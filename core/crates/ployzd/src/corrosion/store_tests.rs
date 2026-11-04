@@ -1226,7 +1226,7 @@ async fn a_forgotten_registered_id_keeps_only_itself_off_the_list() {
     store
         .machine_publication()
         .await
-        .register(&forgotten)
+        .register(forgotten.clone())
         .await
         .unwrap();
     assert_eq!(
@@ -1252,7 +1252,7 @@ async fn a_register_takes_back_the_forget_of_a_registered_row() {
     store
         .machine_publication()
         .await
-        .register(&machine)
+        .register(machine.clone())
         .await
         .unwrap();
 
@@ -1288,7 +1288,7 @@ async fn a_register_does_not_take_back_the_forget_of_a_joined_row() {
     store
         .machine_publication()
         .await
-        .register(&machine)
+        .register(machine.clone())
         .await
         .unwrap();
 
@@ -1841,6 +1841,35 @@ async fn container_rows_expose_rotation_and_gen_against_the_schema() {
             [json!("in"), json!(2)],
             [serde_json::Value::Null, serde_json::Value::Null]
         ]
+    );
+    task.abort();
+}
+
+#[tokio::test]
+async fn a_register_row_names_no_identity_so_its_forget_is_taken_back() {
+    let (store, task) = identity_store(corrosion_db()).await;
+    let (machine, _) = participating_record();
+    let claimed = joined(machine.clone());
+    store
+        .machine_publication()
+        .await
+        .register(claimed.clone())
+        .await
+        .unwrap();
+    assert_eq!(
+        store.machine(machine.id.as_str()).await.unwrap(),
+        Some(machine.clone())
+    );
+    store.forget_machine(&machine.id).await.unwrap();
+    store
+        .machine_publication()
+        .await
+        .register(claimed)
+        .await
+        .unwrap();
+    assert_eq!(
+        store.machine(machine.id.as_str()).await.unwrap(),
+        Some(machine)
     );
     task.abort();
 }

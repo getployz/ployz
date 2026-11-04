@@ -760,8 +760,10 @@ impl LocalMachine {
         let replicated = self.replicated()?;
         let publication = replicated.machine_publication().await;
         // Other Machines' rows are not consulted: Cloud owns concurrency. A Register
-        // for an existing id overwrites its row until that Machine has published
-        // itself, or takes back its forget.
+        // replaces its id's row unless this Entry's copy was published by the Machine
+        // holding the same key, or takes back its forget. It never writes a
+        // Management Identity. The reply is the row it sent; when the row is kept,
+        // nothing tells the caller.
         let snapshot = ployz_core::EnrollmentSnapshot {
             network: published_network(&self.record(), replicated).await?,
             machines: Vec::new(),
@@ -775,9 +777,9 @@ impl LocalMachine {
             })
             .map(|key| key.seal_to(&assignment.machine.public_key))
             .transpose()?;
-        publication.register(&assignment.machine).await?;
+        let machine = publication.register(assignment.machine).await?;
         Ok(registered(
-            assignment.machine,
+            machine,
             replicated.machines().await?.observations,
             replicated.version().await?,
             sealing_key,

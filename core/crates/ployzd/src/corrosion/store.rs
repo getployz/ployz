@@ -94,22 +94,29 @@ impl MachinePublicationGuard<'_> {
         self.store.publish_local_machine_unlocked(machine).await
     }
 
-    /// Store a Register's row. A Register is an explicit add, so it takes back the
-    /// forget of a row that had no Management Identity: its `forgotten-id:` tombstone
-    /// goes in the same transaction, and a rerun of a failed add keeps its Server
-    /// (#3342). A tombstone keyed by a Management Identity stays, so a joined Server
-    /// that was forgotten is still not listed again (#3613).
-    pub(crate) async fn register(&self, machine: &Machine) -> Result<(), Error> {
+    /// Store a Register's row, as [`registration_upsert`] decides, and return the row
+    /// it sent. The call succeeds whether the row was written or kept, and nothing
+    /// tells the caller which.
+    ///
+    /// A Register is an explicit add, so it takes back the forget of a row that had no
+    /// Management Identity: its `forgotten-id:` tombstone goes in the same transaction,
+    /// and a rerun of a failed add keeps its Server (#3342). A Register's row names no
+    /// identity, so forgetting one always leaves that tombstone. A tombstone keyed by a
+    /// Management Identity stays, so a joined Server that was forgotten is still not
+    /// listed again (#3613).
+    pub(crate) async fn register(&self, machine: Machine) -> Result<Machine, Error> {
+        let row = RegisterRow::new(machine);
         self.store
             .api
             .execute([
                 Statement::new(
                     "DELETE FROM cluster WHERE key = 'forgotten-id:' || ?",
-                    [json!(machine.id)],
+                    [json!(row.0.id)],
                 ),
-                registration_upsert(machine)?,
+                registration_upsert(&row)?,
             ])
-            .await
+            .await?;
+        Ok(row.0)
     }
 
     pub(crate) async fn remove(&self, machine_id: &MachineId) -> Result<(), Error> {
@@ -272,13 +279,30 @@ fn machine_upsert(machine: &Machine) -> Result<Statement, Error> {
     ))
 }
 
-/// Write a Register's row as [`machine_upsert`] does. A Register replaces a row
-/// until that Machine has published itself, which the Management Identity in its
-/// row shows; that row is kept. Only a Machine's own publish sets the identity, so
-/// a row from a daemon that publishes none is still replaced. The check reads this
-/// Entry's replica: a self-publish that has not reached it is still overwritten,
-/// until that Machine's publisher writes its row back.
-fn registration_upsert(machine: &Machine) -> Result<Statement, Error> {
+/// A Machine row as a Register writes it. It never names a Management Identity,
+/// because a Register can't vouch for one: [`RegisterRow::new`] drops any the request
+/// carried. On this daemon only a Machine's own publish
+/// ([`MachinePublicationGuard::publishable_machine`]) writes one. An older Entry may
+/// still have stored a Register's identity.
+struct RegisterRow(Machine);
+
+impl RegisterRow {
+    fn new(mut machine: Machine) -> Self {
+        machine.runtime.management_identity = None;
+        Self(machine)
+    }
+}
+
+/// Write a Register's row unless its id is forgotten and not listed, as
+/// [`machine_upsert`] does. An existing row is kept only when this Entry's copy
+/// names a Management Identity and the same WireGuard key as the Register; every
+/// other row is replaced. The key makes keeping safe: a Machine's record refuses a
+/// key other than its own, and a reset mints a new id, so the kept row's key holder
+/// is the Machine whose own publish overwrites it unconditionally. The check reads
+/// only this Entry's replica: a self-publish that hasn't arrived is still
+/// overwritten, until that Machine's publisher writes its row back.
+fn registration_upsert(row: &RegisterRow) -> Result<Statement, Error> {
+    let RegisterRow(machine) = row;
     Ok(Statement::new(
         "INSERT INTO machines (id, info) SELECT ?1, ?2 \
          WHERE EXISTS (SELECT 1 FROM machines WHERE id = ?1) \
@@ -286,7 +310,9 @@ fn registration_upsert(machine: &Machine) -> Result<Statement, Error> {
                          WHERE key LIKE 'forgotten:%' AND value = ?1) \
              AND NOT EXISTS (SELECT 1 FROM cluster WHERE key = 'forgotten-id:' || ?1)) \
          ON CONFLICT (id) DO UPDATE SET info = excluded.info \
-         WHERE json_extract(machines.info, '$.runtime.management_identity') IS NULL",
+         WHERE json_extract(machines.info, '$.runtime.management_identity') IS NULL \
+            OR json_extract(machines.info, '$.public_key') \
+               IS NOT json_extract(excluded.info, '$.public_key')",
         [json!(machine.id), json!(serde_json::to_string(machine)?)],
     ))
 }
