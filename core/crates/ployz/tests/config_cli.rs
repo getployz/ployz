@@ -1905,11 +1905,13 @@ fn status_keeps_a_down_server_past_a_slow_first_use_and_routes_read() {
         .unwrap();
     assert!(output.status.success(), "{output:?}");
     let status: Value = serde_json::from_slice(&output.stdout).unwrap();
+    // web-2 lists no daemon version, so it never joined and holds no copies.
     assert_eq!(
         status["attention"],
         json!([{
             "reason": "machine_down",
-            "message": "Down. Its copies serve again once it's back.",
+            "message": "Never joined. If its add isn't still running, take it out with \
+                        `ployz server forget cccccccccccccccccccccccccccccccc --confirm dead`.",
             "machine": "web-2",
         }]),
         "{status}"

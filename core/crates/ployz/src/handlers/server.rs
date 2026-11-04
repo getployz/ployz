@@ -850,6 +850,19 @@ pub(super) fn target<'a>(matches: &'a ArgMatches, name: &str) -> Result<&'a str,
         .ok_or_else(|| Error::usage(format!("{name} is required")))
 }
 
+/// The command that takes out a Server that never joined. By ID, since a rerun of its add
+/// can list a second Server under the same name.
+pub(super) fn forget_unarrived(id: MachineId) -> String {
+    shell_words::join([
+        "ployz",
+        "server",
+        "forget",
+        id.as_str(),
+        "--confirm",
+        "dead",
+    ])
+}
+
 /// A Machine as every `server` command prints it: its WireGuard public key in base64,
 /// as `wg` prints it, and without its Sealing state.
 pub(super) fn machine_json(machine: &Machine) -> Value {

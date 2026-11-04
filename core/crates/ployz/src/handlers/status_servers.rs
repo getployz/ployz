@@ -375,15 +375,7 @@ fn judge(
         attention: machines
             .iter()
             .filter(|observed| down.contains(&observed.machine.id))
-            .map(|observed| Attention {
-                reason: "machine_down".to_owned(),
-                message: "Down. Its copies serve again once it's back.".to_owned(),
-                deployment: None,
-                next: None,
-                subject: Some(Subject::Down {
-                    machine: observed.machine.name.clone(),
-                }),
-            })
+            .map(down_attention)
             .collect(),
         unchecked_down: machines
             .iter()
@@ -672,6 +664,29 @@ fn stale_address(
             service,
             machine,
             addresses,
+        }),
+    }
+}
+
+/// A Down Server. One that never arrived holds no copies, and an add still running looks
+/// the same, so the command that forgets it comes only with that condition.
+fn down_attention(observed: &MachineObservation) -> Attention {
+    let message = if observed.unarrived() {
+        format!(
+            "Never joined. If its add isn't still running, take it out with `{}`.",
+            crate::ui::pasteable(&server::forget_unarrived(observed.machine.id))
+        )
+    } else {
+        "Down. Its copies serve again once it's back.".to_owned()
+    };
+    Attention {
+        reason: "machine_down".to_owned(),
+        message,
+        deployment: None,
+        // Not the one obvious command: an add still running looks the same.
+        next: None,
+        subject: Some(Subject::Down {
+            machine: observed.machine.name.clone(),
         }),
     }
 }
