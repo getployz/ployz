@@ -12,7 +12,7 @@ The property, in one sentence: **a cancel that returned success keeps its Enviro
 ## Run it
 
 ```
-cd core && cargo test -p ployz-verify removal_marks
+cd core && cargo test -p ployz-verify removal_marks -- --nocapture
 ```
 
 Under a second warm; the whole crate takes about 40 s because of the Volume Runs model beside it. CI runs it in the workspace nextest, so a red model blocks the PR.
@@ -32,7 +32,7 @@ A failure prints the property name, the model's flags, and a numbered story. Eac
     mark=Removing environment=present removal=Applied held: project=free environment=free mark=free cancelled=false
 ```
 
-`mark` is the committed `config_removal_mark.state`; `environment` says whether the `config_environment` row still exists; `removal` is the removal Deployment's status as `on_servers` reads it; `held` names who holds each row from its update to its commit; `cancelled` flips once `cancel_removal` returned success. `Record` is the runner's `deployment::record` ending the removal Deployment, one step because it takes the Project lock before anything else. `Whole(actor)` is a SQLite transaction running start to end.
+`mark` is the committed `config_removal_mark.state`; `environment` says whether the `config_environment` row still exists; `removal` is the removal Deployment's status as `on_servers` reads it; `held` names who holds each row from its update to its commit; `cancelled` flips once `cancel_removal` returned success. `Record(status)` is the runner's `deployment::record` ending the removal Deployment with that status, one step because it takes the Project lock before anything else. `Whole(actor)` is a SQLite transaction running start to end.
 
 Write the story out in the Store's words before deciding anything: which transaction read the mark, under which lock, and what had committed by then. A test that fails inside `assert_properties` prints the raw `Path[n]` of actions instead; to see the rows, call the module's `breaks` helper with that model in a scratch test, which prints the story.
 
@@ -49,7 +49,7 @@ The finding this model was built on, confirmed step by step at the sync commit b
 
 ## A break that stays green
 
-Guards overlap, so removing one can leave every property holding. Before calling a guard dead, rerun with a neighbouring `Broken` flag set too, or under the other `Save` variant. `cancel_needs_the_environment_lock` only fails under `Save::Conditional`: on the code as it is, the sweep's upsert already breaks the property on its own, so the cancel's lock shows its worth only once `finish` is fixed. That is why the fix to `finish` is not the whole guard: the cancel must still lock the Environment, or it commits `cancelled` over a purge.
+Guards overlap, so removing one can leave every property holding. Before calling a guard dead, rerun with a neighbouring `Broken` flag set too, or under the other `Save` variant. `cancel_needs_the_environment_lock` only shows the lock's worth under `Save::Conditional`: on the code as it is, the sweep's upsert already breaks the property on its own, so the cancel's lock shows its worth only once `finish` is fixed. That is why the fix to `finish` is not the whole guard: the cancel must still lock the Environment, or it commits `cancelled` over a purge.
 
 ## Keep the model in step
 
@@ -63,7 +63,7 @@ When a change intentionally alters the lifecycle (a new guard, a new statement, 
 
 ## Bounds and blind spots
 
-Bounds: one Project with one Environment target, one mark, one removal Deployment that starts `Running` or already `Applied`, one sweep, one close, one cancel, each running at most once, and the runner ending the Deployment once. Three row locks: the Project, the Environment, the mark. No lock timeout: a transaction waits as long as it takes, where Postgres gives up after ten seconds and the write fails.
+Bounds: one Project with one Environment target, one mark, one removal Deployment that starts `Running` or already `Applied`, one sweep, one close, one cancel, each running at most once, and the runner ending the Deployment once. The runner ends a `Running` removal `Applied`, and a `Cancelling` one either `Applied` (its run succeeded) or `Cancelled` (it failed), as `record` and `end` do; so a cancel can return success while the removal still applies on the Servers. A `Running` removal that ends `Failed` is out of bounds: the Environment stays on the Servers, and no finisher gets past `on_servers`. Three row locks: the Project, the Environment, the mark. No lock timeout: a transaction waits as long as it takes, where Postgres gives up after ten seconds and the write fails.
 
 Out of scope: a Project-target mark and its member Environments, two sweeps side by side, a `remove()` run again after a cancel, a queued removal Deployment that never claimed, Cloud admitting what the sweep lists as due, the runner's own row lock on the Deployment, the `evidence` and `accepted` columns the same upsert overwrites, `clear_tombstone` on the next `remove()`, pull-request idle closes, and the Store's change log. A green model says nothing about them; cover them with the removal tests in `core/crates/ployz-store/tests/removal.rs`, on Postgres with `PLOYZ_STORE_TEST_POSTGRES` set.
 
@@ -75,7 +75,7 @@ Each model step is a copy of code at the sync commit. Reread these when a diff t
 - `core/crates/ployz-store/src/removal/mark.rs`: `live`, `of`, `save` and its `ON CONFLICT` update.
 - `core/crates/ployz-store/src/removal/mod.rs`: `cancel_removal`, `stop`, `lock_project`, `on_servers`, `ran`, `purge`.
 - `core/crates/ployz-store/src/scope.rs`: `environment`, `lock`, `lock_all`, `lock_id`, `owned`, `load_by_id`.
-- `core/crates/ployz-store/src/deployment/lifecycle.rs`: `cancel`, `record`, `end`.
+- `core/crates/ployz-store/src/deployment/lifecycle.rs`: `cancel`, `record` and its `Applied`/`Failed` choice, `end` and its `(Cancelling, Failed)` to `Cancelled` mapping.
 - `core/crates/ployz-store/src/deployment/history.rs`: `in_flight`, `last_ran`.
 - `core/crates/ployz-store/src/storage/pg.rs`: `begin` and its READ COMMITTED level, `TIMEOUT`.
 - `core/crates/ployz-store/src/storage/sqlite.rs`: `transaction` and `BEGIN IMMEDIATE`.

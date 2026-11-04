@@ -22,7 +22,9 @@
 //!   mark under the lock, returning on a tombstone, and settling as the sweep does;
 //! - the runner: `deployment::record` (deployment/lifecycle.rs) ending the removal
 //!   Deployment under the Project lock, as one step, since it takes that lock before
-//!   anything else and the cancel takes it first too.
+//!   anything else and the cancel takes it first too. A running removal ends
+//!   `Applied`; a cancelling one ends `Applied` when its run succeeded, or
+//!   `Cancelled` when it failed (`end`).
 //!
 //! READ COMMITTED (storage/pg.rs `begin`): a statement reads the rows committed when
 //! it runs, a row update waits for the transaction holding the row and then applies
@@ -224,8 +226,8 @@ struct State {
     sweep: Tx,
     close: Tx,
     cancel: Tx,
-    /// The runner recorded how the removal Deployment ended.
-    recorded: bool,
+    /// The removal Deployment's status when the runner recorded how it ended.
+    recorded: Option<Removal>,
     /// `cancel_removal` returned success to its caller.
     cancelled: bool,
 }
@@ -340,8 +342,8 @@ struct RemovalMarks {
 enum Action {
     /// `Actor` runs its next statement, `Step`.
     Step(Actor, Step),
-    /// The runner records the removal Deployment's end.
-    Record,
+    /// The runner records the removal Deployment's end with this status.
+    Record(Removal),
     /// On SQLite, `Actor`'s transaction runs whole.
     Whole(Actor),
 }
@@ -364,22 +366,27 @@ impl RemovalMarks {
         self.program(actor).get(tx.next).copied()
     }
 
-    /// `deployment::record` may run: it takes the Project lock first, then the
-    /// Deployment, which only a removal still running or cancelling has to record.
-    fn records(state: &State) -> bool {
-        !state.recorded
-            && state.environment
-            && state.held.project.is_none()
-            && matches!(state.removal, Removal::Running | Removal::Cancelling)
+    /// The statuses `deployment::record` may end the removal with now. It takes the
+    /// Project lock first, then the Deployment, which only a removal still running
+    /// or cancelling has to record. `record` picks `Applied` when the run succeeded
+    /// and `Failed` otherwise, and `end` turns only `(Cancelling, Failed)` into
+    /// `Cancelled` (deployment/lifecycle.rs). A running removal that fails is out of
+    /// bounds: it leaves the Environment on the Servers, and no finisher gets past
+    /// `CheckServers`.
+    fn records(state: &State) -> &'static [Removal] {
+        if state.recorded.is_some() || !state.environment || state.held.project.is_some() {
+            return &[];
+        }
+        match state.removal {
+            Removal::Running => &[Removal::Applied],
+            Removal::Cancelling => &[Removal::Applied, Removal::Cancelled],
+            Removal::Applied | Removal::Cancelled => &[],
+        }
     }
 
-    fn record(state: &mut State) {
-        state.removal = match state.removal {
-            Removal::Running => Removal::Applied,
-            Removal::Cancelling => Removal::Cancelled,
-            Removal::Applied | Removal::Cancelled => state.removal,
-        };
-        state.recorded = true;
+    fn record(state: &mut State, ended: Removal) {
+        state.recorded = Some(state.removal);
+        state.removal = ended;
     }
 
     /// `actor` runs the step at its program counter, which `admits` already allowed.
@@ -514,15 +521,15 @@ impl Model for RemovalMarks {
                 sweep: Tx::START,
                 close: Tx::START,
                 cancel: Tx::START,
-                recorded: false,
+                recorded: None,
                 cancelled: false,
             })
             .collect()
     }
 
     fn actions(&self, state: &State, actions: &mut Vec<Action>) {
-        if Self::records(state) {
-            actions.push(Action::Record);
+        for ended in Self::records(state) {
+            actions.push(Action::Record(*ended));
         }
         for actor in Actor::ALL
             .into_iter()
@@ -548,7 +555,7 @@ impl Model for RemovalMarks {
         let mut state = last.clone();
         match action {
             Action::Step(actor, _) => self.step(&mut state, actor),
-            Action::Record => Self::record(&mut state),
+            Action::Record(ended) => Self::record(&mut state, ended),
             Action::Whole(actor) => {
                 while !state.tx(actor).over() {
                     self.step(&mut state, actor);
@@ -578,6 +585,14 @@ impl Model for RemovalMarks {
                 |_, state: &State| {
                     state.cancelled
                         && matches!(state.removal, Removal::Cancelling | Removal::Cancelled)
+                },
+            ),
+            Property::sometimes(
+                "a cancel returns success while the removal applied on the Servers",
+                |_, state: &State| {
+                    state.cancelled
+                        && state.recorded == Some(Removal::Cancelling)
+                        && state.removal == Removal::Applied
                 },
             ),
             Property::sometimes(
@@ -641,17 +656,21 @@ fn story(path: stateright::Path<State, Action>) -> String {
     // Stateright pairs each state with the action taken from it; the row lists the
     // action that led to the state instead, so the last row shows the broken state.
     let mut led_by = None;
+    // The committed removal Deployment before the step that led here.
+    let mut before = None;
     for (n, (state, action)) in path.into_vec().into_iter().enumerate() {
         let what = match led_by {
             None => "start".to_owned(),
-            Some(Action::Record) => {
-                "runner: deployment::record ends the removal Deployment under the Project lock"
-                    .to_owned()
-            }
+            Some(Action::Record(ended)) => format!(
+                "runner: deployment::record ends the removal Deployment {ended:?} under the Project lock"
+            ),
             Some(Action::Whole(actor)) => format!("{actor:?}: the whole transaction, serialized"),
-            Some(Action::Step(actor, step)) => format!("{actor:?}: {}", reads_as(step)),
+            Some(Action::Step(actor, step)) => {
+                format!("{actor:?}: {}", reads_as(actor, step, before))
+            }
         };
         led_by = action;
+        before = Some(state.removal);
         let held =
             |holder: Option<Actor>| holder.map_or_else(|| "free".to_owned(), |h| format!("{h:?}"));
         let _ = writeln!(
@@ -673,7 +692,8 @@ fn story(path: stateright::Path<State, Action>) -> String {
     story
 }
 
-fn reads_as(step: Step) -> &'static str {
+/// `step` as `actor` runs it, with `removal` the committed removal Deployment it saw.
+fn reads_as(actor: Actor, step: Step, removal: Option<Removal>) -> &'static str {
     match step {
         Step::ReadLive => {
             "mark::live reads every `removing` mark, under no lock (removal/due.rs sweep)"
@@ -682,9 +702,14 @@ fn reads_as(step: Step) -> &'static str {
         Step::LockEnvironment => {
             "scope::lock_all updates the Environment row, waiting for its holder (scope.rs)"
         }
-        Step::LoadEnvironment => {
-            "the Environment loads after the lock, or the write fails (scope.rs owned)"
-        }
+        Step::LoadEnvironment => match actor {
+            Actor::Sweep | Actor::Close => {
+                "scope::lock_id loads the Environment with owned after the lock, or the write fails (scope.rs)"
+            }
+            Actor::Cancel => {
+                "scope::lock loads the Environment with load after the lock (scope::environment, unlocked, under Broken), or the write fails (scope.rs)"
+            }
+        },
         Step::ReadMark => "mark::of reads the mark under the locks (removal/mark.rs)",
         Step::CheckServers => {
             "finish asks on_servers whether anything of the Environment may still run (removal/due.rs)"
@@ -693,9 +718,12 @@ fn reads_as(step: Step) -> &'static str {
             "finish saves the stale in-memory mark as `removed` (removal/due.rs, mark::save)"
         }
         Step::Purge => "finish purges the Environment (removal/due.rs, removal::purge)",
-        Step::CancelRemoval => {
-            "stop cancels the removal Deployment still in flight (removal/mod.rs)"
-        }
+        Step::CancelRemoval => match removal {
+            Some(Removal::Running) => {
+                "stop finds the removal Deployment in flight and cancels it (removal/mod.rs)"
+            }
+            _ => "stop finds no removal Deployment it can cancel (removal/mod.rs)",
+        },
         Step::SaveCancelled => "stop saves the mark as `cancelled` (removal/mod.rs, mark::save)",
         Step::Commit => "COMMIT: every row it updated is released",
     }
@@ -718,7 +746,7 @@ mod tests {
         }
     }
 
-    /// The shortest path on which `property` fails under `model`, printed as a story.
+    /// A path on which `property` fails under `model`, printed as a story.
     fn breaks(model: RemovalMarks, property: &'static str) -> State {
         let checker = model
             .checker()
@@ -733,8 +761,8 @@ mod tests {
     }
 
     /// The finding. On the Postgres Store as the code is, the sweep reads the mark
-    /// before the cancel commits, waits for the cancel at the member lock, then
-    /// saves its stale copy as `removed` and purges the Environment the cancel just
+    /// before the cancel commits and takes the member lock after it, then saves its
+    /// stale copy as `removed` and purges the Environment the cancel just
     /// kept. This test passes by finding that path; it starts failing once the code
     /// keeps a committed cancel.
     #[test]
