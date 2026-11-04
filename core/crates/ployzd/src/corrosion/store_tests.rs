@@ -1130,6 +1130,7 @@ fn cli_registered() -> (Machine, LocalMachineRecord) {
 
 #[tokio::test]
 async fn forget_of_a_registered_row_keeps_its_id_gone() {
+    // whatever the other rows advertise
     for peers in [vec![], vec![joined_peer()]] {
         let (store, task) = identity_store(corrosion_db()).await;
         // A Registered row as Cloud writes it, advertising nothing.

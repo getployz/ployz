@@ -856,12 +856,6 @@ on it then says `this Machine was forgotten by its Cluster`.
 Nothing stops its services when it can't reach any of those servers, or when the versions don't
 line up. Those cases, and the minutes before it asks, are yours to cover.
 
-A server forgotten before it finished joining, so it never showed a version, stays off your list
-even if it finishes joining later, when it and the server that forgot it run Ployz 0.3.17 or later.
-It isn't told it was forgotten: it stays joining, or runs on its own with nothing to do. Run
-`sudo ployz-uninstall` on it, or add it again with `ployz server add`. On an older Ployz it can put
-itself back on your list when it finishes joining; forget it again.
-
 So decide before a forgotten server runs again. As soon as it boots, run `sudo ployz-uninstall`
 on it. That stops the services Ployz runs there and keeps every copy of a volume on the disk, along
 with Docker and your images. Adding it back later with a plain `ployz server add` keeps every copy
@@ -872,6 +866,14 @@ by then. A copy of a volume your project still has then shows under that volume'
 meanwhile, syncs refuse a second mirror until you remove one of them. Wipe
 or reinstall its disk only if you need nothing on it. Ployz no longer lists a forgotten server, so `ployz server rm` can't
 reach it. `ployz server forget` prints this warning each time it forgets servers.
+
+A server forgotten before it finished joining, or while its last report came from Ployz 0.3.0,
+stays off your list if it carries on later, as long as it and the server that forgot it run Ployz
+0.3.17 or later by then. It isn't told it was forgotten: it stays joining, or keeps running on its own. Run
+`sudo ployz-uninstall` on it, or add it again with `ployz server add`. A server that never started
+joining keeps its ID and address. One that had started joining is asked to reset first, then joins
+with a new address. On an older Ployz a forgotten server can put itself back on your list; forget it
+again.
 
 `ployz server forget` warns about replicated services as `ployz server rm` does, with one
 difference. A forgotten server may still run its replicas, so for a service with every replica on
