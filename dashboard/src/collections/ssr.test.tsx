@@ -44,7 +44,7 @@ it("hydrates the server result before live reads and committed writes take over"
   });
   await screen.findByText("Live snapshot");
   expect(onRecoverableError).not.toHaveBeenCalled();
-  await browserRows.writeCommitted({ id: "one", name: "Committed edit" });
+  await browserRows.utils.writeUpsert({ id: "one", name: "Committed edit" });
   await waitFor(() => expect(screen.getByText("Committed edit")).toBeTruthy());
   expect(serverRows.get("one")?.name).toBe("Server snapshot");
   view.unmount();

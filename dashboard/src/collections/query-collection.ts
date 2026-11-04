@@ -31,23 +31,6 @@ function baseOptions<T extends object>(input: ApiCollectionInput<T>): BaseOption
   };
 }
 
-type ApiCollection<T extends object> = Pick<Collection<T, string | number, QueryCollectionUtils<T>>, "subscribeChanges" | "utils">;
-
-function withWriteCommitted<T extends object, C extends ApiCollection<T>>(input: ApiCollectionInput<T>, collection: C) {
-  return Object.assign(collection, {
-    async writeCommitted(rows: T | T[]): Promise<void> {
-      const subscription = collection.subscribeChanges(() => {});
-      try {
-        // A read started before the POST must not overwrite its committed response.
-        await input.queryClient.cancelQueries({ queryKey: input.queryKey, exact: true });
-        await collection.utils.writeUpsert(rows);
-      } finally {
-        subscription.unsubscribe();
-      }
-    },
-  });
-}
-
 /**
  * A failed first load ends its sync run, and later reads of the same Query never reach it. The Collection reloads
  * after its Query next succeeds, or when `recover()` is called. A reload starts a new run, which cancels every read of
@@ -108,7 +91,7 @@ export function createApiCollection<T extends object>(input: ApiCollectionInput<
   queryFn: (context: { signal: AbortSignal }) => Promise<T[]>;
 }) {
   const options = queryCollectionOptions({ ...baseOptions(input), refetchInterval: input.refetchInterval, queryFn: input.queryFn });
-  return withWriteCommitted(input, withRecovery(input, getDbClient(input.queryClient).collection(collectionOptions(options))));
+  return withRecovery(input, getDbClient(input.queryClient).collection(collectionOptions(options)));
 }
 
 /** Rows and their change cursor live in one Query entry, so a cancelled or reverted read reverts both. */
@@ -137,7 +120,7 @@ export function createChangeCollection<T extends object>(input: ApiCollectionInp
     queryFn,
     select: (snapshot: ChangeSnapshot<T>) => snapshot.rows,
   });
-  return withWriteCommitted(input, withRecovery(input, getDbClient(input.queryClient).collection(collectionOptions(options))));
+  return withRecovery(input, getDbClient(input.queryClient).collection(collectionOptions(options)));
 }
 
 type ApiCollectionReadiness = Pick<Collection<object>, "status" | "preload"> & {

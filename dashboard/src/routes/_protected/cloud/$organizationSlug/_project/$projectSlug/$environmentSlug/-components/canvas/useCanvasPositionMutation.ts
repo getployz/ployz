@@ -123,7 +123,7 @@ export async function persistCanvasPositionBatch(
 ) {
   const results = await Promise.allSettled(writes);
   const committed = results.flatMap((result) => result.status === "fulfilled" ? [result.value.data] : []);
-  if (committed.length) await collection.writeCommitted(committed);
+  if (committed.length) await collection.utils.writeUpsert(committed);
   const failure = results.find((result) => result.status === "rejected");
   if (failure) throw failure.reason;
 }

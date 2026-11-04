@@ -75,7 +75,7 @@ export function useServerUpgradeSettings(organizationSlug: string) {
       else collection.insert({ id: organizationId, ...settings, ...change });
     },
     mutationFn: (change) => setServerUpgradeSettingsServerFn({ data: { organizationSlug, ...change } })
-      .then((row) => collection.writeCommitted(row)),
+      .then((row) => collection.utils.writeUpsert(row)),
   });
   const save = (change: Change, failure: string) => {
     set(change).when("settled").catch(() => toast.error(failure));

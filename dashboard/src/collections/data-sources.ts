@@ -12,7 +12,7 @@
 export type DataSourceKind = "org-store" | "runtime" | "remote";
 
 export const dataSources = {
-  "collections/query-collection.ts": { kind: "org-store", freshness: "table default: the Organization change stream pushes which tables changed and each reads rows changed since its cursor; no timer; refetch on focus and reconnect; land this user's writes via writeCommitted" },
+  "collections/query-collection.ts": { kind: "org-store", freshness: "table default: the Organization change stream pushes which tables changed and each reads rows changed since its cursor; no timer; refetch on focus and reconnect; land this user's writes via utils.writeUpsert" },
   "collections/collections.ts": { kind: "org-store", freshness: "table default for every table" },
   "collections/org-store.ts": { kind: "org-store", freshness: "readiness only, once per organization; the change stream keeps tables fresh" },
   "modules/config-store/store-view.queries.ts": { kind: "remote", freshness: "one bounded Config Store view per query (an Environment's Settings, its diff or plan, a Deployments page, one Deployment), prefetched by loaders; the change stream refetches the views each Store table family backs; a domains view polls every 30s while a domain is setting up or needs DNS (certificates and DNS change without a Store write); an in-flight Deployment polls every 5s in case the stream missed its progress; this tab's pending edits show over it until they commit" },
