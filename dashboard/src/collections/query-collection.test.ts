@@ -307,7 +307,7 @@ it.each([false, true])("applies committed rows without an observer over older re
   client.clear();
 });
 
-it("lands a committed write made during the first load and lets that load finish", async () => {
+it("does not stall a first load when a committed write lands during it", async () => {
   const client = new QueryClient();
   const stale = { id: "row", revision: "old" };
   let finishRead = (_rows: typeof stale[]) => {};
@@ -320,6 +320,60 @@ it("lands a committed write made during the first load and lets that load finish
   finishRead([stale]);
   await loading;
   expect(collection.get("row")).toMatchObject({ revision: "committed" });
+  await collection.cleanup();
+  client.clear();
+});
+
+it("keeps a committed row over an incremental read that started before the write", async () => {
+  const client = new QueryClient();
+  type Row = { id: string; name: string };
+  let finishRead = (_result: CollectionRead<Row>) => {};
+  const read = vi.fn<(context: { since: string | undefined }) => Promise<CollectionRead<Row>>>()
+    .mockResolvedValueOnce({ full: true, rows: [{ id: "a", name: "a" }], cursor: "10" })
+    .mockImplementationOnce(() => new Promise((resolve) => { finishRead = resolve; }))
+    .mockResolvedValueOnce({ full: false, rows: [], deleted: [], cursor: "12" });
+  const collection = createChangeCollection({ queryClient: client, queryKey: ["changes", "race"], read, getKey: (row: Row) => row.id });
+  const names = () => [...collection.values()].map((row) => row.name).sort();
+  const active = collection.subscribeChanges(() => {});
+  await preloadCollection(collection);
+  const pendingRead = collection.utils.refetch();
+  await vi.waitFor(() => expect(read).toHaveBeenCalledTimes(2));
+  await collection.utils.writeUpsert({ id: "d", name: "d" });
+  finishRead({ full: false, rows: [], deleted: [], cursor: "11" });
+  await pendingRead;
+  expect(names()).toEqual(["a", "d"]);
+  await collection.utils.refetch();
+  expect(read.mock.calls.map(([context]) => context.since)).toEqual([undefined, "10", "11"]);
+  expect(names()).toEqual(["a", "d"]);
+  active.unsubscribe();
+  await collection.cleanup();
+  client.clear();
+});
+
+it("shows a later reader the committed row when an unobserved refetch was in flight across the write", async () => {
+  const client = new QueryClient();
+  type Row = { id: string; name: string };
+  let finishRead = (_result: CollectionRead<Row>) => {};
+  const read = vi.fn<(context: { since: string | undefined }) => Promise<CollectionRead<Row>>>()
+    .mockResolvedValueOnce({ full: true, rows: [{ id: "a", name: "old" }], cursor: "10" })
+    .mockImplementationOnce(() => new Promise((resolve) => { finishRead = resolve; }))
+    .mockResolvedValue({ full: false, rows: [], deleted: [], cursor: "12" });
+  const collection = createChangeCollection({ queryClient: client, queryKey: ["changes", "unobserved"], read, getKey: (row: Row) => row.id });
+  await preloadCollection(collection);
+  const pendingRead = collection.utils.refetch();
+  await vi.waitFor(() => expect(read).toHaveBeenCalledTimes(2));
+  await collection.utils.writeUpsert({ id: "a", name: "committed" });
+  finishRead({ full: false, rows: [], deleted: [], cursor: "11" });
+  await pendingRead;
+  const seen: string[] = [];
+  const reader = collection.subscribeChanges((changes) => {
+    for (const change of changes) seen.push(change.value.name);
+  }, { includeInitialState: true });
+  await preloadCollection(collection);
+  await collection.utils.refetch();
+  expect(seen).toEqual(["committed"]);
+  expect(collection.get("a")?.name).toBe("committed");
+  reader.unsubscribe();
   await collection.cleanup();
   client.clear();
 });
