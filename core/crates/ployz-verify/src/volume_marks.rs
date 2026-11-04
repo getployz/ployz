@@ -12,6 +12,19 @@
 //! `written_here` (departure.rs) reads false, and the Seed runs `zfs destroy -r` on the
 //! slot and starts copying the old restore point into it.
 //!
+//! The properties: a Seed from an ended seed run never destroys a copy of `into` a later
+//! run made; a Seed never destroys a copy only this Machine may hold, nor a slot a
+//! receive is still writing; a seed run ends done only on a root holding its restore
+//! point; and at rest the run's row has ended. They are phrased over stale Seeds where
+//! the finding is, because a live Seed replacing a pulled Mirror is designed
+//! (`seed_tests.rs` `a_seed_replaces_a_slot_a_mirror_pull_marked_or_that_holds_no_point`).
+//!
+//! The fix variant gives Seed its run's gen and admits it against `into`'s floor, as
+//! `admit_gen` (machine_api/local_volume_copy.rs) and `FloorTurn::admit`
+//! (docker/spec_store.rs) do for `SetVolumeCopy`, before `seed_volume` runs. Gens come
+//! from one identity column, so a later run's `SetVolumeCopy` on A raises `into`'s floor
+//! above the seed run's gen.
+//!
 //! Every plugin handler holds `admit_mutation` (storage.rs) from its first read to its
 //! answer, so each handler is one step. A receive task runs outside it, so a receive
 //! completing and `mark_pulled` are steps of their own.
@@ -55,6 +68,7 @@ enum Made {
 }
 
 const EARLIER: u8 = 1;
+const SEED: u8 = 2;
 const LATER: u8 = 3;
 
 /// The marks `written_here` reads (departure.rs `marked_written_here`). `ployz:epoch` is
@@ -134,6 +148,8 @@ impl Row {
 /// The branch of `VolumeStorage::seed_volume` (seed.rs) one Seed request took.
 #[derive(Clone, Copy, Debug, Hash, PartialEq, Eq)]
 enum SeedPath {
+    /// The fix: `admit_gen` refuses the seed run's gen below `into`'s floor.
+    Stale,
     /// A root of `into` with this guid in `ployz:seed`: answers the root.
     AnswersRoot,
     /// A root of `into` with another or no `ployz:seed`: "Volume into already exists".
@@ -255,9 +271,184 @@ impl State {
     }
 }
 
+/// A guard the code has, taken out, to show the check catches what it prevents.
+#[derive(Clone, Copy, Debug, Default)]
+#[expect(
+    clippy::struct_excessive_bools,
+    reason = "each flag removes one independent guard"
+)]
+struct Broken {
+    /// The root branch of `seed_volume` (seed.rs) answers any root of `into`, skipping
+    /// its `ployz:seed` check against the guid.
+    root_ignores_seed: bool,
+    /// `seed_volume` skips `receives.running(&into)` (seed.rs).
+    seed_ignores_receive: bool,
+    /// `seed_volume` skips `written_here(&fs)` before its `destroy -r` (seed.rs).
+    seed_ignores_written_here: bool,
+    /// `mark_pulled` (copy.rs) sets `ployz:pulled` without inheriting `ployz:cut`,
+    /// `epoch`, `promote` and `seed` first.
+    pull_keeps_marks: bool,
+}
+
+/// What a coverage check takes out of the model, to show the `sometimes` naming it is
+/// reached no other way.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Omit {
+    /// These actions are never taken.
+    Actions(&'static [Action]),
+    /// No Seed request takes this branch.
+    Path(SeedPath),
+}
+
+/// One `sometimes`: a branch the code handles, read from the state that took it, the
+/// scenarios that reach it, and what to take out of the model to show nothing else does.
+struct Coverage {
+    name: &'static str,
+    scenarios: &'static [Scenario],
+    /// Reached only with the fix's floor check.
+    fix_only: bool,
+    omit: Omit,
+    reached: fn(&VolumeMarks, &State) -> bool,
+}
+
+/// The last step was a Seed request that took `path`.
+fn took(state: &State, path: SeedPath) -> bool {
+    matches!(state.last, Some(Action::Seed { .. })) && state.seed == Some(path)
+}
+
+const ALL: &[Scenario] = &[Scenario::Fresh, Scenario::OldCopy, Scenario::Taken];
+const SEEDS: &[Scenario] = &[Scenario::Fresh, Scenario::OldCopy];
+const FRESH: &[Scenario] = &[Scenario::Fresh];
+const OLD_COPY: &[Scenario] = &[Scenario::OldCopy];
+const TAKEN: &[Scenario] = &[Scenario::Taken];
+
+/// Each branch the bounds reach, once. `every_sometimes_needs_what_it_names` takes each
+/// row's `omit` out and expects its `name` unreached.
+const COVERAGE: &[Coverage] = &[
+    Coverage {
+        name: "a Seed starts its copy in a new slot",
+        scenarios: FRESH,
+        fix_only: false,
+        omit: Omit::Path(SeedPath::Starts),
+        reached: |_, state| took(state, SeedPath::Starts),
+    },
+    Coverage {
+        name: "a resent Seed answers the copy still receiving",
+        scenarios: SEEDS,
+        fix_only: false,
+        omit: Omit::Path(SeedPath::Receiving),
+        reached: |_, state| took(state, SeedPath::Receiving),
+    },
+    Coverage {
+        name: "a Seed lands its complete copy as a root",
+        scenarios: SEEDS,
+        fix_only: false,
+        omit: Omit::Path(SeedPath::Lands),
+        reached: |_, state| took(state, SeedPath::Lands),
+    },
+    Coverage {
+        name: "a Seed answers the root it landed",
+        scenarios: FRESH,
+        fix_only: false,
+        omit: Omit::Path(SeedPath::AnswersRoot),
+        reached: |_, state| took(state, SeedPath::AnswersRoot),
+    },
+    Coverage {
+        name: "a Seed refuses a Volume into that already exists",
+        scenarios: TAKEN,
+        fix_only: false,
+        omit: Omit::Path(SeedPath::Exists),
+        reached: |_, state| took(state, SeedPath::Exists),
+    },
+    Coverage {
+        name: "a Seed refuses a slot written here",
+        scenarios: OLD_COPY,
+        fix_only: false,
+        omit: Omit::Path(SeedPath::Held),
+        reached: |_, state| took(state, SeedPath::Held),
+    },
+    Coverage {
+        name: LIVE_REPLACES_PULLED,
+        scenarios: OLD_COPY,
+        fix_only: false,
+        omit: Omit::Path(SeedPath::Replaces),
+        reached: |_, state| {
+            took(state, SeedPath::Replaces) && state.destroyed.is_some_and(|d| !d.stale && d.pulled)
+        },
+    },
+    Coverage {
+        name: "the floor refuses a Seed from an ended seed run",
+        scenarios: FRESH,
+        fix_only: true,
+        omit: Omit::Path(SeedPath::Stale),
+        reached: |_, state| {
+            took(state, SeedPath::Stale)
+                && state.last == Some(Action::Seed { answered: false })
+                && !state.row.open()
+        },
+    },
+    Coverage {
+        name: "the seed run ends done",
+        scenarios: SEEDS,
+        fix_only: false,
+        omit: Omit::Actions(&[Action::Seed { answered: true }]),
+        reached: |_, state| {
+            state.last == Some(Action::Seed { answered: true }) && matches!(state.row, Row::Done(_))
+        },
+    },
+    Coverage {
+        name: "a Seed request outlives its run's row",
+        scenarios: ALL,
+        fix_only: false,
+        omit: Omit::Actions(&[Action::TimeOut]),
+        reached: |_, state| !state.row.open() && state.on_wire > 0,
+    },
+    Coverage {
+        name: "the run gives up after its last poll",
+        scenarios: FRESH,
+        fix_only: false,
+        omit: Omit::Actions(&[Action::GiveUp]),
+        reached: |_, state| state.last == Some(Action::GiveUp),
+    },
+    Coverage {
+        name: "Create adopts the landed root",
+        scenarios: FRESH,
+        fix_only: false,
+        omit: Omit::Actions(&[Action::Adopt]),
+        reached: |_, state| state.last == Some(Action::Adopt),
+    },
+    Coverage {
+        name: "the later Move cuts the adopted root into an old copy",
+        scenarios: FRESH,
+        fix_only: false,
+        omit: Omit::Actions(&[Action::Cut]),
+        reached: |_, state| state.last == Some(Action::Cut),
+    },
+    Coverage {
+        name: "mark_pulled marks the slot a pull received",
+        scenarios: SEEDS,
+        fix_only: false,
+        omit: Omit::Actions(&[Action::MarkPulled]),
+        reached: |_, state| state.last == Some(Action::MarkPulled),
+    },
+    Coverage {
+        name: "the floor a Seed raised refuses the earlier run's pull",
+        scenarios: OLD_COPY,
+        fix_only: true,
+        omit: Omit::Actions(&[Action::EarlierPull]),
+        reached: |_, state| state.last == Some(Action::EarlierPull) && state.task == Task::Idle,
+    },
+];
+
 #[derive(Clone, Copy, Debug)]
 struct VolumeMarks {
     scenario: Scenario,
+    /// The fix: Seed carries its run's gen and admits it against `into`'s floor
+    /// (`admit_gen`, machine_api/local_volume_copy.rs) before `seed_volume` runs.
+    fix: bool,
+    broken: Broken,
+    /// A coverage check's cut, `None` to run the whole model.
+    omit: Option<Omit>,
 }
 
 impl VolumeMarks {
@@ -268,14 +459,23 @@ impl VolumeMarks {
     }
 
     /// `VolumeStorage::seed_volume` (seed.rs) for one request, under `admit_mutation`.
-    fn seed(state: &mut State) -> Answer {
+    fn seed(&self, state: &mut State) -> Answer {
+        let broken = self.broken;
+        if self.fix && !Self::admit(state, SEED) {
+            state.seed = Some(SeedPath::Stale);
+            return Answer::Refused;
+        }
         let (path, answer) = match state.into {
             // seed.rs: `Self::dataset(..)` finds the root; `ployz:seed` against the guid.
             // A landed root no longer holds `G`, so `finish_landing` does not run again.
-            Into::Root(root) if root.marks.seed => (SeedPath::AnswersRoot, Answer::Root(root.made)),
+            Into::Root(root) if root.marks.seed || broken.root_ignores_seed => {
+                (SeedPath::AnswersRoot, Answer::Root(root.made))
+            }
             Into::Root(_) => (SeedPath::Exists, Answer::Refused),
             // seed.rs: `self.receives.running(&into)`.
-            _ if state.task != Task::Idle => (SeedPath::Receiving, Answer::Slot),
+            _ if state.task != Task::Idle && !broken.seed_ignores_receive => {
+                (SeedPath::Receiving, Answer::Slot)
+            }
             // seed.rs: the slot's `fs` newest is `G`, so `land` inherits `ployz:pulled`,
             // sets `ployz:seed` and `ployz:promote`, renames it to the root and
             // `finish_landing` destroys the parent and `root@G`.
@@ -293,7 +493,9 @@ impl VolumeMarks {
                 (SeedPath::Lands, Answer::Root(fs.made))
             }
             // seed.rs: `slot_fs` exists and `written_here(&fs)`.
-            Into::Slot { fs: Some(fs) } if Self::written_here(fs) => {
+            Into::Slot { fs: Some(fs) }
+                if Self::written_here(fs) && !broken.seed_ignores_written_here =>
+            {
                 (SeedPath::Held, Answer::Refused)
             }
             // seed.rs: `if slot { zfs destroy -r <parent> }`, `create_bounded_slot`, set
@@ -340,7 +542,7 @@ impl VolumeMarks {
         true
     }
 
-    fn step(state: &mut State, action: Action) {
+    fn step(&self, state: &mut State, action: Action) {
         match action {
             Action::Send => {
                 state.sends += 1;
@@ -354,7 +556,7 @@ impl VolumeMarks {
             Action::GiveUp => state.row = Row::Failed,
             Action::Seed { answered } => {
                 state.on_wire -= 1;
-                let answer = Self::seed(state);
+                let answer = self.seed(state);
                 if answered {
                     Self::answer(state, answer);
                 }
@@ -433,7 +635,9 @@ impl VolumeMarks {
             }
             Action::MarkPulled => {
                 if let Into::Slot { fs: Some(fs) } = &mut state.into {
-                    fs.marks = Marks::default();
+                    if !self.broken.pull_keeps_marks {
+                        fs.marks = Marks::default();
+                    }
                     fs.pulled = fs.newest;
                 }
                 state.task = Task::Idle;
@@ -445,6 +649,17 @@ impl VolumeMarks {
     fn slot_holds(state: &State, point: Point) -> bool {
         state.task == Task::Idle
             && matches!(state.into, Into::Slot { fs: Some(fs) } if fs.newest == Some(point))
+    }
+
+    /// `action` from `before` to `after` is what the coverage check cut.
+    fn omitted(&self, action: Action, after: &State) -> bool {
+        match self.omit {
+            None => false,
+            Some(Omit::Actions(actions)) => actions.contains(&action),
+            Some(Omit::Path(path)) => {
+                matches!(action, Action::Seed { .. }) && after.seed == Some(path)
+            }
+        }
     }
 }
 
@@ -549,13 +764,16 @@ impl Model for VolumeMarks {
 
     fn next_state(&self, last: &State, action: Action) -> Option<State> {
         let mut state = *last;
-        Self::step(&mut state, action);
+        self.step(&mut state, action);
+        if self.omitted(action, &state) {
+            return None;
+        }
         state.last = Some(action);
         Some(state)
     }
 
     fn properties(&self) -> Vec<Property<Self>> {
-        vec![
+        let mut properties = vec![
             Property::always(STALE_KEEPS_LATER, |_, state: &State| {
                 state
                     .destroyed
@@ -574,7 +792,14 @@ impl Model for VolumeMarks {
             Property::always(EVERY_ROW_ENDS, |model: &Self, state: &State| {
                 !state.at_rest(model) || !state.row.open()
             }),
-        ]
+        ];
+        properties.extend(
+            COVERAGE
+                .iter()
+                .filter(|row| row.scenarios.contains(&self.scenario) && (self.fix || !row.fix_only))
+                .map(|row| Property::sometimes(row.name, row.reached)),
+        );
+        properties
     }
 }
 
@@ -584,10 +809,11 @@ const KEEPS_ALONE: &str = "a Seed never destroys a copy of into only this Machin
 const KEEPS_RECEIVING: &str = "a Seed never destroys a slot a receive is still writing";
 const DONE_HOLDS_POINT: &str = "a seed run ends done only on a root holding its restore point";
 const EVERY_ROW_ENDS: &str = "at rest, the seed run's row has ended";
+const LIVE_REPLACES_PULLED: &str = "a live Seed replaces a Mirror a pull received";
 
 /// `path` in the code's words: each step, and the row, the wire, A's floor and `into`'s
 /// datasets once it ran.
-fn story(path: &[(State, Option<Action>)]) -> String {
+fn story(model: &VolumeMarks, path: &[(State, Option<Action>)]) -> String {
     let mut story = String::new();
     // Stateright pairs each state with the action taken from it; the row lists the
     // action that led to the state instead, so the last row shows the broken state.
@@ -595,7 +821,7 @@ fn story(path: &[(State, Option<Action>)]) -> String {
     for (n, (state, action)) in path.iter().enumerate() {
         let what = led_by.map_or_else(
             || "start".to_owned(),
-            |(before, action)| reads_as(&before, action, state),
+            |(before, action)| reads_as(model, &before, action, state),
         );
         led_by = action.map(|action| (*state, action));
         let copy = |copy: Copy| {
@@ -632,8 +858,8 @@ fn story(path: &[(State, Option<Action>)]) -> String {
     story
 }
 
-/// `action` from `before`, read with `after` for the branch it took.
-fn reads_as(before: &State, action: Action, after: &State) -> String {
+/// `action` from `before` under `model`, read with `after` for the branch it took.
+fn reads_as(model: &VolumeMarks, before: &State, action: Action, after: &State) -> String {
     match action {
         Action::Send => {
             "Cloud: seedVolume's 03-ask step sends seed_volume {name, into, guid: G} (volume-run.inngest.ts)".to_owned()
@@ -653,7 +879,22 @@ fn reads_as(before: &State, action: Action, after: &State) -> String {
             } else {
                 "no step waits for the answer"
             };
+            let broken = model.broken;
+            let fs = match before.into {
+                Into::Slot { fs } => fs,
+                Into::Absent | Into::Root(_) => None,
+            };
             let branch = match after.seed {
+                Some(SeedPath::Stale) => {
+                    return format!(
+                        "A: Volume.Seed carries its run's gen, {row}; admit_gen refuses it below into's floor before the switch lock (the fix, machine_api/local_volume_copy.rs); {to}"
+                    );
+                }
+                Some(SeedPath::AnswersRoot)
+                    if !matches!(before.into, Into::Root(root) if root.marks.seed) =>
+                {
+                    "the root branch answers a root without ployz:seed = G, skipping its guid check (under Broken)"
+                }
                 Some(SeedPath::AnswersRoot) => {
                     "the root of into carries ployz:seed = G: answers the root"
                 }
@@ -667,14 +908,30 @@ fn reads_as(before: &State, action: Action, after: &State) -> String {
                 Some(SeedPath::Held) => {
                     "written_here(fs) reads true: refuses, Volume into is held in slot"
                 }
+                Some(SeedPath::Replaces) if before.task != Task::Idle => {
+                    "receives.running(into) skipped (under Broken): zfs destroy -r the slot parent under the receive, a new slot, copy_snapshot of name@G"
+                }
+                Some(SeedPath::Replaces)
+                    if fs.is_some_and(VolumeMarks::written_here) && broken.seed_ignores_written_here =>
+                {
+                    "written_here(fs) skipped (under Broken): zfs destroy -r the slot parent, a new slot, copy_snapshot of name@G"
+                }
+                Some(SeedPath::Replaces) if fs.is_none() => {
+                    "the slot has no fs: zfs destroy -r the slot parent, a new slot, copy_snapshot of name@G"
+                }
                 Some(SeedPath::Replaces) => {
                     "written_here(fs) reads false: zfs destroy -r the slot parent, a new slot, copy_snapshot of name@G"
                 }
                 Some(SeedPath::Starts) => "no slot: a new slot, copy_snapshot of name@G",
                 None => "?",
             };
+            let admitted = if model.fix {
+                "admit_gen admits its gen, then "
+            } else {
+                ""
+            };
             format!(
-                "A: Volume.Seed runs a request, {row}, under the switch lock and admit_mutation; {branch} (seed.rs seed_volume); {to}"
+                "A: Volume.Seed runs a request, {row}; {admitted}under the switch lock and admit_mutation, {branch} (seed.rs seed_volume); {to}"
             )
         }
         Action::CopyDone => {
@@ -704,6 +961,9 @@ fn reads_as(before: &State, action: Action, after: &State) -> String {
             "A: the pull's receive exits 0; fs holds the writer's newest (copy.rs pull_stream)"
                 .to_owned()
         }
+        Action::MarkPulled if model.broken.pull_keeps_marks => {
+            "A: mark_pulled sets ployz:pulled to the newest guid, keeping every mark (under Broken); the task ends (copy.rs)".to_owned()
+        }
         Action::MarkPulled => {
             "A: mark_pulled inherits ployz:cut, epoch, promote and seed and sets ployz:pulled to the newest guid; the task ends (copy.rs)".to_owned()
         }
@@ -719,6 +979,28 @@ mod tests {
     use super::*;
 
     type Path = Vec<(State, Option<Action>)>;
+
+    /// The code as it is.
+    fn as_is(scenario: Scenario) -> VolumeMarks {
+        VolumeMarks {
+            scenario,
+            fix: false,
+            broken: Broken::default(),
+            omit: None,
+        }
+    }
+
+    /// The fix: Seed admits its run's gen against `into`'s floor.
+    fn fixed(scenario: Scenario) -> VolumeMarks {
+        VolumeMarks {
+            fix: true,
+            ..as_is(scenario)
+        }
+    }
+
+    fn check(model: VolumeMarks) -> impl Checker<VolumeMarks> {
+        model.checker().threads(4).spawn_bfs().join()
+    }
 
     /// The first path in BFS order whose last state breaks `property` under `model`, so
     /// no shorter path breaks it, printed as a story. A visitor keeps the first: the
@@ -754,7 +1036,7 @@ mod tests {
         println!(
             "[{}] {property} fails under {model:?}:\n{}",
             test.name().unwrap_or("?"),
-            story(&path)
+            story(&model, &path)
         );
         path
     }
@@ -771,12 +1053,7 @@ mod tests {
     /// destroys the Mirror the later run pulled. This test passes by finding that path.
     #[test]
     fn current_code_lets_a_late_seed_destroy_a_mirror_a_later_run_pulled() {
-        let path = breaks(
-            VolumeMarks {
-                scenario: Scenario::Fresh,
-            },
-            STALE_KEEPS_LATER,
-        );
+        let path = breaks(as_is(Scenario::Fresh), STALE_KEEPS_LATER);
         let broken = last(&path);
         let destroyed = broken.destroyed.expect("the Seed destroyed a slot");
         assert!(destroyed.stale, "the seed run's row had ended");
@@ -797,11 +1074,7 @@ mod tests {
     #[test]
     fn current_code_breaks_only_the_late_seed_property() {
         for scenario in [Scenario::Fresh, Scenario::OldCopy, Scenario::Taken] {
-            let checker = VolumeMarks { scenario }
-                .checker()
-                .threads(4)
-                .spawn_bfs()
-                .join();
+            let checker = check(as_is(scenario));
             println!(
                 "{scenario:?}, as is: {} states",
                 checker.unique_state_count()
@@ -823,5 +1096,131 @@ mod tests {
                 "only the later Move reaches the finding"
             );
         }
+    }
+
+    /// The fix holds in every scenario, and every `sometimes` is reached: a live Seed
+    /// still replaces a Mirror a pull received, as `seed_tests.rs`
+    /// `a_seed_replaces_a_slot_a_mirror_pull_marked_or_that_holds_no_point` pins, while
+    /// the floor the later Move raised refuses the stranded request.
+    #[test]
+    fn the_floor_keeps_a_late_seed_off_a_later_copy() {
+        for scenario in ALL {
+            let checker = check(fixed(*scenario));
+            println!(
+                "{scenario:?}, fixed: {} states",
+                checker.unique_state_count()
+            );
+            checker.assert_properties();
+        }
+    }
+
+    /// Every `sometimes` needs what it names: with the row's `omit` taken out of the
+    /// fixed model, no other path reaches its predicate.
+    #[test]
+    fn every_sometimes_needs_what_it_names() {
+        for row in COVERAGE {
+            for scenario in row.scenarios {
+                let whole = check(fixed(*scenario));
+                assert!(
+                    whole.discovery(row.name).is_some(),
+                    "{} is never reached in {scenario:?}",
+                    row.name
+                );
+                let cut = check(VolumeMarks {
+                    omit: Some(row.omit),
+                    ..fixed(*scenario)
+                });
+                assert!(
+                    cut.discovery(row.name).is_none(),
+                    "{} is reached in {scenario:?} without {:?}",
+                    row.name,
+                    row.omit
+                );
+            }
+        }
+    }
+
+    /// Without the `ployz:seed` check on a root, a Seed answers a root another Volume
+    /// named `into` holds, and the run ends done on data that is not its restore point.
+    #[test]
+    fn a_root_needs_its_seed_guid_checked() {
+        let path = breaks(
+            VolumeMarks {
+                broken: Broken {
+                    root_ignores_seed: true,
+                    ..Broken::default()
+                },
+                ..fixed(Scenario::Taken)
+            },
+            DONE_HOLDS_POINT,
+        );
+        assert_eq!(last(&path).row, Row::Done(Made::Other));
+    }
+
+    /// Without `receives.running`, a resend while the seed's own copy receives destroys
+    /// the slot under it and starts the copy over.
+    #[test]
+    fn a_seed_needs_to_wait_for_a_running_receive() {
+        let path = breaks(
+            VolumeMarks {
+                broken: Broken {
+                    seed_ignores_receive: true,
+                    ..Broken::default()
+                },
+                ..fixed(Scenario::Fresh)
+            },
+            KEEPS_RECEIVING,
+        );
+        let destroyed = last(&path).destroyed.expect("the Seed destroyed a slot");
+        assert!(destroyed.receiving && !destroyed.stale);
+    }
+
+    /// Without `written_here`, a live Seed destroys the cut-marked old copy an earlier
+    /// Volume named `into` left, which may be the only copy of its point.
+    #[test]
+    fn a_seed_needs_written_here() {
+        let path = breaks(
+            VolumeMarks {
+                broken: Broken {
+                    seed_ignores_written_here: true,
+                    ..Broken::default()
+                },
+                ..fixed(Scenario::OldCopy)
+            },
+            KEEPS_ALONE,
+        );
+        let destroyed = last(&path).destroyed.expect("the Seed destroyed a slot");
+        assert_eq!(destroyed.made, Some(Made::Earlier));
+        assert!(destroyed.alone && !destroyed.stale);
+    }
+
+    /// Without the mark clearing in `mark_pulled`, a pulled Mirror keeps the old copy's
+    /// `ployz:cut`, `written_here` reads true, and a live Seed never replaces it, which
+    /// the seed tests pin. The clearing is also what opens the finding's path: with the
+    /// marks kept, the code as it is refuses the stranded request too. The fix is the
+    /// floor, not a stricter `written_here`.
+    #[test]
+    fn a_live_seed_replaces_a_pulled_mirror_once_mark_pulled_clears_its_marks() {
+        let keeps = Broken {
+            pull_keeps_marks: true,
+            ..Broken::default()
+        };
+        let checker = check(VolumeMarks {
+            broken: keeps,
+            ..fixed(Scenario::OldCopy)
+        });
+        assert!(checker.discovery(LIVE_REPLACES_PULLED).is_none());
+        assert!(
+            fixed(Scenario::OldCopy)
+                .properties()
+                .iter()
+                .any(|property| property.name == LIVE_REPLACES_PULLED)
+        );
+
+        let checker = check(VolumeMarks {
+            broken: keeps,
+            ..as_is(Scenario::Fresh)
+        });
+        assert!(checker.discovery(STALE_KEEPS_LATER).is_none());
     }
 }
