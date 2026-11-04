@@ -2,6 +2,7 @@
 """Boat provider logic that needs no sandbox: endpoints, errors, limits, placement, and which sandboxes down removes."""
 
 import contextlib
+import errno
 import fcntl
 import importlib.machinery
 import importlib.util
@@ -513,8 +514,9 @@ class Pool(unittest.TestCase):
             self.assertNotEqual(boat.fingerprints("bake-a"), saved)
         self.assertEqual(boat.fingerprints("bake-a"), saved)
 
-    def park(self, ledger, pool, answers=None, retiring=()):
-        """Park machine-1 as bx_new with POOL_SIZE 2 beside `pool` and the `retiring` entries; returns the provider."""
+    def park(self, ledger, pool, answers=None, retiring=(), fault=None):
+        """Park machine-1 as bx_new with POOL_SIZE 2 beside `pool` and the `retiring` entries, with `fault` as park's write();
+        returns the provider."""
         boat.write(boat.BAKES, ledger)
         limits = dict(maxActiveSandboxes=100, activeSandboxes=0, starts=dict(unlimited=True))
         listing = self.listing(**{entry["id"]: "ready" for entry in [*pool, *retiring] if entry["id"] != "bx_gone"}, bx_new="ready")
@@ -528,7 +530,8 @@ class Pool(unittest.TestCase):
             boat.write(boat.fingerprints("bake-a"), {"containers": []})
             provider.reboot = lambda node: None
             provider.fingerprint = lambda node: {"containers": []}
-            provider.park("machine-1")
+            with unittest.mock.patch.object(boat, "write", fault or boat.write):
+                provider.park("machine-1")
         return provider
 
     def test_park_displaces_an_older_bakes_oldest_sandbox_to_keep_the_whole_pool_at_its_size(self):
@@ -538,6 +541,26 @@ class Pool(unittest.TestCase):
         self.assertEqual(sorted(call for call in self.calls if call[0] == "delete"),
                          [["delete", "bx_b1", "--yes"], ["delete", "bx_gone", "--yes"]])
         self.assertEqual(provider.record()["sandboxes"]["machine-1"]["state"], "parked")
+
+    def test_a_park_that_dies_after_marking_the_registry_leaves_the_sandbox_in_the_pool(self):
+        save = boat.write
+
+        def dies(failure):
+            def write(path, record):
+                if path in (boat.RETIRING, boat.POOL) and boat.read(boat.registry("run1"))["sandboxes"]["machine-1"]["state"] == "parked":
+                    raise failure
+                save(path, record)
+            return write
+        # A full disk is the field path park's except RuntimeError misses; KeyboardInterrupt stands in for SIGKILL.
+        for failure in [OSError(errno.ENOSPC, "No space left on device"), KeyboardInterrupt()]:
+            with self.subTest(failure=type(failure).__name__):
+                with self.assertRaises(type(failure)):
+                    self.park(["bake-a"], [], fault=dies(failure))
+                state = boat.read(boat.registry("run1"))["sandboxes"]["machine-1"]["state"]
+                pooled = [entry["id"] for entry in boat.read(boat.POOL) or []]
+                boat.registry("run1").unlink()
+                # Otherwise down skips the parked entry, unlinks the registry, and no ledger deletes the sandbox.
+                self.assertTrue(state != "parked" or "bx_new" in pooled, f"machine-1 is {state} while POOL holds {pooled}")
 
     def test_park_never_displaces_a_newer_bake_and_keeps_each_bake_to_the_pool_size(self):
         for ledger, image in [(["bake-a", "bake-b"], "bake-b"), (["bake-b", "bake-a"], "bake-a")]:
