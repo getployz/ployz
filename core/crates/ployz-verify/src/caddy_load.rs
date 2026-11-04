@@ -157,12 +157,9 @@ enum Probe {
     Refused,
 }
 
-/// `result` at the record write, by where the pass got it.
+/// `result` at the record write.
 #[derive(Clone, Copy, Debug, Hash, PartialEq, Eq)]
 enum Outcome {
-    /// The `loaded` cache: the last load is what Caddy serves, so the pass counts as
-    /// Ok without connecting.
-    Cached,
     /// The input equals the last, so nothing was applied.
     Unchanged,
     /// `apply_caddy` returned Ok.
@@ -173,6 +170,49 @@ enum Outcome {
     /// `ApplyError::AfterServing`: Caddy serves the new config, and the Caddyfile or
     /// the stale certificate files may not match it.
     AfterServing,
+}
+
+/// What the record write sees: `result`, and whether the pass had the admin.
+#[derive(Clone, Copy, Debug, Hash, PartialEq, Eq)]
+enum Recorded {
+    /// The `loaded` cache: the last load is what Caddy serves, so the pass counts as
+    /// Ok through the admin without connecting.
+    Cached,
+    /// A pass without the admin, which claims only `Some({})` for a stopped Caddy.
+    WithoutAdmin(Outcome),
+    /// A pass through the admin.
+    ThroughAdmin {
+        outcome: Outcome,
+        /// `Probe::Refused` under the fix: record, then `continue` to the read.
+        continues: bool,
+    },
+}
+
+impl Recorded {
+    fn through_admin(self) -> bool {
+        !matches!(self, Self::WithoutAdmin(_))
+    }
+
+    fn continues(self) -> bool {
+        matches!(
+            self,
+            Self::ThroughAdmin {
+                continues: true,
+                ..
+            }
+        )
+    }
+
+    /// `let refused = through_admin && matches!(result, Err(ApplyError::BeforeServing(_)))`.
+    fn refused(self) -> bool {
+        matches!(
+            self,
+            Self::ThroughAdmin {
+                outcome: Outcome::BeforeServing,
+                ..
+            }
+        )
+    }
 }
 
 /// Where the watcher is in `watch_caddy`.
@@ -207,17 +247,21 @@ enum Pc {
     ProbeCandidate,
     /// The `Probe` arms, then the `(applied, admin)` match.
     Settle {
-        admin: bool,
         applied: Outcome,
-        probe: Probe,
+        /// Through the admin, what `find_refused` left (`Unchanged` when no probe
+        /// ran); `None` without the admin, which has no probe.
+        probe: Option<Probe>,
     },
     /// The keep rule and the record write, then the retry or the acks.
-    Record {
-        through_admin: bool,
-        outcome: Outcome,
-        /// `Probe::Refused` under the fix: record, then `continue` to the read.
-        continues: bool,
-    },
+    Record(Recorded),
+}
+
+/// `apply_caddy` returned `applied` with no probe.
+fn settle(admin: bool, applied: Outcome) -> Pc {
+    Pc::Settle {
+        applied,
+        probe: admin.then_some(Probe::Unchanged),
+    }
 }
 
 #[derive(Clone, Copy, Debug, Hash, PartialEq, Eq)]
@@ -236,11 +280,9 @@ struct State {
     /// first, and after a failed write, which may or may not have replaced the file.
     /// The fix reads it as `CaddyFile::Current` when it holds the claim.
     written: Option<Config>,
-    /// The last pass ended in the read's `Err` arm; cleared by the next read.
-    read_failed: bool,
-    /// A load this pass applied its config and lost the response; cleared by the next
-    /// read.
-    load_lost: bool,
+    /// The action that led here, so a `sometimes` can name the call or event it
+    /// covers.
+    last: Option<Action>,
 }
 
 impl State {
@@ -406,6 +448,304 @@ impl Fix {
     };
 }
 
+/// What a coverage check takes out of the model, to show that the `sometimes` naming
+/// it is reached no other way.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Omit {
+    /// These actions are never offered.
+    Actions(&'static [Action]),
+    /// No pass ends in this record.
+    Record(Recorded),
+    /// Caddy never raises this event.
+    Event(Event),
+    /// No pass reaches a record the keep rule keeps.
+    Keep,
+}
+
+/// The bound a coverage row needs on.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Bound {
+    Always,
+    Restarts,
+    RestartsMidApply,
+    ReadsFail,
+    LoadsLost,
+    KeepNeedsCurrentFile,
+    RefusedProbeRecords,
+}
+
+/// One `sometimes`: the call, outcome or event it names, read from the state that
+/// recorded it, and what to take out of the model to show nothing else reaches it.
+struct Coverage {
+    name: &'static str,
+    needs: Bound,
+    omit: Omit,
+    reached: fn(&CaddyLoad, &State) -> bool,
+}
+
+/// Each outcome the bounds offer, once. `every_sometimes_needs_what_it_names` takes
+/// each row's `omit` out and expects its `name` unreached.
+const COVERAGE: &[Coverage] = &[
+    Coverage {
+        name: "a load through the admin succeeds and the pass claims the projection",
+        needs: Bound::Always,
+        omit: Omit::Actions(&[Action::Load(Load::Ok)]),
+        reached: |_, state| {
+            state.at_rest()
+                && matches!(state.addresses, Some(Served::Config(_)))
+                && state.recorded_by.is_some()
+        },
+    },
+    Coverage {
+        name: "connect finds the admin",
+        needs: Bound::Always,
+        omit: Omit::Actions(&[Action::Connect(Admin::Some)]),
+        reached: |_, state| state.last == Some(Action::Connect(Admin::Some)),
+    },
+    Coverage {
+        name: "connect finds the admin socket down",
+        needs: Bound::Always,
+        omit: Omit::Actions(&[Action::Connect(Admin::None)]),
+        reached: |_, state| state.last == Some(Action::Connect(Admin::None)),
+    },
+    Coverage {
+        name: "connect fails and counts as a failure without the admin",
+        needs: Bound::Always,
+        omit: Omit::Actions(&[Action::Connect(Admin::Err)]),
+        reached: |_, state| state.last == Some(Action::Connect(Admin::Err)),
+    },
+    Coverage {
+        name: "write_certificate_files fails before serving",
+        needs: Bound::Always,
+        omit: Omit::Actions(&[Action::WriteCertificates(Call::Err)]),
+        reached: |_, state| state.last == Some(Action::WriteCertificates(Call::Err)),
+    },
+    Coverage {
+        name: "the admin refuses the load, so find_refused runs",
+        needs: Bound::Always,
+        omit: Omit::Actions(&[Action::Load(Load::Refused)]),
+        reached: |_, state| state.last == Some(Action::Load(Load::Refused)),
+    },
+    Coverage {
+        name: "caddy::load fails short of Caddy",
+        needs: Bound::Always,
+        omit: Omit::Actions(&[Action::Load(Load::Failed)]),
+        reached: |_, state| state.last == Some(Action::Load(Load::Failed)),
+    },
+    Coverage {
+        name: "a load takes and its response is lost",
+        needs: Bound::LoadsLost,
+        omit: Omit::Actions(&[Action::Load(Load::Lost)]),
+        reached: |_, state| state.last == Some(Action::Load(Load::Lost)),
+    },
+    Coverage {
+        name: "the Caddyfile write fails before its rename after Caddy loaded the projection",
+        needs: Bound::Always,
+        omit: Omit::Actions(&[Action::WriteCaddyfile(Write::FailedBeforeReplacing)]),
+        reached: |_, state| {
+            state.last == Some(Action::WriteCaddyfile(Write::FailedBeforeReplacing))
+                && matches!(
+                    state.pc,
+                    Pc::Settle {
+                        applied: Outcome::AfterServing,
+                        ..
+                    }
+                )
+        },
+    },
+    Coverage {
+        name: "a failed write replaced the Caddyfile",
+        needs: Bound::Always,
+        omit: Omit::Actions(&[Action::WriteCaddyfile(Write::FailedAfterReplacing)]),
+        reached: |_, state| state.last == Some(Action::WriteCaddyfile(Write::FailedAfterReplacing)),
+    },
+    Coverage {
+        name: "remove_stale_certificate_files fails after the Caddyfile is written",
+        needs: Bound::Always,
+        omit: Omit::Actions(&[Action::RemoveStale(Call::Err)]),
+        reached: |_, state| state.last == Some(Action::RemoveStale(Call::Err)),
+    },
+    Coverage {
+        name: "apply_caddy returns Ok through the admin",
+        needs: Bound::Always,
+        omit: Omit::Record(Recorded::ThroughAdmin {
+            outcome: Outcome::Applied,
+            continues: false,
+        }),
+        reached: |_, state| {
+            state.pc
+                == Pc::Record(Recorded::ThroughAdmin {
+                    outcome: Outcome::Applied,
+                    continues: false,
+                })
+        },
+    },
+    Coverage {
+        name: "a pass without the admin writes the Caddyfile and claims nothing",
+        needs: Bound::Always,
+        omit: Omit::Record(Recorded::WithoutAdmin(Outcome::Applied)),
+        reached: |_, state| {
+            state.pc == Pc::Record(Recorded::WithoutAdmin(Outcome::Applied)) && !state.no_caddy()
+        },
+    },
+    Coverage {
+        name: "a pass without the admin fails before serving",
+        needs: Bound::Always,
+        omit: Omit::Record(Recorded::WithoutAdmin(Outcome::BeforeServing)),
+        reached: |_, state| state.pc == Pc::Record(Recorded::WithoutAdmin(Outcome::BeforeServing)),
+    },
+    Coverage {
+        name: "loaded_certificates answers and replaces `accepted`",
+        needs: Bound::Always,
+        omit: Omit::Actions(&[Action::ProbeLoaded(Call::Ok)]),
+        reached: |_, state| state.last == Some(Action::ProbeLoaded(Call::Ok)),
+    },
+    Coverage {
+        name: "loaded_certificates fails and `accepted` stands",
+        needs: Bound::Always,
+        omit: Omit::Actions(&[Action::ProbeLoaded(Call::Err)]),
+        reached: |_, state| state.last == Some(Action::ProbeLoaded(Call::Err)),
+    },
+    Coverage {
+        name: "the load without the suspects takes",
+        needs: Bound::Always,
+        omit: Omit::Actions(&[Action::ProbeWithout(Load::Ok)]),
+        reached: |_, state| state.last == Some(Action::ProbeWithout(Load::Ok)),
+    },
+    Coverage {
+        name: "the load without the suspects fails: Probe::Unchanged",
+        needs: Bound::Always,
+        omit: Omit::Actions(&[Action::ProbeWithout(Load::Failed)]),
+        reached: |_, state| state.last == Some(Action::ProbeWithout(Load::Failed)),
+    },
+    Coverage {
+        name: "the load without the suspects takes and its response is lost",
+        needs: Bound::LoadsLost,
+        omit: Omit::Actions(&[Action::ProbeWithout(Load::Lost)]),
+        reached: |_, state| state.last == Some(Action::ProbeWithout(Load::Lost)),
+    },
+    Coverage {
+        name: "the candidate with c loads: Probe::Reloaded",
+        needs: Bound::Always,
+        omit: Omit::Actions(&[Action::ProbeCandidate(Load::Ok)]),
+        reached: |_, state| state.last == Some(Action::ProbeCandidate(Load::Ok)),
+    },
+    Coverage {
+        name: "the candidate with c is refused twice: c quarantined, Probe::Refused",
+        needs: Bound::Always,
+        omit: Omit::Actions(&[Action::ProbeCandidate(Load::Refused)]),
+        reached: |_, state| {
+            state.last == Some(Action::ProbeCandidate(Load::Refused))
+                && state.certificates.refused_c
+        },
+    },
+    Coverage {
+        name: "the candidate with c fails short of Caddy: Probe::Reloaded",
+        needs: Bound::Always,
+        omit: Omit::Actions(&[Action::ProbeCandidate(Load::Failed)]),
+        reached: |_, state| state.last == Some(Action::ProbeCandidate(Load::Failed)),
+    },
+    Coverage {
+        name: "the candidate with c takes and its response is lost",
+        needs: Bound::LoadsLost,
+        omit: Omit::Actions(&[Action::ProbeCandidate(Load::Lost)]),
+        reached: |_, state| state.last == Some(Action::ProbeCandidate(Load::Lost)),
+    },
+    Coverage {
+        name: "the loaded cache skips the admin",
+        needs: Bound::Always,
+        omit: Omit::Record(Recorded::Cached),
+        reached: |_, state| state.pc == Pc::Record(Recorded::Cached),
+    },
+    Coverage {
+        name: "an equal input skips the apply without the admin",
+        needs: Bound::Always,
+        omit: Omit::Record(Recorded::WithoutAdmin(Outcome::Unchanged)),
+        reached: |_, state| state.pc == Pc::Record(Recorded::WithoutAdmin(Outcome::Unchanged)),
+    },
+    Coverage {
+        name: "a refusal keeps the claim of the Caddy that confirmed it",
+        needs: Bound::Always,
+        omit: Omit::Keep,
+        reached: |model, state| matches!(state.pc, Pc::Record(recorded) if model.keeps(state, recorded)),
+    },
+    Coverage {
+        name: "a refusal while the Caddyfile is stale claims nothing",
+        needs: Bound::KeepNeedsCurrentFile,
+        omit: Omit::Actions(&[
+            Action::WriteCaddyfile(Write::FailedBeforeReplacing),
+            Action::WriteCaddyfile(Write::FailedAfterReplacing),
+        ]),
+        reached: |_, state| {
+            matches!(state.pc, Pc::Record(recorded) if recorded.refused())
+                && state.recorded_by == Some(state.caddy.container)
+                && !state.claim_is_written()
+        },
+    },
+    Coverage {
+        name: "a refused probe records before it re-derives",
+        needs: Bound::RefusedProbeRecords,
+        omit: Omit::Record(Recorded::ThroughAdmin {
+            outcome: Outcome::BeforeServing,
+            continues: true,
+        }),
+        reached: |_, state| matches!(state.pc, Pc::Record(recorded) if recorded.continues()),
+    },
+    Coverage {
+        name: "a read fails and the pass ends without a record write",
+        needs: Bound::ReadsFail,
+        omit: Omit::Actions(&[Action::Read(Call::Err)]),
+        reached: |_, state| state.pc == Pc::Wait && state.last == Some(Action::Read(Call::Err)),
+    },
+    Coverage {
+        name: "a restarted Caddy serves a Caddyfile older than the claim",
+        needs: Bound::Restarts,
+        omit: Omit::Event(Event::Restarted),
+        reached: |_, state| {
+            state.caddy.unseen == Some(Event::Restarted)
+                && state
+                    .addresses
+                    .is_some_and(|claim| claim != state.caddy.serves)
+        },
+    },
+    Coverage {
+        name: "Caddy restarts between the load and the Caddyfile write",
+        needs: Bound::RestartsMidApply,
+        omit: Omit::Event(Event::RestartedMidApply),
+        reached: |_, state| state.caddy.unseen == Some(Event::RestartedMidApply),
+    },
+    Coverage {
+        name: "a new container confirms the claim",
+        needs: Bound::Always,
+        omit: Omit::Event(Event::Replaced),
+        reached: |_, state| state.at_rest() && state.recorded_by == Some(Container::Y),
+    },
+    Coverage {
+        name: "a stopped Caddy claims to serve nothing",
+        needs: Bound::Always,
+        omit: Omit::Event(Event::Stopped),
+        reached: |_, state| state.at_rest() && state.addresses == Some(Served::Nothing),
+    },
+    Coverage {
+        name: "a started Caddy serves the Caddyfile",
+        needs: Bound::Always,
+        omit: Omit::Event(Event::Started),
+        reached: |_, state| state.last == Some(Action::Start),
+    },
+    Coverage {
+        name: "the store changes, and the next pass derives P0",
+        needs: Bound::Always,
+        omit: Omit::Actions(&[Action::Change(Config::P0)]),
+        reached: |_, state| state.last == Some(Action::Change(Config::P0)),
+    },
+    Coverage {
+        name: "the store changes, and the next pass derives P1",
+        needs: Bound::Always,
+        omit: Omit::Actions(&[Action::Change(Config::P1)]),
+        reached: |_, state| state.last == Some(Action::Change(Config::P1)),
+    },
+];
+
 /// The bounds: which events Caddy and the host may raise, and which code runs.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 struct CaddyLoad {
@@ -420,6 +760,8 @@ struct CaddyLoad {
     loads_lost: bool,
     fix: Fix,
     broken: Broken,
+    /// A coverage check's cut, `None` to run the whole model.
+    omit: Option<Omit>,
 }
 
 impl CaddyLoad {
@@ -442,7 +784,35 @@ impl CaddyLoad {
             keep_ignores_the_container: false,
             claims_without_admin: false,
         },
+        omit: None,
     };
+
+    fn on(&self, bound: Bound) -> bool {
+        match bound {
+            Bound::Always => true,
+            Bound::Restarts => self.restarts,
+            Bound::RestartsMidApply => self.restarts_mid_apply,
+            Bound::ReadsFail => self.reads_fail,
+            Bound::LoadsLost => self.loads_lost,
+            Bound::KeepNeedsCurrentFile => self.fix.keep_needs_current_file,
+            Bound::RefusedProbeRecords => self.fix.refused_probe_records,
+        }
+    }
+
+    /// `action` from `before` to `after` is what the coverage check cut.
+    fn omitted(&self, before: &State, action: Action, after: &State) -> bool {
+        match self.omit {
+            None => false,
+            Some(Omit::Actions(actions)) => actions.contains(&action),
+            Some(Omit::Record(recorded)) => after.pc == Pc::Record(recorded),
+            Some(Omit::Event(event)) => {
+                after.caddy.unseen == Some(event) && before.caddy.unseen != Some(event)
+            }
+            Some(Omit::Keep) => {
+                matches!(after.pc, Pc::Record(recorded) if self.keeps(after, recorded))
+            }
+        }
+    }
 
     fn step(&self, state: &mut State, action: Action) {
         match action {
@@ -450,14 +820,9 @@ impl CaddyLoad {
                 // `quarantine` keeps `c` refused only while the projection still pins it.
                 state.certificates.refused_c &= state.projection.pins_c();
                 state.caddy.unseen = None;
-                state.read_failed = false;
-                state.load_lost = false;
                 state.pc = Pc::Cached;
             }
-            Action::Read(Call::Err) => {
-                state.read_failed = true;
-                state.pc = Pc::Wait;
-            }
+            Action::Read(Call::Err) => state.pc = Pc::Wait,
             Action::Cached => {
                 let running = !state.no_caddy() || self.broken.cache_ignores_a_stopped_caddy;
                 let loaded = running
@@ -465,11 +830,7 @@ impl CaddyLoad {
                         .last_input
                         .is_some_and(|last| last.loaded(state.derived(), state.caddy.container));
                 state.pc = if loaded {
-                    Pc::Record {
-                        through_admin: true,
-                        outcome: Outcome::Cached,
-                        continues: false,
-                    }
+                    Pc::Record(Recorded::Cached)
                 } else {
                     Pc::Connect
                 };
@@ -477,22 +838,24 @@ impl CaddyLoad {
             Action::Connect(Admin::Some) => state.pc = Pc::Same { admin: true },
             Action::Connect(Admin::None) => state.pc = Pc::Same { admin: false },
             Action::Connect(Admin::Err) => {
-                state.pc = Pc::Record {
-                    through_admin: false,
-                    outcome: Outcome::BeforeServing,
-                    continues: false,
-                };
+                state.pc = Pc::Record(Recorded::WithoutAdmin(Outcome::BeforeServing));
             }
             Action::Same => {
                 let Pc::Same { admin } = state.pc else {
                     unreachable!("Same at {:?}", state.pc)
                 };
+                // Through the admin, an equal last input is the `loaded` cache's case:
+                // the equality holds here only when the store says no Caddy while the
+                // admin socket still answers, a lag the bounds do not raise.
                 state.pc = if state.last_input == Some(state.input(admin)) {
-                    Pc::Record {
-                        through_admin: admin,
-                        outcome: Outcome::Unchanged,
-                        continues: false,
-                    }
+                    Pc::Record(if admin {
+                        Recorded::ThroughAdmin {
+                            outcome: Outcome::Unchanged,
+                            continues: false,
+                        }
+                    } else {
+                        Recorded::WithoutAdmin(Outcome::Unchanged)
+                    })
                 } else {
                     Pc::WriteCertificates { admin }
                 };
@@ -503,11 +866,7 @@ impl CaddyLoad {
                 };
                 state.pc = match call {
                     Call::Ok => Pc::Load { admin },
-                    Call::Err => Pc::Settle {
-                        admin,
-                        applied: Outcome::BeforeServing,
-                        probe: Probe::Unchanged,
-                    },
+                    Call::Err => settle(admin, Outcome::BeforeServing),
                 };
             }
             Action::Load(load) => {
@@ -525,13 +884,8 @@ impl CaddyLoad {
                     Load::Failed | Load::Lost => {
                         if load == Load::Lost {
                             state.caddy.serves = Served::Config(state.applying(admin));
-                            state.load_lost = true;
                         }
-                        Pc::Settle {
-                            admin,
-                            applied: Outcome::BeforeServing,
-                            probe: Probe::Unchanged,
-                        }
+                        settle(admin, Outcome::BeforeServing)
                     }
                 };
             }
@@ -551,15 +905,14 @@ impl CaddyLoad {
                             state.caddy.caddyfile = applying;
                         }
                         state.written = None;
-                        Pc::Settle {
+                        settle(
                             admin,
-                            applied: if admin {
+                            if admin {
                                 Outcome::AfterServing
                             } else {
                                 Outcome::BeforeServing
                             },
-                            probe: Probe::Unchanged,
-                        }
+                        )
                     }
                 };
             }
@@ -567,14 +920,13 @@ impl CaddyLoad {
                 let Pc::RemoveStale { admin } = state.pc else {
                     unreachable!("RemoveStale at {:?}", state.pc)
                 };
-                state.pc = Pc::Settle {
+                state.pc = settle(
                     admin,
-                    applied: match call {
+                    match call {
                         Call::Ok => Outcome::Applied,
                         Call::Err => Outcome::AfterServing,
                     },
-                    probe: Probe::Unchanged,
-                };
+                );
             }
             Action::ProbeLoaded(call) => {
                 if call == Call::Ok {
@@ -584,11 +936,7 @@ impl CaddyLoad {
                 state.pc = if suspect {
                     Pc::ProbeWithout
                 } else {
-                    Pc::Settle {
-                        admin: true,
-                        applied: Outcome::BeforeServing,
-                        probe: Probe::Unchanged,
-                    }
+                    settle(true, Outcome::BeforeServing)
                 };
             }
             Action::ProbeWithout(load) => {
@@ -597,14 +945,7 @@ impl CaddyLoad {
                 }
                 state.pc = match load {
                     Load::Ok => Pc::ProbeCandidate,
-                    Load::Lost | Load::Failed => {
-                        state.load_lost |= load == Load::Lost;
-                        Pc::Settle {
-                            admin: true,
-                            applied: Outcome::BeforeServing,
-                            probe: Probe::Unchanged,
-                        }
-                    }
+                    Load::Lost | Load::Failed => settle(true, Outcome::BeforeServing),
                     Load::Refused => {
                         unreachable!("find_refused reads a refusal of `without` as any error")
                     }
@@ -625,36 +966,30 @@ impl CaddyLoad {
                     Load::Failed | Load::Lost => {
                         if load == Load::Lost {
                             state.caddy.serves = Served::Config(state.derived());
-                            state.load_lost = true;
                         }
                         state.certificates.accepted_c = false;
                         Probe::Reloaded
                     }
                 };
                 state.pc = Pc::Settle {
-                    admin: true,
                     applied: Outcome::BeforeServing,
-                    probe,
+                    probe: Some(probe),
                 };
             }
             Action::Settle => {
-                let Pc::Settle {
-                    admin,
-                    applied,
-                    probe,
-                } = state.pc
-                else {
+                let Pc::Settle { applied, probe } = state.pc else {
                     unreachable!("Settle at {:?}", state.pc)
                 };
+                let admin = probe.is_some();
                 match probe {
-                    Probe::Unchanged => {}
-                    Probe::Reloaded => {
+                    None | Some(Probe::Unchanged) => {}
+                    Some(Probe::Reloaded) => {
                         state.last_input = None;
                         if !self.broken.reloaded_keeps_recorded_by {
                             state.recorded_by = None;
                         }
                     }
-                    Probe::Refused => {
+                    Some(Probe::Refused) => {
                         state.last_input = None;
                         state.recorded_by = None;
                     }
@@ -673,43 +1008,46 @@ impl CaddyLoad {
                     (Outcome::BeforeServing | Outcome::AfterServing, false) => {
                         state.last_input = None;
                     }
-                    (Outcome::Cached | Outcome::Unchanged, _) => {}
+                    (Outcome::Unchanged, _) => {
+                        unreachable!("an equal input records without settling")
+                    }
                 }
                 state.pc = match probe {
-                    Probe::Refused if self.fix.refused_probe_records => Pc::Record {
-                        through_admin: true,
-                        outcome: applied,
-                        continues: true,
-                    },
-                    Probe::Refused => Pc::Read,
-                    Probe::Unchanged | Probe::Reloaded => Pc::Record {
-                        through_admin: admin,
-                        outcome: applied,
-                        continues: false,
-                    },
+                    None => Pc::Record(Recorded::WithoutAdmin(applied)),
+                    Some(Probe::Refused) if self.fix.refused_probe_records => {
+                        Pc::Record(Recorded::ThroughAdmin {
+                            outcome: applied,
+                            continues: true,
+                        })
+                    }
+                    Some(Probe::Refused) => Pc::Read,
+                    Some(Probe::Unchanged | Probe::Reloaded) => {
+                        Pc::Record(Recorded::ThroughAdmin {
+                            outcome: applied,
+                            continues: false,
+                        })
+                    }
                 };
             }
             Action::Record => {
-                let Pc::Record {
-                    through_admin,
-                    outcome,
-                    continues,
-                } = state.pc
-                else {
+                let Pc::Record(recorded) = state.pc else {
                     unreachable!("Record at {:?}", state.pc)
                 };
-                if !self.keeps(state, through_admin, outcome) {
-                    let claimed = through_admin || self.broken.claims_without_admin;
-                    let refused = refused(through_admin, outcome);
+                if !self.keeps(state, recorded) {
+                    let claimed = recorded.through_admin() || self.broken.claims_without_admin;
                     state.addresses = if claimed {
-                        (!refused).then(|| state.addresses())
+                        (!recorded.refused()).then(|| state.addresses())
                     } else {
                         state.no_caddy().then_some(Served::Nothing)
                     };
-                    state.recorded_by = (through_admin && state.addresses.is_some())
+                    state.recorded_by = (recorded.through_admin() && state.addresses.is_some())
                         .then_some(state.caddy.container);
                 }
-                state.pc = if continues { Pc::Read } else { Pc::Wait };
+                state.pc = if recorded.continues() {
+                    Pc::Read
+                } else {
+                    Pc::Wait
+                };
             }
             Action::Restart => state.starts(if state.pc == Pc::Wait {
                 Event::Restarted
@@ -749,18 +1087,13 @@ impl CaddyLoad {
     /// The keep rule: a refused load leaves the record standing while the newest
     /// observed ingress container is the one whose admin confirmed it. The fix adds:
     /// and the Caddyfile holds what was recorded.
-    fn keeps(&self, state: &State, through_admin: bool, outcome: Outcome) -> bool {
-        refused(through_admin, outcome)
+    fn keeps(&self, state: &State, recorded: Recorded) -> bool {
+        recorded.refused()
             && state.recorded_by.is_some()
             && (self.broken.keep_ignores_the_container
                 || state.recorded_by == Some(state.caddy.container))
             && (!self.fix.keep_needs_current_file || state.claim_is_written())
     }
-}
-
-/// `let refused = through_admin && matches!(result, Err(ApplyError::BeforeServing(_)))`.
-fn refused(through_admin: bool, outcome: Outcome) -> bool {
-    through_admin && outcome == Outcome::BeforeServing
 }
 
 impl Model for CaddyLoad {
@@ -784,8 +1117,7 @@ impl Model for CaddyLoad {
                 certificates: Certificates::default(),
                 addresses: None,
                 written: None,
-                read_failed: false,
-                load_lost: false,
+                last: None,
             })
             .collect()
     }
@@ -870,6 +1202,10 @@ impl Model for CaddyLoad {
     fn next_state(&self, last: &State, action: Action) -> Option<State> {
         let mut state = *last;
         self.step(&mut state, action);
+        if self.omitted(last, action, &state) {
+            return None;
+        }
+        state.last = Some(action);
         Some(state)
     }
 
@@ -886,186 +1222,13 @@ impl Model for CaddyLoad {
                     || !matches!(state.addresses, Some(Served::Config(_)))
                     || state.recorded_by.is_some()
             }),
-            Property::sometimes(
-                "Caddy loads the projection through its admin and the claim names it",
-                |_, state: &State| {
-                    state.at_rest()
-                        && state.addresses == Some(Served::Config(Config::P1))
-                        && state.recorded_by.is_some()
-                },
-            ),
-            Property::sometimes(
-                "the Caddyfile write fails after Caddy loaded the projection",
-                |_, state: &State| {
-                    matches!(
-                        state.pc,
-                        Pc::Settle {
-                            applied: Outcome::AfterServing,
-                            ..
-                        }
-                    ) && state.written.is_none()
-                },
-            ),
-            Property::sometimes(
-                "a failed write replaced the Caddyfile",
-                |_, state: &State| {
-                    matches!(state.pc, Pc::Settle { .. })
-                        && state.written.is_none()
-                        && state.caddy.caddyfile != Config::P0
-                },
-            ),
-            Property::sometimes(
-                "a refusal keeps the claim of the Caddy that confirmed it",
-                |model: &Self, state: &State| {
-                    matches!(
-                        state.pc,
-                        Pc::Record {
-                            through_admin: true,
-                            outcome: Outcome::BeforeServing,
-                            ..
-                        }
-                    ) && model.keeps(state, true, Outcome::BeforeServing)
-                },
-            ),
-            Property::sometimes("a probe quarantines the certificate", |_, state: &State| {
-                state.certificates.refused_c
-            }),
-            Property::sometimes(
-                "a probe reloads Caddy and refuses nothing",
-                |_, state: &State| {
-                    matches!(
-                        state.pc,
-                        Pc::Settle {
-                            probe: Probe::Reloaded,
-                            ..
-                        }
-                    )
-                },
-            ),
-            Property::sometimes(
-                "a failure before serving leaves Caddy unchanged",
-                |_, state: &State| {
-                    matches!(
-                        state.pc,
-                        Pc::Settle {
-                            admin: true,
-                            applied: Outcome::BeforeServing,
-                            probe: Probe::Unchanged,
-                        }
-                    ) && !state.load_lost
-                },
-            ),
-            Property::sometimes(
-                "a stopped Caddy claims to serve nothing",
-                |_, state: &State| state.at_rest() && state.addresses == Some(Served::Nothing),
-            ),
-            Property::sometimes(
-                "a pass without the admin writes the Caddyfile and claims nothing",
-                |_, state: &State| {
-                    matches!(
-                        state.pc,
-                        Pc::Record {
-                            through_admin: false,
-                            outcome: Outcome::Applied,
-                            ..
-                        }
-                    ) && !state.no_caddy()
-                },
-            ),
-            Property::sometimes(
-                "a pass without the admin fails before serving",
-                |_, state: &State| {
-                    matches!(
-                        state.pc,
-                        Pc::Record {
-                            through_admin: false,
-                            outcome: Outcome::BeforeServing,
-                            ..
-                        }
-                    )
-                },
-            ),
-            Property::sometimes("the loaded cache skips the admin", |_, state: &State| {
-                matches!(
-                    state.pc,
-                    Pc::Record {
-                        outcome: Outcome::Cached,
-                        ..
-                    }
-                )
-            }),
-            Property::sometimes("an equal input skips the apply", |_, state: &State| {
-                matches!(
-                    state.pc,
-                    Pc::Record {
-                        outcome: Outcome::Unchanged,
-                        ..
-                    }
-                )
-            }),
-            Property::sometimes("a new container confirms the claim", |_, state: &State| {
-                state.at_rest() && state.recorded_by == Some(Container::Y)
-            }),
         ];
-        if self.restarts {
-            properties.push(Property::sometimes(
-                "a restarted Caddy serves a Caddyfile older than the claim",
-                |_, state: &State| {
-                    state.caddy.unseen == Some(Event::Restarted)
-                        && state
-                            .addresses
-                            .is_some_and(|claim| claim != state.caddy.serves)
-                },
-            ));
-        }
-        if self.restarts_mid_apply {
-            properties.push(Property::sometimes(
-                "Caddy restarts between the load and the Caddyfile write",
-                |_, state: &State| state.caddy.unseen == Some(Event::RestartedMidApply),
-            ));
-        }
-        if self.reads_fail {
-            properties.push(Property::sometimes(
-                "a read fails and the pass ends without a record write",
-                |_, state: &State| state.pc == Pc::Wait && state.read_failed,
-            ));
-        }
-        if self.loads_lost {
-            properties.push(Property::sometimes(
-                "a load takes and its response is lost",
-                |_, state: &State| state.load_lost && matches!(state.pc, Pc::Settle { .. }),
-            ));
-        }
-        if self.fix.keep_needs_current_file {
-            properties.push(Property::sometimes(
-                "a refusal while the Caddyfile is stale claims nothing",
-                |_, state: &State| {
-                    matches!(
-                        state.pc,
-                        Pc::Record {
-                            through_admin: true,
-                            outcome: Outcome::BeforeServing,
-                            ..
-                        }
-                    ) && state.recorded_by == Some(state.caddy.container)
-                        && !state.claim_is_written()
-                },
-            ));
-        }
-        if self.fix.refused_probe_records {
-            properties.push(Property::sometimes(
-                "a refused probe records before it re-derives",
-                |_, state: &State| {
-                    matches!(
-                        state.pc,
-                        Pc::Record {
-                            continues: true,
-                            ..
-                        }
-                    )
-                },
-            ));
-        }
+        properties.extend(
+            COVERAGE
+                .iter()
+                .filter(|row| self.on(row.needs))
+                .map(|row| Property::sometimes(row.name, row.reached)),
+        );
         properties
     }
 }
@@ -1075,7 +1238,7 @@ const CLAIM_CONFIRMED: &str = "at rest, a claim of addresses names the Caddy tha
 
 /// `path` in the code's words: each statement, and the claim, Caddy and the watcher's
 /// locals once it ran.
-fn story(path: &[(State, Option<Action>)]) -> String {
+fn story(model: &CaddyLoad, path: &[(State, Option<Action>)]) -> String {
     let mut story = String::new();
     // Stateright pairs each state with the action taken from it; the row lists the
     // action that led to the state instead.
@@ -1083,7 +1246,7 @@ fn story(path: &[(State, Option<Action>)]) -> String {
     for (n, (state, action)) in path.iter().enumerate() {
         let what = led_by.map_or_else(
             || "start".to_owned(),
-            |(before, action)| reads_as(&before, action),
+            |(before, action)| reads_as(model, &before, action),
         );
         led_by = action.map(|action| (*state, action));
         let served = |served: Served| match served {
@@ -1125,7 +1288,7 @@ fn story(path: &[(State, Option<Action>)]) -> String {
 }
 
 /// `action` as the watcher, Caddy or the store ran it from `before`.
-fn reads_as(before: &State, action: Action) -> String {
+fn reads_as(model: &CaddyLoad, before: &State, action: Action) -> String {
     let admin = |admin: bool| {
         if admin {
             "through the admin"
@@ -1249,39 +1412,39 @@ fn reads_as(before: &State, action: Action) -> String {
             before.derived()
         ),
         Action::Settle => {
-            let Pc::Settle {
-                admin: with_admin,
-                applied,
-                probe,
-            } = before.pc
-            else {
+            let Pc::Settle { applied, probe } = before.pc else {
                 unreachable!("Settle at {:?}", before.pc)
             };
             let arm = match probe {
-                Probe::Unchanged => "Probe::Unchanged",
-                Probe::Reloaded => "Probe::Reloaded clears last_input and recorded_by",
-                Probe::Refused => "Probe::Refused clears last_input and recorded_by and `continue`s",
+                None => "no probe without the admin",
+                Some(Probe::Unchanged) => "Probe::Unchanged",
+                Some(Probe::Reloaded) => "Probe::Reloaded clears last_input and recorded_by",
+                Some(Probe::Refused) => {
+                    "Probe::Refused clears last_input and recorded_by and `continue`s"
+                }
             };
             format!(
                 "watcher: {arm}; the ({applied:?}, {}) arm (watch_caddy)",
-                admin(with_admin)
+                admin(probe.is_some())
             )
         }
         Action::Record => {
-            let Pc::Record {
-                through_admin,
-                outcome,
-                ..
-            } = before.pc
-            else {
+            let Pc::Record(recorded) = before.pc else {
                 unreachable!("Record at {:?}", before.pc)
             };
-            format!(
-                "watcher: refused = {}; the keep rule checks recorded_by {:?} against caddy {:?}, then the record write (watch_caddy)",
-                refused(through_admin, outcome),
-                before.recorded_by,
-                before.caddy.container
-            )
+            if model.keeps(before, recorded) {
+                format!(
+                    "watcher: refused = true; the keep rule finds recorded_by {:?} is the running caddy {:?} and keeps the claim: no record write (watch_caddy)",
+                    before.recorded_by, before.caddy.container
+                )
+            } else {
+                format!(
+                    "watcher: refused = {}; the keep rule checks recorded_by {:?} against caddy {:?}, then the record write (watch_caddy)",
+                    recorded.refused(),
+                    before.recorded_by,
+                    before.caddy.container
+                )
+            }
         }
         Action::Restart if before.pc == Pc::Wait => format!(
             "caddy: container {:?} restarts in place under the same id and serves its Caddyfile, {:?}",
@@ -1342,7 +1505,7 @@ mod tests {
         println!(
             "[{}] {property} fails under {model:?}:\n{}",
             test.name().unwrap_or("?"),
-            story(&path)
+            story(&model, &path)
         );
         path
     }
@@ -1451,7 +1614,13 @@ mod tests {
             },
             CLAIM_SERVED,
         );
-        assert_eq!(under_the_fix, path);
+        let kept = under_the_fix.last().expect("a path has a state").0;
+        over_claims(&kept);
+        assert!(took(&under_the_fix, Action::Load(Load::Lost)));
+        assert_eq!(kept.recorded_by, Some(kept.caddy.container));
+        assert!(kept.claim_is_written());
+        assert_eq!(kept.caddy.serves, Served::Config(Config::P0));
+        assert_eq!(kept.addresses, Some(Served::Config(Config::P1)));
     }
 
     /// Where the code already holds: under `QUIET`, every claim at rest is what Caddy
@@ -1502,9 +1671,55 @@ mod tests {
             matches!(state.pc, Pc::WriteCaddyfile { admin: true })
         }));
         assert!(took(&path, Action::WriteCaddyfile(Write::Ok)));
+        assert!(
+            path.iter()
+                .any(|(state, _)| state.pc == Pc::Record(Recorded::Cached))
+        );
         assert_eq!(last.caddy.serves, Served::Config(Config::P0));
         assert_eq!(last.caddy.caddyfile, Config::P1);
         assert_eq!(last.addresses, Some(Served::Config(Config::P1)));
+    }
+
+    /// Every `sometimes` needs what it names. With every bound on, each coverage row
+    /// is reached; with the row's `omit` taken out of the model, it is not, so no
+    /// other path satisfies its predicate. A row that stays reached is vacuous: its
+    /// predicate is looser than its name.
+    #[test]
+    fn every_sometimes_needs_what_it_names() {
+        let all = CaddyLoad {
+            restarts: true,
+            restarts_mid_apply: true,
+            reads_fail: true,
+            loads_lost: true,
+            fix: Fix::BOTH,
+            ..CaddyLoad::QUIET
+        };
+        let whole = check(all);
+        println!("all bounds on: {} states", whole.unique_state_count());
+        for row in COVERAGE {
+            assert!(all.on(row.needs), "{} is off with every bound on", row.name);
+            assert!(
+                whole.discovery(row.name).is_some(),
+                "{} is never reached",
+                row.name
+            );
+            let cut = check(CaddyLoad {
+                omit: Some(row.omit),
+                ..all
+            });
+            assert!(
+                cut.discovery(row.name).is_none(),
+                "{} is reached without {:?}",
+                row.name,
+                row.omit
+            );
+            println!(
+                "without {:?}: {} states, unreached: {}",
+                row.omit,
+                cut.unique_state_count(),
+                row.name
+            );
+        }
     }
 
     /// Without `!no_caddy` in the `loaded` cache, a pass that sees Caddy stopped
