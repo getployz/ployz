@@ -85,6 +85,7 @@ it("shows active scoped refresh errors while retaining rows, clears on recovery,
   fail = true;
   await failRefresh(async () => { await raw.utils.refetch(); });
   await waitFor(() => expect(screen.getByRole("alert").textContent).toContain("may be out of date"));
+  expect(screen.getByRole("alert").textContent).not.toContain("Retrying");
   expect(screen.getByText("running")).toBeTruthy();
   for (const otherScope of [{ sessionId: "other" }, { userId: "other" }, { organizationSlug: "other" }]) {
     view.rerender(<View {...otherScope} />);

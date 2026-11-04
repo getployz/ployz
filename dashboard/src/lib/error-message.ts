@@ -22,6 +22,11 @@ export function isUnauthorized<T>(error: T) {
   return isPublicError(error) && error.code === "UNAUTHORIZED";
 }
 
+/** A failure a second try can pass: no answer, or Cloud failing. A refusal (signed out, forbidden, not found) answers the same way again. */
+export function mayPassOnRetry<T>(error: T) {
+  return !isPublicError(error) || error.code === "UNAVAILABLE" || error.code === "INTERNAL";
+}
+
 export function describeFailureCause(cause: unknown): string {
   return cause instanceof Error ? cause.message : String(cause);
 }

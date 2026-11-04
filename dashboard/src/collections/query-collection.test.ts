@@ -4,6 +4,7 @@ import { focusManager, onlineManager, QueryClient } from "@tanstack/react-query"
 import { createApiCollection, createChangeCollection, preloadCollection, preloadCollections, reconcileCollection } from "./query-collection";
 import type { CollectionRead } from "./read.contract";
 import { getDbClient } from "./scope";
+import type { PublicError } from "#/lib/public-error";
 
 afterEach(() => {
   vi.useRealTimers();
@@ -468,3 +469,35 @@ it("fails readiness only once every collection's read has settled, so SSR never 
   await slow.cleanup();
   client.clear();
 });
+
+const refusals: PublicError[] = [
+  { _tag: "PublicError", code: "UNAUTHORIZED", message: "Sign in again." },
+  { _tag: "PublicError", code: "FORBIDDEN", message: "Not allowed." },
+  { _tag: "PublicError", code: "NOT_FOUND", message: "Not found." },
+  { _tag: "PublicError", code: "SERVER_LACKS", message: "Upgrade the Server.", machineId: "machine", capability: "logs" },
+];
+const transient: PublicError[] = [
+  { _tag: "PublicError", code: "UNAVAILABLE", message: "Ployz Cloud had a problem. Try again." },
+  { _tag: "PublicError", code: "INTERNAL", message: "The request could not be completed." },
+];
+
+it.each([...refusals.map((error) => [error, 1] as const), ...transient.map((error) => [error, 4] as const)])(
+  "reads a failed refresh refused with %o %i times", async (error, reads) => {
+    vi.useFakeTimers();
+    const client = new QueryClient();
+    const read = vi.fn<() => Promise<{ id: string }[]>>().mockResolvedValue([{ id: "before" }]);
+    const collection = createApiCollection({ queryClient: client, queryKey: ["refusal", error.code], queryFn: read,
+      getKey: (row: { id: string }) => row.id });
+    const active = collection.subscribeChanges(() => {});
+    await vi.advanceTimersByTimeAsync(10);
+    read.mockClear();
+    read.mockRejectedValue(error);
+    void collection.utils.refetch();
+    await vi.advanceTimersByTimeAsync(60_000);
+    expect(read).toHaveBeenCalledTimes(reads);
+    expect(client.getQueryState(["refusal", error.code])?.status).toBe("error");
+    expect(collection.get("before")).toMatchObject({ id: "before" });
+    active.unsubscribe();
+    await collection.cleanup();
+    client.clear();
+  });
