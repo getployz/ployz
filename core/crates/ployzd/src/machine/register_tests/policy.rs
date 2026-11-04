@@ -69,15 +69,29 @@ async fn registration_publishes_initial_policy_and_join_persists_it() {
     let _ = std::fs::remove_dir_all(joiner_dir);
 }
 
+/// A Register replaces the row an earlier Register wrote with its whole assignment,
+/// even when that earlier request named a Management Identity: a Register writes no
+/// identity, and never the mark that keeps a row its Machine published.
 #[tokio::test]
-async fn registration_with_a_changed_policy_overwrites_the_published_row() {
-    let (local, replicated, _founder, data_dir, server) = participating().await;
-    let identity = request("peer", WireGuardPublicKey([7; 32]));
+async fn registration_with_a_changed_policy_replaces_the_registered_row() {
+    let (local, replicated, data_dir, server) = sqlite_entry("ployzd-register-policy").await;
+    let mut wire = serde_json::to_value(RegisterRequest {
+        initial_policy: ployz_core::InitialMachinePolicy {
+            accepts_builds: false,
+            ..Default::default()
+        },
+        ..request("peer", WireGuardPublicKey([7; 32]))
+    })
+    .unwrap();
+    *wire.pointer_mut("/runtime/management_identity").unwrap() = serde_json::json!("11".repeat(32));
+    let identity: RegisterRequest = serde_json::from_value(wire).unwrap();
+    assert!(identity.runtime.management_identity.is_some());
     let assigned = local
         .register(identity.clone())
         .await
         .unwrap()
         .assigned_machine;
+    assert_eq!(assigned.runtime.management_identity, None);
     assert_eq!(
         local
             .register(identity.clone())
@@ -86,11 +100,9 @@ async fn registration_with_a_changed_policy_overwrites_the_published_row() {
             .assigned_machine,
         assigned
     );
-    let mut edited = assigned.clone();
-    edited.accepts_builds = false;
-    replicated.publish_local_machine(&edited).await.unwrap();
     let changed = local
         .register(RegisterRequest {
+            name: ployz_core::MachineName::parse("renamed").unwrap(),
             initial_policy: ployz_core::InitialMachinePolicy {
                 accepts_services: false,
                 ..Default::default()
@@ -102,6 +114,7 @@ async fn registration_with_a_changed_policy_overwrites_the_published_row() {
         .assigned_machine;
     assert!(!changed.accepts_services);
     assert!(changed.accepts_builds);
+    assert_eq!(changed.name.as_str(), "renamed");
     assert_eq!(
         replicated.machine(assigned.id.as_str()).await.unwrap(),
         Some(changed)

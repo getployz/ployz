@@ -96,12 +96,16 @@ impl MachinePublicationGuard<'_> {
 
     /// Store a Register's row, as [`registration_upsert`] decides, and return the row
     /// it sent. The call succeeds whether the row was written or kept, and nothing
-    /// tells the caller which.
+    /// tells the caller which: the returned row isn't read back, so a kept row is not
+    /// the one returned.
     ///
     /// A Register is an explicit add, so it takes back the forget of a row that had no
     /// Management Identity: its `forgotten-id:` tombstone goes in the same transaction,
-    /// and a rerun of a failed add keeps its Server (#3342). A Register's row names no
-    /// identity, so forgetting one always leaves that tombstone. A tombstone keyed by a
+    /// and a rerun of a failed add keeps its Server (#3342). A row a Register wrote names
+    /// no identity, so forgetting it leaves that tombstone. A row a Register kept carries
+    /// the mark, which outside tests only a publish of [`Self::publishable_machine`]
+    /// writes, and that row names a Management Identity. So forgetting a kept row leaves
+    /// `forgotten:<identity>`, which the #2927 fence reads. A tombstone keyed by a
     /// Management Identity stays, so a joined Server that was forgotten is still not
     /// listed again (#3613).
     pub(crate) async fn register(&self, machine: Machine) -> Result<Machine, Error> {
@@ -259,7 +263,8 @@ impl MachinePublicationGuard<'_> {
     }
 }
 
-/// Write `machine`'s row unless its id is forgotten and not listed.
+/// Write `machine`'s row, as this Machine's own publish, unless its id is forgotten
+/// and not listed.
 ///
 /// A forgotten id comes back only through a Register: a reset Machine rejoins under a
 /// new one. So neither the forgotten Machine's still-running publisher (#3418) nor an
@@ -267,9 +272,18 @@ impl MachinePublicationGuard<'_> {
 /// again. A joined row's tombstone is keyed by its identity and names the id in its
 /// value; a Registered row's is keyed `forgotten-id:<id>`, which only a Register
 /// clears.
+///
+/// The row gets `"self_published": true`, a key outside [`Machine`]'s fields that
+/// readers ignore. In the daemon only this statement writes it, and outside tests only
+/// the publisher reaches it, with [`MachinePublicationGuard::publishable_machine`].
+/// [`MachinePublicationGuard::mark_leaving`] edits the row in place and keeps it. A
+/// Register under the same WireGuard key keeps a row that has it
+/// ([`registration_upsert`]), so keep the name out of [`Machine`]: a field by that name
+/// would let a Register write it.
 fn machine_upsert(machine: &Machine) -> Result<Statement, Error> {
     Ok(Statement::new(
-        "INSERT INTO machines (id, info) SELECT ?1, ?2 \
+        "INSERT INTO machines (id, info) \
+         SELECT ?1, json_set(?2, '$.self_published', json('true')) \
          WHERE EXISTS (SELECT 1 FROM machines WHERE id = ?1) \
          OR (NOT EXISTS (SELECT 1 FROM cluster \
                          WHERE key LIKE 'forgotten:%' AND value = ?1) \
@@ -279,11 +293,10 @@ fn machine_upsert(machine: &Machine) -> Result<Statement, Error> {
     ))
 }
 
-/// A Machine row as a Register writes it. It never names a Management Identity,
-/// because a Register can't vouch for one: [`RegisterRow::new`] drops any the request
-/// carried. On this daemon only a Machine's own publish
-/// ([`MachinePublicationGuard::publishable_machine`]) writes one. An older Entry may
-/// still have stored a Register's identity.
+/// A Machine row as a Register writes it. It names no Management Identity, because a
+/// Register can't vouch for one: [`RegisterRow::new`] drops any the request carried,
+/// and [`MachinePublicationGuard::register`] builds its row only through it. It is only
+/// [`Machine`]'s fields, so it never carries the mark [`machine_upsert`] writes.
 struct RegisterRow(Machine);
 
 impl RegisterRow {
@@ -295,12 +308,13 @@ impl RegisterRow {
 
 /// Write a Register's row unless its id is forgotten and not listed, as
 /// [`machine_upsert`] does. An existing row is kept only when this Entry's copy
-/// names a Management Identity and the same WireGuard key as the Register; every
-/// other row is replaced. The key makes keeping safe: a Machine's record refuses a
-/// key other than its own, and a reset mints a new id, so the kept row's key holder
-/// is the Machine whose own publish overwrites it unconditionally. The check reads
-/// only this Entry's replica: a self-publish that hasn't arrived is still
-/// overwritten, until that Machine's publisher writes its row back.
+/// carries the `self_published` mark and names the Register's WireGuard key. Every
+/// other row is replaced: a Register's row, and a row whose whole body a daemon
+/// without the mark wrote, including one that names a Management Identity. So no
+/// Register keeps a row on the strength of an identity an older Entry stored from a
+/// Register request. The check reads only this Entry's replica: a self-publish that
+/// hasn't arrived is still overwritten, until that Machine's publisher writes its
+/// row back.
 fn registration_upsert(row: &RegisterRow) -> Result<Statement, Error> {
     let RegisterRow(machine) = row;
     Ok(Statement::new(
@@ -310,7 +324,7 @@ fn registration_upsert(row: &RegisterRow) -> Result<Statement, Error> {
                          WHERE key LIKE 'forgotten:%' AND value = ?1) \
              AND NOT EXISTS (SELECT 1 FROM cluster WHERE key = 'forgotten-id:' || ?1)) \
          ON CONFLICT (id) DO UPDATE SET info = excluded.info \
-         WHERE json_extract(machines.info, '$.runtime.management_identity') IS NULL \
+         WHERE json_extract(machines.info, '$.self_published') IS NULL \
             OR json_extract(machines.info, '$.public_key') \
                IS NOT json_extract(excluded.info, '$.public_key')",
         [json!(machine.id), json!(serde_json::to_string(machine)?)],
@@ -334,6 +348,7 @@ impl ReplicatedStore {
         &self.api
     }
 
+    #[cfg(test)]
     pub async fn publish_local_machine(&self, machine: &Machine) -> Result<(), Error> {
         self.machine_publication().await.publish(machine).await
     }

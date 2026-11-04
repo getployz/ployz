@@ -1170,6 +1170,22 @@ const OLDER_GUARDED_UPSERT: &str = "INSERT INTO machines (id, info) SELECT ?1, ?
                     WHERE key LIKE 'forgotten:%' AND value = ?1) \
      ON CONFLICT (id) DO UPDATE SET info = excluded.info";
 
+/// Write `machine`'s row as v0.3.11 to v0.3.16 wrote both a self-publish and a
+/// Register: with [`OLDER_GUARDED_UPSERT`], so without the `self_published` mark.
+pub(crate) async fn store_as_an_older_daemon(store: &ReplicatedStore, machine: &Machine) {
+    store
+        .api()
+        .execute([Statement::new(
+            OLDER_GUARDED_UPSERT,
+            [
+                json!(machine.id),
+                json!(serde_json::to_string(machine).unwrap()),
+            ],
+        )])
+        .await
+        .unwrap();
+}
+
 #[tokio::test]
 async fn an_older_entry_still_lists_a_forgotten_registered_row() {
     let (store, task) = identity_store(corrosion_db()).await;
@@ -1870,6 +1886,28 @@ async fn a_register_row_names_no_identity_so_its_forget_is_taken_back() {
     assert_eq!(
         store.machine(machine.id.as_str()).await.unwrap(),
         Some(machine)
+    );
+    task.abort();
+}
+
+/// A leaving Machine marks its own row in place, so the row is still its own publish,
+/// and a Register for it under its key leaves it, `leaving` included.
+#[tokio::test]
+async fn a_register_keeps_the_leaving_mark_of_a_row_its_machine_published() {
+    let (store, task) = identity_store(corrosion_db()).await;
+    let (machine, local) = participating_record();
+    let publication = store.machine_publication().await;
+    let mut published = publication
+        .publishable_machine(&local, RuntimeOverlay::default())
+        .unwrap();
+    publication.publish(&published).await.unwrap();
+    publication.mark_leaving(&machine.id, true).await.unwrap();
+    publication.register(machine.clone()).await.unwrap();
+    drop(publication);
+    published.runtime.leaving = true;
+    assert_eq!(
+        store.machine(machine.id.as_str()).await.unwrap(),
+        Some(published)
     );
     task.abort();
 }

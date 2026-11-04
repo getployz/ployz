@@ -430,11 +430,15 @@ async fn register_replaces_a_pending_row_that_carries_a_daemon_version() {
     let _ = std::fs::remove_dir_all(data_dir);
 }
 
-/// A daemon that publishes no Management Identity leaves no sign that it joined, so
-/// a Register replaces its row.
+/// A daemon without the `self_published` mark wrote rows that don't show who wrote
+/// them: its own publish, and a Register an older Entry stored with the identity the
+/// request named. A Register replaces such a row even under the same key, so the row
+/// names no identity, and forgetting it leaves a tombstone the next Register takes back.
 #[tokio::test]
-async fn register_replaces_a_row_published_without_a_management_identity() {
-    let (local, replicated, data_dir, server) = sqlite_entry("ployzd-register-older").await;
+async fn register_replaces_a_row_without_the_mark_and_takes_back_its_forget() {
+    use crate::corrosion::store_tests::store_as_an_older_daemon;
+
+    let (local, replicated, data_dir, server) = sqlite_entry("ployzd-register-unmarked").await;
 
     let identity = request("joiner", WireGuardPublicKey([41; 32]));
     let mut older = local
@@ -442,79 +446,22 @@ async fn register_replaces_a_row_published_without_a_management_identity() {
         .await
         .unwrap()
         .assigned_machine;
-    older.runtime.daemon_version = "0.3.0".into();
-    older.runtime.hostname = "joiner".into();
-    replicated.publish_local_machine(&older).await.unwrap();
-    let assigned = local.register(identity).await.unwrap().assigned_machine;
-    assert_ne!(assigned, older);
-    assert_eq!(
-        replicated.machine(assigned.id.as_str()).await.unwrap(),
-        Some(assigned)
-    );
-    server.abort();
-    drop(local);
-    let _ = std::fs::remove_dir_all(data_dir);
-}
+    older.runtime.daemon_version = "0.3.16".into();
+    older.runtime.management_identity =
+        Some(crate::management::ManagementSecret::generate().public_key());
+    store_as_an_older_daemon(&replicated, &older).await;
 
-/// A Register can't vouch for a Management Identity, so it writes none, even when the
-/// request names one. Its row stays replaceable, and the reply is the row it sent.
-#[tokio::test]
-async fn register_writes_no_management_identity_so_a_rekey_still_lands() {
-    let (local, replicated, data_dir, server) = sqlite_entry("ployzd-register-claimed").await;
-
-    let mut wire = serde_json::to_value(request("joiner", WireGuardPublicKey([41; 32]))).unwrap();
-    *wire.pointer_mut("/runtime/management_identity").unwrap() = serde_json::json!("11".repeat(32));
-    let claimed: RegisterRequest = serde_json::from_value(wire).unwrap();
-    assert!(claimed.runtime.management_identity.is_some());
-    let first = local
-        .register(claimed.clone())
-        .await
-        .unwrap()
-        .assigned_machine;
-    assert_eq!(first.runtime.management_identity, None);
-    assert_eq!(
-        replicated.machine(first.id.as_str()).await.unwrap(),
-        Some(first)
-    );
-
-    let rekeyed = RegisterRequest {
-        public_key: WireGuardPublicKey([42; 32]),
-        ..claimed
-    };
-    let assigned = local.register(rekeyed).await.unwrap().assigned_machine;
-    assert_eq!(assigned.public_key, WireGuardPublicKey([42; 32]));
-    assert_eq!(
-        replicated.machine(assigned.id.as_str()).await.unwrap(),
-        Some(assigned)
-    );
-    server.abort();
-    drop(local);
-    let _ = std::fs::remove_dir_all(data_dir);
-}
-
-/// An older Entry stores the identity a Register names. That row names another key
-/// than this Register, so its Machine can't be the joined one, and the row is replaced.
-#[tokio::test]
-async fn register_replaces_a_row_an_older_entry_stored_with_an_identity_when_the_key_differs() {
-    let (local, replicated, data_dir, server) = sqlite_entry("ployzd-register-forged").await;
-
-    let identity = request("joiner", WireGuardPublicKey([41; 32]));
-    let mut forged = local
+    let assigned = local
         .register(identity.clone())
         .await
         .unwrap()
         .assigned_machine;
-    forged.runtime.management_identity =
-        Some(crate::management::ManagementSecret::generate().public_key());
-    replicated.publish_local_machine(&forged).await.unwrap();
-
-    let rekeyed = RegisterRequest {
-        public_key: WireGuardPublicKey([42; 32]),
-        ..identity
-    };
-    let assigned = local.register(rekeyed).await.unwrap().assigned_machine;
-    assert_eq!(assigned.public_key, WireGuardPublicKey([42; 32]));
-    assert_eq!(assigned.runtime.management_identity, None);
+    assert_eq!(
+        replicated.machine(assigned.id.as_str()).await.unwrap(),
+        Some(assigned.clone())
+    );
+    replicated.forget_machine(&assigned.id).await.unwrap();
+    local.register(identity).await.unwrap();
     assert_eq!(
         replicated.machine(assigned.id.as_str()).await.unwrap(),
         Some(assigned)
@@ -524,8 +471,8 @@ async fn register_replaces_a_row_an_older_entry_stored_with_an_identity_when_the
     let _ = std::fs::remove_dir_all(data_dir);
 }
 
-/// A Register that names another key than the joined row is replaced, as on main, and
-/// the joined Machine's own publish writes its row back.
+/// A Register that names another key than the joined row replaces it, and the joined
+/// Machine's own publish writes it back.
 #[tokio::test]
 async fn a_register_with_another_key_over_a_published_row_is_replaced_and_its_publisher_restores_it()
  {
