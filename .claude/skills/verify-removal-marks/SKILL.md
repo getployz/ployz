@@ -1,6 +1,6 @@
 ---
 name: verify-removal-marks
-description: Model-check the Config Store's removal mark lifecycle (remove, sweep, cancel, pull-request close, the removal Deployment ending) on Postgres and SQLite with the Stateright model in core/crates/ployz-verify. Use when a change touches core/crates/ployz-store/src/removal/ (due.rs sweep, settle, finish, close; mark.rs live, of, save; mod.rs cancel_removal, stop, on_servers, purge), the row locks in scope.rs, the Deployment record path in deployment/lifecycle.rs, the transaction isolation in storage/pg.rs or storage/sqlite.rs, or Cloud's sweep triggers in dashboard/src/modules/config-store/.
+description: Model-check the Config Store's removal mark lifecycle (remove, sweep, cancel, pull-request close, the removal Deployment ending) on Postgres and SQLite with the Stateright model in core/crates/ployz-verify. Use when a change touches core/crates/ployz-store/src/removal/ (due.rs sweep, settle, finish, close; mark.rs live, of, save, finish; mod.rs cancel_removal, stop, on_servers, purge), the row locks in scope.rs, the Deployment record path in deployment/lifecycle.rs, the transaction isolation in storage/pg.rs or storage/sqlite.rs, or Cloud's sweep triggers in dashboard/src/modules/config-store/.
 ---
 
 # Verify removal marks
@@ -19,9 +19,8 @@ Under a second warm; the whole crate takes about 40 s because of the Volume Runs
 
 The run is green when all six tests pass. Read them as three groups:
 
-- **The finding.** `current_code_lets_a_sweep_undo_a_committed_cancel` passes by *finding* the counterexample on the code as it is, and prints it. It is red on code that keeps a committed cancel. When a product fix lands, flip it: assert the property holds under `Save::Upsert` or model the fix as the code wrote it, and move the printed path into this skill as history.
-- **Where the code already holds.** `a_close_reads_the_mark_under_the_member_lock_and_keeps_a_cancel` (a close alone never undoes a cancel, because it reads the mark under the Environment lock) and `sqlite_runs_each_transaction_whole_and_keeps_a_cancel` (SQLite cannot race). Both print a state count and check every property and every `sometimes`. A `sometimes` that is never reached fails here: the model can no longer reach that outcome, so a property passing beside it proves nothing.
-- **The fix and the guards.** `a_conditional_save_in_finish_keeps_a_committed_cancel` runs the sweep, a close, the cancel and the runner together under `Save::Conditional`, the fix variant: `finish` moves the mark to `removed` only `WHERE state = 'removing'` and purges only when a row moved. `close_needs_its_tombstone_check` and `cancel_needs_the_environment_lock` each drop one guard (a `Broken` flag) and expect the property to fail. One of those going green-to-red means a guard no longer earns its keep, or the model lost the path that shows it.
+- **Where the code holds.** `a_conditional_save_in_finish_keeps_a_committed_cancel` runs the sweep, a close, the cancel and the runner together: `finish` moves the mark to `removed` through `mark::finish` only `WHERE state = 'removing'`, and purges only when a row moved. `a_close_reads_the_mark_under_the_member_lock_and_keeps_a_cancel` (a close alone never undoes a cancel, because it reads the mark under the Environment lock) and `sqlite_runs_each_transaction_whole_and_keeps_a_cancel` (SQLite cannot race) check narrower setups. Each prints a state count and checks every property and every `sometimes`. A `sometimes` that is never reached fails here: the model can no longer reach that outcome, so a property passing beside it proves nothing.
+- **The guards.** `finish_needs_its_conditional_save`, `close_needs_its_tombstone_check` and `cancel_needs_the_environment_lock` each drop a guard (a `Broken` flag) and expect the property to fail, printing the path. One of those going green-to-red means a guard no longer earns its keep, or the model lost the path that shows it. `finish_needs_its_conditional_save` is the finding below, kept out by the fix.
 
 ## Read a counterexample
 
@@ -45,11 +44,14 @@ A counterexample is a **lead**, not a verdict. Confirm each step of the story ag
 - If a step does something the code cannot, fix the model and say so. The usual suspects: a lock the model skips (`holder` decides which steps wait), a read the model takes from committed state where the code reuses a copy (or the other way round), and `records`, which lets the runner end the removal Deployment only while the Project row is free.
 - If every step matches the code, it is a finding. Report it in plain words with the path. Keep the property and the model as they are; weakening either to go green hides the bug.
 
-The finding this model was built on, confirmed step by step at the sync commit below: `removal::sweep` reads every `removing` mark with `mark::live` under no lock. `settle` then takes the Environment row and `finish` saves the copy it read as `removed` through `mark::save`'s unconditional upsert, and purges. A `cancel_removal` that took the Environment row first and committed `cancelled` in between is overwritten. SQLite cannot reach this: both transactions take the database write lock at `BEGIN`. The window on Postgres is real: Cloud sweeps right after an applied removal Deployment ends and every hour, with no lock around user commands.
+The finding this model was built on, now fixed: `removal::sweep` reads every `removing` mark with `mark::live` under no lock. `settle` then takes the Environment row, and `finish` used to save the copy it read as `removed` through `mark::save`'s unconditional upsert, and purge. A `cancel_removal` that took the Environment row first and committed `cancelled` in between was overwritten, and the Environment it had just kept was deleted. SQLite cannot reach this: both transactions take the database write lock at `BEGIN`. The window on Postgres was real: Cloud sweeps right after an applied removal Deployment ends and every hour, with no lock around user commands. `a_sweep_queued_behind_a_cancel_keeps_the_environment_*` in `core/crates/ployz-store/tests/removal.rs` reproduced it on the real Store. `mark::State` now has no `removed`, so `mark::save` cannot write it, and `mark::finish` moves a mark there only from `removing`. `finish_needs_its_conditional_save` sets `Broken::finish_saves_unconditionally` and prints the old path.
 
 ## A break that stays green
 
-Guards overlap, so removing one can leave every property holding. Before calling a guard dead, rerun with a neighbouring `Broken` flag set too, or under the other `Save` variant. `cancel_needs_the_environment_lock` only shows the lock's worth under `Save::Conditional`: on the code as it is, the sweep's upsert already breaks the property on its own, so the cancel's lock shows its worth only once `finish` is fixed. That is why the fix to `finish` is not the whole guard: the cancel must still lock the Environment, or it commits `cancelled` over a purge.
+Guards overlap, so removing one can leave every property holding. Before calling a guard dead, rerun with a neighbouring `Broken` flag set too. Two pairs overlap here:
+
+- `close_needs_its_tombstone_check` sets `finish_saves_unconditionally` as well. With `mark::finish` intact, a close past a tombstone moves nothing and purges nothing, so the property holds. The check still earns its keep in the code, where a close past a tombstone would also cancel the Branch's Deployments and list it due, which this model does not cover.
+- `cancel_needs_the_environment_lock` runs on the fixed `finish`. With the upsert, the sweep breaks the property on its own, so the cancel's lock shows its worth only once `finish` is fixed. That is why the conditional `finish` is not the whole guard: the cancel must still lock the Environment, or it commits `cancelled` over a purge.
 
 ## Keep the model in step
 
@@ -57,7 +59,7 @@ When a change intentionally alters the lifecycle (a new guard, a new statement, 
 
 1. Update the matching `Step`, the program constant (`SWEEP`, `CLOSE`, `CANCEL`), or `step`'s arm, citing the file and function it copies.
 2. If the change adds a guard, add a `Broken` flag that removes it and a `breaks` test naming the property it keeps. A guard with no failing variant is untested.
-3. If the change fixes the finding, flip the finding test as described under Run it. Do not delete it: its printed path is the record of what the fix keeps out.
+3. If the change fixes a finding, flip its finding test into a `Broken` flag that restores the old code and a `breaks` test, as `finish_needs_its_conditional_save` did. Do not delete it: its printed path is the record of what the fix keeps out.
 4. If a property's meaning changes, change its text and say why in the PR body. Narrow a property only when the code is right and the property was wrong about the design.
 5. Move the sync commit below forward only after you confirmed each covered function still reads as the model says.
 
@@ -72,7 +74,7 @@ Out of scope: a Project-target mark and its member Environments, two sweeps side
 Each model step is a copy of code at the sync commit. Reread these when a diff touches them:
 
 - `core/crates/ployz-store/src/removal/due.rs`: `sweep`, `settle`, `finish`, `close` and its `Cancelled` early return.
-- `core/crates/ployz-store/src/removal/mark.rs`: `live`, `of`, `save` and its `ON CONFLICT` update.
+- `core/crates/ployz-store/src/removal/mark.rs`: `live`, `of`, `save` and its `ON CONFLICT` update, `finish` and its `WHERE state = 'removing'`.
 - `core/crates/ployz-store/src/removal/mod.rs`: `cancel_removal`, `stop`, `lock_project`, `on_servers`, `ran`, `purge`.
 - `core/crates/ployz-store/src/scope.rs`: `environment`, `lock`, `lock_all`, `lock_id`, `owned`, `load_by_id`.
 - `core/crates/ployz-store/src/deployment/lifecycle.rs`: `cancel`, `record` and its `Applied`/`Failed` choice, `end` and its `(Cancelling, Failed)` to `Cancelled` mapping.

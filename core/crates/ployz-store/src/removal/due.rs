@@ -171,7 +171,7 @@ pub(super) fn go_on(
             why,
         });
     }
-    if finish(tx, who, mark)?.is_some() {
+    if finish(tx, mark)?.is_some() {
         return Ok(Removal::Removed {
             residuals: mark.residuals.clone(),
         });
@@ -196,12 +196,9 @@ fn services(environment: &Environment) -> Result<Vec<ServiceName>, RpcError> {
 
 /// Delete `mark`'s target once nothing of it runs on the Servers, recording what
 /// came off only in configuration. A Project goes in one piece, after its last
-/// member. Returns what it deleted.
-fn finish(
-    tx: &mut dyn Tx,
-    who: &Actor,
-    mark: &mut Mark,
-) -> Result<Option<Vec<EnvironmentSummary>>, RpcError> {
+/// member. Returns what it deleted: nothing while something of it may still run,
+/// or once a cancel left the mark a tombstone.
+fn finish(tx: &mut dyn Tx, mark: &mut Mark) -> Result<Option<Vec<EnvironmentSummary>>, RpcError> {
     let mut gone = Vec::new();
     for member in alive(tx, mark)? {
         if on_servers(tx, &member)?.is_some() {
@@ -220,10 +217,12 @@ fn finish(
             });
         }
     }
+    // Before the delete, which it decides: a cancel that committed since this
+    // transaction read the mark left a tombstone, and the target stays.
+    if let mark::Finished::NotRemoving = mark::finish(tx, &mark.id, &residuals)? {
+        return Ok(None);
+    }
     mark.residuals = residuals;
-    mark.state = State::Removed;
-    // Saved before the delete: its target columns go NULL with the target.
-    mark::save(tx, who, mark)?;
     match &mark.target {
         Target::Environment(id) => purge(tx, id)?,
         Target::Project(id) => {
@@ -263,7 +262,7 @@ fn settle(
             Standing::Due => automated.closing.push(environment.summary),
         }
     }
-    if let Some(removed) = finish(tx, who, mark)? {
+    if let Some(removed) = finish(tx, mark)? {
         automated.removed.extend(removed);
     }
     Ok(())
