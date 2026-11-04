@@ -308,7 +308,7 @@ pub(crate) fn review(tx: &mut dyn Tx, environment: &Environment) -> Result<Revie
     let baseline = before
         .saved
         .unwrap_or_else(|| crate::scope::empty(environment.summary.name.as_str()));
-    let draft = saved_comparison(environment, &baseline)?;
+    let draft = saved_comparison(environment, &baseline, &[])?;
     view.draft_changes = draft.changes;
     view.draft_count = draft.total_count;
     // Only staged changes or draft reversals are worded by it.
@@ -378,11 +378,14 @@ impl Before {
     }
 }
 
+/// `recorded` lists variables, as service id and key, shown changed in value even
+/// where both sides read the same.
 fn saved_comparison(
     environment: &Environment,
     baseline: &SavedEnvironmentIntent,
+    recorded: &[(String, String)],
 ) -> Result<authored::Summary, RpcError> {
-    authored::compare(baseline, &environment.working)
+    authored::compare(baseline, &environment.working, recorded)
 }
 
 fn compare(

@@ -355,6 +355,7 @@ impl Plan {
             key.as_str(),
             before.as_ref(),
             after.as_ref(),
+            false,
         );
         effects.retain(|effect| match effect {
             Effect::VariableLifecycle { .. } => !matches!(target, Target::Exported(_)),
@@ -384,6 +385,15 @@ impl Plan {
         before: &SavedEnvironmentIntent,
         after: &SavedEnvironmentIntent,
     ) -> Result<Self, RpcError> {
+        Self::recording(before, after, &[])
+    }
+    /// As `between`, also showing each variable `recorded` lists, as service id and
+    /// key, changed in value.
+    fn recording(
+        before: &SavedEnvironmentIntent,
+        after: &SavedEnvironmentIntent,
+        recorded: &[(String, String)],
+    ) -> Result<Self, RpcError> {
         let SavedEnvironmentIntent {
             version,
             environment_slug,
@@ -407,7 +417,9 @@ impl Plan {
                 (Some(before), None) => effects.push(Effect::ServiceLifecycle(Box::new(
                     Lifecycle::Removed(before.clone()),
                 ))),
-                (Some(before), Some(after)) => service_changes(&mut effects, before, after)?,
+                (Some(before), Some(after)) => {
+                    service_changes(&mut effects, before, after, recorded)?
+                }
                 (None, None) => unreachable!("union contains an owner"),
             }
         }
@@ -651,6 +663,7 @@ fn service_changes(
     effects: &mut Vec<Effect>,
     before: &SavedServiceIntent,
     after: &SavedServiceIntent,
+    recorded: &[(String, String)],
 ) -> Result<(), RpcError> {
     let SavedServiceIntent {
         id,
@@ -813,6 +826,9 @@ fn service_changes(
             key,
             earlier.get(key).copied(),
             later.get(key).copied(),
+            recorded
+                .iter()
+                .any(|(service, variable)| service == id && variable == key),
         );
     }
     for resource in keys(&before.volume_attachments, volume_attachments, |mount| {
@@ -860,12 +876,14 @@ fn service_changes(
     Ok(())
 }
 
+/// `recorded` shows a value change even where both values read the same.
 fn variable_changes(
     effects: &mut Vec<Effect>,
     service: &str,
     key: &str,
     before: Option<&SavedVariableIntent>,
     after: Option<&SavedVariableIntent>,
+    recorded: bool,
 ) {
     match (before, after) {
         (None, Some(after)) => effects.push(Effect::VariableLifecycle {
@@ -897,8 +915,12 @@ fn variable_changes(
             if let Some(delta) = Delta::between(&before.id, variable_id) {
                 add(VariableField::Id(delta));
             }
-            if let Some(delta) = Delta::between(&VersionedValue::of(before), &pair) {
-                add(VariableField::Value(Box::new(delta)));
+            let was = VersionedValue::of(before);
+            if recorded || was != pair {
+                add(VariableField::Value(Box::new(Delta {
+                    before: was,
+                    after: pair,
+                })));
             }
             if let Some(delta) = Delta::between(&before.description, description) {
                 add(VariableField::Description(delta));
@@ -2103,11 +2125,16 @@ fn node_path(change: &NodeChange) -> String {
         EnvironmentNodeType::Config => format!("configs.@{}", change.node.id),
     }
 }
+/// `recorded` lists variables, as service id and key, shown changed in value even
+/// where both sides read the same.
 pub(super) fn compare(
     before: &SavedEnvironmentIntent,
     after: &SavedEnvironmentIntent,
+    recorded: &[(String, String)],
 ) -> Result<Summary, RpcError> {
-    Ok(Plan::between(before, after)?.render(before, after)?.0)
+    Ok(Plan::recording(before, after, recorded)?
+        .render(before, after)?
+        .0)
 }
 
 pub(super) struct Prepared {

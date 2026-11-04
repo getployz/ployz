@@ -378,8 +378,8 @@ impl VariableValue {
         }
     }
 
-    /// The literal text this value is, a generated one's included; an arriving one has
-    /// none yet.
+    /// The literal text this value is, a generated one's included. An arriving one is
+    /// `""`, the literal it is stored as until made.
     #[must_use]
     pub fn literal(&self) -> Option<&str> {
         match self {
