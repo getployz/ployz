@@ -176,6 +176,64 @@ class RunState(unittest.TestCase):
             self.assertEqual(self.main("down", str(self.manifest), backend=unittest.mock.Mock()), 0)
         self.assertEqual(json.loads(self.manifest.read_text())["state"], "removed")
 
+    def write_unknown(self, state):
+        self.write(state)
+        if state is None:
+            run = json.loads(self.manifest.read_text())
+            del run["state"]
+            cluster.save(run)
+
+    def test_a_run_with_an_unknown_state_refuses_every_command_but_down(self):
+        for state, named in (("bogus", "'bogus'"), (None, "None")):
+            with self.subTest(state=state):
+                self.write_unknown(state)
+                with self.assertRaisesRegex(RuntimeError, f"state {named} is unknown"):
+                    self.main("doctor", str(self.manifest))
+                with contextlib.redirect_stdout(io.StringIO()):
+                    self.assertEqual(self.main("down", str(self.manifest), backend=unittest.mock.Mock()), 0)
+                self.assertEqual(json.loads(self.manifest.read_text())["state"], "removed")
+
+    def reap(self, *found, backend):
+        args = cluster.argparse.Namespace(runs=[run["id"] for run in found], older_than=24, force=True, yes=True)
+        row = dict(run="", age="", machines="", ram="", owner="", checkout="")
+        output = io.StringIO()
+        with unittest.mock.patch.object(cluster, "host_runs", return_value=list(found)), \
+             unittest.mock.patch.object(cluster.host, "verdict", return_value=(True, "old")), \
+             unittest.mock.patch.object(cluster, "describe", side_effect=lambda found, now: dict(row, run=found["id"])), \
+             unittest.mock.patch.object(cluster, "provider", return_value=backend), \
+             contextlib.redirect_stdout(output):
+            cluster.reap(args)
+        return {line.split()[0]: line.split()[1] for line in output.getvalue().splitlines()[1:]}
+
+    def found(self, manifest, id="t1"):
+        return dict(id=id, provider="boat", owner=dict(manifest=str(manifest)), machines=[dict(name="machine-1")])
+
+    def test_reap_destroys_what_a_removed_run_still_holds(self):
+        # A Boat key that may not delete a sandbox stops it, and teardown still ends removed.
+        self.write("removed")
+        backend = unittest.mock.Mock()
+        self.assertEqual(self.reap(self.found(self.manifest), backend=backend), {"t1": "removed"})
+        backend.destroy.assert_called_once()
+        self.assertEqual(json.loads(self.manifest.read_text())["state"], "removed")
+
+    def test_reap_removes_a_run_with_an_unknown_state(self):
+        for state in ("bogus", None):
+            with self.subTest(state=state):
+                self.write_unknown(state)
+                backend = unittest.mock.Mock()
+                self.assertEqual(self.reap(self.found(self.manifest), backend=backend), {"t1": "removed"})
+                backend.destroy.assert_called_once()
+                self.assertEqual(json.loads(self.manifest.read_text())["state"], "removed")
+
+    def test_one_unreadable_manifest_does_not_stop_reap(self):
+        broken = self.manifest.with_name("broken.json")
+        broken.write_text("{")
+        self.write("ready")
+        backend = unittest.mock.Mock()
+        rows = self.reap(self.found(broken, id="t0"), self.found(self.manifest), backend=backend)
+        self.assertEqual(rows, {"t0": "failed", "t1": "removed"})
+        self.assertEqual(json.loads(self.manifest.read_text())["state"], "removed")
+
 
 if __name__ == "__main__":
     unittest.main()

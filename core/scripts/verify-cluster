@@ -55,20 +55,29 @@ class RunState(enum.Enum):
     REMOVED = "removed"
 
 
-# Down may begin from every state but removed, including a teardown that raised.
-UNREMOVED = (RunState.STARTING, RunState.READY, RunState.TEARING_DOWN)
+def recorded(run):
+    """The run's RunState, or None when its manifest records no state this script knows."""
+    try:
+        return RunState(run.get("state"))
+    except ValueError:
+        return None
+
+
+# Down may begin from every state but removed: a teardown that raised, or a state this script doesn't know.
+UNREMOVED = (RunState.STARTING, RunState.READY, RunState.TEARING_DOWN, None)
 
 
 def advance(run, frm, to):
     """Move the run from one of the states `frm` to `to`, against the manifest on disk.
 
-    Its own lock, held only for this write: teardown runs inside `locked`, whose flock a second open would wait on.
+    Its own lock, held only for this write: teardown runs inside `locked`, whose non-blocking flock a second open of
+    the same file would fail to take.
     """
     with Path(run["manifest"]).with_suffix(".state.lock").open("a") as lock:
         fcntl.flock(lock, fcntl.LOCK_EX)
-        current = RunState(json.loads(Path(run["manifest"]).read_text())["state"])
-        if current not in frm:
-            raise RuntimeError(f"This cluster is {current.value}, so it can't become {to.value}")
+        on_disk = json.loads(Path(run["manifest"]).read_text())
+        if recorded(on_disk) not in frm:
+            raise RuntimeError(f"This cluster is {on_disk.get('state')}, so it can't become {to.value}")
         run["state"] = to.value
         save(run)
 
@@ -709,16 +718,21 @@ def reap(args):
         if not (remove and args.yes):
             continue
         manifest = Path(found["owner"].get("manifest", ""))
-        if manifest.is_file() and json.loads(manifest.read_text()).get("id") == found["id"]:
-            run = json.loads(manifest.read_text())
-            try:
+        try:
+            run = json.loads(manifest.read_text()) if manifest.is_file() else {}
+            if run.get("id") == found["id"]:
                 with locked(run):
                     commands = Commands(run)
-                    teardown(run, commands, provider(run, commands))
-            except RuntimeError as error:
-                rows[-1].update(action="failed", reason=str(error).splitlines()[0])
-                continue
-        else:
+                    if recorded(run) is RunState.REMOVED:
+                        # Teardown finished, but the provider kept what it could only stop.
+                        provider(run, commands).destroy()
+                    else:
+                        teardown(run, commands, provider(run, commands))
+        except (RuntimeError, OSError, ValueError, KeyError) as error:
+            # One bad manifest must not keep reap from the runs after it.
+            rows[-1].update(action="failed", reason=str(error).splitlines()[0])
+            continue
+        if run.get("id") != found["id"]:
             # The manifest is gone, so evidence goes to the host cache.
             directory = Path.home() / ".cache" / "ployz" / "verify" / "reaped" / found["id"]
             directory.mkdir(parents=True, exist_ok=True)
@@ -1035,15 +1049,18 @@ def main():
             node.setdefault("endpoint", endpoint(node["address"]))
     if run["root"] != str(CORE) or Path(run["manifest"]).resolve() != args.manifest.resolve():
         raise RuntimeError("Use this run's originating checkout and manifest path")
-    state = RunState(run["state"])
+    state = recorded(run)
     if state is RunState.REMOVED:
         if args.action == "down":
             print(f"Already removed. Evidence: {args.manifest.parent / 'evidence'}")
             return 0
         raise RuntimeError("This cluster has been removed")
+    if state is None and args.action != "down":
+        raise RuntimeError(f"This cluster's state {run.get('state')!r} is unknown; remove it: scripts/verify-cluster down {args.manifest}")
     if state is not RunState.READY and args.action != "down":
         # up never finished, or down never did: its Machines may lack an address or be half gone.
-        raise RuntimeError(f"This cluster is {state.value}, not ready; remove it: scripts/verify-cluster down {args.manifest}")
+        raise RuntimeError(f"This cluster is {state.value}, not ready. If its up is still running, wait for it to print the "
+                           f"manifest; otherwise remove it: scripts/verify-cluster down {args.manifest}")
     commands = Commands(run)
     backend = provider(run, commands)
     if run["provider"] == "boat" and args.action != "down":
