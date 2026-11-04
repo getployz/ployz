@@ -109,7 +109,8 @@ These are out of scope:
 - `ployz:epoch`, since no modelled copy carries it
 - a departure snapshot, and the departure itself, which also destroys on `written_here`
 - `ployz:pull` and `ployz:role` on the slot parent
-- a failure between the `zfs` calls of one handler, except `finish_landing`'s `readonly=off` after `land`'s rename, and that failure again when a resent Seed reruns `finish_landing`
+- a failure between the `zfs` calls of one handler, except `finish_landing`'s `readonly=off` after `land`'s rename
+- a resent Seed's rerun of `finish_landing` failing again (`seed.rs:47-51`): the model's `Finishes` arm always makes the root writable (`core/crates/ployz-verify/src/volume_marks.rs:539-546`), and `SeedStops` is offered only beside a Seed that takes `Lands` (`volume_marks.rs:882-888`)
 - a read-only root with `ployz:cut` or with no mark: the Move's cut is one step, so no modelled root reads `cut` or no mark, and `PARSE_CLAIMS_MARKS` checks only the reads a stopped landing reaches
 - a promote of a cut copy stopped before `readonly=off` (`copy.rs:505-550`), which carries the same marks as a cut stopped before its rename and reads `cut`; the model has no Writer want
 - `name`'s writer losing `G` (`RestorePointGone`, `seed.rs:82-92`)
