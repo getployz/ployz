@@ -289,8 +289,8 @@ impl FromStr for SlotRole {
     }
 }
 
-/// A `SetVolumeCopy` pull into a slot: which snapshot it fetches and, once the receive
-/// has stopped without landing it, why.
+/// A `SetVolumeCopy` pull into a slot: which snapshot it fetches and, once its receive task
+/// ended with a failure, possibly after the snapshot arrived, why.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
 pub struct Pull {
     pub target: SnapshotName,
@@ -299,8 +299,8 @@ pub struct Pull {
 }
 
 /// A slot's pull as its own Machine reads it: `ployz:pull` names the target, the plugin
-/// process's receive of that target says whether anything attends it, and the slot's newest
-/// snapshot says whether it landed. Open: a state this build does not know reads as
+/// process's receive of that target says whether it is alive or failed, and otherwise the
+/// newest snapshot says whether it landed. Open: a state this build does not know reads as
 /// `Unrecognized`, so a newer daemon's value never breaks an older reader's whole reply.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
 #[serde(tag = "kind", rename_all = "snake_case")]
@@ -309,7 +309,7 @@ pub enum PullState {
     Receiving { target: SnapshotName },
     /// The slot's newest snapshot is `target`, and no receive of it is alive or failed.
     Landed { target: SnapshotName },
-    /// The receive of `target` stopped without landing it.
+    /// The receive task of `target` ended with a failure, possibly after `target` arrived.
     Failed {
         target: SnapshotName,
         failure: String,
