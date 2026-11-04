@@ -25,7 +25,7 @@ Each property is phrased over a stale Seed, or over a copy no writer elsewhere h
 cd core && cargo test -p ployz-verify volume_marks -- --nocapture --test-threads=1
 ```
 
-A warm run takes under a second, since the largest scenario has 238 states. The whole crate takes about 40 s because of the Volume Runs model beside it. With one test thread, each story prints in order under its test's name, which appears in brackets above it. CI runs it in the workspace nextest, so a red model blocks the PR.
+A warm run takes under a second, since the largest scenario has 238 states. The whole crate took 111 s at the sync commit on a shared host, almost all of it in the other models. With one test thread, each story prints in order under its test's name, which appears in brackets above it. CI runs it in the workspace nextest, so a red model blocks the PR.
 
 The run is green when all eight tests pass. Read them as three groups.
 

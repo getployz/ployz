@@ -651,7 +651,7 @@ impl VolumeMarks {
             && matches!(state.into, Into::Slot { fs: Some(fs) } if fs.newest == Some(point))
     }
 
-    /// `action` from `before` to `after` is what the coverage check cut.
+    /// `action`, which led to `after`, is what the coverage check cut.
     fn omitted(&self, action: Action, after: &State) -> bool {
         match self.omit {
             None => false,
