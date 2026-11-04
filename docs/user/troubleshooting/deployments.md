@@ -500,9 +500,9 @@ When status warns that `web-3 has not confirmed what its proxy serves`, one of t
 - Web-3's daemon has just started.
 - Web-3 wrote a new proxy config without reaching the proxy.
 - Web-3's proxy restarted, and web-3 hasn't loaded its config into the new proxy yet.
-- Web-3 couldn't save its proxy config to disk, and a later attempt failed before reaching the
-  proxy. A restarted proxy would serve the older file, so web-3 claims nothing until a load reaches
-  the proxy again. Check free space and permissions on web-3's disk.
+- Web-3 couldn't save its proxy config to disk, and a later load wasn't confirmed. A restarted
+  proxy would serve the older file, so web-3 claims nothing until a load is confirmed again. Check
+  free space and permissions on web-3's disk.
 - Web-3's proxy refused a certificate, and web-3 hasn't read the cluster's state since.
 - Status couldn't read what web-3 routes within 3 seconds, which a slow link between servers can
   cause.
