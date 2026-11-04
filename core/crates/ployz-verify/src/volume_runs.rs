@@ -743,6 +743,7 @@ fn volume_copy(held: Held, machine: Machine) -> Option<VolumeCopy> {
             newest: newest.map(snapshot),
             epoch: WriterEpoch::new(epoch),
             seed: false,
+            mark: None,
         }),
         Held::Slot { newest } => Some(VolumeCopy::Slot {
             slot: slot_id(machine),

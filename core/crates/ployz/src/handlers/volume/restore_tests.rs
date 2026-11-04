@@ -58,6 +58,7 @@ fn root(readonly: bool, epoch: u32) -> VolumeCopy {
         newest: Some(snapshot("w-3-1", 41, 1_700_000_000)),
         epoch: WriterEpoch::new(epoch),
         seed: false,
+        mark: None,
     }
 }
 

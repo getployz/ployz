@@ -14,11 +14,12 @@
 //! `Broken::seed_skips_floor` restores that Seed.
 //!
 //! The properties: a Seed from an ended seed run never destroys a copy of `into` a later
-//! run made; a Seed never destroys a copy only this Machine may hold, nor a slot a
-//! receive is still writing; a seed run ends done only on a root holding its restore
-//! point; and at rest the run's row has ended. They are phrased over stale Seeds where
-//! the finding is, because a live Seed replacing a pulled Mirror is designed
-//! (`seed_tests.rs` `a_seed_replaces_a_slot_a_mirror_pull_marked_or_that_holds_no_point`).
+//! run made; a Seed never destroys a copy only this Machine may hold, nor a slot a receive
+//! is still writing; a seed run ends done only on a root holding its restore point; at rest
+//! the run's row has ended; and Inspect names only a mark `into`'s root carries. They are
+//! phrased over stale Seeds where the finding is, because a live Seed replacing a pulled
+//! Mirror is designed (`seed_tests.rs`
+//! `a_seed_replaces_a_slot_a_mirror_pull_marked_or_that_holds_no_point`).
 //!
 //! The fix: Seed carries its run's gen, and `seed_volume` (machine_api/local.rs:557-573)
 //! checks it against `into`'s floor under the switch lock, before the plugin's
@@ -31,9 +32,14 @@
 //! answer, so each handler is one step. A receive task runs outside it, so a receive
 //! completing and `mark_pulled` are steps of their own.
 //!
+//! One failure inside a handler is modelled: `finish_landing`'s `readonly=off` failing
+//! after `land`'s rename, which leaves a read-only root with `ployz:seed` and
+//! `ployz:promote` that the next Seed finishes. `RootCopy::parse` (inspect.rs) must read
+//! that root by its marks, not as a cut.
+//!
 //! Out of scope: a seed copy that fails, `ployz:epoch` (no modelled copy carries it), the
-//! departure, a crash between the zfs calls of one handler, `ployz:pull` and the role
-//! property on the slot parent, more than one Seed request stranded, and Busy answers.
+//! departure, any other failure between the zfs calls of one handler, `ployz:pull` and the
+//! role property on the slot parent, more than one Seed request stranded, and Busy answers.
 
 use std::fmt::Write as _;
 
@@ -94,6 +100,8 @@ impl Marks {
 /// One dataset holding a copy of `into`: the root, or a slot's `fs`.
 #[derive(Clone, Copy, Debug, Hash, PartialEq, Eq)]
 struct Copy {
+    /// ZFS `readonly`.
+    readonly: bool,
     /// The newest snapshot, `None` for none.
     newest: Option<Point>,
     /// `ployz:pulled`, set locally by `mark_pulled` (copy.rs).
@@ -154,12 +162,17 @@ enum SeedPath {
     Stale,
     /// A root of `into` with this guid in `ployz:seed`: answers the root.
     AnswersRoot,
+    /// That root still holds `G`, so a landing stopped on it: `finish_landing` runs
+    /// again, then it answers the root.
+    Finishes,
     /// A root of `into` with another or no `ployz:seed`: "Volume into already exists".
     Exists,
     /// `receives.running(&into)`: answers the copy as it stands.
     Receiving,
     /// The slot's `fs` holds `G` as its newest: `land` renames it to the root.
     Lands,
+    /// As `Lands`, but `finish_landing`'s `readonly=off` fails after the rename.
+    Stops,
     /// `written_here(&fs)`: "Volume into is held in slot".
     Held,
     /// A slot exists: `zfs destroy -r <parent>`, then a new slot and a copy of `G`.
@@ -189,6 +202,8 @@ enum Answer {
     Root(Made),
     Slot,
     Refused,
+    /// An internal error: `sendSwitch` fails only the attempt, and the step retries.
+    Failed,
 }
 
 /// Which copies of `into` A starts with.
@@ -218,6 +233,9 @@ enum Action {
     /// wire under the switch lock; `answered` when the step that sent it still waits. Under
     /// `Broken::floor_checked_only_before_lock` it runs one request `Admit` let through.
     Seed { answered: bool },
+    /// A Seed request that takes `land` (seed.rs), where `finish_landing`'s `set
+    /// readonly=off` fails after the rename. Offered beside each `Seed` that would land.
+    SeedStops { answered: bool },
     /// Only under `Broken::floor_checked_only_before_lock`: the floor check takes one
     /// request off the wire before the switch lock, and either refuses it or lets it on
     /// toward the lock; `answered` when it is the request the step waits for.
@@ -306,6 +324,19 @@ struct Broken {
     floor_checked_only_before_lock: bool,
     /// The Seed's floor check raises the floor, as `FloorTurn::admit` does.
     seed_raises_floor: bool,
+    /// `RootCopy::parse` (inspect.rs) reads every read-only root as a cut, whatever its
+    /// marks.
+    parse_reads_readonly_as_cut: bool,
+}
+
+/// How `RootCopy::parse` (inspect.rs) reads a root, by its `readonly` and marks. The
+/// model drops its `seed`, which no property reads.
+#[derive(Clone, Copy, Debug, Hash, PartialEq, Eq)]
+enum Parsed {
+    Writable,
+    Cut,
+    Promote,
+    Unmarked,
 }
 
 /// What a coverage check takes out of the model, to show the `sometimes` naming it is
@@ -329,7 +360,10 @@ struct Coverage {
 
 /// The last step was a Seed request that took `path`.
 fn took(state: &State, path: SeedPath) -> bool {
-    matches!(state.last, Some(Action::Seed { .. })) && state.seed == Some(path)
+    matches!(
+        state.last,
+        Some(Action::Seed { .. } | Action::SeedStops { .. })
+    ) && state.seed == Some(path)
 }
 
 const ALL: &[Scenario] = &[Scenario::Fresh, Scenario::OldCopy, Scenario::Taken];
@@ -358,6 +392,21 @@ const COVERAGE: &[Coverage] = &[
         scenarios: SEEDS,
         omit: Omit::Path(SeedPath::Lands),
         reached: |_, state| took(state, SeedPath::Lands),
+    },
+    Coverage {
+        name: "Inspect reads a landing stopped before readonly=off as promote",
+        scenarios: SEEDS,
+        omit: Omit::Path(SeedPath::Stops),
+        reached: |model, state| {
+            took(state, SeedPath::Stops)
+                && matches!(state.into, Into::Root(root) if model.parse(root) == Parsed::Promote)
+        },
+    },
+    Coverage {
+        name: "a resent Seed finishes a landing that stopped",
+        scenarios: SEEDS,
+        omit: Omit::Path(SeedPath::Finishes),
+        reached: |_, state| took(state, SeedPath::Finishes),
     },
     Coverage {
         name: "a Seed answers the root it landed",
@@ -460,10 +509,23 @@ impl VolumeMarks {
         fs.marks.any() || fs.newest.is_some_and(|newest| fs.pulled != Some(newest))
     }
 
+    /// `RootCopy::parse` (inspect.rs): the read-only split, then `ployz:cut`, then
+    /// `ployz:promote`.
+    fn parse(&self, root: Copy) -> Parsed {
+        match (root.readonly, root.marks.cut, root.marks.promote) {
+            (false, _, _) => Parsed::Writable,
+            (true, _, _) if self.broken.parse_reads_readonly_as_cut => Parsed::Cut,
+            (true, true, _) => Parsed::Cut,
+            (true, false, true) => Parsed::Promote,
+            (true, false, false) => Parsed::Unmarked,
+        }
+    }
+
     /// Volume.Seed for one request: the floor check under the switch lock
     /// (machine_api/local.rs `seed_volume`), then `VolumeStorage::seed_volume` (seed.rs)
-    /// under `admit_mutation`.
-    fn seed(&self, state: &mut State) -> Answer {
+    /// under `admit_mutation`. With `stops`, a landing stops at `finish_landing`'s
+    /// `readonly=off`.
+    fn seed(&self, state: &mut State, stops: bool) -> Answer {
         let broken = self.broken;
         let checks = !broken.seed_skips_floor && !broken.floor_checked_only_before_lock;
         if checks && !self.check(state, SEED) {
@@ -472,7 +534,16 @@ impl VolumeMarks {
         }
         let (path, answer) = match state.into {
             // seed.rs: `Self::dataset(..)` finds the root; `ployz:seed` against the guid.
-            // A landed root no longer holds `G`, so `finish_landing` does not run again.
+            // A root still holding `G` stopped landing, so `finish_landing` runs again:
+            // `readonly=off`, then `destroy root@G`. A landed root no longer holds `G`.
+            Into::Root(root) if root.marks.seed && root.newest == Some(Point::G) => {
+                state.into = Into::Root(Copy {
+                    readonly: false,
+                    newest: None,
+                    ..root
+                });
+                (SeedPath::Finishes, Answer::Root(root.made))
+            }
             Into::Root(root) if root.marks.seed || broken.root_ignores_seed => {
                 (SeedPath::AnswersRoot, Answer::Root(root.made))
             }
@@ -482,20 +553,34 @@ impl VolumeMarks {
                 (SeedPath::Receiving, Answer::Slot)
             }
             // seed.rs: the slot's `fs` newest is `G`, so `land` inherits `ployz:pulled`,
-            // sets `ployz:seed` and `ployz:promote`, renames it to the root and
-            // `finish_landing` destroys the parent and `root@G`.
+            // sets `ployz:seed` and `ployz:promote` and renames it to the root, and
+            // `finish_landing` sets `readonly=off`, destroys the parent and `root@G`.
+            // Stopped at `readonly=off`, the root stays read-only and still holds `G`, and
+            // the request answers an internal error.
             Into::Slot { fs: Some(fs) } if fs.newest == Some(Point::G) => {
-                state.into = Into::Root(Copy {
-                    newest: None,
-                    pulled: None,
-                    marks: Marks {
-                        seed: true,
-                        promote: true,
-                        cut: false,
-                    },
-                    ..fs
-                });
-                (SeedPath::Lands, Answer::Root(fs.made))
+                let marks = Marks {
+                    seed: true,
+                    promote: true,
+                    cut: false,
+                };
+                if stops {
+                    state.into = Into::Root(Copy {
+                        readonly: true,
+                        pulled: None,
+                        marks,
+                        ..fs
+                    });
+                    (SeedPath::Stops, Answer::Failed)
+                } else {
+                    state.into = Into::Root(Copy {
+                        readonly: false,
+                        newest: None,
+                        pulled: None,
+                        marks,
+                        ..fs
+                    });
+                    (SeedPath::Lands, Answer::Root(fs.made))
+                }
             }
             // seed.rs: `slot_fs` exists and `written_here(&fs)`.
             Into::Slot { fs: Some(fs) }
@@ -532,7 +617,7 @@ impl VolumeMarks {
     fn answer(state: &mut State, answer: Answer) {
         state.row = match answer {
             Answer::Root(made) => Row::Done(made),
-            Answer::Slot => Row::Open { awaiting: false },
+            Answer::Slot | Answer::Failed => Row::Open { awaiting: false },
             Answer::Refused => Row::Failed,
         };
     }
@@ -571,13 +656,13 @@ impl VolumeMarks {
                 state.row = Row::Open { awaiting: false };
             }
             Action::GiveUp => state.row = Row::Failed,
-            Action::Seed { answered } => {
+            Action::Seed { answered } | Action::SeedStops { answered } => {
                 if self.broken.floor_checked_only_before_lock {
                     state.queued -= 1;
                 } else {
                     state.on_wire -= 1;
                 }
-                let answer = self.seed(state);
+                let answer = self.seed(state, matches!(action, Action::SeedStops { .. }));
                 if answered {
                     Self::answer(state, answer);
                 }
@@ -597,6 +682,7 @@ impl VolumeMarks {
             Action::CopyDone => {
                 state.into = Into::Slot {
                     fs: Some(Copy {
+                        readonly: true,
                         newest: Some(Point::G),
                         pulled: None,
                         marks: Marks::default(),
@@ -617,6 +703,7 @@ impl VolumeMarks {
                 if let Into::Root(root) = state.into {
                     state.into = Into::Slot {
                         fs: Some(Copy {
+                            readonly: true,
                             newest: Some(Point::T1),
                             pulled: None,
                             marks: Marks {
@@ -690,7 +777,8 @@ impl VolumeMarks {
             None => false,
             Some(Omit::Actions(actions)) => actions.contains(&action),
             Some(Omit::Path(path)) => {
-                matches!(action, Action::Seed { .. }) && after.seed == Some(path)
+                matches!(action, Action::Seed { .. } | Action::SeedStops { .. })
+                    && after.seed == Some(path)
             }
         }
     }
@@ -705,6 +793,7 @@ impl Model for VolumeMarks {
             Scenario::Fresh => Into::Absent,
             Scenario::OldCopy => Into::Slot {
                 fs: Some(Copy {
+                    readonly: true,
                     newest: Some(Point::Old),
                     pulled: None,
                     marks: Marks {
@@ -716,6 +805,7 @@ impl Model for VolumeMarks {
                 }),
             },
             Scenario::Taken => Into::Root(Copy {
+                readonly: false,
                 newest: None,
                 pulled: None,
                 marks: Marks::default(),
@@ -779,6 +869,23 @@ impl Model for VolumeMarks {
                 actions.push(Action::Seed { answered: false });
             }
         }
+        let seeds: Vec<bool> = actions
+            .iter()
+            .filter_map(|action| {
+                if let Action::Seed { answered } = action {
+                    Some(*answered)
+                } else {
+                    None
+                }
+            })
+            .collect();
+        for answered in seeds {
+            let mut landing = *state;
+            self.step(&mut landing, Action::Seed { answered });
+            if landing.seed == Some(SeedPath::Lands) {
+                actions.push(Action::SeedStops { answered });
+            }
+        }
         match state.task {
             Task::Copying => actions.push(Action::CopyDone),
             Task::Pulling {
@@ -793,7 +900,8 @@ impl Model for VolumeMarks {
                     Into::Root(root) => Some(root),
                     Into::Absent | Into::Slot { .. } => None,
                 };
-                if !state.adopted && root.is_some_and(|root| root.marks.promote) {
+                // storage.rs `create_volume`: `require_requested` refuses a read-only root.
+                if !state.adopted && root.is_some_and(|root| root.marks.promote && !root.readonly) {
                     actions.push(Action::Adopt);
                 }
                 if state.adopted && root.is_some_and(|root| !root.marks.promote) {
@@ -845,6 +953,16 @@ impl Model for VolumeMarks {
             Property::always(EVERY_ROW_ENDS, |model: &Self, state: &State| {
                 !state.at_rest(model) || !state.row.open()
             }),
+            Property::always(PARSE_CLAIMS_MARKS, |model: &Self, state: &State| {
+                let Into::Root(root) = state.into else {
+                    return true;
+                };
+                match model.parse(root) {
+                    Parsed::Cut => root.marks.cut,
+                    Parsed::Promote => root.marks.promote && !root.marks.cut,
+                    Parsed::Writable | Parsed::Unmarked => true,
+                }
+            }),
         ];
         properties.extend(
             COVERAGE
@@ -862,6 +980,7 @@ const KEEPS_ALONE: &str = "a Seed never destroys a copy of into only this Machin
 const KEEPS_RECEIVING: &str = "a Seed never destroys a slot a receive is still writing";
 const DONE_HOLDS_POINT: &str = "a seed run ends done only on a root holding its restore point";
 const EVERY_ROW_ENDS: &str = "at rest, the seed run's row has ended";
+const PARSE_CLAIMS_MARKS: &str = "Inspect names only a mark into's root carries";
 const LIVE_REPLACES_PULLED: &str = "a live Seed replaces a Mirror a pull received";
 const EARLIER_PULL_AFTER_SEED: &str =
     "admit_gen admits the earlier run's pull after a Seed of into ran";
@@ -891,7 +1010,12 @@ fn story(model: &VolumeMarks, path: &[(State, Option<Action>)]) -> String {
                 }
             }
             format!(
-                "newest={:?} pulled={:?} marks=[{}] made={:?}",
+                "{} newest={:?} pulled={:?} marks=[{}] made={:?}",
+                if copy.readonly {
+                    "readonly"
+                } else {
+                    "writable"
+                },
                 copy.newest,
                 copy.pulled,
                 marks.join(","),
@@ -955,7 +1079,7 @@ fn reads_as(model: &VolumeMarks, before: &State, action: Action, after: &State) 
                 )
             }
         }
-        Action::Seed { answered } => {
+        Action::Seed { answered } | Action::SeedStops { answered } => {
             let (row, to) = row_and_reader(before, answered);
             let broken = model.broken;
             let fs = match before.into {
@@ -976,12 +1100,18 @@ fn reads_as(model: &VolumeMarks, before: &State, action: Action, after: &State) 
                 Some(SeedPath::AnswersRoot) => {
                     "the root of into carries ployz:seed = G: answers the root"
                 }
+                Some(SeedPath::Finishes) => {
+                    "the root of into carries ployz:seed = G and still holds G: finish_landing sets readonly=off and destroys root@G, then answers the root"
+                }
                 Some(SeedPath::Exists) => {
                     "the root of into carries another ployz:seed: refuses, Volume into already exists"
                 }
                 Some(SeedPath::Receiving) => "receives.running(into): answers the copy as it stands",
                 Some(SeedPath::Lands) => {
                     "the slot's fs holds G: land sets ployz:seed and ployz:promote and renames it to the root"
+                }
+                Some(SeedPath::Stops) => {
+                    "the slot's fs holds G: land sets ployz:seed and ployz:promote and renames it to the root, and finish_landing's readonly=off FAILS, so the root stays read-only holding G and the request answers an internal error"
                 }
                 Some(SeedPath::Held) => {
                     "written_here(fs) reads true: refuses, Volume into is held in slot"
@@ -1298,6 +1428,29 @@ mod tests {
                 );
             }
         }
+    }
+
+    /// A parse that reads every read-only root as a cut names a cut on the root a Seed
+    /// landing left read-only, which carries `ployz:seed` and `ployz:promote` and no
+    /// `ployz:cut`.
+    #[test]
+    fn inspect_needs_the_marks_of_a_read_only_root() {
+        let model = VolumeMarks {
+            broken: Broken {
+                parse_reads_readonly_as_cut: true,
+                ..Broken::default()
+            },
+            ..fixed(Scenario::Fresh)
+        };
+        let path = breaks(model, PARSE_CLAIMS_MARKS);
+        let broken = last(&path);
+        let Into::Root(root) = broken.into else {
+            panic!("{:?}", broken.into);
+        };
+        assert!(root.readonly && root.marks.promote && !root.marks.cut);
+        assert_eq!(broken.seed, Some(SeedPath::Stops));
+        assert_eq!(model.parse(root), Parsed::Cut);
+        assert_eq!(fixed(Scenario::Fresh).parse(root), Parsed::Promote);
     }
 
     /// Without the `ployz:seed` check on a root, a Seed answers a root another Volume
