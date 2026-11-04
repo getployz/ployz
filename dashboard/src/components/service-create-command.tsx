@@ -5,6 +5,7 @@ import { Suspense, useEffect, useRef, useState } from "react";
 import { Command as CommandPrimitive } from "cmdk";
 import { ChevronRightIcon } from "lucide-react";
 import { useNavigate } from "@tanstack/react-router";
+import { toast } from "sonner";
 import { Alert, AlertDescription, AlertTitle } from "#/components/ui/alert";
 import { InputGroupInput } from "#/components/ui/input-group";
 import { SourcePickerInput, SourcePickerLayout } from "#/components/source-picker-layout";
@@ -27,7 +28,7 @@ import {
 } from "#/components/create-menu-items";
 import { DATABASE_LOGOS } from "#/components/icons/database-logos";
 import { Spinner } from "#/components/ui/spinner";
-import { toErrorMessage } from "#/lib/error-message";
+import { isUnauthorized, toErrorMessage } from "#/lib/error-message";
 import {
   ENVIRONMENT_INDEX_ROUTE_TO,
   ENVIRONMENT_SERVICE_ROUTE_TO,
@@ -41,7 +42,7 @@ import {
 import { DATABASE_PRESETS, type DatabasePreset } from "#/modules/config-store/database-presets";
 import { newProjectName, randomName, type NewServiceSource } from "#/modules/config-store/store-services";
 import { environmentsQuery, fetchStoreView, projectsQuery } from "#/modules/config-store/store-view.queries";
-import { useStoreWriter } from "#/modules/config-store/store-write";
+import { isRequested, showRefusalInline, useStoreWriter } from "#/modules/config-store/store-write";
 
 type Panel = { kind: CreatePanel };
 type CreateMode = "project" | "service";
@@ -279,6 +280,7 @@ function useServiceCreateActions({
   /** Creates a Service here, or as the first in a new Project named after `source`. */
   const createInTarget = (
     source: NewServiceSource | undefined,
+    kind: "service" | "database",
     create: (placement: NewServicePlacement) => CreatedService,
   ) =>
     whileCreating(async () => {
@@ -294,8 +296,20 @@ function useServiceCreateActions({
         await props.onCreated?.(created, stillHere());
         return;
       }
+      showRefusalInline(created.persisted);
       // A new Project's canvas has nothing cached to show the Service in before the Store has it.
-      await created.persisted;
+      try {
+        await created.persisted;
+      } catch (error) {
+        // The writer still says these itself: Sign in, and an approval request.
+        if (!isUnauthorized(error) && !(error instanceof Error && isRequested(error))) {
+          toast.error(`${target.projectSlug} was created, but its ${kind} wasn’t added. Add it from the canvas.`,
+            { description: toErrorMessage(error, "Ployz Cloud couldn’t save it.") });
+        }
+        if (stillHere()) await navigateToEnvironment(target);
+        return;
+      }
+      if (!stillHere()) return;
       await navigate({
         to: ENVIRONMENT_SERVICE_ROUTE_TO,
         params: { organizationSlug: props.organizationSlug, projectSlug: target.projectSlug, environmentSlug: target.environmentSlug,
@@ -305,9 +319,9 @@ function useServiceCreateActions({
     });
 
   const createServiceFromSource = (source: NewServiceSource) =>
-    createInTarget(source, (placement) => createStoreService(placement, source));
+    createInTarget(source, "service", (placement) => createStoreService(placement, source));
   const createDatabase = (preset: DatabasePreset) =>
-    createInTarget(undefined, (placement) => createStoreDatabase(placement, preset));
+    createInTarget(undefined, "database", (placement) => createStoreDatabase(placement, preset));
 
   function selectCreateItem({ id, panel }: CreateMenuItem) {
     if (panel) {
