@@ -12,13 +12,14 @@ use crate::error;
 use crate::id::{DeploymentId, EnvironmentId, ProjectId, RemovalId, VolumeName};
 use crate::storage::{Row, Tx};
 
+/// Where a mark a write can still change stands. A finished mark reads `removed`
+/// only through [`finish`], and no query loads it back as a [`Mark`].
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub(crate) enum State {
     Removing,
     /// A tombstone: idle close and a repeated PR close leave its target be.
     Cancelled,
-    Removed,
 }
 
 /// What a member's removal may delete, as its caller accepted it. Stored only,
@@ -128,7 +129,6 @@ fn state_text(state: State) -> &'static str {
     match state {
         State::Removing => "removing",
         State::Cancelled => "cancelled",
-        State::Removed => "removed",
     }
 }
 
@@ -227,6 +227,35 @@ pub(crate) fn save(tx: &mut dyn Tx, who: &Actor, mark: &Mark) -> Result<(), RpcE
         ],
     )?;
     Ok(())
+}
+
+/// Whether [`finish`] moved the mark.
+#[must_use]
+pub(crate) enum Finished {
+    /// It read `removing`, and now reads `removed`.
+    Moved,
+    /// It no longer reads `removing`: a cancel committed after the caller read it.
+    NotRemoving,
+}
+
+/// Move live mark `id` to `removed` with what its removal left on old servers. Only
+/// a `removing` mark moves, so a tombstone a cancel committed since the caller read
+/// the mark stays one.
+pub(crate) fn finish(
+    tx: &mut dyn Tx,
+    id: &RemovalId,
+    residuals: &[Residual],
+) -> Result<Finished, RpcError> {
+    let moved = tx.execute(
+        "UPDATE config_removal_mark SET state = 'removed', residuals = ?2 \
+         WHERE id = ?1 AND state = 'removing'",
+        &[id.as_str().into(), text(&residuals).as_str().into()],
+    )?;
+    Ok(if moved == 0 {
+        Finished::NotRemoving
+    } else {
+        Finished::Moved
+    })
 }
 
 /// Drop `environment`'s tombstone: a reopen, a push or a new `remove` brings it back.

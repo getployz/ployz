@@ -14,7 +14,8 @@
 //!
 //! - the sweep: `removal::sweep` (removal/due.rs) reading every `removing` mark with
 //!   `mark::live` and no lock, then `settle` locking the member and `finish` checking
-//!   the Servers, saving `removed` and purging;
+//!   the Servers, moving the mark to `removed` only from `removing`, and purging only
+//!   when it moved;
 //! - the cancel: `cancel_removal` (removal/mod.rs) locking the Project and the
 //!   Environment, reading the mark under them, and `stop` cancelling the removal
 //!   Deployment and saving `cancelled`;
@@ -36,7 +37,7 @@
 //! beside the first, Cloud admitting what the sweep lists as due, a `remove()` run
 //! again, a queued removal Deployment, the `lock_timeout` that fails a wait past ten
 //! seconds, the runner's own row lock on the Deployment, and the evidence and
-//! consent columns the same upsert overwrites.
+//! consent columns `mark::save`'s upsert overwrites.
 
 use std::fmt::Write as _;
 
@@ -96,9 +97,11 @@ enum Step {
     /// `on_servers` in `finish` (removal/due.rs): nothing to delete while any
     /// Deployment of the Environment may still run.
     CheckServers,
-    /// `mark::save` with `state = Removed` in `finish` (removal/due.rs).
+    /// `mark::finish` in `finish` (removal/due.rs): `UPDATE config_removal_mark SET
+    /// state = 'removed' WHERE id = ? AND state = 'removing'`.
     SaveRemoved,
-    /// `purge` in `finish` (removal/due.rs): `DELETE FROM config_environment`.
+    /// `purge` in `finish` (removal/due.rs): `DELETE FROM config_environment`, only
+    /// when `mark::finish` moved the mark.
     Purge,
     /// `stop` (removal/mod.rs): `in_flight`, then `deployment::cancel` on a removal
     /// Deployment still in flight.
@@ -173,7 +176,7 @@ struct Tx {
     mark: Option<MarkState>,
     purge: bool,
     removal: Option<Removal>,
-    /// Under `Save::Conditional`, its save found the mark no longer `removing`.
+    /// Its `mark::finish` found the mark no longer `removing`.
     moved_nothing: bool,
 }
 
@@ -309,20 +312,12 @@ impl Finishers {
     }
 }
 
-/// How `finish` writes `removed`.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum Save {
-    /// `mark::save` as it is: `INSERT ... ON CONFLICT (id) DO UPDATE SET state =
-    /// excluded.state`, whatever state the row holds, then `purge`.
-    Upsert,
-    /// The fix: `UPDATE config_removal_mark SET state = 'removed', residuals = ?
-    /// WHERE id = ? AND state = 'removing'`, and `finish` purges only when that moved
-    /// a row.
-    Conditional,
-}
-
 #[derive(Clone, Copy, Debug, Default)]
 struct Broken {
+    /// `finish` saves `removed` as `mark::save`'s upsert does, `INSERT ... ON
+    /// CONFLICT (id) DO UPDATE SET state = excluded.state` whatever state the row
+    /// holds, and purges, as it did before `mark::finish`.
+    finish_saves_unconditionally: bool,
     /// `close()` goes on past a `Cancelled` mark (removal/due.rs) as if it were live.
     close_ignores_tombstone: bool,
     /// `cancel_removal` loads the Environment with `scope::environment` instead of
@@ -334,7 +329,6 @@ struct Broken {
 struct RemovalMarks {
     backend: Backend,
     finishers: Finishers,
-    save: Save,
     broken: Broken,
 }
 
@@ -445,20 +439,19 @@ impl RemovalMarks {
             Step::SaveRemoved => {
                 state.held.mark = Some(actor);
                 let live = state.mark == MarkState::Removing;
+                let unconditional = self.broken.finish_saves_unconditionally;
                 let tx = state.tx_mut(actor);
-                match self.save {
-                    Save::Upsert => tx.mark = Some(MarkState::Removed),
-                    Save::Conditional if live => tx.mark = Some(MarkState::Removed),
-                    Save::Conditional => tx.moved_nothing = true,
+                if live || unconditional {
+                    tx.mark = Some(MarkState::Removed);
+                } else {
+                    tx.moved_nothing = true;
                 }
                 advance(state);
             }
             Step::Purge => {
+                let unconditional = self.broken.finish_saves_unconditionally;
                 let tx = state.tx_mut(actor);
-                tx.purge = match self.save {
-                    Save::Upsert => true,
-                    Save::Conditional => tx.mark.is_some(),
-                };
+                tx.purge = unconditional || tx.mark.is_some();
                 advance(state);
             }
             Step::CancelRemoval => {
@@ -634,7 +627,7 @@ impl Model for RemovalMarks {
             }
         }
         if self.backend == Backend::Postgres
-            && self.save == Save::Conditional
+            && !self.broken.finish_saves_unconditionally
             && self.finishers.runs(Actor::Sweep)
         {
             properties.push(Property::sometimes(
@@ -649,9 +642,9 @@ impl Model for RemovalMarks {
 const CANCEL_KEPT: &str = "a cancel that returned success keeps its Environment";
 const EVERY_TX_ENDS: &str = "every transaction ends";
 
-/// `path` in the code's words: each statement, and the committed rows and held locks
-/// once it ran.
-fn story(path: stateright::Path<State, Action>) -> String {
+/// `path` under `model` in the code's words: each statement, and the committed rows
+/// and held locks once it ran.
+fn story(model: &RemovalMarks, path: stateright::Path<State, Action>) -> String {
     let mut story = String::new();
     // Stateright pairs each state with the action taken from it; the row lists the
     // action that led to the state instead, so the last row shows the broken state.
@@ -666,7 +659,7 @@ fn story(path: stateright::Path<State, Action>) -> String {
             ),
             Some(Action::Whole(actor)) => format!("{actor:?}: the whole transaction, serialized"),
             Some(Action::Step(actor, step)) => {
-                format!("{actor:?}: {}", reads_as(actor, step, before))
+                format!("{actor:?}: {}", reads_as(model, actor, step, before))
             }
         };
         led_by = action;
@@ -692,8 +685,15 @@ fn story(path: stateright::Path<State, Action>) -> String {
     story
 }
 
-/// `step` as `actor` runs it, with `removal` the committed removal Deployment it saw.
-fn reads_as(actor: Actor, step: Step, removal: Option<Removal>) -> &'static str {
+/// `step` as `actor` runs it under `model`, with `removal` the committed removal
+/// Deployment it saw.
+fn reads_as(
+    model: &RemovalMarks,
+    actor: Actor,
+    step: Step,
+    removal: Option<Removal>,
+) -> &'static str {
+    let broken = model.broken;
     match step {
         Step::ReadLive => {
             "mark::live reads every `removing` mark, under no lock (removal/due.rs sweep)"
@@ -706,18 +706,29 @@ fn reads_as(actor: Actor, step: Step, removal: Option<Removal>) -> &'static str 
             Actor::Sweep | Actor::Close => {
                 "scope::lock_id loads the Environment with owned after the lock, or the write fails (scope.rs)"
             }
+            Actor::Cancel if broken.cancel_locks_no_environment => {
+                "scope::environment loads the Environment, unlocked, or the write fails (scope.rs)"
+            }
             Actor::Cancel => {
-                "scope::lock loads the Environment with load after the lock (scope::environment, unlocked, under Broken), or the write fails (scope.rs)"
+                "scope::lock loads the Environment with load after the lock, or the write fails (scope.rs)"
             }
         },
         Step::ReadMark => "mark::of reads the mark under the locks (removal/mark.rs)",
         Step::CheckServers => {
             "finish asks on_servers whether anything of the Environment may still run (removal/due.rs)"
         }
-        Step::SaveRemoved => {
-            "finish saves the stale in-memory mark as `removed` (removal/due.rs, mark::save)"
+        Step::SaveRemoved if broken.finish_saves_unconditionally => {
+            "finish saves the mark it read as `removed`, whatever the row now holds (removal/due.rs, mark::save's upsert, under Broken)"
         }
-        Step::Purge => "finish purges the Environment (removal/due.rs, removal::purge)",
+        Step::SaveRemoved => {
+            "finish moves the mark to `removed` only from `removing` (removal/due.rs, mark::finish's conditional UPDATE)"
+        }
+        Step::Purge if broken.finish_saves_unconditionally => {
+            "finish purges the Environment (removal/due.rs, removal::purge, under Broken)"
+        }
+        Step::Purge => {
+            "finish purges the Environment if its UPDATE moved the mark (removal/due.rs, removal::purge)"
+        }
         Step::CancelRemoval => match removal {
             Some(Removal::Running) => {
                 "stop finds the removal Deployment in flight and cancels it (removal/mod.rs)"
@@ -741,7 +752,6 @@ mod tests {
         RemovalMarks {
             backend: Backend::Postgres,
             finishers,
-            save: Save::Upsert,
             broken: Broken::default(),
         }
     }
@@ -756,18 +766,26 @@ mod tests {
             .join();
         let path = checker.assert_any_discovery(property);
         let last = path.last_state().clone();
-        println!("{property} fails under {model:?}:\n{}", story(path));
+        println!("{property} fails under {model:?}:\n{}", story(&model, path));
         last
     }
 
-    /// The finding. On the Postgres Store as the code is, the sweep reads the mark
-    /// before the cancel commits and takes the member lock after it, then saves its
-    /// stale copy as `removed` and purges the Environment the cancel just
-    /// kept. This test passes by finding that path; it starts failing once the code
-    /// keeps a committed cancel.
+    /// The finding, now kept out. With `finish` saving `removed` whatever the row
+    /// holds, as it did before `mark::finish`, the sweep reads the mark before the
+    /// cancel commits and takes the member lock after it, then saves its stale copy as
+    /// `removed` and purges the Environment the cancel just kept.
     #[test]
-    fn current_code_lets_a_sweep_undo_a_committed_cancel() {
-        let last = breaks(as_is(Finishers::Sweep), CANCEL_KEPT);
+    fn finish_needs_its_conditional_save() {
+        let last = breaks(
+            RemovalMarks {
+                broken: Broken {
+                    finish_saves_unconditionally: true,
+                    ..Broken::default()
+                },
+                ..as_is(Finishers::Sweep)
+            },
+            CANCEL_KEPT,
+        );
         assert!(last.cancelled, "the cancel returned success");
         assert_eq!(last.mark, MarkState::Removed);
         assert!(!last.environment, "the Environment is purged");
@@ -794,30 +812,45 @@ mod tests {
         checker.assert_properties();
     }
 
-    /// The fix: `finish` moves the row to `removed` only from `removing`, and purges
-    /// only when a row moved. Every property holds with the sweep, a close, the
-    /// cancel and the runner interleaved, and every `sometimes` is reached: a cancel
+    /// `finish` moves the row to `removed` only from `removing`, and purges only
+    /// when a row moved. Every property holds with the sweep, a close, the cancel
+    /// and the runner interleaved, and every `sometimes` is reached: a cancel
     /// commits, a removal finishes and purges, and the sweep and the cancel land in
     /// both orders.
     #[test]
     fn a_conditional_save_in_finish_keeps_a_committed_cancel() {
-        let checker = check(RemovalMarks {
-            save: Save::Conditional,
-            ..as_is(Finishers::Both)
-        });
-        println!("postgres, fixed: {} states", checker.unique_state_count());
+        let checker = check(as_is(Finishers::Both));
+        println!("postgres, as is: {} states", checker.unique_state_count());
         checker.assert_properties();
     }
 
     /// Without the `Cancelled` early return in `close()`, a pull-request close after
-    /// a cancel settles the tombstone as if it were live and purges the Environment.
+    /// a cancel settles the tombstone as if it were live. `mark::finish` then moves
+    /// nothing, so the check shows its worth for this property only with `finish`
+    /// saving unconditionally too: the close then purges the Environment. With the
+    /// check in place, that save alone keeps every property, so the pair is what
+    /// breaks it.
     #[test]
     fn close_needs_its_tombstone_check() {
+        let unconditional = Broken {
+            finish_saves_unconditionally: true,
+            ..Broken::default()
+        };
+        let checker = check(RemovalMarks {
+            broken: unconditional,
+            ..as_is(Finishers::Close)
+        });
+        println!(
+            "close, unconditional save: {} states",
+            checker.unique_state_count()
+        );
+        checker.assert_properties();
+
         let last = breaks(
             RemovalMarks {
                 broken: Broken {
                     close_ignores_tombstone: true,
-                    ..Broken::default()
+                    ..unconditional
                 },
                 ..as_is(Finishers::Close)
             },
@@ -835,7 +868,6 @@ mod tests {
     fn cancel_needs_the_environment_lock() {
         let last = breaks(
             RemovalMarks {
-                save: Save::Conditional,
                 broken: Broken {
                     cancel_locks_no_environment: true,
                     ..Broken::default()
