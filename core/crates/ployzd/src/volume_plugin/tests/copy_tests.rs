@@ -581,6 +581,53 @@ async fn the_writer_route_restores_a_cut_root_without_hiding_it_from_docker() {
 }
 
 #[tokio::test]
+async fn a_half_promoted_root_reads_apart_from_an_unfinished_cut() {
+    let promoting = TestDir::new();
+    let (socket, server) = slot(&promoting, &[("f-1", 13)]);
+    fs::write(
+        promoting.0.join("props/fail-command"),
+        "set readonly=off tank/ployz/data",
+    )
+    .unwrap();
+    let failed = post(
+        &socket,
+        "/Volume.Copy.Writer",
+        json!({"name": "data", "at": "13", "epoch": 2}),
+    )
+    .await;
+    assert!(failed.get("Err").is_some(), "{failed}");
+    assert!(!promoting.0.join("props/fail-command").exists());
+    let promoting_copy = post(&socket, "/Volume.Inspect", json!({"name": "data"})).await;
+    server.abort();
+
+    let cutting = TestDir::new();
+    let (socket, server) = writer(&cutting, &[("f-1", 13)]);
+    set_property(&cutting, ROOT, "ployz:epoch", "2");
+    set_property(&cutting, ROOT, "written@f-1", "0");
+    fs::write(
+        cutting.0.join("props/fail-command"),
+        "rename tank/ployz/data tank/ployz-mirror/data/fs",
+    )
+    .unwrap();
+    let failed = post(
+        &socket,
+        "/Volume.Copy.Cut",
+        json!({"name": "data", "target": "f-1"}),
+    )
+    .await;
+    assert!(failed.get("Err").is_some(), "{failed}");
+    assert!(!cutting.0.join("props/fail-command").exists());
+    let cutting_copy = post(&socket, "/Volume.Inspect", json!({"name": "data"})).await;
+    server.abort();
+
+    assert_ne!(
+        promoting_copy.pointer("/Ok/copy"),
+        cutting_copy.pointer("/Ok/copy"),
+        "a half-promoted root and an unfinished cut read the same"
+    );
+}
+
+#[tokio::test]
 async fn the_writer_route_converges_after_a_failure_at_every_step() {
     converges_after_each_failure(
         "/Volume.Copy.Writer",
