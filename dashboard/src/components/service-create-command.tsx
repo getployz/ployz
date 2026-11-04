@@ -5,6 +5,7 @@ import { Suspense, useEffect, useRef, useState } from "react";
 import { Command as CommandPrimitive } from "cmdk";
 import { ChevronRightIcon } from "lucide-react";
 import { useNavigate } from "@tanstack/react-router";
+import { toast } from "sonner";
 import { Alert, AlertDescription, AlertTitle } from "#/components/ui/alert";
 import { InputGroupInput } from "#/components/ui/input-group";
 import { SourcePickerInput, SourcePickerLayout } from "#/components/source-picker-layout";
@@ -279,6 +280,7 @@ function useServiceCreateActions({
   /** Creates a Service here, or as the first in a new Project named after `source`. */
   const createInTarget = (
     source: NewServiceSource | undefined,
+    kind: "service" | "database",
     create: (placement: NewServicePlacement) => CreatedService,
   ) =>
     whileCreating(async () => {
@@ -295,7 +297,13 @@ function useServiceCreateActions({
         return;
       }
       // A new Project's canvas has nothing cached to show the Service in before the Store has it.
-      await created.persisted;
+      try {
+        await created.persisted;
+      } catch {
+        toast.error(`${target.projectSlug} was created, but its ${kind} wasn’t added. Add it from the canvas.`);
+        await navigateToEnvironment(target);
+        return;
+      }
       await navigate({
         to: ENVIRONMENT_SERVICE_ROUTE_TO,
         params: { organizationSlug: props.organizationSlug, projectSlug: target.projectSlug, environmentSlug: target.environmentSlug,
@@ -305,9 +313,9 @@ function useServiceCreateActions({
     });
 
   const createServiceFromSource = (source: NewServiceSource) =>
-    createInTarget(source, (placement) => createStoreService(placement, source));
+    createInTarget(source, "service", (placement) => createStoreService(placement, source));
   const createDatabase = (preset: DatabasePreset) =>
-    createInTarget(undefined, (placement) => createStoreDatabase(placement, preset));
+    createInTarget(undefined, "database", (placement) => createStoreDatabase(placement, preset));
 
   function selectCreateItem({ id, panel }: CreateMenuItem) {
     if (panel) {
