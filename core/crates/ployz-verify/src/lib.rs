@@ -5,6 +5,8 @@
 #[cfg(test)]
 mod caddy_load;
 #[cfg(test)]
+mod pool_ownership;
+#[cfg(test)]
 mod removal_marks;
 #[cfg(test)]
 mod runner_standing;
