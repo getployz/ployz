@@ -776,7 +776,7 @@ async function seedVolume({ step, runEffect, run, runId }: RunSteps, phase: Phas
     const copy = await step.run(`03-ask-${poll}`, () => runEffect(sendSwitch(run, runId, source, {
       command: "seed_volume",
       payload: { name: run.dockerVolume, into: args.into.dockerVolume, guid: args.guid, gen: run.gen },
-    }).pipe(
+    }, args.into.name).pipe(
       Effect.map((view) => view.copy),
       Effect.catchIf((error) => error instanceof SwitchAttemptError && error.reason === "busy", () => Effect.succeed(null)),
     )));

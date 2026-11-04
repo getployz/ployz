@@ -1200,9 +1200,11 @@ mod tests {
         }
     }
 
-    /// A floor checked only before the switch lock lets the stranded request through
-    /// while the floor is still the seed run's. It waits at the lock across the Deploy,
-    /// the Move's cut and the pull, then destroys the Mirror the later run pulled.
+    /// A floor checked only before the switch lock admits the stranded request at floor 0
+    /// (row 5 of the printed story). It is then delayed between the check and taking the
+    /// lock while the Deploy adopts the root (row 11), the Move cuts it and raises the floor
+    /// to 3 (row 12), and the later run pulls a Mirror back (rows 14-16). It then destroys
+    /// that Mirror (row 17).
     #[test]
     fn a_seed_needs_the_floor_checked_under_the_switch_lock() {
         let path = breaks(
@@ -1233,23 +1235,43 @@ mod tests {
     /// A Seed leaves `into`'s floor where it found it, so a request on `into` with a gen
     /// below the seed run's is still admitted after a Seed ran. A check that raised the
     /// floor would refuse it, as it would every mirror sync of `into` whose gen is below
-    /// the seed run's.
+    /// the seed run's. In every scenario, raising it keeps every safety property and leaves
+    /// only that one `sometimes` unreached.
     #[test]
     fn a_seed_leaves_the_floor_of_into_where_it_found_it() {
-        let checker = check(VolumeMarks {
-            broken: Broken {
-                seed_raises_floor: true,
-                ..Broken::default()
-            },
-            ..fixed(Scenario::OldCopy)
-        });
-        assert!(checker.discovery(EARLIER_PULL_AFTER_SEED).is_none());
-        assert!(
-            fixed(Scenario::OldCopy)
-                .properties()
+        for scenario in ALL {
+            let checker = check(VolumeMarks {
+                broken: Broken {
+                    seed_raises_floor: true,
+                    ..Broken::default()
+                },
+                ..fixed(*scenario)
+            });
+            for property in [
+                STALE_KEEPS_LATER,
+                KEEPS_ALONE,
+                KEEPS_RECEIVING,
+                DONE_HOLDS_POINT,
+                EVERY_ROW_ENDS,
+            ] {
+                assert!(
+                    checker.discovery(property).is_none(),
+                    "{property} fails in {scenario:?}"
+                );
+            }
+            let unreached: Vec<&str> = COVERAGE
                 .iter()
-                .any(|property| property.name == EARLIER_PULL_AFTER_SEED)
-        );
+                .filter(|row| row.scenarios.contains(scenario))
+                .map(|row| row.name)
+                .filter(|name| checker.discovery(name).is_none())
+                .collect();
+            let expected: &[&str] = if *scenario == Scenario::OldCopy {
+                &[EARLIER_PULL_AFTER_SEED]
+            } else {
+                &[]
+            };
+            assert_eq!(unreached, expected, "unreached in {scenario:?}");
+        }
     }
 
     /// Every `sometimes` needs what it names: with the row's `omit` taken out of the
