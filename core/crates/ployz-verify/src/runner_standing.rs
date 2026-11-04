@@ -1,32 +1,44 @@
 //! One Deployment's run, from the runner that claimed it, against the Config Store that
 //! holds its status. The runner (`run_deployment_expecting` and `Run`, ployz's
-//! sdk/store_runner.rs) dials the Servers under `connecting`, then plans or builds and
-//! prepares, executes, deletes the Volumes the Deploy removes and fills ingress, each
-//! piece of work under `renewing`. At each await point it calls `status()`, which is
-//! `record(RunEvidence::Alive)` (ployz-store deployment/lifecycle.rs `record`), and
-//! compares the answer with a hand-picked set of statuses. Meanwhile a user cancels it
-//! (`cancel`), a newer Deployment of the Environment is claimed and sets it Unknown
-//! (`claim`), or forgetting the Cluster cancels it without waiting on the runner
-//! (`cancel_in_flight`).
+//! sdk/store_runner.rs:163-222, :702-706) dials the Servers under `connecting`, then
+//! plans or builds and prepares, executes, deletes the Volumes the Deploy removes and
+//! fills ingress, each piece of work under `renewing` (:733-746, :764-768, :778,
+//! :807-809). While it awaits that work, `connecting` and `renewing` call `status()`
+//! every `CANCEL_POLL`, 2 s (:40, :1190-1198, :1208-1220), and the work can end before
+//! the next call (:1199, :1211). `execute` also calls it once after executing (:771) and
+//! once before `fill_ingress` (:782). `status()` is `record(RunEvidence::Alive)`
+//! (:1373-1377), and each site compares the answer with its own set of statuses (:1195,
+//! :1214-1217, :1368, :782). Meanwhile a user cancels the Deployment (ployz-store
+//! deployment/lifecycle.rs:1471), a newer Deployment of the Environment is claimed and
+//! sets it Unknown (lifecycle.rs:1320-1325), or forgetting the Cluster cancels it without
+//! waiting on the runner (lifecycle.rs:1502, teardown.rs:458).
 //!
-//! The finding: `execute`'s one read after executing, `lost_to_another_runner`, comes
-//! before `remove_volumes`, `fill_ingress` and the `Executed` record. A takeover that
-//! lands after it leaves the Deployment Unknown, and `record` then refuses an `Executed`
-//! that is not Interrupted. The run has deleted Volumes, and neither its outcome nor the
+//! The finding: `lost_to_another_runner` is the one read after executing that acts on a
+//! takeover (store_runner.rs:771, :1367-1369), and `remove_volumes`, `fill_ingress` and
+//! the `Executed` record come after it (:776-791). A takeover that lands after it leaves
+//! the Deployment Unknown, and `record` then refuses an `Executed` that is not Interrupted
+//! (lifecycle.rs:1615-1618). The run has deleted Volumes, and neither its outcome nor the
 //! deletions are kept. No read has to fail for this.
 //!
-//! The second finding: the sites read `Err` as keep. Once `cancel_in_flight` ended the
-//! Deployment, `status()` answers `Err` ("This Deployment already ended"), and
-//! `renewing` keeps the work in hand going.
+//! The second finding has two causes. The sites read `Err` as keep: once
+//! `cancel_in_flight` ended the Deployment, `status()` answers `Err` ("This Deployment
+//! already ended", deployment/mod.rs:1219-1221, :1294-1296), and `renewing` keeps the work
+//! in hand going (store_runner.rs:1213-1219). And `connecting` and the gate before
+//! `fill_ingress` read `Ok(Unknown)` as keep (:1195, :782).
 //!
-//! The fix variant classifies every read into one `Standing`, latches Lost and Ended,
-//! stops at each site on either, records Interrupted carrying the deletions when it is
-//! Lost, and sends Interrupted again when `record` refuses an `Executed` because the
-//! Deployment went Unknown.
+//! The fix variant changes the runner and the store. The runner classifies every read into
+//! one `Standing`, latches Lost and Ended, stops at each site on either, and records
+//! Interrupted carrying the deletions when it is Lost. The store's `record` turns a
+//! non-Interrupted `Executed` for an Unknown Deployment into Interrupted in the same
+//! transaction, where the code refuses it (lifecycle.rs:1615-1618). Its projection shows
+//! the deletions of an Interrupted outcome, where the code reads them NotAttempted for any
+//! outcome but a Success (lifecycle.rs:2158-2162), and an Interrupted outcome projects
+//! to Failed (ployz-core config/runtime_outcome.rs:208-220).
 //!
 //! Each store call is one step, since `record`, `claim`, `cancel` and `cancel_in_flight`
-//! each take one transaction. A record that follows a read, or the end of a piece of
-//! work, is one step with it, except the `Executed` record.
+//! each take one transaction (lifecycle.rs:1512-1517, :1231-1236, :1459-1463,
+//! :1486-1489). A record that follows a read, or the end of a piece of work, is one step
+//! with it, except the `Executed` record.
 //!
 //! Out of scope: a takeover or `cancel_in_flight` between a read and the record merged
 //! with it, build's records, warnings, the lease lapsing, a second claim by the same
@@ -43,7 +55,8 @@ use stateright::{Model, Property};
 enum Status {
     Running,
     Cancelling,
-    /// In the model, `claim`'s takeover, or the run's own `Abandoned` after a preview.
+    /// In the model, `claim`'s takeover (lifecycle.rs:1320-1325), or the run's own
+    /// `Abandoned` after a preview (lifecycle.rs:1895).
     Unknown,
     /// Applied, Failed or Cancelled: `end` (lifecycle.rs), or `cancel_in_flight`.
     Ended,
@@ -53,7 +66,10 @@ enum Status {
 #[derive(Clone, Copy, Debug, Hash, PartialEq, Eq)]
 enum Outcome {
     NotExecuted,
-    /// `RunEvidence::Executed`; `removed` when it names the Volumes the run deleted.
+    /// `RunEvidence::Executed`: whether its outcome is Interrupted, and whether `removed`
+    /// names the Volumes the run deleted (store_runner.rs:786-790). One that is not
+    /// Interrupted and names deletions is a Success, since only a Success deletes
+    /// (store_runner.rs:776-781).
     Executed {
         interrupted: bool,
         removed: bool,
@@ -68,6 +84,9 @@ struct Store {
     preview: bool,
     /// `run.outcome`.
     outcome: Option<Outcome>,
+    /// The deleted Volumes' nodes read Removed. `removed_volume` reads the deletions only
+    /// for a Success outcome, and NotAttempted for any other (lifecycle.rs:2146-2168).
+    shows_removed: bool,
 }
 
 /// What `status()` (store_runner.rs) returned: `record(RunEvidence::Alive)`'s summary
@@ -138,8 +157,6 @@ enum Phase {
     Filling { exec: Exec, stopped: bool },
     /// `record(RunEvidence::Executed { .. })` is next.
     Recording(Exec),
-    /// The fix: `record` refused the `Executed`; Interrupted goes again.
-    Resending,
     /// The run returned.
     Returned,
 }
@@ -156,7 +173,6 @@ impl Phase {
             | Self::Checking(_)
             | Self::Gating(_)
             | Self::Recording(_)
-            | Self::Resending
             | Self::Returned => None,
         }
     }
@@ -170,14 +186,15 @@ impl Phase {
             | Self::Removing
             | Self::Gating(_)
             | Self::Recording(_)
-            | Self::Resending
             | Self::Returned => {}
         }
     }
 }
 
-/// The fix's view of the Deployment, latched from every read: once Lost or Ended, it
-/// stays so.
+/// The fix's view of the Deployment, latched from every read: the first `Ok(Unknown)` sets
+/// Lost and the first ended `Err` sets Ended, and no later read changes either
+/// (`Standing::after`). `the_fix_needs_lost_to_stick` shows what a Lost that does not stick
+/// lets through.
 #[derive(Clone, Copy, Debug, Hash, PartialEq, Eq)]
 enum Standing {
     Keep,
@@ -199,6 +216,9 @@ impl Standing {
 #[derive(Clone, Copy, Debug, Hash, PartialEq, Eq)]
 enum Answer {
     Kept,
+    /// The fix: the Deployment is Unknown and the `Executed` not Interrupted, so `record`
+    /// kept it as Interrupted, where the code refuses it (lifecycle.rs:1615-1618).
+    Converted,
     /// `running` refused it: the Deployment is Unknown (lifecycle.rs `record`, the
     /// `taken_over` check).
     RefusedUnknown,
@@ -245,8 +265,8 @@ enum Branch {
     Records,
     /// The fix: the latch said Lost, so the run sent Interrupted with its deletions.
     RecordsInterrupted,
-    /// The fix: the refused `Executed` went again as Interrupted.
-    Resends,
+    /// The fix: `record` kept the `Executed` as Interrupted.
+    Converted,
     /// The fix: the latch said the run is over, so the run returned without more work.
     StopsOver,
 }
@@ -279,8 +299,6 @@ enum Action {
     Filled,
     /// `record(RunEvidence::Executed { .. })` with the outcome.
     Record,
-    /// The fix: Interrupted again, after `record` refused the `Executed`.
-    Resend,
     /// `connecting`'s poll tick: one `status()` read.
     Poll(Call),
     /// `renewing`'s poll tick: one `status()` read.
@@ -313,7 +331,8 @@ struct State {
     last: Option<Action>,
 }
 
-/// A guard the code has, taken out, to show the check catches what it prevents.
+/// A guard taken out, to show the check catches what it prevents. The first six are
+/// guards the code has; the last three are parts of the fix.
 #[derive(Clone, Copy, Debug, Default)]
 #[expect(
     clippy::struct_excessive_bools,
@@ -334,6 +353,14 @@ struct Broken {
     /// `record` (lifecycle.rs) skips `running` on a non-Interrupted `Executed` for an
     /// Unknown Deployment.
     store_takes_any_outcome: bool,
+    /// The fix's latch drops Lost on a later read that says the run is not over.
+    lost_does_not_stick: bool,
+    /// The fix's `record` refuses a non-Interrupted `Executed` for an Unknown Deployment,
+    /// as the code does (lifecycle.rs:1615-1618), where the fix keeps it as Interrupted.
+    store_refuses_late_executed: bool,
+    /// The fix's projection reads the deletions of an Interrupted outcome NotAttempted, as
+    /// the code does (lifecycle.rs:2158-2162).
+    projection_hides_interrupted_deletions: bool,
 }
 
 /// What a coverage check takes out of the model, to show the `sometimes` naming it is
@@ -371,18 +398,29 @@ const COVERAGE: &[Coverage] = &[
         reached: |_, state| took(state, Branch::ConnectingCancelled),
     },
     Coverage {
-        name: "renewing aborts the work in hand on a cancel",
+        name: "renewing aborts the prepare",
         fix_only: false,
         omit: Omit::Branch(Branch::Aborts),
         reached: |_, state| {
-            took(state, Branch::Aborts) && state.last_read == Some(Read::Cancelling)
+            took(state, Branch::Aborts) && state.phase == (Phase::Preparing { aborted: true })
         },
     },
     Coverage {
-        name: "renewing aborts the work in hand on a takeover",
+        name: "renewing aborts executing",
         fix_only: false,
         omit: Omit::Branch(Branch::Aborts),
-        reached: |_, state| took(state, Branch::Aborts) && state.last_read == Some(Read::Unknown),
+        reached: |_, state| {
+            took(state, Branch::Aborts) && state.phase == (Phase::Executing { aborted: true })
+        },
+    },
+    Coverage {
+        name: "renewing stops fill_ingress",
+        fix_only: false,
+        omit: Omit::Branch(Branch::Aborts),
+        reached: |_, state| {
+            took(state, Branch::Aborts)
+                && matches!(state.phase, Phase::Filling { stopped: true, .. })
+        },
     },
     Coverage {
         name: "an aborted prepare records NotExecuted",
@@ -435,7 +473,7 @@ const COVERAGE: &[Coverage] = &[
         },
     },
     Coverage {
-        name: "the store keeps a Success that names the deleted Volumes",
+        name: "the store keeps a Success and shows the deleted Volumes removed",
         fix_only: false,
         omit: Omit::Actions(&[Action::Removed]),
         reached: |_, state| {
@@ -445,6 +483,18 @@ const COVERAGE: &[Coverage] = &[
                         interrupted: false,
                         removed: true,
                     })
+                && state.store.shows_removed
+        },
+    },
+    Coverage {
+        name: "record refuses the Executed of a run cancel_in_flight ended",
+        fix_only: false,
+        omit: Omit::Actions(&[Action::CancelInFlight]),
+        reached: |_, state| {
+            took(state, Branch::Records)
+                && state
+                    .sent
+                    .is_some_and(|sent| sent.answer == Answer::RefusedEnded)
         },
     },
     Coverage {
@@ -462,7 +512,7 @@ const COVERAGE: &[Coverage] = &[
         reached: |_, state| took(state, Branch::Latches),
     },
     Coverage {
-        name: "the latch records Interrupted with the deleted Volumes",
+        name: "the latch records Interrupted and the store shows the deleted Volumes",
         fix_only: true,
         omit: Omit::Branch(Branch::RecordsInterrupted),
         reached: |_, state| {
@@ -472,14 +522,23 @@ const COVERAGE: &[Coverage] = &[
                         interrupted: true,
                         removed: true,
                     })
+                && state.store.shows_removed
         },
     },
     Coverage {
-        name: "a refused Executed goes again as Interrupted and is kept",
+        name: "record keeps a late Executed as Interrupted and shows the deleted Volumes",
         fix_only: true,
-        omit: Omit::Branch(Branch::Resends),
+        omit: Omit::Branch(Branch::Converted),
+        reached: |_, state| took(state, Branch::Converted) && state.store.shows_removed,
+    },
+    Coverage {
+        name: "the run stops in connecting once a read says it lost",
+        fix_only: true,
+        omit: Omit::Branch(Branch::StopsOver),
         reached: |_, state| {
-            took(state, Branch::Resends) && state.sent.is_some_and(|s| s.answer == Answer::Kept)
+            took(state, Branch::StopsOver)
+                && state.standing == Standing::Lost
+                && matches!(state.last, Some(Action::Poll(_)))
         },
     },
     Coverage {
@@ -492,8 +551,9 @@ const COVERAGE: &[Coverage] = &[
 
 #[derive(Clone, Copy, Debug)]
 struct RunnerStanding {
-    /// The fix: one `Standing` from every read, latched; each site stops on Lost or
-    /// Ended, and a refused `Executed` goes again as Interrupted.
+    /// The fix: one `Standing` from every read, latched, and each site stops on Lost or
+    /// Ended; `record` keeps a late `Executed` as Interrupted, and the projection shows
+    /// an Interrupted outcome's deletions.
     fix: bool,
     broken: Broken,
     /// How many `status()` calls may fail.
@@ -543,6 +603,9 @@ impl RunnerStanding {
         state.last_read = Some(read);
         state.told_over |= read.over();
         if self.fix && (heeds_lost || read != Read::Unknown) {
+            if self.broken.lost_does_not_stick && state.standing == Standing::Lost && !read.over() {
+                state.standing = Standing::Keep;
+            }
             state.standing = state.standing.after(read);
         }
         read
@@ -601,44 +664,57 @@ impl RunnerStanding {
         state.phase = Phase::Returned;
     }
 
-    /// `record(RunEvidence::Executed { .. })` (lifecycle.rs `record`). An Unknown
-    /// Deployment takes only an Interrupted outcome, keeps it and stays Unknown; any
-    /// other goes through `finish`.
+    /// `record(RunEvidence::Executed { .. })` (lifecycle.rs:1590-1773). An Unknown
+    /// Deployment takes only an Interrupted outcome, keeps it and stays Unknown
+    /// (:1615-1618, :1763-1771); any other goes through `finish` (:1772). The fix keeps a
+    /// non-Interrupted one for an Unknown Deployment as Interrupted. The projection shows
+    /// the deletions for a Success (:2158-2167), and in the fix for an Interrupted outcome
+    /// too.
     fn executed(&self, state: &mut State, interrupted: bool) -> Answer {
+        let broken = self.broken;
         let store = &mut state.store;
-        let outcome = Outcome::Executed {
-            interrupted,
-            removed: state.removed,
-        };
+        let removed = state.removed;
         let taken_over = store.status == Status::Unknown;
-        let answer = if taken_over && !interrupted && !self.broken.store_takes_any_outcome {
-            Answer::RefusedUnknown
-        } else if taken_over {
-            store.outcome = Some(outcome);
-            Answer::Kept
+        let (answer, kept) = if !taken_over {
+            let outcome = Outcome::Executed {
+                interrupted,
+                removed,
+            };
+            (finish(store, outcome), interrupted)
+        } else if interrupted || broken.store_takes_any_outcome {
+            (Answer::Kept, interrupted)
+        } else if self.fix && !broken.store_refuses_late_executed {
+            (Answer::Converted, true)
         } else {
-            finish(store, outcome)
+            (Answer::RefusedUnknown, interrupted)
         };
+        if taken_over && matches!(answer, Answer::Kept | Answer::Converted) {
+            store.outcome = Some(Outcome::Executed {
+                interrupted: kept,
+                removed,
+            });
+        }
+        if matches!(answer, Answer::Kept | Answer::Converted) {
+            store.shows_removed =
+                removed && (!kept || (self.fix && !broken.projection_hides_interrupted_deletions));
+        }
         state.sent = Some(Sent {
             interrupted,
-            removed: state.removed,
+            removed,
             answer,
         });
         answer
     }
 
-    /// `record(RunEvidence::Abandoned)` (lifecycle.rs `record`): a no-op on an Unknown
-    /// Deployment or one with an outcome, `running` otherwise, then Unknown after a
-    /// preview.
+    /// `record(RunEvidence::Abandoned)` (lifecycle.rs:1876-1898): a no-op on an Unknown
+    /// Deployment or one with an outcome (:1877-1879), `running` otherwise (:1880), then
+    /// Unknown after a preview (:1895-1897). The model sends it only from executing, after
+    /// the preview, so the arm's `NotExecuted` for a run with no preview (:1881-1894) is out
+    /// of scope.
     fn abandoned(state: &mut State) {
         let store = &mut state.store;
-        if store.outcome.is_some() || store.status == Status::Unknown || running(*store).is_err() {
-            return;
-        }
-        if store.preview {
+        if store.outcome.is_none() && store.status != Status::Unknown && running(*store).is_ok() {
             store.status = Status::Unknown;
-        } else {
-            finish(store, Outcome::NotExecuted);
         }
     }
 
@@ -764,18 +840,13 @@ impl RunnerStanding {
                     state.took = Some(Branch::StopsOver);
                 } else {
                     let answer = self.executed(state, false);
-                    state.phase = if self.fix && answer == Answer::RefusedUnknown {
-                        Phase::Resending
+                    state.phase = Phase::Returned;
+                    state.took = Some(if answer == Answer::Converted {
+                        Branch::Converted
                     } else {
-                        Phase::Returned
-                    };
-                    state.took = Some(Branch::Records);
+                        Branch::Records
+                    });
                 }
-            }
-            Action::Resend => {
-                self.executed(state, true);
-                state.phase = Phase::Returned;
-                state.took = Some(Branch::Resends);
             }
         }
     }
@@ -800,6 +871,7 @@ impl Model for RunnerStanding {
                 status: Status::Running,
                 preview: false,
                 outcome: None,
+                shows_removed: false,
             },
             phase: Phase::Connecting,
             removed: false,
@@ -860,7 +932,6 @@ impl Model for RunnerStanding {
                 reads(actions, Action::Tick);
             }
             Phase::Recording(_) => actions.push(Action::Record),
-            Phase::Resending => actions.push(Action::Resend),
             Phase::Returned => {}
         }
     }
@@ -877,11 +948,19 @@ impl Model for RunnerStanding {
 
     fn properties(&self) -> Vec<Property<Self>> {
         let mut properties = vec![
-            Property::always(OUTCOME_RECORDED, |_, state: &State| {
+            Property::always(TAKEOVER_KEEPS_OUTCOME, |_, state: &State| {
                 !(state.phase == Phase::Returned
                     && state.sent.is_some_and(|sent| {
                         !sent.interrupted && sent.answer == Answer::RefusedUnknown
                     }))
+            }),
+            Property::always(DELETIONS_KEPT, |_, state: &State| {
+                let cancelled_in_flight =
+                    state.store.status == Status::Ended && state.store.outcome.is_none();
+                !(state.phase == Phase::Returned
+                    && state.removed
+                    && !state.store.shows_removed
+                    && !cancelled_in_flight)
             }),
             Property::always(NO_WORK_AFTER_END, |_, state: &State| {
                 state.after_over.is_none()
@@ -910,8 +989,12 @@ impl Model for RunnerStanding {
     }
 }
 
-const OUTCOME_RECORDED: &str =
+const TAKEOVER_KEEPS_OUTCOME: &str =
     "a run never returns with its Executed refused because the Deployment went Unknown";
+/// `cancel_in_flight` is exempt: `forget_cluster`, which runs it, lets go of the
+/// Organization's Applied State and Volumes' fixed storage (teardown.rs:442-445,
+/// :458-469).
+const DELETIONS_KEPT: &str = "once the run returned, the store shows the Volumes it deleted as removed, unless cancel_in_flight ended the Deployment";
 const NO_WORK_AFTER_END: &str = "once a read said the run is over, the runner starts no work, and keeps on none but deleting Volumes";
 const HEEDS_CANCEL: &str = "while its last read said Cancelling, the runner starts or keeps on no work but deleting Volumes";
 const TAKEN_OVER_INTERRUPTED: &str =
@@ -935,10 +1018,11 @@ fn story(model: &RunnerStanding, path: &[(State, Option<Action>)]) -> String {
             .map_or_else(|| "-".to_owned(), |read| format!("{read:?}"));
         let _ = writeln!(
             story,
-            "{n:2}. {what}\n    store: status={:?} preview={} outcome={:?} | runner: {:?} last_read={read} removed={}{}",
+            "{n:2}. {what}\n    store: status={:?} preview={} outcome={:?} shows_removed={} | runner: {:?} last_read={read} removed={}{}",
             state.store.status,
             state.store.preview,
             state.store.outcome,
+            state.store.shows_removed,
             state.phase,
             state.removed,
             if model.fix {
@@ -1093,7 +1177,7 @@ fn reads_as(model: &RunnerStanding, before: &State, action: Action, after: &Stat
             format!("Runner: the gate reads status() = {read}; {then} (store_runner.rs execute)")
         }
         Action::Filled => "Runner: fill_ingress ends (store_runner.rs fill_ingress)".to_owned(),
-        Action::Record | Action::Resend => {
+        Action::Record => {
             let Some(sent) = after.sent else {
                 return "Runner: the latch says the run ended: the run returns without a record (the fix)".to_owned();
             };
@@ -1115,18 +1199,30 @@ fn reads_as(model: &RunnerStanding, before: &State, action: Action, after: &Stat
                     "the store keeps it; the Deployment stays Unknown"
                 }
                 Answer::Kept => "the store keeps it and ends the Deployment",
+                Answer::Converted => {
+                    "the Deployment is Unknown: the store keeps it as Interrupted (the fix)"
+                }
                 Answer::RefusedUnknown => {
                     "the Deployment is Unknown and the outcome not Interrupted: running() refuses it; execute returns that Err"
                 }
                 Answer::RefusedEnded => "the Deployment ended: finish's running() refuses it",
             };
             let why = match after.took {
-                Some(Branch::Resends) => "the fix sends it again",
                 Some(Branch::RecordsInterrupted) => "the latch says Lost (the fix)",
                 _ => "record(Executed)",
             };
+            let shown = match (sent.removed, after.store.outcome, after.store.shows_removed) {
+                (true, Some(_), true) => "; removed_volume reads the deleted Volumes Removed",
+                (true, Some(_), false) if model.broken.projection_hides_interrupted_deletions => {
+                    "; removed_volume reads the deleted Volumes NotAttempted for an Interrupted outcome (under Broken)"
+                }
+                (true, Some(_), false) => {
+                    "; removed_volume reads the deleted Volumes NotAttempted, the outcome not a Success"
+                }
+                _ => "",
+            };
             format!(
-                "Runner: {why} with {what}{removed}; {answer} (store_runner.rs execute, lifecycle.rs record)"
+                "Runner: {why} with {what}{removed}; {answer}{shown} (store_runner.rs execute, lifecycle.rs record)"
             )
         }
     }
@@ -1136,7 +1232,7 @@ fn reads_as(model: &RunnerStanding, before: &State, action: Action, after: &Stat
 mod tests {
     use std::sync::{Arc, Mutex};
 
-    use stateright::Checker;
+    use stateright::{Checker, HasDiscoveries};
 
     use super::*;
 
@@ -1152,8 +1248,8 @@ mod tests {
         }
     }
 
-    /// The fix: one latched `Standing`, and a refused `Executed` sent again as
-    /// Interrupted.
+    /// The fix: on the runner, one latched `Standing`; in the store, a late `Executed` kept
+    /// as Interrupted and its deletions shown.
     fn fixed() -> RunnerStanding {
         RunnerStanding {
             fix: true,
@@ -1176,14 +1272,24 @@ mod tests {
     /// The first path in BFS order whose last state breaks `property` under `model`, so
     /// no shorter path breaks it, printed as a story under the test's name. The checker's
     /// own discovery is not that path: `check_block` stores every violation it visits,
-    /// each overwriting the last, so a visitor keeps the first. The model is small enough
-    /// to explore whole. One thread keeps the path the same from run to run.
+    /// each overwriting the last, and `finish_when` is read once per 1500-state block, so
+    /// a visitor keeps the first. One thread keeps the path the same from run to run.
     fn breaks(model: RunnerStanding, property: &'static str) -> Path {
-        breaks_where(model, property, |_| true)
+        first_break(model, property, |_| true, true)
     }
 
-    /// As `breaks`, the first such path that also satisfies `and`.
+    /// As `breaks`, the first such path that also satisfies `and`. It explores the whole
+    /// model, since the first discovery may not pass `and`.
     fn breaks_where(model: RunnerStanding, property: &'static str, and: fn(&Path) -> bool) -> Path {
+        first_break(model, property, and, false)
+    }
+
+    fn first_break(
+        model: RunnerStanding,
+        property: &'static str,
+        and: fn(&Path) -> bool,
+        stop_at_discovery: bool,
+    ) -> Path {
         let holds = model
             .properties()
             .into_iter()
@@ -1192,20 +1298,25 @@ mod tests {
             .condition;
         let first = Arc::new(Mutex::new(None));
         let seen = Arc::clone(&first);
-        model
-            .checker()
-            .threads(1)
-            .visitor(move |path: stateright::Path<State, Action>| {
-                let mut first = seen.lock().expect("the first break");
-                if first.is_none() && !holds(&model, path.last_state()) {
-                    let path = path.into_vec();
-                    if and(&path) {
-                        *first = Some(path);
+        let checker =
+            model
+                .checker()
+                .threads(1)
+                .visitor(move |path: stateright::Path<State, Action>| {
+                    let mut first = seen.lock().expect("the first break");
+                    if first.is_none() && !holds(&model, path.last_state()) {
+                        let path = path.into_vec();
+                        if and(&path) {
+                            *first = Some(path);
+                        }
                     }
-                }
-            })
-            .spawn_bfs()
-            .join();
+                });
+        let checker = if stop_at_discovery {
+            checker.finish_when(HasDiscoveries::AllOf([property].into()))
+        } else {
+            checker
+        };
+        checker.spawn_bfs().join();
         let path = first
             .lock()
             .expect("the first break")
@@ -1234,7 +1345,7 @@ mod tests {
     /// finding that path.
     #[test]
     fn current_code_loses_the_outcome_of_a_run_taken_over_after_its_last_read() {
-        let path = breaks(as_is(), OUTCOME_RECORDED);
+        let path = breaks(as_is(), TAKEOVER_KEEPS_OUTCOME);
         let broken = last(&path);
         assert_eq!(broken.store.status, Status::Unknown);
         assert_eq!(broken.store.outcome, None);
@@ -1254,10 +1365,11 @@ mod tests {
     /// path.
     #[test]
     fn current_code_loses_the_volumes_a_run_deleted_once_taken_over() {
-        let path = breaks_where(as_is(), OUTCOME_RECORDED, |path| {
-            last(path).removed && !took_action(path, Action::Cancel)
+        let path = breaks_where(as_is(), DELETIONS_KEPT, |path| {
+            !took_action(path, Action::Cancel)
         });
         let broken = last(&path);
+        assert!(broken.removed && !broken.store.shows_removed);
         assert_eq!(broken.store.status, Status::Unknown);
         assert_eq!(broken.store.outcome, None);
         assert_eq!(
@@ -1284,8 +1396,8 @@ mod tests {
         assert_eq!(broken.failed, 0, "no status() call failed");
     }
 
-    /// The second finding. `forget_cluster` cancels the Deployment in flight, and
-    /// `renewing`'s next tick reads `Err` ("already ended") and skips it: the work in
+    /// The second finding, first cause. `forget_cluster` cancels the Deployment in flight,
+    /// and `renewing`'s next tick reads `Err` ("already ended") and skips it: the work in
     /// hand keeps going on a Deployment the store ended.
     #[test]
     fn current_code_keeps_working_after_cancel_in_flight_ended_the_run() {
@@ -1298,23 +1410,53 @@ mod tests {
         assert_eq!(broken.after_over, Some(Work::Prepare));
     }
 
-    /// The code as it is breaks only the two properties the findings name, with or
-    /// without a failed read.
+    /// The second finding, second cause, with no `cancel_in_flight` and no failed read.
+    /// After a takeover, `connecting` reads `Ok(Unknown)` and dials on, and the prepare
+    /// starts. The gate before `fill_ingress` reads `Ok(Unknown)` as keep too.
     #[test]
-    fn current_code_breaks_only_the_two_findings() {
+    fn current_code_works_on_after_a_read_said_unknown() {
+        let model = RunnerStanding {
+            omit: Some(Omit::Actions(&[Action::CancelInFlight])),
+            ..as_is()
+        };
+        let path = breaks(model, NO_WORK_AFTER_END);
+        let broken = last(&path);
+        assert_eq!(broken.store.status, Status::Unknown);
+        assert_eq!(broken.after_over, Some(Work::Prepare));
+        assert!(took_action(&path, Action::Poll(Call::Answers)));
+        assert_eq!(broken.failed, 0, "no status() call failed");
+        let path = breaks_where(model, NO_WORK_AFTER_END, |path| {
+            last(path).after_over == Some(Work::FillIngress)
+        });
+        let broken = last(&path);
+        assert_eq!(broken.last, Some(Action::Gate(Call::Answers)));
+        assert_eq!(broken.last_read, Some(Read::Unknown));
+    }
+
+    /// The code as it is breaks only the properties the findings name, with one failed
+    /// read, and reaches every `sometimes` the fix does not add.
+    #[test]
+    fn current_code_breaks_only_the_findings() {
         let checker = check(failing(as_is()));
         println!("as is: {} states", checker.unique_state_count());
         for property in [HEEDS_CANCEL, TAKEN_OVER_INTERRUPTED] {
             assert!(checker.discovery(property).is_none(), "{property} fails");
         }
-        for property in [OUTCOME_RECORDED, NO_WORK_AFTER_END] {
+        for property in [TAKEOVER_KEEPS_OUTCOME, DELETIONS_KEPT, NO_WORK_AFTER_END] {
             assert!(checker.discovery(property).is_some(), "{property} holds");
+        }
+        for row in COVERAGE.iter().filter(|row| !row.fix_only) {
+            assert!(
+                checker.discovery(row.name).is_some(),
+                "{} is never reached",
+                row.name
+            );
         }
     }
 
     /// The fix holds with a failed read, and every `sometimes` is reached.
     #[test]
-    fn a_latched_standing_and_an_interrupted_resend_keep_the_outcome() {
+    fn a_latched_standing_and_a_converting_store_keep_the_outcome_and_the_deletions() {
         let checker = check(failing(fixed()));
         println!("fixed: {} states", checker.unique_state_count());
         checker.assert_properties();
@@ -1324,8 +1466,8 @@ mod tests {
     /// fixed model, no other path reaches its predicate.
     #[test]
     fn every_sometimes_needs_what_it_names() {
+        let whole = check(failing(fixed()));
         for row in COVERAGE {
-            let whole = check(failing(fixed()));
             assert!(
                 whole.discovery(row.name).is_some(),
                 "{} is never reached",
@@ -1429,5 +1571,48 @@ mod tests {
             TAKEN_OVER_INTERRUPTED,
         );
         assert_eq!(last(&path).store.status, Status::Unknown);
+    }
+
+    /// Without Lost sticking, a failed read after a takeover puts the fix's latch back to
+    /// Keep, and the run starts work the latch would have stopped. Only a failed read can
+    /// follow `Ok(Unknown)` with another answer, since no store step leaves Unknown.
+    #[test]
+    fn the_fix_needs_lost_to_stick() {
+        let path = breaks(
+            failing(fixed_without(Broken {
+                lost_does_not_stick: true,
+                ..Broken::default()
+            })),
+            NO_WORK_AFTER_END,
+        );
+        assert_eq!(last(&path).failed, 1);
+    }
+
+    /// Without the store keeping a late `Executed` as Interrupted, a takeover after the
+    /// run's last read gets its outcome refused, as on the code as it is.
+    #[test]
+    fn the_fix_needs_the_store_to_keep_a_late_executed() {
+        let path = breaks(
+            fixed_without(Broken {
+                store_refuses_late_executed: true,
+                ..Broken::default()
+            }),
+            TAKEOVER_KEEPS_OUTCOME,
+        );
+        assert_eq!(last(&path).store.outcome, None);
+    }
+
+    /// Without the projection showing an Interrupted outcome's deletions, the store keeps
+    /// the outcome and still reads the deleted Volumes NotAttempted.
+    #[test]
+    fn the_fix_needs_the_projection_to_show_interrupted_deletions() {
+        let path = breaks(
+            fixed_without(Broken {
+                projection_hides_interrupted_deletions: true,
+                ..Broken::default()
+            }),
+            DELETIONS_KEPT,
+        );
+        assert!(last(&path).store.outcome.is_some());
     }
 }
