@@ -20,7 +20,6 @@ const position: CanvasPosition = {
 };
 type Positions = ReturnType<typeof positionsCollection>;
 
-/** The canvas positions collection as `collections.ts` builds it, reading through the given function. */
 function positionsCollection(scope: CollectionScope, read: (since: string | undefined) => Promise<CollectionRead<CanvasPosition>>) {
   return createChangeCollection<CanvasPosition>({
     queryClient: scope.queryClient,
@@ -30,7 +29,6 @@ function positionsCollection(scope: CollectionScope, read: (since: string | unde
   });
 }
 
-/** The canvas's live query, as `EnvironmentCanvasScene` streams it under an explicit key. */
 function positionsQuery(positions: Positions) {
   return {
     queryKey: ["canvas-positions", positions.id, environmentId],
@@ -66,8 +64,7 @@ it("hydrates the SSR canvas without a fallback and resumes change reads from the
   document.body.append(container);
   expect(container.textContent).toBe(`Loaded canvas: ${position.resourceId}`);
   expect(read).not.toHaveBeenCalled();
-  // What the router dehydrates: DB live queries through routerWithDbClient, every Query through the SSR Query integration.
-  getDbClient(client).hydrate(getDbClient(server).dehydrate({ shouldDehydrateLiveQuery: () => true }));
+  getDbClient(client).hydrate(getDbClient(server).dehydrate());
   hydrate(client, dehydrate(server));
   pending.mockClear();
   const errors = vi.fn();
@@ -78,7 +75,6 @@ it("hydrates the SSR canvas without a fallback and resumes change reads from the
     expect(errors).not.toHaveBeenCalled();
     expect(container.textContent).toBe(`Loaded canvas: ${position.resourceId}`);
     expect(read).not.toHaveBeenCalled();
-    // The Organization change stream's first refetch reads only changes since the server's cursor.
     await act(() => clientPositions.utils.refetch());
     expect(read.mock.calls).toEqual([["acme.7"]]);
   } finally {
