@@ -15,7 +15,7 @@ import { operationApprovals } from "#/modules/approvals/tables";
 import type { PolarService } from "#/modules/billing/polar-provider.server";
 import type { Caller } from "#/modules/identity/actor";
 import type { JsonObject } from "#/db/tables";
-import { oauthClient, oauthConsent, oauthConsentSession, oauthRefreshToken } from "#/modules/identity/oauth-tables";
+import { jwks, oauthClient, oauthConsent, oauthConsentSession, oauthRefreshToken } from "#/modules/identity/oauth-tables";
 import { member, session, verification } from "#/modules/identity/tables";
 import { REQUEST_KEY_HEADER } from "#/modules/operations/keyed.server";
 import { removeMembership } from "#/modules/organization/membership.server";
@@ -128,6 +128,9 @@ const holdRead = Effect.fn(function* (table: Table, skip = 0) {
   return { reached: Effect.promise(() => ready), release: Effect.sync(release) };
 });
 
+/** The signing key every test's Cloud shares, from the first one. */
+let signingKey: typeof jwks.$inferSelect | undefined;
+
 /** A Cloud, hosted or self-hosted, with every route the remote endpoint answers on, run as a browser or agent would. */
 const cloudOf = Effect.fn(function* (hosted: boolean) {
   const services = yield* storeTestCloudWith(AuthLive.pipe(Layer.provide(HoldableBetterAuthDatabase)), {
@@ -136,6 +139,17 @@ const cloudOf = Effect.fn(function* (hosted: boolean) {
   });
   const run = Effect.runPromiseWith(services);
   const provided = <A, E>(effect: Effect.Effect<A, E, StoreCloud | Auth>) => effect.pipe(Effect.provide(services));
+  // Every test's Cloud signs with the first one's key, as one Cloud keeps its key. Better Auth caches a JWKS by its URL
+  // for the process, and these Clouds share one, so a key minted per test would verify against the first test's set.
+  yield* provided(Effect.gen(function* () {
+    const { drizzle } = yield* Database;
+    if (signingKey !== undefined) {
+      yield* drizzle.insert(jwks).values(signingKey);
+      return;
+    }
+    yield* Effect.promise(() => run(serveAuth(new Request(`${origin}/api/auth/jwks`))));
+    [signingKey] = yield* drizzle.select().from(jwks);
+  }));
   return { run, provided };
 });
 

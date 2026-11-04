@@ -36,7 +36,8 @@ const unreachableAuth = (() => {
       Layer.succeed(Polar, { mode: "self_hosted" }),
       Layer.succeed(InngestClient, new Inngest({ id: "auth-log-redaction-test" })),
     )),
-    Layer.provide(RedactedLogsLive),
+    // Merged, as Cloud's runtime does: the test's own logs go through redaction too.
+    Layer.provideMerge(RedactedLogsLive),
   );
 })();
 
