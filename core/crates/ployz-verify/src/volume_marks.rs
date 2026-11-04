@@ -167,7 +167,7 @@ enum SeedPath {
     Finishes,
     /// A root of `into` with another or no `ployz:seed`: "Volume into already exists".
     Exists,
-    /// `receives.take_failure(&into)` answers `Busy`: answers the copy as it stands.
+    /// `receives.take_failure` answers `Busy`: answers the copy as it stands.
     Receiving,
     /// The slot's `fs` holds `G` as its newest: `land` renames it to the root.
     Lands,
@@ -310,7 +310,7 @@ struct Broken {
     /// The root branch of `seed_volume` (seed.rs) answers any root of `into`, skipping
     /// its `ployz:seed` check against the guid.
     root_ignores_seed: bool,
-    /// `seed_volume` skips the `Busy` arm of `receives.take_failure(&into)` (seed.rs).
+    /// `seed_volume` skips the `Busy` arm of `receives.take_failure` (seed.rs).
     seed_ignores_receive: bool,
     /// `seed_volume` skips `written_here(&fs)` before its `destroy -r` (seed.rs).
     seed_ignores_written_here: bool,
@@ -548,7 +548,7 @@ impl VolumeMarks {
                 (SeedPath::AnswersRoot, Answer::Root(root.made))
             }
             Into::Root(_) => (SeedPath::Exists, Answer::Refused),
-            // seed.rs: the `Busy` arm of `self.receives.take_failure(&into)`.
+            // seed.rs: the `Busy` arm of `self.receives.take_failure(&into, pulling.as_ref())`.
             _ if state.task != Task::Idle && !broken.seed_ignores_receive => {
                 (SeedPath::Receiving, Answer::Slot)
             }

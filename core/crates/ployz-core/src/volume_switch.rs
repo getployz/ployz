@@ -221,7 +221,10 @@ pub enum VolumeCopy {
         #[ts(optional)]
         role: Option<SlotRole>,
         /// What attends the pull `pull` names, for the same target. Absent when there is no
-        /// pull, and from older daemons.
+        /// pull, and from older daemons. When present it agrees with `pull`: ployzd builds both
+        /// from one read of the receive, and it is `Failed` exactly when `pull.failure` is set,
+        /// with the same text. A reader that knows this field matches on it rather than
+        /// re-deriving the state from `pull`.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         #[ts(optional)]
         pull_state: Option<PullState>,
