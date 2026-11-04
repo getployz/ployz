@@ -4949,3 +4949,80 @@ fn history_never_brings_a_sealed_value_back_as_port() {
         assert_eq!(diff(&store, &who).draft_count, 0, "{case}");
     }
 }
+
+/// Revision `revision`'s row for `web.env.TOKEN`, as History shows it.
+fn token_in_history(store: &ConfigStore, who: &Actor, revision: u64) -> Option<Value> {
+    let history = store
+        .read(who, &ployz_store::HistoryQuery::default())
+        .unwrap();
+    let history = serde_json::to_value(history).unwrap();
+    history["revisions"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|row| row["revision"] == revision)?["changes"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .flat_map(|change| change["settings"].as_array().unwrap())
+        .find(|setting| setting["path"] == "web.env.TOKEN")
+        .map(|setting| json!({"kind": setting["kind"], "before": setting["before"], "after": setting["after"]}))
+}
+
+/// A version that changed TOKEN keeps that change in History after sealing makes
+/// it read the same as the version before: sealed both sides, or Not set both sides,
+/// never a value neither side held.
+#[test]
+fn history_keeps_a_change_that_sealing_since_made_read_the_same() {
+    let unset = |store: &ConfigStore, who: &Actor| {
+        store
+            .write(
+                who,
+                &Edit {
+                    environment: EnvironmentRef::default(),
+                    expect: None,
+                    changes: vec![Change::Unset {
+                        path: SettingPath::parse("web.env.TOKEN").unwrap(),
+                    }],
+                },
+            )
+            .unwrap();
+    };
+    // Plain, plain, then sealed and deleted: both earlier versions read Not set.
+    let (store, who) = shop();
+    set(&store, &who, "web.env.TOKEN", json!("first"));
+    publish(&store, &who, None).unwrap();
+    set(&store, &who, "web.env.TOKEN", json!("second"));
+    publish(&store, &who, None).unwrap();
+    set(&store, &who, "web.env.TOKEN", sealed(3, "TOKEN", 1));
+    unset(&store, &who);
+    publish(&store, &who, None).unwrap();
+    assert_eq!(
+        token_in_history(&store, &who, 2),
+        Some(json!({"kind": "update", "before": {"secret": false}, "after": {"secret": false}}))
+    );
+
+    // Plain, plain, then sealed: both earlier versions read Sealed.
+    let (store, who) = shop();
+    set(&store, &who, "web.env.TOKEN", json!("first"));
+    publish(&store, &who, None).unwrap();
+    set(&store, &who, "web.env.TOKEN", json!("second"));
+    publish(&store, &who, None).unwrap();
+    set(&store, &who, "web.env.TOKEN", sealed(3, "TOKEN", 1));
+    publish(&store, &who, None).unwrap();
+    assert_eq!(
+        token_in_history(&store, &who, 2),
+        Some(json!({"kind": "update", "before": {"secret": true}, "after": {"secret": true}}))
+    );
+
+    // Sealed three times: each earlier version reads the latest seal.
+    let (store, who) = shop();
+    for n in 1..=3 {
+        set(&store, &who, "web.env.TOKEN", sealed(3, "TOKEN", n));
+        publish(&store, &who, None).unwrap();
+    }
+    assert_eq!(
+        token_in_history(&store, &who, 2),
+        Some(json!({"kind": "update", "before": {"secret": true}, "after": {"secret": true}}))
+    );
+}
