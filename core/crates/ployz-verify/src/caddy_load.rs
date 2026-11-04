@@ -1696,8 +1696,9 @@ mod tests {
     /// Open under the fix: Caddy restarts in place between `caddy::load` and
     /// `write_caddyfile`, so it serves P0 while the write lands P1 and the pass
     /// claims P1. Every later pass hits the `loaded` cache, which skips the admin
-    /// while Caddy runs and the last load matches, so the claim stands until the
-    /// projection or the ingress container changes, or Caddy stops.
+    /// while Caddy runs and the last load matches, so no retry, debounce or
+    /// resnapshot pass corrects it; the first cache miss is the next projection or
+    /// ingress container change, or Caddy stopping.
     #[test]
     fn the_fix_does_not_close_a_restart_between_the_load_and_the_caddyfile_write() {
         let path = breaks(
