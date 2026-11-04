@@ -84,4 +84,4 @@ Each model step is a copy of code at the sync commit. Reread these when a diff t
 - `core/crates/ployz-store/src/pull_request/mod.rs`: the calls to `removal::close` and `removal::sweep`.
 - `dashboard/src/modules/config-store/store-github.inngest.ts` and `store-deployment.inngest.ts`: when Cloud sweeps.
 
-Sync commit: `ec9d5c638348ac517a942d23ceefbc8a2ed09562`, the `main` this model was checked against. Code in the list above that changed after it has not been rechecked.
+Sync commit: `379d927a88e00ad82aafa355f828f3b4a0bf5451`, the commit that made `finish` conditional, checked against it. Code in the list above that changed after it has not been rechecked.
