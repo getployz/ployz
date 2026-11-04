@@ -11,6 +11,8 @@ mod removal_marks;
 #[cfg(test)]
 mod runner_standing;
 #[cfg(test)]
+mod sign_in_store;
+#[cfg(test)]
 mod upgrade_attempt;
 #[cfg(test)]
 mod volume_marks;
