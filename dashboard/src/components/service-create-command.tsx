@@ -309,6 +309,7 @@ function useServiceCreateActions({
         if (stillHere()) await navigateToEnvironment(target);
         return;
       }
+      if (!stillHere()) return;
       await navigate({
         to: ENVIRONMENT_SERVICE_ROUTE_TO,
         params: { organizationSlug: props.organizationSlug, projectSlug: target.projectSlug, environmentSlug: target.environmentSlug,
