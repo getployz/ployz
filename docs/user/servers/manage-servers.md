@@ -867,6 +867,21 @@ meanwhile, syncs refuse a second mirror until you remove one of them. Wipe
 or reinstall its disk only if you need nothing on it. Ployz no longer lists a forgotten server, so `ployz server rm` can't
 reach it. `ployz server forget` prints this warning each time it forgets servers.
 
+A server forgotten before it finished joining, or while its last report came from Ployz 0.3.0,
+stays off your list even if it carries on later. That needs the server that forgets it to run Ployz
+0.3.17 or later when it forgets, and the forgotten server to run 0.3.17 or later when it carries on.
+It isn't told it was forgotten: it stays joining, or keeps running on its own. Run
+`sudo ployz-uninstall` on it, or add it again:
+
+- A server that never started joining keeps its ID and address.
+- Through Ployz Cloud, a retry resumes a server that is still joining, with the same ID and
+  address. One that had finished joining is refused, and the message says how to add it with
+  `--reset` and a new token.
+- In a standalone Cluster, a retry asks to reset a server that had started joining, then adds it
+  with a new address.
+
+On an older Ployz a forgotten server can put itself back on your list; forget it again.
+
 `ployz server forget` warns about replicated services as `ployz server rm` does, with one
 difference. A forgotten server may still run its replicas, so for a service with every replica on
 it, forget says "No copies of Replicated Services were seen on the remaining Servers" rather than

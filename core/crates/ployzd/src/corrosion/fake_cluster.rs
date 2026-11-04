@@ -620,6 +620,8 @@ fn execute(kv: &Mutex<ClusterKv>, statements: Vec<Statement>) -> Bytes {
             {
                 set_leaving(&mut kv, text_param(&statement.params, 0), false);
             }
+            // This fake keeps no tombstones, so a Register has none to take back.
+            "DELETE FROM cluster WHERE key = 'forgotten-id:' || ?" => {}
             "DELETE FROM volumes WHERE machine_id = ?" => {
                 let machine_id = text_param(&statement.params, 0);
                 kv.volumes.retain(|(owner, _), _| owner != machine_id);

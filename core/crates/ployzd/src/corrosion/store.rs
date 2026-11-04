@@ -94,6 +94,24 @@ impl MachinePublicationGuard<'_> {
         self.store.publish_local_machine_unlocked(machine).await
     }
 
+    /// Store a Register's row. A Register is an explicit add, so it takes back the
+    /// forget of a row that had no Management Identity: its `forgotten-id:` tombstone
+    /// goes in the same transaction, and a rerun of a failed add keeps its Server
+    /// (#3342). A tombstone keyed by a Management Identity stays, so a joined Server
+    /// that was forgotten is still not listed again (#3613).
+    pub(crate) async fn register(&self, machine: &Machine) -> Result<(), Error> {
+        self.store
+            .api
+            .execute([
+                Statement::new(
+                    "DELETE FROM cluster WHERE key = 'forgotten-id:' || ?",
+                    [json!(machine.id)],
+                ),
+                machine_upsert(machine)?,
+            ])
+            .await
+    }
+
     pub(crate) async fn remove(&self, machine_id: &MachineId) -> Result<(), Error> {
         self.store.api.execute(removal(machine_id)).await
     }
@@ -117,12 +135,15 @@ impl MachinePublicationGuard<'_> {
             .await
     }
 
-    /// Remove a Machine another Machine forgot, leaving a tombstone keyed by the
-    /// row's Management Identity so the forgotten Machine can learn it was forgotten
-    /// (#2927). A row without an identity leaves none. One transaction, so no
-    /// reader sees the row gone and the tombstone absent.
+    /// Remove a Machine another Machine forgot, leaving a tombstone so no publish of
+    /// its own lists it again. A row with a Management Identity leaves one keyed by
+    /// that identity, so the forgotten Machine can learn it was forgotten (#2927). A
+    /// row without one, such as a Registered row, leaves `forgotten-id:<id>`. That key
+    /// is outside the `forgotten:` prefix older daemons' guards read, so an older
+    /// Machine lists the id again as before. One transaction, so no reader sees the
+    /// row gone and the tombstone absent.
     pub(crate) async fn forget(&self, machine_id: &MachineId) -> Result<(), Error> {
-        let tombstone = Statement::new(
+        let identity_tombstone = Statement::new(
             "INSERT INTO cluster (key, value) \
              SELECT 'forgotten:' || json_extract(info, '$.runtime.management_identity'), id \
              FROM machines \
@@ -130,9 +151,21 @@ impl MachinePublicationGuard<'_> {
              ON CONFLICT (key) DO UPDATE SET value = excluded.value",
             [json!(machine_id)],
         );
+        let id_tombstone = Statement::new(
+            "INSERT INTO cluster (key, value) \
+             SELECT 'forgotten-id:' || id, id \
+             FROM machines \
+             WHERE id = ? AND json_extract(info, '$.runtime.management_identity') IS NULL \
+             ON CONFLICT (key) DO UPDATE SET value = excluded.value",
+            [json!(machine_id)],
+        );
         self.store
             .api
-            .execute(std::iter::once(tombstone).chain(removal(machine_id)))
+            .execute(
+                [identity_tombstone, id_tombstone]
+                    .into_iter()
+                    .chain(removal(machine_id)),
+            )
             .await
     }
 
@@ -219,6 +252,26 @@ impl MachinePublicationGuard<'_> {
     }
 }
 
+/// Write `machine`'s row unless its id is forgotten and not listed.
+///
+/// A forgotten id comes back only through a Register: a reset Machine rejoins under a
+/// new one. So neither the forgotten Machine's still-running publisher (#3418) nor an
+/// Entry's Register for a plain add of a joined Server (#3613) may write its row
+/// again. A joined row's tombstone is keyed by its identity and names the id in its
+/// value; a Registered row's is keyed `forgotten-id:<id>`, which only a Register
+/// clears.
+fn machine_upsert(machine: &Machine) -> Result<Statement, Error> {
+    Ok(Statement::new(
+        "INSERT INTO machines (id, info) SELECT ?1, ?2 \
+         WHERE EXISTS (SELECT 1 FROM machines WHERE id = ?1) \
+         OR (NOT EXISTS (SELECT 1 FROM cluster \
+                         WHERE key LIKE 'forgotten:%' AND value = ?1) \
+             AND NOT EXISTS (SELECT 1 FROM cluster WHERE key = 'forgotten-id:' || ?1)) \
+         ON CONFLICT (id) DO UPDATE SET info = excluded.info",
+        [json!(machine.id), json!(serde_json::to_string(machine)?)],
+    ))
+}
+
 pub(crate) const SEALING_PUBLIC_KEY_CLUSTER_KEY: &str = "sealing_public_key";
 pub(crate) const SEALING_AWAITS_RECOVERY_CLUSTER_KEY: &str = "sealing_awaits_recovery";
 
@@ -288,20 +341,7 @@ impl ReplicatedStore {
         if current.as_ref() == Some(machine) {
             return Ok(());
         }
-        // A forgotten id never comes back: a reset Machine rejoins under a new one. So
-        // neither the forgotten Machine's still-running publisher (#3418) nor an Entry's
-        // Register for a plain add of it (#3613) may write its row again. Its tombstone
-        // names the id, whatever identity it is keyed by; a Register carries none.
-        self.api
-            .execute([Statement::new(
-                "INSERT INTO machines (id, info) SELECT ?1, ?2 \
-                 WHERE EXISTS (SELECT 1 FROM machines WHERE id = ?1) \
-                 OR NOT EXISTS (SELECT 1 FROM cluster \
-                                WHERE key LIKE 'forgotten:%' AND value = ?1) \
-                 ON CONFLICT (id) DO UPDATE SET info = excluded.info",
-                [json!(machine.id), json!(serde_json::to_string(machine)?)],
-            )])
-            .await?;
+        self.api.execute([machine_upsert(machine)?]).await?;
         Ok(())
     }
 
