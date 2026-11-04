@@ -272,11 +272,12 @@ fn machine_upsert(machine: &Machine) -> Result<Statement, Error> {
     ))
 }
 
-/// Write a Register's row as [`machine_upsert`] does, but replace an existing row
-/// only while its `daemon_version` is empty: a Server fills it when it publishes
-/// itself, so a late Register leaves a joined row. The check reads this Entry's
-/// replica; a self-publish that has not reached it is still overwritten, until that
-/// Machine's publisher writes its row back.
+/// Write a Register's row as [`machine_upsert`] does. A Register replaces a row
+/// until that Machine has published itself, which the Management Identity in its
+/// row shows; that row is kept. Only a Machine's own publish sets the identity, so
+/// a row from a daemon that publishes none is still replaced. The check reads this
+/// Entry's replica: a self-publish that has not reached it is still overwritten,
+/// until that Machine's publisher writes its row back.
 fn registration_upsert(machine: &Machine) -> Result<Statement, Error> {
     Ok(Statement::new(
         "INSERT INTO machines (id, info) SELECT ?1, ?2 \
@@ -285,7 +286,7 @@ fn registration_upsert(machine: &Machine) -> Result<Statement, Error> {
                          WHERE key LIKE 'forgotten:%' AND value = ?1) \
              AND NOT EXISTS (SELECT 1 FROM cluster WHERE key = 'forgotten-id:' || ?1)) \
          ON CONFLICT (id) DO UPDATE SET info = excluded.info \
-         WHERE COALESCE(json_extract(machines.info, '$.runtime.daemon_version'), '') = ''",
+         WHERE json_extract(machines.info, '$.runtime.management_identity') IS NULL",
         [json!(machine.id), json!(serde_json::to_string(machine)?)],
     ))
 }

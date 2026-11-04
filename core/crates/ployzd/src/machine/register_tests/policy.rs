@@ -70,7 +70,7 @@ async fn registration_publishes_initial_policy_and_join_persists_it() {
 }
 
 #[tokio::test]
-async fn registration_with_a_changed_policy_overwrites_the_published_row() {
+async fn registration_with_a_changed_policy_overwrites_the_registered_row() {
     let (local, replicated, _founder, data_dir, server) = participating().await;
     let identity = request("peer", WireGuardPublicKey([7; 32]));
     let assigned = local
