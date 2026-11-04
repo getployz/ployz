@@ -827,15 +827,30 @@ mod tests {
     /// Without the `Cancelled` early return in `close()`, a pull-request close after
     /// a cancel settles the tombstone as if it were live. `mark::finish` then moves
     /// nothing, so the check shows its worth for this property only with `finish`
-    /// saving unconditionally too: the close then purges the Environment.
+    /// saving unconditionally too: the close then purges the Environment. With the
+    /// check in place, that save alone keeps every property, so the pair is what
+    /// breaks it.
     #[test]
     fn close_needs_its_tombstone_check() {
+        let unconditional = Broken {
+            finish_saves_unconditionally: true,
+            ..Broken::default()
+        };
+        let checker = check(RemovalMarks {
+            broken: unconditional,
+            ..as_is(Finishers::Close)
+        });
+        println!(
+            "close, unconditional save: {} states",
+            checker.unique_state_count()
+        );
+        checker.assert_properties();
+
         let last = breaks(
             RemovalMarks {
                 broken: Broken {
                     close_ignores_tombstone: true,
-                    finish_saves_unconditionally: true,
-                    ..Broken::default()
+                    ..unconditional
                 },
                 ..as_is(Finishers::Close)
             },

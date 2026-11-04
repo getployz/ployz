@@ -2205,17 +2205,25 @@ fn a_sweep_queued_behind_a_cancel(removing: impl FnOnce(&ConfigStore, &Actor)) {
     .unwrap();
     let mut watch = postgres::Client::connect(&url, postgres::NoTls).unwrap();
     let mut waiting = |until: i64, finished: &dyn Fn() -> bool| {
-        while watch
-            .query_one(
-                "SELECT COUNT(*) FROM pg_stat_activity \
-                 WHERE datname = current_database() AND wait_event_type = 'Lock'",
-                &[],
-            )
-            .unwrap()
-            .get::<_, i64>(0)
-            < until
-        {
+        // The Store's lock_timeout: a write that waits longer fails anyway.
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        loop {
+            let waiting: i64 = watch
+                .query_one(
+                    "SELECT COUNT(*) FROM pg_stat_activity \
+                     WHERE datname = current_database() AND wait_event_type = 'Lock'",
+                    &[],
+                )
+                .unwrap()
+                .get(0);
+            if waiting >= until {
+                return;
+            }
             assert!(!finished(), "it never waited on production's row");
+            assert!(
+                std::time::Instant::now() < deadline,
+                "{waiting} of {until} writes waited on a lock after 10 s"
+            );
             // real-wait: another Postgres backend blocking on a row lock signals nothing.
             std::thread::sleep(std::time::Duration::from_millis(10));
         }
