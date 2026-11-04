@@ -45,17 +45,20 @@ pub(crate) struct Attempt {
 }
 
 impl Attempt {
-    /// Fail the attempt at the furthest stage it reached, saved or `live`.
+    /// Fail the attempt at the `live` stage of the run, unless the attempt, already raised to
+    /// `live`, holds a committed stage: a committed attempt never fails below Joining.
     pub(crate) fn fail(&mut self, live: EnrollStage, message: String) -> &AttemptFailure {
-        self.stage = self.stage.max(live);
-        self.failure.insert(AttemptFailure {
-            stage: self.stage,
-            message,
-        })
+        let stage = if self.stage.committed() {
+            self.stage
+        } else {
+            live
+        };
+        self.failure.insert(AttemptFailure { stage, message })
     }
 }
 
-/// Built only by [`Attempt::fail`], so its stage is never below the attempt's.
+/// This build writes it only through [`Attempt::fail`]. A record an older build wrote can still
+/// hold a committed attempt with a failure below Joining.
 #[derive(Clone, Debug, Deserialize, PartialEq, Eq, Serialize)]
 pub(crate) struct AttemptFailure {
     stage: EnrollStage,

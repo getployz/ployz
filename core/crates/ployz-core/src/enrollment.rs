@@ -34,7 +34,7 @@ pub struct EnrollmentAssignment {
 ///
 /// `Unknown` is any stage a newer release wrote. No enrollment reports it, and it sorts first,
 /// so it is never committed and never the furthest stage an attempt reached. Written back, it
-/// reads as `"unknown"`, which Cloud ignores. The TypeScript union leaves it out.
+/// reads as `"unknown"`, which Cloud ignores.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Ord, PartialOrd, Serialize, Deserialize, TS)]
 #[serde(into = "&'static str", from = "String")]
 #[ts(rename_all = "lowercase")]
