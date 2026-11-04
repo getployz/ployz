@@ -2179,3 +2179,121 @@ fn removing_a_branch_takes_its_branch_row_before_its_sync_rows_as_a_scrub_does()
     }
     removed_while_a_scrub_runs(true, &[SCRUB_BRANCH, SCRUB_ARRIVAL, SCRUB_BASE]);
 }
+
+/// Cancel `production`'s removal while a sweep waits on its row behind the cancel,
+/// once `removing` left the mark live with nothing of `production` on the Servers:
+/// the sweep read the mark before the cancel committed, so it holds a stale copy.
+/// The cancel keeps `production`.
+fn a_sweep_queued_behind_a_cancel(removing: impl FnOnce(&ConfigStore, &Actor)) {
+    let dir = tempfile::tempdir().unwrap();
+    let url = backend::fresh_url(&dir);
+    let (store, who) = shop_in(ConfigStore::open(&url, backend::key()).unwrap());
+    set_default(&store, &who, "staging");
+    removing(&store, &who);
+    assert!(
+        due(&store, &who).is_empty(),
+        "the next sweep deletes production"
+    );
+
+    // `scope::lock_all`'s statement: the cancel and the sweep each wait for it.
+    let mut client = postgres::Client::connect(&url, postgres::NoTls).unwrap();
+    let mut held = client.transaction().unwrap();
+    held.execute(
+        "UPDATE config_environment SET working_revision = working_revision WHERE id = $1",
+        &[&uuid(2)],
+    )
+    .unwrap();
+    let mut watch = postgres::Client::connect(&url, postgres::NoTls).unwrap();
+    let mut waiting = |until: i64, finished: &dyn Fn() -> bool| {
+        while watch
+            .query_one(
+                "SELECT COUNT(*) FROM pg_stat_activity \
+                 WHERE datname = current_database() AND wait_event_type = 'Lock'",
+                &[],
+            )
+            .unwrap()
+            .get::<_, i64>(0)
+            < until
+        {
+            assert!(!finished(), "it never waited on production's row");
+            // real-wait: another Postgres backend blocking on a row lock signals nothing.
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+    };
+    let canceller = ConfigStore::open(&url, backend::key()).unwrap();
+    let cancelling = std::thread::spawn({
+        let who = who.clone();
+        move || {
+            canceller.write(
+                &who,
+                &ployz_store::Command::CancelRemoval(CancelRemoval {
+                    project: ProjectName::parse("shop").unwrap(),
+                    environment: Some(EnvironmentName::parse("production").unwrap()),
+                }),
+            )
+        }
+    });
+    waiting(1, &|| cancelling.is_finished());
+    let sweeping = std::thread::spawn({
+        let who = who.clone();
+        move || sweep(&store, &who)
+    });
+    waiting(2, &|| sweeping.is_finished());
+    held.commit().unwrap();
+
+    let cancelled = cancelling.join().unwrap().unwrap();
+    assert!(matches!(cancelled, Written::RemovalCancelled(_)));
+    let swept = sweeping.join().unwrap();
+    assert!(
+        swept.removed.is_empty(),
+        "swept {:?}",
+        names(&swept.removed)
+    );
+    let store = ConfigStore::open(&url, backend::key()).unwrap();
+    assert_eq!(listed(&store, &who), ["production", "staging*"]);
+    assert_eq!(
+        backend::count(
+            &url,
+            "SELECT COUNT(*) FROM config_removal_mark WHERE state = 'cancelled'"
+        ),
+        1
+    );
+}
+
+#[test]
+fn a_sweep_queued_behind_a_cancel_keeps_the_environment_its_applied_removal_left() {
+    if std::env::var("PLOYZ_STORE_TEST_POSTGRES").is_err() {
+        return; // SQLite runs one writer at a time.
+    }
+    a_sweep_queued_behind_a_cancel(|store, who| {
+        deploy(store, who, "production", 1, &["web", "db"]);
+        let removing = confirmed(
+            store,
+            who,
+            accepting_data(Some("production")),
+            &observing(observed()),
+        )
+        .unwrap();
+        // Applied, the removal took production off the Servers; the sweep has yet to delete it.
+        run(
+            store,
+            &taking_off(&removing, "production"),
+            &["web", "db"],
+            deleted(&[held()]),
+        );
+    });
+}
+
+#[test]
+fn a_sweep_queued_behind_a_cancel_keeps_the_environment_whose_queued_removal_it_stops() {
+    if std::env::var("PLOYZ_STORE_TEST_POSTGRES").is_err() {
+        return; // SQLite runs one writer at a time.
+    }
+    a_sweep_queued_behind_a_cancel(|store, who| {
+        // Nothing of production ever ran: its Deploy waits in the queue, and Cloud
+        // admits the removal behind it, which the cancel stops before it starts.
+        admit_deploy(store, who, "production", 1);
+        store.write(who, &request(Some("production"))).unwrap();
+        admit_removal(store, who, "production", 2, &Trusted::default()).unwrap();
+    });
+}
