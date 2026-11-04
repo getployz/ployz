@@ -1355,6 +1355,47 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn an_inventory_listed_before_a_restore_never_records_its_slot_mid_check() {
+        let copy = keyed_copy_in_rotation().await;
+        connect(copy.runtime.spec_store_path_for_test())
+            .unwrap()
+            .execute("DELETE FROM creations", [])
+            .unwrap();
+        let listed = std::sync::Arc::new(tokio::sync::Barrier::new(2));
+        *copy.fake.listed_hold.lock().unwrap() = Some(std::sync::Arc::clone(&listed));
+        let mut inventory = tokio::spawn({
+            let runtime = copy.runtime.clone();
+            async move { runtime.managed_inventory().await }
+        });
+        listed.wait().await;
+        let restored = restored_unstarted(&copy);
+        let inspected = std::sync::Arc::new(tokio::sync::Barrier::new(2));
+        *copy.fake.answered_hold.lock().unwrap() = Some(std::sync::Arc::clone(&inspected));
+        let removal = tokio::spawn({
+            let runtime = copy.runtime.clone();
+            async move { runtime.discard_half_made(&restored).await }
+        });
+        // The check adopted nothing, since the slot has no row, and now inspects.
+        inspected.wait().await;
+        listed.wait().await;
+        // The inventory, which listed the old ID in the slot, may record it now.
+        let early =
+            tokio::time::timeout(std::time::Duration::from_millis(500), &mut inventory).await;
+        inspected.wait().await;
+
+        let removed = removal.await.unwrap().unwrap();
+        match early {
+            Ok(finished) => finished,
+            Err(_) => inventory.await,
+        }
+        .unwrap()
+        .unwrap();
+
+        assert!(!removed, "the restored copy is not half-made");
+        assert_eq!(copy.containers.lock().unwrap().len(), 1);
+    }
+
+    #[tokio::test]
     async fn a_copy_restored_from_before_slots_were_recorded_is_never_removed() {
         use crate::docker::test_support::{container_request, machine};
         use ployz_core::{ContainerKind, Namespace};
