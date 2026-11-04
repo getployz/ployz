@@ -1105,13 +1105,22 @@ async fn a_forgotten_id_stays_gone_when_published_without_an_identity() {
 }
 
 #[tokio::test]
-async fn forget_of_a_row_without_an_identity_writes_no_tombstone() {
+async fn forget_of_a_registered_row_keeps_its_id_gone() {
     let (store, task) = identity_store(corrosion_db()).await;
     let (machine, local) = participating_record();
     store.publish_local_machine(&machine).await.unwrap();
 
     store.forget_machine(&machine.id).await.unwrap();
 
+    assert_eq!(store.machine(machine.id.as_str()).await.unwrap(), None);
+    store.publish_local_machine(&machine).await.unwrap();
+    assert_eq!(store.machine(machine.id.as_str()).await.unwrap(), None);
+    let publication = store.machine_publication().await;
+    let caught_up = publication
+        .publishable_machine(&local, RuntimeOverlay::default())
+        .unwrap();
+    publication.publish(&caught_up).await.unwrap();
+    drop(publication);
     assert_eq!(store.machine(machine.id.as_str()).await.unwrap(), None);
     assert_eq!(
         store
