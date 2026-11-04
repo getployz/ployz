@@ -1140,7 +1140,13 @@ export function switchErrorOf(error: PloyzSdkError): SwitchReason | null {
   return Option.isSome(decoded) ? decoded.value.details.reason : null;
 }
 
-export function switchFailureMessage(reason: SwitchReason, ctx: Pick<RunContext, "volumeName">, machine: MachineRef): string | undefined {
+/** `fenced` names the Volume whose floor refused a Stale request: the run's own, except a Seed's `into`. */
+export function switchFailureMessage(
+  reason: SwitchReason,
+  ctx: Pick<RunContext, "volumeName">,
+  machine: MachineRef,
+  fenced = ctx.volumeName,
+): string | undefined {
   const name = ctx.volumeName;
   switch (reason) {
     case "mismatch":
@@ -1163,7 +1169,7 @@ export function switchFailureMessage(reason: SwitchReason, ctx: Pick<RunContext,
     case "restore_point_gone":
       return `the restore point is gone from ${name} on ${machine.name}`;
     case "stale":
-      return `a newer run took ${name} on ${machine.name}`;
+      return `a newer run took ${fenced} on ${machine.name}`;
     case "busy":
       return undefined;
   }
@@ -1191,15 +1197,18 @@ const switchReach = (cause: unknown): SwitchReach => {
 /** The verbs a run still sends through `sendSwitch`: SeedVolume and the reads. */
 type SwitchRequest = Extract<VolumeSwitchRequest, { command: "seed_volume" | "inspect_volume_copy" }>;
 
-/** A refusal with a message ends the run; Busy and transport failures fail only the attempt, so the step retries. */
-export const sendSwitch = <R extends SwitchRequest>(ctx: RunContext, inngestRunId: string, machine: MachineRef, request: R) => {
+/**
+ * A refusal with a message ends the run; Busy and transport failures fail only the attempt, so the step retries.
+ * `fenced` names the Volume whose floor the request is checked against, as in `switchFailureMessage`.
+ */
+export const sendSwitch = <R extends SwitchRequest>(ctx: RunContext, inngestRunId: string, machine: MachineRef, request: R, fenced = ctx.volumeName) => {
   return Effect.gen(function* () {
     yield* requireOwner(ctx.id, inngestRunId);
     const session = yield* openSession(ctx.organizationId);
     return yield* session.volumeSwitch(machine.id, request).pipe(
       Effect.catch((error): Effect.Effect<never, Error, Database> => {
         const reason = switchErrorOf(error);
-        const message = reason === null ? undefined : switchFailureMessage(reason, ctx, machine);
+        const message = reason === null ? undefined : switchFailureMessage(reason, ctx, machine, fenced);
         if (message !== undefined) return failRun(ctx, inngestRunId, message);
         return Effect.fail(new SwitchAttemptError(reason, `${request.command} on ${machine.name}: ${sdkFailureMessage(error, [machine])}`));
       }),

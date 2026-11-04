@@ -267,6 +267,21 @@ impl MachineService {
         }
     }
 
+    /// Refuse `gen` Stale below the floor of `name`, without raising it. A Seed fences on
+    /// `into` this way: raising it would refuse every later mirror sync of `into` that
+    /// carries a gen below the seed run's.
+    pub(super) async fn check_gen(
+        &self,
+        name: &DockerVolumeName,
+        r#gen: VolumeGen,
+    ) -> Result<(), LocalMachineError> {
+        let checked = self.joined_floor_turn().await?.check(name, r#gen).await?;
+        match checked {
+            Ok(()) => Ok(()),
+            Err(floor) => Err(stale(floor, self.inspect_copy(name).await?, name)),
+        }
+    }
+
     /// The Floor want: raise the floor and read the copy under the floor lock, which a
     /// cut holds through its flip, so the copy is the root or the slot, never between.
     /// Never refuses on `gen`; a lower one leaves the floor where it is.

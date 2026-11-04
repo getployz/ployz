@@ -7,6 +7,7 @@ import type {
   ExpectedCopy,
   MachineId,
   RuntimeWatchView,
+  SeedVolumeRequest,
   SetVolumeCopyReply,
   SetVolumeCopyRequest,
   SetVolumeSizeReply,
@@ -195,6 +196,7 @@ describe("volume runs", () => {
   let openFault: ((open: number) => Error | "unreachable" | null) | null;
   let opens: number;
   let sent: SetVolumeCopyRequest[];
+  let seeds: SeedVolumeRequest[];
   let sizes: SetVolumeSizeRequest[];
   /** The running row's message each time a Machine was asked for a size. */
   let sizing: (string | null)[];
@@ -448,7 +450,12 @@ describe("volume runs", () => {
           }),
         );
       }
-      if (request.command !== "set_volume_copy") return Effect.die(new Error(`the run sent ${request.command}`));
+      if (request.command === "seed_volume") {
+        seeds.push(request.payload);
+        const fault = failNext.get(`seed@${fake.name}`);
+        failNext.delete(`seed@${fake.name}`);
+        return fault === undefined ? Effect.succeed({ copy: seedCopy }) : fail(fault);
+      }
       const { expect: expected, want } = request.payload;
       const verb = label(fake, want);
       const key = verb.replace(/\(.*$/, "");
@@ -611,6 +618,7 @@ describe("volume runs", () => {
     openFault = null;
     opens = 0;
     sent = [];
+    seeds = [];
     sizes = [];
     sizing = [];
     held = new Map();
@@ -1597,6 +1605,37 @@ describe("volume runs", () => {
       expect(swept).toEqual({ not_started: 0, unheld: 1, closed: 0 });
       expect(Object.fromEntries((await harness.pool.query("select volume_id, held_by from volume_run")).rows.map((row: { volume_id: string; held_by: string | null }) => [row.volume_id, row.held_by])))
         .toEqual({ "v-over": null, "v-live": "d-live", "v-unknown": "d-unknown" });
+    });
+  });
+
+  describe("seed", () => {
+    const into = { volumeId: "vol2", dockerVolume: "shop-production_vol-vol2", name: "data-copy" };
+    const seed: VolumeRunInput = { kind: "seed", args: { into, guid: base.guid, name: base.name } };
+    beforeEach(() => {
+      storeVolumes = [...storeVolumes, { id: into.volumeId, name: into.name, storage: { kind: "provisioned", maximumBytes: 5_000_000 } }];
+    });
+    const genOf = async (id: string) =>
+      Number((await harness.pool.query<{ gen: string }>("select gen from volume_run where id = $1", [id])).rows[0]?.gen);
+
+    it("sends the seed run's gen with the Seed", async () => {
+      const run = await requested(seed);
+
+      const output = await execute(run.id);
+
+      expect(output.error).toBeUndefined();
+      expect(seeds).toEqual([{ name: dockerVolume, into: into.dockerVolume, guid: base.guid, gen: await genOf(run.id) }]);
+      expect(await rows()).toEqual([expect.objectContaining({ id: run.id, kind: "seed", state: "done" })]);
+    });
+
+    it("a Stale reply fails the run naming into, the Volume whose floor refused it", async () => {
+      failNext.set("seed@fsn-1", "stale");
+      const run = await requested(seed);
+
+      const output = await execute(run.id);
+
+      expect(output.error).toBeDefined();
+      expect(seeds).toHaveLength(1);
+      expect(await rows()).toEqual([expect.objectContaining({ id: run.id, kind: "seed", state: "failed", message: "a newer run took data-copy on fsn-1" })]);
     });
   });
 

@@ -531,16 +531,7 @@ impl FloorTurn<'_> {
         let name = name.to_string();
         blocking(move || {
             let connection = connect(&path)?;
-            let floor = connection
-                .query_row(
-                    "SELECT floor FROM volume_floors WHERE name = ?1",
-                    [&name],
-                    |row| row.get::<_, i64>(0),
-                )
-                .optional()?
-                .map_or(VolumeGen::default(), |floor| {
-                    VolumeGen::new(u64::try_from(floor).unwrap_or_default())
-                });
+            let floor = volume_floor(&connection, &name)?;
             if r#gen < floor {
                 return Ok(Err(floor));
             }
@@ -555,6 +546,37 @@ impl FloorTurn<'_> {
         .await
         .map_err(super::Error::from)
     }
+
+    /// Refuse a `gen` below the floor of `name` with that floor, as [`Self::admit`] does,
+    /// but leave the floor where it is.
+    pub async fn check(
+        &mut self,
+        name: &DockerVolumeName,
+        r#gen: VolumeGen,
+    ) -> Result<Result<(), VolumeGen>, super::Error> {
+        let path = self.store.path.clone();
+        let name = name.to_string();
+        blocking(move || {
+            let floor = volume_floor(&connect(&path)?, &name)?;
+            Ok(if r#gen < floor { Err(floor) } else { Ok(()) })
+        })
+        .await
+        .map_err(super::Error::from)
+    }
+}
+
+/// The floor of the Volume `name`; 0 when it has none yet.
+fn volume_floor(connection: &Connection, name: &str) -> Result<VolumeGen, rusqlite::Error> {
+    let floor = connection
+        .query_row(
+            "SELECT floor FROM volume_floors WHERE name = ?1",
+            [name],
+            |row| row.get::<_, i64>(0),
+        )
+        .optional()?;
+    Ok(floor.map_or(VolumeGen::default(), |floor| {
+        VolumeGen::new(u64::try_from(floor).unwrap_or_default())
+    }))
 }
 
 fn materialize_config(

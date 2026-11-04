@@ -1565,6 +1565,105 @@ mod set_volume_copy {
         std::fs::remove_dir_all(data_dir).unwrap();
     }
 
+    const SEED_ROUTE: &str = "Volume.Seed";
+
+    async fn seed(service: &MachineService, request: Value) -> RpcResponse {
+        service
+            .seed_volume(Request::new(
+                op::SeedVolume::into_request(serde_json::from_value(request).unwrap())
+                    .encode()
+                    .unwrap(),
+            ))
+            .await
+            .unwrap()
+            .into_inner()
+            .decode_response()
+            .unwrap()
+    }
+
+    /// A plugin holding a Mirror of `into` that a pull received, which its Seed route
+    /// would `zfs destroy -r` and copy over (seed.rs `seed_volume`).
+    fn pulled_mirror_plugin() -> FakePlugin {
+        let plugin = FakePlugin::default();
+        let mirror = json!({"kind":"slot", "slot":"1", "readonly":true,
+            "newest":snapshot("w-9-1", 900), "resume_token":null, "pull":null, "role":"mirror"});
+        plugin.reply(INSPECT_ROUTE, json!({"Ok": mirror}));
+        plugin.reply(SEED_ROUTE, json!({"Ok": {"copy": mirror}}));
+        plugin
+    }
+
+    /// A Seed request still in transit from a seed run that ended, landing after a later
+    /// run raised `into`'s floor and pulled a Mirror of it back here.
+    #[tokio::test]
+    #[expect(clippy::indexing_slicing, reason = "JSON fixture assertions")]
+    async fn a_seed_below_the_floor_of_into_refuses_stale_before_any_effect() {
+        let (data_dir, _store, service, _fake) = fake_docker_service("ployzd-seed-stale").await;
+        let plugin = pulled_mirror_plugin();
+        let (socket, server) = plugin.serve(&data_dir);
+        let service = service.with_volume_plugin(socket);
+        reply(&set_copy(&service, floor(5)).await);
+
+        let response = seed(
+            &service,
+            json!({"name":"source", "into":VOLUME, "guid":"77", "gen":4}),
+        )
+        .await;
+        assert!(
+            !plugin
+                .routes_called()
+                .iter()
+                .any(|route| route == SEED_ROUTE),
+            "a Seed below into's floor reached the plugin, which replaces a pulled Mirror: {response:?}"
+        );
+        let error = refusal(&response);
+        assert_eq!(error.code, RpcErrorCode::Conflict, "{error:?}");
+        assert_eq!(error.details["reason"], json!("stale"));
+        assert_eq!(error.details["floor"], json!(5));
+        server.abort();
+        std::fs::remove_dir_all(data_dir).unwrap();
+    }
+
+    /// The floor refuses only a gen below it, and a Seed raises no floor: a later
+    /// request on `into` with a lower gen than the Seed's is still admitted. A Seed with
+    /// no gen, from a Cloud that predates it, is not checked.
+    #[tokio::test]
+    async fn a_seed_at_the_floor_or_without_a_gen_reaches_the_plugin_and_raises_no_floor() {
+        let (data_dir, _store, service, _fake) = fake_docker_service("ployzd-seed-admit").await;
+        let plugin = pulled_mirror_plugin();
+        let (socket, server) = plugin.serve(&data_dir);
+        let service = service.with_volume_plugin(socket);
+        reply(&set_copy(&service, floor(5)).await);
+
+        for request in [
+            json!({"name":"source", "into":VOLUME, "guid":"77", "gen":5}),
+            json!({"name":"source", "into":VOLUME, "guid":"77", "gen":9}),
+            json!({"name":"source", "into":VOLUME, "guid":"77"}),
+        ] {
+            let response = seed(&service, request.clone()).await;
+            response
+                .clone()
+                .decode::<op::SeedVolume>()
+                .unwrap_or_else(|error| panic!("{request}: {error}: {response:?}"));
+        }
+        let seeds = plugin
+            .routes_called()
+            .into_iter()
+            .filter(|route| route == SEED_ROUTE)
+            .count();
+        assert_eq!(seeds, 3);
+        let floor = service
+            .containers()
+            .unwrap()
+            .floor_turn()
+            .await
+            .admit(&VOLUME.parse().unwrap(), ployz_core::VolumeGen::new(5))
+            .await
+            .unwrap();
+        assert_eq!(floor, Ok(()), "the Seed at gen 9 raised into's floor");
+        server.abort();
+        std::fs::remove_dir_all(data_dir).unwrap();
+    }
+
     #[tokio::test]
     async fn a_machine_outside_the_cluster_refuses_a_cut_forget_or_floor_and_raises_no_floor() {
         let data_dir =

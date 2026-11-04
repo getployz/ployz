@@ -559,7 +559,16 @@ impl MachineRpc for MachineService {
         request: Request<OpaquePayload>,
     ) -> Result<Response<OpaquePayload>, Status> {
         let request = expect::<op::SeedVolume>(request)?;
-        self.switch_verb::<ployz_core::VolumeCopyView>("SeedVolume", "Volume.Seed", &request)
+        let _guard = self.switch_mutation.lock().await;
+        // Checked under the switch lock, which a mirror pull of `into` takes too: a check
+        // before it would let a Seed admitted at the old floor run after a later run
+        // raised the floor and pulled a Mirror of `into` here, and replace that Mirror.
+        if let Some(r#gen) = request.r#gen
+            && let Err(error) = self.check_gen(&request.into, r#gen).await
+        {
+            return local_error(error);
+        }
+        self.volume_verb::<ployz_core::VolumeCopyView>("SeedVolume", "Volume.Seed", &request)
             .await
     }
 
