@@ -140,8 +140,9 @@ impl MachineSpecStore {
             .collect()
     }
 
-    /// Whether a spec of Service `service_id` with no creation slot names a Container
-    /// `present` lacks. A slotted one can be a restore source only for its own slot.
+    /// Whether a spec of Service `service_id` that no `creations` row names, names a
+    /// Container `present` lacks. Call it under the config lock after
+    /// [`ConfigOperation::adopt_restored`], which already moved a slot's own restore source.
     pub(super) async fn holds_absent(
         &self,
         present: Vec<ContainerId>,
@@ -278,17 +279,6 @@ impl MachineSpecStore {
             store: self,
             _guard: self.config_operations.lock().await,
         }
-    }
-
-    /// Point each listed slot with no holder at the listed Container holding its spec.
-    /// Returns whether a listed Container looks restored, which
-    /// [`ConfigOperation::adopt_restored`] then adopts under the lock.
-    pub(crate) async fn record_creations(
-        &self,
-        listed: Vec<(ContainerId, Option<CreationSlot>)>,
-    ) -> Result<bool, Error> {
-        let path = self.path.clone();
-        blocking(move || Ok(!reconcile_creations(&path, &listed, false)?.is_empty())).await
     }
 
     pub async fn get(
@@ -457,6 +447,18 @@ impl ConfigOperation<'_> {
             Ok(())
         })
         .await
+    }
+
+    /// Point each listed slot with no holder at the listed Container holding its spec.
+    /// Returns whether a listed Container looks restored, which [`Self::adopt_restored`]
+    /// then adopts with a listing read under this lock. Under it, no slot is recorded
+    /// between a half-made check's adoption and its decision.
+    pub(crate) async fn record_creations(
+        &mut self,
+        listed: Vec<(ContainerId, Option<CreationSlot>)>,
+    ) -> Result<bool, Error> {
+        let path = self.store.path.clone();
+        blocking(move || Ok(!reconcile_creations(&path, &listed, false)?.is_empty())).await
     }
 
     /// Move the records of each listed Container's restored-over ID onto it, so it is
@@ -1528,12 +1530,11 @@ mod tests {
         let mut operation = store.config_operation().await;
         operation.put(&live, Some(&slot), &spec).await.unwrap();
         operation.put(&stale, None, &spec).await.unwrap();
-        drop(operation);
-
-        store
+        operation
             .record_creations(vec![(stale, Some(slot.clone()))])
             .await
             .unwrap();
+        drop(operation);
 
         assert_eq!(
             store
