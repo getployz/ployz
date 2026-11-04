@@ -32,7 +32,7 @@ export function useSupportAccess(organizationSlug: string) {
     mutationFn: (change) => {
       const saved = (saving.get(organizationSlug) ?? Promise.resolve()).catch(() => undefined)
         .then(() => setSupportAccessServerFn({ data: { organizationSlug, change } }))
-        .then((row) => collection.writeCommitted(row));
+        .then((row) => collection.utils.writeUpsert(row));
       saving.set(organizationSlug, saved);
       return saved;
     },

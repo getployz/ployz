@@ -281,7 +281,7 @@ it("releases preload-only and reconciliation observers while keeping mounted con
   client.clear();
 });
 
-it.each([false, true])("applies committed rows without an observer and cancels older reads (preloaded: %s)", async (preloaded) => {
+it.each([false, true])("applies committed rows without an observer over older reads (preloaded: %s)", async (preloaded) => {
   const client = new QueryClient();
   const stale = { id: "row", revision: "old" };
   const committed = { id: "row", revision: "committed" };
@@ -293,7 +293,7 @@ it.each([false, true])("applies committed rows without an observer and cancels o
   read.mockImplementation(() => new Promise((resolve) => { finishRead = resolve; }));
   const active = collection.subscribeChanges(() => {});
   const pendingRead = collection.utils.refetch();
-  await collection.writeCommitted(committed);
+  await collection.utils.writeUpsert(committed);
   finishRead([stale]);
   await pendingRead;
   expect(collection.get("row")).toMatchObject(committed);
@@ -303,6 +303,23 @@ it.each([false, true])("applies committed rows without an observer and cancels o
   expect(collection.get("row")).toMatchObject(committed);
   expect(collection.health.hasErrors).toBe(true);
   expect(collection.subscriberCount).toBe(0);
+  await collection.cleanup();
+  client.clear();
+});
+
+it("lands a committed write made during the first load and lets that load finish", async () => {
+  const client = new QueryClient();
+  const stale = { id: "row", revision: "old" };
+  let finishRead = (_rows: typeof stale[]) => {};
+  const read = vi.fn(() => new Promise<typeof stale[]>((resolve) => { finishRead = resolve; }));
+  const collection = createApiCollection({ queryClient: client, queryKey: ["committed", "first-load"], queryFn: read,
+    getKey: (row: typeof stale) => row.id });
+  const loading = preloadCollection(collection);
+  await vi.waitFor(() => expect(read).toHaveBeenCalled());
+  await collection.utils.writeUpsert({ id: "row", revision: "committed" });
+  finishRead([stale]);
+  await loading;
+  expect(collection.get("row")).toMatchObject({ revision: "committed" });
   await collection.cleanup();
   client.clear();
 });
@@ -326,7 +343,7 @@ it("merges incremental reads, drops deleted ids, and advances the cursor when no
   await collection.utils.refetch();
   expect(names()).toEqual(["c", "renamed"]);
   // An own write keeps the cursor; the next read starts after the quiet one.
-  await collection.writeCommitted({ id: "d", name: "d" });
+  await collection.utils.writeUpsert({ id: "d", name: "d" });
   await collection.utils.refetch();
   expect(names()).toEqual(["c", "d", "renamed"]);
   await collection.utils.refetch();
