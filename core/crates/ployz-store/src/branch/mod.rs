@@ -42,9 +42,9 @@ use ployz_core::config::{
     Arrives, At, BranchNodeReason, BranchNodeRole, BranchPicks, BranchPlan, BranchPreset, Cell,
     Cells, ConfigError, EnvironmentNodeType, Hostnames, Landed, LiveLineageUse, LiveValuesInput,
     LiveValuesOwner, NodeRef, Plan, PlannedRow, Policy as Rules, RowId, SavedEnvironmentIntent,
-    SavedServiceIntent, SavedVariableIntent, SavedVariableProducer, SavedVariableValue, SealedCell,
-    SealedSecret, ServiceImageCredentials, ServiceSource, Setting, Sides, Unapplied, ValuePart,
-    ValuePartOwner, Verdict, Way, Why, canonicalize_environment_intent, compile_environment_intent,
+    SavedServiceIntent, SavedVariableIntent, SavedVariableProducer, SealedCell, SealedSecret,
+    ServiceImageCredentials, ServiceSource, Setting, Sides, Unapplied, ValuePart, ValuePartOwner,
+    VariableValue, Verdict, Way, Why, canonicalize_environment_intent, compile_environment_intent,
     dependents, live_values, marks_on, parse_service_setting, plan, plan_branch, put_back,
     referenced_by_others, unapply, unchanged_since,
 };
@@ -505,7 +505,7 @@ pub(crate) fn not_set(
     let mut not_set = Vec::new();
     for service in &working.services {
         for variable in &service.variables {
-            if variable.value == SavedVariableValue::SecretWithoutValue {
+            if variable.value == VariableValue::NotSet {
                 not_set.push(review::history::NotSetVariable {
                     service: ServiceName::parse(&service.slug)
                         .map_err(|_| error::corrupt("Service name"))?,

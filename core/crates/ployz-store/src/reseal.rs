@@ -4,8 +4,8 @@
 
 use ployz_core::RpcError;
 use ployz_core::config::{
-    EnvironmentNodeType, SavedEnvironmentIntent, SavedServiceIntent, SavedVariableValue,
-    SealedCell, SealedSecret, SecretCiphertext,
+    EnvironmentNodeType, SavedEnvironmentIntent, SavedServiceIntent, SealedCell, SealedSecret,
+    SecretCiphertext, VariableValue,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::json;
@@ -281,8 +281,9 @@ impl Resealing<'_> {
         let identity = client_sealed::identity(self.organization, self.environment, &service.id);
         let mut changed = false;
         for variable in &mut service.variables {
-            let SavedVariableValue::Secret {
-                encrypted_value: Some(SecretCiphertext::Legacy(legacy)),
+            let VariableValue::Sealed {
+                ciphertext: Some(SecretCiphertext::Legacy(legacy)),
+                ..
             } = &variable.value
             else {
                 continue;
@@ -318,11 +319,10 @@ impl Resealing<'_> {
                     sealed
                 }
             };
-            variable.value_fingerprint = sealed.fingerprint;
-            variable.value = SavedVariableValue::Secret {
-                encrypted_value: Some(sealed.value),
+            variable.value = VariableValue::Sealed {
+                ciphertext: Some(sealed.value),
+                fingerprint: crate::variables::made_fingerprint(sealed.fingerprint),
             };
-            variable.generated = None;
             self.tally.resealed += 1;
             changed = true;
         }
@@ -341,7 +341,7 @@ fn legacy_in_service(service: &SavedServiceIntent) -> u32 {
         .filter(|variable| {
             matches!(
                 &variable.value,
-                SavedVariableValue::Secret { encrypted_value: Some(value) } if is_legacy(value)
+                VariableValue::Sealed { ciphertext: Some(value), .. } if is_legacy(value)
             )
         })
         .count();
@@ -355,7 +355,8 @@ const fn is_legacy(value: &SecretCiphertext) -> bool {
 #[cfg(test)]
 mod tests {
     use ployz_core::config::{
-        Cell, SavedVariableIntent, SavedVariableValue, SealedCell, SealedSecret, SecretCiphertext,
+        Cell, PlainText, SavedVariableIntent, SealedCell, SealedSecret, SecretCiphertext,
+        ValueFingerprint,
     };
     use ployz_core::{SealedIdentity, ServiceName};
     use serde_json::json;
@@ -412,15 +413,24 @@ mod tests {
 
     fn secret(key: &str, value: SecretCiphertext) -> SavedVariableIntent {
         SavedVariableIntent {
-            generated: None,
             id: Uuid::new_v4().to_string(),
             key: key.into(),
             description: None,
             exported: false,
-            value_fingerprint: "s1:old".into(),
-            value: SavedVariableValue::Secret {
-                encrypted_value: Some(value),
+            value: VariableValue::Sealed {
+                ciphertext: Some(value),
+                fingerprint: ValueFingerprint::parse("s1:old").unwrap(),
             },
+        }
+    }
+
+    /// Give sealed `variable` `ciphertext`, keeping its fingerprint.
+    fn reseal_value(variable: &mut SavedVariableIntent, ciphertext: SecretCiphertext) {
+        if let VariableValue::Sealed {
+            ciphertext: held, ..
+        } = &mut variable.value
+        {
+            *held = Some(ciphertext);
         }
     }
 
@@ -627,8 +637,9 @@ mod tests {
     }
 
     fn client_sealed(variable: &SavedVariableIntent) -> &ployz_core::config::ClientSealedValue {
-        let SavedVariableValue::Secret {
-            encrypted_value: Some(SecretCiphertext::ClientSealed(value)),
+        let VariableValue::Sealed {
+            ciphertext: Some(SecretCiphertext::ClientSealed(value)),
+            ..
         } = &variable.value
         else {
             panic!(
@@ -701,7 +712,7 @@ mod tests {
                 let sealed = client_sealed(variable);
                 assert_eq!(keypair.open(&identity, sealed).as_deref(), Some(plaintext));
                 assert_eq!(
-                    variable.value_fingerprint,
+                    variable.value.stored_fingerprint(),
                     crate::client_sealed::fingerprint(sealed)
                 );
             }
@@ -917,12 +928,7 @@ mod tests {
         set_mode(&store, &who);
         let after = working(&store);
         client_sealed(variable(&after, "TOKEN"));
-        assert_eq!(
-            variable(&after, "MODE").value,
-            SavedVariableValue::Literal {
-                value: "fast".into()
-            }
-        );
+        assert_eq!(variable(&after, "MODE").value.literal(), Some("fast"));
     }
 
     #[test]
@@ -950,14 +956,13 @@ mod tests {
             .unwrap()
             .variables
             .push(SavedVariableIntent {
-                generated: None,
                 id: Uuid::new_v4().to_string(),
                 key: "MODE".into(),
                 description: None,
                 exported: false,
-                value_fingerprint: "p1:fast".into(),
-                value: SavedVariableValue::Literal {
-                    value: "fast".into(),
+                value: VariableValue::Plain {
+                    text: PlainText::Literal("fast".into()),
+                    fingerprint: ValueFingerprint::parse("p1:fast").unwrap(),
                 },
             });
         let mut save = postgres::Client::connect(&url, postgres::NoTls).unwrap();
@@ -983,7 +988,10 @@ mod tests {
 
         let after = working(&store);
         client_sealed(variable(&after, "TOKEN"));
-        assert_eq!(variable(&after, "MODE").value_fingerprint, "p1:fast");
+        assert_eq!(
+            variable(&after, "MODE").value.stored_fingerprint(),
+            "p1:fast"
+        );
     }
 
     #[test]
@@ -1000,9 +1008,7 @@ mod tests {
         plant_saved(&store, 1, |intent| {
             for variable in &mut intent.services.first_mut().unwrap().variables {
                 if variable.key == "OTHER" {
-                    variable.value = SavedVariableValue::Secret {
-                        encrypted_value: Some(legacy(&store.sealing, "marlin")),
-                    };
+                    reseal_value(variable, legacy(&store.sealing, "marlin"));
                 }
             }
         });
@@ -1016,8 +1022,8 @@ mod tests {
             client_sealed(variable(&head, "OTHER"))
         );
         assert_ne!(
-            variable(&working, "OTHER").value_fingerprint,
-            variable(&head, "OTHER").value_fingerprint
+            variable(&working, "OTHER").value.fingerprint(),
+            variable(&head, "OTHER").value.fingerprint()
         );
         let unsaved: Vec<String> = store
             .read(&who, &crate::DiffQuery::default())
@@ -1035,9 +1041,7 @@ mod tests {
         |web| {
             for variable in &mut web.variables {
                 if variable.key == "TOKEN" {
-                    variable.value = SavedVariableValue::Secret {
-                        encrypted_value: Some(legacy(&store.sealing, "hunter2")),
-                    };
+                    reseal_value(variable, legacy(&store.sealing, "hunter2"));
                 }
             }
         }
@@ -1244,18 +1248,19 @@ mod tests {
                 .unwrap()
                 .variables
                 .push(SavedVariableIntent {
-                    generated: None,
                     id: Uuid::new_v4().to_string(),
                     key: "DATABASE_URL".into(),
                     description: None,
                     exported: false,
-                    value_fingerprint: "t1:url".into(),
-                    value: SavedVariableValue::Template {
-                        parts: ployz_core::config::parse_variable_template(
-                            "postgres://app:${{ db.PASSWORD }}@db/app",
-                            |_, _| Some(db.clone()),
-                        )
-                        .parts,
+                    value: VariableValue::Plain {
+                        text: PlainText::Template(
+                            ployz_core::config::parse_variable_template(
+                                "postgres://app:${{ db.PASSWORD }}@db/app",
+                                |_, _| Some(db.clone()),
+                            )
+                            .parts,
+                        ),
+                        fingerprint: ValueFingerprint::parse("t1:url").unwrap(),
                     },
                 });
         });
@@ -1312,18 +1317,19 @@ mod tests {
                         .push(secret("TOKEN", legacy(&store.sealing, "hunter2")));
                 } else {
                     service.variables.push(SavedVariableIntent {
-                        generated: None,
                         id: Uuid::new_v4().to_string(),
                         key: "AUTH".into(),
                         description: None,
                         exported: false,
-                        value_fingerprint: "t1:auth".into(),
-                        value: SavedVariableValue::Template {
-                            parts: ployz_core::config::parse_variable_template(
-                                "Bearer ${{ auth.TOKEN }}",
-                                |_, _| Some(auth.clone()),
-                            )
-                            .parts,
+                        value: VariableValue::Plain {
+                            text: PlainText::Template(
+                                ployz_core::config::parse_variable_template(
+                                    "Bearer ${{ auth.TOKEN }}",
+                                    |_, _| Some(auth.clone()),
+                                )
+                                .parts,
+                            ),
+                            fingerprint: ValueFingerprint::parse("t1:auth").unwrap(),
                         },
                     });
                 }
@@ -1351,18 +1357,19 @@ mod tests {
             auth.variables
                 .push(secret("TOKEN", legacy(&store.sealing, "hunter22")));
             auth.variables.push(SavedVariableIntent {
-                generated: None,
                 id: Uuid::new_v4().to_string(),
                 key: "PAYLOAD".into(),
                 description: None,
                 exported: false,
-                value_fingerprint: "t1:payload".into(),
-                value: SavedVariableValue::Template {
-                    parts: ployz_core::config::parse_variable_template(
-                        &format!("{padding}${{{{ TOKEN }}}}"),
-                        |_, _| Some(lineage.clone()),
-                    )
-                    .parts,
+                value: VariableValue::Plain {
+                    text: PlainText::Template(
+                        ployz_core::config::parse_variable_template(
+                            &format!("{padding}${{{{ TOKEN }}}}"),
+                            |_, _| Some(lineage.clone()),
+                        )
+                        .parts,
+                    ),
+                    fingerprint: ValueFingerprint::parse("t1:payload").unwrap(),
                 },
             });
         });
@@ -1384,18 +1391,19 @@ mod tests {
                 .unwrap()
                 .variables
                 .push(SavedVariableIntent {
-                    generated: None,
                     id: Uuid::new_v4().to_string(),
                     key: "AUTH".into(),
                     description: None,
                     exported: false,
-                    value_fingerprint: "t1:auth".into(),
-                    value: SavedVariableValue::Template {
-                        parts: ployz_core::config::parse_variable_template(
-                            "Bearer ${{ auth.TOKEN }}",
-                            |_, _| Some(auth.clone()),
-                        )
-                        .parts,
+                    value: VariableValue::Plain {
+                        text: PlainText::Template(
+                            ployz_core::config::parse_variable_template(
+                                "Bearer ${{ auth.TOKEN }}",
+                                |_, _| Some(auth.clone()),
+                            )
+                            .parts,
+                        ),
+                        fingerprint: ValueFingerprint::parse("t1:auth").unwrap(),
                     },
                 });
         });

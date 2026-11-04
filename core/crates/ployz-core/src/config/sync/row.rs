@@ -11,8 +11,7 @@ use crate::ConfigFileName;
 use crate::config::service_changes::{at, default_value, source_cell};
 use crate::config::{
     ConfigError, Generator, SavedConfigIntent, SavedEnvironmentIntent as Intent,
-    SavedServiceIntent, SavedVariableIntent, SavedVariableValue, SavedVolumeIntent,
-    SecretCiphertext,
+    SavedServiceIntent, SavedVariableIntent, SavedVolumeIntent, SecretCiphertext, VariableValue,
 };
 
 /// One row's address: a lineage and a place in its node. The only row address anywhere;
@@ -528,10 +527,11 @@ pub(super) fn sealed_cell(env: &Intent, cells: &Cells, row: &RowId) -> SealedCel
     let value = service(env, &row.lineage)
         .and_then(|service| service.variables.iter().find(|v| v.key == *key))
         .and_then(|variable| match &variable.value {
-            SavedVariableValue::Secret { encrypted_value } => encrypted_value.clone(),
-            SavedVariableValue::Literal { .. }
-            | SavedVariableValue::Template { .. }
-            | SavedVariableValue::SecretWithoutValue => None,
+            VariableValue::Sealed { ciphertext, .. } => ciphertext.clone(),
+            VariableValue::Plain { .. }
+            | VariableValue::Generated { .. }
+            | VariableValue::Arriving { .. }
+            | VariableValue::NotSet => None,
         });
     match value {
         Some(value) => SealedCell::Secret(SealedSecret {
@@ -633,21 +633,21 @@ fn cells(env: &Intent, node: NodeRef, suffix: &str) -> BTreeMap<At, Cell> {
 }
 
 fn variable_cell(variable: &SavedVariableIntent) -> Cell {
-    if let Some(generator) = variable.generator() {
-        return generated_cell(generator);
-    }
     match &variable.value {
-        SavedVariableValue::Literal { .. } | SavedVariableValue::Template { .. } => {
-            let mut value = json!(variable.value);
+        VariableValue::Plain { fingerprint, .. } => {
+            let mut value = json!(variable.value.stored());
             if let Some(object) = value.as_object_mut() {
-                object.insert("fingerprint".to_owned(), json!(variable.value_fingerprint));
+                object.insert("fingerprint".to_owned(), json!(fingerprint.as_str()));
             }
             Cell::Value(value)
         }
-        SavedVariableValue::Secret { .. } => Cell::Secret {
-            fingerprint: variable.value_fingerprint.clone(),
+        VariableValue::Generated { generator, .. } | VariableValue::Arriving { generator } => {
+            generated_cell(generator)
+        }
+        VariableValue::Sealed { fingerprint, .. } => Cell::Secret {
+            fingerprint: fingerprint.to_string(),
         },
-        SavedVariableValue::SecretWithoutValue => Cell::SecretWithoutValue,
+        VariableValue::NotSet => Cell::SecretWithoutValue,
     }
 }
 
@@ -693,17 +693,12 @@ pub(super) fn held_cell(env: &Intent, cells: &Cells, row: &RowId) -> SealedCell 
     };
     let held = service(env, &row.lineage)
         .and_then(|service| service.variables.iter().find(|v| v.key == *key));
-    match held {
-        Some(SavedVariableIntent {
-            generated: Some(generator),
-            value: SavedVariableValue::Literal { value },
-            value_fingerprint,
-            ..
-        }) => SealedCell::Cell(Cell::Value(json!({
+    match held.map(|variable| (&variable.value, variable.generator())) {
+        Some((value, Some(generator))) => SealedCell::Cell(Cell::Value(json!({
             "generated": generator,
-            "value": value,
-            "fingerprint": value_fingerprint,
+            "value": value.literal(),
+            "fingerprint": value.stored_fingerprint(),
         }))),
-        Some(_) | None => sealed_cell(env, cells, row),
+        Some((_, None)) | None => sealed_cell(env, cells, row),
     }
 }

@@ -397,7 +397,7 @@ mod tests {
     use serde_json::{Value, json};
 
     use super::*;
-    use crate::config::{SavedVariableIntent, SavedVariableValue};
+    use crate::config::{SavedVariableIntent, VariableValue};
 
     /// Base64 of 48 bytes: the shortest ciphertext a Sealed value takes.
     const SEALED: &str =
@@ -416,8 +416,9 @@ mod tests {
         let parsed: SavedVariableIntent = serde_json::from_str(row).unwrap();
         assert!(matches!(
             parsed.value,
-            SavedVariableValue::Secret {
-                encrypted_value: Some(SecretCiphertext::Legacy(_))
+            VariableValue::Sealed {
+                ciphertext: Some(SecretCiphertext::Legacy(_)),
+                ..
             }
         ));
         assert_eq!(serde_json::to_string(&parsed).unwrap(), row);

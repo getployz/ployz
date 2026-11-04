@@ -16,8 +16,7 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use ployz_core::config::{
     BUILT_IN_VARIABLES, SavedConfigIntent, SavedEnvironmentIntent, SavedServiceIntent,
-    SavedVariableValue, SavedVolumeIntent, ServiceUpdateOrder, ValuePart, ValuePartOwner,
-    VolumeKind,
+    SavedVolumeIntent, ServiceUpdateOrder, ValuePart, ValuePartOwner, VolumeKind,
 };
 use ployz_core::{ConfigFileName, ConfigName, RpcError, ServiceName};
 use serde::{Deserialize, Serialize};
@@ -412,16 +411,14 @@ fn service<'a>(
 /// Each reference in `service`'s variables: (its variable, the owner, the key).
 fn references(service: &SavedServiceIntent) -> impl Iterator<Item = (&str, &ValuePartOwner, &str)> {
     service.variables.iter().flat_map(|variable| {
-        let parts = match &variable.value {
-            SavedVariableValue::Template { parts } => parts.as_slice(),
-            SavedVariableValue::Literal { .. }
-            | SavedVariableValue::Secret { .. }
-            | SavedVariableValue::SecretWithoutValue => &[],
-        };
-        parts.iter().filter_map(move |part| match part {
-            ValuePart::Ref { owner, key } => Some((variable.key.as_str(), owner, key.as_str())),
-            ValuePart::Text { .. } => None,
-        })
+        variable
+            .value
+            .parts()
+            .iter()
+            .filter_map(move |part| match part {
+                ValuePart::Ref { owner, key } => Some((variable.key.as_str(), owner, key.as_str())),
+                ValuePart::Text { .. } => None,
+            })
     })
 }
 
@@ -715,7 +712,8 @@ impl<'a> Refusing<'a> {
 )]
 pub(crate) mod tests {
     use ployz_core::config::{
-        SavedEnvironmentIntent, SavedVariableValue, ValuePart, ValuePartOwner, VolumeAttachment,
+        PlainText, SavedEnvironmentIntent, ValueFingerprint, ValuePart, ValuePartOwner,
+        VariableValue, VolumeAttachment,
     };
     use ployz_core::{RpcError, RpcErrorCode, ServiceName};
     use serde_json::{Value, json};
@@ -1080,11 +1078,12 @@ pub(crate) mod tests {
                 .iter_mut()
                 .find(|service| service.slug == "redis")
                 .unwrap();
-            redis.variables[0].value = SavedVariableValue::Template {
-                parts: vec![ValuePart::Ref {
+            redis.variables[0].value = VariableValue::Plain {
+                text: PlainText::Template(vec![ValuePart::Ref {
                     owner: ValuePartOwner::Self_,
                     key: "SELF".into(),
-                }],
+                }]),
+                fingerprint: ValueFingerprint::parse("p1:self").unwrap(),
             };
         });
         unrelated(&store, &who).unwrap();

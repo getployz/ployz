@@ -3,7 +3,7 @@
 
 use ployz_core::config::{
     ClientSealedValue, SavedEnvironmentIntent, SavedServiceIntent, SavedVariableIntent,
-    SavedVariableValue, SealedSecret, SecretCiphertext,
+    SealedSecret, SecretCiphertext, VariableValue,
 };
 use ployz_core::{RpcError, SealedIdentity, SealedScope, SealedValue};
 use ring::digest::{SHA256, digest};
@@ -157,8 +157,9 @@ fn sealed_port(service: &SavedServiceIntent) -> bool {
 pub(crate) fn browser_sealed(variable: &SavedVariableIntent) -> bool {
     matches!(
         variable.value,
-        SavedVariableValue::Secret {
-            encrypted_value: Some(SecretCiphertext::ClientSealed(_))
+        VariableValue::Sealed {
+            ciphertext: Some(SecretCiphertext::ClientSealed(_)),
+            ..
         }
     )
 }

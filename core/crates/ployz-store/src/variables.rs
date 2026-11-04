@@ -12,11 +12,11 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
 
 use ployz_core::config::{
-    ClientSealedValue, CompiledEnvironmentIntent, CompiledNodeConfig, Generator,
+    ClientSealedValue, CompiledEnvironmentIntent, CompiledNodeConfig, Generator, PlainText,
     ResolveVariablesInput, ResolveVariablesResult, ResolvedConfigFile, ResolverValue,
     SavedServiceIntent, SavedVariableIntent, SavedVariableValue, SecretCiphertext, ServiceEnvValue,
-    ValuePart, ValuePartOwner, VariableProducer, is_deleted_owner, parse_variable_template,
-    render_variable_parts, resolve_config_file, resolve_variables,
+    ValueFingerprint, ValuePart, ValuePartOwner, VariableProducer, VariableValue, is_deleted_owner,
+    parse_variable_template, render_variable_parts, resolve_config_file, resolve_variables,
 };
 use ployz_core::{ConfigFileName, EnvPart, EnvValue, RpcError, SealedScope, ServiceName, Template};
 use ring::rand::{SecureRandom as _, SystemRandom};
@@ -75,7 +75,7 @@ enum Input {
 /// A variable's value as reads show it: text with references by Service name,
 /// `{"secret": true}`, or `{"secret": false}` for a secret still without a value.
 pub(crate) fn shown(variable: &SavedVariableIntent, names: &BTreeMap<String, String>) -> Value {
-    shown_value(&variable.value, names)
+    shown_value(&variable.value.to_saved_value(), names)
 }
 
 /// `value` as [`shown`] shows a variable holding it.
@@ -169,22 +169,15 @@ pub(crate) fn set(
         .variables
         .iter()
         .find(|variable| variable.key == key.as_str());
-    let kept = |current: &SavedVariableIntent| {
-        (
-            current.value.clone(),
-            current.value_fingerprint.clone(),
-            current.generator().cloned(),
-            None,
-        )
-    };
-    let (value, fingerprint, generated, typed) = match (input, current) {
+    let kept = |current: &SavedVariableIntent| (current.value.clone(), None);
+    let (value, typed) = match (input, current) {
         (None, None) => return Err(invalid(key, "a new variable needs a value")),
         (None, Some(current)) => kept(current),
         (Some(Input::Keep), Some(current)) if secret(current) => kept(current),
         (Some(Input::Keep), _) => return Err(invalid(key, "it holds no secret to keep")),
         // A retried edit must not rotate a secret its referrers and a database already use.
         (Some(Input::Generate), Some(current))
-            if matches!(current.value, SavedVariableValue::Secret { .. }) =>
+            if matches!(current.value, VariableValue::Sealed { .. }) =>
         {
             kept(current)
         }
@@ -196,11 +189,10 @@ pub(crate) fn set(
                 &generated_secret()?,
             )?;
             (
-                SavedVariableValue::Secret {
-                    encrypted_value: Some(sealed.value),
+                VariableValue::Sealed {
+                    ciphertext: Some(sealed.value),
+                    fingerprint: made_fingerprint(sealed.fingerprint),
                 },
-                sealed.fingerprint,
-                None,
                 None,
             )
         }
@@ -219,10 +211,7 @@ pub(crate) fn set(
         {
             kept(current)
         }
-        (Some(Input::Generated(generator)), _) => {
-            let (value, fingerprint) = generated_value(&generator)?;
-            (value, fingerprint, Some(generator), None)
-        }
+        (Some(Input::Generated(generator)), _) => (generated_value(generator)?, None),
         (Some(Input::Text(text)), _) => {
             let old = current.map_or(&[][..], |current| current.value.parts());
             let (labels, removed) = (environment.shown_names(), environment.removed_names());
@@ -232,13 +221,22 @@ pub(crate) fn set(
             };
             let (parts, fingerprint) = text_parts(key, &text, &names, shown, old)?;
             let typed = typed_address::in_plain(&parts, key, &others, &names)?;
-            let value = stored(parts);
+            let text = PlainText::of(parts);
             // A generated variable's own value, as reads show it, set back stays generated.
-            match current {
-                Some(current) if current.generator().is_some() && current.value == value => {
+            match (current, &text) {
+                (Some(current), PlainText::Literal(value))
+                    if current.generator().is_some()
+                        && current.value.literal() == Some(value.as_str()) =>
+                {
                     kept(current)
                 }
-                Some(_) | None => (value, fingerprint, None, typed),
+                (Some(_) | None, _) => (
+                    VariableValue::Plain {
+                        text,
+                        fingerprint: made_fingerprint(fingerprint),
+                    },
+                    typed,
+                ),
             }
         }
         (Some(Input::Seal(_)), _) => {
@@ -252,11 +250,10 @@ pub(crate) fn set(
             let sealed =
                 client_sealed::accept(value, key, &receiver, |message| invalid(key, message))?;
             (
-                SavedVariableValue::Secret {
-                    encrypted_value: Some(sealed.value),
+                VariableValue::Sealed {
+                    ciphertext: Some(sealed.value),
+                    fingerprint: made_fingerprint(sealed.fingerprint),
                 },
-                sealed.fingerprint,
-                None,
                 None,
             )
         }
@@ -269,9 +266,7 @@ pub(crate) fn set(
         key: key.as_str().to_owned(),
         description: current.and_then(|current| current.description.clone()),
         exported: exported.unwrap_or_else(|| current.is_some_and(|current| current.exported)),
-        value_fingerprint: fingerprint,
         value,
-        generated,
     };
     if current == Some(&next) {
         return Ok((false, typed));
@@ -418,7 +413,11 @@ pub(crate) fn rename(
     for referrer in &mut environment.working.services {
         let own = referrer.slug == service.as_str();
         for variable in &mut referrer.variables {
-            let SavedVariableValue::Template { parts } = &mut variable.value else {
+            let VariableValue::Plain {
+                text: PlainText::Template(parts),
+                fingerprint,
+            } = &mut variable.value
+            else {
                 continue;
             };
             let mut rewrote = false;
@@ -432,7 +431,7 @@ pub(crate) fn rename(
                 }
             }
             if rewrote {
-                variable.value_fingerprint = plain_fingerprint(parts);
+                *fingerprint = made_fingerprint(plain_fingerprint(parts));
             }
         }
     }
@@ -467,9 +466,7 @@ fn referrers(
     for referrer in &environment.working.services {
         let own = referrer.slug == service.as_str();
         for variable in sorted(referrer) {
-            let SavedVariableValue::Template { parts } = &variable.value else {
-                continue;
-            };
+            let parts = variable.value.parts();
             let uses = parts.iter().any(|part| {
                 matches!(part, ValuePart::Ref { owner, key: wanted }
                     if wanted == key.as_str() && references(owner, own, lineage))
@@ -634,13 +631,9 @@ pub(crate) fn environment_note(
         .service(service)?
         .variables
         .iter()
-        .filter_map(|variable| match &variable.value {
-            SavedVariableValue::Literal { value } => {
-                Some(env_bytes(variable.key.len(), value.len()))
-            }
-            SavedVariableValue::Template { .. }
-            | SavedVariableValue::Secret { .. }
-            | SavedVariableValue::SecretWithoutValue => None,
+        .filter_map(|variable| {
+            let value = variable.value.literal()?;
+            Some(env_bytes(variable.key.len(), value.len()))
         })
         .sum();
     too_big(service.as_str(), bytes)?;
@@ -721,10 +714,7 @@ pub(crate) fn validate_text(key: &VariableKey, text: &str) -> Result<(), RpcErro
 }
 
 fn secret(variable: &SavedVariableIntent) -> bool {
-    matches!(
-        variable.value,
-        SavedVariableValue::Secret { .. } | SavedVariableValue::SecretWithoutValue
-    )
+    variable.value.is_secret()
 }
 
 /// Mark variable `key` exported or not. Returns whether Working State changed.
@@ -891,12 +881,21 @@ fn generated_secret() -> Result<String, RpcError> {
 }
 
 /// A new value `generator` makes, with its fingerprint.
-fn generated_value(generator: &Generator) -> Result<(SavedVariableValue, String), RpcError> {
-    let value = generate(generator)?;
-    let fingerprint = plain_fingerprint(&[ValuePart::Text {
+fn generated_value(generator: Generator) -> Result<VariableValue, RpcError> {
+    let value = generate(&generator)?;
+    let fingerprint = made_fingerprint(plain_fingerprint(&[ValuePart::Text {
         value: value.clone(),
-    }]);
-    Ok((SavedVariableValue::Literal { value }, fingerprint))
+    }]));
+    Ok(VariableValue::Generated {
+        generator,
+        value,
+        fingerprint,
+    })
+}
+
+/// A fingerprint the Store made, which always names its version.
+pub(crate) fn made_fingerprint(fingerprint: String) -> ValueFingerprint {
+    ValueFingerprint::parse(fingerprint).expect("a fingerprint the Store makes names its version")
 }
 
 /// Make the value of every generated variable in `working` that awaits one: what a
@@ -914,7 +913,7 @@ pub(crate) fn make_generated(
         .flat_map(|service| service.variables.iter_mut())
     {
         if let (true, Some(generator)) = (variable.awaits_value(), variable.generator().cloned()) {
-            (variable.value, variable.value_fingerprint) = generated_value(&generator)?;
+            variable.value = generated_value(generator)?;
         }
     }
     Ok(())
@@ -942,9 +941,6 @@ pub(crate) fn take_generated(
                     && !made.awaits_value()
             }) {
                 variable.value.clone_from(&made.value);
-                variable
-                    .value_fingerprint
-                    .clone_from(&made.value_fingerprint);
             }
         }
     }

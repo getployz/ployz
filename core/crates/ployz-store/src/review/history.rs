@@ -164,19 +164,15 @@ pub(crate) fn history(
             environment.working = intent.clone();
             // The first revision is what it created, against an empty Environment.
             let empty = crate::scope::empty(environment.summary.name.as_str());
-            let mut baseline = std::borrow::Cow::Borrowed(
-                previous.as_ref().map_or(&empty, |(_, baseline)| baseline),
-            );
+            let baseline = previous.as_ref().map_or(&empty, |(_, baseline)| baseline);
             let changed: Vec<(String, String)> = row
                 .optional_text(5)?
                 .map(serde_json::from_str)
                 .transpose()
                 .map_err(|_| error::corrupt("Saved value changes"))?
                 .unwrap_or_default();
-            if !changed.is_empty() {
-                unscrub_changes(baseline.to_mut(), &environment.working, &changed);
-            }
-            let changes = review::saved_comparison(&environment, &baseline)?;
+            let recorded = recorded_changes(baseline, &environment.working, &changed);
+            let changes = review::saved_comparison(&environment, baseline, &recorded)?;
             revisions.push(SavedRevision {
                 revision,
                 message: row.optional_text(2)?.map(str::to_owned),
@@ -208,14 +204,15 @@ pub(crate) fn history(
     })
 }
 
-/// Mark in `baseline` each value `changed` lists that sealing has since made equal
-/// to `saved`'s, so History shows that the version changed it. Both sides still show
-/// only that the value is sealed.
-fn unscrub_changes(
-    baseline: &mut SavedEnvironmentIntent,
+/// The `baseline` variables, as service id and key, whose value `changed` lists but
+/// sealing has since made read the same as `saved`'s, so History still lists that the
+/// version changed them. Both sides show only what they showed before.
+fn recorded_changes(
+    baseline: &SavedEnvironmentIntent,
     saved: &SavedEnvironmentIntent,
     changed: &[(String, String)],
-) {
+) -> Vec<(String, String)> {
+    let mut recorded = Vec::new();
     for (service_id, variable_id) in changed {
         let Some(now) = saved
             .services
@@ -227,25 +224,25 @@ fn unscrub_changes(
         };
         let Some(was) = baseline
             .services
-            .iter_mut()
+            .iter()
             .find(|service| &service.id == service_id)
             .and_then(|service| {
-                let index = service
+                service
                     .variables
                     .iter()
-                    .position(|was| was.id == now.id)
-                    .or_else(|| service.variables.iter().position(|was| was.key == now.key))?;
-                service.variables.get_mut(index)
+                    .find(|was| was.id == now.id)
+                    .or_else(|| service.variables.iter().find(|was| was.key == now.key))
             })
         else {
             continue;
         };
-        // The comparison counts a differing fingerprint as a changed value but never
-        // shows one, so this marks the row without revealing anything.
-        if was.value == now.value && was.value_fingerprint == now.value_fingerprint {
-            was.value_fingerprint = format!("{}:before", now.value_fingerprint);
+        if was.value.holds_same(&now.value)
+            && was.value.stored_fingerprint() == now.value.stored_fingerprint()
+        {
+            recorded.push((service_id.clone(), was.key.clone()));
         }
     }
+    recorded
 }
 
 pub(crate) fn preview(

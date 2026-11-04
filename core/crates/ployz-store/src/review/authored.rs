@@ -8,12 +8,12 @@ use crate::storage::Tx;
 use crate::{error, scope};
 use ployz_core::config::{
     At, AuthoredServiceConfig, BuildMethod, ChangeKind, CompiledNodeConfig, ConfigAttachment,
-    EnvironmentNodeType, Generator, ReviewComparisonRole, ReviewLifecycleKind, ReviewNodeIdentity,
+    EnvironmentNodeType, PlainText, ReviewComparisonRole, ReviewLifecycleKind, ReviewNodeIdentity,
     RowId, SavedConfigFile, SavedConfigIntent, SavedEnvironmentIntent, SavedServiceIntent,
-    SavedVariableIntent, SavedVariableValue, SavedVolumeIntent, ServiceBuildConfig,
-    ServiceGitAccess, ServiceGitBranch, ServiceHealthcheck, ServiceManagedHostname,
-    ServiceRestartPolicy, ServiceRoute, ServiceSettingChange, ServiceSource, ServiceTemplate,
-    ServiceUpdateOrder, Setting, ValuePart, VolumeAttachment, VolumeKind, compare_service_settings,
+    SavedVariableIntent, SavedVolumeIntent, ServiceBuildConfig, ServiceGitAccess, ServiceGitBranch,
+    ServiceHealthcheck, ServiceManagedHostname, ServiceRestartPolicy, ServiceRoute,
+    ServiceSettingChange, ServiceSource, ServiceTemplate, ServiceUpdateOrder, Setting, ValuePart,
+    VariableValue, VolumeAttachment, VolumeKind, compare_service_settings,
     compile_environment_intent, render_variable_parts,
 };
 use ployz_core::{ConfigFileName, ConfigName, RpcError, ServiceName};
@@ -49,51 +49,36 @@ impl<T> Lifecycle<T> {
         }
     }
 }
+/// A variable's value with its fingerprint and generator: what a review compares.
 #[derive(Clone, PartialEq)]
 struct VersionedValue {
-    value: SavedVariableValue,
-    fingerprint: String,
-    generated: Option<Generator>,
+    value: VariableValue,
 }
 impl VersionedValue {
     fn of(variable: &SavedVariableIntent) -> Self {
-        let SavedVariableIntent {
-            id: _,
-            key: _,
-            description: _,
-            exported: _,
-            value_fingerprint,
-            value,
-            generated: _,
-        } = variable;
         Self {
-            value: value.clone(),
-            fingerprint: value_fingerprint.clone(),
-            generated: variable.generator().cloned(),
+            value: variable.value.clone(),
         }
     }
     fn restore(&self, variable: &mut SavedVariableIntent) {
-        (
-            variable.value,
-            variable.value_fingerprint,
-            variable.generated,
-        ) = (
-            self.value.clone(),
-            self.fingerprint.clone(),
-            self.generated.clone(),
-        );
+        variable.value.clone_from(&self.value);
     }
     fn shown(&self, names: &BTreeMap<String, String>) -> Value {
         match &self.value {
-            SavedVariableValue::Literal { value } => json!(render_variable_parts(
+            VariableValue::Plain {
+                text: PlainText::Template(parts),
+                ..
+            } => json!(render_variable_parts(parts, names)),
+            VariableValue::Plain { .. }
+            | VariableValue::Generated { .. }
+            | VariableValue::Arriving { .. } => json!(render_variable_parts(
                 &[ValuePart::Text {
-                    value: value.clone()
+                    value: self.value.literal().unwrap_or_default().to_owned()
                 }],
                 names
             )),
-            SavedVariableValue::Template { parts } => json!(render_variable_parts(parts, names)),
-            SavedVariableValue::Secret { encrypted_value: _ } => json!({ "secret": true }),
-            SavedVariableValue::SecretWithoutValue => json!({ "secret": false }),
+            VariableValue::Sealed { .. } => json!({ "secret": true }),
+            VariableValue::NotSet => json!({ "secret": false }),
         }
     }
 }
@@ -266,7 +251,7 @@ impl Uses {
             ..Self::default()
         }
     }
-    fn of_value(value: &SavedVariableValue) -> Self {
+    fn of_value(value: &VariableValue) -> Self {
         Self {
             lineages: value.referenced_lineages().map(str::to_owned).collect(),
             ..Self::default()
@@ -370,6 +355,7 @@ impl Plan {
             key.as_str(),
             before.as_ref(),
             after.as_ref(),
+            false,
         );
         effects.retain(|effect| match effect {
             Effect::VariableLifecycle { .. } => !matches!(target, Target::Exported(_)),
@@ -399,6 +385,15 @@ impl Plan {
         before: &SavedEnvironmentIntent,
         after: &SavedEnvironmentIntent,
     ) -> Result<Self, RpcError> {
+        Self::recording(before, after, &[])
+    }
+    /// As `between`, also showing each variable `recorded` lists, as service id and
+    /// key, changed in value.
+    fn recording(
+        before: &SavedEnvironmentIntent,
+        after: &SavedEnvironmentIntent,
+        recorded: &[(String, String)],
+    ) -> Result<Self, RpcError> {
         let SavedEnvironmentIntent {
             version,
             environment_slug,
@@ -422,7 +417,9 @@ impl Plan {
                 (Some(before), None) => effects.push(Effect::ServiceLifecycle(Box::new(
                     Lifecycle::Removed(before.clone()),
                 ))),
-                (Some(before), Some(after)) => service_changes(&mut effects, before, after)?,
+                (Some(before), Some(after)) => {
+                    service_changes(&mut effects, before, after, recorded)?
+                }
                 (None, None) => unreachable!("union contains an owner"),
             }
         }
@@ -666,6 +663,7 @@ fn service_changes(
     effects: &mut Vec<Effect>,
     before: &SavedServiceIntent,
     after: &SavedServiceIntent,
+    recorded: &[(String, String)],
 ) -> Result<(), RpcError> {
     let SavedServiceIntent {
         id,
@@ -828,6 +826,9 @@ fn service_changes(
             key,
             earlier.get(key).copied(),
             later.get(key).copied(),
+            recorded
+                .iter()
+                .any(|(service, variable)| service == id && variable == key),
         );
     }
     for resource in keys(&before.volume_attachments, volume_attachments, |mount| {
@@ -875,12 +876,14 @@ fn service_changes(
     Ok(())
 }
 
+/// `recorded` shows a value change even where both values read the same.
 fn variable_changes(
     effects: &mut Vec<Effect>,
     service: &str,
     key: &str,
     before: Option<&SavedVariableIntent>,
     after: Option<&SavedVariableIntent>,
+    recorded: bool,
 ) {
     match (before, after) {
         (None, Some(after)) => effects.push(Effect::VariableLifecycle {
@@ -899,9 +902,7 @@ fn variable_changes(
                 key,
                 description,
                 exported,
-                value_fingerprint: _,
                 value: _,
-                generated: _,
             } = after;
             let pair = VersionedValue::of(after);
             let mut add = |field| {
@@ -914,8 +915,12 @@ fn variable_changes(
             if let Some(delta) = Delta::between(&before.id, variable_id) {
                 add(VariableField::Id(delta));
             }
-            if let Some(delta) = Delta::between(&VersionedValue::of(before), &pair) {
-                add(VariableField::Value(Box::new(delta)));
+            let was = VersionedValue::of(before);
+            if recorded || was != pair {
+                add(VariableField::Value(Box::new(Delta {
+                    before: was,
+                    after: pair,
+                })));
             }
             if let Some(delta) = Delta::between(&before.description, description) {
                 add(VariableField::Description(delta));
@@ -2120,11 +2125,16 @@ fn node_path(change: &NodeChange) -> String {
         EnvironmentNodeType::Config => format!("configs.@{}", change.node.id),
     }
 }
+/// `recorded` lists variables, as service id and key, shown changed in value even
+/// where both sides read the same.
 pub(super) fn compare(
     before: &SavedEnvironmentIntent,
     after: &SavedEnvironmentIntent,
+    recorded: &[(String, String)],
 ) -> Result<Summary, RpcError> {
-    Ok(Plan::between(before, after)?.render(before, after)?.0)
+    Ok(Plan::recording(before, after, recorded)?
+        .render(before, after)?
+        .0)
 }
 
 pub(super) struct Prepared {
@@ -2293,13 +2303,9 @@ fn keep_sealed(
             match now {
                 Some(now) if sealed(&now.value) || sealed(&variable.value) => {
                     variable.id.clone_from(&now.id);
-                    variable
-                        .value_fingerprint
-                        .clone_from(&now.value_fingerprint);
-                    variable.value = now.value.clone();
-                    variable.generated.clone_from(&now.generated);
+                    variable.value.clone_from(&now.value);
                 }
-                Some(now) if now.value == variable.value => {}
+                Some(now) if now.value.holds_same(&variable.value) => {}
                 Some(_) if ever.holds(&service.id, variable) => {
                     let key = &variable.key;
                     return Err(error::conflict(
@@ -2308,9 +2314,7 @@ fn keep_sealed(
                     ));
                 }
                 None if sealed(&variable.value) || ever.holds(&service.id, variable) => {
-                    variable.value = SavedVariableValue::SecretWithoutValue;
-                    variable.value_fingerprint.clear();
-                    variable.generated = None;
+                    variable.value = VariableValue::NotSet;
                     not_set.push(NotSetVariable {
                         service: ServiceName::parse(&service.slug)
                             .map_err(|_| error::corrupt("Service name"))?,
@@ -2653,12 +2657,7 @@ fn prevent_plaintext(
     for service in &current.services {
         if let Some(restored) = target.services.iter().find(|owner| owner.id == service.id) {
             for variable in &service.variables {
-                let secret = |value: &SavedVariableValue| match value {
-                    SavedVariableValue::Secret { encrypted_value: _ }
-                    | SavedVariableValue::SecretWithoutValue => true,
-                    SavedVariableValue::Literal { value: _ }
-                    | SavedVariableValue::Template { parts: _ } => false,
-                };
+                let secret = VariableValue::is_secret;
                 if secret(&variable.value)
                     && restored
                         .variables

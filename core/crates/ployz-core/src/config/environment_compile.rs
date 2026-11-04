@@ -167,26 +167,34 @@ pub fn render_variable_parts(parts: &[ValuePart], slugs: &BTreeMap<String, Strin
 
 fn env_value(variable: &SavedVariableIntent, slugs: &BTreeMap<String, String>) -> ServiceEnvValue {
     match &variable.value {
-        SavedVariableValue::Literal { value } => ServiceEnvValue::Literal {
-            value: value.clone(),
+        VariableValue::Plain {
+            text: PlainText::Template(parts),
+            ..
+        } => ServiceEnvValue::Literal {
+            value: render_variable_parts(parts, slugs),
+            parts: Some(parts.clone()),
+        },
+        VariableValue::Plain { .. }
+        | VariableValue::Generated { .. }
+        | VariableValue::Arriving { .. } => ServiceEnvValue::Literal {
+            value: variable.value.literal().unwrap_or_default().to_owned(),
             parts: None,
         },
-        SavedVariableValue::Secret { encrypted_value } => ServiceEnvValue::Secret {
+        VariableValue::Sealed {
+            ciphertext,
+            fingerprint,
+        } => ServiceEnvValue::Secret {
             variable_id: Some(variable.id.clone()),
-            encrypted_value: encrypted_value.clone(),
-            fingerprint: variable.value_fingerprint.clone(),
+            encrypted_value: ciphertext.clone(),
+            fingerprint: fingerprint.to_string(),
             interpolated: None,
         },
         // A review shows it as a secret; a Deployment leaves it out.
-        SavedVariableValue::SecretWithoutValue => ServiceEnvValue::Secret {
+        VariableValue::NotSet => ServiceEnvValue::Secret {
             variable_id: Some(variable.id.clone()),
             encrypted_value: None,
             fingerprint: String::new(),
             interpolated: None,
-        },
-        SavedVariableValue::Template { parts } => ServiceEnvValue::Literal {
-            value: render_variable_parts(parts, slugs),
-            parts: Some(parts.clone()),
         },
     }
 }
@@ -298,7 +306,7 @@ pub fn compile_environment_intent(
             owner_id: service.id.clone(),
             owner_lineage_id: service.lineage_id.clone(),
             key: v.key.clone(),
-            value: v.value.clone(),
+            value: v.value.to_saved_value(),
         }));
     }
     node_snapshots.extend(intent.volumes.iter().map(|v| CompiledEnvironmentNode {
