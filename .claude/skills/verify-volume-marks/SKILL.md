@@ -142,4 +142,4 @@ Each model step is a copy of code at the sync commit. Reread these when a diff t
 - `dashboard/src/modules/volume-run/tables.ts`: the `gen` identity column.
 - `core/crates/ployzd/src/volume_plugin/tests/seed_tests.rs`: `a_seed_replaces_a_slot_a_mirror_pull_marked_or_that_holds_no_point`, the designed replacement the model must keep.
 
-Sync commit: `77fffcc6ca90f46e9ab7e3b1b719e78165d4bdea`, the commit this model was checked against, and every line cited above is at it except the finding's step 7, which is at `0928c565975b97f0446d60298f30a3a5267f1a97`. Code in the list above that changed after it has not been rechecked.
+Sync commit: `4be4aafe444a0d9a4b03a6ebd861134a7a3081d3`, the commit this model was checked against, and every line cited above is at it except the finding's step 7, which is at `0928c565975b97f0446d60298f30a3a5267f1a97`. Code in the list above that changed after it has not been rechecked.
