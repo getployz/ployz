@@ -257,7 +257,7 @@ enum Branch {
     CheckFindsLost,
     /// The read after executing let the run go on.
     CheckGoesOn,
-    /// The fix: a `renewing` tick during `remove_volumes` latched Lost.
+    /// The fix: a `renewing` tick during `remove_volumes` latched Lost or Ended.
     Latches,
     /// The gate let `fill_ingress` start.
     Fills,
@@ -509,7 +509,7 @@ const COVERAGE: &[Coverage] = &[
         name: "renewing latches a takeover during remove_volumes",
         fix_only: true,
         omit: Omit::Branch(Branch::Latches),
-        reached: |_, state| took(state, Branch::Latches),
+        reached: |_, state| took(state, Branch::Latches) && state.standing == Standing::Lost,
     },
     Coverage {
         name: "record keeps a late Executed as Interrupted and shows the deleted Volumes",
@@ -1080,9 +1080,10 @@ fn reads_as(model: &RunnerStanding, before: &State, action: Action, after: &Stat
             });
             let then = match after.took {
                 Some(Branch::Aborts) => "calls abort".to_owned(),
-                Some(Branch::Latches) => {
-                    "the abort is || (), deleting goes on; the latch keeps Lost (the fix)".to_owned()
-                }
+                Some(Branch::Latches) => format!(
+                    "the abort is || (), deleting goes on; the latch keeps {:?} (the fix)",
+                    after.standing
+                ),
                 _ if before.phase.renewing().is_some_and(|(_, stopped)| stopped) => {
                     "its abort already ran".to_owned()
                 }
