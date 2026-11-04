@@ -539,6 +539,7 @@ mod tests {
             newest,
             epoch: WriterEpoch::new(epoch),
             seed: false,
+            mark: None,
         }
     }
 
@@ -548,6 +549,7 @@ mod tests {
             newest: None,
             epoch: WriterEpoch::default(),
             seed: true,
+            mark: None,
         }
     }
 

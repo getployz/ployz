@@ -194,6 +194,12 @@ pub enum VolumeCopy {
         /// `ployz:seed` and `ployz:promote`. Older daemons never report it.
         #[serde(default)]
         seed: bool,
+        /// On a read-only root, the mark that tells which step left it read-only. Absent
+        /// on a writable root, on a read-only root with neither mark, and from older
+        /// daemons.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        #[ts(optional)]
+        mark: Option<RootMark>,
     },
     /// `<pool>/ployz-mirror/<name>`: a read-only copy Docker never sees. `newest` is of
     /// its `fs` child; `resume_token` is set while a receive into `fs` is interrupted.
@@ -213,6 +219,20 @@ pub enum VolumeCopy {
         #[ts(optional)]
         role: Option<SlotRole>,
     },
+}
+
+/// The `ployz:*` mark on a read-only root, named after the mark and claiming no more.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "snake_case")]
+pub enum RootMark {
+    /// `ployz:cut`. A cut leaves it from setting the mark until its rename into the slot,
+    /// and a promote of a cut copy from its rename back until `readonly=off`. The marks do
+    /// not tell those two apart.
+    Cut,
+    /// `ployz:promote` without `ployz:cut`. A promote of a pulled copy, or a Seed landing,
+    /// leaves it from its rename until `readonly=off`. So does a cut of a root Docker has
+    /// not registered, from `readonly=on` until it sets `ployz:cut`.
+    Promote,
 }
 
 /// What a slot holds its copy for, as its own Machine recorded it: a pull makes it a
@@ -603,6 +623,7 @@ mod tests {
             newest: None,
             epoch: WriterEpoch::default(),
             seed: false,
+            mark: None,
         };
         let slot = VolumeCopy::Slot {
             slot: SlotId::new(1),

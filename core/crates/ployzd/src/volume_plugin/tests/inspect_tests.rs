@@ -83,3 +83,118 @@ async fn inspect_without_a_pool_holds_nothing() {
     assert_eq!(response, json!({"Ok": {"copy": null}}));
     server.abort();
 }
+
+/// Every combination of `readonly` and the marks parses to one root. Its reply keeps the
+/// `readonly` and `seed` the root read as before the parse (`seed` is `ployz:promote` and
+/// `ployz:seed` together) and only adds `mark`. Every plan reads the reply as it reads it
+/// without `mark`, and `Held::switching` answers `readonly`, as it did.
+#[test]
+fn every_root_mark_combination_parses_to_one_copy() {
+    use ployz_core::{
+        Drain, ExpectedCopy, RootMark, SnapshotGuid, VolumeCopy, WantedCopy, WriterEpoch, plan,
+    };
+
+    use super::super::{
+        inspect::{RootCopy, RootMarks},
+        storage::Held,
+    };
+
+    let epoch = WriterEpoch::new(2);
+    let wants = [
+        WantedCopy::Writer {
+            at: SnapshotGuid::new(13),
+            epoch,
+            start: None,
+        },
+        WantedCopy::Writer {
+            at: SnapshotGuid::new(13),
+            epoch: WriterEpoch::new(3),
+            start: None,
+        },
+        WantedCopy::Mirror {
+            from: None,
+            target: "f-2".parse().unwrap(),
+            drain: Drain::NONE,
+        },
+        WantedCopy::Snapshot {
+            name: "f-2".parse().unwrap(),
+        },
+        WantedCopy::Forget,
+        WantedCopy::Floor,
+    ];
+    let expects = [ExpectedCopy::Writer { epoch }, ExpectedCopy::None];
+    let newest = || {
+        Some(ployz_core::Snapshot {
+            name: "f-1".parse().unwrap(),
+            guid: SnapshotGuid::new(13),
+            created_unix_seconds: 1_700_000_000,
+        })
+    };
+    let mut parsed = Vec::new();
+    for bits in 0..16_u8 {
+        let readonly = bits & 1 != 0;
+        let marks = RootMarks {
+            cut: bits & 2 != 0,
+            promote: bits & 4 != 0,
+            seed: bits & 8 != 0,
+        };
+        let dataset = Dataset::parse(
+            &format!(
+                "tank/ployz/data\t1073741824\t0\t0\t0\t/var/lib/ployz-volumes/data\tno\t{}",
+                if readonly { "on" } else { "off" }
+            ),
+            "tank",
+        )
+        .unwrap();
+        let root = RootCopy::parse(&dataset, marks);
+        parsed.push(root);
+        let copy = root.view(newest(), epoch);
+        let VolumeCopy::Root {
+            readonly: replied,
+            seed,
+            mark,
+            ..
+        } = copy
+        else {
+            panic!("{copy:?}");
+        };
+        assert_eq!(replied, readonly, "{marks:?}");
+        assert_eq!(seed, marks.promote && marks.seed, "{marks:?}");
+        let expected = match (readonly, marks.cut, marks.promote) {
+            (true, true, _) => Some(RootMark::Cut),
+            (true, false, true) => Some(RootMark::Promote),
+            (true, false, false) | (false, _, _) => None,
+        };
+        assert_eq!(mark, expected, "readonly={readonly} {marks:?}");
+        assert_eq!(Held::Root(&dataset).switching(), readonly);
+
+        let before = VolumeCopy::Root {
+            readonly,
+            newest: newest(),
+            epoch,
+            seed,
+            mark: None,
+        };
+        for want in &wants {
+            for expect in &expects {
+                for running in [false, true] {
+                    assert_eq!(
+                        plan(Some(&copy), running, expect, want),
+                        plan(Some(&before), running, expect, want),
+                        "{copy:?} {want:?}"
+                    );
+                }
+            }
+        }
+    }
+    assert!(parsed.contains(&RootCopy::Unmarked));
+    for seed in [false, true] {
+        for root in [
+            RootCopy::Writable { seed },
+            RootCopy::Cut { seed },
+            RootCopy::Promote { seed },
+        ] {
+            assert!(parsed.contains(&root), "{root:?} is never parsed");
+        }
+    }
+}

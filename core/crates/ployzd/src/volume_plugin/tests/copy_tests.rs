@@ -625,6 +625,11 @@ async fn a_half_promoted_root_reads_apart_from_an_unfinished_cut() {
         cutting_copy.pointer("/Ok/copy"),
         "a half-promoted root and an unfinished cut read the same"
     );
+    assert_eq!(
+        promoting_copy.pointer("/Ok/copy/mark"),
+        Some(&json!("promote"))
+    );
+    assert_eq!(cutting_copy.pointer("/Ok/copy/mark"), Some(&json!("cut")));
 }
 
 #[tokio::test]

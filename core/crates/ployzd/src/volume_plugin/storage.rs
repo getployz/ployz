@@ -469,9 +469,11 @@ impl Held<'_> {
     }
 
     /// Whether a Volume Run has the Volume mid-switch on this Machine. A root switches
-    /// while [`Dataset::switching`]. A slot switches only while a receive runs into it:
-    /// its pull mark stays until a later pull settles, and its copy's cut mark until a
-    /// pull or a promote clears it, so a mark alone says nothing about a step in progress.
+    /// while [`Dataset::switching`], the split [`super::inspect::RootCopy::parse`] takes
+    /// too, so every root it parses as read-only switches. A slot switches only while a
+    /// receive runs into it: its pull mark stays until a later pull settles, and its copy's
+    /// cut mark until a pull or a promote clears it, so a mark alone says nothing about a
+    /// step in progress.
     pub(super) fn switching(&self) -> bool {
         match self {
             Self::Root(root) => root.switching(),

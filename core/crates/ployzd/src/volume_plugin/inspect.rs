@@ -2,7 +2,7 @@
 
 use axum::{Json, extract::State};
 use ployz_core::{
-    InspectVolumeCopyRequest, Pull, RpcError, RpcErrorCode, SlotId, SlotRole, Snapshot,
+    InspectVolumeCopyRequest, Pull, RootMark, RpcError, RpcErrorCode, SlotId, SlotRole, Snapshot,
     SnapshotGuid, SnapshotName, VolumeCopy, VolumeCopyView, WriterEpoch,
 };
 use ployzd::machine_pool::MachinePool;
@@ -11,10 +11,71 @@ use super::{
     Dataset, DockerVolumeName, Result, VolumeError, VolumeStorage,
     seed::SEED_PROPERTY,
     storage::{
-        EPOCH_PROPERTY, PROMOTE_PROPERTY, PULL_PROPERTY, RESUME_TOKEN_PROPERTY, ROLE_PROPERTY,
-        slot_fs, slot_parent,
+        CUT_PROPERTY, EPOCH_PROPERTY, PROMOTE_PROPERTY, PULL_PROPERTY, RESUME_TOKEN_PROPERTY,
+        ROLE_PROPERTY, slot_fs, slot_parent,
     },
 };
+
+/// The `ployz:*` marks on a root that tell which step left it read-only.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(super) struct RootMarks {
+    pub(super) cut: bool,
+    pub(super) promote: bool,
+    /// `ployz:seed`. It counts only beside `ployz:promote`, so it is read only then.
+    pub(super) seed: bool,
+}
+
+/// A Volume's root on this Machine, parsed once from its `readonly` and its marks. Each
+/// variant claims only what those show. `seed` is a root Volume.Seed landed that Docker
+/// has not adopted: it carries both `ployz:seed` and `ployz:promote`.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(super) enum RootCopy {
+    /// Writable, whatever its marks.
+    Writable { seed: bool },
+    /// Read-only with `ployz:cut`. A cut leaves it from that mark (copy.rs:291) until its
+    /// rename into the slot (:320), and a promote of a cut copy from its rename back (:505)
+    /// until `readonly=off` (:550). The marks do not tell those two apart.
+    Cut { seed: bool },
+    /// Read-only with `ployz:promote` and no `ployz:cut`. A promote of a pulled copy leaves
+    /// it from its rename (copy.rs:505) until `readonly=off` (:550), and a Seed landing from
+    /// its rename (seed.rs:159) until `readonly=off` (:175). So does a cut of a root Docker
+    /// has not registered, from `readonly=on` (copy.rs:287) until `ployz:cut` (:291).
+    Promote { seed: bool },
+    /// Read-only with neither mark. A cut of a registered root leaves it from
+    /// `readonly=on` (copy.rs:287) until `ployz:cut` (:291).
+    Unmarked,
+}
+
+impl RootCopy {
+    /// The read-only split is [`Dataset::switching`], the one [`super::storage::Held`]
+    /// reads too.
+    pub(super) fn parse(root: &Dataset, marks: RootMarks) -> Self {
+        let seed = marks.promote && marks.seed;
+        match (root.switching(), marks.cut, marks.promote) {
+            (false, _, _) => Self::Writable { seed },
+            (true, true, _) => Self::Cut { seed },
+            (true, false, true) => Self::Promote { seed },
+            (true, false, false) => Self::Unmarked,
+        }
+    }
+
+    /// The root as `Volume.Inspect` and every `SetVolumeCopy` reply carry it.
+    pub(super) fn view(self, newest: Option<Snapshot>, epoch: WriterEpoch) -> VolumeCopy {
+        let (readonly, seed, mark) = match self {
+            Self::Writable { seed } => (false, seed, None),
+            Self::Cut { seed } => (true, seed, Some(RootMark::Cut)),
+            Self::Promote { seed } => (true, seed, Some(RootMark::Promote)),
+            Self::Unmarked => (true, false, None),
+        };
+        VolumeCopy::Root {
+            readonly,
+            newest,
+            epoch,
+            seed,
+            mark,
+        }
+    }
+}
 
 pub(super) fn internal(error: VolumeError) -> RpcError {
     match error {
@@ -69,6 +130,15 @@ impl VolumeStorage {
     pub(super) async fn unadopted_seed(&self, dataset: &str) -> Result<bool> {
         Ok(self.unregistered(dataset).await?
             && self.property(dataset, SEED_PROPERTY).await?.is_some())
+    }
+
+    async fn root_marks(&self, root: &str) -> Result<RootMarks> {
+        let promote = self.unregistered(root).await?;
+        Ok(RootMarks {
+            cut: self.property(root, CUT_PROPERTY).await?.is_some(),
+            promote,
+            seed: promote && self.property(root, SEED_PROPERTY).await?.is_some(),
+        })
     }
 
     /// Every snapshot of a dataset as `name<TAB>guid<TAB>creation`, newest first by
@@ -201,12 +271,11 @@ impl VolumeStorage {
     ) -> Result<Option<VolumeCopy>> {
         if let Some(root) = Self::dataset(datasets, pool, name)? {
             root.require_provisioned(name)?;
-            return Ok(Some(VolumeCopy::Root {
-                readonly: root.readonly,
-                newest: self.newest_snapshot(&root.name).await?,
-                epoch: self.epoch(&root.name).await?,
-                seed: self.unadopted_seed(&root.name).await?,
-            }));
+            let copy = RootCopy::parse(root, self.root_marks(&root.name).await?);
+            return Ok(Some(copy.view(
+                self.newest_snapshot(&root.name).await?,
+                self.epoch(&root.name).await?,
+            )));
         }
         let Some(slot) = Self::slot(datasets, pool, name) else {
             return Ok(None);
