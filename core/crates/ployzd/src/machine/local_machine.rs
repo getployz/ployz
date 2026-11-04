@@ -761,7 +761,7 @@ impl LocalMachine {
         let publication = replicated.machine_publication().await;
         // Other Machines' rows are not consulted: Cloud owns concurrency. A Register
         // takes back its id's `forgotten-id:` forget and replaces its id's row, unless
-        // this Entry's copy carries its Machine's self-publish mark and the same key
+        // this Entry's copy carries the `self_published` mark and the same key
         // (`registration_upsert`). It never writes a Management Identity. The reply is
         // the row it sent, not read back: when the row is kept, the stored row differs
         // from it, and `target_versions` may lack the version an overwrite would make.

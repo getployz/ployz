@@ -95,9 +95,9 @@ impl MachinePublicationGuard<'_> {
     }
 
     /// Store a Register's row, as [`registration_upsert`] decides, and return the row
-    /// it sent. The call succeeds whether the row was written or kept, and nothing
-    /// tells the caller which: the returned row isn't read back, so a kept row is not
-    /// the one returned.
+    /// it sent. The call succeeds whether the row was written, kept, or held back by a
+    /// forget, and nothing tells the caller which: the returned row isn't read back, so
+    /// a kept row is not the one returned.
     ///
     /// A Register is an explicit add, so it takes back the forget of a row that had no
     /// Management Identity: its `forgotten-id:` tombstone goes in the same transaction,
@@ -309,12 +309,12 @@ impl RegisterRow {
 /// Write a Register's row unless its id is forgotten and not listed, as
 /// [`machine_upsert`] does. An existing row is kept only when this Entry's copy
 /// carries the `self_published` mark and names the Register's WireGuard key. Every
-/// other row is replaced: a Register's row, and a row whose whole body a daemon
-/// without the mark wrote, including one that names a Management Identity. So no
-/// Register keeps a row on the strength of an identity an older Entry stored from a
-/// Register request. The check reads only this Entry's replica: a self-publish that
-/// hasn't arrived is still overwritten, until that Machine's publisher writes its
-/// row back.
+/// other row is replaced: a Register's row, a marked row under another key, and a row
+/// whose whole body a daemon without the mark wrote, including one that names a
+/// Management Identity. So no Register keeps a row on the strength of an identity an
+/// older Entry stored from a Register request. The check reads only this Entry's
+/// replica: a self-publish that hasn't arrived is still overwritten, until that
+/// Machine's publisher writes its row back.
 fn registration_upsert(row: &RegisterRow) -> Result<Statement, Error> {
     let RegisterRow(machine) = row;
     Ok(Statement::new(
