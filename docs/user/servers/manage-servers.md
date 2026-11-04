@@ -856,6 +856,12 @@ on it then says `this Machine was forgotten by its Cluster`.
 Nothing stops its services when it can't reach any of those servers, or when the versions don't
 line up. Those cases, and the minutes before it asks, are yours to cover.
 
+A server forgotten before it finished joining, so it never showed a version, stays off your list
+even if it finishes joining later, when it and the server that forgot it run Ployz 0.3.17 or later.
+It isn't told it was forgotten: it stays joining, or runs on its own with nothing to do. Run
+`sudo ployz-uninstall` on it, or add it again with `ployz server add`. On an older Ployz it can put
+itself back on your list when it finishes joining; forget it again.
+
 So decide before a forgotten server runs again. As soon as it boots, run `sudo ployz-uninstall`
 on it. That stops the services Ployz runs there and keeps every copy of a volume on the disk, along
 with Docker and your images. Adding it back later with a plain `ployz server add` keeps every copy

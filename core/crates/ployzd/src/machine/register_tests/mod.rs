@@ -277,6 +277,58 @@ async fn register_of_a_forgotten_id_does_not_list_it_again() {
     let _ = std::fs::remove_dir_all(data_dir);
 }
 
+/// A failed add rerun on the same host Registers the same id again, even after the
+/// Registered row was forgotten, and finishes that Server (#3342).
+#[tokio::test]
+async fn register_after_forgetting_a_registered_row_lists_it_again() {
+    use crate::corrosion::store_tests::{corrosion_db, identity_store};
+
+    let db = corrosion_db();
+    // Register answers with the store's version, which cr-sqlite and Corrosion keep here.
+    db.execute_batch(
+        "CREATE TABLE crsql_db_versions (site_id BLOB PRIMARY KEY, db_version INTEGER);
+         CREATE TABLE __corro_bookkeeping_gaps (actor_id BLOB, start INTEGER, end INTEGER);
+         CREATE TABLE __corro_seq_bookkeeping (site_id BLOB, db_version INTEGER);",
+    )
+    .unwrap();
+    let (replicated, server) = identity_store(db).await;
+    replicated
+        .publish_cluster_network("10.210.0.0/16".parse().unwrap())
+        .await
+        .unwrap();
+    let (data_dir, store, founder) = open_store("ployzd-register-rerun-after-forget");
+    replicated.publish_local_machine(&founder).await.unwrap();
+    let local = LocalMachine::new(store).with_cluster(Some((
+        replicated.clone(),
+        AdminClient::new("/no/such/ployz-admin.sock"),
+    )));
+
+    let rerun = request("rerun", WireGuardPublicKey([33; 32]));
+    let registered = local
+        .register(rerun.clone())
+        .await
+        .unwrap()
+        .assigned_machine;
+    replicated.forget_machine(&registered.id).await.unwrap();
+
+    local.register(rerun).await.unwrap();
+    assert_eq!(
+        replicated.machine(registered.id.as_str()).await.unwrap(),
+        Some(registered.clone())
+    );
+    let mut joined = registered;
+    joined.runtime.management_identity =
+        Some(crate::management::ManagementSecret::generate().public_key());
+    replicated.publish_local_machine(&joined).await.unwrap();
+    assert_eq!(
+        replicated.machine(joined.id.as_str()).await.unwrap(),
+        Some(joined)
+    );
+    server.abort();
+    drop(local);
+    let _ = std::fs::remove_dir_all(data_dir);
+}
+
 #[tokio::test]
 async fn register_requires_a_valid_assignment_and_preserves_the_row_on_refusal() {
     let (data_dir, store, founder) = open_store("ployzd-register-publication");

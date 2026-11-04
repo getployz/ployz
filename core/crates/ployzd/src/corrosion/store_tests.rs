@@ -1104,31 +1104,194 @@ async fn a_forgotten_id_stays_gone_when_published_without_an_identity() {
     task.abort();
 }
 
+/// `machine` as its own daemon publishes it once joined, with its Management Identity.
+fn joined(mut machine: Machine) -> Machine {
+    machine.runtime.management_identity =
+        Some(crate::management::ManagementSecret::generate().public_key());
+    machine
+}
+
+/// Another listed Machine, joined, whose daemon advertises nothing.
+fn joined_peer() -> Machine {
+    let (mut peer, _) = participating_record();
+    peer.id = MachineId::parse("c".repeat(32)).unwrap();
+    peer.name = ployz_core::MachineName::parse("peer").unwrap();
+    peer.subnet = "10.210.2.0/24".parse().unwrap();
+    joined(peer)
+}
+
+/// A Registered row as `ployz server add` writes it: its runtime is the joiner's
+/// own, so it advertises what that daemon serves.
+fn cli_registered() -> (Machine, LocalMachineRecord) {
+    let (mut machine, local) = participating_record();
+    machine.runtime.capabilities = ployz_core::served_capabilities();
+    (machine, local)
+}
+
 #[tokio::test]
 async fn forget_of_a_registered_row_keeps_its_id_gone() {
-    let (store, task) = identity_store(corrosion_db()).await;
-    let (machine, local) = participating_record();
-    store.publish_local_machine(&machine).await.unwrap();
+    for peers in [vec![], vec![joined_peer()]] {
+        let (store, task) = identity_store(corrosion_db()).await;
+        // A Registered row as Cloud writes it, advertising nothing.
+        let (machine, local) = participating_record();
+        for peer in &peers {
+            store.publish_local_machine(peer).await.unwrap();
+        }
+        store.publish_local_machine(&machine).await.unwrap();
 
+        store.forget_machine(&machine.id).await.unwrap();
+
+        assert_eq!(store.machine(machine.id.as_str()).await.unwrap(), None);
+        store.publish_local_machine(&machine).await.unwrap();
+        assert_eq!(store.machine(machine.id.as_str()).await.unwrap(), None);
+        let publication = store.machine_publication().await;
+        let caught_up = publication
+            .publishable_machine(&local, RuntimeOverlay::default())
+            .unwrap();
+        publication.publish(&caught_up).await.unwrap();
+        drop(publication);
+        assert_eq!(store.machine(machine.id.as_str()).await.unwrap(), None);
+        assert_eq!(
+            store
+                .forgotten(local.management_secret().public_key())
+                .await
+                .unwrap(),
+            ForgottenAnswer::NoAnswer
+        );
+        task.abort();
+    }
+}
+
+/// The guarded upsert of v0.3.11 to v0.3.16, verbatim (store.rs:297-301 at v0.3.16).
+const OLDER_GUARDED_UPSERT: &str = "INSERT INTO machines (id, info) SELECT ?1, ?2 \
+     WHERE EXISTS (SELECT 1 FROM machines WHERE id = ?1) \
+     OR NOT EXISTS (SELECT 1 FROM cluster \
+                    WHERE key LIKE 'forgotten:%' AND value = ?1) \
+     ON CONFLICT (id) DO UPDATE SET info = excluded.info";
+
+#[tokio::test]
+async fn an_older_entry_still_lists_a_forgotten_registered_row() {
+    let (store, task) = identity_store(corrosion_db()).await;
+    let (machine, local) = cli_registered();
+    store.publish_local_machine(&machine).await.unwrap();
     store.forget_machine(&machine.id).await.unwrap();
 
-    assert_eq!(store.machine(machine.id.as_str()).await.unwrap(), None);
-    store.publish_local_machine(&machine).await.unwrap();
-    assert_eq!(store.machine(machine.id.as_str()).await.unwrap(), None);
+    store
+        .api()
+        .execute([Statement::new(
+            OLDER_GUARDED_UPSERT,
+            [
+                json!(machine.id),
+                json!(serde_json::to_string(&machine).unwrap()),
+            ],
+        )])
+        .await
+        .unwrap();
+
+    assert_eq!(
+        store.machine(machine.id.as_str()).await.unwrap(),
+        Some(machine.clone())
+    );
     let publication = store.machine_publication().await;
     let caught_up = publication
         .publishable_machine(&local, RuntimeOverlay::default())
         .unwrap();
     publication.publish(&caught_up).await.unwrap();
     drop(publication);
-    assert_eq!(store.machine(machine.id.as_str()).await.unwrap(), None);
     assert_eq!(
-        store
-            .forgotten(local.management_secret().public_key())
-            .await
-            .unwrap(),
-        ForgottenAnswer::NoAnswer
+        store.machine(machine.id.as_str()).await.unwrap(),
+        Some(caught_up)
     );
+    task.abort();
+}
+
+#[tokio::test]
+async fn a_forgotten_registered_id_keeps_only_itself_off_the_list() {
+    let (store, task) = identity_store(corrosion_db()).await;
+    let (mut forgotten, _) = cli_registered();
+    forgotten.id = MachineId::parse("12345678901234567890123456789012").unwrap();
+    let mut other = forgotten.clone();
+    other.id = MachineId::parse("12345678901234567890123456789099").unwrap();
+    other.name = ployz_core::MachineName::parse("other").unwrap();
+    other.subnet = "10.210.2.0/24".parse().unwrap();
+    store.publish_local_machine(&forgotten).await.unwrap();
+    store.forget_machine(&forgotten.id).await.unwrap();
+
+    store.publish_local_machine(&other).await.unwrap();
+    assert_eq!(store.machine(other.id.as_str()).await.unwrap(), Some(other));
+    store.publish_local_machine(&forgotten).await.unwrap();
+    assert_eq!(store.machine(forgotten.id.as_str()).await.unwrap(), None);
+
+    store
+        .machine_publication()
+        .await
+        .register(&forgotten)
+        .await
+        .unwrap();
+    assert_eq!(
+        store.machine(forgotten.id.as_str()).await.unwrap(),
+        Some(forgotten.clone())
+    );
+    let republished = joined(forgotten);
+    store.publish_local_machine(&republished).await.unwrap();
+    assert_eq!(
+        store.machine(republished.id.as_str()).await.unwrap(),
+        Some(republished)
+    );
+    task.abort();
+}
+
+#[tokio::test]
+async fn a_register_takes_back_the_forget_of_a_registered_row() {
+    let (store, task) = identity_store(corrosion_db()).await;
+    let (machine, local) = participating_record();
+    store.publish_local_machine(&machine).await.unwrap();
+    store.forget_machine(&machine.id).await.unwrap();
+
+    store
+        .machine_publication()
+        .await
+        .register(&machine)
+        .await
+        .unwrap();
+
+    assert_eq!(
+        store.machine(machine.id.as_str()).await.unwrap(),
+        Some(machine.clone())
+    );
+    let publication = store.machine_publication().await;
+    let caught_up = publication
+        .publishable_machine(&local, RuntimeOverlay::default())
+        .unwrap();
+    publication.publish(&caught_up).await.unwrap();
+    drop(publication);
+    assert_eq!(
+        store.machine(machine.id.as_str()).await.unwrap(),
+        Some(caught_up)
+    );
+    task.abort();
+}
+
+#[tokio::test]
+async fn a_register_does_not_take_back_the_forget_of_a_joined_row() {
+    let (store, task) = identity_store(corrosion_db()).await;
+    let (machine, local) = participating_record();
+    let publication = store.machine_publication().await;
+    let published = publication
+        .publishable_machine(&local, RuntimeOverlay::default())
+        .unwrap();
+    publication.publish(&published).await.unwrap();
+    drop(publication);
+    store.forget_machine(&machine.id).await.unwrap();
+
+    store
+        .machine_publication()
+        .await
+        .register(&machine)
+        .await
+        .unwrap();
+
+    assert_eq!(store.machine(machine.id.as_str()).await.unwrap(), None);
     task.abort();
 }
 
