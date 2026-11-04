@@ -329,6 +329,68 @@ async fn register_after_forgetting_a_registered_row_lists_it_again() {
     let _ = std::fs::remove_dir_all(data_dir);
 }
 
+/// A Register that reaches an Entry after its Server joined, from Cloud on a stale
+/// snapshot or a rerun of `ployz server add`, leaves the row that Server published.
+#[tokio::test]
+async fn register_keeps_a_row_its_machine_already_published() {
+    use crate::corrosion::store_tests::{corrosion_db, identity_store};
+
+    let db = corrosion_db();
+    // Register answers with the store's version, which cr-sqlite and Corrosion keep here.
+    db.execute_batch(
+        "CREATE TABLE crsql_db_versions (site_id BLOB PRIMARY KEY, db_version INTEGER);
+         CREATE TABLE __corro_bookkeeping_gaps (actor_id BLOB, start INTEGER, end INTEGER);
+         CREATE TABLE __corro_seq_bookkeeping (site_id BLOB, db_version INTEGER);",
+    )
+    .unwrap();
+    let (replicated, server) = identity_store(db).await;
+    replicated
+        .publish_cluster_network("10.210.0.0/16".parse().unwrap())
+        .await
+        .unwrap();
+    let (data_dir, store, founder) = open_store("ployzd-register-joined");
+    replicated.publish_local_machine(&founder).await.unwrap();
+    let local = LocalMachine::new(store).with_cluster(Some((
+        replicated.clone(),
+        AdminClient::new("/no/such/ployz-admin.sock"),
+    )));
+
+    let identity = request("joiner", WireGuardPublicKey([41; 32]));
+    local.register(identity.clone()).await.unwrap();
+    let mut rekeyed = identity;
+    rekeyed.public_key = WireGuardPublicKey([42; 32]);
+    let assigned = local
+        .register(rekeyed.clone())
+        .await
+        .unwrap()
+        .assigned_machine;
+    assert_eq!(
+        replicated.machine(assigned.id.as_str()).await.unwrap(),
+        Some(assigned.clone())
+    );
+
+    let mut joined = assigned;
+    joined.runtime.daemon_version = "0.3.0".into();
+    joined.runtime.management_identity =
+        Some(crate::management::ManagementSecret::generate().public_key());
+    replicated.publish_local_machine(&joined).await.unwrap();
+    local.register(rekeyed).await.unwrap();
+    assert_eq!(
+        replicated.machine(joined.id.as_str()).await.unwrap(),
+        Some(joined.clone())
+    );
+
+    joined.runtime.running_builds += 1;
+    replicated.publish_local_machine(&joined).await.unwrap();
+    assert_eq!(
+        replicated.machine(joined.id.as_str()).await.unwrap(),
+        Some(joined)
+    );
+    server.abort();
+    drop(local);
+    let _ = std::fs::remove_dir_all(data_dir);
+}
+
 #[tokio::test]
 async fn register_requires_a_valid_assignment_and_preserves_the_row_on_refusal() {
     let (data_dir, store, founder) = open_store("ployzd-register-publication");
