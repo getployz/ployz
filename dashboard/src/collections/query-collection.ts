@@ -3,6 +3,7 @@ import { BasicIndex, collectionOptions, type Collection, type CollectionStatus }
 import { hashKey, type QueryClient } from "@tanstack/react-query";
 import type { CollectionRead } from "./read.contract";
 import { getDbClient } from "./scope";
+import { mayPassOnRetry } from "#/lib/error-message";
 
 type ApiCollectionInput<T> = {
   queryClient: QueryClient;
@@ -25,7 +26,8 @@ function baseOptions<T extends object>(input: ApiCollectionInput<T>): BaseOption
     staleTime: input.staleTime ?? 15_000,
     refetchOnWindowFocus: "always",
     refetchOnReconnect: "always",
-    retry: false,
+    // A refresh retries with backoff while its rows stand in. A first load fails at once, so its gate shows the error.
+    retry: (failures, error) => failures < 3 && mayPassOnRetry(error) && input.queryClient.getQueryData(input.queryKey) !== undefined,
     autoIndex: "eager",
     defaultIndexType: BasicIndex,
   };
@@ -145,6 +147,13 @@ export async function preloadCollection(collection: ApiCollectionReadiness) {
   } finally {
     subscription.unsubscribe();
   }
+}
+
+/** Readiness of several collections. It fails only once every read settles, since SSR streams a read still running and its later cancel rejects in the browser. */
+export async function preloadCollections(collections: ApiCollectionReadiness[]) {
+  const reads = await Promise.allSettled(collections.map(preloadCollection));
+  const failed = reads.find((read) => read.status === "rejected");
+  if (failed) throw failed.reason;
 }
 
 /** Secondary freshness: Query owns read errors after the command has committed. */

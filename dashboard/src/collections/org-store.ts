@@ -1,5 +1,5 @@
 import { queryOptions, useSuspenseQuery } from "@tanstack/react-query";
-import { preloadCollection } from "./query-collection";
+import { preloadCollections } from "./query-collection";
 import type { CollectionScope } from "./scope";
 import { useCollectionScope } from "./use-collection-scope";
 import { orgStoreTables } from "./collections";
@@ -10,7 +10,7 @@ export function orgStoreOptions(organizationSlug: string, scope: CollectionScope
     // Readiness happens once; each table keeps itself fresh after that.
     staleTime: Infinity,
     queryFn: async () => {
-      await Promise.all(Object.values(orgStoreTables).map((get) => preloadCollection(get(organizationSlug, scope))));
+      await preloadCollections(Object.values(orgStoreTables).map((get) => get(organizationSlug, scope)));
       return true;
     },
   });

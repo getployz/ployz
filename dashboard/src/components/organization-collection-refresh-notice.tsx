@@ -35,7 +35,7 @@ export function OrganizationCollectionRefreshNotice({
         Changes are queued and not saved yet. Keep this tab open; saving resumes automatically.
       </AlertDescription> : null}
       {hasError ? <AlertDescription>
-        Could not refresh organization data. Shown results may be out of date. Retrying automatically.
+        Could not refresh organization data. Shown results may be out of date.
       </AlertDescription> : null}
     </Alert>
   );

@@ -1,9 +1,10 @@
 // @vitest-environment jsdom
 import { afterEach, expect, it, vi } from "vitest";
 import { focusManager, onlineManager, QueryClient } from "@tanstack/react-query";
-import { createApiCollection, createChangeCollection, preloadCollection, reconcileCollection } from "./query-collection";
+import { createApiCollection, createChangeCollection, preloadCollection, preloadCollections, reconcileCollection } from "./query-collection";
 import type { CollectionRead } from "./read.contract";
 import { getDbClient } from "./scope";
+import type { PublicError } from "#/lib/public-error";
 
 afterEach(() => {
   vi.useRealTimers();
@@ -29,10 +30,12 @@ it("refreshes active snapshots, retains failed reads, and stops unused scopes", 
   await vi.advanceTimersByTimeAsync(15_000);
   expect(collection.get("a")).toBeUndefined();
   expect(collection.get("b")?.name).toBe("after");
-  read.mockRejectedValueOnce(new Error("unavailable"));
-  await vi.advanceTimersByTimeAsync(15_000);
+  read.mockRejectedValue(new Error("unavailable"));
+  // The interval read and its three retries, 1s, 2s and 4s apart.
+  await vi.advanceTimersByTimeAsync(23_000);
   expect(collection.get("b")?.name).toBe("after");
   expect(collection.health.hasErrors).toBe(true);
+  read.mockImplementation(async () => rows);
   focusManager.setFocused(false);
   const hiddenReads = read.mock.calls.length;
   rows = [{ id: "c", name: "focused" }];
@@ -70,7 +73,10 @@ it("rejects failed initial loader readiness, retries later, and retains successf
   expect(collection.get("retained")).toMatchObject({ id: "retained" });
   const active = collection.subscribeChanges(() => {});
   read.mockRejectedValue(failure);
-  await expect(collection.utils.refetch({ throwOnError: true })).rejects.toBe(failure);
+  vi.useFakeTimers();
+  const refresh = expect(collection.utils.refetch({ throwOnError: true })).rejects.toBe(failure);
+  await vi.advanceTimersByTimeAsync(10_000);
+  await refresh;
   await expect(preloadCollection(collection)).resolves.toBeUndefined();
   expect(collection.get("retained")).toMatchObject({ id: "retained" });
   active.unsubscribe();
@@ -299,7 +305,10 @@ it.each([false, true])("applies committed rows without an observer over older re
   expect(collection.get("row")).toMatchObject(committed);
   active.unsubscribe();
   read.mockRejectedValue(new Error("GET unavailable"));
-  await reconcileCollection(collection);
+  vi.useFakeTimers();
+  const reconciled = reconcileCollection(collection);
+  await vi.advanceTimersByTimeAsync(10_000);
+  await reconciled;
   expect(collection.get("row")).toMatchObject(committed);
   expect(collection.health.hasErrors).toBe(true);
   expect(collection.subscriberCount).toBe(0);
@@ -407,3 +416,88 @@ it("merges incremental reads, drops deleted ids, and advances the cursor when no
   await collection.cleanup();
   client.clear();
 });
+
+it.each(["api", "change"] as const)("retries a failed refresh with backoff, one read at a time, and stops after three tries (%s)", async (kind) => {
+  vi.useFakeTimers();
+  const client = new QueryClient();
+  const read = vi.fn<() => Promise<{ id: string }[]>>().mockResolvedValue([{ id: "before" }]);
+  const input = { queryClient: client, queryKey: ["refresh-retry", kind], getKey: (row: { id: string }) => row.id };
+  const collection = kind === "api"
+    ? createApiCollection({ ...input, queryFn: read })
+    : createChangeCollection({ ...input, read: async () => ({ full: true as const, rows: await read(), cursor: "1" }) });
+  const active = collection.subscribeChanges(() => {});
+  await vi.advanceTimersByTimeAsync(10);
+  read.mockRejectedValueOnce(new Error("one")).mockRejectedValueOnce(new Error("two")).mockResolvedValue([{ id: "after" }]);
+  void collection.utils.refetch();
+  await vi.advanceTimersByTimeAsync(10);
+  expect(read).toHaveBeenCalledTimes(2);
+  await vi.advanceTimersByTimeAsync(999);
+  expect(read).toHaveBeenCalledTimes(3);
+  await vi.advanceTimersByTimeAsync(2_000);
+  expect(read).toHaveBeenCalledTimes(4);
+  expect(collection.get("after")).toMatchObject({ id: "after" });
+  expect(client.getQueryState(input.queryKey)?.status).toBe("success");
+  read.mockRejectedValue(new Error("down"));
+  void collection.utils.refetch();
+  await vi.advanceTimersByTimeAsync(60_000);
+  expect(read).toHaveBeenCalledTimes(8);
+  expect(client.getQueryState(input.queryKey)?.status).toBe("error");
+  expect(collection.get("after")).toMatchObject({ id: "after" });
+  active.unsubscribe();
+  await collection.cleanup();
+  client.clear();
+});
+
+it("fails readiness only once every collection's read has settled, so SSR never streams a read it gave up on", async () => {
+  vi.useFakeTimers();
+  const client = new QueryClient();
+  const getKey = (row: { id: string }) => row.id;
+  const failing = createApiCollection({ queryClient: client, queryKey: ["ready", "failing"], getKey,
+    queryFn: async () => { throw new Error("Read failed"); } });
+  const slow = createApiCollection({ queryClient: client, queryKey: ["ready", "slow"], getKey,
+    queryFn: () => new Promise<{ id: string }[]>((resolve) => setTimeout(() => resolve([{ id: "slow" }]), 1_000)) });
+  let settled = false;
+  const ready = preloadCollections([failing, slow]).finally(() => { settled = true; });
+  const failure = expect(ready).rejects.toThrow("Read failed");
+  await vi.advanceTimersByTimeAsync(500);
+  expect(client.getQueryState(["ready", "failing"])?.status).toBe("error");
+  expect(settled).toBe(false);
+  await vi.advanceTimersByTimeAsync(500);
+  await failure;
+  expect(client.isFetching()).toBe(0);
+  await failing.cleanup();
+  await slow.cleanup();
+  client.clear();
+});
+
+const refusals: PublicError[] = [
+  { _tag: "PublicError", code: "UNAUTHORIZED", message: "Sign in again." },
+  { _tag: "PublicError", code: "FORBIDDEN", message: "Not allowed." },
+  { _tag: "PublicError", code: "NOT_FOUND", message: "Not found." },
+  { _tag: "PublicError", code: "SERVER_LACKS", message: "Upgrade the Server.", machineId: "machine", capability: "logs" },
+];
+const transient: PublicError[] = [
+  { _tag: "PublicError", code: "UNAVAILABLE", message: "Ployz Cloud had a problem. Try again." },
+  { _tag: "PublicError", code: "INTERNAL", message: "The request could not be completed." },
+];
+
+it.each([...refusals.map((error) => [error, 1] as const), ...transient.map((error) => [error, 4] as const)])(
+  "reads a failed refresh refused with %o %i times", async (error, reads) => {
+    vi.useFakeTimers();
+    const client = new QueryClient();
+    const read = vi.fn<() => Promise<{ id: string }[]>>().mockResolvedValue([{ id: "before" }]);
+    const collection = createApiCollection({ queryClient: client, queryKey: ["refusal", error.code], queryFn: read,
+      getKey: (row: { id: string }) => row.id });
+    const active = collection.subscribeChanges(() => {});
+    await vi.advanceTimersByTimeAsync(10);
+    read.mockClear();
+    read.mockRejectedValue(error);
+    void collection.utils.refetch();
+    await vi.advanceTimersByTimeAsync(60_000);
+    expect(read).toHaveBeenCalledTimes(reads);
+    expect(client.getQueryState(["refusal", error.code])?.status).toBe("error");
+    expect(collection.get("before")).toMatchObject({ id: "before" });
+    active.unsubscribe();
+    await collection.cleanup();
+    client.clear();
+  });

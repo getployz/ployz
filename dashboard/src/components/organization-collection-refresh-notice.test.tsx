@@ -1,12 +1,25 @@
 // @vitest-environment jsdom
 import { act, cleanup, render, screen, waitFor } from "@testing-library/react";
-import { afterEach, expect, it } from "vitest";
+import { afterEach, expect, it, vi } from "vitest";
 import { MutationObserver, onlineManager, QueryClient } from "@tanstack/react-query";
 import { useLiveQuery } from "@tanstack/react-db";
 import { createApiCollection } from "#/collections/query-collection";
 import { OrganizationCollectionRefreshNotice } from "./organization-collection-refresh-notice";
 
-afterEach(cleanup);
+afterEach(() => {
+  cleanup();
+  vi.useRealTimers();
+});
+
+async function failRefresh(refetch: () => Promise<void>) {
+  vi.useFakeTimers();
+  await act(async () => {
+    const refresh = refetch();
+    await vi.advanceTimersByTimeAsync(10_000);
+    await refresh;
+  });
+  vi.useRealTimers();
+}
 
 it("shows paused Store writes only in their Organization and clears once they are saved", async () => {
   const queryClient = new QueryClient();
@@ -70,8 +83,9 @@ it("shows active scoped refresh errors while retaining rows, clears on recovery,
   await screen.findByText("running");
   expect(screen.queryByRole("alert")).toBeNull();
   fail = true;
-  await act(async () => { await raw.utils.refetch(); });
+  await failRefresh(async () => { await raw.utils.refetch(); });
   await waitFor(() => expect(screen.getByRole("alert").textContent).toContain("may be out of date"));
+  expect(screen.getByRole("alert").textContent).not.toContain("Retrying");
   expect(screen.getByText("running")).toBeTruthy();
   for (const otherScope of [{ sessionId: "other" }, { userId: "other" }, { organizationSlug: "other" }]) {
     view.rerender(<View {...otherScope} />);
@@ -83,7 +97,7 @@ it("shows active scoped refresh errors while retaining rows, clears on recovery,
   await act(async () => { await raw.utils.refetch(); });
   await waitFor(() => expect(screen.queryByRole("alert")).toBeNull());
   fail = true;
-  await act(async () => { await raw.utils.refetch(); });
+  await failRefresh(async () => { await raw.utils.refetch(); });
   await screen.findByRole("alert");
   view.rerender(<View active={false} />);
   await waitFor(() => expect(screen.queryByRole("alert")).toBeNull());
