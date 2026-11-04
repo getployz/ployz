@@ -1116,6 +1116,77 @@ async fn a_pull_resent_after_a_restart_resumes_the_stopped_receive_by_its_token(
 }
 
 #[tokio::test]
+async fn a_pull_for_another_target_that_fails_before_its_receive_keeps_the_failure_on_its_own_target()
+ {
+    let source = Source::start(Some(BOUND), "break\n").await;
+    let test = TestDir::new();
+    let (socket, server) = puller(&test, &["root", "mirror", "mirror-fs"], source.port);
+    set_snapshots(&test, SLOT_FS, &[("w-1-1", 11)]);
+    post(&socket, "/Volume.Copy.Pull", pull("w-1-2")).await;
+    let failure = failed(&socket).await;
+    assert!(failure.contains("connection reset"), "{failure}");
+
+    let token_read = test.0.join("props/fail-command");
+    fs::write(
+        &token_read,
+        format!("get -H -o value receive_resume_token {SLOT_FS}"),
+    )
+    .unwrap();
+    let reply = post(&socket, "/Volume.Copy.Pull", pull("w-1-3")).await;
+    assert!(reply.get("Err").is_some(), "{reply}");
+    assert!(!token_read.exists(), "the token read never ran");
+
+    let copy = post(&socket, "/Volume.Copy.Inspect", json!({"name": "data"})).await;
+    assert_ne!(
+        copy.pointer("/Ok/pull"),
+        Some(&json!({"target": "w-1-3", "failure": failure})),
+        "w-1-3 carries the failure of w-1-2"
+    );
+    assert_eq!(
+        copy.pointer("/Ok/pull"),
+        Some(&json!({"target": "w-1-2", "failure": failure})),
+        "{copy}"
+    );
+
+    source.answer("token=", StatusCode::OK, "snapshot w-1-3 13\n");
+    let sent = source.requests().len();
+    let reply = post(&socket, "/Volume.Copy.Pull", pull("w-1-3")).await;
+    assert_eq!(
+        reply.pointer("/Ok/pull"),
+        Some(&json!({"target": "w-1-3", "failure": null})),
+        "{reply}"
+    );
+    assert_eq!(
+        source.requests().into_iter().skip(sent).collect::<Vec<_>>(),
+        [
+            "/volume-bound/data",
+            "/volume-send/data?target=w-1-3&token=token-1"
+        ]
+    );
+    server.abort();
+}
+
+#[tokio::test]
+async fn a_pull_no_receive_attends_reads_unattended_and_resumable_by_its_token() {
+    let test = TestDir::new();
+    let (socket, server) = slot(&test, &[("w-1-1", 11)]);
+    set_property(&test, SLOT, "ployz:pull", "w-1-2");
+    set_property(&test, SLOT_FS, "receive_resume_token", "token-1");
+
+    let copy = post(&socket, "/Volume.Copy.Inspect", json!({"name": "data"})).await;
+    assert_eq!(
+        copy.pointer("/Ok/pull_state"),
+        Some(&json!({"kind": "unattended", "target": "w-1-2", "resumable": true})),
+        "{copy}"
+    );
+    assert_eq!(
+        copy.pointer("/Ok/pull"),
+        Some(&json!({"target": "w-1-2", "failure": null}))
+    );
+    server.abort();
+}
+
+#[tokio::test]
 async fn a_pull_whose_base_the_writer_lost_starts_over_from_a_full_send() {
     let source = Source::start(Some(BOUND), "snapshot w-1-2 12\n").await;
     source.answer(
