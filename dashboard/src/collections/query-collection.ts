@@ -148,6 +148,13 @@ export async function preloadCollection(collection: ApiCollectionReadiness) {
   }
 }
 
+/** Readiness of several collections. It fails only once every read settles, since SSR streams a read still running and its later cancel rejects in the browser. */
+export async function preloadCollections(collections: ApiCollectionReadiness[]) {
+  const reads = await Promise.allSettled(collections.map(preloadCollection));
+  const failed = reads.find((read) => read.status === "rejected");
+  if (failed) throw failed.reason;
+}
+
 /** Secondary freshness: Query owns read errors after the command has committed. */
 export async function reconcileCollection(collection: ApiCollectionReadiness) {
   const subscription = collection.subscribeChanges(() => {});

@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 import { afterEach, expect, it, vi } from "vitest";
 import { focusManager, onlineManager, QueryClient } from "@tanstack/react-query";
-import { createApiCollection, createChangeCollection, preloadCollection, reconcileCollection } from "./query-collection";
+import { createApiCollection, createChangeCollection, preloadCollection, preloadCollections, reconcileCollection } from "./query-collection";
 import type { CollectionRead } from "./read.contract";
 import { getDbClient } from "./scope";
 
@@ -444,5 +444,27 @@ it.each(["api", "change"] as const)("retries a failed refresh with backoff, one 
   expect(collection.get("after")).toMatchObject({ id: "after" });
   active.unsubscribe();
   await collection.cleanup();
+  client.clear();
+});
+
+it("fails readiness only once every collection's read has settled, so SSR never streams a read it gave up on", async () => {
+  vi.useFakeTimers();
+  const client = new QueryClient();
+  const getKey = (row: { id: string }) => row.id;
+  const failing = createApiCollection({ queryClient: client, queryKey: ["ready", "failing"], getKey,
+    queryFn: async () => { throw new Error("Read failed"); } });
+  const slow = createApiCollection({ queryClient: client, queryKey: ["ready", "slow"], getKey,
+    queryFn: () => new Promise<{ id: string }[]>((resolve) => setTimeout(() => resolve([{ id: "slow" }]), 1_000)) });
+  let settled = false;
+  const ready = preloadCollections([failing, slow]).finally(() => { settled = true; });
+  const failure = expect(ready).rejects.toThrow("Read failed");
+  await vi.advanceTimersByTimeAsync(500);
+  expect(client.getQueryState(["ready", "failing"])?.status).toBe("error");
+  expect(settled).toBe(false);
+  await vi.advanceTimersByTimeAsync(500);
+  await failure;
+  expect(client.isFetching()).toBe(0);
+  await failing.cleanup();
+  await slow.cleanup();
   client.clear();
 });
