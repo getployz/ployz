@@ -1199,6 +1199,74 @@ mod tests {
         );
     }
 
+    #[tokio::test]
+    async fn a_keyed_spec_whose_container_is_gone_does_not_keep_a_half_made_container() {
+        let containers =
+            std::sync::Arc::new(std::sync::Mutex::new(std::collections::BTreeMap::new()));
+        let (runtime, _fake) = fake_runtime_with(FakeDocker {
+            named_containers: Some(containers.clone()),
+            list_named: true,
+            ..Default::default()
+        })
+        .await;
+        let machine = machine();
+        let namespace = Namespace::parse("app").unwrap();
+        let spec = spec_with_sources(Vec::new());
+        // A `docker rm`, or a crash after Docker's remove, leaves an earlier slot's rows.
+        let gone = ContainerId::parse("f".repeat(64)).unwrap();
+        let old = super::super::spec_store::CreationSlot::new(
+            &namespace,
+            ContainerKind::ServiceContainer,
+            "plan:old",
+        );
+        runtime
+            .specs
+            .config_operation()
+            .await
+            .put(&gone, Some(&old), &spec)
+            .await
+            .unwrap();
+        let request = || ContainerRequest {
+            creation_key: Some("plan:0"),
+            ..container_request(
+                ContainerKind::ServiceContainer,
+                &namespace,
+                &spec,
+                std::future::ready(None),
+            )
+        };
+        let first = runtime
+            .create_with_admission::<_, _, Error>(&machine, request())
+            .await
+            .unwrap();
+        runtime
+            .specs
+            .config_operation()
+            .await
+            .remove(&first.container_id)
+            .await
+            .unwrap();
+        for container in containers.lock().unwrap().values_mut() {
+            container["State"] = serde_json::json!({ "Status": "created" });
+        }
+        let made = runtime
+            .create_with_admission::<_, _, Error>(&machine, request())
+            .await
+            .expect("the resend creates the Container again");
+        assert_ne!(made.container_id, first.container_id);
+        let ids = containers
+            .lock()
+            .unwrap()
+            .values()
+            .map(|container| container["Id"].as_str().unwrap().to_owned())
+            .collect::<Vec<_>>();
+        assert_eq!(
+            ids,
+            vec![made.container_id.to_string()],
+            "the half-made Container is gone, so nothing is left bound to its Volumes"
+        );
+    }
+
     /// A Container the create under `key` left, with no spec and Docker state `status`.
     async fn specless(
         key: Option<&'static str>,
