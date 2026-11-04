@@ -29,10 +29,12 @@ it("refreshes active snapshots, retains failed reads, and stops unused scopes", 
   await vi.advanceTimersByTimeAsync(15_000);
   expect(collection.get("a")).toBeUndefined();
   expect(collection.get("b")?.name).toBe("after");
-  read.mockRejectedValueOnce(new Error("unavailable"));
-  await vi.advanceTimersByTimeAsync(15_000);
+  read.mockRejectedValue(new Error("unavailable"));
+  // The interval read and its three retries, 1s, 2s and 4s apart.
+  await vi.advanceTimersByTimeAsync(23_000);
   expect(collection.get("b")?.name).toBe("after");
   expect(collection.health.hasErrors).toBe(true);
+  read.mockImplementation(async () => rows);
   focusManager.setFocused(false);
   const hiddenReads = read.mock.calls.length;
   rows = [{ id: "c", name: "focused" }];
@@ -70,7 +72,10 @@ it("rejects failed initial loader readiness, retries later, and retains successf
   expect(collection.get("retained")).toMatchObject({ id: "retained" });
   const active = collection.subscribeChanges(() => {});
   read.mockRejectedValue(failure);
-  await expect(collection.utils.refetch({ throwOnError: true })).rejects.toBe(failure);
+  vi.useFakeTimers();
+  const refresh = expect(collection.utils.refetch({ throwOnError: true })).rejects.toBe(failure);
+  await vi.advanceTimersByTimeAsync(10_000);
+  await refresh;
   await expect(preloadCollection(collection)).resolves.toBeUndefined();
   expect(collection.get("retained")).toMatchObject({ id: "retained" });
   active.unsubscribe();
@@ -299,7 +304,10 @@ it.each([false, true])("applies committed rows without an observer over older re
   expect(collection.get("row")).toMatchObject(committed);
   active.unsubscribe();
   read.mockRejectedValue(new Error("GET unavailable"));
-  await reconcileCollection(collection);
+  vi.useFakeTimers();
+  const reconciled = reconcileCollection(collection);
+  await vi.advanceTimersByTimeAsync(10_000);
+  await reconciled;
   expect(collection.get("row")).toMatchObject(committed);
   expect(collection.health.hasErrors).toBe(true);
   expect(collection.subscriberCount).toBe(0);

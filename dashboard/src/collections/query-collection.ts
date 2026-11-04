@@ -25,7 +25,8 @@ function baseOptions<T extends object>(input: ApiCollectionInput<T>): BaseOption
     staleTime: input.staleTime ?? 15_000,
     refetchOnWindowFocus: "always",
     refetchOnReconnect: "always",
-    retry: false,
+    // A refresh retries with backoff while its rows stand in. A first load fails at once, so its gate shows the error.
+    retry: (failures) => failures < 3 && input.queryClient.getQueryData(input.queryKey) !== undefined,
     autoIndex: "eager",
     defaultIndexType: BasicIndex,
   };
