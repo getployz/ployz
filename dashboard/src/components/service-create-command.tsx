@@ -33,6 +33,7 @@ import {
   ENVIRONMENT_SERVICE_ROUTE_TO,
 } from "#/routes/_protected/cloud/$organizationSlug/_project/$projectSlug/$environmentSlug/-components/environment-route-paths";
 import {
+  type CreatedService,
   type NewServicePlacement,
   useCreateStoreDatabase,
   useCreateStoreService,
@@ -84,7 +85,7 @@ type ServiceCommandProps = {
   };
   initialPanel?: CreatePanel;
   /** `stillHere` is false once the user moved on: close up, but don't take them anywhere. */
-  onCreated?: (result: { service: { id: string } }, stillHere: boolean) => void | Promise<void>;
+  onCreated?: (created: CreatedService, stillHere: boolean) => void | Promise<void>;
   onCreateVolume?: () => void;
   onCreateConfig?: () => void;
   /** Says when a create starts and ends, so the dialog around it can stay open meanwhile. */
@@ -278,7 +279,7 @@ function useServiceCreateActions({
   /** Creates a Service here, or as the first in a new Project named after `source`. */
   const createInTarget = (
     source: NewServiceSource | undefined,
-    create: (placement: NewServicePlacement) => ReturnType<typeof createStoreService>,
+    create: (placement: NewServicePlacement) => CreatedService,
   ) =>
     whileCreating(async () => {
       const stillHere = markHere();

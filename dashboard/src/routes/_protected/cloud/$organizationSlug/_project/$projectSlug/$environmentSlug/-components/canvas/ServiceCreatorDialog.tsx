@@ -9,6 +9,7 @@ import {
 import { ServiceCreateCommand } from "#/components/service-create-command";
 import type { CreatePanel } from "#/components/create-menu-items";
 import type { FlowPosition } from "./types";
+import type { CreatedService } from "./useServiceCreator";
 
 export function ServiceCreatorDialog({
   open,
@@ -31,7 +32,7 @@ export function ServiceCreatorDialog({
   };
   onCreateVolume: () => void;
   onCreateConfig: () => void;
-  onCreated: (result: { service: { id: string } }, stillHere: boolean) => void | Promise<void>;
+  onCreated: (created: CreatedService, stillHere: boolean) => void | Promise<void>;
 }) {
   // Escape or a click outside can't close it mid-create: the new service opens once it's saved.
   const [creating, setCreating] = useState(false);

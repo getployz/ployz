@@ -1,7 +1,7 @@
 import { useCollectionScope } from "#/collections/use-collection-scope";
 import { useRef, useState } from "react";
 import { useReactFlow } from "@xyflow/react";
-import { useLoaderData, useNavigate } from "@tanstack/react-router";
+import { useLoaderData, useNavigate, useRouter } from "@tanstack/react-router";
 import type { EnvironmentRef } from "@ployz/sdk";
 import { createServiceCommand, newServiceName, serviceName, uniqueName, type NewServiceSource } from "#/modules/config-store/store-services";
 import { databaseCommand, type DatabasePreset } from "#/modules/config-store/database-presets";
@@ -14,10 +14,13 @@ import { SERVICE_NODE_HEIGHT, SERVICE_NODE_SIZE, SNAP_GRID } from "./constants";
 import type { CreatePanel } from "#/components/create-menu-items";
 import type { CanvasResourceNode, FlowPosition } from "./types";
 import { findPlacement } from "#/routes/_protected/cloud/$organizationSlug/_project/$projectSlug/$environmentSlug/-utils/node-placement";
-import { ENVIRONMENT_ROUTE_FROM, ENVIRONMENT_SERVICE_ROUTE_TO } from "../environment-route-paths";
+import { ENVIRONMENT_INDEX_ROUTE_TO, ENVIRONMENT_ROUTE_FROM, ENVIRONMENT_SERVICE_ROUTE_TO, type EnvironmentRouteParams } from "../environment-route-paths";
 
 /** Where a new Service goes: its Environment, and where the canvas put it. */
 export type NewServicePlacement = { store: EnvironmentRef; environmentId: string; position: FlowPosition };
+
+/** A Service created on the canvas: its id at once, and the write that saves it. */
+export type CreatedService = { service: { id: string }; persisted: Promise<unknown> };
 
 /** What creating a Service needs: the writer, canvas placement, and the names this tab has seen taken. */
 function useStoreCreate(organizationSlug: string) {
@@ -46,7 +49,7 @@ function useStoreCreate(organizationSlug: string) {
  */
 export function useCreateStoreService(organizationSlug: string) {
   const { writer, place, services } = useStoreCreate(organizationSlug);
-  return (target: NewServicePlacement, source: NewServiceSource) => {
+  return (target: NewServicePlacement, source: NewServiceSource): CreatedService => {
     const id = crypto.randomUUID();
     place({ environmentId: target.environmentId, resourceType: "service", resourceId: id, ...target.position });
     const name = newServiceName(source, services(target.store));
@@ -57,7 +60,7 @@ export function useCreateStoreService(organizationSlug: string) {
 /** Creates a Database Preset's Service, as `useCreateStoreService` does, with its Volume placed below it: one Batch. */
 export function useCreateStoreDatabase(organizationSlug: string) {
   const { writer, place, services, volumeNames } = useStoreCreate(organizationSlug);
-  return (target: NewServicePlacement, preset: DatabasePreset) => {
+  return (target: NewServicePlacement, preset: DatabasePreset): CreatedService => {
     const service = crypto.randomUUID();
     const volume = crypto.randomUUID();
     const { x, y } = target.position;
@@ -70,6 +73,24 @@ export function useCreateStoreDatabase(organizationSlug: string) {
   };
 }
 
+/**
+ * Opens a new Service's panel at once, before the Store has it. A refusal undoes the Service, so whoever is still on
+ * its panel goes back to the canvas, where the refusal's toast says why.
+ */
+export function useOpenCreatedService(params: EnvironmentRouteParams) {
+  const navigate = useNavigate();
+  const router = useRouter();
+  return async ({ service, persisted }: CreatedService) => {
+    const panel = { to: ENVIRONMENT_SERVICE_ROUTE_TO, params: { ...params, serviceId: service.id } } as const;
+    await navigate({ ...panel, search: (prev) => prev });
+    persisted.catch(() => {
+      if (router.matchRoute(panel, { fuzzy: true })) {
+        void navigate({ to: ENVIRONMENT_INDEX_ROUTE_TO, params, replace: true, search: (prev) => prev });
+      }
+    });
+  };
+}
+
 export function useServiceCreator(
   params: {
     organizationSlug: string;
@@ -79,7 +100,7 @@ export function useServiceCreator(
   environmentId: string,
   getViewportCenter: () => FlowPosition,
 ) {
-  const navigate = useNavigate();
+  const openCreated = useOpenCreatedService(params);
   const flow = useReactFlow<CanvasResourceNode>();
   const createStoreService = useCreateStoreService(params.organizationSlug);
   const { store } = useLoaderData({ from: ENVIRONMENT_ROUTE_FROM });
@@ -113,8 +134,7 @@ export function useServiceCreator(
 
   async function createBlankService(position: FlowPosition) {
     const placement = computePlacement(position);
-    const created = createStoreService({ store, environmentId, position: placement }, { type: "empty" });
-    await navigate({ to: ENVIRONMENT_SERVICE_ROUTE_TO, params: { ...params, serviceId: created.service.id } });
+    await openCreated(createStoreService({ store, environmentId, position: placement }, { type: "empty" }));
   }
 
   function onPaneContextMenu(event: MouseEvent | React.MouseEvent) {
@@ -135,6 +155,7 @@ export function useServiceCreator(
   }
 
   return {
+    openCreated,
     creatorOpen,
     setCreatorOpen,
     creatorPosition,
