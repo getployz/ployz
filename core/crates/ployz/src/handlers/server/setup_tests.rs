@@ -215,7 +215,7 @@ async fn leave_lost_to_a_daemon_restart_is_resent() {
 }
 
 /// A reset that left its row in the old Cluster, as when the row removal fails after
-/// the reset commits, is said: nothing else removes that row, and `server add --reset`,
+/// the reset commits, is warned: nothing else removes that row, and `server add --reset`,
 /// `server init` and `cloud enroll --reset` never reach the old Cluster to forget it.
 #[tokio::test]
 async fn a_leave_that_could_not_remove_its_row_says_so() {

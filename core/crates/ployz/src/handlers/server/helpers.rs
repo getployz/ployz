@@ -346,7 +346,8 @@ async fn enroll_with<T: Rpc<Response = Enrolled>>(
 }
 
 /// Leave the Cluster, resending until a reply arrives: a resend on a Machine
-/// that already left replies with its phase.
+/// that already left replies with its phase. A reset that could not take its row out of
+/// its old Cluster is warned: the callers never reach that Cluster to forget it.
 pub(in crate::handlers) async fn leave(client: &mut Client) -> Result<(), Error> {
     let left = client
         .call_repeatable_for::<op::Leave>(LeaveRequest {}, None, None, None, MACHINE_START_WAIT)
@@ -356,7 +357,18 @@ pub(in crate::handlers) async fn leave(client: &mut Client) -> Result<(), Error>
             exhausted => ConnectError::Exhausted(Box::new(exhausted)),
         })?;
     match left {
-        Left::Left { .. } => Ok(()),
+        Left::Left { reset_warning, .. } => {
+            if let Some(reason) = reset_warning {
+                crate::ui::warn(crate::ui::then_sentence(
+                    &crate::ui::with_reason(
+                        "The Server reset, but its old Cluster still lists it",
+                        &reason,
+                    ),
+                    "Whoever manages that Cluster can remove it there with `ployz server forget <id> --confirm dead`.",
+                ));
+            }
+            Ok(())
+        }
         Left::Refused { error, .. } => Err(ConnectError::Remote(error).into()),
     }
 }
