@@ -1,7 +1,7 @@
 import { useCollectionScope } from "#/collections/use-collection-scope";
 import { useRef, useState } from "react";
 import { useReactFlow } from "@xyflow/react";
-import { useLoaderData, useNavigate } from "@tanstack/react-router";
+import { useLoaderData, useNavigate, useRouter } from "@tanstack/react-router";
 import type { EnvironmentRef } from "@ployz/sdk";
 import { createServiceCommand, newServiceName, serviceName, uniqueName, type NewServiceSource } from "#/modules/config-store/store-services";
 import { databaseCommand, type DatabasePreset } from "#/modules/config-store/database-presets";
@@ -14,7 +14,7 @@ import { SERVICE_NODE_HEIGHT, SERVICE_NODE_SIZE, SNAP_GRID } from "./constants";
 import type { CreatePanel } from "#/components/create-menu-items";
 import type { CanvasResourceNode, FlowPosition } from "./types";
 import { findPlacement } from "#/routes/_protected/cloud/$organizationSlug/_project/$projectSlug/$environmentSlug/-utils/node-placement";
-import { ENVIRONMENT_ROUTE_FROM, ENVIRONMENT_SERVICE_ROUTE_TO, type EnvironmentRouteParams } from "../environment-route-paths";
+import { ENVIRONMENT_INDEX_ROUTE_TO, ENVIRONMENT_ROUTE_FROM, ENVIRONMENT_SERVICE_ROUTE_TO, type EnvironmentRouteParams } from "../environment-route-paths";
 
 /** Where a new Service goes: its Environment, and where the canvas put it. */
 export type NewServicePlacement = { store: EnvironmentRef; environmentId: string; position: FlowPosition };
@@ -73,11 +73,21 @@ export function useCreateStoreDatabase(organizationSlug: string) {
   };
 }
 
-/** Opens a new Service's panel at once, before the Store has it. */
+/**
+ * Opens a new Service's panel at once, before the Store has it. A refusal undoes the Service, so whoever is still on
+ * its panel goes back to the canvas, where the refusal's toast says why.
+ */
 export function useOpenCreatedService(params: EnvironmentRouteParams) {
   const navigate = useNavigate();
-  return async ({ service }: CreatedService) => {
-    await navigate({ to: ENVIRONMENT_SERVICE_ROUTE_TO, params: { ...params, serviceId: service.id }, search: (prev) => prev });
+  const router = useRouter();
+  return async ({ service, persisted }: CreatedService) => {
+    const panel = { to: ENVIRONMENT_SERVICE_ROUTE_TO, params: { ...params, serviceId: service.id } } as const;
+    await navigate({ ...panel, search: (prev) => prev });
+    persisted.catch(() => {
+      if (router.matchRoute(panel, { fuzzy: true })) {
+        void navigate({ to: ENVIRONMENT_INDEX_ROUTE_TO, params, replace: true, search: (prev) => prev });
+      }
+    });
   };
 }
 
