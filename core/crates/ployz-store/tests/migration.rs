@@ -624,6 +624,136 @@ fn a_seal_only_working_state_held_at_upgrade_keeps_history_from_plain_text() {
     }
 }
 
+/// Production of project shop, with Service web holding TOKEN plain at revision 1,
+/// then sealed under a new variable ID at revision 2: the Save scrubs revision 1's
+/// TOKEN by key, sealing it under its own, older ID.
+fn sealed_by_key(url: &str) -> ConfigStore {
+    let who = Actor::system(OrganizationId::parse("org").unwrap());
+    let store = ConfigStore::open(url, backend::key()).unwrap();
+    store
+        .write(
+            &who,
+            &CreateProject {
+                id: ProjectId::parse(uuid(1)).unwrap(),
+                name: ProjectName::parse("shop").unwrap(),
+                default_environment: EnvironmentId::parse(uuid(2)).unwrap(),
+            },
+        )
+        .unwrap();
+    store
+        .write(
+            &who,
+            &CreateService {
+                id: ServiceLineageId::parse(uuid(3)).unwrap(),
+                environment: EnvironmentRef::default(),
+                name: ServiceName::parse("web").unwrap(),
+                image: Some("web:1".into()),
+                template: None,
+            },
+        )
+        .unwrap();
+    set(
+        &store,
+        &who,
+        "production",
+        &[("web.env.TOKEN", json!("plain-value"))],
+    );
+    publish(&store, &who);
+    store
+        .write(
+            &who,
+            &Edit {
+                environment: at("production"),
+                expect: None,
+                changes: vec![Change::Unset {
+                    path: SettingPath::parse("web.env.TOKEN").unwrap(),
+                }],
+            },
+        )
+        .unwrap();
+    set(
+        &store,
+        &who,
+        "production",
+        &[(
+            "web.env.TOKEN",
+            backend::sealed_secret(&uuid(2), &uuid(3), "TOKEN", 1),
+        )],
+    );
+    publish(&store, &who);
+    store
+}
+
+/// Each `[environment, service, variable, key]` a saved version or Working State
+/// holds sealed that `config_sealed_variable` lacks.
+fn unrecorded_seals(url: &str) -> Vec<Vec<String>> {
+    let ledger = select(
+        url,
+        "SELECT environment_id, service_id, variable_id, key FROM config_sealed_variable",
+    );
+    let mut documents = select(url, "SELECT environment_id, intent FROM config_saved");
+    documents.extend(select(url, "SELECT id, working FROM config_environment"));
+    let mut unrecorded: Vec<Vec<String>> = documents
+        .iter()
+        .flat_map(|row| {
+            let [environment, document] = row.as_slice() else {
+                unreachable!("two columns are selected")
+            };
+            let intent: ployz_core::config::SavedEnvironmentIntent =
+                serde_json::from_str(document).unwrap();
+            intent
+                .services
+                .iter()
+                .flat_map(|service| {
+                    service
+                        .variables
+                        .iter()
+                        .filter(|variable| variable.value.is_secret())
+                        .map(|variable| {
+                            vec![
+                                environment.clone(),
+                                service.id.clone(),
+                                variable.id.clone(),
+                                variable.key.clone(),
+                            ]
+                        })
+                })
+                .collect::<Vec<_>>()
+        })
+        .filter(|seal| !ledger.contains(seal))
+        .collect();
+    unrecorded.sort();
+    unrecorded.dedup();
+    unrecorded
+}
+
+/// A scrub that seals an earlier version's variable by key, under that variable's
+/// own ID, records the seal: the ledger alone answers whether it was ever sealed.
+#[test]
+fn a_seal_a_scrub_writes_into_history_is_in_the_ledger() {
+    let dir = tempfile::tempdir().unwrap();
+    let url = backend::fresh_url(&dir);
+    let _store = sealed_by_key(&url);
+    assert_eq!(unrecorded_seals(&url), Vec::<Vec<String>>::new());
+}
+
+/// A database whose saves hold seals the ledger lacks, as one an older Store wrote,
+/// has every one of them in the ledger once `0033_record_saved_seals` runs.
+#[test]
+fn every_seal_a_save_holds_is_in_the_ledger_after_upgrade() {
+    let dir = tempfile::tempdir().unwrap();
+    let url = backend::fresh_url(&dir);
+    drop(sealed_by_key(&url));
+    run(
+        &url,
+        "DELETE FROM config_sealed_variable;
+         DELETE FROM config_migration WHERE name = '0033_record_saved_seals';",
+    );
+    assert_ne!(unrecorded_seals(&url), Vec::<Vec<String>>::new());
+    drop(ConfigStore::open(&url, backend::key()).unwrap());
+    assert_eq!(unrecorded_seals(&url), Vec::<Vec<String>>::new());
+}
+
 #[test]
 fn a_push_held_for_ci_lives_on_its_deployment_after_upgrade() {
     let dir = tempfile::tempdir().unwrap();
