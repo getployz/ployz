@@ -140,7 +140,8 @@ impl MachineSpecStore {
             .collect()
     }
 
-    /// Whether a spec of Service `service_id` names a Container `present` lacks.
+    /// Whether a spec of Service `service_id` with no creation slot names a Container
+    /// `present` lacks. A slotted one can be a restore source only for its own slot.
     pub(super) async fn holds_absent(
         &self,
         present: Vec<ContainerId>,
@@ -153,7 +154,10 @@ impl MachineSpecStore {
                 .map(ContainerId::as_str)
                 .collect::<HashSet<_>>();
             let connection = connect(&path)?;
-            let mut statement = connection.prepare("SELECT id, service_spec FROM containers")?;
+            let mut statement = connection.prepare(
+                "SELECT id, service_spec FROM containers WHERE NOT EXISTS \
+                 (SELECT 1 FROM creations WHERE creations.id = containers.id)",
+            )?;
             let rows = statement
                 .query_map([], |row| {
                     Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
