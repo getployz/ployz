@@ -1197,7 +1197,7 @@ fn a_server_that_never_arrived_does_not_hide_a_draining_copy() {
 }
 
 #[test]
-fn a_server_that_never_joined_names_how_to_forget_it_by_id() {
+fn a_server_that_has_not_joined_names_how_to_forget_it_by_id() {
     let [one, two, _] = machines();
     let never = machine('d', "machine-4");
     let mut observed = listed(&[&one], &[&two]);
@@ -1219,8 +1219,8 @@ fn a_server_that_never_joined_names_how_to_forget_it_by_id() {
             {
                 "reason": "machine_down",
                 "message": format!(
-                    "Never joined. If its add isn't still running, take it out with \
-                     `ployz server forget {} --confirm dead`.",
+                    "Hasn't joined and may still be joining. Once that Server is deleted or won't \
+                     join, take it out with `ployz server forget {} --confirm dead`.",
                     never.id.as_str()
                 ),
                 "machine": "machine-4",

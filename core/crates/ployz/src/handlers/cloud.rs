@@ -403,7 +403,7 @@ where
         && unlisted_participation(&details, &assigned).is_err()
         && another_cluster(&details, &join.registration)
     {
-        return Err(undoable(refuse_another_cluster(join)));
+        return Err(refuse_another_cluster(join));
     }
     if !initial_policy.matches(&assigned)
         || local.is_some_and(|machine| !initial_policy.matches(machine))
@@ -417,7 +417,7 @@ where
         report.step(Step::Join);
         progress(EnrollStage::Joining);
     } else {
-        unlisted_participation(&details, &assigned).map_err(undoable)?;
+        unlisted_participation(&details, &assigned)?;
         client = ensure_uninitialized(
             matches,
             matches.get_flag("yes"),

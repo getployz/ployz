@@ -668,12 +668,13 @@ fn stale_address(
     }
 }
 
-/// A Down Server. One that never arrived holds no copies, and an add still running looks
-/// the same, so the command that forgets it comes only with that condition.
+/// A Down Server. One that never arrived holds no copies, and one whose join is still under
+/// way looks the same, so the command that forgets it comes only with that condition.
 fn down_attention(observed: &MachineObservation) -> Attention {
     let message = if observed.unarrived() {
         format!(
-            "Never joined. If its add isn't still running, take it out with `{}`.",
+            "Hasn't joined and may still be joining. Once that Server is deleted or won't join, \
+             take it out with `{}`.",
             crate::ui::pasteable(&server::forget_unarrived(observed.machine.id))
         )
     } else {
@@ -683,7 +684,7 @@ fn down_attention(observed: &MachineObservation) -> Attention {
         reason: "machine_down".to_owned(),
         message,
         deployment: None,
-        // Not the one obvious command: an add still running looks the same.
+        // Not the one obvious command: a join still under way looks the same.
         next: None,
         subject: Some(Subject::Down {
             machine: observed.machine.name.clone(),

@@ -101,11 +101,12 @@ pub(in crate::handlers) fn list(root: &ArgMatches) -> Result<(), Error> {
     })
 }
 
-/// A listed Server that never joined. An add still running looks the same, so the command
-/// that takes it out comes with that condition.
+/// A listed Server that hasn't joined. One whose join is still under way looks the same, even
+/// after its add stopped waiting, so the command that takes it out comes with that condition.
 fn never_joined(observed: &MachineObservation) -> String {
     format!(
-        "Server {} never joined. If its add isn't still running, take it out with `{}`.",
+        "Server {} hasn't joined and may still be joining. Once that Server is deleted or won't \
+         join, take it out with `{}`.",
         observed.machine.name,
         ui::pasteable(&super::forget_unarrived(observed.machine.id))
     )
@@ -723,7 +724,7 @@ mod tests {
     use ployz_core::MachineStorageObservation;
 
     #[test]
-    fn a_server_that_never_joined_is_named_with_the_command_that_forgets_it_by_id() {
+    fn a_server_that_has_not_joined_is_named_with_the_command_that_forgets_it_by_id() {
         let machine = crate::global_fixtures::machine('d', "web-3");
         let id = machine.id;
         let never = MachineObservation::new(machine, MembershipObservation::Down);
@@ -732,8 +733,8 @@ mod tests {
         assert_eq!(
             never_joined(&never),
             format!(
-                "Server web-3 never joined. If its add isn't still running, take it out with \
-                 `ployz server forget {} --confirm dead`.",
+                "Server web-3 hasn't joined and may still be joining. Once that Server is deleted \
+                 or won't join, take it out with `ployz server forget {} --confirm dead`.",
                 id.as_str()
             )
         );
