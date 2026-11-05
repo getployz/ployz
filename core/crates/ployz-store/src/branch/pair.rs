@@ -44,9 +44,10 @@ pub(crate) struct Move {
 /// Who owns what a [`Checked::apply`] lands.
 #[derive(Clone, Copy)]
 pub(crate) enum Owner<'a> {
-    /// Nobody: Follow, Own Copy, and a Sync at a pull request's merge.
+    /// Nobody: a Follow, a take of Use hints, and Own Copy. A row a Sync landed keeps
+    /// that Sync's claim under one (see [`ledger::landing`]).
     None,
-    /// Proposal `id`, included by Sync `sync`.
+    /// Proposal `id`, included by Sync `sync`: a Sync.
     Proposal {
         id: &'a ProposalId,
         sync: &'a SyncId,
@@ -307,9 +308,9 @@ impl Checked<'_> {
 
     /// Land `picks` in `into`, `values` filling the secrets that need one, and advance
     /// the pair's base by exactly what landed, recording each row's arrival for
-    /// `owner`. Arrivals are recorded before the rows land, so the release that
-    /// saving the Working State runs sees them as they landed. Returns the nodes
-    /// staged.
+    /// `owner` over what arrived there from that side before ([`ledger::landing`]).
+    /// Arrivals are recorded before the rows land, so the release that saving the
+    /// Working State runs sees them as they landed. Returns the nodes staged.
     pub(crate) fn apply(
         &self,
         tx: &mut dyn Tx,
@@ -333,15 +334,14 @@ impl Checked<'_> {
             Way::Follow => How::Follow,
             Way::Sync | Way::Merge | Way::Copy => How::Sync,
         };
+        let stored: BTreeMap<RowId, Arrival> =
+            arrived(tx, &into.summary.id, Which::From(&of.other))?
+                .into_iter()
+                .map(|arrived| (arrived.row, arrived.arrival))
+                .collect();
         for landed in applied.landed {
-            let claim = match owner {
-                Owner::None => Claim::Nobody,
-                Owner::Proposal { id, sync } => Claim::Owned {
-                    sync: sync.clone(),
-                    proposal: id.clone(),
-                    was: landed.was,
-                },
-            };
+            let stored = stored.get(&landed.row);
+            let arrival = ledger::landing(stored, owner, (landed.prior, landed.was));
             let from = self
                 .plan
                 .rows()
@@ -354,12 +354,9 @@ impl Checked<'_> {
                 how,
                 from,
                 value: landed.value,
-                arrival: Arrival::Pending {
-                    prior: landed.prior,
-                    claim,
-                },
+                arrival,
             };
-            arrive(tx, who, &into.summary.id, &arrived)?;
+            ledger::write(tx, who, &into.summary.id, &arrived, stored)?;
         }
         let read = crate::rules::removed_lineages(&applied.next, &into.live);
         let source_removed = scope::removed_of(tx, &of.source)?;
@@ -618,7 +615,8 @@ pub(super) fn rewind_bases(
 
 /// After a discard took `receiver`'s Working State from `before` to `after`: each
 /// row that arrived there and is gone again returns its pair's base to what it held
-/// before, so it is offered again. A Follow's stays a hint; a Sync's is forgotten.
+/// before, so it is offered again. A Follow's stays a hint, keeping no Sync's claim;
+/// a Sync's is forgotten.
 pub(crate) fn rewind(
     tx: &mut dyn Tx,
     receiver: &EnvironmentId,
@@ -634,25 +632,15 @@ pub(crate) fn rewind(
         if before.at(&row) == after.at(&row) {
             continue;
         }
-        let at = row.at().to_string();
-        let key = [
-            receiver.as_str().into(),
-            arrived.other.as_str().into(),
-            row.lineage().into(),
-            at.as_str().into(),
-        ];
-        match arrived.how {
-            How::Follow => tx.execute(
-                "UPDATE config_sync_arrival SET state = 'hint', prior = NULL, was = NULL \
-                 WHERE environment_id = ?1 AND other_id = ?2 AND lineage = ?3 AND at = ?4",
-                &key,
-            )?,
-            How::Sync => tx.execute(
-                "DELETE FROM config_sync_arrival \
-                 WHERE environment_id = ?1 AND other_id = ?2 AND lineage = ?3 AND at = ?4",
-                &key,
-            )?,
+        let key = ledger::Key {
+            receiver: receiver.as_str(),
+            other: arrived.other.as_str(),
+            row: &row,
         };
+        match arrived.how {
+            How::Follow => ledger::rewind_follow(tx, &key)?,
+            How::Sync => ledger::rewind_sync(tx, &key)?,
+        }
         undone.push((arrived.other, row, prior));
     }
     rewind_bases(tx, receiver, undone)
@@ -694,7 +682,8 @@ pub(crate) fn deployed(
     Ok(())
 }
 
-/// `other`'s `value` at `row` was delivered to `receiver` but stays a hint there.
+/// `other`'s `value` at `row` was delivered to `receiver` but stays a Use hint there
+/// ([`ledger::hinting`] says what that writes over what arrived there before).
 pub(super) fn hint(
     tx: &mut dyn Tx,
     who: &Actor,
@@ -702,15 +691,30 @@ pub(super) fn hint(
     row: &RowId,
     value: &Cell,
 ) -> Result<(), RpcError> {
-    let arrived = Arrived {
-        other: other.clone(),
-        row: row.clone(),
-        how: How::Follow,
-        from: value.clone(),
-        value: value.clone(),
-        arrival: Arrival::Hint,
+    let stored = arrived(tx, receiver, Which::From(other))?
+        .into_iter()
+        .find(|arrived| arrived.row == *row)
+        .map(|arrived| arrived.arrival);
+    let key = ledger::Key {
+        receiver: receiver.as_str(),
+        other: other.as_str(),
+        row,
     };
-    arrive(tx, who, receiver, &arrived)
+    match ledger::hinting(stored.as_ref()) {
+        ledger::Hinting::Nothing => Ok(()),
+        ledger::Hinting::Source(sync) => ledger::hint_source(tx, &key, sync, value),
+        ledger::Hinting::Hint => {
+            let arrived = Arrived {
+                other: other.clone(),
+                row: row.clone(),
+                how: How::Follow,
+                from: value.clone(),
+                value: value.clone(),
+                arrival: Arrival::Hint,
+            };
+            ledger::write(tx, who, receiver, &arrived, stored.as_ref())
+        }
+    }
 }
 
 /// How a row arrived.
@@ -722,18 +726,21 @@ pub(super) enum How {
 }
 
 /// Where an arrived row stands in its receiver.
+#[derive(Clone, Debug, PartialEq)]
 pub(super) enum Arrival {
     /// Staged, not deployed: `prior` is what the pair base held before it landed, to
     /// rewind a discard.
     Pending { prior: Cell, claim: Claim },
     /// A Follow the receiver changed too, or discarded.
     Hint,
-    /// Deployed.
-    Settled,
+    /// Deployed, with the Sync that landed it, if one did: that Sync's Undo then
+    /// refuses it as deployed.
+    Settled { sync: Option<SyncId> },
 }
 
 /// The Sync that landed a pending row, if one did, with the receiver's own from
 /// before it (`was`) to undo it.
+#[derive(Clone, Debug, PartialEq)]
 pub(super) enum Claim {
     Nobody,
     Released {
@@ -786,6 +793,296 @@ pub(crate) fn forget_unclaimed(tx: &mut dyn Tx, receiver: &str) -> Result<(), Rp
         &[receiver.into(), json_of(&UNKEPT).as_str().into()],
     )?;
     Ok(())
+}
+
+/// The arrival ledger's edges: each moves one receiver's `config_sync_arrival` rows
+/// between absent, pending (under its [`Claim`]), a Use hint and settled, and carries
+/// in its WHERE the from-state its caller read under the receiver's lock. Besides
+/// these only the content scrubs, which change cells and never a state or claim, the
+/// Environment purge, and a proposal's rebind, whose foreign key moves `other_id`,
+/// write the table.
+pub(super) mod ledger {
+    use super::*;
+    use crate::storage::Param;
+
+    /// One arrival's key: what arrived in `receiver` from `other` at `row`.
+    pub(in crate::branch) struct Key<'a> {
+        pub(in crate::branch) receiver: &'a str,
+        pub(in crate::branch) other: &'a str,
+        pub(in crate::branch) row: &'a RowId,
+    }
+
+    /// The columns an [`Arrival`] sets besides what landed.
+    struct Columns<'a> {
+        state: &'static str,
+        prior: Option<String>,
+        was: Option<String>,
+        sync: Option<&'a str>,
+        proposal: Option<&'a str>,
+    }
+
+    impl<'a> Columns<'a> {
+        fn of(arrival: &'a Arrival) -> Self {
+            match arrival {
+                Arrival::Pending { prior, claim } => {
+                    let (sync, proposal, was) = match claim {
+                        Claim::Nobody => (None, None, &UNKEPT),
+                        Claim::Released { sync, was } => (Some(sync.as_str()), None, was),
+                        Claim::Owned {
+                            sync,
+                            proposal,
+                            was,
+                        } => (Some(sync.as_str()), Some(proposal.as_str()), was),
+                    };
+                    Self {
+                        state: "pending",
+                        prior: Some(json_of(prior)),
+                        was: Some(json_of(was)),
+                        sync,
+                        proposal,
+                    }
+                }
+                Arrival::Hint => Self {
+                    state: "hint",
+                    prior: None,
+                    was: None,
+                    sync: None,
+                    proposal: None,
+                },
+                Arrival::Settled { sync } => Self {
+                    state: "settled",
+                    prior: None,
+                    was: None,
+                    sync: sync.as_ref().map(SyncId::as_str),
+                    proposal: None,
+                },
+            }
+        }
+    }
+
+    /// What a landing writes over `stored`, the row that arrived there from that
+    /// side before, if one did, for `owner`, given the landing's own `prior` (the
+    /// pair base's cell before it) and `was` (the receiver's own cell before it):
+    ///
+    /// | `owner` | `stored` | writes |
+    /// |---|---|---|
+    /// | None | pending, Released or Owned | Released by its Sync, its `was` and `prior` kept |
+    /// | None | pending, Nobody | Nobody, its `prior` kept |
+    /// | None | absent, a Use hint or settled | Nobody, the landing's `prior` |
+    /// | Proposal `id` | pending, Owned by `id` | Owned by the new Sync, its `was` and `prior` kept |
+    /// | Proposal `id` | anything else | Owned, the landing's `was` and `prior` |
+    ///
+    /// A row at one key is owned only by the proposal of its `other`: one proposal per
+    /// receiver and source, which the foreign key ties to it. So Owned by another
+    /// proposal is "anything else", which the landing takes over.
+    pub(super) fn landing(
+        stored: Option<&Arrival>,
+        owner: Owner<'_>,
+        (prior, was): (Cell, SealedCell),
+    ) -> Arrival {
+        let kept = match stored {
+            Some(Arrival::Pending { prior, claim }) => Some((prior, claim)),
+            Some(Arrival::Hint | Arrival::Settled { .. }) | None => None,
+        };
+        let (prior, claim) = match (owner, kept) {
+            (
+                Owner::None,
+                Some((prior, Claim::Released { sync, was } | Claim::Owned { sync, was, .. })),
+            ) => (
+                prior.clone(),
+                Claim::Released {
+                    sync: sync.clone(),
+                    was: was.clone(),
+                },
+            ),
+            (Owner::None, Some((prior, Claim::Nobody))) => (prior.clone(), Claim::Nobody),
+            (Owner::None, None) => (prior, Claim::Nobody),
+            (
+                Owner::Proposal { id, sync },
+                Some((
+                    prior,
+                    Claim::Owned {
+                        proposal,
+                        was: kept,
+                        ..
+                    },
+                )),
+            ) if proposal == id => (
+                prior.clone(),
+                Claim::Owned {
+                    sync: sync.clone(),
+                    proposal: id.clone(),
+                    was: kept.clone(),
+                },
+            ),
+            (Owner::Proposal { id, sync }, _) => (
+                prior,
+                Claim::Owned {
+                    sync: sync.clone(),
+                    proposal: id.clone(),
+                    was,
+                },
+            ),
+        };
+        Arrival::Pending { prior, claim }
+    }
+
+    /// What a Use hint writes over `stored`, the row that arrived there from that side
+    /// before, if one did.
+    #[derive(Debug, PartialEq)]
+    pub(super) enum Hinting<'a> {
+        /// Over a pending row Released by this Sync: only `source`, the cell delivered,
+        /// so the Use hint is offered and the next Follow skips it. The row keeps its
+        /// state, `how`, value, claim, `prior` and `was`, so that Sync's Undo sees it.
+        Source(&'a SyncId),
+        /// Over a pending row a proposal owns: nothing.
+        Nothing,
+        /// Over nothing, a Use hint, a settled row or a pending row no Sync claims: the
+        /// Use hint, a Follow's, keeping no claim.
+        Hint,
+    }
+
+    pub(super) fn hinting(stored: Option<&Arrival>) -> Hinting<'_> {
+        match stored {
+            Some(Arrival::Pending {
+                claim: Claim::Released { sync, .. },
+                ..
+            }) => Hinting::Source(sync),
+            Some(Arrival::Pending {
+                claim: Claim::Owned { .. },
+                ..
+            }) => Hinting::Nothing,
+            Some(
+                Arrival::Pending {
+                    claim: Claim::Nobody,
+                    ..
+                }
+                | Arrival::Hint
+                | Arrival::Settled { .. },
+            )
+            | None => Hinting::Hint,
+        }
+    }
+
+    /// Land: write `arrived` in `receiver` over `stored`, what arrived at its key
+    /// before as the caller read it. Where nothing was, an insert; else an update of
+    /// that row only while it still holds `stored`: its state and, but for a Use
+    /// hint, its claim. A Use hint's `sync_id` isn't compared: one an older Store's
+    /// Discard wrote keeps a Sync's.
+    pub(super) fn write(
+        tx: &mut dyn Tx,
+        who: &Actor,
+        receiver: &EnvironmentId,
+        arrived: &Arrived,
+        stored: Option<&Arrival>,
+    ) -> Result<(), RpcError> {
+        let to = Columns::of(&arrived.arrival);
+        let at = arrived.row.at().to_string();
+        let how = storage::name_of(arrived.how);
+        let (value, source) = (json_of(&arrived.value), json_of(&arrived.from));
+        let mut params: Vec<Param<'_>> = vec![
+            receiver.as_str().into(),
+            arrived.other.as_str().into(),
+            arrived.row.lineage().into(),
+            at.as_str().into(),
+            how.as_str().into(),
+            to.state.into(),
+            value.as_str().into(),
+            to.prior.as_deref().into(),
+            to.was.as_deref().into(),
+            to.sync.into(),
+            to.proposal.into(),
+            source.as_str().into(),
+        ];
+        let Some(stored) = stored else {
+            params.push(who.organization.as_str().into());
+            tx.execute(
+                "INSERT INTO config_sync_arrival (environment_id, other_id, lineage, at, how, \
+                 state, value, prior, was, sync_id, proposal_id, source, organization_id) \
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)",
+                &params,
+            )?;
+            return Ok(());
+        };
+        let from = Columns::of(stored);
+        params.push(from.state.into());
+        params.push(from.sync.into());
+        params.push(from.proposal.into());
+        tx.execute(
+            "UPDATE config_sync_arrival SET how = ?5, state = ?6, value = ?7, prior = ?8, \
+             was = ?9, sync_id = ?10, proposal_id = ?11, source = ?12 \
+             WHERE environment_id = ?1 AND other_id = ?2 AND lineage = ?3 AND at = ?4 \
+             AND state = ?13 AND (state = 'hint' OR (COALESCE(sync_id, '') = COALESCE(?14, '') \
+             AND COALESCE(proposal_id, '') = COALESCE(?15, '')))",
+            &params,
+        )?;
+        Ok(())
+    }
+
+    /// Hint over a pending row Released by `sync`: write only `source`, the cell
+    /// `delivered` ([`Hinting::Source`]).
+    pub(super) fn hint_source(
+        tx: &mut dyn Tx,
+        key: &Key<'_>,
+        sync: &SyncId,
+        delivered: &Cell,
+    ) -> Result<(), RpcError> {
+        let (at, source) = (key.row.at().to_string(), json_of(delivered));
+        tx.execute(
+            "UPDATE config_sync_arrival SET source = ?5 \
+             WHERE environment_id = ?1 AND other_id = ?2 AND lineage = ?3 AND at = ?4 \
+             AND state = 'pending' AND sync_id = ?6 AND proposal_id IS NULL",
+            &[
+                key.receiver.into(),
+                key.other.into(),
+                key.row.lineage().into(),
+                at.as_str().into(),
+                source.as_str().into(),
+                sync.as_str().into(),
+            ],
+        )?;
+        Ok(())
+    }
+
+    /// Rewind a Follow's row: from pending, unowned, `how = 'follow'`, to a Use hint,
+    /// which keeps no claim, a Sync's included.
+    pub(super) fn rewind_follow(tx: &mut dyn Tx, key: &Key<'_>) -> Result<(), RpcError> {
+        let to = Columns::of(&Arrival::Hint);
+        let at = key.row.at().to_string();
+        tx.execute(
+            "UPDATE config_sync_arrival SET state = ?5, prior = ?6, was = ?7, sync_id = ?8 \
+             WHERE environment_id = ?1 AND other_id = ?2 AND lineage = ?3 AND at = ?4 \
+             AND state = 'pending' AND how = 'follow' AND proposal_id IS NULL",
+            &[
+                key.receiver.into(),
+                key.other.into(),
+                key.row.lineage().into(),
+                at.as_str().into(),
+                to.state.into(),
+                to.prior.as_deref().into(),
+                to.was.as_deref().into(),
+                to.sync.into(),
+            ],
+        )?;
+        Ok(())
+    }
+
+    /// Rewind a Sync's row: from pending, `how = 'sync'`, under any claim, to absent.
+    pub(super) fn rewind_sync(tx: &mut dyn Tx, key: &Key<'_>) -> Result<(), RpcError> {
+        let at = key.row.at().to_string();
+        tx.execute(
+            "DELETE FROM config_sync_arrival \
+             WHERE environment_id = ?1 AND other_id = ?2 AND lineage = ?3 AND at = ?4 \
+             AND state = 'pending' AND how = 'sync'",
+            &[
+                key.receiver.into(),
+                key.other.into(),
+                key.row.lineage().into(),
+                at.as_str().into(),
+            ],
+        )?;
+        Ok(())
+    }
 }
 
 /// Keep no plain value `environment` ever sealed in a base it shares: what a Branch
@@ -1385,80 +1682,6 @@ fn seal_without_value(variable: &mut SavedVariableIntent) {
     variable.value = VariableValue::NotSet;
 }
 
-/// Record `arrived` in `receiver`, replacing what arrived at that row from that side
-/// before. A row still pending under the same owner keeps the base's cell from
-/// before its first arrival, and one its proposal still owns keeps the receiver's own
-/// from before it too; a new proposal starts from the base it found. A hint never
-/// replaces an owned row.
-fn arrive(
-    tx: &mut dyn Tx,
-    who: &Actor,
-    receiver: &EnvironmentId,
-    arrived: &Arrived,
-) -> Result<(), RpcError> {
-    let (state, prior, was, sync, owner) = match &arrived.arrival {
-        Arrival::Pending { prior, claim } => {
-            let (sync, owner, was) = match claim {
-                Claim::Nobody => (None, None, &UNKEPT),
-                Claim::Released { sync, was } => (Some(sync.as_str()), None, was),
-                Claim::Owned {
-                    sync,
-                    proposal,
-                    was,
-                } => (Some(sync.as_str()), Some(proposal.as_str()), was),
-            };
-            (
-                "pending",
-                Some(json_of(prior)),
-                Some(json_of(was)),
-                sync,
-                owner,
-            )
-        }
-        Arrival::Hint => ("hint", None, None, None, None),
-        Arrival::Settled => ("settled", None, None, None, None),
-    };
-    let hint = if matches!(arrived.arrival, Arrival::Hint) {
-        " WHERE config_sync_arrival.proposal_id IS NULL"
-    } else {
-        ""
-    };
-    tx.execute(
-        &format!(
-            "INSERT INTO config_sync_arrival (environment_id, other_id, lineage, at, \
-             organization_id, how, state, value, prior, was, sync_id, proposal_id, source) \
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13) \
-             ON CONFLICT (environment_id, other_id, lineage, at) DO UPDATE SET \
-             how = excluded.how, state = excluded.state, value = excluded.value, \
-             sync_id = excluded.sync_id, proposal_id = excluded.proposal_id, \
-             source = excluded.source, was = CASE \
-             WHEN config_sync_arrival.state = 'pending' \
-             AND config_sync_arrival.proposal_id = excluded.proposal_id \
-             THEN config_sync_arrival.was ELSE excluded.was END, prior = CASE \
-             WHEN config_sync_arrival.state = 'pending' AND excluded.state = 'pending' \
-             AND COALESCE(config_sync_arrival.proposal_id, '') \
-             = COALESCE(excluded.proposal_id, '') \
-             THEN config_sync_arrival.prior ELSE excluded.prior END{hint}"
-        ),
-        &[
-            receiver.as_str().into(),
-            arrived.other.as_str().into(),
-            arrived.row.lineage().into(),
-            arrived.row.at().to_string().as_str().into(),
-            who.organization.as_str().into(),
-            storage::name_of(arrived.how).as_str().into(),
-            state.into(),
-            json_of(&arrived.value).as_str().into(),
-            prior.as_deref().into(),
-            was.as_deref().into(),
-            sync.into(),
-            owner.into(),
-            json_of(&arrived.from).as_str().into(),
-        ],
-    )?;
-    Ok(())
-}
-
 /// Which of an Environment's arrivals [`arrived`] reads.
 pub(super) enum Which<'id> {
     /// Those not yet deployed.
@@ -1518,11 +1741,14 @@ pub(super) fn arrived(
                     },
                 },
                 "hint" => Arrival::Hint,
-                "settled" => Arrival::Settled,
+                "settled" => Arrival::Settled {
+                    sync: row.parse_optional(8, "Sync")?,
+                },
                 _ => return Err(error::corrupt("Sync")),
             };
             let value: Cell = row.json(5, "Sync")?;
-            // A row no proposal owns has no source: what it offers is what landed.
+            // A row with no source offers what landed: the release or end of its
+            // proposal cleared it, and no Use hint has delivered a cell there since.
             let from = match row.optional_text(10)? {
                 Some(from) => serde_json::from_str(from).map_err(|_| error::corrupt("Sync"))?,
                 None => value.clone(),
@@ -1552,9 +1778,10 @@ pub(super) fn arrivals(
 }
 
 /// Undo Sync `sync` in `receiver`, whose lock the caller holds: put back what each
-/// row it landed held before, and the pair bases' too. Refused when a row changed
-/// since it landed (for a new node, any of its rows), or deployed. False when the
-/// Sync landed nothing there.
+/// row it landed held before, and the pair bases' too. Refused when a row deployed,
+/// when a Follow or a take landed over a row since (`how = 'follow'`, whatever it
+/// holds), or when a row changed since it landed (for a new node, any of its rows).
+/// False when no row carries the Sync there.
 pub(super) fn undo(
     tx: &mut dyn Tx,
     receiver: &mut Environment,
@@ -1570,6 +1797,7 @@ pub(super) fn undo(
     };
     let mut others = Vec::new();
     let mut landed = Vec::new();
+    let mut followed = None;
     for arrived in rows {
         let Arrival::Pending { prior, claim } = arrived.arrival else {
             return Err(error::conflict(
@@ -1580,6 +1808,9 @@ pub(super) fn undo(
                 json!({ "row": arrived.row }),
             ));
         };
+        if matches!(arrived.how, How::Follow) && followed.is_none() {
+            followed = Some((arrived.row.clone(), arrived.value.clone()));
+        }
         others.push(arrived.other);
         landed.push(Landed {
             row: arrived.row,
@@ -1589,6 +1820,15 @@ pub(super) fn undo(
         });
     }
     let suffix = suffix(tx, receiver)?;
+    // A Follow or a take landed over the row since this Sync did: the row changed.
+    if let Some((row, value)) = followed {
+        return Err(changed_since(
+            &receiver.working,
+            &suffix,
+            &row,
+            Some(&value),
+        ));
+    }
     receiver.working = match unapply(&receiver.working, &suffix, &landed) {
         Ok(working) => working,
         Err(Unapplied::Changed(row)) => {
@@ -1683,9 +1923,9 @@ pub(super) fn withdraw(
     Ok(true)
 }
 
-/// Undo refused: `row` holds other than the `value` a Sync landed there, if it landed
-/// one. A plain value sealed since never becomes plain again, so it can't be changed
-/// back.
+/// Undo refused: `row` changed since a Sync landed there. `value` is what last landed
+/// at `row`, if anything did, read only to tell a plain value sealed since, which
+/// never becomes plain again, so it can't be changed back.
 pub(super) fn changed_since(
     working: &SavedEnvironmentIntent,
     suffix: &str,
@@ -1880,4 +2120,188 @@ pub(crate) fn land(
     }
     staged.sort();
     Ok(staged)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::ledger::{Hinting, hinting, landing};
+    use super::*;
+
+    fn sync(n: u8) -> SyncId {
+        SyncId::parse(format!("00000000-0000-4000-8000-0000000002{n:02}")).unwrap()
+    }
+
+    fn proposal(n: u8) -> ProposalId {
+        ProposalId::parse(format!("00000000-0000-4000-8000-0000000003{n:02}")).unwrap()
+    }
+
+    fn cell(value: &str) -> Cell {
+        Cell::Value(json!(value))
+    }
+
+    fn sealed(value: &str) -> SealedCell {
+        SealedCell::Cell(cell(value))
+    }
+
+    /// A pending row whose `prior` and `was` are the stored ones.
+    fn pending(claim: Claim) -> Arrival {
+        Arrival::Pending {
+            prior: cell("stored prior"),
+            claim,
+        }
+    }
+
+    fn released() -> Claim {
+        Claim::Released {
+            sync: sync(1),
+            was: sealed("stored was"),
+        }
+    }
+
+    fn owned(by: u8) -> Claim {
+        Claim::Owned {
+            sync: sync(1),
+            proposal: proposal(by),
+            was: sealed("stored was"),
+        }
+    }
+
+    /// What a landing for `owner` writes over `stored`, with its own `prior` and `was`.
+    fn landed(stored: Option<&Arrival>, owner: Owner<'_>) -> Arrival {
+        landing(
+            stored,
+            owner,
+            (cell("landing prior"), sealed("landing was")),
+        )
+    }
+
+    /// The row a landing nobody owns writes over a pending row it keeps the claim of.
+    fn released_kept() -> Arrival {
+        Arrival::Pending {
+            prior: cell("stored prior"),
+            claim: released(),
+        }
+    }
+
+    #[test]
+    fn a_landing_nobody_owns_over_a_released_row_keeps_its_sync_was_and_prior() {
+        assert_eq!(
+            landed(Some(&pending(released())), Owner::None),
+            released_kept()
+        );
+    }
+
+    #[test]
+    fn a_landing_nobody_owns_over_an_owned_row_releases_it_with_its_sync_was_and_prior() {
+        assert_eq!(
+            landed(Some(&pending(owned(1))), Owner::None),
+            released_kept()
+        );
+    }
+
+    #[test]
+    fn a_landing_nobody_owns_over_a_pending_row_nobody_claims_keeps_its_prior() {
+        assert_eq!(
+            landed(Some(&pending(Claim::Nobody)), Owner::None),
+            Arrival::Pending {
+                prior: cell("stored prior"),
+                claim: Claim::Nobody,
+            }
+        );
+    }
+
+    #[test]
+    fn a_landing_nobody_owns_over_no_pending_row_starts_from_the_base_it_found() {
+        let fresh = Arrival::Pending {
+            prior: cell("landing prior"),
+            claim: Claim::Nobody,
+        };
+        for stored in [
+            None,
+            Some(Arrival::Hint),
+            Some(Arrival::Settled { sync: None }),
+            Some(Arrival::Settled {
+                sync: Some(sync(1)),
+            }),
+        ] {
+            assert_eq!(landed(stored.as_ref(), Owner::None), fresh, "{stored:?}");
+        }
+    }
+
+    #[test]
+    fn a_sync_landing_over_its_own_proposals_row_keeps_its_was_and_prior() {
+        let (id, next) = (proposal(1), sync(2));
+        let owner = Owner::Proposal {
+            id: &id,
+            sync: &next,
+        };
+        assert_eq!(
+            landed(Some(&pending(owned(1))), owner),
+            Arrival::Pending {
+                prior: cell("stored prior"),
+                claim: Claim::Owned {
+                    sync: sync(2),
+                    proposal: proposal(1),
+                    was: sealed("stored was"),
+                },
+            }
+        );
+    }
+
+    #[test]
+    fn a_sync_landing_over_any_other_row_takes_it_over_from_what_it_found() {
+        let (id, next) = (proposal(1), sync(2));
+        let owner = Owner::Proposal {
+            id: &id,
+            sync: &next,
+        };
+        let fresh = Arrival::Pending {
+            prior: cell("landing prior"),
+            claim: Claim::Owned {
+                sync: sync(2),
+                proposal: proposal(1),
+                was: sealed("landing was"),
+            },
+        };
+        for stored in [
+            None,
+            Some(pending(Claim::Nobody)),
+            Some(pending(released())),
+            Some(pending(owned(2))),
+            Some(Arrival::Hint),
+            Some(Arrival::Settled {
+                sync: Some(sync(1)),
+            }),
+        ] {
+            assert_eq!(landed(stored.as_ref(), owner), fresh, "{stored:?}");
+        }
+    }
+
+    #[test]
+    fn a_use_hint_over_a_released_row_writes_only_its_source() {
+        assert_eq!(
+            hinting(Some(&pending(released()))),
+            Hinting::Source(&sync(1))
+        );
+    }
+
+    #[test]
+    fn a_use_hint_over_an_owned_row_writes_nothing() {
+        assert_eq!(hinting(Some(&pending(owned(1)))), Hinting::Nothing);
+    }
+
+    #[test]
+    fn a_use_hint_over_any_other_row_replaces_it() {
+        for stored in [
+            None,
+            Some(pending(Claim::Nobody)),
+            Some(Arrival::Hint),
+            Some(Arrival::Settled { sync: None }),
+            Some(Arrival::Settled {
+                sync: Some(sync(1)),
+            }),
+        ] {
+            assert_eq!(hinting(stored.as_ref()), Hinting::Hint, "{stored:?}");
+        }
+    }
 }
