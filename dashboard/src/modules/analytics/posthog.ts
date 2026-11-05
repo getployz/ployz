@@ -1,7 +1,8 @@
-import { type AnyRouter, createMemoryHistory } from "@tanstack/react-router";
+import type { AnyRouter } from "@tanstack/react-router";
 import { createIsomorphicFn } from "@tanstack/react-start";
 import posthog, { type CaptureResult, type Properties } from "posthog-js";
 import type { AuthSession } from "#/auth/auth";
+import { secretPagesOf } from "#/lib/secret-pages";
 
 /** The public project key and where to send events; null when Cloud runs without PostHog. */
 export type PostHogBrowserConfig = { readonly key: string; readonly host: string } | null;
@@ -18,16 +19,10 @@ export const getPostHogBrowserConfig = createIsomorphicFn()
   });
 
 /**
- * Pages whose URL is itself a secret, an invite, a claim link or a device code, mark their route `staticData.secret`.
- * PostHog records every URL, so nothing on them reaches it, and no later event carries their URL anywhere.
- * A path counts as secret exactly when the router would render one of those routes for it, encodings and all.
+ * PostHog records every URL, so nothing on a secret page ([`secretPagesOf`]) reaches it, and no later event carries
+ * their URL anywhere.
  */
 let opensSecretPage = (_path: string) => true;
-
-const secretPagesOf = (router: AnyRouter) => (path: string) => {
-  const { pathname } = router.parseLocation(createMemoryHistory({ initialEntries: [path] }).location);
-  return router.getMatchedRoutes(pathname)[0].some((route) => route.options.staticData?.secret === true);
-};
 
 /** An absolute URL or a rooted path; any other text, like a button's "Invite", is not a URL. */
 const isSecretUrl = (value: string) =>

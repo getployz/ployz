@@ -1,6 +1,7 @@
 import { createCsrfMiddleware, createIsomorphicFn, createMiddleware, createStart } from "@tanstack/react-start";
 import { serverFnFetch } from "./lib/server-fn-fetch";
 import { negotiatePageResponse } from "./server/content-negotiation";
+import { unhandledRequestMiddleware } from "./server/unhandled-request";
 import { installWebShutdown } from "./server/web-shutdown.server";
 
 // Keep shutdown in the same SSR bundle and runtime as application requests.
@@ -14,6 +15,7 @@ const negotiationMiddleware = createMiddleware().server(async ({ request, next, 
 
 export const startInstance = createStart(() => ({
   requestMiddleware: [
+    unhandledRequestMiddleware,
     createCsrfMiddleware({ filter: (ctx) => ctx.handlerType === "serverFn" }),
     negotiationMiddleware,
   ],
