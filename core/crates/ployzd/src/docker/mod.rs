@@ -1579,8 +1579,13 @@ pub enum Error {
     /// Docker took the update, but the Container was not running when read back.
     #[error("container {0} stopped after its limits update")]
     StoppedAfterLimitsUpdate(ContainerId),
+    /// Docker answered an inspect of this ID, and `machine.db` holds no spec under it.
     #[error("resolved spec not found in machine.db for {0}")]
     SpecNotFound(ContainerId),
+    /// A limits update found no stored spec for this ID before it asked Docker
+    /// anything, so nothing says whether Docker has the Container.
+    #[error("resolved spec not found in machine.db for {0}")]
+    LimitsSpecNotFound(ContainerId),
     #[error("container {0} was not found")]
     ContainerNotFound(ContainerId),
     #[error("Docker name '{0}' is occupied by incompatible creation inputs")]
@@ -1622,6 +1627,7 @@ impl Error {
         match self {
             Self::ContainerNotFound(_)
             | Self::SpecNotFound(_)
+            | Self::LimitsSpecNotFound(_)
             | Self::ExternalVolumeNotFound(_)
             | Self::Docker(bollard::errors::Error::DockerResponseServerError {
                 status_code: 404,
@@ -1700,6 +1706,9 @@ impl From<&Error> for RpcError {
             }
             Error::DiskFull { full, .. } => full.details(),
             Error::LimitsRefused { refusal, .. } => serde_json::json!({ "reason": refusal }),
+            Error::SpecNotFound(_) => {
+                serde_json::json!({ "reason": ployz_core::ContainerNotFoundReason::NoResolvedSpec })
+            }
             _ => serde_json::Value::Null,
         };
         let code = error.rpc_code();

@@ -53,7 +53,7 @@ impl ContainerRuntime {
             .specs
             .get(container_id)
             .await?
-            .ok_or_else(|| Error::SpecNotFound(*container_id))?;
+            .ok_or_else(|| Error::LimitsSpecNotFound(*container_id))?;
         // A resent request whose first attempt applied the limits finds them stored.
         let resent = match refusal(&stored, spec) {
             None => false,
@@ -348,6 +348,30 @@ mod tests {
         let rpc = ployz_core::RpcError::from(&stopped);
         assert_eq!(rpc.code, ployz_core::RpcErrorCode::Internal);
         assert!(rpc.details.get("reason").is_none());
+    }
+
+    #[tokio::test]
+    async fn a_limits_update_with_no_stored_spec_answers_not_found_unmarked() {
+        let (runtime, _fake) =
+            crate::docker::test_support::fake_runtime_with(Default::default()).await;
+        let container_id = ContainerId::parse("c".repeat(64)).unwrap();
+
+        let error = runtime
+            .update_limits(&container_id, &spec(Some(128)))
+            .await
+            .expect_err("no spec is stored for the Container");
+
+        assert!(
+            matches!(error, Error::LimitsSpecNotFound(id) if id == container_id),
+            "{error:?}"
+        );
+        let answer = ployz_core::RpcError::from(&error);
+        assert_eq!(answer.code, ployz_core::RpcErrorCode::NotFound);
+        assert_eq!(
+            answer.message,
+            format!("resolved spec not found in machine.db for {container_id}")
+        );
+        assert_eq!(answer.details, serde_json::Value::Null);
     }
 
     #[test]
