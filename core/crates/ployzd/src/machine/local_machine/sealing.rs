@@ -169,14 +169,22 @@ impl LocalMachine {
     /// Install opens the sealed key and checks it is the one named before it
     /// reads this Machine's key file, then answers from the file:
     ///
-    /// - the same key: inserts its public half as the Cluster's (a no-op when a
-    ///   key is already published there) and answers it, with no read of the
-    ///   Cluster's Sealing;
+    /// - the same key: reads the Cluster's Sealing, then
+    ///   - refuses [`Error::AwaitsRecovery`] and inserts nothing when this
+    ///     Machine reads its Cluster awaiting recovery of another key
+    ///     ([`ClusterSealing::awaits_another`]);
+    ///   - otherwise inserts its public half as the Cluster's (a no-op when a
+    ///     key is already published there, this one or another) and answers
+    ///     it;
+    ///   - when the read fails, logs the failure, inserts and answers as
+    ///     above;
     /// - another key: refuses [`Error::HeldAnother`];
-    /// - no file, or a file that is not 32 bytes: refuses [`Error::Published`]
-    ///   or [`Error::AwaitsRecovery`] when the Cluster names another key, and
-    ///   otherwise writes the key over the file, inserts its public half as the
-    ///   Cluster's and answers it;
+    /// - no file, or a file that is not 32 bytes: reads the Cluster's Sealing
+    ///   and refuses [`Error::Published`] when it publishes another key, or
+    ///   [`Error::AwaitsRecovery`] when it awaits recovery of another key (the
+    ///   rule `awaits_another` states), and otherwise writes the key over the
+    ///   file, inserts its public half as the Cluster's and answers it. A
+    ///   failed read refuses with its error;
     /// - a file that cannot be read: refuses [`Error::Unreadable`].
     async fn install_admitted(
         &self,
@@ -208,12 +216,25 @@ impl LocalMachine {
         let file = SealingKey::read(data_dir).map_err(Error::Unreadable)?;
         match &file {
             KeyFile::Held(held) if *held == key => {
+                match replicated.cluster_sealing(record.recovery_seed()).await {
+                    Ok(cluster) => {
+                        if let Some(awaited) = cluster.awaits_another(public_key) {
+                            return Err(Error::AwaitsRecovery(awaited).into());
+                        }
+                    }
+                    Err(error) => tracing::warn!(
+                        machine = %record.id(),
+                        %public_key,
+                        error = %ployz_core::error_chain::inline(&error),
+                        "could not read whether the Cluster awaits recovery of another Sealing Key; publishing the held key"
+                    ),
+                }
                 replicated.publish_sealing_public_key(public_key).await?;
                 tracing::info!(
                     machine = %record.id(),
                     from = %request.from,
                     %public_key,
-                    "this Machine already holds the Cluster's Sealing Key"
+                    "this Machine already holds this Sealing Key"
                 );
                 return Ok(SealingKeyHeld { public_key });
             }

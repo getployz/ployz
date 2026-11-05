@@ -380,6 +380,23 @@ impl ClusterSealing {
             Self::AwaitsRecovery(seed.expected_public_key)
         }))
     }
+
+    /// `Some(awaited)` only for [`Self::AwaitsRecovery`] naming a key other
+    /// than `key`; `None` for [`Self::Unsealed`], for `AwaitsRecovery` naming
+    /// `key`, and for every [`Self::Published`].
+    ///
+    /// `AwaitsRecovery` already covers a seed with no marker on this replica
+    /// ([`Self::decide`]). Under `Published` this never bars: inserting a key
+    /// there is a no-op (`ON CONFLICT (key) DO NOTHING`), and whether a held
+    /// key beside another published key should be refused is not decided
+    /// here. Install of a new key states the same rule in its own match, which
+    /// also refuses another published key.
+    pub(crate) fn awaits_another(self, key: SealingPublicKey) -> Option<SealingPublicKey> {
+        match self {
+            Self::AwaitsRecovery(awaited) if awaited != key => Some(awaited),
+            Self::Unsealed | Self::AwaitsRecovery(_) | Self::Published(_) => None,
+        }
+    }
 }
 
 fn sealing_key_value(

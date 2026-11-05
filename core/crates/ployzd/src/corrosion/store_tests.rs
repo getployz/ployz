@@ -693,6 +693,28 @@ async fn the_sealing_readers_report_the_clusters_key_and_its_recovery_marker() {
     task.abort();
 }
 
+#[test]
+fn the_cluster_sealing_awaits_another_key_only_while_none_is_published() {
+    use super::ClusterSealing::{AwaitsRecovery, Published, Unsealed};
+
+    let k = ployz_core::SealingPublicKey::from_bytes([1; 32]);
+    let other = ployz_core::SealingPublicKey::from_bytes([2; 32]);
+
+    for (sealing, expected) in [
+        (Unsealed, None),
+        (AwaitsRecovery(k), None),
+        (AwaitsRecovery(other), Some(other)),
+        (Published(k), None),
+        (Published(other), None),
+    ] {
+        assert_eq!(
+            sealing.awaits_another(k),
+            expected,
+            "{sealing:?} asked about {k}",
+        );
+    }
+}
+
 fn sealing_founder() -> ployz_core::EnrollRequest {
     ployz_core::EnrollRequest {
         role: ployz_core::EnrollAs::Founder {
