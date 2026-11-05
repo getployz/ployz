@@ -6,11 +6,11 @@ import { DeploymentStatusIcon } from "#/components/deployment-status-icon";
 import { LatestButton, LogEmpty } from "#/components/log-scroll";
 import { Skeleton } from "#/components/ui/skeleton";
 import { cn } from "#/lib/utils";
-import { missingDeployLogs, nodeStatusLabels, outcomeReason, shownNodeStatus } from "#/modules/config-store/store-deployments";
+import { buildInterrupted, missingDeployLogs, nodeStatusLabels, outcomeReason, shownNodeStatus } from "#/modules/config-store/store-deployments";
 import { buildLogQuery, useStoreView } from "#/modules/config-store/store-view.queries";
 import { ENVIRONMENT_ROUTE_FROM } from "../environment-route-paths";
 import type { DeploymentCleanupView } from "#/modules/config-store/tables";
-import { buildStatusLabels, cleanupLabel, rowLabel, rowLight, rowStopped, rowTiming, type OutcomeRunNode, type RunNode } from "./run-graph";
+import { buildLabel, cleanupLabel, rowLabel, rowLight, rowStopped, rowTiming, type OutcomeRunNode, type RunNode } from "./run-graph";
 import { RunTime, runNodeIcons, runNodeKinds } from "./RunCanvas";
 
 /** The picked node: its status, each Server's row as reported, then its logs. */
@@ -26,7 +26,7 @@ export function RunPanel({ deployment, node }: { deployment: DeploymentView; nod
 
 function RunNodeDetail({ deployment, node }: { deployment: DeploymentView; node: RunNode }) {
   const Icon = runNodeIcons[node.type];
-  const status = node.type === "build" ? buildStatusLabels[node.build.status]
+  const status = node.type === "build" ? buildLabel(node.build)
     : node.type === "cleanup" ? cleanupLabel(node.cleanup)
     : node.type === "untargeted" ? nodeStatusLabels[node.status]
     : nodeStatusLabels[shownNodeStatus(node.node)];
@@ -56,8 +56,10 @@ function RunNodeDetail({ deployment, node }: { deployment: DeploymentView; node:
 function BuildDetail({ deployment, build }: { deployment: DeploymentView; build: DeploymentView["builds"][number] }) {
   return (
     <div className="flex min-h-0 flex-1 flex-col gap-2 p-4">
-      {/* Said once: the header's reason already carries a failed build's message. */}
-      {build.message && !outcomeReason(deployment.outcome)?.includes(build.message) ? <p className="break-words text-destructive">{build.message}</p> : null}
+      {/* Said once: the header's reason already carries a failed build's message. An interrupted build's says only that it never reported its end. */}
+      {build.message && !outcomeReason(deployment.outcome)?.includes(build.message) ? (
+        <p className={cn("break-words", buildInterrupted(build) ? "text-muted-foreground" : "text-destructive")}>{build.message}</p>
+      ) : null}
       <Suspense fallback={<Skeleton className="h-24 w-full" />}>
         <StoreBuildLog deploymentId={deployment.id} service={build.service} />
       </Suspense>

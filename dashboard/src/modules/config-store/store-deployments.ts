@@ -1,5 +1,5 @@
 import type {
-  ChangeKind, DiscardTarget, DeploymentStatus, DeploymentSummary, DeploymentView, DeploymentWarning, DiffView, JsonValue, NodeChange, NodeOutcome, NodeStatus, Outcome, RowId,
+  BuildView, ChangeKind, DiscardTarget, DeploymentStatus, DeploymentSummary, DeploymentView, DeploymentWarning, DiffView, JsonValue, NodeChange, NodeOutcome, NodeStatus, Outcome, RowId,
   ServiceListing,
 } from "@ployz/sdk";
 import { Option, Schema } from "effect";
@@ -259,6 +259,14 @@ export const nodeStatusLabels = {
   pending: "Pending", deployed: "Deployed", removed: "Removed", failed: "Failed", cancelled: "Cancelled",
   not_attempted: "Not attempted", unchanged: "Unchanged", unknown: "Unknown",
 } satisfies Record<ShownNodeStatus, string>;
+
+/**
+ * Whether a build failed only because its Deployment ended, or lost its runner, before the build reported how it ended:
+ * nothing says the build itself failed. The Store marks it beside Failed rather than giving it a status of its own, so a
+ * reader from before it reads Failed. Read the marker only through this.
+ */
+export const buildInterrupted = ({ status, interrupted }: Pick<BuildView, "status" | "interrupted">) =>
+  status === "failed" && interrupted === true;
 
 /** Whether the Deployment left the node as intended: deployed, removed, or nothing it had to change. */
 export const nodeApplied = (outcome: ShownNodeStatus) => outcome === "deployed" || outcome === "removed" || outcome === "unchanged";

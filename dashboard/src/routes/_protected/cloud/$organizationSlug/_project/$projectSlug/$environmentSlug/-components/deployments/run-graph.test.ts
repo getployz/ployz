@@ -2,7 +2,7 @@ import type { BuildView, DeploymentView, NodeOutcome, RowPhase, ServerRow } from
 import { describe, expect, it } from "vitest";
 import { asTestDouble } from "#/lib/test-double";
 import { machineId } from "#/test/ids";
-import { cleanupLabel, makeRunGraph, orderRows, rowLabel, rowLight, rowPhaseLabel, selectRunNode } from "./run-graph";
+import { buildLabel, cleanupLabel, makeRunGraph, orderRows, rowLabel, rowLight, rowPhaseLabel, selectRunNode } from "./run-graph";
 
 const deployment = (fields: Partial<DeploymentView>) => asTestDouble<DeploymentView>()({
   id: "d1", status: "running", in_flight: true, builds: [], nodes: [], runtime_names: {}, preview: null, ...fields,
@@ -272,5 +272,21 @@ describe("run graph", () => {
       .toBe("Left running on machine-3");
     expect(cleanupLabel({ state: "cancelled", left: [], message: null })).toBe("A newer Deployment took over");
     expect(cleanupLabel({ state: "failed", left: [], message: "boom" })).toBe("Failed");
+  });
+
+  it("reads a build its Deployment ended under as Interrupted, lit unknown, and never opens on it as failed", () => {
+    const interrupted = build("web", { status: "failed", message: "The deployment ended or lost its runner before this build reported how it ended.", interrupted: true, started_at: 8, finished_at: 20 });
+    expect([buildLabel(interrupted), buildLabel(build("web", { status: "failed" })), buildLabel(build("web", { status: "building", interrupted: true }))])
+      .toEqual(["Interrupted", "Failed", "Building"]);
+    const ended = deployment({ status: "unknown", in_flight: false, builds: [interrupted], nodes: [service("web", [], "unknown")] });
+    const graph = makeRunGraph(ended);
+    expect(graph.nodes.map(({ id, light, timing }) => ({ id, light, timing }))).toEqual([
+      { id: "build:web", light: "unknown", timing: { started: 8, finished: 20 } },
+      { id: "web-id", light: "unknown", timing: undefined },
+    ]);
+    expect(selectRunNode(graph, {})?.id).toBe("web-id");
+    const failed = makeRunGraph({ ...ended, builds: [{ ...interrupted, interrupted: undefined }] });
+    expect(failed.nodes[0]?.light).toBe("failed");
+    expect(selectRunNode(failed, {})?.id).toBe("build:web");
   });
 });

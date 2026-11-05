@@ -2028,3 +2028,660 @@ fn a_build_s_input_and_routing_need_no_key_to_open_a_secret() {
         json!({ "template": ["https://", token, "@example.com"] })
     );
 }
+
+/// `shop` with Git Service `web`, on a database of its own, with that database's URL.
+fn own_git_shop() -> (ConfigStore, Actor, String, tempfile::TempDir) {
+    let dir = tempfile::tempdir().unwrap();
+    let url = backend::fresh_url(&dir);
+    let (store, who) = project(ConfigStore::open(&url, backend::key()).unwrap());
+    store
+        .write_trusted(&who, &create("acme/web", None), &evidence())
+        .unwrap();
+    (store, who, url, dir)
+}
+
+/// Deployment #1 of `store`, its build of `web` pinned, claimed by `cloud-1`, and
+/// reported Building.
+fn building(store: &ConfigStore, who: &Actor) -> (DeploymentId, RunnerId) {
+    let first = admit(store, who, 1, &[]);
+    store
+        .pin(&first, &pins(&backend::sha(&"a".repeat(40))))
+        .unwrap();
+    let runner = RunnerId::parse("cloud-1").unwrap();
+    store.claim(&first, &runner).unwrap();
+    store
+        .record(&first, &runner, report(BuildStatus::Building, None, "#1\n"))
+        .unwrap();
+    (first, runner)
+}
+
+/// Move Deployment `id`'s runner lease, its start and its build's start an hour into
+/// the past, as an hour passing with no record would: the lease lapses 600 s after
+/// the claim, after the build started.
+fn lapse_build(url: &str, id: &DeploymentId) {
+    backend::execute(
+        url,
+        &format!("UPDATE config_build SET started = started - 3600 WHERE deployment_id = '{id}'"),
+    );
+    backend::execute(
+        url,
+        &format!(
+            "UPDATE config_deployment SET started = started - 3600, lease = started - 3000 \
+             WHERE id = '{id}'"
+        ),
+    );
+}
+
+/// When a build reads as finished.
+#[derive(Debug, PartialEq)]
+enum Finished {
+    No,
+    Yes,
+    BeforeItStarted,
+}
+
+/// What a case reads of its one build.
+#[derive(Debug, PartialEq)]
+struct Seen {
+    case: &'static str,
+    status: BuildStatus,
+    message: Option<String>,
+    started: bool,
+    finished: Finished,
+    /// The build view's `interrupted`, read as JSON so a view without it reads false.
+    interrupted: bool,
+    /// Rows the database itself holds `building`, whatever any view reads.
+    building: i64,
+    /// Builds `github_outstanding` lists: what a cancel of the run stops.
+    on_github: usize,
+}
+
+/// Deployment `id`'s build as the Store shows it, with when it finished against
+/// when its Deployment ended.
+fn seen(
+    case: &'static str,
+    (store, who, url): (&ConfigStore, &Actor, &str),
+    id: &DeploymentId,
+) -> (Seen, bool) {
+    let view = store
+        .read(who, &ployz_store::DeploymentQuery { id: id.clone() })
+        .unwrap();
+    let build = &view.builds[0];
+    let finished = match (build.started_at, build.finished_at) {
+        (_, None) => Finished::No,
+        (Some(started), Some(finished)) if finished < started => Finished::BeforeItStarted,
+        (_, Some(_)) => Finished::Yes,
+    };
+    let seen = Seen {
+        case,
+        status: build.status,
+        message: build.message.clone(),
+        started: build.started_at.is_some(),
+        finished,
+        interrupted: serde_json::to_value(build).unwrap()["interrupted"] == true,
+        building: backend::count(
+            url,
+            "SELECT count(*) FROM config_build WHERE status = 'building'",
+        ),
+        on_github: store.github_outstanding(id).unwrap().len(),
+    };
+    let at_its_end = build.finished_at.is_some() && build.finished_at == view.deployment.ended_at;
+    (seen, at_its_end)
+}
+
+/// A build its Servers held reads Building only while its Deployment may still run.
+/// Each way a claimed Deployment leaves flight with its build still Building settles
+/// the build as Failed, marked interrupted, finished when the Deployment ended. A
+/// build that reported its own end, one never started, one under a Deployment still
+/// in flight, and one GitHub holds read as before.
+#[test]
+fn a_build_its_deployment_ended_under_does_not_read_building() {
+    let mut cases = Vec::new();
+    let mut case = |name: &'static str,
+                    run: &dyn Fn(&ConfigStore, &Actor, &str) -> DeploymentId| {
+        let (store, who, url, _dir) = own_git_shop();
+        let id = run(&store, &who, &url);
+        cases.push(seen(name, (&store, &who, &url), &id));
+    };
+    case("R1 taken over", &|store, who, _| {
+        let (first, _) = building(store, who);
+        let second = admit(store, who, 2, &[]);
+        store
+            .claim(&second, &RunnerId::parse("cloud-2").unwrap())
+            .unwrap();
+        first
+    });
+    case("R2 lapsed, nothing written", &|store, who, url| {
+        let (first, _) = building(store, who);
+        lapse_build(url, &first);
+        first
+    });
+    case("R3 alive after it lapsed", &|store, who, url| {
+        let (first, runner) = building(store, who);
+        lapse_build(url, &first);
+        store.record(&first, &runner, RunEvidence::Alive).unwrap();
+        first
+    });
+    case("R4 abandoned before a preview", &|store, who, _| {
+        let (first, runner) = building(store, who);
+        store
+            .record(&first, &runner, RunEvidence::Abandoned)
+            .unwrap();
+        first
+    });
+    case("R5 not executed", &|store, who, _| {
+        let (first, runner) = building(store, who);
+        store
+            .record(
+                &first,
+                &runner,
+                RunEvidence::NotExecuted("Build failed".into()),
+            )
+            .unwrap();
+        first
+    });
+    case("R6 cancelled while it ran", &|store, who, _| {
+        let (first, runner) = building(store, who);
+        store
+            .write(
+                who,
+                &ployz_store::Cancel {
+                    deployment: first.clone(),
+                },
+            )
+            .unwrap();
+        store
+            .record(
+                &first,
+                &runner,
+                RunEvidence::NotExecuted("Build failed".into()),
+            )
+            .unwrap();
+        first
+    });
+    case("R7 its cluster forgotten", &|store, who, _| {
+        let (first, _) = building(store, who);
+        store
+            .system(
+                &who.organization,
+                &ployz_store::SystemEvent::ClusterForgotten,
+                &Trusted::default(),
+            )
+            .unwrap();
+        first
+    });
+    case("C1 failed on its own", &|store, who, _| {
+        let (first, runner) = building(store, who);
+        store
+            .record(
+                &first,
+                &runner,
+                report(BuildStatus::Failed, Some("npm ci failed"), "exit 1\n"),
+            )
+            .unwrap();
+        store
+            .record(
+                &first,
+                &runner,
+                RunEvidence::NotExecuted("Build failed".into()),
+            )
+            .unwrap();
+        first
+    });
+    case("C2 built, then applied", &|store, who, _| {
+        let (first, runner) = building(store, who);
+        store
+            .record(&first, &runner, report(BuildStatus::Built, None, "done\n"))
+            .unwrap();
+        applied(store, &first, &runner);
+        first
+    });
+    case("C3 never started", &|store, who, _| {
+        let first = admit(store, who, 1, &[]);
+        store
+            .pin(&first, &pins(&backend::sha(&"a".repeat(40))))
+            .unwrap();
+        let runner = RunnerId::parse("cloud-1").unwrap();
+        store.claim(&first, &runner).unwrap();
+        store
+            .record(
+                &first,
+                &runner,
+                RunEvidence::NotExecuted("Build failed".into()),
+            )
+            .unwrap();
+        first
+    });
+    case("C4 live claim", &|store, who, _| {
+        let (first, runner) = building(store, who);
+        store.record(&first, &runner, RunEvidence::Alive).unwrap();
+        first
+    });
+    case("C5 live cancelling", &|store, who, _| {
+        let (first, _) = building(store, who);
+        store
+            .write(
+                who,
+                &ployz_store::Cancel {
+                    deployment: first.clone(),
+                },
+            )
+            .unwrap();
+        first
+    });
+    let (store, who, url, _dir) = {
+        let dir = tempfile::tempdir().unwrap();
+        let url = backend::fresh_url(&dir);
+        let (store, who) = project(ConfigStore::open(&url, backend::key()).unwrap());
+        (store, who, url, dir)
+    };
+    let id = dispatched(&store, &who);
+    store
+        .write(
+            &who,
+            &ployz_store::Cancel {
+                deployment: id.deployment.clone(),
+            },
+        )
+        .unwrap();
+    cases.push(seen(
+        "C6 held by GitHub, cancelled",
+        (&store, &who, &url),
+        &id.deployment,
+    ));
+
+    let interrupted = |case, building| Seen {
+        case,
+        status: BuildStatus::Failed,
+        message: Some(
+            "The deployment ended or lost its runner before this build reported how it ended."
+                .into(),
+        ),
+        started: true,
+        finished: Finished::Yes,
+        interrupted: true,
+        building,
+        on_github: 0,
+    };
+    let kept = |case, status, message: Option<&str>, started, finished, building, on_github| Seen {
+        case,
+        status,
+        message: message.map(Into::into),
+        started,
+        finished,
+        interrupted: false,
+        building,
+        on_github,
+    };
+    let (seen, at_its_end): (Vec<_>, Vec<_>) = cases.into_iter().unzip();
+    assert_eq!(
+        seen,
+        [
+            interrupted("R1 taken over", 0),
+            // Nothing writes a lapsed Deployment, so only the view settles its build.
+            interrupted("R2 lapsed, nothing written", 1),
+            interrupted("R3 alive after it lapsed", 0),
+            interrupted("R4 abandoned before a preview", 0),
+            interrupted("R5 not executed", 0),
+            interrupted("R6 cancelled while it ran", 0),
+            interrupted("R7 its cluster forgotten", 0),
+            kept(
+                "C1 failed on its own",
+                BuildStatus::Failed,
+                Some("npm ci failed"),
+                true,
+                Finished::Yes,
+                0,
+                0
+            ),
+            kept(
+                "C2 built, then applied",
+                BuildStatus::Built,
+                None,
+                true,
+                Finished::Yes,
+                0,
+                0
+            ),
+            kept(
+                "C3 never started",
+                BuildStatus::Pending,
+                None,
+                false,
+                Finished::No,
+                0,
+                0
+            ),
+            kept(
+                "C4 live claim",
+                BuildStatus::Building,
+                None,
+                true,
+                Finished::No,
+                1,
+                0
+            ),
+            kept(
+                "C5 live cancelling",
+                BuildStatus::Building,
+                None,
+                true,
+                Finished::No,
+                1,
+                0
+            ),
+            kept(
+                "C6 held by GitHub, cancelled",
+                BuildStatus::Building,
+                None,
+                true,
+                Finished::No,
+                1,
+                1
+            ),
+        ]
+    );
+    // Each interrupted build finished when its Deployment ended.
+    let at_its_end: Vec<_> = seen
+        .iter()
+        .zip(at_its_end)
+        .filter(|(seen, _)| seen.interrupted)
+        .map(|(seen, at_its_end)| (seen.case, at_its_end))
+        .collect();
+    assert!(at_its_end.iter().all(|(_, at)| *at), "{at_its_end:?}");
+}
+
+/// A Deploy Preview of one operation on `web`, which `applied` executes.
+fn web_preview() -> ployz_core::DeployPreview {
+    let operation = json!({"type": "remove_container", "machine_id": "a".repeat(32), "container_id": "a".repeat(64)});
+    serde_json::from_value(json!({
+        "namespace": "shop-production", "warnings": [], "would_remove": [], "preserved_volumes": [],
+        "operations": [{"index": 0, "machine_id": "a".repeat(32), "service_name": "web",
+                        "operation": operation, "status": {"type": "pending"}}],
+    }))
+    .unwrap()
+}
+
+/// Deployment `id`'s build of `web` and its Deployment, as the Store shows them, with
+/// the rows the database itself holds `building`.
+fn shown_build(
+    (store, who, url): (&ConfigStore, &Actor, &str),
+    id: &DeploymentId,
+) -> (ployz_store::BuildView, ployz_store::DeploymentSummary, i64) {
+    let view = store
+        .read(who, &ployz_store::DeploymentQuery { id: id.clone() })
+        .unwrap();
+    let building = backend::count(
+        url,
+        "SELECT count(*) FROM config_build WHERE status = 'building'",
+    );
+    (view.builds[0].clone(), view.deployment, building)
+}
+
+/// Whether `build` reads as the settle leaves it under `deployment`: Failed and
+/// interrupted, finished when its Deployment ended.
+fn settled_under(
+    build: &ployz_store::BuildView,
+    deployment: &ployz_store::DeploymentSummary,
+) -> bool {
+    build.is_interrupted()
+        && build.message.as_deref()
+            == Some(
+                "The deployment ended or lost its runner before this build reported how it ended.",
+            )
+        && build.finished_at.is_some()
+        && build.finished_at == deployment.ended_at
+}
+
+/// A lapsed claim nothing has written reads its build as the settle writes it once
+/// a record saves the Deployment: a reader can't tell the two apart.
+#[test]
+fn a_build_its_deployment_lapsed_under_reads_as_the_settle_later_writes_it() {
+    let (store, who, url, _dir) = own_git_shop();
+    let (first, runner) = building(&store, &who);
+    lapse_build(&url, &first);
+    let (projected, _, building) = shown_build((&store, &who, &url), &first);
+    assert_eq!(building, 1, "nothing wrote it yet");
+    store.record(&first, &runner, RunEvidence::Alive).unwrap();
+    let (written, deployment, building) = shown_build((&store, &who, &url), &first);
+    assert_eq!(building, 0);
+    assert!(
+        settled_under(&written, &deployment),
+        "{written:?} {deployment:?}"
+    );
+    assert_eq!(json!(projected), json!(written));
+}
+
+/// Each other way a Deployment holding a Servers build Building can end settles the
+/// build in the same write: a claim again after a preview, a run abandoned after a
+/// preview, an applied run that never reported the build's end, and a run that found
+/// an upload missing.
+#[test]
+fn a_build_settles_at_every_other_end_its_deployment_reaches() {
+    let mut seen = Vec::new();
+    let mut case = |name: &'static str, end: &dyn Fn(&ConfigStore, &DeploymentId, &RunnerId)| {
+        let (store, who, url, _dir) = own_git_shop();
+        let (first, runner) = building(&store, &who);
+        end(&store, &first, &runner);
+        let (build, deployment, building) = shown_build((&store, &who, &url), &first);
+        seen.push((
+            name,
+            deployment.status,
+            settled_under(&build, &deployment),
+            building,
+        ));
+    };
+    case("claimed again after a preview", &|store, id, runner| {
+        store
+            .record(id, runner, RunEvidence::Prepared(web_preview()))
+            .unwrap();
+        assert_eq!(
+            store.claim(id, runner).unwrap_err().code,
+            RpcErrorCode::Conflict
+        );
+    });
+    case("abandoned after a preview", &|store, id, runner| {
+        store
+            .record(id, runner, RunEvidence::Prepared(web_preview()))
+            .unwrap();
+        store.record(id, runner, RunEvidence::Abandoned).unwrap();
+    });
+    case("applied", &|store, id, runner| applied(store, id, runner));
+    case("an upload went missing", &|store, id, runner| {
+        store
+            .record(
+                id,
+                runner,
+                RunEvidence::UploadNeeded(vec![ServiceName::parse("web").unwrap()]),
+            )
+            .unwrap();
+    });
+    use ployz_store::DeploymentStatus as S;
+    assert_eq!(
+        seen,
+        [
+            ("claimed again after a preview", S::Unknown, true, 0),
+            ("abandoned after a preview", S::Unknown, true, 0),
+            ("applied", S::Applied, true, 0),
+            ("an upload went missing", S::Failed, true, 0),
+        ]
+    );
+}
+
+/// The settle and the view take only a build that is Building, that its Servers
+/// hold, under a Deployment out of flight that shows an end; a build that already
+/// finished keeps when. A Deployment row no Store writes that shows no end, or that
+/// is live and shows one, leaves its build as every Store before this read it, until
+/// an edge stamps the row's end.
+#[test]
+fn a_build_settles_only_under_a_deployment_that_shows_an_end() {
+    let mut seen = Vec::new();
+    let mut case = |name: &'static str,
+                    run: &dyn Fn(&ConfigStore, &Actor, &str) -> DeploymentId| {
+        let (store, who, url, _dir) = own_git_shop();
+        let id = run(&store, &who, &url);
+        let (build, deployment, building) = shown_build((&store, &who, &url), &id);
+        seen.push((
+            name,
+            build.status,
+            build.is_interrupted(),
+            build
+                .finished_at
+                .map(|finished| Some(finished) == deployment.ended_at),
+            building,
+        ));
+    };
+    let set = |url: &str, id: &DeploymentId, columns: &str| {
+        backend::execute(
+            url,
+            &format!("UPDATE config_deployment SET {columns} WHERE id = '{id}'"),
+        );
+    };
+    case("reused, then failed", &|store, who, url| {
+        let (first, runner) = building(store, who);
+        store
+            .record(&first, &runner, report(BuildStatus::Reused, None, ""))
+            .unwrap();
+        backend::execute(url, "UPDATE config_build SET finished = 5");
+        store
+            .record(
+                &first,
+                &runner,
+                RunEvidence::NotExecuted("Build failed".into()),
+            )
+            .unwrap();
+        first
+    });
+    case("finished already, then failed", &|store, who, url| {
+        let (first, runner) = building(store, who);
+        backend::execute(url, "UPDATE config_build SET finished = 5");
+        store
+            .record(
+                &first,
+                &runner,
+                RunEvidence::NotExecuted("Build failed".into()),
+            )
+            .unwrap();
+        first
+    });
+    case("failed with no end and no claim", &|store, who, url| {
+        let (first, _) = building(store, who);
+        set(
+            url,
+            &first,
+            "status = 'failed', runner = NULL, started = NULL, ended = NULL",
+        );
+        first
+    });
+    case("running with no number, lapsed", &|store, who, url| {
+        let (first, _) = building(store, who);
+        set(url, &first, "number = NULL, lease = 0");
+        first
+    });
+    case(
+        "alive while unknown with no start or end",
+        &|store, who, url| {
+            let (first, runner) = building(store, who);
+            set(
+                url,
+                &first,
+                "status = 'unknown', started = NULL, ended = NULL",
+            );
+            store.record(&first, &runner, RunEvidence::Alive).unwrap();
+            first
+        },
+    );
+    case("live, with an end no Store writes", &|store, who, url| {
+        let (first, runner) = building(store, who);
+        set(url, &first, "ended = started");
+        store.record(&first, &runner, RunEvidence::Alive).unwrap();
+        first
+    });
+    case(
+        "taken over while running with no start",
+        &|store, who, url| {
+            let (first, _) = building(store, who);
+            set(url, &first, "started = NULL");
+            let second = admit(store, who, 2, &[]);
+            store
+                .claim(&second, &RunnerId::parse("cloud-2").unwrap())
+                .unwrap();
+            first
+        },
+    );
+    assert_eq!(
+        seen,
+        [
+            (
+                "reused, then failed",
+                BuildStatus::Reused,
+                false,
+                Some(false),
+                0
+            ),
+            (
+                "finished already, then failed",
+                BuildStatus::Failed,
+                true,
+                Some(false),
+                0
+            ),
+            (
+                "failed with no end and no claim",
+                BuildStatus::Building,
+                false,
+                None,
+                1
+            ),
+            (
+                "running with no number, lapsed",
+                BuildStatus::Building,
+                false,
+                None,
+                1
+            ),
+            (
+                "alive while unknown with no start or end",
+                BuildStatus::Building,
+                false,
+                None,
+                1
+            ),
+            (
+                "live, with an end no Store writes",
+                BuildStatus::Building,
+                false,
+                None,
+                1
+            ),
+            (
+                "taken over while running with no start",
+                BuildStatus::Failed,
+                true,
+                Some(true),
+                0
+            ),
+        ]
+    );
+}
+
+/// A build the database marks interrupted reads only when it failed.
+#[test]
+fn a_build_marked_interrupted_that_did_not_fail_is_unreadable() {
+    let (store, who, url, _dir) = own_git_shop();
+    let (first, _) = building(&store, &who);
+    backend::execute(&url, "UPDATE config_build SET interrupted = 1");
+    let error = store
+        .read(&who, &ployz_store::DeploymentQuery { id: first.clone() })
+        .unwrap_err();
+    assert_eq!(
+        (error.code, error.message.as_str()),
+        (
+            RpcErrorCode::Internal,
+            "The Config Store holds an unreadable build status"
+        )
+    );
+    backend::execute(&url, "UPDATE config_build SET status = 'failed'");
+    let (build, ..) = shown_build((&store, &who, &url), &first);
+    assert!(build.is_interrupted());
+}

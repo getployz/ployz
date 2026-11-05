@@ -78,3 +78,17 @@ it("counts several failed Services, names no source when no build failed, and fa
   expect(bare).toMatchObject({ subject: "A deploy to shop / pr 7 failed", title: "A deploy to pr 7 failed", preview: "The logs show what went wrong." });
   expect(bare.facts?.map((fact) => fact.label)).toEqual(["Environment", "Error"]);
 });
+
+it("never names a build its Deployment ended under as the failure, nor opens it", () => {
+  const interrupted = mail({
+    status: "unknown",
+    builds: [{
+      service: "web", commit: "8a7ed6e", status: "failed", message: "The deployment ended or lost its runner before this build reported how it ended.",
+      started_at: 8, finished_at: 20, server: "fsn-1", github_skipped: null, interrupted: true,
+    }],
+    nodes: [serviceNode("svc web", "web", "not_attempted"), serviceNode("svc api", "api", "not_attempted")],
+  });
+  expect(interrupted.subject).toBe("A deploy to shop / pr 7 failed");
+  expect(interrupted.facts?.at(-1)?.value).toBe("Ployz lost track of it partway through, so some of it may be live.");
+  expect(interrupted.action?.url).toMatch(/\/deployments\/dep%201$/);
+});

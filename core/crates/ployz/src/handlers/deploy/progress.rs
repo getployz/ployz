@@ -33,7 +33,7 @@ pub(super) fn frame(view: &DeploymentView) -> Frame {
                         DeployedNode::Service { name, .. } => name.to_string(),
                     },
                 },
-                state: node_state(node, false),
+                state: node_state(node, None),
                 detail: None,
                 timing: Timing::Unavailable,
             });
@@ -48,10 +48,7 @@ pub(super) fn frame(view: &DeploymentView) -> Frame {
         }
         if node.rows.is_empty() {
             let build = view.builds.iter().find(|build| build.service == *name);
-            row.state = node_state(
-                node,
-                build.is_some_and(|build| build.status == BuildStatus::Failed),
-            );
+            row.state = node_state(node, build);
             // A removal with nothing to plan found no copy on the Servers it could
             // check. It is still a removal, not a switch.
             if node.outcome == NodeStatus::Removed
@@ -69,6 +66,7 @@ pub(super) fn frame(view: &DeploymentView) -> Frame {
             row.detail = blocked.or_else(|| {
                 build.map(|build| {
                     let word = match build.status {
+                        BuildStatus::Failed if build.is_interrupted() => "build interrupted",
                         BuildStatus::Pending => "build pending",
                         BuildStatus::Building => "building",
                         BuildStatus::Built => "built",
@@ -238,9 +236,17 @@ fn runtime_row(
     )
 }
 
-fn node_state(node: &NodeOutcome, build_failed: bool) -> State {
+/// A node's state from its outcome. One still Pending reads as its build when that
+/// stopped it: Failed, or Interrupted when the Deployment ended before the build
+/// reported how it ended.
+fn node_state(node: &NodeOutcome, build: Option<&ployz_store::BuildView>) -> State {
     match node.outcome {
-        NodeStatus::Pending if build_failed => State::Failed,
+        NodeStatus::Pending if build.is_some_and(ployz_store::BuildView::is_interrupted) => {
+            State::Interrupted
+        }
+        NodeStatus::Pending if build.is_some_and(|build| build.status == BuildStatus::Failed) => {
+            State::Failed
+        }
         NodeStatus::Pending => State::Pending,
         NodeStatus::Deployed | NodeStatus::Removed => State::Completed,
         NodeStatus::Failed if node.cancelled => State::Cancelled,
@@ -662,7 +668,9 @@ fn failure(view: &DeploymentView, named: &[&str], command: impl Fn(&[&str]) -> S
             view.runtime_names.get(name).unwrap_or(name).clone(),
         );
         let built = view.builds.iter().find(|build| build.service == *name);
-        let mut build_failed = built.is_some_and(|build| build.status == BuildStatus::Failed);
+        // An interrupted build never said it failed, so it names no build log.
+        let mut build_failed = built
+            .is_some_and(|build| build.status == BuildStatus::Failed && !build.is_interrupted());
         let mut logs = false;
         let mut pulled = false;
         let mut memory_limit = None;
@@ -2402,16 +2410,10 @@ mod tests {
         let node = view.nodes.first_mut().unwrap();
         node.rows.clear();
         node.outcome = NodeStatus::Pending;
-        view.builds.push(ployz_store::BuildView {
-            service: "web".parse().unwrap(),
-            commit: None,
-            status: BuildStatus::Pending,
-            message: None,
-            started_at: None,
-            finished_at: None,
-            server: None,
-            github_skipped: None,
-        });
+        view.builds.push(
+            serde_json::from_value(json!({"service": "web", "commit": null, "status": "pending"}))
+                .unwrap(),
+        );
         assert!(!visible(&view));
         for (status, detail, state) in [
             (BuildStatus::Building, "building", State::Pending),
@@ -2464,6 +2466,52 @@ mod tests {
             Some("built on machine-1")
         );
         assert_eq!(builders(&view), ["web built on machine-1."]);
+    }
+
+    /// A build its Deployment ended under before it reported its end.
+    fn interrupted_build(view: &mut DeploymentView) {
+        view.nodes.first_mut().unwrap().rows.clear();
+        view.builds = serde_json::from_value(json!([{
+            "service": "web", "commit": null, "status": "failed", "server": "machine-1",
+            "message": "The deployment ended or lost its runner before this build reported how it ended.",
+            "interrupted": true
+        }]))
+        .unwrap();
+    }
+
+    #[test]
+    fn an_interrupted_build_reads_interrupted_never_failed() {
+        let mut view = view();
+        view.deployment.status = DeploymentStatus::Unknown;
+        view.nodes.truncate(1);
+        interrupted_build(&mut view);
+        view.nodes.first_mut().unwrap().outcome = NodeStatus::Pending;
+        let shown = frame(&view);
+        let row = shown.rows.first().unwrap();
+        assert_eq!(
+            (row.state.clone(), row.detail.as_deref()),
+            (State::Interrupted, Some("build interrupted on machine-1"))
+        );
+        // A node the Store already says more about reads as it says.
+        view.nodes.first_mut().unwrap().outcome = NodeStatus::Unknown;
+        assert_eq!(frame(&view).rows.first().unwrap().state, State::Unknown);
+        // The marker alone never makes a build interrupted.
+        view.builds.first_mut().unwrap().status = BuildStatus::Built;
+        view.nodes.first_mut().unwrap().outcome = NodeStatus::Pending;
+        assert_eq!(
+            frame(&view).rows.first().unwrap().detail.as_deref(),
+            Some("built on machine-1")
+        );
+    }
+
+    #[test]
+    fn an_interrupted_build_names_no_build_log_and_says_to_deploy_again() {
+        let mut view = view();
+        interrupted_build(&mut view);
+        assert_eq!(
+            hints(&failure(&view, &[], command)),
+            ["retry: ployz deploy --project shop --env production"]
+        );
     }
 
     #[test]

@@ -790,7 +790,11 @@ fn build_logs(root: &ArgMatches, id: &DeploymentId, named: &[String]) -> Result<
                     .commit
                     .as_ref()
                     .map_or("the upload", ployz_store::CommitSha::as_str),
-                super::store::word(&build.build.status)
+                if build.build.is_interrupted() {
+                    "interrupted".to_owned()
+                } else {
+                    super::store::word(&build.build.status)
+                }
             ));
             crate::ui::stream(format_args!("{}", build.log));
         }

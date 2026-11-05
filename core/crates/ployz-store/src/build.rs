@@ -105,6 +105,87 @@ pub struct BuildView {
     /// Why GitHub passed it to the next Builder, when it did.
     #[serde(default)]
     pub github_skipped: Option<String>,
+    /// Set on a Failed build that never reported how it ended: its Deployment ended,
+    /// or lost its runner, while the Servers built it. Sent as a marker beside
+    /// `failed` rather than a status of its own, so a reader from before it reads
+    /// Failed. Private, so no struct literal or assignment outside the Store sets it:
+    /// the Store's view sets it beside `status`. Decoding a `BuildView`, or changing
+    /// its `status` after, can still pair it with any status, so every reader asks
+    /// [`BuildView::is_interrupted`], which reads it only with Failed.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    #[ts(as = "Option<bool>", optional)]
+    interrupted: bool,
+}
+
+impl BuildView {
+    /// Whether it failed only because its Deployment ended, or lost its runner,
+    /// before it reported how it ended: nothing says the build itself failed.
+    #[must_use]
+    pub fn is_interrupted(&self) -> bool {
+        self.status == BuildStatus::Failed && self.interrupted
+    }
+}
+
+/// What a build reads once its Deployment ended, or lost its runner, before it
+/// reported how it ended. It says only what the Store saw.
+pub(crate) const INTERRUPTED: &str =
+    "The deployment ended or lost its runner before this build reported how it ended.";
+
+/// A build's `status` column with its `interrupted` one: only a failed build can be
+/// interrupted. Compares equal to the [`BuildStatus`] its `status` column holds, which
+/// is all a writer of the row reads.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum RowStatus {
+    /// As its last Builder, or the Store, left it.
+    Reported(BuildStatus),
+    /// Failed: its Deployment ended, or lost its runner, before it reported its end.
+    Interrupted,
+}
+
+impl RowStatus {
+    /// Its `status` and `interrupted` columns; `corrupt` for a build marked
+    /// interrupted that isn't failed.
+    fn decode(status: BuildStatus, interrupted: i64) -> Result<Self, RpcError> {
+        match (status, interrupted) {
+            (status, 0) => Ok(Self::Reported(status)),
+            (BuildStatus::Failed, 1) => Ok(Self::Interrupted),
+            _ => Err(error::corrupt("build status")),
+        }
+    }
+
+    const fn interrupted(self) -> bool {
+        matches!(self, Self::Interrupted)
+    }
+}
+
+impl From<RowStatus> for BuildStatus {
+    fn from(status: RowStatus) -> Self {
+        match status {
+            RowStatus::Reported(status) => status,
+            RowStatus::Interrupted => Self::Failed,
+        }
+    }
+}
+
+impl PartialEq<BuildStatus> for RowStatus {
+    fn eq(&self, other: &BuildStatus) -> bool {
+        BuildStatus::from(*self) == *other
+    }
+}
+
+/// Settle each build of Deployment `id` its Servers still hold Building, now that
+/// the Deployment can't run any more and shows that it ended at `ended`: Failed,
+/// marked interrupted, finished at `ended` unless it already finished. A build
+/// GitHub holds stays Building, so Cloud still finds its run to cancel
+/// ([`github_outstanding`]). Settling again changes nothing.
+pub(crate) fn settle(tx: &mut dyn Tx, id: &DeploymentId, ended: i64) -> Result<(), RpcError> {
+    tx.execute(
+        "UPDATE config_build SET status = 'failed', interrupted = 1, message = ?2, \
+         finished = COALESCE(finished, ?3) \
+         WHERE deployment_id = ?1 AND status = 'building' AND github IS NULL",
+        &[id.as_str().into(), INTERRUPTED.into(), ended.into()],
+    )?;
+    Ok(())
 }
 
 /// Ask for the log of `service`'s build in `deployment`; `not_found` when that
@@ -289,7 +370,7 @@ struct BuildRow {
     service: ServiceName,
     /// None when it builds from the Deployment's upload.
     commit: Option<CommitSha>,
-    status: BuildStatus,
+    status: RowStatus,
     message: Option<String>,
     log: String,
     /// The GitHub run it was handed to, if any.
@@ -304,7 +385,28 @@ struct BuildRow {
 }
 
 impl BuildRow {
+    /// It as `stored` shows it. A build its Servers still hold Building under a
+    /// Deployment that can't run any more and shows an end reads as [`settle`]
+    /// leaves it, before anything writes it: a lapsed runner lease writes nothing.
     fn view(&self, stored: &Stored) -> BuildView {
+        let settled = match stored.summary.ended_at {
+            Some(ended)
+                if self.status == BuildStatus::Building
+                    && self.github.is_none()
+                    && !stored.summary.in_flight =>
+            {
+                Some(ended)
+            }
+            _ => None,
+        };
+        let (status, message, finished) = match settled {
+            Some(ended) => (
+                RowStatus::Interrupted,
+                Some(INTERRUPTED.to_owned()),
+                self.finished.or(Some(ended)),
+            ),
+            None => (self.status, self.message.clone(), self.finished),
+        };
         BuildView {
             service: stored
                 .nodes
@@ -321,12 +423,13 @@ impl BuildRow {
                 })
                 .unwrap_or_else(|| self.service.clone()),
             commit: self.commit.clone(),
-            status: self.status,
-            message: self.message.clone(),
+            status: status.into(),
+            message,
             started_at: self.started,
-            finished_at: self.finished,
+            finished_at: finished,
             server: self.server.clone(),
             github_skipped: self.github_skipped.clone(),
+            interrupted: status.interrupted(),
         }
     }
 }
@@ -334,7 +437,7 @@ impl BuildRow {
 fn rows(tx: &mut dyn Tx, id: &DeploymentId) -> Result<Vec<BuildRow>, RpcError> {
     tx.query(
         "SELECT service, commit_sha, status, message, log, github, organization_id, \
-         started, finished, server, github_skipped \
+         started, finished, server, github_skipped, interrupted \
          FROM config_build \
          WHERE deployment_id = ?1 ORDER BY service",
         &[id.as_str().into()],
@@ -344,7 +447,7 @@ fn rows(tx: &mut dyn Tx, id: &DeploymentId) -> Result<Vec<BuildRow>, RpcError> {
         Ok(BuildRow {
             service: row.parse::<ServiceName>(0, "build")?,
             commit: row.parse_optional(1, "build commit")?,
-            status: row.variant(2, "build status")?,
+            status: RowStatus::decode(row.variant(2, "build status")?, row.int(11)?)?,
             message: row.optional_text(3)?.map(str::to_owned),
             log: row.text(4)?.to_owned(),
             github: row
@@ -475,7 +578,7 @@ fn source_of(
         commit: row.and_then(|row| row.commit.clone()),
         builders: Vec::new(),
         preferred_machine: None,
-        status: row.map(|row| row.status),
+        status: row.map(|row| row.status.into()),
         message: row.and_then(|row| row.message.clone()),
     })
 }
@@ -675,11 +778,12 @@ fn no_longer_wanted() -> RpcError {
 fn save_github(
     tx: &mut dyn Tx,
     id: &GithubBuildId,
-    status: BuildStatus,
+    status: impl Into<BuildStatus>,
     message: Option<&str>,
     log: &str,
     github: Option<&GithubState>,
 ) -> Result<(), RpcError> {
+    let status = status.into();
     let github =
         github.map(|github| serde_json::to_string(github).expect("a GitHub build is JSON"));
     tx.execute(
@@ -703,7 +807,7 @@ impl BuildRow {
         Some(GithubBuild {
             id: id.clone(),
             organization: self.organization.clone(),
-            status: self.status,
+            status: self.status.into(),
             run: github.run.clone(),
             grant: github.grant.clone(),
             checked_in_at: github.checked_in_at,

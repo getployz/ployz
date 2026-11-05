@@ -1,5 +1,5 @@
 import type { BuildStatus, BuildView, DeploymentView, FailedAt, NodeOutcome, NodeStatus, RowPhase, ServerRow } from "@ployz/sdk";
-import { buildNodeId, nodeLight, shownNodeStatus, type NodeLight, type ShownNodeStatus } from "#/modules/config-store/store-deployments";
+import { buildInterrupted, buildNodeId, nodeLight, shownNodeStatus, type NodeLight, type ShownNodeStatus } from "#/modules/config-store/store-deployments";
 import type { DeploymentCleanupState, DeploymentCleanupView } from "#/modules/config-store/tables";
 import type { RunSearch } from "./run-search";
 
@@ -26,9 +26,12 @@ export type RunEdge = { id: string; source: string; target: string; animated: bo
 /** `done` of `total` counts the Deployment's own steps, never Cloud's cleanup, which joins only once the run ended. */
 export type RunGraph = { nodes: RunNode[]; edges: RunEdge[]; done: number; total: number };
 
-export const buildStatusLabels = {
+const buildStatusLabels = {
   pending: "Pending", building: "Building", built: "Built", reused: "Reused", failed: "Failed",
 } satisfies Record<BuildStatus, string>;
+
+/** A build's status in words: one its Deployment ended under before it reported its end reads Interrupted, as a row does. */
+export const buildLabel = (build: BuildView) => buildInterrupted(build) ? "Interrupted" : buildStatusLabels[build.status];
 
 export function rowPhaseLabel(phase: RowPhase): string {
   switch (phase) {
@@ -102,6 +105,10 @@ const buildOutcome = {
   pending: "pending", building: "pending", built: "deployed", reused: "deployed", failed: "failed",
 } satisfies Record<BuildStatus, NodeStatus>;
 
+/** A build's outcome as its light shows it: an interrupted one never said how it ended, as an interrupted row reads. */
+const buildLight = (build: BuildView, deployment: DeploymentView) =>
+  nodeLight(buildInterrupted(build) ? "unknown" : buildOutcome[build.status], deployment);
+
 type Placeable = { id: string; name: string; column: number; rank: number };
 
 /**
@@ -173,7 +180,7 @@ export function makeRunGraph(deployment: DeploymentView, cleanup: DeploymentClea
     ...deployment.builds.map((build): RunNode => ({
       type: "build", id: buildNodeId(build.service), name: build.service, build, row: 0,
       column: (services.get(runtime(build.service))?.column ?? 1) - 1,
-      timing: buildTiming(build, deployment.in_flight), light: nodeLight(buildOutcome[build.status], deployment),
+      timing: buildTiming(build, deployment.in_flight), light: buildLight(build, deployment),
     })),
     ...outcomes,
     ...Object.entries(deployment.untargeted ?? {}).map(([name, rows]): RunNode => {

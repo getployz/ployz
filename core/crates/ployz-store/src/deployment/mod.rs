@@ -1749,16 +1749,23 @@ impl Stored {
     }
 }
 
-/// Write `stored` back: its [`Standing`] as the `status`, `number`, `runner`,
-/// `started`, `lease` and `ended` columns, and its run, outcome and preview
-/// included. An edge changes the standing and then saves, so `save` first shows the
-/// standing on the summary ([`Stored::show`]), and a caller returns the summary as
-/// the row now reads. A claim whose runner lease lapsed it writes as its row holds
-/// it, `running` or `cancelling` ([`Standing::kept`]): only an edge that loses the
-/// runner writes Unknown, with its end (lifecycle.rs `claim` and `record`). Once
-/// the Deployment can't run any more, History drops the sealed values only a
-/// Deployment in flight kept, rewriting only a revision that still holds one
-/// ([`crate::review::scrub_sealed`]).
+/// Write `stored` back, the one writer of a loaded Deployment's standing.
+///
+/// - It first shows the standing on the summary ([`Stored::show`]), so the summary
+///   reads as the row now does, and a caller returns it.
+/// - It writes the [`Standing`] as the `status`, `number`, `runner`, `started`,
+///   `lease` and `ended` columns, with the run, its outcome and its preview. A claim
+///   whose runner lease lapsed it writes as its row holds it, `running` or
+///   `cancelling` ([`Standing::kept`]): only an edge that loses the runner writes
+///   Unknown, with its end (lifecycle.rs `claim` and `record`).
+///
+/// Once the summary says the Deployment can't run any more, at each save:
+/// - History drops the sealed values only a Deployment in flight kept, rewriting
+///   only a revision that still holds one ([`crate::review::scrub_sealed`]).
+/// - When it shows an end, each build its Servers still hold Building is settled as
+///   interrupted, finished at that end ([`crate::build::settle`]): its runner can't
+///   report on it any more ([`running`]). One out of flight that shows no end,
+///   waiting for CI or a [`Raw`] row with no `ended`, leaves its builds as they are.
 fn save(tx: &mut dyn Tx, stored: &mut Stored) -> Result<(), RpcError> {
     stored.show();
     let standing = &stored.standing;
@@ -1783,6 +1790,9 @@ fn save(tx: &mut dyn Tx, stored: &mut Stored) -> Result<(), RpcError> {
     )?;
     if !stored.summary.in_flight {
         crate::review::scrub_sealed(tx, &stored.summary.environment_id)?;
+        if let Some(ended) = stored.summary.ended_at {
+            crate::build::settle(tx, &stored.summary.id, ended)?;
+        }
     }
     Ok(())
 }
