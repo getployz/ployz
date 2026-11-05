@@ -2502,8 +2502,9 @@ fn a_build_settles_at_every_other_end_its_deployment_reaches() {
 
 /// The settle and the view take only a build that is Building, that its Servers
 /// hold, under a Deployment out of flight that shows an end; a build that already
-/// finished keeps when. A Deployment row no Store writes that shows no end leaves its
-/// build as every Store before this read it, until an edge stamps the row's end.
+/// finished keeps when. A Deployment row no Store writes that shows no end, or that
+/// is live and shows one, leaves its build as every Store before this read it, until
+/// an edge stamps the row's end.
 #[test]
 fn a_build_settles_only_under_a_deployment_that_shows_an_end() {
     let mut seen = Vec::new();
@@ -2582,6 +2583,12 @@ fn a_build_settles_only_under_a_deployment_that_shows_an_end() {
             first
         },
     );
+    case("live, with an end no Store writes", &|store, who, url| {
+        let (first, runner) = building(store, who);
+        set(url, &first, "ended = started");
+        store.record(&first, &runner, RunEvidence::Alive).unwrap();
+        first
+    });
     case(
         "taken over while running with no start",
         &|store, who, url| {
@@ -2627,6 +2634,13 @@ fn a_build_settles_only_under_a_deployment_that_shows_an_end() {
             ),
             (
                 "alive while unknown with no start or end",
+                BuildStatus::Building,
+                false,
+                None,
+                1
+            ),
+            (
+                "live, with an end no Store writes",
                 BuildStatus::Building,
                 false,
                 None,
