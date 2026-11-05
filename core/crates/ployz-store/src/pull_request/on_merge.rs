@@ -681,7 +681,8 @@ enum LandingReceipt {
 }
 
 /// What one Destination did with a pull request's merge, as [`land`] saw it. A
-/// `reason` is the one [`Unlanded`] takes for that Destination in the same loop.
+/// `reason` is the first that Destination's [`Unlanded`] records in the same loop;
+/// it records at most one, as `deploy_landed` skips at most once.
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case", tag = "outcome")]
 enum LandingOutcome {

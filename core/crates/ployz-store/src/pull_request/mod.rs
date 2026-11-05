@@ -8,7 +8,8 @@
 //! decides. An older read never replaces a newer one: facts are ordered by GitHub's
 //! `updated_at`. Opening makes the PR Environment and deploys it; renaming the head
 //! branch retracks it; the merge lands its On merge list, once; closing closes it,
-//! unless the plan keeps it or it holds what its merge didn't land.
+//! unless the plan keeps it, it holds what its merge didn't land, or the event that
+//! first reports the merge didn't land it in every Destination, or found none.
 //!
 //! Closing a Branch, for its pull request or for sitting idle a week, removes it
 //! as the Store ([`crate::removal::close`]): Cloud admits its removal from the
