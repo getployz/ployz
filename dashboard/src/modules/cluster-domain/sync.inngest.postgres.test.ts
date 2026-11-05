@@ -196,6 +196,7 @@ describe("sync-cluster-domain", () => {
     ["no Cluster is paired", null, "no_servers"],
     ["the Cluster has no Servers", [], "no_servers"],
     ["no ingress Server has a public IP", [machine("a", null), machine("b", "203.0.113.2", false)], "no_public_ip"],
+    ["no Server takes web traffic", [machine("a", "203.0.113.1", false), machine("b", "203.0.113.2", false)], "no_servers"],
   ] as const)("records why there is no traffic when %s, and still renews the lease", async (_, machines, kind) => {
     frame = machines === null ? null : runtimeWatchFrameFixture({ machines: [...machines] });
 
