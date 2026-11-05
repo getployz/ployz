@@ -9,20 +9,20 @@
 //! once before `fill_ingress` (:782). `status()` is `record(RunEvidence::Alive)`
 //! (:1373-1377), and each site compares the answer with its own set of statuses (:1195,
 //! :1214-1217, :1368, :782). Meanwhile a user cancels the Deployment (ployz-store
-//! deployment/lifecycle.rs:1471), a newer Deployment of the Environment is claimed and
-//! sets it Unknown (lifecycle.rs:1320-1325), or forgetting the Cluster cancels it without
-//! waiting on the runner (lifecycle.rs:1502, teardown.rs:458).
+//! deployment/lifecycle.rs:1472), a newer Deployment of the Environment is claimed and
+//! sets it Unknown (lifecycle.rs:1320-1332), or forgetting the Cluster cancels it without
+//! waiting on the runner (lifecycle.rs:1503, teardown.rs:458).
 //!
 //! The finding: `lost_to_another_runner` is the one read after executing that acts on a
 //! takeover (store_runner.rs:771, :1367-1369), and `remove_volumes`, `fill_ingress` and
 //! the `Executed` record come after it (:776-791). A takeover that lands after it leaves
 //! the Deployment Unknown, and `record` then refuses an `Executed` that is not Interrupted
-//! (lifecycle.rs:1615-1618). The run has deleted Volumes, and neither its outcome nor the
+//! (lifecycle.rs:1619-1622). The run has deleted Volumes, and neither its outcome nor the
 //! deletions are kept. No read has to fail for this.
 //!
 //! The second finding has two causes. The sites read `Err` as keep: once
 //! `cancel_in_flight` ended the Deployment, `status()` answers `Err` ("This Deployment
-//! already ended", deployment/mod.rs:1219-1221, :1294-1296), and `renewing` keeps the work
+//! already ended", deployment/mod.rs:1663-1665, :1738-1740), and `renewing` keeps the work
 //! in hand going (store_runner.rs:1213-1219). And `connecting` and the gate before
 //! `fill_ingress` read `Ok(Unknown)` as keep (:1195, :782).
 //!
@@ -31,15 +31,15 @@
 //! the read after executing and the gate, which `NO_WORK_AFTER_END` needs. It sends the
 //! `Executed` record as the code does. The store's `record` turns a non-Interrupted
 //! `Executed` for an Unknown Deployment into Interrupted in the same transaction, where
-//! the code refuses it (lifecycle.rs:1615-1618), which `TAKEOVER_KEEPS_OUTCOME` needs. Its
+//! the code refuses it (lifecycle.rs:1619-1622), which `TAKEOVER_KEEPS_OUTCOME` needs. Its
 //! projection shows the deletions of an Interrupted outcome, which `DELETIONS_KEPT` needs,
 //! where the code reads them NotAttempted for any outcome but a Success
-//! (lifecycle.rs:2158-2162), and an Interrupted outcome projects to Failed (ployz-core
+//! (lifecycle.rs:2164-2168), and an Interrupted outcome projects to Failed (ployz-core
 //! config/runtime_outcome.rs:208-220).
 //!
 //! Each store call is one step, since `record`, `claim`, `cancel` and `cancel_in_flight`
-//! each take one transaction (lifecycle.rs:1512-1517, :1231-1236, :1459-1463,
-//! :1486-1489). A record that follows a read, or the end of a piece of work, is one step
+//! each take one transaction (lifecycle.rs:1512-1517, :1232-1237, :1463-1467,
+//! :1487-1490). A record that follows a read, or the end of a piece of work, is one step
 //! with it, except the `Executed` record.
 //!
 //! Out of scope: a takeover or `cancel_in_flight` between a read and the record merged
@@ -57,8 +57,8 @@ use stateright::{Model, Property};
 enum Status {
     Running,
     Cancelling,
-    /// In the model, `claim`'s takeover (lifecycle.rs:1320-1325), or the run's own
-    /// `Abandoned` after a preview (lifecycle.rs:1895).
+    /// In the model, `claim`'s takeover (lifecycle.rs:1320-1332), or the run's own
+    /// `Abandoned` after a preview (lifecycle.rs:1901).
     Unknown,
     /// Applied, Failed or Cancelled: `end` (lifecycle.rs), or `cancel_in_flight`.
     Ended,
@@ -87,7 +87,7 @@ struct Store {
     /// `run.outcome`.
     outcome: Option<Outcome>,
     /// The deleted Volumes' nodes read Removed. `removed_volume` reads the deletions only
-    /// for a Success outcome, and NotAttempted for any other (lifecycle.rs:2146-2168).
+    /// for a Success outcome, and NotAttempted for any other (lifecycle.rs:2152-2174).
     shows_removed: bool,
 }
 
@@ -219,7 +219,7 @@ impl Standing {
 enum Answer {
     Kept,
     /// The fix: the Deployment is Unknown and the `Executed` not Interrupted, so `record`
-    /// kept it as Interrupted, where the code refuses it (lifecycle.rs:1615-1618).
+    /// kept it as Interrupted, where the code refuses it (lifecycle.rs:1619-1622).
     Converted,
     /// `running` refused it: the Deployment is Unknown (lifecycle.rs `record`, the
     /// `taken_over` check).
@@ -356,10 +356,10 @@ struct Broken {
     /// The fix's latch drops Lost on a later read that says the run is not over.
     lost_does_not_stick: bool,
     /// The fix's `record` refuses a non-Interrupted `Executed` for an Unknown Deployment,
-    /// as the code does (lifecycle.rs:1615-1618), where the fix keeps it as Interrupted.
+    /// as the code does (lifecycle.rs:1619-1622), where the fix keeps it as Interrupted.
     store_refuses_late_executed: bool,
     /// The fix's projection reads the deletions of an Interrupted outcome NotAttempted, as
-    /// the code does (lifecycle.rs:2158-2162).
+    /// the code does (lifecycle.rs:2164-2168).
     projection_hides_interrupted_deletions: bool,
 }
 
@@ -667,11 +667,11 @@ impl RunnerStanding {
         state.phase = Phase::Returned;
     }
 
-    /// `record(RunEvidence::Executed { .. })` (lifecycle.rs:1590-1773). An Unknown
+    /// `record(RunEvidence::Executed { .. })` (lifecycle.rs:1594-1779). An Unknown
     /// Deployment takes only an Interrupted outcome, keeps it and stays Unknown
-    /// (:1615-1618, :1763-1771); any other goes through `finish` (:1772). The fix keeps a
+    /// (:1619-1622, :1767-1777); any other goes through `finish` (:1778). The fix keeps a
     /// non-Interrupted one for an Unknown Deployment as Interrupted. The projection shows
-    /// the deletions for a Success (:2158-2167), and in the fix for an Interrupted outcome
+    /// the deletions for a Success (:2164-2173), and in the fix for an Interrupted outcome
     /// too.
     fn executed(&self, state: &mut State, interrupted: bool) -> Answer {
         let broken = self.broken;
@@ -709,10 +709,10 @@ impl RunnerStanding {
         answer
     }
 
-    /// `record(RunEvidence::Abandoned)` (lifecycle.rs:1876-1898): a no-op on an Unknown
-    /// Deployment or one with an outcome (:1877-1879), `running` otherwise (:1880), then
-    /// Unknown after a preview (:1895-1897). The model sends it only from executing, after
-    /// the preview, so the arm's `NotExecuted` for a run with no preview (:1881-1894) is out
+    /// `record(RunEvidence::Abandoned)` (lifecycle.rs:1882-1904): a no-op on an Unknown
+    /// Deployment or one with an outcome (:1883-1885), `running` otherwise (:1886), then
+    /// Unknown after a preview (:1901-1903). The model sends it only from executing, after
+    /// the preview, so the arm's `NotExecuted` for a run with no preview (:1887-1900) is out
     /// of scope.
     fn abandoned(state: &mut State) {
         let store = &mut state.store;
@@ -985,9 +985,9 @@ impl Model for RunnerStanding {
 
 const TAKEOVER_KEEPS_OUTCOME: &str =
     "a run never returns with its Executed refused because the Deployment went Unknown";
-/// Only the `removed_volume` node projection (lifecycle.rs:2146-2168). Applied State still
+/// Only the `removed_volume` node projection (lifecycle.rs:2152-2174). Applied State still
 /// lists the deleted Volume under the fix, since a run that was taken over moves no Applied
-/// State (lifecycle.rs:1763-1771). `cancel_in_flight` is exempt: `forget_cluster`, which
+/// State (lifecycle.rs:1767-1777). `cancel_in_flight` is exempt: `forget_cluster`, which
 /// runs it, lets go of the Organization's Applied State and Volumes' fixed storage
 /// (teardown.rs:442-445, :458-469).
 const DELETIONS_KEPT: &str = "once the run returned, the Deployment's nodes show the Volumes it deleted as Removed, unless cancel_in_flight ended the Deployment";

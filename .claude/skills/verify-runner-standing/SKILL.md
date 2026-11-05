@@ -9,28 +9,28 @@ The model in `core/crates/ployz-verify/src/runner_standing.rs` explores every in
 
 While it awaits a piece of work, `connecting` and `renewing` call `status()` every `CANCEL_POLL`, 2 s (`:40`, `:1190-1198`, `:1208-1220`), and the work can end before the next call (`:1199`, `:1211`). `execute` also calls it once after executing, in `lost_to_another_runner` (`:771`, `:1367-1369`), and once at the gate before `fill_ingress` (`:782`). `status()` is `record(RunEvidence::Alive)` (`:1373-1377`), and each site compares the answer with its own set of statuses (`:1195`, `:1214-1217`, `:1368`, `:782`). The model gives each call its own step.
 
-Meanwhile the store takes three steps. A user's `cancel` moves Running to Cancelling (`core/crates/ployz-store/src/deployment/lifecycle.rs:1471`). Another Deployment's `claim` sets this one unknown and leaves its runner column (`lifecycle.rs:1320-1325`). `forget_cluster` (`core/crates/ployz-store/src/teardown.rs:458`) runs `cancel_in_flight`, which sets it Cancelled (`lifecycle.rs:1502`).
+Meanwhile the store takes three steps. A user's `cancel` moves Running to Cancelling (`core/crates/ployz-store/src/deployment/lifecycle.rs:1472`). Another Deployment's `claim` sets this one unknown and leaves its runner column (`lifecycle.rs:1320-1332`). `forget_cluster` (`core/crates/ployz-store/src/teardown.rs:458`) runs `cancel_in_flight`, which sets it Cancelled (`lifecycle.rs:1503`).
 
-The model also copies what the store shows of the deleted Volumes. `removed_volume` reads them Removed only for a Success outcome, and NotAttempted for any other (`lifecycle.rs:2146-2168`, the check at `:2158-2162`). An Interrupted outcome projects to Failed with reason Interrupted (`core/crates/ployz-core/src/config/runtime_outcome.rs:208-220`).
+The model also copies what the store shows of the deleted Volumes. `removed_volume` reads them Removed only for a Success outcome, and NotAttempted for any other (`lifecycle.rs:2152-2174`, the check at `:2164-2168`). An Interrupted outcome projects to Failed with reason Interrupted (`core/crates/ployz-core/src/config/runtime_outcome.rs:208-220`).
 
 Nothing calls the real runner or store. The model is a hand copy, and it drifts unless you keep it in step. `ployz-verify` dev-depends only on `ployz-core` and `stateright` (`core/crates/ployz-verify/Cargo.toml`). So a product change leaves the model green, without even recompiling it, until you copy the change in.
 
-Each store call is one step, because `record` (`lifecycle.rs:1512`), `claim` (`:1231`), `cancel` (`:1459`) and `cancel_in_flight` (`:1486`) each take one transaction. A record that follows a read, or the end of a piece of work, is one step with it, except the `Executed` record.
+Each store call is one step, because `record` (`lifecycle.rs:1512`), `claim` (`:1232`), `cancel` (`:1463`) and `cancel_in_flight` (`:1487`) each take one transaction. A record that follows a read, or the end of a piece of work, is one step with it, except the `Executed` record.
 
 What `status()` returns, as the model reads it:
 
-- `Ok(Running)` or `Ok(Cancelling)`: the Alive arm calls `running` (`lifecycle.rs:1533-1539`), which passes both (`core/crates/ployz-store/src/deployment/mod.rs:1211-1213`).
-- `Ok(Unknown)`: the Alive arm skips `running` for an Unknown Deployment (`lifecycle.rs:1534`). The owner check still passes, since the takeover leaves the runner column (`lifecycle.rs:1522-1524`, `1320-1325`).
-- `Err(conflict "This Deployment already ended")`: `running` refuses an Applied, Failed or Cancelled one (`mod.rs:1219-1221`, `1294-1296`).
+- `Ok(Running)` or `Ok(Cancelling)`: the Alive arm calls `running` (`lifecycle.rs:1533-1543`), which passes both (`core/crates/ployz-store/src/deployment/mod.rs:1655-1657`).
+- `Ok(Unknown)`: the Alive arm skips `running` for an Unknown Deployment (`lifecycle.rs:1534-1540`). The owner check still passes, since the takeover leaves the runner column (`lifecycle.rs:1522-1524`, `1320-1332`).
+- `Err(conflict "This Deployment already ended")`: `running` refuses an Applied, Failed or Cancelled one (`mod.rs:1663-1665`, `1738-1740`).
 - `Err(unavailable)`: `store_call` gave up waiting or running (`core/crates/ployz/src/sdk/store_call.rs:41-56`). The model allows one such failure (`failing`).
 
 The properties, each one sentence:
 
-- `TAKEOVER_KEEPS_OUTCOME`: **a run never returns with its `Executed` refused because the Deployment went Unknown.** This is finding 1. The store keeps no outcome for a run that executed (`lifecycle.rs:1615-1618`).
-- `DELETIONS_KEPT`: **once the run returned, the Deployment's nodes show the Volumes it deleted as Removed, unless `cancel_in_flight` ended the Deployment.** This is finding 1 with Volumes deleted. It checks only the `removed_volume` node projection (`lifecycle.rs:2146-2168`), not Applied State. `cancel_in_flight` is exempt because `forget_cluster`, which runs it, lets go of the Organization's Applied State and Volumes' fixed storage (`teardown.rs:442-445`, `458-469`).
-- `NO_WORK_AFTER_END`: **once a read said the run is over, the runner starts no work, and keeps on none but deleting Volumes.** "Over" is Unknown or ended, the two `running` refuses (`mod.rs:1214-1221`). Deleting is exempt from "keeps on" because its abort is `|| ()` by design (`store_runner.rs:777-778`). This is finding 2.
+- `TAKEOVER_KEEPS_OUTCOME`: **a run never returns with its `Executed` refused because the Deployment went Unknown.** This is finding 1. The store keeps no outcome for a run that executed (`lifecycle.rs:1619-1622`).
+- `DELETIONS_KEPT`: **once the run returned, the Deployment's nodes show the Volumes it deleted as Removed, unless `cancel_in_flight` ended the Deployment.** This is finding 1 with Volumes deleted. It checks only the `removed_volume` node projection (`lifecycle.rs:2152-2174`), not Applied State. `cancel_in_flight` is exempt because `forget_cluster`, which runs it, lets go of the Organization's Applied State and Volumes' fixed storage (`teardown.rs:442-445`, `458-469`).
+- `NO_WORK_AFTER_END`: **once a read said the run is over, the runner starts no work, and keeps on none but deleting Volumes.** "Over" is Unknown or ended, the two `running` refuses (`mod.rs:1658-1665`). Deleting is exempt from "keeps on" because its abort is `|| ()` by design (`store_runner.rs:777-778`). This is finding 2.
 - `HEEDS_CANCEL`: **while its last read said Cancelling, the runner starts or keeps on no work but deleting Volumes.** Deleting is exempt because the code never stops it on a cancel: the one read before `remove_volumes`, `lost_to_another_runner`, acts only on Unknown (`store_runner.rs:771`, `1367-1369`), and its abort is `|| ()` (`:778`).
-- `TAKEN_OVER_INTERRUPTED`: **the store keeps no outcome but Interrupted on a Deployment that went Unknown.** This is what `record`'s takeover refusal keeps (`lifecycle.rs:1615-1618`).
+- `TAKEN_OVER_INTERRUPTED`: **the store keeps no outcome but Interrupted on a Deployment that went Unknown.** This is what `record`'s takeover refusal keeps (`lifecycle.rs:1619-1622`).
 
 ## Run it
 
@@ -58,7 +58,7 @@ The run is green when all sixteen tests pass. Read them as four groups.
   - `executing_needs_the_prepared_cancel_check` drops the check on `record(Prepared)`'s summary (`:754-758`) and breaks `HEEDS_CANCEL`.
   - `deleting_needs_the_read_after_executing` makes `lost_to_another_runner` read Unknown as keep (`:771-773`, `1367-1369`) and breaks `NO_WORK_AFTER_END`.
   - `fill_ingress_needs_the_gate` drops the gate's Cancelling check (`:782`) and breaks `HEEDS_CANCEL`.
-  - `the_store_needs_its_takeover_refusal` drops `running` for a non-Interrupted `Executed` on an Unknown Deployment (`lifecycle.rs:1616-1618`) and breaks `TAKEN_OVER_INTERRUPTED`.
+  - `the_store_needs_its_takeover_refusal` drops `running` for a non-Interrupted `Executed` on an Unknown Deployment (`lifecycle.rs:1620-1622`) and breaks `TAKEN_OVER_INTERRUPTED`.
 - **The fix's guards.** Three tests each drop one part of the fix and expect the property it keeps to fail. They are below, under The fix.
 
 If a guard test goes from green to red, the guard no longer earns its keep, or the model lost the path that shows it.
@@ -69,7 +69,7 @@ The fix needs a runner change and a store change. Without the store change, `TAK
 
 The runner change is to latch Lost and stop. Every read goes through one `Standing`. "Latches Lost" means the first `Ok(Unknown)` read sets Lost and no later read changes it, and likewise the first ended `Err` sets Ended (`Standing::after`). On either, `connecting` returns, `renewing` aborts (except during `remove_volumes`, whose abort stays a no-op), the read after executing returns, and the gate skips `fill_ingress`. These stops keep `NO_WORK_AFTER_END`, which breaks without them on the code as it is (the two finding 2 tests) and with Lost not sticking (`the_fix_needs_lost_to_stick`). The runner sends the `Executed` record as the code does (`store_runner.rs:786-791`), and the store keeps it.
 
-The store change has two parts. `record` keeps a non-Interrupted `Executed` for an Unknown Deployment as Interrupted, in the same transaction, where the code refuses it (`lifecycle.rs:1615-1618`). `removed_volume` shows the deleted Volumes for an Interrupted outcome, where the code reads them NotAttempted for anything but a Success (`lifecycle.rs:2158-2162`).
+The store change has two parts. `record` keeps a non-Interrupted `Executed` for an Unknown Deployment as Interrupted, in the same transaction, where the code refuses it (`lifecycle.rs:1619-1622`). `removed_volume` shows the deleted Volumes for an Interrupted outcome, where the code reads them NotAttempted for anything but a Success (`lifecycle.rs:2164-2168`).
 
 Each part has a `Broken` flag and a test that breaks the property it keeps on `fixed()`:
 
@@ -109,18 +109,18 @@ Finding 1, confirmed step by step at the sync commit below, has a path of 10 row
 
 1. The runner claims the Deployment, dials, and plans or builds and prepares (`store_runner.rs:177-180`, `195-218`, `733-746`). `record(Prepared)` keeps the preview, and its summary reads Running, so executing starts (`:751-758`, `764-768`).
 2. Executing returns a Success. `lost_to_another_runner` reads `Ok(Running)`, which is not Unknown (`:771`, `1367-1369`). `remove_volumes` starts under `renewing` with the no-op abort `|| ()` (`:776-778`).
-3. Another Deployment of the Environment is claimed. Its UPDATE sets this one unknown and leaves its runner column (`lifecycle.rs:1320-1325`).
+3. Another Deployment of the Environment is claimed. Its takeover saves this one unknown, ended, and leaves its runner column (`lifecycle.rs:1320-1332`).
 4. `remove_volumes` returns the Volumes it deleted. The gate reads `Ok(Unknown)`, which is not Cancelling, so `fill_ingress` runs (`store_runner.rs:782-785`).
-5. `record(Executed)` sends the Success, naming the deleted Volumes (`:786-791`). The Deployment is Unknown and the outcome not Interrupted, so `running` refuses it (`lifecycle.rs:1615-1618`, `mod.rs:1214-1218`). The arm returns before it writes anything (`lifecycle.rs:1595-1618`), and `execute` returns the error. On Cloud, `runStoreDeployment` catches that conflict as `{ nothingToRun }` (`dashboard/src/modules/config-store/store-deployment.server.ts:106-107`). The function then marks the Volumes done, skips `retire-old`, and skips `mail-failure`, which runs only for a `ran` result that failed or is unknown (`dashboard/src/modules/config-store/store-deployment.inngest.ts:83-107`). `onFailure`, which calls `stopStoreDeploymentRun` (`:44-50`), never runs.
+5. `record(Executed)` sends the Success, naming the deleted Volumes (`:786-791`). The Deployment is Unknown and the outcome not Interrupted, so `running` refuses it (`lifecycle.rs:1619-1622`, `mod.rs:1658-1662`). The arm returns before it writes anything (`lifecycle.rs:1599-1622`), and `execute` returns the error. On Cloud, `runStoreDeployment` catches that conflict as `{ nothingToRun }` (`dashboard/src/modules/config-store/store-deployment.server.ts:106-107`). The function then marks the Volumes done, skips `retire-old`, and skips `mail-failure`, which runs only for a `ran` result that failed or is unknown (`dashboard/src/modules/config-store/store-deployment.inngest.ts:83-107`). `onFailure`, which calls `stopStoreDeploymentRun` (`:44-50`), never runs.
 
 No `status()` call fails on this path. The shortest path that breaks `TAKEOVER_KEEPS_OUTCOME` deletes nothing: a cancel lets the gate skip `fill_ingress`, and the takeover lands after the gate's read, so the store refuses a Failed outcome the same way. When the takeover lands before `lost_to_another_runner` instead, the run records Interrupted with no deletions (`store_runner.rs:771-773`, `1253-1264`). `tests/deploy_client/runner_cancellation.rs` `taken_over_mid_create` (`:120-164`) shows that case, with the takeover while the first run still executes.
 
 Finding 2 has two causes, and a fix for one leaves `NO_WORK_AFTER_END` red through the other.
 
-- **`Err` read as keep.** `current_code_keeps_working_after_cancel_in_flight_ended_the_run` has 4 rows. `cancel_in_flight` sets the Deployment Cancelled while the runner dials (`lifecycle.rs:1486-1507`). The dial completes and the prepare starts. `renewing`'s tick reads the ended `Err`, and "a failed read skips one check" (`store_runner.rs:1213-1219`), so the prepare goes on. `connecting`, `lost_to_another_runner` and the gate read `Err` as keep too (`:1195`, `1368`, `782`).
+- **`Err` read as keep.** `current_code_keeps_working_after_cancel_in_flight_ended_the_run` has 4 rows. `cancel_in_flight` sets the Deployment Cancelled while the runner dials (`lifecycle.rs:1487-1507`). The dial completes and the prepare starts. `renewing`'s tick reads the ended `Err`, and "a failed read skips one check" (`store_runner.rs:1213-1219`), so the prepare goes on. `connecting`, `lost_to_another_runner` and the gate read `Err` as keep too (`:1195`, `1368`, `782`).
 - **`Ok(Unknown)` read as keep.** `current_code_works_on_after_a_read_said_unknown` takes `cancel_in_flight` out, and no read fails. After a takeover, `connecting` reads `Ok(Unknown)` and dials on, since only Cancelling stops it (`:1195`), and the prepare starts: 4 rows. Its second path takes the takeover after `lost_to_another_runner`, and the gate reads `Ok(Unknown)` and fills ingress, since only Cancelling skips it (`:782`): 7 rows.
 
-What the model assumes, so you can judge the lead. A takeover needs a newer Deployment of the same Environment claimed while this run holds it, which `claim` takes from Queued (`lifecycle.rs:1264-1271`, `1320-1325`). The model gives each read and each piece of work its own step, so a store step can land between any two. Neither finding needs a failed read.
+What the model assumes, so you can judge the lead. A takeover needs a newer Deployment of the same Environment claimed while this run holds it, which `claim` takes from Queued (`lifecycle.rs:1266-1271`, `1320-1332`). The model gives each read and each piece of work its own step, so a store step can land between any two. Neither finding needs a failed read.
 
 ### Staging finding 1 in real code
 
@@ -166,14 +166,14 @@ These are out of scope:
 
 - a takeover or `cancel_in_flight` between a read and the record the model merges with it, such as `connecting`'s Cancelling read and its `NotExecuted` (`store_runner.rs:205`), which then fails
 - `build`'s own records (`Build`, `Built`), the Deploy's warnings (`record_warnings`, `:775`), and what `fill_ingress` records about ingress (`:815-835`)
-- the lease lapsing, which every read remaps to Unknown (`mod.rs:976-981`, `1092-1095`), after `LEASE` (600 s, `mod.rs:336`) with no record
-- a second claim by the same runner after a preview, which also sets the Deployment Unknown and keeps its runner (`lifecycle.rs:1239-1250`)
-- Cloud's `abandonDeployment` while the run is still going, and the Abandoned arm's `NotExecuted` for a run with no preview (`lifecycle.rs:1881-1894`)
+- the lease lapsing, which every read remaps to Unknown (`mod.rs:987-989`, `1235-1243`), after `LEASE` (600 s, `mod.rs:344`) with no record
+- a second claim by the same runner after a preview, which also sets the Deployment Unknown and keeps its runner (`lifecycle.rs:1241-1252`)
+- Cloud's `abandonDeployment` while the run is still going, and the Abandoned arm's `NotExecuted` for a run with no preview (`lifecycle.rs:1887-1900`)
 - a dial that fails, a refused prepare, or a build that needs an upload
 - a store call other than `status()` failing, such as `record(Prepared)`, whose error `?` returns (`store_runner.rs:751-753`)
 - an abort that comes too late to stop its work
 - the select order in `connecting` (`biased`, `:1193`) and `renewing`
-- Applied State: it still lists a deleted Volume under the fix, since a run that was taken over moves no Applied State (`lifecycle.rs:1763-1771`), and `DELETIONS_KEPT` checks only the node projection
+- Applied State: it still lists a deleted Volume under the fix, since a run that was taken over moves no Applied State (`lifecycle.rs:1767-1777`), and `DELETIONS_KEPT` checks only the node projection
 
 A green model says nothing about them. Cover them with `cargo nextest run -p ployz sdk::store_runner` and `cargo nextest run -p ployz --test deploy_client runner_cancellation`.
 
@@ -183,9 +183,9 @@ Each model step is a copy of code at the sync commit. Reread these when a diff t
 
 - `core/crates/ployz/src/sdk/store_runner.rs`: `run_deployment_expecting` from the claim to `execute`. All of `execute`: the plan or build and prepare, `record(Prepared)` and its Cancelling check, executing under `renewing`, `lost_to_another_runner`, `remove_volumes` with its no-op abort, the gate, the `Executed` record and `Abandoned`. Also `fill_ingress`'s `renewing`, `prepare`'s and `build`'s `renewing`, `connecting`, `renewing`, `interrupted`, `not_executed`, `lost_to_another_runner`, `status`, and `CANCEL_POLL`.
 - `core/crates/ployz/src/sdk/store_call.rs`: `store_call`, `bounded` and `unavailable`.
-- `core/crates/ployz-store/src/deployment/lifecycle.rs`: `claim`'s re-claim and takeover UPDATE. `cancel` and `cancel_in_flight`. `record`'s owner check, lease renewal, and its Alive, Prepared, Executed (the `taken_over` refusal and keep), NotExecuted and Abandoned arms. Also `finish`, `end`, and the `removed_volume` projection.
-- `core/crates/ployz-store/src/deployment/mod.rs`: `running`, `ended`, `lapsed` and the remap in `stored`.
+- `core/crates/ployz-store/src/deployment/lifecycle.rs`: `claim`'s re-claim and takeover. `cancel` and `cancel_in_flight`. `record`'s owner check, lease renewal, and its Alive, Prepared, Executed (the `taken_over` refusal and keep), NotExecuted and Abandoned arms. Also `finish`, `end`, and the `removed_volume` projection.
+- `core/crates/ployz-store/src/deployment/mod.rs`: `running`, `ended`, `lapsed`, and the remap to Unknown that `stored` reads through `Standing::status`.
 - `core/crates/ployz-core/src/config/runtime_outcome.rs`: the Interrupted arm of the projection.
 - `core/crates/ployz-store/src/teardown.rs`: `forget_cluster`'s call to `cancel_in_flight`.
 
-Sync commit: `d44c048596334df069b0c5ff27c120e357f1edd0`, the `main` this model was checked against, and every line cited above is at it. Code in the list above that changed after it has not been rechecked.
+Sync commit: `d44c048596334df069b0c5ff27c120e357f1edd0`, the `main` this model was checked against, and every line cited above is at it, except the `lifecycle.rs` and `mod.rs` lines. Those are cited at `5e7ca40aa0`, which rewrote `claim`'s re-claim and takeover, `cancel`, `cancel_in_flight`, `record`'s Alive, Executed and Abandoned arms, `end` and `lapsed`; each was rechecked there and answers as the model says. Code in the list above that changed after these has not been rechecked.
