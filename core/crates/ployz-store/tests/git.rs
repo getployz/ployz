@@ -2453,8 +2453,9 @@ fn a_build_its_deployment_lapsed_under_reads_as_the_settle_later_writes_it() {
 }
 
 /// Each other way a Deployment holding a Servers build Building can end settles the
-/// build in the same write: a claim again after a preview, an applied run that never
-/// reported the build's end, and a run that found an upload missing.
+/// build in the same write: a claim again after a preview, a run abandoned after a
+/// preview, an applied run that never reported the build's end, and a run that found
+/// an upload missing.
 #[test]
 fn a_build_settles_at_every_other_end_its_deployment_reaches() {
     let mut seen = Vec::new();
@@ -2479,6 +2480,12 @@ fn a_build_settles_at_every_other_end_its_deployment_reaches() {
             RpcErrorCode::Conflict
         );
     });
+    case("abandoned after a preview", &|store, id, runner| {
+        store
+            .record(id, runner, RunEvidence::Prepared(web_preview()))
+            .unwrap();
+        store.record(id, runner, RunEvidence::Abandoned).unwrap();
+    });
     case("applied", &|store, id, runner| applied(store, id, runner));
     case("an upload went missing", &|store, id, runner| {
         store
@@ -2494,6 +2501,7 @@ fn a_build_settles_at_every_other_end_its_deployment_reaches() {
         seen,
         [
             ("claimed again after a preview", S::Unknown, true, 0),
+            ("abandoned after a preview", S::Unknown, true, 0),
             ("applied", S::Applied, true, 0),
             ("an upload went missing", S::Failed, true, 0),
         ]
