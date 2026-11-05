@@ -20,7 +20,7 @@ The model in `core/crates/ployz-verify/src/bridge_notes.rs` explores the two not
 - `At::Remove` and `At::Create`: `replace_docker_network` (`:836-842`, `:855-868`) and `create_bridge`.
 - `At::Rejoin`: `rejoin` and `rejoin_with` (`:1058-1102`): the pinned connect, then `connect(None)` (`:1088-1093`). The readdress discards the answer (`:1058-1061`); the pin pass puts a false into `unjoined` (`:981-983`).
 - `At::Finish`: `Pins::finish` keeps only `unjoined` (`pins.rs:82-100`).
-- `At::Start(member)`: `Stopped::start`'s start of one member (`stopped.rs:60-79`): Docker runs it, it already runs (bollard reads Docker's 304 as `Ok`), "No such container" drops it (`stopped.rs:66`, `:104-110`), and any other error keeps it.
+- `At::Start(member)`: `Stopped::start`'s start of one member (`stopped.rs:60-79`): Docker runs it, it already runs (bollard reads Docker's 304 as `Ok`), "No such container" drops it (`stopped.rs:66`, `stopped.rs:104-110`), and any other error keeps it.
 - `At::Update`: `Stopped::start`'s removal or rewrite of the note (`stopped.rs:80-93`). A failure keeps the old file, with every id it held.
 
 **The other actors.** `Who::Crash` ends a daemon start at any step. `Who::Docker` is the restart policy moving a member that was not stopped through the API between running and between restarts, or, under the `no` policy, from between restarts to exited. `Who::Operator` is `ContainerStep::Start`, `Stop`, `Hold` (a stop of a Container at rest, whose 304 reads as success, `core/crates/ployzd/src/docker/lifecycle.rs:870-881`) and the operator removing the Container.
