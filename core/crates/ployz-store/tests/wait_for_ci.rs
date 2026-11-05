@@ -477,6 +477,46 @@ fn no_servers_at_pass_cancels_with_reason() {
     );
 }
 
+/// A hold in a shape no Store writes, here one numbered, which a write in SQL can
+/// leave, is cancelled with its reason all the same.
+#[test]
+fn no_servers_at_pass_cancels_a_hold_no_store_wrote_with_reason() {
+    let dir = tempfile::tempdir().unwrap();
+    let url = backend::fresh_url(&dir);
+    let (store, who) = shop_on(ConfigStore::open(&url, backend::key()).unwrap());
+    set(&store, &who, "web.waitForCi", json!(true));
+    publish(&store, &who);
+    system(&store, &push(None, Some(H2), None));
+    let [hold] = <[_; 1]>::try_from(held(&store, &who)).unwrap();
+    backend::execute(&url, "UPDATE config_deployment SET number = 1");
+    let serverless = Trusted {
+        servers: Some(0),
+        ..backend::members()
+    };
+    let Ok(ployz_store::Written::Automated(automated)) = store.system(
+        &org(),
+        &suite(1, H2, "completed", Some("success"), 10),
+        &serverless,
+    ) else {
+        panic!("a system event writes Automated")
+    };
+    let [reason] = <[_; 1]>::try_from(reasons(&automated)).unwrap();
+    let cancelled = find(&store, &who, &hold);
+    assert_eq!(
+        (cancelled.status, cancelled.ended_at.is_some()),
+        (DeploymentStatus::Cancelled, true)
+    );
+    assert_eq!(
+        cancelled.outcome,
+        Some(Outcome::NotExecuted {
+            reason: reason.to_owned(),
+            cause: Vec::new(),
+            needs_upload: Vec::new(),
+            same_again: false,
+        })
+    );
+}
+
 /// Pull request environments from `production`, and pull request #5 from `search`
 /// at `H2`, opened by a member or not; what opening it admitted.
 fn pull_request_by(store: &ConfigStore, who: &Actor, member: bool) -> Automated {

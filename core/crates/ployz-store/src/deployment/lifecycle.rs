@@ -563,16 +563,16 @@ pub(crate) fn cancel_held(
     reason: String,
 ) -> Result<(), RpcError> {
     let mut stored = locked(tx, id)?;
-    let Standing::Waiting(waiting) = stored.standing else {
+    if stored.summary.status != DeploymentStatus::WaitingForCi {
         return Ok(());
-    };
+    }
     let outcome = Outcome::NotExecuted {
         reason,
         cause: Vec::new(),
         needs_upload: Vec::new(),
         same_again: false,
     };
-    stored.standing = Standing::Ended(waiting.cancel(now()));
+    stored.standing = stored.standing.cancel(now());
     stored.summary.outcome = Some(outcome.clone());
     stored.run.outcome = Some(outcome);
     save(tx, &mut stored)
