@@ -481,6 +481,13 @@ fn query(kv: &Mutex<ClusterKv>, statement: Statement) -> Result<Bytes, StatusCod
             };
             events(&["value"], value.map(|value| vec![json!(value)]))
         }
+        super::store::CLUSTER_SEALING_QUERY => events(
+            &["published", "awaits"],
+            [vec![
+                json!(kv.sealing_public_key.borrow().clone()),
+                json!(kv.sealing_awaits_recovery.clone()),
+            ]],
+        ),
         "SELECT value FROM cluster WHERE key = 'network'" => events(
             &["value"],
             kv.network.iter().map(|network| vec![json!(network)]),

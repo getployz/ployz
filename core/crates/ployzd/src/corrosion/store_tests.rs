@@ -531,6 +531,97 @@ async fn publishing_a_sealing_public_key_never_replaces_the_clusters() {
     task.abort();
 }
 
+#[test]
+fn the_cluster_sealing_prefers_the_published_key_then_the_marker_then_the_seed() {
+    use super::ClusterSealing::{AwaitsRecovery, Published, Unsealed};
+
+    let p = ployz_core::SealingPublicKey::from_bytes([1; 32]);
+    let m = ployz_core::SealingPublicKey::from_bytes([2; 32]);
+    let s = ployz_core::SealingPublicKey::from_bytes([3; 32]);
+    let seed = |key| ployz_core::RecoverySeed {
+        expected_public_key: key,
+        backup: None,
+    };
+
+    for (published, marker, seeded, expected) in [
+        (None, None, None, Unsealed),
+        (None, None, Some(s), AwaitsRecovery(s)),
+        (None, Some(m), None, AwaitsRecovery(m)),
+        (None, Some(m), Some(m), AwaitsRecovery(m)),
+        (None, Some(m), Some(s), AwaitsRecovery(m)),
+        (Some(p), None, None, Published(p)),
+        (Some(p), Some(p), Some(p), Published(p)),
+        (Some(p), Some(m), None, Published(p)),
+        (Some(p), None, Some(s), Published(p)),
+    ] {
+        assert_eq!(
+            super::ClusterSealing::decide(published, marker, seeded.map(seed).as_ref()),
+            expected,
+            "published {published:?}, marker {marker:?}, seed {seeded:?}",
+        );
+    }
+}
+
+#[tokio::test]
+async fn the_cluster_sealing_reads_both_rows_in_one_query() {
+    use super::ClusterSealing::{AwaitsRecovery, Published, Unsealed};
+
+    let p = ployz_core::SealingPublicKey::from_bytes([1; 32]);
+    let m = ployz_core::SealingPublicKey::from_bytes([2; 32]);
+    let s = ployz_core::SealingPublicKey::from_bytes([3; 32]);
+    let seed = ployz_core::RecoverySeed {
+        expected_public_key: s,
+        backup: None,
+    };
+
+    let (store, task) = identity_store(corrosion_db()).await;
+    assert_eq!(store.cluster_sealing(None).await.unwrap(), Unsealed);
+    assert_eq!(
+        store.cluster_sealing(Some(&seed)).await.unwrap(),
+        AwaitsRecovery(s)
+    );
+    store.publish_sealing_awaits_recovery(m).await.unwrap();
+    assert_eq!(
+        store.cluster_sealing(None).await.unwrap(),
+        AwaitsRecovery(m)
+    );
+    assert_eq!(
+        store.cluster_sealing(Some(&seed)).await.unwrap(),
+        AwaitsRecovery(m)
+    );
+    store.publish_sealing_public_key(p).await.unwrap();
+    assert_eq!(store.cluster_sealing(None).await.unwrap(), Published(p));
+    assert_eq!(
+        store.cluster_sealing(Some(&seed)).await.unwrap(),
+        Published(p)
+    );
+    task.abort();
+
+    let (store, task) = identity_store(corrosion_db()).await;
+    store.publish_sealing_public_key(p).await.unwrap();
+    assert_eq!(store.cluster_sealing(None).await.unwrap(), Published(p));
+    assert_eq!(
+        store.cluster_sealing(Some(&seed)).await.unwrap(),
+        Published(p)
+    );
+    store
+        .api()
+        .execute([Statement::new(
+            "INSERT INTO cluster (key, value) VALUES ('sealing_awaits_recovery', 'not a key')",
+            [],
+        )])
+        .await
+        .unwrap();
+    assert!(
+        matches!(
+            store.cluster_sealing(None).await,
+            Err(super::Error::Protocol(_))
+        ),
+        "a marker that is not a Sealing public key read as a Cluster Sealing",
+    );
+    task.abort();
+}
+
 #[tokio::test]
 async fn the_sealing_readers_report_the_clusters_key_and_its_recovery_marker() {
     let (store, task) = identity_store(corrosion_db()).await;

@@ -562,14 +562,22 @@ impl LocalMachine {
         }
     }
 
-    /// A published key overrides the recovery marker, as Generate reads them.
+    /// A Machine without the key reports the key a recovery awaits, read as
+    /// Generate reads it, and otherwise that it needs access.
     async fn lacking_key(&self) -> Option<ployz_core::Sealing> {
+        use crate::corrosion::ClusterSealing;
+
         let Ok(replicated) = self.replicated() else {
             return Some(ployz_core::Sealing::NeedsAccess);
         };
-        match replicated.awaited_sealing_key().await {
-            Ok(Some(public_key)) => Some(ployz_core::Sealing::AwaitsRecovery { public_key }),
-            Ok(None) => Some(ployz_core::Sealing::NeedsAccess),
+        let record = self.record();
+        match replicated.cluster_sealing(record.recovery_seed()).await {
+            Ok(ClusterSealing::AwaitsRecovery(public_key)) => {
+                Some(ployz_core::Sealing::AwaitsRecovery { public_key })
+            }
+            Ok(ClusterSealing::Published(_) | ClusterSealing::Unsealed) => {
+                Some(ployz_core::Sealing::NeedsAccess)
+            }
             Err(error) => {
                 tracing::warn!(%error, "could not read whether the Cluster awaits recovery");
                 None
