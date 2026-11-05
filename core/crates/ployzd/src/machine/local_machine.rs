@@ -33,7 +33,7 @@ use crate::{
     docker::{ContainerRuntime, LocalDocker},
     host_capacity,
     network::{Leftover, NetworkError, NetworkPlane, discover_network},
-    sealing_key::SealingKey,
+    sealing_key::{KeyFile, SealingKey},
 };
 
 const REDISCOVERY_RETRY_MIN: Duration = Duration::from_millis(250);
@@ -539,7 +539,8 @@ impl LocalMachine {
     }
 
     /// The Sealing Key this Machine holds as a member of its Cluster, read from its data dir
-    /// alone: what a confirmation can carry without a replicated read.
+    /// alone: what a confirmation can carry without a replicated read. A key file that holds
+    /// no key, or that could not be read, names none.
     pub(crate) fn held_sealing(&self, phase: LocalMachinePhase) -> Option<ployz_core::Sealing> {
         if !matches!(
             phase,
@@ -548,9 +549,13 @@ impl LocalMachine {
             return None;
         }
         SealingKey::observe(self.owner.data_dir())
-            .filter(|sealing| matches!(sealing, ployz_core::Sealing::Held { .. }))
+            .and_then(KeyFile::held)
+            .map(|public_key| ployz_core::Sealing::Held { public_key })
     }
 
+    /// The key this Machine's file holds, or, when it holds none, the key a recovery
+    /// awaits as Generate reads it, and otherwise that it needs access. `None` when the
+    /// file or the Cluster's Sealing could not be read.
     async fn sealing(&self, phase: LocalMachinePhase) -> Option<ployz_core::Sealing> {
         if !matches!(
             phase,
@@ -558,31 +563,24 @@ impl LocalMachine {
         ) {
             return None;
         }
-        match SealingKey::observe(self.owner.data_dir()) {
-            Some(ployz_core::Sealing::NeedsAccess) => self.lacking_key().await,
-            observed => observed,
-        }
+        SealingKey::observe(self.owner.data_dir())?
+            .sealing(self.cluster_sealing())
+            .await
+            .inspect_err(|error| {
+                tracing::warn!(%error, "could not read whether the Cluster awaits recovery");
+            })
+            .ok()
     }
 
-    /// A Machine without the key reports the key a recovery awaits, read as
-    /// Generate reads it, and otherwise that it needs access.
-    async fn lacking_key(&self) -> Option<ployz_core::Sealing> {
+    /// The Cluster's Sealing as Generate reads it, or `None` with no Cluster store.
+    async fn cluster_sealing(&self) -> Result<Option<ClusterSealing>, crate::corrosion::Error> {
         let Ok(replicated) = self.replicated() else {
-            return Some(ployz_core::Sealing::NeedsAccess);
+            return Ok(None);
         };
-        let record = self.record();
-        match replicated.cluster_sealing(record.recovery_seed()).await {
-            Ok(ClusterSealing::AwaitsRecovery(public_key)) => {
-                Some(ployz_core::Sealing::AwaitsRecovery { public_key })
-            }
-            Ok(ClusterSealing::Published(_) | ClusterSealing::Unsealed) => {
-                Some(ployz_core::Sealing::NeedsAccess)
-            }
-            Err(error) => {
-                tracing::warn!(%error, "could not read whether the Cluster awaits recovery");
-                None
-            }
-        }
+        replicated
+            .cluster_sealing(self.record().recovery_seed())
+            .await
+            .map(Some)
     }
 
     async fn token(

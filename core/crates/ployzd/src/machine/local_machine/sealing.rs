@@ -6,6 +6,10 @@
 //! asked to do agrees with its key file and with the Cluster's Sealing as this
 //! Machine reads it: the key its replica publishes or awaits, or the key its own
 //! RecoverySeed awaits.
+//!
+//! A key file that is not 32 bytes ([`KeyFile::Unusable`]) holds no key to keep,
+//! so Generate and Install read it as a missing file and may replace it. Share
+//! needs a key and refuses it. A file that cannot be read is never replaced.
 
 use std::io;
 
@@ -17,7 +21,7 @@ use thiserror::Error as ThisError;
 
 use super::LocalMachine;
 use crate::corrosion::ClusterSealing;
-use crate::sealing_key::{OpenError, SealingKey};
+use crate::sealing_key::{KeyFile, OpenError, SealingKey};
 
 #[derive(Debug, ThisError)]
 pub enum Error {
@@ -64,20 +68,34 @@ impl LocalMachine {
             .await
     }
 
+    /// Generate answers from this Machine's key file first, and reads the
+    /// Cluster's Sealing only when the file holds no key:
+    ///
+    /// - a key: answers that key, with no Cluster read;
+    /// - no file, or a file that is not 32 bytes: refuses [`Error::Published`]
+    ///   or [`Error::AwaitsRecovery`] when the Cluster names a key, and under
+    ///   [`ClusterSealing::Unsealed`] writes a new key to the file, then
+    ///   inserts its public half as the Cluster's (a no-op when a key is
+    ///   already published there) and answers it;
+    /// - a file that cannot be read: refuses [`Error::Unreadable`].
     async fn generate_admitted(&self) -> Result<SealingKeyHeld, super::Error> {
         let record = self.record();
         if record.phase() != LocalMachinePhase::Participating {
             return Err(super::Error::NotParticipating);
         }
         let data_dir = self.owner.data_dir();
-        if let Some(held) = SealingKey::load(data_dir).map_err(Error::Unreadable)? {
-            let public_key = held.public_key();
-            tracing::info!(
-                machine = %record.id(),
-                %public_key,
-                "this Machine already holds the Cluster's Sealing Key"
-            );
-            return Ok(SealingKeyHeld { public_key });
+        let file = SealingKey::read(data_dir).map_err(Error::Unreadable)?;
+        match &file {
+            KeyFile::Held(held) => {
+                let public_key = held.public_key();
+                tracing::info!(
+                    machine = %record.id(),
+                    %public_key,
+                    "this Machine already holds the Cluster's Sealing Key"
+                );
+                return Ok(SealingKeyHeld { public_key });
+            }
+            KeyFile::Absent | KeyFile::Unusable => {}
         }
         let replicated = self.replicated()?;
         match replicated.cluster_sealing(record.recovery_seed()).await? {
@@ -95,6 +113,13 @@ impl LocalMachine {
             .mutate(move |store| store.set_sealing_key(Some(&key)))
             .await?
             .map_err(Error::Unwritable)?;
+        if file == KeyFile::Unusable {
+            tracing::warn!(
+                machine = %record.id(),
+                %public_key,
+                "replaced a Sealing Key file that was not 32 bytes"
+            );
+        }
         replicated.publish_sealing_public_key(public_key).await?;
         tracing::info!(
             machine = %record.id(),
@@ -141,6 +166,18 @@ impl LocalMachine {
             .await
     }
 
+    /// Install opens the sealed key and checks it is the one named before it
+    /// reads this Machine's key file, then answers from the file:
+    ///
+    /// - the same key: inserts its public half as the Cluster's (a no-op when a
+    ///   key is already published there) and answers it, with no read of the
+    ///   Cluster's Sealing;
+    /// - another key: refuses [`Error::HeldAnother`];
+    /// - no file, or a file that is not 32 bytes: refuses [`Error::Published`]
+    ///   or [`Error::AwaitsRecovery`] when the Cluster names another key, and
+    ///   otherwise writes the key over the file, inserts its public half as the
+    ///   Cluster's and answers it;
+    /// - a file that cannot be read: refuses [`Error::Unreadable`].
     async fn install_admitted(
         &self,
         request: InstallSealingKeyRequest,
@@ -168,8 +205,9 @@ impl LocalMachine {
             .into());
         }
         let data_dir = self.owner.data_dir();
-        match SealingKey::load(data_dir).map_err(Error::Unreadable)? {
-            Some(held) if held == key => {
+        let file = SealingKey::read(data_dir).map_err(Error::Unreadable)?;
+        match &file {
+            KeyFile::Held(held) if *held == key => {
                 replicated.publish_sealing_public_key(public_key).await?;
                 tracing::info!(
                     machine = %record.id(),
@@ -179,14 +217,14 @@ impl LocalMachine {
                 );
                 return Ok(SealingKeyHeld { public_key });
             }
-            Some(held) => {
+            KeyFile::Held(held) => {
                 return Err(Error::HeldAnother {
                     held: held.public_key(),
                     requested: public_key,
                 }
                 .into());
             }
-            None => {}
+            KeyFile::Absent | KeyFile::Unusable => {}
         }
         match replicated.cluster_sealing(record.recovery_seed()).await? {
             ClusterSealing::Published(published) if published != public_key => {
@@ -203,6 +241,13 @@ impl LocalMachine {
             .mutate(move |store| store.set_sealing_key(Some(&key)))
             .await?
             .map_err(Error::Unwritable)?;
+        if file == KeyFile::Unusable {
+            tracing::warn!(
+                machine = %record.id(),
+                %public_key,
+                "replaced a Sealing Key file that was not 32 bytes"
+            );
+        }
         replicated.publish_sealing_public_key(public_key).await?;
         tracing::info!(
             machine = %record.id(),

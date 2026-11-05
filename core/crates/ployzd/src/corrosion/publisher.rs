@@ -2,10 +2,9 @@ use std::{collections::BTreeMap, io, sync::Arc, time::Duration};
 
 use tokio_util::sync::CancellationToken;
 
-use super::{
-    ClusterSealing, Error, MachineView, MachinesSnapshot, ReplicatedStore, store::RuntimeOverlay,
-};
+use super::{Error, MachineView, MachinesSnapshot, ReplicatedStore, store::RuntimeOverlay};
 use crate::machine::{LocalMachineBody, LocalMachineRecord, RecordOwner};
+use crate::sealing_key::KeyFile;
 
 /// What this Machine observes of itself live: published on its row, never held in
 /// its record.
@@ -198,29 +197,30 @@ pub async fn run_machine_publisher(
     }
 }
 
-/// A Machine without the Sealing Key reports the key a recovery awaits, as it
-/// reads its Cluster's Sealing, so Cloud can tell a lost key from a missing grant.
+/// This Machine's Sealing from the key file it observed: the key it holds, or,
+/// when it holds none, the key a recovery awaits as it reads its Cluster's
+/// Sealing, so Cloud can tell a lost key from a missing grant. `None` when the
+/// file or the Cluster's Sealing could not be read.
 async fn awaiting_recovery(
     replicated: &ReplicatedStore,
-    observed: Option<ployz_core::Sealing>,
+    observed: Option<KeyFile<ployz_core::SealingPublicKey>>,
     record: &LocalMachineRecord,
 ) -> Option<ployz_core::Sealing> {
-    if !matches!(observed, Some(ployz_core::Sealing::NeedsAccess)) {
-        return observed;
-    }
-    match replicated.cluster_sealing(record.recovery_seed()).await {
-        Ok(ClusterSealing::AwaitsRecovery(public_key)) => {
-            Some(ployz_core::Sealing::AwaitsRecovery { public_key })
-        }
-        Ok(ClusterSealing::Published(_) | ClusterSealing::Unsealed) => observed,
-        Err(error) => {
+    observed?
+        .sealing(async {
+            replicated
+                .cluster_sealing(record.recovery_seed())
+                .await
+                .map(Some)
+        })
+        .await
+        .inspect_err(|error| {
             eprintln!(
                 "failed to read whether the Cluster awaits recovery: {error}",
-                error = ployz_core::error_chain::inline(&error),
+                error = ployz_core::error_chain::inline(error),
             );
-            None
-        }
-    }
+        })
+        .ok()
 }
 
 /// A founder awaiting recovery names the Sealing public key before it publishes

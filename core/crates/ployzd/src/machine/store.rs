@@ -23,7 +23,7 @@ use super::{
 };
 use crate::management::ManagementSecret;
 use crate::network::{DiscoveredNetwork, WireGuardPrivateKey, allocate_machine_subnet};
-use crate::sealing_key::{OpenError, SealingKey};
+use crate::sealing_key::{KeyFile, OpenError, SealingKey};
 
 const STATE_FILE_NAME: &str = "machine.json";
 const TEMPORARY_FILE_NAME: &str = ".machine.json.tmp";
@@ -42,7 +42,7 @@ pub struct LocalMachineStore {
     // transfers, which run side by side while all exclusive work waits for them.
     pub(super) admission_lock: Arc<tokio::sync::RwLock<()>>,
     pub(super) mutation_gate: crate::mutation::MutationGate,
-    pub(super) sealing: tokio::sync::watch::Sender<Option<ployz_core::Sealing>>,
+    pub(super) sealing: tokio::sync::watch::Sender<Option<KeyFile<ployz_core::SealingPublicKey>>>,
 }
 
 pub(crate) struct PreparedReset {

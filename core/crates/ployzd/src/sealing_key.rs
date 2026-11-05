@@ -13,6 +13,7 @@ use rand_core::{OsRng, TryRngCore as _};
 use thiserror::Error;
 use zeroize::{Zeroize as _, Zeroizing};
 
+use crate::corrosion::ClusterSealing;
 use crate::network::WireGuardPrivateKey;
 
 const FILE_NAME: &str = "sealing.key";
@@ -24,6 +25,65 @@ type Kem = X25519HkdfSha256;
 
 #[derive(Clone, Eq, PartialEq)]
 pub(crate) struct SealingKey([u8; 32]);
+
+/// What `<data_dir>/sealing.key` holds.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum KeyFile<Key = SealingKey> {
+    /// Exactly 32 bytes, read as the key.
+    Held(Key),
+    /// No file.
+    Absent,
+    /// A file that is not 32 bytes. ployzd never writes one.
+    Unusable,
+}
+
+impl KeyFile {
+    pub(crate) fn public(&self) -> KeyFile<SealingPublicKey> {
+        match self {
+            Self::Held(key) => KeyFile::Held(key.public_key()),
+            Self::Absent => KeyFile::Absent,
+            Self::Unusable => KeyFile::Unusable,
+        }
+    }
+}
+
+impl KeyFile<SealingPublicKey> {
+    pub(crate) fn held(self) -> Option<SealingPublicKey> {
+        match self {
+            Self::Held(public_key) => Some(public_key),
+            Self::Absent | Self::Unusable => None,
+        }
+    }
+
+    /// This Machine's Sealing: the key its file holds, or, when the file holds
+    /// none, what `cluster` reads of the Cluster's Sealing. `cluster` is
+    /// awaited only then, so a held key never waits on or fails with a
+    /// Cluster read.
+    ///
+    /// # Errors
+    /// Returns `cluster`'s error.
+    pub(crate) async fn sealing<E>(
+        self,
+        cluster: impl Future<Output = Result<Option<ClusterSealing>, E>>,
+    ) -> Result<Sealing, E> {
+        match self {
+            Self::Held(public_key) => Ok(Sealing::Held { public_key }),
+            Self::Absent | Self::Unusable => cluster.await.map(lacking_key),
+        }
+    }
+}
+
+/// What a Machine whose key file holds no key reports, given the Cluster's
+/// Sealing as it reads it (`None` with no Cluster store): the key a recovery
+/// awaits, and otherwise that it needs access.
+pub(crate) fn lacking_key(cluster: Option<ClusterSealing>) -> Sealing {
+    match cluster {
+        Some(ClusterSealing::AwaitsRecovery(public_key)) => Sealing::AwaitsRecovery { public_key },
+        Some(ClusterSealing::Published(_) | ClusterSealing::Unsealed) | None => {
+            Sealing::NeedsAccess
+        }
+    }
+}
 
 #[derive(Debug, Error)]
 pub enum OpenError {
@@ -50,30 +110,46 @@ impl SealingKey {
         SealingPublicKey::from_bytes(Kem::sk_to_pk(&self.private()).to_bytes().into())
     }
 
-    pub(crate) fn load(data_dir: &Path) -> io::Result<Option<Self>> {
+    /// Classifies `<data_dir>/sealing.key`: 32 bytes are the key, no file is
+    /// [`KeyFile::Absent`], and any other length is [`KeyFile::Unusable`].
+    ///
+    /// # Errors
+    /// Returns the read error when the file exists but cannot be read. That is
+    /// never [`KeyFile::Unusable`].
+    pub(crate) fn read(data_dir: &Path) -> io::Result<KeyFile> {
         match fs::read(data_dir.join(FILE_NAME)).map(Zeroizing::new) {
-            Ok(bytes) => <[u8; 32]>::try_from(bytes.as_slice())
-                .map(|bytes| Some(Self(bytes)))
-                .map_err(|_| {
-                    io::Error::new(io::ErrorKind::InvalidData, "Sealing Key is not 32 bytes")
-                }),
-            Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(None),
+            Ok(bytes) => Ok(<[u8; 32]>::try_from(bytes.as_slice())
+                .map_or(KeyFile::Unusable, |bytes| KeyFile::Held(Self(bytes)))),
+            Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(KeyFile::Absent),
             Err(error) => Err(error),
         }
     }
 
-    /// What the Machine at `data_dir` holds of the Sealing Key; `None` when the file
-    /// could not be read at all.
-    pub(crate) fn observe(data_dir: &Path) -> Option<Sealing> {
-        match Self::load(data_dir) {
-            Ok(Some(key)) => Some(Sealing::Held {
-                public_key: key.public_key(),
-            }),
-            Ok(None) => Some(Sealing::NeedsAccess),
-            Err(error) if error.kind() == io::ErrorKind::InvalidData => {
-                tracing::warn!(%error, "this Machine's Sealing Key is unusable");
-                Some(Sealing::NeedsAccess)
+    /// The key `<data_dir>/sealing.key` holds, or `None` with no file.
+    ///
+    /// # Errors
+    /// Returns [`io::ErrorKind::InvalidData`] for a file that is not 32 bytes,
+    /// and the read error for a file that cannot be read.
+    pub(crate) fn load(data_dir: &Path) -> io::Result<Option<Self>> {
+        match Self::read(data_dir)? {
+            KeyFile::Held(key) => Ok(Some(key)),
+            KeyFile::Absent => Ok(None),
+            KeyFile::Unusable => Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "Sealing Key is not 32 bytes",
+            )),
+        }
+    }
+
+    /// What `<data_dir>/sealing.key` holds, with only the public half of a
+    /// key; `None` when the file exists but could not be read.
+    pub(crate) fn observe(data_dir: &Path) -> Option<KeyFile<SealingPublicKey>> {
+        match Self::read(data_dir) {
+            Ok(KeyFile::Unusable) => {
+                tracing::warn!("this Machine's Sealing Key is unusable: it is not 32 bytes");
+                Some(KeyFile::Unusable)
             }
+            Ok(file) => Some(file.public()),
             Err(error) => {
                 tracing::warn!(%error, "could not read the Sealing Key");
                 None
@@ -285,6 +361,109 @@ mod tests {
         SealingKey::set(&dir.0, None).unwrap();
         assert_eq!(SealingKey::load(&dir.0).unwrap(), None);
         SealingKey::set(&dir.0, None).unwrap();
+    }
+
+    #[test]
+    fn the_key_file_reads_as_held_only_at_32_bytes() {
+        let dir = TestDir::new("sealing-key-file");
+        fs::create_dir_all(&dir.0).unwrap();
+        let path = dir.0.join(FILE_NAME);
+
+        assert_eq!(SealingKey::read(&dir.0).unwrap(), KeyFile::Absent);
+        assert_eq!(SealingKey::load(&dir.0).unwrap(), None);
+
+        for len in [0, 31, 33] {
+            fs::write(&path, vec![7; len]).unwrap();
+            assert_eq!(
+                SealingKey::read(&dir.0).unwrap(),
+                KeyFile::Unusable,
+                "{len} bytes"
+            );
+            assert_eq!(
+                SealingKey::load(&dir.0).unwrap_err().kind(),
+                io::ErrorKind::InvalidData,
+                "{len} bytes"
+            );
+        }
+
+        fs::write(&path, [7; 32]).unwrap();
+        assert_eq!(
+            SealingKey::read(&dir.0).unwrap(),
+            KeyFile::Held(SealingKey([7; 32]))
+        );
+        assert_eq!(SealingKey::load(&dir.0).unwrap(), Some(SealingKey([7; 32])));
+
+        fs::remove_file(&path).unwrap();
+        fs::create_dir(&path).unwrap();
+        let unread = SealingKey::read(&dir.0).unwrap_err();
+        assert!(
+            !matches!(
+                unread.kind(),
+                io::ErrorKind::NotFound | io::ErrorKind::InvalidData
+            ),
+            "{unread:?}"
+        );
+        let unloaded = SealingKey::load(&dir.0).unwrap_err();
+        assert_eq!(unloaded.kind(), unread.kind());
+        assert_eq!(SealingKey::observe(&dir.0), None);
+    }
+
+    #[test]
+    fn a_key_file_shows_only_the_public_half_of_its_key() {
+        let key = SealingKey::generate();
+        let public_key = key.public_key();
+
+        assert_eq!(KeyFile::Held(key).public(), KeyFile::Held(public_key));
+        assert_eq!(KeyFile::Absent.public(), KeyFile::Absent);
+        assert_eq!(KeyFile::Unusable.public(), KeyFile::Unusable);
+        assert_eq!(KeyFile::Held(public_key).held(), Some(public_key));
+        assert_eq!(KeyFile::<SealingPublicKey>::Absent.held(), None);
+        assert_eq!(KeyFile::<SealingPublicKey>::Unusable.held(), None);
+    }
+
+    #[test]
+    fn a_machine_lacking_the_key_reports_only_an_awaited_key() {
+        let published = SealingKey::generate().public_key();
+        let awaited = SealingKey::generate().public_key();
+
+        assert_eq!(lacking_key(None), Sealing::NeedsAccess);
+        assert_eq!(
+            lacking_key(Some(ClusterSealing::Unsealed)),
+            Sealing::NeedsAccess
+        );
+        assert_eq!(
+            lacking_key(Some(ClusterSealing::Published(published))),
+            Sealing::NeedsAccess
+        );
+        assert_eq!(
+            lacking_key(Some(ClusterSealing::AwaitsRecovery(awaited))),
+            Sealing::AwaitsRecovery {
+                public_key: awaited
+            }
+        );
+    }
+
+    #[tokio::test]
+    async fn a_held_key_reads_no_cluster_and_a_missing_one_reads_it() {
+        let held = SealingKey::generate().public_key();
+        let awaited = SealingKey::generate().public_key();
+        let unread = async { unreachable!("a held key reads no Cluster") };
+        let awaits = || async { Ok::<_, ()>(Some(ClusterSealing::AwaitsRecovery(awaited))) };
+
+        assert_eq!(
+            KeyFile::Held(held).sealing::<()>(unread).await,
+            Ok(Sealing::Held { public_key: held })
+        );
+        for file in [KeyFile::Absent, KeyFile::Unusable] {
+            assert_eq!(
+                file.sealing(awaits()).await,
+                Ok(Sealing::AwaitsRecovery {
+                    public_key: awaited
+                }),
+                "{file:?}"
+            );
+            assert_eq!(file.sealing(async { Err("unread") }).await, Err("unread"));
+        }
     }
 
     #[test]
