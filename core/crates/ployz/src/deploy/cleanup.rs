@@ -561,7 +561,7 @@ pub(crate) async fn user_remove<C: MachineOperations>(
                 && ContainerNotFoundReason::from_details(&error.details)
                     == Some(ContainerNotFoundReason::NoResolvedSpec) =>
         {
-            return Err(held_without_spec(machine_id, container_id, error));
+            return Err(held_without_spec(container_id, error));
         }
         Err(error) if error.code == RpcErrorCode::NotFound => return Ok(()),
         observed => observed?,
@@ -577,17 +577,13 @@ pub(crate) async fn user_remove<C: MachineOperations>(
 
 /// The Machine answered that Docker had the Container and that it holds no Resolved
 /// Service Spec for it, so nothing was removed.
-fn held_without_spec(
-    machine_id: &MachineId,
-    container_id: &ContainerId,
-    error: RpcError,
-) -> RpcError {
+fn held_without_spec(container_id: &ContainerId, error: RpcError) -> RpcError {
     let mut cause = vec![error.message];
     cause.extend(error.cause);
     RpcError {
         code: RpcErrorCode::Conflict,
         message: format!(
-            "Container {container_id} was not removed: Machine {machine_id} has it but holds no Resolved Service Spec for it."
+            "Container {container_id} was not removed: its Server still has it, but no record of the Service configuration it was created with."
         ),
         details: Value::Null,
         cause,

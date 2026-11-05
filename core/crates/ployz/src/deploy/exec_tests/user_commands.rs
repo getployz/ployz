@@ -546,6 +546,13 @@ async fn a_remove_of_a_container_its_machine_holds_without_a_spec_reports_it_not
         .answer
         .expect_err("the Machine still has the Container, so it was not removed");
     assert_eq!(error.code, RpcErrorCode::Conflict, "{error:?}");
+    assert_eq!(
+        error.message,
+        format!(
+            "Container {} was not removed: its Server still has it, but no record of the Service configuration it was created with.",
+            container('1')
+        )
+    );
     assert!(ran.wants.is_empty());
 }
 
