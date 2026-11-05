@@ -1016,11 +1016,18 @@ enum Standing {
     Raw(Raw),
 }
 
-/// A row whose columns fit no other [`Standing`], which no Store writes but a
-/// write in SQL can leave: one applied or failed with no `ended`, or one with a
-/// `started` and no `runner`. It keeps every column as read, so it reads and saves
-/// as a Store read each column before [`Standing`]: Unknown once a claim's runner
-/// lease [`lapsed`], with its `ended` as the column holds it.
+/// A row whose columns fit no other [`Standing`]. No Store writes one, but a write
+/// in SQL can leave one: applied or failed with no `ended`, or a `started` with no
+/// `runner`. It keeps every column as read, and goes by its status alone, as every
+/// Store before [`Standing`] did:
+/// - It reads Unknown once its status says a runner holds it and that runner's
+///   lease [`lapsed`], with its `ended` as the column holds it.
+/// - Each edge, [`Standing::claim_for`] through [`Standing::restamp`], writes the
+///   columns it writes for the typed standing of the same status, and no others
+///   (`parity_tests`).
+/// - Whatever picks a row to move or count tests its status or its columns, never
+///   its kind of [`Standing`]: lifecycle.rs `cancel_held`, and history.rs
+///   `settling`, which counts the lease of any row with no `ended`.
 #[derive(Debug)]
 struct Raw {
     status: DeploymentStatus,
@@ -1469,11 +1476,11 @@ impl Standing {
         }
     }
 
-    /// Its runner said at `now` that it stopped, when it ended. Any other stands
-    /// as it was.
+    /// Its runner said at `now` that it stopped, when it ended Unknown. Any other
+    /// stands as it was.
     const fn restamp(&mut self, now: i64) {
         match self {
-            Self::Ended(ended) => ended.ended = now,
+            Self::Ended(ended) if matches!(ended.end, End::Unknown) => ended.ended = now,
             Self::Raw(raw) if matches!(raw.status, DeploymentStatus::Unknown) => {
                 raw.ended = Some(now);
             }
@@ -1481,6 +1488,7 @@ impl Standing {
             | Self::Queued(_)
             | Self::Claimed(_)
             | Self::Superseded { .. }
+            | Self::Ended(_)
             | Self::Raw(_) => {}
         }
     }
@@ -1898,5 +1906,154 @@ mod runner_lost_tests {
         // Still held: its runner lost it now, before its lease would have.
         assert!(!lapsed(110, 100));
         assert_eq!(runner_lost(110, 100), 100);
+    }
+}
+
+#[cfg(test)]
+mod parity_tests {
+    use super::{DeploymentStatus, End, LEASE, Raw, RunnerId, Standing};
+
+    const NOW: i64 = 1_000;
+
+    /// Every column `save` writes from a [`Standing`].
+    type Columns = (
+        DeploymentStatus,
+        Option<u64>,
+        Option<RunnerId>,
+        Option<i64>,
+        i64,
+        Option<i64>,
+    );
+
+    fn columns(standing: &Standing) -> Columns {
+        (
+            standing.kept(),
+            standing.number(),
+            standing.runner().cloned(),
+            standing.started(),
+            standing.lease(),
+            standing.ended(),
+        )
+    }
+
+    fn raw(standing: &Standing) -> Standing {
+        let (status, number, runner, started, lease, ended) = columns(standing);
+        Standing::Raw(Raw {
+            status,
+            number,
+            runner,
+            started,
+            lease,
+            ended,
+        })
+    }
+
+    /// A typed one read again from the columns `save` wrote for it.
+    fn again(standing: &Standing) -> Standing {
+        let (status, number, runner, started, lease, ended) = columns(standing);
+        let again = Standing::decode(status, number, (runner, started, lease), ended, (50, NOW));
+        assert!(
+            !matches!(again, Standing::Raw(_)),
+            "{:?}",
+            columns(standing)
+        );
+        again
+    }
+
+    fn runner(name: &str) -> RunnerId {
+        RunnerId::parse(name).unwrap()
+    }
+
+    const STATUSES: [DeploymentStatus; 9] = [
+        DeploymentStatus::WaitingForCi,
+        DeploymentStatus::Queued,
+        DeploymentStatus::Superseded,
+        DeploymentStatus::Running,
+        DeploymentStatus::Applied,
+        DeploymentStatus::Failed,
+        DeploymentStatus::Unknown,
+        DeploymentStatus::Cancelling,
+        DeploymentStatus::Cancelled,
+    ];
+
+    /// Every standing `decode` reads typed, over each status and each column
+    /// absent or set, with a runner lease lapsed at [`NOW`] or held past it.
+    fn typed() -> Vec<Standing> {
+        let mut typed = Vec::new();
+        for status in STATUSES {
+            for number in [None, Some(7)] {
+                for runner in [None, Some(runner("runner-a"))] {
+                    for started in [None, Some(100)] {
+                        for lease in [0, 500, 2_000] {
+                            for ended in [None, Some(150)] {
+                                let standing = Standing::decode(
+                                    status,
+                                    number,
+                                    (runner.clone(), started, lease),
+                                    ended,
+                                    (50, NOW),
+                                );
+                                if !matches!(standing, Standing::Raw(_)) {
+                                    typed.push(standing);
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        typed
+    }
+
+    type Edge = (&'static str, fn(Standing) -> Standing);
+
+    const EDGES: [Edge; 11] = [
+        ("claim_for", |standing| {
+            standing.claim_for(&runner("runner-b"), NOW)
+        }),
+        ("renew", |mut standing| {
+            standing.renew(NOW);
+            standing
+        }),
+        ("cancel", |standing| standing.cancel(NOW)),
+        ("cancelling", Standing::cancelling),
+        ("end applied", |standing| standing.end(End::Applied, NOW)),
+        ("end failed", |standing| standing.end(End::Failed, NOW)),
+        ("end unknown", |standing| standing.end(End::Unknown, NOW)),
+        ("end cancelled", |standing| {
+            standing.end(End::Cancelled, NOW)
+        }),
+        ("lose_runner", |standing| standing.lose_runner(NOW)),
+        ("restamp", |mut standing| {
+            standing.restamp(NOW);
+            standing
+        }),
+        ("none", |standing| standing),
+    ];
+
+    #[test]
+    fn a_raw_row_moves_through_every_edge_as_its_typed_twin() {
+        let typed = typed();
+        for status in STATUSES {
+            assert!(
+                typed.iter().any(|standing| standing.kept() == status),
+                "{status:?} has a typed standing"
+            );
+        }
+        for standing in typed {
+            for (first, one) in EDGES {
+                for (second, other) in EDGES {
+                    let twin = raw(&standing);
+                    let before = columns(&standing);
+                    let typed = other(one(again(&standing)));
+                    let raw = other(one(twin));
+                    let path = format!("{before:?} then {first} then {second}");
+                    assert_eq!(columns(&raw), columns(&typed), "{path}");
+                    for now in [NOW, NOW + 2 * LEASE] {
+                        assert_eq!(raw.status(now), typed.status(now), "{path} at {now}");
+                    }
+                }
+            }
+        }
     }
 }
