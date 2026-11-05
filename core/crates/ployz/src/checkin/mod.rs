@@ -1323,8 +1323,10 @@ fn marked_on(file: &fs::File, filesystem: nix::sys::statfs::FsType) -> io::Resul
 fn keeps_locks_local(filesystem: nix::sys::statfs::FsType) -> bool {
     use nix::sys::statfs::{
         BTRFS_SUPER_MAGIC, EXT4_SUPER_MAGIC, FsType, OVERLAYFS_SUPER_MAGIC, TMPFS_MAGIC,
-        XFS_SUPER_MAGIC,
     };
+    // Linux's `XFS_SUPER_MAGIC`, from include/uapi/linux/magic.h. nix 0.29 doesn't define it on
+    // musl, which the release binaries build for.
+    const XFS_SUPER_MAGIC: FsType = FsType(0x5846_5342);
     // OpenZFS's `ZFS_SUPER_MAGIC`, from its include/sys/fs/zfs.h.
     const ZFS_SUPER_MAGIC: FsType = FsType(0x2fc1_2fc1);
     // ext2 and ext3 share ext4's magic.
