@@ -17,7 +17,7 @@ function Create({ created }: { created: CreatedService }) {
   return <button onClick={() => void openCreated(created)}>Create</button>;
 }
 
-async function openCanvas(created: CreatedService) {
+async function openCanvas(created: CreatedService, at = CANVAS) {
   const root = createRootRoute({ component: Outlet });
   const environment = createRoute({
     getParentRoute: () => root,
@@ -29,7 +29,7 @@ async function openCanvas(created: CreatedService) {
   const elsewhere = createRoute({ getParentRoute: () => root, path: "elsewhere", component: () => <p>Elsewhere page</p> });
   const router = createRouter({
     routeTree: root.addChildren([environment.addChildren([index, service]), elsewhere]),
-    history: createMemoryHistory({ initialEntries: ["/elsewhere", CANVAS] }),
+    history: createMemoryHistory({ initialEntries: ["/elsewhere", at] }),
   });
   render(<RouterProvider router={router} />);
   await screen.findByRole("button", { name: "Create" });
@@ -60,9 +60,39 @@ it("returns to the canvas when the Store refuses the new service", async () => {
   fireEvent.click(screen.getByRole("button", { name: "Create" }));
   await waitFor(() => expect(router.state.location.pathname).toBe(`${CANVAS}/services/new`));
   write.refuse();
-  await waitFor(() => expect(router.state.location.pathname).toBe(CANVAS));
+  await waitFor(() => expect(router.history.location.state.__TSR_index).toBe(1));
+  expect(router.state.location.pathname).toBe(CANVAS);
+  router.history.forward();
+  await waitFor(() => expect(router.history.location.state.__TSR_index).toBe(2));
+  expect(router.state.location.pathname).toBe(CANVAS);
+  router.history.go(-2);
+  await waitFor(() => expect(router.state.location.pathname).toBe("/elsewhere"));
+});
+
+it("steps back to the canvas when the panel's entry was replaced, as a tab change does", async () => {
+  const write = pendingWrite();
+  const router = await openCanvas(write.created);
+  fireEvent.click(screen.getByRole("button", { name: "Create" }));
+  await waitFor(() => expect(router.state.location.pathname).toBe(`${CANVAS}/services/new`));
+  router.history.replace(`${CANVAS}/services/new?tab=variables`);
+  await waitFor(() => expect(router.state.location.searchStr).toBe("?tab=variables"));
+  write.refuse();
+  await waitFor(() => expect(router.history.location.state.__TSR_index).toBe(1));
+  expect(router.state.location.pathname).toBe(CANVAS);
   router.history.back();
   await waitFor(() => expect(router.state.location.pathname).toBe("/elsewhere"));
+});
+
+it("goes to the canvas without stepping back when the panel opened from another panel", async () => {
+  const write = pendingWrite();
+  const router = await openCanvas(write.created, `${CANVAS}/services/api`);
+  fireEvent.click(screen.getByRole("button", { name: "Create" }));
+  await waitFor(() => expect(router.state.location.pathname).toBe(`${CANVAS}/services/new`));
+  write.refuse();
+  await waitFor(() => expect(router.state.location.pathname).toBe(CANVAS));
+  expect(router.history.location.state.__TSR_index).toBe(2);
+  router.history.back();
+  await waitFor(() => expect(router.state.location.pathname).toBe(`${CANVAS}/services/api`));
 });
 
 it("returns to the canvas when the Store refuses a service whose panel moved on to another entry", async () => {
