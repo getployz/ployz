@@ -71,6 +71,14 @@ describe("Config Store nodes", () => {
     expect(nodes[4]?.data).toMatchObject({ resourceType: "config", resourceId: "spare", environmentId: "e" });
   });
 
+  it("gives each node it draws its measured size, which a React Flow drag reads", () => {
+    // A position write rebuilds every node as a new object, which React Flow takes its measured size from: the size
+    // doesn't change, so nothing measures it again, and a drag of a node without one logs error 015.
+    const nodes = buildStoreNodes({ ...store, live: [{ name: "db", owner: "production", data: true, usedBy: [] }] }, [], "e");
+    for (const node of nodes) expect(node.measured).toEqual({ width: node.width, height: node.height });
+    expect(nodes.map((node) => node.height)).toContain(144 + 2 * 40);
+  });
+
   it("places a new node clear of each node's whole height, trays included", () => {
     const tall = createCanvasPosition({ resourceId: "s1", x: 0, y: 0 });
     const nodes = buildStoreNodes(store, [tall], "e");
