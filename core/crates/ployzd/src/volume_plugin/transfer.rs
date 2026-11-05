@@ -13,7 +13,9 @@ use std::{
 };
 
 use futures_util::{FutureExt as _, StreamExt as _};
-use ployz_core::{ManagementAddress, SendSource, SendStream, VolumeGen, error_chain::inline};
+use ployz_core::{
+    ManagementAddress, SendSource, SendStream, SnapshotName, VolumeGen, error_chain::inline,
+};
 use ployzd::faults::{Identity, Want};
 use tokio::{
     io::{AsyncReadExt as _, AsyncWriteExt as _},
@@ -45,12 +47,13 @@ pub(super) const RECEIVE_STALL: Duration = Duration::from_secs(60);
 /// One deadline for all of a departure's stops, well inside Demote's 120 s timeout.
 pub(super) const STOP_DEADLINE: Duration = Duration::from_secs(30);
 
-/// The receive this process started for each Volume, by name. An entry lasts while its
-/// task or a `zfs` child the task dropped is alive: that child can still write the slot
-/// or hold it busy, and only the entry lets the departure wait for it or name it.
+/// The receive this process started for each Volume, by name, with the target it pulls. An
+/// entry lasts while its task or a `zfs` child the task dropped is alive: that child can
+/// still write the slot or hold it busy, and only the entry lets the departure wait for it
+/// or name it. A plugin process that restarts starts with none.
 #[derive(Clone)]
 pub(super) struct Receives {
-    receives: Arc<Mutex<BTreeMap<String, Receive>>>,
+    receives: Arc<Mutex<BTreeMap<String, Entry>>>,
     /// How long a failure waits for the children its task dropped. One still alive after
     /// the departure's own deadline for a stop is stuck, not writing.
     hold: Duration,
@@ -63,6 +66,13 @@ impl Default for Receives {
             hold: STOP_DEADLINE,
         }
     }
+}
+
+/// One Volume's receive and the snapshot it pulls. Its ending is that target's alone, so a
+/// failure is answered only to a pull of the same target.
+struct Entry {
+    target: SnapshotName,
+    receive: Receive,
 }
 
 /// One Volume's receive. Its task writes the ending before it lets go of its life, so a
@@ -116,10 +126,11 @@ impl Receive {
     }
 }
 
-/// What a route reads of a Volume's receive.
+/// What a route reads of a Volume's receive, or of its receive of one target.
 #[derive(Debug, PartialEq, Eq)]
 pub(super) enum Status {
-    /// No receive, or one that landed or was stopped and left no child alive.
+    /// No receive, or one that landed or was stopped and left no child alive. Read for one
+    /// target, a receive of another target reads as none.
     Idle,
     /// The task, or a child it dropped, is alive, with no failure to show yet.
     Receiving,
@@ -134,6 +145,7 @@ impl Status {
         matches!(self, Self::Receiving | Self::Failed { settled: false, .. })
     }
 
+    #[cfg(test)]
     pub(super) fn failure(self) -> Option<String> {
         match self {
             Self::Failed { failure, .. } => Some(failure),
@@ -190,17 +202,32 @@ impl Receives {
         }
     }
 
-    /// The receive of `name`. A task that answered still runs until the children it
-    /// dropped exit, and those can still change the slot, so its failure waits for them,
-    /// but only for the hold.
+    /// The receive of `name`, whatever its target. A task that answered still runs until
+    /// the children it dropped exit, and those can still change the slot, so its failure
+    /// waits for them, but only for the hold.
     pub(super) fn status(&self, name: &DockerVolumeName) -> Status {
         let receives = self
             .receives
             .lock()
             .expect("receive registry is not poisoned");
-        let Some(receive) = receives.get(&name.0) else {
-            return Status::Idle;
-        };
+        receives
+            .get(&name.0)
+            .map_or(Status::Idle, |entry| self.read(&entry.receive))
+    }
+
+    /// The receive of `name` pulling `target`, read as [`Self::status`] reads it.
+    pub(super) fn status_of(&self, name: &DockerVolumeName, target: &SnapshotName) -> Status {
+        let receives = self
+            .receives
+            .lock()
+            .expect("receive registry is not poisoned");
+        match receives.get(&name.0) {
+            Some(entry) if entry.target == *target => self.read(&entry.receive),
+            Some(_) | None => Status::Idle,
+        }
+    }
+
+    fn read(&self, receive: &Receive) -> Status {
         let settled = !receive.unfinished();
         match receive {
             Receive::Running { .. } => Status::Receiving,
@@ -217,28 +244,37 @@ impl Receives {
         }
     }
 
-    /// Answers `name`'s failure and clears it in one step, so the answer is given once and
-    /// the next start of the receive begins afresh.
+    /// Answers the failure of `name`'s receive of `target` and clears it in one step, so
+    /// the answer is given once and the next start of the receive begins afresh. A failure
+    /// of another target, or with no target named, is not answered and stays.
     ///
     /// # Errors
     ///
-    /// [`Busy`] while the task or a child it dropped is alive, whether or not its failure
-    /// already shows.
-    pub(super) fn take_failure(&self, name: &DockerVolumeName) -> Result<Option<String>, Busy> {
+    /// [`Busy`] while the task or a child it dropped is alive, whatever its target and
+    /// whether or not its failure already shows.
+    pub(super) fn take_failure(
+        &self,
+        name: &DockerVolumeName,
+        target: Option<&SnapshotName>,
+    ) -> Result<Option<String>, Busy> {
         let mut receives = self
             .receives
             .lock()
             .expect("receive registry is not poisoned");
         match receives.remove(&name.0) {
             None => Ok(None),
-            Some(Receive::Ended {
-                ending: Ending::Failed(failure),
-                life,
-                ..
-            }) if life.finished.is_cancelled() => Ok(Some(failure)),
-            Some(receive) => {
-                let busy = receive.unfinished();
-                receives.insert(name.0.clone(), receive);
+            Some(Entry {
+                target: failed,
+                receive:
+                    Receive::Ended {
+                        ending: Ending::Failed(failure),
+                        life,
+                        ..
+                    },
+            }) if Some(&failed) == target && life.finished.is_cancelled() => Ok(Some(failure)),
+            Some(entry) => {
+                let busy = entry.receive.unfinished();
+                receives.insert(name.0.clone(), entry);
                 if busy { Err(Busy) } else { Ok(None) }
             }
         }
@@ -253,17 +289,18 @@ impl Receives {
             .expect("receive registry is not poisoned");
         if receives
             .get(&name.0)
-            .is_some_and(|receive| !receive.unfinished())
+            .is_some_and(|entry| !entry.receive.unfinished())
         {
             receives.remove(&name.0);
         }
     }
 
-    /// Runs `work` as the receive task of `name`. A receive starts only under the plugin's
-    /// mutation, which the departure holds while it stops them all. `work` gets the
-    /// [`Stop`] [`Self::stop_all`] fires; once it does, `work` kills and reaps its `zfs`
-    /// children before returning, and an error it returns after acting on the stop ends
-    /// the receive stopped. A panic is recorded as the task's failure.
+    /// Runs `work` as the receive task of `name` pulling `target`, which its ending belongs
+    /// to. A receive starts only under the plugin's mutation, which the departure holds
+    /// while it stops them all. `work` gets the [`Stop`] [`Self::stop_all`] fires; once it
+    /// does, `work` kills and reaps its `zfs` children before returning, and an error it
+    /// returns after acting on the stop ends the receive stopped. A panic is recorded as
+    /// the task's failure.
     ///
     /// # Errors
     ///
@@ -273,6 +310,7 @@ impl Receives {
         &self,
         _held: &HeldMutation,
         name: &DockerVolumeName,
+        target: &SnapshotName,
         work: impl FnOnce(Stop) -> F,
     ) -> Result<(), Busy>
     where
@@ -292,10 +330,19 @@ impl Receives {
                 .receives
                 .lock()
                 .expect("receive registry is not poisoned");
-            if receives.get(&name.0).is_some_and(Receive::unfinished) {
+            if receives
+                .get(&name.0)
+                .is_some_and(|entry| entry.receive.unfinished())
+            {
                 return Err(Busy);
             }
-            receives.insert(name.0.clone(), Receive::Running { life });
+            receives.insert(
+                name.0.clone(),
+                Entry {
+                    target: target.clone(),
+                    receive: Receive::Running { life },
+                },
+            );
         }
         let held = stop.clone();
         let work = work(stop);
@@ -309,8 +356,9 @@ impl Receives {
                 Err(_) => Ending::Failed("the receive task panicked".to_owned()),
             };
             let mut receives = receives.lock().expect("receive registry is not poisoned");
-            if let Some(receive) = receives.remove(&name) {
-                receives.insert(name, receive.end(ending));
+            if let Some(mut entry) = receives.remove(&name) {
+                entry.receive = entry.receive.end(ending);
+                receives.insert(name, entry);
             }
             drop(receives);
             // The task's share of the finish goes only once the ending is written, so a
@@ -329,8 +377,8 @@ impl Receives {
             .lock()
             .expect("receive registry is not poisoned")
             .iter()
-            .map(|(name, receive)| {
-                let life = receive.life();
+            .map(|(name, entry)| {
+                let life = entry.receive.life();
                 life.stop.cancel();
                 (name.clone(), life.finished.clone())
             })

@@ -603,7 +603,7 @@ impl VolumeStorage {
             None => None,
         };
         if pulling.as_deref() == Some(target.as_str()) {
-            match self.receives.take_failure(name) {
+            match self.receives.take_failure(name, Some(&request.target)) {
                 Err(Busy) => return self.copy_now(&scope).await,
                 // A resend after the receive failed answers that failure instead of hiding
                 // it under a fresh receive. The answer clears it, so the next want for this
@@ -687,12 +687,11 @@ impl VolumeStorage {
             self.receives.forget(name);
             return self.copy_now(&scope).await;
         }
-        if pulling.as_deref() != Some(target.as_str()) {
+        let retarget = pulling.as_deref() != Some(target.as_str());
+        if retarget {
             self.mark_slot_role(&parent, SlotRole::Mirror)
                 .await
                 .map_err(internal)?;
-            self.z(&["set", &format!("{PULL_PROPERTY}={target}"), &parent])
-                .await?;
         }
         let bound = if fresh {
             bound
@@ -724,21 +723,29 @@ impl VolumeStorage {
             name: request.name.clone(),
             source,
         };
+        // Set last before the spawn, so a step above that fails leaves `ployz:pull` naming
+        // the target it named before.
+        if retarget {
+            self.z(&["set", &format!("{PULL_PROPERTY}={target}"), &parent])
+                .await?;
+        }
         let storage = self.clone();
         let (from, r#gen) = (request.from, request.r#gen);
-        let spawned = self.receives.spawn(&scope.held, name, |stop| async move {
-            let result = match storage
-                .pull_stream(from, stream, &fs, bound, r#gen, &stop)
-                .await
-            {
-                Ok(()) => storage.mark_pulled(&fs).await,
-                Err(error) => Err(error),
-            };
-            if let Err(error) = &result {
-                tracing::warn!(%fs, %error, "Volume pull failed");
-            }
-            result
-        });
+        let spawned = self
+            .receives
+            .spawn(&scope.held, name, &request.target, |stop| async move {
+                let result = match storage
+                    .pull_stream(from, stream, &fs, bound, r#gen, &stop)
+                    .await
+                {
+                    Ok(()) => storage.mark_pulled(&fs).await,
+                    Err(error) => Err(error),
+                };
+                if let Err(error) = &result {
+                    tracing::warn!(%fs, %error, "Volume pull failed");
+                }
+                result
+            });
         if spawned.is_err() {
             return Err(self.receiving_another(&scope).await);
         }

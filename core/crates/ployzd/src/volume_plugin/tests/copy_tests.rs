@@ -1116,6 +1116,209 @@ async fn a_pull_resent_after_a_restart_resumes_the_stopped_receive_by_its_token(
 }
 
 #[tokio::test]
+async fn a_pull_for_another_target_that_fails_before_its_receive_keeps_the_failure_on_its_own_target()
+ {
+    let source = Source::start(Some(BOUND), "break\n").await;
+    let test = TestDir::new();
+    let (socket, server) = puller(&test, &["root", "mirror", "mirror-fs"], source.port);
+    set_snapshots(&test, SLOT_FS, &[("w-1-1", 11)]);
+    post(&socket, "/Volume.Copy.Pull", pull("w-1-2")).await;
+    let failure = failed(&socket).await;
+    assert!(failure.contains("connection reset"), "{failure}");
+
+    let token_read = test.0.join("props/fail-command");
+    fs::write(
+        &token_read,
+        format!("get -H -o value receive_resume_token {SLOT_FS}"),
+    )
+    .unwrap();
+    let reply = post(&socket, "/Volume.Copy.Pull", pull("w-1-3")).await;
+    assert!(reply.get("Err").is_some(), "{reply}");
+    assert!(!token_read.exists(), "the token read never ran");
+
+    let copy = post(&socket, "/Volume.Copy.Inspect", json!({"name": "data"})).await;
+    assert_ne!(
+        copy.pointer("/Ok/pull"),
+        Some(&json!({"target": "w-1-3", "failure": failure})),
+        "w-1-3 carries the failure of w-1-2"
+    );
+    assert_eq!(
+        copy.pointer("/Ok/pull"),
+        Some(&json!({"target": "w-1-2", "failure": failure})),
+        "{copy}"
+    );
+
+    source.answer("token=", StatusCode::OK, "snapshot w-1-3 13\n");
+    let sent = source.requests().len();
+    let reply = post(&socket, "/Volume.Copy.Pull", pull("w-1-3")).await;
+    assert_eq!(
+        reply.pointer("/Ok/pull"),
+        Some(&json!({"target": "w-1-3", "failure": null})),
+        "{reply}"
+    );
+    assert_eq!(
+        source.requests().into_iter().skip(sent).collect::<Vec<_>>(),
+        [
+            "/volume-bound/data",
+            "/volume-send/data?target=w-1-3&token=token-1"
+        ]
+    );
+    server.abort();
+}
+
+#[tokio::test]
+async fn a_pull_no_receive_attends_reads_unattended_and_resumable_by_its_token() {
+    let test = TestDir::new();
+    let (socket, server) = slot(&test, &[("w-1-1", 11)]);
+    set_property(&test, SLOT, "ployz:pull", "w-1-2");
+    set_property(&test, SLOT_FS, "receive_resume_token", "token-1");
+
+    let copy = post(&socket, "/Volume.Copy.Inspect", json!({"name": "data"})).await;
+    assert_eq!(
+        copy.pointer("/Ok/pull_state"),
+        Some(&json!({"kind": "unattended", "target": "w-1-2", "resumable": true})),
+        "{copy}"
+    );
+    assert_eq!(
+        copy.pointer("/Ok/pull"),
+        Some(&json!({"target": "w-1-2", "failure": null}))
+    );
+    server.abort();
+}
+
+/// Polls Inspect until the pull's state is of `kind`.
+async fn pull_state(socket: &Path, kind: &str) -> Value {
+    poll(async || {
+        let copy = post(socket, "/Volume.Copy.Inspect", json!({"name": "data"})).await;
+        let state = copy.pointer("/Ok/pull_state")?.clone();
+        (state.get("kind") == Some(&json!(kind))).then_some(state)
+    })
+    .await
+    .unwrap_or_else(|| panic!("the pull never read {kind}"))
+}
+
+#[tokio::test]
+async fn a_pull_reads_receiving_failed_answered_then_landed() {
+    let source = Source::start(Some(BOUND), "break\n").await;
+    source.hold("target=w-1-2", "break\n");
+    let test = TestDir::new();
+    let (socket, server) = puller(&test, &["root", "mirror", "mirror-fs"], source.port);
+    set_snapshots(&test, SLOT_FS, &[("w-1-1", 11)]);
+
+    let reply = post(&socket, "/Volume.Copy.Pull", pull("w-1-2")).await;
+    assert_eq!(
+        reply.pointer("/Ok/pull_state"),
+        Some(&json!({"kind": "receiving", "target": "w-1-2"})),
+        "{reply}"
+    );
+    source.release();
+    let failure = failed(&socket).await;
+    assert_eq!(
+        pull_state(&socket, "failed").await,
+        json!({"kind": "failed", "target": "w-1-2", "failure": failure})
+    );
+
+    source.answer("token=", StatusCode::OK, "snapshot w-1-2 12\n");
+    let reply = post(&socket, "/Volume.Copy.Pull", pull("w-1-2")).await;
+    assert_eq!(
+        reply.pointer("/Ok/pull_state"),
+        Some(&json!({"kind": "failed", "target": "w-1-2", "failure": failure})),
+        "the answer carries the failure in both fields: {reply}"
+    );
+    let copy = post(&socket, "/Volume.Copy.Inspect", json!({"name": "data"})).await;
+    assert_eq!(
+        copy.pointer("/Ok/pull_state"),
+        Some(&json!({"kind": "unattended", "target": "w-1-2", "resumable": true})),
+        "{copy}"
+    );
+
+    post(&socket, "/Volume.Copy.Pull", pull("w-1-2")).await;
+    assert_eq!(
+        pull_state(&socket, "landed").await,
+        json!({"kind": "landed", "target": "w-1-2"})
+    );
+    let reply = finished(&socket, "w-1-2").await;
+    assert_eq!(reply.pointer("/Ok/pull_state"), None, "{reply}");
+    server.abort();
+}
+
+/// A plugin process that restarted holds no receive, so the slot's newest tells a pull
+/// that landed from one nothing attends.
+#[tokio::test]
+async fn a_pull_with_no_receive_reads_landed_once_the_slot_holds_its_target() {
+    let test = TestDir::new();
+    let (socket, server) = slot(&test, &[("w-1-2", 12), ("w-1-1", 11)]);
+    set_property(&test, SLOT, "ployz:pull", "w-1-2");
+    let copy = post(&socket, "/Volume.Copy.Inspect", json!({"name": "data"})).await;
+    assert_eq!(
+        copy.pointer("/Ok/pull_state"),
+        Some(&json!({"kind": "landed", "target": "w-1-2"})),
+        "{copy}"
+    );
+
+    set_property(&test, SLOT, "ployz:pull", "w-1-3");
+    let copy = post(&socket, "/Volume.Copy.Inspect", json!({"name": "data"})).await;
+    assert_eq!(
+        copy.pointer("/Ok/pull_state"),
+        Some(&json!({"kind": "unattended", "target": "w-1-3", "resumable": false})),
+        "{copy}"
+    );
+    server.abort();
+}
+
+#[tokio::test]
+async fn a_pull_a_seal_stopped_reads_unattended() {
+    let source = Source::start(Some(BOUND), "snapshot w-1-1 77\n").await;
+    let test = TestDir::new();
+    let (socket, server) = puller(&test, &["root"], source.port);
+    fs::create_dir_all(test.0.join("props")).unwrap();
+    fs::write(test.0.join("props/stall-read"), "").unwrap();
+    post(&socket, "/Volume.Copy.Pull", pull("w-1-1")).await;
+    receive_ready(&test).await;
+
+    post(&socket, "/Storage.Seal", json!(null)).await;
+    let copy = post(&socket, "/Volume.Copy.Inspect", json!({"name": "data"})).await;
+    assert_eq!(
+        copy.pointer("/Ok/pull_state/kind"),
+        Some(&json!("unattended")),
+        "{copy}"
+    );
+    server.abort();
+}
+
+/// A receive's failure is its own target's: a pull of another target neither reads nor
+/// takes it.
+#[tokio::test]
+async fn a_failure_is_read_and_taken_only_for_its_own_target() {
+    let receives = Receives::default();
+    let name: DockerVolumeName = "data".parse().unwrap();
+    let other: ployz_core::SnapshotName = "w-1-2".parse().unwrap();
+    receives
+        .spawn(&mutation().await, &name, &target(), |_stop| async {
+            Err("the stream broke".to_owned())
+        })
+        .unwrap();
+    assert!(receives.stop_all(Duration::from_secs(5)).await.is_empty());
+    let failed = Status::Failed {
+        failure: "the stream broke".to_owned(),
+        settled: true,
+    };
+    assert_eq!(receives.status(&name), failed);
+    assert_eq!(receives.status_of(&name, &other), Status::Idle);
+    assert_eq!(receives.status_of(&name, &target()), failed);
+
+    assert_eq!(receives.take_failure(&name, Some(&other)).unwrap(), None);
+    assert_eq!(receives.take_failure(&name, None).unwrap(), None);
+    assert_eq!(
+        receives
+            .take_failure(&name, Some(&target()))
+            .unwrap()
+            .as_deref(),
+        Some("the stream broke")
+    );
+}
+
+#[tokio::test]
 async fn a_pull_whose_base_the_writer_lost_starts_over_from_a_full_send() {
     let source = Source::start(Some(BOUND), "snapshot w-1-2 12\n").await;
     source.answer(
@@ -1911,6 +2114,11 @@ fn alive(pid: u32) -> bool {
     Path::new(&format!("/proc/{pid}")).exists()
 }
 
+/// The target a receive task a test spawns pulls.
+pub(super) fn target() -> ployz_core::SnapshotName {
+    "w-1-1".parse().unwrap()
+}
+
 /// The mutation a receive starts under, for a test that spawns one without a route.
 pub(super) async fn mutation() -> HeldMutation {
     MutationLock::default().lock().await
@@ -1929,7 +2137,7 @@ async fn a_zfs_child_dropped_without_a_reap_is_killed() {
     let name: DockerVolumeName = "data".parse().unwrap();
     let mut pid = 0;
     receives
-        .spawn(&mutation().await, &name, |stop| {
+        .spawn(&mutation().await, &name, &target(), |stop| {
             let child = ZfsChild::spawn(Command::new("sleep").arg("30"), &stop).unwrap();
             pid = child.id().unwrap();
             async move {
@@ -1947,7 +2155,7 @@ async fn a_receive_task_finishes_only_once_a_dropped_child_exits() {
     let name: DockerVolumeName = "data".parse().unwrap();
     let mut pid = 0;
     receives
-        .spawn(&mutation().await, &name, |stop| {
+        .spawn(&mutation().await, &name, &target(), |stop| {
             let (child, spawned) = slow_child(&stop);
             pid = spawned;
             async move {
@@ -1970,7 +2178,7 @@ async fn a_receive_task_whose_second_spawn_fails_finishes_once_the_first_child_e
     let name: DockerVolumeName = "data".parse().unwrap();
     let mut pid = 0;
     receives
-        .spawn(&mutation().await, &name, |stop| {
+        .spawn(&mutation().await, &name, &target(), |stop| {
             let (send, spawned) = slow_child(&stop);
             pid = spawned;
             async move {
@@ -1994,7 +2202,7 @@ async fn a_receive_task_that_panics_with_a_live_child_finishes_once_it_exits() {
     let name: DockerVolumeName = "data".parse().unwrap();
     let mut pid = 0;
     receives
-        .spawn(&mutation().await, &name, |stop| {
+        .spawn(&mutation().await, &name, &target(), |stop| {
             let (child, spawned) = slow_child(&stop);
             pid = spawned;
             async move {
@@ -2044,7 +2252,7 @@ async fn a_reap_whose_kill_fails_holds_its_task_until_the_child_exits() {
     let receives = Receives::default();
     let name: DockerVolumeName = "data".parse().unwrap();
     receives
-        .spawn(&mutation().await, &name, |stop| {
+        .spawn(&mutation().await, &name, &target(), |stop| {
             let mut child = held_child(&stop, &gate);
             child.fail_kill();
             async move {
@@ -2072,7 +2280,7 @@ async fn a_reap_whose_wait_fails_holds_its_task_until_the_child_exits() {
     let receives = Receives::default();
     let name: DockerVolumeName = "data".parse().unwrap();
     receives
-        .spawn(&mutation().await, &name, |stop| {
+        .spawn(&mutation().await, &name, &target(), |stop| {
             let mut child = held_child(&stop, &gate);
             child.fail_kill();
             child.fail_wait();
@@ -2099,7 +2307,7 @@ async fn a_dropped_child_whose_wait_fails_holds_its_task_until_it_exits() {
     let receives = Receives::default();
     let name: DockerVolumeName = "data".parse().unwrap();
     receives
-        .spawn(&mutation().await, &name, |stop| {
+        .spawn(&mutation().await, &name, &target(), |stop| {
             let mut child = held_child(&stop, &gate);
             child.fail_wait();
             async move {
@@ -2134,7 +2342,7 @@ async fn a_dropped_child_whose_kill_fails_holds_its_task_until_it_exits() {
             .finish(),
     );
     receives
-        .spawn(&mutation().await, &name, |stop| {
+        .spawn(&mutation().await, &name, &target(), |stop| {
             let mut child = gated_child(&stop, &gate);
             child.fail_kill();
             async move {
@@ -2186,7 +2394,7 @@ impl<'a> tracing_subscriber::fmt::MakeWriter<'a> for Capture {
 async fn panicked_with_a_held_child(receives: &Receives, name: &DockerVolumeName, gate: &Path) {
     let panicked = Arc::new(AtomicBool::new(false));
     receives
-        .spawn(&mutation().await, name, |stop| {
+        .spawn(&mutation().await, name, &target(), |stop| {
             let child = held_child(&stop, gate);
             let panicked = Arc::clone(&panicked);
             async move {
@@ -2238,7 +2446,10 @@ async fn a_failure_whose_child_is_alive_is_neither_taken_nor_forgotten() {
     let receives = Receives::default();
     let name: DockerVolumeName = "data".parse().unwrap();
     panicked_with_a_held_child(&receives, &name, &gate).await;
-    assert!(matches!(receives.take_failure(&name), Err(Busy)));
+    assert!(matches!(
+        receives.take_failure(&name, Some(&target())),
+        Err(Busy)
+    ));
     receives.forget(&name);
     assert_eq!(
         receives.stop_all(Duration::from_millis(200)).await,
@@ -2248,7 +2459,10 @@ async fn a_failure_whose_child_is_alive_is_neither_taken_nor_forgotten() {
     fs::remove_file(&gate).unwrap();
     assert!(receives.stop_all(Duration::from_secs(5)).await.is_empty());
     assert_eq!(
-        receives.take_failure(&name).unwrap().as_deref(),
+        receives
+            .take_failure(&name, Some(&target()))
+            .unwrap()
+            .as_deref(),
         Some("the receive task panicked")
     );
     assert_eq!(receives.status(&name), Status::Idle);
@@ -2264,7 +2478,7 @@ async fn a_spawn_over_a_task_whose_child_is_alive_answers_busy() {
     let name: DockerVolumeName = "data".parse().unwrap();
     panicked_with_a_held_child(&receives, &name, &gate).await;
     let ran = Arc::new(AtomicBool::new(false));
-    let spawned = receives.spawn(&mutation().await, &name, |_stop| {
+    let spawned = receives.spawn(&mutation().await, &name, &target(), |_stop| {
         ran.store(true, Ordering::SeqCst);
         async { Ok(()) }
     });
@@ -2273,7 +2487,9 @@ async fn a_spawn_over_a_task_whose_child_is_alive_answers_busy() {
     fs::remove_file(&gate).unwrap();
     assert!(receives.stop_all(Duration::from_secs(5)).await.is_empty());
     receives
-        .spawn(&mutation().await, &name, |_stop| async { Ok(()) })
+        .spawn(&mutation().await, &name, &target(), |_stop| async {
+            Ok(())
+        })
         .unwrap();
     assert!(receives.stop_all(Duration::from_secs(5)).await.is_empty());
     assert_eq!(receives.status(&name), Status::Idle);
