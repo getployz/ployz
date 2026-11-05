@@ -109,6 +109,38 @@ impl Machine {
     pub fn management_address(&self) -> ManagementAddress {
         management_address(self.public_key)
     }
+
+    /// Where this copy of the row stands, read from its daemon version and its leaving
+    /// mark alone. The leaving mark wins over the version.
+    #[must_use]
+    pub fn standing(&self) -> RowStanding {
+        let versioned = !self.runtime.daemon_version.is_empty();
+        if self.runtime.leaving {
+            RowStanding::Leaving { versioned }
+        } else if versioned {
+            RowStanding::Versioned
+        } else {
+            RowStanding::Registered
+        }
+    }
+}
+
+/// Where a Machine's row stands in this observer's copy of it. It is neither the
+/// Machine's Local Machine Phase nor a Membership Observation: it reads only what the
+/// row holds. A row without the leaving mark claims nothing about whether its Machine
+/// is leaving: see [`MachineRuntime::leaving`].
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum RowStanding {
+    /// The row names no daemon version, as Cloud's Register writes it.
+    Registered,
+    /// The row names a daemon version. A daemon's own publish writes one, and so does
+    /// the CLI's own Register, which `ployz server add --standalone` sends.
+    Versioned,
+    /// The row is marked leaving, as its own daemon marks it once a Leave is admitted.
+    Leaving {
+        /// Whether the row also names a daemon version.
+        versioned: bool,
+    },
 }
 
 /// Deterministic management-plane address for a WireGuard identity.
@@ -686,12 +718,17 @@ impl MachineObservation {
     /// An Unarrived Machine: omitted, never recorded by this observer's admin, and with
     /// no daemon version in its row. Cloud's Register writes an empty runtime, and a
     /// daemon publishes its own row, version included, only once it participates, so
-    /// this observer has no sign the Machine ever ran or held a Service Container.
+    /// this observer has no sign the Machine ever participated or held a Service
+    /// Container. A row its own daemon marked leaving while the row named no version is
+    /// still Unarrived: the mark shows that daemon ran, not that it participated.
     #[must_use]
     pub fn unarrived(&self) -> bool {
         !self.invites_rpc()
             && self.membership_evidence.is_none()
-            && self.machine.runtime.daemon_version.is_empty()
+            && matches!(
+                self.machine.standing(),
+                RowStanding::Registered | RowStanding::Leaving { versioned: false }
+            )
     }
 
     /// Start an observer-relative Machine view with optional observations absent.
@@ -960,7 +997,7 @@ mod placement_tests {
 
     use super::{
         BuildConcurrency, BuildConcurrencyUpdate, Machine, MachineObservation, MachineUpdate,
-        MembershipEvidence, MembershipObservation, machine_matches_placement,
+        MembershipEvidence, MembershipObservation, RowStanding, machine_matches_placement,
     };
 
     fn machine(hex: char, name: &str) -> Machine {
@@ -1051,13 +1088,69 @@ mod placement_tests {
         recorded.membership_evidence = Some(MembershipEvidence::Down);
         assert!(!recorded.unarrived(), "the admin recorded it, even as Down");
 
-        let mut published = registered.clone();
-        published.machine.runtime.daemon_version = "0.3.0".into();
-        assert!(!published.unarrived(), "the Machine published its own row");
+        let mut versioned = registered.clone();
+        versioned.machine.runtime.daemon_version = "0.3.0".into();
+        assert!(!versioned.unarrived(), "its row names a daemon version");
+
+        let mut leaving = registered.clone();
+        leaving.machine.runtime.leaving = true;
+        assert!(
+            leaving.unarrived(),
+            "its row is marked leaving but names no daemon version"
+        );
+
+        let mut leaving_versioned = versioned.clone();
+        leaving_versioned.machine.runtime.leaving = true;
+        assert!(
+            !leaving_versioned.unarrived(),
+            "its row is marked leaving and names a daemon version"
+        );
 
         let mut answering = registered;
         answering.membership = MembershipObservation::Up;
         assert!(!answering.unarrived(), "it invites RPC");
+    }
+
+    #[test]
+    fn a_rows_standing_reads_its_version_and_leaving_mark_and_leaving_wins() {
+        for (version, leaving, expected) in [
+            ("", false, RowStanding::Registered),
+            ("0.3.0", false, RowStanding::Versioned),
+            ("", true, RowStanding::Leaving { versioned: false }),
+            ("0.3.0", true, RowStanding::Leaving { versioned: true }),
+            ("  ", false, RowStanding::Versioned),
+            ("  ", true, RowStanding::Leaving { versioned: true }),
+        ] {
+            let mut row = machine('a', "row");
+            row.runtime.daemon_version = version.into();
+            row.runtime.leaving = leaving;
+            assert_eq!(
+                row.standing(),
+                expected,
+                "daemon version {version:?}, leaving {leaving}"
+            );
+        }
+
+        for (runtime, expected) in [
+            (serde_json::json!({}), RowStanding::Registered),
+            (
+                serde_json::json!({ "daemon_version": "0.3.0" }),
+                RowStanding::Versioned,
+            ),
+            (
+                serde_json::json!({ "daemon_version": "0.3.0", "leaving": false }),
+                RowStanding::Versioned,
+            ),
+            (
+                serde_json::json!({ "daemon_version": "", "leaving": true }),
+                RowStanding::Leaving { versioned: false },
+            ),
+        ] {
+            let mut wire = serde_json::to_value(machine('a', "row")).unwrap();
+            *wire.get_mut("runtime").unwrap() = runtime.clone();
+            let row: Machine = serde_json::from_value(wire).unwrap();
+            assert_eq!(row.standing(), expected, "runtime {runtime}");
+        }
     }
 
     #[test]

@@ -1171,9 +1171,9 @@ fn an_ingress_server_the_entry_no_longer_lists_is_not_left_unchecked() {
 
 /// An ingress Server whose own daemon says it is leaving is on its way out with its
 /// ingress role, so the plan puts no Ingress Proxy there, and the check doesn't call it
-/// unchecked when its listing times out during the removal (#3277). A Server that is
-/// silent without saying so stays unchecked, and an empty one that answered gets its
-/// proxy.
+/// unchecked when its listing times out during the removal (#3277), whether or not its
+/// row names a daemon version. A Server that is silent without saying so stays
+/// unchecked, and an empty one that answered gets its proxy.
 #[test]
 fn an_ingress_server_that_is_leaving_is_neither_filled_nor_left_unchecked() {
     use std::collections::BTreeMap;
@@ -1186,11 +1186,18 @@ fn an_ingress_server_that_is_leaving_is_neither_filled_nor_left_unchecked() {
         machine.runtime.leaving = true;
         machine
     };
+    let leaving_versioned = |hex, name| {
+        let mut machine = leaving(hex, name);
+        machine.runtime.daemon_version = "0.3.17".into();
+        machine
+    };
     let serving = crate::global_fixtures::machine('1', "edge-1");
     let leaving_answered = leaving('2', "edge-2");
     let leaving_silent = leaving('3', "edge-3");
     let silent = crate::global_fixtures::machine('4', "edge-4");
     let empty = crate::global_fixtures::machine('5', "edge-5");
+    let versioned_answered = leaving_versioned('6', "edge-6");
+    let versioned_silent = leaving_versioned('7', "edge-7");
     let mut snapshot = servers(
         &[
             serving.clone(),
@@ -1198,6 +1205,8 @@ fn an_ingress_server_that_is_leaving_is_neither_filled_nor_left_unchecked() {
             leaving_silent.clone(),
             silent.clone(),
             empty.clone(),
+            versioned_answered.clone(),
+            versioned_silent.clone(),
         ],
         vec![ingress_on('a', &serving)],
     );
@@ -1205,7 +1214,11 @@ fn an_ingress_server_that_is_leaving_is_neither_filled_nor_left_unchecked() {
         machine_id: machine.id,
         error: error("target Machine RPC timed out"),
     };
-    snapshot.container_failures = vec![timed_out(&leaving_silent), timed_out(&silent)];
+    snapshot.container_failures = vec![
+        timed_out(&leaving_silent),
+        timed_out(&silent),
+        timed_out(&versioned_silent),
+    ];
 
     let repairs: BTreeMap<_, _> = plan_ingress_repairs(&ingress_intent(), &snapshot)
         .into_iter()
@@ -1235,9 +1248,10 @@ fn an_ingress_server_that_is_leaving_is_neither_filled_nor_left_unchecked() {
 }
 
 /// A plan can read membership just before a Leave marks the Server, then time out
-/// on it as it goes. Read again, a Server now marked leaving or no longer listed
-/// left with its ingress role, so it owes no check; one still listed and not
-/// leaving stays unchecked, and a re-read that failed changes nothing (#3288).
+/// on it as it goes. Read again, a Server now marked leaving, whether or not its row
+/// names a daemon version, or no longer listed left with its ingress role, so it owes
+/// no check; one still listed and not leaving stays unchecked, and a re-read that
+/// failed changes nothing (#3288).
 #[test]
 fn an_unchecked_server_that_left_since_the_plan_read_is_dropped() {
     use crate::deploy::planning::ingress_repairs::{ingress_intent, ingress_on, servers};
@@ -1247,12 +1261,14 @@ fn an_unchecked_server_that_left_since_the_plan_read_is_dropped() {
     let marked = crate::global_fixtures::machine('2', "edge-2");
     let gone = crate::global_fixtures::machine('3', "edge-3");
     let silent = crate::global_fixtures::machine('4', "edge-4");
+    let marked_versioned = crate::global_fixtures::machine('5', "edge-5");
     let mut snapshot = servers(
         &[
             serving.clone(),
             marked.clone(),
             gone.clone(),
             silent.clone(),
+            marked_versioned.clone(),
         ],
         vec![ingress_on('a', &serving)],
     );
@@ -1260,7 +1276,12 @@ fn an_unchecked_server_that_left_since_the_plan_read_is_dropped() {
         machine_id: machine.id,
         error: error("target Machine RPC timed out"),
     };
-    snapshot.container_failures = vec![timed_out(&marked), timed_out(&gone), timed_out(&silent)];
+    snapshot.container_failures = vec![
+        timed_out(&marked),
+        timed_out(&gone),
+        timed_out(&silent),
+        timed_out(&marked_versioned),
+    ];
     let planned = plan_ingress_repairs(&ingress_intent(), &snapshot);
     let unchecked = |repairs: &[crate::deploy::SlotRepair]| {
         repairs
@@ -1269,23 +1290,34 @@ fn an_unchecked_server_that_left_since_the_plan_read_is_dropped() {
             .map(|repair| repair.machine_id)
             .collect::<Vec<_>>()
     };
-    assert_eq!(unchecked(&planned), [marked.id, gone.id, silent.id]);
+    assert_eq!(
+        unchecked(&planned),
+        [marked.id, gone.id, silent.id, marked_versioned.id]
+    );
 
     let mut now_leaving = marked.clone();
     now_leaving.runtime.leaving = true;
-    let reread: Vec<_> = [serving.clone(), now_leaving, silent.clone()]
-        .into_iter()
-        .map(|machine| {
-            ployz_core::MachineObservation::new(machine, ployz_core::MembershipObservation::Up)
-        })
-        .collect();
+    let mut now_leaving_versioned = marked_versioned.clone();
+    now_leaving_versioned.runtime.daemon_version = "0.3.17".into();
+    now_leaving_versioned.runtime.leaving = true;
+    let reread: Vec<_> = [
+        serving.clone(),
+        now_leaving,
+        silent.clone(),
+        now_leaving_versioned,
+    ]
+    .into_iter()
+    .map(|machine| {
+        ployz_core::MachineObservation::new(machine, ployz_core::MembershipObservation::Up)
+    })
+    .collect();
     assert_eq!(
         unchecked(&without_departed(planned.clone(), Some(&reread))),
         [silent.id]
     );
     assert_eq!(
         unchecked(&without_departed(planned, None)),
-        [marked.id, gone.id, silent.id]
+        [marked.id, gone.id, silent.id, marked_versioned.id]
     );
 }
 
