@@ -191,3 +191,13 @@ describe("PendingInvites", () => {
     expect(onRevoke.mock.calls).toEqual([["inv-1"], ["inv-2"]]);
   });
 });
+
+it("shows an invite's expiry as its UTC day, so the server render and the browser agree", () => {
+  vi.stubEnv("TZ", "Pacific/Kiritimati");
+  try {
+    render(<Pending onRevoke={vi.fn()} initial={[invite("inv-1", null, { expires_at: "2026-10-21T20:00:00Z" })]} />);
+    expect(screen.getByRole("button", { name: /^Revoke link expiring Oct 21, 2026/ })).toBeTruthy();
+  } finally {
+    vi.unstubAllEnvs();
+  }
+});

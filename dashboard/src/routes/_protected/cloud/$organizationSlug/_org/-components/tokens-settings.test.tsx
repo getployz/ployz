@@ -177,3 +177,13 @@ it("keeps the token when the confirm is cancelled", async () => {
   fireEvent.click(within(await screen.findByRole("alertdialog")).getByRole("button", { name: "Cancel" }));
   expect(onRevoke).not.toHaveBeenCalled();
 });
+
+it("shows a token's expiry as its UTC day, so the server render and the browser agree", () => {
+  vi.stubEnv("TZ", "Pacific/Kiritimati");
+  try {
+    render(<TokenItem token={{ ...token, expires_at: "2026-12-31T20:00:00Z" }} revoking={false} onRevoke={vi.fn()} />);
+    expect(screen.getByText("Deploy staging · Expires Dec 31, 2026")).toBeTruthy();
+  } finally {
+    vi.unstubAllEnvs();
+  }
+});

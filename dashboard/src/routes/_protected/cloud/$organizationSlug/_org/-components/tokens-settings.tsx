@@ -20,8 +20,8 @@ import { projectsQuery, requireView, useStoreView } from "#/modules/config-store
 import { createTokenServerFn, revokeTokenServerFn } from "#/modules/identity/organization-token.functions";
 import { organizationTokensQueryOptions, tokensKey } from "#/modules/identity/organization-token.queries";
 import type { TokenPreset } from "#/modules/identity/token-grant";
+import { formatDay } from "#/lib/format-day";
 
-const formatDate = (iso: string) => new Date(iso).toLocaleDateString(undefined, { dateStyle: "medium" });
 
 export function TokensSettings({ organizationSlug }: { organizationSlug: string }) {
   const queryClient = useQueryClient();
@@ -67,7 +67,7 @@ export function TokenItem({ token, revoking, onRevoke }: {
     <SettingsListItem
       media={<KeyRoundIcon />}
       label={token.name}
-      hint={`${token.scope}${by} · ${token.expired ? "Expired" : "Expires"} ${formatDate(token.expires_at)}`}
+      hint={`${token.scope}${by} · ${token.expired ? "Expired" : "Expires"} ${formatDay(token.expires_at)}`}
       commit="confirm"
       actions={(
         <>

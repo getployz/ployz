@@ -29,6 +29,7 @@ import { notificationSettingsQueryOptions, useSetNotificationChannel } from "#/m
 import { formatRelativeTime } from "#/utils/relative-time";
 import { RelativeTime, useClockReadable } from "#/components/relative-time";
 import { NotificationsSection } from "./notifications-section";
+import { formatDay } from "#/lib/format-day";
 
 export function prefetchAccount(scope: CollectionScope) {
   return prefetchRemote(scope, notificationSettingsQueryOptions(), accountSessionsRead(scope), linkedAccountsRead(scope), connectedAgentsRead(scope));
@@ -47,8 +48,6 @@ export function AccountSections() {
 }
 
 const providerLabel = (providerId: string) => (providerId === "github" ? "GitHub" : providerId);
-
-const dateFormat = new Intl.DateTimeFormat("en-US", { dateStyle: "medium" });
 
 /** Who you are, and how you sign in. Both come from GitHub, so nothing here is edited. */
 function ProfileSection() {
@@ -74,7 +73,7 @@ function ProfileSection() {
             key={row.id}
             media={<GitHubMarkIcon />}
             label={providerLabel(row.providerId)}
-            hint={`Linked ${dateFormat.format(new Date(row.createdAt))}`}
+            hint={`Linked ${formatDay(row.createdAt)}`}
             commit="none"
             actions={<Badge variant="outline">Sign-in</Badge>}
           />

@@ -35,6 +35,7 @@ import {
 import { membersKey, organizationMembersQueryOptions } from "#/modules/organization/members.queries";
 import { useOrganizationName } from "#/modules/organization/organization-state.queries";
 import { can } from "#/modules/organization/permissions";
+import { formatDay } from "#/lib/format-day";
 
 type Role = "owner" | "admin" | "member";
 type InviteRole = Exclude<Role, "owner">;
@@ -42,7 +43,6 @@ type InviteRole = Exclude<Role, "owner">;
 const ROLE_LABELS = { owner: "Owner", admin: "Admin", member: "Member" } satisfies Record<Role, string>;
 
 
-const formatDate = (iso: string) => new Date(iso).toLocaleDateString(undefined, { dateStyle: "medium" });
 
 type Pending = { kind: "remove"; email: string; name: string } | { kind: "leave" } | null;
 
@@ -114,7 +114,7 @@ export function MembersSettings({ organizationSlug }: { organizationSlug: string
                 key={row.email}
                 media={<UserIcon />}
                 label={<>{row.name}{row.you ? <span className="text-muted-foreground"> (you)</span> : null}</>}
-                hint={`${row.email} · Joined ${formatDate(row.joined_at)}`}
+                hint={`${row.email} · Joined ${formatDay(row.joined_at)}`}
                 commit={editable ? "change" : "none"}
                 actions={(
                   <>
@@ -198,7 +198,7 @@ export function PendingInvites({ invites, manager, onRevoke, onInvite }: {
   const revokeButtons = useRef(new Map<string, HTMLButtonElement>());
   const inviteButton = useRef<HTMLButtonElement>(null);
   const revokeNames = distinctNames(invites.map((invite) =>
-    [invite.email ?? `link expiring ${formatDate(invite.expires_at)}`, `from ${invite.invited_by}`, ROLE_LABELS[invite.role]]));
+    [invite.email ?? `link expiring ${formatDay(invite.expires_at)}`, `from ${invite.invited_by}`, ROLE_LABELS[invite.role]]));
   // The invite below takes the revoked one's place, so focus moves to it, or up, or to Invite when none is left.
   function revoke(id: string) {
     const index = invites.findIndex((row) => row.id === id);
@@ -216,7 +216,7 @@ export function PendingInvites({ invites, manager, onRevoke, onInvite }: {
               key={invite.id}
               media={invite.email ? <MailIcon /> : <LinkIcon />}
               label={invite.email ?? "Anyone with the link"}
-              hint={`From ${invite.invited_by} · ${ROLE_LABELS[invite.role]} · expires ${formatDate(invite.expires_at)}`}
+              hint={`From ${invite.invited_by} · ${ROLE_LABELS[invite.role]} · expires ${formatDay(invite.expires_at)}`}
               commit="change"
               actions={manager ? (
                 <Button variant="ghost" size="sm" onClick={() => revoke(invite.id)}
