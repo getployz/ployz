@@ -7,8 +7,8 @@ use ployz_core::{
     BridgeEndpointCapacity, ContainerObservation, ContainerRuntimeObservation, DockerVolume,
     DockerVolumeId, DockerVolumeName, IngressHost, MachineFailure, MachineId, MachineName,
     MachineObservation, MembershipObservation, Namespace, PartialResult, PlacementConstraint,
-    ProvisionedVolumeMaximumBytes, QualifiedService, RpcError, RpcErrorCode, ServiceName,
-    ServiceObservation, VolumeInventory, VolumeObservationFailure, derive_services,
+    ProvisionedVolumeMaximumBytes, QualifiedService, RowStanding, RpcError, RpcErrorCode,
+    ServiceName, ServiceObservation, VolumeInventory, VolumeObservationFailure, derive_services,
 };
 use thiserror::Error;
 
@@ -494,7 +494,10 @@ impl DeploySnapshot {
         self.machines.iter().filter(move |machine| {
             machine.invites_rpc()
                 && machine.machine.accepts_ingress
-                && !machine.machine.runtime.leaving
+                && match machine.machine.standing() {
+                    RowStanding::Registered | RowStanding::Versioned => true,
+                    RowStanding::Leaving { .. } => false,
+                }
                 && ployz_core::machine_matches_placement(&machine.machine, &placement)
         })
     }

@@ -7,7 +7,7 @@ use std::{
 
 use ployz_core::{
     CertificateHost, ContainerId, DockerVolume, DockerVolumeId, DockerVolumeName, ForgottenAnswer,
-    IngressHost, IssuanceClock, IssuanceFailure, Machine, MachineId, QualifiedService,
+    IngressHost, IssuanceClock, IssuanceFailure, Machine, MachineId, QualifiedService, RowStanding,
 };
 use serde_json::json;
 
@@ -1912,21 +1912,26 @@ async fn a_register_keeps_the_leaving_mark_of_a_row_its_machine_published() {
     task.abort();
 }
 
-/// Whether `id`'s row, as this store reads it back, names no daemon version, and
-/// whether it is marked leaving; `None` when there is no row.
-async fn unversioned_and_leaving(store: &ReplicatedStore, id: &MachineId) -> Option<(bool, bool)> {
-    store
-        .machine(id.as_str())
-        .await
-        .unwrap()
-        .map(|row| (row.runtime.daemon_version.is_empty(), row.runtime.leaving))
+/// `id`'s row as this store reads it back: whether it names no daemon version and
+/// whether it is marked leaving, beside the standing it decodes to; `None` when there
+/// is no row.
+async fn read_back(store: &ReplicatedStore, id: &MachineId) -> Option<((bool, bool), RowStanding)> {
+    store.machine(id.as_str()).await.unwrap().map(|row| {
+        (
+            (row.runtime.daemon_version.is_empty(), row.runtime.leaving),
+            row.standing(),
+        )
+    })
 }
 
 /// Each row written through the store's own statements, and row 10 through an older
-/// daemon's upsert, read back: whether it names no daemon version, and whether it is
-/// marked leaving. Row 2 is a leaving row that names no version.
+/// daemon's upsert, read back: whether it names no daemon version and whether it is
+/// marked leaving, and the standing that decodes from them. Row 2 is a leaving row
+/// that names no version.
 #[tokio::test]
-async fn each_written_machine_row_reads_back_its_version_and_leaving() {
+async fn each_written_machine_row_decodes_to_its_standing() {
+    use RowStanding::{Leaving, Registered, Versioned};
+
     let (store, task) = identity_store(corrosion_db()).await;
     // Cloud's Register writes an empty runtime.
     let (cloud_shaped, local) = participating_record();
@@ -1945,22 +1950,30 @@ async fn each_written_machine_row_reads_back_its_version_and_leaving() {
     rekeyed.public_key = crate::network::WireGuardPrivateKey::from_bytes([1; 32]).public_key();
 
     let publication = || store.machine_publication();
-    let read = || unversioned_and_leaving(&store, &id);
+    let read = || read_back(&store, &id);
 
     publication()
         .await
         .register(cloud_shaped.clone())
         .await
         .unwrap();
-    assert_eq!(read().await, Some((true, false)), "row 1: Cloud's Register");
+    assert_eq!(
+        read().await,
+        Some(((true, false), Registered)),
+        "row 1: Cloud's Register"
+    );
 
     publication().await.mark_leaving(&id, true).await.unwrap();
-    assert_eq!(read().await, Some((true, true)), "row 2: marked leaving");
+    assert_eq!(
+        read().await,
+        Some(((true, true), Leaving { versioned: false })),
+        "row 2: marked leaving"
+    );
 
     publication().await.mark_leaving(&id, false).await.unwrap();
     assert_eq!(
         read().await,
-        Some((true, false)),
+        Some(((true, false), Registered)),
         "row 3: leaving mark removed"
     );
 
@@ -1971,12 +1984,16 @@ async fn each_written_machine_row_reads_back_its_version_and_leaving() {
         .unwrap();
     assert_eq!(
         read().await,
-        Some((false, false)),
+        Some(((false, false), Versioned)),
         "row 4: the CLI's Register"
     );
 
     publication().await.publish(&published).await.unwrap();
-    assert_eq!(read().await, Some((false, false)), "row 5: its own publish");
+    assert_eq!(
+        read().await,
+        Some(((false, false), Versioned)),
+        "row 5: its own publish"
+    );
 
     publication()
         .await
@@ -1985,7 +2002,7 @@ async fn each_written_machine_row_reads_back_its_version_and_leaving() {
         .unwrap();
     assert_eq!(
         read().await,
-        Some((false, false)),
+        Some(((false, false), Versioned)),
         "row 6: Cloud's Register under its key keeps its own publish"
     );
 
@@ -1997,28 +2014,28 @@ async fn each_written_machine_row_reads_back_its_version_and_leaving() {
         .unwrap();
     assert_eq!(
         read().await,
-        Some((false, true)),
+        Some(((false, true), Leaving { versioned: true })),
         "row 7: Cloud's Register under its key keeps its own publish, marked leaving"
     );
 
     publication().await.mark_leaving(&id, false).await.unwrap();
     assert_eq!(
         read().await,
-        Some((false, false)),
+        Some(((false, false), Versioned)),
         "row 8: leaving mark removed"
     );
 
     publication().await.register(rekeyed).await.unwrap();
     assert_eq!(
         read().await,
-        Some((true, false)),
+        Some(((true, false), Registered)),
         "row 9: Cloud's Register under another key replaces its own publish"
     );
 
     store_as_an_older_daemon(&store, &cli_shaped).await;
     assert_eq!(
         read().await,
-        Some((false, false)),
+        Some(((false, false), Versioned)),
         "row 10: an older daemon's upsert, without the `self_published` mark"
     );
 
@@ -2029,7 +2046,7 @@ async fn each_written_machine_row_reads_back_its_version_and_leaving() {
         .unwrap();
     assert_eq!(
         read().await,
-        Some((true, false)),
+        Some(((true, false), Registered)),
         "row 11: Cloud's Register under its key replaces a row without the `self_published` mark"
     );
 
@@ -2039,7 +2056,7 @@ async fn each_written_machine_row_reads_back_its_version_and_leaving() {
     publication().await.register(cloud_shaped).await.unwrap();
     assert_eq!(
         read().await,
-        Some((true, false)),
+        Some(((true, false), Registered)),
         "row 13: Cloud's Register takes the forget back"
     );
     task.abort();
