@@ -213,9 +213,10 @@ why. `ployz server add` and enrollment also show its exit code and last line. Wh
 
 ## None of my servers takes web traffic
 
-You'll see **No Server receives traffic** or **No ingress Server has a public IP**. Either every server has web traffic turned off,
-or Ployz doesn't know their public addresses. [Add a server](../servers/add-a-server.md), or open
-a server and turn on **Takes web traffic** under **Web traffic**.
+You'll see **No Server receives traffic** when every server has web traffic turned off, and **No
+ingress Server has a public IP** when the servers that take web traffic have no public address Ployz
+knows. [Add a server](../servers/add-a-server.md), or open a server and turn on
+**Takes web traffic** under **Web traffic**.
 
 The dashboard can't set a public IP yet, so tell Ployz a server's address from the CLI:
 

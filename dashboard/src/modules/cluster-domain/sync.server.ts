@@ -85,7 +85,10 @@ export const probeIngressServers = Effect.fn("ClusterDomain.probeIngressServers"
   if (session.status !== "connected") return { kind: "unknown" } satisfies IngressProbe;
   const frame = yield* session.connected.watchFirstFrame(RUNTIME_FRAME_TIMEOUT_MS);
   if (frame.machines.length === 0) return { kind: "no_servers" } satisfies IngressProbe;
-  const ingress = frame.machines.filter(({ machine }) => machine.accepts_ingress && machine.public_ip !== null);
+  const accepting = frame.machines.filter(({ machine }) => machine.accepts_ingress);
+  // With web traffic off everywhere, no Server receives traffic whatever addresses they have.
+  if (accepting.length === 0) return { kind: "no_servers" } satisfies IngressProbe;
+  const ingress = accepting.filter(({ machine }) => machine.public_ip !== null);
   if (ingress.length === 0) return { kind: "no_public_ip" } satisfies IngressProbe;
   // A down Server reads Offline on the Servers page, where the user fixes it; probing it would only time out.
   const servers = ingress.flatMap(({ machine, membership }): IngressServerName[] =>
