@@ -10,7 +10,7 @@ use crate::backend;
 use crate::support::{
     HEAD, LATER, MERGE, at, check, deployed, exclude, history, labels, merge_sealed, merge_value,
     merged, merged_within, on_merge, preview_listed, production_diff, pull, push, row, rows, save,
-    sealed_in, set, shop, shop_with, system, unset, uuid, value, watching,
+    sealed_in, set, shop, shop_in, shop_with, system, unset, uuid, value, watching,
 };
 
 /// `web.env.TOKEN` sealed in the browser for production's `web`, as a merge value.
@@ -531,6 +531,35 @@ fn the_merge_lands_once_whatever_order_its_events_come_in() {
         value(&store, &who, "production", "web.env.A"),
         Some(json!("7"))
     );
+}
+
+/// A merge seals a variable in Saved State that production's Working State keeps
+/// its own draft of: the save records the seal, which Working State never held.
+#[test]
+fn a_seal_the_merge_saves_over_a_staged_edit_is_in_the_ledger() {
+    let dir = tempfile::tempdir().unwrap();
+    let url = backend::fresh_url(&dir);
+    let (store, who) = shop_in(
+        ConfigStore::open(&url, backend::key()).unwrap(),
+        |_, _| {},
+        None,
+    );
+    let token = sealed_in(&store, &who, "pr-5", "web", "TOKEN", 1);
+    set(&store, &who, "pr-5", &[("web.env.TOKEN", token)]);
+    store.write(&who, &merge_token(2)).unwrap();
+    set(
+        &store,
+        &who,
+        "production",
+        &[("web.env.TOKEN", json!("staged"))],
+    );
+
+    merged(&store, &who, "2026-09-29T11:00:00Z", MERGE);
+    assert_eq!(
+        value(&store, &who, "production", "web.env.TOKEN"),
+        Some(json!("staged"))
+    );
+    assert_eq!(backend::unrecorded_seals(&url), Vec::<Vec<String>>::new());
 }
 
 #[test]

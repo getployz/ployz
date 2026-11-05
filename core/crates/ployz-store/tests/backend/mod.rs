@@ -398,3 +398,69 @@ pub fn tables_holding(url: &str, marker: &str) -> Vec<String> {
     tables.sort();
     tables
 }
+
+/// Each `[environment, service, variable, key]` a saved version or Working State
+/// holds sealed that `config_sealed_variable` lacks.
+pub fn unrecorded_seals(url: &str) -> Vec<Vec<String>> {
+    let ledger = texts(
+        url,
+        "SELECT environment_id, service_id, variable_id, key FROM config_sealed_variable",
+    );
+    let mut documents = texts(url, "SELECT environment_id, intent FROM config_saved");
+    documents.extend(texts(url, "SELECT id, working FROM config_environment"));
+    let mut unrecorded: Vec<Vec<String>> = documents
+        .iter()
+        .flat_map(|row| {
+            let [environment, document] = row.as_slice() else {
+                unreachable!("two columns are selected")
+            };
+            let intent: ployz_core::config::SavedEnvironmentIntent =
+                serde_json::from_str(document).unwrap();
+            intent
+                .services
+                .iter()
+                .flat_map(|service| {
+                    service
+                        .variables
+                        .iter()
+                        .filter(|variable| variable.value.is_secret())
+                        .map(|variable| {
+                            vec![
+                                environment.clone(),
+                                service.id.clone(),
+                                variable.id.clone(),
+                                variable.key.clone(),
+                            ]
+                        })
+                })
+                .collect::<Vec<_>>()
+        })
+        .filter(|seal| !ledger.contains(seal))
+        .collect();
+    unrecorded.sort();
+    unrecorded.dedup();
+    unrecorded
+}
+
+/// Every row `sql` selects at `url`, each column as text.
+fn texts(url: &str, sql: &str) -> Vec<Vec<String>> {
+    match url.strip_prefix("sqlite:") {
+        Some(path) => {
+            let connection = rusqlite::Connection::open(path).unwrap();
+            let mut statement = connection.prepare(sql).unwrap();
+            let columns = statement.column_count();
+            statement
+                .query_map([], |row| (0..columns).map(|index| row.get(index)).collect())
+                .unwrap()
+                .map(Result::unwrap)
+                .collect()
+        }
+        None => postgres::Client::connect(url, postgres::NoTls)
+            .unwrap()
+            .query(sql, &[])
+            .unwrap()
+            .iter()
+            .map(|row| (0..row.len()).map(|index| row.get(index)).collect())
+            .collect(),
+    }
+}

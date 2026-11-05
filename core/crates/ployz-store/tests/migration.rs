@@ -624,6 +624,167 @@ fn a_seal_only_working_state_held_at_upgrade_keeps_history_from_plain_text() {
     }
 }
 
+/// Project shop, its production holding Service web.
+fn shop_at(url: &str) -> (ConfigStore, Actor) {
+    let who = Actor::system(OrganizationId::parse("org").unwrap());
+    let store = ConfigStore::open(url, backend::key()).unwrap();
+    store
+        .write(
+            &who,
+            &CreateProject {
+                id: ProjectId::parse(uuid(1)).unwrap(),
+                name: ProjectName::parse("shop").unwrap(),
+                default_environment: EnvironmentId::parse(uuid(2)).unwrap(),
+            },
+        )
+        .unwrap();
+    store
+        .write(
+            &who,
+            &CreateService {
+                id: ServiceLineageId::parse(uuid(3)).unwrap(),
+                environment: EnvironmentRef::default(),
+                name: ServiceName::parse("web").unwrap(),
+                image: Some("web:1".into()),
+                template: None,
+            },
+        )
+        .unwrap();
+    (store, who)
+}
+
+fn unset(store: &ConfigStore, who: &Actor, path: &str) {
+    store
+        .write(
+            who,
+            &Edit {
+                environment: at("production"),
+                expect: None,
+                changes: vec![Change::Unset {
+                    path: SettingPath::parse(path).unwrap(),
+                }],
+            },
+        )
+        .unwrap();
+}
+
+/// TOKEN sealed in production's web under a new variable ID: the Save seals what
+/// History holds of the TOKEN before it by key, under that variable's own ID.
+fn seal_token_again(store: &ConfigStore, who: &Actor) {
+    unset(store, who, "web.env.TOKEN");
+    set(
+        store,
+        who,
+        "production",
+        &[(
+            "web.env.TOKEN",
+            backend::sealed_secret(&uuid(2), &uuid(3), "TOKEN", 1),
+        )],
+    );
+    publish(store, who);
+}
+
+/// [`shop_at`], with web holding TOKEN plain at revision 1, then sealed under a new
+/// variable ID at revision 2, which seals revision 1's TOKEN by key.
+fn sealed_by_key(url: &str) -> ConfigStore {
+    let (store, who) = shop_at(url);
+    set(
+        &store,
+        &who,
+        "production",
+        &[("web.env.TOKEN", json!("plain-value"))],
+    );
+    publish(&store, &who);
+    seal_token_again(&store, &who);
+    store
+}
+
+/// A scrub that seals an earlier version's variable by key, under that variable's
+/// own ID, records the seal: the ledger alone answers whether it was ever sealed.
+#[test]
+fn a_seal_a_scrub_writes_into_history_is_in_the_ledger() {
+    let dir = tempfile::tempdir().unwrap();
+    let url = backend::fresh_url(&dir);
+    let _store = sealed_by_key(&url);
+    assert_eq!(backend::unrecorded_seals(&url), Vec::<Vec<String>>::new());
+}
+
+/// A database whose saves hold seals the ledger lacks, as one an older Store wrote,
+/// has every one of them in the ledger once `0033_record_saved_seals` runs.
+#[test]
+fn every_seal_a_save_holds_is_in_the_ledger_after_upgrade() {
+    let dir = tempfile::tempdir().unwrap();
+    let url = backend::fresh_url(&dir);
+    drop(sealed_by_key(&url));
+    run(
+        &url,
+        "DELETE FROM config_sealed_variable;
+         DELETE FROM config_migration WHERE name = '0033_record_saved_seals';",
+    );
+    assert_ne!(backend::unrecorded_seals(&url), Vec::<Vec<String>>::new());
+    drop(ConfigStore::open(&url, backend::key()).unwrap());
+    assert_eq!(backend::unrecorded_seals(&url), Vec::<Vec<String>>::new());
+}
+
+/// A Store from before 0033, still running beside one that migrated their shared
+/// database, seals a value by key without recording it. A plain copy a Deployment
+/// kept still leaves History when that Deployment ends: the saves are read too.
+#[test]
+fn a_seal_a_store_from_before_0033_left_unrecorded_still_scrubs_history() {
+    let dir = tempfile::tempdir().unwrap();
+    let url = backend::fresh_url(&dir);
+    let (store, who) = shop_at(&url);
+    set(
+        &store,
+        &who,
+        "production",
+        &[("web.env.TOKEN", json!("plain-private"))],
+    );
+    publish(&store, &who);
+    set(
+        &store,
+        &who,
+        "production",
+        &[("web.env.OTHER", json!("other"))],
+    );
+    let queued = backend::admit(&store, &who, "production", 1);
+    seal_token_again(&store, &who);
+    assert_eq!(backend::unrecorded_seals(&url), Vec::<Vec<String>>::new());
+    // The older Store records only what Working State holds: TOKEN's newest ID.
+    let working: ployz_core::config::SavedEnvironmentIntent = serde_json::from_str(
+        &select(&url, "SELECT working FROM config_environment")
+            .concat()
+            .concat(),
+    )
+    .unwrap();
+    let token = working
+        .services
+        .iter()
+        .flat_map(|service| &service.variables)
+        .find(|variable| variable.key == "TOKEN")
+        .unwrap();
+    run(
+        &url,
+        &format!(
+            "DELETE FROM config_sealed_variable WHERE variable_id <> '{}';",
+            token.id
+        ),
+    );
+    assert_eq!(backend::unrecorded_seals(&url).len(), 1);
+    unset(&store, &who, "web.env.TOKEN");
+    set(
+        &store,
+        &who,
+        "production",
+        &[("web.env.TOKEN", json!("plain-again"))],
+    );
+    publish(&store, &who);
+    assert!(backend::tables_holding(&url, "plain-private").contains(&"config_saved".to_owned()));
+
+    backend::run(&store, &queued);
+    assert!(!backend::tables_holding(&url, "plain-private").contains(&"config_saved".to_owned()));
+}
+
 #[test]
 fn a_push_held_for_ci_lives_on_its_deployment_after_upgrade() {
     let dir = tempfile::tempdir().unwrap();

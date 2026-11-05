@@ -1,6 +1,6 @@
 use super::history::NotSetVariable;
 use super::publish::DiscardTarget;
-use super::sealed::{EverSealed, sealed};
+use super::sealed::{SealLedger, sealed};
 use super::{NodeChange, Review};
 use crate::scope::{Environment, EnvironmentSummary};
 use crate::settings::{NodeName, ServiceSetting, SettingPath, Target, shown};
@@ -2233,7 +2233,7 @@ impl Prepared {
 pub(super) fn prepare_history(
     tx: &mut dyn Tx,
     environment: &Environment,
-    ever: &EverSealed,
+    ledger: &SealLedger,
     saved: Option<&SavedEnvironmentIntent>,
     selected: &SavedEnvironmentIntent,
     previous: Option<&SavedEnvironmentIntent>,
@@ -2270,7 +2270,7 @@ pub(super) fn prepare_history(
     } else {
         selected.clone()
     };
-    let not_set = keep_sealed(environment, ever, &mut target)?;
+    let not_set = keep_sealed(environment, ledger, &mut target)?;
     crate::names::refuse_new_taken(tx, environment, &target)?;
     let mut prepared = Prepared::from_target(tx, environment, saved, target, None)?;
     prepared.not_set = not_set;
@@ -2282,7 +2282,7 @@ pub(super) fn prepare_history(
 /// back as plain text. Returns the keys that came back without a value.
 fn keep_sealed(
     environment: &Environment,
-    ever: &EverSealed,
+    ledger: &SealLedger,
     target: &mut SavedEnvironmentIntent,
 ) -> Result<Vec<NotSetVariable>, RpcError> {
     let mut not_set = Vec::new();
@@ -2306,14 +2306,14 @@ fn keep_sealed(
                     variable.value.clone_from(&now.value);
                 }
                 Some(now) if now.value.holds_same(&variable.value) => {}
-                Some(_) if ever.holds(&service.id, variable) => {
+                Some(_) if ledger.holds(&service.id, variable) => {
                     let key = &variable.key;
                     return Err(error::conflict(
                         format!("{key} was sealed. Set it again."),
                         json!({ "path": format!("{}.env.{key}", service.slug) }),
                     ));
                 }
-                None if sealed(&variable.value) || ever.holds(&service.id, variable) => {
+                None if sealed(&variable.value) || ledger.holds(&service.id, variable) => {
                     variable.value = VariableValue::NotSet;
                     not_set.push(NotSetVariable {
                         service: ServiceName::parse(&service.slug)

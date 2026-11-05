@@ -14,7 +14,7 @@ use serde_json::Value;
 use ts_rs::TS;
 
 use crate::scope::{self, EnvironmentRef};
-use crate::storage::Tx;
+use crate::storage::{Param, Tx};
 use crate::{Actor, EnvironmentId, EnvironmentSummary};
 
 pub(crate) const fn sealed(value: &VariableValue) -> bool {
@@ -35,8 +35,8 @@ pub(crate) fn seal_running(
     running: &mut SavedEnvironmentIntent,
     copied: &BTreeSet<String>,
 ) -> Result<(), RpcError> {
-    let ever = EverSealed::load(tx, owner.summary.id.as_str())?;
-    if ever.is_empty() {
+    let ledger = SealLedger::load(tx, owner.summary.id.as_str())?;
+    if ledger.is_empty() {
         return Ok(());
     }
     for service in &mut running.services {
@@ -60,8 +60,8 @@ pub(crate) fn seal_running(
             });
             variable.value = match now {
                 Some(now) if sealed(&now.value) => now.value.clone(),
-                Some(_) if !ever.holds_id(&service.id, variable) => continue,
-                None if !ever.holds(&service.id, variable) => continue,
+                Some(_) if !ledger.holds_id(&service.id, variable) => continue,
+                None if !ledger.holds(&service.id, variable) => continue,
                 Some(_) | None => VariableValue::NotSet,
             };
         }
@@ -81,7 +81,7 @@ pub(crate) struct SealedSince<'env> {
     working: &'env SavedEnvironmentIntent,
     // Read only for a variable changed, deleted or added again: the ledgers here
     // and above scan every save.
-    ever: Option<EverSealed>,
+    ledger: Option<SealLedger>,
     chain: Option<Chain>,
     // Only what an Environment above sealed: History scrubs the Environment's own
     // seals itself, and keeps a revision a deployment still runs.
@@ -96,7 +96,7 @@ impl<'env> SealedSince<'env> {
         Self {
             environment,
             working,
-            ever: None,
+            ledger: None,
             chain: None,
             above_only: false,
         }
@@ -110,7 +110,7 @@ impl<'env> SealedSince<'env> {
         Self {
             environment,
             working,
-            ever: None,
+            ledger: None,
             chain: None,
             above_only: true,
         }
@@ -164,7 +164,7 @@ impl<'env> SealedSince<'env> {
         let Self {
             environment,
             working,
-            ever,
+            ledger,
             chain,
             above_only,
         } = self;
@@ -208,12 +208,12 @@ impl<'env> SealedSince<'env> {
                         was,
                     )?,
                     Some(_) | None => {
-                        if ever.is_none() {
-                            *ever = Some(EverSealed::load(tx, environment.as_str())?);
+                        if ledger.is_none() {
+                            *ledger = Some(SealLedger::load(tx, environment.as_str())?);
                         }
-                        let own = ever.as_ref().is_some_and(|ever| match now {
-                            Some(_) => ever.holds_id(&service.id, was),
-                            None => ever.holds(&service.id, was),
+                        let own = ledger.as_ref().is_some_and(|ledger| match now {
+                            Some(_) => ledger.holds_id(&service.id, was),
+                            None => ledger.holds(&service.id, was),
                         });
                         own || sealed_above(
                             tx,
@@ -348,7 +348,7 @@ enum CopiedFrom {
 #[derive(Default)]
 struct Chain {
     sealed: BTreeMap<String, SealedAbove>,
-    ledgers: BTreeMap<String, EverSealed>,
+    ledgers: BTreeMap<String, SealLedger>,
     /// By Environment, its Node Introductions' variables: what it was made with or
     /// copied, never a variable added since.
     introduced: BTreeMap<String, Vec<Introduced>>,
@@ -622,10 +622,10 @@ impl Chain {
                 .filter(|(of, _)| of == lineage)
                 .map(|(_, node)| node.clone()),
         );
-        let ever = ledger(tx, &mut self.ledgers, environment)?;
+        let ledger = ledger(tx, &mut self.ledgers, environment)?;
         Ok(nodes
             .into_iter()
-            .any(|node| ever.keys.contains(&(node, key.to_owned()))))
+            .any(|node| ledger.keys.contains(&(node, key.to_owned()))))
     }
 
     /// `environment`'s Parent and the base the two last shared, read once.
@@ -735,17 +735,17 @@ impl Chain {
     }
 }
 
-/// `source`'s [`EverSealed`], loaded once per review.
+/// `source`'s [`SealLedger`], loaded once per review.
 fn ledger<'a>(
     tx: &mut dyn Tx,
-    ledgers: &'a mut BTreeMap<String, EverSealed>,
+    ledgers: &'a mut BTreeMap<String, SealLedger>,
     source: &str,
-) -> Result<&'a EverSealed, RpcError> {
+) -> Result<&'a SealLedger, RpcError> {
     Ok(match ledgers.entry(source.to_owned()) {
-        Entry::Occupied(ever) => ever.into_mut(),
+        Entry::Occupied(ledger) => ledger.into_mut(),
         Entry::Vacant(at) => {
-            let ever = EverSealed::load(tx, source)?;
-            at.insert(ever)
+            let ledger = SealLedger::load(tx, source)?;
+            at.insert(ledger)
         }
     })
 }
@@ -854,39 +854,48 @@ pub(crate) fn names_view(
     })
 }
 
-/// Every variable an Environment ever held sealed, per Service: by stable ID, so
-/// a rename keeps the seal, and by key, so a new variable under that key does.
+/// The ledger of every variable an Environment ever held sealed, per Service: by
+/// stable ID, so a rename keeps the seal, and by key, so a new variable under that
+/// key does. Each Save, History scrub and Working State write records the seals it
+/// holds ([`Self::record`]), and `0033_record_saved_seals` recorded those saved
+/// before. A reseal records nothing: it re-encrypts only seals already held.
 #[derive(Default)]
-pub(crate) struct EverSealed {
+pub(crate) struct SealLedger {
     ids: BTreeSet<(String, String)>,
     keys: BTreeSet<(String, String)>,
 }
 
-impl EverSealed {
+impl SealLedger {
     pub(crate) fn load(tx: &mut dyn Tx, environment: &str) -> Result<Self, RpcError> {
-        let mut ever = Self::default();
+        let mut ledger = Self::default();
         for row in tx.query(
             "SELECT service_id, variable_id, key FROM config_sealed_variable \
              WHERE environment_id = ?1",
             &[environment.into()],
         )? {
             let service = row.text(0)?;
-            ever.ids
+            ledger
+                .ids
                 .insert((service.to_owned(), row.text(1)?.to_owned()));
-            ever.keys
+            ledger
+                .keys
                 .insert((service.to_owned(), row.text(2)?.to_owned()));
         }
-        // Saves hold seals made before Working State recorded them.
+        // TODO(#3752): drop at the next major. A Store from before 0033 shares the
+        // database during a rolling deploy and saves seals it never records, so the
+        // saves are read too.
         for row in tx.query(
             "SELECT intent FROM config_saved WHERE environment_id = ?1",
             &[environment.into()],
         )? {
             for (service, variable) in sealed_in(&row.intent(0, "Saved State")?) {
-                ever.ids.insert((service.to_owned(), variable.id.clone()));
-                ever.keys.insert((service.to_owned(), variable.key.clone()));
+                ledger.ids.insert((service.to_owned(), variable.id.clone()));
+                ledger
+                    .keys
+                    .insert((service.to_owned(), variable.key.clone()));
             }
         }
-        Ok(ever)
+        Ok(ledger)
     }
 
     pub(crate) fn is_empty(&self) -> bool {
@@ -906,34 +915,99 @@ impl EverSealed {
                 .keys
                 .contains(&(service.to_owned(), variable.key.clone()))
     }
+
+    /// Record each variable `intent` holds sealed, at the write of Working or Saved
+    /// State that holds it.
+    pub(crate) fn record(
+        tx: &mut dyn Tx,
+        environment: &str,
+        intent: &SavedEnvironmentIntent,
+    ) -> Result<(), RpcError> {
+        let seals: Vec<_> = sealed_in(intent)
+            .map(|(service, variable)| (service, variable.id.as_str(), variable.key.as_str()))
+            .collect();
+        insert(tx, environment, &seals)
+    }
+
+    /// Record each variable every Environment's Working State holds sealed: seals
+    /// made before the ledger existed.
+    pub(crate) fn record_working(tx: &mut dyn Tx) -> Result<(), RpcError> {
+        for row in tx.query("SELECT id, working FROM config_environment", &[])? {
+            Self::record(tx, row.text(0)?, &row.intent(1, "Working State")?)?;
+        }
+        Ok(())
+    }
+
+    /// Record each variable every Environment's Working State and saved versions
+    /// hold sealed: seals saved before every save recorded them. Each Environment's
+    /// seals are recorded once, however many saves repeat them.
+    pub(crate) fn record_saved(tx: &mut dyn Tx) -> Result<(), RpcError> {
+        for environment in tx.query("SELECT id, working FROM config_environment", &[])? {
+            let id = environment.text(0)?;
+            let mut seals = BTreeSet::new();
+            let mut hold = |intent: &SavedEnvironmentIntent| {
+                seals.extend(sealed_in(intent).map(|(service, variable)| {
+                    (
+                        service.to_owned(),
+                        variable.id.clone(),
+                        variable.key.clone(),
+                    )
+                }));
+            };
+            hold(&environment.intent(1, "Working State")?);
+            // One Environment's saves at a time, so a Store of many holds only one in memory.
+            for row in tx.query(
+                "SELECT intent FROM config_saved WHERE environment_id = ?1",
+                &[id.into()],
+            )? {
+                hold(&row.intent(0, "Saved State")?);
+            }
+            let seals: Vec<_> = seals
+                .iter()
+                .map(|(service, variable, key)| (service.as_str(), variable.as_str(), key.as_str()))
+                .collect();
+            insert(tx, id, &seals)?;
+        }
+        Ok(())
+    }
 }
 
-/// Record each variable `working` holds sealed, at the write that seals it.
-pub(crate) fn record(
+/// Rows per `INSERT`: well under either database's limit on bound parameters.
+const INSERT_ROWS: usize = 500;
+
+/// Add each `(service, variable, key)` of `environment` to the ledger, in as few
+/// statements as the batch allows.
+fn insert(
     tx: &mut dyn Tx,
     environment: &str,
-    working: &SavedEnvironmentIntent,
+    seals: &[(&str, &str, &str)],
 ) -> Result<(), RpcError> {
-    for (service, variable) in sealed_in(working) {
+    for batch in seals.chunks(INSERT_ROWS) {
+        let rows = (0..batch.len())
+            .map(|row| {
+                let at = row * 4;
+                format!("(?{}, ?{}, ?{}, ?{})", at + 1, at + 2, at + 3, at + 4)
+            })
+            .collect::<Vec<_>>()
+            .join(", ");
+        let params: Vec<Param<'_>> = batch
+            .iter()
+            .flat_map(|&(service, variable, key)| {
+                [
+                    environment.into(),
+                    service.into(),
+                    variable.into(),
+                    key.into(),
+                ]
+            })
+            .collect();
         tx.execute(
-            "INSERT INTO config_sealed_variable (environment_id, service_id, variable_id, key) \
-             VALUES (?1, ?2, ?3, ?4) ON CONFLICT DO NOTHING",
-            &[
-                environment.into(),
-                service.into(),
-                variable.id.as_str().into(),
-                variable.key.as_str().into(),
-            ],
+            &format!(
+                "INSERT INTO config_sealed_variable (environment_id, service_id, variable_id, key) \
+                 VALUES {rows} ON CONFLICT DO NOTHING"
+            ),
+            &params,
         )?;
-    }
-    Ok(())
-}
-
-/// Record each variable every Environment's Working State holds sealed: seals made
-/// before the ledger existed.
-pub(crate) fn record_working(tx: &mut dyn Tx) -> Result<(), RpcError> {
-    for row in tx.query("SELECT id, working FROM config_environment", &[])? {
-        record(tx, row.text(0)?, &row.intent(1, "Working State")?)?;
     }
     Ok(())
 }
@@ -956,8 +1030,8 @@ pub(crate) fn sealed_rows(
     tx: &mut dyn Tx,
     environment: &str,
 ) -> Result<BTreeSet<(String, String)>, RpcError> {
-    let ever = EverSealed::load(tx, environment)?;
-    if ever.is_empty() {
+    let ledger = SealLedger::load(tx, environment)?;
+    if ledger.is_empty() {
         return Ok(BTreeSet::new());
     }
     let mut intents = Vec::new();
@@ -980,7 +1054,7 @@ pub(crate) fn sealed_rows(
             service
                 .variables
                 .iter()
-                .filter(|variable| ever.holds(&service.id, variable))
+                .filter(|variable| ledger.holds(&service.id, variable))
                 .map(|variable| (service.lineage_id.clone(), variable.key.clone()))
         })
         .collect())

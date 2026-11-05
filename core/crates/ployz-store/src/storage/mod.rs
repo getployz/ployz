@@ -76,7 +76,7 @@ const MIGRATIONS: &[(&str, Step)] = &[
         "0015_sealed_variable",
         Step::Rust(|tx, _| {
             tx.batch(include_str!("migrations/0015_sealed_variable.sql"))?;
-            crate::review::sealed::record_working(tx).map(|()| None)
+            crate::review::sealed::SealLedger::record_working(tx).map(|()| None)
         }),
     ),
     (
@@ -189,6 +189,10 @@ const MIGRATIONS: &[(&str, Step)] = &[
     (
         "0032_node_copied_from",
         Step::Sql(include_str!("migrations/0032_node_copied_from.sql")),
+    ),
+    (
+        "0033_record_saved_seals",
+        Step::Rust(|tx, _| crate::review::sealed::SealLedger::record_saved(tx).map(|()| None)),
     ),
 ];
 

@@ -832,7 +832,11 @@ pub(crate) fn persist_working(
             environment.summary.id.as_str().into(),
         ],
     )?;
-    crate::review::sealed::record(tx, environment.summary.id.as_str(), &environment.working)?;
+    crate::review::sealed::SealLedger::record(
+        tx,
+        environment.summary.id.as_str(),
+        &environment.working,
+    )?;
     let sealed = crate::review::sealed::newly_sealed(&before, &environment.working);
     crate::branch::empty_in_bases(tx, environment.summary.id.as_str(), &sealed)?;
     crate::branch::empty_sealed_below(tx, environment.summary.id.as_str(), &sealed, Some(&before))?;
