@@ -14,10 +14,10 @@ type Invites = Parameters<typeof PendingInvites>[0]["invites"];
 const invite = (id: string, email: string | null, row: Partial<Invites[number]> = {}): Invites[number] =>
   ({ id, email, role: "member", invited_by: "Ada", expires_at: "2026-10-21T12:00:00Z", ...row });
 
-function Pending({ initial, onRevoke }: { initial: Invites; onRevoke: (invite: string) => void }) {
+function Pending({ initial, onRevoke, timeZone = "UTC" }: { initial: Invites; onRevoke: (invite: string) => void; timeZone?: string }) {
   const [invites, setInvites] = useState(initial);
   return (
-    <PendingInvites invites={invites} manager onInvite={vi.fn()} onRevoke={(id) => {
+    <PendingInvites invites={invites} timeZone={timeZone} manager onInvite={vi.fn()} onRevoke={(id) => {
       onRevoke(id);
       setInvites((current) => current.filter((row) => row.id !== id));
     }} />
@@ -48,7 +48,7 @@ describe("MembersSettings", () => {
     client.setQueryData(organizationKeys.state("acme"), { organizations: [{ slug: "acme", name: "Acme" }] });
     client.setQueryDefaults(organizationKeys.state("acme"), { refetchOnMount: false });
     const router = createRouter({
-      routeTree: createRootRoute({ component: () => <MembersSettings organizationSlug="acme" /> }),
+      routeTree: createRootRoute({ loader: () => ({ timeZone: "UTC" }), component: () => <MembersSettings organizationSlug="acme" /> }),
       history: createMemoryHistory(),
     });
     await router.load();
@@ -190,4 +190,9 @@ describe("PendingInvites", () => {
     expect(document.activeElement).toBe(screen.getByRole("button", { name: "Invite" }));
     expect(onRevoke.mock.calls).toEqual([["inv-1"], ["inv-2"]]);
   });
+});
+
+it("shows an invite's expiry as the day it falls on in the viewer's zone", () => {
+  render(<Pending timeZone="Pacific/Pago_Pago" onRevoke={vi.fn()} initial={[invite("inv-1", null, { expires_at: "2026-10-21T02:00:00Z" })]} />);
+  expect(screen.getByRole("button", { name: /^Revoke link expiring Oct 20, 2026/ })).toBeTruthy();
 });

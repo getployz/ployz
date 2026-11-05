@@ -37,6 +37,9 @@ export const writeTimeZone = createClientOnlyFn(() => {
 /** The zone every rendered time uses; the root loader resolves it so SSR and hydration agree. */
 export const useTimeZone = () => useLoaderData({ from: rootRouteId, select: (data) => data.timeZone })
 
+/** A calendar day in the given zone: "Nov 5, 2026". */
+export const calendarDay = (timeZone: string) => new Intl.DateTimeFormat('en-US', { dateStyle: 'medium', timeZone })
+
 /** A wall-clock time ("14:03:05", or "14:03:05.123" with milliseconds) in the given zone. */
 export const clock = (timeZone: string, milliseconds = false) => new Intl.DateTimeFormat('en-GB', {
   hourCycle: 'h23', hour: '2-digit', minute: '2-digit', second: '2-digit', fractionalSecondDigits: milliseconds ? 3 : undefined, timeZone,

@@ -20,12 +20,12 @@ import { projectsQuery, requireView, useStoreView } from "#/modules/config-store
 import { createTokenServerFn, revokeTokenServerFn } from "#/modules/identity/organization-token.functions";
 import { organizationTokensQueryOptions, tokensKey } from "#/modules/identity/organization-token.queries";
 import type { TokenPreset } from "#/modules/identity/token-grant";
-
-const formatDate = (iso: string) => new Date(iso).toLocaleDateString(undefined, { dateStyle: "medium" });
+import { calendarDay, useTimeZone } from "#/utils/time-zone";
 
 export function TokensSettings({ organizationSlug }: { organizationSlug: string }) {
   const queryClient = useQueryClient();
   const { data: tokens } = useSuspenseQuery(organizationTokensQueryOptions(organizationSlug));
+  const timeZone = useTimeZone();
   const [making, setMaking] = useState(false);
   const refresh = () => queryClient.invalidateQueries({ queryKey: tokensKey(organizationSlug) });
   const revoke = useMutation({
@@ -39,7 +39,7 @@ export function TokensSettings({ organizationSlug }: { organizationSlug: string 
       {tokens.length > 0 ? (
         <SettingsList label="Tokens">
           {tokens.map((token) => (
-            <TokenItem key={token.id} token={token} revoking={revoke.isPending && revoke.variables === token.id} onRevoke={() => revoke.mutate(token.id)} />
+            <TokenItem key={token.id} token={token} timeZone={timeZone} revoking={revoke.isPending && revoke.variables === token.id} onRevoke={() => revoke.mutate(token.id)} />
           ))}
         </SettingsList>
       ) : (
@@ -55,8 +55,10 @@ export function TokensSettings({ organizationSlug }: { organizationSlug: string 
 
 type TokenOwner = { readonly name: string; readonly email: string; readonly you: boolean };
 
-export function TokenItem({ token, revoking, onRevoke }: {
+/** `timeZone` is the viewer's (`useTimeZone`), so the server render and the browser agree on the expiry's day. */
+export function TokenItem({ token, timeZone, revoking, onRevoke }: {
   token: { name: string; scope: string; expires_at: string; expired: boolean; owner: TokenOwner };
+  timeZone: string;
   revoking: boolean;
   onRevoke: () => void;
 }) {
@@ -67,7 +69,7 @@ export function TokenItem({ token, revoking, onRevoke }: {
     <SettingsListItem
       media={<KeyRoundIcon />}
       label={token.name}
-      hint={`${token.scope}${by} · ${token.expired ? "Expired" : "Expires"} ${formatDate(token.expires_at)}`}
+      hint={`${token.scope}${by} · ${token.expired ? "Expired" : "Expires"} ${calendarDay(timeZone).format(new Date(token.expires_at))}`}
       commit="confirm"
       actions={(
         <>

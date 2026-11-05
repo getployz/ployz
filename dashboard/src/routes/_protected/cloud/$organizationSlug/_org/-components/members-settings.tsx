@@ -35,14 +35,12 @@ import {
 import { membersKey, organizationMembersQueryOptions } from "#/modules/organization/members.queries";
 import { useOrganizationName } from "#/modules/organization/organization-state.queries";
 import { can } from "#/modules/organization/permissions";
+import { calendarDay, useTimeZone } from "#/utils/time-zone";
 
 type Role = "owner" | "admin" | "member";
 type InviteRole = Exclude<Role, "owner">;
 
 const ROLE_LABELS = { owner: "Owner", admin: "Admin", member: "Member" } satisfies Record<Role, string>;
-
-
-const formatDate = (iso: string) => new Date(iso).toLocaleDateString(undefined, { dateStyle: "medium" });
 
 type Pending = { kind: "remove"; email: string; name: string } | { kind: "leave" } | null;
 
@@ -51,6 +49,8 @@ export function MembersSettings({ organizationSlug }: { organizationSlug: string
   const navigate = useNavigate();
   const { data } = useSuspenseQuery(organizationMembersQueryOptions(organizationSlug));
   const organizationName = useOrganizationName(organizationSlug);
+  const timeZone = useTimeZone();
+  const day = calendarDay(timeZone);
   const [inviting, setInviting] = useState(false);
   const [confirming, setConfirming] = useState<Pending>(null);
   const queryKey = membersKey(organizationSlug);
@@ -114,7 +114,7 @@ export function MembersSettings({ organizationSlug }: { organizationSlug: string
                 key={row.email}
                 media={<UserIcon />}
                 label={<>{row.name}{row.you ? <span className="text-muted-foreground"> (you)</span> : null}</>}
-                hint={`${row.email} · Joined ${formatDate(row.joined_at)}`}
+                hint={`${row.email} · Joined ${day.format(new Date(row.joined_at))}`}
                 commit={editable ? "change" : "none"}
                 actions={(
                   <>
@@ -144,7 +144,7 @@ export function MembersSettings({ organizationSlug }: { organizationSlug: string
           })}
         </SettingsList>
       </SettingsSection>
-      <PendingInvites invites={data.invites} manager={manager} onRevoke={(invite) => revoke.mutate(invite)} onInvite={() => setInviting(true)} />
+      <PendingInvites invites={data.invites} timeZone={timeZone} manager={manager} onRevoke={(invite) => revoke.mutate(invite)} onInvite={() => setInviting(true)} />
       {inviting ? <InviteDialog organizationName={organizationName} mail={data.mail} invite={(input) => inviteMemberServerFn({ data: { organizationSlug, ...input } })} onInvited={refresh} onOpenChange={setInviting} /> : null}
       <AlertDialog
         open={confirming !== null}
@@ -189,16 +189,19 @@ export function MembersSettings({ organizationSlug }: { organizationSlug: string
 
 type PendingInvite = { id: string; email: string | null; role: InviteRole; invited_by: string; expires_at: string };
 
-export function PendingInvites({ invites, manager, onRevoke, onInvite }: {
+/** `timeZone` is the viewer's (`useTimeZone`), so the server render and the browser agree on each expiry's day. */
+export function PendingInvites({ invites, timeZone, manager, onRevoke, onInvite }: {
   invites: readonly PendingInvite[];
+  timeZone: string;
   manager: boolean;
   onRevoke: (invite: string) => void;
   onInvite: () => void;
 }) {
+  const day = calendarDay(timeZone);
   const revokeButtons = useRef(new Map<string, HTMLButtonElement>());
   const inviteButton = useRef<HTMLButtonElement>(null);
   const revokeNames = distinctNames(invites.map((invite) =>
-    [invite.email ?? `link expiring ${formatDate(invite.expires_at)}`, `from ${invite.invited_by}`, ROLE_LABELS[invite.role]]));
+    [invite.email ?? `link expiring ${day.format(new Date(invite.expires_at))}`, `from ${invite.invited_by}`, ROLE_LABELS[invite.role]]));
   // The invite below takes the revoked one's place, so focus moves to it, or up, or to Invite when none is left.
   function revoke(id: string) {
     const index = invites.findIndex((row) => row.id === id);
@@ -216,7 +219,7 @@ export function PendingInvites({ invites, manager, onRevoke, onInvite }: {
               key={invite.id}
               media={invite.email ? <MailIcon /> : <LinkIcon />}
               label={invite.email ?? "Anyone with the link"}
-              hint={`From ${invite.invited_by} · ${ROLE_LABELS[invite.role]} · expires ${formatDate(invite.expires_at)}`}
+              hint={`From ${invite.invited_by} · ${ROLE_LABELS[invite.role]} · expires ${day.format(new Date(invite.expires_at))}`}
               commit="change"
               actions={manager ? (
                 <Button variant="ghost" size="sm" onClick={() => revoke(invite.id)}
