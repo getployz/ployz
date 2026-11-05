@@ -91,7 +91,8 @@ export function useOpenCreatedService(params: EnvironmentRouteParams) {
       if (!router.matchRoute(panel, { fuzzy: true })) return;
       const stepBack = fromCanvas && router.history.location.state.__TSR_index === opened;
       await navigate({ to: ENVIRONMENT_INDEX_ROUTE_TO, params, replace: true, search: (prev) => prev });
-      if (stepBack) router.history.back();
+      // The replace keeps the index, so a Back or a new panel while it loaded moves it, and they already left.
+      if (stepBack && router.history.location.state.__TSR_index === opened) router.history.back();
     });
   };
 }
