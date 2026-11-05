@@ -135,9 +135,16 @@ it("rolls a drag back and shows the server's sentence when its save is refused",
       result.current.onNodeDrag(drag, node, [node]);
       result.current.onNodeDrag(drag, { ...node, position: { x: 80, y: 80 } }, [node]);
     });
-    await waitFor(() => expect(toastError).toHaveBeenCalledWith(refusal.message));
-    expect(toastError).toHaveBeenCalledTimes(1);
-    expect(collection.get("config:sentry")).toMatchObject({ x: 0, y: 0 });
+    const toastOnce = { id: "canvas-position-save" };
+    await waitFor(() => {
+      expect(toastError).toHaveBeenCalledWith(refusal.message, toastOnce);
+      expect(collection.get("config:sentry")).toMatchObject({ x: 0, y: 0 });
+    });
+    // The drag goes on after the refusal: its next save is refused too, and replaces the toast rather than adding one.
+    act(() => result.current.onNodeDrag(drag, { ...node, position: { x: 120, y: 120 } }, [node]));
+    await waitFor(() => expect(toastError).toHaveBeenCalledTimes(2));
+    expect(toastError.mock.calls).toEqual([[refusal.message, toastOnce], [refusal.message, toastOnce]]);
+    await waitFor(() => expect(collection.get("config:sentry")).toMatchObject({ x: 0, y: 0 }));
   } finally {
     await done();
   }
