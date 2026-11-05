@@ -1589,6 +1589,9 @@ impl BridgeNotes {
                     _ => vec![Pick::Go],
                 }
             }
+            // No `AfterRename` for `finish` or `Stopped::start`'s update: each returns nothing and
+            // only prints on Err (pins.rs:94-99, stopped.rs:88-93), so an Err after its rename
+            // leaves the files and the run a success leaves.
             At::Finish => {
                 let unchanged = state.pins == Pair::default()
                     && state
@@ -1924,7 +1927,8 @@ fn ran_loaded(state: &State, why: Why) -> bool {
     )
 }
 
-/// Each branch the bounds reach. `current_code_reaches_every_row` expects every row.
+/// Each branch the bounds reach. `current_code_breaks_both_properties_and_reaches_every_row`
+/// expects every row on the code as it is, and the two policy tests every row their policy keeps.
 const COVERAGE: &[Coverage] = &[
     // ensure_docker_network_shape (:718-785).
     Coverage {
@@ -2803,6 +2807,9 @@ fn reads_as(model: &BridgeNotes, before: &State, action: Action, after: &State) 
             match answer {
                 Settle::Leave => "; the refused operation is retried",
                 Settle::Stop => "; it is stopped without a note",
+                Settle::StopAndNote if model.broken.stop_before_note => {
+                    "; under stop_before_note, it is stopped before its note"
+                }
                 Settle::StopAndNote => "; it is noted before its stop",
             }
         ),
@@ -3933,8 +3940,8 @@ mod tests {
 
     // The policies.
 
-    /// Drop keeps every property but the first property's route 3, and gives up the rows that
-    /// start a member at a later daemon start after its start was refused or deferred.
+    /// Drop keeps every `always` property but the first property's route 3, and gives up the
+    /// rows that start a member at a later daemon start after its start was refused or deferred.
     #[test]
     fn fix_with_drop_breaks_only_route_3_and_gives_up_the_named_rows() {
         let model = fixed(OnRefusal::Drop);
