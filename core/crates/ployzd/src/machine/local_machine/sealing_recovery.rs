@@ -15,7 +15,7 @@ use thiserror::Error as ThisError;
 use super::LocalMachine;
 use crate::{
     corrosion::ClusterSealing,
-    sealing_key::SealingKey,
+    sealing_key::{KeyFile, SealingKey},
     sealing_recovery::{RestoreError, back_up, restore},
 };
 
@@ -93,18 +93,22 @@ impl LocalMachine {
     }
 
     /// Open a recovery backup with its code and keep the Sealing Key the Cluster
-    /// names, then publish its public half.
+    /// names, then insert its public half as the Cluster's (a no-op when a key is
+    /// already published there).
     ///
     /// The code is checked even when this Machine already holds that key, so a
-    /// caller learns a wrong code before it needs one.
+    /// caller learns a wrong code before it needs one. A key file that is not 32
+    /// bytes holds no key, so Recover writes the recovered key over it.
     ///
     /// # Errors
     ///
     /// Returns [`Error::CloudRouted`] through the management tunnel,
     /// [`super::Error::NotParticipating`] before participation,
     /// [`Error::NothingAwaited`] or [`Error::NoBackup`] without a key to recover or
-    /// a backup to open, a restore refusal, and [`Error::HeldAnother`] when this
-    /// Machine holds a different key.
+    /// a backup to open, a restore refusal, [`Error::HeldAnother`] when this
+    /// Machine holds a different key, [`Error::Unreadable`] when its key file
+    /// exists but cannot be read, and [`Error::Unwritable`] when the recovered key
+    /// cannot be written.
     pub(crate) async fn recover_sealing_key(
         &self,
         request: RecoverSealingKeyRequest,
@@ -118,6 +122,17 @@ impl LocalMachine {
             .await
     }
 
+    /// Recover reads the Cluster's Sealing and opens the backup first, then
+    /// answers from this Machine's key file:
+    ///
+    /// - the recovered key: keeps the file;
+    /// - another key: refuses [`Error::HeldAnother`];
+    /// - no file, or a file that is not 32 bytes: writes the recovered key over
+    ///   the file;
+    /// - a file that cannot be read: refuses [`Error::Unreadable`].
+    ///
+    /// Short of a refusal, it inserts the recovered public key as the Cluster's
+    /// (a no-op when a key is already published there) and answers it.
     async fn recover_admitted(
         &self,
         RecoverSealingKeyRequest { code, backup }: RecoverSealingKeyRequest,
@@ -143,20 +158,27 @@ impl LocalMachine {
             RestoreError::WrongCode => Error::WrongCode,
         })?;
         let data_dir = self.owner.data_dir();
-        match SealingKey::load(data_dir).map_err(Error::Unreadable)? {
-            Some(held) if held.public_key() != expected => {
+        match SealingKey::read(data_dir).map_err(Error::Unreadable)? {
+            KeyFile::Held(held) if held.public_key() != expected => {
                 return Err(Error::HeldAnother {
                     held: held.public_key(),
                     recovered: expected,
                 }
                 .into());
             }
-            Some(_) => {}
-            None => {
+            KeyFile::Held(_) => {}
+            file @ (KeyFile::Absent | KeyFile::Unusable) => {
                 self.owner
                     .mutate(move |store| store.set_sealing_key(Some(&key)))
                     .await?
                     .map_err(Error::Unwritable)?;
+                if file == KeyFile::Unusable {
+                    tracing::warn!(
+                        machine = %record.id(),
+                        public_key = %expected,
+                        "replaced a Sealing Key file that was not 32 bytes"
+                    );
+                }
             }
         }
         replicated.publish_sealing_public_key(expected).await?;

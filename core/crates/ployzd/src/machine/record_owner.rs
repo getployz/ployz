@@ -25,6 +25,7 @@ use tokio::sync::{oneshot, watch};
 
 use super::{LocalMachineRecord, LocalMachineStore};
 use crate::mutation::MutationGate;
+use crate::sealing_key::KeyFile;
 
 /// A mutation the owner thread applies to the store it owns.
 type Mutation =
@@ -53,7 +54,7 @@ pub struct RecordOwnerStopped;
 pub struct RecordOwner {
     mailbox: mpsc::Sender<Message>,
     record: watch::Receiver<Arc<LocalMachineRecord>>,
-    sealing: watch::Receiver<Option<ployz_core::Sealing>>,
+    sealing: watch::Receiver<Option<KeyFile<ployz_core::SealingPublicKey>>>,
     restart: watch::Sender<bool>,
     shared: Arc<Shared>,
 }
@@ -158,11 +159,14 @@ impl RecordOwner {
         self.record.clone()
     }
 
-    /// What this Machine holds of the Sealing Key, as the store last wrote it.
+    /// This Machine's Sealing Key file, as the store read it when it opened or
+    /// last set the key, with only the key's public half: `None` when the file
+    /// could not be read. A change made to the file outside the store is not
+    /// seen until the next open or set.
     ///
     /// The receiver closes when the owner stops.
     #[must_use]
-    pub(crate) fn sealing(&self) -> watch::Receiver<Option<ployz_core::Sealing>> {
+    pub(crate) fn sealing(&self) -> watch::Receiver<Option<KeyFile<ployz_core::SealingPublicKey>>> {
         self.sealing.clone()
     }
 
