@@ -1,7 +1,9 @@
 use ployz_core::{LocalMachinePhase, MachineId, RegisterRequest, RpcErrorCode, WireGuardPublicKey};
 
 use super::{EnrollPlan, LocalMachine, LocalMachineError, LocalMachineStore, RecordOwner};
-use crate::corrosion::{AdminClient, MachineView, fake_cluster, run_machine_publisher};
+use crate::corrosion::{
+    AdminClient, MachineView, ReplicatedStore, fake_cluster, run_machine_publisher,
+};
 use crate::sealing_key::SealingKey;
 
 mod backfill;
@@ -319,6 +321,184 @@ async fn register_after_forgetting_a_registered_row_lists_it_again() {
     let mut joined = registered;
     joined.runtime.management_identity =
         Some(crate::management::ManagementSecret::generate().public_key());
+    replicated.publish_local_machine(&joined).await.unwrap();
+    assert_eq!(
+        replicated.machine(joined.id.as_str()).await.unwrap(),
+        Some(joined)
+    );
+    server.abort();
+    drop(local);
+    let _ = std::fs::remove_dir_all(data_dir);
+}
+
+/// An Entry over the SQLite schema Corrosion runs, so Register's SQL guards apply.
+async fn sqlite_entry(
+    prefix: &str,
+) -> (
+    LocalMachine,
+    ReplicatedStore,
+    std::path::PathBuf,
+    tokio::task::JoinHandle<()>,
+) {
+    use crate::corrosion::store_tests::{corrosion_db, identity_store};
+
+    let db = corrosion_db();
+    // Register answers with the store's version, which cr-sqlite and Corrosion keep here.
+    db.execute_batch(
+        "CREATE TABLE crsql_db_versions (site_id BLOB PRIMARY KEY, db_version INTEGER);
+         CREATE TABLE __corro_bookkeeping_gaps (actor_id BLOB, start INTEGER, end INTEGER);
+         CREATE TABLE __corro_seq_bookkeeping (site_id BLOB, db_version INTEGER);",
+    )
+    .unwrap();
+    let (replicated, server) = identity_store(db).await;
+    replicated
+        .publish_cluster_network("10.210.0.0/16".parse().unwrap())
+        .await
+        .unwrap();
+    let (data_dir, store, founder) = open_store(prefix);
+    replicated.publish_local_machine(&founder).await.unwrap();
+    let local = LocalMachine::new(store).with_cluster(Some((
+        replicated.clone(),
+        AdminClient::new("/no/such/ployz-admin.sock"),
+    )));
+    (local, replicated, data_dir, server)
+}
+
+/// A Register that reaches an Entry after its Server joined, from Cloud on a stale
+/// snapshot or a rerun of `ployz server add`, leaves the row that Server published.
+#[tokio::test]
+async fn register_keeps_a_row_its_machine_already_published() {
+    let (local, replicated, data_dir, server) = sqlite_entry("ployzd-register-joined").await;
+
+    let identity = request("joiner", WireGuardPublicKey([41; 32]));
+    local.register(identity.clone()).await.unwrap();
+    let mut rekeyed = identity;
+    rekeyed.public_key = WireGuardPublicKey([42; 32]);
+    let assigned = local
+        .register(rekeyed.clone())
+        .await
+        .unwrap()
+        .assigned_machine;
+    assert_eq!(
+        replicated.machine(assigned.id.as_str()).await.unwrap(),
+        Some(assigned.clone())
+    );
+
+    let mut joined = assigned;
+    joined.runtime.daemon_version = "0.3.0".into();
+    joined.runtime.management_identity =
+        Some(crate::management::ManagementSecret::generate().public_key());
+    replicated.publish_local_machine(&joined).await.unwrap();
+    local.register(rekeyed).await.unwrap();
+    assert_eq!(
+        replicated.machine(joined.id.as_str()).await.unwrap(),
+        Some(joined.clone())
+    );
+
+    joined.runtime.running_builds += 1;
+    replicated.publish_local_machine(&joined).await.unwrap();
+    assert_eq!(
+        replicated.machine(joined.id.as_str()).await.unwrap(),
+        Some(joined)
+    );
+    server.abort();
+    drop(local);
+    let _ = std::fs::remove_dir_all(data_dir);
+}
+
+/// A CLI Register carries the Server's daemon version from its token before that
+/// Server joins. Another Register still replaces the row, and answers what it stored.
+#[tokio::test]
+async fn register_replaces_a_pending_row_that_carries_a_daemon_version() {
+    let (local, replicated, data_dir, server) = sqlite_entry("ployzd-register-pending").await;
+
+    let mut identity = request("joiner", WireGuardPublicKey([41; 32]));
+    identity.runtime.daemon_version = "0.3.16".into();
+    local.register(identity.clone()).await.unwrap();
+    let rekeyed = RegisterRequest {
+        public_key: WireGuardPublicKey([42; 32]),
+        ..identity
+    };
+    let assigned = local.register(rekeyed).await.unwrap().assigned_machine;
+    assert_eq!(assigned.public_key, WireGuardPublicKey([42; 32]));
+    assert_eq!(
+        replicated.machine(assigned.id.as_str()).await.unwrap(),
+        Some(assigned)
+    );
+    server.abort();
+    drop(local);
+    let _ = std::fs::remove_dir_all(data_dir);
+}
+
+/// A daemon without the `self_published` mark wrote rows that don't show who wrote
+/// them: its own publish, and a Register an older Entry stored with the identity the
+/// request named. A Register replaces such a row even under the same key, so the row
+/// names no identity, and forgetting it leaves a tombstone the next Register takes back.
+#[tokio::test]
+async fn register_replaces_a_row_without_the_mark_and_takes_back_its_forget() {
+    use crate::corrosion::store_tests::store_as_an_older_daemon;
+
+    let (local, replicated, data_dir, server) = sqlite_entry("ployzd-register-unmarked").await;
+
+    let identity = request("joiner", WireGuardPublicKey([41; 32]));
+    let mut older = local
+        .register(identity.clone())
+        .await
+        .unwrap()
+        .assigned_machine;
+    older.runtime.daemon_version = "0.3.16".into();
+    older.runtime.management_identity =
+        Some(crate::management::ManagementSecret::generate().public_key());
+    store_as_an_older_daemon(&replicated, &older).await;
+
+    let assigned = local
+        .register(identity.clone())
+        .await
+        .unwrap()
+        .assigned_machine;
+    assert_eq!(
+        replicated.machine(assigned.id.as_str()).await.unwrap(),
+        Some(assigned.clone())
+    );
+    replicated.forget_machine(&assigned.id).await.unwrap();
+    local.register(identity).await.unwrap();
+    assert_eq!(
+        replicated.machine(assigned.id.as_str()).await.unwrap(),
+        Some(assigned)
+    );
+    server.abort();
+    drop(local);
+    let _ = std::fs::remove_dir_all(data_dir);
+}
+
+/// A Register that names another key than the joined row replaces it, and the joined
+/// Machine's own publish writes it back.
+#[tokio::test]
+async fn a_register_with_another_key_over_a_published_row_is_replaced_and_its_publisher_restores_it()
+ {
+    let (local, replicated, data_dir, server) = sqlite_entry("ployzd-register-other-key").await;
+
+    let identity = request("joiner", WireGuardPublicKey([41; 32]));
+    let mut joined = local
+        .register(identity.clone())
+        .await
+        .unwrap()
+        .assigned_machine;
+    joined.runtime.daemon_version = "0.3.16".into();
+    joined.runtime.management_identity =
+        Some(crate::management::ManagementSecret::generate().public_key());
+    replicated.publish_local_machine(&joined).await.unwrap();
+
+    let rekeyed = RegisterRequest {
+        public_key: WireGuardPublicKey([43; 32]),
+        ..identity
+    };
+    let assigned = local.register(rekeyed).await.unwrap().assigned_machine;
+    assert_eq!(
+        replicated.machine(assigned.id.as_str()).await.unwrap(),
+        Some(assigned)
+    );
+
     replicated.publish_local_machine(&joined).await.unwrap();
     assert_eq!(
         replicated.machine(joined.id.as_str()).await.unwrap(),

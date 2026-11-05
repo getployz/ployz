@@ -1170,6 +1170,22 @@ const OLDER_GUARDED_UPSERT: &str = "INSERT INTO machines (id, info) SELECT ?1, ?
                     WHERE key LIKE 'forgotten:%' AND value = ?1) \
      ON CONFLICT (id) DO UPDATE SET info = excluded.info";
 
+/// Write `machine`'s row as v0.3.11 to v0.3.16 wrote both a self-publish and a
+/// Register: with [`OLDER_GUARDED_UPSERT`], so without the `self_published` mark.
+pub(crate) async fn store_as_an_older_daemon(store: &ReplicatedStore, machine: &Machine) {
+    store
+        .api()
+        .execute([Statement::new(
+            OLDER_GUARDED_UPSERT,
+            [
+                json!(machine.id),
+                json!(serde_json::to_string(machine).unwrap()),
+            ],
+        )])
+        .await
+        .unwrap();
+}
+
 #[tokio::test]
 async fn an_older_entry_still_lists_a_forgotten_registered_row() {
     let (store, task) = identity_store(corrosion_db()).await;
@@ -1226,7 +1242,7 @@ async fn a_forgotten_registered_id_keeps_only_itself_off_the_list() {
     store
         .machine_publication()
         .await
-        .register(&forgotten)
+        .register(forgotten.clone())
         .await
         .unwrap();
     assert_eq!(
@@ -1252,7 +1268,7 @@ async fn a_register_takes_back_the_forget_of_a_registered_row() {
     store
         .machine_publication()
         .await
-        .register(&machine)
+        .register(machine.clone())
         .await
         .unwrap();
 
@@ -1288,7 +1304,7 @@ async fn a_register_does_not_take_back_the_forget_of_a_joined_row() {
     store
         .machine_publication()
         .await
-        .register(&machine)
+        .register(machine.clone())
         .await
         .unwrap();
 
@@ -1841,6 +1857,57 @@ async fn container_rows_expose_rotation_and_gen_against_the_schema() {
             [json!("in"), json!(2)],
             [serde_json::Value::Null, serde_json::Value::Null]
         ]
+    );
+    task.abort();
+}
+
+#[tokio::test]
+async fn a_register_row_names_no_identity_so_its_forget_is_taken_back() {
+    let (store, task) = identity_store(corrosion_db()).await;
+    let (machine, _) = participating_record();
+    let claimed = joined(machine.clone());
+    store
+        .machine_publication()
+        .await
+        .register(claimed.clone())
+        .await
+        .unwrap();
+    assert_eq!(
+        store.machine(machine.id.as_str()).await.unwrap(),
+        Some(machine.clone())
+    );
+    store.forget_machine(&machine.id).await.unwrap();
+    store
+        .machine_publication()
+        .await
+        .register(claimed)
+        .await
+        .unwrap();
+    assert_eq!(
+        store.machine(machine.id.as_str()).await.unwrap(),
+        Some(machine)
+    );
+    task.abort();
+}
+
+/// A leaving Machine marks its own row in place, so the row is still its own publish,
+/// and a Register for it under its key leaves it, `leaving` included.
+#[tokio::test]
+async fn a_register_keeps_the_leaving_mark_of_a_row_its_machine_published() {
+    let (store, task) = identity_store(corrosion_db()).await;
+    let (machine, local) = participating_record();
+    let publication = store.machine_publication().await;
+    let mut published = publication
+        .publishable_machine(&local, RuntimeOverlay::default())
+        .unwrap();
+    publication.publish(&published).await.unwrap();
+    publication.mark_leaving(&machine.id, true).await.unwrap();
+    publication.register(machine.clone()).await.unwrap();
+    drop(publication);
+    published.runtime.leaving = true;
+    assert_eq!(
+        store.machine(machine.id.as_str()).await.unwrap(),
+        Some(published)
     );
     task.abort();
 }

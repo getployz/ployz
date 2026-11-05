@@ -94,22 +94,33 @@ impl MachinePublicationGuard<'_> {
         self.store.publish_local_machine_unlocked(machine).await
     }
 
-    /// Store a Register's row. A Register is an explicit add, so it takes back the
-    /// forget of a row that had no Management Identity: its `forgotten-id:` tombstone
-    /// goes in the same transaction, and a rerun of a failed add keeps its Server
-    /// (#3342). A tombstone keyed by a Management Identity stays, so a joined Server
-    /// that was forgotten is still not listed again (#3613).
-    pub(crate) async fn register(&self, machine: &Machine) -> Result<(), Error> {
+    /// Store a Register's row, as [`registration_upsert`] decides, and return the row
+    /// it sent. The call succeeds whether the row was written, kept, or held back by a
+    /// forget, and nothing tells the caller which: the returned row isn't read back, so
+    /// a kept row is not the one returned.
+    ///
+    /// A Register is an explicit add, so it takes back the forget of a row that had no
+    /// Management Identity: its `forgotten-id:` tombstone goes in the same transaction,
+    /// and a rerun of a failed add keeps its Server (#3342). A row a Register wrote names
+    /// no identity, so forgetting it leaves that tombstone. A row a Register kept carries
+    /// the mark, which outside tests only a publish of [`Self::publishable_machine`]
+    /// writes, and that row names a Management Identity. So forgetting a kept row leaves
+    /// `forgotten:<identity>`, which the #2927 fence reads. A tombstone keyed by a
+    /// Management Identity stays, so a joined Server that was forgotten is still not
+    /// listed again (#3613).
+    pub(crate) async fn register(&self, machine: Machine) -> Result<Machine, Error> {
+        let row = RegisterRow::new(machine);
         self.store
             .api
             .execute([
                 Statement::new(
                     "DELETE FROM cluster WHERE key = 'forgotten-id:' || ?",
-                    [json!(machine.id)],
+                    [json!(row.0.id)],
                 ),
-                machine_upsert(machine)?,
+                registration_upsert(&row)?,
             ])
-            .await
+            .await?;
+        Ok(row.0)
     }
 
     pub(crate) async fn remove(&self, machine_id: &MachineId) -> Result<(), Error> {
@@ -252,7 +263,8 @@ impl MachinePublicationGuard<'_> {
     }
 }
 
-/// Write `machine`'s row unless its id is forgotten and not listed.
+/// Write `machine`'s row, as this Machine's own publish, unless its id is forgotten
+/// and not listed.
 ///
 /// A forgotten id comes back only through a Register: a reset Machine rejoins under a
 /// new one. So neither the forgotten Machine's still-running publisher (#3418) nor an
@@ -260,14 +272,61 @@ impl MachinePublicationGuard<'_> {
 /// again. A joined row's tombstone is keyed by its identity and names the id in its
 /// value; a Registered row's is keyed `forgotten-id:<id>`, which only a Register
 /// clears.
+///
+/// The row gets `"self_published": true`, a key outside [`Machine`]'s fields that
+/// readers ignore. In the daemon only this statement writes it, and outside tests only
+/// the publisher reaches it, with [`MachinePublicationGuard::publishable_machine`].
+/// [`MachinePublicationGuard::mark_leaving`] edits the row in place and keeps it. A
+/// Register under the same WireGuard key keeps a row that has it
+/// ([`registration_upsert`]), so keep the name out of [`Machine`]: a field by that name
+/// would let a Register write it.
 fn machine_upsert(machine: &Machine) -> Result<Statement, Error> {
+    Ok(Statement::new(
+        "INSERT INTO machines (id, info) \
+         SELECT ?1, json_set(?2, '$.self_published', json('true')) \
+         WHERE EXISTS (SELECT 1 FROM machines WHERE id = ?1) \
+         OR (NOT EXISTS (SELECT 1 FROM cluster \
+                         WHERE key LIKE 'forgotten:%' AND value = ?1) \
+             AND NOT EXISTS (SELECT 1 FROM cluster WHERE key = 'forgotten-id:' || ?1)) \
+         ON CONFLICT (id) DO UPDATE SET info = excluded.info",
+        [json!(machine.id), json!(serde_json::to_string(machine)?)],
+    ))
+}
+
+/// A Machine row as a Register writes it. It names no Management Identity, because a
+/// Register can't vouch for one: [`RegisterRow::new`] drops any the request carried,
+/// and [`MachinePublicationGuard::register`] builds its row only through it. It is only
+/// [`Machine`]'s fields, so it never carries the mark [`machine_upsert`] writes.
+struct RegisterRow(Machine);
+
+impl RegisterRow {
+    fn new(mut machine: Machine) -> Self {
+        machine.runtime.management_identity = None;
+        Self(machine)
+    }
+}
+
+/// Write a Register's row unless its id is forgotten and not listed, as
+/// [`machine_upsert`] does. An existing row is kept only when this Entry's copy
+/// carries the `self_published` mark and names the Register's WireGuard key. Every
+/// other row is replaced: a Register's row, a marked row under another key, and a row
+/// whose whole body a daemon without the mark wrote, including one that names a
+/// Management Identity. So no Register keeps a row on the strength of an identity an
+/// older Entry stored from a Register request. The check reads only this Entry's
+/// replica: a self-publish that hasn't arrived is still overwritten, until that
+/// Machine's publisher writes its row back.
+fn registration_upsert(row: &RegisterRow) -> Result<Statement, Error> {
+    let RegisterRow(machine) = row;
     Ok(Statement::new(
         "INSERT INTO machines (id, info) SELECT ?1, ?2 \
          WHERE EXISTS (SELECT 1 FROM machines WHERE id = ?1) \
          OR (NOT EXISTS (SELECT 1 FROM cluster \
                          WHERE key LIKE 'forgotten:%' AND value = ?1) \
              AND NOT EXISTS (SELECT 1 FROM cluster WHERE key = 'forgotten-id:' || ?1)) \
-         ON CONFLICT (id) DO UPDATE SET info = excluded.info",
+         ON CONFLICT (id) DO UPDATE SET info = excluded.info \
+         WHERE json_extract(machines.info, '$.self_published') IS NULL \
+            OR json_extract(machines.info, '$.public_key') \
+               IS NOT json_extract(excluded.info, '$.public_key')",
         [json!(machine.id), json!(serde_json::to_string(machine)?)],
     ))
 }
@@ -289,6 +348,7 @@ impl ReplicatedStore {
         &self.api
     }
 
+    #[cfg(test)]
     pub async fn publish_local_machine(&self, machine: &Machine) -> Result<(), Error> {
         self.machine_publication().await.publish(machine).await
     }
