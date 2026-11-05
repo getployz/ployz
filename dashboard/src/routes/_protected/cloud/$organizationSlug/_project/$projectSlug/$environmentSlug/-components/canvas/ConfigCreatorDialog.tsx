@@ -6,6 +6,7 @@ import { Input } from "#/components/ui/input";
 import { DnsNameHint } from "#/components/dns-name-hint";
 import { dnsName } from "#/utils/dns-name";
 
+/** `onCreate` rejects once its failure has been shown (the Store writer toasts a refusal), so the dialog stays open to try again. */
 export function ConfigCreatorDialog({ open, onOpenChange, onCreate }: {
   open: boolean;
   onOpenChange: (open: boolean) => void;
@@ -29,6 +30,8 @@ export function ConfigCreatorDialog({ open, onOpenChange, onCreate }: {
       await onCreate(converted.name);
       onOpenChange(false);
       setName("config");
+    } catch {
+      // Already shown; the name stays for another try.
     } finally {
       setCreating(false);
     }
