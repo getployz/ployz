@@ -3,6 +3,8 @@
 //! interleaving within the bounds the module states.
 
 #[cfg(test)]
+mod build_handoff;
+#[cfg(test)]
 mod caddy_load;
 #[cfg(test)]
 mod pool_ownership;
