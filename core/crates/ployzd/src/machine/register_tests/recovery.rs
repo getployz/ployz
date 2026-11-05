@@ -1,13 +1,14 @@
 use ployz_core::{
-    AdvertisedEndpoint, MachineName, MachineRpc, MachineRpcClient, RecoverSealingKeyRequest,
-    RecoveryCode, RecoveryRefusal, RecoverySeed, RpcErrorCode, RpcResponseBody, Sealing,
-    SealingKeyBackup, SealingPublicKey, WrapSealingKeyRequest, op,
+    AdvertisedEndpoint, GenerateSealingKeyRequest, InstallSealingKeyRequest, MachineName,
+    MachineRpc, MachineRpcClient, RecoverSealingKeyRequest, RecoveryCode, RecoveryRefusal,
+    RecoverySeed, RpcErrorCode, RpcResponseBody, Sealing, SealingKeyBackup, SealingPublicKey,
+    ShareSealingKeyRequest, WrapSealingKeyRequest, op,
 };
 use tokio_stream::wrappers::TcpListenerStream;
 use tonic::{Code, Request, transport::Server};
 
 use super::super::{
-    LocalMachine, LocalMachineError, LocalMachineStore, RecordOwner, RecoveryError,
+    LocalMachine, LocalMachineError, LocalMachineStore, RecordOwner, RecoveryError, SealingError,
 };
 use super::harness::{machine_service, open_store, participating};
 use crate::corrosion::{AdminClient, ReplicatedStore, fake_cluster};
@@ -220,6 +221,107 @@ async fn a_founder_recovers_before_its_awaits_marker_replicates() {
     assert_eq!(
         replicated.sealing_public_key().await.unwrap(),
         Some(key.public_key())
+    );
+    server.abort();
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+#[tokio::test]
+async fn generate_refuses_on_a_seeded_founder_before_its_awaits_marker_replicates() {
+    let key = SealingKey::generate();
+    let code = RecoveryCode::generate();
+    let (local, replicated, dir, server) =
+        seeded(key.public_key(), Some(back_up(&key, &code))).await;
+    assert_eq!(replicated.sealing_awaits_recovery().await.unwrap(), None);
+
+    let generated = local
+        .generate_sealing_key(GenerateSealingKeyRequest {})
+        .await;
+
+    assert!(
+        matches!(
+            generated,
+            Err(LocalMachineError::Sealing(SealingError::AwaitsRecovery(awaited)))
+                if awaited == key.public_key()
+        ),
+        "a founder seeded for {} answered Generate with {generated:?}",
+        key.public_key(),
+    );
+    assert_eq!(held(&dir), None);
+    assert_eq!(replicated.sealing_public_key().await.unwrap(), None);
+    assert_eq!(
+        recover(&local, &code, None).await.unwrap(),
+        key.public_key()
+    );
+    server.abort();
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+#[tokio::test]
+async fn install_refuses_another_key_on_a_seeded_founder_before_its_awaits_marker_replicates() {
+    let key = SealingKey::generate();
+    let code = RecoveryCode::generate();
+    let (local, replicated, dir, server) =
+        seeded(key.public_key(), Some(back_up(&key, &code))).await;
+    assert_eq!(replicated.sealing_awaits_recovery().await.unwrap(), None);
+    let (holder_dir, holder_store, holder) = open_store("ployzd-recover-holder");
+    replicated.publish_local_machine(&holder).await.unwrap();
+    let holder_local = LocalMachine::new(holder_store).with_cluster(Some((
+        replicated.clone(),
+        AdminClient::new("/no/such/ployz-admin.sock"),
+    )));
+    let other = held(&holder_dir).unwrap();
+    let founder = local.owner().record().machine().unwrap().clone();
+    let sealed = holder_local
+        .share_sealing_key(ShareSealingKeyRequest {
+            machine: founder.id,
+            public_key: founder.public_key,
+        })
+        .await
+        .unwrap()
+        .sealed;
+
+    let installed = local
+        .install_sealing_key(InstallSealingKeyRequest {
+            from: holder.id,
+            sealed,
+            public_key: other,
+        })
+        .await;
+
+    assert!(
+        matches!(
+            installed,
+            Err(LocalMachineError::Sealing(SealingError::AwaitsRecovery(awaited)))
+                if awaited == key.public_key()
+        ),
+        "a founder seeded for {} answered Install of {other} with {installed:?}",
+        key.public_key(),
+    );
+    assert_eq!(held(&dir), None);
+    assert_eq!(replicated.sealing_public_key().await.unwrap(), None);
+    assert_eq!(
+        recover(&local, &code, None).await.unwrap(),
+        key.public_key()
+    );
+    server.abort();
+    let _ = std::fs::remove_dir_all(holder_dir);
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+#[tokio::test]
+async fn a_seeded_founder_reports_awaits_recovery_before_its_awaits_marker_replicates() {
+    let key = SealingKey::generate();
+    let code = RecoveryCode::generate();
+    let (local, replicated, dir, server) =
+        seeded(key.public_key(), Some(back_up(&key, &code))).await;
+    assert_eq!(replicated.sealing_awaits_recovery().await.unwrap(), None);
+
+    assert_eq!(
+        super::sealing(&local).await,
+        Some(Sealing::AwaitsRecovery {
+            public_key: key.public_key()
+        })
     );
     server.abort();
     let _ = std::fs::remove_dir_all(dir);
