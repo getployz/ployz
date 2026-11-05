@@ -40,16 +40,20 @@ The model in `core/crates/ployz-verify/src/acme_issuance.rs` explores when each 
 
 ## The finding
 
-`first_seen` keeps aging through a hold of the shared clock, and through a pass that returns before the gate. So once the gate opens, rank 1 can push the hostname in the same tick as rank 0, though it waited no rank delay since its last blocked pass. The checker finds four routes, each with its own test.
+`first_seen` keeps aging through a hold of the shared clock, and through a pass that returns before the gate. So once the gate opens, or the early return clears, rank 1 can push the hostname in the same tick as rank 0, though it waited no rank delay since its last blocked pass. The checker finds four routes, each with its own test. Each story, and the PR's diagram, shows one possible schedule: the real loops pass in either order within a step.
 
 - **The authority hold** (`current_code_lets_rank_1_order_with_rank_0_after_an_authority_hold`). At 0 s rank 0's pass pushes the hostname, and its order fails. The record writes an Authority clock with one failure and `next_attempt_at` 60 s after the pass's `wall` (`DEFAULT_BACKOFF_BASE`, `core/crates/ployz-core/src/domain/certificate_policy.rs:20-21`). Rank 1's pass inserts `first_seen` (`:483`), and the gate holds it (`:510`). At 30 s both Machines are held, and rank 1 is now Order-due. At 60 s the clock has passed, and both push the hostname.
 - **The verdict change** (`current_code_lets_rank_1_order_with_rank_0_when_the_verdict_changes_during_a_refused_hold`). Both probes find the hostname does not resolve. Rank 0 refuses and records a DoesNotResolve clock, and rank 1's pass inserts `first_seen` and is held. At 30 s both probes reach the Cluster. That verdict differs from the clock's refusal, so `issuance_gate` opens with 30 s still on the clock (`core/crates/ployz-core/src/domain/issuance.rs:76-83`), and both push the hostname.
-- **The policy refusal** (`current_code_lets_rank_1_order_with_rank_0_after_a_policy_refusal`). At 0 s rank 1's pass inserts `first_seen` and waits out its rank delay. The operator sets a Certificate Policy that `resolve_certificate_policy` refuses. At 30 s rank 1's pass records the policy's reason and returns before the gate, and `run` sleeps 60 s (`:444`). The operator repairs the policy. At 90 s rank 0's loop makes its first pass and pushes the hostname, and so does rank 1's.
-- **An Err before the gate** (`current_code_lets_rank_1_order_with_rank_0_after_an_error_before_the_gate`). It is the policy refusal's schedule, with a call before the gate returning Err at 30 s in place of the refusal (`:394-400`).
+- **The policy refusal** (`current_code_lets_rank_1_order_with_rank_0_after_a_policy_refusal`). Rank 0 is on time. At 0 s rank 1's pass inserts `first_seen` and waits out its rank delay. The operator sets a Certificate Policy that `resolve_certificate_policy` refuses, and rank 0's first pass, also at 0 s, records the policy's reason and returns before the gate; `run` sleeps 60 s (`:444`). At 30 s rank 1's pass returns the same way. The operator repairs the policy. At 60 s rank 0's sleep ends and it pushes the hostname. A container change wakes rank 1's loop at that moment (`:370`, `:402-409`), and rank 1 pushes too. The refusal held rank 0 back as long as rank 1, so neither Machine's delay separates them.
+- **An Err before the gate** (`current_code_lets_rank_1_order_with_rank_0_after_an_error_before_the_gate`). It is the policy refusal's schedule, with a call before the gate returning Err in place of each refusal, rank 0's at 0 s and rank 1's at 30 s; `run` waits `RETRY_INTERVAL`, 60 s (`:394-400`).
 
-Each test replays its schedule with `follow`, asserts each branch, and then asks the checker for its first path to the same broken state (`breaks_where`). The checker keeps one path to each state, the first in BFS order, and a shorter path can reach the same state, so the replay shows the route's own schedule, and the second check shows the checker discovers its end state. Each pass in a replay is at a time `poll_wait` allows, which its story row prints.
+A rank 0 whose first pass comes late pushes with rank 1 on the fix too, with no early return at all: that is risk 2's family (What the property is not, below), not this finding.
 
-**The timing condition.** Rank 1's `first_seen` must be at least one `issuance_step` old when the gate opens. While it is Order-due and held, `poll_wait` answers `RANK_STEP` (`:204`), so both Machines re-check every 30 s and meet the opening within one step. It recurs on every hold, since a hold leaves `first_seen` in place. Four lines end it, each by removing the entry: a restart (`:367`), the hostname leaving the wanted set (`:453`), material present (`:476`) and a refusal (`:512`). `a_restart_restarts_the_rank_delay` shows a restart ending it.
+Each test replays its schedule with `follow`, asserts each branch, and then asks the checker for its first path to the same broken state (`breaks_where`). The checker keeps one path to each state, the first in BFS order, and a shorter path can reach the same state, so the replay shows the route's own schedule, and the second check shows the checker discovers its end state. Each pass in a replay comes when its Machine's requested sleep ends, which its story row prints, except rank 1's last pass in the policy refusal and the Err, which a container change wakes.
+
+**The timing condition.** Rank 1's `first_seen` must be at least one `issuance_step` old at its first pass after the gate opens. While rank 1 is Order-due and held, `poll_wait` asks for a 30 s sleep, `RANK_STEP` (`:204`). That is a requested sleep, not a cadence: a pass takes time, store outages and probes delay the next check, and a container change wakes the loop early (`:402-409`). The replays meet at the opening, which is one possible schedule when passes are short. Meeting there is not needed: in `a_late_recheck_still_lets_rank_1_order_with_rank_0` both Machines recheck 60 s after the gate opens, and rank 1 still pushes with rank 0. It recurs on every hold, since a hold leaves `first_seen` in place.
+
+Four lines remove the entry: a restart (`:367`), the hostname leaving the wanted set (`:453`), material present (`:476`) and a refusal (`:512`). A removal ends the route only when no held pass inserts `first_seen` again at least one issuance step before the gate opens (`:480-485`). Early in a hold it does not: in `an_early_restart_does_not_end_the_route`, rank 1's daemon restarts right after its first held pass, its next held pass inserts `first_seen` again, and rank 1 still pushes with rank 0 when the gate opens. `a_restart_restarts_the_rank_delay` restarts rank 1 after the gate opens, so it covers only the late case.
 
 **The property** is `RANK_DELAY_KEPT`, an `always`: "a Machine of rank r pushes the hostname to to_order only r issuance steps or more after its first pass since its last blocked pass". A blocked pass is one whose gate answered Nothing or Refuse, or one that returned before the gate: the policy refusal, no directory, an Err before the gate, or material present. A Machine's first pass ever counts as unblocked. `Machine::unblocked` holds the ticks since that pass, and `Branch::Pushed { early }` compares them with the rank.
 
@@ -73,16 +77,16 @@ It is justified from the code. The doc comment on `RANK_STEP`, in full (`:44`):
 cd core && cargo nextest run -p ployz-verify acme_issuance --no-capture
 ```
 
-Expected: the summary line ends with `17 tests run: 17 passed, 133 skipped`. `current_code_breaks_only_the_rank_delay` prints `as is: 370920 states`, `the_fix_keeps_the_rank_delay` prints `fixed: 205372 states`, and `only_rank_zero_records_a_refusal` prints `fixed, any rank records: 238600 states`. Each story prints under its test's name. A warm run takes about 16 s of nextest time. CI runs `ployz-verify` in its workspace nextest run.
+Expected: the summary line ends with `19 tests run: 19 passed, 133 skipped`. `current_code_breaks_only_the_rank_delay` prints `as is: 370920 states`, `the_fix_keeps_the_rank_delay` prints `fixed: 205372 states`, and `only_rank_zero_records_a_refusal` prints `fixed, any rank records: 238600 states`. Each story prints under its test's name. `--no-capture` runs the tests one at a time, so a warm run takes about 12 to 20 s of nextest time; without it, about 4 s. CI runs `ployz-verify` in its workspace nextest run.
 
 Read the tests in four groups.
-- **The finding, on the code as it is.** The four route tests above, and `current_code_breaks_only_the_rank_delay`, which expects `RANK_DELAY_KEPT` to break, `HOLD_KEPT` and `NO_ORDER_OVER_MATERIAL` to hold, and every `COVERAGE` row that is not `Reach::Fix` to be reached. It also prints the checker's first broken path: rank 1's pass waits out its rank delay, a container change wakes its loop at once and a call before the gate returns Err, and a tick later rank 1 pushes the hostname, measured from its pass after the Err.
+- **The finding, on the code as it is.** The four route tests above; `a_late_recheck_still_lets_rank_1_order_with_rank_0` and `an_early_restart_does_not_end_the_route`, which pin the timing condition; and `current_code_breaks_only_the_rank_delay`, which expects `RANK_DELAY_KEPT` to break, `HOLD_KEPT` and `NO_ORDER_OVER_MATERIAL` to hold, and every `COVERAGE` row that is not `Reach::Fix` to be reached. It also prints the checker's first broken path: rank 1's pass waits out its rank delay, a container change wakes its loop at once and a call before the gate returns Err, and a tick later rank 1 pushes the hostname, measured from its pass after the Err.
 - **The code's guards.**
   - `the_gate_holds_while_the_clock_holds` sets `hold_orders` and expects `HOLD_KEPT` to break. It then keeps to a path whose last pass's probe finds the hostname does not resolve: a held Refused verdict has no route to order along, so the break orders along Direct, the model's only route.
   - `obtain_rechecks_material` sets `obtain_skips_recheck` and expects `NO_ORDER_OVER_MATERIAL` to break.
   - `a_refusal_restarts_the_rank_delay` sets `refusal_keeps_first_seen` on the fix: rank 1 refuses with no clock recorded yet, its verdict changes, and it is Order-due at once.
   - `only_rank_zero_records_a_refusal` sets `any_rank_records` on the fix (The fix, below).
-  - `a_restart_restarts_the_rank_delay`, `an_order_s_clock_counts_from_its_pass` and `a_tick_is_one_issuance_step` pin the restart, the failure clock's `wall` and the tick (Bounds).
+  - `a_restart_restarts_the_rank_delay`, `an_order_s_clock_counts_from_its_pass` and `a_tick_is_one_issuance_step` pin the late restart, the failure clock's `wall` and the tick (Bounds).
 - **The fix.**
   - `the_fix_keeps_the_rank_delay` runs `fixed()` with `assert_properties`: every `always` holds, and every row is reached.
   - `the_fix_waits_on_each_finding_s_schedule` replays each route's schedule under the fix: rank 1's last pass inserts `first_seen` and waits, and a tick later it pushes the hostname.
@@ -103,7 +107,7 @@ a pass that returns before the gate    drops first_seen, with Ok or Err
 | The drop on a held pass | The authority hold and the verdict change: rank 1's next pass after the hold inserts `first_seen` and waits its rank delay | `fix_hold_keeps_first_seen` | `the_fix_needs_its_hold_reset`, `RANK_DELAY_KEPT` |
 | The drop on a pass that returns before the gate | The policy refusal, no directory and an Err before the gate | `fix_early_return_keeps_first_seen` | `the_fix_needs_its_early_return_reset`, `RANK_DELAY_KEPT`, by replays of the policy refusal, no directory and the Err |
 
-The second part exists because the policy refusal and the Err are code paths that return before the gate (`:436-449`, `:394-400`). E-46 must cover them too.
+The second part exists because the policy refusal and the Err are code paths that return before the gate (`:436-449`, `:394-400`). With rank 0 on time, the same early return holds rank 0 back too, and once it clears both Machines push in the same tick (`THE_POLICY_REFUSAL`, `THE_ERROR`). The drop makes rank 1's next pass wait its rank delay (`the_fix_waits_on_each_finding_s_schedule`). That is the harm the reset prevents, so E-46 must cover these routes too.
 
 What the fix keeps as it is:
 - **Only rank 0 records a refusal** (`:513`). No `always` property in this model needs that restriction: with `any_rank_records` on the fix, every `always` still holds. What changes is that the row "rank 1 refuses and records nothing, and the row holds no reason" goes unreached, and every other row is still reached. So with rank 0 running no loop, no Machine records the refusal. `redact_certificate` then reports Unknown for a row with no material, no challenge, no clock and no reason (`core/crates/ployzd/src/runtime_watch.rs:422-423`).
@@ -161,7 +165,14 @@ A counterexample is a lead, not a verdict. Before calling it a bug, confirm each
 
 ## Breaking a guard yourself
 
-Set its `Broken` flag through `as_is_without` or `fixed_without`. That changes one model, so only the tests that set the flag see it. Add `--no-fail-fast` to the nextest command, so every red test is listed.
+Each `Broken` flag is already set by its own test, so setting one in a test of your own changes no other test and turns none red. To check the flag table below, run `scratch_flag_kinds`, after it. To break a guard in a new test, set its flag through `as_is_without` or `fixed_without`. That changes one model, so only the tests that set the flag see it. Add `--no-fail-fast` to the nextest command, so every red test is listed.
+
+A failure prints the property's full string, not its constant's name:
+- `RANK_DELAY_KEPT`: "a Machine of rank r pushes the hostname to to_order only r issuance steps or more after its first pass since its last blocked pass";
+- `HOLD_KEPT`: "no pass pushes the hostname to to_order while its snapshot's clock holds and its verdict leaves the clock standing";
+- `NO_ORDER_OVER_MATERIAL`: "no obtain orders while the row it re-reads holds material that is not due for renewal".
+
+A `COVERAGE` row prints its `name`.
 
 Which kind of property each flag breaks, from a scratch run that checked each flagged model in full. It lists the `always` properties that break on the flagged model but not on its unflagged one, and the rows the unflagged model reaches but the flagged one does not. On the code as it is, `RANK_DELAY_KEPT` breaks with or without a flag.
 
@@ -174,7 +185,7 @@ Which kind of property each flag breaks, from a scratch run that checked each fl
 | `fix_hold_keeps_first_seen` | `RANK_DELAY_KEPT` | "the fix drops first_seen on a held pass" |
 | `fix_early_return_keeps_first_seen` | `RANK_DELAY_KEPT` | "the fix drops first_seen on a pass that returns before the gate" |
 
-The scratch test that printed it follows. Put it at the end of `mod tests`, before the file's last closing brace, and run it alone; it takes about 9 s of nextest time in release.
+The scratch test that printed it follows. Put it at the end of `mod tests`, before the file's last closing brace, and run it alone; it takes about 9 to 12 s of nextest time in release.
 
 ```rust
     #[test]
@@ -216,28 +227,30 @@ An edit to the model's code changes every model at once. For this PR, each edit 
 
 | Edit, by function | Tests that went red |
 |---|---|
-| K01. `AcmeIssuance::pass`: `IssuanceGate::Nothing if self.broken.hold_orders =>` read as `IssuanceGate::Nothing if true =>`, so every model's held pass orders along Direct | `a_restart_restarts_the_rank_delay`, `current_code_breaks_only_the_rank_delay`, `current_code_lets_rank_1_order_with_rank_0_after_an_authority_hold`, `current_code_lets_rank_1_order_with_rank_0_when_the_verdict_changes_during_a_refused_hold`, `only_rank_zero_records_a_refusal`, `the_fix_keeps_the_rank_delay`, `the_fix_needs_its_hold_reset`, `the_fix_on_each_edge_state`, `the_fix_waits_on_each_finding_s_schedule` |
+| K01. `AcmeIssuance::pass`: `IssuanceGate::Nothing if self.broken.hold_orders =>` read as `IssuanceGate::Nothing if true =>`, so every model's held pass orders along Direct | `a_late_recheck_still_lets_rank_1_order_with_rank_0`, `a_restart_restarts_the_rank_delay`, `an_early_restart_does_not_end_the_route`, `current_code_breaks_only_the_rank_delay`, `current_code_lets_rank_1_order_with_rank_0_after_an_authority_hold`, `current_code_lets_rank_1_order_with_rank_0_when_the_verdict_changes_during_a_refused_hold`, `only_rank_zero_records_a_refusal`, `the_fix_keeps_the_rank_delay`, `the_fix_needs_its_hold_reset`, `the_fix_on_each_edge_state`, `the_fix_waits_on_each_finding_s_schedule` |
 | K02. `AcmeIssuance::pass`: `if !self.broken.refusal_keeps_first_seen {` read as `if false {`, so no refusal removes `first_seen` | `a_refusal_restarts_the_rank_delay`, `only_rank_zero_records_a_refusal`, `the_fix_keeps_the_rank_delay`, `the_fix_needs_its_hold_reset` |
 | K03. `AcmeIssuance::pass`: `if rank == 0 \|\| self.broken.any_rank_records {` read as `if true {`, so every rank records its refusal | `a_refusal_restarts_the_rank_delay`, `current_code_breaks_only_the_rank_delay`, `the_fix_keeps_the_rank_delay` |
 | K04. `AcmeIssuance::obtain`: `let rechecks = reread.material && !self.broken.obtain_skips_recheck;` replaced by `let rechecks = false;` | `current_code_breaks_only_the_rank_delay`, `only_rank_zero_records_a_refusal`, `the_fix_keeps_the_rank_delay` |
 | K05. `resets_on_hold`: its body `self.fix && !self.broken.fix_hold_keeps_first_seen` replaced by `self.fix`, so the flag does nothing | `the_fix_needs_its_hold_reset` |
 | K06. `resets_on_hold`: its body replaced by `false`, so the fix keeps `first_seen` on a held pass | `only_rank_zero_records_a_refusal`, `the_fix_keeps_the_rank_delay`, `the_fix_on_each_edge_state`, `the_fix_waits_on_each_finding_s_schedule` |
-| K07. `resets_on_hold`: its body replaced by `true`, so the code as it is drops `first_seen` on a held pass too | `a_restart_restarts_the_rank_delay`, `current_code_lets_rank_1_order_with_rank_0_after_an_authority_hold`, `current_code_lets_rank_1_order_with_rank_0_when_the_verdict_changes_during_a_refused_hold`, `the_fix_needs_its_hold_reset`, `the_fix_on_each_edge_state` |
+| K07. `resets_on_hold`: its body replaced by `true`, so the code as it is drops `first_seen` on a held pass too | `a_late_recheck_still_lets_rank_1_order_with_rank_0`, `a_restart_restarts_the_rank_delay`, `an_early_restart_does_not_end_the_route`, `current_code_lets_rank_1_order_with_rank_0_after_an_authority_hold`, `current_code_lets_rank_1_order_with_rank_0_when_the_verdict_changes_during_a_refused_hold`, `the_fix_needs_its_hold_reset`, `the_fix_on_each_edge_state` |
 | K08. `resets_on_early_return`: its body `self.fix && !self.broken.fix_early_return_keeps_first_seen` replaced by `self.fix`, so the flag does nothing | `the_fix_needs_its_early_return_reset` |
 | K09. `resets_on_early_return`: its body replaced by `false`, so the fix keeps `first_seen` on a pass that returns before the gate | `only_rank_zero_records_a_refusal`, `the_fix_keeps_the_rank_delay`, `the_fix_needs_its_hold_reset`, `the_fix_waits_on_each_finding_s_schedule` |
-| K10. `AcmeIssuance::pass`: `early: usize::from(since) < rank,` replaced by `early: false,`, so `RANK_DELAY_KEPT` never fires | `a_refusal_restarts_the_rank_delay`, `current_code_breaks_only_the_rank_delay`, `current_code_lets_rank_1_order_with_rank_0_after_a_policy_refusal`, `current_code_lets_rank_1_order_with_rank_0_after_an_authority_hold`, `current_code_lets_rank_1_order_with_rank_0_after_an_error_before_the_gate`, `current_code_lets_rank_1_order_with_rank_0_when_the_verdict_changes_during_a_refused_hold`, `the_fix_needs_its_early_return_reset`, `the_fix_needs_its_hold_reset` |
-| K11. `AcmeIssuance::obtain`: `let wall = now() - tick() * u32::from(order.ago);` replaced by `let wall = now();`, so the failure clock counts from the order's end | `an_order_s_clock_counts_from_its_pass` |
-| K12. `AcmeIssuance::tick`: `clock.left = clock.left.saturating_sub(1);` deleted, so no clock passes | `a_restart_restarts_the_rank_delay`, `an_order_s_clock_counts_from_its_pass`, `current_code_lets_rank_1_order_with_rank_0_after_an_authority_hold`, `current_code_lets_rank_1_order_with_rank_0_when_the_verdict_changes_during_a_refused_hold`, `the_fix_needs_its_hold_reset`, `the_fix_waits_on_each_finding_s_schedule` |
-| K13. `AcmeIssuance::pass`, the policy refusal: `if state.row.last_error() == Some(Reason::Policy) {` read as `if false {`, so `record_certificate_error` writes over its own reason | `current_code_breaks_only_the_rank_delay`, `only_rank_zero_records_a_refusal`, `the_fix_keeps_the_rank_delay` |
+| K10. `AcmeIssuance::pass`: `early: usize::from(since) < rank,` replaced by `early: false,`, so `RANK_DELAY_KEPT` never fires | `a_late_recheck_still_lets_rank_1_order_with_rank_0`, `a_refusal_restarts_the_rank_delay`, `an_early_restart_does_not_end_the_route`, `current_code_breaks_only_the_rank_delay`, `current_code_lets_rank_1_order_with_rank_0_after_a_policy_refusal`, `current_code_lets_rank_1_order_with_rank_0_after_an_authority_hold`, `current_code_lets_rank_1_order_with_rank_0_after_an_error_before_the_gate`, `current_code_lets_rank_1_order_with_rank_0_when_the_verdict_changes_during_a_refused_hold`, `the_fix_needs_its_early_return_reset`, `the_fix_needs_its_hold_reset` |
+| K11. `AcmeIssuance::obtain`: `let wall = now() - tick() * u32::from(order.ago);` replaced by `let wall = now();`, so the failure clock counts from the order's end | `an_order_s_clock_counts_from_its_pass`, `current_code_breaks_only_the_rank_delay`, `only_rank_zero_records_a_refusal`, `the_fix_keeps_the_rank_delay`: the row "an order that ends ticks after its pass counts its clock from the pass" goes unreached |
+| K12. `AcmeIssuance::tick`: `clock.left = clock.left.saturating_sub(1);` deleted, so no clock passes | `a_late_recheck_still_lets_rank_1_order_with_rank_0`, `a_restart_restarts_the_rank_delay`, `an_early_restart_does_not_end_the_route`, `an_order_s_clock_counts_from_its_pass`, `current_code_lets_rank_1_order_with_rank_0_after_an_authority_hold`, `current_code_lets_rank_1_order_with_rank_0_when_the_verdict_changes_during_a_refused_hold`, `the_fix_needs_its_hold_reset`, `the_fix_waits_on_each_finding_s_schedule` |
+| K13. `AcmeIssuance::pass`, the policy refusal: `if state.row.last_error() == Some(Reason::Policy) {` read as `if false {`, so `record_certificate_error` writes over its own reason | `current_code_breaks_only_the_rank_delay`, `current_code_lets_rank_1_order_with_rank_0_after_a_policy_refusal`, `only_rank_zero_records_a_refusal`, `the_fix_keeps_the_rank_delay` |
 | K14. `AcmeIssuance::pass`, material present: `machine.first_seen = None;` before `block(machine);` deleted | `the_fix_on_each_edge_state` |
 | K15. `AcmeIssuance::restart`: `machine.first_seen = None;` deleted | `a_restart_restarts_the_rank_delay`, `current_code_breaks_only_the_rank_delay`, `only_rank_zero_records_a_refusal`, `the_fix_keeps_the_rank_delay` |
-| K16. `AcmeIssuance::pass`, the Nothing arm: `block(machine);` deleted, so a held pass does not restart the property's count | `the_fix_on_each_edge_state` |
+| K16. `AcmeIssuance::pass`, the Nothing arm: its `block(machine);`, the one just before `let reset = self.resets_on_hold();`, deleted, so a held pass does not restart the property's count | `the_fix_on_each_edge_state` |
 | K17. `Clock::holds`: its body `self.left > 0 && !(self.last == Failure::DoesNotResolve && verdict != Verdict::DoesNotResolve)` replaced by `self.left > 0`, so the model's reading of the gate ignores a verdict change | `current_code_breaks_only_the_rank_delay`, `current_code_lets_rank_1_order_with_rank_0_when_the_verdict_changes_during_a_refused_hold`, `only_rank_zero_records_a_refusal`, `the_fix_keeps_the_rank_delay`, `the_fix_on_each_edge_state` |
 | K18. `actions`: `actions.push(Action::Errs(who));` deleted, so no call before the gate returns Err | `current_code_breaks_only_the_rank_delay`, `current_code_lets_rank_1_order_with_rank_0_after_an_error_before_the_gate`, `only_rank_zero_records_a_refusal`, `the_fix_keeps_the_rank_delay`, `the_fix_needs_its_early_return_reset`, `the_fix_waits_on_each_finding_s_schedule` |
 
+K06 and K09 are the same as deleting the fix's drop itself. Deleting `if reset { machine.first_seen = None; }` from the Nothing arm turns K06's tests red: `only_rank_zero_records_a_refusal`, `the_fix_keeps_the_rank_delay`, `the_fix_on_each_edge_state` and `the_fix_waits_on_each_finding_s_schedule`. Reading `machine.first_seen.take().is_some()` in `early_return` as `machine.first_seen.is_some()` turns K09's red: `only_rank_zero_records_a_refusal`, `the_fix_keeps_the_rank_delay`, `the_fix_needs_its_hold_reset` and `the_fix_waits_on_each_finding_s_schedule`.
+
 A side-effect failure is a test whose pinned path or expected rows your edit already moved, such as `a_restart_restarts_the_rank_delay` under K01. A guard that no longer earns its keep fails with its flag alone, on a model with no other edit.
 
-**Making a `COVERAGE` row unreachable.** Put `false && ` inside the row's closure, before its body. For a row whose closure is one expression:
+**Making a `COVERAGE` row unreachable.** Put `false && ` inside the row's closure, before its body, whether the body starts with `matches!(` or `took(`. For a row whose closure is one expression:
 
 ```rust
         reached: |_, state| false && matches!(state.took, Some(Branch::NoDirectory { .. })),
@@ -251,6 +264,18 @@ For a row whose closure is a block, inside the brace:
                 state.took,
                 // the row's pattern, unchanged
             )
+        },
+```
+
+or, for a row built on `took`:
+
+```rust
+        reached: |_, state| {
+            false && took(
+                state,
+                // the row's branch, unchanged
+            ) && state
+                // the rest of the row, unchanged
         },
 ```
 
@@ -276,15 +301,28 @@ Each of the 29 rows was made unreachable alone this way. Every row turned the te
 
 | Bound | Value | What needs it | Dropped by one: tests that went red | Lifted by one: states as is / fixed |
 |---|---|---|---|---|
-| `MACHINES` | 2 | every finding needs a rank 1 | to 1: `a_refusal_restarts_the_rank_delay`, `a_restart_restarts_the_rank_delay`, `current_code_breaks_only_the_rank_delay`, `current_code_lets_rank_1_order_with_rank_0_after_a_policy_refusal`, `current_code_lets_rank_1_order_with_rank_0_after_an_authority_hold`, `current_code_lets_rank_1_order_with_rank_0_after_an_error_before_the_gate`, `current_code_lets_rank_1_order_with_rank_0_when_the_verdict_changes_during_a_refused_hold`, `obtain_rechecks_material`, `only_rank_zero_records_a_refusal`, `the_fix_keeps_the_rank_delay`, `the_fix_needs_its_early_return_reset`, `the_fix_needs_its_hold_reset`, `the_fix_on_each_edge_state`, `the_fix_waits_on_each_finding_s_schedule` | to 3: 124,505,516 / 32,941,384, in 854 s in release |
+| `MACHINES` | 2 | every finding needs a rank 1 | to 1: `a_late_recheck_still_lets_rank_1_order_with_rank_0`, `a_refusal_restarts_the_rank_delay`, `a_restart_restarts_the_rank_delay`, `an_early_restart_does_not_end_the_route`, `current_code_breaks_only_the_rank_delay`, `current_code_lets_rank_1_order_with_rank_0_after_a_policy_refusal`, `current_code_lets_rank_1_order_with_rank_0_after_an_authority_hold`, `current_code_lets_rank_1_order_with_rank_0_after_an_error_before_the_gate`, `current_code_lets_rank_1_order_with_rank_0_when_the_verdict_changes_during_a_refused_hold`, `obtain_rechecks_material`, `only_rank_zero_records_a_refusal`, `the_fix_keeps_the_rank_delay`, `the_fix_needs_its_early_return_reset`, `the_fix_needs_its_hold_reset`, `the_fix_on_each_edge_state`, `the_fix_waits_on_each_finding_s_schedule` | to 3: 124,505,516 / 32,941,384, in about 1,210 s in release |
 | `MAX_FAILURES` | 2 | the row "a second failure of the same kind doubles the backoff" | to 1: `a_tick_is_one_issuance_step`, `an_order_s_clock_counts_from_its_pass`, `current_code_breaks_only_the_rank_delay`, `only_rank_zero_records_a_refusal`, `the_fix_keeps_the_rank_delay` | to 3: 1,197,056 / 729,052 |
-| `AGE_CAP` | `MACHINES - 1`, 1 tick | rank 1's delay | to 0: `a_refusal_restarts_the_rank_delay`, `current_code_breaks_only_the_rank_delay`, `current_code_lets_rank_1_order_with_rank_0_after_a_policy_refusal`, `current_code_lets_rank_1_order_with_rank_0_after_an_authority_hold`, `current_code_lets_rank_1_order_with_rank_0_after_an_error_before_the_gate`, `current_code_lets_rank_1_order_with_rank_0_when_the_verdict_changes_during_a_refused_hold`, `obtain_rechecks_material`, `only_rank_zero_records_a_refusal`, `the_fix_keeps_the_rank_delay`, `the_fix_needs_its_early_return_reset`, `the_fix_needs_its_hold_reset`, `the_fix_on_each_edge_state`, `the_fix_waits_on_each_finding_s_schedule` | to 2: 1,001,906 / 423,182 |
+| `AGE_CAP` | `MACHINES - 1`, 1 tick | rank 1's delay | to 0: `a_late_recheck_still_lets_rank_1_order_with_rank_0`, `a_refusal_restarts_the_rank_delay`, `an_early_restart_does_not_end_the_route`, `current_code_breaks_only_the_rank_delay`, `current_code_lets_rank_1_order_with_rank_0_after_a_policy_refusal`, `current_code_lets_rank_1_order_with_rank_0_after_an_authority_hold`, `current_code_lets_rank_1_order_with_rank_0_after_an_error_before_the_gate`, `current_code_lets_rank_1_order_with_rank_0_when_the_verdict_changes_during_a_refused_hold`, `obtain_rechecks_material`, `only_rank_zero_records_a_refusal`, `the_fix_keeps_the_rank_delay`, `the_fix_needs_its_early_return_reset`, `the_fix_needs_its_hold_reset`, `the_fix_on_each_edge_state`, `the_fix_waits_on_each_finding_s_schedule` | to 2: 1,001,906 / 423,182 |
 | `ago_cap` | `issuance_backoff(MAX_FAILURES, ..)`, 4 ticks | `an_order_s_clock_counts_from_its_pass` | to 3: `a_tick_is_one_issuance_step`, `an_order_s_clock_counts_from_its_pass` | to 5: 416,672 / 237,400 |
 | The operator refuses the policy | at most once, from the built-in policy | `THE_POLICY_REFUSAL` and the policy rows | to never: `current_code_breaks_only_the_rank_delay`, `current_code_lets_rank_1_order_with_rank_0_after_a_policy_refusal`, `only_rank_zero_records_a_refusal`, `the_fix_keeps_the_rank_delay`, `the_fix_needs_its_early_return_reset`, `the_fix_waits_on_each_finding_s_schedule` | any number of times: 399,176 / 221,188 |
 | The operator empties the directory | at most once, from the built-in policy | the row "with no directory, the pass returns before the gate" | to never: `current_code_breaks_only_the_rank_delay`, `only_rank_zero_records_a_refusal`, `the_fix_keeps_the_rank_delay`, `the_fix_needs_its_early_return_reset` | in the same lift |
 | The operator repairs the policy | at most once | `THE_POLICY_REFUSAL` | to never: `current_code_lets_rank_1_order_with_rank_0_after_a_policy_refusal`, `the_fix_needs_its_early_return_reset`, `the_fix_waits_on_each_finding_s_schedule` | in the same lift |
 
-A drop edits the constant, or deletes the operator's action from `actions`, and runs the module. A lift edits it the other way, and the policy lift lets a repaired policy be refused or emptied again. Each lift runs this test, put at the end of `mod tests`, before the file's last closing brace:
+A drop or a lift is one edit, then a run. `AGE_CAP` is `(MACHINES - 1) as u8`, so it moves with `MACHINES`; drop or lift it alone by writing `(MACHINES - 2) as u8` or `MACHINES as u8`.
+- `MACHINES` and `MAX_FAILURES`: edit the constant.
+- `ago_cap`, which is computed: append ` - 1` or ` + 1` after the `))` that closes `ticks(issuance_backoff(..))` in `fn ago_cap`.
+- The operator bounds live in `actions`, in its `match state.policy`. To drop refusing, delete `Action::Operator(Policy::Refused),` from the `Policy::BuiltIn` arm's `extend([...])`. To drop emptying, delete `Action::Operator(Policy::NoDirectory),` from it. To drop repair, delete the `actions.push(Action::Operator(Policy::Repaired));` in the `Policy::Refused | Policy::NoDirectory` arm.
+- The policy lift lets a repaired policy be refused or emptied again: in `actions`, replace the `Policy::Repaired => {}` arm with
+
+```rust
+            Policy::Repaired => actions.extend([
+                Action::Operator(Policy::Refused),
+                Action::Operator(Policy::NoDirectory),
+            ]),
+```
+
+A drop runs the module. Each lift runs this test, put at the end of `mod tests`, before the file's last closing brace:
 
 ```rust
     #[test]
@@ -307,7 +345,7 @@ A drop edits the constant, or deletes the operator's action from `actions`, and 
 cd core && cargo nextest run -p ployz-verify -E 'test(=acme_issuance::tests::scratch_lift)' --no-capture --release
 ```
 
-Without an edit it prints `as is: 370920 states` and `fixed: 205372 states`. Every lift passed. The lift to three Machines peaked at about 11 GB of memory.
+Without an edit it prints `as is: 370920 states` and `fixed: 205372 states`. Every lift passed. The lift to three Machines peaked at about 11 GB of memory in an earlier run of the same model.
 
 **Unbounded.** Each Machine's verdict flips without bound (`Action::Probe`), so a verdict can be older than the latest DNS change on one Machine and not the other (`core/CONTEXT.md:576-577`). Restarts, lost records and Errs before the gate are unbounded too. The model explores one refusal kind, DoesNotResolve, and one route, Direct.
 
@@ -371,4 +409,4 @@ Each model step is a copy of code at the sync commit. Reread these when a diff t
 - `core/crates/ployzd/src/daemon.rs`: the certificate loop's start after `wait_for_participation`.
 - `core/crates/ployzd/src/runtime_watch.rs`: `redact_certificate`.
 
-Sync commit: `896b0545d8b665ad72743c9b7aa2ca6044e4a534`, the `main` this model was checked against, and every line cited above is at it. Code in the list above that changed after it has not been rechecked.
+Sync commit: `9a3a0708749bc98d14fda4f06025d4aa6acc43f3`, the `main` this model was checked against, and every line cited above is at it. Code in the list above that changed after it has not been rechecked.

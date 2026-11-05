@@ -773,7 +773,10 @@ const COVERAGE: &[Coverage] = &[
                     late: true,
                     ..
                 })
-            )
+            ) && state
+                .row
+                .clock()
+                .is_some_and(|c| c.left < if c.failures == 1 { 2 } else { 4 })
         },
     },
     Coverage {
@@ -1935,17 +1938,19 @@ mod tests {
         assert_eq!(last(&found), broken);
     }
 
-    /// The policy refusal's schedule. At 0 s rank 1's pass inserts `first_seen` and waits out
-    /// its rank delay; `poll_wait` answers 30 s. The operator sets a policy the daemon refuses.
-    /// At 30 s rank 1's pass records the policy's reason and returns before the gate, and `run`
-    /// sleeps 60 s (:444). The operator repairs the policy. At 90 s rank 0's loop makes its
-    /// first pass and pushes the hostname, and so does rank 1's.
+    /// The policy refusal's schedule, with rank 0 on time. At 0 s rank 1's pass inserts
+    /// `first_seen` and waits out its rank delay; `poll_wait` answers 30 s. The operator sets a
+    /// policy the daemon refuses, and rank 0's first pass, also at 0 s, records the policy's
+    /// reason and returns before the gate; `run` sleeps 60 s (:444). At 30 s rank 1's pass
+    /// returns the same way. The operator repairs the policy. At 60 s rank 0's sleep ends and it
+    /// pushes the hostname. A container change wakes rank 1's loop at that moment (:370,
+    /// :402-409), and rank 1 pushes too.
     const THE_POLICY_REFUSAL: [Action; 9] = [
         pass(R1),
         Action::Operator(Policy::Refused),
+        pass(R0),
         Action::Tick,
         pass(R1),
-        Action::Tick,
         Action::Operator(Policy::Repaired),
         Action::Tick,
         pass(R0),
@@ -1954,7 +1959,8 @@ mod tests {
 
     /// A policy refusal returns before `first_seen.retain` and the gate (:436-445), so
     /// `first_seen` keeps aging through it, and its `record_certificate_error` drops any clock.
-    /// Once the policy is repaired, rank 0 and rank 1 push the hostname in the same tick.
+    /// The refusal holds rank 0 back for the same span, so once the policy is repaired rank 0
+    /// and rank 1 push the hostname in the same tick.
     #[test]
     fn current_code_lets_rank_1_order_with_rank_0_after_a_policy_refusal() {
         let path = follow(as_is(), &THE_POLICY_REFUSAL);
@@ -1966,8 +1972,14 @@ mod tests {
                     gate: Gate::NoClock
                 },
                 Branch::PolicyRefused {
-                    who: R1,
+                    who: R0,
                     record: Record::Wrote,
+                    dropped: false,
+                    reset: false
+                },
+                Branch::PolicyRefused {
+                    who: R1,
+                    record: Record::Same,
                     dropped: false,
                     reset: false
                 },
@@ -1989,22 +2001,25 @@ mod tests {
         assert_eq!(last(&found), broken);
     }
 
-    /// The error's schedule. At 0 s rank 1's pass inserts `first_seen` and waits out its rank
-    /// delay; `poll_wait` answers 30 s. At 30 s a call before the gate returns Err, and `run`
-    /// waits `RETRY_INTERVAL`, 60 s (:394-400). At 90 s rank 0's loop makes its first pass and
-    /// pushes the hostname, and so does rank 1's.
+    /// The error's schedule, with rank 0 on time. At 0 s rank 1's pass inserts `first_seen` and
+    /// waits out its rank delay; `poll_wait` answers 30 s. Rank 0's first pass, also at 0 s,
+    /// returns Err before the gate, and `run` waits `RETRY_INTERVAL`, 60 s (:394-400). At 30 s
+    /// rank 1's pass returns Err the same way. At 60 s rank 0's sleep ends and it pushes the
+    /// hostname, and a container change wakes rank 1's loop to push too, as in the policy
+    /// refusal's schedule.
     const THE_ERROR: [Action; 7] = [
         pass(R1),
+        Action::Errs(R0),
         Action::Tick,
         Action::Errs(R1),
-        Action::Tick,
         Action::Tick,
         pass(R0),
         pass(R1),
     ];
 
     /// A pass that returns Err before the gate keeps `first_seen`, as the policy refusal does,
-    /// so it ages through the error. Rank 0 and rank 1 then push the hostname in the same tick.
+    /// so it ages through the error. The error holds rank 0 back too, so rank 0 and rank 1 then
+    /// push the hostname in the same tick.
     #[test]
     fn current_code_lets_rank_1_order_with_rank_0_after_an_error_before_the_gate() {
         let path = follow(as_is(), &THE_ERROR);
@@ -2014,6 +2029,10 @@ mod tests {
                 Branch::Waiting {
                     who: R1,
                     gate: Gate::NoClock
+                },
+                Branch::Errored {
+                    who: R0,
+                    reset: false
                 },
                 Branch::Errored {
                     who: R1,
@@ -2263,9 +2282,10 @@ mod tests {
         assert!(last(&breaks(model, RANK_DELAY_KEPT)).early());
     }
 
-    /// A restart empties `first_seen` (:367), so it ends the finding's route: on the hold's
-    /// schedule, rank 1's daemon restarts before its last pass, and that pass inserts `first_seen`
-    /// and waits out its rank delay.
+    /// A restart empties `first_seen` (:367). Late in the hold it ends the finding's route: on
+    /// the hold's schedule, rank 1's daemon restarts after the gate opens and before its last
+    /// pass, and that pass inserts `first_seen` and waits out its rank delay. This is only the
+    /// late case; `an_early_restart_does_not_end_the_route` is the early one.
     #[test]
     fn a_restart_restarts_the_rank_delay() {
         let mut schedule = THE_HOLD.to_vec();
@@ -2278,6 +2298,38 @@ mod tests {
                 gate: Gate::Passed
             })
         );
+    }
+
+    /// A restart early in the hold does not end the route. The next held pass inserts
+    /// `first_seen` again (:480-485), and it ages through the rest of the hold. Here rank 1's
+    /// daemon restarts right after its first held pass, and rank 1 still pushes with rank 0 when
+    /// the gate opens.
+    #[test]
+    fn an_early_restart_does_not_end_the_route() {
+        let mut schedule = THE_HOLD.to_vec();
+        schedule.insert(3, Action::Restart(R1));
+        let path = follow(as_is(), &schedule);
+        assert_eq!(
+            last(&path).took,
+            Some(Branch::Pushed {
+                who: R1,
+                gate: Gate::Passed,
+                early: true
+            })
+        );
+    }
+
+    /// The meeting at the opening is one schedule, not a cadence. Both Machines' rechecks come
+    /// 60 s after the gate opens, and rank 1 still pushes with rank 0.
+    #[test]
+    fn a_late_recheck_still_lets_rank_1_order_with_rank_0() {
+        let mut schedule = THE_HOLD[..7].to_vec();
+        schedule.extend([Action::Tick, Action::Tick, pass(R0), pass(R1)]);
+        let path = follow(as_is(), &schedule);
+        let broken = last(&path);
+        assert!(broken.early());
+        assert!(broken.machine(R0).obtaining.is_some());
+        assert!(broken.machine(R1).obtaining.is_some());
     }
 
     /// One pass by `who` from `state` under `model`, with no lost record.
