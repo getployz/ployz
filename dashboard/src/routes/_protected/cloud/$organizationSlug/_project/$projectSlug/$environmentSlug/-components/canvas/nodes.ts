@@ -96,14 +96,16 @@ export function buildStoreNodes(
     occupied.push({ ...position, ...size });
     return position;
   };
-  const node = { width: SERVICE_NODE_WIDTH, height: SERVICE_NODE_HEIGHT, handles: handles(SERVICE_NODE_HEIGHT), draggable: true };
+  // React Flow draws a node at its width and height, so that is its measured size too. A drag needs it, and a new node
+  // object from this rebuild would otherwise drop the size React Flow measured, since an unchanged size isn't measured again.
+  const sized = (height: number) => ({ width: SERVICE_NODE_WIDTH, height, measured: { width: SERVICE_NODE_WIDTH, height }, handles: handles(height) });
+  const node = { ...sized(SERVICE_NODE_HEIGHT), draggable: true };
   return [
     ...store.services.map((service) => {
       const { height } = sizeOf(service.service.id);
       return {
         ...node,
-        height,
-        handles: handles(height),
+        ...sized(height),
         id: service.service.id,
         type: "storeService",
         position: place("service", service.service.id),
@@ -114,8 +116,7 @@ export function buildStoreNodes(
       const { height } = sizeOf(volume.id);
       return {
         ...node,
-        height,
-        handles: handles(height),
+        ...sized(height),
         id: volume.id,
         type: "storeVolume",
         position: place("volume", volume.id),
@@ -138,12 +139,14 @@ export function buildStoreNodes(
       draggable: false,
       data: { live },
     } satisfies CanvasStoreLiveNode)),
-    // Where its creator put it, which is saved before the Store is asked, so the answer lands in the same spot.
+    // Where its creator put it, which is saved before the Store is asked, so the answer lands in the same spot. It
+    // holds still until the Store answers, since a drag before then has no node to save.
     ...(store.arriving ?? []).map((arriving) => ({
       ...SERVICE_NODE_SIZE,
       id: arriving.id,
       type: "pending",
       position: place(arriving.node, arriving.id),
+      draggable: false,
       data: { name: arriving.name },
     } satisfies PendingNode)),
   ];
