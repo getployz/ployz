@@ -1849,7 +1849,8 @@ fn status_tries_each_silent_server_once_within_its_bound() {
 fn status_keeps_a_down_server_past_a_slow_first_use_and_routes_read() {
     let (store, home) = no_server_answering();
     std::fs::remove_file(home.path().join("config.yaml")).unwrap();
-    // web-2 is Down, and web-1 serves one In copy of web, so status reads its routes.
+    // web-2 is Down with no daemon version, and web-1 serves one In copy of web, so status
+    // reads its routes.
     let (sent, engine) = std::sync::mpsc::channel();
     std::thread::spawn(move || {
         let runtime = tokio::runtime::Runtime::new().unwrap();
@@ -1905,11 +1906,14 @@ fn status_keeps_a_down_server_past_a_slow_first_use_and_routes_read() {
         .unwrap();
     assert!(output.status.success(), "{output:?}");
     let status: Value = serde_json::from_slice(&output.stdout).unwrap();
+    // web-2 lists no daemon version, so it hasn't joined and holds no copies.
     assert_eq!(
         status["attention"],
         json!([{
             "reason": "machine_down",
-            "message": "Down. Its copies serve again once it's back.",
+            "message": "Hasn't joined and may still be joining. Once that Server is deleted or \
+                        won't join, take it out with \
+                        `ployz server forget cccccccccccccccccccccccccccccccc --confirm dead`.",
             "machine": "web-2",
         }]),
         "{status}"

@@ -376,11 +376,16 @@ images from ghcr.io.
 - **Pinning your own Caddy?** `--ingress-image` needs Caddy 2.8 or newer. Ployz refuses an older
   version tag.
 - **A server that never joined doesn't hold up the next one.** If a token was used but its server
-  never joined, `ployz server ls` lists it as down with no version. The next `ployz server add`
-  doesn't wait on it: it warns `Server web-3 may still be joining` and points you to
-  `ployz server ls`. A server whose add is still running looks the same, so check first: if it's
-  still down with no version after a few minutes, take it out with the
-  `ployz server forget <its ID> --confirm dead` the warning names. With `--json`, the result
+  never joined, `ployz server ls` lists it as down with no version and warns that it hasn't
+  joined and may still be joining. `ployz status` shows the same. Both name
+  `ployz server forget <its ID> --confirm dead`. A join keeps going on the server after
+  `ployz server add` stops waiting, so run it only once that server is deleted or won't join,
+  from wherever you're signed in to the Organization. A Cloud add that fails before the server
+  takes the join, for example over a policy that differs from the server's, prints that command
+  after `undo:`. The next `ployz server add` doesn't wait on it: it warns `Server web-3 may still
+  be joining` and points you to `ployz server ls`. A server whose add is still running looks the
+  same, so check first: if it's still down with no version after a few minutes, take it out with
+  the `ployz server forget <its ID> --confirm dead` the warning names. With `--json`, the result
   lists each such server under `unarrived`, with its `id`, `name` and that command as `next`; run
   it only on the same condition. You get the warning, the command and the list even when the add
   then fails for another reason, such as a down server.

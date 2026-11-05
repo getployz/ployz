@@ -52,6 +52,9 @@ pub(in crate::handlers) fn list(root: &ArgMatches) -> Result<(), Error> {
         {
             ui::warn(dropped_path(&observed.machine.name));
         }
+        for observed in machines.iter().filter(|observed| observed.unarrived()) {
+            ui::warn(never_joined(observed));
+        }
         let listed = machines.iter().map(observation_json).collect::<Vec<_>>();
         let mut gaps = Gaps::default().named(
             machines
@@ -96,6 +99,17 @@ pub(in crate::handlers) fn list(root: &ArgMatches) -> Result<(), Error> {
         }
         crate::ui::finish_fanout("servers", &listed, &gaps, || ui::rows(&table))
     })
+}
+
+/// A listed Server that hasn't joined. One whose join is still under way looks the same, even
+/// after its add stopped waiting, so the command that takes it out comes with that condition.
+fn never_joined(observed: &MachineObservation) -> String {
+    format!(
+        "Server {} hasn't joined and may still be joining. Once that Server is deleted or won't \
+         join, take it out with `{}`.",
+        observed.machine.name,
+        ui::pasteable(&super::forget_unarrived(observed.machine.id))
+    )
 }
 
 fn membership_tone(membership: &MembershipObservation) -> Tone {
@@ -708,6 +722,23 @@ fn observation_json(observation: &MachineObservation) -> Value {
 mod tests {
     use super::*;
     use ployz_core::MachineStorageObservation;
+
+    #[test]
+    fn a_server_that_has_not_joined_is_named_with_the_command_that_forgets_it_by_id() {
+        let machine = crate::global_fixtures::machine('d', "web-3");
+        let id = machine.id;
+        let never = MachineObservation::new(machine, MembershipObservation::Down);
+        assert!(never.unarrived());
+
+        assert_eq!(
+            never_joined(&never),
+            format!(
+                "Server web-3 hasn't joined and may still be joining. Once that Server is deleted \
+                 or won't join, take it out with `ployz server forget {} --confirm dead`.",
+                id.as_str()
+            )
+        );
+    }
 
     #[test]
     fn storage_column_distinguishes_ready_without_a_pool() {

@@ -389,6 +389,16 @@ where
 {
     let assigned = join.registration.assigned_machine.clone();
     let local = already_assigned(&details, &assigned);
+    // Cloud already listed this Server. Until its daemon takes the join, a failure leaves
+    // that listing behind, so it names the command that takes it out. A daemon that already
+    // runs the assigned Machine is that Server, never a leftover.
+    let runs_assigned = details
+        .machine
+        .as_ref()
+        .is_some_and(|machine| machine.id == assigned.id);
+    let undo = (local.is_none() && !runs_assigned)
+        .then(|| Hint::Undo(super::server::forget_unarrived(assigned.id)));
+    let undoable = |error: Error| error.hint(undo.clone());
     if local.is_none()
         && unlisted_participation(&details, &assigned).is_err()
         && another_cluster(&details, &join.registration)
@@ -398,9 +408,9 @@ where
     if !initial_policy.matches(&assigned)
         || local.is_some_and(|machine| !initial_policy.matches(machine))
     {
-        return Err(Error::conflict(
+        return Err(undoable(Error::conflict(
             "initial policy differs from the currently observed Server; enrollment does not edit an existing Server",
-        ));
+        )));
     }
     let pairing = join.pairing;
     if local.is_some() {
@@ -414,9 +424,12 @@ where
             matches.get_flag("reset"),
             client,
         )
-        .await?;
+        .await
+        .map_err(undoable)?;
         progress(EnrollStage::Storage);
-        client = provision_storage(matches, client, &join.storage, install).await?;
+        client = provision_storage(matches, client, &join.storage, install)
+            .await
+            .map_err(undoable)?;
         report.step(Step::Join);
         crate::handlers::server::enroll(
             &mut client,

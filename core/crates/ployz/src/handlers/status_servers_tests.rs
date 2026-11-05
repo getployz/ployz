@@ -1197,6 +1197,39 @@ fn a_server_that_never_arrived_does_not_hide_a_draining_copy() {
 }
 
 #[test]
+fn a_server_that_has_not_joined_names_how_to_forget_it_by_id() {
+    let [one, two, _] = machines();
+    let never = machine('d', "machine-4");
+    let mut observed = listed(&[&one], &[&two]);
+    observed.push(MachineObservation::new(
+        never.clone(),
+        MembershipObservation::Down,
+    ));
+
+    let check = checked(observed, Vec::new());
+
+    assert_eq!(
+        serde_json::to_value(&check.attention).unwrap(),
+        json!([
+            {
+                "reason": "machine_down",
+                "message": "Down. Its copies serve again once it's back.",
+                "machine": "machine-2",
+            },
+            {
+                "reason": "machine_down",
+                "message": format!(
+                    "Hasn't joined and may still be joining. Once that Server is deleted or won't \
+                     join, take it out with `ployz server forget {} --confirm dead`.",
+                    never.id.as_str()
+                ),
+                "machine": "machine-4",
+            },
+        ])
+    );
+}
+
+#[test]
 fn a_live_server_left_unasked_hides_a_draining_copy_behind_its_warning() {
     let unrecognized = MachineObservation {
         membership_evidence: Some(MembershipEvidence::Unrecognized {

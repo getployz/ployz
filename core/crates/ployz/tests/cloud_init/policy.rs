@@ -62,7 +62,12 @@ async fn cloud_resume_refuses_policy_mismatch_without_editing_the_machine() {
             !output.status.success(),
             "enrollment must not edit a participating Machine"
         );
-        assert!(String::from_utf8_lossy(&output.stderr).contains("initial policy differs"));
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert!(stderr.contains("initial policy differs"), "{stderr}");
+        assert!(
+            !stderr.contains("server forget"),
+            "a Server that already joined is never offered for forgetting: {stderr}"
+        );
         let observed = connect_daemon(address)
             .await
             .call::<op::Inspect>(InspectRequest::default(), None)
@@ -75,6 +80,45 @@ async fn cloud_resume_refuses_policy_mismatch_without_editing_the_machine() {
         assert_eq!(events.entries(), ["initialize"]);
         assert_eq!(daemon.initialize_requests().len(), 1);
     }
+}
+
+/// A join refused before the daemon takes it leaves Cloud's listing of the Server behind,
+/// so the refusal names the command that takes it out.
+#[tokio::test]
+async fn a_join_refused_before_the_daemon_takes_it_names_how_to_forget_the_server() {
+    let registration = registration();
+    let id = registration.assigned_machine.id;
+    assert!(registration.assigned_machine.accepts_ingress);
+    let enroll = EnrollListen::start(json!({
+        "kind": "join",
+        "storage": "none",
+        "pairing": { "secret": PAIRING },
+        "registration": registration,
+    }))
+    .await;
+    let daemon = JoinDaemon::new(registration);
+    let address = serve_machine(daemon.clone()).await;
+
+    let output = init_cloud(
+        &format!("ssh://root@{address}"),
+        &enroll.url,
+        "joiner",
+        false,
+        true,
+    )
+    .await;
+
+    assert!(!output.status.success());
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("initial policy differs"), "{stderr}");
+    assert!(
+        stderr.contains(&format!(
+            "undo: ployz server forget {} --confirm dead",
+            id.as_str()
+        )),
+        "{stderr}"
+    );
+    assert_eq!(daemon.join_attempts(), 0);
 }
 
 #[tokio::test]
