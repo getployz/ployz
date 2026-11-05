@@ -2028,3 +2028,365 @@ fn a_build_s_input_and_routing_need_no_key_to_open_a_secret() {
         json!({ "template": ["https://", token, "@example.com"] })
     );
 }
+
+/// `shop` with Git Service `web`, on a database of its own, with that database's URL.
+fn own_git_shop() -> (ConfigStore, Actor, String, tempfile::TempDir) {
+    let dir = tempfile::tempdir().unwrap();
+    let url = backend::fresh_url(&dir);
+    let (store, who) = project(ConfigStore::open(&url, backend::key()).unwrap());
+    store
+        .write_trusted(&who, &create("acme/web", None), &evidence())
+        .unwrap();
+    (store, who, url, dir)
+}
+
+/// Deployment #1 of `store`, its build of `web` pinned, claimed by `cloud-1`, and
+/// reported Building.
+fn building(store: &ConfigStore, who: &Actor) -> (DeploymentId, RunnerId) {
+    let first = admit(store, who, 1, &[]);
+    store
+        .pin(&first, &pins(&backend::sha(&"a".repeat(40))))
+        .unwrap();
+    let runner = RunnerId::parse("cloud-1").unwrap();
+    store.claim(&first, &runner).unwrap();
+    store
+        .record(&first, &runner, report(BuildStatus::Building, None, "#1\n"))
+        .unwrap();
+    (first, runner)
+}
+
+/// Move Deployment `id`'s runner lease, its start and its build's start an hour into
+/// the past, as an hour passing with no record would: the lease lapses 600 s after
+/// the claim, after the build started.
+fn lapse_build(url: &str, id: &DeploymentId) {
+    backend::execute(
+        url,
+        &format!("UPDATE config_build SET started = started - 3600 WHERE deployment_id = '{id}'"),
+    );
+    backend::execute(
+        url,
+        &format!(
+            "UPDATE config_deployment SET started = started - 3600, lease = started - 3000 \
+             WHERE id = '{id}'"
+        ),
+    );
+}
+
+/// When a build reads as finished.
+#[derive(Debug, PartialEq)]
+enum Finished {
+    No,
+    Yes,
+    BeforeItStarted,
+}
+
+/// What a case reads of its one build.
+#[derive(Debug, PartialEq)]
+struct Seen {
+    case: &'static str,
+    status: BuildStatus,
+    message: Option<String>,
+    started: bool,
+    finished: Finished,
+    /// The build view's `interrupted`, read as JSON so a view without it reads false.
+    interrupted: bool,
+    /// Rows the database itself holds `building`, whatever any view reads.
+    building: i64,
+    /// Builds `github_outstanding` lists: what a cancel of the run stops.
+    on_github: usize,
+}
+
+/// Deployment `id`'s build as the Store shows it, with when it finished against
+/// when its Deployment ended.
+fn seen(
+    case: &'static str,
+    (store, who, url): (&ConfigStore, &Actor, &str),
+    id: &DeploymentId,
+) -> (Seen, bool) {
+    let view = store
+        .read(who, &ployz_store::DeploymentQuery { id: id.clone() })
+        .unwrap();
+    let build = &view.builds[0];
+    let finished = match (build.started_at, build.finished_at) {
+        (_, None) => Finished::No,
+        (Some(started), Some(finished)) if finished < started => Finished::BeforeItStarted,
+        (_, Some(_)) => Finished::Yes,
+    };
+    let seen = Seen {
+        case,
+        status: build.status,
+        message: build.message.clone(),
+        started: build.started_at.is_some(),
+        finished,
+        interrupted: serde_json::to_value(build).unwrap()["interrupted"] == true,
+        building: backend::count(
+            url,
+            "SELECT count(*) FROM config_build WHERE status = 'building'",
+        ),
+        on_github: store.github_outstanding(id).unwrap().len(),
+    };
+    let at_its_end = build.finished_at.is_some() && build.finished_at == view.deployment.ended_at;
+    (seen, at_its_end)
+}
+
+/// A build its Servers held reads Building only while its Deployment may still run.
+/// Each way a claimed Deployment leaves flight with its build still Building settles
+/// the build as Failed, marked interrupted, finished when the Deployment ended. A
+/// build that reported its own end, one never started, one under a Deployment still
+/// in flight, and one GitHub holds read as before.
+#[test]
+fn a_build_its_deployment_ended_under_does_not_read_building() {
+    let mut cases = Vec::new();
+    let mut case = |name: &'static str,
+                    run: &dyn Fn(&ConfigStore, &Actor, &str) -> DeploymentId| {
+        let (store, who, url, _dir) = own_git_shop();
+        let id = run(&store, &who, &url);
+        cases.push(seen(name, (&store, &who, &url), &id));
+    };
+    case("R1 taken over", &|store, who, _| {
+        let (first, _) = building(store, who);
+        let second = admit(store, who, 2, &[]);
+        store
+            .claim(&second, &RunnerId::parse("cloud-2").unwrap())
+            .unwrap();
+        first
+    });
+    case("R2 lapsed, nothing written", &|store, who, url| {
+        let (first, _) = building(store, who);
+        lapse_build(url, &first);
+        first
+    });
+    case("R3 alive after it lapsed", &|store, who, url| {
+        let (first, runner) = building(store, who);
+        lapse_build(url, &first);
+        store.record(&first, &runner, RunEvidence::Alive).unwrap();
+        first
+    });
+    case("R4 abandoned before a preview", &|store, who, _| {
+        let (first, runner) = building(store, who);
+        store
+            .record(&first, &runner, RunEvidence::Abandoned)
+            .unwrap();
+        first
+    });
+    case("R5 not executed", &|store, who, _| {
+        let (first, runner) = building(store, who);
+        store
+            .record(
+                &first,
+                &runner,
+                RunEvidence::NotExecuted("Build failed".into()),
+            )
+            .unwrap();
+        first
+    });
+    case("R6 cancelled while it ran", &|store, who, _| {
+        let (first, runner) = building(store, who);
+        store
+            .write(
+                who,
+                &ployz_store::Cancel {
+                    deployment: first.clone(),
+                },
+            )
+            .unwrap();
+        store
+            .record(
+                &first,
+                &runner,
+                RunEvidence::NotExecuted("Build failed".into()),
+            )
+            .unwrap();
+        first
+    });
+    case("R7 its cluster forgotten", &|store, who, _| {
+        let (first, _) = building(store, who);
+        store
+            .system(
+                &who.organization,
+                &ployz_store::SystemEvent::ClusterForgotten,
+                &Trusted::default(),
+            )
+            .unwrap();
+        first
+    });
+    case("C1 failed on its own", &|store, who, _| {
+        let (first, runner) = building(store, who);
+        store
+            .record(
+                &first,
+                &runner,
+                report(BuildStatus::Failed, Some("npm ci failed"), "exit 1\n"),
+            )
+            .unwrap();
+        store
+            .record(
+                &first,
+                &runner,
+                RunEvidence::NotExecuted("Build failed".into()),
+            )
+            .unwrap();
+        first
+    });
+    case("C2 built, then applied", &|store, who, _| {
+        let (first, runner) = building(store, who);
+        store
+            .record(&first, &runner, report(BuildStatus::Built, None, "done\n"))
+            .unwrap();
+        applied(store, &first, &runner);
+        first
+    });
+    case("C3 never started", &|store, who, _| {
+        let first = admit(store, who, 1, &[]);
+        store
+            .pin(&first, &pins(&backend::sha(&"a".repeat(40))))
+            .unwrap();
+        let runner = RunnerId::parse("cloud-1").unwrap();
+        store.claim(&first, &runner).unwrap();
+        store
+            .record(
+                &first,
+                &runner,
+                RunEvidence::NotExecuted("Build failed".into()),
+            )
+            .unwrap();
+        first
+    });
+    case("C4 live claim", &|store, who, _| {
+        let (first, runner) = building(store, who);
+        store.record(&first, &runner, RunEvidence::Alive).unwrap();
+        first
+    });
+    case("C5 live cancelling", &|store, who, _| {
+        let (first, _) = building(store, who);
+        store
+            .write(
+                who,
+                &ployz_store::Cancel {
+                    deployment: first.clone(),
+                },
+            )
+            .unwrap();
+        first
+    });
+    let (store, who, url, _dir) = {
+        let dir = tempfile::tempdir().unwrap();
+        let url = backend::fresh_url(&dir);
+        let (store, who) = project(ConfigStore::open(&url, backend::key()).unwrap());
+        (store, who, url, dir)
+    };
+    let id = dispatched(&store, &who);
+    store
+        .write(
+            &who,
+            &ployz_store::Cancel {
+                deployment: id.deployment.clone(),
+            },
+        )
+        .unwrap();
+    cases.push(seen(
+        "C6 held by GitHub, cancelled",
+        (&store, &who, &url),
+        &id.deployment,
+    ));
+
+    let interrupted = |case, building| Seen {
+        case,
+        status: BuildStatus::Failed,
+        message: Some(
+            "The deployment ended or lost its runner before this build reported how it ended."
+                .into(),
+        ),
+        started: true,
+        finished: Finished::Yes,
+        interrupted: true,
+        building,
+        on_github: 0,
+    };
+    let kept = |case, status, message: Option<&str>, started, finished, building, on_github| Seen {
+        case,
+        status,
+        message: message.map(Into::into),
+        started,
+        finished,
+        interrupted: false,
+        building,
+        on_github,
+    };
+    let (seen, at_its_end): (Vec<_>, Vec<_>) = cases.into_iter().unzip();
+    assert_eq!(
+        seen,
+        [
+            interrupted("R1 taken over", 0),
+            // Nothing writes a lapsed Deployment, so only the view settles its build.
+            interrupted("R2 lapsed, nothing written", 1),
+            interrupted("R3 alive after it lapsed", 0),
+            interrupted("R4 abandoned before a preview", 0),
+            interrupted("R5 not executed", 0),
+            interrupted("R6 cancelled while it ran", 0),
+            interrupted("R7 its cluster forgotten", 0),
+            kept(
+                "C1 failed on its own",
+                BuildStatus::Failed,
+                Some("npm ci failed"),
+                true,
+                Finished::Yes,
+                0,
+                0
+            ),
+            kept(
+                "C2 built, then applied",
+                BuildStatus::Built,
+                None,
+                true,
+                Finished::Yes,
+                0,
+                0
+            ),
+            kept(
+                "C3 never started",
+                BuildStatus::Pending,
+                None,
+                false,
+                Finished::No,
+                0,
+                0
+            ),
+            kept(
+                "C4 live claim",
+                BuildStatus::Building,
+                None,
+                true,
+                Finished::No,
+                1,
+                0
+            ),
+            kept(
+                "C5 live cancelling",
+                BuildStatus::Building,
+                None,
+                true,
+                Finished::No,
+                1,
+                0
+            ),
+            kept(
+                "C6 held by GitHub, cancelled",
+                BuildStatus::Building,
+                None,
+                true,
+                Finished::No,
+                1,
+                1
+            ),
+        ]
+    );
+    // Each interrupted build finished when its Deployment ended.
+    let at_its_end: Vec<_> = seen
+        .iter()
+        .zip(at_its_end)
+        .filter(|(seen, _)| seen.interrupted)
+        .map(|(seen, at_its_end)| (seen.case, at_its_end))
+        .collect();
+    assert!(at_its_end.iter().all(|(_, at)| *at), "{at_its_end:?}");
+}

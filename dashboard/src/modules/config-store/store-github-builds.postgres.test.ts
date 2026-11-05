@@ -121,10 +121,12 @@ it.live(
       expect(steps).toMatchObject({ _tag: "Conflict", message: "This build has not checked in" });
 
       // Cancelling the Deployment ends the build GitHub holds; a late check-in is refused.
+      const calledBefore = github.calls.length;
       const cancelled = yield* provided(callStore(ORGANIZATION, "00000000-0000-4000-8000-00000000b0ff", {
         operation: "write", command: { command: "cancel", deployment: "00000000-0000-4000-8000-00000000b102" },
       }, { source: "dashboard" }, { approval: "not_required", permissions: permissionsOf("owner") }));
       expect(cancelled).toMatchObject({ ok: true });
+      expect(github.calls.slice(calledBefore).map((call) => call.path)).toContain("/repos/acme/web/actions/runs/9001/cancel");
       expect(yield* Effect.promise(() => store.githubBuild(next))).toMatchObject({ held: { status: "failed" } });
       expect(yield* rejection(oidcToken())).toMatchObject({ _tag: "Conflict" });
 
