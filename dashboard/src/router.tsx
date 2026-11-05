@@ -11,6 +11,7 @@ import { routeTree } from "./routeTree.gen";
 import { setupRouterSsrQueryIntegration } from "@tanstack/react-router-ssr-query";
 import { routerWithDbClient } from "@tanstack/react-router-with-db";
 import { getDbClient } from "./collections/scope";
+import { endRequestCollections } from "./collections/query-collection";
 import { environmentManager, QueryClient } from "@tanstack/react-query";
 import { ErrorPage } from "./components/error-page";
 import { NotFoundPage } from "./components/not-found-page";
@@ -87,6 +88,10 @@ export function getRouter() {
     defaultRemountDeps: ({ params }) => params,
   });
 
+  // The DB integration ends its collections when render finishes, but a HEAD request's SSR ends first: its body is
+  // dropped. This cleanup runs before the Query integration's, which clears the QueryClient under them.
+  router.serverSsrLifecycle = { onServerSsrAttach: [...router.serverSsrLifecycle?.onServerSsrAttach ?? [],
+    (serverSsr) => serverSsr.onCleanup(() => endRequestCollections(queryClient))] };
   setupRouterSsrQueryIntegration({ router, queryClient });
   router.subscribe("onBeforeNavigate", ({ toLocation }) => followPostHogNavigation(toLocation.pathname));
 

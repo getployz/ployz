@@ -1,6 +1,6 @@
 import { queryCollectionOptions, type QueryCollectionConfig, type QueryCollectionUtils } from "@tanstack/query-db-collection";
 import { BasicIndex, collectionOptions, type Collection, type CollectionStatus } from "@tanstack/react-db";
-import { hashKey, type QueryClient } from "@tanstack/react-query";
+import { environmentManager, hashKey, type QueryClient } from "@tanstack/react-query";
 import type { CollectionRead } from "./read.contract";
 import { getDbClient } from "./scope";
 import { mayPassOnRetry } from "#/lib/error-message";
@@ -33,15 +33,32 @@ function baseOptions<T extends object>(input: ApiCollectionInput<T>): BaseOption
   };
 }
 
+/** Each SSR request's collections, by its QueryClient. The browser keeps its collections for the tab's life. */
+const requestCollections = new WeakMap<QueryClient, Set<Pick<Collection<object>, "cleanup">>>();
+
+/**
+ * Ends an SSR request's collections at once. A collection a page still reads re-reads its Query when the Query is
+ * removed, so they end before the request's QueryClient is cleared: a read then would run outside the request.
+ */
+export function endRequestCollections(queryClient: QueryClient) {
+  const collections = requestCollections.get(queryClient);
+  requestCollections.delete(queryClient);
+  for (const collection of collections ?? []) void collection.cleanup({ dependents: true }).catch(() => {});
+}
+
 /**
  * A failed first load ends its sync run, and later reads of the same Query never reach it. The Collection reloads
  * after its Query next succeeds, or when `recover()` is called. A reload starts a new run, which cancels every read of
  * the old run still settling, so it waits until none is, holding the Collection meanwhile. A cleanup or another run
  * during the wait ends the recovery. The Query cache is watched only while the Collection is in `error`.
  */
-function withRecovery<T extends object, C extends Pick<Collection<T>, "status" | "reload" | "on" | "subscribeChanges">>(
+function withRecovery<T extends object, C extends Pick<Collection<T>, "status" | "reload" | "on" | "subscribeChanges" | "cleanup">>(
   input: ApiCollectionInput<T>, collection: C,
 ) {
+  if (environmentManager.isServer()) {
+    const collections = requestCollections.get(input.queryClient) ?? new Set();
+    requestCollections.set(input.queryClient, collections.add(collection));
+  }
   const queryHash = hashKey(input.queryKey);
   const fetching = () => input.queryClient.getQueryCache().get(queryHash)?.state.fetchStatus === "fetching";
   const recover = async () => {
