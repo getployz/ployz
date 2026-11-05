@@ -422,6 +422,24 @@ impl VolumeStorage {
 
     /// Writer at `at` numbered `epoch`. A root takes the higher epoch and becomes writable
     /// again; a slot whose newest snapshot is `at` is promoted to the root first.
+    ///
+    /// A promoted slot drops every mark that says another step made its copy, before the
+    /// rename, and takes a writer's:
+    /// - `ployz:pulled` goes, so the departure stops taking it for a received copy from a
+    ///   crash on ([`Self::written_here`]).
+    /// - `ployz:seed` goes whenever the slot carries it. A departure parks a seed's root
+    ///   with the mark still on it, whether Docker adopted it or not, since Docker's
+    ///   Create inherits only `ployz:promote`. Beside the `ployz:promote` set below, it
+    ///   would read as a seed Docker never adopted ([`RootCopy::parse`]), which Forget
+    ///   destroys. So `land` is the one step that leaves both on a root.
+    /// - `ployz:epoch` becomes `epoch`.
+    /// - `ployz:promote` is set unless the slot was cut. A pulled copy has no Docker record
+    ///   yet, so the root hides from Get and List until Docker's own Create registers it
+    ///   with labels. A cut copy keeps its record, and hiding it would make Docker drop
+    ///   that record.
+    /// - `ployz:cut` goes after the rename, in [`Self::make_writable`].
+    ///
+    /// [`RootCopy::parse`]: super::inspect::RootCopy::parse
     async fn copy_writer(&self, request: &WriterRequest) -> Result<Copy, RpcError> {
         let scope = self.scope(&request.name).await?.ok_or_else(no_pool)?;
         let name = &scope.name;
@@ -486,18 +504,21 @@ impl VolumeStorage {
         {
             self.z(&["receive", "-A", &fs_name]).await?;
         }
-        // The slot stops being a received copy here, so the departure must not take it
-        // for one from a crash on.
         self.z(&["inherit", PULLED_PROPERTY, &fs_name]).await?;
+        if self
+            .property(&fs_name, SEED_PROPERTY)
+            .await
+            .map_err(internal)?
+            .is_some()
+        {
+            self.z(&["inherit", SEED_PROPERTY, &fs_name]).await?;
+        }
         self.z(&[
             "set",
             &format!("{EPOCH_PROPERTY}={}", request.epoch),
             &fs_name,
         ])
         .await?;
-        // A pulled copy has no Docker record yet, so the root hides from Get and List
-        // until Docker's own Create registers it with labels. A cut copy keeps its
-        // record, and hiding it would make Docker drop that record.
         let cut = self
             .property(&fs_name, CUT_PROPERTY)
             .await

@@ -708,3 +708,53 @@ async fn a_seeded_volume_promoted_back_after_a_departure_is_a_writer() {
     );
     assert!(test.0.join("seed-volume").exists(), "the writer root stays");
 }
+
+#[tokio::test]
+async fn a_seed_resent_to_a_volume_promoted_back_after_a_departure_is_refused() {
+    let test = TestDir::new();
+    let (socket, _server) = start(&test, USABLE_POOL, &["root", "volume"]);
+    let writer = promoted_back_seed(&test, &socket).await;
+    let promoted = post(&socket, "/Volume.Copy.Writer", writer).await;
+    assert_eq!(
+        promoted.pointer("/Ok/kind"),
+        Some(&json!("root")),
+        "{promoted}"
+    );
+    let log = commands(&test);
+
+    let resent = post(&socket, "/Volume.Seed", seed(77)).await;
+
+    assert_eq!(
+        resent.pointer("/Err/details/reason"),
+        Some(&json!("precondition")),
+        "{resent}"
+    );
+    assert_eq!(
+        resent.pointer("/Err/message"),
+        Some(&json!("Volume seed already exists on this Machine")),
+        "{resent}"
+    );
+    assert_eq!(effects_since(&test, &log), Vec::<String>::new());
+}
+
+#[tokio::test]
+async fn a_writer_whose_seed_mark_clear_failed_promotes_a_writer_on_resend() {
+    let test = TestDir::new();
+    let (socket, _server) = start(&test, USABLE_POOL, &["root", "volume"]);
+    let writer = promoted_back_seed(&test, &socket).await;
+    fs::write(
+        test.0.join("props/fail-command"),
+        "inherit ployz:seed tank/ployz-mirror/seed/fs",
+    )
+    .unwrap();
+
+    let failed = post(&socket, "/Volume.Copy.Writer", writer.clone()).await;
+    assert!(failed.get("Err").is_some(), "{failed}");
+    let parked = post(&socket, "/Volume.Copy.Inspect", json!({"name": "seed"})).await;
+    assert_eq!(parked.pointer("/Ok/kind"), Some(&json!("slot")), "{parked}");
+
+    let resent = post(&socket, "/Volume.Copy.Writer", writer).await;
+    assert_eq!(resent.pointer("/Ok/kind"), Some(&json!("root")), "{resent}");
+    assert_eq!(resent.pointer("/Ok/seed"), Some(&json!(false)), "{resent}");
+    assert_eq!(property(&test, "tank/ployz/seed", "ployz:seed"), None);
+}
