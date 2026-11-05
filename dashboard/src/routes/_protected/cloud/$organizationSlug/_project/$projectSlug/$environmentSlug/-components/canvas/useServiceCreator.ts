@@ -75,18 +75,24 @@ export function useCreateStoreDatabase(organizationSlug: string) {
 
 /**
  * Opens a new Service's panel at once, before the Store has it. A refusal undoes the Service, so whoever is still on
- * its panel goes back to the canvas, where the refusal's toast says why.
+ * its panel goes back to the canvas, where the refusal's toast says why. The panel's entry becomes the canvas, and
+ * when the panel opened straight from the canvas and is still that entry, history steps back onto the canvas it came
+ * from, so neither Back nor Forward lands on a second canvas or the undone panel.
  */
 export function useOpenCreatedService(params: EnvironmentRouteParams) {
   const navigate = useNavigate();
   const router = useRouter();
   return async ({ service, persisted }: CreatedService) => {
     const panel = { to: ENVIRONMENT_SERVICE_ROUTE_TO, params: { ...params, serviceId: service.id } } as const;
+    const fromCanvas = router.matchRoute({ to: ENVIRONMENT_INDEX_ROUTE_TO, params }) !== false;
     await navigate({ ...panel, search: (prev) => prev });
-    persisted.catch(() => {
-      if (router.matchRoute(panel, { fuzzy: true })) {
-        void navigate({ to: ENVIRONMENT_INDEX_ROUTE_TO, params, replace: true, search: (prev) => prev });
-      }
+    const opened = router.history.location.state.__TSR_index;
+    persisted.catch(async () => {
+      if (!router.matchRoute(panel, { fuzzy: true })) return;
+      const stepBack = fromCanvas && router.history.location.state.__TSR_index === opened;
+      await navigate({ to: ENVIRONMENT_INDEX_ROUTE_TO, params, replace: true, search: (prev) => prev });
+      // The replace keeps the index, so a Back or a new panel while it loaded moves it, and they already left.
+      if (stepBack && router.history.location.state.__TSR_index === opened) router.history.back();
     });
   };
 }
