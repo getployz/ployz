@@ -35,7 +35,7 @@ pub(crate) fn seal_running(
     running: &mut SavedEnvironmentIntent,
     copied: &BTreeSet<String>,
 ) -> Result<(), RpcError> {
-    let ledger = SealLedger::load(tx, owner.summary.id.as_str())?;
+    let ledger = SealLedger::load_with_saves(tx, owner.summary.id.as_str())?;
     if ledger.is_empty() {
         return Ok(());
     }
@@ -857,8 +857,9 @@ pub(crate) fn names_view(
 /// The ledger of every variable an Environment ever held sealed, per Service: by
 /// stable ID, so a rename keeps the seal, and by key, so a new variable under that
 /// key does. Each Save, History scrub and Working State write records the seals it
-/// holds ([`Self::record`]), and `0033_record_saved_seals` recorded those saved
-/// before. A reseal records nothing: it re-encrypts only seals already held.
+/// holds ([`Self::record`]), and `0033_record_saved_seals` and
+/// `0038_record_late_saved_seals` recorded those saved before. A reseal records
+/// nothing: it re-encrypts only seals already held.
 #[derive(Default)]
 pub(crate) struct SealLedger {
     ids: BTreeSet<(String, String)>,
@@ -866,6 +867,7 @@ pub(crate) struct SealLedger {
 }
 
 impl SealLedger {
+    /// The ledger alone: what a review reads, once per Environment its walk reaches.
     pub(crate) fn load(tx: &mut dyn Tx, environment: &str) -> Result<Self, RpcError> {
         let mut ledger = Self::default();
         for row in tx.query(
@@ -881,9 +883,15 @@ impl SealLedger {
                 .keys
                 .insert((service.to_owned(), row.text(2)?.to_owned()));
         }
-        // TODO(#3752): drop at the next major. A Store from before 0033 shares the
-        // database during a rolling deploy and saves seals it never records, so the
-        // saves are read too.
+        Ok(ledger)
+    }
+
+    /// The ledger and every seal the saves hold, for the writes that remove or copy a
+    /// plain value.
+    // TODO(#3752): read the ledger alone at the next major. A Store from before 0033
+    // shares the database during a rolling deploy and saves seals it never records.
+    pub(crate) fn load_with_saves(tx: &mut dyn Tx, environment: &str) -> Result<Self, RpcError> {
+        let mut ledger = Self::load(tx, environment)?;
         for row in tx.query(
             "SELECT intent FROM config_saved WHERE environment_id = ?1",
             &[environment.into()],
@@ -1030,7 +1038,7 @@ pub(crate) fn sealed_rows(
     tx: &mut dyn Tx,
     environment: &str,
 ) -> Result<BTreeSet<(String, String)>, RpcError> {
-    let ledger = SealLedger::load(tx, environment)?;
+    let ledger = SealLedger::load_with_saves(tx, environment)?;
     if ledger.is_empty() {
         return Ok(BTreeSet::new());
     }
