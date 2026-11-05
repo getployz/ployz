@@ -1366,6 +1366,14 @@ it.live("a member who stops a reply mid-stream ends the run, and the thread answ
     expect((yield* say("shorter please", {}, model)).said).toBe("Short, then.");
   }));
 
+/**
+ * The captured events as text, to search for the conversation's words, without the span ids and the parent ids that
+ * point at them. Those are generated, so random base36 can spell a short word ("msg-…-qb4htwo"). Each test pins every
+ * other field.
+ */
+const capturedText = (events: ReadonlyArray<Parameters<PostHogService["capture"]>[0]>) =>
+  JSON.stringify(events.map(({ properties, ...event }) => ({ ...event, properties: { ...properties, $ai_span_id: undefined, $ai_parent_id: undefined } })));
+
 it.live("each model call tells PostHog its tokens once, cache reads and writes apart from the rest, and none of the words", () =>
   Effect.gen(function* () {
     const { caller, say } = yield* sidebar({ removeWeb: false });
@@ -1420,7 +1428,7 @@ it.live("each model call tells PostHog its tokens once, cache reads and writes a
         properties: { $ai_trace_id: run, $ai_session_id: THREAD, $ai_span_name: "sidebar_turn", $ai_latency: expect.any(Number), $ai_is_error: false },
       }];
     }));
-    expect(JSON.stringify(captured)).not.toMatch(/count|services|two/i);
+    expect(capturedText(captured)).not.toMatch(/count|services|two/i);
   }));
 
 it.live("a turn's trace in PostHog nests each tool call under the model call that made it, and none of the words", () =>
@@ -1471,7 +1479,7 @@ it.live("a turn's trace in PostHog nests each tool call under the model call tha
       { ...envelope, event: "$ai_trace", properties: { $ai_trace_id: "run-1", $ai_session_id: THREAD, $ai_span_name: "sidebar_turn", $ai_latency: expect.any(Number), $ai_is_error: true } },
     ]);
     expect(captured[0]?.properties?.["$ai_span_id"]).not.toBe(captured[2]?.properties?.["$ai_span_id"]);
-    expect(JSON.stringify(captured)).not.toMatch(/look|around|quiet|secretname/i);
+    expect(capturedText(captured)).not.toMatch(/look|around|quiet|secretname/i);
   }));
 
 it.live("a refused tool call shows in PostHog as an error", () =>
