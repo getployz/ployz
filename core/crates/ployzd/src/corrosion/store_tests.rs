@@ -916,10 +916,72 @@ async fn store_version_stops_below_each_actors_first_hole() {
 pub(crate) async fn identity_store(
     db: rusqlite::Connection,
 ) -> (ReplicatedStore, tokio::task::JoinHandle<()>) {
+    let (store, _hold, task) = held_identity_store(db).await;
+    (store, task)
+}
+
+/// Holds one answer of a `held_identity_store`, as `FakeCluster::hold_query` does.
+#[derive(Clone, Default)]
+pub(crate) struct QueryHold(Arc<Mutex<Option<HeldQuery>>>);
+
+struct HeldQuery {
+    query: String,
+    nth: usize,
+    gate: Arc<tokio::sync::Barrier>,
+}
+
+impl QueryHold {
+    /// Hold the answer to the `nth` run of `query` from now, read before the hold, until the
+    /// returned gate is waited on twice: once to see it held, once to release it.
+    pub(crate) fn hold(&self, query: &str, nth: usize) -> Arc<tokio::sync::Barrier> {
+        let gate = Arc::new(tokio::sync::Barrier::new(2));
+        *self.0.lock().unwrap() = Some(HeldQuery {
+            query: query.to_owned(),
+            nth,
+            gate: Arc::clone(&gate),
+        });
+        gate
+    }
+
+    fn due(&self, query: &str) -> Option<Arc<tokio::sync::Barrier>> {
+        let mut held = self.0.lock().unwrap();
+        let due = held.as_mut().is_some_and(|held| {
+            if held.query == query {
+                held.nth -= 1;
+            }
+            held.nth == 0
+        });
+        if due {
+            held.take().map(|held| held.gate)
+        } else {
+            None
+        }
+    }
+}
+
+/// `identity_store` with a hold on the answers to its queries.
+pub(crate) async fn held_identity_store(
+    db: rusqlite::Connection,
+) -> (ReplicatedStore, QueryHold, tokio::task::JoinHandle<()>) {
     use axum::{Router, body::Bytes, extract::State, routing::post};
-    async fn query(State(db): State<Arc<Mutex<rusqlite::Connection>>>, body: Bytes) -> Vec<u8> {
+    #[derive(Clone)]
+    struct Served {
+        db: Arc<Mutex<rusqlite::Connection>>,
+        hold: QueryHold,
+    }
+    async fn query(State(served): State<Served>, body: Bytes) -> Vec<u8> {
         let request: serde_json::Value = serde_json::from_slice(&body).unwrap();
-        let db = db.lock().unwrap();
+        let gate = served
+            .hold
+            .due(request.get("query").unwrap().as_str().unwrap());
+        let response = answer(&served.db.lock().unwrap(), &request);
+        if let Some(gate) = gate {
+            gate.wait().await;
+            gate.wait().await;
+        }
+        response
+    }
+    fn answer(db: &rusqlite::Connection, request: &serde_json::Value) -> Vec<u8> {
         let mut statement = db
             .prepare(request.get("query").unwrap().as_str().unwrap())
             .unwrap();
@@ -958,9 +1020,9 @@ pub(crate) async fn identity_store(
         response.extend(br#"{"eoq":{"time":0.0}}"#);
         response
     }
-    async fn transact(State(db): State<Arc<Mutex<rusqlite::Connection>>>, body: Bytes) -> Vec<u8> {
+    async fn transact(State(served): State<Served>, body: Bytes) -> Vec<u8> {
         let requests: Vec<serde_json::Value> = serde_json::from_slice(&body).unwrap();
-        let db = db.lock().unwrap();
+        let db = served.db.lock().unwrap();
         let results = requests
             .iter()
             .map(|request| {
@@ -986,18 +1048,23 @@ pub(crate) async fn identity_store(
     let store = ReplicatedStore::new(
         ApiClient::http1(listener.local_addr().unwrap(), &"a".repeat(64)).unwrap(),
     );
+    let hold = QueryHold::default();
+    let served = Served {
+        db: Arc::new(Mutex::new(db)),
+        hold: hold.clone(),
+    };
     let task = tokio::spawn(async move {
         axum::serve(
             listener,
             Router::new()
                 .route("/v1/queries", post(query))
                 .route("/v1/transactions", post(transact))
-                .with_state(Arc::new(Mutex::new(db))),
+                .with_state(served),
         )
         .await
         .unwrap();
     });
-    (store, task)
+    (store, hold, task)
 }
 
 /// Corrosion re-renders schema.sql before creating its tables, which declares
@@ -2195,5 +2262,242 @@ async fn each_written_machine_row_decodes_to_its_standing() {
         Some(((true, false), Registered)),
         "row 13: Cloud's Register takes the forget back"
     );
+    task.abort();
+}
+
+/// `row`'s read, the one an ACME writer makes before it writes.
+const CERTIFICATE_READ: &str = "SELECT body FROM certificates WHERE hostname = ?";
+
+fn certificate_material(hostname: &IngressHost) -> super::CertificateMaterial {
+    let pair = rcgen::generate_simple_self_signed([hostname.as_str().to_owned()]).unwrap();
+    super::CertificateMaterial::parse(pair.cert.pem(), pair.signing_key.serialize_pem()).unwrap()
+}
+
+fn certificate_challenge() -> super::CertificateChallenge {
+    super::CertificateChallenge::parse(
+        "LoqXcYV8q5ONbJQxbmR7SCTNo3tiAXDfowyjxAjEuX0",
+        "LoqXcYV8q5ONbJQxbmR7SCTNo3tiAXDfowyjxAjEuX0.AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+    )
+    .unwrap()
+}
+
+/// Run `late` with its certificate read held, land `landing` between that read and its write,
+/// then let `late` finish.
+async fn certificate_race<Late, Landing>(
+    store: &ReplicatedStore,
+    hold: &QueryHold,
+    late: impl FnOnce(ReplicatedStore) -> Late,
+    landing: Landing,
+) where
+    Late: std::future::Future + Send + 'static,
+    Late::Output: Send + 'static,
+    Landing: std::future::Future,
+{
+    let gate = hold.hold(CERTIFICATE_READ, 1);
+    let late = tokio::spawn(late(store.clone()));
+    gate.wait().await;
+    landing.await;
+    gate.wait().await;
+    late.await.unwrap();
+}
+
+#[tokio::test]
+async fn a_late_acme_certificate_write_leaves_a_newer_publish() {
+    let (store, hold, task) = held_identity_store(corrosion_db()).await;
+    let hostname = IngressHost::parse("app.example.com").unwrap();
+    let acme = certificate_material(&hostname);
+    let published = certificate_material(&hostname);
+    certificate_race(
+        &store,
+        &hold,
+        {
+            let hostname = hostname.clone();
+            move |store| async move {
+                store
+                    .publish_certificate(&hostname, &acme, ployz_core::ClusterRoute::Direct)
+                    .await
+                    .unwrap();
+            }
+        },
+        async {
+            store
+                .publish_certificate_material(
+                    &CertificateHost::from(hostname.clone()),
+                    published.clone(),
+                )
+                .await
+                .unwrap();
+        },
+    )
+    .await;
+    assert_eq!(
+        store.certificate_row(&hostname).await.unwrap(),
+        super::CertificateRow::Published(published),
+        "the late ACME write replaced the newer Publish"
+    );
+    task.abort();
+}
+
+#[tokio::test]
+async fn a_late_certificate_challenge_leaves_a_newer_publish() {
+    let (store, hold, task) = held_identity_store(corrosion_db()).await;
+    let hostname = IngressHost::parse("app.example.com").unwrap();
+    store
+        .publish_certificate(
+            &hostname,
+            &certificate_material(&hostname),
+            ployz_core::ClusterRoute::Direct,
+        )
+        .await
+        .unwrap();
+    let published = certificate_material(&hostname);
+    certificate_race(
+        &store,
+        &hold,
+        {
+            let hostname = hostname.clone();
+            move |store| async move {
+                store
+                    .publish_certificate_challenge(&hostname, &certificate_challenge())
+                    .await
+                    .unwrap();
+            }
+        },
+        async {
+            store
+                .publish_certificate_material(
+                    &CertificateHost::from(hostname.clone()),
+                    published.clone(),
+                )
+                .await
+                .unwrap();
+        },
+    )
+    .await;
+    assert_eq!(
+        store.certificate_row(&hostname).await.unwrap(),
+        super::CertificateRow::Published(published),
+        "the late challenge replaced the newer Publish"
+    );
+    task.abort();
+}
+
+#[tokio::test]
+async fn a_late_certificate_error_leaves_a_newer_publish() {
+    let (store, hold, task) = held_identity_store(corrosion_db()).await;
+    let hostname = IngressHost::parse("app.example.com").unwrap();
+    store
+        .publish_certificate(
+            &hostname,
+            &certificate_material(&hostname),
+            ployz_core::ClusterRoute::Direct,
+        )
+        .await
+        .unwrap();
+    let published = certificate_material(&hostname);
+    certificate_race(
+        &store,
+        &hold,
+        {
+            let hostname = hostname.clone();
+            move |store| async move {
+                store
+                    .record_certificate_error(&hostname, "policy refused")
+                    .await
+                    .unwrap();
+            }
+        },
+        async {
+            store
+                .publish_certificate_material(
+                    &CertificateHost::from(hostname.clone()),
+                    published.clone(),
+                )
+                .await
+                .unwrap();
+        },
+    )
+    .await;
+    assert_eq!(
+        store.certificate_row(&hostname).await.unwrap(),
+        super::CertificateRow::Published(published),
+        "the late policy refusal replaced the newer Publish"
+    );
+    task.abort();
+}
+
+// In this test and the next, this Machine's `publish_certificate` stands in for material another
+// Machine issued and replication delivered. One daemon never races its own failure record or
+// challenge against its own issue for one hostname.
+#[tokio::test]
+async fn a_late_certificate_failure_leaves_newly_issued_material() {
+    let (store, hold, task) = held_identity_store(corrosion_db()).await;
+    let hostname = IngressHost::parse("app.example.com").unwrap();
+    let clock = IssuanceClock::new(1, SystemTime::UNIX_EPOCH, IssuanceFailure::Authority);
+    store
+        .record_certificate_failure(&hostname, None, "ACME request failed", clock)
+        .await
+        .unwrap();
+    let issued = certificate_material(&hostname);
+    certificate_race(
+        &store,
+        &hold,
+        {
+            let hostname = hostname.clone();
+            move |store| async move {
+                store
+                    .record_certificate_failure(&hostname, None, "ACME request failed", clock)
+                    .await
+                    .unwrap();
+            }
+        },
+        async {
+            store
+                .publish_certificate(&hostname, &issued, ployz_core::ClusterRoute::Direct)
+                .await
+                .unwrap();
+        },
+    )
+    .await;
+    assert_eq!(
+        store.certificate_row(&hostname).await.unwrap().material(),
+        Some(&issued),
+        "the late failure record dropped the newly issued material"
+    );
+    task.abort();
+}
+
+#[tokio::test]
+async fn a_late_certificate_challenge_keeps_newly_issued_material() {
+    let (store, hold, task) = held_identity_store(corrosion_db()).await;
+    let hostname = IngressHost::parse("app.example.com").unwrap();
+    let issued = certificate_material(&hostname);
+    certificate_race(
+        &store,
+        &hold,
+        {
+            let hostname = hostname.clone();
+            move |store| async move {
+                store
+                    .publish_certificate_challenge(&hostname, &certificate_challenge())
+                    .await
+                    .unwrap();
+            }
+        },
+        async {
+            store
+                .publish_certificate(&hostname, &issued, ployz_core::ClusterRoute::Direct)
+                .await
+                .unwrap();
+        },
+    )
+    .await;
+    let row = store.certificate_row(&hostname).await.unwrap();
+    assert_eq!(
+        row.material(),
+        Some(&issued),
+        "the late challenge dropped the newly issued material"
+    );
+    assert_eq!(row.challenge(), Some(&certificate_challenge()));
     task.abort();
 }
