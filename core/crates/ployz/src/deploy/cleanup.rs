@@ -2,11 +2,10 @@ use std::collections::BTreeSet;
 use std::time::Duration;
 
 use ployz_core::{
-    AnonymousVolumes, ContainerId, ContainerKind, ContainerLocator, ContainerNotFoundReason,
-    ContainerObservation, ContainerRefusal, ContainerRefusalReason, ContainerWant, CopyRotation,
-    DeploymentLogId, Drain, EnsuredContainer, HealthVerdict, MachineId, QualifiedService,
-    ResolvedServiceSpec, RoutesRead, RpcError, RpcErrorCode, RunRotation, RunTarget, StopOptions,
-    Unacked,
+    AnonymousVolumes, ContainerId, ContainerKind, ContainerLocator, ContainerObservation,
+    ContainerRefusal, ContainerRefusalReason, ContainerWant, CopyRotation, DeploymentLogId, Drain,
+    EnsuredContainer, HealthVerdict, MachineId, QualifiedService, ResolvedServiceSpec, RoutesRead,
+    RpcError, RpcErrorCode, RunRotation, RunTarget, StopOptions, Unacked,
 };
 use serde_json::Value;
 use tokio::time::Instant;
@@ -556,13 +555,6 @@ pub(crate) async fn user_remove<C: MachineOperations>(
     cancellation: &CancellationToken,
 ) -> Result<(), RpcError> {
     let observed = match observe(client, machine_id, container_id).await {
-        Err(error)
-            if error.code == RpcErrorCode::NotFound
-                && ContainerNotFoundReason::from_details(&error.details)
-                    == Some(ContainerNotFoundReason::NoResolvedSpec) =>
-        {
-            return Err(held_without_spec(container_id, error));
-        }
         Err(error) if error.code == RpcErrorCode::NotFound => return Ok(()),
         observed => observed?,
     };
@@ -573,21 +565,6 @@ pub(crate) async fn user_remove<C: MachineOperations>(
         remove(client, &copy, AnonymousVolumes::Remove).await?
     };
     left_running(&copy, "Out", step)
-}
-
-/// The Machine answered that Docker had the Container and that it holds no Resolved
-/// Service Spec for it, so nothing was removed.
-fn held_without_spec(container_id: &ContainerId, error: RpcError) -> RpcError {
-    let mut cause = vec![error.message];
-    cause.extend(error.cause);
-    RpcError {
-        code: RpcErrorCode::Conflict,
-        message: format!(
-            "Container {container_id} was not removed: its Server still has it, but no record of the Service configuration it was created with."
-        ),
-        details: Value::Null,
-        cause,
-    }
 }
 
 async fn observe<C: MachineOperations>(

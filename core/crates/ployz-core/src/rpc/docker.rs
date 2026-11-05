@@ -222,18 +222,8 @@ impl std::fmt::Display for LimitsRefusal {
 #[serde(rename_all = "snake_case")]
 pub enum ContainerNotFoundReason {
     /// Docker answered an inspect of this Container ID, and the Machine holds no
-    /// Resolved Service Spec for it.
+    /// Resolved Service Spec under this ID.
     NoResolvedSpec,
-}
-
-impl ContainerNotFoundReason {
-    /// The `reason` of a Container RPC error, if it is one of the frozen names.
-    #[must_use]
-    pub fn from_details(details: &serde_json::Value) -> Option<Self> {
-        details
-            .get("reason")
-            .and_then(|reason| Self::deserialize(reason).ok())
-    }
 }
 
 /// Request fresh storage commitments and physical backing capacity.

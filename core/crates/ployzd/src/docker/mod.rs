@@ -1579,7 +1579,7 @@ pub enum Error {
     /// Docker took the update, but the Container was not running when read back.
     #[error("container {0} stopped after its limits update")]
     StoppedAfterLimitsUpdate(ContainerId),
-    /// Docker answered an inspect of this ID, and `machine.db` holds no spec for it.
+    /// Docker answered an inspect of this ID, and `machine.db` holds no spec under it.
     #[error("resolved spec not found in machine.db for {0}")]
     SpecNotFound(ContainerId),
     /// A limits update found no stored spec for this ID before it asked Docker

@@ -592,9 +592,8 @@ pub async fn stop_one(
 /// converges.
 ///
 /// # Errors
-/// Returns the Machine's refusal, a copy proxies kept routing (left running), a
-/// `Conflict` when the Machine has the Container but holds no Resolved Service Spec for
-/// it (not removed), or the transport's error when it did not answer.
+/// Returns the Machine's refusal, a copy proxies kept routing (left running), or the
+/// transport's error when it did not answer.
 pub async fn remove_one(
     session: &Session,
     machine: MachineId,
