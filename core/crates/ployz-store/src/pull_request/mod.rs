@@ -8,7 +8,8 @@
 //! decides. An older read never replaces a newer one: facts are ordered by GitHub's
 //! `updated_at`. Opening makes the PR Environment and deploys it; renaming the head
 //! branch retracks it; the merge lands its On merge list, once; closing closes it,
-//! unless the plan keeps it.
+//! unless the plan keeps it, it holds what its merge didn't land, or the event that
+//! first reports the merge didn't land it in every Destination, or found none.
 //!
 //! Closing a Branch, for its pull request or for sitting idle a week, removes it
 //! as the Store ([`crate::removal::close`]): Cloud admits its removal from the
@@ -705,11 +706,16 @@ pub(crate) fn pull_request(
             });
         }
     }
-    // A merge closes it whichever event told of it first; older facts never reopen.
+    // A closed event closes it, whichever told of the merge first, unless this
+    // event's merge kept it or what the merge recorded holds it (`holds_open`);
+    // older facts never reopen.
     if !event.open {
         for (environment, project) in &current {
             let plan = load(tx, project, event.repository_id)?.unwrap_or_else(off);
-            if plan.remove_on_close && !kept.contains(environment) {
+            if plan.remove_on_close
+                && !kept.contains(environment)
+                && !on_merge::holds_open(tx, who, environment)?
+            {
                 let because = crate::removal::mark::Closed::PullRequest;
                 crate::removal::close(tx, who, environment, because, &mut automated)?;
             }
@@ -1227,7 +1233,7 @@ pub(crate) fn sweep(tx: &mut dyn Tx, who: &Actor, sweep: &Sweep) -> Result<Autom
     for row in &rows {
         let id = row.parse::<EnvironmentId>(0, "Environment ID")?;
         let closes_at = idle_close(row)?;
-        if closes_at.is_some_and(|at| sweep.now >= at) && on_merge::holds(tx, who, &id)? {
+        if closes_at.is_some_and(|at| sweep.now >= at) && on_merge::holds_open(tx, who, &id)? {
             held.push(id);
         } else {
             idle.push((id, closes_at));

@@ -3,14 +3,16 @@ use ployz_store::{
     Actor, CheckSuite, ConfigStore, EnvironmentName, EnvironmentRef, EnvironmentsQuery,
     HistoryAction, HistoryPreviewQuery, NeverSync, OnMergeCheck, OnMergeConclusion, ProjectName,
     PullRequest, Ride, SetPrPlan, StageHistory, SyncChanges, SyncQuery, SystemEvent, Trusted,
+    Written,
 };
 use serde_json::{Value, json};
 
 use crate::backend;
 use crate::support::{
-    HEAD, LATER, MERGE, at, check, deployed, exclude, history, labels, merge_sealed, merge_value,
-    merged, merged_within, on_merge, preview_listed, production_diff, pull, push, row, rows, save,
-    sealed_in, set, shop, shop_in, shop_with, system, unset, uuid, value, watching,
+    HEAD, LATER, MERGE, at, check, deployed, exclude, history, labels, merge_event, merge_sealed,
+    merge_value, merged, merged_onto, merged_within, on_merge, preview_listed, production_diff,
+    pull, push, row, rows, save, sealed_in, set, shop, shop_in, shop_with, system, unset, uuid,
+    value, watching,
 };
 
 /// `web.env.TOKEN` sealed in the browser for production's `web`, as a merge value.
@@ -824,6 +826,308 @@ fn a_merge_production_cant_take_lands_nothing_and_keeps_the_preview() {
             environment: Some(EnvironmentName::parse("production").unwrap()),
         })
     );
+}
+
+/// What one case saw: the first merge's closes, the later event's closes, whether
+/// pr-5 is still listed after it, the check's title then, and whether its summary
+/// still says the changes stay in the preview.
+type Replayed = (&'static str, usize, usize, bool, Option<String>, bool);
+
+/// The merge event `first` closed nothing; now `later` arrives as GitHub's closed
+/// delivery, or an edit after the merge, would.
+fn replayed(
+    case: &'static str,
+    (store, who): (ConfigStore, Actor),
+    first: impl FnOnce(&ConfigStore, &Actor) -> ployz_store::Automated,
+    later: impl FnOnce(&ConfigStore, &Actor) -> ployz_store::Automated,
+) -> Replayed {
+    let closes =
+        |automated: &ployz_store::Automated| automated.closing.len() + automated.removed.len();
+    let first = first(&store, &who);
+    let later = later(&store, &who);
+    let check = check(&store, &who);
+    (
+        case,
+        closes(&first),
+        closes(&later),
+        preview_listed(&store, &who),
+        check.as_ref().map(|check| check.title.clone()),
+        check.is_some_and(|check| check.summary.contains("They stay in the preview")),
+    )
+}
+
+/// [`shop`], with pr-5's `A` reading production's `B`, which production made read `A`
+/// since: a merge into production would close a cycle.
+fn cycle() -> (ConfigStore, Actor) {
+    cycle_in(backend::open())
+}
+
+/// [`cycle`] on `store`.
+fn cycle_in(store: ConfigStore) -> (ConfigStore, Actor) {
+    let (store, who) = shop_in(store, |_, _| {}, None);
+    set(&store, &who, "pr-5", &[("web.env.A", json!("${{ B }}"))]);
+    set(
+        &store,
+        &who,
+        "production",
+        &[("web.env.B", json!("${{ A }}"))],
+    );
+    (store, who)
+}
+
+/// [`shop`], with pr-5 onto `release`, which nothing deploys, and `A` changed or not.
+fn onto_release(changed: bool) -> (ConfigStore, Actor) {
+    let (store, who) = shop();
+    if changed {
+        set(&store, &who, "pr-5", &[("web.env.A", json!("2"))]);
+    }
+    pull(&store, &who, "release", "2026-09-29T10:00:01Z");
+    (store, who)
+}
+
+#[test]
+fn a_later_closed_event_keeps_a_preview_whose_merge_didnt_land() {
+    let failed_land = |store: &ConfigStore, who: &Actor| {
+        let automated = merged(store, who, "2026-09-29T11:00:00Z", MERGE);
+        assert!(
+            automated.skipped.len() == 1
+                && automated.skipped[0]
+                    .reason
+                    .starts_with("Didn't land #5 in production: "),
+            "{automated:?}"
+        );
+        automated
+    };
+    let release = |store: &ConfigStore, who: &Actor| {
+        merged_onto(store, who, "release", "2026-09-29T11:00:00Z")
+    };
+    let stuck = || Some("Didn't land in production".to_owned());
+    let cases = [
+        // GitHub's closed delivery, after Cloud reported the merge from the push.
+        replayed("R1 redelivery", cycle(), failed_land, |store, who| {
+            merged(store, who, "2026-09-29T11:00:00Z", MERGE)
+        }),
+        // An edit or a label after the merge.
+        replayed("R2 later", cycle(), failed_land, |store, who| {
+            merged(store, who, "2026-09-29T12:00:00Z", MERGE)
+        }),
+        replayed("R3 no Destination", onto_release(true), release, release),
+        replayed("C1 nothing held", onto_release(false), release, release),
+    ];
+    assert_eq!(
+        cases,
+        [
+            ("R1 redelivery", 0, 0, true, stuck(), true),
+            ("R2 later", 0, 0, true, stuck(), true),
+            ("R3 no Destination", 0, 0, true, None, false),
+            ("C1 nothing held", 0, 1, false, None, false),
+        ]
+    );
+}
+
+/// Whether the later event closed pr-5: it said so, or pr-5 is no longer listed.
+fn closed(store: &ConfigStore, who: &Actor, later: &ployz_store::Automated) -> bool {
+    later.closing.len() + later.removed.len() == 1 || !preview_listed(store, who)
+}
+
+/// [`cycle`]'s merge, which lands nothing in production.
+fn failed_merge(store: &ConfigStore, who: &Actor) {
+    let automated = merged(store, who, "2026-09-29T11:00:00Z", MERGE);
+    assert!(
+        automated.skipped.len() == 1 && automated.closing.is_empty(),
+        "{automated:?}"
+    );
+}
+
+/// production's `web` tracks `release` from its next Saved State on.
+fn production_tracks_release(store: &ConfigStore, who: &Actor) {
+    set(
+        store,
+        who,
+        "production",
+        &[("web.branch", json!("release"))],
+    );
+    save(store, who, "production");
+}
+
+#[test]
+fn a_merge_into_nowhere_keeps_its_preview_once_a_destination_appears() {
+    let (store, who) = onto_release(true);
+    let first = merged_onto(&store, &who, "release", "2026-09-29T11:00:00Z");
+    assert!(
+        first.closing.is_empty() && first.removed.is_empty(),
+        "{first:?}"
+    );
+    // production deploys `release` now: a Destination that took none of the merge.
+    production_tracks_release(&store, &who);
+    assert_eq!(on_merge(&store, &who).destinations.len(), 1);
+
+    let later = merged_onto(&store, &who, "release", "2026-09-29T12:00:00Z");
+    assert!(!closed(&store, &who, &later), "{later:?}");
+}
+
+#[test]
+fn a_failed_merge_whose_destination_stops_deploying_keeps_its_preview() {
+    let (store, who) = cycle();
+    failed_merge(&store, &who);
+    production_tracks_release(&store, &who);
+    assert_eq!(on_merge(&store, &who).destinations, []);
+
+    let later = merged(&store, &who, "2026-09-29T12:00:00Z", MERGE);
+    assert!(!closed(&store, &who, &later), "{later:?}");
+}
+
+#[test]
+fn a_failed_merge_recorded_before_receipts_keeps_its_preview() {
+    let dir = tempfile::tempdir().unwrap();
+    let url = backend::fresh_url(&dir);
+    let (store, who) = cycle_in(ployz_store::ConfigStore::open(&url, backend::key()).unwrap());
+    failed_merge(&store, &who);
+    drop(store);
+    // The database as a Store from before 0036_merge_landing left it.
+    backend::execute(
+        &url,
+        "ALTER TABLE config_pr_environment DROP COLUMN merge_landing",
+    );
+    backend::execute(
+        &url,
+        "DELETE FROM config_migration WHERE name = '0036_merge_landing'",
+    );
+    let store = ployz_store::ConfigStore::open(&url, backend::key()).unwrap();
+    assert_eq!(
+        backend::count(
+            &url,
+            "SELECT COUNT(*) FROM config_pr_environment WHERE merge_landing IS NULL"
+        ),
+        1
+    );
+
+    let later = merged(&store, &who, "2026-09-29T12:00:00Z", MERGE);
+    assert!(!closed(&store, &who, &later), "{later:?}");
+}
+
+#[test]
+fn a_failed_merge_taken_by_hand_lets_its_preview_close() {
+    let (store, who) = cycle();
+    failed_merge(&store, &who);
+    set(&store, &who, "production", &[("web.env.B", json!("plain"))]);
+    let review = store
+        .read(
+            &who,
+            &SyncQuery {
+                from: at("pr-5"),
+                into: Some(at("production")),
+            },
+        )
+        .unwrap();
+    store
+        .write(
+            &who,
+            &SyncChanges {
+                from: at("pr-5"),
+                into: Some(at("production")),
+                close_after: false,
+                version: review.version,
+                picks: Some(vec!["web.env.A".into()]),
+                skip: Vec::new(),
+                values: std::collections::BTreeMap::new(),
+                id: None,
+            },
+        )
+        .unwrap();
+    save(&store, &who, "production");
+
+    let later = merged(&store, &who, "2026-09-29T12:00:00Z", MERGE);
+    assert!(closed(&store, &who, &later), "{later:?}");
+}
+
+#[test]
+fn a_merge_saved_but_not_deployed_closes_its_preview() {
+    let (store, who) = shop();
+    watching(&store, &who);
+    set(
+        &store,
+        &who,
+        "pr-5",
+        &[("web.env.A", json!("2")), ("web.env.B", json!("new"))],
+    );
+    // A row that stays behind once the merge saved the rest.
+    exclude(&store, &who, "web.env.B", false);
+    // The push came first, so the merge deploys in its own transaction, with no Server
+    // to run it.
+    system(&store, &who, &push(Some(HEAD), MERGE, Some(&["README.md"])));
+    let no_servers = Trusted {
+        servers: Some(0),
+        ..backend::members()
+    };
+    let Written::Automated(first) = store
+        .system(
+            &who.organization,
+            &merge_event("main", "2026-09-29T11:00:00Z"),
+            &no_servers,
+        )
+        .unwrap()
+    else {
+        panic!("a system event writes Automated")
+    };
+    assert_eq!(
+        value(&store, &who, "production", "web.env.A"),
+        Some(json!("2"))
+    );
+    assert!(closed(&store, &who, &first), "{first:?}");
+    assert_eq!(
+        check(&store, &who).map(|check| check.title),
+        Some("Saved in production, not deployed".to_owned())
+    );
+}
+
+#[test]
+fn a_merge_landing_receipt_with_no_destination_entry_is_refused() {
+    let dir = tempfile::tempdir().unwrap();
+    let url = backend::fresh_url(&dir);
+    let (store, who) = cycle_in(ployz_store::ConfigStore::open(&url, backend::key()).unwrap());
+    failed_merge(&store, &who);
+    backend::execute(
+        &url,
+        r#"UPDATE config_pr_environment SET merge_landing = '{"into":{}}'"#,
+    );
+
+    let refused = store
+        .system(
+            &who.organization,
+            &merge_event("main", "2026-09-29T12:00:00Z"),
+            &backend::members(),
+        )
+        .unwrap_err();
+    assert_eq!(
+        (refused.code, refused.message.as_str()),
+        (
+            RpcErrorCode::Internal,
+            "The Config Store holds an unreadable merge landing"
+        )
+    );
+}
+
+#[test]
+fn a_merge_recorded_with_nothing_unlanded_lets_its_preview_close() {
+    let dir = tempfile::tempdir().unwrap();
+    let url = backend::fresh_url(&dir);
+    let (store, who) = shop_in(
+        ployz_store::ConfigStore::open(&url, backend::key()).unwrap(),
+        |_, _| {},
+        None,
+    );
+    set(&store, &who, "pr-5", &[("web.env.A", json!("2"))]);
+    // As the conversion of a merge from before `unlanded` left it.
+    backend::execute(
+        &url,
+        &format!(
+            r#"UPDATE config_pull_request SET merged = '{{"commit":"{MERGE}","into":"main"}}'"#
+        ),
+    );
+
+    let later = merged(&store, &who, "2026-09-29T12:00:00Z", MERGE);
+    assert!(closed(&store, &who, &later), "{later:?}");
 }
 
 #[test]

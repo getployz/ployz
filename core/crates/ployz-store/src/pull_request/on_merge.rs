@@ -570,35 +570,154 @@ pub(crate) fn set_merge_value(
     listed(tx, who, from)
 }
 
-/// Whether closing PR Environment `id` would lose something: its pull request is
-/// open, or merged and some Destination didn't take it, and it holds a row for
-/// some Destination, riding or not. Once the merge landed everywhere, nothing
-/// else of it lands. Merged into a branch no Environment tracks, it landed
-/// nowhere: it holds what it would sync into its Parent.
-pub(crate) fn holds(tx: &mut dyn Tx, who: &Actor, id: &EnvironmentId) -> Result<bool, RpcError> {
+/// Whether closing PR Environment `id` would lose something its pull request still
+/// has to land:
+///
+/// - not a PR Environment, or its pull request closed and never merged: no;
+/// - merged, with the receipt its first merge recorded ([`LandingReceipt`]): when
+///   that merge found no Destination, whether it holds a row for its Parent, even if
+///   a Destination appeared since, as that one took none of it; when some
+///   Destination didn't land it, whether it holds a row for some Destination now, or
+///   for its Parent when there is none; otherwise no;
+/// - open, or merged with no receipt (a merge from before `0036_merge_landing`, or
+///   one an older Store landed): from its pull request's `unlanded`, as the sweep
+///   read it before receipts. Merged with nothing recorded, no. Recorded, with no
+///   Destination now, whether it holds a row for its Parent. Open, or merged with
+///   some Destination that didn't land it, whether it holds a row for some
+///   Destination. Otherwise no.
+///
+/// A Kept row never counts: a Kept Volume stays where it is. Only the branches that
+/// answer "whether it holds a row" plan a landing.
+pub(crate) fn holds_open(
+    tx: &mut dyn Tx,
+    who: &Actor,
+    id: &EnvironmentId,
+) -> Result<bool, RpcError> {
     let Some(pull_request) = of(tx, id)? else {
         return Ok(false);
     };
-    let open = facts(tx, who, pull_request.repository_id, pull_request.number)?
-        .is_some_and(|facts| facts.open);
-    let unlanded = unlanded(tx, who, &pull_request)?;
+    let Some(facts) = facts(tx, who, pull_request.repository_id, pull_request.number)? else {
+        return Ok(false);
+    };
+    if facts.open {
+        return by_unlanded(tx, who, id, &pull_request, true);
+    }
+    if facts.merge_commit.is_none() {
+        return Ok(false);
+    }
+    match receipt(tx, id)? {
+        None => by_unlanded(tx, who, id, &pull_request, false),
+        Some(LandingReceipt::NoDestination) => {
+            let from = scope::load_by_id(tx, id)?;
+            Ok(parent_landing(tx, &from)?.is_some_and(|landing| keeps(&[landing])))
+        }
+        Some(LandingReceipt::Into(outcomes)) => {
+            let stuck = outcomes
+                .values()
+                .any(|outcome| matches!(outcome, LandingOutcome::NotLanded { .. }));
+            if !stuck {
+                return Ok(false);
+            }
+            let from = scope::load_by_id(tx, id)?;
+            let (_, mut landings) = landings(tx, who, &from)?;
+            if landings.is_empty() {
+                landings.extend(parent_landing(tx, &from)?);
+            }
+            Ok(keeps(&landings))
+        }
+    }
+}
+
+/// [`holds_open`] for a PR Environment with no receipt, from its pull request's
+/// `unlanded` and whether it is `open`.
+fn by_unlanded(
+    tx: &mut dyn Tx,
+    who: &Actor,
+    id: &EnvironmentId,
+    pull_request: &PullRequestRef,
+    open: bool,
+) -> Result<bool, RpcError> {
+    let unlanded = unlanded(tx, who, pull_request)?;
+    if !open && unlanded.is_none() {
+        return Ok(false);
+    }
     let from = scope::load_by_id(tx, id)?;
     let (_, mut landings) = landings(tx, who, &from)?;
     if landings.is_empty() && unlanded.is_some() {
-        let Some(branch) = crate::branch::row(tx, id)? else {
-            return Ok(false);
-        };
-        let parent = scope::load_by_id(tx, &branch.parent)?;
-        landings.push(landing(tx, &from, parent)?);
+        landings.extend(parent_landing(tx, &from)?);
     } else if !open
         && !unlanded.is_some_and(|unlanded| unlanded.iter().any(|destination| !destination.saved))
     {
         return Ok(false);
     }
-    // A Kept Volume stays where it is: nothing of it lands.
-    Ok(landings
+    Ok(keeps(&landings))
+}
+
+/// What PR Environment `from` would land in its Parent; none when it has none.
+fn parent_landing(tx: &mut dyn Tx, from: &Environment) -> Result<Option<Landing>, RpcError> {
+    let Some(branch) = crate::branch::row(tx, &from.summary.id)? else {
+        return Ok(None);
+    };
+    let parent = scope::load_by_id(tx, &branch.parent)?;
+    landing(tx, from, parent).map(Some)
+}
+
+/// Whether some landing has a row that isn't Kept.
+fn keeps(landings: &[Landing]) -> bool {
+    landings
         .iter()
-        .any(|landing| landing.rows.iter().any(|row| row.ride != Ride::Kept)))
+        .any(|landing| landing.rows.iter().any(|row| row.ride != Ride::Kept))
+}
+
+/// What a pull request's first merge did in one PR Environment, as [`land`] saw it,
+/// recorded once in the merge's transaction.
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+enum LandingReceipt {
+    /// Its pull request merged into a branch no Environment of its Project deploys.
+    NoDestination,
+    /// What each Destination did with it, by Destination ID; never empty.
+    Into(BTreeMap<EnvironmentId, LandingOutcome>),
+}
+
+/// What one Destination did with a pull request's merge, as [`land`] saw it. A
+/// `reason` is the first that Destination's [`Unlanded`] records in the same loop;
+/// it records at most one, as `deploy_landed` skips at most once.
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case", tag = "outcome")]
+enum LandingOutcome {
+    /// Its savepoint committed: it took every riding row, if any rode, and no
+    /// deploy of what it took was skipped in the merge's transaction.
+    Landed,
+    /// Its savepoint committed, but the deploy of what it took was skipped in the
+    /// merge's transaction.
+    SavedNotDeployed { reason: String },
+    /// It took none of it: the savepoint rolled back with this error.
+    NotLanded { reason: String },
+}
+
+/// The receipt PR Environment `id`'s first merge recorded; none before its merge,
+/// for a merge from before `0036_merge_landing`, or for one an older Store landed.
+fn receipt(tx: &mut dyn Tx, id: &EnvironmentId) -> Result<Option<LandingReceipt>, RpcError> {
+    let rows = tx.query(
+        "SELECT merge_landing FROM config_pr_environment WHERE environment_id = ?1",
+        &[id.as_str().into()],
+    )?;
+    let Some(text) = rows
+        .first()
+        .map(|row| row.optional_text(0))
+        .transpose()?
+        .flatten()
+    else {
+        return Ok(None);
+    };
+    match serde_json::from_str(text) {
+        Ok(LandingReceipt::Into(outcomes)) if outcomes.is_empty() => {
+            Err(error::corrupt("merge landing"))
+        }
+        Ok(receipt) => Ok(Some(receipt)),
+        Err(_) => Err(error::corrupt("merge landing")),
+    }
 }
 
 /// What a Destination didn't take when the pull request merged.
@@ -696,11 +815,12 @@ impl MergedServices {
 }
 
 /// Land what PR Environment `from`'s pull request lands in each Destination, one
-/// Saved revision each, and deploy the Services it changed or removed there. A Destination
-/// that can't take it is skipped and keeps what it had. A merge into a branch
-/// nothing deploys lands nowhere, so the PR Environment keeps what it holds. What
-/// didn't land, or landed but didn't deploy, goes in `unlanded`. The caller holds
-/// the locks.
+/// Saved revision each, and deploy the Services it changed or removed there. A
+/// Destination that can't take it is skipped and keeps what it had. A merge into a
+/// branch nothing deploys lands nowhere, so the PR Environment keeps what it holds.
+/// What didn't land, or landed but didn't deploy, goes in `unlanded`. What each
+/// Destination did, or that there was none, goes in `from`'s [`LandingReceipt`],
+/// unless it already has one. The caller holds the locks.
 pub(crate) fn land(
     tx: &mut dyn Tx,
     who: &Actor,
@@ -711,6 +831,7 @@ pub(crate) fn land(
     let from = scope::load_by_id(tx, from)?;
     let (pull_request, landings) = landings(tx, who, &from)?;
     let mut all = !landings.is_empty();
+    let mut outcomes = BTreeMap::new();
     for landing in landings {
         let into = landing.into.summary.clone();
         let landed = storage::attempt(tx, |tx| {
@@ -719,6 +840,7 @@ pub(crate) fn land(
         match landed {
             Ok(services) => {
                 if services.is_empty() {
+                    outcomes.insert(into.id, LandingOutcome::Landed);
                     continue;
                 }
                 let skipped = automated.skipped.len();
@@ -731,19 +853,24 @@ pub(crate) fn land(
                     services,
                     automated,
                 )?;
-                unlanded.extend(
-                    automated
-                        .skipped
-                        .iter()
-                        .skip(skipped)
-                        .filter(|skip| skip.environment == into.id)
-                        .map(|skip| Unlanded {
-                            project: into.project.clone(),
-                            into: into.name.clone(),
-                            saved: true,
-                            reason: skip.reason.clone(),
-                        }),
-                );
+                let undeployed: Vec<String> = automated
+                    .skipped
+                    .iter()
+                    .skip(skipped)
+                    .filter(|skip| skip.environment == into.id)
+                    .map(|skip| skip.reason.clone())
+                    .collect();
+                unlanded.extend(undeployed.iter().map(|reason| Unlanded {
+                    project: into.project.clone(),
+                    into: into.name.clone(),
+                    saved: true,
+                    reason: reason.clone(),
+                }));
+                let outcome = match undeployed.into_iter().next() {
+                    Some(reason) => LandingOutcome::SavedNotDeployed { reason },
+                    None => LandingOutcome::Landed,
+                };
+                outcomes.insert(into.id, outcome);
             }
             Err(error) if automation::skippable(&error) => {
                 all = false;
@@ -754,16 +881,35 @@ pub(crate) fn land(
                     reason: error.message.clone(),
                 });
                 automated.skipped.push(Skipped {
-                    environment: into.id,
+                    environment: into.id.clone(),
                     reason: format!(
                         "Didn't land #{} in {}: {}",
                         pull_request.number, into.name, error.message
                     ),
                 });
+                let reason = error.message;
+                outcomes.insert(into.id, LandingOutcome::NotLanded { reason });
             }
             Err(error) => return Err(error),
         }
     }
+    // Every Destination visited has an outcome, so none means there was none.
+    let receipt = if outcomes.is_empty() {
+        LandingReceipt::NoDestination
+    } else {
+        LandingReceipt::Into(outcomes)
+    };
+    tx.execute(
+        "UPDATE config_pr_environment SET merge_landing = ?2 \
+         WHERE environment_id = ?1 AND merge_landing IS NULL",
+        &[
+            from.summary.id.as_str().into(),
+            serde_json::to_string(&receipt)
+                .expect("a receipt is JSON")
+                .as_str()
+                .into(),
+        ],
+    )?;
     Ok(Merged { all })
 }
 
