@@ -5,7 +5,7 @@ import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testi
 import { Fragment } from "react";
 import { cleanStores } from "nanostores";
 import { getDbClient } from "#/collections/scope";
-import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import { hashKey, QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { createMemoryHistory, createRoute, createRouter, Outlet, RouterProvider } from "@tanstack/react-router";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { DashboardShell } from "./dashboard-shell";
@@ -82,6 +82,8 @@ async function show({ orgStore = "ready", scope = "environment", billingEnabled 
   let resolveOrgStore = (_ready: boolean) => {};
   if (orgStore === "ready") client.setQueryData(store.queryKey, true);
   else if (orgStore === "pending") void client.fetchQuery({ ...store, queryFn: () => new Promise<boolean>((resolve) => { resolveOrgStore = resolve; }) });
+  // An unloaded table fails the gate's own read, leaving its collection in `error` as in the browser.
+  else if (unloadedTable) await client.fetchQuery(store).catch(() => {});
   else await client.fetchQuery({ ...store, queryFn: () => Promise.reject(new Error("offline")) }).catch(() => {});
   RootRoute.updateLoader({ loader: () => ({ theme: "light", session: savedSession }) });
   Object.assign(RootRoute.options, { shellComponent: Fragment });
@@ -141,11 +143,20 @@ it("shows a retryable Org Store failure inside the shell and recovers", async ()
 });
 
 it("returns to the Org Store failure after a Retry while a table still can't load", async () => {
-  await show({ orgStore: "failed", unloadedTable: "organization_server_upgrades" });
+  const table = ["collections", "test-session", "test-user", "acme", "organization_server_upgrades"];
+  const { router } = await show({ orgStore: "failed", unloadedTable: "organization_server_upgrades" });
   expect(await screen.findByText("Organization data couldn’t load")).toBeTruthy();
+  const client = router.options.context.queryClient;
+  expect(client.getQueryState(table)?.status).toBe("error");
+  let reads = 0;
+  const stop = client.getQueryCache().subscribe((event) => {
+    if (event.type === "updated" && event.action.type === "fetch" && event.query.queryHash === hashKey(table)) reads += 1;
+  });
   fireEvent.click(screen.getByRole("button", { name: "Retry" }));
-  // Without its own retries the gate answers after one read, not after Query's 1 s, 2 s and 4 s backoff.
-  expect(await screen.findByText("Organization data couldn’t load", {}, { timeout: 900 })).toBeTruthy();
+  // The gate answers after one read, not after Query's 1 s, 2 s and 4 s backoff.
+  expect(await screen.findByText("Organization data couldn’t load", {}, { timeout: 3000 })).toBeTruthy();
+  stop();
+  expect(reads).toBe(1);
   expect(screen.queryByText("Log entries")).toBeNull();
   expect(screen.queryByText(/Could not refresh organization data/)).toBeNull();
 });
