@@ -5,6 +5,8 @@
 #[cfg(test)]
 mod acme_issuance;
 #[cfg(test)]
+mod bridge_notes;
+#[cfg(test)]
 mod build_handoff;
 #[cfg(test)]
 mod caddy_load;
