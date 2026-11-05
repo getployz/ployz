@@ -1533,8 +1533,9 @@ fn every_build_its_deployment_ended_under_is_interrupted_after_upgrade() {
         before + 3600,
     );
     // Deployment `n`'s columns, and the build of web under it: status, message,
-    // GitHub run and finished.
-    let cases: [(u8, String, (&str, &str, &str, String)); 12] = [
+    // GitHub run and finished, as SQL.
+    type Build = (&'static str, &'static str, &'static str, String);
+    let cases: [(u8, String, Build); 12] = [
         (
             1,
             format!(
@@ -1667,7 +1668,10 @@ fn every_build_its_deployment_ended_under_is_interrupted_after_upgrade() {
             finished.to_string(),
         )
     };
-    let upgraded: i64 = seen[5].3.parse().unwrap_or(0);
+    let upgraded: i64 = seen
+        .get(5)
+        .and_then(|(.., finished)| finished.parse().ok())
+        .unwrap_or(0);
     assert_eq!(
         seen,
         [
@@ -1720,14 +1724,17 @@ fn every_build_its_deployment_ended_under_is_interrupted_after_upgrade() {
         ),
     );
     assert_eq!(
-        older.iter().map(|row| row[2].as_str()).collect::<Vec<_>>(),
+        older
+            .iter()
+            .filter_map(|row| row.get(2).map(String::as_str))
+            .collect::<Vec<_>>(),
         ["pending", "building"]
     );
     let all = builds();
     assert_eq!(
         all.iter()
-            .filter(|row| row[1] == "api")
-            .map(|row| row[3].as_str())
+            .filter(|row| row.get(1).is_some_and(|service| service == "api"))
+            .filter_map(|row| row.get(3).map(String::as_str))
             .collect::<Vec<_>>(),
         ["0"]
     );
