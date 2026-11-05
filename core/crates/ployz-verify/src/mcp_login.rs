@@ -19,6 +19,11 @@
 //! The finding: two logins read the same token before, and both mint. The first rename's token
 //! is replaced by the second's. It stays live in Cloud, and no login revokes it or names it.
 //! Its login still prints that `ployz mcp` now acts with it (:171-174).
+//!
+//! The fix variant models E-142's lock: a CLI-local exclusive lock beside `mcp.json`, taken
+//! before the read and held through the warnings and the note, in the shape of
+//! `Config::update` (core/crates/ployz/src/context.rs:299-326). A second login then reads the
+//! first one's token as its token before, and revokes it as `fate` and `revoke` do today.
 
 use std::fmt::Write as _;
 
@@ -53,6 +58,11 @@ impl Tok {
 
     fn index(self) -> usize {
         usize::from(self.0)
+    }
+
+    /// `P`, then each login's token.
+    fn all() -> impl Iterator<Item = Self> {
+        (0..TOKENS).map(|index| Self(u8::try_from(index).expect("a small index")))
     }
 
     /// The login that minted it, or `None` for `P`.
@@ -288,6 +298,35 @@ impl Login {
     }
 }
 
+/// A guard taken out, to show the check catches what it prevents. The first seven are guards
+/// the code has; the last two are parts of the fix.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[expect(
+    clippy::struct_excessive_bools,
+    reason = "each flag removes one independent guard"
+)]
+struct Broken {
+    /// `save` renames the temp file without its `sync_all` (:75-78).
+    persist_unflushed_bytes: bool,
+    /// `fate` has no Unflushed arm, so it revokes after a failed directory flush (:229-235).
+    revoke_after_unflushed: bool,
+    /// `fate` has no Cloud check (:213-220).
+    fate_ignores_cloud: bool,
+    /// `fate` has no Organization check (:221-228).
+    fate_ignores_organization: bool,
+    /// `revoke` deletes the token before without its listed-as-agent check (:246-252).
+    revoke_unlisted: bool,
+    /// `login` saves a token of any kind: no kind check (:109, :119-124).
+    keep_non_agent: bool,
+    /// A failed save, or a refused kind, returns its error without revoking the token just
+    /// made or warning (:125-136).
+    failed_save_keeps_new_token: bool,
+    /// The fix takes no lock.
+    fix_unlocked: bool,
+    /// The fix releases its lock right after the rename, not after the note.
+    fix_releases_before_report: bool,
+}
+
 /// How many of each failure the model has spent.
 #[derive(Clone, Copy, Debug, Default, Hash, PartialEq, Eq)]
 struct Failures {
@@ -344,6 +383,8 @@ struct State {
     /// Bookkeeping, read by no step that copies code: some login renamed after another
     /// login's rename that landed after its own read. Sticky.
     raced: bool,
+    /// Under the fix, the login that holds the lock beside `mcp.json`.
+    lock: Option<usize>,
     took: Option<Branch>,
 }
 
@@ -400,9 +441,21 @@ fn listed_as_agent(token: Token) -> bool {
     token.place == Place::Here && token.live && token.kind == Kind::Agent
 }
 
+/// Which model a `COVERAGE` row is reached on.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Reach {
+    Both,
+    /// Only on the code as it is: two logins decide one token's fate, or one renames while
+    /// another is between its read and its note. The fix's lock takes these away.
+    AsIs,
+    /// Only with the fix.
+    Fix,
+}
+
 /// One `sometimes`: a branch the code handles, read from the state that took it.
 struct Coverage {
     name: &'static str,
+    reach: Reach,
     reached: fn(&McpLogin, &State) -> bool,
 }
 
@@ -415,27 +468,33 @@ fn noted_left(state: &State, why: Why) -> bool {
     matches!(state.took, Some(Branch::Noted { left: Some(left), .. }) if left == why)
 }
 
-/// Each branch the bounds reach on the code as it is.
-/// `current_code_breaks_only_the_finding` expects every row the code as it is reaches.
+/// Each branch the bounds reach, on the code as it is, on the fix, or on both.
+/// `current_code_breaks_only_the_finding` and `the_fix_holds` expect every row their model
+/// reaches.
 const COVERAGE: &[Coverage] = &[
     Coverage {
         name: "a login reads no mcp.json",
+        reach: Reach::Both,
         reached: |_, state| took(state, Branch::Read(File::Absent)),
     },
     Coverage {
         name: "a login reads the agent token mcp.json holds",
+        reach: Reach::Both,
         reached: |_, state| matches!(state.took, Some(Branch::Read(File::Holds(tok))) if state.token(tok).kind == Kind::Agent),
     },
     Coverage {
         name: "a login reads an unreadable mcp.json, warns \"Replacing it.\" and goes on with none",
+        reach: Reach::Both,
         reached: |_, state| took(state, Branch::Read(File::Unreadable)),
     },
     Coverage {
         name: "Cloud mints an agent token",
+        reach: Reach::Both,
         reached: |_, state| took(state, Branch::Minted(Kind::Agent)),
     },
     Coverage {
         name: "Cloud answers a cli token, and the login refuses it and revokes it",
+        reach: Reach::Both,
         reached: |_, state| {
             took(
                 state,
@@ -448,6 +507,7 @@ const COVERAGE: &[Coverage] = &[
     },
     Coverage {
         name: "a save fails before the rename, and the login revokes the token it just made",
+        reach: Reach::Both,
         reached: |_, state| {
             took(
                 state,
@@ -460,42 +520,52 @@ const COVERAGE: &[Coverage] = &[
     },
     Coverage {
         name: "the revoke of the token just made fails, and the login warns \"Could not revoke the token … just made\"",
+        reach: Reach::Both,
         reached: |_, state| matches!(state.took, Some(Branch::Unmade { revoked: false, .. })),
     },
     Coverage {
         name: "a save is Durable",
+        reach: Reach::Both,
         reached: |_, state| matches!(state.took, Some(Branch::Saved { durable: true, .. })),
     },
     Coverage {
         name: "a save is Unflushed, and the login warns that it may not survive a crash and that the token before is still live",
+        reach: Reach::Both,
         reached: |_, state| noted_left(state, Why::Unflushed),
     },
     Coverage {
         name: "the token before is in another Cloud, and the login warns that it is still live",
+        reach: Reach::Both,
         reached: |_, state| noted_left(state, Why::Cloud),
     },
     Coverage {
         name: "the token before is in another Organization, and the login warns that it is still live",
+        reach: Reach::Both,
         reached: |_, state| noted_left(state, Why::Organization),
     },
     Coverage {
         name: "the token before is listed as an agent token and revoked, and the login prints \"Revoked the agent token … it replaced.\"",
+        reach: Reach::Both,
         reached: |_, state| matches!(state.took, Some(Branch::Noted { who, .. }) if state.login(who).revoked),
     },
     Coverage {
         name: "the token before is of kind cli, and the login leaves it and says nothing",
+        reach: Reach::Both,
         reached: |_, state| matches!(state.took, Some(Branch::Listed { who, found: false }) if state.token(state.previous(who)).kind == Kind::Cli),
     },
     Coverage {
         name: "revoke's list fails, and the login warns that the token before is still live",
+        reach: Reach::Both,
         reached: |_, state| noted_left(state, Why::ListFailed),
     },
     Coverage {
         name: "revoke's DELETE fails once, and the login warns that the token before is still live",
+        reach: Reach::Both,
         reached: |_, state| noted_left(state, Why::DeleteFailed),
     },
     Coverage {
         name: "another login revoked the token before after this one read it, and this one finds it unlisted and says nothing",
+        reach: Reach::AsIs,
         reached: |_, state| {
             matches!(state.took, Some(Branch::Listed { who, found: false }) if {
                 let token = state.token(state.previous(who));
@@ -505,10 +575,12 @@ const COVERAGE: &[Coverage] = &[
     },
     Coverage {
         name: "another login's DELETE landed between this one's list and its DELETE, which gets a 404, and the login warns that the token before \"is still live\"",
+        reach: Reach::AsIs,
         reached: |_, state| noted_left(state, Why::NotFound),
     },
     Coverage {
         name: "a login's rename replaces a token another login saved after this one read mcp.json",
+        reach: Reach::AsIs,
         reached: |_, state| {
             matches!(state.took, Some(Branch::Saved { who, over: File::Holds(over), .. })
                 if over.maker().is_some_and(|maker| maker != who)
@@ -517,6 +589,7 @@ const COVERAGE: &[Coverage] = &[
     },
     Coverage {
         name: "a login that read another login's token renames before that login's note, which is then printed stale",
+        reach: Reach::AsIs,
         reached: |_, state| {
             matches!(state.took, Some(Branch::Noted { who, .. }) if matches!(state.file,
                 File::Holds(held) if held.maker().is_some_and(|other| other != who
@@ -524,7 +597,13 @@ const COVERAGE: &[Coverage] = &[
         },
     },
     Coverage {
+        name: "under the fix, a login takes the lock once the other released it, and reads that login's token as its token before",
+        reach: Reach::Fix,
+        reached: |_, state| matches!(state.took, Some(Branch::Read(File::Holds(tok))) if tok.maker().is_some()),
+    },
+    Coverage {
         name: "every login returns Ok",
+        reach: Reach::Both,
         reached: |model, state| {
             model
                 .running()
@@ -533,13 +612,16 @@ const COVERAGE: &[Coverage] = &[
     },
 ];
 
-/// The `ployz mcp login` processes, as the code is.
+/// The `ployz mcp login` processes, as the code is or with the fix.
 #[derive(Clone, Copy, Debug)]
 struct McpLogin {
     /// How many `ployz mcp login` processes run, at most `MAX_LOGINS`.
     logins: usize,
     /// The files the model starts from.
     starts: &'static [Start],
+    /// The fix: E-142's lock beside `mcp.json`, from the read through the note.
+    fix: bool,
+    broken: Broken,
 }
 
 impl McpLogin {
@@ -561,6 +643,7 @@ impl McpLogin {
             failed: Failures::default(),
             renames: 0,
             raced: false,
+            lock: None,
             took: None,
         };
         let held = |place, kind| {
@@ -582,21 +665,42 @@ impl McpLogin {
         }
     }
 
-    /// `fate` (:209-240) for the token before, with the save `durable` or not.
-    fn fate(token: Token, durable: bool) -> Fate {
-        if token.place == Place::OtherCloud {
+    /// The fix takes its lock before the read and holds it.
+    fn locks(&self) -> bool {
+        self.fix && !self.broken.fix_unlocked
+    }
+
+    /// `fate` (:209-240) for the token before, with the save `durable` or not. A token in
+    /// another Cloud carries the same Organization slug, so only the Cloud check leaves it.
+    fn fate(&self, token: Token, durable: bool) -> Fate {
+        if token.place == Place::OtherCloud && !self.broken.fate_ignores_cloud {
             Fate::Left(Why::Cloud)
-        } else if token.place == Place::OtherOrganization {
+        } else if token.place == Place::OtherOrganization && !self.broken.fate_ignores_organization
+        {
             Fate::Left(Why::Organization)
-        } else if !durable {
+        } else if !durable && !self.broken.revoke_after_unflushed {
             Fate::Left(Why::Unflushed)
         } else {
             Fate::Revoke
         }
     }
 
-    /// `stored` reads `mcp.json` (:92-99).
-    fn read(state: &mut State, who: usize) -> Pc {
+    /// Where a failed save or a refused kind goes: `remove_token` of the token just made
+    /// (:125-137).
+    fn unmaking(&self, why: Unmake) -> Pc {
+        if self.broken.failed_save_keeps_new_token {
+            Pc::Done(Outcome::Err)
+        } else {
+            Pc::Unmaking(why)
+        }
+    }
+
+    /// `stored` reads `mcp.json` (:92-99). Under the fix the lock is taken first; no other
+    /// login writes `mcp.json` without it, so taking it and reading are one step.
+    fn read(&self, state: &mut State, who: usize) -> Pc {
+        if self.locks() {
+            state.lock = Some(who);
+        }
         let read = state.file;
         let saw = state.renames;
         let login = state.login_mut(who);
@@ -622,16 +726,16 @@ impl McpLogin {
 
     /// The kind check and `save` (:109-124, :66-88), then `fate` (:140-141). Each part
     /// touches only this process's state except the rename (:79), so they are one step.
-    fn save(state: &mut State, who: usize, fails: bool, flushes_dir: bool) -> Pc {
+    fn save(&self, state: &mut State, who: usize, fails: bool, flushes_dir: bool) -> Pc {
         let made = Tok::of(who);
-        if state.token(made).kind != Kind::Agent {
+        if state.token(made).kind != Kind::Agent && !self.broken.keep_non_agent {
             state.took = Some(Branch::Failed(Unmake::Refused));
-            return Pc::Unmaking(Unmake::Refused);
+            return self.unmaking(Unmake::Refused);
         }
         if fails {
             state.failed.save += 1;
             state.took = Some(Branch::Failed(Unmake::SaveFailed));
-            return Pc::Unmaking(Unmake::SaveFailed);
+            return self.unmaking(Unmake::SaveFailed);
         }
         if !flushes_dir {
             state.failed.flush += 1;
@@ -643,14 +747,17 @@ impl McpLogin {
         }
         state.renames += 1;
         state.login_mut(who).flushes = Some(Flushes {
-            bytes: true,
+            bytes: !self.broken.persist_unflushed_bytes,
             dir: flushes_dir,
         });
+        if self.locks() && self.broken.fix_releases_before_report {
+            state.lock = None;
+        }
         let fate = state
             .login(who)
             .previous
             .map_or(Fate::NoPrevious, |previous| {
-                Self::fate(state.token(previous), flushes_dir)
+                self.fate(state.token(previous), flushes_dir)
             });
         state.took = Some(Branch::Saved {
             who,
@@ -682,7 +789,7 @@ impl McpLogin {
     }
 
     /// `revoke`'s list and its listed-as-agent check (:245-252).
-    fn list(state: &mut State, who: usize, fails: bool) -> Pc {
+    fn list(&self, state: &mut State, who: usize, fails: bool) -> Pc {
         if fails {
             state.failed.list += 1;
             state.took = Some(Branch::ListFailed);
@@ -690,7 +797,8 @@ impl McpLogin {
                 left: Some(Why::ListFailed),
             };
         }
-        let found = listed_as_agent(state.token(state.previous(who)));
+        let found =
+            self.broken.revoke_unlisted || listed_as_agent(state.token(state.previous(who)));
         state.took = Some(Branch::Listed { who, found });
         if found {
             Pc::Deleting
@@ -737,15 +845,19 @@ impl McpLogin {
     fn step(&self, state: &mut State, who: usize, how: How) {
         let fails = how == How::Fails;
         let next = match state.pc(who) {
-            Pc::Idle => Self::read(state, who),
+            Pc::Idle => self.read(state, who),
             Pc::Minting => Self::mint(state, who, if fails { Kind::Cli } else { Kind::Agent }),
-            Pc::Saving => Self::save(state, who, fails, how != How::Unflushed),
+            Pc::Saving => self.save(state, who, fails, how != How::Unflushed),
             Pc::Unmaking(why) => Self::unmake(state, who, why, fails),
-            Pc::Listing => Self::list(state, who, fails),
+            Pc::Listing => self.list(state, who, fails),
             Pc::Deleting => Self::delete(state, who, fails),
             Pc::Reporting { left } => Self::report(state, who, left),
             Pc::Done(_) => unreachable!("a returned login takes no step"),
         };
+        // The lock guard drops when its login returns, whichever way.
+        if matches!(next, Pc::Done(_)) && state.lock == Some(who) {
+            state.lock = None;
+        }
         state.login_mut(who).pc = next;
     }
 
@@ -755,23 +867,21 @@ impl McpLogin {
         if matches!(pc, Pc::Done(_)) {
             return false;
         }
+        if pc == Pc::Idle && self.locks() && state.lock.is_some() {
+            return false;
+        }
+        let saves = state.token(Tok::of(who)).kind == Kind::Agent || self.broken.keep_non_agent;
         let failed = state.failed;
         match how {
             How::Goes => true,
             How::Fails => match pc {
                 Pc::Minting => failed.cli < CLI_ANSWERS,
-                Pc::Saving => {
-                    state.token(Tok::of(who)).kind == Kind::Agent && failed.save < SAVE_FAILURES
-                }
+                Pc::Saving => saves && failed.save < SAVE_FAILURES,
                 Pc::Unmaking(_) | Pc::Deleting => failed.delete < DELETE_FAILURES,
                 Pc::Listing => failed.list < LIST_FAILURES,
                 Pc::Idle | Pc::Reporting { .. } | Pc::Done(_) => false,
             },
-            How::Unflushed => {
-                pc == Pc::Saving
-                    && state.token(Tok::of(who)).kind == Kind::Agent
-                    && failed.flush < FLUSH_FAILURES
-            }
+            How::Unflushed => pc == Pc::Saving && saves && failed.flush < FLUSH_FAILURES,
         }
     }
 }
@@ -862,6 +972,11 @@ impl Model for McpLogin {
         properties.extend(
             COVERAGE
                 .iter()
+                .filter(|row| match row.reach {
+                    Reach::Both => true,
+                    Reach::AsIs => !self.fix,
+                    Reach::Fix => self.fix,
+                })
                 .map(|row| Property::sometimes(row.name, row.reached)),
         );
         properties
@@ -871,9 +986,7 @@ impl Model for McpLogin {
 /// Once every login has returned, each token the property counts is accounted for.
 fn every_token_accounted(model: &McpLogin, state: &State) -> bool {
     !model.all_returned(state)
-        || (0..TOKENS)
-            .map(|index| Tok(u8::try_from(index).expect("a small index")))
-            .all(|tok| !counts(state.token(tok)) || accounted(state, tok))
+        || Tok::all().all(|tok| !counts(state.token(tok)) || accounted(state, tok))
 }
 
 /// A login that just printed its note finds `mcp.json` holding its own token.
@@ -934,19 +1047,22 @@ fn story(model: &McpLogin, path: &[(State, Option<Action>)]) -> String {
         let what = led_by.map_or_else(
             || {
                 if state.logins.iter().all(|login| login.pc == Pc::Idle) {
-                    format!(
-                        "start: mcp.json holds {}; no login has started",
-                        start_file(state)
-                    )
+                    format!("start: {}; no login has started", start_file(state))
                 } else {
-                    format!("from the state above: mcp.json holds {}", state.file)
+                    format!("from the state above: mcp.json is {}", state.file)
                 }
             },
             |(before, action)| reads_as(&before, action, state),
         );
+        // A row that skips a guard is reached by a flag or by a direct edit to the model;
+        // it names Broken only when a flag is set.
+        let what = if model.broken == Broken::default() {
+            what.replace(" (under Broken)", "")
+        } else {
+            what
+        };
         led_by = action.map(|action| (*state, action));
-        let tokens: Vec<String> = (0..TOKENS)
-            .map(|index| Tok(u8::try_from(index).expect("a small index")))
+        let tokens: Vec<String> = Tok::all()
             .filter(|tok| state.token(*tok).exists)
             .map(|tok| row(tok, state.token(tok)))
             .collect();
@@ -960,8 +1076,7 @@ fn story(model: &McpLogin, path: &[(State, Option<Action>)]) -> String {
                 format!("{}: {:?}{read}", name(who), login.pc)
             })
             .collect();
-        let named: Vec<String> = (0..TOKENS)
-            .map(|index| Tok(u8::try_from(index).expect("a small index")))
+        let named: Vec<String> = Tok::all()
             .filter_map(|tok| {
                 let token = state.token(tok);
                 match (token.named_left, token.named_unrevoked) {
@@ -971,9 +1086,17 @@ fn story(model: &McpLogin, path: &[(State, Option<Action>)]) -> String {
                 }
             })
             .collect();
+        let lock = if model.fix {
+            format!(
+                " | lock: {}",
+                state.lock.map_or_else(|| "free".to_owned(), name)
+            )
+        } else {
+            String::new()
+        };
         let _ = writeln!(
             story,
-            "{n:2}. {what}\n    mcp.json: {} | Cloud: {} | {} | named: {}",
+            "{n:2}. {what}\n    mcp.json: {}{lock} | Cloud: {} | {} | named: {}",
             state.file,
             if tokens.is_empty() {
                 "no token".to_owned()
@@ -997,30 +1120,52 @@ fn start_file(state: &State) -> String {
         File::Holds(tok) => {
             let token = state.token(tok);
             match (token.kind, token.place) {
-                (Kind::Cli, _) => format!("{tok}, an edited file naming a cli token"),
+                (Kind::Cli, _) => {
+                    format!("mcp.json, edited, holds {tok}, a cli token in this Organization")
+                }
                 (Kind::Agent, Place::Here) => {
-                    format!("{tok}, an agent token in this Cloud and Organization")
+                    format!("mcp.json holds {tok}, an agent token in this Cloud and Organization")
                 }
-                (Kind::Agent, Place::OtherOrganization) => {
-                    format!("{tok}, an agent token in another Organization of this Cloud")
-                }
+                (Kind::Agent, Place::OtherOrganization) => format!(
+                    "mcp.json holds {tok}, an agent token in another Organization of this Cloud"
+                ),
                 (Kind::Agent, Place::OtherCloud) => format!(
-                    "{tok}, an agent token in another Cloud, under the same Organization slug"
+                    "mcp.json holds {tok}, an agent token in another Cloud, under the same Organization slug"
                 ),
             }
         }
-        File::Absent | File::Unreadable => state.file.to_string(),
+        File::Absent => "there is no mcp.json".to_owned(),
+        File::Unreadable => "mcp.json is unreadable".to_owned(),
     }
 }
 
-/// What `fate` decided, in the code's words.
-fn fated(fate: Fate, previous: Option<Tok>) -> String {
+/// What `fate` decided for the token before, read from `before`, in the code's words.
+fn fated(fate: Fate, before: &State, who: usize, durable: bool) -> String {
+    let previous = before.login(who).previous;
     let id = previous.map_or_else(String::new, |tok| tok.to_string());
     match fate {
         Fate::NoPrevious => "there is no token before, so nothing is revoked (:143)".to_owned(),
-        Fate::Revoke => format!(
-            "fate finds {id} in this Cloud and Organization and the save Durable, so revoke is next (:140-141, :145, :237)"
-        ),
+        Fate::Revoke => {
+            let place = before.token(before.previous(who)).place;
+            let skipped = match place {
+                Place::OtherCloud => {
+                    format!(
+                        "skips its Cloud check, though {id} is in another Cloud (under Broken), and "
+                    )
+                }
+                Place::OtherOrganization => format!(
+                    "skips its Organization check, though {id} is in another Organization (under Broken), and "
+                ),
+                Place::Here if !durable => {
+                    "skips its Unflushed arm, though the save is Unflushed (under Broken), and "
+                        .to_owned()
+                }
+                Place::Here => {
+                    format!("finds {id} in this Cloud and Organization and the save Durable, and ")
+                }
+            };
+            format!("fate {skipped}returns Ok({id}), so revoke is next (:140-141, :145, :237)")
+        }
         Fate::Left(Why::Cloud) => {
             format!("fate leaves {id} live: it is in another Cloud (:213-220)")
         }
@@ -1061,11 +1206,25 @@ fn left_why(why: Why) -> &'static str {
 fn reads_as(before: &State, action: Action, after: &State) -> String {
     let who = action.who;
     let made = Tok::of(who);
+    let locked = if after.lock == Some(who) && before.lock != Some(who) {
+        "takes the lock beside mcp.json (the fix), and "
+    } else {
+        ""
+    };
+    let releases = if before.lock == Some(who) && after.lock.is_none() {
+        "; the lock is released (the fix)"
+    } else {
+        ""
+    };
     let what = match after.took.expect("every step takes a branch") {
-        Branch::Read(File::Absent) => "stored finds no mcp.json, so there is no token before (:92, :54); in_cloud's credential load and new_token's POST are next (core/crates/ployz/src/handlers/account.rs:139, :101-108)".to_owned(),
-        Branch::Read(File::Unreadable) => "stored finds mcp.json unreadable, so login warns \"The sign-in stored at <path> is unreadable. Replacing it.\" and goes on with no token before (:92, :53, :94-97; core/crates/ployz/src/cloud_login.rs:50); in_cloud's credential load and new_token's POST are next (core/crates/ployz/src/handlers/account.rs:139, :101-108)".to_owned(),
+        Branch::Read(File::Absent) => format!(
+            "{locked}stored finds no mcp.json, so there is no token before (:92, :54); in_cloud's credential load and new_token's POST are next (core/crates/ployz/src/handlers/account.rs:139, :101-108)"
+        ),
+        Branch::Read(File::Unreadable) => format!(
+            "{locked}stored finds mcp.json unreadable, so login warns \"The sign-in stored at <path> is unreadable. Replacing it.\" and goes on with no token before (:92, :53, :94-97; core/crates/ployz/src/cloud_login.rs:50); in_cloud's credential load and new_token's POST are next (core/crates/ployz/src/handlers/account.rs:139, :101-108)"
+        ),
         Branch::Read(File::Holds(tok)) => format!(
-            "stored reads mcp.json, which holds {tok}, its token before (:92, :50-52); in_cloud's credential load and new_token's POST are next (core/crates/ployz/src/handlers/account.rs:139, :101-108)"
+            "{locked}stored reads mcp.json, which holds {tok}, its token before (:92, :50-52); in_cloud's credential load and new_token's POST are next (core/crates/ployz/src/handlers/account.rs:139, :101-108)"
         ),
         Branch::Minted(Kind::Agent) => format!(
             "new_token: POST /api/cli/tokens, and Cloud inserts {made}, an agent token named \"ployz mcp\" with the Full preset for 365 days (:101-108; dashboard/src/modules/identity/organization-token.server.ts:34-56, :70); the kind check and save are next (:109-110)"
@@ -1073,12 +1232,23 @@ fn reads_as(before: &State, action: Action, after: &State) -> String {
         Branch::Minted(Kind::Cli) => format!(
             "new_token: POST /api/cli/tokens, and Cloud inserts {made} with kind cli, as a Cloud that ignores the kind the CLI asks for would (:101-108); the kind check is next (:109)"
         ),
-        Branch::Failed(Unmake::Refused) => format!(
-            "the kind check finds {made} is a cli token where `ployz mcp` needs an agent token (:109, :119-124), so remove_token of {made} is next (:127-128)"
-        ),
-        Branch::Failed(Unmake::SaveFailed) => format!(
-            "save fails before its rename, say writing the temp file (:69-78), so remove_token of {made} is next (:125-128)"
-        ),
+        Branch::Failed(why) => {
+            let failed = match why {
+                Unmake::Refused => format!(
+                    "the kind check finds {made} is a cli token where `ployz mcp` needs an agent token (:109, :119-124)"
+                ),
+                Unmake::SaveFailed => {
+                    "save fails before its rename, say writing the temp file (:69-78)".to_owned()
+                }
+            };
+            if matches!(after.pc(who), Pc::Done(_)) {
+                format!(
+                    "{failed}, and login returns the error without revoking {made} or warning (under Broken) (:137){releases}"
+                )
+            } else {
+                format!("{failed}, so remove_token of {made} is next (:125-128)")
+            }
+        }
         Branch::Unmade { why, revoked } => {
             let error = match why {
                 Unmake::Refused => {
@@ -1090,11 +1260,11 @@ fn reads_as(before: &State, action: Action, after: &State) -> String {
             };
             if revoked {
                 format!(
-                    "remove_token: DELETE /api/cli/tokens/{made} revokes the token it just made (:128), and login returns the error {error} (:137)"
+                    "remove_token: DELETE /api/cli/tokens/{made} revokes the token it just made (:128), and login returns the error {error} (:137){releases}"
                 )
             } else {
                 format!(
-                    "remove_token: DELETE /api/cli/tokens/{made} fails, Cloud unreachable, so login warns \"Could not revoke the token {made} just made: … Run `ployz token rm {made}`.\" (:128-135) and returns the error {error} (:137)"
+                    "remove_token: DELETE /api/cli/tokens/{made} fails, Cloud unreachable, so login warns \"Could not revoke the token {made} just made: … Run `ployz token rm {made}`.\" (:128-135) and returns the error {error} (:137){releases}"
                 )
             }
         }
@@ -1109,19 +1279,46 @@ fn reads_as(before: &State, action: Action, after: &State) -> String {
             } else {
                 "the directory flush fails, so save returns Unflushed (:82-85)"
             };
+            let kind = if before.token(made).kind == Kind::Cli {
+                ", a cli token, past no kind check (under Broken),"
+            } else {
+                ""
+            };
+            let synced = if after
+                .login(who)
+                .flushes
+                .is_some_and(|flushes| flushes.bytes)
+            {
+                "flushes it"
+            } else {
+                "skips its sync_all (under Broken)"
+            };
             format!(
-                "save writes {made} to a temp file, flushes it, and renames it to mcp.json, where {over} was, without reading it (:71-79); {flush}; {}",
-                fated(fate, before.login(who).previous)
+                "save writes {made}{kind} to a temp file, {synced}, and renames it to mcp.json, where {over} was, without reading it (:71-79); {flush}; {}{}",
+                fated(fate, before, who, durable),
+                if releases.is_empty() {
+                    ""
+                } else {
+                    "; the fix releases its lock right after the rename, before the note (under Broken)"
+                }
             )
         }
         Branch::ListFailed => format!(
             "revoke: GET /api/cli/tokens fails, Cloud unreachable, so login leaves {} live (:245, :148-154)",
             before.previous(who)
         ),
-        Branch::Listed { found: true, .. } => format!(
-            "revoke: GET /api/cli/tokens lists {} as an agent token (:245-252); its DELETE is next (:253)",
-            before.previous(who)
-        ),
+        Branch::Listed { found: true, .. } => {
+            let previous = before.previous(who);
+            if listed_as_agent(before.token(previous)) {
+                format!(
+                    "revoke: GET /api/cli/tokens lists {previous} as an agent token (:245-252); its DELETE is next (:253)"
+                )
+            } else {
+                format!(
+                    "revoke: GET /api/cli/tokens answers, and with no listed-as-agent check its DELETE of {previous} is next (under Broken) (:245-253)"
+                )
+            }
+        }
         Branch::Listed { found: false, .. } => {
             let previous = before.previous(who);
             let token = before.token(previous);
@@ -1175,7 +1372,7 @@ fn reads_as(before: &State, action: Action, after: &State) -> String {
                     before.previous(who)
                 ));
             }
-            format!("login {}, and returns Ok", said.join(", "))
+            format!("{}, and returns Ok{releases}", said.join(", "))
         }
     };
     let how = match action.how {
@@ -1205,9 +1402,27 @@ mod tests {
     /// The code as it is, with two logins, from every start file.
     fn as_is() -> McpLogin {
         McpLogin {
-            logins: 2,
+            logins: MAX_LOGINS,
             starts: &STARTS,
+            fix: false,
+            broken: Broken::default(),
         }
+    }
+
+    /// The fix: E-142's lock, from the read through the note.
+    fn fixed() -> McpLogin {
+        McpLogin {
+            fix: true,
+            ..as_is()
+        }
+    }
+
+    fn as_is_without(broken: Broken) -> McpLogin {
+        McpLogin { broken, ..as_is() }
+    }
+
+    fn fixed_without(broken: Broken) -> McpLogin {
+        McpLogin { broken, ..fixed() }
     }
 
     fn check(model: McpLogin) -> impl Checker<McpLogin> {
@@ -1223,6 +1438,15 @@ mod tests {
     /// same from run to run.
     fn breaks(model: McpLogin, property: &'static str) -> Path {
         first_break(model, property, |_| true, true).expect("a path breaks the property")
+    }
+
+    /// As `first_break` over the whole model, and it panics when no path breaks.
+    fn breaks_where(
+        model: McpLogin,
+        property: &'static str,
+        and: impl Fn(&Path) -> bool + Send + Sync + 'static,
+    ) -> Path {
+        first_break(model, property, and, false).expect("a path breaks the property")
     }
 
     /// The first path in BFS order that breaks `property` and satisfies `and`, or `None`.
@@ -1566,7 +1790,7 @@ mod tests {
     }
 
     /// The code as it is breaks the two finding properties, keeps the other three, and
-    /// reaches every row.
+    /// reaches every row the fix does not add.
     #[test]
     fn current_code_breaks_only_the_finding() {
         let checker = check(as_is());
@@ -1580,12 +1804,368 @@ mod tests {
         ] {
             assert!(checker.discovery(property).is_none(), "{property} breaks");
         }
-        for row in COVERAGE {
+        for row in COVERAGE.iter().filter(|row| row.reach != Reach::Fix) {
             assert!(
                 checker.discovery(row.name).is_some(),
                 "{} is never reached",
                 row.name
             );
         }
+    }
+    /// `persist_unflushed_bytes`: without the `sync_all` before the rename (:75-78), a
+    /// login revokes P after a save whose bytes were never flushed.
+    #[test]
+    fn the_temp_file_is_flushed_before_the_rename() {
+        let path = breaks(
+            as_is_without(Broken {
+                persist_unflushed_bytes: true,
+                ..Broken::default()
+            }),
+            REVOKED_ONLY_WHEN_DURABLE,
+        );
+        let broken = last(&path);
+        assert_eq!(broken.took, Some(Branch::Deleted));
+        assert!(broken.logins.iter().any(|login| login.revoked
+            && login.flushes
+                == Some(Flushes {
+                    bytes: false,
+                    dir: true
+                })));
+    }
+
+    /// `revoke_after_unflushed`: without `fate`'s Unflushed arm (:229-235), a login whose
+    /// directory flush failed revokes P.
+    #[test]
+    fn an_unflushed_save_keeps_the_token_before() {
+        let path = breaks(
+            as_is_without(Broken {
+                revoke_after_unflushed: true,
+                ..Broken::default()
+            }),
+            REVOKED_ONLY_WHEN_DURABLE,
+        );
+        let broken = last(&path);
+        assert_eq!(broken.took, Some(Branch::Deleted));
+        assert!(
+            broken
+                .logins
+                .iter()
+                .any(|login| login.revoked && login.flushes.is_some_and(|flushes| !flushes.dir))
+        );
+    }
+
+    /// The first unraced path that leaves a token unaccounted under `broken`, on the code as
+    /// it is.
+    fn unraced_orphan(broken: Broken) -> State {
+        last(&breaks_where(
+            as_is_without(broken),
+            EVERY_TOKEN_ACCOUNTED,
+            |path| !last(path).raced,
+        ))
+    }
+
+    /// `fate_ignores_cloud`: without `fate`'s Cloud check (:213-220), a P in another Cloud
+    /// under the same Organization slug reaches `revoke`, which lists this Cloud, finds no
+    /// P and says nothing. P stays live and unnamed.
+    #[test]
+    fn fate_leaves_a_token_in_another_cloud() {
+        let broken = unraced_orphan(Broken {
+            fate_ignores_cloud: true,
+            ..Broken::default()
+        });
+        let p = broken.token(Tok::P);
+        assert_eq!(p.place, Place::OtherCloud);
+        assert!(p.live && !accounted(&broken, Tok::P));
+    }
+
+    /// `fate_ignores_organization`: without `fate`'s Organization check (:221-228), a P
+    /// in another Organization reaches `revoke`, which lists this one and says nothing.
+    #[test]
+    fn fate_leaves_a_token_in_another_organization() {
+        let broken = unraced_orphan(Broken {
+            fate_ignores_organization: true,
+            ..Broken::default()
+        });
+        let p = broken.token(Tok::P);
+        assert_eq!(p.place, Place::OtherOrganization);
+        assert!(p.live && !accounted(&broken, Tok::P));
+    }
+
+    /// `revoke_unlisted`: without the listed-as-agent check (:246-252), a login revokes the
+    /// cli token an edited mcp.json names.
+    #[test]
+    fn revoke_deletes_only_a_listed_agent_token() {
+        let path = breaks(
+            as_is_without(Broken {
+                revoke_unlisted: true,
+                ..Broken::default()
+            }),
+            NO_CLI_TOKEN_REVOKED,
+        );
+        let broken = last(&path);
+        assert_eq!(broken.took, Some(Branch::Deleted));
+        assert_eq!(broken.token(Tok::P).kind, Kind::Cli);
+        assert!(!broken.token(Tok::P).live);
+    }
+
+    /// `keep_non_agent`: without the kind check (:109, :119-124), a login renames a cli
+    /// token into mcp.json.
+    #[test]
+    fn the_kind_check_refuses_a_cli_token() {
+        let path = breaks(
+            as_is_without(Broken {
+                keep_non_agent: true,
+                ..Broken::default()
+            }),
+            ONLY_AGENT_TOKEN_HELD,
+        );
+        let broken = last(&path);
+        let File::Holds(held) = broken.file else {
+            panic!("mcp.json holds a token");
+        };
+        assert_eq!(broken.token(held).kind, Kind::Cli);
+    }
+
+    /// `failed_save_keeps_new_token`: without the revoke of the token just made and its
+    /// warning (:125-136), a failed save leaves that token live, held by no file and
+    /// named by no warning.
+    #[test]
+    fn a_failed_save_revokes_the_token_just_made() {
+        let broken = unraced_orphan(Broken {
+            failed_save_keeps_new_token: true,
+            ..Broken::default()
+        });
+        let orphan = (0..MAX_LOGINS)
+            .find(|who| !accounted(&broken, Tok::of(*who)) && counts(broken.token(Tok::of(*who))))
+            .expect("a login's own token is unaccounted");
+        assert_eq!(broken.pc(orphan), Pc::Done(Outcome::Err));
+    }
+
+    /// The fix holds, and every `sometimes` it reaches is reached.
+    #[test]
+    fn the_fix_holds() {
+        let checker = check(fixed());
+        println!("fixed: {} states", checker.unique_state_count());
+        checker.assert_properties();
+    }
+
+    /// `fix_unlocked`: without the lock, the fix is the code as it is, and the race comes
+    /// back.
+    #[test]
+    fn the_fix_needs_the_lock_from_the_read() {
+        let path = breaks(
+            fixed_without(Broken {
+                fix_unlocked: true,
+                ..Broken::default()
+            }),
+            EVERY_TOKEN_ACCOUNTED,
+        );
+        assert!(last(&path).raced);
+    }
+
+    /// `fix_releases_before_report`: a lock released right after the rename keeps every
+    /// token accounted, but lets the other login read this one's token and rename before
+    /// this one's note: the second route to a stale note.
+    #[test]
+    fn the_fix_needs_the_lock_through_the_report() {
+        let early = fixed_without(Broken {
+            fix_releases_before_report: true,
+            ..Broken::default()
+        });
+        let path = breaks(early, NOTE_HOLDS_WHEN_PRINTED);
+        let end = last(&path);
+        let Some(Branch::Noted { who, .. }) = end.took else {
+            panic!("the last step is a note");
+        };
+        let other = if who == A { B } else { A };
+        assert_eq!(end.login(other).previous, Some(Tok::of(who)));
+        assert!(!end.raced);
+        let checker = check(early);
+        assert!(checker.discovery(EVERY_TOKEN_ACCOUNTED).is_none());
+    }
+
+    /// Under the fix, the lock is free at the start, the first login to read takes it, and
+    /// the other login is offered no step until the holder returns.
+    #[test]
+    fn the_fix_holds_off_a_second_login() {
+        let model = fixed();
+        let start = McpLogin::start(Start::Here);
+        assert_eq!(start.lock, None);
+        assert!(model.offers(&start, A, How::Goes) && model.offers(&start, B, How::Goes));
+        let mut held = start;
+        for _ in 0..5 {
+            held = model.next_state(&held, goes(A)).expect("A steps");
+            assert_eq!(held.lock, Some(A));
+            for how in [How::Goes, How::Fails, How::Unflushed] {
+                assert!(!model.offers(&held, B, how), "B is offered {how:?}");
+            }
+        }
+        let done = model.next_state(&held, goes(A)).expect("A reports");
+        assert_eq!(done.pc(A), Pc::Done(Outcome::Ok));
+        assert_eq!(done.lock, None);
+        assert!(model.offers(&done, B, How::Goes));
+    }
+
+    /// Under the fix, a holder whose save fails, or whose kind check refuses, revokes its
+    /// token, releases the lock as it returns, and the next login reads the unchanged P.
+    #[test]
+    fn the_fix_releases_the_lock_when_a_login_fails() {
+        let fails = |who| Action {
+            who,
+            how: How::Fails,
+        };
+        for a in [
+            [goes(A), goes(A), fails(A), goes(A)],
+            [goes(A), fails(A), goes(A), goes(A)],
+        ] {
+            let mut schedule = a.to_vec();
+            schedule.push(goes(B));
+            let path = follow(fixed(), Start::Here, &schedule);
+            let end = last(&path);
+            assert_eq!(end.pc(A), Pc::Done(Outcome::Err));
+            assert!(!end.token(Tok::of(A)).live);
+            assert_eq!(end.took, Some(Branch::Read(File::Holds(Tok::P))));
+            assert_eq!(end.lock, Some(B));
+        }
+    }
+
+    /// Under the fix, a first login with no mcp.json saves TA, and the next login reads TA
+    /// as its token before and revokes it.
+    #[test]
+    fn the_fix_revokes_a_first_login_s_token() {
+        let path = follow(
+            fixed(),
+            Start::Absent,
+            &[
+                goes(A),
+                goes(A),
+                goes(A),
+                goes(A),
+                goes(B),
+                goes(B),
+                goes(B),
+                goes(B),
+                goes(B),
+                goes(B),
+            ],
+        );
+        assert_eq!(
+            steps_of(&path, B).first(),
+            Some(&Branch::Read(File::Holds(Tok::of(A))))
+        );
+        let end = last(&path);
+        assert_eq!(end.file, File::Holds(Tok::of(B)));
+        assert!(!end.token(Tok::of(A)).live);
+        assert!(every_token_accounted(&fixed(), &end));
+    }
+
+    /// Under the fix, a holder that leaves P live and named (Unflushed, or P in another
+    /// Organization or Cloud) still hands its own token to the next login, which revokes
+    /// it, while P stays named.
+    #[test]
+    fn the_fix_revokes_the_holder_s_token_and_keeps_the_earlier_one_named() {
+        let unflushed = Action {
+            who: A,
+            how: How::Unflushed,
+        };
+        let b = [goes(B), goes(B), goes(B), goes(B), goes(B), goes(B)];
+        for (start, a) in [
+            (Start::Here, [goes(A), goes(A), unflushed, goes(A)]),
+            (
+                Start::OtherOrganization,
+                [goes(A), goes(A), goes(A), goes(A)],
+            ),
+            (Start::OtherCloud, [goes(A), goes(A), goes(A), goes(A)]),
+        ] {
+            let mut schedule = a.to_vec();
+            schedule.extend(b);
+            let path = follow(fixed(), start, &schedule);
+            let end = last(&path);
+            let p = end.token(Tok::P);
+            assert!(p.live && p.named_left, "{start:?}: P stays live and named");
+            assert!(!end.token(Tok::of(A)).live, "{start:?}: B revoked TA");
+            assert_eq!(end.file, File::Holds(Tok::of(B)));
+            assert!(every_token_accounted(&fixed(), &end));
+        }
+    }
+
+    /// The finding's logins under the fix: B is offered no read while A holds the lock, so
+    /// B reads only after A returns. B reads TA, revokes it, and every `always` holds.
+    #[test]
+    fn the_fix_serializes_the_finding_s_logins() {
+        let model = fixed();
+        let after_a_read = model
+            .next_state(&McpLogin::start(Start::Here), goes(A))
+            .expect("A reads");
+        assert!(!model.offers(&after_a_read, B, How::Goes));
+        let path = follow(
+            model,
+            Start::Here,
+            &[
+                goes(A),
+                goes(A),
+                goes(A),
+                goes(A),
+                goes(A),
+                goes(A),
+                goes(B),
+                goes(B),
+                goes(B),
+                goes(B),
+                goes(B),
+                goes(B),
+            ],
+        );
+        assert_eq!(
+            steps_of(&path, B).first(),
+            Some(&Branch::Read(File::Holds(Tok::of(A))))
+        );
+        let properties = model.properties();
+        for (state, _) in &path {
+            for property in &properties {
+                if matches!(property.expectation, Expectation::Always) {
+                    assert!(
+                        (property.condition)(&model, state),
+                        "{} breaks",
+                        property.name
+                    );
+                }
+            }
+        }
+        let end = last(&path);
+        assert!(!end.token(Tok::P).live && !end.token(Tok::of(A)).live);
+        assert_eq!(end.file, File::Holds(Tok::of(B)));
+    }
+
+    /// `accounted` at its edges: held, revoked, named by a `Left` warning, named by the
+    /// failed-save warning, and named by neither; `counts` leaves out a cli token and the
+    /// unknowable token of an unreadable start.
+    #[test]
+    fn a_token_is_accounted_only_when_held_revoked_or_named() {
+        let base = McpLogin::start(Start::Here);
+        assert!(accounted(&base, Tok::P), "held");
+        let mut moved = base;
+        moved.file = File::Holds(Tok::of(A));
+        *moved.token_mut(Tok::of(A)) = Token::live(Place::Here, Kind::Agent);
+        assert!(!accounted(&moved, Tok::P), "named by neither");
+        let mut revoked = moved;
+        revoked.token_mut(Tok::P).live = false;
+        assert!(accounted(&revoked, Tok::P), "revoked");
+        let mut left = moved;
+        left.token_mut(Tok::P).named_left = true;
+        assert!(accounted(&left, Tok::P), "named by a Left warning");
+        let mut unrevoked = moved;
+        unrevoked.token_mut(Tok::P).named_unrevoked = true;
+        assert!(
+            accounted(&unrevoked, Tok::P),
+            "named by the failed-save warning"
+        );
+        let cli = McpLogin::start(Start::Cli);
+        assert!(!counts(cli.token(Tok::P)), "a cli token is not counted");
+        let unreadable = McpLogin::start(Start::Unreadable);
+        assert!(
+            Tok::all().all(|tok| !counts(unreadable.token(tok))),
+            "an unreadable start counts no token"
+        );
     }
 }
