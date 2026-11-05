@@ -298,7 +298,7 @@ pub(crate) fn forget(
         "DELETE FROM config_applied WHERE environment_id = ?1",
         &[stored.summary.environment_id.as_str().into()],
     )?;
-    end(tx, stored, outcome, DeploymentStatus::Applied)
+    end(tx, stored, outcome, End::Applied)
 }
 
 /// Add to `nodes` the teardown of each Service `environment`'s queued Deployment
@@ -373,25 +373,26 @@ fn inherit(
 
 /// Queue a Deployment of `environment`, written by `insert` with the next number,
 /// superseding the queued one, if any. `held` queues the Deployment waiting for CI in
-/// place; otherwise a new one queues, superseding every one waiting for CI too. The
-/// superseded one leaves flight, so the sealed values only it kept in History go once
-/// the new one holds its revision.
+/// place; otherwise a new one queues, superseding every one waiting for CI too. Each
+/// superseded one ends now. The superseded queued one leaves flight, so the sealed
+/// values only it kept in History go once the new one holds its revision.
 pub(super) fn queue(
     tx: &mut dyn Tx,
     environment: &EnvironmentId,
     held: bool,
     insert: impl FnOnce(&mut dyn Tx, u64) -> Result<(), RpcError>,
 ) -> Result<u64, RpcError> {
+    let now = now();
     let superseded = tx.execute(
-        "UPDATE config_deployment SET status = 'superseded' \
+        "UPDATE config_deployment SET status = 'superseded', ended = ?2 \
          WHERE environment_id = ?1 AND status = 'queued'",
-        &[environment.as_str().into()],
+        &[environment.as_str().into(), now.into()],
     )?;
     if !held {
         tx.execute(
             "UPDATE config_deployment SET status = 'superseded', ended = ?2 \
              WHERE environment_id = ?1 AND status = 'waiting_for_ci'",
-            &[environment.as_str().into(), now().into()],
+            &[environment.as_str().into(), now.into()],
         )?;
     }
     let number = next_number(tx, environment)?;
@@ -571,8 +572,7 @@ pub(crate) fn cancel_held(
         needs_upload: Vec::new(),
         same_again: false,
     };
-    stored.summary.status = DeploymentStatus::Cancelled;
-    stored.summary.ended_at = Some(now());
+    stored.standing = stored.standing.cancel(now());
     stored.summary.outcome = Some(outcome.clone());
     stored.run.outcome = Some(outcome);
     save(tx, &mut stored)
@@ -1225,7 +1225,8 @@ pub(crate) fn start(
 /// Claiming again as the same runner returns the same until it records a Deploy
 /// Preview; after that it may have executed, so a second claim leaves the Deployment
 /// `unknown` and refuses: nothing replays silently. A Deployment another runner still
-/// holds without an outcome reads `unknown` from here on.
+/// holds without an outcome reads `unknown` from here on. Either way its runner is
+/// lost then ([`ClaimedRun::lose_runner`]).
 ///
 /// The outer error rolls back; the inner one is a refusal that keeps what it recorded.
 pub(crate) fn claim(
@@ -1235,12 +1236,13 @@ pub(crate) fn claim(
     sealing: &SealingKey,
 ) -> Result<Result<Claimed, RpcError>, RpcError> {
     let mut stored = locked(tx, id)?;
+    let now = now();
     let starting = match stored.summary.status {
         DeploymentStatus::Running | DeploymentStatus::Cancelling
             if stored.summary.runner.as_ref() == Some(runner) =>
         {
             if stored.run.preview.is_some() {
-                stored.summary.status = DeploymentStatus::Unknown;
+                stored.standing = stored.standing.lose_runner(now);
                 save(tx, &mut stored)?;
                 return Ok(Err(error::conflict(
                     "This Deployment's runner lost track of it after preparing it, so what \
@@ -1248,7 +1250,7 @@ pub(crate) fn claim(
                     json!({ "deployment": id }),
                 )));
             }
-            stored.lease = now() + LEASE;
+            stored.standing.renew(now);
             save(tx, &mut stored)?;
             false
         }
@@ -1262,11 +1264,9 @@ pub(crate) fn claim(
         | DeploymentStatus::Unknown
         | DeploymentStatus::Cancelled => return Ok(Err(ended(id))),
         DeploymentStatus::Queued => {
-            let started = now();
-            stored.summary.status = DeploymentStatus::Running;
-            stored.summary.runner = Some(runner.clone());
-            stored.summary.started_at = Some(started);
-            stored.lease = started + LEASE;
+            stored.standing = stored.standing.claim_for(runner, now);
+            // A claim-time refusal below ends it from Running.
+            stored.show();
             true
         }
     };
@@ -1286,7 +1286,7 @@ pub(crate) fn claim(
                 needs_upload: Vec::new(),
                 same_again: false,
             },
-            DeploymentStatus::Failed,
+            End::Failed,
         )?;
         return Ok(Err(refused));
     }
@@ -1310,7 +1310,7 @@ pub(crate) fn claim(
                     needs_upload: Vec::new(),
                     same_again: false,
                 },
-                DeploymentStatus::Failed,
+                End::Failed,
             )?;
             return Ok(Err(error::conflict(refused.message, refused.details)));
         }
@@ -1318,16 +1318,20 @@ pub(crate) fn claim(
     };
     let sources = build::routed(tx, &stored, &saved)?;
     if starting {
-        let taken_over = tx.execute(
-            "UPDATE config_deployment SET status = 'unknown' \
+        // Every other claimed Deployment of the Environment loses its runner, its runner
+        // lease lapsed or not; each keeps its runner column for an Interrupted record.
+        let taken_over = tx.query(
+            "SELECT id FROM config_deployment \
              WHERE environment_id = ?1 AND status IN ('running', 'cancelling')",
             &[stored.summary.environment_id.as_str().into()],
         )?;
+        for row in &taken_over {
+            let mut taken = load(tx, &row.parse::<DeploymentId>(0, "Deployment")?)?;
+            taken.standing = taken.standing.lose_runner(now);
+            save(tx, &mut taken)?;
+        }
         super::uploads::claimed(tx, &mut stored)?;
         save(tx, &mut stored)?;
-        if taken_over > 0 {
-            crate::review::scrub_sealed(tx, &stored.summary.environment_id)?;
-        }
     }
     let uploads = build::uploads_of(tx, &stored)?;
     if stored.run.warnings != warnings {
@@ -1463,12 +1467,9 @@ pub(crate) fn cancel(
 ) -> Result<DeploymentSummary, RpcError> {
     owned(tx, who, id)?;
     let mut stored = locked(tx, id)?;
-    stored.summary.status = match stored.summary.status {
-        DeploymentStatus::WaitingForCi | DeploymentStatus::Queued => {
-            stored.summary.ended_at = Some(now());
-            DeploymentStatus::Cancelled
-        }
-        DeploymentStatus::Running => DeploymentStatus::Cancelling,
+    stored.standing = match stored.summary.status {
+        DeploymentStatus::WaitingForCi | DeploymentStatus::Queued => stored.standing.cancel(now()),
+        DeploymentStatus::Running => stored.standing.cancelling(),
         DeploymentStatus::Cancelling | DeploymentStatus::Cancelled => return Ok(stored.summary),
         DeploymentStatus::Superseded
         | DeploymentStatus::Applied
@@ -1499,8 +1500,7 @@ pub(crate) fn cancel_in_flight(
     for row in rows {
         let id = row.parse::<DeploymentId>(0, "Deployment")?;
         let mut stored = load(tx, &id)?;
-        stored.summary.status = DeploymentStatus::Cancelled;
-        stored.summary.ended_at = Some(now());
+        stored.standing = stored.standing.cancel(now());
         save(tx, &mut stored)?;
         cancelled.push(id);
     }
@@ -1527,11 +1527,15 @@ pub(crate) fn record(
         stored.summary.status,
         DeploymentStatus::Running | DeploymentStatus::Cancelling
     ) {
-        stored.lease = now() + LEASE;
+        stored.standing.renew(now());
     }
     match evidence {
         RunEvidence::Alive => {
-            if stored.summary.status != DeploymentStatus::Unknown {
+            if stored.summary.status == DeploymentStatus::Unknown {
+                // Its runner lease lapsed, so its runner is lost; one whose row
+                // already says Unknown keeps its end.
+                stored.standing = stored.standing.lose_runner(now());
+            } else {
                 running(&stored)?;
             }
             save(tx, &mut stored)?;
@@ -1736,9 +1740,9 @@ pub(crate) fn record(
             };
             // A blocked Service was never attempted, whatever the rest did (bet 8).
             let status = if success && preview.blocked.is_empty() && !nodes.iter().any(unfinished) {
-                DeploymentStatus::Applied
+                End::Applied
             } else {
-                DeploymentStatus::Failed
+                End::Failed
             };
             let outcome = Outcome::Executed {
                 summary: serde_json::to_value(projection.summary).expect("a summary is JSON"),
@@ -1762,8 +1766,10 @@ pub(crate) fn record(
             stored.run.executed = Some(executed);
             if taken_over {
                 // Another runner owns the Environment now: the run stays Unknown and
-                // moves no Applied State.
-                stored.summary.ended_at = Some(now());
+                // moves no Applied State. It ended when its runner says it stopped.
+                let now = now();
+                stored.standing = stored.standing.lose_runner(now);
+                stored.standing.restamp(now);
                 stored.summary.outcome = Some(outcome.clone());
                 stored.run.outcome = Some(outcome);
                 save(tx, &mut stored)?;
@@ -1837,7 +1843,7 @@ pub(crate) fn record(
                     needs_upload: Vec::new(),
                     same_again,
                 },
-                DeploymentStatus::Failed,
+                End::Failed,
             )
         }
         RunEvidence::Ingress(ingress) => {
@@ -1870,7 +1876,7 @@ pub(crate) fn record(
                     needs_upload: services,
                     same_again: false,
                 },
-                DeploymentStatus::Failed,
+                End::Failed,
             )
         }
         RunEvidence::Abandoned => {
@@ -1889,10 +1895,10 @@ pub(crate) fn record(
                         needs_upload: Vec::new(),
                         same_again: false,
                     },
-                    DeploymentStatus::Failed,
+                    End::Failed,
                 );
             }
-            stored.summary.status = DeploymentStatus::Unknown;
+            stored.standing = stored.standing.lose_runner(now());
             save(tx, &mut stored)?;
             Ok(stored.summary)
         }
@@ -2311,7 +2317,7 @@ pub(super) fn finish(
     tx: &mut dyn Tx,
     stored: Stored,
     outcome: Outcome,
-    status: DeploymentStatus,
+    status: End,
 ) -> Result<DeploymentSummary, RpcError> {
     match &stored.run.outcome {
         Some(recorded) if *recorded == outcome => return Ok(stored.summary),
@@ -2326,19 +2332,19 @@ pub(super) fn finish(
     end(tx, stored, outcome, status)
 }
 
-/// End `stored` with `outcome`: what it confirmed enters Applied State.
+/// End `stored` with `outcome`, now: what it confirmed enters Applied State.
 fn end(
     tx: &mut dyn Tx,
     mut stored: Stored,
     outcome: Outcome,
-    status: DeploymentStatus,
+    status: End,
 ) -> Result<DeploymentSummary, RpcError> {
-    advance(tx, &stored, status == DeploymentStatus::Applied, true)?;
-    stored.summary.status = match (stored.summary.status, status) {
-        (DeploymentStatus::Cancelling, DeploymentStatus::Failed) => DeploymentStatus::Cancelled,
+    advance(tx, &stored, status == End::Applied, true)?;
+    let status = match (stored.summary.status, status) {
+        (DeploymentStatus::Cancelling, End::Failed) => End::Cancelled,
         _ => status,
     };
-    stored.summary.ended_at = Some(now());
+    stored.standing = stored.standing.end(status, now());
     stored.summary.outcome = Some(outcome.clone());
     stored.run.outcome = Some(outcome);
     save(tx, &mut stored)?;

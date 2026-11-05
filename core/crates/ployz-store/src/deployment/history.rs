@@ -320,10 +320,25 @@ pub(crate) fn claimed_or_queued(
 /// runner waits two minutes on each call.
 pub(crate) const SETTLING: i64 = 10 * 60;
 
-/// `environment`'s latest Deployment that ran and ended no earlier than [`SETTLING`]
-/// before `looked`, whatever its outcome: what it sent its Servers may still have
-/// landed after a look at them then. One whose runner was lost
-/// records no end, so its lease, which every record renews, stands in for it.
+/// `environment`'s latest Deployment that ran, whatever its outcome, and whose
+/// Servers may still be doing what it sent at `looked`, or at now if that is
+/// earlier: it started (a runner claimed it), and it ended, or its runner may have
+/// acted, no earlier than [`SETTLING`] before then. Which column says so:
+/// - `ended`, for every row: the end its last edge stamped (lifecycle.rs `end`,
+///   `cancel_in_flight`).
+/// - Its runner lease, which every record renews (lifecycle.rs `record`), for one
+///   whose runner may act until it: the row says `running` or `cancelling` while
+///   it holds and once it lapsed unwritten, and `unknown` once lost. Losing its
+///   runner stamps `ended` no later than the lease ([`super::runner_lost`]), so the
+///   lease bounds such a run. An Unknown run whose runner later records an
+///   Interrupted outcome is bounded by the later of the two.
+/// - Its runner lease too, whatever its status, for one with no `ended`: only a
+///   row in a shape no Store writes ([`super::Raw`]) can be one of any other
+///   status, and every Store before [`super::Standing`] counted its lease.
+///
+/// So a typed applied, failed or cancelled run is bounded by `ended` alone: a
+/// runner's record renews the lease just before the end it records, so the lease
+/// would hold such a run [`super::LEASE`] longer.
 pub(crate) fn settling(
     tx: &mut dyn Tx,
     environment: &EnvironmentId,
@@ -334,7 +349,9 @@ pub(crate) fn settling(
         tx,
         environment,
         &format!(
-            "started IS NOT NULL AND (ended >= {since} OR (ended IS NULL AND lease >= {since}))"
+            "started IS NOT NULL AND (ended >= {since} \
+             OR ((ended IS NULL OR status IN ('running', 'cancelling', 'unknown')) \
+             AND lease >= {since}))"
         ),
     )
 }

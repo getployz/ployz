@@ -1370,3 +1370,138 @@ fn an_own_copy_made_after_upgrade_never_shows_a_value_its_owner_sealed_since() {
         (json!({ "secret": true }), Value::Null)
     );
 }
+
+/// Each Deployment a Store from before `0034_deployment_ended` took out of flight
+/// without stamping its end gets one when the Store upgrades, and no other row
+/// changes.
+#[test]
+fn every_deployment_that_left_flight_records_when_it_ended_after_upgrade() {
+    let dir = tempfile::tempdir().unwrap();
+    let url = backend::fresh_url(&dir);
+    let runner = ployz_store::RunnerId::parse("runner").unwrap();
+    let id = |n: u8| format!("00000000-0000-4000-8000-0000000001{n:02}");
+    // Deployment `n`'s status, ended, admitted, lease and started columns.
+    let row = |n: u8| -> [String; 5] {
+        select(
+            &url,
+            &format!(
+                "SELECT status, CAST(ended AS TEXT), CAST(admitted AS TEXT), \
+                 CAST(lease AS TEXT), CAST(started AS TEXT) FROM config_deployment \
+                 WHERE id = '{}'",
+                id(n)
+            ),
+        )
+        .remove(0)
+        .try_into()
+        .unwrap()
+    };
+    let kept = {
+        let (store, who) = shop_at(&url);
+        // #1 superseded from the queue by #2, which applies.
+        backend::admit(&store, &who, "production", 1);
+        backend::deploy(&store, &who, "production", 2);
+        // #3 abandoned after preparing.
+        let three = backend::admit(&store, &who, "production", 3);
+        let claimed = store.claim(&three, &runner).unwrap();
+        backend::confirm(&store, &three, &claimed, &[], 0);
+        store
+            .record(&three, &runner, ployz_store::RunEvidence::Abandoned)
+            .unwrap();
+        // #4 prepared, taken over by #5, then records it was interrupted.
+        let four = backend::admit(&store, &who, "production", 4);
+        let claimed = store.claim(&four, &runner).unwrap();
+        backend::confirm(&store, &four, &claimed, &[], 0);
+        let five = backend::admit(&store, &who, "production", 5);
+        store.claim(&five, &runner).unwrap();
+        let interrupted: ployz_core::DeployOutcome<ployz_core::ExecutionError> =
+            serde_json::from_value(json!({
+                "type": "interrupted",
+                // The one operation `backend::confirm` prepared, for web.
+                "completed": [{"type": "remove_container", "machine_id": "a".repeat(32),
+                               "container_id": format!("{:064x}", 0)}],
+                "unexecuted": []
+            }))
+            .unwrap();
+        store
+            .record(
+                &four,
+                &runner,
+                ployz_store::RunEvidence::Executed {
+                    progress: Vec::new(),
+                    outcome: Box::new(interrupted),
+                    removed: Vec::new(),
+                },
+            )
+            .unwrap();
+        // #5 taken over live by #6, whose runner lease then lapses unwritten.
+        let six = backend::admit(&store, &who, "production", 6);
+        store.claim(&six, &runner).unwrap();
+        // #7: a hold a newer push superseded.
+        run(
+            &url,
+            &format!(
+                "INSERT INTO config_deployment (id, organization_id, environment_id, status, \
+                 saved_revision, services, nodes, namespace, run, credentials, admitted, \
+                 ended, listed) \
+                 SELECT '{}', organization_id, environment_id, 'superseded', saved_revision, \
+                 services, '[]', namespace, run, credentials, admitted, admitted + 5, 100 \
+                 FROM config_deployment WHERE id = '{}'",
+                id(7),
+                id(1)
+            ),
+        );
+        // What a Store from before 0034 left.
+        run(
+            &url,
+            &format!(
+                "UPDATE config_deployment SET lease = lease - 3600 WHERE id = '{three}';
+                 UPDATE config_deployment SET started = started - 3600, lease = started - 3000 \
+                 WHERE id = '{six}';
+                 UPDATE config_deployment SET ended = NULL \
+                 WHERE id IN ('{}', '{three}', '{five}');
+                 DELETE FROM config_migration WHERE name = '0034_deployment_ended';",
+                id(1)
+            ),
+        );
+        [2, 4, 6, 7].map(|n| (n, row(n)))
+    };
+    let [_, ended, ..] = row(5);
+    assert_eq!(ended, "NULL");
+    drop(ConfigStore::open(&url, backend::key()).unwrap());
+    let now = i64::try_from(
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs(),
+    )
+    .unwrap();
+    let int = |cell: &str| cell.parse::<i64>().unwrap();
+    // Superseded from the queue: its admission.
+    let [status, ended, admitted, ..] = row(1);
+    assert_eq!((status.as_str(), ended), ("superseded", admitted));
+    // Unknown, its runner lease past: that lease.
+    let [status, ended, _, lease, _] = row(3);
+    assert_eq!((status.as_str(), ended), ("unknown", lease));
+    // Unknown, taken over while its runner lease held: when the Store upgraded.
+    let [status, ended, _, lease, started] = row(5);
+    assert_eq!(status, "unknown");
+    let (ended, lease, started) = (int(&ended), int(&lease), int(&started));
+    assert!(
+        started <= ended && ended <= now && ended < lease,
+        "{ended} {lease} {started}"
+    );
+    // Applied, interrupted after a takeover, lapsed but still `running`, and a
+    // superseded hold: as they were.
+    let [(_, applied), (_, interrupted), (_, lapsed), (_, hold)] = &kept;
+    assert_eq!(
+        [applied, interrupted, lapsed, hold]
+            .map(|[status, ended, ..]| (status.as_str(), ended == "NULL")),
+        [
+            ("applied", false),
+            ("unknown", false),
+            ("running", true),
+            ("superseded", false)
+        ]
+    );
+    assert_eq!(kept.clone().map(|(n, _)| (n, row(n))), kept);
+}

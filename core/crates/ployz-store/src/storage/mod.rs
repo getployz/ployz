@@ -194,6 +194,28 @@ const MIGRATIONS: &[(&str, Step)] = &[
         "0033_record_saved_seals",
         Step::Rust(|tx, _| crate::review::sealed::SealLedger::record_saved(tx).map(|()| None)),
     ),
+    (
+        // Each Deployment an older Store took out of flight without stamping its end.
+        // An Unknown one ended when its runner was lost, as a Store now reads it
+        // (`deployment::runner_lost`). A superseded one ended when a later admission
+        // superseded it (`deployment::lifecycle::queue`), a time no row stored, so it
+        // gets its own admission: the earliest it could have ended. Rows such a Store
+        // writes after this read the same way. Two statements, whatever the row count.
+        "0034_deployment_ended",
+        Step::Rust(|tx, _| {
+            tx.execute(
+                "UPDATE config_deployment SET ended = CASE WHEN lease < ?1 THEN lease ELSE ?1 END \
+                 WHERE status = 'unknown' AND ended IS NULL",
+                &[crate::deployment::now().into()],
+            )?;
+            tx.execute(
+                "UPDATE config_deployment SET ended = admitted \
+                 WHERE status = 'superseded' AND ended IS NULL",
+                &[],
+            )?;
+            Ok(None)
+        }),
+    ),
 ];
 
 enum Step {

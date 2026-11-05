@@ -1224,6 +1224,85 @@ fn a_record_from_a_run_that_found_no_copy_waits_for_the_deployments_that_ran_to_
     assert_eq!(listing(&store, &who, "data").recorded_storage, Some(gb(20)));
 }
 
+/// Shift Deployment `n`'s end and runner lease `seconds` earlier.
+fn earlier(url: &str, n: u8, seconds: i64) {
+    backend::execute(
+        url,
+        &format!(
+            "UPDATE config_deployment SET ended = ended - {seconds}, lease = lease - {seconds} \
+             WHERE id = '{}'",
+            id(n)
+        ),
+    );
+}
+
+/// An applied run settles once its end leaves the window, though the record that
+/// ended it renewed its runner lease just before.
+#[test]
+fn a_record_from_a_run_that_found_no_copy_waits_for_an_applied_run_only_until_it_settled() {
+    let dir = tempfile::tempdir().unwrap();
+    let (store, who, url) = aged_shop(&dir);
+    publish(&store, &who);
+    deploy(&store, &who, 1);
+    earlier(&url, 1, 700);
+    resize_unheld(&store, 10, 20, Some(1)).unwrap();
+    assert_eq!(listing(&store, &who, "data").recorded_storage, Some(gb(20)));
+}
+
+/// A run in a shape no Store writes, one that started with no end, which a write
+/// in SQL can leave, settles once its runner lease leaves the window, whatever its
+/// status says.
+#[test]
+fn a_record_from_a_run_that_found_no_copy_waits_for_a_run_with_no_end_until_its_lease() {
+    for status in [
+        "applied",
+        "failed",
+        "cancelled",
+        "superseded",
+        "waiting_for_ci",
+    ] {
+        let dir = tempfile::tempdir().unwrap();
+        let (store, who, url) = aged_shop(&dir);
+        publish(&store, &who);
+        deploy(&store, &who, 1);
+        backend::execute(
+            &url,
+            &format!("UPDATE config_deployment SET status = '{status}', ended = NULL"),
+        );
+        refused_as_deployed_since(&resize_unheld(&store, 10, 20, Some(1)).unwrap_err(), 1);
+        settled(&url);
+        resize_unheld(&store, 10, 20, Some(1)).unwrap_or_else(|e| panic!("{status}: {e:?}"));
+        assert_eq!(listing(&store, &who, "data").recorded_storage, Some(gb(20)));
+    }
+}
+
+/// A run whose runner was lost may still act until its runner lease, though its
+/// end, when the runner was found lost, already left the window.
+#[test]
+fn a_record_from_a_run_that_found_no_copy_waits_out_a_lost_runners_lease() {
+    let dir = tempfile::tempdir().unwrap();
+    let (store, who, url) = aged_shop(&dir);
+    publish(&store, &who);
+    deploy(&store, &who, 1);
+    settled(&url);
+    admit(&store, &who, 2).unwrap();
+    let runner = RunnerId::parse("runner").unwrap();
+    store.claim(&id(2), &runner).unwrap();
+    let preview: DeployPreview = serde_json::from_value(json!({
+        "namespace": "shop-production", "operations": [],
+        "warnings": [], "would_remove": [], "preserved_volumes": []
+    }))
+    .unwrap();
+    store
+        .record(&id(2), &runner, RunEvidence::Prepared(preview))
+        .unwrap();
+    store
+        .record(&id(2), &runner, RunEvidence::Abandoned)
+        .unwrap();
+    earlier(&url, 2, 700);
+    refused_as_deployed_since(&resize_unheld(&store, 10, 20, Some(2)).unwrap_err(), 2);
+}
+
 #[test]
 fn a_record_from_a_run_that_found_no_copy_moves_the_size_with_no_deployment_since() {
     let dir = tempfile::tempdir().unwrap();
