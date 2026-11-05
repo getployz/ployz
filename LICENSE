@@ -1,0 +1,6 @@
+Ployz is licensed per directory:
+
+- core/       Apache License 2.0, see core/LICENSE
+- dashboard/  GNU Affero General Public License v3.0 only, see dashboard/LICENSE
+
+Each directory's LICENSE file holds the full license text.
