@@ -1668,10 +1668,6 @@ fn every_build_its_deployment_ended_under_is_interrupted_after_upgrade() {
         )
     };
     let upgraded: i64 = seen[5].3.parse().unwrap_or(0);
-    assert!(
-        (before..=after).contains(&upgraded),
-        "{before} {upgraded} {after}"
-    );
     assert_eq!(
         seen,
         [
@@ -1696,9 +1692,13 @@ fn every_build_its_deployment_ended_under_is_interrupted_after_upgrade() {
             kept("building", "NULL", "NULL"),
         ]
     );
-    // A Store from before 0035 names the columns it writes and reads
-    // (`build.rs:244`, `:269` and `rows`), so it adds a build as before, which the
-    // new column's default leaves unmarked, and still reads the table.
+    assert!(
+        (before..=after).contains(&upgraded),
+        "{before} {upgraded} {after}"
+    );
+    // A Store from before 0035 names the columns it writes and reads (`build.rs`
+    // `pin`, `record` and `rows`), so it adds a build as before, which the new
+    // column's default leaves unmarked, and still reads the table.
     run(
         &url,
         &format!(
