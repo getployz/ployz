@@ -3679,7 +3679,9 @@ fn a_deployment_an_older_store_ended_without_a_time_reads_one() {
 
 /// A row in a shape no Store writes, which a write in SQL can leave, reads as its
 /// columns say: one applied or failed with no end, one queued with a start and no
-/// runner, one running with no runner. A cancel still moves the last two.
+/// runner, one running with no runner, and Cloud's fixtures' applied one with a
+/// start and no runner or end, and with neither. A cancel still moves the second
+/// pair.
 #[test]
 fn a_deployment_row_no_store_writes_reads_as_its_columns_say() {
     let (store, who, url, _dir) = own_shop();
@@ -3718,6 +3720,12 @@ fn a_deployment_row_no_store_writes_reads_as_its_columns_say() {
     seen.push(read(4));
     cancel(&store, &who, 4).unwrap();
     seen.push(read(4));
+    admit(&store, &who, 5, &[], None).unwrap();
+    set(5, "status = 'applied', started = 1");
+    seen.push(read(5));
+    admit(&store, &who, 6, &[], None).unwrap();
+    set(6, "status = 'applied'");
+    seen.push(read(6));
     use DeploymentStatus as S;
     assert_eq!(
         seen,
@@ -3728,6 +3736,8 @@ fn a_deployment_row_no_store_writes_reads_as_its_columns_say() {
             (S::Cancelled, false, Some(1), true),
             (S::Running, false, started, false),
             (S::Cancelling, false, started, false),
+            (S::Applied, false, Some(1), false),
+            (S::Applied, false, None, false),
         ]
     );
 }
