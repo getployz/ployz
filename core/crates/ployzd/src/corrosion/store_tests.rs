@@ -693,6 +693,163 @@ async fn the_sealing_readers_report_the_clusters_key_and_its_recovery_marker() {
     task.abort();
 }
 
+fn sealing_founder() -> ployz_core::EnrollRequest {
+    ployz_core::EnrollRequest {
+        role: ployz_core::EnrollAs::Founder {
+            initial_policy: Default::default(),
+            name: ployz_core::MachineName::parse("local").unwrap(),
+            cluster_network: "10.210.0.0/16".parse().unwrap(),
+            public_ip: None,
+            advertised_endpoints: vec![ployz_core::AdvertisedEndpoint(
+                "192.0.2.1:51820".parse().unwrap(),
+            )],
+            grant: None,
+        },
+        wireguard_mtu: None,
+        pinned: Default::default(),
+    }
+}
+
+/// A founder enrolled to recover `awaited`, reopened after `held` was written
+/// to its key file, as a daemon start reads a key file put there by hand.
+fn founder_awaiting_recovery_holding(
+    awaited: ployz_core::SealingPublicKey,
+    held: &crate::sealing_key::SealingKey,
+) -> (std::path::PathBuf, LocalMachineStore) {
+    let data_dir = std::env::temp_dir().join(format!("ployzd-awaits-held-{}", MachineId::random()));
+    let mut store = LocalMachineStore::open(&data_dir).unwrap();
+    store
+        .enroll_for_recovery(
+            sealing_founder(),
+            ployz_core::RecoverySeed {
+                expected_public_key: awaited,
+                backup: None,
+            },
+        )
+        .unwrap();
+    drop(store);
+    crate::sealing_key::SealingKey::set(&data_dir, Some(held)).unwrap();
+    let store = LocalMachineStore::open(&data_dir).unwrap();
+    (data_dir, store)
+}
+
+struct RunningPublisher {
+    view: crate::corrosion::MachineView,
+    shutdown: tokio_util::sync::CancellationToken,
+    task: tokio::task::JoinHandle<std::io::Result<()>>,
+}
+
+impl RunningPublisher {
+    fn spawn(replicated: &ReplicatedStore, store: LocalMachineStore) -> Self {
+        let shutdown = tokio_util::sync::CancellationToken::new();
+        let view = crate::corrosion::MachineView::start(replicated.clone(), shutdown.clone());
+        let task = tokio::spawn(crate::corrosion::run_machine_publisher(
+            Some((replicated.clone(), view.clone())),
+            RecordOwner::spawn(store).unwrap(),
+            crate::corrosion::LiveRuntime::unobserved(),
+            shutdown.clone(),
+        ));
+        Self {
+            view,
+            shutdown,
+            task,
+        }
+    }
+
+    async fn stop(self) {
+        self.shutdown.cancel();
+        self.task.await.unwrap().unwrap();
+    }
+}
+
+#[tokio::test]
+async fn publisher_publishes_no_held_key_while_the_cluster_awaits_another() {
+    use std::time::Duration;
+
+    let cluster = crate::corrosion::fake_cluster::FakeCluster::start();
+    let replicated = cluster.store();
+    let awaited = crate::sealing_key::SealingKey::generate().public_key();
+    let held = crate::sealing_key::SealingKey::generate();
+    let (data_dir, store) = founder_awaiting_recovery_holding(awaited, &held);
+    let id = store.record().id();
+    let publisher = RunningPublisher::spawn(&replicated, store);
+
+    // One pass sends the Held publish before it publishes this row.
+    let expected = Some(ployz_core::Sealing::Held {
+        public_key: held.public_key(),
+    });
+    let mut machines = publisher.view.watch();
+    tokio::time::timeout(
+        Duration::from_secs(5),
+        machines.wait_for(|snapshot| {
+            snapshot.as_ref().is_some_and(|snapshot| {
+                snapshot
+                    .observations
+                    .iter()
+                    .any(|machine| machine.id == id && machine.runtime.sealing == expected)
+            })
+        }),
+    )
+    .await
+    .unwrap_or_else(|_| panic!("{expected:?} was never published"))
+    .unwrap();
+
+    assert_eq!(replicated.sealing_public_key().await.unwrap(), None);
+    assert_eq!(
+        replicated.sealing_awaits_recovery().await.unwrap(),
+        Some(awaited)
+    );
+    publisher.stop().await;
+    let _ = std::fs::remove_dir_all(data_dir);
+}
+
+#[tokio::test]
+async fn publisher_publishes_a_held_key_the_cluster_awaits() {
+    use std::time::Duration;
+
+    let cluster = crate::corrosion::fake_cluster::FakeCluster::start();
+    let replicated = cluster.store();
+    let held = crate::sealing_key::SealingKey::generate();
+    let (data_dir, store) = founder_awaiting_recovery_holding(held.public_key(), &held);
+    let publisher = RunningPublisher::spawn(&replicated, store);
+
+    let published = tokio::time::timeout(Duration::from_secs(5), cluster.sealing_public_key())
+        .await
+        .expect("the awaited Sealing public key was never published");
+
+    assert_eq!(published, held.public_key().to_string());
+    publisher.stop().await;
+    let _ = std::fs::remove_dir_all(data_dir);
+}
+
+#[tokio::test]
+async fn publisher_publishes_a_held_key_over_a_malformed_marker() {
+    use std::time::Duration;
+
+    let cluster = crate::corrosion::fake_cluster::FakeCluster::start();
+    let replicated = cluster.store();
+    let data_dir =
+        std::env::temp_dir().join(format!("ployzd-held-malformed-{}", MachineId::random()));
+    let mut store = LocalMachineStore::open(&data_dir).unwrap();
+    store.enroll(sealing_founder()).unwrap();
+    let held = crate::sealing_key::SealingKey::load(&data_dir)
+        .unwrap()
+        .expect("the founder holds a Sealing Key")
+        .public_key();
+    // With no key published, this marker decides, and it is not a key: any
+    // read of the Cluster's Sealing fails.
+    cluster.write_sealing_awaits_recovery("not a key");
+    let publisher = RunningPublisher::spawn(&replicated, store);
+
+    let published = tokio::time::timeout(Duration::from_secs(5), cluster.sealing_public_key())
+        .await
+        .expect("the held Sealing public key was never published");
+
+    assert_eq!(published, held.to_string());
+    publisher.stop().await;
+    let _ = std::fs::remove_dir_all(data_dir);
+}
+
 fn participating_record() -> (Machine, LocalMachineRecord) {
     let machine: Machine = serde_json::from_value(json!({
         "id": "b".repeat(32),

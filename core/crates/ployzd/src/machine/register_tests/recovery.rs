@@ -328,6 +328,59 @@ async fn a_seeded_founder_reports_awaits_recovery_before_its_awaits_marker_repli
 }
 
 #[tokio::test]
+async fn install_refuses_to_publish_a_held_key_on_a_seeded_founder_before_its_awaits_marker_replicates()
+ {
+    let key = SealingKey::generate();
+    let code = RecoveryCode::generate();
+    let (local, replicated, dir, server) =
+        seeded(key.public_key(), Some(back_up(&key, &code))).await;
+    assert_eq!(replicated.sealing_awaits_recovery().await.unwrap(), None);
+    let other = SealingKey::generate();
+    let other_key = other.public_key();
+    SealingKey::set(&dir, Some(&other)).unwrap();
+    let founder = local.owner().record().machine().unwrap().clone();
+    let sealed = local
+        .share_sealing_key(ShareSealingKeyRequest {
+            machine: founder.id,
+            public_key: founder.public_key,
+        })
+        .await
+        .unwrap()
+        .sealed;
+
+    let installed = local
+        .install_sealing_key(InstallSealingKeyRequest {
+            from: founder.id,
+            sealed,
+            public_key: other_key,
+        })
+        .await;
+
+    assert!(
+        matches!(
+            installed,
+            Err(LocalMachineError::Sealing(SealingError::AwaitsRecovery(awaited)))
+                if awaited == key.public_key()
+        ),
+        "a founder seeded for {} answered Install of its held {other_key} with {installed:?}",
+        key.public_key(),
+    );
+    assert_eq!(held(&dir), Some(other_key));
+    assert_eq!(replicated.sealing_public_key().await.unwrap(), None);
+    SealingKey::set(&dir, None).unwrap();
+    assert_eq!(
+        recover(&local, &code, None).await.unwrap(),
+        key.public_key()
+    );
+    assert_eq!(
+        replicated.sealing_public_key().await.unwrap(),
+        Some(key.public_key())
+    );
+    server.abort();
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+#[tokio::test]
 async fn refused_recoveries_keep_no_key_and_publish_nothing() {
     let key = SealingKey::generate();
     let code = RecoveryCode::generate();
