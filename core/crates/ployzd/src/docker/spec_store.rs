@@ -140,7 +140,9 @@ impl MachineSpecStore {
             .collect()
     }
 
-    /// Whether a spec of Service `service_id` names a Container `present` lacks.
+    /// Whether a spec of Service `service_id` that no `creations` row names, names a
+    /// Container `present` lacks. Call it under the config lock after
+    /// [`ConfigOperation::adopt_restored`], which already moved a slot's own restore source.
     pub(super) async fn holds_absent(
         &self,
         present: Vec<ContainerId>,
@@ -153,7 +155,10 @@ impl MachineSpecStore {
                 .map(ContainerId::as_str)
                 .collect::<HashSet<_>>();
             let connection = connect(&path)?;
-            let mut statement = connection.prepare("SELECT id, service_spec FROM containers")?;
+            let mut statement = connection.prepare(
+                "SELECT id, service_spec FROM containers WHERE NOT EXISTS \
+                 (SELECT 1 FROM creations WHERE creations.id = containers.id)",
+            )?;
             let rows = statement
                 .query_map([], |row| {
                     Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
@@ -274,17 +279,6 @@ impl MachineSpecStore {
             store: self,
             _guard: self.config_operations.lock().await,
         }
-    }
-
-    /// Point each listed slot with no holder at the listed Container holding its spec.
-    /// Returns whether a listed Container looks restored, which
-    /// [`ConfigOperation::adopt_restored`] then adopts under the lock.
-    pub(crate) async fn record_creations(
-        &self,
-        listed: Vec<(ContainerId, Option<CreationSlot>)>,
-    ) -> Result<bool, Error> {
-        let path = self.path.clone();
-        blocking(move || Ok(!reconcile_creations(&path, &listed, false)?.is_empty())).await
     }
 
     pub async fn get(
@@ -453,6 +447,18 @@ impl ConfigOperation<'_> {
             Ok(())
         })
         .await
+    }
+
+    /// Point each listed slot with no holder at the listed Container holding its spec.
+    /// Returns whether a listed Container looks restored, which [`Self::adopt_restored`]
+    /// then adopts with a listing read under this lock. Under it, no slot is recorded
+    /// between a half-made check's adoption and its decision.
+    pub(crate) async fn record_creations(
+        &mut self,
+        listed: Vec<(ContainerId, Option<CreationSlot>)>,
+    ) -> Result<bool, Error> {
+        let path = self.store.path.clone();
+        blocking(move || Ok(!reconcile_creations(&path, &listed, false)?.is_empty())).await
     }
 
     /// Move the records of each listed Container's restored-over ID onto it, so it is
@@ -1373,6 +1379,47 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn an_inventory_listed_before_a_restore_never_records_its_slot_mid_check() {
+        let copy = keyed_copy_in_rotation().await;
+        connect(copy.runtime.spec_store_path_for_test())
+            .unwrap()
+            .execute("DELETE FROM creations", [])
+            .unwrap();
+        let listed = std::sync::Arc::new(tokio::sync::Barrier::new(2));
+        *copy.fake.listed_hold.lock().unwrap() = Some(std::sync::Arc::clone(&listed));
+        let mut inventory = tokio::spawn({
+            let runtime = copy.runtime.clone();
+            async move { runtime.managed_inventory().await }
+        });
+        listed.wait().await;
+        let restored = restored_unstarted(&copy);
+        let inspected = std::sync::Arc::new(tokio::sync::Barrier::new(2));
+        *copy.fake.answered_hold.lock().unwrap() = Some(std::sync::Arc::clone(&inspected));
+        let removal = tokio::spawn({
+            let runtime = copy.runtime.clone();
+            async move { runtime.discard_half_made(&restored).await }
+        });
+        // The check adopted nothing, since the slot has no row, and now inspects.
+        inspected.wait().await;
+        listed.wait().await;
+        // The inventory, which listed the old ID in the slot, may record it now.
+        let early =
+            tokio::time::timeout(std::time::Duration::from_millis(500), &mut inventory).await;
+        inspected.wait().await;
+
+        let removed = removal.await.unwrap().unwrap();
+        match early {
+            Ok(finished) => finished,
+            Err(_) => inventory.await,
+        }
+        .unwrap()
+        .unwrap();
+
+        assert!(!removed, "the restored copy is not half-made");
+        assert_eq!(copy.containers.lock().unwrap().len(), 1);
+    }
+
+    #[tokio::test]
     async fn a_copy_restored_from_before_slots_were_recorded_is_never_removed() {
         use crate::docker::test_support::{container_request, machine};
         use ployz_core::{ContainerKind, Namespace};
@@ -1505,12 +1552,11 @@ mod tests {
         let mut operation = store.config_operation().await;
         operation.put(&live, Some(&slot), &spec).await.unwrap();
         operation.put(&stale, None, &spec).await.unwrap();
-        drop(operation);
-
-        store
+        operation
             .record_creations(vec![(stale, Some(slot.clone()))])
             .await
             .unwrap();
+        drop(operation);
 
         assert_eq!(
             store

@@ -601,12 +601,13 @@ impl ContainerRuntime {
             .into_iter()
             .map(|(id, labels)| (id, creation_slot(&labels)))
             .collect::<Vec<_>>();
-        if !self.specs.record_creations(listed.clone()).await? {
+        // Creates and removes hold this lock across their Docker call and spec write,
+        // and a half-made check across its adoption and decision, so only a listing
+        // taken under it agrees with the records it moves.
+        let mut operation = self.specs.config_operation().await;
+        if !operation.record_creations(listed.clone()).await? {
             return Ok(listed.into_iter().map(|(id, _)| id).collect());
         }
-        // Creates and removes hold this lock across their Docker call and spec write,
-        // so only a listing taken under it agrees with the records it moves.
-        let mut operation = self.specs.config_operation().await;
         let listed = self.managed_slots().await?;
         for (old, new) in operation.adopt_restored(listed.clone()).await? {
             eprintln!("adopted restored container {new}, which replaces {old}");
