@@ -99,6 +99,7 @@ describe("Account relative times", () => {
         ]} />
         <ConnectedAgentList onDisconnect={vi.fn()} agents={[
           { id: "a", name: "Claude", organization: "Shop", allowedAt: "2026-10-19T11:58:40Z" },
+          { id: "b", name: "Claude", organization: "Shop", allowedAt: "2026-10-17T12:00:00Z" },
         ]} />
       </>
     );
@@ -111,13 +112,16 @@ describe("Account relative times", () => {
     vi.setSystemTime(new Date("2026-10-19T12:00:21Z"));
     const recoverable = vi.fn();
     const consoleError = vi.spyOn(console, "error");
-    await act(async () => { hydrateRoot(container, lists(), { onRecoverableError: recoverable }); });
+    let root: ReturnType<typeof hydrateRoot> | undefined;
+    await act(async () => { root = hydrateRoot(container, lists(), { onRecoverableError: recoverable }); });
     expect(recoverable).not.toHaveBeenCalled();
     expect(consoleError).not.toHaveBeenCalled();
     // Once hydrated, the times show, and the Sign out names tell the two sessions on one device apart by them.
     expect(container.textContent).toContain("Active 2 minutes ago");
     expect(container.textContent).toContain("Allowed 2 minutes ago");
     const names = [...container.querySelectorAll("button")].map((button) => button.getAttribute("aria-label"));
-    expect(names).toEqual(["Sign out Chrome on Linux, active 2 minutes ago", "Sign out Chrome on Linux, active 2 days ago", "Disconnect Claude"]);
+    expect(names).toEqual(["Sign out Chrome on Linux, active 2 minutes ago", "Sign out Chrome on Linux, active 2 days ago",
+      "Disconnect Claude, allowed 2 minutes ago", "Disconnect Claude, allowed 2 days ago"]);
+    act(() => root?.unmount());
   });
 });
