@@ -80,6 +80,7 @@ export function useCanvasPositionMutation(params: {
       });
     },
     mutationFn: async ({ transaction }) => {
+      // Throttled calls share this transaction, so a failed save toasts once; the transaction then rolls the drag back.
       await persistCanvasPositionBatch(
         transaction.mutations.map(async (m) => {
           // SAFETY: this paced mutation only writes canvas position rows; TanStack DB types `modified` as a generic mutation payload.
@@ -95,7 +96,10 @@ export function useCanvasPositionMutation(params: {
           } });
         }),
         collection,
-      );
+      ).catch((error: Error) => {
+        toast.error(toErrorMessage(error, "The position couldn't be saved."));
+        throw error;
+      });
     },
     strategy: throttleStrategy({ wait: 250, leading: false, trailing: true }),
   });
@@ -125,7 +129,10 @@ export async function persistCanvasPositionBatch(
   const committed = results.flatMap((result) => result.status === "fulfilled" ? [result.value.data] : []);
   if (committed.length) await collection.utils.writeUpsert(committed);
   const failure = results.find((result) => result.status === "rejected");
-  if (failure) throw failure.reason;
+  if (!failure) return;
+  // A server function rejects with an encoded PublicError, and TanStack DB turns a rejection that isn't an Error into "[object Object]".
+  if (failure.reason instanceof Error) throw failure.reason;
+  throw new Error(toErrorMessage(failure.reason, "The position couldn't be saved."), { cause: failure.reason });
 }
 
 /**
