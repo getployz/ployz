@@ -1249,6 +1249,33 @@ fn a_record_from_a_run_that_found_no_copy_waits_for_an_applied_run_only_until_it
     assert_eq!(listing(&store, &who, "data").recorded_storage, Some(gb(20)));
 }
 
+/// A run in a shape no Store writes, one that started with no end, which a write
+/// in SQL can leave, settles once its runner lease leaves the window, whatever its
+/// status says.
+#[test]
+fn a_record_from_a_run_that_found_no_copy_waits_for_a_run_with_no_end_until_its_lease() {
+    for status in [
+        "applied",
+        "failed",
+        "cancelled",
+        "superseded",
+        "waiting_for_ci",
+    ] {
+        let dir = tempfile::tempdir().unwrap();
+        let (store, who, url) = aged_shop(&dir);
+        publish(&store, &who);
+        deploy(&store, &who, 1);
+        backend::execute(
+            &url,
+            &format!("UPDATE config_deployment SET status = '{status}', ended = NULL"),
+        );
+        refused_as_deployed_since(&resize_unheld(&store, 10, 20, Some(1)).unwrap_err(), 1);
+        settled(&url);
+        resize_unheld(&store, 10, 20, Some(1)).unwrap_or_else(|e| panic!("{status}: {e:?}"));
+        assert_eq!(listing(&store, &who, "data").recorded_storage, Some(gb(20)));
+    }
+}
+
 /// A run whose runner was lost may still act until its runner lease, though its
 /// end, when the runner was found lost, already left the window.
 #[test]
