@@ -493,3 +493,30 @@ pub(crate) fn sealed_in(
         n,
     )
 }
+
+/// Pull request #5 merged at [`MERGE`] onto `target`, as GitHub said at `updated`.
+pub(crate) fn merged_onto(
+    store: &ConfigStore,
+    who: &Actor,
+    target: &str,
+    updated: &str,
+) -> Automated {
+    let event = SystemEvent::PullRequest(PullRequest {
+        repository_id: backend::repo_id(11),
+        number: backend::pr_number(5),
+        title: "Add search".into(),
+        author: "ada".into(),
+        author_id: Some(backend::ada()),
+        bot: false,
+        head_branch: backend::git_branch("search"),
+        head_repository_id: Some(backend::repo_id(11)),
+        head: backend::sha(HEAD),
+        target_branch: backend::git_branch(target),
+        commits: 1,
+        open: false,
+        merge_commit: Some(backend::sha(MERGE)),
+        target_head: None,
+        updated: ployz_store::GithubTimestamp::parse(updated).unwrap(),
+    });
+    system(store, who, &event)
+}

@@ -9,8 +9,8 @@ use serde_json::{Value, json};
 use crate::backend;
 use crate::support::{
     HEAD, LATER, MERGE, at, check, deployed, exclude, history, labels, merge_sealed, merge_value,
-    merged, merged_within, on_merge, preview_listed, production_diff, pull, push, row, rows, save,
-    sealed_in, set, shop, shop_in, shop_with, system, unset, uuid, value, watching,
+    merged, merged_onto, merged_within, on_merge, preview_listed, production_diff, pull, push, row,
+    rows, save, sealed_in, set, shop, shop_in, shop_with, system, unset, uuid, value, watching,
 };
 
 /// `web.env.TOKEN` sealed in the browser for production's `web`, as a merge value.
@@ -823,6 +823,98 @@ fn a_merge_production_cant_take_lands_nothing_and_keeps_the_preview() {
             project: Some(ProjectName::parse("shop").unwrap()),
             environment: Some(EnvironmentName::parse("production").unwrap()),
         })
+    );
+}
+
+/// What one case saw: the first merge's closes, the later event's closes, whether
+/// pr-5 is still listed after it, the check's title then, and whether its summary
+/// still says the changes stay in the preview.
+type Replayed = (&'static str, usize, usize, bool, Option<String>, bool);
+
+/// The merge event `first` closed nothing; now `later` arrives as GitHub's closed
+/// delivery, or an edit after the merge, would.
+fn replayed(
+    case: &'static str,
+    (store, who): (ConfigStore, Actor),
+    first: impl FnOnce(&ConfigStore, &Actor) -> ployz_store::Automated,
+    later: impl FnOnce(&ConfigStore, &Actor) -> ployz_store::Automated,
+) -> Replayed {
+    let closes =
+        |automated: &ployz_store::Automated| automated.closing.len() + automated.removed.len();
+    let first = first(&store, &who);
+    let later = later(&store, &who);
+    let check = check(&store, &who);
+    (
+        case,
+        closes(&first),
+        closes(&later),
+        preview_listed(&store, &who),
+        check.as_ref().map(|check| check.title.clone()),
+        check.is_some_and(|check| check.summary.contains("They stay in the preview")),
+    )
+}
+
+/// [`shop`], with pr-5's `A` reading production's `B`, which production made read `A`
+/// since: a merge into production would close a cycle.
+fn cycle() -> (ConfigStore, Actor) {
+    let (store, who) = shop();
+    set(&store, &who, "pr-5", &[("web.env.A", json!("${{ B }}"))]);
+    set(
+        &store,
+        &who,
+        "production",
+        &[("web.env.B", json!("${{ A }}"))],
+    );
+    (store, who)
+}
+
+/// [`shop`], with pr-5 onto `release`, which nothing deploys, and `A` changed or not.
+fn onto_release(changed: bool) -> (ConfigStore, Actor) {
+    let (store, who) = shop();
+    if changed {
+        set(&store, &who, "pr-5", &[("web.env.A", json!("2"))]);
+    }
+    pull(&store, &who, "release", "2026-09-29T10:00:01Z");
+    (store, who)
+}
+
+#[test]
+fn a_later_closed_event_keeps_a_preview_whose_merge_didnt_land() {
+    let failed_land = |store: &ConfigStore, who: &Actor| {
+        let automated = merged(store, who, "2026-09-29T11:00:00Z", MERGE);
+        assert!(
+            automated.skipped.len() == 1
+                && automated.skipped[0]
+                    .reason
+                    .starts_with("Didn't land #5 in production: "),
+            "{automated:?}"
+        );
+        automated
+    };
+    let release = |store: &ConfigStore, who: &Actor| {
+        merged_onto(store, who, "release", "2026-09-29T11:00:00Z")
+    };
+    let stuck = || Some("Didn't land in production".to_owned());
+    let cases = [
+        // GitHub's closed delivery, after Cloud reported the merge from the push.
+        replayed("R1 redelivery", cycle(), failed_land, |store, who| {
+            merged(store, who, "2026-09-29T11:00:00Z", MERGE)
+        }),
+        // An edit or a label after the merge.
+        replayed("R2 later", cycle(), failed_land, |store, who| {
+            merged(store, who, "2026-09-29T12:00:00Z", MERGE)
+        }),
+        replayed("R3 no Destination", onto_release(true), release, release),
+        replayed("C1 nothing held", onto_release(false), release, release),
+    ];
+    assert_eq!(
+        cases,
+        [
+            ("R1 redelivery", 0, 0, true, stuck(), true),
+            ("R2 later", 0, 0, true, stuck(), true),
+            ("R3 no Destination", 0, 0, true, None, false),
+            ("C1 nothing held", 0, 1, false, None, false),
+        ]
     );
 }
 
