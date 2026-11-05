@@ -2501,3 +2501,335 @@ async fn a_late_certificate_challenge_keeps_newly_issued_material() {
     assert_eq!(row.challenge(), Some(&certificate_challenge()));
     task.abort();
 }
+
+/// The body text this store's replica holds for `hostname`.
+async fn stored_certificate_body(store: &ReplicatedStore, hostname: &IngressHost) -> String {
+    let rows = store
+        .api()
+        .query(Statement::new(CERTIFICATE_READ, [json!(hostname.as_str())]))
+        .await
+        .unwrap()
+        .rows(["body"])
+        .unwrap();
+    let [[body]] = rows.as_slice() else {
+        panic!("{hostname} has no certificate row");
+    };
+    body.as_str().unwrap().to_owned()
+}
+
+#[tokio::test]
+async fn an_acme_certificate_write_over_no_row_inserts_it() {
+    let (store, task) = identity_store(corrosion_db()).await;
+    let hostname = IngressHost::parse("app.example.com").unwrap();
+    assert_eq!(
+        store
+            .publish_certificate_challenge(&hostname, &certificate_challenge())
+            .await
+            .unwrap(),
+        super::AcmeWrite::Changed
+    );
+    assert_eq!(
+        store.certificate_row(&hostname).await.unwrap().challenge(),
+        Some(&certificate_challenge())
+    );
+    task.abort();
+}
+
+#[tokio::test]
+async fn an_acme_certificate_write_lands_over_the_schema_default_body() {
+    let db = corrosion_db();
+    db.execute(
+        "INSERT INTO certificates (hostname) VALUES (?)",
+        ["app.example.com"],
+    )
+    .unwrap();
+    let (store, task) = identity_store(db).await;
+    let hostname = IngressHost::parse("app.example.com").unwrap();
+    assert_eq!(stored_certificate_body(&store, &hostname).await, "{}");
+    assert_eq!(
+        store
+            .record_certificate_error(&hostname, "policy refused")
+            .await
+            .unwrap(),
+        super::AcmeWrite::Changed
+    );
+    assert_eq!(
+        store.certificate_row(&hostname).await.unwrap(),
+        super::CertificateRow::default().with_error("policy refused")
+    );
+    task.abort();
+}
+
+#[tokio::test]
+async fn an_acme_certificate_write_lands_over_a_newer_daemons_body() {
+    let db = corrosion_db();
+    db.execute(
+        "INSERT INTO certificates (hostname, body) VALUES (?, ?)",
+        rusqlite::params![
+            "app.example.com",
+            json!({"last_error": "refused", "future_field": {"from": "a newer daemon"}})
+                .to_string()
+        ],
+    )
+    .unwrap();
+    let (store, task) = identity_store(db).await;
+    let hostname = IngressHost::parse("app.example.com").unwrap();
+    let issued = certificate_material(&hostname);
+    assert_eq!(
+        store
+            .publish_certificate(&hostname, &issued, ployz_core::ClusterRoute::Direct)
+            .await
+            .unwrap(),
+        super::AcmeWrite::Changed
+    );
+    assert_eq!(
+        store.certificate_row(&hostname).await.unwrap(),
+        super::CertificateRow::issued(issued, ployz_core::ClusterRoute::Direct)
+    );
+    task.abort();
+}
+
+#[tokio::test]
+async fn issued_certificate_material_already_on_the_row_is_kept() {
+    let (store, task) = identity_store(corrosion_db()).await;
+    let hostname = IngressHost::parse("app.example.com").unwrap();
+    let issued = certificate_material(&hostname);
+    store
+        .publish_certificate(&hostname, &issued, ployz_core::ClusterRoute::Direct)
+        .await
+        .unwrap();
+    let before = stored_certificate_body(&store, &hostname).await;
+    assert_eq!(
+        store
+            .publish_certificate(&hostname, &issued, ployz_core::ClusterRoute::Direct)
+            .await
+            .unwrap(),
+        super::AcmeWrite::Kept
+    );
+    assert_eq!(stored_certificate_body(&store, &hostname).await, before);
+    task.abort();
+}
+
+#[tokio::test]
+async fn a_certificate_challenge_already_on_the_row_is_kept() {
+    let (store, task) = identity_store(corrosion_db()).await;
+    let hostname = IngressHost::parse("app.example.com").unwrap();
+    store
+        .publish_certificate_challenge(&hostname, &certificate_challenge())
+        .await
+        .unwrap();
+    let before = stored_certificate_body(&store, &hostname).await;
+    assert_eq!(
+        store
+            .publish_certificate_challenge(&hostname, &certificate_challenge())
+            .await
+            .unwrap(),
+        super::AcmeWrite::Kept
+    );
+    assert_eq!(stored_certificate_body(&store, &hostname).await, before);
+    task.abort();
+}
+
+#[tokio::test]
+async fn a_certificate_failure_without_tried_material_keeps_a_row_with_material() {
+    let (store, task) = identity_store(corrosion_db()).await;
+    let hostname = IngressHost::parse("app.example.com").unwrap();
+    store
+        .publish_certificate(
+            &hostname,
+            &certificate_material(&hostname),
+            ployz_core::ClusterRoute::Direct,
+        )
+        .await
+        .unwrap();
+    let before = stored_certificate_body(&store, &hostname).await;
+    let clock = IssuanceClock::new(1, SystemTime::UNIX_EPOCH, IssuanceFailure::Authority);
+    assert_eq!(
+        store
+            .record_certificate_failure(&hostname, None, "ACME request failed", clock)
+            .await
+            .unwrap(),
+        super::AcmeWrite::Kept
+    );
+    assert_eq!(stored_certificate_body(&store, &hostname).await, before);
+    task.abort();
+}
+
+#[tokio::test]
+async fn a_certificate_policy_refusal_with_the_same_reason_keeps_its_clock() {
+    let (store, task) = identity_store(corrosion_db()).await;
+    let hostname = IngressHost::parse("app.example.com").unwrap();
+    let clock = IssuanceClock::new(1, SystemTime::UNIX_EPOCH, IssuanceFailure::Authority);
+    store
+        .record_certificate_failure(&hostname, None, "policy refused", clock)
+        .await
+        .unwrap();
+    let before = stored_certificate_body(&store, &hostname).await;
+    assert_eq!(
+        store
+            .record_certificate_error(&hostname, "policy refused")
+            .await
+            .unwrap(),
+        super::AcmeWrite::Kept
+    );
+    assert_eq!(stored_certificate_body(&store, &hostname).await, before);
+    assert_eq!(
+        store.certificate_row(&hostname).await.unwrap().clock(),
+        Some(clock)
+    );
+    task.abort();
+}
+
+#[tokio::test]
+async fn every_acme_certificate_writer_keeps_a_published_row() {
+    let (store, task) = identity_store(corrosion_db()).await;
+    let hostname = IngressHost::parse("app.example.com").unwrap();
+    let published = certificate_material(&hostname);
+    store
+        .publish_certificate_material(&CertificateHost::from(hostname.clone()), published.clone())
+        .await
+        .unwrap();
+    let before = stored_certificate_body(&store, &hostname).await;
+    let clock = IssuanceClock::new(1, SystemTime::UNIX_EPOCH, IssuanceFailure::Authority);
+    let issued = certificate_material(&hostname);
+    let outcomes = [
+        store
+            .publish_certificate(&hostname, &issued, ployz_core::ClusterRoute::Direct)
+            .await
+            .unwrap(),
+        store
+            .publish_certificate_challenge(&hostname, &certificate_challenge())
+            .await
+            .unwrap(),
+        store
+            .record_certificate_failure(&hostname, None, "ACME request failed", clock)
+            .await
+            .unwrap(),
+        store
+            .record_certificate_failure(&hostname, Some(&published), "ACME request failed", clock)
+            .await
+            .unwrap(),
+        store
+            .record_certificate_error(&hostname, "policy refused")
+            .await
+            .unwrap(),
+    ];
+    assert_eq!(outcomes, [super::AcmeWrite::Kept; 5]);
+    assert_eq!(stored_certificate_body(&store, &hostname).await, before);
+    task.abort();
+}
+
+#[tokio::test]
+async fn a_moved_certificate_challenge_reads_its_row_again_and_lands() {
+    let (store, hold, task) = held_identity_store(corrosion_db()).await;
+    let hostname = IngressHost::parse("app.example.com").unwrap();
+    let issued = certificate_material(&hostname);
+    let gate = hold.hold(CERTIFICATE_READ, 1);
+    let mut late = tokio::spawn({
+        let store = store.clone();
+        let hostname = hostname.clone();
+        async move {
+            store
+                .publish_certificate_challenge(&hostname, &certificate_challenge())
+                .await
+                .unwrap()
+        }
+    });
+    gate.wait().await;
+    store
+        .publish_certificate(&hostname, &issued, ployz_core::ClusterRoute::Direct)
+        .await
+        .unwrap();
+    let reread = hold.hold(CERTIFICATE_READ, 1);
+    gate.wait().await;
+    tokio::select! {
+        _ = reread.wait() => {}
+        outcome = &mut late => panic!("the challenge did not read its row again: {outcome:?}"),
+    }
+    reread.wait().await;
+    assert_eq!(late.await.unwrap(), super::AcmeWrite::Changed);
+    let row = store.certificate_row(&hostname).await.unwrap();
+    assert_eq!(row.material(), Some(&issued));
+    assert_eq!(row.challenge(), Some(&certificate_challenge()));
+    task.abort();
+}
+
+#[tokio::test]
+async fn a_certificate_challenge_whose_row_moves_on_every_read_gives_up_as_moved() {
+    let (store, hold, task) = held_identity_store(corrosion_db()).await;
+    let hostname = IngressHost::parse("app.example.com").unwrap();
+    let mut gate = hold.hold(CERTIFICATE_READ, 1);
+    let mut late = tokio::spawn({
+        let store = store.clone();
+        let hostname = hostname.clone();
+        async move {
+            store
+                .publish_certificate_challenge(&hostname, &certificate_challenge())
+                .await
+                .unwrap()
+        }
+    });
+    for read in 1..=super::store::ACME_WRITE_ATTEMPTS {
+        tokio::select! {
+            _ = gate.wait() => {}
+            outcome = &mut late => panic!("the challenge stopped after {} reads: {outcome:?}", read - 1),
+        }
+        store
+            .record_certificate_error(&hostname, &format!("refused {read}"))
+            .await
+            .unwrap();
+        // The last read is left unheld: a writer that reads once more finds its row unchanged and
+        // lands.
+        let next = if read < super::store::ACME_WRITE_ATTEMPTS {
+            hold.hold(CERTIFICATE_READ, 1)
+        } else {
+            Arc::clone(&gate)
+        };
+        gate.wait().await;
+        gate = next;
+    }
+    assert_eq!(late.await.unwrap(), super::AcmeWrite::Moved);
+    assert_eq!(
+        store.certificate_row(&hostname).await.unwrap(),
+        super::CertificateRow::default()
+            .with_error(format!("refused {}", super::store::ACME_WRITE_ATTEMPTS))
+    );
+    task.abort();
+}
+
+#[tokio::test]
+async fn a_certificate_renewal_failure_lands_over_its_tried_material_and_moves_after_a_renewal() {
+    let (store, task) = identity_store(corrosion_db()).await;
+    let hostname = IngressHost::parse("app.example.com").unwrap();
+    let tried = certificate_material(&hostname);
+    store
+        .publish_certificate(&hostname, &tried, ployz_core::ClusterRoute::Direct)
+        .await
+        .unwrap();
+    let clock = IssuanceClock::new(1, SystemTime::UNIX_EPOCH, IssuanceFailure::Authority);
+    assert_eq!(
+        store
+            .record_certificate_failure(&hostname, Some(&tried), "ACME request failed", clock)
+            .await
+            .unwrap(),
+        super::AcmeWrite::Changed
+    );
+    store
+        .publish_certificate(
+            &hostname,
+            &certificate_material(&hostname),
+            ployz_core::ClusterRoute::Direct,
+        )
+        .await
+        .unwrap();
+    let renewed = stored_certificate_body(&store, &hostname).await;
+    assert_eq!(
+        store
+            .record_certificate_failure(&hostname, Some(&tried), "ACME request failed", clock)
+            .await
+            .unwrap(),
+        super::AcmeWrite::Moved
+    );
+    assert_eq!(stored_certificate_body(&store, &hostname).await, renewed);
+    task.abort();
+}

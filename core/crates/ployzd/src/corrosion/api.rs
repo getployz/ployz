@@ -127,6 +127,14 @@ impl ApiClient {
         &self,
         statements: impl IntoIterator<Item = Statement>,
     ) -> Result<(), Error> {
+        self.execute_counted(statements).await.map(drop)
+    }
+
+    /// Run `statements` as one transaction, answering how many rows each one changed.
+    pub(crate) async fn execute_counted(
+        &self,
+        statements: impl IntoIterator<Item = Statement>,
+    ) -> Result<Vec<usize>, Error> {
         let statements = statements.into_iter().collect::<Vec<_>>();
         // ponytail: finite query responses are buffered; stream events if store size makes this measurable.
         let (status, body) = Self::bounded(&self.transactions, async {
@@ -159,16 +167,16 @@ impl ApiClient {
                     Error::Api,
                 ));
         }
-        let errors: Vec<String> = decoded?
-            .results
-            .into_iter()
-            .filter_map(|result| match result {
-                ExecResult::Error { error } => Some(error),
-                ExecResult::Executed { .. } => None,
-            })
-            .collect();
+        let mut counts = Vec::new();
+        let mut errors = Vec::new();
+        for result in decoded?.results {
+            match result {
+                ExecResult::Executed { rows_affected, .. } => counts.push(rows_affected),
+                ExecResult::Error { error } => errors.push(error),
+            }
+        }
         if errors.is_empty() {
-            Ok(())
+            Ok(counts)
         } else {
             Err(Error::Api(errors.join("; ")))
         }
@@ -372,8 +380,7 @@ struct ExecResponse {
 #[serde(deny_unknown_fields, untagged)]
 enum ExecResult {
     Executed {
-        #[serde(rename = "rows_affected")]
-        _rows_affected: usize,
+        rows_affected: usize,
         #[serde(rename = "time")]
         _time: f64,
     },
@@ -753,6 +760,60 @@ mod tests {
         .expect("stalled subscription snapshot must fail");
         assert!(
             matches!(error, super::Error::Io(ref error) if error.kind() == std::io::ErrorKind::TimedOut),
+            "{error}"
+        );
+        server.abort();
+    }
+
+    /// A Corrosion whose `/v1/transactions` answers `body` to every request.
+    async fn transactions_answering(
+        body: &'static str,
+    ) -> (ApiClient, tokio::task::JoinHandle<()>) {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move {
+            axum::serve(
+                listener,
+                Router::new().route("/v1/transactions", post(move || async move { body })),
+            )
+            .await
+            .unwrap();
+        });
+        (ApiClient::http1(address, &"a".repeat(64)).unwrap(), server)
+    }
+
+    #[tokio::test]
+    async fn a_counted_execute_answers_each_statements_rows_affected() {
+        let (client, server) = transactions_answering(
+            r#"{"results":[{"rows_affected":0,"time":0.0},{"rows_affected":1,"time":0.0}],"time":0.0}"#,
+        )
+        .await;
+        let counts = client
+            .execute_counted([
+                Statement::new("UPDATE test SET id = 1 WHERE id = 0", []),
+                Statement::new("UPDATE test SET id = 2 WHERE id = 1", []),
+            ])
+            .await
+            .unwrap();
+        assert_eq!(counts, [0, 1]);
+        server.abort();
+    }
+
+    #[tokio::test]
+    async fn a_counted_execute_is_an_error_when_a_statement_errors() {
+        let (client, server) = transactions_answering(
+            r#"{"results":[{"rows_affected":1,"time":0.0},{"error":"CHECK constraint failed"}],"time":0.0}"#,
+        )
+        .await;
+        let error = client
+            .execute_counted([
+                Statement::new("UPDATE test SET id = 1", []),
+                Statement::new("UPDATE test SET body = 'not json'", []),
+            ])
+            .await
+            .unwrap_err();
+        assert!(
+            matches!(error, super::Error::Api(ref error) if error == "CHECK constraint failed"),
             "{error}"
         );
         server.abort();
