@@ -13,7 +13,8 @@ afterEach(() => {
   vi.unstubAllGlobals();
 });
 
-it("an open picker recovers a failed first load when the next read succeeds", async () => {
+/** An open picker over a repos collection whose reads the test supplies, and a teardown for it. */
+function openPicker() {
   vi.stubGlobal("ResizeObserver", class { observe() {} unobserve() {} disconnect() {} });
   vi.stubGlobal("scrollTo", () => {});
   Element.prototype.scrollIntoView ??= () => {};
@@ -31,9 +32,21 @@ it("an open picker recovers a failed first load when the next read succeeds", as
   const page = createRoute({ getParentRoute: () => protectedRoute, path: "/",
     component: () => <Command><CommandList><GitRepoSelector organizationSlug="acme" query="" onSelectRepo={() => {}} /></CommandList></Command> });
   const router = createRouter({ routeTree: rootRoute.addChildren([protectedRoute.addChildren([page])]), history: createMemoryHistory({ initialEntries: ["/"] }) });
-  const read = (rows: () => unknown[]) => queryClient.fetchQuery({ queryKey, queryFn: async () => rows(), staleTime: 0 });
+  render(<QueryClientProvider client={queryClient}><RouterProvider router={router} /></QueryClientProvider>);
+  return {
+    githubRepos,
+    read: (rows: () => unknown[]) => queryClient.fetchQuery({ queryKey, queryFn: async () => rows(), staleTime: 0 }),
+    close: async () => {
+      cleanup();
+      await githubRepos.cleanup();
+      queryClient.clear();
+    },
+  };
+}
+
+it("an open picker recovers a failed first load when the next read succeeds", async () => {
+  const { githubRepos, read, close } = openPicker();
   try {
-    render(<QueryClientProvider client={queryClient}><RouterProvider router={router} /></QueryClientProvider>);
     await waitFor(() => expect(githubRepos.subscriberCount).toBeGreaterThan(0));
     await act(async () => { await expect(read(() => { throw new Error("offline"); })).rejects.toThrow("offline"); });
     expect((await screen.findByRole("alert")).textContent).toBe("Could not load repositories. Trying again every 15 seconds.");
@@ -49,8 +62,21 @@ it("an open picker recovers a failed first load when the next read succeeds", as
     expect(githubRepos.status).toBe("ready");
     expect(screen.queryByRole("alert")).toBeNull();
   } finally {
-    cleanup();
-    await githubRepos.cleanup();
-    queryClient.clear();
+    await close();
+  }
+});
+
+it("an open picker says to reload the page when its collection crashes, since the poll's reads never reach a crashed collection", async () => {
+  const { githubRepos, read, close } = openPicker();
+  try {
+    await waitFor(() => expect(githubRepos.subscriberCount).toBeGreaterThan(0));
+    await act(async () => { await read(() => []); });
+    await waitFor(() => expect(githubRepos.status).toBe("ready"));
+    // What TanStack DB does when a sync start or an index fails: the collection ends for good.
+    act(() => { githubRepos._lifecycle.crash(new Error("broken")); });
+    expect((await screen.findByRole("alert")).textContent).toBe("Could not load repositories. Reload the page to try again.");
+    expect(githubRepos.status).toBe("crashed");
+  } finally {
+    await close();
   }
 });
