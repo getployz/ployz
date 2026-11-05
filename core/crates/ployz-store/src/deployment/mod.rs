@@ -179,8 +179,16 @@ pub struct DeploymentSummary {
     /// When its runner claimed it, in Unix seconds.
     #[ts(type = "number | null")]
     pub started_at: Option<i64>,
-    /// When it ended, in Unix seconds: its outcome recorded, or cancelled before
-    /// it ran.
+    /// When it left flight, in Unix seconds; none while it waits for CI, is queued, or
+    /// is claimed and its runner lease holds. Its runner recording an outcome, or a
+    /// cancel, sets it then. A newer admission superseding it sets it then too, though
+    /// [`DeploymentStatus::ended`] doesn't count a superseded one as ended. One whose
+    /// runner was lost reads Unknown, ended at the earlier of its runner lease and when
+    /// that was found: a newer claim took it over, its runner claimed it again or gave
+    /// up after preparing, or its runner lease lapsed. Its runner may still act until
+    /// that lease. An Interrupted outcome its runner records after moves it to then. A
+    /// row an older Store left without one reads its admission once superseded, and
+    /// the earlier of its runner lease and now once Unknown.
     #[ts(type = "number | null")]
     pub ended_at: Option<i64>,
     /// What whoever admitted it said it ships.
@@ -861,8 +869,10 @@ pub(crate) struct Stored {
     cluster_domain: Option<Hostname>,
     pub(crate) nodes: Vec<TargetNode>,
     run: Run,
-    /// Until when, in Unix seconds, its runner holds it without recording anything.
-    lease: i64,
+    standing: Standing,
+    /// When `stored` read it, in Unix seconds: the moment its summary judges a
+    /// runner lease by, so the status it shows holds for the whole transaction.
+    read_at: i64,
     /// Where it lists among its Environment's Deployments: taken once, at insert,
     /// and never moved, so a page cursor can hold it.
     pub(crate) listed: i64,
@@ -971,13 +981,390 @@ pub(crate) fn in_flight_sql() -> String {
     )
 }
 
-/// Whether a claimed Deployment's runner is gone: its lease lapsed, so what ran
-/// is unknown. Every read remaps a lapsed one to `unknown`.
-fn lapsed(status: DeploymentStatus, lease: i64) -> bool {
-    matches!(
-        status,
-        DeploymentStatus::Running | DeploymentStatus::Cancelling
-    ) && lease <= now()
+/// Whether a claimed Deployment's runner is gone at `now`: its runner lease lapsed,
+/// so what ran is unknown. Every read shows a lapsed one as `unknown`
+/// ([`Standing::status`]).
+fn lapsed(lease: i64, now: i64) -> bool {
+    lease <= now
+}
+
+/// When a claimed Deployment whose runner is lost ended, found at `now`: the
+/// earlier of its runner lease and `now`. While the lease holds that is `now`;
+/// once it [`lapsed`], the lease, when reads began to show it Unknown. So it never
+/// passes the lease, which [`settling`] bounds such a run by.
+fn runner_lost(lease: i64, now: i64) -> i64 {
+    lease.min(now)
+}
+
+/// Where a Deployment stands, with exactly the columns its status keeps. `stored`
+/// decodes each row into one, `save` writes `status`, `number`, `runner`,
+/// `started`, `lease` and `ended` from it, and [`Standing::shown`] is all the
+/// summary shows of them. Each edge out of a state is a method of that state's type.
+#[derive(Debug)]
+enum Standing {
+    Waiting(Waiting),
+    Queued(Queued),
+    Claimed(ClaimedRun),
+    /// A newer admission replaced it before any runner claimed it.
+    Superseded {
+        /// None when what it replaced was waiting for CI.
+        number: Option<u64>,
+        ended: i64,
+    },
+    Ended(Ended),
+}
+
+/// Waiting for its commit's CI: unnumbered and unclaimed. The push that admitted
+/// it stays on the summary, as it does once it queues.
+#[derive(Debug)]
+struct Waiting;
+
+#[derive(Debug)]
+struct Queued {
+    number: u64,
+}
+
+/// Claimed by a runner, whose runner lease may have lapsed since.
+#[derive(Debug)]
+struct ClaimedRun {
+    number: u64,
+    claim: Claim,
+    phase: Phase,
+}
+
+/// A runner's claim: `claim` sets all three at once (lifecycle.rs `claim`).
+#[derive(Debug)]
+struct Claim {
+    runner: RunnerId,
+    /// When it claimed it, in Unix seconds.
+    started: i64,
+    /// Until when, in Unix seconds, its runner holds it without recording anything.
+    lease: i64,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum Phase {
+    Running,
+    Cancelling,
+}
+
+/// Out of flight for good.
+#[derive(Debug)]
+struct Ended {
+    /// None when it never queued: cancelled while it waited for CI.
+    number: Option<u64>,
+    /// None when no runner ever claimed it: cancelled before one did, or a removal
+    /// applied without one (lifecycle.rs `forget`).
+    claim: Option<Claim>,
+    ended: i64,
+    end: End,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum End {
+    Applied,
+    Failed,
+    Unknown,
+    Cancelled,
+}
+
+impl Waiting {
+    /// Cancelled while it waited for CI: it never queued, so it has no number.
+    const fn cancel(self, now: i64) -> Ended {
+        Ended {
+            number: None,
+            claim: None,
+            ended: now,
+            end: End::Cancelled,
+        }
+    }
+}
+
+impl Queued {
+    /// Claimed by `runner` at `now`, which holds it for [`LEASE`].
+    const fn claim(self, runner: RunnerId, now: i64) -> ClaimedRun {
+        ClaimedRun {
+            number: self.number,
+            claim: Claim {
+                runner,
+                started: now,
+                lease: now + LEASE,
+            },
+            phase: Phase::Running,
+        }
+    }
+
+    /// Ended `end` at `now` without a runner: cancelled, or a removal applied
+    /// without one.
+    const fn end(self, end: End, now: i64) -> Ended {
+        Ended {
+            number: Some(self.number),
+            claim: None,
+            ended: now,
+            end,
+        }
+    }
+}
+
+impl ClaimedRun {
+    /// Its runner recorded something at `now`, so it is still there.
+    const fn renew(&mut self, now: i64) {
+        self.claim.lease = now + LEASE;
+    }
+
+    /// Ended `end` at `now`, keeping its claim.
+    fn end(self, end: End, now: i64) -> Ended {
+        Ended {
+            number: Some(self.number),
+            claim: Some(self.claim),
+            ended: now,
+            end,
+        }
+    }
+
+    /// Its runner is lost, found at `now`: it ends Unknown at [`runner_lost`],
+    /// keeping its claim, so its runner may still record an Interrupted outcome.
+    fn lose_runner(self, now: i64) -> Ended {
+        let ended = runner_lost(self.claim.lease, now);
+        self.end(End::Unknown, ended)
+    }
+}
+
+impl Phase {
+    const fn status(self) -> DeploymentStatus {
+        match self {
+            Self::Running => DeploymentStatus::Running,
+            Self::Cancelling => DeploymentStatus::Cancelling,
+        }
+    }
+}
+
+impl End {
+    const fn status(self) -> DeploymentStatus {
+        match self {
+            Self::Applied => DeploymentStatus::Applied,
+            Self::Failed => DeploymentStatus::Failed,
+            Self::Unknown => DeploymentStatus::Unknown,
+            Self::Cancelled => DeploymentStatus::Cancelled,
+        }
+    }
+}
+
+/// What a summary shows of a [`Standing`].
+struct Shown {
+    status: DeploymentStatus,
+    number: Option<u64>,
+    runner: Option<RunnerId>,
+    started_at: Option<i64>,
+    ended_at: Option<i64>,
+}
+
+impl Standing {
+    /// Decode a row's `status` with its `number`, `claim` and `ended`, read at
+    /// `now`. A row an older Store left without `ended` reads its `admitted` once
+    /// superseded, and [`runner_lost`] once Unknown. Refuses only what no Store
+    /// writes: a number on one waiting for CI, or none on one queued or claimed; a
+    /// claim on one waiting, queued or superseded, or none on one claimed or
+    /// Unknown; an end on one waiting, queued or claimed, or none on one applied,
+    /// failed or cancelled.
+    fn decode(
+        status: DeploymentStatus,
+        (number, claim, ended): (Option<u64>, Option<Claim>, Option<i64>),
+        admitted: i64,
+        now: i64,
+    ) -> Result<Self, RpcError> {
+        use DeploymentStatus as S;
+        Ok(match (status, number, claim, ended) {
+            (S::WaitingForCi, None, None, None) => Self::Waiting(Waiting),
+            (S::Queued, Some(number), None, None) => Self::Queued(Queued { number }),
+            (S::Running, Some(number), Some(claim), None) => Self::Claimed(ClaimedRun {
+                number,
+                claim,
+                phase: Phase::Running,
+            }),
+            (S::Cancelling, Some(number), Some(claim), None) => Self::Claimed(ClaimedRun {
+                number,
+                claim,
+                phase: Phase::Cancelling,
+            }),
+            (S::Superseded, number, None, ended) => Self::Superseded {
+                number,
+                ended: ended.unwrap_or(admitted),
+            },
+            (S::Unknown, number, Some(claim), ended) => Self::Ended(Ended {
+                number,
+                ended: ended.unwrap_or_else(|| runner_lost(claim.lease, now)),
+                claim: Some(claim),
+                end: End::Unknown,
+            }),
+            (S::Applied, number, claim, Some(ended)) => Self::Ended(Ended {
+                number,
+                claim,
+                ended,
+                end: End::Applied,
+            }),
+            (S::Failed, number, claim, Some(ended)) => Self::Ended(Ended {
+                number,
+                claim,
+                ended,
+                end: End::Failed,
+            }),
+            (S::Cancelled, number, claim, Some(ended)) => Self::Ended(Ended {
+                number,
+                claim,
+                ended,
+                end: End::Cancelled,
+            }),
+            _ => return Err(error::corrupt("Deployment status")),
+        })
+    }
+
+    /// The status its row holds, which a lapsed runner lease leaves `running` or
+    /// `cancelling` until something writes it.
+    const fn kept(&self) -> DeploymentStatus {
+        match self {
+            Self::Waiting(_) => DeploymentStatus::WaitingForCi,
+            Self::Queued(_) => DeploymentStatus::Queued,
+            Self::Claimed(claimed) => claimed.phase.status(),
+            Self::Superseded { .. } => DeploymentStatus::Superseded,
+            Self::Ended(ended) => ended.end.status(),
+        }
+    }
+
+    /// Its status at `now`: Unknown once a claimed one's runner lease [`lapsed`].
+    fn status(&self, now: i64) -> DeploymentStatus {
+        match self {
+            Self::Claimed(claimed) if lapsed(claimed.claim.lease, now) => DeploymentStatus::Unknown,
+            standing @ (Self::Waiting(_)
+            | Self::Queued(_)
+            | Self::Claimed(_)
+            | Self::Superseded { .. }
+            | Self::Ended(_)) => standing.kept(),
+        }
+    }
+
+    const fn claim(&self) -> Option<&Claim> {
+        match self {
+            Self::Claimed(claimed) => Some(&claimed.claim),
+            Self::Ended(ended) => ended.claim.as_ref(),
+            Self::Waiting(_) | Self::Queued(_) | Self::Superseded { .. } => None,
+        }
+    }
+
+    const fn number(&self) -> Option<u64> {
+        match self {
+            Self::Waiting(_) => None,
+            Self::Queued(Queued { number }) | Self::Claimed(ClaimedRun { number, .. }) => {
+                Some(*number)
+            }
+            Self::Superseded { number, .. } | Self::Ended(Ended { number, .. }) => *number,
+        }
+    }
+
+    /// Its `ended` column: set once it left flight for good.
+    const fn ended(&self) -> Option<i64> {
+        match self {
+            Self::Superseded { ended, .. } | Self::Ended(Ended { ended, .. }) => Some(*ended),
+            Self::Waiting(_) | Self::Queued(_) | Self::Claimed(_) => None,
+        }
+    }
+
+    /// What a summary shows of it at `now`. A claimed one whose runner lease
+    /// lapsed reads Unknown, ended at [`runner_lost`], before anything writes it.
+    fn shown(&self, now: i64) -> Shown {
+        let claim = self.claim();
+        Shown {
+            status: self.status(now),
+            number: self.number(),
+            runner: claim.map(|claim| claim.runner.clone()),
+            started_at: claim.map(|claim| claim.started),
+            ended_at: match self {
+                Self::Claimed(ClaimedRun { claim, .. }) => {
+                    lapsed(claim.lease, now).then(|| runner_lost(claim.lease, now))
+                }
+                standing @ (Self::Waiting(_)
+                | Self::Queued(_)
+                | Self::Superseded { .. }
+                | Self::Ended(_)) => standing.ended(),
+            },
+        }
+    }
+
+    /// Claimed by `runner` at `now`, when it is queued. Any other stands as it was.
+    fn claim_for(self, runner: &RunnerId, now: i64) -> Self {
+        match self {
+            Self::Queued(queued) => Self::Claimed(queued.claim(runner.clone(), now)),
+            standing @ (Self::Waiting(_)
+            | Self::Claimed(_)
+            | Self::Superseded { .. }
+            | Self::Ended(_)) => standing,
+        }
+    }
+
+    /// Its runner recorded something at `now`, when it is claimed. Any other
+    /// stands as it was.
+    const fn renew(&mut self, now: i64) {
+        if let Self::Claimed(claimed) = self {
+            claimed.renew(now);
+        }
+    }
+
+    /// Cancelled at `now`, when it may still run: it ends Cancelled, keeping any
+    /// claim. Any other stands as it was.
+    fn cancel(self, now: i64) -> Self {
+        match self {
+            Self::Waiting(waiting) => Self::Ended(waiting.cancel(now)),
+            Self::Queued(queued) => Self::Ended(queued.end(End::Cancelled, now)),
+            Self::Claimed(claimed) => Self::Ended(claimed.end(End::Cancelled, now)),
+            standing @ (Self::Superseded { .. } | Self::Ended(_)) => standing,
+        }
+    }
+
+    /// Cancelled while it runs: its runner stops it and records what ran. Any
+    /// other stands as it was.
+    const fn cancelling(mut self) -> Self {
+        if let Self::Claimed(claimed) = &mut self {
+            claimed.phase = Phase::Cancelling;
+        }
+        self
+    }
+
+    /// Ended `end` at `now`, when it is claimed or, for a removal applied without a
+    /// runner, queued. Any other stands as it was.
+    fn end(self, end: End, now: i64) -> Self {
+        match self {
+            Self::Claimed(claimed) => Self::Ended(claimed.end(end, now)),
+            Self::Queued(queued) => Self::Ended(queued.end(end, now)),
+            standing @ (Self::Waiting(_) | Self::Superseded { .. } | Self::Ended(_)) => standing,
+        }
+    }
+
+    /// Its runner is lost, found at `now`, when it is claimed
+    /// ([`ClaimedRun::lose_runner`]). Any other stands as it was: one that already
+    /// ended keeps its end.
+    fn lose_runner(self, now: i64) -> Self {
+        match self {
+            Self::Claimed(claimed) => Self::Ended(claimed.lose_runner(now)),
+            standing @ (Self::Waiting(_)
+            | Self::Queued(_)
+            | Self::Superseded { .. }
+            | Self::Ended(_)) => standing,
+        }
+    }
+
+    /// Its runner said at `now` that it stopped, when it ended. Any other stands
+    /// as it was.
+    const fn restamp(&mut self, now: i64) {
+        if let Self::Ended(ended) = self {
+            ended.ended = now;
+        }
+    }
+
+    /// Its `lease` column: the claim's runner lease, or 0, the column's default,
+    /// when no runner claimed it.
+    fn lease(&self) -> i64 {
+        self.claim().map_or(0, |claim| claim.lease)
+    }
 }
 
 /// The Cluster Domain `environment`'s latest Deployment that had one expanded its
@@ -1086,13 +1473,36 @@ pub(crate) fn load(tx: &mut dyn Tx, id: &DeploymentId) -> Result<Stored, RpcErro
 }
 
 fn stored(row: &Row) -> Result<Stored, RpcError> {
-    let status: DeploymentStatus = row.variant(3, "Deployment status")?;
-    let lease = row.int(12)?;
-    let run: Run = row.json(8, "Deployment run")?;
-    let status = match lapsed(status, lease) {
-        true => DeploymentStatus::Unknown,
-        false => status,
+    let read_at = now();
+    let number = row
+        .optional_int(2)?
+        .map(u64::try_from)
+        .transpose()
+        .map_err(|_| error::corrupt("Deployment number"))?;
+    let claim = match (row.parse_optional(11, "identity")?, row.optional_int(15)?) {
+        (Some(runner), Some(started)) => Some(Claim {
+            runner,
+            started,
+            lease: row.int(12)?,
+        }),
+        (None, None) => None,
+        _ => return Err(error::corrupt("Deployment claim")),
     };
+    let admitted_at = row.int(14)?;
+    let standing = Standing::decode(
+        row.variant(3, "Deployment status")?,
+        (number, claim, row.optional_int(16)?),
+        admitted_at,
+        read_at,
+    )?;
+    let Shown {
+        status,
+        number,
+        runner,
+        started_at,
+        ended_at,
+    } = standing.shown(read_at);
+    let run: Run = row.json(8, "Deployment run")?;
     let nodes: Vec<TargetNode> = row.json(6, "Deployment")?;
     let push = match (
         row.optional_int(18)?,
@@ -1119,16 +1529,12 @@ fn stored(row: &Row) -> Result<Stored, RpcError> {
         summary: DeploymentSummary {
             id: row.parse(0, "identity")?,
             environment_id: row.parse(1, "identity")?,
-            number: row
-                .optional_int(2)?
-                .map(u64::try_from)
-                .transpose()
-                .map_err(|_| error::corrupt("Deployment number"))?,
+            number,
             status,
             saved: row.number(4, "revision")?,
             services: row.json(5, "Deployment")?,
             ships: shipped(&nodes),
-            runner: row.parse_optional(11, "identity")?,
+            runner,
             upload: row
                 .optional_text(9)?
                 .map(serde_json::from_str)
@@ -1139,9 +1545,9 @@ fn stored(row: &Row) -> Result<Stored, RpcError> {
             remove: row.number::<Revision>(4, "revision")? == NOTHING,
             prune: run.prune,
             admitted_by: row.parse_optional(13, "identity")?,
-            admitted_at: row.int(14)?,
-            started_at: row.optional_int(15)?,
-            ended_at: row.optional_int(16)?,
+            admitted_at,
+            started_at,
+            ended_at,
             message: row.optional_text(17)?.map(str::to_owned),
             push,
             ci: row
@@ -1161,7 +1567,8 @@ fn stored(row: &Row) -> Result<Stored, RpcError> {
         namespace: row.parse::<Namespace>(7, "Namespace")?,
         run,
         cluster_domain: row.parse_optional(10, "identity")?,
-        lease,
+        standing,
+        read_at,
         listed: row.int(22)?,
         service_uploads,
     })
@@ -1182,24 +1589,61 @@ fn preparing(status: DeploymentStatus, run: &Run) -> bool {
     status == DeploymentStatus::Running && run.preview.is_none()
 }
 
-/// Write `stored`'s status and run, keeping `in_flight`, `chooses_upload_at_start`
-/// and `preparing` in step with them.
+impl Stored {
+    /// Show its standing on its summary: the status, number, runner, start and end
+    /// [`Standing::shown`] gives at `read_at`, with what follows from that status:
+    /// whether it may still run, chooses its upload as it starts, or prepares.
+    fn show(&mut self) {
+        let Shown {
+            status,
+            number,
+            runner,
+            started_at,
+            ended_at,
+        } = self.standing.shown(self.read_at);
+        self.summary.status = status;
+        self.summary.number = number;
+        self.summary.runner = runner;
+        self.summary.started_at = started_at;
+        self.summary.ended_at = ended_at;
+        self.summary.in_flight = status.in_flight();
+        self.summary.chooses_upload_at_start =
+            chooses_upload_at_start(status, self.service_uploads.as_ref());
+        self.summary.preparing = preparing(status, &self.run);
+    }
+}
+
+/// Write `stored` back: its [`Standing`] as the `status`, `number`, `runner`,
+/// `started`, `lease` and `ended` columns, and its run, outcome and preview
+/// included. An edge changes the standing and then saves, so `save` first shows the
+/// standing on the summary ([`Stored::show`]), and a caller returns the summary as
+/// the row now reads. A claim whose runner lease lapsed it writes as its row holds
+/// it, `running` or `cancelling` ([`Standing::kept`]): only an edge that loses the
+/// runner writes Unknown, with its end (lifecycle.rs `claim` and `record`). Once
+/// the Deployment can't run any more, History drops the sealed values only a
+/// Deployment in flight kept, rewriting only a revision that still holds one
+/// ([`crate::review::scrub_sealed`]).
 fn save(tx: &mut dyn Tx, stored: &mut Stored) -> Result<(), RpcError> {
-    stored.summary.in_flight = stored.summary.status.in_flight();
-    stored.summary.chooses_upload_at_start =
-        chooses_upload_at_start(stored.summary.status, stored.service_uploads.as_ref());
-    stored.summary.preparing = preparing(stored.summary.status, &stored.run);
+    stored.show();
+    let standing = &stored.standing;
+    let claim = standing.claim();
+    let number = standing
+        .number()
+        .map(i64::try_from)
+        .transpose()
+        .map_err(|_| error::corrupt("Deployment number"))?;
     tx.execute(
         "UPDATE config_deployment SET status = ?1, run = ?2, runner = ?4, lease = ?5, \
-         started = ?6, ended = ?7 WHERE id = ?3",
+         started = ?6, ended = ?7, number = ?8 WHERE id = ?3",
         &[
-            name_of(stored.summary.status).as_str().into(),
+            name_of(standing.kept()).as_str().into(),
             json_text(&stored.run).as_str().into(),
             stored.summary.id.as_str().into(),
-            stored.summary.runner.as_ref().map(RunnerId::as_str).into(),
-            stored.lease.into(),
-            stored.summary.started_at.into(),
-            stored.summary.ended_at.into(),
+            claim.map(|claim| claim.runner.as_str()).into(),
+            standing.lease().into(),
+            claim.map(|claim| claim.started).into(),
+            standing.ended().into(),
+            number.into(),
         ],
     )?;
     if !stored.summary.in_flight {
@@ -1310,4 +1754,22 @@ pub(crate) fn now() -> i64 {
         .map_or(0, |elapsed| {
             i64::try_from(elapsed.as_secs()).unwrap_or(i64::MAX)
         })
+}
+
+#[cfg(test)]
+mod runner_lost_tests {
+    use super::{lapsed, runner_lost};
+
+    #[test]
+    fn a_lost_runner_ended_at_the_earlier_of_its_runner_lease_and_now() {
+        // Lapsed: when reads began to show it Unknown.
+        assert!(lapsed(90, 100));
+        assert_eq!(runner_lost(90, 100), 90);
+        // Lapsing now: both are the same moment.
+        assert!(lapsed(100, 100));
+        assert_eq!(runner_lost(100, 100), 100);
+        // Still held: its runner lost it now, before its lease would have.
+        assert!(!lapsed(110, 100));
+        assert_eq!(runner_lost(110, 100), 100);
+    }
 }
