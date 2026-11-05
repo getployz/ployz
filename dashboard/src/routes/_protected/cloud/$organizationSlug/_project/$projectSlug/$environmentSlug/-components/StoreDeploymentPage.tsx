@@ -16,8 +16,8 @@ import { useRuntimeLens } from "#/modules/runtime/use-runtime-lens";
 import { Button } from "#/components/ui/button";
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from "#/components/ui/dropdown-menu";
 import {
-  admission, canFixOnBranch, deploymentActions, deploymentWarningText, deploymentByline, deploymentLabel, deploymentLight, deploymentStatusLabel, freshRollback, nodeApplied,
-  outcomeReason, rollbackConfirm, showCancelling, shownNodeStatus, warnedService, type DeploymentAction,
+  admission, canFixOnBranch, deploymentActions, deploymentWarningText, deployWarningNotices, deploymentByline, deploymentLabel, deploymentLight, deploymentStatusLabel, freshRollback, nodeApplied,
+  outcomeReason, rollbackConfirm, showCancelling, shownNodeStatus, type DeploymentAction,
 } from "#/modules/config-store/store-deployments";
 import { deploymentQuery, useStoreView } from "#/modules/config-store/store-view.queries";
 import { useStoreCancelling } from "#/modules/config-store/store-pending";
@@ -74,7 +74,7 @@ function RunHeader({ deployment, graph, selected, search, onCancel }: {
   const warnings = deployment.warnings ?? [];
   const ingressWarnings = warnings.filter((warning) => "ingress" in warning);
   const uncheckedIngress = warnings.filter((warning) => "cause" in warning);
-  const deployWarnings = warnings.filter((warning) => "warning" in warning);
+  const deployNotices = deployWarningNotices(deployment);
   const variableWarnings = warnings.filter((warning) => !("ingress" in warning) && !("cause" in warning) && !("warning" in warning));
   const services = deployment.nodes.filter((node) => node.type === "service");
   const service = selected?.type === "build" ? services.find((node) => node.name === selected.name)
@@ -154,19 +154,19 @@ function RunHeader({ deployment, graph, selected, search, onCancel }: {
           <TriangleAlertIcon className="size-4" />{deploymentWarningText(warning)}.
         </p>
       ))}
-      {deployWarnings.map((warning) => {
-        const node = warnedService(deployment, warning);
-        const text = deploymentWarningText(warning, node?.name);
-        return (
-          <p key={text} role="status" className="flex flex-wrap items-center gap-1.5 text-sm text-warning">
-            <TriangleAlertIcon className="size-4" />{text}. Set the domain port or PORT.
-            {node ? (
+      {deployNotices.map(({ node, text, port }) => (
+        // A long line wraps beside its icon rather than under it.
+        <p key={text} role="status" className="flex items-start gap-1.5 text-sm text-warning">
+          <TriangleAlertIcon className="mt-0.5 size-4 shrink-0" />
+          <span className="min-w-0">
+            {text}.{port ? " Set the domain port or PORT. " : null}
+            {node && port ? (
               <Link to={ENVIRONMENT_SERVICE_ROUTE_TO} params={{ ...params, serviceId: node.id }} search={{}}
                 className="underline underline-offset-4">Service settings</Link>
             ) : null}
-          </p>
-        );
-      })}
+          </span>
+        </p>
+      ))}
     </div>
   );
 }

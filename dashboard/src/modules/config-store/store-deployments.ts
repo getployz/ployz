@@ -368,15 +368,32 @@ export const canFixOnBranch = (deployment: DeploymentView, node: NodeOutcome, no
 
 /**
  * What a Deployment shipped despite, in words: "TOKEN not set", with the variable without a value it reads, a broken
- * reference left out, where a Config file left one empty, a Server left without ingress, ingress it couldn't check, or
- * an image exposing a port its domains don't send to.
+ * reference left out, where a Config file left one empty, a Server left without ingress, ingress it couldn't check, an
+ * image exposing a port its domains don't send to, a Server it couldn't check, an old copy it left running, or what a
+ * Server's replaced copies may do once it is back.
  */
 export function deploymentWarningText(warning: DeploymentWarning, service?: string) {
   if ("warning" in warning) {
     const found = warning.warning;
-    return found.type === "image_port_mismatch"
-      ? `${service ?? found.service}'s image ${found.image} exposes ${found.exposed.join(", ")}; its domains send to ${found.routed.join(", ")}`
-      : "The deployment found something to check";
+    switch (found.type) {
+      case "image_port_mismatch":
+        return `${service ?? found.service}'s image ${found.image} exposes ${found.exposed.join(", ")}; its domains send to ${found.routed.join(", ")}`;
+      // As the CLI prints it, but "full": a deploy of only some Services leaves the copy. The short ID `docker ps`
+      // shows tells two copies on one Server apart.
+      case "left_running":
+        return `${service ?? runtimeName(found.service)} copy ${found.container_id.slice(0, 12)} left running on ${found.machine} (${found.reason.replace(/\.$/, "")}). The next full deploy cleans it up`;
+      case "observation_failed":
+      case "observation_omitted":
+        if (!found.gap) break;
+        if (found.gap.reason === "down") return `${found.gap.machine_name} is down, so this deployment couldn't check it`;
+        return found.type === "observation_failed"
+          ? `This deployment couldn't check ${found.gap.machine_name}: ${found.message.replace(/\.$/, "")}`
+          : `This deployment couldn't check ${found.gap.machine_name}`;
+      // As the CLI prints it, for a Server cleanup couldn't reach or confirm, but "full" as above.
+      case "mixed_after_return":
+        return `If ${found.machine} restarts and confirms the new copies within a few minutes of starting, it takes its replaced copies out of traffic. Otherwise they keep answering beside the new copies. Either way they keep running, and a left worker still takes jobs, until the next full deploy`;
+    }
+    return "The deployment found something to check";
   }
   if ("cause" in warning) return `Couldn't check ingress: ${warning.cause.replace(/\.$/, "")}. Deploy again to retry`;
   if ("ingress" in warning) {
@@ -405,10 +422,31 @@ export function deploymentWarningText(warning: DeploymentWarning, service?: stri
  * since keeps its link, and another one that took its old name is never chosen.
  */
 export function warnedService(deployment: Pick<DeploymentView, "nodes" | "runtime_names">, warning: DeploymentWarning) {
-  if (!("warning" in warning) || warning.warning.type !== "image_port_mismatch") return undefined;
-  const runtime = warning.warning.service;
+  if (!("warning" in warning)) return undefined;
+  const found = warning.warning;
+  const runtime = found.type === "image_port_mismatch" ? found.service : found.type === "left_running" ? runtimeName(found.service) : null;
+  if (runtime === null) return undefined;
   return deployment.nodes.find((node) => node.type === "service" && (deployment.runtime_names[node.name] ?? node.name) === runtime);
 }
+
+/**
+ * The header's line for each thing the Deploy found, with the Service it links to: each Server its plan couldn't check
+ * (a gap) and what its old copies may do once it is back, which the planner keeps on the Deploy Preview, then what it
+ * found while executing. Only a port mismatch asks for a port. A Server's container and volume listings each leave a
+ * gap, and the run may repeat what the plan found; those read the same, so each line shows once.
+ */
+export function deployWarningNotices(deployment: Pick<DeploymentView, "nodes" | "runtime_names" | "warnings" | "preview">) {
+  const planned = (deployment.preview?.warnings ?? []).filter((warning) => warning.type === "mixed_after_return"
+    || ((warning.type === "observation_failed" || warning.type === "observation_omitted") && warning.gap !== undefined));
+  return [...planned.map((warning) => ({ warning })), ...deployment.warnings ?? []].flatMap((warning) => {
+    if (!("warning" in warning)) return [];
+    const node = warnedService(deployment, warning);
+    return [{ node, text: deploymentWarningText(warning, node?.name), port: warning.warning.type === "image_port_mismatch" }];
+  }).filter(({ text }, index, all) => all.findIndex((other) => other.text === text) === index);
+}
+
+/** A Service's runtime name from the Engine's `namespace/name`. */
+const runtimeName = (qualified: string) => qualified.slice(qualified.indexOf("/") + 1);
 
 /** Why a Deployment ended: its reason and deepest cause, or what a forgotten removal left. */
 export function outcomeReason(outcome: Outcome | null) {

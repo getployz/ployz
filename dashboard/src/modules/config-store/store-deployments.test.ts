@@ -1,12 +1,12 @@
 import { readFileSync } from "node:fs";
-import type { DeploymentView, DiffView, JsonValue, MachineId, NodeOutcome, Outcome, RowId, ServiceId, ServiceListing } from "@ployz/sdk";
+import type { ContainerId, DeploymentView, DiffView, JsonValue, MachineId, NodeOutcome, Outcome, RowId, ServiceId, ServiceListing } from "@ployz/sdk";
 import { expect, it } from "vitest";
 import { asTestDouble } from "#/lib/test-double";
 import {
   buildInterrupted, showCancelling,
   canFixOnBranch, changeGroups, deploymentWarningText, deploymentActions, deploymentByline, deploymentLight, deploymentStatusLabel, deploysLabel, missingDeployLogs, outcomeReason,
   deploymentLabel, freshRollback, nodeLight, nodeStatusLabels, reviewGroups, rollbackConfirm, shippedService, shownNodeStatus, shownValue,
-  uploadLabel, warnedService,
+  uploadLabel, warnedService, deployWarningNotices,
 } from "./store-deployments";
 
 // The grouping reads only the changes and each Service's id and source.
@@ -471,6 +471,69 @@ it("links a port warning to the Service by its runtime name, so a rename keeps t
   expect(warnedService({ nodes: [node("web", "deployed")], runtime_names: { web: "web" } }, mismatch)?.id).toBe("id-web");
   expect(warnedService({ nodes: [node("api", "deployed")], runtime_names: { api: "api" } }, mismatch)).toBeUndefined();
   expect(warnedService({ nodes, runtime_names }, { service: "web", variable: "TOKEN" })).toBeUndefined();
+});
+
+it("names the Server a deployment couldn't check, and a copy it left running with the Engine's reason", () => {
+  const machine_id = "c".repeat(32) as MachineId;
+  const down = { warning: { type: "observation_omitted" as const, gap: { machine_name: "machine-3", reason: "down" as const }, kind: "container" as const, machine_id } };
+  expect(deploymentWarningText(down)).toBe("machine-3 is down, so this deployment couldn't check it");
+  const failed = { warning: { type: "observation_failed" as const, gap: { machine_name: "machine-3", reason: "failed" as const }, kind: "volume" as const, machine_id, message: "timed out" } };
+  expect(deploymentWarningText(failed)).toBe("This deployment couldn't check machine-3: timed out");
+  expect(deploymentWarningText({ warning: { type: "observation_omitted", gap: { machine_name: "machine-3", reason: "failed" }, kind: "volume", machine_id } }))
+    .toBe("This deployment couldn't check machine-3");
+  expect(deploymentWarningText({ warning: { type: "mixed_after_return", machine: "machine-3" } })).toBe(
+    "If machine-3 restarts and confirms the new copies within a few minutes of starting, it takes its replaced copies out of traffic. Otherwise they keep answering beside the new copies. Either way they keep running, and a left worker still takes jobs, until the next full deploy",
+  );
+  // Without a gap the Engine doesn't claim the Server matters to this Deploy.
+  expect(deploymentWarningText({ warning: { type: "observation_omitted", kind: "container", machine_id } })).toBe("The deployment found something to check");
+  const left = (machine: string, reason: string, container = "d") => ({
+    warning: { type: "left_running" as const, service: "cl-production/stray2", container_id: container.repeat(64) as ContainerId, machine, reason },
+  });
+  const unreached = left("machine-3", "machine-3 didn't answer, the next full deploy removes its copy once it is back");
+  expect(deploymentWarningText(unreached))
+    .toBe("stray2 copy dddddddddddd left running on machine-3 (machine-3 didn't answer, the next full deploy removes its copy once it is back). The next full deploy cleans it up");
+  // A reason that doesn't name the Server still says where the copy runs.
+  expect(deploymentWarningText(left("machine-2", "the Deploy failed."), "web"))
+    .toBe("web copy dddddddddddd left running on machine-2 (the Deploy failed). The next full deploy cleans it up");
+  // Copies on two Servers, or two on one, each keep their line.
+  const notices = deployWarningNotices({
+    nodes: [], runtime_names: {}, preview: null,
+    warnings: [left("machine-1", "interrupted"), left("machine-2", "interrupted"), left("machine-2", "interrupted", "e")],
+  });
+  expect(notices).toHaveLength(3);
+  // A Service not in this deployment has no node; one in it is found by its runtime name.
+  expect(warnedService({ nodes: [node("web", "deployed")], runtime_names: { web: "web" } }, unreached)).toBeUndefined();
+  expect(warnedService({ nodes: [node("extra", "deployed")], runtime_names: { extra: "stray2" } }, unreached)?.id).toBe("id-extra");
+});
+
+it("lists each Server the plan couldn't check, then each run finding, once, and asks for a port only on a port mismatch", () => {
+  const machine_id = "c".repeat(32) as MachineId;
+  const gap = (kind: "container" | "volume") => ({ type: "observation_omitted" as const, gap: { machine_name: "machine-3", reason: "down" as const }, kind, machine_id });
+  const mismatch = { warning: { type: "image_port_mismatch" as const, service: "web", service_id: "f".repeat(32) as ServiceId, image: "nginx", machines: [], exposed: [80], routed: [8080] } };
+  // The planner keeps its gaps on the Deploy Preview; a preview warning without a gap adds no line.
+  const preview = asTestDouble<NonNullable<DeploymentView["preview"]>>()({
+    warnings: [
+      gap("container"), gap("volume"), { type: "mixed_after_return", machine: "machine-3" },
+      { type: "unbudgeted_disk_usage" }, { type: "observation_omitted", kind: "container", machine_id },
+    ],
+  });
+  // The run repeats the plan's restart note, which shows once; a copy left by a renamed Service reads its current name.
+  const left = {
+    warning: {
+      type: "left_running" as const, service: "shop-production/stray2", container_id: "d".repeat(64) as ContainerId, machine: "machine-3", reason: "interrupted",
+    },
+  };
+  const notices = deployWarningNotices({
+    nodes: [node("web", "deployed"), node("extra", "deployed")], runtime_names: { web: "web", extra: "stray2" }, preview,
+    warnings: [mismatch, { warning: { type: "mixed_after_return", machine: "machine-3" } }, left, { service: "web", variable: "TOKEN" }],
+  });
+  expect(notices.map(({ text, port, node }) => [text, port, node?.id])).toEqual([
+    ["machine-3 is down, so this deployment couldn't check it", false, undefined],
+    [expect.stringMatching(/^If machine-3 restarts /), false, undefined],
+    ["web's image nginx exposes 80; its domains send to 8080", true, "id-web"],
+    ["extra copy dddddddddddd left running on machine-3 (interrupted). The next full deploy cleans it up", false, "id-extra"],
+  ]);
+  expect(deployWarningNotices({ nodes: [], runtime_names: {}, preview: null, warnings: [] })).toEqual([]);
 });
 
 it("shows a Cancel at once as Cancelling while the Deployment runs or waits, and leaves an ended one alone", () => {
