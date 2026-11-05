@@ -29,7 +29,7 @@ async function openCanvas(created: CreatedService) {
   const elsewhere = createRoute({ getParentRoute: () => root, path: "elsewhere", component: () => <p>Elsewhere page</p> });
   const router = createRouter({
     routeTree: root.addChildren([environment.addChildren([index, service]), elsewhere]),
-    history: createMemoryHistory({ initialEntries: [CANVAS] }),
+    history: createMemoryHistory({ initialEntries: ["/elsewhere", CANVAS] }),
   });
   render(<RouterProvider router={router} />);
   await screen.findByRole("button", { name: "Create" });
@@ -62,7 +62,18 @@ it("returns to the canvas when the Store refuses the new service", async () => {
   write.refuse();
   await waitFor(() => expect(router.state.location.pathname).toBe(CANVAS));
   router.history.back();
-  await waitFor(() => expect(router.state.location.pathname).not.toBe(`${CANVAS}/services/new`));
+  await waitFor(() => expect(router.state.location.pathname).toBe("/elsewhere"));
+});
+
+it("returns to the canvas when the Store refuses a service whose panel moved on to another entry", async () => {
+  const write = pendingWrite();
+  const router = await openCanvas(write.created);
+  fireEvent.click(screen.getByRole("button", { name: "Create" }));
+  await waitFor(() => expect(router.state.location.pathname).toBe(`${CANVAS}/services/new`));
+  router.history.push(`${CANVAS}/services/new?tab=variables`);
+  await waitFor(() => expect(router.state.location.searchStr).toBe("?tab=variables"));
+  write.refuse();
+  await waitFor(() => expect(router.state.location.pathname).toBe(CANVAS));
 });
 
 it("leaves someone who moved on where they are when the Store refuses", async () => {

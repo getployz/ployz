@@ -75,7 +75,8 @@ export function useCreateStoreDatabase(organizationSlug: string) {
 
 /**
  * Opens a new Service's panel at once, before the Store has it. A refusal undoes the Service, so whoever is still on
- * its panel goes back to the canvas, where the refusal's toast says why.
+ * its panel goes back to the canvas, where the refusal's toast says why. It steps back through history when it can,
+ * so the refused panel leaves no entry for Back to land on.
  */
 export function useOpenCreatedService(params: EnvironmentRouteParams) {
   const navigate = useNavigate();
@@ -83,10 +84,11 @@ export function useOpenCreatedService(params: EnvironmentRouteParams) {
   return async ({ service, persisted }: CreatedService) => {
     const panel = { to: ENVIRONMENT_SERVICE_ROUTE_TO, params: { ...params, serviceId: service.id } } as const;
     await navigate({ ...panel, search: (prev) => prev });
+    const opened = router.history.location.state.__TSR_index;
     persisted.catch(() => {
-      if (router.matchRoute(panel, { fuzzy: true })) {
-        void navigate({ to: ENVIRONMENT_INDEX_ROUTE_TO, params, replace: true, search: (prev) => prev });
-      }
+      if (!router.matchRoute(panel, { fuzzy: true })) return;
+      if (router.history.location.state.__TSR_index === opened) router.history.back();
+      else void navigate({ to: ENVIRONMENT_INDEX_ROUTE_TO, params, replace: true, search: (prev) => prev });
     });
   };
 }
