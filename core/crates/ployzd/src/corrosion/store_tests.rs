@@ -1911,3 +1911,136 @@ async fn a_register_keeps_the_leaving_mark_of_a_row_its_machine_published() {
     );
     task.abort();
 }
+
+/// Whether `id`'s row, as this store reads it back, names no daemon version, and
+/// whether it is marked leaving; `None` when there is no row.
+async fn unversioned_and_leaving(store: &ReplicatedStore, id: &MachineId) -> Option<(bool, bool)> {
+    store
+        .machine(id.as_str())
+        .await
+        .unwrap()
+        .map(|row| (row.runtime.daemon_version.is_empty(), row.runtime.leaving))
+}
+
+/// Each row written through the store's own statements, and row 10 through an older
+/// daemon's upsert, read back: whether it names no daemon version, and whether it is
+/// marked leaving. Row 2 is a leaving row that names no version.
+#[tokio::test]
+async fn each_written_machine_row_reads_back_its_version_and_leaving() {
+    let (store, task) = identity_store(corrosion_db()).await;
+    // Cloud's Register writes an empty runtime.
+    let (cloud_shaped, local) = participating_record();
+    let id = cloud_shaped.id;
+    // The CLI's own Register, from `ployz server add --standalone`, writes the
+    // joiner's runtime, version included.
+    let mut cli_shaped = cloud_shaped.clone();
+    cli_shaped.runtime.daemon_version = "0.3.17".into();
+    let mut published = store
+        .machine_publication()
+        .await
+        .publishable_machine(&local, RuntimeOverlay::default())
+        .unwrap();
+    published.runtime.daemon_version = "0.3.17".into();
+    let mut rekeyed = cloud_shaped.clone();
+    rekeyed.public_key = crate::network::WireGuardPrivateKey::from_bytes([1; 32]).public_key();
+
+    let publication = || store.machine_publication();
+    let read = || unversioned_and_leaving(&store, &id);
+
+    publication()
+        .await
+        .register(cloud_shaped.clone())
+        .await
+        .unwrap();
+    assert_eq!(read().await, Some((true, false)), "row 1: Cloud's Register");
+
+    publication().await.mark_leaving(&id, true).await.unwrap();
+    assert_eq!(read().await, Some((true, true)), "row 2: marked leaving");
+
+    publication().await.mark_leaving(&id, false).await.unwrap();
+    assert_eq!(
+        read().await,
+        Some((true, false)),
+        "row 3: leaving mark removed"
+    );
+
+    publication()
+        .await
+        .register(cli_shaped.clone())
+        .await
+        .unwrap();
+    assert_eq!(
+        read().await,
+        Some((false, false)),
+        "row 4: the CLI's Register"
+    );
+
+    publication().await.publish(&published).await.unwrap();
+    assert_eq!(read().await, Some((false, false)), "row 5: its own publish");
+
+    publication()
+        .await
+        .register(cloud_shaped.clone())
+        .await
+        .unwrap();
+    assert_eq!(
+        read().await,
+        Some((false, false)),
+        "row 6: Cloud's Register under its key keeps its own publish"
+    );
+
+    publication().await.mark_leaving(&id, true).await.unwrap();
+    publication()
+        .await
+        .register(cloud_shaped.clone())
+        .await
+        .unwrap();
+    assert_eq!(
+        read().await,
+        Some((false, true)),
+        "row 7: Cloud's Register under its key keeps its own publish, marked leaving"
+    );
+
+    publication().await.mark_leaving(&id, false).await.unwrap();
+    assert_eq!(
+        read().await,
+        Some((false, false)),
+        "row 8: leaving mark removed"
+    );
+
+    publication().await.register(rekeyed).await.unwrap();
+    assert_eq!(
+        read().await,
+        Some((true, false)),
+        "row 9: Cloud's Register under another key replaces its own publish"
+    );
+
+    store_as_an_older_daemon(&store, &cli_shaped).await;
+    assert_eq!(
+        read().await,
+        Some((false, false)),
+        "row 10: an older daemon's upsert, without the `self_published` mark"
+    );
+
+    publication()
+        .await
+        .register(cloud_shaped.clone())
+        .await
+        .unwrap();
+    assert_eq!(
+        read().await,
+        Some((true, false)),
+        "row 11: Cloud's Register under its key replaces a row without the `self_published` mark"
+    );
+
+    store.forget_machine(&id).await.unwrap();
+    assert_eq!(read().await, None, "row 12: forgotten");
+
+    publication().await.register(cloud_shaped).await.unwrap();
+    assert_eq!(
+        read().await,
+        Some((true, false)),
+        "row 13: Cloud's Register takes the forget back"
+    );
+    task.abort();
+}

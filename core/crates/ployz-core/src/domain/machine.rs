@@ -1051,9 +1051,23 @@ mod placement_tests {
         recorded.membership_evidence = Some(MembershipEvidence::Down);
         assert!(!recorded.unarrived(), "the admin recorded it, even as Down");
 
-        let mut published = registered.clone();
-        published.machine.runtime.daemon_version = "0.3.0".into();
-        assert!(!published.unarrived(), "the Machine published its own row");
+        let mut versioned = registered.clone();
+        versioned.machine.runtime.daemon_version = "0.3.0".into();
+        assert!(!versioned.unarrived(), "its row names a daemon version");
+
+        let mut leaving = registered.clone();
+        leaving.machine.runtime.leaving = true;
+        assert!(
+            leaving.unarrived(),
+            "its row is marked leaving but names no daemon version"
+        );
+
+        let mut leaving_versioned = versioned.clone();
+        leaving_versioned.machine.runtime.leaving = true;
+        assert!(
+            !leaving_versioned.unarrived(),
+            "its row is marked leaving and names a daemon version"
+        );
 
         let mut answering = registered;
         answering.membership = MembershipObservation::Up;
