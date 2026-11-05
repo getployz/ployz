@@ -821,3 +821,49 @@ async fn install_answers_a_held_key_beside_another_published_key() {
     );
     server.abort();
 }
+
+#[tokio::test]
+async fn a_keyless_machine_beside_a_holder_of_another_key_awaits_recovery_and_refuses_that_key() {
+    let cluster = FakeCluster::start();
+    let awaited = SealingKey::generate().public_key();
+    cluster.write_sealing_awaits_recovery(&awaited.to_string());
+    let holder = Peer::participating("ployzd-backfill-other-holder", &cluster.store()).await;
+    let keyless = Peer::needing_access("ployzd-backfill-keyless-beside", &cluster.store()).await;
+    let held = holder.held();
+    // The held arm of Install on the holder itself inserts what its
+    // publisher's Held publish would.
+    let own = holder.share_to(&holder).await;
+    let _ = holder
+        .local
+        .install_sealing_key(InstallSealingKeyRequest {
+            from: holder.machine.id,
+            sealed: own,
+            public_key: held,
+        })
+        .await;
+
+    assert_eq!(
+        sealing(&keyless.local).await,
+        Some(Sealing::AwaitsRecovery {
+            public_key: awaited
+        })
+    );
+    let sealed = holder.share_to(&keyless).await;
+    let installed = keyless
+        .local
+        .install_sealing_key(InstallSealingKeyRequest {
+            from: holder.machine.id,
+            sealed,
+            public_key: held,
+        })
+        .await;
+    assert!(
+        matches!(
+            &installed,
+            Err(LocalMachineError::Sealing(SealingError::AwaitsRecovery(key))) if *key == awaited
+        ),
+        "Install of {held} on a Machine reading its Cluster awaiting {awaited} answered {installed:?}",
+    );
+    assert_eq!(keyless.key(), None);
+    assert_eq!(cluster.store().sealing_public_key().await.unwrap(), None);
+}
