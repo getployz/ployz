@@ -1639,13 +1639,13 @@ fn decode_certificate_row(hostname: &CertificateHost, encoded: &str) -> Option<C
         .ok()
 }
 
-/// The deletes that take a Machine and everything it published out of the Cluster.
-/// How many times an ACME write reads its row before it answers [`AcmeWrite::Moved`]. A cap, not a
+/// How many times an ACME write reads its row before it answers [`AcmeWrite::Moved`]. Only
+/// repeated misses use it up: a re-read can still answer `Kept` or `Changed`. A cap, not a
 /// guarantee: each miss means a write landed on this replica between one read and its write, and
 /// the certificate loop's next pass reads again.
 pub(super) const ACME_WRITE_ATTEMPTS: usize = 3;
 
-/// What an ACME certificate write did.
+/// What an ACME write to a certificate row did.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum AcmeWrite {
     /// The write landed.
@@ -1683,6 +1683,7 @@ fn acme_written(counts: Vec<usize>) -> Result<AcmeWrite, Error> {
     }
 }
 
+/// The deletes that take a Machine and everything it published out of the Cluster.
 fn removal(machine_id: &MachineId) -> [Statement; 4] {
     [
         Statement::new(

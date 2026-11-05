@@ -519,16 +519,15 @@ async fn issue_wanted(
                 first_seen.remove(hostname);
                 if rank == 0 {
                     let reason = refusal_reason(hostname, refusal, &cluster);
+                    let tried = row.and_then(CertificateRow::material);
                     match store
-                        .record_certificate_failure(
-                            hostname,
-                            row.and_then(CertificateRow::material),
-                            reason,
-                            clock,
-                        )
+                        .record_certificate_failure(hostname, tried, reason, clock)
                         .await
                     {
                         Ok(AcmeWrite::Changed | AcmeWrite::Kept) => {}
+                        Ok(AcmeWrite::Moved) if tried.is_some() => eprintln!(
+                            "did not record certificate refusal for {hostname}: its row no longer holds the failed material as ACME material"
+                        ),
                         Ok(AcmeWrite::Moved) => eprintln!(
                             "did not record certificate refusal for {hostname}: its row changed on every attempt"
                         ),
@@ -573,17 +572,22 @@ async fn issue_wanted(
                     policy.backoff_base(),
                     policy.backoff_cap(),
                 );
+                let tried = rows
+                    .get(hostname.as_str())
+                    .and_then(CertificateRow::material);
                 match store
                     .record_certificate_failure(
                         hostname,
-                        rows.get(hostname.as_str())
-                            .and_then(CertificateRow::material),
+                        tried,
                         ployz_core::error_chain::inline(&error),
                         clock,
                     )
                     .await
                 {
                     Ok(AcmeWrite::Changed | AcmeWrite::Kept) => {}
+                    Ok(AcmeWrite::Moved) if tried.is_some() => eprintln!(
+                        "did not record certificate authority failure for {hostname}: its row no longer holds the failed material as ACME material"
+                    ),
                     Ok(AcmeWrite::Moved) => eprintln!(
                         "did not record certificate authority failure for {hostname}: its row changed on every attempt"
                     ),
