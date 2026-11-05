@@ -3677,35 +3677,140 @@ fn a_deployment_an_older_store_ended_without_a_time_reads_one() {
     );
 }
 
-/// A row no Store writes, such as one applied with no end or one claimed by a
-/// runner with no start, is refused rather than read as something it never was.
+/// A row in a shape no Store writes, which a write in SQL can leave, reads as its
+/// columns say: one applied or failed with no end, one queued with a start and no
+/// runner, one running with no runner. A cancel still moves the last two.
 #[test]
-fn a_deployment_row_no_store_writes_is_refused() {
+fn a_deployment_row_no_store_writes_reads_as_its_columns_say() {
     let (store, who, url, _dir) = own_shop();
+    let set = |n: u8, columns: &str| {
+        backend::execute(
+            &url,
+            &format!(
+                "UPDATE config_deployment SET {columns} WHERE id = '{}'",
+                id(n)
+            ),
+        );
+    };
     admit(&store, &who, 1, &[], None).unwrap();
     apply(&store, 1);
+    set(1, "ended = NULL");
     admit(&store, &who, 2, &[], None).unwrap();
-    store.claim(&id(2), &runner("runner-a")).unwrap();
-    backend::execute(
-        &url,
-        &format!(
-            "UPDATE config_deployment SET ended = NULL WHERE id = '{}'",
-            id(1)
-        ),
+    set(2, "status = 'failed'");
+    admit(&store, &who, 3, &[], None).unwrap();
+    set(3, "started = 1");
+    let read = |n: u8| {
+        let shown = summary(&store, &who, n);
+        (
+            shown.status,
+            shown.runner.is_some(),
+            shown.started_at,
+            shown.ended_at.is_some(),
+        )
+    };
+    let mut seen = vec![read(1), read(2), read(3)];
+    cancel(&store, &who, 3).unwrap();
+    seen.push(read(3));
+    admit(&store, &who, 4, &[], None).unwrap();
+    store.claim(&id(4), &runner("runner-a")).unwrap();
+    set(4, "runner = NULL");
+    let started = summary(&store, &who, 4).started_at;
+    seen.push(read(4));
+    cancel(&store, &who, 4).unwrap();
+    seen.push(read(4));
+    use DeploymentStatus as S;
+    assert_eq!(
+        seen,
+        [
+            (S::Applied, true, summary(&store, &who, 1).started_at, false),
+            (S::Failed, false, None, false),
+            (S::Queued, false, Some(1), false),
+            (S::Cancelled, false, Some(1), true),
+            (S::Running, false, started, false),
+            (S::Cancelling, false, started, false),
+        ]
     );
-    backend::execute(
-        &url,
-        &format!(
-            "UPDATE config_deployment SET started = NULL WHERE id = '{}'",
-            id(2)
-        ),
+}
+
+/// A claimed row in a shape no Store writes moves through each edge as its
+/// columns say: its runner's records renew its runner lease and end it, a newer
+/// claim takes it over, its Interrupted record after that ends it then, a claim
+/// takes a queued one, and a lapsed one reads Unknown.
+#[test]
+fn a_deployment_row_no_store_writes_moves_through_each_edge() {
+    let (store, who, url, _dir) = own_shop();
+    let (a, b) = (runner("runner-a"), runner("runner-b"));
+    let set = |n: u8, columns: &str| {
+        backend::execute(
+            &url,
+            &format!(
+                "UPDATE config_deployment SET {columns} WHERE id = '{}'",
+                id(n)
+            ),
+        );
+    };
+    let read = |n: u8| {
+        let shown = summary(&store, &who, n);
+        (shown.status, shown.started_at, shown.ended_at)
+    };
+    admit(&store, &who, 1, &[], None).unwrap();
+    store.claim(&id(1), &a).unwrap();
+    set(1, "started = NULL, lease = lease - 590");
+    store.record(&id(1), &a, RunEvidence::Alive).unwrap();
+    set(1, "lease = lease - 300");
+    let renewed = read(1);
+    store
+        .record(&id(1), &a, RunEvidence::NotExecuted("stopped".into()))
+        .unwrap();
+    let failed = read(1);
+    admit(&store, &who, 2, &[], None).unwrap();
+    store.claim(&id(2), &a).unwrap();
+    store
+        .record(&id(2), &a, RunEvidence::Prepared(preview(&["web", "api"])))
+        .unwrap();
+    set(2, "started = NULL");
+    admit(&store, &who, 3, &[], None).unwrap();
+    set(3, "started = 1");
+    store.claim(&id(3), &b).unwrap();
+    let taken_over = read(2);
+    let claimed = read(3);
+    set(2, "ended = ended - 100");
+    let before = read(2).2;
+    let interrupted = RunEvidence::Executed {
+        progress: Vec::new(),
+        outcome: Box::new(outcome(json!({
+            "type": "interrupted",
+            "completed": [operation("web"), operation("api")],
+            "unexecuted": []
+        }))),
+        removed: Vec::new(),
+    };
+    store.record(&id(2), &a, interrupted).unwrap();
+    let restamped = read(2).2;
+    set(3, "started = NULL, lease = 0");
+    let lapsed = read(3);
+    use DeploymentStatus as S;
+    assert_eq!(
+        [
+            (renewed.0, renewed.1, renewed.2.is_some()),
+            (failed.0, failed.1, failed.2.is_some()),
+            (taken_over.0, taken_over.1, taken_over.2.is_some()),
+            (
+                claimed.0,
+                claimed.1.filter(|&started| started > 1),
+                claimed.2.is_some()
+            ),
+            (lapsed.0, lapsed.1, lapsed.2.is_some()),
+        ],
+        [
+            (S::Running, None, false),
+            (S::Failed, None, true),
+            (S::Unknown, None, true),
+            (S::Running, claimed.1, false),
+            (S::Unknown, None, false),
+        ]
     );
-    for n in [1, 2] {
-        let refused = store
-            .read(&who, &ployz_store::DeploymentQuery { id: id(n) })
-            .unwrap_err();
-        assert_eq!(refused.code, RpcErrorCode::Internal, "#{n}: {refused:?}");
-    }
+    assert!(restamped > before, "{before:?} then {restamped:?}");
 }
 
 /// A taken-over run that records it was interrupted ended when its runner says

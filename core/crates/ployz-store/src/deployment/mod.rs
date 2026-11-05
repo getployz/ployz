@@ -996,10 +996,11 @@ fn runner_lost(lease: i64, now: i64) -> i64 {
     lease.min(now)
 }
 
-/// Where a Deployment stands, with exactly the columns its status keeps. `stored`
-/// decodes each row into one, `save` writes `status`, `number`, `runner`,
-/// `started`, `lease` and `ended` from it, and [`Standing::shown`] is all the
-/// summary shows of them. Each edge out of a state is a method of that state's type.
+/// Where a Deployment stands, with exactly the columns its status keeps, or every
+/// column as read for a row in a shape no Store writes ([`Raw`]). `stored` decodes
+/// each row into one, `save` writes `status`, `number`, `runner`, `started`,
+/// `lease` and `ended` from it, and [`Standing::shown`] is all the summary shows of
+/// them. Each edge out of a state is a method of that state's type.
 #[derive(Debug)]
 enum Standing {
     Waiting(Waiting),
@@ -1012,6 +1013,22 @@ enum Standing {
         ended: i64,
     },
     Ended(Ended),
+    Raw(Raw),
+}
+
+/// A row whose columns fit no other [`Standing`], which no Store writes but a
+/// write in SQL can leave: one applied or failed with no `ended`, or one with a
+/// `started` and no `runner`. It keeps every column as read, so it reads and saves
+/// as a Store read each column before [`Standing`]: Unknown once a claim's runner
+/// lease [`lapsed`], with its `ended` as the column holds it.
+#[derive(Debug)]
+struct Raw {
+    status: DeploymentStatus,
+    number: Option<u64>,
+    runner: Option<RunnerId>,
+    started: Option<i64>,
+    lease: i64,
+    ended: Option<i64>,
 }
 
 /// Waiting for its commit's CI: unnumbered and unclaimed. The push that admitted
@@ -1150,6 +1167,16 @@ impl End {
     }
 }
 
+impl Raw {
+    /// Whether its status says a runner holds it.
+    const fn claimed(&self) -> bool {
+        matches!(
+            self.status,
+            DeploymentStatus::Running | DeploymentStatus::Cancelling
+        )
+    }
+}
+
 /// What a summary shows of a [`Standing`].
 struct Shown {
     status: DeploymentStatus,
@@ -1160,63 +1187,79 @@ struct Shown {
 }
 
 impl Standing {
-    /// Decode a row's `status` with its `number`, `claim` and `ended`, read at
-    /// `now`. A row an older Store left without `ended` reads its `admitted` once
-    /// superseded, and [`runner_lost`] once Unknown. Refuses only what no Store
-    /// writes: a number on one waiting for CI, or none on one queued or claimed; a
-    /// claim on one waiting, queued or superseded, or none on one claimed or
-    /// Unknown; an end on one waiting, queued or claimed, or none on one applied,
-    /// failed or cancelled.
+    /// Decode a row's `status` with its `number`, `runner`, `started`, `lease` and
+    /// `ended`, read at `now`. A row an older Store left without `ended` reads its
+    /// `admitted` once superseded, and [`runner_lost`] once Unknown. Any row whose
+    /// columns fit no other standing reads as [`Raw`], so every row a Store read
+    /// before [`Standing`] still reads.
     fn decode(
         status: DeploymentStatus,
-        (number, claim, ended): (Option<u64>, Option<Claim>, Option<i64>),
-        admitted: i64,
-        now: i64,
-    ) -> Result<Self, RpcError> {
+        number: Option<u64>,
+        (runner, started, lease): (Option<RunnerId>, Option<i64>, i64),
+        ended: Option<i64>,
+        (admitted, now): (i64, i64),
+    ) -> Self {
         use DeploymentStatus as S;
-        Ok(match (status, number, claim, ended) {
-            (S::WaitingForCi, None, None, None) => Self::Waiting(Waiting),
-            (S::Queued, Some(number), None, None) => Self::Queued(Queued { number }),
-            (S::Running, Some(number), Some(claim), None) => Self::Claimed(ClaimedRun {
+        // A claim needs its runner and its start; none needs neither.
+        let claim = match (&runner, started) {
+            (Some(runner), Some(started)) => Some(Some(Claim {
+                runner: runner.clone(),
+                started,
+                lease,
+            })),
+            (None, None) => Some(None),
+            (Some(_), None) | (None, Some(_)) => None,
+        };
+        match (status, number, claim, ended) {
+            (S::WaitingForCi, None, Some(None), None) => Self::Waiting(Waiting),
+            (S::Queued, Some(number), Some(None), None) => Self::Queued(Queued { number }),
+            (S::Running, Some(number), Some(Some(claim)), None) => Self::Claimed(ClaimedRun {
                 number,
                 claim,
                 phase: Phase::Running,
             }),
-            (S::Cancelling, Some(number), Some(claim), None) => Self::Claimed(ClaimedRun {
+            (S::Cancelling, Some(number), Some(Some(claim)), None) => Self::Claimed(ClaimedRun {
                 number,
                 claim,
                 phase: Phase::Cancelling,
             }),
-            (S::Superseded, number, None, ended) => Self::Superseded {
+            (S::Superseded, number, Some(None), ended) => Self::Superseded {
                 number,
                 ended: ended.unwrap_or(admitted),
             },
-            (S::Unknown, number, Some(claim), ended) => Self::Ended(Ended {
+            (S::Unknown, number, Some(Some(claim)), ended) => Self::Ended(Ended {
                 number,
                 ended: ended.unwrap_or_else(|| runner_lost(claim.lease, now)),
                 claim: Some(claim),
                 end: End::Unknown,
             }),
-            (S::Applied, number, claim, Some(ended)) => Self::Ended(Ended {
+            (S::Applied, number, Some(claim), Some(ended)) => Self::Ended(Ended {
                 number,
                 claim,
                 ended,
                 end: End::Applied,
             }),
-            (S::Failed, number, claim, Some(ended)) => Self::Ended(Ended {
+            (S::Failed, number, Some(claim), Some(ended)) => Self::Ended(Ended {
                 number,
                 claim,
                 ended,
                 end: End::Failed,
             }),
-            (S::Cancelled, number, claim, Some(ended)) => Self::Ended(Ended {
+            (S::Cancelled, number, Some(claim), Some(ended)) => Self::Ended(Ended {
                 number,
                 claim,
                 ended,
                 end: End::Cancelled,
             }),
-            _ => return Err(error::corrupt("Deployment status")),
-        })
+            _ => Self::Raw(Raw {
+                status,
+                number,
+                runner,
+                started,
+                lease,
+                ended,
+            }),
+        }
     }
 
     /// The status its row holds, which a lapsed runner lease leaves `running` or
@@ -1228,6 +1271,7 @@ impl Standing {
             Self::Claimed(claimed) => claimed.phase.status(),
             Self::Superseded { .. } => DeploymentStatus::Superseded,
             Self::Ended(ended) => ended.end.status(),
+            Self::Raw(raw) => raw.status,
         }
     }
 
@@ -1235,11 +1279,13 @@ impl Standing {
     fn status(&self, now: i64) -> DeploymentStatus {
         match self {
             Self::Claimed(claimed) if lapsed(claimed.claim.lease, now) => DeploymentStatus::Unknown,
+            Self::Raw(raw) if raw.claimed() && lapsed(raw.lease, now) => DeploymentStatus::Unknown,
             standing @ (Self::Waiting(_)
             | Self::Queued(_)
             | Self::Claimed(_)
             | Self::Superseded { .. }
-            | Self::Ended(_)) => standing.kept(),
+            | Self::Ended(_)
+            | Self::Raw(_)) => standing.kept(),
         }
     }
 
@@ -1247,7 +1293,31 @@ impl Standing {
         match self {
             Self::Claimed(claimed) => Some(&claimed.claim),
             Self::Ended(ended) => ended.claim.as_ref(),
-            Self::Waiting(_) | Self::Queued(_) | Self::Superseded { .. } => None,
+            Self::Waiting(_) | Self::Queued(_) | Self::Superseded { .. } | Self::Raw(_) => None,
+        }
+    }
+
+    /// Its `runner` column.
+    fn runner(&self) -> Option<&RunnerId> {
+        match self {
+            Self::Raw(raw) => raw.runner.as_ref(),
+            standing @ (Self::Waiting(_)
+            | Self::Queued(_)
+            | Self::Claimed(_)
+            | Self::Superseded { .. }
+            | Self::Ended(_)) => standing.claim().map(|claim| &claim.runner),
+        }
+    }
+
+    /// Its `started` column.
+    fn started(&self) -> Option<i64> {
+        match self {
+            Self::Raw(raw) => raw.started,
+            standing @ (Self::Waiting(_)
+            | Self::Queued(_)
+            | Self::Claimed(_)
+            | Self::Superseded { .. }
+            | Self::Ended(_)) => standing.claim().map(|claim| claim.started),
         }
     }
 
@@ -1257,7 +1327,9 @@ impl Standing {
             Self::Queued(Queued { number }) | Self::Claimed(ClaimedRun { number, .. }) => {
                 Some(*number)
             }
-            Self::Superseded { number, .. } | Self::Ended(Ended { number, .. }) => *number,
+            Self::Superseded { number, .. }
+            | Self::Ended(Ended { number, .. })
+            | Self::Raw(Raw { number, .. }) => *number,
         }
     }
 
@@ -1265,6 +1337,7 @@ impl Standing {
     const fn ended(&self) -> Option<i64> {
         match self {
             Self::Superseded { ended, .. } | Self::Ended(Ended { ended, .. }) => Some(*ended),
+            Self::Raw(raw) => raw.ended,
             Self::Waiting(_) | Self::Queued(_) | Self::Claimed(_) => None,
         }
     }
@@ -1272,12 +1345,11 @@ impl Standing {
     /// What a summary shows of it at `now`. A claimed one whose runner lease
     /// lapsed reads Unknown, ended at [`runner_lost`], before anything writes it.
     fn shown(&self, now: i64) -> Shown {
-        let claim = self.claim();
         Shown {
             status: self.status(now),
             number: self.number(),
-            runner: claim.map(|claim| claim.runner.clone()),
-            started_at: claim.map(|claim| claim.started),
+            runner: self.runner().cloned(),
+            started_at: self.started(),
             ended_at: match self {
                 Self::Claimed(ClaimedRun { claim, .. }) => {
                     lapsed(claim.lease, now).then(|| runner_lost(claim.lease, now))
@@ -1285,7 +1357,8 @@ impl Standing {
                 standing @ (Self::Waiting(_)
                 | Self::Queued(_)
                 | Self::Superseded { .. }
-                | Self::Ended(_)) => standing.ended(),
+                | Self::Ended(_)
+                | Self::Raw(_)) => standing.ended(),
             },
         }
     }
@@ -1294,6 +1367,15 @@ impl Standing {
     fn claim_for(self, runner: &RunnerId, now: i64) -> Self {
         match self {
             Self::Queued(queued) => Self::Claimed(queued.claim(runner.clone(), now)),
+            Self::Raw(mut raw) => {
+                if raw.status == DeploymentStatus::Queued {
+                    raw.status = DeploymentStatus::Running;
+                    raw.runner = Some(runner.clone());
+                    raw.started = Some(now);
+                    raw.lease = now + LEASE;
+                }
+                Self::Raw(raw)
+            }
             standing @ (Self::Waiting(_)
             | Self::Claimed(_)
             | Self::Superseded { .. }
@@ -1304,8 +1386,14 @@ impl Standing {
     /// Its runner recorded something at `now`, when it is claimed. Any other
     /// stands as it was.
     const fn renew(&mut self, now: i64) {
-        if let Self::Claimed(claimed) = self {
-            claimed.renew(now);
+        match self {
+            Self::Claimed(claimed) => claimed.renew(now),
+            Self::Raw(raw) if raw.claimed() => raw.lease = now + LEASE,
+            Self::Waiting(_)
+            | Self::Queued(_)
+            | Self::Superseded { .. }
+            | Self::Ended(_)
+            | Self::Raw(_) => {}
         }
     }
 
@@ -1316,15 +1404,30 @@ impl Standing {
             Self::Waiting(waiting) => Self::Ended(waiting.cancel(now)),
             Self::Queued(queued) => Self::Ended(queued.end(End::Cancelled, now)),
             Self::Claimed(claimed) => Self::Ended(claimed.end(End::Cancelled, now)),
+            Self::Raw(mut raw) => {
+                if raw.status == DeploymentStatus::WaitingForCi || raw.status.in_flight() {
+                    raw.status = DeploymentStatus::Cancelled;
+                    raw.ended = Some(now);
+                }
+                Self::Raw(raw)
+            }
             standing @ (Self::Superseded { .. } | Self::Ended(_)) => standing,
         }
     }
 
     /// Cancelled while it runs: its runner stops it and records what ran. Any
     /// other stands as it was.
-    const fn cancelling(mut self) -> Self {
-        if let Self::Claimed(claimed) = &mut self {
-            claimed.phase = Phase::Cancelling;
+    fn cancelling(mut self) -> Self {
+        match &mut self {
+            Self::Claimed(claimed) => claimed.phase = Phase::Cancelling,
+            Self::Raw(raw) if matches!(raw.status, DeploymentStatus::Running) => {
+                raw.status = DeploymentStatus::Cancelling;
+            }
+            Self::Waiting(_)
+            | Self::Queued(_)
+            | Self::Superseded { .. }
+            | Self::Ended(_)
+            | Self::Raw(_) => {}
         }
         self
     }
@@ -1335,6 +1438,13 @@ impl Standing {
         match self {
             Self::Claimed(claimed) => Self::Ended(claimed.end(end, now)),
             Self::Queued(queued) => Self::Ended(queued.end(end, now)),
+            Self::Raw(mut raw) => {
+                if raw.status.in_flight() {
+                    raw.status = end.status();
+                    raw.ended = Some(now);
+                }
+                Self::Raw(raw)
+            }
             standing @ (Self::Waiting(_) | Self::Superseded { .. } | Self::Ended(_)) => standing,
         }
     }
@@ -1345,6 +1455,13 @@ impl Standing {
     fn lose_runner(self, now: i64) -> Self {
         match self {
             Self::Claimed(claimed) => Self::Ended(claimed.lose_runner(now)),
+            Self::Raw(mut raw) => {
+                if raw.claimed() {
+                    raw.status = DeploymentStatus::Unknown;
+                    raw.ended = Some(runner_lost(raw.lease, now));
+                }
+                Self::Raw(raw)
+            }
             standing @ (Self::Waiting(_)
             | Self::Queued(_)
             | Self::Superseded { .. }
@@ -1355,15 +1472,30 @@ impl Standing {
     /// Its runner said at `now` that it stopped, when it ended. Any other stands
     /// as it was.
     const fn restamp(&mut self, now: i64) {
-        if let Self::Ended(ended) = self {
-            ended.ended = now;
+        match self {
+            Self::Ended(ended) => ended.ended = now,
+            Self::Raw(raw) if matches!(raw.status, DeploymentStatus::Unknown) => {
+                raw.ended = Some(now);
+            }
+            Self::Waiting(_)
+            | Self::Queued(_)
+            | Self::Claimed(_)
+            | Self::Superseded { .. }
+            | Self::Raw(_) => {}
         }
     }
 
     /// Its `lease` column: the claim's runner lease, or 0, the column's default,
-    /// when no runner claimed it.
+    /// when no runner claimed it. A [`Raw`] one keeps the lease it was read with.
     fn lease(&self) -> i64 {
-        self.claim().map_or(0, |claim| claim.lease)
+        match self {
+            Self::Raw(raw) => raw.lease,
+            standing @ (Self::Waiting(_)
+            | Self::Queued(_)
+            | Self::Claimed(_)
+            | Self::Superseded { .. }
+            | Self::Ended(_)) => standing.claim().map_or(0, |claim| claim.lease),
+        }
     }
 }
 
@@ -1479,22 +1611,18 @@ fn stored(row: &Row) -> Result<Stored, RpcError> {
         .map(u64::try_from)
         .transpose()
         .map_err(|_| error::corrupt("Deployment number"))?;
-    let claim = match (row.parse_optional(11, "identity")?, row.optional_int(15)?) {
-        (Some(runner), Some(started)) => Some(Claim {
-            runner,
-            started,
-            lease: row.int(12)?,
-        }),
-        (None, None) => None,
-        _ => return Err(error::corrupt("Deployment claim")),
-    };
     let admitted_at = row.int(14)?;
     let standing = Standing::decode(
         row.variant(3, "Deployment status")?,
-        (number, claim, row.optional_int(16)?),
-        admitted_at,
-        read_at,
-    )?;
+        number,
+        (
+            row.parse_optional(11, "identity")?,
+            row.optional_int(15)?,
+            row.int(12)?,
+        ),
+        row.optional_int(16)?,
+        (admitted_at, read_at),
+    );
     let Shown {
         status,
         number,
@@ -1626,7 +1754,6 @@ impl Stored {
 fn save(tx: &mut dyn Tx, stored: &mut Stored) -> Result<(), RpcError> {
     stored.show();
     let standing = &stored.standing;
-    let claim = standing.claim();
     let number = standing
         .number()
         .map(i64::try_from)
@@ -1639,9 +1766,9 @@ fn save(tx: &mut dyn Tx, stored: &mut Stored) -> Result<(), RpcError> {
             name_of(standing.kept()).as_str().into(),
             json_text(&stored.run).as_str().into(),
             stored.summary.id.as_str().into(),
-            claim.map(|claim| claim.runner.as_str()).into(),
+            standing.runner().map(RunnerId::as_str).into(),
             standing.lease().into(),
-            claim.map(|claim| claim.started).into(),
+            standing.started().into(),
             standing.ended().into(),
             number.into(),
         ],
