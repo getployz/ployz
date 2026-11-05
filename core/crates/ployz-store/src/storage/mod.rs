@@ -251,6 +251,10 @@ const MIGRATIONS: &[(&str, Step)] = &[
             Ok(None)
         }),
     ),
+    (
+        "0036_merge_landing",
+        Step::Sql(include_str!("migrations/0036_merge_landing.sql")),
+    ),
 ];
 
 enum Step {
