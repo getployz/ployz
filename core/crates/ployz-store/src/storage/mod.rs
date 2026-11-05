@@ -216,6 +216,41 @@ const MIGRATIONS: &[(&str, Step)] = &[
             Ok(None)
         }),
     ),
+    (
+        // Each build its Servers held Building under a Deployment an older Store took
+        // out of flight: Failed, marked interrupted, as a Store now settles it when the
+        // Deployment leaves flight (`build::settle`). Only one that can't run any more
+        // and shows an end, as `deployment::Standing` reads it: one with `ended`, or a
+        // claimed one (a runner and a start) that is Unknown, or numbered and still
+        // `running` or `cancelling` past its runner lease. It finishes at that end:
+        // `ended`, else when its runner was lost (`deployment::runner_lost`). A build
+        // GitHub holds, and one whose Deployment shows no end, stay Building. One
+        // statement, whatever the row count.
+        "0035_build_interrupted",
+        Step::Rust(|tx, _| {
+            tx.batch(include_str!("migrations/0035_build_interrupted.sql"))?;
+            tx.execute(
+                &format!(
+                    "UPDATE config_build SET status = 'failed', interrupted = 1, message = ?2, \
+                     finished = COALESCE(finished, (SELECT CASE WHEN d.ended IS NOT NULL \
+                       THEN d.ended WHEN d.lease < ?1 THEN d.lease ELSE ?1 END \
+                       FROM config_deployment d WHERE d.id = config_build.deployment_id)) \
+                     WHERE status = 'building' AND github IS NULL AND EXISTS (\
+                       SELECT 1 FROM config_deployment \
+                       WHERE config_deployment.id = config_build.deployment_id \
+                       AND NOT {} AND (ended IS NOT NULL OR (runner IS NOT NULL \
+                         AND started IS NOT NULL AND (status = 'unknown' \
+                           OR (status IN ('running', 'cancelling') AND number IS NOT NULL)))))",
+                    crate::deployment::in_flight_sql()
+                ),
+                &[
+                    crate::deployment::now().into(),
+                    crate::build::INTERRUPTED.into(),
+                ],
+            )?;
+            Ok(None)
+        }),
+    ),
 ];
 
 enum Step {

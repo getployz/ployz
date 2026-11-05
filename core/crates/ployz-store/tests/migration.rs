@@ -1505,3 +1505,233 @@ fn every_deployment_that_left_flight_records_when_it_ended_after_upgrade() {
     );
     assert_eq!(kept.clone().map(|(n, _)| (n, row(n))), kept);
 }
+
+/// Each build its Servers held Building under a Deployment a Store from before
+/// `0035_build_interrupted` took out of flight, and that shows an end, reads Failed
+/// and interrupted when the Store upgrades, finished at that end. No other build
+/// changes, opening the Store again changes nothing, and an older Store's writes and
+/// reads still work on the table.
+#[test]
+fn every_build_its_deployment_ended_under_is_interrupted_after_upgrade() {
+    const MESSAGE: &str =
+        "The deployment ended or lost its runner before this build reported how it ended.";
+    let dir = tempfile::tempdir().unwrap();
+    let url = backend::fresh_url(&dir);
+    let id = |n: u8| format!("00000000-0000-4000-8000-0000000001{n:02}");
+    let now = || {
+        i64::try_from(
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_secs(),
+        )
+        .unwrap()
+    };
+    let before = now();
+    let (claimed, live) = (
+        format!("runner = 'cloud-1', started = {}", before - 7200),
+        before + 3600,
+    );
+    // Deployment `n`'s columns, and the build of web under it: status, message,
+    // GitHub run and finished.
+    let cases: [(u8, String, (&str, &str, &str, String)); 12] = [
+        (
+            1,
+            format!(
+                "status = 'unknown', {claimed}, lease = {}, ended = NULL",
+                before - 3600
+            ),
+            ("building", "NULL", "NULL", "NULL".into()),
+        ),
+        (
+            2,
+            format!(
+                "status = 'running', {claimed}, lease = {}, ended = NULL",
+                before - 3600
+            ),
+            ("building", "NULL", "NULL", "NULL".into()),
+        ),
+        (
+            3,
+            format!("status = 'failed', {claimed}, ended = {}", before - 100),
+            ("building", "NULL", "NULL", "NULL".into()),
+        ),
+        (
+            4,
+            format!("status = 'cancelled', {claimed}, ended = {}", before - 50),
+            ("building", "NULL", "NULL", "NULL".into()),
+        ),
+        (
+            5,
+            format!("status = 'failed', {claimed}, ended = {}", before - 100),
+            ("building", "NULL", "NULL", (before - 500).to_string()),
+        ),
+        (
+            6,
+            format!("status = 'unknown', {claimed}, lease = {live}, ended = NULL"),
+            ("building", "NULL", "NULL", "NULL".into()),
+        ),
+        (
+            7,
+            format!("status = 'running', {claimed}, lease = {live}, ended = NULL"),
+            ("building", "NULL", "NULL", "NULL".into()),
+        ),
+        (
+            8,
+            format!("status = 'cancelling', {claimed}, lease = {live}, ended = NULL"),
+            ("building", "NULL", "NULL", "NULL".into()),
+        ),
+        (
+            9,
+            format!("status = 'cancelled', {claimed}, ended = {}", before - 50),
+            ("building", "NULL", "'{\"run\": 9001}'", "NULL".into()),
+        ),
+        (
+            10,
+            format!("status = 'failed', {claimed}, ended = {}", before - 100),
+            ("pending", "NULL", "NULL", "NULL".into()),
+        ),
+        (
+            11,
+            format!("status = 'failed', {claimed}, ended = {}", before - 100),
+            (
+                "failed",
+                "'exit status 1'",
+                "NULL",
+                (before - 200).to_string(),
+            ),
+        ),
+        (
+            12,
+            "status = 'failed', runner = NULL, started = NULL, lease = 0, ended = NULL".into(),
+            ("building", "NULL", "NULL", "NULL".into()),
+        ),
+    ];
+    {
+        let (store, who) = shop_at(&url);
+        for (n, ..) in &cases {
+            backend::admit(&store, &who, "production", *n);
+        }
+    }
+    // The schema before 0035, and the rows a Store from before it left.
+    run(
+        &url,
+        "ALTER TABLE config_build DROP COLUMN interrupted;
+         DELETE FROM config_migration WHERE name = '0035_build_interrupted';",
+    );
+    for (n, deployment, (status, message, github, finished)) in &cases {
+        run(
+            &url,
+            &format!(
+                "UPDATE config_deployment SET number = {n}, {deployment} WHERE id = '{id}';
+                 INSERT INTO config_build (deployment_id, service, organization_id, commit_sha, \
+                 status, message, log, github, started, finished) \
+                 SELECT id, 'web', organization_id, NULL, '{status}', {message}, '', {github}, \
+                 {}, {finished} FROM config_deployment WHERE id = '{id}';",
+                before - 7000,
+                id = id(*n),
+            ),
+        );
+    }
+    drop(ConfigStore::open(&url, backend::key()).unwrap());
+    let after = now();
+    let builds = || {
+        select(
+            &url,
+            "SELECT deployment_id, service, status, CAST(interrupted AS TEXT), message, \
+             github, CAST(started AS TEXT), CAST(finished AS TEXT) FROM config_build \
+             ORDER BY deployment_id, service",
+        )
+    };
+    let seen: Vec<_> = builds()
+        .into_iter()
+        .map(|row| {
+            let [_, _, status, interrupted, message, _, _, finished]: [String; 8] =
+                row.try_into().unwrap();
+            (status, interrupted, message, finished)
+        })
+        .collect();
+    let settled = |finished: i64| {
+        (
+            "failed".to_string(),
+            "1".to_string(),
+            MESSAGE.to_string(),
+            finished.to_string(),
+        )
+    };
+    let kept = |status: &str, message: &str, finished: &str| {
+        (
+            status.to_string(),
+            "0".to_string(),
+            message.to_string(),
+            finished.to_string(),
+        )
+    };
+    let upgraded: i64 = seen[5].3.parse().unwrap_or(0);
+    assert!(
+        (before..=after).contains(&upgraded),
+        "{before} {upgraded} {after}"
+    );
+    assert_eq!(
+        seen,
+        [
+            // Unknown, its runner lease past: that lease.
+            settled(before - 3600),
+            // Still `running` past its runner lease: that lease.
+            settled(before - 3600),
+            // Failed and Cancelled: when they ended.
+            settled(before - 100),
+            settled(before - 50),
+            // Finished already: when it did.
+            settled(before - 500),
+            // Unknown, taken over while its runner lease held: when the Store upgraded.
+            settled(upgraded),
+            // Live, held by GitHub, never started, failed on its own, and under a row
+            // no Store writes that shows no end: as they were.
+            kept("building", "NULL", "NULL"),
+            kept("building", "NULL", "NULL"),
+            kept("building", "NULL", "NULL"),
+            kept("pending", "NULL", "NULL"),
+            kept("failed", "exit status 1", &(before - 200).to_string()),
+            kept("building", "NULL", "NULL"),
+        ]
+    );
+    // A Store from before 0035 names the columns it writes and reads
+    // (`build.rs:244`, `:269` and `rows`), so it adds a build as before, which the
+    // new column's default leaves unmarked, and still reads the table.
+    run(
+        &url,
+        &format!(
+            "INSERT INTO config_build \
+             (deployment_id, service, organization_id, commit_sha, status, message, log) \
+             SELECT id, 'api', organization_id, NULL, 'pending', NULL, '' \
+             FROM config_deployment WHERE id = '{}' \
+             ON CONFLICT (deployment_id, service) DO NOTHING",
+            id(7)
+        ),
+    );
+    let older = select(
+        &url,
+        &format!(
+            "SELECT service, commit_sha, status, message, log, github, organization_id, \
+             CAST(started AS TEXT), CAST(finished AS TEXT), server, github_skipped \
+             FROM config_build WHERE deployment_id = '{}' ORDER BY service",
+            id(7)
+        ),
+    );
+    assert_eq!(
+        older.iter().map(|row| row[2].as_str()).collect::<Vec<_>>(),
+        ["pending", "building"]
+    );
+    let all = builds();
+    assert_eq!(
+        all.iter()
+            .filter(|row| row[1] == "api")
+            .map(|row| row[3].as_str())
+            .collect::<Vec<_>>(),
+        ["0"]
+    );
+    // Opening the Store again runs nothing more.
+    drop(ConfigStore::open(&url, backend::key()).unwrap());
+    assert_eq!(builds(), all);
+}
