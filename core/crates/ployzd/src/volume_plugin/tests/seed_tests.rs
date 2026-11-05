@@ -658,3 +658,222 @@ async fn a_seed_replaces_a_slot_a_mirror_pull_marked_or_that_holds_no_point() {
         assert_landed(&test);
     }
 }
+
+/// Docker adopts a landed seed, a departure parks its root as an old copy, and a Writer
+/// promotes that copy back. The result is a writer root, not a seed Docker never adopted.
+async fn promoted_back_seed(test: &TestDir, socket: &Path) -> Value {
+    set_property(test, "tank/ployz/data", "snapshots", POINT);
+    settled(socket).await;
+    let created = post(
+        socket,
+        "/VolumeDriver.Create",
+        json!({"Name": "seed", "Opts": {"size": "1g"}}),
+    )
+    .await;
+    assert_eq!(created, json!({"Err": ""}));
+    assert_eq!(
+        property(test, "tank/ployz/seed", "ployz:promote"),
+        None,
+        "Docker adopted the root"
+    );
+    let demoted = post(socket, "/Storage.Demote", json!(null)).await;
+    assert_eq!(
+        demoted,
+        json!({"Ok": {"demoted": ["data", "seed"], "stuck": [], "failed": []}})
+    );
+    let parked = post(socket, "/Volume.Copy.Inspect", json!({"name": "seed"})).await;
+    let guid = parked
+        .pointer("/Ok/newest/guid")
+        .cloned()
+        .unwrap_or_else(|| panic!("{parked}"));
+    json!({"name": "seed", "at": guid, "epoch": 1})
+}
+
+#[tokio::test]
+async fn a_seeded_volume_promoted_back_after_a_departure_is_a_writer() {
+    let test = TestDir::new();
+    let (socket, _server) = start(&test, USABLE_POOL, &["root", "volume"]);
+    let writer = promoted_back_seed(&test, &socket).await;
+
+    let reply = post(&socket, "/Volume.Copy.Writer", writer).await;
+
+    assert_eq!(reply.pointer("/Ok/kind"), Some(&json!("root")), "{reply}");
+    assert_eq!(reply.pointer("/Ok/seed"), Some(&json!(false)), "{reply}");
+    assert_eq!(property(&test, "tank/ployz/seed", "ployz:seed"), None);
+    let destroyed = post(&socket, "/Volume.Copy.Destroy", json!({"name": "seed"})).await;
+    assert_eq!(
+        destroyed.pointer("/Err/details/reason"),
+        Some(&json!("no_transition")),
+        "{destroyed}"
+    );
+    assert!(test.0.join("seed-volume").exists(), "the writer root stays");
+}
+
+#[tokio::test]
+async fn a_seed_resent_to_a_volume_promoted_back_after_a_departure_is_refused() {
+    let test = TestDir::new();
+    let (socket, _server) = start(&test, USABLE_POOL, &["root", "volume"]);
+    let writer = promoted_back_seed(&test, &socket).await;
+    let promoted = post(&socket, "/Volume.Copy.Writer", writer).await;
+    assert_eq!(
+        promoted.pointer("/Ok/kind"),
+        Some(&json!("root")),
+        "{promoted}"
+    );
+    let log = commands(&test);
+
+    let resent = post(&socket, "/Volume.Seed", seed(77)).await;
+
+    assert_eq!(
+        resent.pointer("/Err/details/reason"),
+        Some(&json!("precondition")),
+        "{resent}"
+    );
+    assert_eq!(
+        resent.pointer("/Err/message"),
+        Some(&json!("Volume seed already exists on this Machine")),
+        "{resent}"
+    );
+    assert_eq!(effects_since(&test, &log), Vec::<String>::new());
+}
+
+#[tokio::test]
+async fn a_writer_whose_seed_mark_clear_failed_promotes_a_writer_on_resend() {
+    let test = TestDir::new();
+    let (socket, _server) = start(&test, USABLE_POOL, &["root", "volume"]);
+    let writer = promoted_back_seed(&test, &socket).await;
+    fs::write(
+        test.0.join("props/fail-command"),
+        "inherit ployz:seed tank/ployz-mirror/seed/fs",
+    )
+    .unwrap();
+
+    let failed = post(&socket, "/Volume.Copy.Writer", writer.clone()).await;
+    assert!(failed.get("Err").is_some(), "{failed}");
+    let parked = post(&socket, "/Volume.Copy.Inspect", json!({"name": "seed"})).await;
+    assert_eq!(parked.pointer("/Ok/kind"), Some(&json!("slot")), "{parked}");
+
+    let resent = post(&socket, "/Volume.Copy.Writer", writer).await;
+    assert_eq!(resent.pointer("/Ok/kind"), Some(&json!("root")), "{resent}");
+    assert_eq!(resent.pointer("/Ok/seed"), Some(&json!(false)), "{resent}");
+    assert_eq!(property(&test, "tank/ployz/seed", "ployz:seed"), None);
+}
+
+/// `land` marks the slot's `fs` and then renames it. A stop between leaves a whole copy
+/// that carries both marks, and the resend lands it.
+#[tokio::test]
+async fn a_seed_whose_landing_stopped_before_its_rename_lands_on_resend() {
+    let test = TestDir::new();
+    let (socket, _server) = start(
+        &test,
+        USABLE_POOL,
+        &["root", "volume", "seed-slot", "seed-fs"],
+    );
+    set_property(&test, "tank/ployz/data", "snapshots", POINT);
+    set_property(&test, "tank/ployz-mirror/seed", "ployz:pull", "w-1-1");
+    set_property(
+        &test,
+        "tank/ployz-mirror/seed/fs",
+        "snapshots",
+        "tank/ployz-mirror/seed/fs@w-1-1\t77\t1700000000",
+    );
+    set_property(&test, "tank/ployz-mirror/seed/fs", "ployz:seed", "77");
+    set_property(&test, "tank/ployz-mirror/seed/fs", "ployz:promote", "on");
+
+    let landed = post(&socket, "/Volume.Seed", seed(77)).await;
+
+    assert_eq!(
+        landed.pointer("/Ok/copy/kind"),
+        Some(&json!("root")),
+        "{landed}"
+    );
+    assert_eq!(commands(&test).matches("zfs send ").count(), 0);
+    assert_landed(&test);
+}
+
+#[tokio::test]
+async fn a_seed_replaces_a_slot_parent_with_no_fs() {
+    let test = TestDir::new();
+    let (socket, _server) = start(&test, USABLE_POOL, &["root", "volume", "seed-slot"]);
+    set_property(&test, "tank/ployz/data", "snapshots", POINT);
+
+    let landed = settled(&socket).await;
+
+    assert_eq!(
+        landed.pointer("/Ok/copy/kind"),
+        Some(&json!("root")),
+        "{landed}"
+    );
+    let log = commands(&test);
+    assert!(
+        log.contains("zfs destroy -r tank/ployz-mirror/seed\n"),
+        "{log}"
+    );
+    assert_landed(&test);
+}
+
+/// Docker's Create leaves `ployz:seed` on the root it adopts, so the same Seed resent
+/// still finds its own root.
+#[tokio::test]
+async fn a_seed_resent_after_docker_adopted_its_root_answers_the_root() {
+    let test = TestDir::new();
+    let (socket, _server) = start(&test, USABLE_POOL, &["root", "volume"]);
+    set_property(&test, "tank/ployz/data", "snapshots", POINT);
+    settled(&socket).await;
+    let created = post(
+        &socket,
+        "/VolumeDriver.Create",
+        json!({"Name": "seed", "Opts": {"size": "1g"}}),
+    )
+    .await;
+    assert_eq!(created, json!({"Err": ""}));
+    let log = commands(&test);
+
+    let resent = post(&socket, "/Volume.Seed", seed(77)).await;
+
+    assert_eq!(
+        resent.pointer("/Ok/copy/kind"),
+        Some(&json!("root")),
+        "{resent}"
+    );
+    assert_eq!(
+        resent.pointer("/Ok/copy/seed"),
+        Some(&json!(false)),
+        "{resent}"
+    );
+    assert_eq!(effects_since(&test, &log), Vec::<String>::new());
+}
+
+/// A failed copy read only after its receive ended is answered by the Seed that takes the
+/// failure from the registry, since no receive is left to show it.
+#[tokio::test]
+async fn a_seed_answers_once_a_failed_copy_whose_receive_already_ended() {
+    let test = TestDir::new();
+    let (socket, _server) = start(&test, USABLE_POOL, &["root", "volume"]);
+    set_property(&test, "tank/ployz/data", "snapshots", POINT);
+    fs::write(test.0.join("props").join("receive-fails"), "").unwrap();
+    post(&socket, "/Volume.Seed", seed(77)).await;
+    let ended = poll(async || {
+        let copy = post(&socket, "/Volume.Copy.Inspect", json!({"name": "seed"})).await;
+        (copy.pointer("/Ok/pull_state/kind") == Some(&json!("failed"))).then_some(copy)
+    })
+    .await;
+    assert!(ended.is_some(), "the seed's receive never failed");
+    fs::remove_file(test.0.join("props").join("receive-fails")).unwrap();
+
+    let failed = post(&socket, "/Volume.Seed", seed(77)).await;
+    let failure = failed
+        .pointer("/Ok/copy/pull/failure")
+        .and_then(Value::as_str)
+        .unwrap_or_else(|| panic!("{failed}"));
+    assert!(failure.contains("out of space"), "{failure}");
+    assert_eq!(commands(&test).matches("zfs send ").count(), 1);
+
+    let restarted = post(&socket, "/Volume.Seed", seed(77)).await;
+    assert_eq!(
+        restarted.pointer("/Ok/copy/pull/failure"),
+        Some(&json!(null)),
+        "{restarted}"
+    );
+    assert_eq!(commands(&test).matches("zfs send ").count(), 2);
+}

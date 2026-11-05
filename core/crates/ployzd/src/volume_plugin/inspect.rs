@@ -42,17 +42,18 @@ pub(super) enum PromoteMark {
 pub(super) enum RootCopy {
     /// Writable, whatever its marks.
     Writable { seed: bool },
-    /// Read-only with `ployz:cut`. A cut leaves it from that mark (copy.rs:291) until its
-    /// rename into the slot (:320), and a promote of a cut copy from its rename back (:505)
-    /// until `readonly=off` (:550). The marks do not tell those two apart.
+    /// Read-only with `ployz:cut`. A cut (`copy_cut`) leaves it from that mark until its
+    /// rename into the slot, and a promote of a cut copy (`copy_writer`) from its rename
+    /// back until `make_writable`'s `readonly=off`. The marks do not tell those two apart.
     Cut { seed: bool },
-    /// Read-only with `ployz:promote` and no `ployz:cut`. A promote of a pulled copy leaves
-    /// it from its rename (copy.rs:505) until `readonly=off` (:550), and a Seed landing from
-    /// its rename (seed.rs:159) until `readonly=off` (:175). So does a cut of a root Docker
-    /// has not registered, from `readonly=on` (copy.rs:287) until `ployz:cut` (:291).
+    /// Read-only with `ployz:promote` and no `ployz:cut`. A promote of a pulled copy
+    /// (`copy_writer`) leaves it from its rename until `make_writable`'s `readonly=off`,
+    /// and a Seed landing from `Copied::land`'s rename until `Renamed::finish_landing`'s
+    /// `readonly=off`. So does a cut (`copy_cut`) of a root Docker has not registered, from
+    /// `readonly=on` until `ployz:cut`.
     Promote { seed: bool },
-    /// Read-only with neither mark. A cut of a registered root leaves it from
-    /// `readonly=on` (copy.rs:287) until `ployz:cut` (:291).
+    /// Read-only with neither mark. A cut (`copy_cut`) of a registered root leaves it from
+    /// `readonly=on` until `ployz:cut`.
     Unmarked,
 }
 

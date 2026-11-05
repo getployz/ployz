@@ -24,7 +24,7 @@
 //! The fix: Seed carries its run's gen, and `seed_volume` (machine_api/local.rs:557-573)
 //! checks it against `into`'s floor under the switch lock, before the plugin's
 //! `seed_volume` runs, through `check_gen` (machine_api/local_volume_copy.rs:273-283) and
-//! `FloorTurn::check` (docker/spec_store.rs:552-565). The check refuses a gen below the
+//! `FloorTurn::check` (docker/spec_store.rs:558-571). The check refuses a gen below the
 //! floor and leaves the floor where it is. Gens come from one identity column, so a later
 //! run's `SetVolumeCopy` on A raises `into`'s floor above the seed run's gen.
 //!
@@ -83,7 +83,7 @@ const LATER: u8 = 3;
 /// out of scope.
 #[derive(Clone, Copy, Debug, Default, Hash, PartialEq, Eq)]
 struct Marks {
-    /// `ployz:seed`, set by `land` (seed.rs) just before the rename.
+    /// `ployz:seed`, set by `Copied::land` (seed.rs) just before the rename.
     seed: bool,
     /// `ployz:promote`, set by `land`, inherited by Create (storage.rs `create_volume`).
     promote: bool,
@@ -173,7 +173,7 @@ enum SeedPath {
     Lands,
     /// As `Lands`, but `finish_landing`'s `readonly=off` fails after the rename.
     Stops,
-    /// `written_here(&fs)`: "Volume into is held in slot".
+    /// `written_here(fs)` in `Stale::clear`: "Volume into is held in slot".
     Held,
     /// A slot exists: `zfs destroy -r <parent>`, then a new slot and a copy of `G`.
     Replaces,
@@ -312,7 +312,7 @@ struct Broken {
     root_ignores_seed: bool,
     /// `seed_volume` skips the `Busy` arm of `receives.take_failure` (seed.rs).
     seed_ignores_receive: bool,
-    /// `seed_volume` skips `written_here(&fs)` before its `destroy -r` (seed.rs).
+    /// `Stale::clear` skips `written_here(fs)` before its `destroy -r` (seed.rs).
     seed_ignores_written_here: bool,
     /// `mark_pulled` (copy.rs) sets `ployz:pulled` without inheriting `ployz:cut`,
     /// `epoch`, `promote` and `seed` first.
@@ -533,9 +533,11 @@ impl VolumeMarks {
             return Answer::Refused;
         }
         let (path, answer) = match state.into {
-            // seed.rs: `Self::dataset(..)` finds the root; `ployz:seed` against the guid.
-            // A root still holding `G` stopped landing, so `finish_landing` runs again:
-            // `readonly=off`, then `destroy root@G`. A landed root no longer holds `G`.
+            // seed.rs `seed_progress`: `Self::dataset(..)` finds the root; `ployz:seed`
+            // against the guid. A root still holding `G` reads `SeedProgress::Renamed`, so
+            // `Renamed::finish_landing` runs again: `readonly=off`, then `destroy root@G`. A
+            // landed root no longer holds `G` and reads `SeedProgress::Landed`. Any other
+            // root reads `SeedProgress::Taken`.
             Into::Root(root) if root.marks.seed && root.newest == Some(Point::G) => {
                 state.into = Into::Root(Copy {
                     readonly: false,
@@ -548,13 +550,15 @@ impl VolumeMarks {
                 (SeedPath::AnswersRoot, Answer::Root(root.made))
             }
             Into::Root(_) => (SeedPath::Exists, Answer::Refused),
-            // seed.rs: the `Busy` arm of `self.receives.take_failure(&into, pulling.as_ref())`.
+            // seed.rs `seed_progress`: the `Busy` arm of
+            // `self.receives.take_failure(into, pulling.as_ref())`, `SeedProgress::Copying`.
             _ if state.task != Task::Idle && !broken.seed_ignores_receive => {
                 (SeedPath::Receiving, Answer::Slot)
             }
-            // seed.rs: the slot's `fs` newest is `G`, so `land` inherits `ployz:pulled`,
-            // sets `ployz:seed` and `ployz:promote` and renames it to the root, and
-            // `finish_landing` sets `readonly=off`, destroys the parent and `root@G`.
+            // seed.rs: the slot's `fs` newest is `G` (`SeedProgress::Copied`), so
+            // `Copied::land` inherits `ployz:pulled`, sets `ployz:seed` and `ployz:promote`
+            // and renames it to the root, and `Renamed::finish_landing` sets `readonly=off`,
+            // destroys the parent and `root@G`.
             // Stopped at `readonly=off`, the root stays read-only and still holds `G`, and
             // the request answers an internal error.
             Into::Slot { fs: Some(fs) } if fs.newest == Some(Point::G) => {
@@ -582,14 +586,16 @@ impl VolumeMarks {
                     (SeedPath::Lands, Answer::Root(fs.made))
                 }
             }
-            // seed.rs: `slot_fs` exists and `written_here(&fs)`.
+            // seed.rs: `SeedProgress::Stale` with an `fs`, and `Stale::clear` finds
+            // `written_here(fs)`.
             Into::Slot { fs: Some(fs) }
                 if Self::written_here(fs) && !broken.seed_ignores_written_here =>
             {
                 (SeedPath::Held, Answer::Refused)
             }
-            // seed.rs: `if slot { zfs destroy -r <parent> }`, `create_bounded_slot`, set
-            // `ployz:pull`, `receives.spawn(copy_snapshot)`.
+            // seed.rs: `SeedProgress::Stale`: `Stale::clear` runs `zfs destroy -r <parent>`,
+            // then `copy_point` runs `create_bounded_slot`, sets `ployz:pull` and runs
+            // `receives.spawn(copy_snapshot)`.
             Into::Slot { fs } => {
                 state.destroyed = Some(Destroy {
                     stale: !state.row.open(),
@@ -602,7 +608,8 @@ impl VolumeMarks {
                 state.task = Task::Copying;
                 (SeedPath::Replaces, Answer::Slot)
             }
-            // seed.rs: no slot: `ensure_commitment`, `ensure_mirror_root`, then as above.
+            // seed.rs: no slot, `SeedProgress::Absent`: `ensure_commitment`,
+            // `ensure_mirror_root`, then `copy_point` as above.
             Into::Absent => {
                 state.into = Into::Slot { fs: None };
                 state.task = Task::Copying;
@@ -622,7 +629,7 @@ impl VolumeMarks {
         };
     }
 
-    /// `FloorTurn::admit` (docker/spec_store.rs:525-548) through `admit_gen`
+    /// `FloorTurn::admit` (docker/spec_store.rs:531-554) through `admit_gen`
     /// (machine_api/local_volume_copy.rs:258-268), which `set_copy` runs before the switch
     /// lock (:47) and `set_copy_admitted` again under it (:88).
     fn admit(state: &mut State, generation: u8) -> bool {
@@ -633,7 +640,7 @@ impl VolumeMarks {
         true
     }
 
-    /// `FloorTurn::check` (docker/spec_store.rs:552-565) through `check_gen`
+    /// `FloorTurn::check` (docker/spec_store.rs:558-571) through `check_gen`
     /// (machine_api/local_volume_copy.rs:273-283): refuses a gen below the floor, so an
     /// equal one passes, and leaves the floor where it is.
     fn check(&self, state: &mut State, generation: u8) -> bool {
