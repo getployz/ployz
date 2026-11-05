@@ -14,7 +14,8 @@ afterEach(() => {
   vi.restoreAllMocks();
 });
 
-it("keeps a failed query's params out of the log when Nitro traps an unhandled rejection", async () => {
+/** Every line the process logs while the test runs. */
+function logged() {
   const lines: string[] = [];
   const record = (...args: unknown[]) => {
     lines.push(formatWithOptions({ depth: Infinity }, ...args));
@@ -28,20 +29,55 @@ it("keeps a failed query's params out of the log when Nitro traps an unhandled r
       return true;
     });
   }
+  return lines;
+}
+
+/**
+ * Runs Cloud's plugin on Nitro's app and then `trap`, and takes both off afterwards: the app's own `captureError` and
+ * every listener `trap` left on the process.
+ */
+async function withTrap(trap: () => Promise<void> | void, run: () => Promise<void>) {
+  const app = useNitroApp();
+  const capture = app.captureError;
   const before = new Map(EVENTS.map((event) => [event, process.listeners(event)]));
-  redactUnhandledErrors(Object.assign(useNitroApp(), { hooks: useNitroHooks() }));
-  trapUnhandledErrors();
   try {
-    process.emit("unhandledRejection", new DrizzleQueryError('select "id" from "session" where "token" = $1', [FAKE_SESSION_TOKEN]), Promise.resolve());
-    await vi.waitFor(() => expect(lines.join("\n")).toContain("DrizzleQueryError in select session"));
+    redactUnhandledErrors(Object.assign(app, { hooks: useNitroHooks() }));
+    await trap();
+    await run();
   } finally {
+    app.captureError = capture;
     for (const event of EVENTS) {
       for (const listener of process.listeners(event)) {
         if (!before.get(event)?.includes(listener)) process.off(event, listener);
       }
     }
   }
+}
+
+const failedQuery = () => new DrizzleQueryError('select "id" from "session" where "token" = $1', [FAKE_SESSION_TOKEN]);
+
+it("keeps a failed query's params out of the log when Nitro traps an unhandled rejection", async () => {
+  const lines = logged();
+  await withTrap(trapUnhandledErrors, async () => {
+    process.emit("unhandledRejection", failedQuery(), Promise.resolve());
+    await vi.waitFor(() => expect(lines.join("\n")).toContain("DrizzleQueryError in select session"));
+  });
 
   expect(lines.join("\n")).not.toContain(FAKE_SESSION_TOKEN);
-  expect(lines.join("\n")).toContain("[unhandledRejection]");
+  expect(lines.join("\n").split("[unhandledRejection]")).toHaveLength(2);
+});
+
+it("keeps a failed query's params out of the log in `pnpm dev`, where only Nitro's Vite dev worker traps", async () => {
+  const lines = logged();
+  // The dev worker's trap is a side effect of loading it, as `pnpm dev` does. It ships no types, and only that side
+  // effect matters here.
+  const devWorker = "../../node_modules/nitro/dist/runtime/internal/vite/dev-worker.mjs";
+  await withTrap(() => import(/* @vite-ignore */ devWorker).then(() => undefined), async () => {
+    process.emit("unhandledRejection", failedQuery(), Promise.resolve());
+    process.emit("uncaughtException", failedQuery(), "uncaughtException");
+    await vi.waitFor(() => expect(lines.join("\n")).toContain("[uncaughtException]"));
+  });
+
+  expect(lines.join("\n")).not.toContain(FAKE_SESSION_TOKEN);
+  expect(lines.join("\n").split("[unhandledRejection]")).toHaveLength(2);
 });
