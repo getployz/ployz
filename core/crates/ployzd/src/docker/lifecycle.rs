@@ -1385,6 +1385,27 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn a_started_container_without_its_spec_answers_not_found_marked_as_held() {
+        let (runtime, _, machine, _, id, _) = specless(Some("plan:0"), "running").await;
+
+        let error = runtime
+            .inspect_managed(&id, &machine.id)
+            .await
+            .expect_err("Docker has the Container, but no spec describes it");
+
+        assert!(
+            matches!(error, Error::SpecNotFound(found) if found == id),
+            "{error:?}"
+        );
+        let answer = ployz_core::RpcError::from(&error);
+        assert_eq!(answer.code, ployz_core::RpcErrorCode::NotFound);
+        assert_eq!(
+            answer.details,
+            serde_json::json!({ "reason": "no_resolved_spec" })
+        );
+    }
+
+    #[tokio::test]
     async fn listing_removes_a_container_a_crash_left_without_its_spec_and_keeps_a_started_one() {
         // An abandoned deploy: no create under this key runs again. A restore can make
         // an unkeyed Container again with no spec, and only keyed ones are adopted.

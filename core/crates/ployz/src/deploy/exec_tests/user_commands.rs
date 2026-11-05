@@ -528,6 +528,27 @@ async fn user_stop_start_restart_remove() {
     }
 }
 
+#[tokio::test]
+async fn a_remove_of_a_container_its_machine_holds_without_a_spec_reports_it_not_removed() {
+    let fake = Scripted::new(vec![Step(
+        Call::Inspect(machine('a'), container('1')),
+        Reply::Error(RpcError {
+            code: RpcErrorCode::NotFound,
+            message: "resolved spec not found in machine.db".into(),
+            details: serde_json::json!({ "reason": "no_resolved_spec" }),
+            cause: Vec::new(),
+        }),
+    )]);
+
+    let ran = run_command(Command::Remove, Recording::of(fake)).await;
+
+    let error = ran
+        .answer
+        .expect_err("the Machine still has the Container, so it was not removed");
+    assert_eq!(error.code, RpcErrorCode::Conflict, "{error:?}");
+    assert!(ran.wants.is_empty());
+}
+
 /// After a partial recovery a gen 3 copy runs beside a gen 4 copy that is In. The owner
 /// refuses the older copy In, and the user rows of the caller table never retire a
 /// copy, so the command names the copy and the rotation it is left in.
