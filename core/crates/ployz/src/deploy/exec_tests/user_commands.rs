@@ -549,6 +549,35 @@ async fn a_remove_of_a_container_its_machine_holds_without_a_spec_reports_it_not
     assert!(ran.wants.is_empty());
 }
 
+/// Only the frozen marker reads as held. A `NotFound` whose `reason` this client does
+/// not know claims nothing, so it still reads as removed.
+#[tokio::test]
+async fn only_the_held_without_a_spec_marker_keeps_a_not_found_remove_from_answering_removed() {
+    for (details, removed) in [
+        (
+            serde_json::json!({ "reason": "no_resolved_spec", "machine_id": machine('a') }),
+            false,
+        ),
+        (serde_json::json!({ "reason": "no_such_server" }), true),
+        (serde_json::json!({ "reason": "no_spec" }), true),
+    ] {
+        let fake = Scripted::new(vec![Step(
+            Call::Inspect(machine('a'), container('1')),
+            Reply::Error(RpcError {
+                code: RpcErrorCode::NotFound,
+                message: "not found".into(),
+                details: details.clone(),
+                cause: Vec::new(),
+            }),
+        )]);
+
+        let ran = run_command(Command::Remove, Recording::of(fake)).await;
+
+        assert_eq!(ran.answer.is_ok(), removed, "{details}: {:?}", ran.answer);
+        assert!(ran.wants.is_empty());
+    }
+}
+
 /// After a partial recovery a gen 3 copy runs beside a gen 4 copy that is In. The owner
 /// refuses the older copy In, and the user rows of the caller table never retire a
 /// copy, so the command names the copy and the rotation it is left in.

@@ -216,6 +216,26 @@ impl std::fmt::Display for LimitsRefusal {
     }
 }
 
+/// What a Machine saw when it answered `NotFound` for a Container.
+/// Carried in `RpcError.details.reason`; an answer without it claims nothing.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ContainerNotFoundReason {
+    /// Docker answered an inspect of this Container ID, and the Machine holds no
+    /// Resolved Service Spec for it.
+    NoResolvedSpec,
+}
+
+impl ContainerNotFoundReason {
+    /// The `reason` of a Container RPC error, if it is one of the frozen names.
+    #[must_use]
+    pub fn from_details(details: &serde_json::Value) -> Option<Self> {
+        details
+            .get("reason")
+            .and_then(|reason| Self::deserialize(reason).ok())
+    }
+}
+
 /// Request fresh storage commitments and physical backing capacity.
 #[derive(Clone, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
 pub struct InspectStorageRequest {}
