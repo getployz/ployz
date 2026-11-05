@@ -1,6 +1,6 @@
 import { queryCollectionOptions, type QueryCollectionConfig, type QueryCollectionUtils } from "@tanstack/query-db-collection";
 import { BasicIndex, collectionOptions, type Collection, type CollectionStatus } from "@tanstack/react-db";
-import { hashKey, type QueryClient } from "@tanstack/react-query";
+import { environmentManager, hashKey, type QueryClient } from "@tanstack/react-query";
 import type { CollectionRead } from "./read.contract";
 import { getDbClient } from "./scope";
 import { mayPassOnRetry } from "#/lib/error-message";
@@ -31,6 +31,25 @@ function baseOptions<T extends object>(input: ApiCollectionInput<T>): BaseOption
     autoIndex: "eager",
     defaultIndexType: BasicIndex,
   };
+}
+
+/** Each SSR request's collections, by its QueryClient. The browser keeps its collections for the tab's life. */
+const requestCollections = new WeakMap<QueryClient, Set<Pick<Collection<object>, "cleanup">>>();
+
+function trackRequestCollection<C extends Pick<Collection<object>, "cleanup">>(queryClient: QueryClient, collection: C) {
+  if (!environmentManager.isServer()) return collection;
+  requestCollections.set(queryClient, (requestCollections.get(queryClient) ?? new Set()).add(collection));
+  return collection;
+}
+
+/**
+ * Ends an SSR request's collections at once. A collection a page still reads re-reads its Query when the Query is
+ * removed, so they end before the request's QueryClient is cleared: a read then would run outside the request.
+ */
+export function endRequestCollections(queryClient: QueryClient) {
+  const collections = requestCollections.get(queryClient);
+  requestCollections.delete(queryClient);
+  for (const collection of collections ?? []) void collection.cleanup({ dependents: true }).catch(() => {});
 }
 
 /**
@@ -93,7 +112,7 @@ export function createApiCollection<T extends object>(input: ApiCollectionInput<
   queryFn: (context: { signal: AbortSignal }) => Promise<T[]>;
 }) {
   const options = queryCollectionOptions({ ...baseOptions(input), refetchInterval: input.refetchInterval, queryFn: input.queryFn });
-  return withRecovery(input, getDbClient(input.queryClient).collection(collectionOptions(options)));
+  return withRecovery(input, trackRequestCollection(input.queryClient, getDbClient(input.queryClient).collection(collectionOptions(options))));
 }
 
 /** Rows and their change cursor live in one Query entry, so a cancelled or reverted read reverts both. */
@@ -122,7 +141,7 @@ export function createChangeCollection<T extends object>(input: ApiCollectionInp
     queryFn,
     select: (snapshot: ChangeSnapshot<T>) => snapshot.rows,
   });
-  return withRecovery(input, getDbClient(input.queryClient).collection(collectionOptions(options)));
+  return withRecovery(input, trackRequestCollection(input.queryClient, getDbClient(input.queryClient).collection(collectionOptions(options))));
 }
 
 type ApiCollectionReadiness = Pick<Collection<object>, "status" | "preload"> & {
