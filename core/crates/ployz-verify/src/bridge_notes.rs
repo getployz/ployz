@@ -27,6 +27,13 @@
 //! `pin_members` rejoined it. `pin_members` returns before rejoining anything when its listing
 //! fails (:915-923), and records a member whose `rejoin_with` failed only in `unjoined`
 //! (:981-983), so a member still detached from the bridge is started.
+//!
+//! The fix variant (`BridgeNotes::fix`) reads each member's `MemberDebt` from the two notes, with
+//! their formats unchanged. Its `Stopped::start` pays a Start debt only once Docker shows the
+//! member attached. A start it cannot pay, one Docker refuses or one it defers, it drops
+//! (`OnRefusal::Drop`) or keeps for `RETRIES` later daemon starts (`OnRefusal::Retry`). It keeps
+//! the code's order: Docker's start first, then the note's update. Each `Broken` flag removes one
+//! guard, the code's or the fix's.
 
 use std::fmt::Write as _;
 
@@ -53,6 +60,9 @@ const FAILED_WRITES: u8 = 1;
 const OPERATOR_STARTS: u8 = 1;
 /// Operator stops, holds or removes (`ContainerStep::Stop`, `Hold`, `Remove`).
 const OPERATOR_STOPS: u8 = 1;
+/// Under the fix's `Retry` policy, how many later daemon starts start a member again after
+/// its start was refused or deferred.
+const RETRIES: u8 = 1;
 
 /// A bridge member: a Container on the ployz bridge, or created for it (`BridgeMember`,
 /// :1189-1197). The model's members are Service Containers; `M0` is the one the findings follow.
@@ -309,6 +319,8 @@ enum Why {
     Netless,
     /// Docker started it, and the note's update failed (stopped.rs:80-93).
     Unupdated,
+    /// The fix deferred its start: Docker showed it detached.
+    Deferred,
 }
 
 /// Which pass a step belongs to.
@@ -419,6 +431,8 @@ struct Pass {
     /// The ids `Stopped::start` keeps (stopped.rs:62-79), and why.
     kept: Set,
     kept_why: Pair<Why>,
+    /// Under `Retry`, the starts each kept id has been given again.
+    kept_retries: Pair<u8>,
 }
 
 /// Each budget the model has spent.
@@ -489,10 +503,12 @@ enum Started {
     Refused,
     /// The netless 404, kept (stopped.rs:102-110).
     Netless,
+    /// The fix: Docker shows the member detached, so its start waits.
+    Deferred,
 }
 
 /// What the operator's step on a member is (`plan_container`,
-/// core/crates/ployzd/src/machine/local_machine/container.rs:1420-1442).
+/// core/crates/ployzd/src/machine/local_machine/container.rs:1420-1441).
 #[derive(Clone, Copy, Debug, Hash, PartialEq, Eq)]
 enum Operator {
     /// `ContainerStep::Start` of a Container at rest; `attached` is where Docker put a detached
@@ -555,7 +571,10 @@ enum Branch {
         noted: bool,
     },
     /// `remove_network` removed the old bridge.
-    Removed,
+    Removed {
+        /// A member's endpoint was still on the old bridge.
+        attached: bool,
+    },
     Created {
         readdress: bool,
     },
@@ -582,7 +601,11 @@ enum Branch {
         answer: Started,
         why: Option<Why>,
         operator_stopped: bool,
+        /// The id stays in `Stopped` for the update to write.
+        kept: bool,
     },
+    /// The old bridge's `remove_network`, with an endpoint still attached: Docker refused it.
+    RemoveRefused,
     Updated {
         kept: bool,
         write: Write,
@@ -606,6 +629,9 @@ struct State {
     stopped: Set,
     /// Why each member the note names is there.
     why: Pair<Why>,
+    /// Under `Retry`, how many later starts the note has given each member. The note's
+    /// `BTreeSet<String>` cannot hold it (stopped.rs:18-21): the policy changes its format.
+    retries: Pair<u8>,
     /// `bridge-member-addresses.json`.
     pins: Pair<Option<Addr>>,
     process: Process,
@@ -614,7 +640,7 @@ struct State {
     starts: u8,
     used: Used,
     /// The operator stopped the member after Ployz last stopped it: the ghost the first
-    /// property reads.
+    /// property reads. Ployz's stop clears it, and the operator's stop, hold or remove sets it.
     operator_stopped: Pair<bool>,
     took: Option<Branch>,
 }
@@ -655,10 +681,70 @@ struct Action {
     pick: Pick,
 }
 
+/// What the fix does with a start it cannot pay: one Docker refused, or one it deferred
+/// because Docker shows the member detached.
+#[derive(Clone, Copy, Debug, Hash, PartialEq, Eq)]
+enum OnRefusal {
+    /// Drop the id from the note.
+    Drop,
+    /// Keep the id for `RETRIES` later daemon starts, then drop it.
+    Retry,
+}
+
+/// Each flag removes one guard: the code's, or the fix's.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[expect(
+    clippy::struct_excessive_bools,
+    reason = "each flag removes one independent guard"
+)]
+struct Broken {
+    /// `stop` stops the member before `Stopped::note`, not after it succeeded (:1043-1048).
+    stop_before_note: bool,
+    /// A failed `Pins::record` neither abandons the readdress (:819-822) nor skips an attached
+    /// member in the pin pass (:946-948).
+    detach_unrecorded: bool,
+    /// The readdress replaces the bridge after a failed detach too (:836-842).
+    replace_after_failed_detach: bool,
+    /// `Pins::restore` gives a detached member its noted address though another member holds
+    /// it (pins.rs:54-55).
+    restore_held: bool,
+    /// `gone` reads the netless 404 as gone, as `is_not_found` did before 74391f71f9
+    /// (stopped.rs:104-110).
+    netless_gone: bool,
+    /// The fix starts a member Docker shows detached.
+    fix_starts_detached: bool,
+    /// The fix keeps a start it cannot pay, as the code keeps a refused one.
+    fix_keeps_unpaid: bool,
+}
+
+/// What the fix reads a member owes, from the two note files with their formats unchanged
+/// (stopped.rs:18-21, pins.rs:17-20).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum MemberDebt {
+    /// `bridge-member-addresses.json` owes it an address.
+    Address,
+    /// `bridge-stopped-members.json` owes it a start.
+    Start,
+    /// Both.
+    AddressThenStart,
+}
+
+fn debt(state: &State, member: Member) -> Option<MemberDebt> {
+    match (state.pins.get(member).is_some(), state.stopped.has(member)) {
+        (false, false) => None,
+        (true, false) => Some(MemberDebt::Address),
+        (false, true) => Some(MemberDebt::Start),
+        (true, true) => Some(MemberDebt::AddressThenStart),
+    }
+}
+
 #[derive(Clone, Copy, Debug)]
 struct BridgeNotes {
     /// How many members the bridge has, 1 or 2.
     members: u8,
+    /// The fix, with its policy; `None` is the code as it is.
+    fix: Option<OnRefusal>,
+    broken: Broken,
 }
 
 impl BridgeNotes {
@@ -717,7 +803,7 @@ impl BridgeNotes {
             if let Some(seen) = seen.get_mut(member)
                 && seen.ipv4.is_none()
                 && let Some(address) = pinned
-                && !held.has(address)
+                && (self.broken.restore_held || !held.has(address))
             {
                 held.extend(Some(address));
                 seen.ipv4 = Some(address);
@@ -845,6 +931,19 @@ impl BridgeNotes {
     }
 
     /// `Stopped::start`'s next id after `after` (stopped.rs:62-79), or its update.
+    /// The fix's start predicate: it pays a member's Start debt only once Docker shows the
+    /// member attached. It does not check that the member sits at the address an
+    /// `AddressThenStart` debt owes: no property here needs that check.
+    fn defers(&self, state: &State, member: Member) -> bool {
+        self.fix.is_some()
+            && !self.broken.fix_starts_detached
+            && matches!(
+                debt(state, member),
+                Some(MemberDebt::Start | MemberDebt::AddressThenStart)
+            )
+            && !state.docker.get(member).endpoint.attached()
+    }
+
     fn next_start(state: &State, after: Option<Member>) -> At {
         state
             .pass
@@ -880,7 +979,7 @@ impl BridgeNotes {
     }
 
     /// One step of `stop` (:1021-1056) for `member`, from `step`; returns the step after it.
-    fn stop(state: &mut State, member: Member, step: Step, pick: Pick) -> Step {
+    fn stop(&self, state: &mut State, member: Member, step: Step, pick: Pick) -> Step {
         match step {
             Step::Inspect => {
                 let container = *state.docker.get(member);
@@ -904,6 +1003,9 @@ impl BridgeNotes {
                 match answer {
                     Settle::Leave => Step::Again,
                     Settle::Stop => Step::Stop(Settle::Stop),
+                    Settle::StopAndNote if self.broken.stop_before_note => {
+                        Step::Stop(Settle::StopAndNote)
+                    }
                     Settle::StopAndNote => Step::Note,
                 }
             }
@@ -915,15 +1017,20 @@ impl BridgeNotes {
                     Self::write(state, pick)
                 };
                 state.took = Some(Branch::Noted { member, write });
+                // Under `stop_before_note`, the stop already ran.
+                let stop = if self.broken.stop_before_note {
+                    Step::Again
+                } else {
+                    Step::Stop(Settle::StopAndNote)
+                };
                 match write {
-                    Write::Unchanged => Step::Stop(Settle::StopAndNote),
+                    Write::Unchanged => stop,
                     Write::Written => {
                         state.pass.stopped = state.pass.stopped.with(member);
                         state.pass.fresh = state.pass.fresh.with(member);
                         state.stopped = state.pass.stopped;
                         *state.why.get_mut(member) = Why::Noted;
-                        *state.operator_stopped.get_mut(member) = false;
-                        Step::Stop(Settle::StopAndNote)
+                        stop
                     }
                     Write::Failed => Step::Again,
                     Write::FailedAfterRename => {
@@ -937,13 +1044,18 @@ impl BridgeNotes {
                 let container = state.docker.get_mut(member);
                 if container.run != Run::Gone {
                     container.run = Run::Exited;
+                    *state.operator_stopped.get_mut(member) = false;
                 }
                 state.took = Some(Branch::StoppedIt {
                     member,
                     settle: answer,
                     noted: state.stopped.has(member),
                 });
-                Step::Again
+                if answer == Settle::StopAndNote && self.broken.stop_before_note {
+                    Step::Note
+                } else {
+                    Step::Again
+                }
             }
             Step::First | Step::Again | Step::Fallback { .. } => step,
         }
@@ -1063,7 +1175,9 @@ impl BridgeNotes {
                 state.took = Some(Branch::Recorded { phase, write });
                 let ok = matches!(write, Write::Unchanged | Write::Written);
                 match phase {
-                    Phase::Readdress if !ok => At::List(Phase::Pin),
+                    Phase::Readdress if !ok && !self.broken.detach_unrecorded => {
+                        At::List(Phase::Pin)
+                    }
                     Phase::Readdress => {
                         // :823: sort by (no address, address), stably over the id order.
                         let mut listed = self
@@ -1086,7 +1200,11 @@ impl BridgeNotes {
                 let member = state.pass.order.nth(i).expect("a member at i");
                 match step {
                     Step::First | Step::Again => {
-                        if phase == Phase::Pin && step == Step::First && !state.pass.recorded {
+                        if phase == Phase::Pin
+                            && step == Step::First
+                            && !state.pass.recorded
+                            && !self.broken.detach_unrecorded
+                        {
                             // :946-948.
                             state.took = Some(Branch::Unrecorded { member });
                             Self::next_pin(state, i + 1)
@@ -1119,6 +1237,11 @@ impl BridgeNotes {
                                     match phase {
                                         // :830-833: `break`, and with `disconnected` an Err
                                         // the bridge is not replaced (:836-842).
+                                        Phase::Readdress
+                                            if self.broken.replace_after_failed_detach =>
+                                        {
+                                            At::Remove
+                                        }
                                         Phase::Readdress => self.start_rejoins(state),
                                         // :971-977: `continue`.
                                         Phase::Pin => Self::next_pin(state, i + 1),
@@ -1145,15 +1268,30 @@ impl BridgeNotes {
                     Step::Inspect | Step::Note | Step::Stop(_) => At::Detach {
                         phase,
                         i,
-                        step: Self::stop(state, member, step, pick),
+                        step: self.stop(state, member, step, pick),
                     },
                     Step::Fallback { .. } => unreachable!("detach has no fallback"),
                 }
             }
             At::Remove => {
-                state.bridge = Bridge::None;
-                state.took = Some(Branch::Removed);
-                At::Create(Phase::Readdress)
+                // Only under `replace_after_failed_detach` does an endpoint stay attached here.
+                // Whether Docker removes such a bridge is not shown in this repo, so the model
+                // takes both answers: `Fails` refuses it, and `Go` removes it and its
+                // endpoints.
+                if pick == Pick::Fails {
+                    state.took = Some(Branch::RemoveRefused);
+                    self.start_rejoins(state)
+                } else {
+                    let mut attached = false;
+                    for member in self.members() {
+                        let endpoint = &mut state.docker.get_mut(member).endpoint;
+                        attached |= endpoint.attached();
+                        *endpoint = Endpoint::Detached;
+                    }
+                    state.bridge = Bridge::None;
+                    state.took = Some(Branch::Removed { attached });
+                    At::Create(Phase::Readdress)
+                }
             }
             At::Create(phase) => {
                 state.bridge = Bridge::New;
@@ -1207,7 +1345,7 @@ impl BridgeNotes {
                     Step::Inspect | Step::Note | Step::Stop(_) => At::Rejoin {
                         phase,
                         i,
-                        step: Self::stop(state, member, step, pick),
+                        step: self.stop(state, member, step, pick),
                     },
                     Step::Fallback { .. } => {
                         let answer = match pick {
@@ -1260,8 +1398,11 @@ impl BridgeNotes {
             }
             At::Start(member) => {
                 let container = *state.docker.get(member);
+                let defers = self.defers(state, member);
                 let answer = match (container.run, pick) {
                     (Run::Gone, _) => Started::Gone,
+                    // The fix reads the member's endpoint before it starts it.
+                    (Run::Exited, _) if defers => Started::Deferred,
                     (Run::Running | Run::Held, _) => Started::AlreadyRunning,
                     (Run::Exited, Pick::Fails) => {
                         state.used.refused_starts += 1;
@@ -1282,30 +1423,48 @@ impl BridgeNotes {
                         }
                     }
                 };
-                state.took = Some(Branch::Start {
-                    member,
-                    answer,
-                    why: (!state.pass.fresh.has(member)).then(|| *state.why.get(member)),
-                    operator_stopped: *state.operator_stopped.get(member),
-                });
-                match answer {
+                let unpaid = match answer {
                     Started::Ran { attached, .. } => {
                         let container = state.docker.get_mut(member);
                         container.run = Run::Running;
                         if let Some(address) = attached {
                             container.endpoint = Endpoint::Dynamic(address);
                         }
+                        None
                     }
-                    Started::Refused => {
-                        state.pass.kept = state.pass.kept.with(member);
-                        *state.pass.kept_why.get_mut(member) = Why::Refused;
-                    }
-                    Started::Netless => {
-                        state.pass.kept = state.pass.kept.with(member);
-                        *state.pass.kept_why.get_mut(member) = Why::Netless;
-                    }
-                    Started::AlreadyRunning | Started::Gone => {}
+                    Started::AlreadyRunning | Started::Gone => None,
+                    Started::Netless if self.broken.netless_gone => None,
+                    Started::Refused => Some(Why::Refused),
+                    Started::Netless => Some(Why::Netless),
+                    Started::Deferred => Some(Why::Deferred),
+                };
+                let tries = *state.retries.get(member);
+                let kept = unpaid.is_some()
+                    && match self.fix {
+                        _ if self.broken.fix_keeps_unpaid => true,
+                        None => true,
+                        Some(OnRefusal::Drop) => false,
+                        Some(OnRefusal::Retry) => tries < RETRIES,
+                    };
+                if let Some(why) = unpaid
+                    && kept
+                {
+                    state.pass.kept = state.pass.kept.with(member);
+                    *state.pass.kept_why.get_mut(member) = why;
+                    *state.pass.kept_retries.get_mut(member) = if self.fix == Some(OnRefusal::Retry)
+                    {
+                        tries + 1
+                    } else {
+                        0
+                    };
                 }
+                state.took = Some(Branch::Start {
+                    member,
+                    answer,
+                    why: (!state.pass.fresh.has(member)).then(|| *state.why.get(member)),
+                    operator_stopped: *state.operator_stopped.get(member),
+                    kept,
+                });
                 Self::next_start(state, Some(member))
             }
             At::Update => {
@@ -1318,6 +1477,7 @@ impl BridgeNotes {
                 match write {
                     Write::Written | Write::FailedAfterRename | Write::Unchanged => {
                         state.stopped = kept;
+                        state.retries = state.pass.kept_retries;
                         for member in kept.members() {
                             *state.why.get_mut(member) = *state.pass.kept_why.get(member);
                         }
@@ -1353,7 +1513,7 @@ impl BridgeNotes {
         );
         state.pass.order = order;
         let mut taken = self.taken(state);
-        // `bridge_address::taken` (core/crates/ployzd/src/docker/bridge_address.rs:59-78): the
+        // `bridge_address::taken` (core/crates/ployzd/src/docker/bridge_address.rs:58-78): the
         // addresses every attached endpoint holds.
         for member in self.members() {
             taken.extend(state.docker.get(member).endpoint.address());
@@ -1372,6 +1532,13 @@ impl BridgeNotes {
             }
         };
         match at {
+            At::Remove
+                if self
+                    .members()
+                    .any(|member| state.docker.get(member).endpoint.attached()) =>
+            {
+                vec![Pick::Go, Pick::Fails]
+            }
             At::Load | At::Shape | At::Remove | At::Create(_) => vec![Pick::Go],
             At::List(_) => {
                 if state.used.failed_listings < FAILED_LISTINGS {
@@ -1437,7 +1604,7 @@ impl BridgeNotes {
             }
             At::Start(member) => {
                 let container = state.docker.get(member);
-                if container.run != Run::Exited {
+                if container.run != Run::Exited || self.defers(state, member) {
                     return vec![Pick::Go];
                 }
                 let mut picks = vec![Pick::Go];
@@ -1492,10 +1659,7 @@ impl BridgeNotes {
             }
         };
         match step {
-            Operator::Start { .. } => {
-                state.used.operator_starts += 1;
-                *state.operator_stopped.get_mut(member) = false;
-            }
+            Operator::Start { .. } => state.used.operator_starts += 1,
             Operator::Stop | Operator::Hold | Operator::Remove => {
                 state.used.operator_stops += 1;
                 *state.operator_stopped.get_mut(member) = true;
@@ -1539,6 +1703,7 @@ impl Model for BridgeNotes {
                     },
                     stopped: Set::default(),
                     why: Pair::default(),
+                    retries: Pair::default(),
                     pins: Pair::default(),
                     process: Process::Starting(At::Load),
                     pass: Pass::default(),
@@ -1678,10 +1843,35 @@ impl Model for BridgeNotes {
                     })
                 )
             }),
+            Property::always(NOTED_BEFORE_STOP, |_, state: &State| {
+                !matches!(
+                    state.took,
+                    Some(Branch::StoppedIt {
+                        settle: Settle::StopAndNote,
+                        noted: false,
+                        ..
+                    })
+                )
+            }),
+            Property::always(
+                ADDRESS_NOTED_BEFORE_DETACH,
+                |_, state: &State| match state.took {
+                    Some(Branch::Disconnected {
+                        member,
+                        answer: Disconnect::Detached { .. },
+                        ..
+                    }) => state.pins.get(member).is_some(),
+                    _ => true,
+                },
+            ),
         ];
+        let rows = if self.fix.is_some() {
+            COVERAGE.iter().chain(FIX_COVERAGE).collect::<Vec<_>>()
+        } else {
+            COVERAGE.iter().collect()
+        };
         properties.extend(
-            COVERAGE
-                .iter()
+            rows.into_iter()
                 .map(|row| Property::sometimes(row.name, row.reached)),
         );
         properties
@@ -1697,6 +1887,14 @@ const STARTS_ONLY_OWED: &str =
     "Stopped::start starts only a container Ployz stopped and nobody stopped since";
 const STARTS_ONLY_ON_BRIDGE: &str =
     "Stopped::start starts a member only while Docker shows it on the bridge";
+/// `Stopped::note`'s doc comment (stopped.rs:47): "Writes `id` down. Stop it only once this
+/// succeeds." `stop` (:1043-1048) and its doc (:1019-1020) say the same.
+const NOTED_BEFORE_STOP: &str =
+    "the start stops a member it must start again only once the stopped note names it";
+/// `Pins::record`'s doc comment (pins.rs:62-63): "Detach a member only once this succeeds."
+/// The readdress's doc (:795-797) says the same.
+const ADDRESS_NOTED_BEFORE_DETACH: &str =
+    "the start detaches a member only while the address note names an address for it";
 
 /// One `sometimes`: a branch the code handles, read from the state that took it.
 struct Coverage {
@@ -1917,7 +2115,7 @@ const COVERAGE: &[Coverage] = &[
                     phase: Phase::Readdress,
                     ..
                 })
-            )
+            ) && state.process != Process::Starting(At::Remove)
         },
     },
     Coverage {
@@ -2116,6 +2314,7 @@ const COVERAGE: &[Coverage] = &[
                 state.took,
                 Some(Branch::Start {
                     answer: Started::Refused,
+                    kept: true,
                     ..
                 })
             )
@@ -2128,6 +2327,7 @@ const COVERAGE: &[Coverage] = &[
                 state.took,
                 Some(Branch::Start {
                     answer: Started::Netless,
+                    kept: true,
                     ..
                 })
             )
@@ -2173,6 +2373,21 @@ const COVERAGE: &[Coverage] = &[
     Coverage {
         name: "a member Ployz stopped is started at a later daemon start after a start that died",
         reached: |_, state| state.used.crashes > 0 && ran_loaded(state, Why::Noted),
+    },
+    // Route 3: the start ran, and the update that should drop the id failed.
+    Coverage {
+        name: "Stopped::start starts a member the operator stopped, kept because the note's update failed",
+        reached: |_, state| {
+            matches!(
+                state.took,
+                Some(Branch::Start {
+                    answer: Started::Ran { .. },
+                    why: Some(Why::Unupdated),
+                    operator_stopped: true,
+                    ..
+                })
+            )
+        },
     },
     Coverage {
         name: "a member Docker refused is started at a later daemon start",
@@ -2312,6 +2527,53 @@ const COVERAGE: &[Coverage] = &[
     },
 ];
 
+/// The fix's own branches, rows only for a model with `fix`.
+const FIX_COVERAGE: &[Coverage] = &[
+    Coverage {
+        name: "the fix defers the start of a member Docker shows detached",
+        reached: |_, state| {
+            matches!(
+                state.took,
+                Some(Branch::Start {
+                    answer: Started::Deferred,
+                    ..
+                })
+            )
+        },
+    },
+    Coverage {
+        name: "the fix drops a member whose start it cannot pay",
+        reached: |_, state| {
+            matches!(
+                state.took,
+                Some(Branch::Start {
+                    answer: Started::Refused | Started::Netless | Started::Deferred,
+                    kept: false,
+                    ..
+                })
+            )
+        },
+    },
+    Coverage {
+        name: "the fix drops a member whose retries are spent",
+        reached: |_, state| {
+            matches!(
+                state.took,
+                Some(Branch::Start {
+                    answer: Started::Refused | Started::Netless | Started::Deferred,
+                    why: Some(Why::Refused | Why::Netless | Why::Deferred),
+                    kept: false,
+                    ..
+                })
+            )
+        },
+    },
+    Coverage {
+        name: "a member deferred for its address is started at a later daemon start",
+        reached: |_, state| ran_loaded(state, Why::Deferred),
+    },
+];
+
 /// The address `addresses` gave `member` for its rejoin.
 fn assigned(state: &State, member: Member) -> Addr {
     state
@@ -2349,7 +2611,7 @@ fn story(model: &BridgeNotes, path: &[(State, Option<Action>)]) -> String {
                     }
                 )
             },
-            |(before, action)| reads_as(&before, action, state),
+            |(before, action)| reads_as(model, &before, action, state),
         );
         led_by = action.map(|action| (*state, action));
         let _ = writeln!(story, "{n:2}. {what}\n    {}", show(model, state));
@@ -2365,6 +2627,12 @@ fn show(model: &BridgeNotes, state: &State) -> String {
         names(model, state.stopped),
         addresses(model, state.pins)
     );
+    for member in model.members() {
+        let retries = *state.retries.get(member);
+        if retries > 0 {
+            let _ = write!(line, " | {member:?} retried {retries}");
+        }
+    }
     for member in model.members() {
         let container = state.docker.get(member);
         let _ = write!(
@@ -2441,7 +2709,7 @@ fn write_words(write: Write, what: &str) -> String {
     clippy::too_many_lines,
     reason = "one arm per branch, each in the code's words"
 )]
-fn reads_as(before: &State, action: Action, after: &State) -> String {
+fn reads_as(model: &BridgeNotes, before: &State, action: Action, after: &State) -> String {
     let who = name(action.who);
     let Some(branch) = after.took else {
         return format!("{who}: {action:?}");
@@ -2560,7 +2828,9 @@ fn reads_as(before: &State, action: Action, after: &State) -> String {
                 (Settle::Stop | Settle::Leave, _) => ", for good",
             }
         ),
-        Branch::Removed => "readdress: every detach succeeded, so replace_docker_network removes the old bridge (:836-842, :862)".to_owned(),
+        Branch::Removed { attached: true } => "readdress: replace_docker_network removes the old bridge, a member still on it, and in this answer Docker detaches the member (:836-842, :862)".to_owned(),
+        Branch::Removed { attached: false } => "readdress: every detach succeeded, so replace_docker_network removes the old bridge (:836-842, :862)".to_owned(),
+        Branch::RemoveRefused => "readdress: Docker refuses to remove the old bridge, a member still on it, so replace_docker_network returns Ok(Some) (:862-865), and the rejoins run (:846-849)".to_owned(),
         Branch::Created { readdress } => format!(
             "create_bridge creates the bridge in its new shape ({})",
             if readdress { ":867, :872-891" } else { ":781, :872-891" }
@@ -2613,6 +2883,7 @@ fn reads_as(before: &State, action: Action, after: &State) -> String {
             answer,
             why,
             operator_stopped,
+            kept,
         } => {
             let loaded = match why {
                 None => "written down by this start".to_owned(),
@@ -2620,6 +2891,7 @@ fn reads_as(before: &State, action: Action, after: &State) -> String {
                 Some(Why::Refused) => "loaded, kept after Docker refused its start".to_owned(),
                 Some(Why::Netless) => "loaded, kept after Docker answered the netless 404".to_owned(),
                 Some(Why::Unupdated) => "loaded, kept because the note's last update failed".to_owned(),
+                Some(Why::Deferred) => "loaded, kept after the fix deferred its start".to_owned(),
             };
             let answered = match answer {
                 Started::Ran { detached: false, .. } => "Docker runs it".to_owned(),
@@ -2633,11 +2905,28 @@ fn reads_as(before: &State, action: Action, after: &State) -> String {
                 } => format!("Docker runs it, though it had no ployz endpoint, and attaches it on {address:?}"),
                 Started::AlreadyRunning => "it already runs: bollard reads Docker's 304 as Ok".to_owned(),
                 Started::Gone => "404 No such container, so it is dropped (stopped.rs:66, :104-110)".to_owned(),
-                Started::Refused => "Docker refuses it (500), so it is kept and reported (stopped.rs:67-73)".to_owned(),
-                Started::Netless => "Docker answers 404 for its missing network, so it is kept (stopped.rs:67-73, :102-110)".to_owned(),
+                Started::Refused if model.fix.is_none() => "Docker refuses it (500), so it is kept and reported (stopped.rs:67-73)".to_owned(),
+                Started::Netless if model.broken.netless_gone => "Docker answers 404 for its missing network, and gone reads every 404 as gone, so it is dropped".to_owned(),
+                Started::Netless if model.fix.is_none() => "Docker answers 404 for its missing network, so it is kept (stopped.rs:67-73, :102-110)".to_owned(),
+                Started::Refused | Started::Netless | Started::Deferred => format!(
+                    "{}, and the fix {}",
+                    match answer {
+                        Started::Netless => "Docker answers 404 for its missing network (stopped.rs:67-73, :102-110)",
+                        Started::Deferred => "Docker shows it with no ployz endpoint",
+                        Started::Refused | Started::Ran { .. } | Started::AlreadyRunning | Started::Gone => {
+                            "Docker refuses it (500) (stopped.rs:67-73)"
+                        }
+                    },
+                    if kept { "keeps it for a later daemon start" } else { "drops it" }
+                ),
             };
             format!(
-                "Stopped::start starts {member:?} ({loaded}{}) (:714, stopped.rs:64): {answered}",
+                "Stopped::start {} {member:?} ({loaded}{}) (:714, stopped.rs:64): {answered}",
+                if answer == Started::Deferred {
+                    "defers its start of"
+                } else {
+                    "starts"
+                },
                 if operator_stopped {
                     "; the operator stopped it since"
                 } else {
@@ -2664,7 +2953,7 @@ fn reads_as(before: &State, action: Action, after: &State) -> String {
         ),
         Branch::Operator { member, step } => match step {
             Operator::Start { attached } => format!(
-                "ContainerStep::Start starts {member:?} (core/crates/ployzd/src/machine/local_machine/container.rs:1095-1105){}",
+                "ContainerStep::Start starts {member:?} (core/crates/ployzd/src/machine/local_machine/container.rs:1099-1105){}",
                 attached.map_or_else(String::new, |address| format!(", and Docker attaches it on {address:?}"))
             ),
             Operator::Stop => format!("ContainerStep::Stop stops {member:?}, which runs: stop_out_of_rotation calls containers.stop (core/crates/ployzd/src/machine/local_machine/container.rs:1106-1121, :499-505)"),
@@ -2690,7 +2979,11 @@ mod tests {
 
     /// The code as it is, with one member.
     fn as_is() -> BridgeNotes {
-        BridgeNotes { members: 1 }
+        BridgeNotes {
+            members: 1,
+            fix: None,
+            broken: Broken::default(),
+        }
     }
 
     /// Every state of `model`. The default, `HasDiscoveries::All`, stops once every property
@@ -2944,6 +3237,7 @@ mod tests {
             answer: Started::Refused,
             why: None,
             operator_stopped: false,
+            kept: true,
         }));
         assert!(taken.contains(&Branch::Operator {
             member: Member::M0,
@@ -3058,13 +3352,17 @@ mod tests {
         assert!(ran_detached(&last(&found)));
     }
 
-    /// The code as it is breaks both properties, and reaches every row.
+    /// The code as it is breaks both findings' properties, keeps its two guards' properties,
+    /// and reaches every row.
     #[test]
     fn current_code_breaks_both_properties_and_reaches_every_row() {
         let checker = check(as_is());
         println!("as is: {} states", checker.unique_state_count());
         for property in [STARTS_ONLY_OWED, STARTS_ONLY_ON_BRIDGE] {
             assert!(checker.discovery(property).is_some(), "{property} holds");
+        }
+        for property in [NOTED_BEFORE_STOP, ADDRESS_NOTED_BEFORE_DETACH] {
+            assert!(checker.discovery(property).is_none(), "{property} fails");
         }
         for row in COVERAGE {
             assert!(
@@ -3075,5 +3373,631 @@ mod tests {
         }
         breaks(as_is(), STARTS_ONLY_OWED);
         breaks(as_is(), STARTS_ONLY_ON_BRIDGE);
+    }
+
+    fn fixed(on_refusal: OnRefusal) -> BridgeNotes {
+        BridgeNotes {
+            fix: Some(on_refusal),
+            ..as_is()
+        }
+    }
+
+    fn broken(fix: Option<OnRefusal>, broken: Broken) -> BridgeNotes {
+        BridgeNotes {
+            members: 1,
+            fix,
+            broken,
+        }
+    }
+
+    fn holds_at(model: BridgeNotes, property: &str, state: &State) -> bool {
+        let named = model
+            .properties()
+            .into_iter()
+            .find(|candidate| candidate.name == property)
+            .expect("a model property");
+        (named.condition)(&model, state)
+    }
+
+    fn row(name: &str) -> &'static Coverage {
+        COVERAGE
+            .iter()
+            .chain(FIX_COVERAGE)
+            .find(|row| row.name == name)
+            .expect("a row")
+    }
+
+    /// The rows of `model` its checker never reaches, in `COVERAGE` then `FIX_COVERAGE` order.
+    fn unreached(model: BridgeNotes, checker: &impl Checker<BridgeNotes>) -> Vec<&'static str> {
+        let fix: &[Coverage] = if model.fix.is_some() {
+            FIX_COVERAGE
+        } else {
+            &[]
+        };
+        COVERAGE
+            .iter()
+            .chain(fix)
+            .filter(|row| checker.discovery(row.name).is_none())
+            .map(|row| row.name)
+            .collect()
+    }
+
+    /// Whether any state of `model` satisfies `reached`.
+    fn reaches(model: BridgeNotes, reached: fn(&State) -> bool) -> bool {
+        let found = Arc::new(Mutex::new(false));
+        let seen = Arc::clone(&found);
+        model
+            .checker()
+            .threads(4)
+            .visitor(move |path: stateright::Path<State, Action>| {
+                if reached(path.last_state()) {
+                    *seen.lock().expect("found") = true;
+                }
+            })
+            .finish_when(HasDiscoveries::AnyOf(BTreeSet::new()))
+            .spawn_bfs()
+            .join();
+        *found.lock().expect("found")
+    }
+
+    /// A P1 break whose member was loaded for anything but a failed note update.
+    fn off_route_3(path: &Path) -> bool {
+        !matches!(
+            last(path).took,
+            Some(Branch::Start {
+                why: Some(Why::Unupdated),
+                ..
+            })
+        )
+    }
+
+    /// Daemon start 2 at `Stopped::start`'s start of M0: the bridge fits, the stopped note
+    /// names M0 from start 1, Docker has M0 at rest on `endpoint`, and the address note owes
+    /// it `owed`.
+    fn at_start(model: BridgeNotes, endpoint: Endpoint, owed: Option<Addr>) -> State {
+        let mut state = model
+            .init_states()
+            .into_iter()
+            .next()
+            .expect("a start state");
+        state.bridge = Bridge::New;
+        state.docker.m0.run = Run::Exited;
+        state.docker.m0.endpoint = endpoint;
+        state.stopped = Set::default().with(Member::M0);
+        state.why.m0 = Why::Noted;
+        state.pins.m0 = owed;
+        state.starts = 2;
+        state.pass = Pass {
+            stopped: state.stopped,
+            ..Pass::default()
+        };
+        state.process = Process::Starting(At::Start(Member::M0));
+        state
+    }
+
+    /// One daemon step from `state`, which must offer `pick`.
+    fn step(model: BridgeNotes, state: &State, pick: Pick) -> State {
+        let mut offered = Vec::new();
+        model.actions(state, &mut offered);
+        assert!(offered.contains(&daemon(pick)), "{pick:?} is offered");
+        model.next_state(state, daemon(pick)).expect("a next state")
+    }
+
+    fn started(state: &State) -> (Started, bool) {
+        match state.took {
+            Some(Branch::Start { answer, kept, .. }) => (answer, kept),
+            other => panic!("a start, not {other:?}"),
+        }
+    }
+
+    /// The code as it is, at the first property's edge states. Each follows `the_refusal`'s
+    /// start 1, so M0 is kept at rest, then runs `operator_steps` and daemon start 2.
+    fn refusal_then(operator_steps: &[Action]) -> State {
+        last(&follow(
+            as_is(),
+            &schedule(&[
+                &TO_THE_START,
+                &[daemon(Pick::Fails), GO],
+                operator_steps,
+                &START_2,
+                &[GO],
+            ]),
+        ))
+    }
+
+    #[test]
+    fn first_property_holds_for_a_member_nobody_touched() {
+        let after = refusal_then(&[]);
+        assert!(matches!(started(&after).0, Started::Ran { .. }));
+        assert!(holds_at(as_is(), STARTS_ONLY_OWED, &after));
+    }
+
+    #[test]
+    fn first_property_fails_for_a_member_the_operator_held() {
+        let after = refusal_then(&[operator(Pick::Stop)]);
+        assert!(matches!(started(&after).0, Started::Ran { .. }));
+        assert!(!holds_at(as_is(), STARTS_ONLY_OWED, &after));
+    }
+
+    #[test]
+    fn first_property_fails_for_a_member_the_operator_started_then_stopped() {
+        let after = refusal_then(&[operator(Pick::Go), operator(Pick::Stop)]);
+        assert!(!holds_at(as_is(), STARTS_ONLY_OWED, &after));
+    }
+
+    /// Nobody stopped it, so the start's 304 is the benign case (bollard 0.21.0 maps it to Ok).
+    #[test]
+    fn first_property_holds_for_a_member_the_operator_only_started() {
+        let after = refusal_then(&[operator(Pick::Go)]);
+        assert_eq!(started(&after).0, Started::AlreadyRunning);
+        assert!(holds_at(as_is(), STARTS_ONLY_OWED, &after));
+    }
+
+    #[test]
+    fn first_property_holds_for_a_member_the_operator_removed() {
+        let after = refusal_then(&[operator(Pick::Remove)]);
+        assert_eq!(started(&after).0, Started::Gone);
+        assert!(holds_at(as_is(), STARTS_ONLY_OWED, &after));
+    }
+
+    #[test]
+    fn second_property_fails_for_a_detached_member_with_an_address_noted() {
+        let after = step(
+            as_is(),
+            &at_start(as_is(), Endpoint::Detached, Some(Addr::A)),
+            Pick::Go,
+        );
+        assert!(!holds_at(as_is(), STARTS_ONLY_ON_BRIDGE, &after));
+    }
+
+    /// `Pins::record` skips a member with no address (pins.rs:69), so none is noted.
+    #[test]
+    fn second_property_fails_for_a_detached_member_with_no_address_noted() {
+        let after = step(
+            as_is(),
+            &at_start(as_is(), Endpoint::Detached, None),
+            Pick::Go,
+        );
+        assert!(!holds_at(as_is(), STARTS_ONLY_ON_BRIDGE, &after));
+    }
+
+    /// Risk 3: no property, a row.
+    #[test]
+    fn second_property_holds_for_a_member_attached_on_another_address_than_owed() {
+        let after = step(
+            as_is(),
+            &at_start(as_is(), Endpoint::Dynamic(Addr::B), Some(Addr::A)),
+            Pick::Go,
+        );
+        assert!(holds_at(as_is(), STARTS_ONLY_ON_BRIDGE, &after));
+        let risk_3 = row(
+            "Stopped::start starts a member attached on a dynamic address while the address note owes another",
+        );
+        assert!((risk_3.reached)(&as_is(), &after));
+    }
+
+    #[test]
+    fn second_property_holds_for_a_pinned_member() {
+        let after = step(
+            as_is(),
+            &at_start(as_is(), Endpoint::Pinned(Addr::A), None),
+            Pick::Go,
+        );
+        assert!(holds_at(as_is(), STARTS_ONLY_ON_BRIDGE, &after));
+    }
+
+    // The fix's start predicate at each state it must handle.
+
+    #[test]
+    fn fix_starts_a_start_debt_attached() {
+        let model = fixed(OnRefusal::Drop);
+        let before = at_start(model, Endpoint::Pinned(Addr::A), None);
+        assert_eq!(debt(&before, Member::M0), Some(MemberDebt::Start));
+        let after = step(model, &before, Pick::Go);
+        assert!(matches!(
+            started(&after),
+            (
+                Started::Ran {
+                    detached: false,
+                    ..
+                },
+                false
+            )
+        ));
+    }
+
+    #[test]
+    fn fix_defers_a_start_debt_detached() {
+        let model = fixed(OnRefusal::Drop);
+        let before = at_start(model, Endpoint::Detached, None);
+        assert_eq!(debt(&before, Member::M0), Some(MemberDebt::Start));
+        let after = step(model, &before, Pick::Go);
+        assert_eq!(started(&after), (Started::Deferred, false));
+        assert_eq!(after.docker.m0.run, Run::Exited);
+    }
+
+    #[test]
+    fn fix_starts_an_address_then_start_debt_attached_at_the_noted_address() {
+        let model = fixed(OnRefusal::Drop);
+        let before = at_start(model, Endpoint::Pinned(Addr::A), Some(Addr::A));
+        assert_eq!(
+            debt(&before, Member::M0),
+            Some(MemberDebt::AddressThenStart)
+        );
+        let after = step(model, &before, Pick::Go);
+        assert!(matches!(
+            started(&after).0,
+            Started::Ran {
+                detached: false,
+                ..
+            }
+        ));
+    }
+
+    #[test]
+    fn fix_defers_an_address_then_start_debt_detached() {
+        let model = fixed(OnRefusal::Retry);
+        let before = at_start(model, Endpoint::Detached, Some(Addr::A));
+        let after = step(model, &before, Pick::Go);
+        assert_eq!(started(&after), (Started::Deferred, true));
+        assert_eq!(after.pass.kept_why.m0, Why::Deferred);
+    }
+
+    /// The fix does not check the address: risk 3's state is started, and stays a row.
+    #[test]
+    fn fix_starts_an_address_then_start_debt_attached_on_another_address() {
+        let model = fixed(OnRefusal::Drop);
+        let before = at_start(model, Endpoint::Dynamic(Addr::B), Some(Addr::A));
+        let after = step(model, &before, Pick::Go);
+        assert!(matches!(
+            started(&after).0,
+            Started::Ran {
+                detached: false,
+                ..
+            }
+        ));
+        assert!(holds_at(model, STARTS_ONLY_ON_BRIDGE, &after));
+    }
+
+    #[test]
+    fn fix_handles_an_address_then_start_debt_whose_address_another_member_holds() {
+        let model = BridgeNotes {
+            members: 2,
+            ..fixed(OnRefusal::Drop)
+        };
+        let mut before = at_start(model, Endpoint::Detached, Some(Addr::A));
+        before.docker.m1.endpoint = Endpoint::Dynamic(Addr::A);
+        let after = step(model, &before, Pick::Go);
+        assert_eq!(started(&after).0, Started::Deferred);
+
+        before.docker.m0.endpoint = Endpoint::Dynamic(Addr::C);
+        let after = step(model, &before, Pick::Go);
+        assert!(matches!(
+            started(&after).0,
+            Started::Ran {
+                detached: false,
+                ..
+            }
+        ));
+    }
+
+    #[test]
+    fn fix_drops_or_retries_a_start_docker_refuses() {
+        let before = at_start(as_is(), Endpoint::Pinned(Addr::A), None);
+        let dropped = step(fixed(OnRefusal::Drop), &before, Pick::Fails);
+        assert_eq!(started(&dropped), (Started::Refused, false));
+
+        let retried = step(fixed(OnRefusal::Retry), &before, Pick::Fails);
+        assert_eq!(started(&retried), (Started::Refused, true));
+        let updated = step(fixed(OnRefusal::Retry), &retried, Pick::Go);
+        assert_eq!(updated.retries.m0, 1);
+        assert!(updated.stopped.has(Member::M0));
+
+        let mut spent = before;
+        spent.retries.m0 = RETRIES;
+        let dropped = step(fixed(OnRefusal::Retry), &spent, Pick::Fails);
+        assert_eq!(started(&dropped), (Started::Refused, false));
+    }
+
+    #[test]
+    fn fix_drops_or_retries_a_netless_refusal() {
+        let before = at_start(as_is(), Endpoint::Pinned(Addr::A), None);
+        let dropped = step(fixed(OnRefusal::Drop), &before, Pick::Netless);
+        assert_eq!(started(&dropped), (Started::Netless, false));
+        let retried = step(fixed(OnRefusal::Retry), &before, Pick::Netless);
+        assert_eq!(started(&retried), (Started::Netless, true));
+    }
+
+    #[test]
+    fn fix_drops_a_gone_container() {
+        for on_refusal in [OnRefusal::Drop, OnRefusal::Retry] {
+            let mut before = at_start(as_is(), Endpoint::Detached, None);
+            before.docker.m0.run = Run::Gone;
+            let after = step(fixed(on_refusal), &before, Pick::Go);
+            assert_eq!(started(&after), (Started::Gone, false));
+        }
+    }
+
+    // The findings' replays on the fix.
+
+    /// Drop drops the refused id, so start 2 has nothing to start. Retry keeps it, and runs
+    /// it at start 2 though the operator stopped it.
+    #[test]
+    fn fix_replays_the_refusal() {
+        let path = follow(fixed(OnRefusal::Drop), &the_refusal());
+        assert!(branches(&path).contains(&Branch::Start {
+            member: Member::M0,
+            answer: Started::Refused,
+            why: None,
+            operator_stopped: false,
+            kept: false,
+        }));
+        let after = last(&path);
+        assert!(after.stopped.is_empty());
+        assert_eq!(after.docker.m0.run, Run::Exited);
+
+        let path = follow(fixed(OnRefusal::Retry), &the_refusal());
+        assert!(ran_after_an_operator_stop(&last(&path), Why::Refused));
+    }
+
+    /// Route 3 does not pass through the policy: it breaks the first property under both.
+    #[test]
+    fn fix_replays_the_failed_update() {
+        for on_refusal in [OnRefusal::Drop, OnRefusal::Retry] {
+            let path = follow(fixed(on_refusal), &the_failed_update());
+            assert!(ran_after_an_operator_stop(&last(&path), Why::Unupdated));
+        }
+    }
+
+    #[test]
+    fn fix_replays_the_early_return() {
+        for on_refusal in [OnRefusal::Drop, OnRefusal::Retry] {
+            let model = fixed(on_refusal);
+            let after = last(&follow(model, &the_early_return()));
+            assert_eq!(started(&after).0, Started::Deferred);
+            assert!(holds_at(model, STARTS_ONLY_ON_BRIDGE, &after));
+        }
+    }
+
+    #[test]
+    fn fix_replays_the_false_rejoin() {
+        for on_refusal in [OnRefusal::Drop, OnRefusal::Retry] {
+            let model = fixed(on_refusal);
+            let after = last(&follow(model, &the_false_rejoin()));
+            assert_eq!(started(&after).0, Started::Deferred);
+            assert!(holds_at(model, STARTS_ONLY_ON_BRIDGE, &after));
+        }
+    }
+
+    // Each flag removes one guard.
+
+    #[test]
+    fn stop_before_note_breaks_the_note_before_the_stop() {
+        let model = broken(
+            None,
+            Broken {
+                stop_before_note: true,
+                ..Broken::default()
+            },
+        );
+        let found = breaks(model, NOTED_BEFORE_STOP);
+        assert!(matches!(
+            last(&found).took,
+            Some(Branch::StoppedIt {
+                settle: Settle::StopAndNote,
+                noted: false,
+                ..
+            })
+        ));
+    }
+
+    #[test]
+    fn detach_unrecorded_breaks_the_address_note_before_the_detach() {
+        let model = broken(
+            None,
+            Broken {
+                detach_unrecorded: true,
+                ..Broken::default()
+            },
+        );
+        let found = breaks(model, ADDRESS_NOTED_BEFORE_DETACH);
+        assert!(branches(&found).iter().any(|branch| matches!(
+            branch,
+            Branch::Recorded {
+                write: Write::Failed,
+                ..
+            }
+        )));
+    }
+
+    /// No property here needs the guard. Without it a failed detach no longer keeps the
+    /// bridge, and the readdress removes it with the member still on it, or Docker refuses.
+    #[test]
+    fn replace_after_failed_detach_removes_a_bridge_a_member_is_on() {
+        let model = broken(
+            None,
+            Broken {
+                replace_after_failed_detach: true,
+                ..Broken::default()
+            },
+        );
+        let checker = check(model);
+        for property in [STARTS_ONLY_OWED, STARTS_ONLY_ON_BRIDGE] {
+            assert!(checker.discovery(property).is_some(), "{property} holds");
+        }
+        for property in [NOTED_BEFORE_STOP, ADDRESS_NOTED_BEFORE_DETACH] {
+            assert!(checker.discovery(property).is_none(), "{property} fails");
+        }
+        assert_eq!(
+            unreached(model, &checker),
+            ["a readdress detach fails, and the bridge is not replaced"]
+        );
+        assert!(reaches(model, |state| state.took
+            == Some(Branch::Removed { attached: true })));
+        assert!(reaches(model, |state| state.took == Some(Branch::RemoveRefused)));
+        assert!(!reaches(as_is(), |state| matches!(
+            state.took,
+            Some(Branch::Removed { attached: true } | Branch::RemoveRefused)
+        )));
+    }
+
+    /// No property here needs the guard. Two members: M0 is detached and owed A, and M1
+    /// holds A on a dynamic address. Without the guard, `Pins::restore` gives M0 A anyway.
+    #[test]
+    fn restore_held_restores_an_address_another_member_holds() {
+        let guarded = BridgeNotes {
+            members: 2,
+            ..as_is()
+        };
+        let mut before = guarded
+            .init_states()
+            .into_iter()
+            .next()
+            .expect("a start state");
+        before.bridge = Bridge::New;
+        before.docker.m0.run = Run::Exited;
+        before.docker.m0.endpoint = Endpoint::Detached;
+        before.docker.m1.endpoint = Endpoint::Dynamic(Addr::A);
+        before.pins.m0 = Some(Addr::A);
+        before.pass.pins = before.pins;
+        before.process = Process::Starting(At::List(Phase::Pin));
+        let seen = |state: &State| state.pass.seen.m0.and_then(|seen| seen.ipv4);
+
+        assert_eq!(seen(&step(guarded, &before, Pick::Go)), None);
+        let unguarded = BridgeNotes {
+            broken: Broken {
+                restore_held: true,
+                ..Broken::default()
+            },
+            ..guarded
+        };
+        assert_eq!(seen(&step(unguarded, &before, Pick::Go)), Some(Addr::A));
+
+        let checker = check(unguarded);
+        println!(
+            "two members, unguarded: {} states",
+            checker.unique_state_count()
+        );
+        for property in [STARTS_ONLY_OWED, STARTS_ONLY_ON_BRIDGE] {
+            assert!(checker.discovery(property).is_some(), "{property} holds");
+        }
+        for property in [NOTED_BEFORE_STOP, ADDRESS_NOTED_BEFORE_DETACH] {
+            assert!(checker.discovery(property).is_none(), "{property} fails");
+        }
+        assert!(unreached(unguarded, &checker).is_empty());
+    }
+
+    #[test]
+    fn netless_gone_never_starts_a_member_refused_for_its_network() {
+        let model = broken(
+            None,
+            Broken {
+                netless_gone: true,
+                ..Broken::default()
+            },
+        );
+        let checker = check(model);
+        assert_eq!(
+            unreached(model, &checker),
+            [
+                "Docker answers the netless 404, and the member stays written down",
+                "a member Docker refused for a missing network is started at a later daemon start",
+            ]
+        );
+    }
+
+    #[test]
+    fn fix_starts_detached_breaks_the_second_property() {
+        let model = broken(
+            Some(OnRefusal::Drop),
+            Broken {
+                fix_starts_detached: true,
+                ..Broken::default()
+            },
+        );
+        assert!(ran_detached(&last(&breaks(model, STARTS_ONLY_ON_BRIDGE))));
+    }
+
+    #[test]
+    fn fix_keeps_unpaid_breaks_the_first_property_by_a_refusal() {
+        let model = broken(
+            Some(OnRefusal::Drop),
+            Broken {
+                fix_keeps_unpaid: true,
+                ..Broken::default()
+            },
+        );
+        let found = breaks_where(model, STARTS_ONLY_OWED, off_route_3);
+        assert!(ran_after_an_operator_stop(&last(&found), Why::Refused));
+    }
+
+    // The policies.
+
+    /// Drop keeps every property but the first property's route 3, and gives up the rows that
+    /// start a member at a later daemon start after its start was refused or deferred.
+    #[test]
+    fn fix_with_drop_breaks_only_route_3_and_gives_up_the_named_rows() {
+        let model = fixed(OnRefusal::Drop);
+        let checker = check(model);
+        println!("drop: {} states", checker.unique_state_count());
+        for property in [
+            STARTS_ONLY_ON_BRIDGE,
+            NOTED_BEFORE_STOP,
+            ADDRESS_NOTED_BEFORE_DETACH,
+        ] {
+            assert!(checker.discovery(property).is_none(), "{property} fails");
+        }
+        assert!(checker.discovery(STARTS_ONLY_OWED).is_some());
+        assert!(
+            checker
+                .discovery(
+                    "Stopped::start starts a member the operator stopped, kept because the note's update failed"
+                )
+                .is_some()
+        );
+        assert!(first_break(model, STARTS_ONLY_OWED, off_route_3, false).is_none());
+        assert!(
+            checker
+                .discovery(
+                    "a member Ployz stopped is started at a later daemon start after a start that died"
+                )
+                .is_some()
+        );
+        assert_eq!(
+            unreached(model, &checker),
+            [
+                "Docker refuses a start, and the member stays written down",
+                "Docker answers the netless 404, and the member stays written down",
+                "Stopped::start rewrites the stopped note with the members Docker did not start",
+                "a member Docker refused is started at a later daemon start",
+                "a member Docker refused for a missing network is started at a later daemon start",
+                "Docker attaches a detached member it starts on a dynamic address while the address note owes another",
+                "the fix drops a member whose retries are spent",
+                "a member deferred for its address is started at a later daemon start",
+            ]
+        );
+    }
+
+    /// Retry keeps the rows Drop gives up, and breaks the first property by a refusal too.
+    #[test]
+    fn fix_with_retry_breaks_the_first_property_by_a_refusal() {
+        let model = fixed(OnRefusal::Retry);
+        let checker = check(model);
+        println!("retry: {} states", checker.unique_state_count());
+        for property in [
+            STARTS_ONLY_ON_BRIDGE,
+            NOTED_BEFORE_STOP,
+            ADDRESS_NOTED_BEFORE_DETACH,
+        ] {
+            assert!(checker.discovery(property).is_none(), "{property} fails");
+        }
+        let found = breaks_where(model, STARTS_ONLY_OWED, off_route_3);
+        assert!(ran_after_an_operator_stop(&last(&found), Why::Refused));
+        assert_eq!(
+            unreached(model, &checker),
+            [
+                "Docker attaches a detached member it starts on a dynamic address while the address note owes another",
+            ]
+        );
     }
 }
