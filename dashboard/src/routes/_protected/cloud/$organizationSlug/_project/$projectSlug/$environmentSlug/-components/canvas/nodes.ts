@@ -87,7 +87,17 @@ export function buildStoreNodes(
     height: SERVICE_NODE_HEIGHT + (trayCount.get(id) ?? 0) * VOLUME_TRAY_HEIGHT + (hangOf.has(id) ? HANG_HEIGHT : 0),
   });
   const positionByResource = getPositionByCanvasResource(canvasPositions);
-  const occupied = canvasPositions.map((position) => ({ x: position.x, y: position.y, ...sizeOf(position.resourceId) }));
+  // Only the nodes drawn here take space. A position outlives what it placed (a refused create, a deleted node, a Volume
+  // or Config now in a tray), and nothing deletes it.
+  const drawn = new Set([
+    ...store.services.map(({ service }) => canvasPositionKey({ resourceType: "service", resourceId: service.id })),
+    ...store.unmountedVolumes.map(({ id }) => canvasPositionKey({ resourceType: "volume", resourceId: id })),
+    ...store.unmountedConfigs.map(({ id }) => canvasPositionKey({ resourceType: "config", resourceId: id })),
+    ...(store.live ?? []).map(({ name }) => canvasPositionKey({ resourceType: "service", resourceId: liveNodeId(name) })),
+    ...(store.arriving ?? []).map(({ node, id }) => canvasPositionKey({ resourceType: node, resourceId: id })),
+  ]);
+  const occupied = canvasPositions.filter((position) => drawn.has(canvasPositionKey(position)))
+    .map((position) => ({ x: position.x, y: position.y, ...sizeOf(position.resourceId) }));
   const place = (resourceType: CanvasResourceType, resourceId: string) => {
     const stored = positionByResource.get(canvasPositionKey({ resourceType, resourceId }));
     if (stored) return getCanvasPosition(stored);
