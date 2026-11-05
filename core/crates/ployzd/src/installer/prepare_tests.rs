@@ -1,5 +1,6 @@
 use super::*;
 use crate::installer::test_support::{fixture, run_contract_child_with_environment, write_script};
+use ployz_core::host_preparation::{DockerOutcome, PrepStep, ZfsOutcome};
 use std::{cell::Cell, env, ffi::OsString, os::unix::fs::symlink};
 
 const ROOT: &str = "PLOYZ_INSTALLER_CONTRACT_ROOT";
@@ -148,9 +149,19 @@ async fn debian_prepare_builds_the_module_without_installing_it() {
         let log = read_log(root);
         assert_nothing_installed_or_loaded(&log);
         let state = read_state(root);
-        assert_eq!(state.docker.step, DockerStep::Ready, "{case}");
-        assert_eq!(state.zfs.step, ZfsStep::Ready, "{case}");
-        assert!(state.zfs.started_at.is_some() && state.zfs.finished_at.is_some());
+        assert_eq!(
+            state.docker.outcome(),
+            Some(&DockerOutcome::Ready),
+            "{case}"
+        );
+        assert_eq!(state.zfs.outcome(), Some(&ZfsOutcome::Ready), "{case}");
+        assert!(matches!(
+            state.zfs,
+            PrepStep::Finished {
+                started_at: Some(_),
+                ..
+            }
+        ));
         if case == "already-built" {
             assert!(!log.contains("apt-get"), "{case} rebuilt:\n{log}");
             assert!(state.added_packages.is_empty());
@@ -293,13 +304,13 @@ async fn debian_prepare_rebuilds_a_recorded_build_only_when_no_package_ships_it(
         let build = format!("dkms build -m zfs -v 2.1.11 -k {DEBIAN_KERNEL}");
         let conf = fs::read_to_string(source_dir.join("dkms.conf")).unwrap();
         let state = read_state(root);
-        let failure = zfs_summary(&state.zfs.step);
+        let failure = state.zfs.outcome().map(zfs_summary).unwrap_or_default();
         match case {
             // A registration this Machine didn't make is only built, even when its owner is unknown.
             "packaged" | "foreign-query-failed" => {
                 assert_eq!(dkms_changes, [build], "{log}");
                 assert_eq!(conf, "package\n");
-                assert_eq!(state.zfs.step, ZfsStep::Ready);
+                assert_eq!(state.zfs.outcome(), Some(&ZfsOutcome::Ready));
                 assert_eq!(state.zfs_build, None);
             }
             "packaged-unregistered" => {
@@ -324,7 +335,7 @@ async fn debian_prepare_rebuilds_a_recorded_build_only_when_no_package_ships_it(
                     "{log}"
                 );
                 assert_eq!(conf, "PACKAGE_NAME=\"zfs\"\nAUTOINSTALL=\"no\"\n");
-                assert_eq!(state.zfs.step, ZfsStep::Ready);
+                assert_eq!(state.zfs.outcome(), Some(&ZfsOutcome::Ready));
                 assert_eq!(state.zfs_build, claim.state.zfs_build);
             }
             _ => {
@@ -388,7 +399,7 @@ async fn ubuntu_prepare_downloads_zfs_without_installing_it() {
         ]
     );
     let state = read_state(root);
-    assert_eq!(state.zfs.step, ZfsStep::Ready);
+    assert_eq!(state.zfs.outcome(), Some(&ZfsOutcome::Ready));
     assert!(state.added_packages.is_empty());
     assert_eq!(
         state.zfs_build,
@@ -541,12 +552,12 @@ async fn a_refused_host_records_zfs_skipped() {
         "dpkg --configure -a --force-confdef --force-confold\n"
     );
     let state = read_state(root);
-    assert_eq!(state.docker.step, DockerStep::Ready);
+    assert_eq!(state.docker.outcome(), Some(&DockerOutcome::Ready));
     assert_eq!(
-        state.zfs.step,
-        ZfsStep::Skipped {
+        state.zfs.outcome(),
+        Some(&ZfsOutcome::Skipped {
             reason: "Managed volumes need Ubuntu LTS, Debian 12–13 or Amazon Linux 2023; this Server runs Debian 11. Use one of those, or add `--storage none`.".into()
-        }
+        })
     );
 }
 
@@ -561,12 +572,12 @@ async fn skip_zfs_records_off_and_a_docker_failure_fails_the_job() {
     );
     let state = read_state(fixture.path());
     assert_eq!(
-        state.docker.step,
-        DockerStep::Failed {
+        state.docker.outcome(),
+        Some(&DockerOutcome::Failed {
             message: "no systemd".into()
-        }
+        })
     );
-    assert_eq!(state.zfs.step, ZfsStep::Off);
+    assert_eq!(state.zfs.outcome(), Some(&ZfsOutcome::Off));
 }
 
 #[test]
@@ -612,15 +623,15 @@ fn discard_removes_only_what_preparation_added_case(case: &str, name: &str, inst
     let job = Job {
         path: state_path(&paths),
         state: PrepState {
-            docker: Timed {
-                step: DockerStep::Ready,
+            docker: PrepStep::Finished {
                 started_at: None,
-                finished_at: None,
+                finished_at: now(),
+                outcome: DockerOutcome::Ready,
             },
-            zfs: Timed {
-                step: ZfsStep::Ready,
+            zfs: PrepStep::Finished {
                 started_at: None,
-                finished_at: None,
+                finished_at: now(),
+                outcome: ZfsOutcome::Ready,
             },
             added_packages: vec!["linux-headers-amd64".into(), "lsb-release".into()],
             zfs_build: Some(ZfsBuild::Dkms {
@@ -663,8 +674,8 @@ fn discard_removes_only_what_preparation_added_case(case: &str, name: &str, inst
     assert!(!contrib.exists());
     assert!(root.join("usr/src/linux-headers-6.1.0-28-amd64").exists());
     let state = read_state(root);
-    assert_eq!(state.docker.step, DockerStep::Ready);
-    assert_eq!(state.zfs.step, ZfsStep::Off);
+    assert_eq!(state.docker.outcome(), Some(&DockerOutcome::Ready));
+    assert_eq!(state.zfs.outcome(), Some(&ZfsOutcome::Off));
     assert!(state.added_packages.is_empty());
     assert_eq!(state.zfs_build, None);
 }
@@ -1049,6 +1060,158 @@ fn the_lock_outlives_its_holder_in_a_child() {
     );
 }
 
+/// Whether `root` is on a filesystem that keeps flocks and record locks local and apart, the
+/// premise of [`marked`]. The list is check-in's (`keeps_locks_local` in the `ployz` crate's
+/// `checkin/mod.rs`) until one definition is shared. Off it a test that asks `marked` is skipped.
+fn locks_stay_local(root: &Path) -> bool {
+    use nix::sys::statfs::{
+        BTRFS_SUPER_MAGIC, EXT4_SUPER_MAGIC, FsType, OVERLAYFS_SUPER_MAGIC, TMPFS_MAGIC,
+        XFS_SUPER_MAGIC, statfs,
+    };
+    let filesystem = statfs(root).unwrap().filesystem_type();
+    let local = [
+        EXT4_SUPER_MAGIC,
+        XFS_SUPER_MAGIC,
+        BTRFS_SUPER_MAGIC,
+        TMPFS_MAGIC,
+        OVERLAYFS_SUPER_MAGIC,
+        FsType(0x2fc1_2fc1),
+    ]
+    .contains(&filesystem);
+    if !local {
+        eprintln!(
+            "skipped: {} is on a filesystem of type {:#x}, whose locks aren't local",
+            root.display(),
+            filesystem.0
+        );
+    }
+    local
+}
+
+/// Whether the lock carries a write lock that names no pid, as an open file description lock
+/// does, asked from an open file of its own. Check-in also requires the lock file's owner and mode,
+/// a whole-file range and a local filesystem; this asks none of that.
+fn marked(paths: &InstallPaths) -> bool {
+    let probe = File::open(prepare_dir(paths).join("lock")).unwrap();
+    let mut held = nix::libc::flock {
+        l_type: nix::libc::F_WRLCK as nix::libc::c_short,
+        l_whence: nix::libc::SEEK_SET as nix::libc::c_short,
+        l_start: 0,
+        l_len: 0,
+        l_pid: 0,
+    };
+    nix::fcntl::fcntl(probe.as_raw_fd(), FcntlArg::F_OFD_GETLK(&mut held)).unwrap();
+    held.l_type == nix::libc::F_WRLCK as nix::libc::c_short && held.l_pid == -1
+}
+
+#[tokio::test]
+async fn a_running_preparation_marks_its_lock() {
+    // The lock is meant to be inherited, so a child another test spawns while it is held
+    // keeps it too. Run alone in a child, where no other test spawns.
+    const CASE: &str = "PLOYZ_PREPARE_MARKED_CONTRACT";
+    if let Ok(name) = env::var(CASE) {
+        let root = contract_root();
+        let paths = InstallPaths::at(&root);
+        let marked_while_running = Cell::new(false);
+        prepare_at(&paths, true, async || {
+            marked_while_running.set(marked(&paths));
+            Ok(())
+        })
+        .await
+        .unwrap();
+        assert!(marked_while_running.get());
+        assert!(!marked(&paths));
+        fs::write(root.join("child-completed"), name).unwrap();
+        return;
+    }
+
+    let fixture = fixture("marked");
+    let root = fixture.path();
+    if !locks_stay_local(root) {
+        return;
+    }
+    fs::create_dir_all(root.join("commands")).unwrap();
+    run_contract_child_with_environment(
+        "installer::prepare::tests::a_running_preparation_marks_its_lock",
+        root,
+        OsString::from(CASE),
+        OsString::from("marked"),
+        "marked",
+        [],
+    );
+}
+
+/// A build child that outlives its preparation run keeps the mark, as it keeps the lock.
+#[tokio::test]
+async fn the_mark_outlives_the_run_in_a_child_holding_the_lock() {
+    // The lock is meant to be inherited, so a child another test spawns while it is held
+    // keeps it too. Run alone in a child, where no other test spawns.
+    const CASE: &str = "PLOYZ_PREPARE_MARK_CHILD_CONTRACT";
+    if let Ok(name) = env::var(CASE) {
+        let root = contract_root();
+        let paths = InstallPaths::at(&root);
+        let child = std::cell::RefCell::new(None);
+        prepare_at(&paths, true, async || {
+            *child.borrow_mut() = Some(Command::new("sleep").arg("30").spawn().unwrap());
+            Ok(())
+        })
+        .await
+        .unwrap();
+        let outlived = marked(&paths);
+        let mut child = child.into_inner().unwrap();
+        child.kill().unwrap();
+        child.wait().unwrap();
+        assert!(outlived, "the mark fell with its run while a child ran");
+        assert!(!marked(&paths));
+        fs::write(root.join("child-completed"), name).unwrap();
+        return;
+    }
+
+    let fixture = fixture("mark-child");
+    let root = fixture.path();
+    if !locks_stay_local(root) {
+        return;
+    }
+    fs::create_dir_all(root.join("commands")).unwrap();
+    symlink("/usr/bin/sleep", root.join("commands/sleep")).unwrap();
+    run_contract_child_with_environment(
+        "installer::prepare::tests::the_mark_outlives_the_run_in_a_child_holding_the_lock",
+        root,
+        OsString::from(CASE),
+        OsString::from("mark-child"),
+        "mark-child",
+        [],
+    );
+}
+
+/// Only a preparation run marks the lock: an install waiting for one, and a discard, take the
+/// same lock unmarked.
+#[test]
+fn waiting_installs_and_discards_leave_no_mark() {
+    let fixture = fixture("unmarked");
+    if !locks_stay_local(fixture.path()) {
+        return;
+    }
+    let paths = InstallPaths::at(fixture.path());
+    fs::create_dir_all(prepare_dir(&paths)).unwrap();
+    Job {
+        path: state_path(&paths),
+        state: PrepState::default(),
+    }
+    .save()
+    .unwrap();
+    let marked_while_installing = Cell::new(true);
+    install_waiting_for_preparation(&paths, "apt-get", || {
+        marked_while_installing.set(marked(&paths));
+        Ok(())
+    })
+    .unwrap();
+    assert!(!marked_while_installing.get());
+    // A discard takes the lock this way, waiting for any run.
+    let _discarding = lock(&paths, Wait::Yes).unwrap();
+    assert!(!marked(&paths));
+}
+
 /// A Docker that `docker.socket` would start but that doesn't answer isn't ready: the step asks
 /// it the way install does.
 #[tokio::test]
@@ -1099,19 +1262,15 @@ async fn a_step_left_installing_is_redone_and_recorded() {
     let fixture = fixture("interrupted");
     let paths = InstallPaths::at(fixture.path());
     fs::create_dir_all(prepare_dir(&paths)).unwrap();
-    let started = Some(now());
+    let started = now();
     Job {
         path: state_path(&paths),
         state: PrepState {
-            docker: Timed {
-                step: DockerStep::Installing,
+            docker: PrepStep::Running {
                 started_at: started.clone(),
-                finished_at: None,
             },
-            zfs: Timed {
-                step: ZfsStep::Installing,
+            zfs: PrepStep::Running {
                 started_at: started,
-                finished_at: None,
             },
             ..PrepState::default()
         },
@@ -1128,6 +1287,6 @@ async fn a_step_left_installing_is_redone_and_recorded() {
     assert!(ran.get());
     let state = read_state(fixture.path());
     assert_eq!(state.interrupted, ["docker", "zfs"]);
-    assert_eq!(state.docker.step, DockerStep::Ready);
-    assert_eq!(state.zfs.step, ZfsStep::Off);
+    assert_eq!(state.docker.outcome(), Some(&DockerOutcome::Ready));
+    assert_eq!(state.zfs.outcome(), Some(&ZfsOutcome::Off));
 }

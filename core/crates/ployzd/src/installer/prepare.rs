@@ -8,6 +8,7 @@ use std::{
 
 use chrono::{SecondsFormat, Utc};
 use nix::fcntl::{FcntlArg, FdFlag};
+use ployz_core::host_preparation::{Begun, DockerOutcome, PrepStep, ZfsOutcome};
 use serde::{Deserialize, Serialize};
 
 use super::assess::{assess, read_facts};
@@ -30,8 +31,8 @@ const DEBIAN_ZFS_DKMS_DEPENDENCIES: [&str; 4] = ["file", "libc6-dev", "lsb-relea
 
 #[derive(Debug, Default, Serialize, Deserialize, PartialEq)]
 pub(super) struct PrepState {
-    pub(super) docker: Timed<DockerStep>,
-    pub(super) zfs: Timed<ZfsStep>,
+    pub(super) docker: PrepStep<DockerOutcome>,
+    pub(super) zfs: PrepStep<ZfsOutcome>,
     pub(super) added_packages: Vec<String>,
     pub(super) zfs_build: Option<ZfsBuild>,
     /// Preparation wrote the Debian contrib source, so discard may remove it.
@@ -40,40 +41,6 @@ pub(super) struct PrepState {
     /// Steps an earlier run left `installing` when it died, which this run redid.
     #[serde(default)]
     pub(super) interrupted: Vec<String>,
-}
-
-#[derive(Debug, Default, Serialize, Deserialize, PartialEq)]
-pub(super) struct Timed<S> {
-    #[serde(flatten)]
-    pub(super) step: S,
-    pub(super) started_at: Option<String>,
-    pub(super) finished_at: Option<String>,
-}
-
-#[derive(Debug, Default, Serialize, Deserialize, PartialEq)]
-#[serde(tag = "state", rename_all = "lowercase")]
-pub(super) enum DockerStep {
-    #[default]
-    Installing,
-    Ready,
-    Failed {
-        message: String,
-    },
-}
-
-#[derive(Debug, Default, Serialize, Deserialize, PartialEq)]
-#[serde(tag = "state", rename_all = "lowercase")]
-pub(super) enum ZfsStep {
-    #[default]
-    Installing,
-    Ready,
-    Failed {
-        message: String,
-    },
-    Skipped {
-        reason: String,
-    },
-    Off,
 }
 
 #[derive(Debug, Serialize, Deserialize, PartialEq)]
@@ -127,21 +94,19 @@ pub(super) async fn prepare_at(
     skip_zfs: bool,
     docker: impl AsyncFnOnce() -> Result<(), String>,
 ) -> Result<(), Error> {
-    let Some(_lock) = lock(paths, Wait::No)? else {
+    let Some(held) = lock(paths, Wait::No)? else {
         println!("Host preparation is already running");
         return Ok(());
     };
+    mark(&held);
     let previous = load(paths);
     // The lock is free, so a step an earlier run began and left `installing` died with it.
     let interrupted: Vec<String> = [
         (
             "docker",
-            previous.docker.started_at.is_some() && previous.docker.step == DockerStep::Installing,
+            matches!(previous.docker, PrepStep::Running { .. }),
         ),
-        (
-            "zfs",
-            previous.zfs.started_at.is_some() && previous.zfs.step == ZfsStep::Installing,
-        ),
+        ("zfs", matches!(previous.zfs, PrepStep::Running { .. })),
     ]
     .into_iter()
     .filter(|(_, unfinished)| *unfinished)
@@ -163,26 +128,23 @@ pub(super) async fn prepare_at(
     if debian_family(paths) {
         finish_interrupted_package_installs();
     }
-    job.begin_docker()?;
+    let begun = job.begin_docker()?;
     let docker = match docker().await {
-        Ok(()) => DockerStep::Ready,
-        Err(message) => DockerStep::Failed { message },
+        Ok(()) => DockerOutcome::Ready,
+        Err(message) => DockerOutcome::Failed { message },
     };
-    job.finish_docker(docker)?;
-    job.begin_zfs()?;
+    let summary = format!("Docker {}", docker_summary(&docker));
+    let failed = matches!(docker, DockerOutcome::Failed { .. });
+    job.finish_docker(begun, docker)?;
+    let begun = job.begin_zfs()?;
     let zfs = if skip_zfs {
-        ZfsStep::Off
+        ZfsOutcome::Off
     } else {
         zfs_step(paths, &mut job)
     };
-    job.finish_zfs(zfs)?;
-    let summary = format!(
-        "Docker {}, ZFS {}",
-        docker_summary(&job.state.docker.step),
-        zfs_summary(&job.state.zfs.step)
-    );
-    let failed = matches!(job.state.docker.step, DockerStep::Failed { .. })
-        || matches!(job.state.zfs.step, ZfsStep::Failed { .. });
+    let summary = format!("{summary}, ZFS {}", zfs_summary(&zfs));
+    let failed = failed || matches!(zfs, ZfsOutcome::Failed { .. });
+    job.finish_zfs(begun, zfs)?;
     if failed {
         Err(refuse(STAGE, summary))
     } else {
@@ -191,21 +153,19 @@ pub(super) async fn prepare_at(
     }
 }
 
-fn docker_summary(step: &DockerStep) -> String {
-    match step {
-        DockerStep::Installing => "installing".into(),
-        DockerStep::Ready => "ready".into(),
-        DockerStep::Failed { message } => format!("failed ({message})"),
+fn docker_summary(outcome: &DockerOutcome) -> String {
+    match outcome {
+        DockerOutcome::Ready => "ready".into(),
+        DockerOutcome::Failed { message } => format!("failed ({message})"),
     }
 }
 
-fn zfs_summary(step: &ZfsStep) -> String {
-    match step {
-        ZfsStep::Installing => "installing".into(),
-        ZfsStep::Ready => "ready".into(),
-        ZfsStep::Failed { message } => format!("failed ({message})"),
-        ZfsStep::Skipped { reason } => format!("skipped ({reason})"),
-        ZfsStep::Off => "off".into(),
+fn zfs_summary(outcome: &ZfsOutcome) -> String {
+    match outcome {
+        ZfsOutcome::Ready => "ready".into(),
+        ZfsOutcome::Failed { message } => format!("failed ({message})"),
+        ZfsOutcome::Skipped { reason } => format!("skipped ({reason})"),
+        ZfsOutcome::Off => "off".into(),
     }
 }
 
@@ -277,6 +237,25 @@ fn lock(paths: &InstallPaths, wait: Wait) -> Result<Option<File>, Error> {
     Ok(Some(file))
 }
 
+/// Marks the preparation lock `held` as held by a run, so check-in can tell one runs: a
+/// whole-file write lock on the same open file, an open file description lock, which the kernel
+/// keeps for exactly as long as the flock, through the build children that inherit it. Best
+/// effort: the flock alone still keeps runs from overlapping.
+fn mark(held: &File) {
+    let whole = nix::libc::flock {
+        l_type: nix::libc::F_WRLCK as nix::libc::c_short,
+        l_whence: nix::libc::SEEK_SET as nix::libc::c_short,
+        l_start: 0,
+        l_len: 0,
+        l_pid: 0,
+    };
+    if let Err(errno) = nix::fcntl::fcntl(held.as_raw_fd(), FcntlArg::F_OFD_SETLK(&whole)) {
+        eprintln!(
+            "Couldn't mark the host preparation lock for check-in: {errno}; check-in will judge this run by ployz-prepare alone"
+        );
+    }
+}
+
 pub(super) struct Job {
     path: PathBuf,
     pub(super) state: PrepState,
@@ -297,33 +276,27 @@ impl Job {
             .map_err(|source| Error::Io { stage, source })
     }
 
-    fn begin_docker(&mut self) -> Result<(), Error> {
-        self.state.docker = Timed {
-            step: DockerStep::Installing,
-            started_at: Some(now()),
-            finished_at: None,
-        };
+    fn begin_docker(&mut self) -> Result<Begun, Error> {
+        let begun = Begun::at(now());
+        self.state.docker = begun.running();
+        self.save()?;
+        Ok(begun)
+    }
+
+    fn finish_docker(&mut self, begun: Begun, outcome: DockerOutcome) -> Result<(), Error> {
+        self.state.docker = begun.finish(outcome, now());
         self.save()
     }
 
-    fn finish_docker(&mut self, step: DockerStep) -> Result<(), Error> {
-        self.state.docker.step = step;
-        self.state.docker.finished_at = Some(now());
-        self.save()
+    fn begin_zfs(&mut self) -> Result<Begun, Error> {
+        let begun = Begun::at(now());
+        self.state.zfs = begun.running();
+        self.save()?;
+        Ok(begun)
     }
 
-    fn begin_zfs(&mut self) -> Result<(), Error> {
-        self.state.zfs = Timed {
-            step: ZfsStep::Installing,
-            started_at: Some(now()),
-            finished_at: None,
-        };
-        self.save()
-    }
-
-    fn finish_zfs(&mut self, step: ZfsStep) -> Result<(), Error> {
-        self.state.zfs.step = step;
-        self.state.zfs.finished_at = Some(now());
+    fn finish_zfs(&mut self, begun: Begun, outcome: ZfsOutcome) -> Result<(), Error> {
+        self.state.zfs = begun.finish(outcome, now());
         self.save()
     }
 
@@ -342,23 +315,23 @@ impl Job {
     }
 }
 
-fn zfs_step(paths: &InstallPaths, job: &mut Job) -> ZfsStep {
+fn zfs_step(paths: &InstallPaths, job: &mut Job) -> ZfsOutcome {
     match build_ahead(paths, job) {
-        Ok(step) => step,
+        Ok(outcome) => outcome,
         Err(Error::Command { stage, message }) if stage == storage::STAGE => {
-            ZfsStep::Skipped { reason: message }
+            ZfsOutcome::Skipped { reason: message }
         }
-        Err(error) => ZfsStep::Failed {
+        Err(error) => ZfsOutcome::Failed {
             message: ployz_core::error_chain::inline(&error),
         },
     }
 }
 
-fn build_ahead(paths: &InstallPaths, job: &mut Job) -> Result<ZfsStep, Error> {
+fn build_ahead(paths: &InstallPaths, job: &mut Job) -> Result<ZfsOutcome, Error> {
     let (os, route) = zfs_preflight(paths)?;
     let kernel = uname("-r", "read running kernel")?;
     if zfs_installed(&kernel) {
-        return Ok(ZfsStep::Ready);
+        return Ok(ZfsOutcome::Ready);
     }
     match route {
         ZfsRoute::Ubuntu => download_ubuntu_zfs(job)?,
@@ -367,7 +340,7 @@ fn build_ahead(paths: &InstallPaths, job: &mut Job) -> Result<ZfsStep, Error> {
         }
         ZfsRoute::AmazonLinux => build_amazon_zfs(paths, job, &os, &kernel, OPENZFS_SHA256)?,
     }
-    Ok(ZfsStep::Ready)
+    Ok(ZfsOutcome::Ready)
 }
 
 /// Fills the apt cache with `zfsutils-linux`; Ubuntu's kernel already ships the module.
@@ -1000,10 +973,10 @@ pub(super) fn discard_at(paths: &InstallPaths) -> Result<(), Error> {
     job.state.added_packages.clear();
     job.state.zfs_build = None;
     job.state.added_contrib_source = false;
-    job.state.zfs = Timed {
-        step: ZfsStep::Off,
+    job.state.zfs = PrepStep::Finished {
         started_at: None,
-        finished_at: Some(now()),
+        finished_at: now(),
+        outcome: ZfsOutcome::Off,
     };
     if job.path.exists() {
         job.save()?;

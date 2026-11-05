@@ -41,7 +41,6 @@ const REFUSAL_SPAN: Duration = Duration::from_secs(60 * 60);
 const REVOKED: &str = "Cloud no longer accepts this Fleet Token.";
 const REFUSED_ONCE: &str =
     "Cloud refused this Fleet Token. It is checked once more before the loop removes it";
-const GAVE_UP: &str = "Preparation stopped mid-step on every try. Run sudo ployz server checkin --install to try again.";
 const STALE_PLOYZD: &str = "ployzd_outdated";
 const IN_ANOTHER_CLUSTER: &str = "in_another_cluster";
 const WIREGUARD_PORT_IN_USE: &str = "wireguard_port_in_use";
@@ -80,6 +79,11 @@ impl Paths {
 
     pub(crate) fn loop_lock(&self) -> PathBuf {
         self.checkin_dir.join(LOOP_LOCK)
+    }
+
+    /// The lock ployzd holds while it prepares this host.
+    fn prepare_lock(&self) -> PathBuf {
+        self.prepare_state.with_file_name("lock")
     }
 }
 
@@ -166,7 +170,12 @@ pub(crate) enum CheckinEnd {
 pub(crate) trait Host {
     async fn probe(&self) -> Result<Probe, String>;
     fn hostname(&self) -> String;
+    /// Whether systemd says `ployz-prepare` runs.
     async fn prepare_running(&self) -> Result<bool, String>;
+    /// Whether a preparation run marks ployzd's preparation `lock`.
+    fn preparation_marked(&self, lock: &Path) -> io::Result<bool> {
+        preparation_marked(lock)
+    }
     async fn start_prepare(&self) -> Result<(), String>;
     async fn disable_loop(&self) -> Result<(), String>;
     /// Why the ployzd this loop runs with should be replaced, when it is older than this CLI.
@@ -833,32 +842,42 @@ async fn check_in<H: Host>(
         code: STALE_PLOYZD.to_owned(),
         message,
     });
-    let seen = host.prepare_running().await;
-    // Only a unit seen running may vouch for a stopped Docker; an unreadable one still counts as
-    // running so as not to start a second preparation.
-    let mut confirmed = seen == Ok(true);
-    let running = seen.unwrap_or_else(|why| {
-        crate::ui::note(format!("Could not read {}: {why}", unit::PREPARE));
-        true
-    });
-    // Read after the unit is seen stopped, so a run that finished in between reads as finished.
-    let (mut state, written) = read_prep_state(&paths.prepare_state).unzip();
+    let (liveness, notes) = observe_liveness(host, paths).await;
+    notes.into_iter().for_each(crate::ui::note);
+    // Read after liveness, so a run that completed in between reads as finished: ployzd saves
+    // each step's outcome before it lets the lock go. A run that stops before such a save lands
+    // can leave a step running, which reads as died mid-step.
+    let (state, written) = read_prep_state(&paths.prepare_state).unzip();
+    let preparation = preparation(
+        state.as_ref(),
+        written.flatten(),
+        liveness,
+        prepare_retries,
+        prepare_started,
+        now,
+    );
+    let mut preparing = liveness == Liveness::Live;
     // An older ployzd may not know how to prepare, and its blocker already says what to do.
-    let due = if running || stale.is_some() || installing {
+    let run = if stale.is_some() || installing {
         None
     } else {
-        // Only a step left installing is dated by its state file. A failure carries its own time.
-        let written = written
-            .flatten()
-            .filter(|_| state.as_ref().is_some_and(PrepState::installing));
-        let last_try = written.max(prepare_started);
-        prepare_due(state.as_ref(), last_try, prepare_retries, now)
+        match preparation {
+            Preparation::NotStarted => Some(PrepareRun::Start),
+            Preparation::RetryDue => Some(PrepareRun::Retry),
+            Preparation::Running
+            | Preparation::Unknown
+            | Preparation::DiedMidStep
+            | Preparation::Failed
+            | Preparation::Finished
+            | Preparation::GaveUp => None,
+        }
     };
-    if let Some(run) = due {
+    if let Some(run) = run {
         match host.start_prepare().await {
             Ok(()) => {
                 // The run just started may already be installing Docker before the probe below.
-                confirmed = host.prepare_running().await == Ok(true);
+                // This pass printed its notes above.
+                preparing = observe_liveness(host, paths).await.0 == Liveness::Live;
                 prepare_started = Some(now);
                 if run == PrepareRun::Retry {
                     prepare_retries += 1;
@@ -866,16 +885,10 @@ async fn check_in<H: Host>(
             }
             Err(why) => crate::ui::note(format!("Could not start {}: {why}", unit::PREPARE)),
         }
-    } else if !running && !installing && prepare_retries >= PREPARE_TRIES {
-        state.get_or_insert_with(PrepState::fresh).give_up(GAVE_UP);
     }
-    let prep = state.as_ref().map_or(
-        Prep {
-            docker: DockerPrep::Installing,
-            zfs: ZfsPrep::Installing,
-        },
-        PrepState::prep,
-    );
+    let gave_up = preparation == Preparation::GaveUp && !installing;
+    let state = state.unwrap_or_default();
+    let prep = state.prep(gave_up);
     let mut status = LocalCheckin {
         answer: Seen::ProbeFailed,
         token_fingerprint: Some(client.fingerprint()),
@@ -931,7 +944,7 @@ async fn check_in<H: Host>(
             return (next, Some(status));
         }
     };
-    let mut report = probe.report(host.hostname(), state.as_ref(), confirmed, prepare_started);
+    let mut report = probe.report(host.hostname(), &state, preparing, gave_up, prepare_started);
     report.blockers.extend(stale);
     report.blockers.extend(member);
     report.blockers.extend(port_taken);
@@ -1093,22 +1106,34 @@ pub(crate) async fn restart_preparation<H: Host>(
     paths: &Paths,
     now: DateTime<Utc>,
 ) -> bool {
-    let running = host.prepare_running().await.unwrap_or_else(|why| {
-        crate::ui::note(format!("Could not read {}: {why}", unit::PREPARE));
-        true
-    });
-    let state = read_prep_state(&paths.prepare_state).map(|(state, _)| state);
-    let finished = state
-        .as_ref()
-        .is_some_and(|state| !state.installing() && state.failed_at().is_none());
-    if running || finished || host.stale_ployzd().is_some() {
+    let (liveness, notes) = observe_liveness(host, paths).await;
+    notes.into_iter().for_each(crate::ui::note);
+    let (state, written) = read_prep_state(&paths.prepare_state).unzip();
+    let status = LocalCheckin::read(&paths.status()).ok().flatten();
+    let preparation = preparation(
+        state.as_ref(),
+        written.flatten(),
+        liveness,
+        status.as_ref().map_or(0, |status| status.prepare_retries),
+        status.as_ref().and_then(|status| status.prepare_started),
+        now,
+    );
+    let settled = match preparation {
+        Preparation::Running | Preparation::Unknown | Preparation::Finished => true,
+        Preparation::NotStarted
+        | Preparation::DiedMidStep
+        | Preparation::Failed
+        | Preparation::RetryDue
+        | Preparation::GaveUp => false,
+    };
+    if settled || host.stale_ployzd().is_some() {
         return false;
     }
     if let Err(why) = host.start_prepare().await {
         crate::ui::note(format!("Could not start {}: {why}", unit::PREPARE));
         return false;
     }
-    if let Some(mut status) = LocalCheckin::read(&paths.status()).ok().flatten() {
+    if let Some(mut status) = status {
         status.restarted_preparation(now);
         record(&status, paths);
     }
@@ -1146,7 +1171,8 @@ pub(crate) fn record(status: &LocalCheckin, paths: &Paths) {
     }
 }
 
-/// The preparation state and when ployzd last wrote it.
+/// ployzd's preparation state and when it was last written, or none when there is none or it
+/// can't be read.
 fn read_prep_state(path: &Path) -> Option<(PrepState, Option<DateTime<Utc>>)> {
     let bytes = match fs::read(path) {
         Ok(bytes) => bytes,
@@ -1166,35 +1192,233 @@ fn read_prep_state(path: &Path) -> Option<(PrepState, Option<DateTime<Utc>>)> {
     Some((state, written))
 }
 
+/// Whether host preparation runs, from the two things that can say so: systemd's
+/// `ployz-prepare` unit, and the mark a preparation run puts on ployzd's lock, which the build
+/// children it starts keep. Either one seen running makes it live, as a run started by hand is,
+/// including a build that outlived its hand-run ployzd. A mark that can't be read leaves the unit
+/// to decide alone, as before there was a mark; a unit that can't be read leaves it unknown,
+/// which never counts as stopped.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Liveness {
+    Live,
+    Stopped,
+    Unknown,
+}
+
+/// Whether this process has printed the note that the lock's filesystem keeps no mark it can
+/// read. It prints once per process on purpose, so the long-running check-in loop doesn't repeat
+/// it every pass. The reader still checks the filesystem of the file it opens on every pass
+/// ([`preparation_marked`]).
+static NOTED_UNREADABLE_FILESYSTEM: std::sync::atomic::AtomicBool =
+    std::sync::atomic::AtomicBool::new(false);
+
+/// Liveness as seen now, and the notes worth printing about how it was read.
+async fn observe_liveness<H: Host>(host: &H, paths: &Paths) -> (Liveness, Vec<String>) {
+    let unit = host.prepare_running().await;
+    if unit == Ok(true) {
+        return (Liveness::Live, Vec::new());
+    }
+    let mut notes = Vec::new();
+    if let Err(why) = &unit {
+        notes.push(format!("Could not read {}: {why}", unit::PREPARE));
+    }
+    let lock = paths.prepare_lock();
+    let liveness = match (unit, host.preparation_marked(&lock)) {
+        (Ok(_), Ok(true)) => {
+            notes.push(format!(
+                "{} is stopped, but a preparation run holds {}; waiting for it.",
+                unit::PREPARE,
+                lock.display()
+            ));
+            Liveness::Live
+        }
+        (Err(_), Ok(true)) => Liveness::Live,
+        (Ok(_), Ok(false)) => Liveness::Stopped,
+        (Ok(_), Err(error)) => {
+            // A kernel without open file description locks fails the query with EINVAL on every
+            // pass, so that is never noted; a filesystem off the allowlist is noted once.
+            let say = if error.kind() == io::ErrorKind::Unsupported {
+                !NOTED_UNREADABLE_FILESYSTEM.swap(true, std::sync::atomic::Ordering::Relaxed)
+            } else {
+                error.kind() != io::ErrorKind::InvalidInput
+            };
+            if say {
+                notes.push(format!(
+                    "Could not tell whether a preparation run holds {}: {error}. Going by {} alone, which reads stopped.",
+                    lock.display(),
+                    unit::PREPARE
+                ));
+            }
+            Liveness::Stopped
+        }
+        (Err(_), Ok(false) | Err(_)) => Liveness::Unknown,
+    };
+    (liveness, notes)
+}
+
+/// Whether a preparation run marks the lock at `lock`. ployzd's run puts a whole-file write lock
+/// on the open file it flocks, an open file description lock, which the kernel keeps for as long
+/// as any process holds that file open, the run's build children included, and which reports no
+/// pid. A process's own record lock reports its pid, and a byte range isn't the mark. Only a lock
+/// file owned by this user and writable by no one else can carry it, so no other user can fake
+/// one, and only on a filesystem whose locks stay local: see [`keeps_locks_local`]. Querying
+/// takes no lock, so it never turns a run away.
+#[cfg(target_os = "linux")]
+fn preparation_marked(lock: &Path) -> io::Result<bool> {
+    use nix::{libc, sys::statfs::fstatfs};
+    use std::os::unix::fs::{MetadataExt, OpenOptionsExt};
+    // Nonblocking, so a lease on the file fails the open rather than holding it up.
+    let file = match fs::File::options()
+        .read(true)
+        .custom_flags(libc::O_NONBLOCK)
+        .open(lock)
+    {
+        Ok(file) => file,
+        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(false),
+        Err(error) => return Err(error),
+    };
+    let owner = file.metadata()?;
+    if owner.uid() != rustix::process::geteuid().as_raw() || owner.mode() & 0o022 != 0 {
+        return Ok(false);
+    }
+    marked_on(&file, fstatfs(&file)?.filesystem_type())
+}
+
+/// Whether `file`, open on a filesystem of type `filesystem`, carries the mark. Off the allowlist
+/// it can't tell.
+#[cfg(target_os = "linux")]
+fn marked_on(file: &fs::File, filesystem: nix::sys::statfs::FsType) -> io::Result<bool> {
+    use nix::{
+        fcntl::{FcntlArg, fcntl},
+        libc,
+    };
+    use std::os::fd::AsRawFd;
+    if !keeps_locks_local(filesystem) {
+        return Err(io::Error::new(
+            io::ErrorKind::Unsupported,
+            format!(
+                "it is on a filesystem of type {:#x}, whose flocks and record locks aren't known to stay local and apart",
+                filesystem.0
+            ),
+        ));
+    }
+    let write = libc::F_WRLCK as libc::c_short;
+    let mut held = libc::flock {
+        l_type: write,
+        l_whence: libc::SEEK_SET as libc::c_short,
+        l_start: 0,
+        l_len: 0,
+        l_pid: 0,
+    };
+    fcntl(file.as_raw_fd(), FcntlArg::F_OFD_GETLK(&mut held))?;
+    Ok(held.l_type == write && held.l_pid == -1 && held.l_start == 0 && held.l_len == 0)
+}
+
+/// Whether locks on `filesystem` are the kernel's own. None of these gives its files a `lock` or
+/// `flock` operation, so the kernel keeps flocks and record locks on separate local lists, and a
+/// query reads the local record locks alone (`vfs_test_lock` and `posix_test_lock` in
+/// `fs/locks.c`). NFS gives both operations, sends a flock to the server as a record lock and
+/// asks the server on a query, so a plain flock answers as the mark there.
+#[cfg(target_os = "linux")]
+fn keeps_locks_local(filesystem: nix::sys::statfs::FsType) -> bool {
+    use nix::sys::statfs::{
+        BTRFS_SUPER_MAGIC, EXT4_SUPER_MAGIC, FsType, OVERLAYFS_SUPER_MAGIC, TMPFS_MAGIC,
+    };
+    // Linux's `XFS_SUPER_MAGIC`, from include/uapi/linux/magic.h. nix 0.29 doesn't define it on
+    // musl, which the release binaries build for.
+    const XFS_SUPER_MAGIC: FsType = FsType(0x5846_5342);
+    // OpenZFS's `ZFS_SUPER_MAGIC`, from its include/sys/fs/zfs.h.
+    const ZFS_SUPER_MAGIC: FsType = FsType(0x2fc1_2fc1);
+    // ext2 and ext3 share ext4's magic.
+    [
+        EXT4_SUPER_MAGIC,
+        XFS_SUPER_MAGIC,
+        BTRFS_SUPER_MAGIC,
+        TMPFS_MAGIC,
+        OVERLAYFS_SUPER_MAGIC,
+        ZFS_SUPER_MAGIC,
+    ]
+    .contains(&filesystem)
+}
+
+/// This build has no open file description lock to read.
+#[cfg(not(target_os = "linux"))]
+fn preparation_marked(_lock: &Path) -> io::Result<bool> {
+    Ok(false)
+}
+
+/// Host preparation as this check-in sees it now. Liveness says whether a run is live; the rest
+/// comes from ployzd's state file and this loop's own starts. None of it is persisted.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Preparation {
+    /// No run left a dated record, and this loop has started none.
+    NotStarted,
+    Running,
+    /// Nothing says whether a run is live, so nothing is started or given up.
+    Unknown,
+    /// A run stopped with a step unfinished, too recently to retry.
+    DiedMidStep,
+    /// A step failed, and is not retried yet or any more.
+    Failed,
+    Finished,
+    RetryDue,
+    /// The retries are spent, and a run stopped with a step unfinished.
+    GaveUp,
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum PrepareRun {
     Start,
     Retry,
 }
 
-/// What to do about a preparation that is not running, `last_try` being its last start or, for a
-/// step left installing, its last state write if later.
-fn prepare_due(
+/// How preparation stands, `written` being when the state file was last written, and `retries`
+/// and `last_start` this loop's retries and its last start of `ployz-prepare`. A run that stopped
+/// is retried once it has waited [`PREPARE_RETRY`] since the later of its last record and its
+/// last start, up to [`PREPARE_TRIES`] times. A run's last record mid-step is its latest save:
+/// the ZFS step saves what it adds as it goes, without a new time of its own.
+fn preparation(
     state: Option<&PrepState>,
-    last_try: Option<DateTime<Utc>>,
+    written: Option<DateTime<Utc>>,
+    liveness: Liveness,
     retries: u32,
+    last_start: Option<DateTime<Utc>>,
     now: DateTime<Utc>,
-) -> Option<PrepareRun> {
-    // A start that left no state, or a step still installing with no run behind it, died
-    // mid-step, by a crash or a reboot.
-    let ended_at = if state.is_none_or(PrepState::installing) {
-        let Some(last_try) = last_try else {
-            return state.is_none().then_some(PrepareRun::Start);
-        };
-        last_try
-    } else {
-        let failed = DateTime::parse_from_rfc3339(state?.failed_at()?)
-            .ok()?
-            .to_utc();
-        last_try.map_or(failed, |last_try| last_try.max(failed))
+) -> Preparation {
+    match liveness {
+        Liveness::Live => return Preparation::Running,
+        Liveness::Unknown => return Preparation::Unknown,
+        Liveness::Stopped => {}
+    }
+    let stopped = match state {
+        Some(state) if !state.unfinished() && !state.failed() => return Preparation::Finished,
+        Some(state) if !state.unfinished() => Stopped::Failed(state.failed_at()),
+        Some(state) => Stopped::MidStep(state.last_dated().max(written)),
+        None => Stopped::MidStep(None),
     };
-    let waited = now.signed_duration_since(ended_at).to_std().ok()?;
-    (waited >= PREPARE_RETRY && retries < PREPARE_TRIES).then_some(PrepareRun::Retry)
+    let since = match stopped {
+        Stopped::MidStep(dated) => dated.max(last_start),
+        Stopped::Failed(at) => at.max(last_start),
+    };
+    let waited = since.map(|since| now.signed_duration_since(since).to_std());
+    // A time ahead of this host's clock has not been waited out.
+    let due = waited.is_none_or(|waited| waited.is_ok_and(|waited| waited >= PREPARE_RETRY));
+    let spent = retries >= PREPARE_TRIES;
+    match (stopped, since) {
+        (Stopped::MidStep(_), None) => Preparation::NotStarted,
+        (Stopped::MidStep(_), Some(_)) if spent => Preparation::GaveUp,
+        (Stopped::MidStep(_), Some(_)) if !due => Preparation::DiedMidStep,
+        (Stopped::Failed(_), _) if !due || spent => Preparation::Failed,
+        (Stopped::MidStep(_) | Stopped::Failed(_), _) => Preparation::RetryDue,
+    }
+}
+
+/// How a preparation that isn't running stopped: mid-step, last dated at the time given, or with
+/// a step failed at the time given.
+#[derive(Clone, Copy)]
+enum Stopped {
+    MidStep(Option<DateTime<Utc>>),
+    Failed(Option<DateTime<Utc>>),
 }
 
 pub(crate) fn ago(at: DateTime<Utc>, now: DateTime<Utc>) -> String {

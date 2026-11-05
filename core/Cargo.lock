@@ -3936,6 +3936,7 @@ dependencies = [
  "indicatif",
  "ipnet",
  "iroh",
+ "nix 0.29.0",
  "oci-client",
  "ployz-build",
  "ployz-core",
