@@ -9,3 +9,29 @@ index cb8ac534cfaa958ceaab2886063437b2aff2194f..90c6ec50e2fb2c229c62bbbbeb69c644
  	useNitroApp().captureError?.(error, { tags: [type] });
  }
  export function trapUnhandledErrors() {
+diff --git a/dist/runtime/internal/vite/dev-worker.mjs b/dist/runtime/internal/vite/dev-worker.mjs
+index bfc182bce14a25194c85538439ca9e7f7d55e25b..f79a6f0286e0ae28418dfaf83d17c9f6df02040e 100644
+--- a/dist/runtime/internal/vite/dev-worker.mjs
++++ b/dist/runtime/internal/vite/dev-worker.mjs
+@@ -100,10 +100,18 @@ function rpc(name, data, timeout = 3000) {
+   });
+ }
+ 
+-// Trap unhandled errors to avoid worker crash
++// Trap unhandled errors to avoid worker crash. Once the Nitro app is up, hand them to its captureError, as
++// production's trap does, so its plugins log them; printed raw, an error can carry a failed query's params.
++function trapped(type) {
++  return (error) => {
++    const app = globalThis.__nitro__?.default;
++    if (typeof app?.captureError === "function") app.captureError(error, { tags: [type] });
++    else console.error(error);
++  };
++}
+ if (typeof process !== "undefined" && typeof process.on === "function") {
+-  process.on("unhandledRejection", (error) => console.error(error));
+-  process.on("uncaughtException", (error) => console.error(error));
++  process.on("unhandledRejection", trapped("unhandledRejection"));
++  process.on("uncaughtException", trapped("uncaughtException"));
+ }
+ 
+ // ----- RSC Support -----
