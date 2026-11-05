@@ -920,6 +920,181 @@ fn a_follow_landing_on_a_row_its_own_pair_owns_releases_it() {
     );
 }
 
+/// Save `environment`'s Working State.
+fn save(store: &ConfigStore, who: &Actor, environment: &str) {
+    let publish = Publish {
+        id: None,
+        environment: at(environment),
+        version: Some(diff(store, who, environment).version),
+        message: None,
+        accept_volume_loss: Vec::new(),
+    };
+    store
+        .write_trusted(who, &publish, &Trusted::default())
+        .unwrap();
+}
+
+/// Undo `synced`: Ok, or the refusal's code and message.
+fn undo_sync(
+    store: &ConfigStore,
+    who: &Actor,
+    synced: &ployz_store::Synced,
+) -> Result<(), (RpcErrorCode, String)> {
+    store
+        .write(
+            who,
+            &ployz_store::UndoSync {
+                sync: synced.sync.clone(),
+            },
+        )
+        .map(|_| ())
+        .map_err(|error| (error.code, error.message))
+}
+
+/// fix-web's `web.env.KEY` for each of `keys`, Null when absent.
+fn fix_web_env(store: &ConfigStore, who: &Actor, keys: &[&str]) -> Vec<Value> {
+    let web = web(store, who, "fix-web");
+    keys.iter().map(|key| web["env"][key].clone()).collect()
+}
+
+/// A Sync from production into fix-web, then a Follow from production over its rows:
+/// what fix-web shows after the Follow, and what Undo of that Sync does.
+#[derive(Debug, PartialEq)]
+struct FollowThenUndo {
+    case: &'static str,
+    incoming: Vec<String>,
+    hints: Vec<String>,
+    undo: Result<(), (RpcErrorCode, String)>,
+    /// fix-web's `PLAIN` and `MORE` after the Undo.
+    after: Vec<Value>,
+}
+
+/// Production stages `PLAIN=2` (and `MORE=m` when `more`), fix-web includes it as
+/// Sync 1 and saves it when `saved`, fix-web sets `PLAIN` to `own` when given, then
+/// production deploys `change`: what Undo of Sync 1 meets.
+fn follow_over_sync(
+    more: bool,
+    saved: bool,
+    own: Option<&str>,
+    change: (&str, &str),
+) -> (ConfigStore, Actor, ployz_store::Synced) {
+    let (store, who) = shop();
+    set(&store, &who, "production", &[("web.env.PLAIN", json!("2"))]);
+    if more {
+        set(&store, &who, "production", &[("web.env.MORE", json!("m"))]);
+    }
+    let synced = include(&store, &who, "production", "fix-web", 1);
+    if saved {
+        save(&store, &who, "fix-web");
+    }
+    if let Some(own) = own {
+        set(&store, &who, "fix-web", &[("web.env.PLAIN", json!(own))]);
+    }
+    set(&store, &who, "production", &[(change.0, json!(change.1))]);
+    deploy(&store, &who, "production", 2);
+    (store, who, synced)
+}
+
+#[test]
+fn a_follow_over_a_row_a_sync_landed_keeps_that_syncs_undo() {
+    let changed = || {
+        Err((
+            RpcErrorCode::Conflict,
+            "web.env.PLAIN changed since it synced: change it back instead".to_owned(),
+        ))
+    };
+    let plain = ("web.env.PLAIN", "3");
+    let cases = [
+        ("R1", follow_over_sync(true, true, None, plain)),
+        ("R2", follow_over_sync(false, true, None, plain)),
+        ("R3", follow_over_sync(true, false, None, plain)),
+        ("R4", follow_over_sync(true, true, Some("5"), plain)),
+        (
+            "C1",
+            follow_over_sync(true, true, None, ("web.env.OTHER", "o")),
+        ),
+        ("L1", follow_over_sync(true, true, None, plain)),
+    ];
+    let mut seen = Vec::new();
+    for (case, (store, who, synced)) in cases {
+        if ["R1", "R2", "R3", "L1"].contains(&case) {
+            let landed = &web(&store, &who, "fix-web")["env"]["PLAIN"];
+            assert_eq!(*landed, json!("3"), "{case}: the Follow landed");
+        }
+        let (incoming, hints) = (
+            incoming(&store, &who, "fix-web"),
+            hints(&store, &who, "fix-web"),
+        );
+        if case == "L1" {
+            // A Discard to Saved, not to Head: Head would put back the deployed `1`.
+            store
+                .write(
+                    &who,
+                    &Discard {
+                        environment: at("fix-web"),
+                        target: Some(ployz_store::DiscardTarget::Saved),
+                        path: Some(SettingPath::parse("web.env.PLAIN").unwrap()),
+                        version: None,
+                    },
+                )
+                .unwrap();
+        }
+        seen.push(FollowThenUndo {
+            case,
+            incoming,
+            hints,
+            undo: undo_sync(&store, &who, &synced),
+            after: fix_web_env(&store, &who, &["PLAIN", "MORE"]),
+        });
+    }
+    let followed = || vec!["web.env.PLAIN production".to_owned()];
+    let expected = [
+        FollowThenUndo {
+            case: "R1",
+            incoming: followed(),
+            hints: Vec::new(),
+            undo: changed(),
+            after: vec![json!("3"), json!("m")],
+        },
+        FollowThenUndo {
+            case: "R2",
+            incoming: followed(),
+            hints: Vec::new(),
+            undo: changed(),
+            after: vec![json!("3"), Value::Null],
+        },
+        FollowThenUndo {
+            case: "R3",
+            incoming: followed(),
+            hints: Vec::new(),
+            undo: changed(),
+            after: vec![json!("3"), json!("m")],
+        },
+        FollowThenUndo {
+            case: "R4",
+            incoming: Vec::new(),
+            hints: vec![r#"web.env.PLAIN = "3" from production"#.to_owned()],
+            undo: changed(),
+            after: vec![json!("5"), json!("m")],
+        },
+        FollowThenUndo {
+            case: "C1",
+            incoming: vec!["web.env.OTHER production".to_owned()],
+            hints: Vec::new(),
+            undo: Ok(()),
+            after: vec![json!("1"), Value::Null],
+        },
+        FollowThenUndo {
+            case: "L1",
+            incoming: followed(),
+            hints: Vec::new(),
+            undo: Ok(()),
+            after: vec![json!("2"), Value::Null],
+        },
+    ];
+    assert_eq!(seen, expected);
+}
+
 #[test]
 fn a_service_the_parent_removes_and_adds_again_follows_into_a_readable_branch() {
     let (store, who) = shop();
