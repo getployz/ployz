@@ -703,3 +703,167 @@ async fn a_confirmation_names_no_key_for_an_unusable_key_file() {
     );
     server.abort();
 }
+
+#[tokio::test]
+async fn install_refuses_to_publish_a_held_key_while_the_cluster_awaits_another() {
+    let cluster = FakeCluster::start();
+    let awaited = SealingKey::generate().public_key();
+    cluster.write_sealing_awaits_recovery(&awaited.to_string());
+    let peer = Peer::participating("ployzd-backfill-held-awaits-another", &cluster.store()).await;
+    let held = peer.held();
+    let sealed = peer.share_to(&peer).await;
+
+    let installed = peer
+        .local
+        .install_sealing_key(InstallSealingKeyRequest {
+            from: peer.machine.id,
+            sealed,
+            public_key: held,
+        })
+        .await;
+
+    assert!(
+        matches!(
+            &installed,
+            Err(LocalMachineError::Sealing(SealingError::AwaitsRecovery(key))) if *key == awaited
+        ),
+        "Install of held key {held} while this Machine reads its Cluster awaiting {awaited} \
+         answered {installed:?}",
+    );
+    assert_eq!(cluster.store().sealing_public_key().await.unwrap(), None);
+    assert_eq!(peer.held(), held);
+    assert_eq!(
+        sealing(&peer.local).await,
+        Some(Sealing::Held { public_key: held })
+    );
+}
+
+#[tokio::test]
+async fn install_publishes_a_held_key_the_cluster_awaits() {
+    let cluster = FakeCluster::start();
+    let peer = Peer::participating("ployzd-backfill-held-awaited", &cluster.store()).await;
+    let held = peer.held();
+    cluster.write_sealing_awaits_recovery(&held.to_string());
+    let sealed = peer.share_to(&peer).await;
+
+    let installed = peer
+        .local
+        .install_sealing_key(InstallSealingKeyRequest {
+            from: peer.machine.id,
+            sealed,
+            public_key: held,
+        })
+        .await
+        .unwrap();
+
+    assert_eq!(installed.public_key, held);
+    assert_eq!(
+        cluster.store().sealing_public_key().await.unwrap(),
+        Some(held)
+    );
+}
+
+#[tokio::test]
+async fn install_publishes_a_held_key_over_a_malformed_marker() {
+    let cluster = FakeCluster::start();
+    let peer = Peer::participating("ployzd-backfill-held-malformed", &cluster.store()).await;
+    let held = peer.held();
+    // With no key published, this marker decides, and it is not a key: any
+    // read of the Cluster's Sealing fails.
+    cluster.write_sealing_awaits_recovery("not a key");
+    let sealed = peer.share_to(&peer).await;
+
+    let installed = peer
+        .local
+        .install_sealing_key(InstallSealingKeyRequest {
+            from: peer.machine.id,
+            sealed,
+            public_key: held,
+        })
+        .await
+        .unwrap();
+
+    assert_eq!(installed.public_key, held);
+    assert_eq!(
+        cluster.store().sealing_public_key().await.unwrap(),
+        Some(held)
+    );
+}
+
+#[tokio::test]
+async fn install_answers_a_held_key_beside_another_published_key() {
+    let (replicated, server) = fake_cluster::store().await;
+    let peer = Peer::participating("ployzd-backfill-held-beside-another", &replicated).await;
+    let held = peer.held();
+    let elsewhere = SealingKey::generate().public_key();
+    replicated
+        .publish_sealing_public_key(elsewhere)
+        .await
+        .unwrap();
+    let sealed = peer.share_to(&peer).await;
+
+    // This pins main's answer. Whether Install should refuse a held key the
+    // Cluster does not publish is a later question.
+    let installed = peer
+        .local
+        .install_sealing_key(InstallSealingKeyRequest {
+            from: peer.machine.id,
+            sealed,
+            public_key: held,
+        })
+        .await
+        .unwrap();
+
+    assert_eq!(installed.public_key, held);
+    assert_eq!(
+        replicated.sealing_public_key().await.unwrap(),
+        Some(elsewhere)
+    );
+    server.abort();
+}
+
+#[tokio::test]
+async fn a_keyless_machine_beside_a_holder_of_another_key_awaits_recovery_and_refuses_that_key() {
+    let cluster = FakeCluster::start();
+    let awaited = SealingKey::generate().public_key();
+    cluster.write_sealing_awaits_recovery(&awaited.to_string());
+    let holder = Peer::participating("ployzd-backfill-other-holder", &cluster.store()).await;
+    let keyless = Peer::needing_access("ployzd-backfill-keyless-beside", &cluster.store()).await;
+    let held = holder.held();
+    // The held arm of Install on the holder itself inserts what its
+    // publisher's Held publish would.
+    let own = holder.share_to(&holder).await;
+    let _ = holder
+        .local
+        .install_sealing_key(InstallSealingKeyRequest {
+            from: holder.machine.id,
+            sealed: own,
+            public_key: held,
+        })
+        .await;
+
+    assert_eq!(
+        sealing(&keyless.local).await,
+        Some(Sealing::AwaitsRecovery {
+            public_key: awaited
+        })
+    );
+    let sealed = holder.share_to(&keyless).await;
+    let installed = keyless
+        .local
+        .install_sealing_key(InstallSealingKeyRequest {
+            from: holder.machine.id,
+            sealed,
+            public_key: held,
+        })
+        .await;
+    assert!(
+        matches!(
+            &installed,
+            Err(LocalMachineError::Sealing(SealingError::AwaitsRecovery(key))) if *key == awaited
+        ),
+        "Install of {held} on a Machine reading its Cluster awaiting {awaited} answered {installed:?}",
+    );
+    assert_eq!(keyless.key(), None);
+    assert_eq!(cluster.store().sealing_public_key().await.unwrap(), None);
+}

@@ -143,7 +143,7 @@ impl LocalMachine {
         }
         let replicated = self.replicated()?;
         let expected = match replicated.cluster_sealing(record.recovery_seed()).await? {
-            ClusterSealing::Published(published) => published,
+            ClusterSealing::Published { key: published, .. } => published,
             // The marker names the awaited key, or, before the publisher
             // replicates it, a founder's seed does.
             ClusterSealing::AwaitsRecovery(awaited) => awaited,

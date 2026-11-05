@@ -351,27 +351,47 @@ pub(crate) enum ClusterSealing {
     /// No key is published on this replica. The recovery marker names this
     /// key, or, with no marker, this Machine's seed does.
     AwaitsRecovery(SealingPublicKey),
-    /// The key published on this replica. The recovery marker may still be
-    /// present beside it, since nothing clears it, and is left unread.
-    Published(SealingPublicKey),
+    /// A key is published on this replica. Nothing clears the recovery marker,
+    /// so one may still be present beside it.
+    Published {
+        /// The key published on this replica.
+        key: SealingPublicKey,
+        /// The key the recovery marker on this replica names, when it names a
+        /// key other than `key`. `None` means one of three things: no marker,
+        /// a marker naming `key`, or a marker that is not a Sealing public
+        /// key. The published key decides, so a marker that does not decode
+        /// beside it is not an error. The seed never fills this.
+        superseded: Option<SealingPublicKey>,
+    },
 }
 
 impl ClusterSealing {
     /// Decides from the two row values one read returned, in precedence
     /// order: a published key, then the recovery marker, then the seed's
-    /// expected key. Only the value that decides is parsed, so a published
-    /// key leaves the marker unread.
+    /// expected key.
+    ///
+    /// - A published key decides [`Self::Published`]. The marker beside it
+    ///   only fills `superseded`, and one that does not decode fills `None`
+    ///   rather than failing the read.
+    /// - With no key published, the marker decides [`Self::AwaitsRecovery`].
+    /// - With neither row, the seed's expected key decides `AwaitsRecovery`,
+    ///   and with no seed either, [`Self::Unsealed`].
     ///
     /// # Errors
     /// Returns [`Error::Protocol`] when the deciding row value is not a
-    /// Sealing public key. A malformed value never reads as absent.
+    /// Sealing public key: the published key, or, with none published, the
+    /// marker. A malformed deciding value never reads as absent.
     pub(crate) fn decide(
         published: &serde_json::Value,
         awaits: &serde_json::Value,
         seed: Option<&RecoverySeed>,
     ) -> Result<Self, Error> {
-        if let Some(published) = sealing_key_value(published, "Sealing public key")? {
-            return Ok(Self::Published(published));
+        if let Some(key) = sealing_key_value(published, "Sealing public key")? {
+            let superseded = sealing_key_value(awaits, "Sealing public key awaiting recovery")
+                .ok()
+                .flatten()
+                .filter(|marker| *marker != key);
+            return Ok(Self::Published { key, superseded });
         }
         if let Some(awaits) = sealing_key_value(awaits, "Sealing public key awaiting recovery")? {
             return Ok(Self::AwaitsRecovery(awaits));
@@ -379,6 +399,23 @@ impl ClusterSealing {
         Ok(seed.map_or(Self::Unsealed, |seed| {
             Self::AwaitsRecovery(seed.expected_public_key)
         }))
+    }
+
+    /// `Some(awaited)` only for [`Self::AwaitsRecovery`] naming a key other
+    /// than `key`; `None` for [`Self::Unsealed`], for `AwaitsRecovery` naming
+    /// `key`, and for every [`Self::Published`].
+    ///
+    /// `AwaitsRecovery` already covers a seed with no marker on this replica
+    /// ([`Self::decide`]). Under `Published` this never bars: inserting a key
+    /// there is a no-op (`ON CONFLICT (key) DO NOTHING`), and whether a held
+    /// key beside another published key should be refused is not decided
+    /// here. Install of a new key states the same rule in its own match, which
+    /// also refuses another published key.
+    pub(crate) fn awaits_another(self, key: SealingPublicKey) -> Option<SealingPublicKey> {
+        match self {
+            Self::AwaitsRecovery(awaited) if awaited != key => Some(awaited),
+            Self::Unsealed | Self::AwaitsRecovery(_) | Self::Published { .. } => None,
+        }
     }
 }
 

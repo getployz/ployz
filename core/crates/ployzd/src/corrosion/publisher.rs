@@ -154,6 +154,7 @@ pub async fn run_machine_publisher(
             published_sealing = awaiting_recovery(replicated, observed, &record).await;
             let overlay = live.mark_seen(published_sealing);
             if let Some(ployz_core::Sealing::Held { public_key }) = overlay.sealing
+                && held_key_publishable(replicated, public_key, &record).await
                 && let Err(error) = replicated.publish_sealing_public_key(public_key).await
             {
                 eprintln!(
@@ -221,6 +222,37 @@ async fn awaiting_recovery(
             );
         })
         .ok()
+}
+
+/// Whether to insert the held Sealing public key as the Cluster's: not while
+/// this Machine reads its Cluster awaiting recovery of another key, as
+/// [`ClusterSealing::awaits_another`](super::ClusterSealing::awaits_another)
+/// answers. [`KeyFile::sealing`] reads no Cluster row for a held key, so this
+/// read narrows only the insert, never what the row reports. A failed read is
+/// logged and the key is inserted.
+async fn held_key_publishable(
+    replicated: &ReplicatedStore,
+    held: ployz_core::SealingPublicKey,
+    record: &LocalMachineRecord,
+) -> bool {
+    match replicated.cluster_sealing(record.recovery_seed()).await {
+        Ok(cluster) => match cluster.awaits_another(held) {
+            None => true,
+            Some(awaited) => {
+                eprintln!(
+                    "not publishing Sealing public key {held}: this Machine reads that its Cluster awaits recovery of {awaited}",
+                );
+                false
+            }
+        },
+        Err(error) => {
+            eprintln!(
+                "failed to read whether the Cluster awaits recovery of another Sealing public key; publishing {held}: {error}",
+                error = ployz_core::error_chain::inline(&error),
+            );
+            true
+        }
+    }
 }
 
 /// A founder awaiting recovery names the Sealing public key before it publishes
