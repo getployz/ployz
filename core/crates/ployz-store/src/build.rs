@@ -108,8 +108,10 @@ pub struct BuildView {
     /// Set on a Failed build that never reported how it ended: its Deployment ended,
     /// or lost its runner, while the Servers built it. Sent as a marker beside
     /// `failed` rather than a status of its own, so a reader from before it reads
-    /// Failed. Private, so only the Store's view sets it beside `status`, and every
-    /// reader asks [`BuildView::is_interrupted`], which reads it only with Failed.
+    /// Failed. Private, so no struct literal or assignment outside the Store sets it:
+    /// the Store's view sets it beside `status`. Decoding a `BuildView`, or changing
+    /// its `status` after, can still pair it with any status, so every reader asks
+    /// [`BuildView::is_interrupted`], which reads it only with Failed.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     #[ts(as = "Option<bool>", optional)]
     interrupted: bool,
