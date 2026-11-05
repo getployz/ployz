@@ -139,12 +139,14 @@ export function buildStoreNodes(
       draggable: false,
       data: { live },
     } satisfies CanvasStoreLiveNode)),
-    // Where its creator put it, which is saved before the Store is asked, so the answer lands in the same spot.
+    // Where its creator put it, which is saved before the Store is asked, so the answer lands in the same spot. It
+    // holds still until the Store answers, since a drag before then has no node to save.
     ...(store.arriving ?? []).map((arriving) => ({
       ...SERVICE_NODE_SIZE,
       id: arriving.id,
       type: "pending",
       position: place(arriving.node, arriving.id),
+      draggable: false,
       data: { name: arriving.name },
     } satisfies PendingNode)),
   ];

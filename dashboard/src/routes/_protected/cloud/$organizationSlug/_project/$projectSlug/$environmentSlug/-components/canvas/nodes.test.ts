@@ -90,7 +90,7 @@ describe("Config Store nodes", () => {
   it("draws an arriving node where its creator saved it, so the Store's answer lands in the same spot", () => {
     const saved = createCanvasPosition({ resourceType: "volume", resourceId: "new-vol", x: 960, y: 640 });
     const nodes = buildStoreNodes({ ...store, arriving: [{ node: "volume", id: "new-vol", name: "cache" }] }, [saved], "e");
-    expect(nodes.find((node) => node.id === "new-vol")).toMatchObject({ type: "pending", position: { x: 960, y: 640 }, data: { name: "cache" } });
+    expect(nodes.find((node) => node.id === "new-vol")).toMatchObject({ type: "pending", position: { x: 960, y: 640 }, draggable: false, data: { name: "cache" } });
   });
 
   it("keeps only arriving Services, Volumes and Configs the Store has not answered", () => {
