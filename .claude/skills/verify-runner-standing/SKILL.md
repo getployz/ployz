@@ -19,16 +19,16 @@ Each store call is one step, because `record` (`lifecycle.rs:1512`), `claim` (`:
 
 What `status()` returns, as the model reads it:
 
-- `Ok(Running)` or `Ok(Cancelling)`: the Alive arm calls `running` (`lifecycle.rs:1533-1543`), which passes both (`core/crates/ployz-store/src/deployment/mod.rs:1782-1784`).
+- `Ok(Running)` or `Ok(Cancelling)`: the Alive arm calls `running` (`lifecycle.rs:1533-1543`), which passes both (`core/crates/ployz-store/src/deployment/mod.rs:1790-1792`).
 - `Ok(Unknown)`: the Alive arm skips `running` for an Unknown Deployment (`lifecycle.rs:1534-1540`). The owner check still passes, since the takeover leaves the runner column (`lifecycle.rs:1522-1524`, `1320-1332`).
-- `Err(conflict "This Deployment already ended")`: `running` refuses an Applied, Failed or Cancelled one (`mod.rs:1790-1792`, `1738-1740`).
+- `Err(conflict "This Deployment already ended")`: `running` refuses an Applied, Failed or Cancelled one (`mod.rs:1798-1800`, `1873-1875`).
 - `Err(unavailable)`: `store_call` gave up waiting or running (`core/crates/ployz/src/sdk/store_call.rs:41-56`). The model allows one such failure (`failing`).
 
 The properties, each one sentence:
 
 - `TAKEOVER_KEEPS_OUTCOME`: **a run never returns with its `Executed` refused because the Deployment went Unknown.** This is finding 1. The store keeps no outcome for a run that executed (`lifecycle.rs:1619-1622`).
 - `DELETIONS_KEPT`: **once the run returned, the Deployment's nodes show the Volumes it deleted as Removed, unless `cancel_in_flight` ended the Deployment.** This is finding 1 with Volumes deleted. It checks only the `removed_volume` node projection (`lifecycle.rs:2152-2174`), not Applied State. `cancel_in_flight` is exempt because `forget_cluster`, which runs it, lets go of the Organization's Applied State and Volumes' fixed storage (`teardown.rs:442-445`, `458-469`).
-- `NO_WORK_AFTER_END`: **once a read said the run is over, the runner starts no work, and keeps on none but deleting Volumes.** "Over" is Unknown or ended, the two `running` refuses (`mod.rs:1785-1792`). Deleting is exempt from "keeps on" because its abort is `|| ()` by design (`store_runner.rs:777-778`). This is finding 2.
+- `NO_WORK_AFTER_END`: **once a read said the run is over, the runner starts no work, and keeps on none but deleting Volumes.** "Over" is Unknown or ended, the two `running` refuses (`mod.rs:1793-1800`). Deleting is exempt from "keeps on" because its abort is `|| ()` by design (`store_runner.rs:777-778`). This is finding 2.
 - `HEEDS_CANCEL`: **while its last read said Cancelling, the runner starts or keeps on no work but deleting Volumes.** Deleting is exempt because the code never stops it on a cancel: the one read before `remove_volumes`, `lost_to_another_runner`, acts only on Unknown (`store_runner.rs:771`, `1367-1369`), and its abort is `|| ()` (`:778`).
 - `TAKEN_OVER_INTERRUPTED`: **the store keeps no outcome but Interrupted on a Deployment that went Unknown.** This is what `record`'s takeover refusal keeps (`lifecycle.rs:1619-1622`).
 
@@ -111,7 +111,7 @@ Finding 1, confirmed step by step at the sync commit below, has a path of 10 row
 2. Executing returns a Success. `lost_to_another_runner` reads `Ok(Running)`, which is not Unknown (`:771`, `1367-1369`). `remove_volumes` starts under `renewing` with the no-op abort `|| ()` (`:776-778`).
 3. Another Deployment of the Environment is claimed. Its takeover saves this one unknown, ended, and leaves its runner column (`lifecycle.rs:1320-1332`).
 4. `remove_volumes` returns the Volumes it deleted. The gate reads `Ok(Unknown)`, which is not Cancelling, so `fill_ingress` runs (`store_runner.rs:782-785`).
-5. `record(Executed)` sends the Success, naming the deleted Volumes (`:786-791`). The Deployment is Unknown and the outcome not Interrupted, so `running` refuses it (`lifecycle.rs:1619-1622`, `mod.rs:1785-1789`). The arm returns before it writes anything (`lifecycle.rs:1599-1622`), and `execute` returns the error. On Cloud, `runStoreDeployment` catches that conflict as `{ nothingToRun }` (`dashboard/src/modules/config-store/store-deployment.server.ts:106-107`). The function then marks the Volumes done, skips `retire-old`, and skips `mail-failure`, which runs only for a `ran` result that failed or is unknown (`dashboard/src/modules/config-store/store-deployment.inngest.ts:83-107`). `onFailure`, which calls `stopStoreDeploymentRun` (`:44-50`), never runs.
+5. `record(Executed)` sends the Success, naming the deleted Volumes (`:786-791`). The Deployment is Unknown and the outcome not Interrupted, so `running` refuses it (`lifecycle.rs:1619-1622`, `mod.rs:1793-1797`). The arm returns before it writes anything (`lifecycle.rs:1599-1622`), and `execute` returns the error. On Cloud, `runStoreDeployment` catches that conflict as `{ nothingToRun }` (`dashboard/src/modules/config-store/store-deployment.server.ts:106-107`). The function then marks the Volumes done, skips `retire-old`, and skips `mail-failure`, which runs only for a `ran` result that failed or is unknown (`dashboard/src/modules/config-store/store-deployment.inngest.ts:83-107`). `onFailure`, which calls `stopStoreDeploymentRun` (`:44-50`), never runs.
 
 No `status()` call fails on this path. The shortest path that breaks `TAKEOVER_KEEPS_OUTCOME` deletes nothing: a cancel lets the gate skip `fill_ingress`, and the takeover lands after the gate's read, so the store refuses a Failed outcome the same way. When the takeover lands before `lost_to_another_runner` instead, the run records Interrupted with no deletions (`store_runner.rs:771-773`, `1253-1264`). `tests/deploy_client/runner_cancellation.rs` `taken_over_mid_create` (`:120-164`) shows that case, with the takeover while the first run still executes.
 
@@ -166,7 +166,7 @@ These are out of scope:
 
 - a takeover or `cancel_in_flight` between a read and the record the model merges with it, such as `connecting`'s Cancelling read and its `NotExecuted` (`store_runner.rs:205`), which then fails
 - `build`'s own records (`Build`, `Built`), the Deploy's warnings (`record_warnings`, `:775`), and what `fill_ingress` records about ingress (`:815-835`)
-- the lease lapsing, which every read remaps to Unknown (`mod.rs:987-989`, `1235-1243`), after `LEASE` (600 s, `mod.rs:344`) with no record
+- the lease lapsing, which every read remaps to Unknown (`mod.rs:987-989`, `1286-1296`), after `LEASE` (600 s, `mod.rs:344`) with no record
 - a second claim by the same runner after a preview, which also sets the Deployment Unknown and keeps its runner (`lifecycle.rs:1241-1252`)
 - Cloud's `abandonDeployment` while the run is still going, and the Abandoned arm's `NotExecuted` for a run with no preview (`lifecycle.rs:1887-1900`)
 - a dial that fails, a refused prepare, or a build that needs an upload
@@ -188,4 +188,4 @@ Each model step is a copy of code at the sync commit. Reread these when a diff t
 - `core/crates/ployz-core/src/config/runtime_outcome.rs`: the Interrupted arm of the projection.
 - `core/crates/ployz-store/src/teardown.rs`: `forget_cluster`'s call to `cancel_in_flight`.
 
-Sync commit: `d44c048596334df069b0c5ff27c120e357f1edd0`, the `main` this model was checked against, and every line cited above is at it, except the `lifecycle.rs` and `mod.rs` lines. Those are cited at `5e7ca40aa0`, which rewrote `claim`'s re-claim and takeover, `cancel`, `cancel_in_flight`, `record`'s Alive, Executed and Abandoned arms, `end` and `lapsed`; each was rechecked there and answers as the model says. The `mod.rs` lines moved again when `Standing` gained `Raw` for rows no Store writes. They are cited at the commit that added it, where `running` and `ended` are unchanged. Code in the list above that changed after these has not been rechecked.
+Sync commit: `d44c048596334df069b0c5ff27c120e357f1edd0`, the `main` this model was checked against, and every line cited above is at it, except the `lifecycle.rs` and `mod.rs` lines. Those are cited at `5e7ca40aa0`, which rewrote `claim`'s re-claim and takeover, `cancel`, `cancel_in_flight`, `record`'s Alive, Executed and Abandoned arms, `end` and `lapsed`; each was rechecked there and answers as the model says. The `mod.rs` lines moved again when `Standing` gained `Raw` for rows no Store writes, and when `Raw`'s contract and parity test grew. They are cited at the commit that last re-cited them, where `running`, `ended` and `lapsed` are unchanged and `Standing::status` only gained `Raw`'s arm. All 68 cites above into `lifecycle.rs` and `mod.rs`, bare ranges included, land on the code they name there. Code in the list above that changed after these has not been rechecked.

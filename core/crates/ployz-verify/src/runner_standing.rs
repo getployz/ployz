@@ -22,7 +22,7 @@
 //!
 //! The second finding has two causes. The sites read `Err` as keep: once
 //! `cancel_in_flight` ended the Deployment, `status()` answers `Err` ("This Deployment
-//! already ended", deployment/mod.rs:1790-1792, :1865-1867), and `renewing` keeps the work
+//! already ended", deployment/mod.rs:1798-1800, :1873-1875), and `renewing` keeps the work
 //! in hand going (store_runner.rs:1213-1219). And `connecting` and the gate before
 //! `fill_ingress` read `Ok(Unknown)` as keep (:1195, :782).
 //!
