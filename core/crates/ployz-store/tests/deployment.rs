@@ -3381,6 +3381,238 @@ fn a_newer_deployment_whose_runner_is_gone_does_not_hold_up_a_redeploy() {
     assert_eq!(retry(&store, &who, 3, 1).unwrap().number, Some(3));
 }
 
+/// A store of its own for one case, so no other case's claim takes its row over.
+fn own_shop() -> (ConfigStore, Actor, String, tempfile::TempDir) {
+    let dir = tempfile::tempdir().unwrap();
+    let url = backend::fresh_url(&dir);
+    let (store, who) = shop_in(ConfigStore::open(&url, backend::key()).unwrap());
+    (store, who, url, dir)
+}
+
+/// Lapse Deployment `n`'s runner lease, as an hour passing after its claim would:
+/// it reads `started_at + 600`.
+fn lapse(url: &str, n: u8) {
+    backend::execute(
+        url,
+        &format!(
+            "UPDATE config_deployment SET started = started - 3600, lease = started - 3000 \
+             WHERE id = '{}'",
+            id(n)
+        ),
+    );
+}
+
+/// How Deployment `n` reads: its status, what its `ended_at` says against
+/// `expected`, and whether its `ended` column is set.
+fn ending(
+    (store, who, url): (&ConfigStore, &Actor, &str),
+    n: u8,
+    expected: Ended,
+) -> (DeploymentStatus, String, i64) {
+    let deployment = store
+        .read(who, &ployz_store::DeploymentQuery { id: id(n) })
+        .unwrap()
+        .deployment;
+    let now = i64::try_from(
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs(),
+    )
+    .unwrap();
+    let (started, ended) = (deployment.started_at, deployment.ended_at);
+    let holds = match expected {
+        Ended::Set => ended.is_some_and(|ended| deployment.admitted_at <= ended && ended <= now),
+        Ended::Started => started.zip(ended).is_some_and(|(s, e)| s <= e && e <= now),
+        Ended::AtLease => ended.is_some() && ended == started.map(|started| started + 600),
+    };
+    let verdict = if holds {
+        format!("{expected:?}")
+    } else {
+        format!("ended_at {ended:?}, started_at {started:?}, now {now}")
+    };
+    let column = backend::count(
+        url,
+        &format!(
+            "SELECT COUNT(*) FROM config_deployment WHERE id = '{}' AND ended IS NOT NULL",
+            id(n)
+        ),
+    );
+    (deployment.status, verdict, column)
+}
+
+/// What a Deployment's `ended_at` must say.
+#[derive(Clone, Copy, Debug)]
+enum Ended {
+    /// Set, no earlier than its admission and no later than now.
+    Set,
+    /// Set, no earlier than its start and no later than now.
+    Started,
+    /// Its runner lease: `started_at + 600` after [`lapse`].
+    AtLease,
+}
+
+#[test]
+fn every_deployment_that_leaves_flight_records_when_it_ended() {
+    use DeploymentStatus::{Applied, Cancelled, Failed, Superseded, Unknown};
+    let (a, b) = (runner("runner-a"), runner("runner-b"));
+    let mut read = Vec::new();
+    let mut expected = Vec::new();
+    let mut case = |name: &'static str,
+                    status: DeploymentStatus,
+                    ended: Ended,
+                    column: i64,
+                    drive: &dyn Fn(&ConfigStore, &Actor, &str)| {
+        let (store, who, url, _dir) = own_shop();
+        drive(&store, &who, &url);
+        let (status_read, verdict, column_read) = ending((&store, &who, &url), 1, ended);
+        read.push((name, status_read, verdict, column_read));
+        expected.push((name, status, format!("{ended:?}"), column));
+    };
+
+    case(
+        "superseded from the queue",
+        Superseded,
+        Ended::Set,
+        1,
+        &|store, who, _| {
+            admit(store, who, 1, &[], None).unwrap();
+            admit(store, who, 2, &[], None).unwrap();
+        },
+    );
+    case(
+        "taken over live",
+        Unknown,
+        Ended::Started,
+        1,
+        &|store, who, _| {
+            admit(store, who, 1, &[], None).unwrap();
+            store.claim(&id(1), &a).unwrap();
+            admit(store, who, 2, &[], None).unwrap();
+            store.claim(&id(2), &b).unwrap();
+        },
+    );
+    case(
+        "taken over lapsed",
+        Unknown,
+        Ended::AtLease,
+        1,
+        &|store, who, url| {
+            admit(store, who, 1, &[], None).unwrap();
+            store.claim(&id(1), &a).unwrap();
+            lapse(url, 1);
+            admit(store, who, 2, &[], None).unwrap();
+            store.claim(&id(2), &b).unwrap();
+        },
+    );
+    case(
+        "claimed again after preparing",
+        Unknown,
+        Ended::Started,
+        1,
+        &|store, who, _| {
+            admit(store, who, 1, &[], None).unwrap();
+            store.claim(&id(1), &a).unwrap();
+            store
+                .record(&id(1), &a, RunEvidence::Prepared(preview(&["web"])))
+                .unwrap();
+            assert_eq!(code(store.claim(&id(1), &a)), RpcErrorCode::Conflict);
+        },
+    );
+    case(
+        "abandoned after preparing",
+        Unknown,
+        Ended::Started,
+        1,
+        &|store, who, _| {
+            admit(store, who, 1, &[], None).unwrap();
+            store.claim(&id(1), &a).unwrap();
+            store
+                .record(&id(1), &a, RunEvidence::Prepared(preview(&["web"])))
+                .unwrap();
+            store.record(&id(1), &a, RunEvidence::Abandoned).unwrap();
+        },
+    );
+    case(
+        "alive after its lease lapsed",
+        Unknown,
+        Ended::AtLease,
+        1,
+        &|store, who, url| {
+            admit(store, who, 1, &[], None).unwrap();
+            store.claim(&id(1), &a).unwrap();
+            lapse(url, 1);
+            store.record(&id(1), &a, RunEvidence::Alive).unwrap();
+        },
+    );
+    case(
+        "lapsed, nothing written",
+        Unknown,
+        Ended::AtLease,
+        0,
+        &|store, who, url| {
+            admit(store, who, 1, &[], None).unwrap();
+            store.claim(&id(1), &a).unwrap();
+            lapse(url, 1);
+        },
+    );
+    // Exits that record their end on main already.
+    case(
+        "cancelled while queued",
+        Cancelled,
+        Ended::Set,
+        1,
+        &|store, who, _| {
+            admit(store, who, 1, &[], None).unwrap();
+            cancel(store, who, 1).unwrap();
+        },
+    );
+    case("applied", Applied, Ended::Started, 1, &|store, who, _| {
+        admit(store, who, 1, &[], None).unwrap();
+        apply(store, 1);
+    });
+    case(
+        "not executed",
+        Failed,
+        Ended::Started,
+        1,
+        &|store, who, _| {
+            admit(store, who, 1, &[], None).unwrap();
+            store.claim(&id(1), &a).unwrap();
+            store
+                .record(&id(1), &a, RunEvidence::NotExecuted("stopped".into()))
+                .unwrap();
+        },
+    );
+    case(
+        "abandoned before preparing",
+        Failed,
+        Ended::Started,
+        1,
+        &|store, who, _| {
+            admit(store, who, 1, &[], None).unwrap();
+            store.claim(&id(1), &a).unwrap();
+            store.record(&id(1), &a, RunEvidence::Abandoned).unwrap();
+        },
+    );
+    case(
+        "cancelled while running",
+        Cancelled,
+        Ended::Started,
+        1,
+        &|store, who, _| {
+            admit(store, who, 1, &[], None).unwrap();
+            store.claim(&id(1), &a).unwrap();
+            cancel(store, who, 1).unwrap();
+            store
+                .record(&id(1), &a, RunEvidence::NotExecuted("stopped".into()))
+                .unwrap();
+        },
+    );
+
+    assert_eq!(read, expected);
+}
+
 #[test]
 fn a_full_rollback_retires_the_services_added_since() {
     let (store, who) = shop();
