@@ -6,7 +6,7 @@ const AGAIN = `Trying again every ${GITHUB_REPOS_POLL_MS / 1000} seconds.`;
 
 /**
  * Why the picker has no repositories, or old ones. The poll still reads after a crash, but a crashed collection never
- * takes those reads, so only a new page starts it over.
+ * takes those reads. A new page starts it over at once; otherwise only its gcTime cleanup does, once no picker reads it.
  */
 export function GithubRepositoryRefreshNotice({ initial = false, crashed = false }: { initial?: boolean; crashed?: boolean }) {
   return (
