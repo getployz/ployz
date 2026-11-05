@@ -3,6 +3,8 @@
 //! interleaving within the bounds the module states.
 
 #[cfg(test)]
+mod acme_issuance;
+#[cfg(test)]
 mod build_handoff;
 #[cfg(test)]
 mod caddy_load;
