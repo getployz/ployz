@@ -36,7 +36,7 @@ it("an open picker recovers a failed first load when the next read succeeds", as
     render(<QueryClientProvider client={queryClient}><RouterProvider router={router} /></QueryClientProvider>);
     await waitFor(() => expect(githubRepos.subscriberCount).toBeGreaterThan(0));
     await act(async () => { await expect(read(() => { throw new Error("offline"); })).rejects.toThrow("offline"); });
-    expect((await screen.findByRole("alert")).textContent).toContain("Could not load");
+    expect((await screen.findByRole("alert")).textContent).toBe("Could not load repositories. Trying again every 15 seconds.");
     expect(githubRepos.status).toBe("error");
     const now = new Date().toISOString();
     const rows = () => [{ id: 42, installation_id: 12, name: "repo", full_name: "acme/repo", default_branch: "main", private: true,

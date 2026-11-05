@@ -36,6 +36,9 @@ function toGithubRepositoryView(repository: GithubRepositoryRow): GithubReposito
   };
 }
 
+/** How often an open picker reads the repositories again, which also retries a failed read. */
+export const GITHUB_REPOS_POLL_MS = 15_000;
+
 function createGithubReposCollection(scope: GithubCollectionScope) {
   const data = { organizationSlug: scope.organizationSlug };
   return createApiCollection({
@@ -46,7 +49,7 @@ function createGithubReposCollection(scope: GithubCollectionScope) {
     // Reopening a picker within a minute reuses the cache.
     staleTime: 60_000,
     // A requested sync lands rows in the background; poll only while a picker holds the collection.
-    refetchInterval: 15_000,
+    refetchInterval: GITHUB_REPOS_POLL_MS,
   });
 }
 
