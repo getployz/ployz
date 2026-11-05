@@ -9,6 +9,8 @@ mod build_handoff;
 #[cfg(test)]
 mod caddy_load;
 #[cfg(test)]
+mod mcp_login;
+#[cfg(test)]
 mod pool_ownership;
 #[cfg(test)]
 mod removal_marks;
