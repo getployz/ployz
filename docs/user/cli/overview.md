@@ -605,8 +605,10 @@ when you deploy again. Unchanged services have no rows because no server work ra
 Work your cancel stopped reads `cancelled`. In `--json`, its row keeps `"state": "failed"` with
 `"cancelled": true`, and so does its service: `"outcome": "failed"` with `"cancelled": true`. Work
 Ployz stopped because the deployment lost its runner reads `interrupted`, and its row keeps
-`"state": "failed"` with `"interrupted": true`. Older Ployz versions ignore both markers and read
-the work as failed. If the runner stops reporting, unfinished rows read `unknown`. Completed and
+`"state": "failed"` with `"interrupted": true`. A build reads `interrupted` when its deployment
+ended, or lost its runner, before the build reported how it ended, and keeps `"status": "failed"`
+with `"interrupted": true`. Older Ployz versions ignore these markers and read the work and the
+build as failed. If the runner stops reporting, unfinished rows read `unknown`. Completed and
 failed rows keep their recorded outcomes.
 
 `ployz deployment redeploy`, `start` and `cancel` do what the buttons on a deployment's page do.

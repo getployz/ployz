@@ -209,7 +209,9 @@ failed.
 
 Work Ployz stopped because the deployment lost its runner reads **Interrupted**. That happens when
 another deployment takes the environment over, or when the runner stops reporting in time. The
-deployment then reads **Unknown**.
+deployment then reads **Unknown**. A build reads **Interrupted** when its deployment ended, or lost
+its runner, before the build reported how it ended. Nothing says whether the build itself would
+have failed, so deploy again to build it.
 
 To follow and inspect deployments from the CLI, see
 [Follow and inspect deployments](../cli/overview.md#follow-and-inspect-deployments).
