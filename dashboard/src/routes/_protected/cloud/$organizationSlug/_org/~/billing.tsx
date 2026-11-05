@@ -15,7 +15,6 @@ import { cn } from "#/lib/utils";
 import { billingStateQueryOptions } from "#/modules/billing/billing.queries";
 import { createCustomerPortalServerFn } from "#/modules/billing/billing.functions";
 import { prefetchRemote, requireBilling } from "#/collections/route-data";
-import { formatDay } from "#/lib/format-day";
 
 export const Route = createFileRoute(
   "/_protected/cloud/$organizationSlug/_org/~/billing"
@@ -197,9 +196,11 @@ function Plan({ plan, current, className }: { plan: PlanDetails; current: boolea
   );
 }
 
+// UTC so the server render and the browser agree on the day.
+const periodEndFormat = new Intl.DateTimeFormat("en-US", { dateStyle: "medium", timeZone: "UTC" });
 
 function periodEndCopy(state: { currentPeriodEnd: Date | null; cancelAtPeriodEnd: boolean }) {
   if (state.currentPeriodEnd === null) return "Your Pro subscription is active";
-  const day = formatDay(state.currentPeriodEnd);
+  const day = periodEndFormat.format(state.currentPeriodEnd);
   return state.cancelAtPeriodEnd ? `Your Pro subscription ends on ${day}` : `Your Pro subscription renews on ${day}`;
 }

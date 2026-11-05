@@ -29,7 +29,7 @@ import { notificationSettingsQueryOptions, useSetNotificationChannel } from "#/m
 import { formatRelativeTime } from "#/utils/relative-time";
 import { RelativeTime, useClockReadable } from "#/components/relative-time";
 import { NotificationsSection } from "./notifications-section";
-import { formatDay } from "#/lib/format-day";
+import { calendarDay, useTimeZone } from "#/utils/time-zone";
 
 export function prefetchAccount(scope: CollectionScope) {
   return prefetchRemote(scope, notificationSettingsQueryOptions(), accountSessionsRead(scope), linkedAccountsRead(scope), connectedAgentsRead(scope));
@@ -54,6 +54,7 @@ function ProfileSection() {
   const { session } = useRouteContext({ from: "/_protected" });
   const { data: linked } = useLiveSuspenseQuery(getLinkedAccountsCollection(useCollectionScope()));
   const { user } = session;
+  const day = calendarDay(useTimeZone());
   return (
     <SettingsSection id="profile" title="Profile">
       <SettingsList label="Profile">
@@ -73,7 +74,7 @@ function ProfileSection() {
             key={row.id}
             media={<GitHubMarkIcon />}
             label={providerLabel(row.providerId)}
-            hint={`Linked ${formatDay(row.createdAt)}`}
+            hint={`Linked ${day.format(new Date(row.createdAt))}`}
             commit="none"
             actions={<Badge variant="outline">Sign-in</Badge>}
           />
