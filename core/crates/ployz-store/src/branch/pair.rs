@@ -647,8 +647,8 @@ pub(crate) fn rewind(
 }
 
 /// `receiver` deployed `saved` to the nodes of `lineages`: what arrived there and
-/// shipped stays. An arrival `saved` lacks, one that landed after it was published,
-/// stays pending.
+/// shipped stays, with the Sync that landed it, if one did. An arrival `saved` lacks,
+/// one that landed after it was published, stays pending.
 pub(crate) fn deployed(
     tx: &mut dyn Tx,
     receiver: &EnvironmentId,
@@ -666,18 +666,29 @@ pub(crate) fn deployed(
         if !lineages.contains(row.lineage()) || *saved.at(row) != arrived.value {
             continue;
         }
-        // An owned row stays pending: its proposal ends at a manual Save or Deploy.
-        tx.execute(
-            "UPDATE config_sync_arrival SET state = 'settled', prior = NULL, was = NULL \
-             WHERE environment_id = ?1 AND other_id = ?2 AND lineage = ?3 AND at = ?4 \
-             AND proposal_id IS NULL",
-            &[
-                receiver.as_str().into(),
-                arrived.other.as_str().into(),
-                row.lineage().into(),
-                row.at().to_string().as_str().into(),
-            ],
-        )?;
+        let sync = match &arrived.arrival {
+            Arrival::Pending {
+                claim: Claim::Released { sync, .. },
+                ..
+            } => Some(sync),
+            Arrival::Pending {
+                claim: Claim::Nobody,
+                ..
+            } => None,
+            // An owned row stays pending: its proposal ends at a manual Save or Deploy.
+            Arrival::Pending {
+                claim: Claim::Owned { .. },
+                ..
+            }
+            | Arrival::Hint
+            | Arrival::Settled { .. } => continue,
+        };
+        let key = ledger::Key {
+            receiver: receiver.as_str(),
+            other: arrived.other.as_str(),
+            row,
+        };
+        ledger::settle(tx, &key, sync)?;
     }
     Ok(())
 }
@@ -1079,6 +1090,156 @@ pub(super) mod ledger {
                 key.other.into(),
                 key.row.lineage().into(),
                 at.as_str().into(),
+            ],
+        )?;
+        Ok(())
+    }
+
+    /// Settle: from pending, Released by `sync` or, with none, claimed by Nobody, to
+    /// settled, keeping that Sync and `source`.
+    pub(super) fn settle(
+        tx: &mut dyn Tx,
+        key: &Key<'_>,
+        sync: Option<&SyncId>,
+    ) -> Result<(), RpcError> {
+        let target = Arrival::Settled {
+            sync: sync.cloned(),
+        };
+        let to = Columns::of(&target);
+        let at = key.row.at().to_string();
+        tx.execute(
+            "UPDATE config_sync_arrival SET state = ?5, prior = ?6, was = ?7, sync_id = ?8 \
+             WHERE environment_id = ?1 AND other_id = ?2 AND lineage = ?3 AND at = ?4 \
+             AND state = 'pending' AND proposal_id IS NULL \
+             AND COALESCE(sync_id, '') = COALESCE(?9, '')",
+            &[
+                key.receiver.into(),
+                key.other.into(),
+                key.row.lineage().into(),
+                at.as_str().into(),
+                to.state.into(),
+                to.prior.as_deref().into(),
+                to.was.as_deref().into(),
+                to.sync.into(),
+                sync.map(SyncId::as_str).into(),
+            ],
+        )?;
+        Ok(())
+    }
+
+    /// Release: from pending, Owned by `proposal`, to Released by its Sync, keeping
+    /// `prior` and `was`. The draft changed the row, so it is the draft's own.
+    pub(in crate::branch) fn release(
+        tx: &mut dyn Tx,
+        key: &Key<'_>,
+        proposal: &str,
+    ) -> Result<(), RpcError> {
+        let at = key.row.at().to_string();
+        tx.execute(
+            "UPDATE config_sync_arrival SET proposal_id = NULL, source = NULL \
+             WHERE environment_id = ?1 AND other_id = ?2 AND lineage = ?3 AND at = ?4 \
+             AND state = 'pending' AND proposal_id = ?5",
+            &[
+                key.receiver.into(),
+                key.other.into(),
+                key.row.lineage().into(),
+                at.as_str().into(),
+                proposal.into(),
+            ],
+        )?;
+        Ok(())
+    }
+
+    /// End the proposals `ended`, a `SELECT id FROM config_proposal` over `params`,
+    /// whose `?1` is `receiver`: from pending, Owned by one, to Released by its Sync.
+    /// For one a later Sync refreshed (`first_sync <> last_sync`) no Sync of it is
+    /// undone after, so every pending row of the receiver one of its Syncs claims,
+    /// owned or released, drops that claim. Then [`forget_unclaimed`] forgets the
+    /// receiver's own those rows kept.
+    pub(in crate::branch) fn end(
+        tx: &mut dyn Tx,
+        receiver: &EnvironmentId,
+        ended: &str,
+        params: &[Param<'_>],
+    ) -> Result<(), RpcError> {
+        tx.execute(
+            &format!(
+                "UPDATE config_sync_arrival SET sync_id = CASE WHEN proposal_id IN \
+                 ({ended} AND first_sync <> last_sync) THEN NULL ELSE sync_id END, \
+                 proposal_id = NULL, source = NULL \
+                 WHERE environment_id = ?1 AND state = 'pending' AND proposal_id IN ({ended})"
+            ),
+            params,
+        )?;
+        tx.execute(
+            &format!(
+                "UPDATE config_sync_arrival SET sync_id = NULL \
+                 WHERE environment_id = ?1 AND state = 'pending' AND sync_id IN \
+                 (SELECT sync_id FROM config_sync_receipt WHERE proposal_id IN \
+                 ({ended} AND first_sync <> last_sync))"
+            ),
+            params,
+        )?;
+        forget_unclaimed(tx, receiver.as_str())
+    }
+
+    /// Take out `proposal` from `receiver`: from pending, Owned by it, to absent. Then
+    /// each pending row a Follow or a take released from one of its `syncs` drops that
+    /// claim, and [`forget_unclaimed`] forgets the receiver's own it kept. A row the
+    /// draft released keeps its Sync. Nothing is put back here.
+    pub(in crate::branch) fn take_out(
+        tx: &mut dyn Tx,
+        receiver: &EnvironmentId,
+        proposal: &ProposalId,
+        syncs: &BTreeSet<SyncId>,
+    ) -> Result<(), RpcError> {
+        tx.execute(
+            "DELETE FROM config_sync_arrival \
+             WHERE environment_id = ?1 AND proposal_id = ?2 AND state = 'pending'",
+            &[receiver.as_str().into(), proposal.as_str().into()],
+        )?;
+        for sync in syncs {
+            tx.execute(
+                "UPDATE config_sync_arrival SET sync_id = NULL \
+                 WHERE environment_id = ?1 AND sync_id = ?2 AND state = 'pending' \
+                 AND how = 'follow' AND proposal_id IS NULL",
+                &[receiver.as_str().into(), sync.as_str().into()],
+            )?;
+        }
+        forget_unclaimed(tx, receiver.as_str())
+    }
+
+    /// Undo `sync` in `receiver`: from pending, claimed by it, to absent.
+    pub(super) fn undo(
+        tx: &mut dyn Tx,
+        receiver: &EnvironmentId,
+        sync: &SyncId,
+    ) -> Result<(), RpcError> {
+        tx.execute(
+            "DELETE FROM config_sync_arrival \
+             WHERE environment_id = ?1 AND sync_id = ?2 AND state = 'pending'",
+            &[receiver.as_str().into(), sync.as_str().into()],
+        )?;
+        Ok(())
+    }
+
+    /// Withdraw what a Follow from `other` staged of node `lineage` in `receiver`:
+    /// from pending, `how = 'follow'`, claimed by Nobody, to absent.
+    pub(super) fn withdraw(
+        tx: &mut dyn Tx,
+        receiver: &EnvironmentId,
+        other: &EnvironmentId,
+        lineage: &str,
+    ) -> Result<(), RpcError> {
+        tx.execute(
+            "DELETE FROM config_sync_arrival \
+             WHERE environment_id = ?1 AND other_id = ?2 AND lineage = ?3 \
+             AND how = 'follow' AND state = 'pending' AND sync_id IS NULL \
+             AND proposal_id IS NULL",
+            &[
+                receiver.as_str().into(),
+                other.as_str().into(),
+                lineage.into(),
             ],
         )?;
         Ok(())
@@ -1841,10 +2002,7 @@ pub(super) fn undo(
         Err(Unapplied::Invalid(error)) => return Err(config(error)),
     };
     scope::save_working(tx, receiver)?;
-    tx.execute(
-        "DELETE FROM config_sync_arrival WHERE environment_id = ?1 AND sync_id = ?2",
-        &[id.as_str().into(), sync.as_str().into()],
-    )?;
+    ledger::undo(tx, &id, sync)?;
     let priors = others
         .into_iter()
         .zip(landed)
@@ -1914,11 +2072,7 @@ pub(super) fn withdraw(
     }
     receiver.working = put_back(&receiver.working, &node, &Cell::Absent).map_err(config)?;
     scope::save_working(tx, receiver)?;
-    tx.execute(
-        "DELETE FROM config_sync_arrival \
-         WHERE environment_id = ?1 AND other_id = ?2 AND lineage = ?3",
-        &[id.as_str().into(), other.as_str().into(), lineage.into()],
-    )?;
+    ledger::withdraw(tx, &id, other, lineage)?;
     rewind_bases(tx, &id, vec![(other.clone(), node, Cell::Absent)])?;
     Ok(true)
 }

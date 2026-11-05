@@ -603,10 +603,7 @@ fn take_out(tx: &mut dyn Tx, into: &mut Environment, proposal: &Proposal) -> Res
         }
         Err(Unapplied::Invalid(error)) => return Err(config(error)),
     };
-    tx.execute(
-        "DELETE FROM config_sync_arrival WHERE environment_id = ?1 AND proposal_id = ?2",
-        &[id.as_str().into(), proposal.id.as_str().into()],
-    )?;
+    pair::ledger::take_out(tx, &id, &proposal.id, &syncs)?;
     let priors = others
         .into_iter()
         .zip(landed)
@@ -856,16 +853,7 @@ pub(crate) fn end_included(
     }
     // The arrivals are the draft's own now. One a later Sync refreshed isn't that
     // Sync's alone: no Undo of it after.
-    tx.execute(
-        &format!(
-            "UPDATE config_sync_arrival SET sync_id = CASE WHEN proposal_id IN \
-             ({of} AND first_sync <> last_sync) THEN NULL ELSE sync_id END, \
-             proposal_id = NULL, source = NULL \
-             WHERE environment_id = ?1 AND proposal_id IN ({of})"
-        ),
-        &params,
-    )?;
-    pair::forget_unclaimed(tx, environment.as_str())?;
+    pair::ledger::end(tx, environment, &of, &params)?;
     let ended = tx.execute(
         &format!("DELETE FROM config_proposal WHERE id IN ({of})"),
         &params,
@@ -878,7 +866,7 @@ pub(crate) fn end_included(
 pub(crate) fn release_changed(tx: &mut dyn Tx, environment: &Environment) -> Result<(), RpcError> {
     let id = &environment.summary.id;
     let rows = tx.query(
-        "SELECT other_id, lineage, at, value FROM config_sync_arrival \
+        "SELECT other_id, lineage, at, value, proposal_id FROM config_sync_arrival \
          WHERE environment_id = ?1 AND proposal_id IS NOT NULL",
         &[id.as_str().into()],
     )?;
@@ -891,16 +879,12 @@ pub(crate) fn release_changed(tx: &mut dyn Tx, environment: &Environment) -> Res
         if *cells.at(&at) == row.json::<Cell>(3, "Sync")? {
             continue;
         }
-        tx.execute(
-            "UPDATE config_sync_arrival SET proposal_id = NULL, source = NULL \
-             WHERE environment_id = ?1 AND other_id = ?2 AND lineage = ?3 AND at = ?4",
-            &[
-                id.as_str().into(),
-                row.text(0)?.into(),
-                row.text(1)?.into(),
-                row.text(2)?.into(),
-            ],
-        )?;
+        let key = pair::ledger::Key {
+            receiver: id.as_str(),
+            other: row.text(0)?,
+            row: &at,
+        };
+        pair::ledger::release(tx, &key, row.text(4)?)?;
     }
     Ok(())
 }
