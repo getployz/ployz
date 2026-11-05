@@ -658,3 +658,53 @@ async fn a_seed_replaces_a_slot_a_mirror_pull_marked_or_that_holds_no_point() {
         assert_landed(&test);
     }
 }
+
+/// Docker adopts a landed seed, a departure parks its root as an old copy, and a Writer
+/// promotes that copy back. The result is a writer root, not a seed Docker never adopted.
+async fn promoted_back_seed(test: &TestDir, socket: &Path) -> Value {
+    set_property(test, "tank/ployz/data", "snapshots", POINT);
+    settled(socket).await;
+    let created = post(
+        socket,
+        "/VolumeDriver.Create",
+        json!({"Name": "seed", "Opts": {"size": "1g"}}),
+    )
+    .await;
+    assert_eq!(created, json!({"Err": ""}));
+    assert_eq!(
+        property(test, "tank/ployz/seed", "ployz:promote"),
+        None,
+        "Docker adopted the root"
+    );
+    let demoted = post(socket, "/Storage.Demote", json!(null)).await;
+    assert_eq!(
+        demoted,
+        json!({"Ok": {"demoted": ["data", "seed"], "stuck": [], "failed": []}})
+    );
+    let parked = post(socket, "/Volume.Copy.Inspect", json!({"name": "seed"})).await;
+    let guid = parked
+        .pointer("/Ok/newest/guid")
+        .cloned()
+        .unwrap_or_else(|| panic!("{parked}"));
+    json!({"name": "seed", "at": guid, "epoch": 1})
+}
+
+#[tokio::test]
+async fn a_seeded_volume_promoted_back_after_a_departure_is_a_writer() {
+    let test = TestDir::new();
+    let (socket, _server) = start(&test, USABLE_POOL, &["root", "volume"]);
+    let writer = promoted_back_seed(&test, &socket).await;
+
+    let reply = post(&socket, "/Volume.Copy.Writer", writer).await;
+
+    assert_eq!(reply.pointer("/Ok/kind"), Some(&json!("root")), "{reply}");
+    assert_eq!(reply.pointer("/Ok/seed"), Some(&json!(false)), "{reply}");
+    assert_eq!(property(&test, "tank/ployz/seed", "ployz:seed"), None);
+    let destroyed = post(&socket, "/Volume.Copy.Destroy", json!({"name": "seed"})).await;
+    assert_eq!(
+        destroyed.pointer("/Err/details/reason"),
+        Some(&json!("no_transition")),
+        "{destroyed}"
+    );
+    assert!(test.0.join("seed-volume").exists(), "the writer root stays");
+}
