@@ -7,9 +7,14 @@ const everySecond = (tick: () => void) => {
   return () => clearInterval(timer);
 };
 
+/** Whether the clock may be read: false on the server and while hydrating, whose clocks differ, so their HTML matches. */
+export function useClockReadable() {
+  return useSyncExternalStore(subscribe, () => true, () => false);
+}
+
 /** "5 minutes ago" reads the clock, which moves between SSR and hydration (and a browser's clock may be off), so it renders only in the browser. */
 export function RelativeTime({ date }: { date: Date }) {
-  const client = useSyncExternalStore(subscribe, () => true, () => false);
+  const client = useClockReadable();
   return <time dateTime={date.toISOString()} title={client ? date.toLocaleString() : undefined}>{client ? formatRelativeTime(date) : null}</time>;
 }
 
