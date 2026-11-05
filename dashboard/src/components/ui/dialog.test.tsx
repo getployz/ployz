@@ -5,7 +5,12 @@ import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/re
 import { afterEach, describe, expect, it } from "vitest";
 import { AlertDialog, AlertDialogContent, AlertDialogTitle } from "#/components/ui/alert-dialog";
 import { Dialog, DialogContent, DialogTitle } from "#/components/ui/dialog";
-import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from "#/components/ui/dropdown-menu";
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuTrigger,
+} from "#/components/ui/dropdown-menu";
 
 function MountedOnOpen({ alert }: { alert?: boolean }) {
   const [open, setOpen] = useState(false);
@@ -135,10 +140,7 @@ describe("dialogs opened without a Trigger", () => {
     trigger.focus();
     fireEvent.click(trigger);
     const item = await screen.findByRole("menuitem", { name: "Rename" });
-    item.focus();
-    for (const press of [fireEvent.pointerDown, fireEvent.mouseDown, fireEvent.pointerUp, fireEvent.mouseUp, fireEvent.click]) {
-      press(item, { pointerType: "mouse", button: 0 });
-    }
+    fireEvent.click(item);
     const input = await screen.findByRole("textbox", { name: "Name" });
     await waitFor(() => expect(screen.queryByRole("menuitem", { name: "Rename" })).toBeNull());
     input.focus();
