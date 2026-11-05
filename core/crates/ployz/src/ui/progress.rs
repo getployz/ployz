@@ -218,7 +218,8 @@ pub(crate) enum State {
     Warned,
     /// The Deployment's cancel stopped it while it ran.
     Cancelled,
-    /// The Deployment lost its runner, which stopped it while it ran.
+    /// The Deployment lost its runner, which stopped it while it ran; or, for a
+    /// Service, the Deployment ended before the Service's build reported how it ended.
     Interrupted,
     NotAttempted,
     Unknown,

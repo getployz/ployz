@@ -1559,10 +1559,14 @@ pub(super) fn say_view(view: &DeploymentView) {
             .server
             .as_deref()
             .map_or_else(String::new, |server| format!(" on {server}"));
-        crate::ui::stream(format_args!(
-            "  build {} from {commit}: {}{on} {reason}",
-            build.service,
+        let status = if build.is_interrupted() {
+            "interrupted".to_owned()
+        } else {
             super::store::word(&build.status)
+        };
+        crate::ui::stream(format_args!(
+            "  build {} from {commit}: {status}{on} {reason}",
+            build.service
         ));
         if let Some(why) = &build.github_skipped {
             crate::ui::stream(format_args!("    GitHub skipped it: {why}"));
