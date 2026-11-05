@@ -30,7 +30,8 @@ use tokio_util::sync::CancellationToken;
 
 use crate::{
     corrosion::{
-        CertificateChallenge, CertificateMaterial, CertificateRow, ReplicatedStore, published_cover,
+        AcmeWrite, CertificateChallenge, CertificateMaterial, CertificateRow, ReplicatedStore,
+        published_cover,
     },
     filesystem::{atomic_write, set_ployz_group},
 };
@@ -437,9 +438,15 @@ async fn issue_wanted(
             let containers = store.containers().await?;
             let rows = store.certificate_state().await?;
             for hostname in wanted_certificate_hosts(containers.observations.iter(), &rows) {
-                store
+                match store
                     .record_certificate_error(&hostname, refusal.reason())
-                    .await?;
+                    .await?
+                {
+                    AcmeWrite::Changed | AcmeWrite::Kept => {}
+                    AcmeWrite::Moved => eprintln!(
+                        "did not record the certificate policy refusal for {hostname}: its row changed on every attempt"
+                    ),
+                }
             }
             return Ok(RETRY_INTERVAL);
         }
@@ -512,19 +519,22 @@ async fn issue_wanted(
                 first_seen.remove(hostname);
                 if rank == 0 {
                     let reason = refusal_reason(hostname, refusal, &cluster);
-                    if let Err(error) = store
-                        .record_certificate_failure(
-                            hostname,
-                            row.and_then(CertificateRow::material),
-                            reason,
-                            clock,
-                        )
+                    let tried = row.and_then(CertificateRow::material);
+                    match store
+                        .record_certificate_failure(hostname, tried, reason, clock)
                         .await
                     {
-                        eprintln!(
+                        Ok(AcmeWrite::Changed | AcmeWrite::Kept) => {}
+                        Ok(AcmeWrite::Moved) if tried.is_some() => eprintln!(
+                            "did not record certificate refusal for {hostname}: its row no longer holds the failed material as ACME material"
+                        ),
+                        Ok(AcmeWrite::Moved) => eprintln!(
+                            "did not record certificate refusal for {hostname}: its row changed on every attempt"
+                        ),
+                        Err(error) => eprintln!(
                             "failed to record certificate refusal for {hostname}: {error}",
                             error = ployz_core::error_chain::inline(&error),
-                        );
+                        ),
                     }
                 }
                 continue;
@@ -562,19 +572,28 @@ async fn issue_wanted(
                     policy.backoff_base(),
                     policy.backoff_cap(),
                 );
-                if let Err(record_error) = store
+                let tried = rows
+                    .get(hostname.as_str())
+                    .and_then(CertificateRow::material);
+                match store
                     .record_certificate_failure(
                         hostname,
-                        rows.get(hostname.as_str())
-                            .and_then(CertificateRow::material),
+                        tried,
                         ployz_core::error_chain::inline(&error),
                         clock,
                     )
                     .await
                 {
-                    eprintln!(
+                    Ok(AcmeWrite::Changed | AcmeWrite::Kept) => {}
+                    Ok(AcmeWrite::Moved) if tried.is_some() => eprintln!(
+                        "did not record certificate authority failure for {hostname}: its row no longer holds the failed material as ACME material"
+                    ),
+                    Ok(AcmeWrite::Moved) => eprintln!(
+                        "did not record certificate authority failure for {hostname}: its row changed on every attempt"
+                    ),
+                    Err(record_error) => eprintln!(
                         "failed to record certificate authority failure for {hostname}: {record_error}"
-                    );
+                    ),
                 }
             }
         }
@@ -638,9 +657,15 @@ async fn obtain(
         let store = store.clone();
         let hostname = hostname.clone();
         async move {
-            store
+            match store
                 .publish_certificate_challenge(&hostname, &challenge)
-                .await?;
+                .await?
+            {
+                AcmeWrite::Changed | AcmeWrite::Kept => {}
+                AcmeWrite::Moved => eprintln!(
+                    "did not publish the HTTP-01 challenge for {hostname}: its row changed on every attempt"
+                ),
+            }
             let resolved = resolve_host(&hostname).await;
             let machines = store.machines().await?;
             let containers = store.containers().await?;
@@ -651,9 +676,15 @@ async fn obtain(
         }
     })
     .await?;
-    store
+    match store
         .publish_certificate(hostname, &material, route)
-        .await?;
+        .await?
+    {
+        AcmeWrite::Changed | AcmeWrite::Kept => {}
+        AcmeWrite::Moved => eprintln!(
+            "did not record the certificate issued for {hostname}: its row changed on every attempt"
+        ),
+    }
     Ok(())
 }
 

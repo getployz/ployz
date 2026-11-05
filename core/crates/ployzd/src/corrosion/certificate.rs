@@ -228,7 +228,9 @@ pub enum CertificateRow {
         challenge: Option<CertificateChallenge>,
         refusal: Option<RecordedRefusal>,
     },
-    /// Operator- or Cloud-supplied material that ACME never orders, renews, or overwrites.
+    /// Operator- or Cloud-supplied material that ACME never orders or renews. Once this replica
+    /// holds it, this daemon's ACME writers leave the row alone. A write another Machine made
+    /// before replication delivered this one, or an older daemon's write, can still replace it.
     Published(CertificateMaterial),
 }
 

@@ -15,8 +15,8 @@ use serde_json::json;
 use tokio_util::sync::CancellationToken;
 
 use super::{
-    ApiClient, CertificateMaterial, CorrosionConfig, MachineView, ReplicatedStore, Statement,
-    run_machine_publisher, wait_for_catch_up,
+    AcmeWrite, ApiClient, CertificateMaterial, CertificateRow, CorrosionConfig, MachineView,
+    ReplicatedStore, Statement, run_machine_publisher, wait_for_catch_up,
 };
 use crate::machine::{LocalMachineBody, LocalMachineRecord, LocalMachineStore, RecordOwner};
 use crate::network::WireGuardPrivateKey;
@@ -292,6 +292,78 @@ async fn certificates_round_trip_and_notify_on_change() {
         store.certificate(&hostname).await.unwrap().as_ref(),
         Some(&updated)
     );
+
+    running.cleanup().await.unwrap();
+}
+
+/// Corrosion's `rows_affected` for the ACME compare-and-set: real Corrosion has no hold, so each
+/// read goes stale by a write landed after it.
+#[tokio::test]
+#[ignore = "requires Docker and the pinned Corrosion image"]
+async fn certificate_compare_and_set_counts_rows_on_corrosion() {
+    let root = TestRoot::new();
+    let mut running = CorrosionConfig::new(
+        root.0.join("data"),
+        root.0.join("run"),
+        unused_address(),
+        unused_address(),
+        format!("ployz-corrosion-certs-{}", MachineId::random()),
+    )
+    .start()
+    .await
+    .unwrap();
+    let store = running.store().clone();
+    let hostname = IngressHost::parse("app.example.com").unwrap();
+    let issued = {
+        let pair = rcgen::generate_simple_self_signed(["app.example.com".to_owned()]).unwrap();
+        CertificateRow::issued(
+            CertificateMaterial::parse(pair.cert.pem(), pair.signing_key.serialize_pem()).unwrap(),
+            ployz_core::ClusterRoute::Direct,
+        )
+    };
+
+    let absent = store.acme_row(&hostname).await.unwrap().unwrap();
+    assert_eq!(
+        store
+            .record_certificate_error(&hostname, "first")
+            .await
+            .unwrap(),
+        AcmeWrite::Changed
+    );
+    assert_eq!(
+        store.compare_and_set(&absent, &issued).await.unwrap(),
+        AcmeWrite::Moved,
+        "an insert for no row must not land over a row made after its read"
+    );
+    assert_eq!(
+        store.certificate_row(&hostname).await.unwrap().last_error(),
+        Some("first")
+    );
+
+    let stale = store.acme_row(&hostname).await.unwrap().unwrap();
+    assert_eq!(
+        store
+            .record_certificate_error(&hostname, "second")
+            .await
+            .unwrap(),
+        AcmeWrite::Changed
+    );
+    assert_eq!(
+        store.compare_and_set(&stale, &issued).await.unwrap(),
+        AcmeWrite::Moved,
+        "an update must not land over a body that changed after its read"
+    );
+    assert_eq!(
+        store.certificate_row(&hostname).await.unwrap().last_error(),
+        Some("second")
+    );
+
+    let fresh = store.acme_row(&hostname).await.unwrap().unwrap();
+    assert_eq!(
+        store.compare_and_set(&fresh, &issued).await.unwrap(),
+        AcmeWrite::Changed
+    );
+    assert_eq!(store.certificate_row(&hostname).await.unwrap(), issued);
 
     running.cleanup().await.unwrap();
 }

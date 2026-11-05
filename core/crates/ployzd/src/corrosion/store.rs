@@ -848,23 +848,32 @@ impl ReplicatedStore {
         Ok(snapshot)
     }
 
-    pub async fn publish_certificate(
+    /// Write material newly issued along `route` over this replica's ACME row for `hostname`,
+    /// clearing its challenge and refusal. Keeps a row that already holds exactly that.
+    ///
+    /// # Errors
+    ///
+    /// Returns if the row cannot be read or written.
+    pub(crate) async fn publish_certificate(
         &self,
         hostname: &IngressHost,
         material: &CertificateMaterial,
         route: ClusterRoute,
-    ) -> Result<(), Error> {
-        let Some((key, latest)) = self.acme_row(hostname).await? else {
-            return Ok(());
-        };
+    ) -> Result<AcmeWrite, Error> {
         let issued = CertificateRow::issued(material.clone(), route);
-        if latest == issued {
-            return Ok(());
-        }
-        self.upsert_certificate(&key, &issued).await
+        self.write_acme_row(hostname, |latest| {
+            if *latest == issued {
+                AcmeEdge::Keep
+            } else {
+                AcmeEdge::Write(issued.clone())
+            }
+        })
+        .await
     }
 
-    /// Hold published material for `hostname`; ACME leaves the row alone from now on.
+    /// Hold published material for `hostname`. Once this replica holds it, this daemon's ACME
+    /// writers leave the row alone. A write another Machine made before replication delivered
+    /// this one, or an older daemon's write, can still replace it.
     ///
     /// # Errors
     ///
@@ -915,17 +924,35 @@ impl ReplicatedStore {
         self.row(&CertificateHost::from(hostname.clone())).await
     }
 
-    /// The row ACME may write for `hostname` and its key, or `None` when it holds published material.
-    async fn acme_row(
+    /// This replica's row for `hostname` as ACME may write it, or `None` when it holds published
+    /// material.
+    pub(super) async fn acme_row(
         &self,
         hostname: &IngressHost,
-    ) -> Result<Option<(CertificateHost, CertificateRow)>, Error> {
+    ) -> Result<Option<AcmeRowRead>, Error> {
         let key = CertificateHost::from(hostname.clone());
-        let row = self.row(&key).await?;
-        Ok(row.published().is_none().then_some((key, row)))
+        let (row, stored) = match self.stored_row(&key).await? {
+            Some((row, stored)) => (row, Some(stored)),
+            None => (CertificateRow::default(), None),
+        };
+        Ok(row
+            .published()
+            .is_none()
+            .then_some(AcmeRowRead { key, row, stored }))
     }
 
     async fn row(&self, hostname: &CertificateHost) -> Result<CertificateRow, Error> {
+        Ok(self
+            .stored_row(hostname)
+            .await?
+            .map_or_else(CertificateRow::default, |(row, _)| row))
+    }
+
+    /// This replica's row for `hostname`, decoded and as its body text stands; `None` with no row.
+    async fn stored_row(
+        &self,
+        hostname: &CertificateHost,
+    ) -> Result<Option<(CertificateRow, String)>, Error> {
         let query = self
             .api
             .query(Statement::new(
@@ -935,11 +962,61 @@ impl ReplicatedStore {
             .await?;
         let rows = query.rows(["body"])?;
         let Some([encoded]) = rows.first() else {
-            return Ok(CertificateRow::default());
+            return Ok(None);
         };
-        CertificateRow::decode(text(encoded, "certificate body")?)
+        let stored = text(encoded, "certificate body")?;
+        Ok(Some((CertificateRow::decode(stored)?, stored.to_owned())))
     }
 
+    /// Read this replica's ACME row for `hostname` and write the edge `edge` decides from it, only
+    /// over the body that was read. A row that moved is read again, up to
+    /// [`ACME_WRITE_ATTEMPTS`] reads in all.
+    async fn write_acme_row(
+        &self,
+        hostname: &IngressHost,
+        edge: impl Fn(&CertificateRow) -> AcmeEdge,
+    ) -> Result<AcmeWrite, Error> {
+        for _ in 0..ACME_WRITE_ATTEMPTS {
+            let Some(read) = self.acme_row(hostname).await? else {
+                return Ok(AcmeWrite::Kept);
+            };
+            let next = match edge(&read.row) {
+                AcmeEdge::Write(next) => next,
+                AcmeEdge::Keep => return Ok(AcmeWrite::Kept),
+            };
+            match self.compare_and_set(&read, &next).await? {
+                AcmeWrite::Moved => {}
+                written @ (AcmeWrite::Changed | AcmeWrite::Kept) => return Ok(written),
+            }
+        }
+        Ok(AcmeWrite::Moved)
+    }
+
+    /// Write `next` for `read`'s hostname only if this replica still holds the body text `read`
+    /// found, or still holds no row if it found none. Answers `Changed` or `Moved`.
+    pub(super) async fn compare_and_set(
+        &self,
+        read: &AcmeRowRead,
+        next: &CertificateRow,
+    ) -> Result<AcmeWrite, Error> {
+        let key = json!(read.key.as_str());
+        let body = json!(next.encode()?);
+        let statement = match &read.stored {
+            None => Statement::new(
+                "INSERT INTO certificates (hostname, body) VALUES (?, ?) ON CONFLICT (hostname) DO NOTHING",
+                [key, body],
+            ),
+            // No `NOT published` clause: text that `CertificateRow::decode` read as an ACME row
+            // already holds `published` false.
+            Some(stored) => Statement::new(
+                "UPDATE certificates SET body = ? WHERE hostname = ? AND body = ?",
+                [body, key, json!(stored)],
+            ),
+        };
+        acme_written(self.api.execute_counted([statement]).await?)
+    }
+
+    /// Write `row` for `hostname` whatever the row holds. Only published material is written so.
     async fn upsert_certificate(
         &self,
         hostname: &CertificateHost,
@@ -953,44 +1030,60 @@ impl ReplicatedStore {
             .await
     }
 
-    pub async fn publish_certificate_challenge(
+    /// Set the pending HTTP-01 challenge on this replica's ACME row for `hostname`, keeping its
+    /// material and refusal. Keeps a row that already holds that challenge.
+    ///
+    /// # Errors
+    ///
+    /// Returns if the row cannot be read or written.
+    pub(crate) async fn publish_certificate_challenge(
         &self,
         hostname: &IngressHost,
         challenge: &CertificateChallenge,
-    ) -> Result<(), Error> {
-        let Some((key, latest)) = self.acme_row(hostname).await? else {
-            return Ok(());
-        };
-        if latest.challenge() == Some(challenge) {
-            return Ok(());
-        }
-        self.upsert_certificate(&key, &latest.with_challenge(challenge.clone()))
-            .await
+    ) -> Result<AcmeWrite, Error> {
+        self.write_acme_row(hostname, |latest| {
+            if latest.challenge() == Some(challenge) {
+                AcmeEdge::Keep
+            } else {
+                AcmeEdge::Write(latest.clone().with_challenge(challenge.clone()))
+            }
+        })
+        .await
     }
 
     /// Record why a hostname has no certificate, or why its renewal failed, and when the Cluster may
     /// try again.
     ///
+    /// With `tried` `None`, this keeps a row that holds material. With `tried`, it writes only the
+    /// failure fields, and answers `Moved` when the row no longer held `tried`, unpublished.
+    ///
     /// # Errors
     ///
     /// Returns if the row cannot be read or written.
-    pub async fn record_certificate_failure(
+    pub(crate) async fn record_certificate_failure(
         &self,
         hostname: &IngressHost,
         tried: Option<&CertificateMaterial>,
         last_error: impl Into<String>,
         clock: IssuanceClock,
-    ) -> Result<(), Error> {
-        let Some((key, latest)) = self.acme_row(hostname).await? else {
-            return Ok(());
-        };
+    ) -> Result<AcmeWrite, Error> {
+        let last_error = last_error.into();
         let Some(tried) = tried else {
-            if latest.material().is_some() {
-                return Ok(());
-            }
             return self
-                .upsert_certificate(&key, &latest.with_backoff(last_error, clock))
+                .write_acme_row(hostname, |latest| {
+                    if latest.material().is_some() {
+                        AcmeEdge::Keep
+                    } else {
+                        AcmeEdge::Write(latest.clone().with_backoff(last_error.clone(), clock))
+                    }
+                })
                 .await;
+        };
+        let Some(AcmeRowRead {
+            key, row: latest, ..
+        }) = self.acme_row(hostname).await?
+        else {
+            return Ok(AcmeWrite::Kept);
         };
         // A failed renewal keeps serving its material and backs off like a first order. Only the
         // failure fields change, and only over the ACME material that failed, so a renewal, a
@@ -998,8 +1091,9 @@ impl ReplicatedStore {
         let failed: serde_json::Value =
             serde_json::from_str(&latest.with_backoff(last_error, clock).encode()?)?;
         let field = |name: &str| failed.get(name).cloned().unwrap_or_default();
-        self.api
-            .execute([Statement::new(
+        let counts = self
+            .api
+            .execute_counted([Statement::new(
                 "UPDATE certificates SET body = json_set(body, \
                    '$.last_error', ?, '$.next_attempt_at', ?, '$.failures', ?, '$.last_failure', ?) \
                  WHERE hostname = ? \
@@ -1014,22 +1108,30 @@ impl ReplicatedStore {
                     json!(tried.certificate()),
                 ],
             )])
-            .await
+            .await?;
+        acme_written(counts)
     }
 
-    pub async fn record_certificate_error(
+    /// Record why the Certificate Policy refuses issuance on this replica's ACME row for
+    /// `hostname`, keeping its material and challenge and dropping any backoff clock. Keeps a row
+    /// that already holds this reason, clock and all.
+    ///
+    /// # Errors
+    ///
+    /// Returns if the row cannot be read or written.
+    pub(crate) async fn record_certificate_error(
         &self,
         hostname: &IngressHost,
         reason: &str,
-    ) -> Result<(), Error> {
-        let Some((key, latest)) = self.acme_row(hostname).await? else {
-            return Ok(());
-        };
-        if latest.last_error() == Some(reason) {
-            return Ok(());
-        }
-        self.upsert_certificate(&key, &latest.with_error(reason))
-            .await
+    ) -> Result<AcmeWrite, Error> {
+        self.write_acme_row(hostname, |latest| {
+            if latest.last_error() == Some(reason) {
+                AcmeEdge::Keep
+            } else {
+                AcmeEdge::Write(latest.clone().with_error(reason))
+            }
+        })
+        .await
     }
 
     pub async fn certificate_policy(&self) -> Result<Option<String>, Error> {
@@ -1535,6 +1637,50 @@ fn decode_certificate_row(hostname: &CertificateHost, encoded: &str) -> Option<C
             );
         })
         .ok()
+}
+
+/// How many times an ACME write reads its row before it answers [`AcmeWrite::Moved`]. Only
+/// repeated misses use it up: a re-read can still answer `Kept` or `Changed`. A cap, not a
+/// guarantee: each miss means a write landed on this replica between one read and its write, and
+/// the certificate loop's next pass reads again.
+pub(super) const ACME_WRITE_ATTEMPTS: usize = 3;
+
+/// What an ACME write to a certificate row did.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum AcmeWrite {
+    /// The write landed.
+    Changed,
+    /// No write was sent, because the row is Published or the writer's no-write rule held.
+    Kept,
+    /// The row no longer met the write's condition when it ran, so nothing was written.
+    Moved,
+}
+
+/// One read of this replica's row for an Ingress Hostname, taken only when the row holds no
+/// published material. An ACME write lands only over the body text it holds.
+pub(super) struct AcmeRowRead {
+    key: CertificateHost,
+    row: CertificateRow,
+    /// The body text as this replica stored it; `None` when there was no row.
+    stored: Option<String>,
+}
+
+/// What an ACME writer does with the row it read, as `RotationEdge` does for a rotation.
+enum AcmeEdge {
+    Write(CertificateRow),
+    /// Allowed with nothing to write: the writer's no-write rule holds for the row.
+    Keep,
+}
+
+/// `hostname` is the primary key, so one certificate write changes one row or none.
+fn acme_written(counts: Vec<usize>) -> Result<AcmeWrite, Error> {
+    match counts.as_slice() {
+        [1] => Ok(AcmeWrite::Changed),
+        [0] => Ok(AcmeWrite::Moved),
+        counts => Err(Error::Protocol(format!(
+            "a certificate write changed {counts:?} rows"
+        ))),
+    }
 }
 
 /// The deletes that take a Machine and everything it published out of the Cluster.
