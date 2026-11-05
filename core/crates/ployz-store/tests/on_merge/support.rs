@@ -501,7 +501,13 @@ pub(crate) fn merged_onto(
     target: &str,
     updated: &str,
 ) -> Automated {
-    let event = SystemEvent::PullRequest(PullRequest {
+    system(store, who, &merge_event(target, updated))
+}
+
+/// The event of pull request #5 merged at [`MERGE`] onto `target`, as GitHub said at
+/// `updated`.
+pub(crate) fn merge_event(target: &str, updated: &str) -> SystemEvent {
+    SystemEvent::PullRequest(PullRequest {
         repository_id: backend::repo_id(11),
         number: backend::pr_number(5),
         title: "Add search".into(),
@@ -517,6 +523,5 @@ pub(crate) fn merged_onto(
         merge_commit: Some(backend::sha(MERGE)),
         target_head: None,
         updated: ployz_store::GithubTimestamp::parse(updated).unwrap(),
-    });
-    system(store, who, &event)
+    })
 }
