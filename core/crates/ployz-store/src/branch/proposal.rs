@@ -473,6 +473,7 @@ pub(crate) fn remove(
 fn take_out(tx: &mut dyn Tx, into: &mut Environment, proposal: &Proposal) -> Result<(), RpcError> {
     let id = into.summary.id.clone();
     let owned = pair::arrived(tx, &id, Which::Owned(&proposal.id))?;
+    let owned_rows = owned.len();
     let rows: BTreeSet<&RowId> = owned.iter().map(|arrived| &arrived.row).collect();
     let source = &proposal.name;
     let label = |row: &RowId| named(&[&into.working], row);
@@ -603,7 +604,7 @@ fn take_out(tx: &mut dyn Tx, into: &mut Environment, proposal: &Proposal) -> Res
         }
         Err(Unapplied::Invalid(error)) => return Err(config(error)),
     };
-    pair::ledger::take_out(tx, &id, &proposal.id, &syncs)?;
+    pair::ledger::take_out(tx, &id, (&proposal.id, owned_rows), &syncs)?;
     let priors = others
         .into_iter()
         .zip(landed)
@@ -845,20 +846,19 @@ pub(crate) fn end_included(
     environment: &EnvironmentId,
     from: Option<&EnvironmentId>,
 ) -> Result<bool, RpcError> {
-    let mut of = "SELECT id FROM config_proposal WHERE environment_id = ?1".to_owned();
-    let mut params = vec![environment.as_str().into()];
-    if let Some(from) = from {
-        of.push_str(" AND source_environment_id = ?2");
-        params.push(from.as_str().into());
-    }
+    let ended = pair::ledger::Ended {
+        receiver: environment,
+        from,
+    };
     // The arrivals are the draft's own now. One a later Sync refreshed isn't that
     // Sync's alone: no Undo of it after.
-    pair::ledger::end(tx, environment, &of, &params)?;
-    let ended = tx.execute(
+    pair::ledger::end(tx, &ended)?;
+    let (of, params) = ended.select();
+    let removed = tx.execute(
         &format!("DELETE FROM config_proposal WHERE id IN ({of})"),
         &params,
     )?;
-    Ok(ended > 0)
+    Ok(removed > 0)
 }
 
 /// Release each row `environment`'s Working State now holds other than its proposal
@@ -884,7 +884,7 @@ pub(crate) fn release_changed(tx: &mut dyn Tx, environment: &Environment) -> Res
             other: row.text(0)?,
             row: &at,
         };
-        pair::ledger::release(tx, &key, row.text(4)?)?;
+        pair::ledger::release(tx, &key, &row.parse(4, "Sync")?)?;
     }
     Ok(())
 }
