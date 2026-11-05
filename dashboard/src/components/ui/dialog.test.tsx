@@ -5,6 +5,12 @@ import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/re
 import { afterEach, describe, expect, it } from "vitest";
 import { AlertDialog, AlertDialogContent, AlertDialogTitle } from "#/components/ui/alert-dialog";
 import { Dialog, DialogContent, DialogTitle } from "#/components/ui/dialog";
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuTrigger,
+} from "#/components/ui/dropdown-menu";
 
 function MountedOnOpen({ alert }: { alert?: boolean }) {
   const [open, setOpen] = useState(false);
@@ -68,6 +74,36 @@ function Handoff() {
   );
 }
 
+/** A row's actions menu whose item opens a dialog, as the variable rows' Rename and Seal do. */
+function FromMenuItem({ alert }: { alert?: boolean }) {
+  const [open, setOpen] = useState(false);
+  return (
+    <>
+      <DropdownMenu>
+        <DropdownMenuTrigger render={<button type="button" aria-label="Actions" />} />
+        <DropdownMenuContent>
+          <DropdownMenuItem onClick={() => setOpen(true)}>Rename</DropdownMenuItem>
+        </DropdownMenuContent>
+      </DropdownMenu>
+      {alert ? (
+        <AlertDialog open={open} onOpenChange={setOpen}>
+          <AlertDialogContent>
+            <AlertDialogTitle>Rename?</AlertDialogTitle>
+            <input aria-label="Name" autoFocus />
+          </AlertDialogContent>
+        </AlertDialog>
+      ) : (
+        <Dialog open={open} onOpenChange={setOpen}>
+          <DialogContent>
+            <DialogTitle>Rename</DialogTitle>
+            <input aria-label="Name" autoFocus />
+          </DialogContent>
+        </Dialog>
+      )}
+    </>
+  );
+}
+
 describe("dialogs opened without a Trigger", () => {
   afterEach(() => {
     cleanup();
@@ -90,6 +126,30 @@ describe("dialogs opened without a Trigger", () => {
 
     await waitFor(() => expect(screen.queryByRole("textbox", { name: "Name" })).toBeNull());
     await waitFor(() => expect(document.activeElement).toBe(opener));
+  });
+
+  // The menu item that opened the dialog has unmounted by the time it closes, so focus goes to the menu's trigger.
+  // In a browser the dialog keeps focus as the menu closes; jsdom runs the menu's own return to its trigger after the
+  // dialog's autofocus, so the test puts focus back in the dialog to start from where a browser is.
+  it.each([
+    ["a dialog", <FromMenuItem />],
+    ["an alert dialog", <FromMenuItem alert />],
+  ])("returns focus to the menu's trigger when Escape closes %s opened from a menu item", async (_name, ui) => {
+    render(ui);
+    const trigger = screen.getByRole("button", { name: "Actions" });
+    trigger.focus();
+    fireEvent.click(trigger);
+    const item = await screen.findByRole("menuitem", { name: "Rename" });
+    fireEvent.click(item);
+    const input = await screen.findByRole("textbox", { name: "Name" });
+    await waitFor(() => expect(screen.queryByRole("menuitem", { name: "Rename" })).toBeNull());
+    input.focus();
+    expect(document.activeElement).toBe(input);
+
+    fireEvent.keyDown(input, { key: "Escape" });
+
+    await waitFor(() => expect(screen.queryByRole("textbox", { name: "Name" })).toBeNull());
+    await waitFor(() => expect(document.activeElement).toBe(trigger));
   });
 
   it("leaves focus in the next dialog when one dialog hands off to another", async () => {
