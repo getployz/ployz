@@ -2410,17 +2410,10 @@ mod tests {
         let node = view.nodes.first_mut().unwrap();
         node.rows.clear();
         node.outcome = NodeStatus::Pending;
-        view.builds.push(ployz_store::BuildView {
-            service: "web".parse().unwrap(),
-            commit: None,
-            status: BuildStatus::Pending,
-            message: None,
-            started_at: None,
-            finished_at: None,
-            server: None,
-            github_skipped: None,
-            interrupted: false,
-        });
+        view.builds.push(
+            serde_json::from_value(json!({"service": "web", "commit": null, "status": "pending"}))
+                .unwrap(),
+        );
         assert!(!visible(&view));
         for (status, detail, state) in [
             (BuildStatus::Building, "building", State::Pending),

@@ -106,12 +106,13 @@ pub struct BuildView {
     #[serde(default)]
     pub github_skipped: Option<String>,
     /// Set on a Failed build that never reported how it ended: its Deployment ended,
-    /// or lost its runner, while the Servers built it. Read it through
-    /// [`BuildView::is_interrupted`]. Sent as a marker beside `failed` rather than a
-    /// status of its own, so a reader from before it reads Failed.
+    /// or lost its runner, while the Servers built it. Sent as a marker beside
+    /// `failed` rather than a status of its own, so a reader from before it reads
+    /// Failed. Private, so only the Store's view sets it beside `status`, and every
+    /// reader asks [`BuildView::is_interrupted`], which reads it only with Failed.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     #[ts(as = "Option<bool>", optional)]
-    pub interrupted: bool,
+    interrupted: bool,
 }
 
 impl BuildView {
