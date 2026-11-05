@@ -996,7 +996,7 @@ fn follow_over_sync(
 }
 
 #[test]
-fn a_follow_over_a_row_a_sync_landed_keeps_that_syncs_undo() {
+fn a_follow_over_a_row_a_sync_landed_keeps_that_syncs_undo_refused() {
     let changed = || {
         Err((
             RpcErrorCode::Conflict,
