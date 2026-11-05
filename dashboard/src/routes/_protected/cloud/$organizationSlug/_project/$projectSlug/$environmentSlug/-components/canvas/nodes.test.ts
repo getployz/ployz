@@ -87,6 +87,16 @@ describe("Config Store nodes", () => {
     expect(clear).toBe(true);
   });
 
+  it("places a new node clear only of nodes it draws, not of positions left by a refused create or a tray", () => {
+    const left = [
+      createCanvasPosition({ id: "p1", resourceType: "service", resourceId: "refused", x: 0, y: 0 }),
+      createCanvasPosition({ id: "p2", resourceType: "volume", resourceId: "shared", x: 0, y: 0 }),
+      createCanvasPosition({ id: "p3", resourceType: "config", resourceId: "sentry", x: 0, y: 0 }),
+    ];
+    const nodes = buildStoreNodes(store, left, "e");
+    expect(nodes.find((node) => node.id === "s1")?.position).toEqual({ x: 0, y: 0 });
+  });
+
   it("draws an arriving node where its creator saved it, so the Store's answer lands in the same spot", () => {
     const saved = createCanvasPosition({ resourceType: "volume", resourceId: "new-vol", x: 960, y: 640 });
     const nodes = buildStoreNodes({ ...store, arriving: [{ node: "volume", id: "new-vol", name: "cache" }] }, [saved], "e");
