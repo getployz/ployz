@@ -56,7 +56,7 @@ pub(in crate::handlers) fn add(root: &ArgMatches) -> Result<(), Error> {
             && !resumes(&snapshot, token.id, token.public_key)
         {
             helpers::confirm(yes, "Reset the Server before adding it to this Cluster?")?;
-            helpers::leave(&mut target_client).await?;
+            helpers::leave(&mut target_client, &details).await?;
             target_client = helpers::reconnect_direct(matches, &connection).await?;
             token = helpers::inspect_token(&mut target_client, token_request)
                 .await?

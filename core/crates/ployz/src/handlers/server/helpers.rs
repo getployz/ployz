@@ -346,8 +346,12 @@ async fn enroll_with<T: Rpc<Response = Enrolled>>(
 }
 
 /// Leave the Cluster, resending until a reply arrives: a resend on a Machine
-/// that already left replies with its phase.
-pub(in crate::handlers) async fn leave(client: &mut Client) -> Result<(), Error> {
+/// that already left replies with its phase. `departing` is the Server as inspected
+/// before the Leave, so a failed row removal names the id it had in its old Cluster.
+pub(in crate::handlers) async fn leave(
+    client: &mut Client,
+    departing: &MachineDetails,
+) -> Result<(), Error> {
     let left = client
         .call_repeatable_for::<op::Leave>(LeaveRequest {}, None, None, None, MACHINE_START_WAIT)
         .await
@@ -356,9 +360,33 @@ pub(in crate::handlers) async fn leave(client: &mut Client) -> Result<(), Error>
             exhausted => ConnectError::Exhausted(Box::new(exhausted)),
         })?;
     match left {
-        Left::Left { .. } => Ok(()),
+        Left::Left { reset_warning, .. } => {
+            if let Some(reason) = reset_warning {
+                crate::ui::warn(unconfirmed_removal(departing, &reason));
+            }
+            Ok(())
+        }
         Left::Refused { error, .. } => Err(ConnectError::Remote(error).into()),
     }
+}
+
+/// The Server's reset committed, but deleting its row from its own store failed, so
+/// whether its old Cluster still shows it is unknown here.
+fn unconfirmed_removal(departing: &MachineDetails, reason: &str) -> String {
+    let id = &departing.id;
+    let server = match &departing.machine {
+        Some(machine) => format!("Server {} ({id})", machine.name),
+        None => format!("Server {id}"),
+    };
+    crate::ui::then_sentence(
+        &crate::ui::with_reason(
+            format_args!("{server} reset, but couldn't confirm that its old Cluster removed it"),
+            reason,
+        ),
+        &format!(
+            "If that Cluster still shows it, whoever manages it can remove it there with `ployz server forget {id} --confirm dead`."
+        ),
+    )
 }
 
 /// The CLI can't see why the daemon isn't ready, so it names where the cause
