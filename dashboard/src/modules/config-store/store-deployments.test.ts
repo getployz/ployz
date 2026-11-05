@@ -3,7 +3,7 @@ import type { DeploymentView, DiffView, JsonValue, MachineId, NodeOutcome, Outco
 import { expect, it } from "vitest";
 import { asTestDouble } from "#/lib/test-double";
 import {
-  showCancelling,
+  buildInterrupted, showCancelling,
   canFixOnBranch, changeGroups, deploymentWarningText, deploymentActions, deploymentByline, deploymentLight, deploymentStatusLabel, deploysLabel, missingDeployLogs, outcomeReason,
   deploymentLabel, freshRollback, nodeLight, nodeStatusLabels, reviewGroups, rollbackConfirm, shippedService, shownNodeStatus, shownValue,
   uploadLabel, warnedService,
@@ -486,4 +486,11 @@ it("counts a Service as shipped by a full Deploy, one that names it, and one tha
   expect(shippedService(narrowed, "api")).toBe(false);
   expect(shippedService({ services: [], ships: ["web"] }, "api")).toBe(true);
   expect(shippedService({ services: ["web"], ships: [] }, "web")).toBe(true);
+});
+
+it("reads a build as interrupted only when it failed and the Store marked it", () => {
+  expect(buildInterrupted({ status: "failed", interrupted: true })).toBe(true);
+  expect(buildInterrupted({ status: "failed" })).toBe(false);
+  expect(buildInterrupted({ status: "failed", interrupted: false })).toBe(false);
+  expect(buildInterrupted({ status: "building", interrupted: true })).toBe(false);
 });
