@@ -2120,8 +2120,8 @@ fn removed_while_a_scrub_runs(a_branch: bool, scrub: &[&str]) {
         &url,
         &format!(
             "INSERT INTO config_sync_arrival \
-             (environment_id, other_id, lineage, at, organization_id, how, state, value, prior) \
-             VALUES ('{other}', '{production}', '{}', 'env.KEY', 'org', 'sync', 'hint', '{{}}', '{{}}')",
+             (environment_id, other_id, lineage, at, organization_id, how, state, value) \
+             VALUES ('{other}', '{production}', '{}', 'env.KEY', 'org', 'follow', 'hint', '{{}}')",
             uuid(3)
         ),
     );

@@ -803,8 +803,8 @@ mod tests {
             .storage
             .write(|tx| {
                 tx.execute(
-                    "INSERT INTO config_sync_arrival (environment_id, other_id, lineage, at, organization_id, how, state, value, source, was) \
-                     VALUES (?1, 'other', 'lineage', 'env.A', ?2, 'sync', 'pending', ?3, ?3, ?4)",
+                    "INSERT INTO config_sync_arrival (environment_id, other_id, lineage, at, organization_id, how, state, value, source, prior, sync_id, was) \
+                     VALUES (?1, 'other', 'lineage', 'env.A', ?2, 'sync', 'pending', ?3, ?3, ?3, 'sync', ?4)",
                     &[
                         environment().as_str().into(),
                         ORGANIZATION.into(),
