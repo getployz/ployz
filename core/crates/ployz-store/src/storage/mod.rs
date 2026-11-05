@@ -255,6 +255,29 @@ const MIGRATIONS: &[(&str, Step)] = &[
         "0036_merge_landing",
         Step::Sql(include_str!("migrations/0036_merge_landing.sql")),
     ),
+    (
+        "0037_arrival_checks",
+        Step::Rust(|tx, backend| {
+            // First: once a CHECK holds, a repair that leaves a row illegal fails.
+            crate::branch::repair_arrivals(tx)?;
+            match backend {
+                Backend::Postgres => {
+                    tx.batch(include_str!("migrations/0037_arrival_checks_postgres.sql"))?
+                }
+                Backend::Sqlite => {
+                    tx.batch(include_str!("migrations/0037_arrival_checks_sqlite.sql"))?;
+                    // Every copied row still names its Environment and its proposal.
+                    if !tx
+                        .query("PRAGMA foreign_key_check(config_sync_arrival)", &[])?
+                        .is_empty()
+                    {
+                        return Err(error::corrupt("Sync arrivals"));
+                    }
+                }
+            }
+            Ok(None)
+        }),
+    ),
 ];
 
 enum Step {

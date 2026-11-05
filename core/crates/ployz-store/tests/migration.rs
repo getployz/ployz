@@ -477,6 +477,251 @@ fn legacy_arrivals_migrate_unowned_with_their_syncs_receipted() {
     assert_eq!(receipts, [receipt(101), receipt(102)]);
 }
 
+/// The arrival table as `0005_proposal` left it, before `0037_arrival_checks`, with
+/// `rows` stored in it.
+fn before_arrival_checks(rows: &str) -> String {
+    format!(
+        "
+    CREATE TABLE config_sync_arrival_before (
+        environment_id TEXT NOT NULL REFERENCES config_environment (id) ON DELETE CASCADE,
+        other_id TEXT NOT NULL,
+        lineage TEXT NOT NULL,
+        at TEXT NOT NULL,
+        organization_id TEXT NOT NULL,
+        how TEXT NOT NULL,
+        state TEXT NOT NULL,
+        value TEXT NOT NULL,
+        prior TEXT,
+        was TEXT,
+        sync_id TEXT,
+        proposal_id TEXT,
+        source TEXT,
+        PRIMARY KEY (environment_id, other_id, lineage, at),
+        CHECK (
+            proposal_id IS NULL
+            OR (
+                how = 'sync' AND state = 'pending' AND prior IS NOT NULL AND was IS NOT NULL
+                AND sync_id IS NOT NULL AND source IS NOT NULL
+            )
+        ),
+        FOREIGN KEY (environment_id, proposal_id, other_id)
+            REFERENCES config_proposal (environment_id, id, source_environment_id)
+            ON UPDATE CASCADE
+    );
+    INSERT INTO config_sync_arrival_before SELECT environment_id, other_id, lineage, at,
+    organization_id, how, state, value, prior, was, sync_id, proposal_id, source
+    FROM config_sync_arrival;
+    DROP TABLE config_sync_arrival;
+    ALTER TABLE config_sync_arrival_before RENAME TO config_sync_arrival;
+    CREATE UNIQUE INDEX config_sync_arrival_owner
+        ON config_sync_arrival (environment_id, lineage, at)
+        WHERE proposal_id IS NOT NULL;
+    DELETE FROM config_migration WHERE name = '0037_arrival_checks';
+    INSERT INTO config_sync_arrival
+    (environment_id, other_id, lineage, at, how, state, value, prior, was, sync_id, source,
+     organization_id) VALUES {rows};
+"
+    )
+}
+
+/// A shop's Store at `url` from before `0037_arrival_checks`, holding arrivals in
+/// production `rows`, each `(at, how, state, value, prior, was, sync_id, source)`.
+fn stored_before_arrival_checks(url: &str, rows: &[[&str; 8]]) {
+    drop(shop_at(url));
+    let rows: Vec<String> = rows
+        .iter()
+        .map(|row| {
+            let cells: Vec<String> = row
+                .iter()
+                .map(|cell| match *cell {
+                    "NULL" => "NULL".to_owned(),
+                    cell => format!("'{cell}'"),
+                })
+                .collect();
+            format!(
+                "('{}', 'other', 'lineage', {}, 'org')",
+                uuid(2),
+                cells.join(", ")
+            )
+        })
+        .collect();
+    run(url, &before_arrival_checks(&rows.join(", ")));
+}
+
+/// Each arrival at `url`, by `at`: its `how`, `state`, `prior`, `was`, `sync_id`
+/// and `source`.
+fn arrival_columns(url: &str) -> Vec<Vec<String>> {
+    select(
+        url,
+        "SELECT at, how, state, prior, was, sync_id, source FROM config_sync_arrival ORDER BY at",
+    )
+}
+
+#[test]
+fn arrival_checks_repair_what_a_store_could_have_stored_without_inventing_a_value() {
+    let dir = tempfile::tempdir().unwrap();
+    let url = backend::fresh_url(&dir);
+    stored_before_arrival_checks(
+        &url,
+        &[
+            // Pending and unclaimed, with no `was` kept.
+            [
+                "env.A", "sync", "pending", "\"1\"", "\"0\"", "NULL", "NULL", "\"1\"",
+            ],
+            // A Use hint with a `prior`, a `was` and a Sync's `how`.
+            [
+                "env.B", "sync", "hint", "\"2\"", "\"0\"", "\"0\"", "NULL", "\"2\"",
+            ],
+            // Settled, with a `prior`, its Sync and its source.
+            [
+                "env.C", "sync", "settled", "\"3\"", "\"0\"", "NULL", "s", "\"3\"",
+            ],
+        ],
+    );
+
+    ConfigStore::open(&url, backend::key()).unwrap();
+    let unkept = serde_json::to_string(&ployz_core::config::SealedCell::Cell(
+        ployz_core::config::Cell::Absent,
+    ))
+    .unwrap();
+    let row = |cells: [&str; 7]| cells.map(str::to_owned).to_vec();
+    assert_eq!(
+        arrival_columns(&url),
+        [
+            row([
+                "env.A", "sync", "pending", "\"0\"", &unkept, "NULL", "\"1\""
+            ]),
+            row(["env.B", "follow", "hint", "NULL", "NULL", "NULL", "\"2\""]),
+            row(["env.C", "sync", "settled", "NULL", "NULL", "s", "\"3\""]),
+        ]
+    );
+}
+
+#[test]
+fn arrival_checks_keep_a_row_they_cannot_repair_and_refuse_a_write_that_leaves_it_so() {
+    let dir = tempfile::tempdir().unwrap();
+    let url = backend::fresh_url(&dir);
+    let rows = [
+        // Pending and Released by a Sync, with no `prior`.
+        [
+            "env.D", "sync", "pending", "\"4\"", "NULL", "\"0\"", "s", "NULL",
+        ],
+        // A state no Store writes.
+        [
+            "env.E", "follow", "gone", "\"5\"", "\"0\"", "\"0\"", "NULL", "NULL",
+        ],
+    ];
+    stored_before_arrival_checks(&url, &rows);
+    let before = arrival_columns(&url);
+
+    ConfigStore::open(&url, backend::key()).unwrap();
+    assert_eq!(
+        select(
+            &url,
+            "SELECT name FROM config_migration WHERE name = '0037_arrival_checks'"
+        ),
+        [["0037_arrival_checks".to_owned()]]
+    );
+    assert_eq!(arrival_columns(&url), before);
+    let refused = try_execute(
+        &url,
+        "UPDATE config_sync_arrival SET was = '\"9\"' WHERE at = 'env.D'",
+    )
+    .unwrap_err();
+    assert!(refused.contains("config_sync_arrival_pending"), "{refused}");
+    try_execute(&url, "DELETE FROM config_sync_arrival WHERE at = 'env.D'").unwrap();
+}
+
+/// Run `sql` on the database at `url`, beside the Store: Ok, or the database's
+/// message.
+fn try_execute(url: &str, sql: &str) -> Result<(), String> {
+    match url.strip_prefix("sqlite:") {
+        Some(path) => rusqlite::Connection::open(path)
+            .unwrap()
+            .execute(sql, [])
+            .map(drop)
+            .map_err(|error| error.to_string()),
+        None => postgres::Client::connect(url, postgres::NoTls)
+            .unwrap()
+            .execute(sql, &[])
+            .map(drop)
+            .map_err(|error| {
+                error
+                    .as_db_error()
+                    .map_or_else(|| error.to_string(), |db| db.message().to_owned())
+            }),
+    }
+}
+
+#[test]
+fn arrival_checks_refuse_each_illegal_row_and_allow_its_nearest_legal_one() {
+    let dir = tempfile::tempdir().unwrap();
+    let url = backend::fresh_url(&dir);
+    drop(shop_at(&url));
+    let insert = |at: &str, columns: &str, values: &str| {
+        try_execute(
+            &url,
+            &format!(
+                "INSERT INTO config_sync_arrival \
+                 (environment_id, other_id, lineage, at, organization_id, {columns}) \
+                 VALUES ('{}', 'other', 'lineage', '{at}', 'org', {values})",
+                uuid(2)
+            ),
+        )
+    };
+    // Each CHECK, a row that breaks only it, and the legal row nearest it.
+    let checks = [
+        (
+            "config_sync_arrival_state",
+            ("how, state, value", "'follow', 'gone', '1'"),
+            ("how, state, value", "'follow', 'settled', '1'"),
+        ),
+        (
+            "config_sync_arrival_how",
+            ("how, state, value", "'merge', 'settled', '1'"),
+            ("how, state, value", "'sync', 'settled', '1'"),
+        ),
+        (
+            "config_sync_arrival_pending",
+            (
+                "how, state, value, was, sync_id",
+                "'sync', 'pending', '1', '0', 's'",
+            ),
+            (
+                "how, state, value, prior, was, sync_id",
+                "'sync', 'pending', '1', '0', '0', 's'",
+            ),
+        ),
+        (
+            "config_sync_arrival_done",
+            ("how, state, value, prior", "'sync', 'settled', '1', '0'"),
+            (
+                "how, state, value, sync_id, source",
+                "'sync', 'settled', '1', 's', '1'",
+            ),
+        ),
+        (
+            "config_sync_arrival_hint",
+            ("how, state, value", "'sync', 'hint', '1'"),
+            ("how, state, value, sync_id", "'follow', 'hint', '1', 's'"),
+        ),
+    ];
+    let mut seen = Vec::new();
+    for (n, (check, (refused, refused_values), (allowed, allowed_values))) in
+        checks.iter().enumerate()
+    {
+        let refusal = insert(&format!("env.R{n}"), refused, refused_values);
+        let names = refusal.as_ref().is_err_and(|error| error.contains(check));
+        let allowed = insert(&format!("env.A{n}"), allowed, allowed_values);
+        seen.push((*check, names, allowed));
+    }
+    let expected: Vec<(&str, bool, Result<(), String>)> = checks
+        .iter()
+        .map(|(check, _, _)| (*check, true, Ok(())))
+        .collect();
+    assert_eq!(seen, expected);
+}
+
 /// The schema as it was before `0011_retire_offers`, with an offered proposal and a
 /// plain one, each with a receipt.
 const BEFORE_RETIRE: &str = "
