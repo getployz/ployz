@@ -115,7 +115,7 @@ Two logins read the same token before, and both mint. The first rename's token i
 
 `mcp.json` holds TB. TA is live in Cloud, and no login revoked it or named it. A's note said `ployz mcp` now acts with TA while `mcp.json` held TB. Both properties break: `EVERY_TOKEN_ACCOUNTED` and `NOTE_HOLDS_WHEN_PRINTED`.
 
-How far this departs from the docs: a login that runs alone still makes a new token and revokes the old one (`docs/user/cli/overview.md:116`). The finding is about the new token of an overlapping login.
+How far this departs from the docs (`docs/user/cli/overview.md:116`): a login that runs alone, whose token before is an agent token in this Cloud and Organization, and whose save, list and `DELETE` all succeed, makes a new token and revokes the old one. Otherwise a lone login leaves the old token live: `fate` leaves one in another Cloud or Organization, or after an Unflushed save (`:213-235`), a failed list or `DELETE` leaves it (`:148-154`), and each of these names it in a warning; `revoke` leaves a `cli` token and says nothing (`:246-251`). The model reaches each of these with one login. The finding is about the new token of an overlapping login, which no warning names.
 
 **Its timing condition.** B's read (`:92`) lands before A's rename (`:79`), and B's rename lands after A's. The login whose rename lands first loses its token, whichever finished first. A login's window from its read to its rename holds `in_cloud`'s credential load (`core/crates/ployz/src/handlers/account.rs:139`), `new_token`'s `POST` (`:101-108`), and the temp file's write and `sync_all` (`:71-78`). The model has no clock: it shows the schedules that break, not how often they happen.
 
@@ -129,7 +129,7 @@ How far this departs from the docs: a login that runs alone still makes a new to
 
 Both are `Reach::AsIs` rows, and no property covers them: `P` is revoked either way.
 
-**Nothing a later login does ends the orphan.** `fate`'s id is the token that login read (`:212`), and the orphan is in no file. Things that do end it: `ployz token rm` (`core/crates/ployz/src/handlers/account.rs:243-268`), the dashboard's revoke (`dashboard/src/modules/identity/organization-token.functions.ts:38-44`), the member leaving the Organization (`dashboard/src/modules/organization/membership.server.ts:44-45`), and expiry after `LIFETIME_DAYS` (`:13`, `:106`; `dashboard/src/modules/identity/organization-token.server.ts:71`). `AgentTokenRefused`'s text also names the Organization's deletion (`core/crates/ployz/src/cloud_login.rs:80`). This list may not be complete.
+**Nothing a later login does ends the orphan.** `fate`'s id is the token that login read (`:212`), and the orphan is in no file. Things that do end it: `ployz token rm` (`core/crates/ployz/src/handlers/account.rs:243-268`), the dashboard's revoke (`dashboard/src/modules/identity/organization-token.functions.ts:38-44`), the member leaving the Organization (`dashboard/src/modules/organization/membership.server.ts:44-45`), and expiry after `LIFETIME_DAYS` (`:13`, `:106`; `dashboard/src/modules/identity/organization-token.server.ts:71`), after which Cloud refuses the token as a bearer (`tokenRuns`, `dashboard/src/modules/identity/caller.server.ts:129-130`, `dashboard/src/modules/identity/claim-required.server.ts:40`), though `ployz token ls` still lists its row as `expired` (`dashboard/src/modules/identity/organization-token.server.ts:157`). `AgentTokenRefused`'s text also names the Organization's deletion (`core/crates/ployz/src/cloud_login.rs:80`). This list may not be complete.
 
 **Only a race orphans a token.** `only_a_race_orphans_a_token` searches the whole model with every raced state rejected and finds no break of `EVERY_TOKEN_ACCOUNTED`. `the_unraced_stale_note_is_the_second_route` runs the same search for `NOTE_HOLDS_WHEN_PRINTED`, and the break it finds is the second route.
 
@@ -141,7 +141,7 @@ cd core && cargo nextest run -p ployz-verify mcp_login --no-capture
 
 Expected: `24 tests run: 24 passed`. `current_code_breaks_only_the_finding` prints `as is: 4104 states`, and `the_fix_holds` prints `fixed: 1114 states`. Each story prints under its test's name, and the stories are the same from run to run. CI runs `ployz-verify` in its workspace nextest run.
 
-The section's "You see" command prints the same stories:
+The `cargo test` form prints the same stories:
 
 ```
 cd core && cargo test -p ployz-verify mcp_login -- --nocapture
@@ -149,9 +149,13 @@ cd core && cargo test -p ployz-verify mcp_login -- --nocapture
 
 Expected: `test result: ok. 24 passed; 0 failed`.
 
-**Run times.** A warm run of the nextest command takes 0.1 to 1 s of nextest time and 0.5 to 8 s of wall time; the upper ends cover recompiling `ployz-verify` after an edit to the model. The logged runs took 0.27 to 0.33 s of nextest time and 0.97 to 2.64 s of wall time, and the scratch runs, which each recompiled, 1.9 to 5.9 s of wall time. A cold release build (`--release`, after `rm -rf core/target/release`) took 8.8 s of wall time here; the dev profile builds `ployz-verify` and `stateright` at `opt-level = 3` already (`core/Cargo.toml:36-40`).
+**Run times.** Count compiling and running apart; both grow with host load.
+- **Running.** The `mcp_login` tests take 0.1 to 1 s of nextest time. The logged runs took 0.27 to 0.56 s.
+- **Without an edit.** A warm run, with nothing to compile, takes 0.5 to 4 s of wall time. The logged runs took 0.97 to 2.64 s.
+- **After an edit to the model.** Cargo recompiles `ployz-verify` first. Across the logged scratch runs, on hosts with load averages up to about 26, an edit-and-run took 1.9 to 12.3 s of wall time, the compile alone up to 10 s; allow up to 20 s.
+- **Cold.** A dev build in a fresh `CARGO_TARGET_DIR` took 72 s of wall time. A release build (`--release`, after `rm -rf core/target/release`) took 8.8 s here, with the dependencies already built; no release build from an empty target was logged. The dev profile builds `ployz-verify` and `stateright` at `opt-level = 3` already (`core/Cargo.toml:36-40`).
 
-Read the tests in four groups.
+Read the tests in five groups.
 - **The finding, on the code as it is.**
   - `two_logins_that_read_the_same_token_orphan_the_first_rename` and `two_first_logins_orphan_the_first_rename` replay each route with `follow`, assert each step's branch and the end state.
   - `the_first_orphan_is_a_race` asks the checker for the first break of `EVERY_TOKEN_ACCOUNTED` and asserts it is a race: one login reads before the other's rename, and renames after it.
@@ -185,6 +189,9 @@ In the model, `McpLogin::locks` turns it on. `McpLogin::read` takes the lock and
 |---|---|---|---|
 | The lock from the read | `fix_unlocked` | `EVERY_TOKEN_ACCOUNTED`, through the race | `the_fix_needs_the_lock_from_the_read` |
 | Holding it through the report | `fix_releases_before_report`, which releases after the rename | `NOTE_HOLDS_WHEN_PRINTED`, through the second route; `EVERY_TOKEN_ACCOUNTED` holds | `the_fix_needs_the_lock_through_the_report` |
+| Releasing it as the login returns | none: K12 deletes the release in `McpLogin::step` | no `always`. The other login waits forever, and only two rows go unreached: the `Reach::Fix` row and "every login returns Ok" (176 states) | `the_fix_holds`, through its rows |
+
+The model has no liveness property, so a lock that is never released shows only as unreached `COVERAGE` rows. An early release (the flag) and no release (K12) are different breaks.
 
 **Its edge states.**
 - the lock is free, and the first login to read takes it; while it holds it, the other login is offered no step (`the_fix_holds_off_a_second_login`);
@@ -326,7 +333,7 @@ Expected: `1 test run: 1 passed`, with the lines the table above gives.
 cd core && cargo nextest run -p ployz-verify mcp_login --no-fail-fast
 ```
 
-Each quoted statement occurs once in `core/crates/ployz-verify/src/mcp_login.rs`.
+Each quoted statement occurs once in the function or const its row names. Most also occur once in `core/crates/ployz-verify/src/mcp_login.rs`, but not all: K12's `state.lock = None;` is also in `McpLogin::save`'s early release, and K19 to K24's `Start::…,` lines are also in `McpLogin::start`, `reads_as` and the tests. In the table, `\|` stands for `|`: unescape it when you copy K05, K06, K25 or K26.
 
 | Edit, by function | Tests that went red |
 |---|---|
@@ -359,7 +366,7 @@ Each quoted statement occurs once in `core/crates/ployz-verify/src/mcp_login.rs`
 | K27. `McpLogin::save`: `state.raced = true;` deleted, so the `raced` mark is never set | `fate_leaves_a_token_in_another_cloud`, `fate_leaves_a_token_in_another_organization`, `only_a_race_orphans_a_token`, `the_first_orphan_is_a_race`, `the_fix_needs_the_lock_from_the_read`, `two_first_logins_orphan_the_first_rename`, `two_logins_that_read_the_same_token_orphan_the_first_rename` |
 | K28. `McpLogin::save`: `state.file = File::Holds(made);` wrapped in `if match state.login(who).previous { Some(previous) => state.file == File::Holds(previous), None => !matches!(state.file, File::Holds(_)) } { … }`, so the rename happens only while `mcp.json` holds what its login read | `two_first_logins_orphan_the_first_rename`, `two_logins_that_read_the_same_token_orphan_the_first_rename` |
 
-K10, K11 and K12 edit the fix's code directly; K08 is the same as deleting the lock everywhere. K13 to K18 are the bounds dropped by one, and K13 to K17 are the choices removed. K19 to K24 are the start files removed. K25 to K27 break the properties' own bookkeeping, and K27 must turn the unraced searches red, which it does through `only_a_race_orphans_a_token` (the guard tests that search unraced go red too, since their filter then finds the race first). Under K28 the losing login renames nothing but still goes on to revoke its token before, so its own token is left unaccounted; only the replays, which pin `mcp.json`'s end, go red.
+K10, K11 and K12 edit the fix's code directly; K08 is the same as deleting the lock everywhere. Run with `scratch_unreached` on `fixed()`: K10 gives 4104 states, and K11 5838, and under each `EVERY_TOKEN_ACCOUNTED` and `NOTE_HOLDS_WHEN_PRINTED` break, which is where `the_fix_holds` fails. K12 gives 176 states, breaks no `always`, and leaves the `Reach::Fix` row and "every login returns Ok" unreached, because the logins deadlock. K13 to K18 are the bounds dropped by one, and K13 to K17 are the choices removed. K19 to K24 are the start files removed. K25 to K27 break the properties' own bookkeeping, and K27 must turn the unraced searches red, which it does through `only_a_race_orphans_a_token` (the guard tests that search unraced go red too, since their filter then finds the race first). Under K28 the losing login renames nothing but still goes on to revoke its token before, so its own token is left unaccounted; only the replays, which pin `mcp.json`'s end, go red.
 
 A side-effect failure is a test whose pinned path or expected rows your edit already moved, such as `fate_leaves_a_token_in_another_cloud` under K25. A guard that no longer earns its keep fails with its flag alone, on a model with no other edit.
 
@@ -373,11 +380,17 @@ For a row whose closure is a block:
 
 ```rust
         reached: |_, state| false && {
-            matches!(state.took, Some(Branch::Read(File::Holds(tok))) if state.token(tok).kind == Kind::Agent)
+            took(
+                state,
+                Branch::Unmade {
+                    why: Unmake::Refused,
+                    revoked: true,
+                },
+            )
         },
 ```
 
-The first is "a login reads no mcp.json"; the second is "a login reads the agent token mcp.json holds". Then run:
+The first is "a login reads no mcp.json"; the second is "Cloud answers a cli token, and the login refuses it and revokes it". Each turned `current_code_breaks_only_the_finding` and `the_fix_holds` red. Then run:
 
 ```
 cd core && cargo nextest run -p ployz-verify mcp_login --no-fail-fast
@@ -415,20 +428,31 @@ Expected at this head: `as is: 4104 states` with `EVERY_TOKEN_ACCOUNTED`'s and `
 
 **The bounds, and the row or test each needs.** Each was dropped by one (K13 to K18) and lifted by one in scratch, alone, and run with `scratch_unreached` and the `mcp_login` suite.
 
-| Bound | Value | Dropped by one: unreached rows | Lifted by one |
+| Bound | Value | Dropped by one: states, and unreached rows | Lifted by one |
 |---|---|---|---|
-| `MAX_LOGINS` | 2 | every `Reach::AsIs` row and the `Reach::Fix` row; 91 states each | see below |
-| `CLI_ANSWERS` | 1 | "Cloud answers a cli token, and the login refuses it and revokes it" | 4266 and 1192 states; no new `always` breaks; every row reached; the suite passes |
-| `SAVE_FAILURES` | 1 | "a save fails before the rename, and the login revokes the token it just made" | 4188 and 1168; the same |
-| `FLUSH_FAILURES` | 1 | "a save is Unflushed, and the login warns that it may not survive a crash and that the token before is still live" | 4224 and 1134; the same |
-| `LIST_FAILURES` | 1 | "revoke's list fails, and the login warns that the token before is still live" | 4160 and 1122; the same |
-| `DELETE_FAILURES` | 1 | "the revoke of the token just made fails, and the login warns \"Could not revoke the token … just made\"" and "revoke's DELETE fails once, and the login warns that the token before is still live" | 4188 and 1154; the same |
+| `MAX_LOGINS` | 2 | 91 and 91; every `Reach::AsIs` row and the `Reach::Fix` row | see below |
+| `CLI_ANSWERS` | 1 | 2752 and 652; "Cloud answers a cli token, and the login refuses it and revokes it" | 4266 and 1192 states; no new `always` breaks; every row reached; the suite passes |
+| `SAVE_FAILURES` | 1 | 3028 and 690; "a save fails before the rename, and the login revokes the token it just made" | 4188 and 1168; the same |
+| `FLUSH_FAILURES` | 1 | 2836 and 802; "a save is Unflushed, and the login warns that it may not survive a crash and that the token before is still live" | 4224 and 1134; the same |
+| `LIST_FAILURES` | 1 | 3336 and 962; "revoke's list fails, and the login warns that the token before is still live" | 4160 and 1122; the same |
+| `DELETE_FAILURES` | 1 | 2992 and 704; "the revoke of the token just made fails, and the login warns \"Could not revoke the token … just made\"" and "revoke's DELETE fails once, and the login warns that the token before is still live" | 4188 and 1154; the same |
 
-The state counts are as is, then fixed. Dropping a start file leaves its row unreached: `Unreadable`, "a login reads an unreadable mcp.json, warns \"Replacing it.\" and goes on with none"; `Cli`, "the token before is of kind cli, and the login leaves it and says nothing"; `OtherCloud` and `OtherOrganization`, their "is in another …" rows; `Absent`, "a login reads no mcp.json"; and `Here`, the two revoke-side `Reach::AsIs` rows, since only a `P` both logins read can be revoked twice.
+The state counts are as is, then fixed. Each drop's `always` results are unchanged: the two breaks as is, none on the fix (with `MAX_LOGINS` at 1, none at all). Dropping a start file leaves its row unreached:
+
+| Start dropped | States | Unreached |
+|---|---|---|
+| `Unreadable` | 3939 and 1035 | "a login reads an unreadable mcp.json, warns \"Replacing it.\" and goes on with none" |
+| `Cli` | 3159 and 879 | "the token before is of kind cli, and the login leaves it and says nothing" |
+| `OtherCloud` | 3583 and 943 | "the token before is in another Cloud, and the login warns that it is still live" |
+| `OtherOrganization` | 3583 and 943 | "the token before is in another Organization, and the login warns that it is still live" |
+| `Here` | 2673 and 827 | the two revoke-side `Reach::AsIs` rows, since only a `P` both logins read can be revoked twice; as is only |
+| `Absent` | 3939 and 1035 | "a login reads no mcp.json" |
+
+The lifts ran `scratch_unreached`, then the suite with `--no-fail-fast`; it lists every red test, though only the `MAX_LOGINS` lift turned any red.
 
 **The exact edits.** A drop or lift of a failure bound edits its const, such as `const CLI_ANSWERS: u8 = 1;` to `= 0;` or `= 2;`. No other const moves with it. `MAX_LOGINS` is the one derived bound: `TOKENS` is `MAX_LOGINS + 1` and moves with it, and `as_is()` runs `MAX_LOGINS` logins, so editing `const MAX_LOGINS: usize = 2;` to `3` is the whole lift. `letter` names slots 0 to 2, so a lift to 4 also needs a `3 => 'D'` arm. Remove a start by deleting its line from `STARTS` and lowering the array's length.
 
-**Three logins.** With `MAX_LOGINS` at 3, run in release:
+**Three logins.** With `MAX_LOGINS` at 3, run in release, or drop `--release`: the debug build took about 7 s of wall time on another host, since the dev profile already optimizes the model:
 
 ```
 cd core && cargo nextest run -p ployz-verify -E 'test(=mcp_login::tests::scratch_unreached)' --no-capture --release
