@@ -27,6 +27,7 @@ import {
 } from "#/modules/account/account.collection";
 import { notificationSettingsQueryOptions, useSetNotificationChannel } from "#/modules/notifications/notifications.queries";
 import { formatRelativeTime } from "#/utils/relative-time";
+import { RelativeTime, useClockReadable } from "#/components/relative-time";
 import { NotificationsSection } from "./notifications-section";
 
 export function prefetchAccount(scope: CollectionScope) {
@@ -104,9 +105,10 @@ export function SessionList({ sessions, currentSessionId, onSignOut }: {
   currentSessionId: string;
   onSignOut: (session: string) => void;
 }) {
+  const clock = useClockReadable();
   const signOutable = sessions.filter((row) => row.id !== currentSessionId && !row.cli);
   const names = distinctNames(signOutable.map((row) =>
-    [deviceLabel(row), row.ipAddress, `active ${formatRelativeTime(new Date(row.lastActiveAt))}`]));
+    [deviceLabel(row), row.ipAddress, clock ? `active ${formatRelativeTime(new Date(row.lastActiveAt))}` : null]));
   const signOutNames = new Map(signOutable.map((row, index) => [row.id, names[index]]));
   return (
     <SettingsList label="Sessions">
@@ -115,7 +117,7 @@ export function SessionList({ sessions, currentSessionId, onSignOut }: {
           key={row.id}
           media={row.cli ? <TerminalIcon /> : <MonitorIcon />}
           label={deviceLabel(row)}
-          hint={[row.ipAddress, `Active ${formatRelativeTime(new Date(row.lastActiveAt))}`].filter(Boolean).join(" · ")}
+          hint={<>{row.ipAddress ? `${row.ipAddress} · ` : null}Active <RelativeTime date={new Date(row.lastActiveAt)} /></>}
           commit={row.id === currentSessionId || row.cli ? "none" : "change"}
           actions={row.id === currentSessionId
             ? <Badge variant="secondary">This device</Badge>
@@ -154,8 +156,9 @@ export function ConnectedAgentList({ agents, onDisconnect }: {
   agents: readonly ConnectedAgentRow[];
   onDisconnect: (consent: string) => void;
 }) {
+  const clock = useClockReadable();
   const names = distinctNames(agents.map((row) =>
-    [agentLabel(row), row.organization, `allowed ${formatRelativeTime(new Date(row.allowedAt))}`]));
+    [agentLabel(row), row.organization, clock ? `allowed ${formatRelativeTime(new Date(row.allowedAt))}` : null]));
   return (
     <SettingsList label="Connected agents">
       {agents.map((row, index) => (
@@ -163,7 +166,7 @@ export function ConnectedAgentList({ agents, onDisconnect }: {
           key={row.id}
           media={<BotIcon />}
           label={agentLabel(row)}
-          hint={`${row.organization} · Allowed ${formatRelativeTime(new Date(row.allowedAt))}`}
+          hint={<>{row.organization} · Allowed <RelativeTime date={new Date(row.allowedAt)} /></>}
           commit="change"
           actions={(
             <Button variant="outline" size="sm" aria-label={`Disconnect ${names[index]}`} onClick={() => onDisconnect(row.id)}>

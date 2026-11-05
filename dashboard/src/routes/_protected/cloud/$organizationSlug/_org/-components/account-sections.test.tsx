@@ -1,6 +1,8 @@
 // @vitest-environment jsdom
 
-import { cleanup, fireEvent, render, screen } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen } from "@testing-library/react";
+import { renderToString } from "react-dom/server";
+import { hydrateRoot } from "react-dom/client";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { ConnectedAgentList, SessionList } from "./account-sections";
 
@@ -76,5 +78,46 @@ describe("ConnectedAgentList", () => {
       .toEqual(["Disconnect Claude, Shop", "Disconnect Claude, Lab", "Disconnect Unnamed agent"]);
     fireEvent.click(screen.getByRole("button", { name: "Disconnect Claude, Lab" }));
     expect(onDisconnect).toHaveBeenCalledExactlyOnceWith("lab");
+  });
+});
+
+describe("Account relative times", () => {
+  afterEach(() => {
+    cleanup();
+    document.body.replaceChildren();
+    vi.useRealTimers();
+    vi.restoreAllMocks();
+  });
+
+  it("hydrates without a mismatch when the minute turns between the server render and the browser's", async () => {
+    const lists = () => (
+      <>
+        <SessionList currentSessionId="this" onSignOut={vi.fn()} sessions={[
+          session("this", linux, "10.0.0.1"),
+          session("recent", linux, "10.0.0.2", "2026-10-19T11:58:40Z"),
+          session("older", linux, "10.0.0.2", "2026-10-17T12:00:00Z"),
+        ]} />
+        <ConnectedAgentList onDisconnect={vi.fn()} agents={[
+          { id: "a", name: "Claude", organization: "Shop", allowedAt: "2026-10-19T11:58:40Z" },
+        ]} />
+      </>
+    );
+    // The server renders at 11:59:59, when the session was active "1 minute ago".
+    vi.useFakeTimers({ now: new Date("2026-10-19T11:59:59Z"), toFake: ["Date"] });
+    const container = document.createElement("div");
+    container.innerHTML = renderToString(lists());
+    document.body.append(container);
+    // The browser hydrates at 12:00:21, when it reads "2 minutes ago".
+    vi.setSystemTime(new Date("2026-10-19T12:00:21Z"));
+    const recoverable = vi.fn();
+    const consoleError = vi.spyOn(console, "error");
+    await act(async () => { hydrateRoot(container, lists(), { onRecoverableError: recoverable }); });
+    expect(recoverable).not.toHaveBeenCalled();
+    expect(consoleError).not.toHaveBeenCalled();
+    // Once hydrated, the times show, and the Sign out names tell the two sessions on one device apart by them.
+    expect(container.textContent).toContain("Active 2 minutes ago");
+    expect(container.textContent).toContain("Allowed 2 minutes ago");
+    const names = [...container.querySelectorAll("button")].map((button) => button.getAttribute("aria-label"));
+    expect(names).toEqual(["Sign out Chrome on Linux, active 2 minutes ago", "Sign out Chrome on Linux, active 2 days ago", "Disconnect Claude"]);
   });
 });
