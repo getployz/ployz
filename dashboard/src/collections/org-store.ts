@@ -9,6 +9,8 @@ export function orgStoreOptions(organizationSlug: string, scope: CollectionScope
     queryKey: ["org-store", scope.sessionId, scope.userId, organizationSlug],
     // Readiness happens once; each table keeps itself fresh after that.
     staleTime: Infinity,
+    // A table's first load fails at once, so the gate shows its error at once. Each table retries its own refreshes.
+    retry: false,
     queryFn: async () => {
       await preloadCollections(Object.values(orgStoreTables).map((get) => get(organizationSlug, scope)));
       return true;

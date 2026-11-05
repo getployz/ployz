@@ -106,3 +106,24 @@ it("shows active scoped refresh errors while retaining rows, clears on recovery,
   await raw.cleanup();
   queryClient.clear();
 });
+
+it("leaves a table that never loaded to the Org Store gate", async () => {
+  const queryClient = new QueryClient();
+  const scope = { queryClient, sessionId: "session", userId: "user" };
+  const key = ["collections", "session", "user", "acme", "organization_server_upgrades"];
+  const raw = createApiCollection({
+    queryClient,
+    queryKey: key,
+    queryFn: async (): Promise<{ id: string }[]> => { throw new Error("table missing"); },
+    getKey: (row: { id: string }) => row.id,
+  });
+  const watcher = raw.subscribeChanges(() => {});
+  render(<OrganizationCollectionRefreshNotice scope={scope} organizationSlug="acme" />);
+  await waitFor(() => expect(queryClient.getQueryState(key)?.status).toBe("error"));
+  expect(queryClient.getQueryCache().find({ queryKey: key })?.isActive()).toBe(true);
+  expect(screen.queryByRole("alert")).toBeNull();
+  watcher.unsubscribe();
+  cleanup();
+  await raw.cleanup();
+  queryClient.clear();
+});

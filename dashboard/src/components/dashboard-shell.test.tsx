@@ -60,20 +60,23 @@ afterEach(() => {
   else Reflect.deleteProperty(HTMLElement.prototype, "scrollTo");
 });
 
-async function show({ orgStore = "ready", scope = "environment", billingEnabled = false, path = "/cloud/acme/store/production/logs" }: {
+async function show({ orgStore = "ready", scope = "environment", billingEnabled = false, path = "/cloud/acme/store/production/logs", unloadedTable }: {
   orgStore?: "ready" | "pending" | "failed";
   scope?: DashboardScope["kind"];
   billingEnabled?: boolean;
   path?: string;
+  /** A table left unseeded, whose read fails here: the test has no server runtime. */
+  unloadedTable?: string;
 } = {}) {
-  const client = new QueryClient({ defaultOptions: { queries: { enabled: false, retry: false, staleTime: Infinity } } });
+  // An unloaded table needs the browser's Query defaults, which retry, to read it.
+  const client = new QueryClient(unloadedTable ? undefined : { defaultOptions: { queries: { enabled: false, retry: false, staleTime: Infinity } } });
   clients.push(client);
   client.setQueryData(organizationKeys.state("acme"), {
     activeOrganization: { id: "org", slug: "acme", name: "Acme" },
     organizations: [{ id: "org", slug: "acme", name: "Acme" }, { id: "other", slug: "other", name: "Other" }],
     billingEnabled,
   });
-  for (const table of orgStoreTableNames) client.setQueryData(["collections", "test-session", "test-user", "acme", table], orgStoreSeed([]));
+  for (const table of orgStoreTableNames.filter((name) => name !== unloadedTable)) client.setQueryData(["collections", "test-session", "test-user", "acme", table], orgStoreSeed([]));
   const storeScope = { queryClient: client, sessionId: "test-session", userId: "test-user" };
   const store = orgStoreOptions("acme", storeScope);
   let resolveOrgStore = (_ready: boolean) => {};
@@ -135,6 +138,16 @@ it("shows a retryable Org Store failure inside the shell and recovers", async ()
   fireEvent.click(screen.getByRole("button", { name: "Retry" }));
   expect(await screen.findByText("Log entries")).toBeTruthy();
   expect(screen.queryByText("Organization data couldn’t load")).toBeNull();
+});
+
+it("returns to the Org Store failure after a Retry while a table still can't load", async () => {
+  await show({ orgStore: "failed", unloadedTable: "organization_server_upgrades" });
+  expect(await screen.findByText("Organization data couldn’t load")).toBeTruthy();
+  fireEvent.click(screen.getByRole("button", { name: "Retry" }));
+  // Without its own retries the gate answers after one read, not after Query's 1 s, 2 s and 4 s backoff.
+  expect(await screen.findByText("Organization data couldn’t load", {}, { timeout: 900 })).toBeTruthy();
+  expect(screen.queryByText("Log entries")).toBeNull();
+  expect(screen.queryByText(/Could not refresh organization data/)).toBeNull();
 });
 
 it("puts the logo, the five places, the way back to the organization and the account in the rail, with the current place marked", async () => {

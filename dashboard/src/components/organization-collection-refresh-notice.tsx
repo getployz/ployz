@@ -13,7 +13,8 @@ export function OrganizationCollectionRefreshNotice({
     () => cache.findAll({
       queryKey: ["collections", scope.sessionId, scope.userId, organizationSlug],
       type: "active",
-      predicate: (query) => query.queryKey.length === 5 && query.state.status === "error",
+      // A table that never loaded has no rows to go stale: the Org Store gate shows that failure.
+      predicate: (query) => query.queryKey.length === 5 && query.state.status === "error" && query.state.data !== undefined,
     }).length > 0,
     () => false,
   );
