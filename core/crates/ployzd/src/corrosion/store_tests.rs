@@ -554,12 +554,69 @@ fn the_cluster_sealing_decides_by_the_published_key_then_the_marker_then_the_see
         (row(None), row(Some(m)), None, Some(AwaitsRecovery(m))),
         (row(None), row(Some(m)), Some(m), Some(AwaitsRecovery(m))),
         (row(None), row(Some(m)), Some(s), Some(AwaitsRecovery(m))),
-        (row(Some(p)), row(None), None, Some(Published(p))),
-        (row(Some(p)), row(Some(p)), Some(p), Some(Published(p))),
-        (row(Some(p)), row(Some(m)), None, Some(Published(p))),
-        (row(Some(p)), row(None), Some(s), Some(Published(p))),
-        (row(Some(p)), malformed.clone(), None, Some(Published(p))),
-        (row(Some(p)), malformed.clone(), Some(s), Some(Published(p))),
+        (
+            row(Some(p)),
+            row(None),
+            None,
+            Some(Published {
+                key: p,
+                superseded: None,
+            }),
+        ),
+        (
+            row(Some(p)),
+            row(Some(p)),
+            Some(p),
+            Some(Published {
+                key: p,
+                superseded: None,
+            }),
+        ),
+        (
+            row(Some(p)),
+            row(Some(m)),
+            None,
+            Some(Published {
+                key: p,
+                superseded: Some(m),
+            }),
+        ),
+        (
+            row(Some(p)),
+            row(Some(m)),
+            Some(s),
+            Some(Published {
+                key: p,
+                superseded: Some(m),
+            }),
+        ),
+        (
+            row(Some(p)),
+            row(None),
+            Some(s),
+            Some(Published {
+                key: p,
+                superseded: None,
+            }),
+        ),
+        (
+            row(Some(p)),
+            malformed.clone(),
+            None,
+            Some(Published {
+                key: p,
+                superseded: None,
+            }),
+        ),
+        (
+            row(Some(p)),
+            malformed.clone(),
+            Some(s),
+            Some(Published {
+                key: p,
+                superseded: None,
+            }),
+        ),
         (malformed.clone(), row(None), None, None),
         (malformed.clone(), row(Some(m)), Some(s), None),
         (row(None), malformed.clone(), None, None),
@@ -625,22 +682,47 @@ async fn the_cluster_sealing_reads_both_rows_in_one_query() {
         AwaitsRecovery(m)
     );
     store.publish_sealing_public_key(p).await.unwrap();
-    assert_eq!(store.cluster_sealing(None).await.unwrap(), Published(p));
+    assert_eq!(
+        store.cluster_sealing(None).await.unwrap(),
+        Published {
+            key: p,
+            superseded: Some(m)
+        }
+    );
     assert_eq!(
         store.cluster_sealing(Some(&seed)).await.unwrap(),
-        Published(p)
+        Published {
+            key: p,
+            superseded: Some(m)
+        }
     );
     task.abort();
 
-    // A published key decides, so a malformed marker beside it is left unread.
+    // A published key decides, so a malformed marker beside it is no error
+    // and names no superseded key.
     let (store, task) = identity_store(corrosion_db()).await;
     store.publish_sealing_public_key(p).await.unwrap();
-    assert_eq!(store.cluster_sealing(None).await.unwrap(), Published(p));
+    assert_eq!(
+        store.cluster_sealing(None).await.unwrap(),
+        Published {
+            key: p,
+            superseded: None
+        }
+    );
     write_malformed(&store, "sealing_awaits_recovery").await;
-    assert_eq!(store.cluster_sealing(None).await.unwrap(), Published(p));
+    assert_eq!(
+        store.cluster_sealing(None).await.unwrap(),
+        Published {
+            key: p,
+            superseded: None
+        }
+    );
     assert_eq!(
         store.cluster_sealing(Some(&seed)).await.unwrap(),
-        Published(p)
+        Published {
+            key: p,
+            superseded: None
+        }
     );
     task.abort();
 
@@ -695,17 +777,21 @@ async fn the_sealing_readers_report_the_clusters_key_and_its_recovery_marker() {
 
 #[test]
 fn the_cluster_sealing_awaits_another_key_only_while_none_is_published() {
-    use super::ClusterSealing::{AwaitsRecovery, Published, Unsealed};
+    use super::ClusterSealing::{AwaitsRecovery, Unsealed};
 
     let k = ployz_core::SealingPublicKey::from_bytes([1; 32]);
     let other = ployz_core::SealingPublicKey::from_bytes([2; 32]);
+    let third = ployz_core::SealingPublicKey::from_bytes([3; 32]);
+    let published = |key, superseded| super::ClusterSealing::Published { key, superseded };
 
     for (sealing, expected) in [
         (Unsealed, None),
         (AwaitsRecovery(k), None),
         (AwaitsRecovery(other), Some(other)),
-        (Published(k), None),
-        (Published(other), None),
+        (published(k, None), None),
+        (published(other, None), None),
+        (published(other, Some(k)), None),
+        (published(other, Some(third)), None),
     ] {
         assert_eq!(
             sealing.awaits_another(k),

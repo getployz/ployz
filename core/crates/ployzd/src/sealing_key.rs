@@ -79,7 +79,7 @@ impl KeyFile<SealingPublicKey> {
 pub(crate) fn lacking_key(cluster: Option<ClusterSealing>) -> Sealing {
     match cluster {
         Some(ClusterSealing::AwaitsRecovery(public_key)) => Sealing::AwaitsRecovery { public_key },
-        Some(ClusterSealing::Published(_) | ClusterSealing::Unsealed) | None => {
+        Some(ClusterSealing::Published { .. } | ClusterSealing::Unsealed) | None => {
             Sealing::NeedsAccess
         }
     }
@@ -432,7 +432,10 @@ mod tests {
             Sealing::NeedsAccess
         );
         assert_eq!(
-            lacking_key(Some(ClusterSealing::Published(published))),
+            lacking_key(Some(ClusterSealing::Published {
+                key: published,
+                superseded: Some(awaited),
+            })),
             Sealing::NeedsAccess
         );
         assert_eq!(

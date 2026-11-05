@@ -99,7 +99,7 @@ impl LocalMachine {
         }
         let replicated = self.replicated()?;
         match replicated.cluster_sealing(record.recovery_seed()).await? {
-            ClusterSealing::Published(published) => {
+            ClusterSealing::Published { key: published, .. } => {
                 return Err(Error::Published(published).into());
             }
             ClusterSealing::AwaitsRecovery(awaited) => {
@@ -248,13 +248,13 @@ impl LocalMachine {
             KeyFile::Absent | KeyFile::Unusable => {}
         }
         match replicated.cluster_sealing(record.recovery_seed()).await? {
-            ClusterSealing::Published(published) if published != public_key => {
+            ClusterSealing::Published { key: published, .. } if published != public_key => {
                 return Err(Error::Published(published).into());
             }
             ClusterSealing::AwaitsRecovery(awaited) if awaited != public_key => {
                 return Err(Error::AwaitsRecovery(awaited).into());
             }
-            ClusterSealing::Published(_)
+            ClusterSealing::Published { .. }
             | ClusterSealing::AwaitsRecovery(_)
             | ClusterSealing::Unsealed => {}
         }
