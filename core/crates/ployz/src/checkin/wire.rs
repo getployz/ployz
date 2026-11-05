@@ -44,10 +44,37 @@ pub(crate) struct Attempt {
     pub(crate) failure: Option<AttemptFailure>,
 }
 
+impl Attempt {
+    /// Fail the attempt at the `live` stage of the run, unless the attempt, already raised to
+    /// `live`, holds a committed stage. So a committed attempt this release fails never fails
+    /// below Joining. A record from a newer release can still carry a failure this release
+    /// reads as Unknown.
+    pub(crate) fn fail(&mut self, live: EnrollStage, message: String) -> &AttemptFailure {
+        let stage = if self.stage.committed() {
+            self.stage
+        } else {
+            live
+        };
+        self.failure.insert(AttemptFailure { stage, message })
+    }
+}
+
+/// This build writes it only through [`Attempt::fail`]. A record an older build wrote can still
+/// hold a committed attempt with a failure below Joining.
 #[derive(Clone, Debug, Deserialize, PartialEq, Eq, Serialize)]
 pub(crate) struct AttemptFailure {
-    pub(crate) stage: EnrollStage,
-    pub(crate) message: String,
+    stage: EnrollStage,
+    message: String,
+}
+
+impl AttemptFailure {
+    pub(crate) const fn stage(&self) -> EnrollStage {
+        self.stage
+    }
+
+    pub(crate) fn message(&self) -> &str {
+        &self.message
+    }
 }
 
 #[derive(Clone, Debug, Deserialize, PartialEq, Eq)]

@@ -894,10 +894,72 @@ async fn rejected_committed_resume_reports_its_actual_failure() {
     assert!(host.events().contains(&"finished"));
     assert_eq!(fixture.status().answer, Seen::Wait);
     let failure = fixture.status().attempt.unwrap().failure.unwrap();
-    assert_eq!(failure.stage, EnrollStage::Joining);
-    assert_eq!(failure.message, "Publish failed");
+    assert_eq!(failure.stage(), EnrollStage::Joining);
+    assert_eq!(failure.message(), "Publish failed");
     assert!(fixture.paths.token_file.exists());
     assert_eq!(host.disables.load(Ordering::SeqCst), 0);
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_resumed_committed_attempt_that_fails_before_joining_keeps_its_committed_stage() {
+    let _ticker = crate::checkin::tests::tick_through_io();
+    let fixture = Fixture::new("ready");
+    let cloud = Arc::new(Cloud::answering(vec![instruction("zfs")]).await);
+    previous(&fixture, Seen::Enroll, EnrollStage::Joining);
+    let mut host = Scripted::new(&cloud, vec![], Err("Could not reach ployzd".to_owned()));
+    host.pace = Some(pause(Duration::from_millis(250)));
+    let next = pass(
+        &host,
+        &mut fixture.client(&cloud),
+        &fixture.key,
+        &fixture.paths,
+        Utc::now(),
+    )
+    .await;
+    assert_eq!(
+        next,
+        Next::Wait {
+            after: Duration::ZERO
+        }
+    );
+    let attempt = fixture.status().attempt.unwrap();
+    assert_eq!(attempt.stage, EnrollStage::Joining);
+    let failure = attempt.failure.unwrap();
+    assert_eq!(failure.stage(), EnrollStage::Joining);
+    assert_eq!(
+        failure_line(&failure),
+        "Enroll failed at joining: Could not reach ployzd"
+    );
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_resumed_uncommitted_attempt_fails_at_the_stage_it_was_retrying() {
+    let _ticker = crate::checkin::tests::tick_through_io();
+    let fixture = Fixture::new("ready");
+    let cloud = Arc::new(Cloud::answering(vec![instruction("zfs")]).await);
+    previous(&fixture, Seen::Enroll, EnrollStage::Queued);
+    let mut host = Scripted::new(&cloud, vec![], Err("Docker install failed".to_owned()));
+    host.pace = Some(pause(Duration::from_millis(250)));
+    let next = pass(
+        &host,
+        &mut fixture.client(&cloud),
+        &fixture.key,
+        &fixture.paths,
+        Utc::now(),
+    )
+    .await;
+    assert_eq!(
+        next,
+        Next::Wait {
+            after: Duration::ZERO
+        }
+    );
+    let failure = fixture.status().attempt.unwrap().failure.unwrap();
+    assert_eq!(failure.stage(), EnrollStage::Installing);
+    assert_eq!(
+        failure_line(&failure),
+        "Enroll failed at installing: Docker install failed"
+    );
 }
 
 #[tokio::test]

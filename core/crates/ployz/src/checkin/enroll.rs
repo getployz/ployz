@@ -39,6 +39,7 @@ pub(super) struct Report<'a> {
 
 pub(super) fn title(stage: EnrollStage) -> &'static str {
     match stage {
+        EnrollStage::Unknown => "Unknown stage",
         EnrollStage::Installing => "Installing",
         EnrollStage::Storage => "Setting up ZFS",
         EnrollStage::Enrolling => "Enrolling",
@@ -51,8 +52,8 @@ pub(super) fn title(stage: EnrollStage) -> &'static str {
 pub(super) fn failure_line(failure: &AttemptFailure) -> String {
     format!(
         "Enroll failed at {}: {}",
-        title(failure.stage).to_lowercase(),
-        failure.message
+        title(failure.stage()).to_lowercase(),
+        failure.message()
     )
 }
 
@@ -60,7 +61,8 @@ pub(super) fn failure_line(failure: &AttemptFailure) -> String {
 /// Rejection awaits installation and stops at live Enrolling or Queued. Once the
 /// attempt has reported Joining, saved or in this run, rejection cannot cancel its
 /// committed join. A successful join is recorded for cleanup; a failure keeps its
-/// live stage for the next check-in and returns to polling.
+/// live stage, or the committed stage it holds, for the next check-in and returns
+/// to polling.
 pub(super) async fn attempt<H: Host>(
     host: &H,
     client: &CheckinClient,
@@ -155,13 +157,8 @@ pub(super) async fn attempt<H: Host>(
             Next::Stop(StopReason::Rejected, message)
         }
         Err(message) => {
-            let failure = AttemptFailure {
-                stage: *moved.borrow(),
-                message,
-            };
-            let line = failure_line(&failure);
+            let line = failure_line(attempt.fail(*moved.borrow(), message));
             crate::ui::note(crate::ui::then_sentence(&line, "Waiting for Cloud."));
-            attempt.failure = Some(failure);
             status.answer = Seen::Wait;
             status.message = Some(line);
             status.attempt = Some(attempt);
@@ -195,7 +192,7 @@ async fn heartbeat(
     };
     match client.post(key, &request).await {
         client::Reply::Answer(Answer::Stop(StopReason::Rejected, message))
-            if attempt.stage >= EnrollStage::Joining =>
+            if attempt.stage.committed() =>
         {
             tracing::warn!(%message, "Ignoring rejection of a committed enrollment");
         }
