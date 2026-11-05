@@ -1095,6 +1095,246 @@ fn a_follow_over_a_row_a_sync_landed_keeps_that_syncs_undo() {
     assert_eq!(seen, expected);
 }
 
+type Outcome = Result<(), (RpcErrorCode, String)>;
+
+/// Undo's refusal of Sync `n` once nothing carries it.
+fn no_sync(n: u8) -> Outcome {
+    Err((
+        RpcErrorCode::NotFound,
+        format!("No Sync 00000000-0000-4000-8000-0000000002{n:02} to undo"),
+    ))
+}
+
+/// Undo's refusal once fix-web's `web.env.PLAIN` changed since it synced.
+fn plain_changed() -> Outcome {
+    Err((
+        RpcErrorCode::Conflict,
+        "web.env.PLAIN changed since it synced: change it back instead".to_owned(),
+    ))
+}
+
+/// Remove the one proposal included in fix-web's draft.
+fn remove_included(store: &ConfigStore, who: &Actor) -> Outcome {
+    let proposal = diff(store, who, "fix-web").included[0].proposal.clone();
+    store
+        .write(
+            who,
+            &ployz_store::RemoveProposal {
+                environment: at("fix-web"),
+                proposal,
+                version: None,
+            },
+        )
+        .map(|_| ())
+        .map_err(|error| (error.code, error.message))
+}
+
+const PLAIN_MORE_OTHER: [&str; 3] = ["PLAIN", "MORE", "OTHER"];
+
+#[test]
+fn a_take_over_a_saved_syncs_row_keeps_that_syncs_undo_refused() {
+    let (store, who, synced) = follow_over_sync(true, true, Some("5"), ("web.env.PLAIN", "3"));
+    let version = diff(&store, &who, "fix-web").version;
+    store
+        .write(
+            &who,
+            &take("production", "fix-web", &["variables.PLAIN"], version),
+        )
+        .unwrap();
+    assert_eq!(
+        (
+            undo_sync(&store, &who, &synced),
+            fix_web_env(&store, &who, &["PLAIN", "MORE"])
+        ),
+        (plain_changed(), vec![json!("3"), json!("m")])
+    );
+}
+
+#[test]
+fn a_follows_row_a_sync_landed_keeps_that_sync_once_deployed() {
+    let (store, who, synced) = follow_over_sync(false, true, None, ("web.env.PLAIN", "3"));
+    deploy(&store, &who, "fix-web", 3);
+    let deployed = Err((
+        RpcErrorCode::Conflict,
+        "web.env.PLAIN is deployed: change it back instead".to_owned(),
+    ));
+    assert_eq!(
+        (
+            undo_sync(&store, &who, &synced),
+            fix_web_env(&store, &who, &["PLAIN"])
+        ),
+        (deployed, vec![json!("3")])
+    );
+}
+
+#[test]
+fn a_use_hint_reaches_a_settled_row_a_sync_landed() {
+    let (store, who, _) = follow_over_sync(false, true, None, ("web.env.PLAIN", "3"));
+    deploy(&store, &who, "fix-web", 3);
+    set(&store, &who, "fix-web", &[("web.env.PLAIN", json!("5"))]);
+    set(&store, &who, "production", &[("web.env.PLAIN", json!("4"))]);
+    deploy(&store, &who, "production", 4);
+    assert_eq!(
+        hints(&store, &who, "fix-web"),
+        [r#"web.env.PLAIN = "4" from production"#]
+    );
+}
+
+#[test]
+fn remove_after_a_follow_over_a_row_of_a_node_the_sync_brought_is_refused() {
+    let (store, who) = shop();
+    store
+        .write(
+            &who,
+            &CreateService {
+                id: ServiceLineageId::parse(uuid(5)).unwrap(),
+                environment: at("production"),
+                name: ServiceName::parse("api").unwrap(),
+                image: Some("api:1".into()),
+                template: None,
+            },
+        )
+        .unwrap();
+    set(&store, &who, "production", &[("api.env.KEY", json!("k"))]);
+    include(&store, &who, "production", "fix-web", 1);
+    set(&store, &who, "production", &[("api.env.KEY", json!("k2"))]);
+    deploy(&store, &who, "production", 2);
+    assert_eq!(
+        remove_included(&store, &who),
+        Err((
+            RpcErrorCode::Conflict,
+            "api's env.KEY was edited here since production was included: \
+             Discard api, or keep production"
+                .to_owned()
+        ))
+    );
+}
+
+/// Production stages `PLAIN=2` and `MORE=m`, fix-web includes it as Sync 1; production
+/// stages `OTHER=o`, fix-web includes it as Sync 2, refreshing that proposal.
+fn refreshed() -> (ConfigStore, Actor, ployz_store::Synced, ployz_store::Synced) {
+    let (store, who) = shop();
+    set(
+        &store,
+        &who,
+        "production",
+        &[("web.env.PLAIN", json!("2")), ("web.env.MORE", json!("m"))],
+    );
+    let first = include(&store, &who, "production", "fix-web", 1);
+    set(&store, &who, "production", &[("web.env.OTHER", json!("o"))]);
+    let second = include(&store, &who, "production", "fix-web", 2);
+    (store, who, first, second)
+}
+
+#[test]
+fn a_save_ending_a_refreshed_proposal_drops_its_sync_from_a_row_a_follow_released() {
+    let (store, who, first, _) = refreshed();
+    set(&store, &who, "production", &[("web.env.PLAIN", json!("3"))]);
+    deploy(&store, &who, "production", 2);
+    save(&store, &who, "fix-web");
+    assert_eq!(
+        (
+            undo_sync(&store, &who, &first),
+            fix_web_env(&store, &who, &PLAIN_MORE_OTHER)
+        ),
+        (no_sync(1), vec![json!("3"), json!("m"), json!("o")])
+    );
+}
+
+#[test]
+fn remove_drops_its_syncs_from_a_row_a_follow_released() {
+    let (store, who, first) = follow_over_sync(true, false, None, ("web.env.PLAIN", "3"));
+    let once = (
+        remove_included(&store, &who),
+        undo_sync(&store, &who, &first),
+        fix_web_env(&store, &who, &PLAIN_MORE_OTHER),
+    );
+    let (store, who, first, second) = refreshed();
+    set(&store, &who, "production", &[("web.env.PLAIN", json!("3"))]);
+    deploy(&store, &who, "production", 2);
+    let refreshed = (
+        remove_included(&store, &who),
+        undo_sync(&store, &who, &first),
+        undo_sync(&store, &who, &second),
+        fix_web_env(&store, &who, &PLAIN_MORE_OTHER),
+    );
+    let left = vec![json!("3"), Value::Null, Value::Null];
+    assert_eq!(
+        (once, refreshed),
+        (
+            (Ok(()), no_sync(1), left.clone()),
+            (Ok(()), no_sync(1), no_sync(2), left)
+        )
+    );
+}
+
+#[test]
+fn a_save_ending_a_refreshed_proposal_drops_its_sync_from_a_row_the_draft_edited() {
+    let (store, who) = shop();
+    set(
+        &store,
+        &who,
+        "production",
+        &[("web.env.PLAIN", json!("2")), ("web.env.MORE", json!("m"))],
+    );
+    let first = include(&store, &who, "production", "fix-web", 1);
+    set(&store, &who, "fix-web", &[("web.env.MORE", json!("mine"))]);
+    set(&store, &who, "production", &[("web.env.OTHER", json!("o"))]);
+    include(&store, &who, "production", "fix-web", 2);
+    save(&store, &who, "fix-web");
+    let edited = (
+        undo_sync(&store, &who, &first),
+        fix_web_env(&store, &who, &PLAIN_MORE_OTHER),
+    );
+    set(&store, &who, "fix-web", &[("web.env.MORE", json!("m"))]);
+    let set_back = (
+        undo_sync(&store, &who, &first),
+        fix_web_env(&store, &who, &PLAIN_MORE_OTHER),
+    );
+    assert_eq!(
+        (edited, set_back),
+        (
+            (no_sync(1), vec![json!("2"), json!("mine"), json!("o")]),
+            (no_sync(1), vec![json!("2"), json!("m"), json!("o")])
+        )
+    );
+}
+
+#[test]
+fn a_row_the_draft_released_keeps_its_sync_through_a_use_hint_and_remove() {
+    let (store, who) = shop();
+    set(
+        &store,
+        &who,
+        "production",
+        &[("web.env.PLAIN", json!("2")), ("web.env.MORE", json!("m"))],
+    );
+    let first = include(&store, &who, "production", "fix-web", 1);
+    set(&store, &who, "fix-web", &[("web.env.PLAIN", json!("5"))]);
+    set(&store, &who, "production", &[("web.env.PLAIN", json!("3"))]);
+    deploy(&store, &who, "production", 2);
+    let hinted = hints(&store, &who, "fix-web");
+    let removed = (
+        remove_included(&store, &who),
+        fix_web_env(&store, &who, &["PLAIN", "MORE"]),
+    );
+    let edited = undo_sync(&store, &who, &first);
+    set(&store, &who, "fix-web", &[("web.env.PLAIN", json!("2"))]);
+    let set_back = (
+        undo_sync(&store, &who, &first),
+        fix_web_env(&store, &who, &["PLAIN"]),
+    );
+    assert_eq!(
+        (hinted, removed, edited, set_back),
+        (
+            vec![r#"web.env.PLAIN = "3" from production"#.to_owned()],
+            (Ok(()), vec![json!("5"), Value::Null]),
+            plain_changed(),
+            (Ok(()), vec![json!("1")])
+        )
+    );
+}
+
 #[test]
 fn a_service_the_parent_removes_and_adds_again_follows_into_a_readable_branch() {
     let (store, who) = shop();
