@@ -5,11 +5,11 @@
 --
 -- SQLite adds a CHECK only by rebuilding the table, as 0005 did: every column, the
 -- primary key, 0005's CHECK, the foreign key and the owner index, and five CHECKs.
--- The copy skips the CHECKs, so a row the repair couldn't fix stays as it was, and a
--- read of it fails as before, rather than every open of the Store; they check every
--- write from here on. A later migration that rewrites every row of this table, by an
--- UPDATE of the whole table or a copy without this pragma, meets the rows these never
--- checked.
+-- The copy skips the CHECKs, so a row the repair couldn't fix stays as it was rather
+-- than failing every open of the Store. From here on an INSERT checks all five, and an
+-- UPDATE those that read a column it sets. A later migration that copies the rows
+-- without this pragma, or updates the whole table setting a column one of them reads,
+-- meets the rows these never checked.
 CREATE TABLE config_sync_arrival_next (
     environment_id TEXT NOT NULL REFERENCES config_environment (id) ON DELETE CASCADE,
     other_id TEXT NOT NULL,

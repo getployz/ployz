@@ -3,11 +3,11 @@
 -- once it is a Use hint or settled, and a Use hint a Follow's. The step that runs this
 -- repaired first what it could without inventing a value.
 --
--- NOT VALID: these check every write from here on, never a row stored before. A row
--- the repair couldn't fix stays as it was, and a read of it fails as before, rather
--- than every open of the Store. A later migration that rewrites every row of this
--- table, by an UPDATE of the whole table, meets the rows these never validated. No
--- rebuild either: one would drop the change-log triggers Cloud attaches.
+-- NOT VALID: these check every INSERT and UPDATE from here on, all five on each, and
+-- never a row stored before. A row the repair couldn't fix stays as it was rather than
+-- failing every open of the Store. A later migration that updates every row of this
+-- table meets the rows these never validated. No rebuild either: one would drop the
+-- change-log triggers Cloud attaches.
 ALTER TABLE config_sync_arrival
     ADD CONSTRAINT config_sync_arrival_state
         CHECK (state IN ('pending', 'hint', 'settled')) NOT VALID,
