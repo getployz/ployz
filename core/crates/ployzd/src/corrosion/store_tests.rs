@@ -531,6 +531,142 @@ async fn publishing_a_sealing_public_key_never_replaces_the_clusters() {
     task.abort();
 }
 
+#[test]
+fn the_cluster_sealing_decides_by_the_published_key_then_the_marker_then_the_seed() {
+    use super::ClusterSealing::{AwaitsRecovery, Published, Unsealed};
+
+    let p = ployz_core::SealingPublicKey::from_bytes([1; 32]);
+    let m = ployz_core::SealingPublicKey::from_bytes([2; 32]);
+    let s = ployz_core::SealingPublicKey::from_bytes([3; 32]);
+    let row = |key: Option<ployz_core::SealingPublicKey>| {
+        key.map_or(serde_json::Value::Null, |key| json!(key.to_string()))
+    };
+    let malformed = json!("not a key");
+    let seed = |key| ployz_core::RecoverySeed {
+        expected_public_key: key,
+        backup: None,
+    };
+
+    // `None` expects `Error::Protocol`.
+    for (published, marker, seeded, expected) in [
+        (row(None), row(None), None, Some(Unsealed)),
+        (row(None), row(None), Some(s), Some(AwaitsRecovery(s))),
+        (row(None), row(Some(m)), None, Some(AwaitsRecovery(m))),
+        (row(None), row(Some(m)), Some(m), Some(AwaitsRecovery(m))),
+        (row(None), row(Some(m)), Some(s), Some(AwaitsRecovery(m))),
+        (row(Some(p)), row(None), None, Some(Published(p))),
+        (row(Some(p)), row(Some(p)), Some(p), Some(Published(p))),
+        (row(Some(p)), row(Some(m)), None, Some(Published(p))),
+        (row(Some(p)), row(None), Some(s), Some(Published(p))),
+        (row(Some(p)), malformed.clone(), None, Some(Published(p))),
+        (row(Some(p)), malformed.clone(), Some(s), Some(Published(p))),
+        (malformed.clone(), row(None), None, None),
+        (malformed.clone(), row(Some(m)), Some(s), None),
+        (row(None), malformed.clone(), None, None),
+        (row(None), malformed.clone(), Some(s), None),
+    ] {
+        let decided = super::ClusterSealing::decide(&published, &marker, seeded.map(seed).as_ref());
+        match expected {
+            Some(expected) => assert_eq!(
+                decided.as_ref().ok(),
+                Some(&expected),
+                "published {published}, marker {marker}, seed {seeded:?}: {decided:?}",
+            ),
+            None => assert!(
+                matches!(decided, Err(super::Error::Protocol(_))),
+                "published {published}, marker {marker}, seed {seeded:?}: {decided:?}",
+            ),
+        }
+    }
+}
+
+#[tokio::test]
+async fn the_cluster_sealing_reads_both_rows_in_one_query() {
+    use super::ClusterSealing::{AwaitsRecovery, Published, Unsealed};
+
+    let p = ployz_core::SealingPublicKey::from_bytes([1; 32]);
+    let m = ployz_core::SealingPublicKey::from_bytes([2; 32]);
+    let s = ployz_core::SealingPublicKey::from_bytes([3; 32]);
+    let seed = ployz_core::RecoverySeed {
+        expected_public_key: s,
+        backup: None,
+    };
+    let write_malformed = |store: &ReplicatedStore, key: &'static str| {
+        let api = store.api().clone();
+        async move {
+            api.execute([Statement::new(
+                "INSERT INTO cluster (key, value) VALUES (?, 'not a key')",
+                [json!(key)],
+            )])
+            .await
+            .unwrap();
+        }
+    };
+    let refused = |read: Result<super::ClusterSealing, super::Error>, what: &str| {
+        assert!(
+            matches!(read, Err(super::Error::Protocol(_))),
+            "{what} read as {read:?}",
+        );
+    };
+
+    let (store, task) = identity_store(corrosion_db()).await;
+    assert_eq!(store.cluster_sealing(None).await.unwrap(), Unsealed);
+    assert_eq!(
+        store.cluster_sealing(Some(&seed)).await.unwrap(),
+        AwaitsRecovery(s)
+    );
+    store.publish_sealing_awaits_recovery(m).await.unwrap();
+    assert_eq!(
+        store.cluster_sealing(None).await.unwrap(),
+        AwaitsRecovery(m)
+    );
+    assert_eq!(
+        store.cluster_sealing(Some(&seed)).await.unwrap(),
+        AwaitsRecovery(m)
+    );
+    store.publish_sealing_public_key(p).await.unwrap();
+    assert_eq!(store.cluster_sealing(None).await.unwrap(), Published(p));
+    assert_eq!(
+        store.cluster_sealing(Some(&seed)).await.unwrap(),
+        Published(p)
+    );
+    task.abort();
+
+    // A published key decides, so a malformed marker beside it is left unread.
+    let (store, task) = identity_store(corrosion_db()).await;
+    store.publish_sealing_public_key(p).await.unwrap();
+    assert_eq!(store.cluster_sealing(None).await.unwrap(), Published(p));
+    write_malformed(&store, "sealing_awaits_recovery").await;
+    assert_eq!(store.cluster_sealing(None).await.unwrap(), Published(p));
+    assert_eq!(
+        store.cluster_sealing(Some(&seed)).await.unwrap(),
+        Published(p)
+    );
+    task.abort();
+
+    let (store, task) = identity_store(corrosion_db()).await;
+    write_malformed(&store, "sealing_awaits_recovery").await;
+    refused(store.cluster_sealing(None).await, "a malformed marker");
+    refused(
+        store.cluster_sealing(Some(&seed)).await,
+        "a malformed marker beside a seed",
+    );
+    task.abort();
+
+    let (store, task) = identity_store(corrosion_db()).await;
+    write_malformed(&store, "sealing_public_key").await;
+    refused(
+        store.cluster_sealing(None).await,
+        "a malformed published key",
+    );
+    store.publish_sealing_awaits_recovery(m).await.unwrap();
+    refused(
+        store.cluster_sealing(Some(&seed)).await,
+        "a malformed published key beside a marker and a seed",
+    );
+    task.abort();
+}
+
 #[tokio::test]
 async fn the_sealing_readers_report_the_clusters_key_and_its_recovery_marker() {
     let (store, task) = identity_store(corrosion_db()).await;

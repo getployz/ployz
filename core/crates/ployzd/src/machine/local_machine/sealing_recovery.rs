@@ -14,6 +14,7 @@ use thiserror::Error as ThisError;
 
 use super::LocalMachine;
 use crate::{
+    corrosion::ClusterSealing,
     sealing_key::SealingKey,
     sealing_recovery::{RestoreError, back_up, restore},
 };
@@ -126,14 +127,12 @@ impl LocalMachine {
             return Err(super::Error::NotParticipating);
         }
         let replicated = self.replicated()?;
-        let expected = match replicated.sealing_public_key().await? {
-            Some(published) => published,
-            // A founder's seed names the key before the publisher replicates its marker.
-            None => replicated
-                .sealing_awaits_recovery()
-                .await?
-                .or_else(|| record.recovery_seed().map(|seed| seed.expected_public_key))
-                .ok_or(Error::NothingAwaited)?,
+        let expected = match replicated.cluster_sealing(record.recovery_seed()).await? {
+            ClusterSealing::Published(published) => published,
+            // The marker names the awaited key, or, before the publisher
+            // replicates it, a founder's seed does.
+            ClusterSealing::AwaitsRecovery(awaited) => awaited,
+            ClusterSealing::Unsealed => return Err(Error::NothingAwaited.into()),
         };
         let backup = backup
             .or_else(|| record.recovery_seed().and_then(|seed| seed.backup.clone()))

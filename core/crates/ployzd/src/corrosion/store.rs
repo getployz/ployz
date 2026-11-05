@@ -17,7 +17,7 @@ use ployz_core::{
     CERTIFICATE_POLICY_CLUSTER_KEY, CertificateHost, ClusterRoute, ContainerId,
     ContainerObservation, DockerVolume, DockerVolumeId, DockerVolumeName, ForgottenAnswer,
     IngressHost, IssuanceClock, Machine, MachineId, ManagementIdentity, QualifiedService,
-    SealingPublicKey, forgotten_key,
+    RecoverySeed, SealingPublicKey, forgotten_key,
 };
 use serde_json::json;
 
@@ -331,8 +331,73 @@ fn registration_upsert(row: &RegisterRow) -> Result<Statement, Error> {
     ))
 }
 
+#[cfg(test)]
 pub(crate) const SEALING_PUBLIC_KEY_CLUSTER_KEY: &str = "sealing_public_key";
+#[cfg(test)]
 pub(crate) const SEALING_AWAITS_RECOVERY_CLUSTER_KEY: &str = "sealing_awaits_recovery";
+
+pub(super) const CLUSTER_SEALING_QUERY: &str = "SELECT \
+     (SELECT value FROM cluster WHERE key = 'sealing_public_key') AS published, \
+     (SELECT value FROM cluster WHERE key = 'sealing_awaits_recovery') AS awaits";
+
+/// The Cluster's Sealing Key as this Machine reads it: one query on its own
+/// replica for the published key and the recovery marker, then its own
+/// record's [`RecoverySeed`]. A key that replicates after the read is not seen.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum ClusterSealing {
+    /// Neither row is on this replica, and this Machine's record holds no
+    /// seed.
+    Unsealed,
+    /// No key is published on this replica. The recovery marker names this
+    /// key, or, with no marker, this Machine's seed does.
+    AwaitsRecovery(SealingPublicKey),
+    /// The key published on this replica. The recovery marker may still be
+    /// present beside it, since nothing clears it, and is left unread.
+    Published(SealingPublicKey),
+}
+
+impl ClusterSealing {
+    /// Decides from the two row values one read returned, in precedence
+    /// order: a published key, then the recovery marker, then the seed's
+    /// expected key. Only the value that decides is parsed, so a published
+    /// key leaves the marker unread.
+    ///
+    /// # Errors
+    /// Returns [`Error::Protocol`] when the deciding row value is not a
+    /// Sealing public key. A malformed value never reads as absent.
+    pub(crate) fn decide(
+        published: &serde_json::Value,
+        awaits: &serde_json::Value,
+        seed: Option<&RecoverySeed>,
+    ) -> Result<Self, Error> {
+        if let Some(published) = sealing_key_value(published, "Sealing public key")? {
+            return Ok(Self::Published(published));
+        }
+        if let Some(awaits) = sealing_key_value(awaits, "Sealing public key awaiting recovery")? {
+            return Ok(Self::AwaitsRecovery(awaits));
+        }
+        Ok(seed.map_or(Self::Unsealed, |seed| {
+            Self::AwaitsRecovery(seed.expected_public_key)
+        }))
+    }
+}
+
+fn sealing_key_value(
+    value: &serde_json::Value,
+    what: &str,
+) -> Result<Option<SealingPublicKey>, Error> {
+    if value.is_null() {
+        return Ok(None);
+    }
+    SealingPublicKey::try_from(text(value, what)?.to_owned())
+        .map(Some)
+        .map_err(|error| {
+            Error::Protocol(format!(
+                "invalid {what}: {error}",
+                error = ployz_core::error_chain::inline(&error),
+            ))
+        })
+}
 
 impl ReplicatedStore {
     #[must_use]
@@ -441,12 +506,37 @@ impl ReplicatedStore {
         Ok(())
     }
 
+    /// The Cluster's Sealing Key as this Machine reads it, given the
+    /// [`RecoverySeed`] its own record holds, decided by
+    /// [`ClusterSealing::decide`].
+    ///
+    /// # Errors
+    /// Returns an error when the Corrosion query fails or answers no row, or
+    /// the deciding stored value is not a Sealing public key.
+    pub(crate) async fn cluster_sealing(
+        &self,
+        seed: Option<&RecoverySeed>,
+    ) -> Result<ClusterSealing, Error> {
+        let query = self
+            .api
+            .query(Statement::new(CLUSTER_SEALING_QUERY, []))
+            .await?;
+        let rows = query.rows(["published", "awaits"])?;
+        let Some([published, awaits]) = rows.first() else {
+            return Err(Error::Protocol(
+                "the Cluster's Sealing read answered no row".to_owned(),
+            ));
+        };
+        ClusterSealing::decide(published, awaits, seed)
+    }
+
     /// The Cluster's published Sealing public key, or `None` for a Cluster
     /// founded before Sealing Keys existed and not yet backfilled.
     ///
     /// # Errors
     /// Returns an error when the Corrosion query fails, or the stored value
     /// is not a Sealing public key.
+    #[cfg(test)]
     pub async fn sealing_public_key(&self) -> Result<Option<SealingPublicKey>, Error> {
         self.sealing_cluster_key(SEALING_PUBLIC_KEY_CLUSTER_KEY, "Sealing public key")
             .await
@@ -458,6 +548,7 @@ impl ReplicatedStore {
     /// # Errors
     /// Returns an error when the Corrosion query fails, or the stored value
     /// is not a Sealing public key.
+    #[cfg(test)]
     pub async fn sealing_awaits_recovery(&self) -> Result<Option<SealingPublicKey>, Error> {
         self.sealing_cluster_key(
             SEALING_AWAITS_RECOVERY_CLUSTER_KEY,
@@ -466,18 +557,7 @@ impl ReplicatedStore {
         .await
     }
 
-    /// The Sealing public key the Cluster awaits from recovery, unless a
-    /// published key superseded the marker.
-    ///
-    /// # Errors
-    /// Returns an error when either read fails.
-    pub async fn awaited_sealing_key(&self) -> Result<Option<SealingPublicKey>, Error> {
-        match self.sealing_public_key().await? {
-            Some(_) => Ok(None),
-            None => self.sealing_awaits_recovery().await,
-        }
-    }
-
+    #[cfg(test)]
     async fn sealing_cluster_key(
         &self,
         key: &str,
@@ -494,14 +574,7 @@ impl ReplicatedStore {
         let Some([value]) = rows.first() else {
             return Ok(None);
         };
-        SealingPublicKey::try_from(text(value, what)?.to_owned())
-            .map(Some)
-            .map_err(|error| {
-                Error::Protocol(format!(
-                    "invalid {what}: {error}",
-                    error = ployz_core::error_chain::inline(&error),
-                ))
-            })
+        sealing_key_value(value, what)
     }
 
     /// The published Cluster network, or `None` before the founder's

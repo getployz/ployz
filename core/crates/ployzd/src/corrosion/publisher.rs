@@ -2,7 +2,9 @@ use std::{collections::BTreeMap, io, sync::Arc, time::Duration};
 
 use tokio_util::sync::CancellationToken;
 
-use super::{Error, MachineView, MachinesSnapshot, ReplicatedStore, store::RuntimeOverlay};
+use super::{
+    ClusterSealing, Error, MachineView, MachinesSnapshot, ReplicatedStore, store::RuntimeOverlay,
+};
 use crate::machine::{LocalMachineBody, LocalMachineRecord, RecordOwner};
 
 /// What this Machine observes of itself live: published on its row, never held in
@@ -150,7 +152,7 @@ pub async fn run_machine_publisher(
                 );
             }
             let observed = *sealing.borrow_and_update();
-            published_sealing = awaiting_recovery(replicated, observed).await;
+            published_sealing = awaiting_recovery(replicated, observed, &record).await;
             let overlay = live.mark_seen(published_sealing);
             if let Some(ployz_core::Sealing::Held { public_key }) = overlay.sealing
                 && let Err(error) = replicated.publish_sealing_public_key(public_key).await
@@ -196,18 +198,21 @@ pub async fn run_machine_publisher(
     }
 }
 
-/// A Machine without the Sealing Key reports the key its Cluster awaits from
-/// recovery, so Cloud can tell a lost key from a missing grant.
+/// A Machine without the Sealing Key reports the key a recovery awaits, as it
+/// reads its Cluster's Sealing, so Cloud can tell a lost key from a missing grant.
 async fn awaiting_recovery(
     replicated: &ReplicatedStore,
     observed: Option<ployz_core::Sealing>,
+    record: &LocalMachineRecord,
 ) -> Option<ployz_core::Sealing> {
     if !matches!(observed, Some(ployz_core::Sealing::NeedsAccess)) {
         return observed;
     }
-    match replicated.awaited_sealing_key().await {
-        Ok(Some(public_key)) => Some(ployz_core::Sealing::AwaitsRecovery { public_key }),
-        Ok(None) => observed,
+    match replicated.cluster_sealing(record.recovery_seed()).await {
+        Ok(ClusterSealing::AwaitsRecovery(public_key)) => {
+            Some(ployz_core::Sealing::AwaitsRecovery { public_key })
+        }
+        Ok(ClusterSealing::Published(_) | ClusterSealing::Unsealed) => observed,
         Err(error) => {
             eprintln!(
                 "failed to read whether the Cluster awaits recovery: {error}",

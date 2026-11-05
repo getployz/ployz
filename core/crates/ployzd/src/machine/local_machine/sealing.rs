@@ -3,7 +3,9 @@
 //! An operator drives these: Generate on one Machine of a Cluster founded before
 //! Sealing Keys existed, then Share from a holder and Install on each Machine that
 //! still needs access. No route elects anything; each only checks that what it is
-//! asked to do agrees with its key file and with what the Cluster published.
+//! asked to do agrees with its key file and with the Cluster's Sealing as this
+//! Machine reads it: the key its replica publishes or awaits, or the key its own
+//! RecoverySeed awaits.
 
 use std::io;
 
@@ -14,6 +16,7 @@ use ployz_core::{
 use thiserror::Error as ThisError;
 
 use super::LocalMachine;
+use crate::corrosion::ClusterSealing;
 use crate::sealing_key::{OpenError, SealingKey};
 
 #[derive(Debug, ThisError)]
@@ -77,11 +80,14 @@ impl LocalMachine {
             return Ok(SealingKeyHeld { public_key });
         }
         let replicated = self.replicated()?;
-        if let Some(published) = replicated.sealing_public_key().await? {
-            return Err(Error::Published(published).into());
-        }
-        if let Some(awaited) = replicated.sealing_awaits_recovery().await? {
-            return Err(Error::AwaitsRecovery(awaited).into());
+        match replicated.cluster_sealing(record.recovery_seed()).await? {
+            ClusterSealing::Published(published) => {
+                return Err(Error::Published(published).into());
+            }
+            ClusterSealing::AwaitsRecovery(awaited) => {
+                return Err(Error::AwaitsRecovery(awaited).into());
+            }
+            ClusterSealing::Unsealed => {}
         }
         let key = SealingKey::generate();
         let public_key = key.public_key();
@@ -182,18 +188,16 @@ impl LocalMachine {
             }
             None => {}
         }
-        match replicated.sealing_public_key().await? {
-            Some(published) if published != public_key => {
+        match replicated.cluster_sealing(record.recovery_seed()).await? {
+            ClusterSealing::Published(published) if published != public_key => {
                 return Err(Error::Published(published).into());
             }
-            Some(_) => {}
-            None => {
-                if let Some(awaited) = replicated.sealing_awaits_recovery().await?
-                    && awaited != public_key
-                {
-                    return Err(Error::AwaitsRecovery(awaited).into());
-                }
+            ClusterSealing::AwaitsRecovery(awaited) if awaited != public_key => {
+                return Err(Error::AwaitsRecovery(awaited).into());
             }
+            ClusterSealing::Published(_)
+            | ClusterSealing::AwaitsRecovery(_)
+            | ClusterSealing::Unsealed => {}
         }
         self.owner
             .mutate(move |store| store.set_sealing_key(Some(&key)))
