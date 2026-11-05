@@ -44,6 +44,12 @@ export function preferredRepresentation(accept: string | null): Preference {
 
 export const requestPreference = (request: Request) => preferredRepresentation(request.headers.get("accept"));
 
+/** Whether an error answer should be a page: HTML is preferred, and JSON no more than HTML (a browser's `*\/*` ties). */
+export function prefersHtmlOverJson(accept: string | null): boolean {
+  const ranges = parseAccept(accept ?? "*/*");
+  return preferredRepresentation(accept) === "html" && quality(ranges, "text", "html") >= quality(ranges, "application", "json");
+}
+
 const ORIGIN = "https://ployz.dev";
 
 function markdownResponse(status: number, body: string): Response {

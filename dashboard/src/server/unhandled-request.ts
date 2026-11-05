@@ -1,13 +1,21 @@
 import { createMiddleware } from "@tanstack/react-start";
-import { isNotFound } from "@tanstack/react-router";
 import { Effect } from "effect";
-import { preferredRepresentation } from "#/server/content-negotiation";
+import { secretPagesOf } from "#/lib/secret-pages";
+import { getRouter } from "#/router";
+import { prefersHtmlOverJson } from "#/server/content-negotiation";
 import { runRedactedLog } from "#/server/log-redaction";
-import { encodePublicError, isClientDisconnect, statusForPublicError } from "#/server/public-error";
+import { encodePublicError, statusForPublicError } from "#/server/public-error";
 
-/** Whether a throw belongs to TanStack Start: a redirect or another Response, a notFound, or the client leaving. */
-function startOwns(request: Request, cause: unknown) {
-  return cause instanceof Response || isNotFound(cause) || request.signal.aborted || isClientDisconnect(cause);
+let opensSecretPage: ((path: string) => boolean) | undefined;
+
+/** `pathname` for the log, unless it opens a page whose URL is a secret (an invite, a claim link, a device code). */
+function loggablePath(pathname: string) {
+  try {
+    opensSecretPage ??= secretPagesOf(getRouter());
+    return opensSecretPage(pathname) ? "[secret page]" : pathname;
+  } catch {
+    return "[unmatched]";
+  }
 }
 
 /** A page that needs nothing that may be down: no database, no script, no asset. */
@@ -42,7 +50,8 @@ code { font: 13px ui-monospace, monospace; color: #18181b; }
  * What a request gets when its handler throws something nothing handled, in place of h3's bare
  * `{"status":500,"unhandled":true,"message":"HTTPError"}`. A page gets a static page, and anything else the Public
  * Error JSON every API route answers, both with a request id. One log line carries the same id, the method, the path
- * and the cause. The query string stays out of the log, since a link may carry a token.
+ * and the cause. The query string stays out of the log, since a link may carry a token, and so does the path of a
+ * page whose URL is a secret.
  */
 export function unhandledRequestResponse(
   request: Request,
@@ -52,12 +61,12 @@ export function unhandledRequestResponse(
 ): Response {
   const { pathname } = new URL(request.url);
   runRedactedLog(Effect.logError("Unhandled request error.", cause).pipe(
-    Effect.annotateLogs({ requestId, method: request.method, path: pathname }),
+    Effect.annotateLogs({ requestId, method: request.method, path: loggablePath(pathname) }),
   ));
   const error = encodePublicError(cause);
   const status = statusForPublicError(error);
-  const headers = { "cache-control": "no-store", "ployz-request-id": requestId };
-  if (page && !pathname.startsWith("/api/") && preferredRepresentation(request.headers.get("accept")) === "html") {
+  const headers = { "cache-control": "no-store", "x-request-id": requestId };
+  if (page && !pathname.startsWith("/api/") && prefersHtmlOverJson(request.headers.get("accept"))) {
     return new Response(errorPage(requestId), { status, headers: { ...headers, "content-type": "text/html; charset=utf-8" } });
   }
   return Response.json({ ...error, requestId }, { status, headers });
@@ -68,7 +77,8 @@ export const unhandledRequestMiddleware = createMiddleware().server(async ({ req
   try {
     return await next();
   } catch (cause) {
-    if (startOwns(request, cause)) throw cause;
+    // Start throws an aborted request's reason past whatever this answers.
+    if (request.signal.aborted) throw cause;
     return unhandledRequestResponse(request, cause, handlerType === "router");
   }
 });
