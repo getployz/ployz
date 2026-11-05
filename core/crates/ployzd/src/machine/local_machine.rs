@@ -27,7 +27,9 @@ use super::{
 };
 
 use crate::{
-    corrosion::{AdminClient, MembershipState, ReplicatedStore, membership_states_by_address},
+    corrosion::{
+        AdminClient, ClusterSealing, MembershipState, ReplicatedStore, membership_states_by_address,
+    },
     docker::{ContainerRuntime, LocalDocker},
     host_capacity,
     network::{Leftover, NetworkError, NetworkPlane, discover_network},
@@ -565,8 +567,6 @@ impl LocalMachine {
     /// A Machine without the key reports the key a recovery awaits, read as
     /// Generate reads it, and otherwise that it needs access.
     async fn lacking_key(&self) -> Option<ployz_core::Sealing> {
-        use crate::corrosion::ClusterSealing;
-
         let Ok(replicated) = self.replicated() else {
             return Some(ployz_core::Sealing::NeedsAccess);
         };

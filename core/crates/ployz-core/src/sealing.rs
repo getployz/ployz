@@ -254,8 +254,9 @@ pub enum Sealing {
     /// The Machine joined without receiving the key and cannot open sealed
     /// values until a member hands it over.
     NeedsAccess,
-    /// The Cluster lost its key: no Machine may generate another until the one it
-    /// published, `public_key`, is recovered.
+    /// The Cluster lost its key: no Machine may generate another until
+    /// `public_key` is recovered. The Cluster's recovery marker names it, or,
+    /// before that marker replicates, this Machine's RecoverySeed does.
     AwaitsRecovery {
         public_key: SealingPublicKey,
     },

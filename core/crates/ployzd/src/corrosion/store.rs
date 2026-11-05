@@ -352,25 +352,33 @@ pub(crate) enum ClusterSealing {
     /// key, or, with no marker, this Machine's seed does.
     AwaitsRecovery(SealingPublicKey),
     /// The key published on this replica. The recovery marker may still be
-    /// present beside it, since nothing clears it.
+    /// present beside it, since nothing clears it, and is left unread.
     Published(SealingPublicKey),
 }
 
 impl ClusterSealing {
-    /// A published key wins, then the recovery marker, then the seed's
-    /// expected key.
+    /// Decides from the two row values one read returned, in precedence
+    /// order: a published key, then the recovery marker, then the seed's
+    /// expected key. Only the value that decides is parsed, so a published
+    /// key leaves the marker unread.
+    ///
+    /// # Errors
+    /// Returns [`Error::Protocol`] when the deciding row value is not a
+    /// Sealing public key. A malformed value never reads as absent.
     pub(crate) fn decide(
-        published: Option<SealingPublicKey>,
-        awaits: Option<SealingPublicKey>,
+        published: &serde_json::Value,
+        awaits: &serde_json::Value,
         seed: Option<&RecoverySeed>,
-    ) -> Self {
-        match (published, awaits) {
-            (Some(published), _) => Self::Published(published),
-            (None, Some(awaits)) => Self::AwaitsRecovery(awaits),
-            (None, None) => seed.map_or(Self::Unsealed, |seed| {
-                Self::AwaitsRecovery(seed.expected_public_key)
-            }),
+    ) -> Result<Self, Error> {
+        if let Some(published) = sealing_key_value(published, "Sealing public key")? {
+            return Ok(Self::Published(published));
         }
+        if let Some(awaits) = sealing_key_value(awaits, "Sealing public key awaiting recovery")? {
+            return Ok(Self::AwaitsRecovery(awaits));
+        }
+        Ok(seed.map_or(Self::Unsealed, |seed| {
+            Self::AwaitsRecovery(seed.expected_public_key)
+        }))
     }
 }
 
@@ -499,11 +507,12 @@ impl ReplicatedStore {
     }
 
     /// The Cluster's Sealing Key as this Machine reads it, given the
-    /// [`RecoverySeed`] its own record holds.
+    /// [`RecoverySeed`] its own record holds, decided by
+    /// [`ClusterSealing::decide`].
     ///
     /// # Errors
     /// Returns an error when the Corrosion query fails or answers no row, or
-    /// either stored value is not a Sealing public key.
+    /// the deciding stored value is not a Sealing public key.
     pub(crate) async fn cluster_sealing(
         &self,
         seed: Option<&RecoverySeed>,
@@ -518,11 +527,7 @@ impl ReplicatedStore {
                 "the Cluster's Sealing read answered no row".to_owned(),
             ));
         };
-        Ok(ClusterSealing::decide(
-            sealing_key_value(published, "Sealing public key")?,
-            sealing_key_value(awaits, "Sealing public key awaiting recovery")?,
-            seed,
-        ))
+        ClusterSealing::decide(published, awaits, seed)
     }
 
     /// The Cluster's published Sealing public key, or `None` for a Cluster

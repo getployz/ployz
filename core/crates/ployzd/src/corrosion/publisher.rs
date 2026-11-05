@@ -2,7 +2,9 @@ use std::{collections::BTreeMap, io, sync::Arc, time::Duration};
 
 use tokio_util::sync::CancellationToken;
 
-use super::{Error, MachineView, MachinesSnapshot, ReplicatedStore, store::RuntimeOverlay};
+use super::{
+    ClusterSealing, Error, MachineView, MachinesSnapshot, ReplicatedStore, store::RuntimeOverlay,
+};
 use crate::machine::{LocalMachineBody, LocalMachineRecord, RecordOwner};
 
 /// What this Machine observes of itself live: published on its row, never held in
@@ -203,8 +205,6 @@ async fn awaiting_recovery(
     observed: Option<ployz_core::Sealing>,
     record: &LocalMachineRecord,
 ) -> Option<ployz_core::Sealing> {
-    use super::ClusterSealing;
-
     if !matches!(observed, Some(ployz_core::Sealing::NeedsAccess)) {
         return observed;
     }
