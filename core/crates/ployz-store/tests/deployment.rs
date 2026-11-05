@@ -3613,6 +3613,210 @@ fn every_deployment_that_leaves_flight_records_when_it_ended() {
     assert_eq!(read, expected);
 }
 
+fn summary(store: &ConfigStore, who: &Actor, n: u8) -> DeploymentSummary {
+    store
+        .read(who, &ployz_store::DeploymentQuery { id: id(n) })
+        .unwrap()
+        .deployment
+}
+
+/// Move Deployment `n`'s recorded end `seconds` earlier.
+fn ended_earlier(url: &str, n: u8, seconds: i64) {
+    backend::execute(
+        url,
+        &format!(
+            "UPDATE config_deployment SET ended = ended - {seconds} WHERE id = '{}'",
+            id(n)
+        ),
+    );
+}
+
+/// A Store from before every exit stamped `ended` left it unset on a Deployment
+/// superseded from the queue and on one whose runner was lost. Each still reads
+/// when it ended: its admission, or the earlier of its runner lease and now.
+#[test]
+fn a_deployment_an_older_store_ended_without_a_time_reads_one() {
+    let (store, who, url, _dir) = own_shop();
+    let (a, b) = (runner("runner-a"), runner("runner-b"));
+    admit(&store, &who, 1, &[], None).unwrap();
+    admit(&store, &who, 2, &[], None).unwrap();
+    store.claim(&id(2), &a).unwrap();
+    admit(&store, &who, 3, &[], None).unwrap();
+    store.claim(&id(3), &b).unwrap();
+    store
+        .record(&id(3), &b, RunEvidence::Prepared(preview(&["web"])))
+        .unwrap();
+    store.record(&id(3), &b, RunEvidence::Abandoned).unwrap();
+    lapse(&url, 3);
+    backend::execute(&url, "UPDATE config_deployment SET ended = NULL");
+
+    let superseded = summary(&store, &who, 1);
+    assert_eq!(superseded.status, DeploymentStatus::Superseded);
+    assert_eq!(superseded.ended_at, Some(superseded.admitted_at));
+    // Taken over while its runner lease held: now, until that lease passes.
+    let live = summary(&store, &who, 2);
+    let now = i64::try_from(
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs(),
+    )
+    .unwrap();
+    assert_eq!(live.status, DeploymentStatus::Unknown);
+    assert!(
+        live.started_at
+            .zip(live.ended_at)
+            .is_some_and(|(started, ended)| started <= ended && ended <= now),
+        "{live:?}"
+    );
+    let lapsed = summary(&store, &who, 3);
+    assert_eq!(lapsed.status, DeploymentStatus::Unknown);
+    assert_eq!(
+        lapsed.ended_at,
+        lapsed.started_at.map(|started| started + 600)
+    );
+}
+
+/// A row no Store writes, such as one applied with no end or one claimed by a
+/// runner with no start, is refused rather than read as something it never was.
+#[test]
+fn a_deployment_row_no_store_writes_is_refused() {
+    let (store, who, url, _dir) = own_shop();
+    admit(&store, &who, 1, &[], None).unwrap();
+    apply(&store, 1);
+    admit(&store, &who, 2, &[], None).unwrap();
+    store.claim(&id(2), &runner("runner-a")).unwrap();
+    backend::execute(
+        &url,
+        &format!(
+            "UPDATE config_deployment SET ended = NULL WHERE id = '{}'",
+            id(1)
+        ),
+    );
+    backend::execute(
+        &url,
+        &format!(
+            "UPDATE config_deployment SET started = NULL WHERE id = '{}'",
+            id(2)
+        ),
+    );
+    for n in [1, 2] {
+        let refused = store
+            .read(&who, &ployz_store::DeploymentQuery { id: id(n) })
+            .unwrap_err();
+        assert_eq!(refused.code, RpcErrorCode::Internal, "#{n}: {refused:?}");
+    }
+}
+
+/// A taken-over run that records it was interrupted ended when its runner says
+/// it stopped, after the takeover.
+#[test]
+fn an_interrupted_record_after_a_takeover_ends_the_run_then() {
+    let (store, who, url, _dir) = own_shop();
+    let a = runner("runner-a");
+    admit(&store, &who, 1, &[], None).unwrap();
+    store.claim(&id(1), &a).unwrap();
+    store
+        .record(&id(1), &a, RunEvidence::Prepared(preview(&["web", "api"])))
+        .unwrap();
+    admit(&store, &who, 2, &[], None).unwrap();
+    store.claim(&id(2), &runner("runner-b")).unwrap();
+    ended_earlier(&url, 1, 100);
+    let taken_over = summary(&store, &who, 1).ended_at.unwrap();
+    let interrupted = RunEvidence::Executed {
+        progress: Vec::new(),
+        outcome: Box::new(outcome(json!({
+            "type": "interrupted",
+            "completed": [operation("web"), operation("api")],
+            "unexecuted": []
+        }))),
+        removed: Vec::new(),
+    };
+    store.record(&id(1), &a, interrupted).unwrap();
+    let recorded = summary(&store, &who, 1);
+    assert_eq!(recorded.status, DeploymentStatus::Unknown);
+    assert!(
+        recorded.ended_at.is_some_and(|ended| ended > taken_over),
+        "{recorded:?}, taken over at {taken_over}"
+    );
+}
+
+/// Each record from its runner renews the runner lease, so a run that keeps
+/// recording outlasts the runner lease it claimed with.
+#[test]
+fn a_record_from_its_runner_renews_the_runner_lease() {
+    let (store, who, url, _dir) = own_shop();
+    let a = runner("runner-a");
+    admit(&store, &who, 1, &[], None).unwrap();
+    store.claim(&id(1), &a).unwrap();
+    let shift = |seconds: i64| {
+        backend::execute(
+            &url,
+            &format!(
+                "UPDATE config_deployment SET lease = lease - {seconds} WHERE id = '{}'",
+                id(1)
+            ),
+        );
+    };
+    // Ten seconds left on the runner lease it claimed with.
+    shift(590);
+    store.record(&id(1), &a, RunEvidence::Alive).unwrap();
+    // Five minutes on, the renewed runner lease still holds.
+    shift(300);
+    assert_eq!(status(&store, &who, 1), DeploymentStatus::Running);
+}
+
+/// A claimed Deployment whose runner lease still holds hasn't ended, running or
+/// cancelling, however little of its runner lease is left.
+#[test]
+fn a_claim_whose_runner_lease_holds_has_not_ended() {
+    let (store, who, url, _dir) = own_shop();
+    let a = runner("runner-a");
+    admit(&store, &who, 1, &[], None).unwrap();
+    store.claim(&id(1), &a).unwrap();
+    // Ten seconds left on the runner lease it claimed with.
+    backend::execute(
+        &url,
+        &format!(
+            "UPDATE config_deployment SET lease = lease - 590 WHERE id = '{}'",
+            id(1)
+        ),
+    );
+    let running = summary(&store, &who, 1);
+    cancel(&store, &who, 1).unwrap();
+    let cancelling = summary(&store, &who, 1);
+    assert_eq!(
+        [
+            (running.status, running.ended_at),
+            (cancelling.status, cancelling.ended_at),
+        ],
+        [
+            (DeploymentStatus::Running, None),
+            (DeploymentStatus::Cancelling, None),
+        ]
+    );
+}
+
+/// A heartbeat from a runner that was taken over changes nothing about when its
+/// run ended.
+#[test]
+fn a_heartbeat_after_a_takeover_keeps_when_the_run_ended() {
+    let (store, who, url, _dir) = own_shop();
+    let a = runner("runner-a");
+    admit(&store, &who, 1, &[], None).unwrap();
+    store.claim(&id(1), &a).unwrap();
+    admit(&store, &who, 2, &[], None).unwrap();
+    store.claim(&id(2), &runner("runner-b")).unwrap();
+    ended_earlier(&url, 1, 100);
+    let taken_over = summary(&store, &who, 1).ended_at;
+    store.record(&id(1), &a, RunEvidence::Alive).unwrap();
+    let after = summary(&store, &who, 1);
+    assert_eq!(
+        (after.status, after.ended_at),
+        (DeploymentStatus::Unknown, taken_over)
+    );
+}
+
 #[test]
 fn a_full_rollback_retires_the_services_added_since() {
     let (store, who) = shop();
