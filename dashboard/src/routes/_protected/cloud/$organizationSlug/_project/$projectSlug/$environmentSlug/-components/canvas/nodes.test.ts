@@ -95,6 +95,10 @@ describe("Config Store nodes", () => {
     ];
     const nodes = buildStoreNodes(store, left, "e");
     expect(nodes.find((node) => node.id === "s1")?.position).toEqual({ x: 0, y: 0 });
+    // A node still drawn there keeps its space, so the new node goes elsewhere.
+    const arriving = createCanvasPosition({ id: "p4", resourceType: "volume", resourceId: "new-vol", x: 0, y: 0 });
+    const beside = buildStoreNodes({ ...store, arriving: [{ node: "volume", id: "new-vol", name: "cache" }] }, [...left, arriving], "e");
+    expect(beside.find((node) => node.id === "s1")?.position).not.toEqual({ x: 0, y: 0 });
   });
 
   it("draws an arriving node where its creator saved it, so the Store's answer lands in the same spot", () => {
