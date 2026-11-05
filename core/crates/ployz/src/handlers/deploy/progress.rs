@@ -2501,7 +2501,7 @@ mod tests {
         );
         // A node the Store already says more about reads as it says.
         view.nodes.first_mut().unwrap().outcome = NodeStatus::Unknown;
-        assert_eq!(frame_state(&view), State::Unknown);
+        assert_eq!(frame(&view).rows.first().unwrap().state, State::Unknown);
         // The marker alone never makes a build interrupted.
         view.builds.first_mut().unwrap().status = BuildStatus::Built;
         view.nodes.first_mut().unwrap().outcome = NodeStatus::Pending;
@@ -2509,10 +2509,6 @@ mod tests {
             frame(&view).rows.first().unwrap().detail.as_deref(),
             Some("built on machine-1")
         );
-    }
-
-    fn frame_state(view: &DeploymentView) -> State {
-        frame(view).rows.first().unwrap().state.clone()
     }
 
     #[test]
