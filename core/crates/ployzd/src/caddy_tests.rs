@@ -662,7 +662,7 @@ fn changing_material_changes_the_pin_paths() {
 }
 
 #[test]
-fn empty_or_absent_material_leaves_today_s_site_bytes() {
+fn absent_material_renders_no_https_site() {
     let local = MachineId::parse("a".repeat(32)).unwrap();
     let observations = vec![observation(
         1,
@@ -673,25 +673,48 @@ fn empty_or_absent_material_leaves_today_s_site_bytes() {
     )];
     let containers = service_containers(observations);
     let without = caddyfile_for(&local, "node-a", &containers, "TIMESTAMP", &BTreeMap::new());
-    let unused = BTreeMap::from([(
-        CertificateHost::parse("other.example.com").unwrap(),
-        CertificateRow::from_parts(
-            Some((test_material(), ployz_core::ClusterRoute::Direct)),
-            None,
-        ),
-    )]);
 
     assert_eq!(
         caddyfile_for(&local, "node-a", &containers, "TIMESTAMP", &BTreeMap::new(),),
         without
     );
-    assert_eq!(
-        caddyfile_for(&local, "node-a", &containers, "TIMESTAMP", &unused,),
-        without
-    );
     assert!(!without.contains("tls "));
     assert!(!without.contains("https://secure.example.com"));
     assert!(without.contains("auto_https off"));
+}
+
+#[test]
+fn pinned_material_whose_last_route_is_gone_answers_https_like_http() {
+    let local = MachineId::parse("a".repeat(32)).unwrap();
+    let certificates = BTreeMap::from([(
+        CertificateHost::parse("secure.example.com").unwrap(),
+        CertificateRow::from_parts(
+            Some((test_material(), ployz_core::ClusterRoute::Direct)),
+            None,
+        ),
+    )]);
+    let routed = vec![observation(
+        1,
+        &local,
+        "api",
+        Some([10, 210, 1, 2]),
+        vec![ingress("secure.example.com", 8443, HttpProtocol::Https)],
+    )];
+    let before = caddyfile_for(
+        &local,
+        "node-a",
+        &service_containers(routed),
+        "TIMESTAMP",
+        &certificates,
+    );
+    let after = caddyfile_for(&local, "node-a", &[], "TIMESTAMP", &certificates);
+
+    let pin = pinned_tls_line(&after, "secure.example.com").expect("the material stays pinned");
+    assert_eq!(pinned_tls_line(&before, "secure.example.com"), Some(pin));
+    let https = automatic_site_block(&after, "https://secure.example.com");
+    assert!(https.contains("error NOT_DEPLOYED 404"), "{https}");
+    assert!(!https.contains("reverse_proxy"), "{https}");
+    assert!(!after.contains("http://secure.example.com"), "{after}");
 }
 
 #[test]
@@ -1098,7 +1121,7 @@ fn certificate_error_text_cannot_add_caddyfile_lines() {
 }
 
 #[tokio::test]
-async fn reconcile_writes_only_pinned_material_and_tolerates_a_stray_directory() {
+async fn reconcile_writes_routed_and_unrouted_material_and_tolerates_a_stray_directory() {
     let directory = std::env::temp_dir().join(format!(
         "ployz-caddy-cert-pinned-test-{}",
         MachineId::random()
@@ -1156,12 +1179,20 @@ async fn reconcile_writes_only_pinned_material_and_tolerates_a_stray_directory()
     let caddyfile = std::fs::read_to_string(&path).unwrap();
     let (cert_name, key_name) =
         pinned_file_names(pinned_tls_line(&caddyfile, "secure.example.com").unwrap());
+    let (removed_cert, removed_key) =
+        pinned_file_names(pinned_tls_line(&caddyfile, "removed.example.com").unwrap());
     let mut written: Vec<_> = std::fs::read_dir(&certs)
         .unwrap()
         .map(|entry| entry.unwrap().file_name().into_string().unwrap())
         .collect();
     written.sort();
-    let mut expected = vec![cert_name, key_name, "stray".to_owned()];
+    let mut expected = vec![
+        cert_name,
+        key_name,
+        removed_cert,
+        removed_key,
+        "stray".to_owned(),
+    ];
     expected.sort();
     assert_eq!(written, expected);
     std::fs::remove_dir_all(directory).unwrap();

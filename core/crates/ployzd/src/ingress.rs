@@ -246,6 +246,9 @@ impl IngressSite {
             .and_then(|certificate| certificate.challenge.as_ref())
     }
 
+    /// The material Caddy pins for this hostname, with or without an HTTPS route. A
+    /// hostname whose last route is gone keeps its certificate, so HTTPS still completes
+    /// the handshake and answers like HTTP.
     #[must_use]
     pub(super) fn material(&self) -> Option<&CertificateMaterial> {
         self.certificate
@@ -764,8 +767,8 @@ enum Probe {
 
 /// The file stem of the certificate the Caddyfile pins for `site`.
 fn pinned_stem(site: &IngressSite) -> Option<String> {
-    site.https()
-        .map(|(material, _)| certificate_file_stem(&site.hostname, material))
+    site.material()
+        .map(|material| certificate_file_stem(&site.hostname, material))
 }
 
 /// `projection` with the pinned certificates named in `excluded` left out.
@@ -1225,7 +1228,7 @@ pub(crate) fn write_certificate_files(
     let directory = certificate_directory(config_file)?;
     prepare(&directory)?;
     for site in sites {
-        let Some((material, _)) = site.https() else {
+        let Some(material) = site.material() else {
             continue;
         };
         let stem = certificate_file_stem(&site.hostname, material);
@@ -1250,7 +1253,7 @@ pub(crate) fn remove_stale_certificate_files(
     let keep: BTreeSet<String> = sites
         .iter()
         .filter_map(|site| {
-            site.https().map(|(material, _)| {
+            site.material().map(|material| {
                 let stem = certificate_file_stem(&site.hostname, material);
                 [format!("{stem}.crt"), format!("{stem}.key")]
             })

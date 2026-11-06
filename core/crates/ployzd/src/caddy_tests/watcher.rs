@@ -2255,11 +2255,12 @@ async fn a_write_without_an_admin_pins_only_certificates_caddy_loaded() {
         vec![ingress("bad.example.com", 8443, HttpProtocol::Https)],
     );
     state.containers.lock().unwrap().push(web);
-    state.write_certificates(&[
+    // new.example.com's row arrives only once the admin is down, so Caddy never loaded it.
+    let loaded_rows = [
         ("bad.example.com", material_body("bad.example.com")),
         ("good.example.com", material_body("good.example.com")),
-        ("new.example.com", material_body("new.example.com")),
-    ]);
+    ];
+    state.write_certificates(&loaded_rows);
     let (load_tx, mut load_rx) = mpsc::unbounded_channel();
     let admin = RefusingAdmin {
         refused: "https://bad.example.com {",
@@ -2285,6 +2286,12 @@ async fn a_write_without_an_admin_pins_only_certificates_caddy_loaded() {
     while load_rx.try_recv().is_ok() {}
 
     admin_up.store(false, Ordering::SeqCst);
+    let [bad, good] = loaded_rows;
+    state.write_certificates(&[
+        bad,
+        good,
+        ("new.example.com", material_body("new.example.com")),
+    ]);
     state.containers.lock().unwrap().push(observation(
         5,
         &machine.id,

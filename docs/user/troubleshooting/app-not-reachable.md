@@ -114,6 +114,8 @@ answers for it there.
   [below](#my-domain-is-behind-cloudflare).
 - **On `https://`?** The domain isn't live yet. If its row says
   **Live after your next deploy**, click **Deploy**.
+- **Removed the service?** Its domain keeps its certificate, so `https://` shows this page too,
+  just like `http://`, until a service with that domain is deployed again.
 
 ## My custom domain is waiting for DNS
 
