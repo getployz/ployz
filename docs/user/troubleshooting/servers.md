@@ -326,7 +326,7 @@ your other servers list it as joined before the wait ran out. Start at step 1.
 2. Make sure your servers reach each other on UDP 51820, in both directions, in the server's own
    firewall and in any firewall your provider runs in front of them. On a server that runs
    firewalld, follow
-   [Servers that run firewalld can't reach each other](#servers-that-run-firewalld-cant-reach-each-other).
+   [A server that runs firewalld doesn't answer your other servers](#a-server-that-runs-firewalld-doesnt-answer-your-other-servers).
 3. Read the server's logs with `sudo journalctl -u ployz -n 200`, or the error's `cause:` line
    when the wait reached the server over SSH. Only if they say `refusing to
    change the retained WireGuard interface` or `refusing to replace the existing Docker network`,
@@ -770,30 +770,37 @@ If iptables fails, for example because another program holds its lock for more t
 the log says `failed to reapply firewall rules` with iptables' reason, and Ployz tries again a
 minute later. Ployz 0.3.16 and earlier put the rules back only when the server restarts.
 
-## Servers that run firewalld can't reach each other
+## A server that runs firewalld doesn't answer your other servers
 
 A command or deploy says `! web-2 did not answer; its rows are missing.` with
-`cause: Permission denied (os error 13)`, and its deploys leave copies running. Check whether
-firewalld runs on that server:
+`cause: Permission denied (os error 13)`, and a deploy leaves an old replica running on another
+server. Check whether firewalld runs on that server:
 
 ```sh
 systemctl is-active firewalld
 ```
 
-If it says `active`, firewalld drops traffic your other servers send it, even though Ployz opens its
-ports in iptables. On that server, open UDP 51820 in the zone of its public interface, and trust
-`ployz-wg`, the interface your servers reach each other on:
+If it says `active`, firewalld refuses the calls your other servers make to Ployz on that server,
+even though Ployz opens its ports in iptables. List its zones, and note the one shown above its
+public interface, such as `eth0`:
 
 ```sh
 sudo firewall-cmd --get-active-zones
+```
+
+Then open UDP 51820 in that zone, shown here as `public`, and trust `ployz-wg`, the interface your
+servers reach each other on:
+
+```sh
 sudo firewall-cmd --zone=public --permanent --add-port=51820/udp
 sudo firewall-cmd --zone=trusted --permanent --add-interface=ployz-wg
 sudo firewall-cmd --reload
 ```
 
-Use the zone the first command lists above your public interface, such as `eth0`, in place of
-`public`. `ployz-wg` only carries traffic from your own servers. On some older systems the reload
-also clears Ployz's own iptables rules; Ployz puts them back within a minute, as
+`ployz-wg` only carries traffic from your own servers and the apps on them. Trusting it lets them
+reach anything listening on this server's private address, as they could without firewalld, while
+Ployz keeps its own ports closed to everything else. On some older systems the reload also clears
+Ployz's own iptables rules; Ployz puts them back within a minute, as
 [Services on other servers stop answering after a firewall change](#services-on-other-servers-stop-answering-after-a-firewall-change)
 describes. On Ployz 0.3.16 and earlier, run `sudo systemctl restart ployz` after the reload
 instead.
