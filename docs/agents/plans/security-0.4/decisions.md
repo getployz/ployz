@@ -66,6 +66,21 @@ The session may authorize workflows within an Environment and named action famil
 
 A proposal describes one complete workflow and its effects. Approval binds its immutable digest. MCP gets an executable approved envelope, not the browser's session key. An unattended request with no applicable authorization returns an actionable approval-required result. Reads and analysis continue under existing access rules. Existing CLI-hosted MCP must not silently turn access to the CLI process into permission to use its Device key for arbitrary tool calls.
 
+#### Draft proposals (thread B)
+
+Today each gated agent call makes its own Approval for one command on one subject. The agent calls the tool again with the approval ID to run it, and any Working State edit in the Environment supersedes a pending Deploy Approval (`dashboard/src/modules/approvals/approvals.server.ts:127`, `:251`, `agent-chat.server.ts:118`). An agent that deploys two Services and moves a Volume asks three times.
+
+Decision: **an explicit draft that gated tools stage into.** `proposal_create` returns a draft ID. Any gated tool called with `proposal: <id>` stages its step into the draft instead of asking. It returns the step's preview and effects. `proposal_present` turns the draft into one Approval card and one prompt. A gated tool called without a draft keeps working as a one-step proposal, so every Approval becomes a proposal of one or more steps on one code path.
+
+- **Staging freezes the step.** A Deploy step publishes and freezes its Saved revision and the effective payload digest that servers will check. An operation step freezes its preview and effects. Working State edits after staging don't supersede the step, because the step no longer depends on Working State.
+- **One step per command and subject.** Staging the same command on the same subject again replaces the earlier step, so an agent can fix a mistake before presenting.
+- **Supersession is per step.** A step goes stale only when the thing it froze can't run any more. Examples are a newer Saved revision for that Environment published outside the draft, or an operation whose fresh preview differs. Presenting or approving a draft with a stale step asks again for that draft. A partial approval is never granted.
+- **Order is the staging order.** Servers enforce authorization per step. They can't enforce ordering across Machines without a barrier, which bet 6 forbids. So each step must be safe to run on its own once approved. A step that is only safe after another declares the dependency, and the Machine requires the earlier step's receipt. Volume Moves already do this with E0's handoff receipt. Anything else stays sequential under Cloud's driving as an outage risk, not an authority risk.
+- **One signature covers the bundle.** Approval signs the ordered list of step digests, with Cluster, Environment, expiry and the bounded recovery allowance. Each Machine checks that the step it's asked to run is in a bundle a trusted key signed and that its payload matches.
+- **Cloud runs the approved proposal.** This generalises today's `review.apply` path (`apply.server.ts:293`) instead of having the agent redeem each step. `proposal_status` lets the agent follow progress. Partial results are reported per step.
+
+Rejected: an implicit draft per agent conversation, which hides state and has no stable identity across MCP clients. Also rejected: a single `propose` call that takes the whole step list at once. That one is stateless, but it forces the agent to know every change before it can preview any of them.
+
 Proposed UX defaults need confirmation during B, not an architecture rewrite. Start with a short Environment-scoped session for ordinary deploy and lifecycle work. Keep destructive storage requests bound to the reviewed workflow. Do not silently interpret a restart approval as authority to delete a Volume.
 
 ### Automatic GitHub deploy and builds
