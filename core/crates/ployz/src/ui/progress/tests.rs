@@ -1308,3 +1308,35 @@ fn an_unread_server_gap_names_it_and_counts_without_claiming_down() {
     assert!(!text.contains(machine_id.as_str()), "{text}");
     assert!(!text.contains("observed Down"), "{text}");
 }
+
+#[test]
+fn a_deploy_report_says_why_logs_were_withheld_in_words() {
+    let tail = |log| LogTail {
+        service: QualifiedService::parse("shop/web").unwrap(),
+        name: ServiceName::parse("web").unwrap(),
+        machine: MachineId::parse("a".repeat(32)).unwrap(),
+        server: "web-1".to_owned(),
+        log: Some(log),
+    };
+    let diagnostic = Diagnostic {
+        failed_machine: None,
+        start_failure: None,
+        failures: Vec::new(),
+        logs: vec![
+            tail(LogText::Withheld {
+                why: Withheld::NoSecretContext,
+            }),
+            tail(LogText::Withheld {
+                why: Withheld::Unanswered,
+            }),
+        ],
+        compensation: Vec::new(),
+    };
+    let mut written = Vec::new();
+    diagnostic.write(&mut written).unwrap();
+    assert_eq!(
+        String::from_utf8(written).unwrap(),
+        "Logs from web on web-1 withheld: Ployz couldn't check its Containers' variables for \
+         secret values, so it can't hide them.\nLogs from web on web-1 unavailable.\n"
+    );
+}

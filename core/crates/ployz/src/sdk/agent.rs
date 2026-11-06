@@ -303,7 +303,7 @@ where
                 let super::AgentTail { text, withheld } = tail.into();
                 if !withheld.is_empty() {
                     notes.push(format!(
-                        "Lines from {} on {} withheld: their env could not be read to scrub Sealed values.",
+                        "Lines from {} on {} withheld: Ployz couldn't check their variables for secret values, so it can't hide them.",
                         withheld.join(", "),
                         machine.machine.name,
                     ));

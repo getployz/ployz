@@ -469,7 +469,8 @@ fn servers_read(body: &[u8]) -> Value {
         Some("logs") if ask["ask"]["service"] == "cache" => json!({
             "servers": [{ "server": "web-1", "text": { "status": "withheld", "why": "no_secret_context" } }],
             "seen": seen,
-            "notes": [],
+            // As Cloud sends it beside withheld text.
+            "notes": ["Lines from cache/abc123def456 on web-1 withheld: Ployz couldn't check their variables for secret values, so it can't hide them."],
         }),
         Some("logs") => {
             let servers = if ask["ask"]["service"] == "web" {
@@ -4787,15 +4788,34 @@ fn reading_through_cloud_refuses_a_name_nothing_answered_for() {
         .args(["logs", "cache"])
         .output()
         .unwrap();
-    let stderr = String::from_utf8(output.stderr).unwrap();
-    assert!(
-        stderr.contains(
-            "cache@web-1: logs withheld: Ployz couldn't read the Container's variables, so it \
-             can't hide their secret values."
+    assert_eq!(
+        (
+            output.status.code(),
+            String::from_utf8(output.stdout).unwrap(),
+            String::from_utf8(output.stderr).unwrap()
         ),
-        "{stderr}"
+        (
+            Some(0),
+            String::new(),
+            "cache@web-1: logs withheld: Ployz couldn't check its Containers' variables for secret \
+             values, so it can't hide them.\nLines from cache/abc123def456 on web-1 withheld: \
+             Ployz couldn't check their variables for secret values, so it can't hide them.\n"
+                .to_owned()
+        )
     );
-    assert!(!stderr.contains("no_secret_context"), "{stderr}");
+    let home = tempfile::tempdir().unwrap();
+    let output = linus
+        .command(home.path())
+        .args(["--json", "logs", "cache"])
+        .output()
+        .unwrap();
+    assert_eq!(output.status.code(), Some(0));
+    let answer: Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(
+        answer["logs"][0]["logs"]["servers"][0]["text"],
+        json!({ "status": "withheld", "why": "no_secret_context" }),
+        "{answer}"
+    );
 }
 
 #[test]
