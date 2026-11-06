@@ -66,6 +66,10 @@ The session may authorize workflows within an Environment and named action famil
 
 A proposal describes one complete workflow and its effects. Approval binds its immutable digest. MCP gets an executable approved envelope, not the browser's session key. An unattended request with no applicable authorization returns an actionable approval-required result. Reads and analysis continue under existing access rules. Existing CLI-hosted MCP must not silently turn access to the CLI process into permission to use its Device key for arbitrary tool calls.
 
+#### More than one Cluster per Organization
+
+Organizations will soon run several Clusters. The Sealing public key that `ployz_core::authority` calls "Cluster identity" is stored once per Organization in Cloud (`dashboard/src/modules/machines/tables.ts:543`), so two Clusters may share it. Every approval must therefore name something unique to its Cluster. Machine IDs are minted by each Machine and are unique, so binding the Machines that may act is enough. The restart approval in #3926 binds target Machine IDs, and a test proves another Machine refuses it. Join approvals bind the admitting Machine IDs. A draft proposal names its Cluster per step, so one bundle may span Clusters and each Machine checks only its own steps. Device approval today adds a Device to every Server in the Organization. Whether a Device trusted in one Cluster should be trusted in all of them is an open product decision.
+
 #### Draft proposals (thread B)
 
 Today each gated agent call makes its own Approval for one command on one subject. The agent calls the tool again with the approval ID to run it, and any Working State edit in the Environment supersedes a pending Deploy Approval (`dashboard/src/modules/approvals/approvals.server.ts:127`, `:251`, `agent-chat.server.ts:118`). An agent that deploys two Services and moves a Volume asks three times.
