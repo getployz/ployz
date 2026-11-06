@@ -11,7 +11,7 @@ import { dialCorrelation, dialTimingFields, nativeDialTimingFields, sampleDialTi
 import { lacks } from "#/modules/organization/access.server";
 import { enrollmentAllocation, organizationMachine, serverAccess } from "#/modules/machines/tables";
 import { clusterRead, SESSION_CLOSE_CLUSTER_MS, withClusterBudget } from "#/modules/runtime/organization-runtime.server";
-import { type PloyzSdkError, Ployz, RpcError, rpcErrorMessage, sdkFailureMessage } from "#/modules/runtime/ployz.server";
+import { managementClientCleared, type PloyzSdkError, Ployz, RpcError, rpcErrorMessage, sdkFailureMessage } from "#/modules/runtime/ployz.server";
 import { Database } from "#/server/database.server";
 import { Unauthorized } from "#/server/public-error";
 import { SecretEncryption } from "#/utils/encrypted-secret.server";
@@ -147,21 +147,48 @@ export const provideServerAccess = Effect.fn("ServerAccess.provide")(function* (
   const results = yield* Effect.forEach(loaded.connections, (cloud) => Effect.gen(function* () {
     const machineId = cloud.machine_id;
     if (machineId === undefined) return yield* Effect.die("an Organization connection names its Machine");
-    const stored = held.get(machineId);
-    if (stored != null) {
-      const management = yield* decryptPairingSecret(stored);
-      if (expect === null) return { machine_id: machineId, management, refused: null };
-      // A stored holder is checked with one dial whose expectation refuses only a Server holding another Cluster's key.
-      // Any refusal the Server answers withholds the holder; a Server that doesn't answer keeps it, as before.
-      const checking = (yield* Ployz).connect({ connections: [cloud], timeoutMs: STORED_CHECK_TIMEOUT_MS, expect: { ...expect, allowUnverified: true } }, { closeWithin: clusterRead });
-      const checked = yield* answered(Effect.scoped(checking).pipe(Effect.timeout(STORED_CHECK_TIMEOUT_MS), withClusterBudget(SESSION_CLOSE_CLUSTER_MS)));
-      return { machine_id: machineId, management: checked.refused === null ? management : null, refused: checked.refused };
-    }
+    // One deadline for this Server, so a stored holder's check and the new holder it provisions after a Clear fit the
+    // dial and Set's time together.
+    const deadline = (yield* Clock.currentTimeMillis) + SERVER_TIMEOUT_MS;
     const holder = and(
       eq(serverAccess.organizationId, caller.organization.id),
       eq(serverAccess.credentialId, caller.credential.id),
       eq(serverAccess.machineId, machineId),
     );
+    const stored = held.get(machineId);
+    if (stored != null) {
+      const management = yield* decryptPairingSecret(stored);
+      const ployz = yield* Ployz;
+      // The Cluster check dials on Cloud's own connection, with an expectation that refuses only a Server holding
+      // another Cluster's key. Any refusal the Server answers withholds the holder; a Server that doesn't answer keeps
+      // it, as before.
+      const checkCluster = expect === null
+        ? Effect.succeed({ refused: null })
+        : answered(Effect.scoped(ployz.connect({ connections: [cloud], timeoutMs: STORED_CHECK_TIMEOUT_MS, expect: { ...expect, allowUnverified: true } }, { closeWithin: clusterRead }))
+          .pipe(Effect.timeout(STORED_CHECK_TIMEOUT_MS), withClusterBudget(SESSION_CLOSE_CLUSTER_MS)));
+      // The stored key itself, dialed with no expectation so the dial only negotiates and leaves a pending key pending.
+      // A Server that says this key was cleared, as a Clear that landed after a later Set leaves it, holds nothing for
+      // the row, so the row goes and this call provisions a new holder. Any other answer, or none, keeps the row.
+      const checkHolder = Effect.scoped(ployz.connect({ connections: [{ machine_id: machineId, management }], timeoutMs: STORED_CHECK_TIMEOUT_MS, expect: null }, { closeWithin: clusterRead }))
+        .pipe(
+          Effect.timeout(STORED_CHECK_TIMEOUT_MS),
+          withClusterBudget(SESSION_CLOSE_CLUSTER_MS),
+          Effect.as(false),
+          Effect.catch((error) => Effect.succeed(!Cause.isTimeoutError(error) && managementClientCleared(error))),
+        );
+      const [checked, cleared] = yield* Effect.all([checkCluster, checkHolder], { concurrency: 2 });
+      if (!cleared) return { machine_id: machineId, management: checked.refused === null ? management : null, refused: checked.refused };
+      // Only the row that still stores this key, unrevoked and unheld: a newer key, a revocation or a claim is another
+      // request's, and a revoked row owes its Server a Clear, never a Set. Not interrupted: a cancelled statement would
+      // cancel the connection's next.
+      yield* drizzle.delete(serverAccess).where(and(
+        holder,
+        eq(serverAccess.encryptedCapability, stored),
+        isNull(serverAccess.revokedAt),
+        unheld,
+      )).pipe(Effect.uninterruptible);
+      if (checked.refused !== null) return { machine_id: machineId, management: null, refused: checked.refused };
+    }
     // Dial, claim, Set, then in one short transaction store the key and check the credential. A first use that
     // found the row claimed waits for the key the claimant stores, so a second Set never replaces the first's key on
     // the Server. A claimant that lost its claim meanwhile stores nothing and takes what the row says instead.
@@ -170,7 +197,8 @@ export const provideServerAccess = Effect.fn("ServerAccess.provide")(function* (
     const provisioned: Provisioned = yield* Effect.scoped(Effect.gen(function* () {
       const ployz = yield* Ployz;
       const runLog = Effect.runForkWith(yield* Effect.context());
-      const deadline = (yield* Clock.currentTimeMillis) + SERVER_TIMEOUT_MS;
+      const timeLeft = Clock.currentTimeMillis.pipe(Effect.map((now) => Math.max(1, deadline - now)));
+      const dialBudget = yield* timeLeft;
       const sampled = sampleDialTiming();
       const correlation = dialCorrelation();
       let cloudDialOutcome: DialTimingInput["outcome"] | undefined;
@@ -182,17 +210,16 @@ export const provideServerAccess = Effect.fn("ServerAccess.provide")(function* (
       const dialStarted = performance.now();
       // A Server that now answers for another Cluster is refused, never handed a Management Client.
       const dialed = yield* answered(ployz.connect({
-        connections: [cloud], timeoutMs: SERVER_TIMEOUT_MS, sampleDialTiming: sampled, dialCorrelation: correlation,
+        connections: [cloud], timeoutMs: dialBudget, sampleDialTiming: sampled, dialCorrelation: correlation,
         onDialTiming, expect,
       }, { closeWithin: clusterRead })
-        .pipe(Effect.timeout(SERVER_TIMEOUT_MS)));
+        .pipe(Effect.timeout(dialBudget)));
       const dialMs = performance.now() - dialStarted;
       cloudDialOutcome = dialed.outcome;
       for (const timing of pendingNativeTimings) runLog(logNativeDialTiming(timing, cloudDialOutcome));
       yield* logDialTiming({ stage: "cloud_dial", totalMs: dialMs, outcome: dialed.outcome, sampled, correlation });
       if (dialed.value === null) return { capability: null, refused: dialed.refused, revoked: false };
       const client = dialed.value;
-      const timeLeft = Clock.currentTimeMillis.pipe(Effect.map((now) => Math.max(1, deadline - now)));
       const token = crypto.randomUUID();
       const holding = eq(serverAccess.claim, token);
       let reclaiming = false;

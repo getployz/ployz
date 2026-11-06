@@ -296,6 +296,16 @@ export function lacksClusterKey(error: PloyzSdkError) {
   return Schema.is(LacksClusterKey)("cause" in error ? error.cause : undefined);
 }
 
+const ManagementClientCleared = Schema.Struct({
+  code: Schema.Literal("unauthenticated"),
+  details: Schema.Struct({ management_client: Schema.Literal("cleared") }),
+});
+
+/** Whether a connect failed on a Server that confirmed the Management Client it was given was cleared. */
+export function managementClientCleared(error: PloyzSdkError) {
+  return error._tag === "PloyzProviderError" && error.operation === "connect" && Schema.is(ManagementClientCleared)(error.cause);
+}
+
 /** The message of the runtime's RPC error a failure carries; undefined for any other failure. */
 export function rpcErrorMessage(error: PloyzSdkError) {
   const rpc = Schema.decodeUnknownOption(Schema.Struct({ message: Schema.String }))("cause" in error ? error.cause : undefined);

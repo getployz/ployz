@@ -99,6 +99,17 @@ function fakeServers() {
     holdClearReply?: Promise<void>;
   }>();
   const aborts = connectionAborts();
+  /**
+   * Each Server's cleared slots, by label, with the key a Clear took: that key is refused as cleared, as a daemon refuses
+   * it, until a Set fills the slot again. Any other key is let through, a replaced one included, so it is never cleared.
+   */
+  const cleared = new Map<string, Map<string, string>>();
+  const clearedOn = (machine: string) => cleared.get(machine) ?? cleared.set(machine, new Map()).get(machine) ?? new Map<string, string>();
+  const clearSlot = (machine: string, slots: Map<string, string>, label: string) => {
+    const key = slots.get(label);
+    slots.delete(label);
+    if (key !== undefined) clearedOn(machine).set(label, key);
+  };
   let sets = 0;
   let clears = 0;
   let dials = 0;
@@ -111,6 +122,11 @@ function fakeServers() {
       if (server?.online === "hangs") return new Promise<never>(() => undefined);
       if (server === undefined || !server.online) {
         throw new RpcError({ code: "internal", message: "All 1 connections failed", details: null, unanswered: true });
+      }
+      const holderLabel = connection && "management" in connection ? /^ployz1:[^:]+:(cli-[^:]+):\d+$/u.exec(connection.management)?.[1] : undefined;
+      if (holderLabel !== undefined && connection && "management" in connection
+        && clearedOn(connection.machine_id ?? "").get(holderLabel) === connection.management) {
+        throw new RpcError({ code: "unauthenticated", message: "Machine confirmed this Management Client was cleared", details: { management_client: "cleared" } });
       }
       // One that holds no key passes a dial that allows that, as the SDK passes it.
       const unverifiedAllowed = server.holds === undefined && options.expect?.allowUnverified === true;
@@ -132,6 +148,7 @@ function fakeServers() {
           await onWire;
           const capability = `ployz1:${connection?.machine_id}:${label}:${sets}`;
           server.slots.set(label, capability);
+          clearedOn(connection?.machine_id ?? "").delete(label);
           const held = server.holdSetReply;
           server.holdSetReply = undefined;
           await held;
@@ -143,7 +160,7 @@ function fakeServers() {
           const held = server.holdClear;
           server.holdClear = undefined;
           await held;
-          server.slots.delete(label);
+          clearSlot(connection?.machine_id ?? "", server.slots, label);
           const reply = server.holdClearReply;
           server.holdClearReply = undefined;
           await reply;
@@ -153,7 +170,12 @@ function fakeServers() {
       });
     },
   });
-  return { servers, layer, aborts, sets: () => sets, clears: () => clears, dials: () => dials };
+  /** A Clear of `label` that reaches `machine` late, after whatever Set came before it. */
+  const clearLate = (machine: string, label: string) => {
+    const server = servers.get(machine);
+    if (server !== undefined) clearSlot(machine, server.slots, label);
+  };
+  return { servers, layer, aborts, clearLate, sets: () => sets, clears: () => clears, dials: () => dials };
 }
 
 const pairingSecret = "ppair_fixture_server_access";
@@ -1606,10 +1628,11 @@ it.live(
         const held = (machine: string): string => first.connections?.find((connection: { machine_id: string }) => connection.machine_id === machine)?.management
           ?? assert.fail("no holder");
 
-        // Each stored holder is checked with one dial, and none is provisioned again.
+        // Each stored holder is checked with two dials, one for its Cluster and one with its own key, and none is
+        // provisioned again.
         const dials = fake.dials();
         assert.deepStrictEqual((yield* cli("POST", "server-access", alice)).json.connections, first.connections);
-        assert.strictEqual(fake.dials() - dials, 2);
+        assert.strictEqual(fake.dials() - dials, 4);
         assert.strictEqual(fake.sets(), 2);
 
         movingServer.holds = `${"X".repeat(43)}=`;
@@ -1634,6 +1657,45 @@ it.live(
         const hung = (yield* cli("POST", "server-access", alice)).json;
         assert.isBelow(Date.now() - started, 5_000);
         assert.deepStrictEqual(hung.connections?.map((connection: { machine_id: string }) => connection.machine_id).sort(), [moving, own].sort());
+      }).pipe(Effect.provide(layer));
+    }),
+  60_000,
+);
+
+it.live(
+  "a stored holder its Server says was cleared, as a Clear that lands after a later Set leaves it, is replaced with a new one",
+  () =>
+    Effect.gen(function* () {
+      const fake = fakeServers();
+      const layer = yield* cliLayer(fake.layer);
+      yield* Effect.gen(function* () {
+        const alice = yield* signUp("alice");
+        const machine = ids.machineId("00000000000000000000000000001274");
+        yield* enroll(alice.organization.id, machine, true);
+        const server = { online: true as const, slots: new Map<string, string>() };
+        fake.servers.set(machine, server);
+        const first = (yield* cli("POST", "server-access", alice)).json.connections?.[0]?.management ?? assert.fail("no holder");
+        const label = [...server.slots.keys()][0] ?? assert.fail("no slot");
+        assert.strictEqual(fake.sets(), 1);
+
+        fake.clearLate(machine, label);
+        const healed = (yield* cli("POST", "server-access", alice)).json;
+        const second = healed.connections?.[0]?.management ?? assert.fail("no holder");
+        assert.notStrictEqual(second, first);
+        assert.strictEqual(server.slots.get(label), second);
+        assert.strictEqual(fake.sets(), 2);
+        assert.deepStrictEqual(healed.refused, []);
+
+        // The new holder is the stored one now, and kept.
+        assert.strictEqual((yield* cli("POST", "server-access", alice)).json.connections?.[0]?.management, second);
+        assert.strictEqual(fake.sets(), 2);
+
+        // A slot another Set refilled is not a cleared one: the stored key stays, and nothing is Set again.
+        server.slots.set(label, `ployz1:${machine}:${label}:elsewhere`);
+        fake.clearLate(machine, label);
+        server.slots.set(label, `ployz1:${machine}:${label}:refilled`);
+        assert.strictEqual((yield* cli("POST", "server-access", alice)).json.connections?.[0]?.management, second);
+        assert.strictEqual(fake.sets(), 2);
       }).pipe(Effect.provide(layer));
     }),
   60_000,
