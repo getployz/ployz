@@ -193,6 +193,10 @@ pub struct LocalMachineRecord {
     /// records from before Devices were Full-only, when any client could name one.
     #[serde(default)]
     device_slots_vetted: bool,
+    /// Whether an Operator caller's Service restart needs a Device-signed approval.
+    /// Off until a Full caller turns it on, so an upgrade changes nothing.
+    #[serde(default)]
+    device_enforcement: bool,
 }
 
 /// Public keys held by one Management Client slot. No secret is persisted.
@@ -517,6 +521,7 @@ impl LocalMachineRecord {
             pinned_addresses: PinnedAddresses::default(),
             push_target: None,
             device_slots_vetted: true,
+            device_enforcement: false,
         })
     }
 
@@ -529,6 +534,12 @@ impl LocalMachineRecord {
     #[must_use]
     pub fn push_target(&self) -> Option<&Url> {
         self.push_target.as_ref()
+    }
+
+    /// Whether an Operator caller's Service restart needs a Device-signed approval.
+    #[must_use]
+    pub fn device_enforcement(&self) -> bool {
+        self.device_enforcement
     }
 
     /// Secret behind this Machine's Management Identity.
@@ -625,6 +636,7 @@ impl LocalMachineRecord {
             pinned_addresses: self.pinned_addresses,
             push_target: self.push_target,
             device_slots_vetted: self.device_slots_vetted,
+            device_enforcement: self.device_enforcement,
         }
     }
 }

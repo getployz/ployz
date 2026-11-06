@@ -810,6 +810,21 @@ async fn fake_docker_service(
     MachineService,
     crate::docker::test_support::FakeDocker,
 ) {
+    let (data_dir, store, service, fake, _) = fake_docker_service_keeping_runtime(prefix).await;
+    (data_dir, store, service, fake)
+}
+
+/// The same, with the runtime whose spec store the service reads, so a service built again
+/// over it finds the same specs.
+async fn fake_docker_service_keeping_runtime(
+    prefix: &str,
+) -> (
+    std::path::PathBuf,
+    RecordOwner,
+    MachineService,
+    crate::docker::test_support::FakeDocker,
+    crate::docker::ContainerRuntime,
+) {
     use crate::docker::test_support::{FakeDocker, fake_runtime_with};
     use ployz_core::MachineName;
     let data_dir = std::env::temp_dir().join(format!("{prefix}-{}", MachineId::random()));
@@ -836,11 +851,11 @@ async fn fake_docker_service(
         ..Default::default()
     })
     .await;
-    let mut service =
-        MachineService::with_cluster(store.clone(), None).with_optional_containers(Some(runtime));
+    let mut service = MachineService::with_cluster(store.clone(), None)
+        .with_optional_containers(Some(runtime.clone()));
     // `true` lists no pools, which reads as ZFS ready whatever the host has.
     service.local = service.local.with_zpool("true");
-    (data_dir, store, service, fake)
+    (data_dir, store, service, fake, runtime)
 }
 
 mod set_volume_copy {
@@ -2983,6 +2998,327 @@ mod ensure_container {
         );
         server.abort();
         std::fs::remove_dir_all(data_dir).unwrap();
+    }
+
+    mod device_enforcement {
+        //! The Operator restart gate under Device enforcement: what an approved Device's
+        //! approval admits, what it refuses, and that a used one stays used across a
+        //! daemon restart.
+
+        use ployz_core::{
+            DeviceKey, Namespace, OPERATOR_SCOPE_HEADER, OperationId, RESTART_APPROVAL_CAPABILITY,
+            SealingPublicKey, ServiceName, SetDeviceEnforcementRequest,
+            authority::{RestartApproval, Signed, Signer, Timestamp, WorkflowKind},
+            rpc::status_details,
+        };
+        use tonic::Status;
+
+        use super::*;
+
+        struct Enforced {
+            data_dir: std::path::PathBuf,
+            store: RecordOwner,
+            service: MachineService,
+            fake: FakeDocker,
+            runtime: crate::docker::ContainerRuntime,
+            signer: Signer,
+            cluster: SealingPublicKey,
+        }
+
+        async fn enforced(prefix: &str) -> Enforced {
+            let (data_dir, store, service, fake, runtime) =
+                fake_docker_service_keeping_runtime(prefix).await;
+            let signer = Signer::from_seed(&[7; 32]);
+            let device = DeviceKey::from(signer.public());
+            store
+                .mutate(move |store| {
+                    store.approve_device(device).unwrap();
+                    store.set_device_enforcement(true).unwrap();
+                })
+                .await
+                .unwrap();
+            let cluster = crate::sealing_key::SealingKey::load(&data_dir)
+                .unwrap()
+                .unwrap()
+                .public_key();
+            Enforced {
+                data_dir,
+                store,
+                service,
+                fake,
+                runtime,
+                signer,
+                cluster,
+            }
+        }
+
+        impl Enforced {
+            fn approval(&self) -> RestartApproval {
+                RestartApproval {
+                    cluster: self.cluster,
+                    operation: OperationId::random(),
+                    kind: WorkflowKind::Restart,
+                    namespace: Namespace::parse("app").unwrap(),
+                    service: ServiceName::parse("api").unwrap(),
+                    machines: vec![self.service.local.record().id()],
+                    expires_at: Timestamp::now().plus(60_000),
+                    signer: self.signer.public().into(),
+                }
+            }
+
+            fn signed(&self, approval: &RestartApproval) -> Signed<RestartApproval> {
+                Signed::sign(approval, &self.signer).unwrap()
+            }
+
+            /// The service a restarted daemon builds over the same record and Docker.
+            fn restarted(&self) -> MachineService {
+                let mut service = MachineService::with_cluster(self.store.clone(), None)
+                    .with_optional_containers(Some(self.runtime.clone()));
+                service.local = service.local.with_zpool("true");
+                service
+            }
+        }
+
+        fn stopped(id: &ContainerId) -> Value {
+            json!({"state":"stopped", "container":{"id":id}, "drain":0})
+        }
+
+        fn started(id: &ContainerId) -> Value {
+            json!({"state":"running", "rotation":"pending", "container":{"existing":{"id":id}}})
+        }
+
+        #[expect(clippy::indexing_slicing, reason = "JSON fixture")]
+        async fn operator_ensure(
+            service: &MachineService,
+            want: Value,
+            approval: Option<&Signed<RestartApproval>>,
+        ) -> Result<EnsuredContainer, Status> {
+            let mut body = json!({"want": want});
+            if let Some(approval) = approval {
+                body["approval"] = serde_json::to_value(approval).unwrap();
+            }
+            let mut request = Request::new(
+                op::EnsureContainer::into_request(serde_json::from_value(body).unwrap())
+                    .encode()
+                    .unwrap(),
+            );
+            request
+                .metadata_mut()
+                .insert(OPERATOR_SCOPE_HEADER, "1".parse().unwrap());
+            let response = service
+                .ensure_container(request)
+                .await?
+                .into_inner()
+                .decode_response()
+                .unwrap();
+            let shown = format!("{response:?}");
+            Ok(response
+                .decode::<op::EnsureContainer>()
+                .unwrap_or_else(|error| panic!("{error}: {shown}")))
+        }
+
+        #[track_caller]
+        #[expect(clippy::indexing_slicing, reason = "JSON fixture assertions")]
+        fn refused(result: Result<EnsuredContainer, Status>, reason: &str) {
+            let status = result.expect_err("the restart step must be refused");
+            assert_eq!(
+                status.code(),
+                Code::PermissionDenied,
+                "{}",
+                status.message()
+            );
+            assert!(status.message().contains(reason), "{}", status.message());
+            assert_eq!(
+                status_details(status.details()).unwrap()["capability"],
+                json!(RESTART_APPROVAL_CAPABILITY)
+            );
+        }
+
+        #[tokio::test]
+        async fn enforcement_off_leaves_an_unsigned_operator_restart_as_it_was() {
+            let (data_dir, _store, service, fake) = fake_docker_service("ployzd-enforce-off").await;
+            let id = present(&ensure(&service, run_new("k1", spec("example.test/api:1"))).await)
+                .container_id;
+            let seen = requests(&fake).len();
+
+            let reply = operator_ensure(&service, stopped(&id), None).await.unwrap();
+
+            assert!(matches!(
+                present(&reply).runtime,
+                ContainerRuntimeObservation::Exited { .. }
+            ));
+            assert_eq!(
+                ends_with(&requests_since(&fake, seen), Method::POST, "/stop").count(),
+                1
+            );
+            std::fs::remove_dir_all(data_dir).unwrap();
+        }
+
+        #[tokio::test]
+        async fn an_operator_restart_passes_only_with_an_approved_devices_approval_of_it() {
+            let fixture = enforced("ployzd-enforce-on").await;
+            let service = &fixture.service;
+            let id = present(&ensure(service, run_new("k1", spec("example.test/api:1"))).await)
+                .container_id;
+            let seen = requests(&fixture.fake).len();
+            let good = fixture.approval();
+
+            refused(
+                operator_ensure(service, stopped(&id), None).await,
+                "carries no signature",
+            );
+            let stranger = Signer::from_seed(&[9; 32]);
+            let forged = Signed::sign(
+                &RestartApproval {
+                    signer: stranger.public().into(),
+                    ..good.clone()
+                },
+                &stranger,
+            )
+            .unwrap();
+            refused(
+                operator_ensure(service, stopped(&id), Some(&forged)).await,
+                "is not approved on this Machine",
+            );
+            let mut tampered = fixture.signed(&good);
+            tampered.body = tampered.body.replace("\"api\"", "\"web\"");
+            refused(
+                operator_ensure(service, stopped(&id), Some(&tampered)).await,
+                "does not verify",
+            );
+            let other_service = fixture.signed(&RestartApproval {
+                service: ServiceName::parse("web").unwrap(),
+                ..good.clone()
+            });
+            refused(
+                operator_ensure(service, stopped(&id), Some(&other_service)).await,
+                "names a Service",
+            );
+            let elsewhere = fixture.signed(&RestartApproval {
+                machines: vec![MachineId::random()],
+                ..good.clone()
+            });
+            refused(
+                operator_ensure(service, stopped(&id), Some(&elsewhere)).await,
+                "names Machines",
+            );
+            let expired = fixture.signed(&RestartApproval {
+                expires_at: Timestamp::from_millis(1).unwrap(),
+                ..good.clone()
+            });
+            refused(
+                operator_ensure(service, stopped(&id), Some(&expired)).await,
+                "expired",
+            );
+            assert_eq!(
+                ends_with(&requests_since(&fixture.fake, seen), Method::POST, "/stop").count(),
+                0,
+                "no refused step reached Docker"
+            );
+
+            let reply = operator_ensure(service, stopped(&id), Some(&fixture.signed(&good)))
+                .await
+                .unwrap();
+
+            assert!(matches!(
+                present(&reply).runtime,
+                ContainerRuntimeObservation::Exited { .. }
+            ));
+            assert_eq!(
+                ends_with(&requests_since(&fixture.fake, seen), Method::POST, "/stop").count(),
+                1
+            );
+            std::fs::remove_dir_all(fixture.data_dir).unwrap();
+        }
+
+        #[tokio::test]
+        async fn a_used_approval_runs_each_step_once_even_after_the_daemon_restarts() {
+            let fixture = enforced("ployzd-enforce-replay").await;
+            let service = &fixture.service;
+            let id = present(&ensure(service, run_new("k1", spec("example.test/api:1"))).await)
+                .container_id;
+            let approval = fixture.signed(&fixture.approval());
+
+            operator_ensure(service, stopped(&id), Some(&approval))
+                .await
+                .unwrap();
+            refused(
+                operator_ensure(service, stopped(&id), Some(&approval)).await,
+                "already ran this step",
+            );
+            let reply = operator_ensure(service, started(&id), Some(&approval))
+                .await
+                .unwrap();
+            assert!(matches!(
+                present(&reply).runtime,
+                ContainerRuntimeObservation::Running { .. }
+            ));
+            refused(
+                operator_ensure(service, started(&id), Some(&approval)).await,
+                "already ran this step",
+            );
+
+            let restarted = fixture.restarted();
+            refused(
+                operator_ensure(&restarted, stopped(&id), Some(&approval)).await,
+                "already ran this step",
+            );
+            refused(
+                operator_ensure(&restarted, started(&id), Some(&approval)).await,
+                "already ran this step",
+            );
+            let fresh = fixture.signed(&fixture.approval());
+            let reply = operator_ensure(&restarted, stopped(&id), Some(&fresh))
+                .await
+                .unwrap();
+            assert!(matches!(
+                present(&reply).runtime,
+                ContainerRuntimeObservation::Exited { .. }
+            ));
+            std::fs::remove_dir_all(fixture.data_dir).unwrap();
+        }
+
+        #[tokio::test]
+        async fn a_full_caller_restarts_without_an_approval() {
+            let fixture = enforced("ployzd-enforce-full").await;
+            let id =
+                present(&ensure(&fixture.service, run_new("k1", spec("example.test/api:1"))).await)
+                    .container_id;
+
+            let reply = ensure(&fixture.service, json!({"want": stopped(&id)})).await;
+
+            assert!(matches!(
+                present(&reply).runtime,
+                ContainerRuntimeObservation::Exited { .. }
+            ));
+            std::fs::remove_dir_all(fixture.data_dir).unwrap();
+        }
+
+        #[tokio::test]
+        async fn the_switch_answers_its_new_state_and_the_record_keeps_it() {
+            let (data_dir, _store, service, _fake) =
+                fake_docker_service("ployzd-enforce-switch").await;
+            for enforced in [true, false] {
+                let reply = service
+                    .set_device_enforcement(Request::new(
+                        op::SetDeviceEnforcement::into_request(SetDeviceEnforcementRequest {
+                            enforced,
+                        })
+                        .encode()
+                        .unwrap(),
+                    ))
+                    .await
+                    .unwrap()
+                    .into_inner()
+                    .decode_response()
+                    .unwrap()
+                    .decode::<op::SetDeviceEnforcement>()
+                    .unwrap();
+                assert_eq!(reply.enforced, enforced);
+                assert_eq!(service.local.record().device_enforcement(), enforced);
+            }
+            std::fs::remove_dir_all(data_dir).unwrap();
+        }
     }
 }
 
