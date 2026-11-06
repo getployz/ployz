@@ -101,7 +101,7 @@ function fakeServers() {
   const aborts = connectionAborts();
   /**
    * Each Server's cleared slots, by label, with the key a Clear took: that key is refused as cleared, as a daemon refuses
-   * it, until a Set fills the slot again. A key an earlier Set replaced is refused as any unknown key is.
+   * it, until a Set fills the slot again. Any other key is let through, a replaced one included, so it is never cleared.
    */
   const cleared = new Map<string, Map<string, string>>();
   const clearedOn = (machine: string) => cleared.get(machine) ?? cleared.set(machine, new Map()).get(machine) ?? new Map<string, string>();

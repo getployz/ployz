@@ -179,13 +179,14 @@ export const provideServerAccess = Effect.fn("ServerAccess.provide")(function* (
       const [checked, cleared] = yield* Effect.all([checkCluster, checkHolder], { concurrency: 2 });
       if (!cleared) return { machine_id: machineId, management: checked.refused === null ? management : null, refused: checked.refused };
       // Only the row that still stores this key, unrevoked and unheld: a newer key, a revocation or a claim is another
-      // request's, and a revoked row owes its Server a Clear, never a Set.
+      // request's, and a revoked row owes its Server a Clear, never a Set. Not interrupted: a cancelled statement would
+      // cancel the connection's next.
       yield* drizzle.delete(serverAccess).where(and(
         holder,
         eq(serverAccess.encryptedCapability, stored),
         isNull(serverAccess.revokedAt),
         unheld,
-      ));
+      )).pipe(Effect.uninterruptible);
       if (checked.refused !== null) return { machine_id: machineId, management: null, refused: checked.refused };
     }
     // Dial, claim, Set, then in one short transaction store the key and check the credential. A first use that
