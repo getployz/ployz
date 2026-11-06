@@ -1197,7 +1197,7 @@ async fn last_in_does_not_count_a_sibling_whose_owner_does_not_answer() {
     let reply = ensure(fleet.node(0), out(a, false, Some(CopyRotation::In))).await;
 
     let message = refused(&reply, ContainerRefusalReason::LastIn);
-    assert!(message.contains("didn't answer"), "{message}");
+    assert!(message.contains("couldn't confirm"), "{message}");
     assert_eq!(fleet.node(0).rotation(a).await, CopyRotation::In);
 }
 

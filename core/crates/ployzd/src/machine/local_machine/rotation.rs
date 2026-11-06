@@ -92,8 +92,15 @@ enum GuardReads {
         BTreeMap<ContainerId, ResolvedServiceSpec>,
     ),
     LastIn(Routed),
-    /// The LastIn guard already ran under exclusive admission, before the turn.
-    Decided(Option<ContainerRefusal>),
+    /// The LastIn guard as decided under exclusive admission, before the turn.
+    Decided(LastInDecision),
+}
+
+enum LastInDecision {
+    /// The copy was In, and the guard ran with it marked leaving.
+    WhileIn(Option<ContainerRefusal>),
+    /// The copy wasn't In, so no guard ran.
+    NotIn,
 }
 
 enum Written {
@@ -274,10 +281,11 @@ impl LocalMachine {
                 let locator = locator.clone();
                 async move {
                     let containers = local.containers.as_ref().ok_or(Error::DockerUnavailable)?;
-                    // Every rotation write on this Machine waits for exclusive admission,
-                    // so the record read here is the one the turn reads. Marking and asking
-                    // before the turn keeps the peer round trips off the config lock that
-                    // observation syncs and creates take.
+                    // Only admitted work takes a copy away from In, so a copy read In here is
+                    // In at the turn. Adoption can give In to a copy with no record without
+                    // admission; `check` refuses if the turn finds In where this read didn't.
+                    // Marking and asking before the turn keeps the peer round trips off the
+                    // config lock that observation syncs and creates take.
                     let (_leaving, reads) = match reads {
                         GuardReads::LastIn(routed) => {
                             let recorded = containers
@@ -288,9 +296,12 @@ impl LocalMachine {
                             if recorded == CopyRotation::In {
                                 let leaving = containers.leave(id);
                                 let refusal = local.last_in(&copy, routed).await?;
-                                (Some(leaving), GuardReads::Decided(refusal))
+                                (
+                                    Some(leaving),
+                                    GuardReads::Decided(LastInDecision::WhileIn(refusal)),
+                                )
                             } else {
-                                (None, GuardReads::Decided(None))
+                                (None, GuardReads::Decided(LastInDecision::NotIn))
                             }
                         }
                         reads @ (GuardReads::None
@@ -381,8 +392,17 @@ impl LocalMachine {
                 };
                 self.newer_in(copy, run, observed, &confirmed).await?
             }
-            (GuardReads::LastIn(routed), CopyRotation::In) => self.last_in(copy, routed).await?,
-            (GuardReads::Decided(refusal), CopyRotation::In) => refusal,
+            (GuardReads::Decided(LastInDecision::WhileIn(refusal)), CopyRotation::In) => refusal,
+            // `write` decides every LastIn read before the turn, with the copy marked. One
+            // that reaches the turn undecided, or finds the copy In when the decision
+            // didn't, is refused rather than guarded without the mark.
+            (
+                GuardReads::LastIn(_) | GuardReads::Decided(LastInDecision::NotIn),
+                CopyRotation::In,
+            ) => Some(refuse(
+                ContainerRefusalReason::LastIn,
+                "the copy came In while this Out waited; send the Out again".to_owned(),
+            )),
             (GuardReads::LastIn(_) | GuardReads::Decided(_) | GuardReads::None, _) => None,
         };
         Ok(guard.map_or(Checked::Allowed(to), Checked::Refused))
@@ -546,7 +566,7 @@ impl LocalMachine {
                 return Ok(id);
             }
             let Some(answer) = self.inspect_peer(sibling.machine_id, id).await else {
-                return Err(format!("the owner of copy {id} didn't answer"));
+                return Err(format!("couldn't confirm copy {id} with its owner"));
             };
             if answer.container.machine_id != sibling.machine_id
                 || *answer.container.rotation() != CopyRotation::In
@@ -561,16 +581,16 @@ impl LocalMachine {
         .await;
         let (siblings, doubts): (Vec<_>, Vec<_>) = asked.into_iter().partition(Result::is_ok);
         let siblings = siblings.into_iter().flatten().collect::<Vec<_>>();
+        let doubts = doubts
+            .into_iter()
+            .filter_map(Result::err)
+            .collect::<Vec<_>>();
+        let why = if doubts.is_empty() {
+            String::new()
+        } else {
+            format!(" ({})", doubts.join("; "))
+        };
         if siblings.is_empty() {
-            let why = doubts
-                .into_iter()
-                .filter_map(Result::err)
-                .collect::<Vec<_>>();
-            let why = if why.is_empty() {
-                String::new()
-            } else {
-                format!(" ({})", why.join("; "))
-            };
             return Ok(Some(refuse(
                 ContainerRefusalReason::LastIn,
                 format!(
@@ -602,7 +622,7 @@ impl LocalMachine {
         Ok(Some(refuse(
             ContainerRefusalReason::LastIn,
             format!(
-                "no other In copy of {} is acked by every live proxy: {waiting}",
+                "no other In copy of {} is acked by every live proxy: {waiting}{why}",
                 copy.service
             ),
         )))
