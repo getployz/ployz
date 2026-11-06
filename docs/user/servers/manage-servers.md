@@ -241,8 +241,8 @@ ployz device rm mmg42klgyq
 ```
 
 `device ls` shows each device and the servers missing it. `device rm` takes it off every server
-that answers. A server that is down or has no direct connection appears as an omission and the
-command exits 3.
+that answers. A server that doesn't answer is listed under failures, and one with no direct
+connection under omissions. Either way the command exits 3.
 
 ### Require a device's signature for restarts and joins
 
@@ -263,8 +263,8 @@ ployz device enforce --off
 ```
 
 `enforce` needs an approved device. It sets every server that answers and lists each server's
-state. A server that is down or has no direct connection appears as an omission and the
-command exits 3. It keeps its old setting. Run `enforce` again once it is reachable. A server
+state. A server that doesn't answer is listed under failures, and one with no direct connection
+under omissions. Either way the command exits 3, and that server keeps its old setting. Run `enforce` again once it is reachable. A server
 from before this setting is reported with its rows missing, the same as one that's down, and
 restarts as before. Upgrade it first.
 
