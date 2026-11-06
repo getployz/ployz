@@ -2,17 +2,14 @@
 //!
 //! Corrosion runs in its own container, so a stopped daemon leaves gossip Up and its
 //! rows as they last were. While a watch is open, the entry asks each peer it would call
-//! a cheap read; a peer that misses `MISSES` probes in a row is named unanswered until it
-//! answers again. One prober serves every open stream, since they share one producer.
+//! a cheap read; a peer that misses `MISSES` probes in a row, an interval apart, is named
+//! unanswered until it answers again. One prober serves every open stream, since they
+//! share one producer.
 
-use std::{
-    collections::{BTreeMap, BTreeSet},
-    future::Future,
-    time::Duration,
-};
+use std::{collections::BTreeMap, future::Future, time::Duration};
 
 use ployz_core::{DescribeContractRequest, MachineId, MachineRpcClient, ManagementAddress, op};
-use tokio::sync::watch;
+use tokio::{sync::watch, time::Instant};
 use tonic::transport::{Channel, Endpoint};
 
 /// How often each peer is asked.
@@ -22,31 +19,53 @@ const PROBE_TIMEOUT: Duration = Duration::from_secs(2);
 /// Probes in a row a peer must miss before it is named.
 const MISSES: u32 = 2;
 
-/// Consecutive misses per peer.
+/// Each probed peer's address and its run of counted misses.
 #[derive(Default)]
-pub(crate) struct Misses(BTreeMap<MachineId, u32>);
+pub(crate) struct Misses(BTreeMap<MachineId, Run>);
+
+struct Run {
+    address: ManagementAddress,
+    misses: u32,
+    counted: Option<Instant>,
+}
 
 impl Misses {
-    /// Record one round over `probed`, where `answered` holds those that answered, and
-    /// return the peers that have now missed `MISSES` in a row. A peer no longer probed
-    /// is forgotten, so it starts again from zero if it returns.
+    /// Record one round of `replies`, each a peer, the address probed and whether it
+    /// answered, made at `at`. Returns the peers that have now missed `MISSES` probes in a
+    /// row. A miss counts only once `interval` has passed since that peer's last counted
+    /// one, so a round brought forward by a new peer list can't hurry a name. A peer not
+    /// in `replies`, or probed at a new address, starts again from zero.
     pub(crate) fn round(
         &mut self,
-        probed: &BTreeSet<MachineId>,
-        answered: &BTreeSet<MachineId>,
+        replies: &[(MachineId, ManagementAddress, bool)],
+        at: Instant,
+        interval: Duration,
     ) -> Vec<MachineId> {
-        self.0.retain(|machine, _| probed.contains(machine));
-        for machine in probed {
-            let misses = self.0.entry(*machine).or_default();
-            *misses = if answered.contains(machine) {
-                0
-            } else {
-                misses.saturating_add(1)
-            };
+        self.0.retain(|machine, run| {
+            replies
+                .iter()
+                .any(|(probed, address, _)| probed == machine && *address == run.address)
+        });
+        for (machine, address, answered) in replies {
+            let run = self.0.entry(*machine).or_insert(Run {
+                address: *address,
+                misses: 0,
+                counted: None,
+            });
+            if *answered {
+                run.misses = 0;
+                run.counted = None;
+            } else if run
+                .counted
+                .is_none_or(|counted| at.saturating_duration_since(counted) >= interval)
+            {
+                run.misses = run.misses.saturating_add(1);
+                run.counted = Some(at);
+            }
         }
         self.0
             .iter()
-            .filter(|(_, misses)| **misses >= MISSES)
+            .filter(|(_, run)| run.misses >= MISSES)
             .map(|(machine, _)| *machine)
             .collect()
     }
@@ -68,22 +87,21 @@ pub(crate) async fn probe_peers<P, F>(
     ticks.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
     loop {
         // A new peer list is probed at once, so a watch's first answer needn't wait a tick.
-        tokio::select! {
-            _ = ticks.tick() => {}
-            Ok(()) = peers.changed() => ticks.reset(),
-        }
+        let at = tokio::select! {
+            at = ticks.tick() => at,
+            Ok(()) = peers.changed() => {
+                let at = Instant::now();
+                ticks.reset();
+                at
+            }
+        };
         let round = peers.borrow_and_update().clone();
-        let probed: BTreeSet<MachineId> = round.iter().map(|(machine, _)| *machine).collect();
         let replies = futures_util::future::join_all(round.iter().map(|(machine, address)| {
             let reply = answers(*address);
-            async move { (*machine, reply.await) }
+            async move { (*machine, *address, reply.await) }
         }))
         .await;
-        let answered = replies
-            .into_iter()
-            .filter_map(|(machine, answered)| answered.then_some(machine))
-            .collect();
-        let named = misses.round(&probed, &answered);
+        let named = misses.round(&replies, at, interval);
         unanswered.send_if_modified(|current| {
             let changed = *current != named;
             if changed {

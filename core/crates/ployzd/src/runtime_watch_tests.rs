@@ -798,10 +798,13 @@ async fn one_missed_probe_names_no_one() {
     let mut stream = serve_sampled(entry.id, &fixture, changes, tick_rx);
     next_frame(&mut stream).await;
 
-    // Silent for about one probe round, then answering: never two misses in a row.
+    // Silent for exactly one probe, then answering: never two misses in a row.
     fixture.silence(&peer, true);
-    tokio::time::sleep(PROBE_EVERY / 2).await;
+    while fixture.missed() == 0 {
+        tokio::time::sleep(PROBE_EVERY / 4).await;
+    }
     fixture.silence(&peer, false);
+    assert_eq!(fixture.missed(), 1);
     assert!(
         tokio::time::timeout(PROBE_EVERY * 10, stream.next())
             .await
@@ -843,6 +846,7 @@ struct WatchFixture {
     snapshot: Arc<Mutex<Result<RuntimeWatchSnapshot, String>>>,
     sample: Arc<Mutex<(Option<RuntimeWatchTelemetry>, String)>>,
     silent: Arc<Mutex<std::collections::BTreeSet<ployz_core::ManagementAddress>>>,
+    missed: Arc<std::sync::atomic::AtomicUsize>,
 }
 
 impl WatchFixture {
@@ -851,6 +855,7 @@ impl WatchFixture {
             snapshot: Arc::new(Mutex::new(Ok(snapshot))),
             sample: Arc::new(Mutex::new((None, OBSERVED_AT.into()))),
             silent: Arc::default(),
+            missed: Arc::default(),
         }
     }
 
@@ -880,6 +885,10 @@ impl WatchFixture {
         } else {
             set.remove(&machine.management_address());
         }
+    }
+
+    fn missed(&self) -> usize {
+        self.missed.load(std::sync::atomic::Ordering::SeqCst)
     }
 
     fn sample(&self) -> LatestSample {
@@ -923,6 +932,11 @@ fn serve_sampled(
         PROBE_EVERY,
         move |address| {
             let silent = probe_fixture.silent.lock().unwrap().contains(&address);
+            if silent {
+                probe_fixture
+                    .missed
+                    .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            }
             async move { !silent }
         },
     )

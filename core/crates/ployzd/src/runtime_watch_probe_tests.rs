@@ -1,46 +1,109 @@
-use std::collections::BTreeSet;
+use std::{net::Ipv6Addr, time::Duration};
 
-use ployz_core::MachineId;
+use ployz_core::{MachineId, ManagementAddress};
+use tokio::time::Instant;
 
 use super::Misses;
+
+const EVERY: Duration = Duration::from_secs(5);
 
 fn id(hex: char) -> MachineId {
     MachineId::parse(hex.to_string().repeat(32)).unwrap()
 }
 
+fn address(last: u16) -> ManagementAddress {
+    ManagementAddress(Ipv6Addr::new(0xfd00, 0, 0, 0, 0, 0, 0, last))
+}
+
+/// Rounds an interval apart, starting at `start`.
+fn at(start: Instant, round: u32) -> Instant {
+    start + EVERY * round
+}
+
 #[test]
 fn two_misses_in_a_row_name_a_peer_and_one_answer_clears_it() {
     let (a, b) = (id('a'), id('b'));
-    let probed = BTreeSet::from([a, b]);
+    let t = Instant::now();
     let mut misses = Misses::default();
+    let round = [(a, address(1), false), (b, address(2), true)];
 
-    assert!(misses.round(&probed, &BTreeSet::from([b])).is_empty());
-    assert_eq!(misses.round(&probed, &BTreeSet::from([b])), vec![a]);
-    assert_eq!(misses.round(&probed, &BTreeSet::from([b])), vec![a]);
-    assert!(misses.round(&probed, &probed).is_empty());
+    assert!(misses.round(&round, at(t, 0), EVERY).is_empty());
+    assert_eq!(misses.round(&round, at(t, 1), EVERY), vec![a]);
+    assert_eq!(misses.round(&round, at(t, 2), EVERY), vec![a]);
+    let answered = [(a, address(1), true), (b, address(2), true)];
+    assert!(misses.round(&answered, at(t, 3), EVERY).is_empty());
 }
 
 #[test]
 fn an_answer_between_misses_starts_the_count_again() {
     let a = id('a');
-    let probed = BTreeSet::from([a]);
+    let t = Instant::now();
     let mut misses = Misses::default();
 
-    assert!(misses.round(&probed, &BTreeSet::new()).is_empty());
-    assert!(misses.round(&probed, &probed).is_empty());
-    assert!(misses.round(&probed, &BTreeSet::new()).is_empty());
+    assert!(
+        misses
+            .round(&[(a, address(1), false)], at(t, 0), EVERY)
+            .is_empty()
+    );
+    assert!(
+        misses
+            .round(&[(a, address(1), true)], at(t, 1), EVERY)
+            .is_empty()
+    );
+    assert!(
+        misses
+            .round(&[(a, address(1), false)], at(t, 2), EVERY)
+            .is_empty()
+    );
 }
 
 #[test]
 fn a_peer_no_longer_probed_is_forgotten() {
     let a = id('a');
-    let probed = BTreeSet::from([a]);
+    let t = Instant::now();
+    let mut misses = Misses::default();
+    let missed = [(a, address(1), false)];
+
+    misses.round(&missed, at(t, 0), EVERY);
+    assert_eq!(misses.round(&missed, at(t, 1), EVERY), vec![a]);
+    assert!(misses.round(&[], at(t, 2), EVERY).is_empty());
+    assert!(misses.round(&missed, at(t, 3), EVERY).is_empty());
+}
+
+#[test]
+fn a_miss_sooner_than_an_interval_after_the_last_does_not_count() {
+    let a = id('a');
+    let t = Instant::now();
+    let mut misses = Misses::default();
+    let missed = [(a, address(1), false)];
+
+    assert!(misses.round(&missed, t, EVERY).is_empty());
+    // A round brought forward by a new peer list, a moment after the first miss.
+    assert!(misses.round(&missed, t + EVERY / 5, EVERY).is_empty());
+    assert!(
+        misses
+            .round(&missed, t + EVERY - Duration::from_millis(1), EVERY)
+            .is_empty()
+    );
+    assert_eq!(misses.round(&missed, t + EVERY, EVERY), vec![a]);
+}
+
+#[test]
+fn a_peer_at_a_new_address_starts_again() {
+    let a = id('a');
+    let t = Instant::now();
     let mut misses = Misses::default();
 
-    misses.round(&probed, &BTreeSet::new());
-    assert_eq!(misses.round(&probed, &BTreeSet::new()), vec![a]);
-    assert!(misses.round(&BTreeSet::new(), &BTreeSet::new()).is_empty());
-    assert!(misses.round(&probed, &BTreeSet::new()).is_empty());
+    misses.round(&[(a, address(1), false)], at(t, 0), EVERY);
+    assert!(
+        misses
+            .round(&[(a, address(2), false)], at(t, 1), EVERY)
+            .is_empty()
+    );
+    assert_eq!(
+        misses.round(&[(a, address(2), false)], at(t, 2), EVERY),
+        vec![a]
+    );
 }
 
 mod dialer {
