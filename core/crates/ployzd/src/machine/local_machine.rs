@@ -415,12 +415,18 @@ impl LocalMachine {
         if let Some(peers) = &self.peers {
             return peers(machine, container).await;
         }
-        let machines = self.replicated().ok()?.machines().await.ok()?;
-        let peer = machines
-            .observations
-            .iter()
-            .find(|peer| peer.id == machine)?;
-        crate::boot_pass::inspect_peer(peer, container, PEER_INSPECT_TIMEOUT).await
+        let inspected = async {
+            let machines = self.replicated().ok()?.machines().await.ok()?;
+            let peer = machines
+                .observations
+                .iter()
+                .find(|peer| peer.id == machine)?;
+            crate::boot_pass::inspect_peer(peer, container, PEER_INSPECT_TIMEOUT).await
+        };
+        tokio::time::timeout(PEER_INSPECT_TIMEOUT, inspected)
+            .await
+            .ok()
+            .flatten()
     }
 
     pub(crate) fn replicated(&self) -> Result<&ReplicatedStore, Error> {

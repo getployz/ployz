@@ -3,8 +3,8 @@
 //! the exclusive admission turn right before the write, against the rotation this
 //! Machine recorded. Replicated rows from other Machines are read before the turn
 //! and only narrow what it does, but they lag: an Out written on another Machine is
-//! invisible here until it replicates. So `LastIn` marks its copy leaving under the
-//! turn, then asks each remote sibling's owner, and counts a sibling only if its owner
+//! invisible here until it replicates. So `LastIn` marks its copy leaving under
+//! exclusive admission, just before the turn, then asks each remote sibling's owner, and counts a sibling only if its owner
 //! answers that it is In and not leaving. Of two Outs racing on the last two copies,
 //! each marks before it asks, so at least one sees the other's mark and refuses.
 
@@ -92,6 +92,8 @@ enum GuardReads {
         BTreeMap<ContainerId, ResolvedServiceSpec>,
     ),
     LastIn(Routed),
+    /// The LastIn guard already ran under exclusive admission, before the turn.
+    Decided(Option<ContainerRefusal>),
 }
 
 enum Written {
@@ -272,6 +274,29 @@ impl LocalMachine {
                 let locator = locator.clone();
                 async move {
                     let containers = local.containers.as_ref().ok_or(Error::DockerUnavailable)?;
+                    // Every rotation write on this Machine waits for exclusive admission,
+                    // so the record read here is the one the turn reads. Marking and asking
+                    // before the turn keeps the peer round trips off the config lock that
+                    // observation syncs and creates take.
+                    let (_leaving, reads) = match reads {
+                        GuardReads::LastIn(routed) => {
+                            let recorded = containers
+                                .rotations(vec![id])
+                                .await?
+                                .remove(&id)
+                                .unwrap_or_default();
+                            if recorded == CopyRotation::In {
+                                let leaving = containers.leave(id);
+                                let refusal = local.last_in(&copy, routed).await?;
+                                (Some(leaving), GuardReads::Decided(refusal))
+                            } else {
+                                (None, GuardReads::Decided(None))
+                            }
+                        }
+                        reads @ (GuardReads::None
+                        | GuardReads::NewerIn(..)
+                        | GuardReads::Decided(_)) => (None, reads),
+                    };
                     let turn = match containers.rotation_turn(&id).await {
                         Ok(turn) => turn,
                         Err(crate::docker::Error::ContainerNotFound(_)) => {
@@ -283,11 +308,6 @@ impl LocalMachine {
                         rotation: turn.rotation().clone(),
                         ..copy
                     };
-                    let _leaving = matches!(
-                        (&want, &copy.rotation),
-                        (RotationWant::Out { allow_empty: false }, CopyRotation::In)
-                    )
-                    .then(|| containers.leave(id));
                     let to = match local.check(&copy, &want, expect.as_ref(), reads).await? {
                         Checked::Met => return Ok(Written::Done),
                         Checked::Refused(refusal) => return Ok(Written::Refused(refusal)),
@@ -362,7 +382,8 @@ impl LocalMachine {
                 self.newer_in(copy, run, observed, &confirmed).await?
             }
             (GuardReads::LastIn(routed), CopyRotation::In) => self.last_in(copy, routed).await?,
-            (GuardReads::LastIn(_), _) | (GuardReads::None, _) => None,
+            (GuardReads::Decided(refusal), CopyRotation::In) => refusal,
+            (GuardReads::LastIn(_) | GuardReads::Decided(_) | GuardReads::None, _) => None,
         };
         Ok(guard.map_or(Checked::Allowed(to), Checked::Refused))
     }
@@ -519,27 +540,41 @@ impl LocalMachine {
             .await?
             .into_iter()
             .filter(|sibling| !membership.down.contains(&sibling.machine_id));
-        let siblings = join_all(live.map(|sibling| async move {
+        let asked = join_all(live.map(|sibling| async move {
+            let id = sibling.container_id;
             if sibling.machine_id == machine_id {
-                return Some(sibling.container_id);
+                return Ok(id);
             }
-            let answer = self
-                .inspect_peer(sibling.machine_id, sibling.container_id)
-                .await?;
-            (answer.container.machine_id == sibling.machine_id
-                && *answer.container.rotation() == CopyRotation::In
-                && !answer.leaving)
-                .then_some(sibling.container_id)
+            let Some(answer) = self.inspect_peer(sibling.machine_id, id).await else {
+                return Err(format!("the owner of copy {id} didn't answer"));
+            };
+            if answer.container.machine_id != sibling.machine_id
+                || *answer.container.rotation() != CopyRotation::In
+            {
+                return Err(format!("copy {id} is no longer In on its owner"));
+            }
+            if answer.leaving {
+                return Err(format!("copy {id} is being taken out too"));
+            }
+            Ok(id)
         }))
-        .await
-        .into_iter()
-        .flatten()
-        .collect::<Vec<_>>();
+        .await;
+        let (siblings, doubts): (Vec<_>, Vec<_>) = asked.into_iter().partition(Result::is_ok);
+        let siblings = siblings.into_iter().flatten().collect::<Vec<_>>();
         if siblings.is_empty() {
+            let why = doubts
+                .into_iter()
+                .filter_map(Result::err)
+                .collect::<Vec<_>>();
+            let why = if why.is_empty() {
+                String::new()
+            } else {
+                format!(" ({})", why.join("; "))
+            };
             return Ok(Some(refuse(
                 ContainerRefusalReason::LastIn,
                 format!(
-                    "no other copy of {} is In and routed; send allow_empty to empty the Service",
+                    "no other copy of {} is In and routed{why}; send allow_empty to empty the Service",
                     copy.service
                 ),
             )));

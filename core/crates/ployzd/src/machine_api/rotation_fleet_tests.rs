@@ -1133,20 +1133,55 @@ async fn of_two_outs_racing_on_the_last_two_copies_one_is_refused() {
     fleet.ack_all(&api, &[a, b]).await;
     let asking = fleet.hold_inspect(1);
 
-    let (first, second) = tokio::join!(
-        ensure(fleet.node(0), out(a, false, Some(CopyRotation::In))),
-        async {
-            asking.wait().await;
-            let second = ensure(fleet.node(1), out(b, false, Some(CopyRotation::In))).await;
-            asking.wait().await;
-            second
-        }
-    );
+    let (first, second) = tokio::time::timeout(SETTLE * 4, async {
+        tokio::join!(
+            ensure(fleet.node(0), out(a, false, Some(CopyRotation::In))),
+            async {
+                asking.wait().await;
+                let second = ensure(fleet.node(1), out(b, false, Some(CopyRotation::In))).await;
+                asking.wait().await;
+                second
+            }
+        )
+    })
+    .await
+    .expect("A's Out asks B's owner, so the held inspect is reached");
 
     refused(&second, ContainerRefusalReason::LastIn);
     ensured(&first);
     assert_eq!(fleet.node(0).rotation(a).await, CopyRotation::Out);
     assert_eq!(fleet.node(1).rotation(b).await, CopyRotation::In);
+}
+
+/// An inspect that began while the copy was marked leaving reports the mark, however the
+/// Out that set it ends while Docker answers. Reading the mark after the rotation could
+/// pair an In read before the Out's write with a mark already cleared.
+#[tokio::test]
+async fn an_inspect_reports_the_leaving_mark_it_began_under() {
+    let fleet = Fleet::start().await;
+    let node = fleet.node(0);
+    let a = fleet.routed(0, "a", "api", 1).await;
+    let machine = fleet.id(0);
+    let leaving = node.runtime.leave(a);
+    let docker = node.hold_inspect();
+
+    let (answer, ()) = tokio::join!(node.runtime.inspect_managed_details(&a, &machine), async {
+        docker.wait().await;
+        drop(leaving);
+        docker.wait().await;
+    });
+
+    let answer = answer.unwrap();
+    assert!(answer.leaving);
+    assert_eq!(*answer.container.rotation(), CopyRotation::In);
+    assert!(
+        !node
+            .runtime
+            .inspect_managed_details(&a, &fleet.id(0))
+            .await
+            .unwrap()
+            .leaving
+    );
 }
 
 /// A sibling whose owner doesn't answer can't be confirmed In, so the copy stays In.
@@ -1161,7 +1196,8 @@ async fn last_in_does_not_count_a_sibling_whose_owner_does_not_answer() {
 
     let reply = ensure(fleet.node(0), out(a, false, Some(CopyRotation::In))).await;
 
-    refused(&reply, ContainerRefusalReason::LastIn);
+    let message = refused(&reply, ContainerRefusalReason::LastIn);
+    assert!(message.contains("didn't answer"), "{message}");
     assert_eq!(fleet.node(0).rotation(a).await, CopyRotation::In);
 }
 

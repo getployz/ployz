@@ -460,9 +460,10 @@ impl ContainerRuntime {
     /// reports it. The caller holds the Machine's exclusive admission turn.
     #[must_use]
     pub fn leave(&self, container_id: ContainerId) -> Leaving {
-        if let Ok(mut leaving) = self.leaving.lock() {
-            leaving.insert(container_id);
-        }
+        self.leaving
+            .lock()
+            .expect("leaving marks lock")
+            .insert(container_id);
         Leaving {
             leaving: Arc::clone(&self.leaving),
             container_id,
@@ -472,7 +473,8 @@ impl ContainerRuntime {
     fn is_leaving(&self, container_id: &ContainerId) -> bool {
         self.leaving
             .lock()
-            .is_ok_and(|leaving| leaving.contains(container_id))
+            .expect("leaving marks lock")
+            .contains(container_id)
     }
 
     fn is_withdrawn(&self, container_id: &ContainerId) -> bool {
@@ -924,6 +926,9 @@ impl ContainerRuntime {
         container_id: &ContainerId,
         machine_id: &MachineId,
     ) -> Result<InspectedRun, Error> {
+        // Before the rotation: an Out clears its mark only after it wrote Out, so an
+        // answer that reads no mark then reads Out, never In from before the write.
+        let leaving = self.is_leaving(container_id);
         let inspected = decode_raw_inspect(
             self.docker
                 .client
@@ -1035,7 +1040,7 @@ impl ContainerRuntime {
                 image_id: inspected.image,
                 last_check,
                 run,
-                leaving: self.is_leaving(container_id),
+                leaving,
             },
             oom_killed,
         })
