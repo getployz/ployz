@@ -15,7 +15,7 @@ use ipnet::Ipv4Net;
 use ployz_core::{
     DeviceCode, DeviceKey, LocalMachinePhase, Machine, MachineId, MachineRuntime,
     MachineStorageObservation, ManagementClientLabel, PinnedAddresses, RecoverySeed,
-    SelectedEndpoint,
+    SelectedEndpoint, WireGuardPublicKey,
 };
 use reqwest::Url;
 use serde::{Deserialize, Serialize};
@@ -320,6 +320,16 @@ impl LocalMachineRecord {
             && body.sealing_recipient == machine.public_key
             && signers.contains(&body.signer.into())
             && self.membership_cluster == Some(body.cluster)
+    }
+
+    /// Whether a WireGuard peer no row names may stay while the store catches up. Under
+    /// enforcement only a trusted Member may.
+    pub(crate) fn keeps_unlisted_peer(&self, key: &WireGuardPublicKey) -> bool {
+        !self.device_enforcement
+            || self
+                .trusted_machines
+                .iter()
+                .any(|member| member.public_key == *key)
     }
 
     pub(crate) fn pins_machine(&self, machine: &Machine) -> bool {

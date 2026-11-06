@@ -14,11 +14,20 @@ fn reconcile(
     planned: &[Peer],
     set: PeerSet,
 ) -> BTreeSet<IpNet> {
+    reconcile_keeping(installed, planned, set, |_| true)
+}
+
+fn reconcile_keeping(
+    installed: &mut HashMap<Key, Peer>,
+    planned: &[Peer],
+    set: PeerSet,
+    keeps_unlisted: impl Fn(&Key) -> bool,
+) -> BTreeSet<IpNet> {
     let PeerChanges {
         updates,
         removals,
         routes,
-    } = peer_changes(installed, planned, set).unwrap();
+    } = peer_changes(installed, planned, set, keeps_unlisted).unwrap();
     let updates = updates.into_iter().cloned().collect::<Vec<_>>();
     let removals = removals.into_iter().cloned().collect::<Vec<_>>();
     for peer in updates {
@@ -370,6 +379,114 @@ fn a_store_that_never_held_another_machine_keeps_the_installed_peers() {
     reconcile(&mut installed, &[], set);
     assert!(planned.is_empty());
     assert!(installed.is_empty());
+}
+
+/// A joined Machine whose saved bootstrap names `founder` and `unsigned`, with
+/// enforcement on and a starting set of itself and `founder` when `enforced`.
+fn joined_record(
+    founder: &Machine,
+    unsigned: &Machine,
+    enforced: bool,
+) -> crate::machine::LocalMachineRecord {
+    use crate::machine::{LocalMachineBody, LocalMachineRecord, ParticipationOrigin};
+
+    let private_key = WireGuardPrivateKey::from_bytes([7; 32]);
+    let own = machine(7, private_key.public_key());
+    let record = LocalMachineRecord::parse(
+        LocalMachineBody::Participating {
+            machine: own.clone(),
+            origin: ParticipationOrigin::Join {
+                bootstrap: vec![founder.clone(), unsigned.clone()],
+            },
+        },
+        private_key,
+    )
+    .unwrap();
+    let serde_json::Value::Object(mut wire) = serde_json::to_value(&record).unwrap() else {
+        panic!("a record serializes as an object");
+    };
+    wire.insert("device_enforcement".into(), enforced.into());
+    wire.insert(
+        "trusted_machines".into(),
+        serde_json::to_value([founder, &own].map(ployz_core::authority::Member::from)).unwrap(),
+    );
+    serde_json::from_value(wire.into()).unwrap()
+}
+
+fn installed_for(machines: &[Machine]) -> HashMap<Key, Peer> {
+    peers_for(&MachineId::random(), machines)
+        .iter()
+        .map(|peer| {
+            let peer = wireguard_peer(peer, None);
+            (peer.public_key.clone(), peer)
+        })
+        .collect()
+}
+
+fn apply_record(
+    installed: &mut HashMap<Key, Peer>,
+    planned: &[MeshPeer],
+    set: PeerSet,
+    record: &crate::machine::LocalMachineRecord,
+) -> BTreeSet<IpNet> {
+    reconcile_keeping(
+        installed,
+        &planned
+            .iter()
+            .map(|peer| wireguard_peer(peer, peer.selected()))
+            .collect::<Vec<_>>(),
+        set,
+        |key| record.keeps_unlisted_peer(&WireGuardPublicKey(key.as_array())),
+    )
+}
+
+/// An unsigned join installed `unsigned` before enforcement. A restart keeps the device,
+/// and its first apply must still drop the peer the starting set left out.
+#[test]
+fn startup_removes_an_installed_peer_enforcement_refuses() {
+    let founder = machine(1, WireGuardPublicKey([1; 32]));
+    let unsigned = machine(9, WireGuardPublicKey([9; 32]));
+    let record = joined_record(&founder, &unsigned, true);
+    let own = record.machine().unwrap();
+    let mut installed = installed_for(&[founder.clone(), unsigned]);
+    let routes = apply_record(
+        &mut installed,
+        &peers_for(&own.id, &record.bootstrap()),
+        PeerSet::Bootstrap,
+        &record,
+    );
+    assert_eq!(installed, installed_for(&[founder]));
+    assert_eq!(routes, peer_routes(installed.values()).unwrap());
+}
+
+/// A store recreated without another Machine's row still drops a peer enforcement refuses.
+/// With enforcement off, nothing is removed.
+#[test]
+fn a_rebuild_from_a_fresh_store_removes_only_peers_enforcement_refuses() {
+    let founder = machine(1, WireGuardPublicKey([1; 32]));
+    let unsigned = machine(9, WireGuardPublicKey([9; 32]));
+    for enforced in [true, false] {
+        let record = joined_record(&founder, &unsigned, enforced);
+        let own = record.machine().unwrap();
+        let own_row_only = ReplicatedObservations {
+            observations: vec![own.clone()],
+            incomplete_ids: Vec::new(),
+        };
+        let bootstrap = peers_for(&own.id, &record.bootstrap());
+        let (planned, set) =
+            snapshot_peers(&own.id, &own_row_only, &bootstrap, false, false).unwrap();
+        assert_eq!(set, PeerSet::Bootstrap);
+        let before = installed_for(&[founder.clone(), unsigned.clone()]);
+        let mut installed = before.clone();
+        let routes = apply_record(&mut installed, &planned, set, &record);
+        let kept = if enforced {
+            installed_for(std::slice::from_ref(&founder))
+        } else {
+            before
+        };
+        assert_eq!(installed, kept, "enforced: {enforced}");
+        assert_eq!(routes, peer_routes(installed.values()).unwrap());
+    }
 }
 
 #[test]
