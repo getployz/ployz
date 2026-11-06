@@ -859,7 +859,7 @@ async fn a_removed_containers_lines_are_left_out_with_a_note_and_the_rest_still_
     assert_eq!(
         answer.notes,
         [
-            "Lines from web/dddddddddddd on one withheld: their env could not be read to scrub Sealed values."
+            "Lines from web/dddddddddddd on one withheld: Ployz couldn't check their variables for secret values, so it can't hide them."
         ]
     );
 }
@@ -996,7 +996,7 @@ async fn a_server_whose_containers_cannot_be_inspected_withholds_only_sealed_lin
     assert_eq!(
         sealed.notes,
         [
-            "Lines from web/cccccccccccc, web/dddddddddddd on one withheld: their env could not be read to scrub Sealed values."
+            "Lines from web/cccccccccccc, web/dddddddddddd on one withheld: Ployz couldn't check their variables for secret values, so it can't hide them."
         ]
     );
     assert_eq!(shown(&nothing_sealed).len(), 1);
