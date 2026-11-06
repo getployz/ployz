@@ -784,7 +784,7 @@ async fn a_peer_whose_daemon_stops_answering_is_named_until_it_answers() {
     assert!(back.unanswered.is_empty());
 }
 
-#[tokio::test]
+#[tokio::test(start_paused = true)]
 async fn one_missed_probe_names_no_one() {
     let entry = machine("edge", ENTRY_ID, 1);
     let peer = machine("peer", PEER_ID, 2);

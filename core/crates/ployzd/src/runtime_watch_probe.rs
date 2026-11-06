@@ -67,7 +67,11 @@ pub(crate) async fn probe_peers<P, F>(
     let mut ticks = tokio::time::interval(interval);
     ticks.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
     loop {
-        ticks.tick().await;
+        // A new peer list is probed at once, so a watch's first answer needn't wait a tick.
+        tokio::select! {
+            _ = ticks.tick() => {}
+            Ok(()) = peers.changed() => ticks.reset(),
+        }
         let round = peers.borrow_and_update().clone();
         let probed: BTreeSet<MachineId> = round.iter().map(|(machine, _)| *machine).collect();
         let replies = futures_util::future::join_all(round.iter().map(|(machine, address)| {
@@ -90,7 +94,8 @@ pub(crate) async fn probe_peers<P, F>(
     }
 }
 
-/// Dials peers' Machine APIs over the mesh, keeping one lazy channel per address.
+/// Dials peers' Machine APIs over the mesh, keeping one lazy channel per address until a
+/// probe on it misses.
 pub(crate) struct Dialer {
     port: u16,
     timeout: Duration,
@@ -129,12 +134,30 @@ impl Dialer {
                 Ok(_) => true,
                 // A status the daemon sent carries no source; the client's own
                 // transport failures (refused, reset, unreachable) do.
-                Err(status) => std::error::Error::source(&status).is_none(),
+                Err(status) if std::error::Error::source(&status).is_none() => true,
+                Err(status) => {
+                    tracing::debug!(address = %address.0, %status, "runtime watch probe missed");
+                    false
+                }
             }
         };
-        tokio::time::timeout(self.timeout, call)
+        let answered = tokio::time::timeout(self.timeout, call)
             .await
-            .unwrap_or(false)
+            .unwrap_or_else(|_| {
+                tracing::debug!(address = %address.0, "runtime watch probe timed out");
+                false
+            });
+        if !answered {
+            // A connection that stalled stays stalled behind its retransmits; dial afresh.
+            self.forget(address);
+        }
+        answered
+    }
+
+    fn forget(&self, address: ManagementAddress) {
+        if let Ok(mut channels) = self.channels.lock() {
+            channels.remove(&address);
+        }
     }
 
     fn channel(&self, address: ManagementAddress) -> Option<Channel> {

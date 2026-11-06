@@ -110,6 +110,11 @@ mod dialer {
         for code in ["7", "14"] {
             let dialer = Dialer::with_timeout(serve(code).await, SHORT);
             assert!(dialer.answers(LOOPBACK).await, "grpc-status {code}");
+            assert_eq!(
+                dialer.channels.lock().unwrap().len(),
+                1,
+                "an answer keeps its channel"
+            );
         }
     }
 
@@ -126,9 +131,12 @@ mod dialer {
         // The kernel accepts the connection, but nothing speaks HTTP/2 on it.
         let listener = TcpListener::bind("[::1]:0").await.unwrap();
         let port = listener.local_addr().unwrap().port();
+        let dialer = Dialer::with_timeout(port, SHORT);
         let started = std::time::Instant::now();
-        assert!(!Dialer::with_timeout(port, SHORT).answers(LOOPBACK).await);
+        assert!(!dialer.answers(LOOPBACK).await);
         assert!(started.elapsed() < SHORT * 3);
+        // The stalled connection isn't kept: the next probe dials afresh.
+        assert!(dialer.channels.lock().unwrap().is_empty());
         drop(listener);
     }
 }
