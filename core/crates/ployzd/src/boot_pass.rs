@@ -15,11 +15,11 @@ use std::{
 
 use futures_util::future::join_all;
 use ployz_core::{
-    CodecError, ContainerId, ContainerKind, ContainerLocator, ContainerObservation, ContainerWant,
-    CopyRotation, EnsuredContainer, Gen, InspectContainerRequest, ListMachinesRequest,
-    MACHINE_API_PORT, Machine, MachineId, MachineRpcClient, QualifiedService,
-    RUNTIME_WATCH_MESSAGE_SIZE_LIMIT, RequestedServiceSpec, ResolvedServiceSpec, ServiceMode,
-    SpecChange, compare_specs, op,
+    CodecError, ContainerDetails, ContainerId, ContainerKind, ContainerLocator,
+    ContainerObservation, ContainerWant, CopyRotation, EnsuredContainer, Gen,
+    InspectContainerRequest, ListMachinesRequest, MACHINE_API_PORT, Machine, MachineId,
+    MachineRpcClient, QualifiedService, RUNTIME_WATCH_MESSAGE_SIZE_LIMIT, RequestedServiceSpec,
+    ResolvedServiceSpec, ServiceMode, SpecChange, compare_specs, op,
 };
 use tokio::{sync::watch, time::Instant};
 use tonic::transport::Endpoint;
@@ -539,7 +539,9 @@ impl BootHost for DaemonHost {
             .observations
             .iter()
             .find(|peer| peer.id == machine)?;
-        inspect_peer(peer, container, INSPECT_TIMEOUT).await
+        inspect_peer(peer, container, INSPECT_TIMEOUT)
+            .await
+            .map(|details| details.container)
     }
 
     async fn ensure(&self, want: ContainerWant) -> Result<EnsuredContainer, LocalMachineError> {
@@ -581,7 +583,7 @@ pub(crate) async fn inspect_peer(
     peer: &Machine,
     container: ContainerId,
     wait: Duration,
-) -> Option<ContainerObservation> {
+) -> Option<ContainerDetails> {
     let address = SocketAddr::new(IpAddr::V6(peer.management_address().0), MACHINE_API_PORT);
     match tokio::time::timeout(wait, inspect_on(address, container)).await {
         Ok(Ok(copy)) => Some(copy),
@@ -601,7 +603,7 @@ pub(crate) async fn inspect_peer(
 async fn inspect_on(
     address: SocketAddr,
     container_id: ContainerId,
-) -> Result<ContainerObservation, PeerError> {
+) -> Result<ContainerDetails, PeerError> {
     let channel = Endpoint::from_shared(format!("http://{address}"))?
         .connect()
         .await?;
@@ -612,8 +614,7 @@ async fn inspect_on(
         .await?
         .into_inner()
         .decode_response()?
-        .decode::<op::InspectContainer>()?
-        .container)
+        .decode::<op::InspectContainer>()?)
 }
 
 #[cfg(test)]

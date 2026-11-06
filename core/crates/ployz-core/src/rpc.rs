@@ -1191,6 +1191,10 @@ pub struct ContainerDetails {
     /// Which run of the Container this is; `None` from older daemons.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub run: Option<crate::ContainerRun>,
+    /// The owner is deciding right now whether to take this copy out of rotation, so a
+    /// sibling's last-copy check must not count it. `false` from older daemons.
+    #[serde(default)]
+    pub leaving: bool,
 }
 
 /// The Machine's answer to `EnsureContainer`: the Container as now observed, and

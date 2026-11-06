@@ -10,7 +10,7 @@ use std::{
 };
 
 use ployz_core::{
-    ContainerId, ContainerObservation, EnrollRequest, Enrolled, ForgetRequest, Forgotten,
+    ContainerDetails, ContainerId, EnrollRequest, Enrolled, ForgetRequest, Forgotten,
     InspectRequest, LeaveRequest, Left, LeftPhase, LocalMachinePhase, Machine, MachineDetails,
     MachineId, MachineIdentity, MachineList, MachineName, MachineObservation, MachineToken,
     MachineUpdated, ManagementAddress, ManagementClientLabel, MembershipEvidence,
@@ -64,7 +64,7 @@ pub(crate) type PeerInspect = std::sync::Arc<
     dyn Fn(
             MachineId,
             ContainerId,
-        ) -> futures_util::future::BoxFuture<'static, Option<ContainerObservation>>
+        ) -> futures_util::future::BoxFuture<'static, Option<ContainerDetails>>
         + Send
         + Sync,
 >;
@@ -410,17 +410,23 @@ impl LocalMachine {
         &self,
         machine: MachineId,
         container: ContainerId,
-    ) -> Option<ContainerObservation> {
+    ) -> Option<ContainerDetails> {
         #[cfg(test)]
         if let Some(peers) = &self.peers {
             return peers(machine, container).await;
         }
-        let machines = self.replicated().ok()?.machines().await.ok()?;
-        let peer = machines
-            .observations
-            .iter()
-            .find(|peer| peer.id == machine)?;
-        crate::boot_pass::inspect_peer(peer, container, PEER_INSPECT_TIMEOUT).await
+        let inspected = async {
+            let machines = self.replicated().ok()?.machines().await.ok()?;
+            let peer = machines
+                .observations
+                .iter()
+                .find(|peer| peer.id == machine)?;
+            crate::boot_pass::inspect_peer(peer, container, PEER_INSPECT_TIMEOUT).await
+        };
+        tokio::time::timeout(PEER_INSPECT_TIMEOUT, inspected)
+            .await
+            .ok()
+            .flatten()
     }
 
     pub(crate) fn replicated(&self) -> Result<&ReplicatedStore, Error> {

@@ -1128,6 +1128,7 @@ impl FakeMachine for DeployService {
                 },
             )
             .unwrap(),
+            leaving: false,
         }))
     }
     async fn remove_volume(

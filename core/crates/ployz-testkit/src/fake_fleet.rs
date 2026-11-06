@@ -800,6 +800,7 @@ impl Fleet {
                         image_id: None,
                         last_check: None,
                         run: None,
+                        leaving: false,
                     }
                     .into(),
                 )

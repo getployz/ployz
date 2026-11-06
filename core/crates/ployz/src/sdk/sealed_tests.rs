@@ -80,6 +80,7 @@ async fn fake<const STREAMS: usize>(env: Option<&str>) -> (Fake, [Frames; STREAM
                                 image_id: None,
                                 last_check: None,
                                 run: None,
+                                leaving: false,
                             })
                             .encode()
                             .unwrap(),

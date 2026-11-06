@@ -450,6 +450,7 @@ mod tests {
             image_id: None,
             last_check,
             run: None,
+            leaving: false,
         }
     }
 
