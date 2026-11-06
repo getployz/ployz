@@ -195,7 +195,7 @@ async fn reconnect_rejects_a_published_error_before_its_sender_is_dropped() {
     drop(latest);
 }
 
-#[tokio::test]
+#[tokio::test(start_paused = true)]
 async fn last_disconnect_stops_the_shared_prober() {
     let entry = machine("edge", ENTRY_ID, 1);
     let peer = machine("peer", PEER_ID, 2);
