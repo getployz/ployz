@@ -273,6 +273,7 @@ mod tests {
                 format!("192.0.2.2:{MACHINE_API_PORT}").parse().unwrap(),
             )],
             runtime: Default::default(),
+            join_approval: None,
             build_concurrency: None,
         }
     }

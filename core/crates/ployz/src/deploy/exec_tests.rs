@@ -1666,6 +1666,7 @@ fn machine_record(id: MachineId) -> ployz_core::Machine {
         accepts_ingress: true,
         advertised_endpoints: Vec::new(),
         runtime: Default::default(),
+        join_approval: None,
         build_concurrency: None,
     }
 }

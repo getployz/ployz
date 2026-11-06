@@ -704,6 +704,7 @@ fn each_copy_gets_its_own_container_bound_approval() {
             accepts_builds: true,
             accepts_services: true,
             accepts_ingress: true,
+            join_approval: None,
             build_concurrency: None,
             runtime: ployz_core::MachineRuntime {
                 sealing: Some(Sealing::Held {

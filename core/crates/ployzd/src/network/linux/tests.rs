@@ -121,6 +121,7 @@ fn machine(seed: u8, public_key: WireGuardPublicKey) -> Machine {
             WIREGUARD_PORT,
         )))],
         runtime: Default::default(),
+        join_approval: None,
         build_concurrency: None,
     }
 }

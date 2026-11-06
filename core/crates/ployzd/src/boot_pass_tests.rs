@@ -43,6 +43,7 @@ fn machine(name: &str, octet: u8) -> Machine {
             format!("192.0.2.{octet}:51820").parse().unwrap(),
         )],
         runtime: MachineRuntime::default(),
+        join_approval: None,
         build_concurrency: None,
     }
 }

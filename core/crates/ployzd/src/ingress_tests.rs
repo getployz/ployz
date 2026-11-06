@@ -48,6 +48,7 @@ pub(crate) fn renderer_projection() -> IngressProjection {
             public_ip: None,
             advertised_endpoints: Vec::new(),
             runtime: Default::default(),
+            join_approval: None,
             build_concurrency: None,
         },
         sites: vec![

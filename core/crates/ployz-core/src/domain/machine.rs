@@ -72,6 +72,9 @@ impl Default for InitialMachinePolicy {
 /// One Machine's durable advertised record.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
 pub struct Machine {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub join_approval: Option<crate::authority::Signed<crate::authority::JoinApproval>>,
     /// Operator classifications used by placement constraints.
     pub labels: BTreeMap<MachineLabelKey, MachineLabelValue>,
     /// Whether to admit new Builds; revocation preserves existing work.
@@ -1013,6 +1016,7 @@ mod placement_tests {
             public_ip: None,
             advertised_endpoints: Vec::new(),
             runtime: Default::default(),
+            join_approval: None,
             build_concurrency: None,
         }
     }

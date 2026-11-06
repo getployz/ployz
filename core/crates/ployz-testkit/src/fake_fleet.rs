@@ -1105,6 +1105,7 @@ impl MachineState {
                 daemon_version: self.version.to_string(),
                 ..MachineRuntime::default()
             },
+            join_approval: None,
             build_concurrency: None,
         }
     }
