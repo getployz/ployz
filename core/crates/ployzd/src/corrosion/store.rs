@@ -691,6 +691,22 @@ impl ReplicatedStore {
         snapshot
             .observations
             .retain(|machine| self.accepts_machine(machine));
+        if let Some(owner) = &self.authority {
+            let record = owner.record();
+            if record.device_enforcement()
+                && snapshot
+                    .observations
+                    .iter()
+                    .any(|machine| !record.pins_machine(machine))
+            {
+                let accepted = snapshot.observations.clone();
+                owner
+                    .mutate(move |store| store.pin_machines(&accepted))
+                    .await
+                    .map_err(std::io::Error::other)?
+                    .map_err(std::io::Error::other)?;
+            }
+        }
         Ok(snapshot)
     }
 

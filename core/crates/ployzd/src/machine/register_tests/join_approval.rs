@@ -698,3 +698,83 @@ async fn pending_join_flood_is_bounded_and_keeps_existing_proposals() {
     drop(entry);
     std::fs::remove_dir_all(directory).unwrap();
 }
+
+#[tokio::test]
+async fn removing_the_signing_device_keeps_an_admitted_machine_peered() {
+    let (entry, _, _, directory, server) = participating().await;
+    let signer = Signer::from_seed(&[1; 32]);
+    enforce(&entry, &signer).await;
+    let join_dir = tempfile::tempdir().unwrap();
+    let joiner = LocalMachineStore::open(join_dir.path()).unwrap();
+    let (request, _) = approved_registration(&entry, &joiner, &signer).await;
+    let members = || async {
+        entry
+            .replicated()
+            .unwrap()
+            .machines()
+            .await
+            .unwrap()
+            .observations
+            .iter()
+            .any(|row| row.id == request.machine_id)
+    };
+    assert!(members().await);
+    entry
+        .set_device(SetDeviceRequest::Approve {
+            key: DeviceKey::from_bytes([7; 32]),
+        })
+        .await
+        .unwrap();
+    entry
+        .set_device(SetDeviceRequest::Remove {
+            code: DeviceKey::from(signer.public()).code(),
+        })
+        .await
+        .unwrap();
+    assert!(
+        !entry
+            .record()
+            .devices()
+            .any(|key| key == signer.public().into())
+    );
+    assert!(members().await);
+    server.abort();
+    drop(entry);
+    std::fs::remove_dir_all(directory).unwrap();
+}
+
+#[tokio::test]
+async fn share_refuses_an_approval_for_another_allocation_of_the_recipient() {
+    let (entry, _, _, directory, server) = participating().await;
+    let existing = entry
+        .register(request("existing", WireGuardPublicKey([4; 32])))
+        .await
+        .unwrap()
+        .assigned_machine;
+    let signer = Signer::from_seed(&[1; 32]);
+    enforce(&entry, &signer).await;
+    let mut other = request("other", WireGuardPublicKey([5; 32]));
+    other.assigned_subnet = Some("10.210.5.0/24".parse().unwrap());
+    assert!(entry.register(other).await.is_err());
+    let mut body = entry.pending_joins().unwrap().joins.pop().unwrap();
+    body.signer = signer.public().into();
+    body.sealing_recipient = existing.public_key;
+    body.machine = (&existing).into();
+    body.machine.subnet = "10.210.99.0/24".parse().unwrap();
+    let share = |body: &ployz_core::authority::JoinApproval| ShareSealingKeyRequest {
+        join_approval: Some(Signed::sign(body, &signer).unwrap()),
+        machine: existing.id,
+        public_key: existing.public_key,
+    };
+    assert!(matches!(
+        entry.share_sealing_key(share(&body)).await,
+        Err(LocalMachineError::JoinRefused(
+            AuthorityRefusal::Mismatch { .. }
+        ))
+    ));
+    body.machine = (&existing).into();
+    assert!(entry.share_sealing_key(share(&body)).await.is_ok());
+    server.abort();
+    drop(entry);
+    std::fs::remove_dir_all(directory).unwrap();
+}

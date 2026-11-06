@@ -205,6 +205,15 @@ pub struct LocalMachineRecord {
     enrollment: Option<ployz_core::EnrollRequest>,
 }
 
+fn same_allocation(
+    allocation: &ployz_core::authority::join::JoinAllocation,
+    machine: &Machine,
+) -> bool {
+    allocation.id == machine.id
+        && allocation.public_key == machine.public_key
+        && allocation.subnet == machine.subnet
+}
+
 /// Public keys held by one Management Client slot. No secret is persisted.
 ///
 /// Unlike the rest of the record this stays strict: an unrecognized field here
@@ -303,20 +312,7 @@ impl LocalMachineRecord {
 
     /// Whether this Machine accepts the row as a Cluster member using its own authority.
     pub(crate) fn accepts_machine(&self, machine: &Machine) -> bool {
-        if !self.device_enforcement {
-            return true;
-        }
-        let matches = |allocation: &ployz_core::authority::join::JoinAllocation| {
-            allocation.id == machine.id
-                && allocation.public_key == machine.public_key
-                && allocation.subnet == machine.subnet
-        };
-        if self.machine().is_some_and(|own| {
-            own.id == machine.id
-                && own.public_key == machine.public_key
-                && own.subnet == machine.subnet
-        }) || self.trusted_machines.iter().any(matches)
-        {
+        if !self.device_enforcement || self.pins_machine(machine) {
             return true;
         }
         let Some(approval) = &machine.join_approval else {
@@ -329,10 +325,19 @@ impl LocalMachineRecord {
             return false;
         };
 
-        matches(&body.machine)
+        same_allocation(&body.machine, machine)
             && body.sealing_recipient == machine.public_key
             && signers.contains(&body.signer.into())
             && self.membership_cluster == Some(body.cluster)
+    }
+
+    pub(crate) fn pins_machine(&self, machine: &Machine) -> bool {
+        self.machine()
+            .is_some_and(|own| same_allocation(&own.into(), machine))
+            || self
+                .trusted_machines
+                .iter()
+                .any(|allocation| same_allocation(allocation, machine))
     }
 
     /// Whether `remote` is a key some Clear left in a tombstone.

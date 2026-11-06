@@ -203,13 +203,28 @@ async fn approve_waiting_join(leaf: &ArgMatches, code: &str) -> Result<(), Error
 }
 
 fn show_join(body: &ployz_core::authority::JoinApproval) {
-    ui::note(format_args!(
-        "Approving Server {} on {} with endpoints {:?} (join code {}).",
+    ui::note(join_summary(body));
+}
+
+fn join_summary(body: &ployz_core::authority::JoinApproval) -> String {
+    let endpoints = body
+        .machine
+        .advertised_endpoints
+        .iter()
+        .map(|endpoint| endpoint.0.to_string())
+        .collect::<Vec<_>>()
+        .join(", ");
+    format!(
+        "Approving Server {} on {} with endpoints {} (join code {}).",
         body.machine.name,
         body.machine.subnet,
-        body.machine.advertised_endpoints,
+        if endpoints.is_empty() {
+            "none"
+        } else {
+            &endpoints
+        },
         body.code()
-    ));
+    )
 }
 
 pub(super) async fn sign_waiting_join(

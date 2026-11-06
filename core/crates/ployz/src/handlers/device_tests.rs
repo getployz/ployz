@@ -444,3 +444,34 @@ async fn full_mutations_report_servers_without_a_direct_connection_as_omissions(
     assert_eq!(gaps.outcome().unwrap_err().printed_exit(), Some(3));
     server.abort();
 }
+
+#[test]
+fn join_summary_names_the_server_subnet_and_endpoints_before_signing() {
+    use ployz_core::{
+        AdvertisedEndpoint, SealingPublicKey,
+        authority::{JoinApproval, Timestamp, join::JoinAllocation},
+    };
+    let mut joiner = machine('a', "joiner");
+    joiner.subnet = "10.210.7.0/24".parse().unwrap();
+    joiner.advertised_endpoints = vec![AdvertisedEndpoint("[2001:db8::7]:51820".parse().unwrap())];
+    let issued_at = Timestamp::now();
+    let body = JoinApproval {
+        cluster: SealingPublicKey::from_bytes([2; 32]),
+        machine: JoinAllocation::from(&joiner),
+        network: "10.210.0.0/16".parse().unwrap(),
+        sealing_recipient: joiner.public_key,
+        devices: Vec::new(),
+        bootstrap: Vec::new(),
+        admitting_machines: vec![id('b')],
+        issued_at,
+        expires_at: issued_at.plus(900_000),
+        signer: key(1),
+    };
+    assert_eq!(
+        join_summary(&body),
+        format!(
+            "Approving Server joiner on 10.210.7.0/24 with endpoints [2001:db8::7]:51820 (join code {}).",
+            body.code()
+        )
+    );
+}

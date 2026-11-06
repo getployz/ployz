@@ -241,7 +241,8 @@ ployz device rm mmg42klgyq
 ```
 
 `device ls` shows each device and the servers missing it. `device rm` takes it off every server
-that answers.
+that answers. A server that is down or has no direct connection appears as an omission and the
+command exits 3.
 
 ### Require a device's signature for restarts and joins
 
@@ -271,6 +272,8 @@ Enforcement also requires an approved Device to authorize a new server's identit
 allocation, and initial Devices. See [Approve a join](add-a-server.md#approve-a-join-when-device-enforcement-is-on).
 A joining server inherits enforcement. Approvals name one existing server that may admit the
 join, so another Cluster cannot use the approval even if it shares a Sealing public key.
+Each server keeps an approved server as a member once it has seen it. Removing the device that
+signed the join does not disconnect that server. Use `ployz server rm` to remove it.
 
 With enforcement on, mesh connections have Operator access. Full actions such as approving Devices, changing
 enforcement, and `exec` use a direct authenticated connection to each target server. A context

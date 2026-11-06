@@ -823,6 +823,28 @@ impl LocalMachineStore {
         Ok(())
     }
 
+    /// Pin approved members so removing the Device that signed them keeps them peered.
+    ///
+    /// # Errors
+    /// Returns a storage error if the updated record cannot be saved atomically.
+    pub(crate) fn pin_machines(&mut self, machines: &[Machine]) -> Result<(), StoreError> {
+        let mut updated = self.record.clone();
+        updated.trusted_machines.extend(
+            machines
+                .iter()
+                .filter(|machine| {
+                    self.record.accepts_machine(machine) && !self.record.pins_machine(machine)
+                })
+                .map(Into::into),
+        );
+        if updated.trusted_machines.len() == self.record.trusted_machines.len() {
+            return Ok(());
+        }
+        save(&self.data_dir, &updated)?;
+        self.record = updated;
+        Ok(())
+    }
+
     /// Turn Device enforcement on or off in one write. An unchanged setting skips the write.
     ///
     /// # Errors
