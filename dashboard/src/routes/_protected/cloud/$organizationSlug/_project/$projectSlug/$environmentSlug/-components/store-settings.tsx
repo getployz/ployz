@@ -15,6 +15,7 @@ import type { SetupCommand as DraftCommand } from "#/modules/config-store/branch
 import { environmentsQuery, servicesQuery, useStoreView } from "#/modules/config-store/store-view.queries";
 import { useSavedSetupCommands } from "./new-branch/SetupCommandsField";
 import { useStoreWriter } from "#/modules/config-store/store-write";
+import { rememberProjectRename } from "#/modules/config-store/renamed-projects";
 import { dnsLabelError } from "#/modules/config-store/store-services";
 import { useRoleGate } from "#/modules/organization/members.queries";
 import { StoreTeardownSection } from "#/routes/_protected/cloud/$organizationSlug/-components/store-teardown-section";
@@ -225,9 +226,11 @@ export function StoreProjectSettings({ organizationSlug, projectSlug, environmen
       <SettingsSection id="project" title="Project">
         <ProjectNameRow project={projectSlug} onRename={(name) => {
           // Awaited: the page opens the renamed Project once the Store has it; a refusal toasts and stays here.
-          // Replaced, not pushed: the old name no longer opens anything, so Back must not return to it.
-          return writer.commit({ command: "rename_project", project: projectSlug, name }).then(() =>
-            navigate({ to: ".", params: (params) => ({ ...params, projectSlug: name }), search: (prev) => prev, replace: true }), () => undefined);
+          // Replaced, not pushed: this entry's old name opens nothing. Earlier entries follow the rename through the Project route.
+          return writer.commit({ command: "rename_project", project: projectSlug, name }).then(() => {
+            rememberProjectRename(organizationSlug, projectSlug, name);
+            return navigate({ to: ".", params: (params) => ({ ...params, projectSlug: name }), search: (prev) => prev, replace: true });
+          }, () => undefined);
         }} />
         <SettingsRow
           label="Default environment"
