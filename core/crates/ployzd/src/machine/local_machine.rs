@@ -172,7 +172,7 @@ pub enum Error {
     #[error("push target {0}")]
     InvalidPushTarget(&'static str),
     /// Device enforcement refused an Operator's restart step.
-    #[error("{RESTART_APPROVAL_CAPABILITY} needs a Device-signed restart approval: {0}")]
+    #[error("{RESTART_APPROVAL_CAPABILITY} needs a Device-signed restart approval")]
     RestartRefused(#[from] ployz_core::authority::AuthorityRefusal),
     #[error("could not keep the record of restart approvals")]
     ApprovalRecord(#[source] std::io::Error),

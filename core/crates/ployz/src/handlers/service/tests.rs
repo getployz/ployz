@@ -598,3 +598,54 @@ fn a_stop_signal_docker_would_refuse_is_refused_before_any_server() {
         }
     }
 }
+
+#[test]
+fn each_copy_gets_its_own_container_bound_approval() {
+    use std::os::unix::fs::PermissionsExt;
+    let dir = tempfile::tempdir().unwrap();
+    let key = dir.path().join("device.key");
+    std::fs::write(&key, [7; 32]).unwrap();
+    std::fs::set_permissions(&key, std::fs::Permissions::from_mode(0o600)).unwrap();
+    let one = observation('a', 'b', "web", ContainerRuntimeObservation::Created);
+    let two = observation('c', 'b', "web", ContainerRuntimeObservation::Created);
+    let service = ployz_core::derive_services([one.clone(), two.clone()]);
+    let machine = ployz_core::MachineObservation::new(
+        ployz_core::Machine {
+            id: one.machine_id,
+            name: MachineName::parse("one").unwrap(),
+            subnet: "10.210.1.0/24".parse().unwrap(),
+            public_key: ployz_core::WireGuardPublicKey([1; 32]),
+            public_ip: None,
+            advertised_endpoints: vec![],
+            labels: Default::default(),
+            accepts_builds: true,
+            accepts_services: true,
+            accepts_ingress: true,
+            build_concurrency: None,
+            runtime: ployz_core::MachineRuntime {
+                sealing: Some(Sealing::Held {
+                    public_key: ployz_core::SealingPublicKey::from_bytes([9; 32]),
+                }),
+                ..Default::default()
+            },
+        },
+        ployz_core::MembershipObservation::Up,
+    );
+    let approvals = restart_approvals(
+        &key,
+        &[machine],
+        &service.iter().collect::<Vec<_>>(),
+        ContainerAction::Restart,
+    )
+    .unwrap();
+    assert_eq!(approvals.len(), 2);
+    let first = approvals.get(&one.container_id).unwrap().open().unwrap();
+    let second = approvals.get(&two.container_id).unwrap().open().unwrap();
+    assert_eq!(first.container, one.container_id);
+    assert_eq!(second.container, two.container_id);
+    assert_ne!(first.operation, second.operation);
+    assert_eq!(
+        first.expires_at.as_millis() - first.issued_at.as_millis(),
+        15 * 60 * 1000
+    );
+}

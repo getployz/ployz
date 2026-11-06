@@ -60,8 +60,8 @@ impl LocalMachine {
 
     /// Under Device enforcement, let an Operator caller's restart step through only with
     /// an approved Device's approval of exactly this restart, and record the step so the
-    /// same approval never runs it again. A want that is no restart step, a Machine not
-    /// enforcing, and a Container that is not there pass untouched.
+    /// same approval never runs it again. New-creation requests need deploy authorization
+    /// and are refused, including adoption. A Machine not enforcing passes untouched.
     ///
     /// # Errors
     /// Returns [`Error::RestartRefused`] naming what the approval lacks,
@@ -73,13 +73,16 @@ impl LocalMachine {
         want: &ContainerWant,
         approval: Option<&Signed<RestartApproval>>,
     ) -> Result<(), Error> {
-        let Some((step, locator)) = RestartStep::of(want) else {
-            return Ok(());
-        };
         let record = self.record();
         if !record.device_enforcement() {
             return Ok(());
         }
+        let Some((step, locator)) = RestartStep::of(want) else {
+            return Err(AuthorityRefusal::Mismatch {
+                field: "a workflow",
+            }
+            .into());
+        };
         let approval = approval.ok_or(AuthorityRefusal::Unsigned {
             purpose: Purpose::Workflow,
         })?;
@@ -102,6 +105,7 @@ impl LocalMachine {
                 devices: &devices,
                 namespace: &identity.namespace,
                 service: &identity.name,
+                container: &observed.container_id,
                 now,
             },
         )?;
@@ -203,6 +207,8 @@ mod tests {
             namespace: ployz_core::Namespace::parse("app").unwrap(),
             service: ployz_core::ServiceName::parse("api").unwrap(),
             machines: vec![],
+            container: container('a'),
+            issued_at: at(0),
             expires_at: Timestamp::from_millis(expires_at).unwrap(),
             signer: DeviceKey::from_bytes([2; 32]),
         }

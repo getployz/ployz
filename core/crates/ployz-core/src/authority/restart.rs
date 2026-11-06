@@ -10,8 +10,8 @@ use super::{
     refusal::AuthorityRefusal,
 };
 use crate::{
-    ContainerLocator, ContainerWant, DeviceKey, MachineId, Namespace, OperationId, RunTarget,
-    SealingPublicKey, ServiceName,
+    ContainerId, ContainerLocator, ContainerWant, DeviceKey, MachineId, Namespace, OperationId,
+    RunTarget, SealingPublicKey, ServiceName,
 };
 
 /// The workflow an approval is for. One approval never serves another kind.
@@ -21,9 +21,8 @@ pub enum WorkflowKind {
     Restart,
 }
 
-/// What a Device approved: restarting every copy of one Service on these Machines, in
-/// this Cluster, under one operation, until the approval expires. A Machine acts on
-/// it only for a Container of that Service and only while it names the Machine.
+/// A Device approves one Container's lifecycle steps in one Cluster and Service,
+/// under one operation with a bounded lifetime.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
 #[serde(deny_unknown_fields)]
 pub struct RestartApproval {
@@ -34,10 +33,34 @@ pub struct RestartApproval {
     pub namespace: Namespace,
     pub service: ServiceName,
     /// Sorted and distinct.
+    #[serde(deserialize_with = "ordered_machines")]
     pub machines: Vec<MachineId>,
+    pub container: ContainerId,
+    pub issued_at: Timestamp,
     pub expires_at: Timestamp,
     /// The Device that signed, which the signature must come from.
     pub signer: DeviceKey,
+}
+
+/// Maximum signed lifetime, excluding clock skew.
+pub const MAX_LIFETIME_MILLIS: u64 = 15 * 60 * 1000;
+/// Clock tolerance in milliseconds on either side of the signed interval.
+pub const CLOCK_SKEW_MILLIS: u64 = 2 * 60 * 1000;
+
+fn ordered_machines<'de, D: serde::Deserializer<'de>>(
+    deserializer: D,
+) -> Result<Vec<MachineId>, D::Error> {
+    let machines = Vec::<MachineId>::deserialize(deserializer)?;
+    if machines
+        .iter()
+        .zip(machines.iter().skip(1))
+        .any(|(left, right)| left >= right)
+    {
+        return Err(serde::de::Error::custom(
+            "Machines must be sorted and distinct",
+        ));
+    }
+    Ok(machines)
 }
 
 impl Statement for RestartApproval {
@@ -51,18 +74,22 @@ impl Statement for RestartApproval {
 #[serde(rename_all = "snake_case")]
 pub enum RestartStep {
     Hold,
+    Out,
     Stop,
     Start,
+    Remove,
 }
 
 impl RestartStep {
-    /// The step `want` is when it acts on an existing Container the way a restart does.
-    /// Creating, removing and routing out are other workflows.
+    /// The lifecycle step on an existing Container. `None` requires deploy authorization,
+    /// even when a new-creation request would adopt an existing Container.
     #[must_use]
     pub fn of(want: &ContainerWant) -> Option<(Self, &ContainerLocator)> {
         match want {
             ContainerWant::Held { container, .. } => Some((Self::Hold, container)),
+            ContainerWant::Out { container, .. } => Some((Self::Out, container)),
             ContainerWant::Stopped { container, .. } => Some((Self::Stop, container)),
+            ContainerWant::Gone { container, .. } => Some((Self::Remove, container)),
             ContainerWant::Running {
                 container: RunTarget::Existing(container),
                 ..
@@ -70,9 +97,7 @@ impl RestartStep {
             ContainerWant::Running {
                 container: RunTarget::New(_),
                 ..
-            }
-            | ContainerWant::Gone { .. }
-            | ContainerWant::Out { .. } => None,
+            } => None,
         }
     }
 }
@@ -87,6 +112,7 @@ pub struct RestartFacts<'a> {
     /// The Service the requested Container belongs to.
     pub namespace: &'a Namespace,
     pub service: &'a ServiceName,
+    pub container: &'a ContainerId,
     pub now: Timestamp,
 }
 
@@ -113,14 +139,36 @@ pub fn verify(
         ("an Environment", &body.namespace == facts.namespace),
         ("a Service", &body.service == facts.service),
         ("Machines", body.machines.contains(facts.machine)),
+        ("a Container", &body.container == facts.container),
     ];
     if let Some((field, _)) = checks.iter().find(|(_, holds)| !holds) {
         return Err(AuthorityRefusal::Mismatch { field });
     }
-    if facts.now > body.expires_at {
+    verify_time(&body, facts.now)?;
+    Ok(body)
+}
+
+/// Check the signed lifetime and the Machine's clock, including its persisted time floor.
+///
+/// # Errors
+/// Returns a mismatch for an invalid lifetime or future issue time, or an expired refusal.
+pub fn verify_time(body: &RestartApproval, now: Timestamp) -> Result<(), AuthorityRefusal> {
+    if body.expires_at < body.issued_at
+        || body.expires_at.as_millis() - body.issued_at.as_millis() > MAX_LIFETIME_MILLIS
+    {
+        return Err(AuthorityRefusal::Mismatch {
+            field: "a lifetime",
+        });
+    }
+    if body.issued_at > now.plus(CLOCK_SKEW_MILLIS) {
+        return Err(AuthorityRefusal::Mismatch {
+            field: "an issue time",
+        });
+    }
+    if now > body.expires_at.plus(CLOCK_SKEW_MILLIS) {
         return Err(AuthorityRefusal::Expired);
     }
-    Ok(body)
+    Ok(())
 }
 
 #[cfg(test)]
@@ -147,6 +195,8 @@ mod tests {
                 MachineId::parse("1111111111111111111111111111111a").unwrap(),
                 MachineId::parse("2222222222222222222222222222222b").unwrap(),
             ],
+            container: ContainerId::parse("a".repeat(64)).unwrap(),
+            issued_at: Timestamp::from_millis(100_000).unwrap(),
             expires_at: Timestamp::from_millis(1_000_000).unwrap(),
             signer: device(signer),
         }
@@ -157,6 +207,7 @@ mod tests {
         devices: Vec<DeviceKey>,
         namespace: Namespace,
         service: ServiceName,
+        container: ContainerId,
     }
 
     impl Machine {
@@ -167,6 +218,7 @@ mod tests {
                 devices: &self.devices,
                 namespace: &self.namespace,
                 service: &self.service,
+                container: &self.container,
                 now: Timestamp::from_millis(999_999).unwrap(),
             }
         }
@@ -178,6 +230,7 @@ mod tests {
             devices: approved.iter().map(|signer| device(signer)).collect(),
             namespace: Namespace::parse("app").unwrap(),
             service: ServiceName::parse("api").unwrap(),
+            container: ContainerId::parse("a".repeat(64)).unwrap(),
         }
     }
 
@@ -205,7 +258,7 @@ mod tests {
         let [signature] = signed.signatures.as_slice() else {
             panic!("one signature, found {:?}", signed.signatures);
         };
-        assert_eq!(signature.signature.len(), 128);
+        assert_eq!(signature.signature.len(), 64);
         let json = serde_json::to_string(&signed).unwrap();
         assert_eq!(
             serde_json::from_str::<Signed<RestartApproval>>(&json).unwrap(),
@@ -322,11 +375,53 @@ mod tests {
             verify(&signed, &facts).is_ok(),
             "the last millisecond still counts"
         );
-        facts.now = Timestamp::from_millis(1_000_001).unwrap();
+        facts.now = Timestamp::from_millis(1_000_001 + CLOCK_SKEW_MILLIS).unwrap();
         assert_eq!(
             verify(&signed, &facts).unwrap_err(),
             AuthorityRefusal::Expired
         );
+    }
+
+    #[test]
+    fn lifetime_and_clock_skew_are_bounded() {
+        let signer = signer(1);
+        let mut body = approval(&signer);
+        body.issued_at = Timestamp::from_millis(100_000).unwrap();
+        body.expires_at = body.issued_at.plus(MAX_LIFETIME_MILLIS);
+        assert!(verify_time(&body, body.expires_at.plus(CLOCK_SKEW_MILLIS)).is_ok());
+        assert_eq!(
+            verify_time(&body, body.expires_at.plus(CLOCK_SKEW_MILLIS + 1)),
+            Err(AuthorityRefusal::Expired)
+        );
+        assert!(verify_time(&body, Timestamp::from_millis(0).unwrap()).is_ok());
+        body.issued_at = Timestamp::from_millis(CLOCK_SKEW_MILLIS + 1).unwrap();
+        assert!(matches!(
+            verify_time(&body, Timestamp::from_millis(0).unwrap()),
+            Err(AuthorityRefusal::Mismatch {
+                field: "an issue time"
+            })
+        ));
+        body.issued_at = Timestamp::from_millis(0).unwrap();
+        body.expires_at = body.issued_at.plus(MAX_LIFETIME_MILLIS + 1);
+        assert!(matches!(
+            verify_time(&body, body.issued_at),
+            Err(AuthorityRefusal::Mismatch {
+                field: "a lifetime"
+            })
+        ));
+    }
+
+    #[test]
+    fn unsorted_or_repeated_machines_and_malformed_signatures_do_not_parse() {
+        let signer = signer(1);
+        let mut body = approval(&signer);
+        body.machines.reverse();
+        assert!(Signed::sign(&body, &signer).unwrap().open().is_err());
+        let machine = *body.machines.first().unwrap();
+        body.machines = vec![machine, machine];
+        assert!(Signed::sign(&body, &signer).unwrap().open().is_err());
+        let envelope = serde_json::json!({ "body":"{}", "signatures":[{ "key": signer.public(), "signature":"00" }] });
+        assert!(serde_json::from_value::<Signed<RestartApproval>>(envelope).is_err());
     }
 
     #[test]
@@ -383,7 +478,7 @@ mod tests {
             RestartStep::of(&started),
             Some((RestartStep::Start, &locator))
         );
-        assert_eq!(RestartStep::of(&out), None);
+        assert_eq!(RestartStep::of(&out), Some((RestartStep::Out, &locator)));
         assert!(RestartStep::Hold < RestartStep::Stop && RestartStep::Stop < RestartStep::Start);
     }
 }

@@ -160,25 +160,41 @@ impl fmt::Debug for Signer {
 #[serde(deny_unknown_fields)]
 pub struct KeySignature {
     pub key: SigningPublicKey,
-    pub signature: String,
+    #[serde(serialize_with = "signature_hex", deserialize_with = "signature_bytes")]
+    #[ts(type = "string")]
+    pub signature: [u8; 64],
+}
+
+fn signature_hex<S: serde::Serializer>(
+    signature: &[u8; 64],
+    serializer: S,
+) -> Result<S::Ok, S::Error> {
+    use fmt::Write as _;
+    let mut hex = String::with_capacity(128);
+    for byte in signature {
+        write!(hex, "{byte:02x}").expect("writing to a String cannot fail");
+    }
+    serializer.serialize_str(&hex)
+}
+
+fn signature_bytes<'de, D: serde::Deserializer<'de>>(
+    deserializer: D,
+) -> Result<[u8; 64], D::Error> {
+    let value = String::deserialize(deserializer)?;
+    hex_bytes(&value)
+        .ok_or_else(|| serde::de::Error::custom("signature must be 128 lowercase hex digits"))
 }
 
 impl KeySignature {
     fn new(signer: &Signer, input: &[u8]) -> Self {
-        let mut hex = String::with_capacity(128);
-        for byte in signer.0.sign(input).to_bytes() {
-            use fmt::Write as _;
-            write!(hex, "{byte:02x}").expect("writing to a String cannot fail");
-        }
         Self {
             key: signer.public(),
-            signature: hex,
+            signature: signer.0.sign(input).to_bytes(),
         }
     }
 
     fn verifies(&self, input: &[u8]) -> bool {
-        hex_bytes::<64>(&self.signature)
-            .is_some_and(|signature| self.key.verifies(input, &signature))
+        self.key.verifies(input, &self.signature)
     }
 }
 

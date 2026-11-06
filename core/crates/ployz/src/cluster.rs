@@ -138,8 +138,6 @@ impl Client {
         }
     }
 
-    /// This client with `approval` on every restart step it sends, for one Service's
-    /// restart, or with none.
     #[must_use]
     pub(crate) fn with_restart_approval(
         mut self,
@@ -1549,6 +1547,10 @@ impl Client {
         action: ContainerAction,
         signal: Option<String>,
         grace_period_seconds: Option<u16>,
+        approvals: &HashMap<
+            ContainerId,
+            ployz_core::authority::Signed<ployz_core::authority::RestartApproval>,
+        >,
         cancellation: &CancellationToken,
     ) -> PartialResult<ContainerId, ContainerOperationFailure> {
         let mut tasks = JoinSet::new();
@@ -1564,7 +1566,8 @@ impl Client {
             let machine_id = observation.machine_id;
             let container_id = observation.container_id;
             let handle = tasks.spawn(change_on_machine(
-                self.clone(),
+                self.clone()
+                    .with_restart_approval(approvals.get(&container_id).cloned()),
                 machine_id,
                 container_id,
                 action,

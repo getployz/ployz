@@ -310,8 +310,8 @@ hex_id_newtype!(
     "32 lowercase hexadecimal characters"
 );
 hex_id_newtype!(
-    /// One workflow its signer minted, such as one `ployz service restart` run. Every
-    /// step of it carries the same ID, so a Machine can tell a retry from a replay.
+    /// One approved operation its signer minted. A Machine consumes each step once,
+    /// so a retry after consumption needs a fresh approval.
     OperationId,
     "operation ID",
     32,

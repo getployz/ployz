@@ -3053,7 +3053,7 @@ mod ensure_container {
         }
 
         impl Enforced {
-            fn approval(&self) -> RestartApproval {
+            fn approval(&self, container: &ContainerId) -> RestartApproval {
                 RestartApproval {
                     cluster: self.cluster,
                     operation: OperationId::random(),
@@ -3061,6 +3061,8 @@ mod ensure_container {
                     namespace: Namespace::parse("app").unwrap(),
                     service: ServiceName::parse("api").unwrap(),
                     machines: vec![self.service.local.record().id()],
+                    container: *container,
+                    issued_at: Timestamp::now(),
                     expires_at: Timestamp::now().plus(60_000),
                     signer: self.signer.public().into(),
                 }
@@ -3127,7 +3129,12 @@ mod ensure_container {
                 "{}",
                 status.message()
             );
-            assert!(status.message().contains(reason), "{}", status.message());
+            let shown = format!(
+                "{} {}",
+                status.message(),
+                String::from_utf8_lossy(status.details())
+            );
+            assert!(shown.contains(reason), "{shown}");
             assert_eq!(
                 status_details(status.details()).unwrap()["capability"],
                 json!(RESTART_APPROVAL_CAPABILITY)
@@ -3155,13 +3162,94 @@ mod ensure_container {
         }
 
         #[tokio::test]
+        async fn an_operator_cannot_route_out_then_remove_a_serving_container() {
+            let fixture = enforced("ployzd-enforce-out-gone").await;
+            let service = &fixture.service;
+            let created = ensure(service, run_new("k1", spec("example.test/api:1"))).await;
+            let id = present(&created).container_id;
+            fixture
+                .runtime
+                .rotation_turn(&id)
+                .await
+                .unwrap()
+                .write(&ployz_core::CopyRotation::In)
+                .await
+                .unwrap();
+            let seen = requests(&fixture.fake).len();
+            for want in [
+                json!({"state":"out", "container":{"id":id}, "allow_empty":true, "expect":null}),
+                json!({"state":"gone", "container":{"id":id}, "drain":0}),
+            ] {
+                refused(
+                    operator_ensure(service, want, None).await,
+                    "carries no signature",
+                );
+            }
+            let observed = fixture
+                .runtime
+                .inspect_managed(&id, &service.local.record().id())
+                .await
+                .unwrap();
+            assert_eq!(observed.rotation(), &ployz_core::CopyRotation::In);
+            assert!(matches!(
+                observed.runtime,
+                ContainerRuntimeObservation::Running { .. }
+            ));
+            assert_eq!(
+                ends_with(&requests_since(&fixture.fake, seen), Method::POST, "/stop").count(),
+                0
+            );
+            assert_eq!(
+                requests_since(&fixture.fake, seen)
+                    .iter()
+                    .filter(|(method, _)| *method == Method::DELETE)
+                    .count(),
+                0
+            );
+            std::fs::remove_dir_all(fixture.data_dir).unwrap();
+        }
+
+        #[tokio::test]
+        async fn an_operator_cannot_adopt_an_exited_container_with_a_new_creation() {
+            let fixture = enforced("ployzd-enforce-adopt").await;
+            let service = &fixture.service;
+            let new = run_new("k1", spec("example.test/api:1"));
+            let id = present(&ensure(service, new.clone()).await).container_id;
+            ensure(service, json!({"want": stopped(&id)})).await;
+            let seen = requests(&fixture.fake).len();
+            refused(
+                operator_ensure(service, new["want"].clone(), None).await,
+                "names a workflow",
+            );
+            let signed = fixture.signed(&fixture.approval(&id));
+            refused(
+                operator_ensure(service, new["want"].clone(), Some(&signed)).await,
+                "names a workflow",
+            );
+            let observed = fixture
+                .runtime
+                .inspect_managed(&id, &service.local.record().id())
+                .await
+                .unwrap();
+            assert!(matches!(
+                observed.runtime,
+                ContainerRuntimeObservation::Exited { .. }
+            ));
+            assert_eq!(
+                ends_with(&requests_since(&fixture.fake, seen), Method::POST, "/start").count(),
+                0
+            );
+            std::fs::remove_dir_all(fixture.data_dir).unwrap();
+        }
+
+        #[tokio::test]
         async fn an_operator_restart_passes_only_with_an_approved_devices_approval_of_it() {
             let fixture = enforced("ployzd-enforce-on").await;
             let service = &fixture.service;
             let id = present(&ensure(service, run_new("k1", spec("example.test/api:1"))).await)
                 .container_id;
             let seen = requests(&fixture.fake).len();
-            let good = fixture.approval();
+            let good = fixture.approval(&id);
 
             refused(
                 operator_ensure(service, stopped(&id), None).await,
@@ -3203,6 +3291,7 @@ mod ensure_container {
                 "names Machines",
             );
             let expired = fixture.signed(&RestartApproval {
+                issued_at: Timestamp::from_millis(0).unwrap(),
                 expires_at: Timestamp::from_millis(1).unwrap(),
                 ..good.clone()
             });
@@ -3237,7 +3326,7 @@ mod ensure_container {
             let service = &fixture.service;
             let id = present(&ensure(service, run_new("k1", spec("example.test/api:1"))).await)
                 .container_id;
-            let approval = fixture.signed(&fixture.approval());
+            let approval = fixture.signed(&fixture.approval(&id));
 
             operator_ensure(service, stopped(&id), Some(&approval))
                 .await
@@ -3267,7 +3356,7 @@ mod ensure_container {
                 operator_ensure(&restarted, started(&id), Some(&approval)).await,
                 "already ran this step",
             );
-            let fresh = fixture.signed(&fixture.approval());
+            let fresh = fixture.signed(&fixture.approval(&id));
             let reply = operator_ensure(&restarted, stopped(&id), Some(&fresh))
                 .await
                 .unwrap();
@@ -3275,6 +3364,65 @@ mod ensure_container {
                 present(&reply).runtime,
                 ContainerRuntimeObservation::Exited { .. }
             ));
+            std::fs::remove_dir_all(fixture.data_dir).unwrap();
+        }
+
+        #[tokio::test]
+        async fn a_captured_approval_cannot_stop_another_copy() {
+            let fixture = enforced("ployzd-enforce-bound-copy").await;
+            let service = &fixture.service;
+            let id = present(&ensure(service, run_new("k1", spec("example.test/api:1"))).await)
+                .container_id;
+            let other = present(&ensure(service, run_new("k2", spec("example.test/api:1"))).await)
+                .container_id;
+            let signed = fixture.signed(&fixture.approval(&id));
+            refused(
+                operator_ensure(service, stopped(&other), Some(&signed)).await,
+                "names a Container",
+            );
+            let observed = fixture
+                .runtime
+                .inspect_managed(&other, &service.local.record().id())
+                .await
+                .unwrap();
+            assert!(matches!(
+                observed.runtime,
+                ContainerRuntimeObservation::Running { .. }
+            ));
+            operator_ensure(service, stopped(&id), Some(&signed))
+                .await
+                .unwrap();
+            std::fs::remove_dir_all(fixture.data_dir).unwrap();
+        }
+
+        #[tokio::test]
+        async fn an_operator_cannot_change_device_enforcement_on_the_local_machine() {
+            let fixture = enforced("ployzd-enforce-operator-switch").await;
+            fixture
+                .store
+                .mutate(|store| {
+                    store
+                        .stage_management_client(
+                            ployz_core::ManagementClientLabel::parse("cloud").unwrap(),
+                            [19; 32],
+                        )
+                        .unwrap();
+                    store.activate_management_client([19; 32]).unwrap();
+                })
+                .await
+                .unwrap();
+            let operator = fixture
+                .service
+                .local
+                .clone()
+                .with_management_client([19; 32]);
+            assert!(matches!(
+                operator
+                    .set_device_enforcement(SetDeviceEnforcementRequest { enforced: false })
+                    .await,
+                Err(crate::machine::LocalMachineError::NeedsFullScope)
+            ));
+            assert!(fixture.service.local.record().device_enforcement());
             std::fs::remove_dir_all(fixture.data_dir).unwrap();
         }
 
