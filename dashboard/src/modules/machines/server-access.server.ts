@@ -11,7 +11,7 @@ import { dialCorrelation, dialTimingFields, nativeDialTimingFields, sampleDialTi
 import { lacks } from "#/modules/organization/access.server";
 import { enrollmentAllocation, organizationMachine, serverAccess } from "#/modules/machines/tables";
 import { clusterRead, SESSION_CLOSE_CLUSTER_MS, withClusterBudget } from "#/modules/runtime/organization-runtime.server";
-import { type PloyzSdkError, Ployz, RpcError, rpcErrorMessage, sdkFailureMessage } from "#/modules/runtime/ployz.server";
+import { managementClientCleared, type PloyzSdkError, Ployz, RpcError, rpcErrorMessage, sdkFailureMessage } from "#/modules/runtime/ployz.server";
 import { Database } from "#/server/database.server";
 import { Unauthorized } from "#/server/public-error";
 import { SecretEncryption } from "#/utils/encrypted-secret.server";
@@ -147,21 +147,44 @@ export const provideServerAccess = Effect.fn("ServerAccess.provide")(function* (
   const results = yield* Effect.forEach(loaded.connections, (cloud) => Effect.gen(function* () {
     const machineId = cloud.machine_id;
     if (machineId === undefined) return yield* Effect.die("an Organization connection names its Machine");
-    const stored = held.get(machineId);
-    if (stored != null) {
-      const management = yield* decryptPairingSecret(stored);
-      if (expect === null) return { machine_id: machineId, management, refused: null };
-      // A stored holder is checked with one dial whose expectation refuses only a Server holding another Cluster's key.
-      // Any refusal the Server answers withholds the holder; a Server that doesn't answer keeps it, as before.
-      const checking = (yield* Ployz).connect({ connections: [cloud], timeoutMs: STORED_CHECK_TIMEOUT_MS, expect: { ...expect, allowUnverified: true } }, { closeWithin: clusterRead });
-      const checked = yield* answered(Effect.scoped(checking).pipe(Effect.timeout(STORED_CHECK_TIMEOUT_MS), withClusterBudget(SESSION_CLOSE_CLUSTER_MS)));
-      return { machine_id: machineId, management: checked.refused === null ? management : null, refused: checked.refused };
-    }
     const holder = and(
       eq(serverAccess.organizationId, caller.organization.id),
       eq(serverAccess.credentialId, caller.credential.id),
       eq(serverAccess.machineId, machineId),
     );
+    const stored = held.get(machineId);
+    if (stored != null) {
+      const management = yield* decryptPairingSecret(stored);
+      const ployz = yield* Ployz;
+      // The Cluster check dials on Cloud's own connection, with an expectation that refuses only a Server holding
+      // another Cluster's key. Any refusal the Server answers withholds the holder; a Server that doesn't answer keeps
+      // it, as before.
+      const checkCluster = expect === null
+        ? Effect.succeed({ refused: null })
+        : answered(Effect.scoped(ployz.connect({ connections: [cloud], timeoutMs: STORED_CHECK_TIMEOUT_MS, expect: { ...expect, allowUnverified: true } }, { closeWithin: clusterRead }))
+          .pipe(Effect.timeout(STORED_CHECK_TIMEOUT_MS), withClusterBudget(SESSION_CLOSE_CLUSTER_MS)));
+      // The stored key itself, dialed with no expectation so the dial only negotiates and leaves a pending key pending.
+      // A Server that says this key was cleared, as a Clear that landed after a later Set leaves it, holds nothing for
+      // the row, so the row goes and this call provisions a new holder. Any other answer, or none, keeps the row.
+      const checkHolder = Effect.scoped(ployz.connect({ connections: [{ machine_id: machineId, management }], timeoutMs: STORED_CHECK_TIMEOUT_MS, expect: null }, { closeWithin: clusterRead }))
+        .pipe(
+          Effect.timeout(STORED_CHECK_TIMEOUT_MS),
+          withClusterBudget(SESSION_CLOSE_CLUSTER_MS),
+          Effect.as(false),
+          Effect.catch((error) => Effect.succeed(!Cause.isTimeoutError(error) && managementClientCleared(error))),
+        );
+      const [checked, cleared] = yield* Effect.all([checkCluster, checkHolder], { concurrency: 2 });
+      if (!cleared) return { machine_id: machineId, management: checked.refused === null ? management : null, refused: checked.refused };
+      // Only the row that still stores this key, unrevoked and unheld: a newer key, a revocation or a claim is another
+      // request's, and a revoked row owes its Server a Clear, never a Set.
+      yield* drizzle.delete(serverAccess).where(and(
+        holder,
+        eq(serverAccess.encryptedCapability, stored),
+        isNull(serverAccess.revokedAt),
+        unheld,
+      ));
+      if (checked.refused !== null) return { machine_id: machineId, management: null, refused: checked.refused };
+    }
     // Dial, claim, Set, then in one short transaction store the key and check the credential. A first use that
     // found the row claimed waits for the key the claimant stores, so a second Set never replaces the first's key on
     // the Server. A claimant that lost its claim meanwhile stores nothing and takes what the row says instead.

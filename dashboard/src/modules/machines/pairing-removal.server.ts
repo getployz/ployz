@@ -2,7 +2,7 @@ import "@tanstack/react-start/server-only";
 import { createHash } from "node:crypto";
 import type { MachineId } from "@ployz/sdk";
 import { and, eq, gt, isNull, ne, or, sql } from "drizzle-orm";
-import { Data, Effect, Option, Schema } from "effect";
+import { Data, Effect, Schema } from "effect";
 import { storeSystem } from "#/modules/config-store/config-store.server";
 import { releasingExpectation } from "#/modules/machines/connections.server";
 import { rustMachineIdSchema } from "#/modules/machines/enrollment";
@@ -12,7 +12,7 @@ import {
 } from "#/modules/machines/tables";
 import { cancelOpenServerEnrollments, cancelServerEnrollments, openFounderAttempt } from "#/modules/machines/waiting/enrollment-run.server";
 import { clusterRead, OrganizationRuntime, SESSION_CLOSE_CLUSTER_MS, withClusterBudget } from "#/modules/runtime/organization-runtime.server";
-import { Ployz } from "#/modules/runtime/ployz.server";
+import { managementClientCleared, Ployz } from "#/modules/runtime/ployz.server";
 import { organizationPairing } from "#/modules/runtime/tables";
 import { Database } from "#/server/database.server";
 import { Conflict } from "#/server/public-error";
@@ -362,11 +362,6 @@ const loadCurrentAttempt = Effect.fn("PairingRemoval.loadCurrent")(
   },
 );
 
-const ManagementClientCleared = Schema.Struct({
-  code: Schema.Literal("unauthenticated"),
-  details: Schema.Struct({ management_client: Schema.Literal("cleared") }),
-});
-
 /**
  * Clear one Machine's device holders (`cli-*`), its push target, then its `cloud` Management Client. Only a successful Clear or an
  * authenticated cleared response confirms removal; once `cloud` is gone, Cloud can't reach the device holders. A Machine that
@@ -390,8 +385,7 @@ const removeEndpointPairing = Effect.fn("PairingRemoval.removeEndpoint")(
         return "confirmed" as const;
       }).pipe(Effect.orElseSucceed(() => "answered" as const));
     })).pipe(withClusterBudget(SESSION_CLOSE_CLUSTER_MS), Effect.catch((error) =>
-      error._tag === "PloyzProviderError" && error.operation === "connect"
-        && Option.isSome(Schema.decodeUnknownOption(ManagementClientCleared)(error.cause))
+      managementClientCleared(error)
         ? Effect.succeed("confirmed" as const)
         : Effect.logInfo("Server didn't confirm its removal yet.", { machineId, error }).pipe(Effect.as("silent" as const)),
     ));
