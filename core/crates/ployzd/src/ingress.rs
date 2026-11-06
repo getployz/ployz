@@ -438,6 +438,53 @@ struct CaddyInput {
     caddy: Option<ContainerId>,
 }
 
+impl CaddyInput {
+    /// Whether `other` serves what this does. The trace page's values are left out: a
+    /// Container's start or removal changes them while every route stays, and a reload
+    /// for them alone would clear Caddy's passive health counts, so the page keeps its
+    /// values until a route changes (#2522).
+    fn serves_as(&self, other: &Self) -> bool {
+        let Self { projection, caddy } = self;
+        let IngressProjection { machine, sites } = projection;
+        *caddy == other.caddy
+            && *machine == other.projection.machine
+            && sites.len() == other.projection.sites.len()
+            && sites
+                .iter()
+                .zip(&other.projection.sites)
+                .all(|(site, other)| site.serves_as(other))
+    }
+}
+
+impl IngressSite {
+    fn serves_as(&self, other: &Self) -> bool {
+        let Self {
+            hostname,
+            publication,
+            certificate,
+        } = self;
+        *hostname == other.hostname
+            && *certificate == other.certificate
+            && match (publication, &other.publication) {
+                (Some(publication), Some(other)) => publication.serves_as(other),
+                (None, None) => true,
+                (Some(_), None) | (None, Some(_)) => false,
+            }
+    }
+}
+
+impl IngressPublication {
+    fn serves_as(&self, other: &Self) -> bool {
+        let Self {
+            owner,
+            http,
+            https,
+            trace: _,
+        } = self;
+        *owner == other.owner && *http == other.http && *https == other.https
+    }
+}
+
 type RoutedAddresses = BTreeMap<QualifiedService, BTreeMap<ContainerId, ContainerAddress>>;
 
 /// Whether the Caddyfile a restarted Caddy reads holds what its admin loaded.
@@ -504,8 +551,8 @@ impl CaddyLoad {
     /// load is `input` and the files hold it; without, the Caddyfile was written from it.
     fn skip(&self, input: &CaddyInput, through_admin: bool) -> bool {
         match self {
-            Self::Loaded { input: loaded, .. } => through_admin && loaded == input,
-            Self::Written { input: written } => !through_admin && written == input,
+            Self::Loaded { input: loaded, .. } => through_admin && loaded.serves_as(input),
+            Self::Written { input: written } => !through_admin && written.serves_as(input),
             Self::Unapplied | Self::Served { .. } => false,
         }
     }

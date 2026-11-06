@@ -88,6 +88,10 @@ status. See
 - **A tunnel hides Cloudflare.** Through a Cloudflare Tunnel or another proxy, the request looks
   local, so the Cloudflare lines don't appear. `ip` shows that proxy's address.
 - **Only `GET` shows the trace.** Other requests to the same path go to your app.
+- **`deploy` and `replicas` update when the domain's routes change.** A replica that starts or
+  is removed without changing which replicas take traffic doesn't update them, since reloading
+  the proxy for the page alone would reset its count of failed replicas. They catch up at the
+  next change to the routes, such as the next deploy.
 - **Each server answers for itself.** Another server can show different `deploy` or `replicas`
   for a few seconds after a change. To ask one server directly, pin the domain to its address:
   `curl --resolve example.com:80:203.0.113.10 http://example.com/.well-known/ployz/trace`.
