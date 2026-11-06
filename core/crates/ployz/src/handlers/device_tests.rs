@@ -489,8 +489,14 @@ fn starting_set_summary_names_each_trusted_server_before_signing() {
     assert_eq!(
         starting_set_summary(&reach, &[(&first).into(), (&second).into()]),
         format!(
-            "Trusting 2 Servers from the start: machine-1 ({}, {}), {} ({}, {}).",
-            first.subnet, first.id, second.id, second.subnet, second.id
+            "Trusting 2 Servers from the start: machine-1 ({}, {}, key {}), {} ({}, {}, key {}).",
+            first.subnet,
+            first.id,
+            first.public_key.fingerprint(),
+            second.id,
+            second.subnet,
+            second.id,
+            second.public_key.fingerprint()
         )
     );
     assert_eq!(

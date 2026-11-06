@@ -264,8 +264,8 @@ ployz device enforce --off
 
 `enforce` needs this computer's approved device key. Before it changes anything, it asks each
 server for its own ID, WireGuard key and subnet. It prints that starting set as
-`Trusting N Servers from the start:`, then each server's name, subnet and Machine ID, and signs it. Check
-the list. Each server then trusts only the servers in that signed set, plus servers whose join
+`Trusting N Servers from the start:`, then each server's name, subnet, Machine ID and WireGuard key
+fingerprint, and signs it. Check the list. Each server then trusts only the servers in that signed set, plus servers whose join
 an approved device signed later. A server row that no server answers for is left out, even if
 it was registered just before. A server refuses a set that leaves itself out, is not signed by
 one of its devices, is over 15 minutes old, or was already used. With enforcement already on,
@@ -274,6 +274,11 @@ state. A server that doesn't answer is listed under failures, and one with no di
 under omissions. Either way the command exits 3, and that server keeps its old setting. Run `enforce` again once it is reachable. A server
 from before this setting is reported with its rows missing, the same as one that's down, and
 restarts as before. Upgrade it first.
+
+The starting set is trust on first use, like the first SSH connection to a host. It is only as
+trustworthy as Ployz Cloud is at the moment you turn enforcement on. To check it, run
+`sudo ployz status` on each server and compare its **wireguard key** line with the fingerprint
+printed next to that server. If they differ, run `ployz device enforce --off` and don't trust that set.
 
 Enforcement also requires an approved Device to authorize a new server's identity, keys,
 allocation, and initial Devices. See [Approve a join](add-a-server.md#approve-a-join-when-device-enforcement-is-on).

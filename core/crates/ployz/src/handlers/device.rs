@@ -427,10 +427,11 @@ fn starting_set_summary(reach: &Reach, members: &[Member]) -> String {
         .iter()
         .map(|member| {
             format!(
-                "{} ({}, {})",
+                "{} ({}, {}, key {})",
                 reach.name(&member.id),
                 member.subnet,
-                member.id
+                member.id,
+                member.public_key.fingerprint()
             )
         })
         .collect::<Vec<_>>()

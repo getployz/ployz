@@ -427,6 +427,10 @@ it as `blocked` lines. With `--json` this is the `this_server` object. After `pl
 resets a server that joined from a Fleet Token, its **this server** line says `Not in a Cluster`
 and `this_server` adds `"left": true`.
 
+Run on a server whose daemon is running, with `sudo`, `ployz status` also shows a **wireguard key** line.
+It is the server's WireGuard key fingerprint, the same one `ployz device enforce` prints. With
+`--json` it is `this_machine`, which holds `wireguard_key` and `fingerprint`.
+
 When a server is up but its proxy hasn't picked up a service's current replicas after a deploy,
 `ployz status` names it, one line per service, like
 `web = web-2 has not picked up the new copies. Check its network.` When a server's proxy sends a

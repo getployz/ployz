@@ -976,6 +976,33 @@ impl fmt::Display for WireGuardPublicKey {
     }
 }
 
+impl WireGuardPublicKey {
+    /// 16 lowercase base32 characters (80 bits) of the key's SHA-256, for a person to compare.
+    #[must_use]
+    pub fn fingerprint(&self) -> String {
+        use sha2::{Digest as _, Sha256};
+
+        let mut digest = Sha256::new();
+        digest.update(b"ployz-wireguard-key-v1\n");
+        digest.update(self.0);
+        let digest = digest.finalize();
+        let bits = u128::from_be_bytes(
+            *digest
+                .as_slice()
+                .first_chunk()
+                .expect("a SHA-256 digest is 32 bytes"),
+        );
+        let alphabet = b"abcdefghijklmnopqrstuvwxyz234567";
+        (0..16)
+            .map(|index| {
+                let digit =
+                    usize::try_from((bits >> (128 - 5 * (index + 1))) & 31).expect("five bits");
+                char::from(*alphabet.get(digit).expect("five bits index 32 digits"))
+            })
+            .collect()
+    }
+}
+
 validated_string_newtype!(
     /// An open wire capability name using a stable namespace.
     CapabilityName,
@@ -1047,6 +1074,17 @@ impl From<CloudEnrollToken> for String {
 
 #[cfg(test)]
 mod tests {
+    /// A CLI and a daemon of different versions must print the same fingerprint.
+    #[test]
+    fn a_wireguard_key_fingerprint_is_stable_and_tells_keys_apart() {
+        let key = super::WireGuardPublicKey([3; 32]);
+        assert_eq!(key.fingerprint(), "3tneseul2uuppwo6");
+        assert_ne!(
+            key.fingerprint(),
+            super::WireGuardPublicKey([4; 32]).fingerprint()
+        );
+    }
+
     #[test]
     fn hostnames_follow_rfc_1035_lengths() {
         let label = "b".repeat(63);
