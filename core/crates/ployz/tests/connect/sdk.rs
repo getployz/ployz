@@ -383,6 +383,7 @@ async fn node_smoke_covers_connect_about_preview_run_and_close() {
                 health: ployz_core::HealthObservation::Healthy,
             },
         ),
+        leaving: false,
     });
     let created = service.created_containers.clone();
     let _machine = session.spawn_machine(description.machine_id, service).await;

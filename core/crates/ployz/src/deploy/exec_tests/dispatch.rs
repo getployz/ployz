@@ -588,6 +588,7 @@ async fn removal_sent(purpose: ployz_core::RemoveContainerPurpose) -> Vec<Contai
                             image_id: None,
                             last_check: None,
                             run: None,
+                            leaving: false,
                         })
                     }
                     RpcRequestBody::EnsureContainer(request) => {
@@ -907,6 +908,7 @@ async fn global_stop_first_retry_replays_retained_candidate_with_no_free_endpoin
                                 .unwrap()
                                 .clone(),
                             environment: None,
+                            leaving: false,
                         })
                     }
                     RpcRequestBody::ListMachines(_) => RpcResponse::from(MachineList {

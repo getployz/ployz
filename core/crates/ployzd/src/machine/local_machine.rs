@@ -10,7 +10,7 @@ use std::{
 };
 
 use ployz_core::{
-    ContainerId, ContainerObservation, EnrollRequest, Enrolled, ForgetRequest, Forgotten,
+    ContainerDetails, ContainerId, EnrollRequest, Enrolled, ForgetRequest, Forgotten,
     InspectRequest, LeaveRequest, Left, LeftPhase, LocalMachinePhase, Machine, MachineDetails,
     MachineId, MachineIdentity, MachineList, MachineName, MachineObservation, MachineToken,
     MachineUpdated, ManagementAddress, ManagementClientLabel, MembershipEvidence,
@@ -64,7 +64,7 @@ pub(crate) type PeerInspect = std::sync::Arc<
     dyn Fn(
             MachineId,
             ContainerId,
-        ) -> futures_util::future::BoxFuture<'static, Option<ContainerObservation>>
+        ) -> futures_util::future::BoxFuture<'static, Option<ContainerDetails>>
         + Send
         + Sync,
 >;
@@ -410,7 +410,7 @@ impl LocalMachine {
         &self,
         machine: MachineId,
         container: ContainerId,
-    ) -> Option<ContainerObservation> {
+    ) -> Option<ContainerDetails> {
         #[cfg(test)]
         if let Some(peers) = &self.peers {
             return peers(machine, container).await;

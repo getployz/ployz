@@ -312,6 +312,7 @@ pub struct ContainerRuntime {
     specs: MachineSpecStore,
     sink: Option<ObservationSink>,
     stopping: watch::Sender<BTreeMap<ContainerId, usize>>,
+    leaving: Arc<std::sync::Mutex<std::collections::BTreeSet<ContainerId>>>,
     first_synced: watch::Sender<bool>,
     checks: Arc<std::sync::Mutex<CheckRecords>>,
     stranded: Arc<tokio::sync::Mutex<observe::StrandedIngress>>,
@@ -330,6 +331,7 @@ impl ContainerRuntime {
             specs,
             sink: None,
             stopping: watch::Sender::new(BTreeMap::new()),
+            leaving: Arc::default(),
             first_synced: watch::Sender::new(false),
             checks: Arc::new(std::sync::Mutex::new(CheckRecords::new(chrono::Utc::now()))),
             stranded: Arc::default(),
@@ -452,6 +454,25 @@ impl ContainerRuntime {
             stopping: self.stopping.clone(),
             container_id,
         }
+    }
+
+    /// Mark this Container leaving until the returned guard drops, so a peer's inspect
+    /// reports it. The caller holds the Machine's exclusive admission turn.
+    #[must_use]
+    pub fn leave(&self, container_id: ContainerId) -> Leaving {
+        if let Ok(mut leaving) = self.leaving.lock() {
+            leaving.insert(container_id);
+        }
+        Leaving {
+            leaving: Arc::clone(&self.leaving),
+            container_id,
+        }
+    }
+
+    fn is_leaving(&self, container_id: &ContainerId) -> bool {
+        self.leaving
+            .lock()
+            .is_ok_and(|leaving| leaving.contains(container_id))
     }
 
     fn is_withdrawn(&self, container_id: &ContainerId) -> bool {
@@ -1014,6 +1035,7 @@ impl ContainerRuntime {
                 image_id: inspected.image,
                 last_check,
                 run,
+                leaving: self.is_leaving(container_id),
             },
             oom_killed,
         })
@@ -1025,6 +1047,20 @@ pub struct InspectedRun {
     pub details: ployz_core::ContainerDetails,
     /// Docker OOM-killed a process of the run this inspect saw.
     pub oom_killed: bool,
+}
+
+/// An Out's hold on a Container's leaving mark.
+pub struct Leaving {
+    leaving: Arc<std::sync::Mutex<std::collections::BTreeSet<ContainerId>>>,
+    container_id: ContainerId,
+}
+
+impl Drop for Leaving {
+    fn drop(&mut self) {
+        if let Ok(mut leaving) = self.leaving.lock() {
+            leaving.remove(&self.container_id);
+        }
+    }
 }
 
 /// One operation's hold on a Container's `stopping` mark.

@@ -3,7 +3,10 @@
 //! the exclusive admission turn right before the write, against the rotation this
 //! Machine recorded. Replicated rows from other Machines are read before the turn
 //! and only narrow what it does, but they lag: an Out written on another Machine is
-//! invisible here until it replicates, so `LastIn` can count a sibling that just left.
+//! invisible here until it replicates. So `LastIn` marks its copy leaving under the
+//! turn, then asks each remote sibling's owner, and counts a sibling only if its owner
+//! answers that it is In and not leaving. Of two Outs racing on the last two copies,
+//! each marks before it asks, so at least one sees the other's mark and refuses.
 
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -280,6 +283,11 @@ impl LocalMachine {
                         rotation: turn.rotation().clone(),
                         ..copy
                     };
+                    let _leaving = matches!(
+                        (&want, &copy.rotation),
+                        (RotationWant::Out { allow_empty: false }, CopyRotation::In)
+                    )
+                    .then(|| containers.leave(id));
                     let to = match local.check(&copy, &want, expect.as_ref(), reads).await? {
                         Checked::Met => return Ok(Written::Done),
                         Checked::Refused(refusal) => return Ok(Written::Refused(refusal)),
@@ -445,7 +453,10 @@ impl LocalMachine {
                 && !supersedes(&observed.resolved_spec, &published)
         });
         join_all(unseen.map(|row| async {
-            let answer = self.inspect_peer(row.machine_id, row.container_id).await?;
+            let answer = self
+                .inspect_peer(row.machine_id, row.container_id)
+                .await?
+                .container;
             (answer.machine_id == row.machine_id
                 && *answer.rotation() == CopyRotation::In
                 && answer.copy_gen() == row.copy_gen())
@@ -490,7 +501,9 @@ impl LocalMachine {
 
     /// Refuse In to Out unless another In copy of the Service is acked by every live
     /// proxy. A Machine list that is only partly replicated never passes, and a copy
-    /// on a Down Machine serves no one.
+    /// on a Down Machine serves no one. A copy on another Machine counts only if its
+    /// owner answers that it is In and not leaving; one that doesn't answer counts as
+    /// gone, so the copy stays In.
     async fn last_in(
         &self,
         copy: &CopyState,
@@ -500,13 +513,28 @@ impl LocalMachine {
             named,
         }: Routed,
     ) -> Result<Option<ContainerRefusal>, Error> {
-        let siblings = self
+        let machine_id = self.record().id();
+        let live = self
             .in_siblings(copy, named)
             .await?
             .into_iter()
-            .filter(|sibling| !membership.down.contains(&sibling.machine_id))
-            .map(|sibling| sibling.container_id)
-            .collect::<Vec<_>>();
+            .filter(|sibling| !membership.down.contains(&sibling.machine_id));
+        let siblings = join_all(live.map(|sibling| async move {
+            if sibling.machine_id == machine_id {
+                return Some(sibling.container_id);
+            }
+            let answer = self
+                .inspect_peer(sibling.machine_id, sibling.container_id)
+                .await?;
+            (answer.container.machine_id == sibling.machine_id
+                && *answer.container.rotation() == CopyRotation::In
+                && !answer.leaving)
+                .then_some(sibling.container_id)
+        }))
+        .await
+        .into_iter()
+        .flatten()
+        .collect::<Vec<_>>();
         if siblings.is_empty() {
             return Ok(Some(refuse(
                 ContainerRefusalReason::LastIn,

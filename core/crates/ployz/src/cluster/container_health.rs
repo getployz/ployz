@@ -100,6 +100,7 @@ mod tests {
             image_id: None,
             last_check: None,
             run: None,
+            leaving: false,
         }
     }
 
