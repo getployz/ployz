@@ -544,7 +544,7 @@ fn restart_approvals(
     services: &[&ServiceObservation],
     action: ContainerAction,
 ) -> Result<HashMap<ContainerId, Signed<RestartApproval>>, Error> {
-    let Some(secret) = super::device::key::load(device_key)? else {
+    let Ok(Some(secret)) = super::device::key::load(device_key) else {
         return Ok(HashMap::new());
     };
     let Some(cluster) =
@@ -634,7 +634,29 @@ async fn apply_service_action(
                 changed.push((success.machine_id, success.value));
             }
         }
+        let mut noted_unsigned = false;
         for failure in outcomes.failures {
+            if !noted_unsigned
+                && !approvals.contains_key(&failure.error.container_id)
+                && failure
+                    .error
+                    .error
+                    .details
+                    .get("capability")
+                    .and_then(serde_json::Value::as_str)
+                    == Some(ployz_core::RESTART_APPROVAL_CAPABILITY)
+                && failure
+                    .error
+                    .error
+                    .cause
+                    .iter()
+                    .any(|cause| cause.contains("carries no signature"))
+            {
+                crate::ui::note(
+                    "No Device approval was sent. Check this computer's Device key and approval.",
+                );
+                noted_unsigned = true;
+            }
             crate::ui::warn_cause(
                 format_args!(
                     "Could not {action} {} on {}",
