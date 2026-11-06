@@ -386,9 +386,7 @@ impl Shipped {
         }
         if self.presented {
             ui::finish(&Next::new(&self.view, Some(self.hint.clone())), || {
-                for line in unserved_outcome_lines(&self.view.deployment.outcome) {
-                    ui::stream(format_args!("{line}"));
-                }
+                say_unserved(&self.view);
             })?;
         } else {
             finish_view(&self.view, Some(self.hint.clone()))?;
@@ -495,7 +493,9 @@ pub(super) fn execute(
                     Disposition::Settled
                 },
             );
-            ui::emit(&Next::new(&followed.view, Some(hint)))?;
+            ui::finish(&Next::new(&followed.view, Some(hint)), || {
+                say_unserved(&followed.view);
+            })?;
             return Err(if interrupted {
                 error.interrupted()
             } else {
@@ -1595,6 +1595,13 @@ fn untargeted_lines(
             )
         })
         .collect()
+}
+
+/// After a deploy's progress, says where each Service ended when one doesn't serve its new copies.
+pub(super) fn say_unserved(view: &DeploymentView) {
+    for line in unserved_outcome_lines(&view.deployment.outcome) {
+        crate::ui::stream(format_args!("{line}"));
+    }
 }
 
 /// Where each Service ended, after a deploy's progress: only when one doesn't serve its new copies,

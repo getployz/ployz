@@ -16,7 +16,7 @@ use ployz_store::{
 use serde::Serialize;
 use serde_json::{Value, json};
 
-use super::deploy::{Request, open_events, say_view, upload_and_ship};
+use super::deploy::{Request, open_events, say_unserved, say_view, upload_and_ship};
 use super::store::{mint, scoped, store};
 use super::{Error, config_path, leaf_matches};
 use crate::cli::{base, value};
@@ -144,7 +144,9 @@ pub(super) fn up(root: &ArgMatches) -> Result<(), Error> {
         next: &shipped.hint,
     };
     crate::ui::finish(&up, || {
-        if !shipped.presented {
+        if shipped.presented {
+            say_unserved(view);
+        } else {
             say_view(view);
         }
         for url in opens(&up.urls, &shipped.ran) {
