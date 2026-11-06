@@ -121,7 +121,7 @@ async fn approved_join_uses_only_encrypted_approved_devices_and_cannot_be_redeem
     let owner = RecordOwner::spawn(LocalMachineStore::open(&directory).unwrap()).unwrap();
     let reopened = LocalMachine::new(owner);
     assert!(matches!(
-        reopened.consume_join(request.machine_id),
+        reopened.require_unused_join(request.machine_id),
         Err(LocalMachineError::JoinConsumed(_))
     ));
     server.abort();
@@ -318,6 +318,46 @@ async fn join_approval_lifetime_and_issue_time_are_bounded_before_admission() {
                 .is_none()
         );
     }
+    server.abort();
+    drop(entry);
+    std::fs::remove_dir_all(directory).unwrap();
+}
+
+#[tokio::test]
+async fn join_consumption_uses_the_shared_persisted_approval_clock_floor() {
+    use ployz_core::authority::Timestamp;
+    let (entry, replicated, _, directory, server) = participating().await;
+    let signer = Signer::from_seed(&[1; 32]);
+    enforce(&entry, &signer).await;
+    std::fs::write(
+        directory.join("restart-approvals.json"),
+        serde_json::to_vec(&serde_json::json!({
+            "expiry_time_floor": Timestamp::now().plus(18 * 60 * 1000),
+        }))
+        .unwrap(),
+    )
+    .unwrap();
+    let request = request("joiner", WireGuardPublicKey([2; 32]));
+    assert!(entry.register(request.clone()).await.is_err());
+    let mut body = entry.pending_joins().unwrap().joins.pop().unwrap();
+    body.signer = signer.public().into();
+    entry
+        .approve_join(ApproveJoinRequest {
+            approval: Signed::sign(&body, &signer).unwrap(),
+        })
+        .await
+        .unwrap();
+    assert!(matches!(
+        entry.register(request.clone()).await,
+        Err(LocalMachineError::JoinRefused(AuthorityRefusal::Expired))
+    ));
+    assert!(
+        replicated
+            .machine(request.machine_id.as_str())
+            .await
+            .unwrap()
+            .is_none()
+    );
     server.abort();
     drop(entry);
     std::fs::remove_dir_all(directory).unwrap();

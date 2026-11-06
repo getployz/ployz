@@ -173,7 +173,7 @@ impl LocalMachine {
                 ));
             }
             self.verify_join(approval, &body.machine, body.network)?;
-            self.consume_join(request.machine)?;
+            self.consume_join(&body)?;
         }
         let sealed = key.seal_from(record.private_key(), &request.public_key)?;
         tracing::info!(

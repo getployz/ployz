@@ -2,7 +2,7 @@
 //! caller's restart step passes under it, and the record of steps already taken.
 
 use std::{
-    collections::BTreeMap,
+    collections::{BTreeMap, BTreeSet},
     io,
     path::{Path, PathBuf},
     sync::{Arc, Mutex},
@@ -136,10 +136,9 @@ impl LocalMachine {
     }
 }
 
-/// The furthest restart step each approved operation reached on each Container, kept in
-/// `<data_dir>/restart-approvals.json` so a replay is refused across daemon restarts. An
-/// operation is forgotten once its approval expires, since the approval can no longer
-/// pass verification.
+/// Device approval consumption in the existing `restart-approvals.json` record.
+/// Restart operations expire, while admitted Machine IDs remain consumed across daemon
+/// restarts and clock rollback.
 pub(crate) struct ConsumptionLog {
     path: PathBuf,
     operations: Mutex<Option<Consumption>>,
@@ -147,6 +146,8 @@ pub(crate) struct ConsumptionLog {
 
 #[derive(Clone, Debug, Default, Deserialize, Serialize)]
 struct Consumption {
+    #[serde(default, skip_serializing_if = "BTreeSet::is_empty")]
+    joins: BTreeSet<ployz_core::MachineId>,
     #[serde(default)]
     expiry_time_floor: Option<Timestamp>,
     #[serde(flatten)]
@@ -237,6 +238,60 @@ impl ConsumptionLog {
             }
             .into());
         }
+        Ok(())
+    }
+
+    pub(crate) fn require_unused_join(&self, machine: ployz_core::MachineId) -> Result<(), Error> {
+        let mut guard = self
+            .operations
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        if guard.is_none() {
+            *guard = Some(self.load().map_err(Error::JoinRecord)?);
+        }
+        if guard
+            .as_ref()
+            .expect("loaded above")
+            .joins
+            .contains(&machine)
+        {
+            return Err(Error::JoinConsumed(machine));
+        }
+        Ok(())
+    }
+
+    pub(crate) fn consume_join(
+        &self,
+        approval: &ployz_core::authority::JoinApproval,
+        now: Timestamp,
+    ) -> Result<(), Error> {
+        let mut guard = self
+            .operations
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        if guard.is_none() {
+            *guard = Some(self.load().map_err(Error::JoinRecord)?);
+        }
+        let consumption = guard.as_ref().expect("loaded above");
+        let now = consumption
+            .expiry_time_floor
+            .map_or(now, |floor| now.max(floor));
+        ployz_core::authority::validity::verify(approval.issued_at, approval.expires_at, now)
+            .map_err(Error::JoinRefused)?;
+        let mut updated = consumption.clone();
+        updated.expiry_time_floor = Some(now);
+        if !updated.joins.insert(approval.machine.id) {
+            return Err(Error::JoinConsumed(approval.machine.id));
+        }
+        let written = serde_json::to_vec(&updated)
+            .map_err(io::Error::other)
+            .and_then(|contents| crate::filesystem::atomic_write(&self.path, &contents, 0o600))
+            .map_err(Error::JoinRecord);
+        if let Err(error) = written {
+            *guard = None;
+            return Err(error);
+        }
+        *guard = Some(updated);
         Ok(())
     }
 
