@@ -414,6 +414,7 @@ async fn live_and_second(
                         volumes: Vec::new(),
                         certificates: Vec::new(),
                         incomplete_ids: Default::default(),
+                        unanswered: Vec::new(),
                         observed_at: String::new(),
                     };
                     return Ok(Response::new(

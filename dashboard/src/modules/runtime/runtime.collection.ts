@@ -74,6 +74,8 @@ export const runtimeMachineRecordSchema = Schema.Struct({
   /** Whether the Server holds its Cluster's Sealing Key; null when unobserved or from an older daemon. */
   sealing: Schema.NullOr(runtimeSealingSchema),
   membership: Schema.String,
+  /** The entry probed this Server's daemon and got no answer, though gossip may read it up. */
+  unanswered: Schema.Boolean,
   observedContainerCount: NonnegativeInt,
   observedAt: Schema.String,
 });

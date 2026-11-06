@@ -98,6 +98,8 @@ export const runtimeWatchFrameSchema = Schema.Struct({
     volumes: Schema.Array(runtimeWatchIncompleteVolumeIdSchema),
     certificates: Schema.Array(Schema.String),
   }),
+  /** Machines whose daemon didn't answer the entry's last probes; their rows are as they last reported them. */
+  unanswered: Schema.Array(Schema.String).pipe(Schema.withDecodingDefaultKey(Effect.succeed([]))),
   observed_at: Schema.String,
 });
 
@@ -191,6 +193,7 @@ export function runtimeWatchFrameForTransport(
       })),
       certificates: [...frame.incomplete_ids.certificates],
     },
+    unanswered: [...frame.unanswered],
     observed_at: frame.observed_at,
   };
 
@@ -212,6 +215,7 @@ export function runtimeSnapshotFromWatchFrame(
   frame: RuntimeWatchFrame,
 ): RuntimeSnapshot {
   const observedAt = frame.observed_at;
+  const unanswered = new Set(frame.unanswered);
   const containerCounts = new Map<string, number>();
   for (const container of frame.containers) {
     containerCounts.set(
@@ -240,6 +244,7 @@ export function runtimeSnapshotFromWatchFrame(
       poolCommittableBytes: machine.machine.runtime.pool_committable_bytes,
       sealing: machine.machine.runtime.sealing,
       membership: machine.membership,
+      unanswered: unanswered.has(machine.machine.id),
       observedContainerCount: containerCounts.get(machine.machine.id) ?? 0,
       observedAt,
     })),

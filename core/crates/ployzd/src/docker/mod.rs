@@ -3410,6 +3410,7 @@ mod sealed_output_tests {
             volumes: Vec::new(),
             certificates: Vec::new(),
             incomplete_ids: Default::default(),
+            unanswered: Vec::new(),
             observed_at: chrono::Utc::now().to_rfc3339(),
         })
         .unwrap();

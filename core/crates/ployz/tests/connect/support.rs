@@ -254,6 +254,7 @@ pub(super) fn empty_watch_frame() -> RuntimeWatchFrame {
         volumes: Vec::new(),
         certificates: Vec::new(),
         incomplete_ids: ployz_core::RuntimeWatchIncompleteIds::default(),
+        unanswered: Vec::new(),
         observed_at: String::new(),
     }
 }

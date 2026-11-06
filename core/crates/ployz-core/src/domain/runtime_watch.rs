@@ -102,6 +102,11 @@ pub struct RuntimeWatchFrame {
     pub certificates: Vec<CertificateObservation>,
     #[serde(default)]
     pub incomplete_ids: RuntimeWatchIncompleteIds,
+    /// Machines whose daemon didn't answer the entry's last probes, though their
+    /// membership may read Up: their rows are only as they last reported them. The
+    /// entry's view, not Cluster truth; empty from daemons that don't probe.
+    #[serde(default)]
+    pub unanswered: Vec<MachineId>,
     /// Freshness of the entry-local membership/RTT sample. Not Cluster truth.
     pub observed_at: String,
 }

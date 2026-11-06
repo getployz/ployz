@@ -144,8 +144,9 @@ const openSession = Effect.fn("ServerUpgrade.openSession")(function* (organizati
 const observeOnlineServers = Effect.fn("ServerUpgrade.observeOnline")(function* (organizationId: string) {
   const session = yield* openSession(organizationId);
   const frame = yield* session.watchFirstFrame(RUNTIME_FRAME_TIMEOUT_MS);
+  const unanswered = new Set(frame.unanswered);
   return frame.machines.flatMap(({ machine, membership }) =>
-    serverStatus({ membership, runningBuilds: machine.runtime.running_builds }) === "online"
+    serverStatus({ membership, runningBuilds: machine.runtime.running_builds, unanswered: unanswered.has(machine.id) }) === "online"
       ? [{ id: machine.id, name: machine.name, version: machine.runtime.daemon_version }]
       : []);
 }, Effect.scoped);

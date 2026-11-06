@@ -106,8 +106,8 @@ export function drainPlan(frame: RuntimeWatchView, owned: ReadonlySet<string>, m
 }
 
 const servesWeb = ({ machine }: RuntimeWatchView["machines"][number]) => machine.accepts_ingress && machine.public_ip !== null;
-const online = ({ machine, membership }: RuntimeWatchView["machines"][number]) =>
-  !needsAttention(serverStatus({ membership, runningBuilds: machine.runtime.running_builds }));
+const online = ({ machine, membership }: RuntimeWatchView["machines"][number], unanswered: readonly string[]) =>
+  !needsAttention(serverStatus({ membership, runningBuilds: machine.runtime.running_builds, unanswered: unanswered.includes(machine.id) }));
 
 /**
  * What turning web traffic off on `machineId` loses: every domain the Cluster serves, when no other online Server with
@@ -118,7 +118,7 @@ export function ingressOffPlan(frame: RuntimeWatchView, machineId: string, chang
   const name = serverName(frame, machineId);
   if (name === undefined) return null;
   const last = frame.machines.some((observed) => observed.machine.id === machineId && servesWeb(observed))
-    && !frame.machines.some((observed) => observed.machine.id !== machineId && servesWeb(observed) && online(observed));
+    && !frame.machines.some((observed) => observed.machine.id !== machineId && servesWeb(observed) && online(observed, frame.unanswered));
   const domains = last ? [...new Set(frame.certificates.map(({ hostname }) => hostname))].sort(byName) : [];
   return {
     subject: `server:${machineId}`,
