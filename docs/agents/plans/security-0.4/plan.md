@@ -2,7 +2,7 @@
 
 Status is planned, not implemented. Read [the decision record](decisions.md) first. It holds the security promise, the settled product choices, the shared contracts, the evidence for each attack path and the open decisions. This file covers the order of work, who owns what, and the evidence that proves each piece. [The kickoff prompts](kickoffs.md) start each thread. [The external authority brief](external-authority.md) scopes the DNS and GitHub investigations.
 
-The goal is that root on np1 can cause an outage and read what Cloud already sees, but cannot run new code or settings on a customer Machine, start or stop a workload, open Sealed values, take a Volume, add a Machine or Device, or choose an upgrade. Customer Machines enforce this with customer-held keys. Customers keep ordinary buttons, native authentication prompts and automatic GitHub deploys.
+The goal is that hosted Cloud is the safest way to run Ployz. Root on np1 can read what Cloud already sees, but cannot run new code or settings on a customer Machine, start or stop a workload, open Sealed values, take a Volume, add a Machine or Device, or choose an upgrade. Customer Machines enforce this with customer-held keys. Customers keep ordinary buttons, native authentication prompts and automatic GitHub deploys.
 
 ## Threads at a glance
 

@@ -6,6 +6,8 @@ Read [the execution plan](plan.md) for ordering and acceptance evidence. Use [th
 
 ## The security promise
 
+The goal is trust. A customer comparing hosted Ployz Cloud with running the dashboard on their own VPS should conclude that hosted Cloud is the safer choice. Someone with full access to np1 must not be able to steal a customer's secrets, run new containers or code, change settings, take data, or add servers or devices. Customer servers enforce this themselves, so the guarantee doesn't depend on np1 staying uncompromised. A self-hosted dashboard gets the same enforcement, so hosting is never the weaker option.
+
 Root on np1 gives the attacker Cloud code, database writes, environment secrets, emails, sessions, workflows, and dashboard JavaScript. Customer Machines must reject new runtime effects unless customer-held authority permits them. Cloud may carry requests and proofs, but cannot manufacture that authority.
 
 This is a bounded promise. Cloud still exposes data it already sees, including plain variables, logs, metadata, and credentials retained there. Those credentials can confer authority outside the Machine verifier. DNS and GitHub authority remain separately reported until their investigations establish a smaller boundary. A compromised dashboard can use an active browser approval session within its scope. Effects accepted during that session can outlast it.
@@ -89,6 +91,22 @@ Sealed values are opened only for an authorized build or workload. Their existin
 ### Existing automatic maintenance
 
 Inventory current automatic effects such as ingress startup, certificate renewal, image pruning, preview cleanup, and Volume recovery. Each needs either a bounded standing authorization or an explicit consequence of an already authorized workflow. Daemon-owned infrastructure maintenance stays local and narrow. Broad Cloud maintenance exemptions are excluded. A repeated redeploy must not rerun hooks as fresh work without authority.
+
+## GitHub App: broad permissions, key off np1
+
+Decision: keep the App's broad permissions (code, workflows, repository settings) so the future coding agent never forces a re-request. Make them safe by taking the App private key off np1. The constraint is removing np1's ability to use the key. Narrowing the grant is not the approach.
+
+- **Token minter.** The App private key lives in a cloud KMS key that cannot be exported. A small minter service outside np1, in a separate cloud account with its own deploy credentials, is the only thing that can sign App JWTs. np1 holds no App key.
+- **Reads stay free.** np1 asks the minter for installation tokens and receives them narrowed at mint time to read permissions (`contents`, `metadata`, `pull_requests`, `checks`, `actions`: read) and the requested repositories. Cloud's existing reads keep working unchanged.
+- **Today's writes are narrow operations, not tokens.** The minter performs `dispatch` of `ployz-build.yml` on a rule's branch, `cancel` of that workflow's runs, and Ployz check runs itself. It never hands np1 a token with write permissions.
+- **Every other write needs customer authority.** A write token, or a write the minter performs, requires a request signed by a key the customer trusts, bound to the installation, repository, permissions, and expiry. The minter pins each installation's trusted keys on first link. Only an existing trusted key can change them, which is the same rule as customer servers. np1 cannot edit that list.
+- **Agent writes don't deploy.** When the coding agent exists, it writes to `ployz/*` branches and opens pull requests. Automatic deploy only accepts the approved branch's head, so the agent's pushes never run on a server until a person merges in GitHub.
+- **OAuth and webhooks.** The App's OAuth client secret and code exchange move to the minter, so np1 never receives user-to-server tokens. Cloud stops storing GitHub OAuth tokens in `account`. Webhooks keep going to Cloud. They inform Cloud and never authorize a server.
+- **Our own org.** Remove the `getployz`, `getployz-dev`, and `getployz-staging` installs from the `getployz` org, or limit them to repositories that matter to nothing. Add `v*` tag rulesets and release reviewers, protect `getployz/build` `main`, pin customer workflows to a build action commit SHA, and move `CLOUDFLARE_API_TOKEN` into a protected environment. The minter must not deploy from any repository np1 can write. Then decide whether to rotate `MINISIGN_SECRET_KEY` and the Cloudflare token. See [the Y report](y-github-report.md).
+
+Cost is one small service and one KMS key. Requests, token caching, and the minter's own key list are cheap. Residual: np1 can read every repository the App can read, withhold or cancel builds, forge Ployz checks, and uninstall the App. It cannot push code, edit workflows, change settings, or obtain a write token without a customer signature.
+
+DNS follows the same pattern per [the X report](x-dns-report.md). Hosted DNS and its Route 53 and ACME credentials move off np1, and the service only changes a name's records or certificates on a request signed by that name's pinned customer key.
 
 ## Demonstrated paths and their owners
 
