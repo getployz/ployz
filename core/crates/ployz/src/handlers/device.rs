@@ -282,7 +282,7 @@ pub(crate) fn enforce(root: &ArgMatches) -> Result<(), Error> {
     let enforced = !leaf.get_flag("off");
     runtime()?.block_on(async {
         let mut client = server::connect_full(leaf, context(leaf)).await?;
-        let reach = Reach::of(&mut client).await?;
+        let reach = Reach::full(&mut client).await?;
         let (answers, gaps) = reach
             .fan_out(|machine_id| enforce_on(client.clone(), machine_id, enforced))
             .await;
@@ -383,7 +383,7 @@ async fn approve_with<T>(
 }
 
 async fn set_everywhere(client: &mut Client, request: SetDeviceRequest) -> Result<Settled, Error> {
-    let reach = Reach::of(client).await?;
+    let reach = Reach::full(client).await?;
     let (answers, gaps) = reach
         .fan_out(|machine_id| set_on(client.clone(), machine_id, request.clone()))
         .await;
@@ -468,6 +468,16 @@ struct Reach {
 }
 
 impl Reach {
+    async fn full(client: &mut Client) -> Result<Self, Error> {
+        let mut reach = Self::of(client).await?;
+        let direct = client.full_machines();
+        if !direct.is_empty() {
+            reach.asked.retain(|machine| direct.contains(machine));
+            reach.silent.retain(|machine| direct.contains(machine));
+        }
+        Ok(reach)
+    }
+
     async fn of(client: &mut Client) -> Result<Self, Error> {
         let machines = client.machines().await?;
         let (asked, silent) = machines

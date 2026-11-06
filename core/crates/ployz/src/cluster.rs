@@ -145,6 +145,20 @@ impl Client {
         self
     }
 
+    pub(crate) fn full_machines(&self) -> BTreeSet<MachineId> {
+        if self.full_connections.is_empty() {
+            return BTreeSet::new();
+        }
+        self.entry
+            .into_iter()
+            .chain(
+                self.full_connections
+                    .iter()
+                    .filter_map(|connection| connection.machine_id().copied()),
+            )
+            .collect()
+    }
+
     async fn full_client(&self, target: &MachineTarget) -> Result<Option<Self>, ConnectError> {
         if self.full_connections.is_empty()
             || self.entry.is_some_and(|id| id.as_str() == target.as_str())

@@ -273,7 +273,9 @@ join, so another Cluster cannot use the approval even if it shares a Sealing pub
 
 Mesh connections have Operator access. Full actions such as approving Devices, changing
 enforcement, and `exec` use a direct authenticated connection to each target server. A context
-used for those actions must contain a direct connection to each target.
+used for those actions must contain a direct connection to each target. With an explicit
+`--connect`, `device approve`, `device rm`, and `device enforce` affect that server only.
+To approve the first Device through SSH, repeat the command on each server.
 
 With enforcement on, `service restart` from a device that isn't approved is refused with
 `ployz.restart.device-approval.v2 needs a Device-signed restart approval`. `service stop` needs
