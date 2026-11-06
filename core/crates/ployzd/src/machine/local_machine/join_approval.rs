@@ -155,7 +155,8 @@ impl LocalMachine {
                     devices: record.devices().collect(),
                     admitting_machines: vec![record.id()],
                     issued_at,
-                    expires_at: issued_at.plus(15 * 60 * 1000),
+                    expires_at: issued_at
+                        .plus(ployz_core::authority::validity::MAX_LIFETIME_MILLIS),
                     signer: DeviceKey::from_bytes([0; 32]),
                 },
                 approval: None,

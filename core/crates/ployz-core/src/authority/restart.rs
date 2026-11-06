@@ -57,10 +57,7 @@ pub struct RestartApproval {
     pub signer: DeviceKey,
 }
 
-/// Maximum signed lifetime, excluding clock skew.
-pub const MAX_LIFETIME_MILLIS: u64 = 15 * 60 * 1000;
-/// Clock tolerance in milliseconds on either side of the signed interval.
-pub const CLOCK_SKEW_MILLIS: u64 = 2 * 60 * 1000;
+pub use super::validity::{CLOCK_SKEW_MILLIS, MAX_LIFETIME_MILLIS};
 
 fn ordered_machines<'de, D: serde::Deserializer<'de>>(
     deserializer: D,
@@ -169,22 +166,7 @@ pub fn verify(
 /// # Errors
 /// Returns a mismatch for an invalid lifetime or future issue time, or an expired refusal.
 pub fn verify_time(body: &RestartApproval, now: Timestamp) -> Result<(), AuthorityRefusal> {
-    if body.expires_at < body.issued_at
-        || body.expires_at.as_millis() - body.issued_at.as_millis() > MAX_LIFETIME_MILLIS
-    {
-        return Err(AuthorityRefusal::Mismatch {
-            field: "a lifetime",
-        });
-    }
-    if body.issued_at > now.plus(CLOCK_SKEW_MILLIS) {
-        return Err(AuthorityRefusal::Mismatch {
-            field: "an issue time",
-        });
-    }
-    if now > body.expires_at.plus(CLOCK_SKEW_MILLIS) {
-        return Err(AuthorityRefusal::Expired);
-    }
-    Ok(())
+    super::validity::verify(body.issued_at, body.expires_at, now)
 }
 
 #[cfg(test)]

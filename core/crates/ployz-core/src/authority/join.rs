@@ -116,6 +116,11 @@ pub fn verify(
     for (field, matches) in [
         ("a Cluster", body.cluster == cluster),
         (
+            "approved Devices",
+            body.devices.contains(&body.signer)
+                && body.devices.iter().all(|key| devices.contains(key)),
+        ),
+        (
             "an admitting Machine",
             body.admitting_machines.contains(&admitting),
         ),
@@ -156,8 +161,6 @@ pub fn verify_signature(
             field: "one admitting Machine",
         });
     }
-    if now > body.expires_at {
-        return Err(AuthorityRefusal::Expired);
-    }
+    super::validity::verify(body.issued_at, body.expires_at, now)?;
     Ok(body)
 }

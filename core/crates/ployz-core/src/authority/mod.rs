@@ -10,6 +10,7 @@ pub mod join;
 pub mod keys;
 pub mod refusal;
 pub mod restart;
+pub mod validity;
 
 pub use canonical::{CanonicalError, Timestamp};
 pub use join::JoinApproval;

@@ -147,6 +147,16 @@ async fn another_admitting_machine_or_changed_recipient_cannot_use_the_approval(
         }))
     ));
     body.admitting_machines = vec![entry.record().id()];
+    body.devices.push(DeviceKey::from_bytes([9; 32]));
+    let approval = Signed::sign(&body, &signer).unwrap();
+    assert!(matches!(
+        entry.approve_join(ApproveJoinRequest { approval }).await,
+        Err(LocalMachineError::JoinRefused(AuthorityRefusal::Mismatch {
+            field: "approved Devices"
+        }))
+    ));
+    body.devices.pop();
+    body.admitting_machines = vec![entry.record().id()];
     body.sealing_recipient = WireGuardPublicKey([3; 32]);
     let approval = Signed::sign(&body, &signer).unwrap();
     assert!(matches!(
@@ -268,5 +278,47 @@ async fn mesh_tcp_never_grants_full_scope_or_slot_administration() {
     server.abort();
     drop(client);
     drop(owner);
+    std::fs::remove_dir_all(directory).unwrap();
+}
+
+#[tokio::test]
+async fn join_approval_lifetime_and_issue_time_are_bounded_before_admission() {
+    use ployz_core::authority::Timestamp;
+    let (entry, replicated, _, directory, server) = participating().await;
+    let signer = Signer::from_seed(&[1; 32]);
+    enforce(&entry, &signer).await;
+    let request = request("joiner", WireGuardPublicKey([2; 32]));
+    assert!(entry.register(request.clone()).await.is_err());
+    let body = entry.pending_joins().unwrap().joins.pop().unwrap();
+    let now = Timestamp::now();
+    let intervals = [
+        (now, now.plus(16 * 60 * 1000)),
+        (now.plus(3 * 60 * 1000), now.plus(18 * 60 * 1000)),
+        (now.plus(1000), now),
+        (
+            Timestamp::from_millis(now.as_millis() - 18 * 60 * 1000).unwrap(),
+            Timestamp::from_millis(now.as_millis() - 3 * 60 * 1000).unwrap(),
+        ),
+    ];
+    for (issued_at, expires_at) in intervals {
+        let mut body = body.clone();
+        body.signer = signer.public().into();
+        body.issued_at = issued_at;
+        body.expires_at = expires_at;
+        let approval = Signed::sign(&body, &signer).unwrap();
+        assert!(matches!(
+            entry.approve_join(ApproveJoinRequest { approval }).await,
+            Err(LocalMachineError::JoinRefused(_))
+        ));
+        assert!(
+            replicated
+                .machine(request.machine_id.as_str())
+                .await
+                .unwrap()
+                .is_none()
+        );
+    }
+    server.abort();
+    drop(entry);
     std::fs::remove_dir_all(directory).unwrap();
 }
