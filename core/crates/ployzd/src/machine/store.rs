@@ -351,13 +351,19 @@ impl LocalMachineStore {
     ) -> Result<(EnrollPlan, Installation), StoreError> {
         let enrollment = request.clone();
         if self.record.enrollment.as_ref() == Some(&request) {
-            return Ok((
-                EnrollPlan::Replay(
+            let plan = match self.record.phase() {
+                LocalMachinePhase::Joining | LocalMachinePhase::Participating => EnrollPlan::Replay(
                     self.record
                         .machine()
                         .expect("persisted enrollment owns a Machine")
                         .clone(),
                 ),
+                LocalMachinePhase::Uninitialized
+                | LocalMachinePhase::Resetting
+                | LocalMachinePhase::Unrecognized(_) => EnrollPlan::Conflict(self.record.now()),
+            };
+            return Ok((
+                plan,
                 Installation {
                     body: self.record.body.clone(),
                     sealing_key: None,

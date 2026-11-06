@@ -778,3 +778,27 @@ async fn share_refuses_an_approval_for_another_allocation_of_the_recipient() {
     drop(entry);
     std::fs::remove_dir_all(directory).unwrap();
 }
+
+#[tokio::test]
+async fn resending_the_original_enroll_while_resetting_conflicts() {
+    let (entry, _, _, directory, server) = participating().await;
+    let signer = Signer::from_seed(&[1; 32]);
+    enforce(&entry, &signer).await;
+    let join_dir = tempfile::tempdir().unwrap();
+    let mut joiner = LocalMachineStore::open(join_dir.path()).unwrap();
+    let (_, registration) = approved_registration(&entry, &joiner, &signer).await;
+    let enrollment = EnrollRequest {
+        role: EnrollAs::Member { registration },
+        wireguard_mtu: None,
+        pinned: Default::default(),
+    };
+    joiner.enroll(enrollment.clone()).unwrap();
+    joiner.begin_reset().unwrap();
+    assert!(matches!(
+        joiner.enroll(enrollment),
+        Ok(EnrollPlan::Conflict(_))
+    ));
+    server.abort();
+    drop(entry);
+    std::fs::remove_dir_all(directory).unwrap();
+}
