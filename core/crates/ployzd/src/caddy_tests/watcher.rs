@@ -430,6 +430,104 @@ async fn a_store_read_error_does_not_reload_an_unchanged_projection() {
     std::fs::remove_dir_all(directory).unwrap();
 }
 
+/// A Container that starts without taking a route changes only what the trace page shows,
+/// so Caddy keeps its load, and with it its passive health counts, until a route changes.
+#[tokio::test]
+async fn a_trace_only_change_does_not_reload_caddy() {
+    let WatcherFixture {
+        machine,
+        state,
+        address,
+        server,
+        directory,
+    } = watcher_fixture().await;
+    let (load_tx, mut load_rx) = mpsc::unbounded_channel();
+    let admin = TestAdmin { loads: load_tx };
+    let shutdown = CancellationToken::new();
+    let watcher = tokio::spawn(watch_caddy(
+        machine.clone(),
+        ReplicatedStore::new(ApiClient::http1(address, &"a".repeat(64)).unwrap()),
+        no_down,
+        directory.join(CONFIG_FILE),
+        tokio::sync::watch::channel(Default::default()).0,
+        shutdown.clone(),
+        move || std::future::ready(Ok(Some(admin.clone()))),
+    ));
+    let first = timeout(Duration::from_millis(250), load_rx.recv())
+        .await
+        .expect("first load waited for debounce")
+        .unwrap();
+    assert!(
+        first.contains(&format!("import ployz_trace {} ", machine.id)),
+        "{first}"
+    );
+
+    let mut starting = observation(
+        2,
+        &machine.id,
+        "api",
+        Some([10, 210, 1, 3]),
+        vec![ingress("example.com", 80, HttpProtocol::Http)],
+    );
+    starting
+        .try_update(|parts| parts.rotation = Some(CopyRotation::Pending))
+        .unwrap();
+    state.containers.lock().unwrap().push(starting.clone());
+    state.send(b"{\"change\":{}}\n");
+    state.wait_for_container_queries(2).await;
+    assert!(
+        timeout(Duration::from_millis(500), load_rx.recv())
+            .await
+            .is_err(),
+        "a Container that took no route reloaded Caddy"
+    );
+
+    state.set_rotation(starting.container_id, CopyRotation::In);
+    let routed = timeout(Duration::from_secs(5), load_rx.recv())
+        .await
+        .expect("a new route reloads Caddy")
+        .unwrap();
+    assert!(routed.contains("10.210.1.3:80"), "{routed}");
+    assert!(routed.contains(&format!("{}:2", machine.id)), "{routed}");
+
+    // The old copy leaving routing reloads with the count the deploy ends at, so its
+    // removal, which changes no route, leaves nothing stale.
+    // The fixture's first Container is the old `api` copy.
+    let old = state
+        .containers
+        .lock()
+        .unwrap()
+        .first()
+        .unwrap()
+        .container_id;
+    state.set_rotation(old, CopyRotation::Out);
+    let left = timeout(Duration::from_secs(5), load_rx.recv())
+        .await
+        .expect("a route leaving reloads Caddy")
+        .unwrap();
+    assert!(!left.contains("10.210.1.2:80"), "{left}");
+    assert!(left.contains(&format!("{}:1 ", machine.id)), "{left}");
+    state
+        .containers
+        .lock()
+        .unwrap()
+        .retain(|container| container.container_id != old);
+    let queried = state.container_queries();
+    state.send(b"{\"change\":{}}\n");
+    state.wait_for_container_queries(queried + 1).await;
+    assert!(
+        timeout(Duration::from_millis(500), load_rx.recv())
+            .await
+            .is_err(),
+        "removing an Out copy reloaded Caddy"
+    );
+
+    shutdown.cancel();
+    watcher.await.unwrap().unwrap();
+    server.abort();
+    std::fs::remove_dir_all(directory).unwrap();
+}
+
 #[tokio::test]
 async fn a_failed_admin_probe_on_a_loaded_input_neither_reloads_nor_holds_back_acks() {
     let WatcherFixture {

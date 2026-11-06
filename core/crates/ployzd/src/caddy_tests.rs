@@ -1296,9 +1296,17 @@ fn an_empty_route_answers_the_same_503_as_no_healthy_replicas() {
     let site = |name: &str| {
         automatic_site_block(&caddyfile, &format!("http://{name}.example")).replace(name, "NAME")
     };
+    // The trace counts a copy rotated Out as gone; only what the request gets is compared.
+    let route = |name: &str| {
+        let block = site(name);
+        let (head, rest) = block.split_once("import ployz_trace").unwrap();
+        let (_, tail) = rest.split_once("import ployz_requests").unwrap();
+        format!("{head}{tail}")
+    };
     assert!(site("stopped").contains("error NOT_RUNNING 503"));
-    assert_eq!(site("out"), site("stopped"));
+    assert_eq!(route("out"), route("stopped"));
     assert_eq!(site("held"), site("stopped"));
+    assert!(site("out").contains(" \"\" \"\" NOT_RUNNING"));
 }
 
 // Only for automatic sites: their tokens contain no quoted braces or placeholders.

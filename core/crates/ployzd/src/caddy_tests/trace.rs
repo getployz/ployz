@@ -114,6 +114,78 @@ fn placement_counts_rollout_overlap_and_stopped_leftovers() {
 }
 
 #[test]
+fn placement_leaves_out_copies_rotated_out() {
+    let projection = derive(vec![
+        with(api(1, &machine('a'), 1), |parts| {
+            parts.rotation = Some(ployz_core::CopyRotation::Out);
+        }),
+        api(2, &machine('a'), 2),
+        api(3, &machine('b'), 3),
+    ]);
+
+    assert_eq!(
+        trace(&projection).placement,
+        placement(&[('a', 1), ('b', 1)])
+    );
+}
+
+#[test]
+fn the_deploy_is_named_by_in_copies_first_then_held_then_out() {
+    let a = machine('a');
+    let rotated = |n: u8, label: &str, rotation: ployz_core::CopyRotation| {
+        with(labeled(api(n, &a, i64::from(n)), label), move |parts| {
+            parts.rotation = Some(rotation);
+        })
+    };
+    let held = || ployz_core::CopyRotation::Held(DeploymentLogId::parse("run").unwrap());
+    let deploy = |copies| {
+        let projection = derive(copies);
+        trace(&projection).deploy.as_ref().map(ToString::to_string)
+    };
+
+    // A failed stop-first attempt's newer copy, held while the old one is back In.
+    assert_eq!(
+        deploy(vec![
+            rotated(1, "served", ployz_core::CopyRotation::In),
+            rotated(2, "failed", held()),
+        ]),
+        Some("served".to_owned())
+    );
+    // No copy In: the newest held one.
+    assert_eq!(
+        deploy(vec![
+            rotated(1, "older", held()),
+            rotated(2, "newer", held()),
+            rotated(3, "retired", ployz_core::CopyRotation::Out),
+        ]),
+        Some("newer".to_owned())
+    );
+    // Every copy Out: the newest of them.
+    assert_eq!(
+        deploy(vec![
+            rotated(1, "older", ployz_core::CopyRotation::Out),
+            rotated(2, "newer", ployz_core::CopyRotation::Out),
+        ]),
+        Some("newer".to_owned())
+    );
+}
+
+#[test]
+fn a_retired_copy_does_not_name_the_deploy() {
+    let projection = derive(vec![
+        labeled(api(1, &machine('a'), 1), "served"),
+        with(labeled(api(2, &machine('a'), 2), "failed"), |parts| {
+            parts.rotation = Some(ployz_core::CopyRotation::Out);
+        }),
+    ]);
+
+    assert_eq!(
+        trace(&projection).deploy,
+        Some(DeploymentLogId::parse("served").unwrap())
+    );
+}
+
+#[test]
 fn placement_counts_only_the_hostname_owner() {
     // The oldest publisher owns a contested hostname.
     let blog = with(api(9, &machine('b'), 9), |parts| {
