@@ -17,6 +17,7 @@ import { Ployz, type PloyzProviderError, type PloyzSdkError, type PloyzSession, 
 import { ClusterOutOfTime, clusterRead, OrganizationRuntime, SESSION_CLOSE_CLUSTER_MS, withClusterBudget } from "#/modules/runtime/organization-runtime.server";
 import { PostHog } from "#/modules/analytics/posthog.server";
 import {
+  JoinApprovalRequired,
   enrollmentExpiry,
   MANAGEMENT_CAPABILITY_LENGTH,
   mintedEnrollment,
@@ -795,7 +796,7 @@ export const enrollMachine = Effect.fn("MachineEnrollment.enrollMachine")(
             ? "The Server's join was already admitted. Inspect the Server before retrying enrollment."
             : "ployz.machine.join.device-approval.v1 requires approval from an existing Device. Approve the join, then rerun the same join command.";
           return Effect.fail(needsApproval
-            ? new Conflict({ message, userFacing: true })
+            ? new JoinApprovalRequired({ message })
             : error);
         }));
       return { kind: "join" as const, pairing, storage: request.storage, registration };

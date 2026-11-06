@@ -121,7 +121,7 @@ impl Error {
         };
         serde_json::from_str::<serde_json::Value>(body)
             .ok()?
-            .pointer("/error/details/capability")?
+            .pointer("/details/capability")?
             .as_str()
             .map(str::to_owned)
     }
@@ -2518,6 +2518,29 @@ mod tests {
         assert_eq!(
             json.get("diskAvailableBytes"),
             Some(&serde_json::json!(85_899_345_920_u64))
+        );
+    }
+}
+
+#[cfg(test)]
+mod join_capability_tests {
+    use super::Error;
+    #[test]
+    fn join_approval_is_selected_by_details_not_error_text() {
+        let capability = ployz_core::JOIN_APPROVAL_CAPABILITY;
+        let error = |body| Error::CodedConflict { body };
+        assert_eq!(
+            error(
+                serde_json::json!({"error":"Approval needed", "details":{"capability":capability}})
+                    .to_string()
+            )
+            .capability()
+            .as_deref(),
+            Some(capability)
+        );
+        assert_eq!(
+            error(serde_json::json!({"error":capability}).to_string()).capability(),
+            None
         );
     }
 }
