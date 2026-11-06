@@ -209,7 +209,7 @@ mod tests {
     }
 
     fn container(fill: char) -> ContainerId {
-        ContainerId::parse(&fill.to_string().repeat(64)).unwrap()
+        ContainerId::parse(fill.to_string().repeat(64)).unwrap()
     }
 
     fn at(millis: u64) -> Timestamp {
