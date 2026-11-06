@@ -385,7 +385,9 @@ impl Shipped {
             ui::warn(skipped);
         }
         if self.presented {
-            ui::emit(&Next::new(&self.view, Some(self.hint.clone())))?;
+            ui::finish(&Next::new(&self.view, Some(self.hint.clone())), || {
+                say_unserved(&self.view);
+            })?;
         } else {
             finish_view(&self.view, Some(self.hint.clone()))?;
         }
@@ -491,7 +493,9 @@ pub(super) fn execute(
                     Disposition::Settled
                 },
             );
-            ui::emit(&Next::new(&followed.view, Some(hint)))?;
+            ui::finish(&Next::new(&followed.view, Some(hint)), || {
+                say_unserved(&followed.view);
+            })?;
             return Err(if interrupted {
                 error.interrupted()
             } else {
@@ -1593,6 +1597,31 @@ fn untargeted_lines(
         .collect()
 }
 
+/// After a deploy's progress, says where each Service ended when one doesn't serve its new copies.
+pub(super) fn say_unserved(view: &DeploymentView) {
+    for line in unserved_outcome_lines(&view.deployment.outcome) {
+        crate::ui::stream(format_args!("{line}"));
+    }
+}
+
+/// Where each Service ended, after a deploy's progress: only when one doesn't serve its new copies,
+/// since the progress already shows a deploy that shipped everything.
+fn unserved_outcome_lines(outcome: &Option<ployz_store::Outcome>) -> Vec<String> {
+    let Some(ployz_store::Outcome::Executed { services, .. }) = outcome else {
+        return Vec::new();
+    };
+    let shipped = services.iter().all(|service| {
+        matches!(
+            service.result,
+            ployz_core::ServiceResult::New | ployz_core::ServiceResult::Updated
+        )
+    });
+    if shipped {
+        return Vec::new();
+    }
+    service_outcome_lines(services)
+}
+
 fn service_outcome_lines(services: &[ployz_core::ServiceOutcome]) -> Vec<String> {
     services
         .iter()
@@ -1616,7 +1645,7 @@ fn service_outcome_lines(services: &[ployz_core::ServiceOutcome]) -> Vec<String>
 mod tests {
     use super::{
         Tone, open_events, provenance, prune_line, prune_skipped, service_outcome_lines, ships_all,
-        status_tone, status_word, undecided, untargeted_lines,
+        status_tone, status_word, undecided, unserved_outcome_lines, untargeted_lines,
     };
     use ployz_core::{RpcErrorCode, ServiceName};
 
@@ -1753,6 +1782,51 @@ mod tests {
                 "  cron: a newer deploy serves it",
             ]
         );
+    }
+
+    #[test]
+    fn a_deploy_ends_naming_each_service_only_when_one_isnt_serving_its_new_copies() {
+        let outcome = |services: serde_json::Value| -> Option<ployz_store::Outcome> {
+            Some(
+                serde_json::from_value(serde_json::json!({
+                    "type": "executed", "summary": {}, "services": services,
+                }))
+                .unwrap(),
+            )
+        };
+        assert_eq!(
+            unserved_outcome_lines(&outcome(serde_json::json!([
+                {"service": "a", "result": "new"},
+                {"service": "b", "result": "old"},
+                {"service": "c", "result": "not_started"},
+            ]))),
+            [
+                "  a: serves its new copies",
+                "  b: not switched to its new copies",
+                "  c: not started",
+            ]
+        );
+        assert_eq!(
+            unserved_outcome_lines(&outcome(serde_json::json!([
+                {"service": "a", "result": "unconfirmed"},
+            ]))),
+            ["  a: may serve its new copies: the switch was not confirmed"]
+        );
+        assert_eq!(
+            unserved_outcome_lines(&outcome(serde_json::json!([
+                {"service": "a", "result": "newer"},
+            ]))),
+            ["  a: a newer deploy serves it"]
+        );
+        assert!(
+            unserved_outcome_lines(&outcome(serde_json::json!([
+                {"service": "a", "result": "new"},
+                {"service": "b", "result": "updated"},
+            ])))
+            .is_empty()
+        );
+        assert!(unserved_outcome_lines(&outcome(serde_json::json!([]))).is_empty());
+        assert!(unserved_outcome_lines(&None).is_empty());
     }
 
     #[test]
