@@ -9,8 +9,9 @@ use std::{
 };
 
 use ployz_core::{
-    ContainerId, ContainerNow, ContainerWant, DeviceEnforcementSet, DeviceKey, LocalMachinePhase,
-    ManagementScope, OperationId, Sealing, SetDeviceEnforcementRequest,
+    ContainerId, ContainerLocator, ContainerNow, ContainerWant, DeviceEnforcementSet, DeviceKey,
+    LocalMachinePhase, ManagementScope, OperationId, RunTarget, Sealing,
+    SetDeviceEnforcementRequest,
     authority::{
         AuthorityRefusal, Purpose, RestartApproval, RestartFacts, RestartStep, Signed, Timestamp,
         restart,
@@ -61,7 +62,8 @@ impl LocalMachine {
     /// Under Device enforcement, let an Operator caller's restart step through only with
     /// an approved Device's approval of exactly this restart, and record the step so the
     /// same approval never runs it again. New-creation requests need deploy authorization
-    /// and are refused, including adoption. A Machine not enforcing passes untouched.
+    /// and are refused, including adoption. Returns a want pinned to the verified
+    /// Container ID. An absent target is refused. A Machine not enforcing passes untouched.
     ///
     /// # Errors
     /// Returns [`Error::RestartRefused`] naming what the approval lacks,
@@ -70,14 +72,14 @@ impl LocalMachine {
     /// read.
     pub async fn admit_operator_restart(
         &self,
-        want: &ContainerWant,
+        mut want: ContainerWant,
         approval: Option<&Signed<RestartApproval>>,
-    ) -> Result<(), Error> {
+    ) -> Result<ContainerWant, Error> {
         let record = self.record();
         if !record.device_enforcement() {
-            return Ok(());
+            return Ok(want);
         }
-        let Some((step, locator)) = RestartStep::of(want) else {
+        let Some((step, locator)) = RestartStep::of(&want) else {
             return Err(AuthorityRefusal::Mismatch {
                 field: "a workflow",
             }
@@ -87,7 +89,10 @@ impl LocalMachine {
             purpose: Purpose::Workflow,
         })?;
         let ContainerNow::Present(observed) = self.container_now(locator).await? else {
-            return Ok(());
+            return Err(AuthorityRefusal::Mismatch {
+                field: "a Container",
+            }
+            .into());
         };
         let devices: Vec<DeviceKey> = record.devices().collect();
         let identity = observed.identity();
@@ -112,7 +117,22 @@ impl LocalMachine {
         )?;
         self.approvals
             .consume(&body, &observed.container_id, step, now)?;
-        Ok(())
+        let locator = match &mut want {
+            ContainerWant::Held { container, .. }
+            | ContainerWant::Out { container, .. }
+            | ContainerWant::Stopped { container, .. }
+            | ContainerWant::Gone { container, .. }
+            | ContainerWant::Running {
+                container: RunTarget::Existing(container),
+                ..
+            } => container,
+            ContainerWant::Running {
+                container: RunTarget::New(_),
+                ..
+            } => unreachable!("new creations were refused"),
+        };
+        *locator = ContainerLocator::Id(observed.container_id);
+        Ok(want)
     }
 }
 

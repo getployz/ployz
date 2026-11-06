@@ -480,15 +480,19 @@ impl MachineRpc for MachineService {
     ) -> Result<Response<OpaquePayload>, Status> {
         let operator = from_operator(&request);
         let request = expect::<op::EnsureContainer>(request)?;
-        if operator
-            && let Err(error) = self
+        let want = if operator {
+            match self
                 .local
-                .admit_operator_restart(&request.want, request.approval.as_ref())
+                .admit_operator_restart(request.want, request.approval.as_ref())
                 .await
-        {
-            return local_error(error);
-        }
-        finish(self.local.ensure_container(request.want).await)
+            {
+                Ok(want) => want,
+                Err(error) => return local_error(error),
+            }
+        } else {
+            request.want
+        };
+        finish(self.local.ensure_container(want).await)
     }
 
     async fn update_container_limits(

@@ -3247,6 +3247,87 @@ mod ensure_container {
         }
 
         #[tokio::test]
+        async fn admission_pins_the_verified_container_when_its_slot_is_replaced() {
+            let fixture = enforced("ployzd-enforce-pinned-slot").await;
+            let service = &fixture.service;
+            let id = present(&ensure(service, run_new("k1", spec("example.test/api:1"))).await)
+                .container_id;
+            let signed = fixture.signed(&fixture.approval(&id));
+            let want = serde_json::from_value(
+                json!({"state":"stopped", "container":{"key":slot("k1")}, "drain":0}),
+            )
+            .unwrap();
+            let admitted = service
+                .local
+                .admit_operator_restart(want, Some(&signed))
+                .await
+                .unwrap();
+            ensure(
+                service,
+                json!({"want":{"state":"gone", "container":{"id":id}, "drain":0}}),
+            )
+            .await;
+            let replacement =
+                present(&ensure(service, run_new("k1", spec("example.test/api:1"))).await)
+                    .container_id;
+            assert_ne!(id, replacement);
+            let seen = requests(&fixture.fake).len();
+            let _ = service.local.ensure_container(admitted).await;
+            refused(
+                operator_ensure(
+                    service,
+                    json!({"state":"stopped", "container":{"key":slot("k1")}, "drain":0}),
+                    Some(&signed),
+                )
+                .await,
+                "names a Container",
+            );
+            let observed = fixture
+                .runtime
+                .inspect_managed(&replacement, &service.local.record().id())
+                .await
+                .unwrap();
+            assert!(matches!(
+                observed.runtime,
+                ContainerRuntimeObservation::Running { .. }
+            ));
+            assert_eq!(
+                ends_with(&requests_since(&fixture.fake, seen), Method::POST, "/stop").count(),
+                0
+            );
+            std::fs::remove_dir_all(fixture.data_dir).unwrap();
+        }
+
+        #[tokio::test]
+        async fn an_empty_slot_at_admission_cannot_authorize_a_later_container() {
+            let fixture = enforced("ployzd-enforce-empty-slot").await;
+            let service = &fixture.service;
+            let signed =
+                fixture.signed(&fixture.approval(&ContainerId::parse("a".repeat(64)).unwrap()));
+            for want in [
+                json!({"state":"stopped", "container":{"key":slot("k1")}, "drain":0}),
+                json!({"state":"gone", "container":{"key":slot("k1")}, "drain":0}),
+            ] {
+                refused(
+                    operator_ensure(service, want, Some(&signed)).await,
+                    "names a Container",
+                );
+            }
+            let id = present(&ensure(service, run_new("k1", spec("example.test/api:1"))).await)
+                .container_id;
+            let observed = fixture
+                .runtime
+                .inspect_managed(&id, &service.local.record().id())
+                .await
+                .unwrap();
+            assert!(matches!(
+                observed.runtime,
+                ContainerRuntimeObservation::Running { .. }
+            ));
+            std::fs::remove_dir_all(fixture.data_dir).unwrap();
+        }
+
+        #[tokio::test]
         async fn an_operator_cannot_adopt_an_exited_container_with_a_new_creation() {
             let fixture = enforced("ployzd-enforce-adopt").await;
             let service = &fixture.service;
