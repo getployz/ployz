@@ -125,7 +125,9 @@ pub(crate) struct IngressPublication {
 /// The owner facts the trace page shows, independent of health and endpoint eligibility.
 #[derive(Clone, Debug, Default, Eq, PartialEq, Serialize)]
 pub(crate) struct PublicationTrace {
-    /// Deployment attempt of the owner's newest Service Container, when it carries a valid one.
+    /// Deployment attempt of the owner's newest Service Container that is In, or when none
+    /// is, the newest held or pending one, or else the newest of any; when it carries a
+    /// valid one. So it changes only with the In set, which changes only with a route.
     pub(super) deploy: Option<DeploymentLogId>,
     /// Count of the owner's observed Service Containers per Machine, in any runtime state,
     /// leaving out copies rotated Out: only their removal follows, and that removal changes
@@ -153,10 +155,8 @@ impl PublicationTrace {
                     .and_modify(|count| *count = count.saturating_add(1))
                     .or_insert(NonZeroUsize::MIN);
             }
-            // A copy rotated Out never names the attempt while one that isn't remains, so a
-            // failed attempt's retired copies don't outlast the reload that retired them.
-            if (!retired(container), creation_key(container))
-                > (!retired(newest), creation_key(newest))
+            if (naming_rank(container), creation_key(container))
+                > (naming_rank(newest), creation_key(newest))
             {
                 *newest = container;
             }
@@ -173,6 +173,16 @@ impl PublicationTrace {
                 (service, Self { deploy, placement })
             })
             .collect()
+    }
+}
+
+/// Which copies name the trace page's deploy first: In, then held or pending, then Out. A
+/// copy leaving or joining without a route change then never changes the name.
+fn naming_rank(container: &ServiceContainer) -> u8 {
+    match container.as_observation().rotation() {
+        ployz_core::CopyRotation::In => 2,
+        ployz_core::CopyRotation::Held(_) | ployz_core::CopyRotation::Pending => 1,
+        ployz_core::CopyRotation::Out => 0,
     }
 }
 
@@ -515,8 +525,9 @@ pub(crate) enum CaddyFile {
 enum CaddyLoad {
     /// Nothing the watcher applied is known to be served.
     Unapplied,
-    /// The Caddyfile was written from `input` without the admin. A starting Caddy may have
-    /// read the file before the write, so this confirms nothing.
+    /// The Caddyfile was written without the admin from `input`, or from an earlier input
+    /// that serves as it and differs only in the trace page's values. A starting Caddy may
+    /// have read the file before the write, so this confirms nothing.
     Written { input: CaddyInput },
     /// The admin of `input.caddy` loaded `input`, so Caddy serves `addresses`, and the files
     /// a restart reads hold it.
