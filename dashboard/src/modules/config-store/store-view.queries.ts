@@ -189,6 +189,20 @@ export function shownQueries(queryClient: QueryClient, organizationSlug: string,
     .slice(0, MAX_SHOWN_VIEWS);
 }
 
+/**
+ * Drops the views nothing shows whose answer is a refusal. A Project renamed to a name this tab saw go (a rename
+ * back) would otherwise keep reading `not_found` there: views never go stale on their own, and a hidden one only
+ * rereads after its stale answer has shown.
+ */
+export function dropHiddenRefusals(queryClient: QueryClient, organizationSlug: string) {
+  queryClient.removeQueries({
+    queryKey: storeViewPrefix(organizationSlug),
+    predicate: (query) => queryOf(query) !== null && query.getObserversCount() === 0 && isRefusal(query.state.data),
+  });
+}
+
+const isRefusal = Schema.is(Schema.Struct({ ok: Schema.Literal(false) }));
+
 function viewsOf(queryClient: QueryClient, organizationSlug: string, keys: ReadonlySet<string> | null) {
   return queryClient.getQueryCache().findAll({ queryKey: storeViewPrefix(organizationSlug) })
     .filter((query) => queryOf(query) !== null && (keys === null || [...keys].some((key) => isOfEnvironment(query, key))));

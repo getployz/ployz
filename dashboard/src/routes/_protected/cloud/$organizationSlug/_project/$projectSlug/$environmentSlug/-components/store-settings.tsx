@@ -234,7 +234,7 @@ export function StoreProjectSettings({ organizationSlug, projectSlug, environmen
           return writer.commit({ command: "rename_project", project: projectSlug, name }).then(() => {
             rememberProjectRename(organizationSlug, projectSlug, name);
             return navigate({ to: ".", params: (params) => ({ ...params, projectSlug: name }), search: (prev) => prev, replace: true });
-          }, () => undefined).finally(() => setRenaming(false));
+          }).catch(() => undefined).finally(() => setRenaming(false));
         }} />
         <SettingsRow
           label="Default environment"
