@@ -1,4 +1,5 @@
 use std::collections::{HashMap, HashSet};
+use std::path::Path;
 
 use clap::{Arg, ArgAction, ArgMatches, Command};
 use futures_util::future::join_all;
@@ -7,8 +8,10 @@ use crate::cli::{base, positional, value};
 use ployz_core::{
     ContainerAction, ContainerId, ContainerObservation, ContainerRef, ContainerRuntimeObservation,
     CopyRotation, HealthFailure, HealthObservation, LiveServices, MachineFailure, MachineId,
-    MachineName, QualifiedService, RpcError, RpcErrorCode, ServiceContainer, ServiceObservation,
-    ServiceSelector, select_service,
+    MachineName, MachineObservation, OperationId, QualifiedService, RpcError, RpcErrorCode,
+    Sealing, ServiceContainer, ServiceObservation, ServiceSelector,
+    authority::{RestartApproval, Signed, Signer, Timestamp, WorkflowKind},
+    select_service,
 };
 use serde::Serialize;
 use tokio_util::sync::CancellationToken;
@@ -357,6 +360,7 @@ fn lifecycle(root: &ArgMatches, actions: &'static [ContainerAction]) -> Result<(
     let selectors = change_selectors(leaf, namespace.as_ref())?;
     let (signal, timeout) = stop_options(leaf, actions)?;
     let hint = super::store::next(leaf, &["ps"]);
+    let device_key = super::device::key::path(&super::config_path(leaf)?);
     with_client(root, |client| {
         Box::pin(async move {
             let machines = client.machines().await?;
@@ -372,6 +376,11 @@ fn lifecycle(root: &ArgMatches, actions: &'static [ContainerAction]) -> Result<(
                 .warn();
             let observed = live.services();
             let services = select_services(&observed, &selectors)?;
+            let approvals = if actions == [ContainerAction::Restart] {
+                restart_approvals(&device_key, &machines, &services)?
+            } else {
+                HashMap::new()
+            };
             // A restart rolls: each Container is stopped, then started and serving, before the next one stops,
             // so a Service with more than one replica keeps serving throughout.
             let rolling: Vec<ServiceObservation> = if actions == [ContainerAction::Restart] {
@@ -404,7 +413,8 @@ fn lifecycle(root: &ArgMatches, actions: &'static [ContainerAction]) -> Result<(
                     ContainerAction::Stop | ContainerAction::Restart => (signal.clone(), timeout),
                     ContainerAction::Start | ContainerAction::Remove => (None, None),
                 };
-                let (live, names, cancellation) = (&live, &names, &cancellation);
+                let (live, names, approvals, cancellation) =
+                    (&live, &names, &approvals, &cancellation);
                 async move {
                     apply_service_action(
                         client,
@@ -412,6 +422,7 @@ fn lifecycle(root: &ArgMatches, actions: &'static [ContainerAction]) -> Result<(
                         names,
                         services,
                         (action, signal, timeout),
+                        approvals,
                         cancellation,
                     )
                     .await
@@ -526,12 +537,68 @@ impl ServiceActionOutcome {
     }
 }
 
+/// How long a restart's approval admits its steps: enough for the slowest rolling restart,
+/// short enough that a copied one soon admits nothing.
+const APPROVAL_LIFETIME_MILLIS: u64 = 15 * 60 * 1000;
+
+/// One approval per Service, signed by this Device for this restart. Without a Device key,
+/// or a Cluster identity to name, there is nothing to sign: the restart goes unsigned, and
+/// a Machine that enforces Device approval refuses it naming the capability.
+fn restart_approvals(
+    device_key: &Path,
+    machines: &[MachineObservation],
+    services: &[&ServiceObservation],
+) -> Result<HashMap<QualifiedService, Signed<RestartApproval>>, Error> {
+    let Some(secret) = super::device::key::load(device_key)? else {
+        return Ok(HashMap::new());
+    };
+    let Some(cluster) =
+        machines
+            .iter()
+            .find_map(|observed| match observed.machine.runtime.sealing {
+                Some(Sealing::Held { public_key }) => Some(public_key),
+                _ => None,
+            })
+    else {
+        return Ok(HashMap::new());
+    };
+    let signer = Signer::from_seed(&secret);
+    let operation = OperationId::random();
+    let expires_at = Timestamp::now().plus(APPROVAL_LIFETIME_MILLIS);
+    services
+        .iter()
+        .map(|service| {
+            let mut machines: Vec<MachineId> = service
+                .containers
+                .iter()
+                .map(|container| container.as_observation().machine_id)
+                .collect();
+            machines.sort_unstable();
+            machines.dedup();
+            let approval = RestartApproval {
+                cluster,
+                operation,
+                kind: WorkflowKind::Restart,
+                namespace: service.identity.namespace.clone(),
+                service: service.identity.name.clone(),
+                machines,
+                expires_at,
+                signer: signer.public().into(),
+            };
+            Signed::sign(&approval, &signer)
+                .map(|signed| (service.identity.clone(), signed))
+                .map_err(Error::command)
+        })
+        .collect()
+}
+
 async fn apply_service_action(
     client: &crate::connect::Client,
     live: &LiveServices<RpcError>,
     names: &HashMap<MachineId, &MachineName>,
     services: &[&ServiceObservation],
     (action, signal, timeout): (ContainerAction, Option<String>, Option<u16>),
+    approvals: &HashMap<QualifiedService, Signed<RestartApproval>>,
     cancellation: &CancellationToken,
 ) -> Result<ServiceActionOutcome, Error> {
     let service_container_ids = services
@@ -546,6 +613,8 @@ async fn apply_service_action(
     let mut partial = false;
     for service in services {
         let outcomes = client
+            .clone()
+            .with_restart_approval(approvals.get(&service.identity).cloned())
             .change_observed_service(service, action, signal.clone(), timeout, cancellation)
             .await;
         for success in outcomes.successes {
