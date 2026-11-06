@@ -8,8 +8,7 @@ export function volumeSupportText(storage: RuntimeMachineRecord["storage"]) {
     : storage === "stateless" ? "Docker only" : "Managed volumes available";
 }
 
-type StatusEvidence = Pick<RuntimeMachineRecord, "membership" | "runningBuilds"> &
-  Partial<Pick<RuntimeMachineRecord, "unanswered">>;
+type StatusEvidence = Pick<RuntimeMachineRecord, "membership" | "runningBuilds" | "unanswered">;
 
 /**
  * The one word a Server's status shows. A `suspect` Server still reads online: SWIM settles suspicion to up or
@@ -17,7 +16,7 @@ type StatusEvidence = Pick<RuntimeMachineRecord, "membership" | "runningBuilds">
  * A Server whose daemon stopped answering the Runtime Watch's probes reads Offline too, though gossip still reads it up.
  */
 export function serverStatus(machine: StatusEvidence): ServerStatus {
-  if (machine.unanswered === true) return "offline";
+  if (machine.unanswered) return "offline";
   switch (machine.membership) {
     case "up":
     case "suspect":

@@ -11,14 +11,9 @@ use std::{
     time::Duration,
 };
 
-use http::uri::PathAndQuery;
-use ployz_core::{InspectRequest, MachineId, ManagementAddress, OpaquePayload, Rpc, op};
+use ployz_core::{DescribeContractRequest, MachineId, MachineRpcClient, ManagementAddress, op};
 use tokio::sync::watch;
-use tonic::{
-    Code,
-    codec::ProstCodec,
-    transport::{Channel, Endpoint},
-};
+use tonic::transport::{Channel, Endpoint};
 
 /// How often each peer is asked.
 pub(crate) const PROBE_INTERVAL: Duration = Duration::from_secs(5);
@@ -95,51 +90,49 @@ pub(crate) async fn probe_peers<P, F>(
     }
 }
 
-/// Dials peers' management APIs, keeping one lazy channel per address.
+/// Dials peers' Machine APIs over the mesh, keeping one lazy channel per address.
 pub(crate) struct Dialer {
     port: u16,
+    timeout: Duration,
     channels: std::sync::Mutex<BTreeMap<ManagementAddress, Channel>>,
 }
 
 impl Dialer {
     pub(crate) fn new(port: u16) -> Self {
+        Self::with_timeout(port, PROBE_TIMEOUT)
+    }
+
+    fn with_timeout(port: u16, timeout: Duration) -> Self {
         Self {
             port,
+            timeout,
             channels: std::sync::Mutex::default(),
         }
     }
 
-    /// Whether the daemon at `address` answers an `Inspect` within `PROBE_TIMEOUT`. Any
-    /// reply from it counts, a refusal included; only no reply is a miss.
+    /// Whether the daemon at `address` replies to a `DescribeContract` within the
+    /// timeout. Any reply from it counts, a refusal included; only a call that never
+    /// reached a daemon, or no reply in time, is a miss.
     pub(crate) async fn answers(&self, address: ManagementAddress) -> bool {
         let Some(channel) = self.channel(address) else {
             return false;
         };
-        let Ok(payload) = op::Inspect::into_request(InspectRequest::default()).encode() else {
+        let Ok(payload) = op::DescribeContract::into_request(DescribeContractRequest {}).encode()
+        else {
             return false;
         };
         let call = async {
-            let mut grpc = tonic::client::Grpc::new(channel);
-            if grpc.ready().await.is_err() {
-                return false;
-            }
-            match grpc
-                .unary(
-                    tonic::Request::new(payload),
-                    PathAndQuery::from_static(op::Inspect::PATH),
-                    ProstCodec::<OpaquePayload, OpaquePayload>::default(),
-                )
+            match MachineRpcClient::new(channel)
+                .describe_contract(payload)
                 .await
             {
                 Ok(_) => true,
-                // The transport's own failures: no daemon replied.
-                Err(status) => !matches!(
-                    status.code(),
-                    Code::Unavailable | Code::Unknown | Code::Cancelled | Code::DeadlineExceeded
-                ),
+                // A status the daemon sent carries no source; the client's own
+                // transport failures (refused, reset, unreachable) do.
+                Err(status) => std::error::Error::source(&status).is_none(),
             }
         };
-        tokio::time::timeout(PROBE_TIMEOUT, call)
+        tokio::time::timeout(self.timeout, call)
             .await
             .unwrap_or(false)
     }
@@ -151,7 +144,7 @@ impl Dialer {
         }
         let channel = Endpoint::from_shared(format!("http://[{}]:{}", address.0, self.port))
             .ok()?
-            .connect_timeout(PROBE_TIMEOUT)
+            .connect_timeout(self.timeout)
             .connect_lazy();
         channels.insert(address, channel.clone());
         Some(channel)

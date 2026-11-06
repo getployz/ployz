@@ -182,7 +182,7 @@ pub(crate) async fn serve_replicated_runtime_watch(
     );
     interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
     let dialer = std::sync::Arc::new(crate::runtime_watch_probe::Dialer::new(
-        ployz_core::MANAGEMENT_PORT,
+        ployz_core::MACHINE_API_PORT,
     ));
     Ok(serve_runtime_watch(
         entry_id,

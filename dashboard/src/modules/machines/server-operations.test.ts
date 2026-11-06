@@ -214,7 +214,9 @@ describe("ingressOffPlan", () => {
   const web = (
     ingress: { here: readonly [boolean, string | null]; there: readonly [boolean, string | null] },
     thereMembership = "up",
+    unanswered: string[] = [],
   ) => asTestDouble<RuntimeWatchView>()({
+    unanswered,
     machines: [
       { membership: "up", machine: { id: here, name: "fra-1", accepts_ingress: ingress.here[0], public_ip: ingress.here[1], runtime: { running_builds: 0 } } },
       { membership: thereMembership, machine: { id: there, name: "fra-2", accepts_ingress: ingress.there[0], public_ip: ingress.there[1], runtime: { running_builds: 0 } } },
@@ -242,6 +244,11 @@ describe("ingressOffPlan", () => {
       expect(ingressOffPlan(web({ here: [true, "203.0.113.1"], there: [true, "203.0.113.2"] }, membership), here, off)?.effects.map(({ name }) => name))
         .toEqual(["api.example.com", "shop.example.com"]);
     }
+  });
+
+  it("removes every domain when the only other Server that takes web traffic reads up but its daemon doesn't answer", () => {
+    expect(ingressOffPlan(web({ here: [true, "203.0.113.1"], there: [true, "203.0.113.2"] }, "up", [there]), here, off)?.effects.map(({ name }) => name))
+      .toEqual(["api.example.com", "shop.example.com"]);
   });
 
   it("removes nothing while another online Server with a public IP takes web traffic, or when this one serves none", () => {
