@@ -493,7 +493,13 @@ async fn a_trace_only_change_does_not_reload_caddy() {
     // The old copy leaving routing reloads with the count the deploy ends at, so its
     // removal, which changes no route, leaves nothing stale.
     // The fixture's first Container is the old `api` copy.
-    let old = state.containers.lock().unwrap()[0].container_id;
+    let old = state
+        .containers
+        .lock()
+        .unwrap()
+        .first()
+        .unwrap()
+        .container_id;
     state.set_rotation(old, CopyRotation::Out);
     let left = timeout(Duration::from_secs(5), load_rx.recv())
         .await
