@@ -24,7 +24,7 @@ mod path;
 
 pub(crate) use endpoints::interface_addresses;
 pub use endpoints::{DiscoveredNetwork, discover_network};
-pub use firewall::{apply_firewall_rules, fence_builder};
+pub use firewall::{Installed, Restored, apply_firewall_rules, fence_builder};
 pub use linux::{Leftover, NetworkPlane};
 pub(crate) use path::PathBook;
 

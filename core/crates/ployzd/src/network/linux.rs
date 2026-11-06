@@ -38,7 +38,7 @@ use super::{
     WIREGUARD_INTERFACE_NAME, WIREGUARD_KEEPALIVE_SECONDS, WIREGUARD_PORT, WireGuardPrivateKey,
     attach_peer_selections, checked_command, choose_endpoint,
     docker_firewall::Ipv6Off,
-    firewall::{docker_ipv6_firewall, fence_container_ipv6, remove_firewall_rules},
+    firewall::{Installed, docker_ipv6_firewall, fence_container_ipv6, remove_firewall_rules},
     path::{self, MIN_MTU, PathBook, PathReport, ProbedPeer},
     peers_for, port_held_elsewhere,
 };
@@ -119,6 +119,8 @@ pub struct NetworkPlane {
     lowered: BTreeMap<MachineId, Lowered>,
     paths: PathBook,
     probed: watch::Sender<Vec<ProbedPeer>>,
+    /// `None` until start installs it, and on a plane built only to clean up.
+    firewall: Option<Installed>,
 }
 
 impl NetworkPlane {
@@ -172,6 +174,7 @@ impl NetworkPlane {
             lowered: BTreeMap::new(),
             paths: PathBook::default(),
             probed: watch::Sender::new(Vec::new()),
+            firewall: None,
         };
         // Boxed: settling the bridge is a large future, and inline it overflows the
         // stack of a daemon start.
@@ -193,13 +196,15 @@ impl NetworkPlane {
                 .await;
             return Err(error);
         }
-        if let Err(error) =
-            super::apply_firewall_rules(plane.machine.subnet, plane.machine.management_address())
+        match super::apply_firewall_rules(plane.machine.subnet, plane.machine.management_address())
         {
-            plane
-                .rollback_start(docker_created, wireguard_created)
-                .await;
-            return Err(error);
+            Ok(installed) => plane.firewall = Some(installed),
+            Err(error) => {
+                plane
+                    .rollback_start(docker_created, wireguard_created)
+                    .await;
+                return Err(error);
+            }
         }
         Ok(Some(plane))
     }
@@ -218,20 +223,15 @@ impl NetworkPlane {
         mut choices: mpsc::Receiver<EndpointChoice>,
         shutdown: CancellationToken,
     ) -> io::Result<()> {
-        let mut firewall = tokio::time::interval_at(
-            tokio::time::Instant::now() + FIREWALL_INTERVAL,
-            FIREWALL_INTERVAL,
-        );
-        firewall.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+        let reapplying = shutdown.child_token();
+        let _stop_reapplying = reapplying.clone().drop_guard();
+        if let Some(firewall) = self.firewall {
+            tokio::spawn(keep_firewall(firewall, reapplying));
+        }
         let Some((replicated, machines)) = machines else {
             drop(choices);
-            loop {
-                tokio::select! {
-                    biased;
-                    () = shutdown.cancelled() => return Ok(()),
-                    _ = firewall.tick() => self.reapply_firewall().await,
-                }
-            }
+            shutdown.cancelled().await;
+            return Ok(());
         };
         let mut machines = machines.watch();
         machines.mark_changed();
@@ -264,7 +264,6 @@ impl NetworkPlane {
                 }
                 Some(choice) = choices.recv() => self.apply_choice(choice, &local).await,
                 Some(report) = path_reports.recv() => self.apply_path(report),
-                _ = firewall.tick() => self.reapply_firewall().await,
                 _ = ticker.tick() => {
                     // A rebuild that couldn't read the store, or only added, tries again here.
                     self.rebuild_when_changed(&replicated, &machines, &mut previous, &local)
@@ -412,6 +411,7 @@ impl NetworkPlane {
             lowered: BTreeMap::new(),
             paths: PathBook::default(),
             probed: watch::Sender::new(Vec::new()),
+            firewall: None,
         }
         .cleanup()
         .await
@@ -419,7 +419,7 @@ impl NetworkPlane {
 
     pub async fn cleanup(&mut self) -> Result<(), NetworkError> {
         let mut failures = Vec::new();
-        if let Err(error) = remove_firewall_rules(self.machine.subnet) {
+        if let Err(error) = remove_firewall(self.machine.subnet).await {
             failures.push(ployz_core::error_chain::inline(&error));
         }
         if let Err(error) = self.remove_docker_network().await {
@@ -690,30 +690,9 @@ impl NetworkPlane {
         let _ = applied.send(outcome);
     }
 
-    async fn reapply_firewall(&self) {
-        let subnet = self.machine.subnet;
-        let management_address = self.machine.management_address();
-        let applied = tokio::task::spawn_blocking(move || {
-            super::apply_firewall_rules(subnet, management_address)
-        })
-        .await
-        .expect("firewall apply does not panic");
-        match applied {
-            Ok(moved) if moved.is_empty() => {}
-            Ok(moved) => eprintln!(
-                "restored firewall rules that were missing or no longer first: {}",
-                moved.join("; "),
-            ),
-            Err(error) => eprintln!(
-                "failed to reapply firewall rules: {error}",
-                error = ployz_core::error_chain::inline(&error),
-            ),
-        }
-    }
-
     async fn rollback_start(&mut self, docker_created: bool, wireguard_created: bool) {
         if wireguard_created {
-            let _ = remove_firewall_rules(self.machine.subnet);
+            let _ = remove_firewall(self.machine.subnet).await;
             let _ = self.wireguard.remove_interface();
         }
         if docker_created {
@@ -1346,6 +1325,53 @@ fn router_advertised_interfaces(routes: &str, addresses: &str) -> BTreeSet<Strin
 /// fence would need it, since without the fence no later check runs (#3377). It
 /// names the cause Ployz saw (bet 8). A host without IPv6 never had it to lose, so
 /// says nothing.
+/// Apply `firewall` again every [`FIREWALL_INTERVAL`] until `stop`, or until a
+/// teardown retires it. Each apply runs off the runtime, so a slow iptables never
+/// holds up the mesh.
+async fn keep_firewall(firewall: Installed, stop: CancellationToken) {
+    let mut ticks = tokio::time::interval_at(
+        tokio::time::Instant::now() + FIREWALL_INTERVAL,
+        FIREWALL_INTERVAL,
+    );
+    ticks.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+    loop {
+        tokio::select! {
+            biased;
+            () = stop.cancelled() => return,
+            _ = ticks.tick() => {}
+        }
+        match tokio::task::spawn_blocking(move || firewall.reapply()).await {
+            Ok(Ok(None)) => return,
+            Ok(Ok(Some(restored))) => {
+                if !restored.displaced.is_empty() {
+                    eprintln!(
+                        "restored firewall rules that were missing or no longer first: {}",
+                        restored.displaced.join("; "),
+                    );
+                }
+                if !restored.behind_docker_nat.is_empty() {
+                    tracing::debug!(
+                        rules = restored.behind_docker_nat.join("; "),
+                        "moved the mesh's nat rule back ahead of Docker's",
+                    );
+                }
+            }
+            Ok(Err(error)) => eprintln!(
+                "failed to reapply firewall rules: {error}",
+                error = ployz_core::error_chain::inline(&error),
+            ),
+            Err(error) => eprintln!("failed to reapply firewall rules: {error}"),
+        }
+    }
+}
+
+/// Off the runtime: removal waits for the firewall writer and the xtables lock.
+async fn remove_firewall(subnet: MachineSubnet) -> Result<(), NetworkError> {
+    tokio::task::spawn_blocking(move || remove_firewall_rules(subnet))
+        .await
+        .map_err(|error| NetworkError::Io(io::Error::other(error)))?
+}
+
 fn ipv6_firewall_off(host_has_ipv6: bool, firewall: &Result<(), Ipv6Off>) -> Option<String> {
     let Err(off) = firewall else {
         return None;
