@@ -1372,38 +1372,55 @@ async fn discard_new<C: MachineOperations>(
 
 /// Remove a copy an ended run left Pending. The owner refuses Gone on a copy that is
 /// In or Held, which the run's runner may have made it after losing its claim: that
-/// copy serves, so it stays for the next Deploy to plan. One that stays for any other
-/// reason is named, and the Deploy goes on without it.
+/// copy serves, so it stays, named because it serves beside this Deploy's new copies.
+/// One that stays for any other reason is named too, and the Deploy goes on without it.
 async fn remove_stray<C: MachineOperations>(
     client: &C,
     progress: &Progress,
     rows: &Rows<'_>,
     (service, machine_id, container_id): (&QualifiedService, &MachineId, ContainerId),
+    cancellation: &CancellationToken,
 ) {
     let want = ContainerWant::Gone {
         container: ContainerLocator::Id(container_id),
         drain: Drain::NONE,
         anonymous_volumes: AnonymousVolumes::Remove,
     };
-    let removed = client.ensure_unsettled(machine_id, want, Some(RESTART_WAIT));
-    let answer = tokio::time::timeout(RESTART_WAIT, removed)
-        .await
-        .unwrap_or_else(|_| {
+    let removed = tokio::time::timeout(
+        RESTART_WAIT,
+        client.ensure_unsettled(machine_id, want, Some(RESTART_WAIT)),
+    );
+    let answer = tokio::select! {
+        answer = removed => answer.unwrap_or_else(|_| {
             Err(crate::cluster::answered_by(
                 machine_id,
                 ConnectError::Rpc(TransportError::budget_expired(
                     "target Machine RPC timed out",
                 )),
             ))
-        });
+        }),
+        () = cancellation.cancelled() => {
+            rows.name_left(progress, service, *machine_id, container_id, "interrupted".into());
+            return;
+        }
+    };
     let error = match answer {
         Ok(EnsuredContainer::Ensured { .. }) => return,
         Ok(EnsuredContainer::Refused { refusal, .. })
-            if matches!(
-                refusal.reason,
-                ContainerRefusalReason::NotFound | ContainerRefusalReason::InRotation
-            ) =>
+            if refusal.reason == ContainerRefusalReason::NotFound =>
         {
+            return;
+        }
+        Ok(EnsuredContainer::Refused { refusal, .. })
+            if refusal.reason == ContainerRefusalReason::InRotation =>
+        {
+            rows.name_left(
+                progress,
+                service,
+                *machine_id,
+                container_id,
+                "it came into routing after this deploy planned".into(),
+            );
             return;
         }
         Ok(EnsuredContainer::Refused { refusal, .. }) => refusal.into_error(),
@@ -2604,6 +2621,18 @@ impl<'a> Rows<'a> {
     ) {
         let unanswered = error.code == RpcErrorCode::Unavailable;
         let (reason, _) = self.failed_on(machine_id, error, unanswered);
+        self.name_left(progress, service, machine_id, container_id, reason);
+    }
+
+    /// A copy this run couldn't remove, for `reason`, which keeps running.
+    fn name_left(
+        &self,
+        progress: &Progress,
+        service: &QualifiedService,
+        machine_id: MachineId,
+        container_id: ContainerId,
+        reason: String,
+    ) {
         progress.warn(DeployWarning::LeftRunning {
             service: service.clone(),
             container_id,
@@ -2865,6 +2894,7 @@ async fn execute_operation<C: MachineOperations>(
                 progress,
                 rows,
                 (&service, machine_id, *container_id),
+                cancellation,
             )
             .await;
             Ok(Ran::default())

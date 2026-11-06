@@ -171,10 +171,10 @@ minute. If it still can't stop it, the deploy says
 `web copy 3f9c1e2a7b04 left running on web-2 (web-2 did not answer). The next deploy cleans it up.`
 If the connection dropped while the replica was being created, the deploy says the create may
 have happened anyway instead, since Ployz never learned the replica's ID. Either way that replica
-never gets requests. Each deploy of a service first stops the replicas that earlier failed deploys
-of it left on servers that answer, so retrying a failing deploy leaves at most one extra replica
-of that service. A replica it can't stop that way is named in the same words, and the deploy goes
-on.
+never gets requests. Each deploy of a service first removes the replicas that earlier failed
+deploys of it left on servers that answer, so retrying a failing deploy leaves at most one extra
+replica of that service. A replica it can't remove that way is named in the same words, and the
+deploy goes on. So is one that started getting requests after the deploy planned.
 
 ## My new version runs out of memory
 

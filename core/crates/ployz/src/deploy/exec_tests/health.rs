@@ -920,24 +920,39 @@ async fn a_failing_deploy_keeps_the_pending_copies_a_live_run_may_own() {
     assert_eq!(pending_copies(&client), [live, moved]);
 }
 
+/// The Deploy of an unchanged `api` beside a new `web` that a runner whose Store
+/// claim reports `ended` plans from what `client` holds.
+fn plan_web(client: &Scripted, ended: &[&str]) -> crate::deploy::DeployPlan {
+    let unchanged: ployz_core::RequestedServiceSpec =
+        serde_json::from_value(serde_json::to_value(spec(None, None, None)).unwrap()).unwrap();
+    let mut web = unchanged.clone();
+    web.name = ServiceName::parse("web").unwrap();
+    let intent = crate::deploy::DeployIntent::apply_all(
+        test_namespace(),
+        [&unchanged, &web],
+        ended_options(ended),
+    );
+    crate::deploy::plan_deploy(&intent, &client.snapshot()).unwrap()
+}
+
 /// A runner that lost its claim still acts until it next polls, so the copy it
 /// left Pending can come In after the next Deploy read it. That Deploy leaves the
-/// copy serving.
+/// copy serving and names it, since it serves beside the Deploy's new copies.
 #[tokio::test(start_paused = true)]
-async fn a_left_copy_that_came_in_before_its_removal_keeps_serving() {
+async fn a_left_copy_that_came_in_before_its_removal_keeps_serving_and_is_named() {
     let machine = machine('1');
     let serving = container('b');
     let promoted = container('c');
     let new = container('d');
-    let client = Scripted::new(vec![
-        unhealthy_run(machine, &new),
-        ok(Call::Discard(machine, new)),
-    ])
+    let client = Scripted::new(vec![created(
+        Call::Run(machine, ContainerKind::ServiceContainer),
+        &new,
+    )])
     .with_copy(&machine, &serving, CopyRotation::In)
     .with_copy(&machine, &promoted, CopyRotation::Pending)
     .with_deploy(&promoted, &DeploymentLogId::parse("superseded").unwrap())
     .with_key(&promoted, "superseded:0123456789abcdef:0");
-    let plan = plan_api(&client, &["superseded"]);
+    let plan = plan_web(&client, &["superseded"]);
     client
         .copies
         .lock()
@@ -946,22 +961,59 @@ async fn a_left_copy_that_came_in_before_its_removal_keeps_serving() {
         .unwrap()
         .rotation = CopyRotation::In;
 
-    let outcome = super::super::execute_operation_sequence(
-        &plan,
-        &DeploymentLogId::parse("run-1").unwrap(),
-        &client,
-        &CancellationToken::new(),
-        None,
-    )
-    .await;
+    let (outcome, warnings) =
+        super::flip::reported_warnings(&plan, &client, &CancellationToken::new()).await;
 
     assert!(
-        matches!(outcome, DeployOutcome::Failed { .. }),
+        matches!(outcome, DeployOutcome::Success { .. }),
         "{outcome:?}"
+    );
+    assert_eq!(
+        warnings.iter().map(ToString::to_string).collect::<Vec<_>>(),
+        [super::flip::left_running(
+            &promoted,
+            "machine-1",
+            "it came into routing after this deploy planned"
+        )]
     );
     client.assert_done();
     assert_eq!(client.rotation(&promoted), Some(CopyRotation::In));
     assert_eq!(client.rotation(&serving), Some(CopyRotation::In));
+}
+
+/// A Deploy cancelled while a Server sits on the removal of a copy an ended run
+/// left stops waiting on it and names the copy.
+#[tokio::test(start_paused = true)]
+async fn a_cancel_during_a_left_copys_removal_names_the_copy_at_once() {
+    let machine = machine('1');
+    let serving = container('b');
+    let left = container('c');
+    let client = Scripted::new(vec![Step(Call::Discard(machine, left), Reply::Pending)])
+        .with_copy(&machine, &serving, CopyRotation::In)
+        .with_copy(&machine, &left, CopyRotation::Pending)
+        .with_deploy(&left, &DeploymentLogId::parse("ended").unwrap())
+        .with_key(&left, "ended:0123456789abcdef:0");
+    let plan = plan_web(&client, &["ended"]);
+    let cancellation = CancellationToken::new();
+    let cancel = cancellation.clone();
+    tokio::spawn(async move {
+        tokio::time::sleep(Duration::from_secs(1)).await;
+        cancel.cancel();
+    });
+    let started = tokio::time::Instant::now();
+
+    let (outcome, warnings) = super::flip::reported_warnings(&plan, &client, &cancellation).await;
+
+    assert!(started.elapsed() < RESTART_WAIT, "{:?}", started.elapsed());
+    assert!(
+        !matches!(outcome, DeployOutcome::Success { .. }),
+        "{outcome:?}"
+    );
+    assert_eq!(
+        warnings.iter().map(ToString::to_string).collect::<Vec<_>>(),
+        [super::flip::left_running(&left, "machine-1", "interrupted")]
+    );
+    client.assert_done();
 }
 
 /// Removing a copy an ended run left fails on its Server. The Deploy names the
@@ -980,16 +1032,7 @@ async fn a_left_copy_the_deploy_cannot_remove_is_named_and_holds_up_no_service()
     .with_copy(&machine, &left, CopyRotation::Pending)
     .with_deploy(&left, &DeploymentLogId::parse("ended").unwrap())
     .with_key(&left, "ended:0123456789abcdef:0");
-    let unchanged: ployz_core::RequestedServiceSpec =
-        serde_json::from_value(serde_json::to_value(spec(None, None, None)).unwrap()).unwrap();
-    let mut web = unchanged.clone();
-    web.name = ServiceName::parse("web").unwrap();
-    let intent = crate::deploy::DeployIntent::apply_all(
-        test_namespace(),
-        [&unchanged, &web],
-        ended_options(&["ended"]),
-    );
-    let plan = crate::deploy::plan_deploy(&intent, &client.snapshot()).unwrap();
+    let plan = plan_web(&client, &["ended"]);
 
     let (outcome, warnings) =
         super::flip::reported_warnings(&plan, &client, &CancellationToken::new()).await;
