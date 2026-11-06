@@ -173,7 +173,8 @@ If the connection dropped while the replica was being created, the deploy says t
 have happened anyway instead, since Ployz never learned the replica's ID. Either way that replica
 never gets requests. Each deploy of a service first stops the replicas that earlier failed deploys
 of it left on servers that answer, so retrying a failing deploy leaves at most one extra replica
-of that service.
+of that service. A replica it can't stop that way is named in the same words, and the deploy goes
+on.
 
 ## My new version runs out of memory
 

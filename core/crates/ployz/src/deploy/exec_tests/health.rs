@@ -810,18 +810,28 @@ fn new_api() -> ployz_core::RequestedServiceSpec {
     serde_json::from_value(serde_json::to_value(&desired).unwrap()).unwrap()
 }
 
-/// Run `run`'s Deploy of `api` against what `client` holds, with `ended` as the
-/// runs its Store claim reports ended.
-async fn deploy_as(client: &Scripted, run: &str, ended: &[&str]) -> DeployOutcome<ExecutionError> {
-    let options = crate::deploy::PlanOptions {
+/// The options of a runner whose Store claim reports `ended` as the runs that ended.
+fn ended_options(ended: &[&str]) -> crate::deploy::PlanOptions {
+    crate::deploy::PlanOptions {
         ended_runs: ended
             .iter()
             .map(|run| DeploymentLogId::parse(*run).unwrap())
             .collect(),
         ..Default::default()
-    };
-    let intent = crate::deploy::DeployIntent::apply_one(test_namespace(), new_api(), options);
-    let plan = crate::deploy::plan_deploy(&intent, &client.snapshot()).unwrap();
+    }
+}
+
+/// The Deploy of `api` such a runner plans from what `client` holds.
+fn plan_api(client: &Scripted, ended: &[&str]) -> crate::deploy::DeployPlan {
+    let intent =
+        crate::deploy::DeployIntent::apply_one(test_namespace(), new_api(), ended_options(ended));
+    crate::deploy::plan_deploy(&intent, &client.snapshot()).unwrap()
+}
+
+/// Run `run`'s Deploy of `api` against what `client` holds, with `ended` as the
+/// runs its Store claim reports ended.
+async fn deploy_as(client: &Scripted, run: &str, ended: &[&str]) -> DeployOutcome<ExecutionError> {
+    let plan = plan_api(client, ended);
     super::super::execute_operation_sequence(
         &plan,
         &DeploymentLogId::parse(run).unwrap(),
@@ -858,10 +868,7 @@ async fn a_failing_deploy_repeated_leaves_only_its_own_copy() {
         ("run-3", container('e')),
     ] {
         if let Some(earlier) = left {
-            client.add_steps([
-                observed(Call::Inspect(machine, earlier), running()),
-                ok(Call::Remove(machine, earlier)),
-            ]);
+            client.add_steps([ok(Call::Discard(machine, earlier))]);
         }
         client.add_steps([
             unhealthy_run(machine, &new),
@@ -911,6 +918,102 @@ async fn a_failing_deploy_keeps_the_pending_copies_a_live_run_may_own() {
     );
     client.assert_done();
     assert_eq!(pending_copies(&client), [live, moved]);
+}
+
+/// A runner that lost its claim still acts until it next polls, so the copy it
+/// left Pending can come In after the next Deploy read it. That Deploy leaves the
+/// copy serving.
+#[tokio::test(start_paused = true)]
+async fn a_left_copy_that_came_in_before_its_removal_keeps_serving() {
+    let machine = machine('1');
+    let serving = container('b');
+    let promoted = container('c');
+    let new = container('d');
+    let client = Scripted::new(vec![
+        unhealthy_run(machine, &new),
+        ok(Call::Discard(machine, new)),
+    ])
+    .with_copy(&machine, &serving, CopyRotation::In)
+    .with_copy(&machine, &promoted, CopyRotation::Pending)
+    .with_deploy(&promoted, &DeploymentLogId::parse("superseded").unwrap())
+    .with_key(&promoted, "superseded:0123456789abcdef:0");
+    let plan = plan_api(&client, &["superseded"]);
+    client
+        .copies
+        .lock()
+        .unwrap()
+        .get_mut(&promoted)
+        .unwrap()
+        .rotation = CopyRotation::In;
+
+    let outcome = super::super::execute_operation_sequence(
+        &plan,
+        &DeploymentLogId::parse("run-1").unwrap(),
+        &client,
+        &CancellationToken::new(),
+        None,
+    )
+    .await;
+
+    assert!(
+        matches!(outcome, DeployOutcome::Failed { .. }),
+        "{outcome:?}"
+    );
+    client.assert_done();
+    assert_eq!(client.rotation(&promoted), Some(CopyRotation::In));
+    assert_eq!(client.rotation(&serving), Some(CopyRotation::In));
+}
+
+/// Removing a copy an ended run left fails on its Server. The Deploy names the
+/// copy and still deploys every Service.
+#[tokio::test(start_paused = true)]
+async fn a_left_copy_the_deploy_cannot_remove_is_named_and_holds_up_no_service() {
+    let machine = machine('1');
+    let serving = container('b');
+    let left = container('c');
+    let new = container('d');
+    let client = Scripted::new(vec![
+        failed(Call::Discard(machine, left), "Docker did not answer"),
+        created(Call::Run(machine, ContainerKind::ServiceContainer), &new),
+    ])
+    .with_copy(&machine, &serving, CopyRotation::In)
+    .with_copy(&machine, &left, CopyRotation::Pending)
+    .with_deploy(&left, &DeploymentLogId::parse("ended").unwrap())
+    .with_key(&left, "ended:0123456789abcdef:0");
+    let unchanged: ployz_core::RequestedServiceSpec =
+        serde_json::from_value(serde_json::to_value(spec(None, None, None)).unwrap()).unwrap();
+    let mut web = unchanged.clone();
+    web.name = ServiceName::parse("web").unwrap();
+    let intent = crate::deploy::DeployIntent::apply_all(
+        test_namespace(),
+        [&unchanged, &web],
+        ended_options(&["ended"]),
+    );
+    let plan = crate::deploy::plan_deploy(&intent, &client.snapshot()).unwrap();
+
+    let (outcome, warnings) =
+        super::flip::reported_warnings(&plan, &client, &CancellationToken::new()).await;
+
+    assert!(
+        matches!(outcome, DeployOutcome::Success { .. }),
+        "{outcome:?}"
+    );
+    assert_eq!(
+        outcome.services(),
+        [ServiceOutcome {
+            service: ServiceName::parse("web").unwrap(),
+            result: ServiceResult::New,
+        }]
+    );
+    assert_eq!(
+        warnings.iter().map(ToString::to_string).collect::<Vec<_>>(),
+        [super::flip::left_running(
+            &left,
+            "machine-1",
+            "Docker did not answer"
+        )]
+    );
+    client.assert_done();
 }
 
 /// A new copy that failed its check and that its Machine wouldn't remove is named

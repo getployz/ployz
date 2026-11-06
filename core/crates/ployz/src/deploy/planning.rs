@@ -68,6 +68,7 @@ struct Planned {
     prune_refusal: Option<PruneRefusal>,
     warnings: Vec<DeployWarning>,
     blocked: Vec<BlockedService>,
+    strays: BTreeMap<usize, ServiceName>,
 }
 
 /// An admitted, immutable sequence of Deploy operations and its informational preview.
@@ -100,6 +101,10 @@ pub struct DeployPlan {
     /// Machines whose Container listing went unanswered while the entry's path probes
     /// found large packets to them dropped, so a notice can give that cause.
     dropped_large_packets: BTreeSet<MachineId>,
+    /// The removals of copies ended runs left Pending, by operation, with each copy's
+    /// Service. Each removes its copy only while it is still Pending or Out, and one
+    /// that fails fails nothing else.
+    strays: BTreeMap<usize, ServiceName>,
 }
 
 impl DeployPlan {
@@ -135,6 +140,10 @@ impl DeployPlan {
 
     pub(super) const fn retiring(&self) -> &BTreeSet<QualifiedService> {
         &self.retiring
+    }
+
+    pub(super) const fn strays(&self) -> &BTreeMap<usize, ServiceName> {
+        &self.strays
     }
 
     pub(super) fn pending_rows(&self) -> Vec<super::OperationRow> {
@@ -182,6 +191,7 @@ impl DeployPlan {
             machine_names: BTreeMap::new(),
             retiring: BTreeSet::new(),
             dropped_large_packets: BTreeSet::new(),
+            strays: BTreeMap::new(),
         }
     }
 
@@ -722,6 +732,7 @@ fn seal_plan(planned: Planned, snapshot: &DeploySnapshot, namespace: &Namespace)
             })
             .map(|failure| failure.machine_id)
             .collect(),
+        strays: planned.strays,
     }
 }
 
@@ -731,23 +742,29 @@ fn plan_operations(intent: &DeployIntent, snapshot: &DeploySnapshot) -> Result<P
     if left.is_empty() {
         return assemble_plan(intent, bound, snapshot);
     }
-    // Placement sees the Machines as they are once these are gone, which they are
-    // before any copy starts.
+    // Placement plans as if these are gone, and each goes before any copy starts.
+    // One its removal leaves running still holds its bridge endpoint, which the
+    // Machine's free count never gave back, and its host ports, so a copy placed on
+    // them fails to start rather than oversubscribing the Machine.
     let mut rest = snapshot.clone();
     rest.containers
         .retain(|container| !left.contains(&container.container_id));
     let mut planned = assemble_plan(intent, bound, &rest)?;
     let first = planned.operations.len();
-    planned
-        .operations
-        .extend(snapshot.containers.iter().filter_map(|container| {
-            left.contains(&container.container_id)
-                .then_some(DeployOperation::RemoveContainer {
-                    machine_id: container.machine_id,
-                    container_id: container.container_id,
-                    purpose: ployz_core::RemoveContainerPurpose::Rollout,
-                })
-        }));
+    for container in snapshot
+        .containers
+        .iter()
+        .filter(|container| left.contains(&container.container_id))
+    {
+        planned
+            .strays
+            .insert(planned.operations.len(), container.service_name().clone());
+        planned.operations.push(DeployOperation::RemoveContainer {
+            machine_id: container.machine_id,
+            container_id: container.container_id,
+            purpose: ployz_core::RemoveContainerPurpose::Rollout,
+        });
+    }
     planned.groups.insert(
         0,
         ServiceGroup {
@@ -1296,6 +1313,7 @@ fn assemble_plan(
         prune_refusal,
         warnings,
         blocked,
+        strays: BTreeMap::new(),
     })
 }
 
