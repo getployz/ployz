@@ -1336,7 +1336,6 @@ fn a_deploy_report_says_why_logs_were_withheld_in_words() {
     diagnostic.write(&mut written).unwrap();
     assert_eq!(
         String::from_utf8(written).unwrap(),
-        "Logs from web on web-1 withheld: Ployz couldn't check the Containers' variables for \
-         secret values, so it can't hide them.\nLogs from web on web-1 unavailable.\n"
+        "Logs from web on web-1 withheld: Ployz couldn't check the variables for secret values, so it can't hide them.\nLogs from web on web-1 unavailable.\n"
     );
 }

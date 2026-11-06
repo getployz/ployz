@@ -993,7 +993,11 @@ async fn a_server_whose_containers_cannot_be_inspected_withholds_only_sealed_lin
             }
         )]
     );
-    // The withheld text says why; a note would only repeat it.
-    assert!(sealed.notes.is_empty(), "{:?}", sealed.notes);
+    assert_eq!(
+        sealed.notes,
+        [
+            "Lines from web/cccccccccccc, web/dddddddddddd on one withheld: Ployz couldn't check their variables for secret values, so it can't hide them."
+        ]
+    );
     assert_eq!(shown(&nothing_sealed).len(), 1);
 }
