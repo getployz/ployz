@@ -971,6 +971,23 @@ fn every_seal_a_save_holds_is_in_the_ledger_after_upgrade() {
     assert_eq!(backend::unrecorded_seals(&url), Vec::<Vec<String>>::new());
 }
 
+/// Seals a Store from before 0033 saved without recording them after 0033 ran are
+/// in the ledger once `0038_record_late_saved_seals` runs.
+#[test]
+fn a_seal_a_store_from_before_0033_saved_after_it_is_in_the_ledger_after_upgrade() {
+    let dir = tempfile::tempdir().unwrap();
+    let url = backend::fresh_url(&dir);
+    drop(sealed_by_key(&url));
+    run(
+        &url,
+        "DELETE FROM config_sealed_variable;
+         DELETE FROM config_migration WHERE name = '0038_record_late_saved_seals';",
+    );
+    assert_ne!(backend::unrecorded_seals(&url), Vec::<Vec<String>>::new());
+    drop(ConfigStore::open(&url, backend::key()).unwrap());
+    assert_eq!(backend::unrecorded_seals(&url), Vec::<Vec<String>>::new());
+}
+
 /// A Store from before 0033, still running beside one that migrated their shared
 /// database, seals a value by key without recording it. A plain copy a Deployment
 /// kept still leaves History when that Deployment ends: the saves are read too.

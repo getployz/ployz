@@ -278,6 +278,12 @@ const MIGRATIONS: &[(&str, Step)] = &[
             Ok(None)
         }),
     ),
+    (
+        // Seals a Store from before 0033 saved after 0033 ran, during that rolling
+        // deploy: a review reads the ledger alone from here on.
+        "0038_record_late_saved_seals",
+        Step::Rust(|tx, _| crate::review::sealed::SealLedger::record_saved(tx).map(|()| None)),
+    ),
 ];
 
 enum Step {

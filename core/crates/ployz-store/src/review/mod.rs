@@ -1058,7 +1058,7 @@ pub(crate) struct Scrub {
 
 impl Scrub {
     pub(crate) fn load(tx: &mut dyn Tx, environment: &EnvironmentId) -> Result<Self, RpcError> {
-        let ledger = sealed::SealLedger::load(tx, environment.as_str())?;
+        let ledger = sealed::SealLedger::load_with_saves(tx, environment.as_str())?;
         if ledger.is_empty() {
             return Ok(Self {
                 latest: None,
