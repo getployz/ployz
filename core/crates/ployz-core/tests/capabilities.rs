@@ -72,7 +72,7 @@ fn catalogued_capabilities_keep_stable_spellings() {
         ),
         (
             RESTART_APPROVAL_CAPABILITY,
-            "ployz.restart.device-approval.v1",
+            "ployz.restart.device-approval.v2",
         ),
         (LIST_CONTAINERS_CAPABILITY, "ployz.container.list.v1"),
         (INSPECT_CONTAINER_CAPABILITY, "ployz.container.inspect.v1"),
@@ -174,7 +174,7 @@ fn advertised_capability_groups_match_the_frozen_catalog() {
             "ployz.env.sealed.v1",
             "ployz.build.sealed.v1",
             "ployz.build.grant.holder.v1",
-            "ployz.restart.device-approval.v1",
+            "ployz.restart.device-approval.v2",
         ]
     );
     assert_eq!(
@@ -346,7 +346,7 @@ const ABOVE_FLOOR: &[(&str, &str)] = &[
         "gated: `ployz device enforce` checks each Machine's contract first, names a Server whose daemon lacks it as missing and exits partial",
     ),
     (
-        "ployz.restart.device-approval.v1",
+        "ployz.restart.device-approval.v2",
         "falls back: an older daemon ignores the approval on EnsureContainer and restarts as before, since it enforces nothing",
     ),
     (

@@ -779,7 +779,7 @@ async fn a_refused_hold_leaves_the_copy_as_it_was_and_says_only_why() {
         assert_eq!(
             error.message,
             format!(
-                "Container {} was not {verb}: ployz.restart.device-approval.v1 needs a Device-signed restart approval",
+                "Container {} was not {verb}: ployz.restart.device-approval.v2 needs a Device-signed restart approval",
                 container('1')
             ),
             "{command:?}"

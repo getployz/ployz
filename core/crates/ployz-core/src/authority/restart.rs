@@ -19,6 +19,21 @@ use crate::{
 #[serde(rename_all = "snake_case")]
 pub enum WorkflowKind {
     Restart,
+    Stop,
+}
+
+impl WorkflowKind {
+    /// Whether this workflow authorizes the requested lifecycle step.
+    #[must_use]
+    pub fn permits(self, step: RestartStep) -> bool {
+        match self {
+            Self::Restart => matches!(
+                step,
+                RestartStep::Hold | RestartStep::Stop | RestartStep::Start
+            ),
+            Self::Stop => matches!(step, RestartStep::Hold | RestartStep::Stop),
+        }
+    }
 }
 
 /// A Device approves one Container's lifecycle steps in one Cluster and Service,
@@ -113,6 +128,7 @@ pub struct RestartFacts<'a> {
     pub namespace: &'a Namespace,
     pub service: &'a ServiceName,
     pub container: &'a ContainerId,
+    pub step: RestartStep,
     pub now: Timestamp,
 }
 
@@ -135,7 +151,7 @@ pub fn verify(
     let checks = [
         ("the signer", signers.contains(&body.signer.into())),
         ("a Cluster", body.cluster == cluster),
-        ("a workflow", body.kind == WorkflowKind::Restart),
+        ("a workflow", body.kind.permits(facts.step)),
         ("an Environment", &body.namespace == facts.namespace),
         ("a Service", &body.service == facts.service),
         ("Machines", body.machines.contains(facts.machine)),
@@ -219,6 +235,7 @@ mod tests {
                 namespace: &self.namespace,
                 service: &self.service,
                 container: &self.container,
+                step: RestartStep::Stop,
                 now: Timestamp::from_millis(999_999).unwrap(),
             }
         }
@@ -264,6 +281,37 @@ mod tests {
             serde_json::from_str::<Signed<RestartApproval>>(&json).unwrap(),
             signed
         );
+    }
+
+    #[test]
+    fn a_signed_workflow_permits_only_its_own_steps() {
+        let signer = signer(1);
+        let machine = machine(&[&signer]);
+        for kind in [WorkflowKind::Restart, WorkflowKind::Stop] {
+            let signed = Signed::sign(
+                &RestartApproval {
+                    kind,
+                    ..approval(&signer)
+                },
+                &signer,
+            )
+            .unwrap();
+            for (step, allowed) in [
+                (RestartStep::Hold, true),
+                (RestartStep::Stop, true),
+                (RestartStep::Start, kind == WorkflowKind::Restart),
+                (RestartStep::Out, false),
+                (RestartStep::Remove, false),
+            ] {
+                let mut facts = machine.facts();
+                facts.step = step;
+                assert_eq!(
+                    verify(&signed, &facts).is_ok(),
+                    allowed,
+                    "{kind:?} {step:?}"
+                );
+            }
+        }
     }
 
     #[test]

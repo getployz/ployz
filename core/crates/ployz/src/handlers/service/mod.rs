@@ -570,7 +570,13 @@ fn restart_approvals(
             let approval = RestartApproval {
                 cluster,
                 operation: OperationId::random(),
-                kind: WorkflowKind::Restart,
+                kind: match action {
+                    ContainerAction::Stop => WorkflowKind::Stop,
+                    ContainerAction::Restart => WorkflowKind::Restart,
+                    ContainerAction::Start | ContainerAction::Remove => {
+                        unreachable!("only restart and stop sign approvals")
+                    }
+                },
                 namespace: service.identity.namespace.clone(),
                 service: service.identity.name.clone(),
                 machines: vec![container.machine_id],

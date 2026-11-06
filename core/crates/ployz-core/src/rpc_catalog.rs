@@ -123,7 +123,7 @@ macro_rules! rpc_catalog {
                 /// The daemon mints a Build Grant for a holder's own key and returns no grant secret.
                 BUILD_GRANT_HOLDER_CAPABILITY: ("ployz.build.grant.holder.v1", Always),
                 /// `EnsureContainer` takes a Device-signed restart approval and, under Device enforcement, refuses an Operator's restart step without one.
-                RESTART_APPROVAL_CAPABILITY: ("ployz.restart.device-approval.v1", Always),
+                RESTART_APPROVAL_CAPABILITY: ("ployz.restart.device-approval.v2", Always),
             }
         }
     };

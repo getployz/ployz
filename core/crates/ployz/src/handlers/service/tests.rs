@@ -713,21 +713,28 @@ fn each_copy_gets_its_own_container_bound_approval() {
         },
         ployz_core::MembershipObservation::Up,
     );
-    let approvals = restart_approvals(
-        &key,
-        &[machine],
-        &service.iter().collect::<Vec<_>>(),
-        ContainerAction::Restart,
-    )
-    .unwrap();
-    assert_eq!(approvals.len(), 2);
-    let first = approvals.get(&one.container_id).unwrap().open().unwrap();
-    let second = approvals.get(&two.container_id).unwrap().open().unwrap();
-    assert_eq!(first.container, one.container_id);
-    assert_eq!(second.container, two.container_id);
-    assert_ne!(first.operation, second.operation);
-    assert_eq!(
-        first.expires_at.as_millis() - first.issued_at.as_millis(),
-        15 * 60 * 1000
-    );
+    for (action, kind) in [
+        (ContainerAction::Restart, WorkflowKind::Restart),
+        (ContainerAction::Stop, WorkflowKind::Stop),
+    ] {
+        let approvals = restart_approvals(
+            &key,
+            std::slice::from_ref(&machine),
+            &service.iter().collect::<Vec<_>>(),
+            action,
+        )
+        .unwrap();
+        assert_eq!(approvals.len(), 2);
+        let first = approvals.get(&one.container_id).unwrap().open().unwrap();
+        let second = approvals.get(&two.container_id).unwrap().open().unwrap();
+        assert_eq!(first.kind, kind);
+        assert_eq!(second.kind, kind);
+        assert_eq!(first.container, one.container_id);
+        assert_eq!(second.container, two.container_id);
+        assert_ne!(first.operation, second.operation);
+        assert_eq!(
+            first.expires_at.as_millis() - first.issued_at.as_millis(),
+            15 * 60 * 1000
+        );
+    }
 }

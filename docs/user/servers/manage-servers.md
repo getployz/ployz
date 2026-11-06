@@ -250,8 +250,9 @@ enforcement on, it restarts or stops only on an approved device's say-so. `ployz
 and `ployz service stop` sign their steps with your device key, and each server checks that signature against the devices it
 approved before it stops or starts anything. Ployz Cloud carries the signed approval but can't
 make one. Each approval names one container, so a captured approval cannot stop a second copy.
-The CLI signs a fresh approval just before each copy of a rolling restart. A server refuses an
-approval that is forged, names another service, server or container, lasts over 15 minutes, or
+The CLI signs a fresh approval just before each copy of a rolling restart. Restart approvals
+permit only holding, stopping and starting that container. Stop approvals permit only holding
+and stopping it. Neither permits removing it. A server refuses an approval that is forged, names another service, server or container, lasts over 15 minutes, or
 was already used, including after the server restarts. It allows two minutes of clock difference
 when checking the issue time and expiry.
 
@@ -266,7 +267,7 @@ from before this setting is reported with its rows missing, the same as one that
 restarts as before. Upgrade it first.
 
 With enforcement on, `service restart` from a device that isn't approved is refused with
-`ployz.restart.device-approval.v1 needs a Device-signed restart approval`. `service stop` needs
+`ployz.restart.device-approval.v2 needs a Device-signed restart approval`. `service stop` needs
 the same approval. `service start` and `deploy` are refused through Ployz Cloud, since they start
 or stop containers through the same steps and don't carry an approval yet. That includes the first deploy of a new service. Turn
 enforcement off to run them. Over `--connect ssh://` everything works as before. If your device

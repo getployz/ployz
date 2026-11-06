@@ -893,7 +893,7 @@ impl Scripted {
         if holding && self.refused_held.contains(&container_id) {
             return Err(RpcError {
                 code: RpcErrorCode::from(crate::connect::FORBIDDEN),
-                message: "ployz.restart.device-approval.v1 needs a Device-signed restart approval"
+                message: "ployz.restart.device-approval.v2 needs a Device-signed restart approval"
                     .into(),
                 details: serde_json::Value::Null,
                 cause: Vec::new(),
