@@ -218,6 +218,14 @@ const claimSignInContext = {
   },
 } satisfies BetterAuthPlugin;
 
+const NO_PROVIDER_TOKENS = {
+  accessToken: null,
+  refreshToken: null,
+  idToken: null,
+  accessTokenExpiresAt: null,
+  refreshTokenExpiresAt: null,
+} as const;
+
 const DEVICE_TOKEN_PATH = "/device/token";
 /** The routes a member signs a browser out through, which disconnect even a session that has already lapsed. */
 const SIGN_OUT_PATHS: ReadonlySet<string> = new Set(["/sign-out", "/revoke-session", "/revoke-sessions", "/revoke-other-sessions", "/oauth2/end-session"]);
@@ -398,6 +406,10 @@ const makeAuth = Effect.gen(function* () {
     rateLimit: { storage: hosted ? "database" : "memory" },
     advanced: { database: { generateId: "uuid" }, ipAddress: { ipAddressHeaders: config.auth.clientIpHeaders } },
     databaseHooks: {
+      account: {
+        create: { before: async (linked) => ({ data: { ...linked, ...NO_PROVIDER_TOKENS } }) },
+        update: { before: async (linked) => ({ data: { ...linked, ...NO_PROVIDER_TOKENS } }) },
+      },
       user: {
         create: {
           after: async (createdUser, context) => {
