@@ -673,14 +673,26 @@ fn absent_material_renders_no_https_site() {
     )];
     let containers = service_containers(observations);
     let without = caddyfile_for(&local, "node-a", &containers, "TIMESTAMP", &BTreeMap::new());
+    let unrelated = BTreeMap::from([(
+        CertificateHost::parse("other.example.com").unwrap(),
+        CertificateRow::from_parts(
+            Some((test_material(), ployz_core::ClusterRoute::Direct)),
+            None,
+        ),
+    )]);
+    let with_unrelated = caddyfile_for(&local, "node-a", &containers, "TIMESTAMP", &unrelated);
 
-    assert_eq!(
-        caddyfile_for(&local, "node-a", &containers, "TIMESTAMP", &BTreeMap::new(),),
-        without
-    );
     assert!(!without.contains("tls "));
     assert!(!without.contains("https://secure.example.com"));
     assert!(without.contains("auto_https off"));
+    // Another hostname's material adds its own site and nothing for this one.
+    assert!(!with_unrelated.contains("https://secure.example.com"));
+    assert!(pinned_tls_line(&with_unrelated, "other.example.com").is_some());
+    assert_eq!(
+        with_unrelated.matches("\ttls ").count(),
+        1,
+        "{with_unrelated}"
+    );
 }
 
 #[test]
@@ -715,6 +727,115 @@ fn pinned_material_whose_last_route_is_gone_answers_https_like_http() {
     assert!(https.contains("error NOT_DEPLOYED 404"), "{https}");
     assert!(!https.contains("reverse_proxy"), "{https}");
     assert!(!after.contains("http://secure.example.com"), "{after}");
+}
+
+#[test]
+fn a_covering_wildcard_replaces_the_own_material_of_a_hostname_whose_last_route_is_gone() {
+    let local = MachineId::parse("a".repeat(32)).unwrap();
+    let observations = vec![observation(
+        1,
+        &local,
+        "api",
+        Some([10, 210, 1, 2]),
+        vec![ingress("api.apps.example.com", 8443, HttpProtocol::Https)],
+    )];
+    let pair = rcgen::generate_simple_self_signed(["*.apps.example.com".to_owned()]).unwrap();
+    let wildcard = crate::corrosion::CertificateMaterial::parse(
+        pair.cert.pem(),
+        pair.signing_key.serialize_pem(),
+    )
+    .unwrap();
+    // web.apps' issued row predates the wildcard; nothing renews it once covered.
+    let certificates = BTreeMap::from([
+        (
+            CertificateHost::parse("*.apps.example.com").unwrap(),
+            CertificateRow::Published(wildcard.clone()),
+        ),
+        (
+            CertificateHost::parse("web.apps.example.com").unwrap(),
+            CertificateRow::issued(test_material(), ployz_core::ClusterRoute::Direct),
+        ),
+    ]);
+    let projection = projection(
+        &local,
+        "node-a",
+        &service_containers(observations),
+        &certificates,
+    );
+    let web = projection
+        .sites
+        .iter()
+        .find(|site| site.hostname.as_str() == "web.apps.example.com")
+        .unwrap();
+    assert_eq!(web.pinned(), Some(&wildcard));
+
+    let caddyfile = render_caddyfile(&projection, "TIMESTAMP");
+    let stem = crate::ingress::certificate_file_stem(&web.hostname, &wildcard);
+    let pin = pinned_tls_line(&caddyfile, "web.apps.example.com").expect("web.apps is pinned");
+    assert!(pin.contains(&stem), "{pin}");
+    let https = automatic_site_block(&caddyfile, "https://web.apps.example.com");
+    assert!(https.contains("error NOT_DEPLOYED 404"), "{https}");
+}
+
+#[test]
+fn an_http_only_hostname_with_material_keeps_proxying_and_pins_nothing() {
+    let local = MachineId::parse("a".repeat(32)).unwrap();
+    let observations = vec![observation(
+        1,
+        &local,
+        "api",
+        Some([10, 210, 1, 2]),
+        vec![ingress("plain.example.com", 80, HttpProtocol::Http)],
+    )];
+    let certificates = BTreeMap::from([(
+        CertificateHost::parse("plain.example.com").unwrap(),
+        CertificateRow::issued(test_material(), ployz_core::ClusterRoute::Direct),
+    )]);
+
+    let caddyfile = caddyfile_for(
+        &local,
+        "node-a",
+        &service_containers(observations),
+        "TIMESTAMP",
+        &certificates,
+    );
+
+    assert!(
+        !caddyfile.contains("https://plain.example.com"),
+        "{caddyfile}"
+    );
+    assert!(!caddyfile.contains("\ttls "), "{caddyfile}");
+    let http = automatic_site_block(&caddyfile, "http://plain.example.com");
+    assert!(http.contains("reverse_proxy 10.210.1.2:80"), "{http}");
+}
+
+#[test]
+fn a_challenge_beside_material_with_no_route_is_answered_and_https_answers_not_deployed() {
+    let local = MachineId::parse("a".repeat(32)).unwrap();
+    let challenge = CertificateChallenge::parse(
+        "LoqXcYV8q5ONbJQxbmR7SCTNo3tiAXDfowyjxAjEuX0",
+        "LoqXcYV8q5ONbJQxbmR7SCTNo3tiAXDfowyjxAjEuX0.AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+    )
+    .unwrap();
+    let certificates = BTreeMap::from([(
+        CertificateHost::parse("secure.example.com").unwrap(),
+        CertificateRow::from_parts(
+            Some((test_material(), ployz_core::ClusterRoute::Direct)),
+            Some(challenge),
+        ),
+    )]);
+
+    let caddyfile = caddyfile_for(&local, "node-a", &[], "TIMESTAMP", &certificates);
+
+    let http = automatic_site_block(&caddyfile, "http://secure.example.com");
+    assert!(
+        http.contains("/.well-known/acme-challenge/LoqXcYV8q5ONbJQxbmR7SCTNo3tiAXDfowyjxAjEuX0"),
+        "{http}"
+    );
+    assert!(http.contains("error NOT_DEPLOYED 404"), "{http}");
+    assert!(pinned_tls_line(&caddyfile, "secure.example.com").is_some());
+    let https = automatic_site_block(&caddyfile, "https://secure.example.com");
+    assert!(https.contains("error NOT_DEPLOYED 404"), "{https}");
 }
 
 #[test]

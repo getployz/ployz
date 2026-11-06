@@ -308,7 +308,7 @@ https:// {{\n\
     if projection.sites.iter().any(|site| {
         site.proxied(HttpProtocol::Http).is_some()
             || site.challenge().is_some()
-            || site.material().is_some()
+            || site.pinned().is_some()
     }) {
         output.push_str("\n# Sites generated from Service ports.\n");
     }
@@ -353,7 +353,7 @@ https:// {{\n\
                 &answer,
             );
         }
-        let Some(material) = site.material() else {
+        let Some(material) = site.pinned() else {
             continue;
         };
         let stem = super::certificate_file_stem(&site.hostname, material);

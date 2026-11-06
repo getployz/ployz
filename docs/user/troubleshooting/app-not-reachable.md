@@ -114,8 +114,9 @@ answers for it there.
   [below](#my-domain-is-behind-cloudflare).
 - **On `https://`?** The domain isn't live yet. If its row says
   **Live after your next deploy**, click **Deploy**.
-- **Removed the service?** Its domain keeps its certificate, so `https://` shows this page too,
-  just like `http://`, until a service with that domain is deployed again.
+- **Removed the service?** While your servers still hold a valid certificate for its domain,
+  `https://` shows this page too, just like `http://`. Nothing renews that certificate, so once it
+  expires, browsers show a certificate error instead.
 
 ## My custom domain is waiting for DNS
 
