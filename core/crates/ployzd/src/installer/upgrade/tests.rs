@@ -195,7 +195,7 @@ async fn run_contract_case(case: &str) {
                 super::request(
                     request,
                     super::Downgrade::Refused,
-                    super::ReleaseChoice::Any,
+                    super::ReleaseChoice::AnyRelease,
                     data,
                     run,
                     guard,
@@ -244,7 +244,7 @@ async fn run_contract_case(case: &str) {
     let accepted = super::request(
         request.clone(),
         super::Downgrade::Refused,
-        super::ReleaseChoice::Any,
+        super::ReleaseChoice::AnyRelease,
         data.clone(),
         run.clone(),
         guard,
@@ -277,7 +277,7 @@ async fn run_contract_case(case: &str) {
                 super::request(
                     request,
                     super::Downgrade::Refused,
-                    super::ReleaseChoice::Any,
+                    super::ReleaseChoice::AnyRelease,
                     data.clone(),
                     run.clone(),
                     guard
@@ -295,7 +295,7 @@ async fn run_contract_case(case: &str) {
                 super::request(
                     other,
                     super::Downgrade::Refused,
-                    super::ReleaseChoice::Any,
+                    super::ReleaseChoice::AnyRelease,
                     data.clone(),
                     run.clone(),
                     guard
@@ -728,20 +728,25 @@ async fn an_operator_names_only_a_release_a_channel_resolves_to() {
         (exact("3.17-beta.2"), "3.17-beta.2"),
     ] {
         assert!(
-            admit(ReleaseChoice::Channel, &requested, target)
+            admit(ReleaseChoice::ChannelResolved, &requested, target)
                 .await
                 .is_ok(),
             "an Operator was refused {requested}"
         );
     }
     for off_channel in ["3.17-beta.1", "3.15", "3.14"] {
-        let refused = admit(ReleaseChoice::Channel, &exact(off_channel), off_channel).await;
+        let refused = admit(
+            ReleaseChoice::ChannelResolved,
+            &exact(off_channel),
+            off_channel,
+        )
+        .await;
         assert!(
             matches!(&refused, Err(Error::OffChannel { target }) if *target == version(off_channel)),
             "an Operator chose {off_channel}: {refused:?}"
         );
         assert!(
-            admit(ReleaseChoice::Any, &exact(off_channel), off_channel)
+            admit(ReleaseChoice::AnyRelease, &exact(off_channel), off_channel)
                 .await
                 .is_ok()
         );

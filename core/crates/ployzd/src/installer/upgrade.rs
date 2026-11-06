@@ -150,15 +150,10 @@ impl Downgrade {
     }
 }
 
-/// Which releases an upgrade request may name.
-///
-/// An Operator, Ployz Cloud included, follows a Release Channel: it names `stable` or `beta`,
-/// or the exact version one of them resolves to now. Only a Full caller, a Device or the
-/// local socket, picks any other release.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum ReleaseChoice {
-    Any,
-    Channel,
+    AnyRelease,
+    ChannelResolved,
 }
 
 impl ReleaseChoice {
@@ -169,7 +164,7 @@ impl ReleaseChoice {
         source: &ReleaseSource,
         installed: Option<&MachineVersion>,
     ) -> Result<(), Error> {
-        if self == Self::Any || !matches!(requested, MachineRelease::Exact(_)) {
+        if self == Self::AnyRelease || !matches!(requested, MachineRelease::Exact(_)) {
             return Ok(());
         }
         for channel in [MachineRelease::Stable, MachineRelease::Beta] {

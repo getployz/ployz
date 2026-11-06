@@ -12,7 +12,6 @@ impl LocalMachine {
     ///
     /// `cloud_routed` marks a request that entered the mesh through Ployz Cloud on any
     /// Machine; such a request, like one on this Machine's own tunnel, cannot downgrade.
-    /// An Operator `scope` names only a release a Release Channel resolves to.
     ///
     /// # Errors
     ///
@@ -44,8 +43,10 @@ impl LocalMachine {
             request,
             self.downgrade(cloud_routed),
             match scope {
-                ManagementScope::Full => crate::installer::upgrade::ReleaseChoice::Any,
-                ManagementScope::Operator => crate::installer::upgrade::ReleaseChoice::Channel,
+                ManagementScope::Full => crate::installer::upgrade::ReleaseChoice::AnyRelease,
+                ManagementScope::Operator => {
+                    crate::installer::upgrade::ReleaseChoice::ChannelResolved
+                }
             },
             data_dir,
             run_dir,
