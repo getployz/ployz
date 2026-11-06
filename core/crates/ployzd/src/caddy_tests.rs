@@ -141,13 +141,13 @@ fn automatic_sites_render_routes_and_health_endpoint() {
 }
 
 #[test]
-fn every_reverse_proxy_balances_by_load_and_dials_briefly() {
+fn every_reverse_proxy_balances_by_load_dials_briefly_and_bounds_the_wait_for_headers() {
     let caddyfile = render_caddyfile(&renderer_projection(), "TIMESTAMP");
 
     let common = automatic_site_block(&caddyfile, "(common_proxy)");
     assert!(common.contains("lb_policy least_conn"), "{common}");
     assert!(
-        common.contains("transport http { dial_timeout 500ms }"),
+        common.contains("transport http { dial_timeout 500ms response_header_timeout 60s }"),
         "{common}"
     );
     let proxies = caddyfile
