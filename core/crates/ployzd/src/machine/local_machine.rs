@@ -76,7 +76,7 @@ pub(crate) use container::CutRefusal;
 pub(crate) use container::{EnsurePause, EnsurePausePoint};
 mod management_client;
 mod push_target;
-mod restart_approval;
+pub(super) mod restart_approval;
 mod sealing;
 pub(crate) use sealing::Error as SealingError;
 mod sealing_recovery;
@@ -212,7 +212,7 @@ impl LocalMachine {
     #[must_use]
     pub fn new(owner: RecordOwner) -> Self {
         Self {
-            approvals: restart_approval::ConsumptionLog::new(owner.data_dir()),
+            approvals: owner.restart_approvals(),
             owner,
             management_client: None,
             cluster: None,

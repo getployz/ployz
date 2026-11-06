@@ -121,7 +121,15 @@ impl LocalMachine {
 /// pass verification.
 pub(crate) struct ConsumptionLog {
     path: PathBuf,
-    operations: Mutex<Option<BTreeMap<OperationId, Operation>>>,
+    operations: Mutex<Option<Consumption>>,
+}
+
+#[derive(Clone, Debug, Default, Deserialize, Serialize)]
+struct Consumption {
+    #[serde(default)]
+    expiry_time_floor: Option<Timestamp>,
+    #[serde(flatten)]
+    operations: BTreeMap<OperationId, Operation>,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -148,6 +156,19 @@ impl ConsumptionLog {
         step: RestartStep,
         now: Timestamp,
     ) -> Result<(), Error> {
+        self.consume_with(approval, container, step, now, |path, contents| {
+            crate::filesystem::atomic_write(path, contents, 0o600)
+        })
+    }
+
+    fn consume_with(
+        &self,
+        approval: &RestartApproval,
+        container: &ContainerId,
+        step: RestartStep,
+        now: Timestamp,
+        write: impl FnOnce(&Path, &[u8]) -> io::Result<()>,
+    ) -> Result<(), Error> {
         let mut guard = self
             .operations
             .lock()
@@ -156,40 +177,52 @@ impl ConsumptionLog {
             *guard = Some(self.load().map_err(Error::ApprovalRecord)?);
         }
         let operations = guard.as_mut().expect("loaded above");
-        let mut updated: BTreeMap<_, _> = operations
-            .iter()
-            .filter(|(_, operation)| operation.expires_at >= now)
-            .map(|(operation, taken)| (*operation, taken.clone()))
-            .collect();
+        let now = operations
+            .expiry_time_floor
+            .map_or(now, |highest| now.max(highest));
+        restart::verify_time(approval, now)?;
+        let mut updated = operations.clone();
+        updated.expiry_time_floor = Some(now);
+        updated
+            .operations
+            .retain(|_, operation| operation.expires_at.plus(restart::CLOCK_SKEW_MILLIS) >= now);
         let operation = updated
+            .operations
             .entry(approval.operation)
             .or_insert_with(|| Operation {
                 expires_at: approval.expires_at,
                 containers: BTreeMap::new(),
             });
-        if operation
+        operation.expires_at = operation.expires_at.max(approval.expires_at);
+        let replayed = operation
             .containers
             .get(container)
-            .is_some_and(|reached| *reached >= step)
-        {
+            .is_some_and(|reached| *reached >= step);
+        if !replayed {
+            operation.containers.insert(*container, step);
+        }
+        let contents = serde_json::to_vec(&updated).map_err(io::Error::other);
+        let written = contents
+            .and_then(|contents| write(&self.path, &contents))
+            .map_err(Error::ApprovalRecord);
+        if let Err(error) = written {
+            *guard = None;
+            return Err(error);
+        }
+        *operations = updated;
+        if replayed {
             return Err(AuthorityRefusal::Replayed {
                 operation: approval.operation,
             }
             .into());
         }
-        operation.containers.insert(*container, step);
-        let contents = serde_json::to_vec(&updated).map_err(io::Error::other);
-        contents
-            .and_then(|contents| crate::filesystem::atomic_write(&self.path, &contents, 0o600))
-            .map_err(Error::ApprovalRecord)?;
-        *operations = updated;
         Ok(())
     }
 
-    fn load(&self) -> io::Result<BTreeMap<OperationId, Operation>> {
+    fn load(&self) -> io::Result<Consumption> {
         match std::fs::read(&self.path) {
             Ok(contents) => serde_json::from_slice(&contents).map_err(io::Error::other),
-            Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(BTreeMap::new()),
+            Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(Consumption::default()),
             Err(error) => Err(error),
         }
     }
@@ -278,7 +311,7 @@ mod tests {
     }
 
     #[test]
-    fn an_expired_operation_is_forgotten() {
+    fn pruning_then_clock_rollback_cannot_replay_even_after_reopening() {
         let dir = tempfile::tempdir().unwrap();
         let log = ConsumptionLog::new(dir.path());
         let short = approval(&"1".repeat(32), 100);
@@ -290,10 +323,119 @@ mod tests {
             RestartStep::Start,
             at(100)
         )));
-        log.consume(&short, &container('a'), RestartStep::Start, at(101))
+        let later = approval(&"2".repeat(32), 200_000);
+        log.consume(&later, &container('a'), RestartStep::Start, at(120_101))
             .unwrap();
         let stored = std::fs::read_to_string(dir.path().join(FILE_NAME)).unwrap();
-        assert_eq!(stored.matches(&"1".repeat(32)).count(), 1, "{stored}");
+        assert!(!stored.contains(&"1".repeat(32)), "{stored}");
+        let reopened = ConsumptionLog::new(dir.path());
+        assert!(matches!(
+            reopened.consume(&short, &container('a'), RestartStep::Start, at(50)),
+            Err(Error::RestartRefused(AuthorityRefusal::Expired))
+        ));
+        assert!(matches!(
+            reopened.consume(&short, &container('b'), RestartStep::Hold, at(50)),
+            Err(Error::RestartRefused(AuthorityRefusal::Expired))
+        ));
+    }
+
+    #[test]
+    fn the_previous_log_shape_still_refuses_consumed_steps() {
+        let dir = tempfile::tempdir().unwrap();
+        let first = approval(&"1".repeat(32), 100);
+        let previous = BTreeMap::from([(
+            first.operation,
+            Operation {
+                expires_at: first.expires_at,
+                containers: BTreeMap::from([(container('a'), RestartStep::Stop)]),
+            },
+        )]);
+        std::fs::write(
+            dir.path().join(FILE_NAME),
+            serde_json::to_vec(&previous).unwrap(),
+        )
+        .unwrap();
+        let log = ConsumptionLog::new(dir.path());
+        assert!(replayed(log.consume(
+            &first,
+            &container('a'),
+            RestartStep::Stop,
+            at(50)
+        )));
+        log.consume(&first, &container('a'), RestartStep::Start, at(51))
+            .unwrap();
+        let reopened = ConsumptionLog::new(dir.path());
+        assert!(replayed(reopened.consume(
+            &first,
+            &container('a'),
+            RestartStep::Start,
+            at(52)
+        )));
+    }
+
+    #[test]
+    fn a_reused_operation_keeps_consumption_until_its_latest_expiry() {
+        let dir = tempfile::tempdir().unwrap();
+        let log = ConsumptionLog::new(dir.path());
+        let short = approval(&"1".repeat(32), 100);
+        log.consume(&short, &container('a'), RestartStep::Start, at(50))
+            .unwrap();
+        let extended = RestartApproval {
+            expires_at: at(300_000),
+            ..short.clone()
+        };
+        assert!(replayed(log.consume(
+            &extended,
+            &container('a'),
+            RestartStep::Start,
+            at(60)
+        )));
+        let later = approval(&"2".repeat(32), 400_000);
+        log.consume(&later, &container('b'), RestartStep::Start, at(200_000))
+            .unwrap();
+        let reopened = ConsumptionLog::new(dir.path());
+        assert!(replayed(reopened.consume(
+            &extended,
+            &container('a'),
+            RestartStep::Start,
+            at(200_001)
+        )));
+    }
+
+    #[test]
+    fn a_write_that_lands_then_errors_is_reloaded_before_the_next_consumption() {
+        let dir = tempfile::tempdir().unwrap();
+        let log = ConsumptionLog::new(dir.path());
+        let first = approval(&"1".repeat(32), 100);
+        assert!(matches!(
+            log.consume_with(
+                &first,
+                &container('a'),
+                RestartStep::Stop,
+                at(1),
+                |path, contents| {
+                    crate::filesystem::atomic_write(path, contents, 0o600)?;
+                    Err(io::Error::other("directory sync failed after rename"))
+                }
+            ),
+            Err(Error::ApprovalRecord(_))
+        ));
+        let later = approval(&"2".repeat(32), 100);
+        log.consume(&later, &container('a'), RestartStep::Stop, at(2))
+            .unwrap();
+        assert!(replayed(log.consume(
+            &first,
+            &container('a'),
+            RestartStep::Stop,
+            at(3)
+        )));
+        let reopened = ConsumptionLog::new(dir.path());
+        assert!(replayed(reopened.consume(
+            &first,
+            &container('a'),
+            RestartStep::Stop,
+            at(3)
+        )));
     }
 
     #[test]
