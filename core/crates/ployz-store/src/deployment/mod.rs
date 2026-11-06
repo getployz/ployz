@@ -593,6 +593,11 @@ pub struct Claimed {
     /// The Organization's Build Order as the build starts. Uploaded Services skip
     /// GitHub in it: GitHub can't build uploaded source, so they build on Servers.
     pub build_order: Vec<crate::Builder>,
+    /// Every other Deployment of the Environment that ran and can no longer act:
+    /// ended, or lost its runner to this claim or an earlier one. None but this
+    /// claim's runner may change the Environment, so a Pending copy one of these
+    /// left is no run's.
+    pub ended_runs: BTreeSet<DeploymentId>,
 }
 
 /// One node a Deployment targets, as frozen at admission.

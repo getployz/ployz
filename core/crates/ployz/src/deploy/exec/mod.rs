@@ -1133,6 +1133,11 @@ pub(super) async fn execute_operation_sequence<C: MachineOperations>(
         for group in schedule.failed_groups() {
             rows.restore_unclaimed(client, progress, |task| schedule.group_of(task) == group)
                 .await;
+            let service = schedule
+                .group(group)
+                .service
+                .clone()
+                .map(|name| QualifiedService::new(plan.namespace.clone(), name));
             let started = started
                 .remove(&group)
                 .unwrap_or_default()
@@ -1142,7 +1147,7 @@ pub(super) async fn execute_operation_sequence<C: MachineOperations>(
             restore_group(
                 client,
                 progress,
-                started,
+                (service.as_ref(), started),
                 unread.contains(&group),
                 stopped.remove(&group).unwrap_or_default(),
                 rows,
@@ -1178,7 +1183,7 @@ fn lost_to_newer(
 async fn restore_group<C: MachineOperations>(
     client: &C,
     progress: &Progress,
-    started: Vec<(MachineId, ContainerId)>,
+    (service, started): (Option<&QualifiedService>, Vec<(MachineId, ContainerId)>),
     unread: bool,
     stopped: Vec<(ResolvedServiceSpec, cleanup::Copy)>,
     rows: &Rows<'_>,
@@ -1187,7 +1192,14 @@ async fn restore_group<C: MachineOperations>(
     if stopped.is_empty() {
         if !unread {
             join_all(started.iter().map(|(machine, id)| {
-                discard_new(client, progress, rows, machine, *id, None, &cleanup)
+                discard_new(
+                    client,
+                    progress,
+                    rows,
+                    (service, machine, *id),
+                    None,
+                    &cleanup,
+                )
             }))
             .await;
         }
@@ -1205,8 +1217,7 @@ async fn restore_group<C: MachineOperations>(
                 client,
                 progress,
                 rows,
-                machine,
-                *id,
+                (service, machine, *id),
                 Some(rows.run),
                 &cleanup,
             )
@@ -1295,8 +1306,7 @@ async fn discard_new<C: MachineOperations>(
     client: &C,
     progress: &Progress,
     rows: &Rows<'_>,
-    machine_id: &MachineId,
-    container_id: ContainerId,
+    (service, machine_id, container_id): (Option<&QualifiedService>, &MachineId, ContainerId),
     hold: Option<&DeploymentLogId>,
     cancellation: &CancellationToken,
 ) -> Withdrawn {
@@ -1309,7 +1319,12 @@ async fn discard_new<C: MachineOperations>(
     let (now, refusal) = match client.ensure_unsettled(machine_id, want, None).await {
         Ok(EnsuredContainer::Ensured { .. }) => return Withdrawn::Gone,
         Ok(EnsuredContainer::Refused { now, refusal }) => (now, refusal),
-        Err(_) => return running(),
+        Err(error) => {
+            if let Some(service) = service {
+                rows.leave_unrouted(progress, service, *machine_id, container_id, error);
+            }
+            return running();
+        }
     };
     if refusal.reason == ContainerRefusalReason::NotFound {
         return Withdrawn::Gone;
@@ -1353,6 +1368,65 @@ async fn discard_new<C: MachineOperations>(
             running()
         }
     }
+}
+
+/// Remove a copy an ended run left Pending. The owner refuses Gone on a copy that is
+/// In or Held, which the run's runner may have made it after losing its claim: that
+/// copy serves, so it stays, named because it serves beside this Deploy's new copies.
+/// One that stays for any other reason is named too, and the Deploy goes on without it.
+async fn remove_stray<C: MachineOperations>(
+    client: &C,
+    progress: &Progress,
+    rows: &Rows<'_>,
+    (service, machine_id, container_id): (&QualifiedService, &MachineId, ContainerId),
+    cancellation: &CancellationToken,
+) {
+    let want = ContainerWant::Gone {
+        container: ContainerLocator::Id(container_id),
+        drain: Drain::NONE,
+        anonymous_volumes: AnonymousVolumes::Remove,
+    };
+    let removed = tokio::time::timeout(
+        RESTART_WAIT,
+        client.ensure_unsettled(machine_id, want, Some(RESTART_WAIT)),
+    );
+    let answer = tokio::select! {
+        answer = removed => answer.unwrap_or_else(|_| {
+            Err(crate::cluster::answered_by(
+                machine_id,
+                ConnectError::Rpc(TransportError::budget_expired(
+                    "target Machine RPC timed out",
+                )),
+            ))
+        }),
+        () = cancellation.cancelled() => {
+            rows.name_left(progress, service, *machine_id, container_id, "interrupted".into());
+            return;
+        }
+    };
+    let error = match answer {
+        Ok(EnsuredContainer::Ensured { .. }) => return,
+        Ok(EnsuredContainer::Refused { refusal, .. })
+            if refusal.reason == ContainerRefusalReason::NotFound =>
+        {
+            return;
+        }
+        Ok(EnsuredContainer::Refused { refusal, .. })
+            if refusal.reason == ContainerRefusalReason::InRotation =>
+        {
+            rows.name_left(
+                progress,
+                service,
+                *machine_id,
+                container_id,
+                "it came into routing after this deploy planned".into(),
+            );
+            return;
+        }
+        Ok(EnsuredContainer::Refused { refusal, .. }) => refusal.into_error(),
+        Err(error) => error,
+    };
+    rows.leave_unrouted(progress, service, *machine_id, container_id, error);
 }
 
 fn left_by(error: ExecutionError) -> Left {
@@ -1903,6 +1977,8 @@ struct Rows<'a> {
     /// The Service each rollout removal retires a copy of, so one that cannot
     /// inspect its copy can still name it.
     services: BTreeMap<usize, &'a ServiceName>,
+    /// The removals of copies ended runs left Pending, with each copy's Service.
+    strays: &'a BTreeMap<usize, ServiceName>,
     gens: std::sync::Mutex<
         BTreeMap<QualifiedService, std::sync::Arc<tokio::sync::OnceCell<Numbered>>>,
     >,
@@ -2042,6 +2118,7 @@ impl<'a> Rows<'a> {
                 })
                 .collect(),
             retiring: plan.retiring(),
+            strays: plan.strays(),
             dropped_large_packets: plan.dropped_large_packets(),
             unreached: std::sync::Mutex::new(BTreeSet::new()),
             stop_first,
@@ -2531,6 +2608,39 @@ impl<'a> Rows<'a> {
             .map_or_else(|| id.to_string(), |name| name.to_string())
     }
 
+    /// A copy this run couldn't remove that never went In: its own new one, or one an
+    /// ended run left. No proxy routes it once its Machine is back, and the next
+    /// Deploy removes it.
+    fn leave_unrouted(
+        &self,
+        progress: &Progress,
+        service: &QualifiedService,
+        machine_id: MachineId,
+        container_id: ContainerId,
+        error: RpcError,
+    ) {
+        let unanswered = error.code == RpcErrorCode::Unavailable;
+        let (reason, _) = self.failed_on(machine_id, error, unanswered);
+        self.name_left(progress, service, machine_id, container_id, reason);
+    }
+
+    /// A copy this run couldn't remove, for `reason`, which keeps running.
+    fn name_left(
+        &self,
+        progress: &Progress,
+        service: &QualifiedService,
+        machine_id: MachineId,
+        container_id: ContainerId,
+        reason: String,
+    ) {
+        progress.warn(DeployWarning::LeftRunning {
+            service: service.clone(),
+            container_id,
+            machine: self.machine_name(&machine_id),
+            reason,
+        });
+    }
+
     /// A Machine that was cut off or powered off can route the copy again once
     /// it is back, so the report names each one.
     fn leave_running(&self, progress: &Progress, copy: &cleanup::Copy, left: Left) {
@@ -2773,6 +2883,22 @@ async fn execute_operation<C: MachineOperations>(
             }
             Err(error) => Err(error.into()),
         },
+        DeployOperation::RemoveContainer {
+            machine_id,
+            container_id,
+            ..
+        } if let Some(service) = rows.strays.get(&index) => {
+            let service = QualifiedService::new(rows.namespace.clone(), service.clone());
+            remove_stray(
+                client,
+                progress,
+                rows,
+                (&service, machine_id, *container_id),
+                cancellation,
+            )
+            .await;
+            Ok(Ran::default())
+        }
         DeployOperation::RemoveContainer {
             machine_id,
             container_id,
@@ -3084,7 +3210,8 @@ async fn adopts_running<C: MachineOperations>(
         .unwrap_or(true)
 }
 
-/// Remove what a failed creation left in `slot`, giving up if the Machine stays silent.
+/// Remove what a failed creation left in `slot`, resending while its Machine is away
+/// for as long as a restart takes, then giving up.
 async fn discard_attempt<C: MachineOperations>(
     client: &C,
     machine_id: &MachineId,
@@ -3098,7 +3225,7 @@ async fn discard_attempt<C: MachineOperations>(
             anonymous_volumes: AnonymousVolumes::Remove,
         },
     );
-    match tokio::time::timeout(TARGET_RPC_TIMEOUT, discarded).await {
+    match tokio::time::timeout(RESTART_WAIT, discarded).await {
         Ok(result) => result.map(|_| ()),
         Err(_) => Err(crate::cluster::answered_by(
             machine_id,

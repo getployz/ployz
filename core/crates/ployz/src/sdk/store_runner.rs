@@ -174,13 +174,7 @@ pub async fn run_deployment_expecting(
         deployment,
         runner,
     };
-    let mut claimed = {
-        let (deployment, runner) = (run.deployment.clone(), run.runner.clone());
-        super::store_call(&run.store, move |store| store.claim(&deployment, &runner)).await?
-    };
-    // The Store lowers the Intent without knowing who will run it.
-    claimed.intent.options.operator = operator;
-    claimed.intent.options.block_unmountable = true;
+    let claimed = run.claim(operator).await?;
     let (targets, built) = match checkouts
         .map_err(Unbuilt::Failed)
         .and_then(|sources| targets(&claimed, sources))
@@ -720,6 +714,24 @@ fn ingress_failure_message<'a>(
 }
 
 impl Run {
+    /// Claim the Deployment, with the Intent's options this runner plans it with,
+    /// driving it as `operator`.
+    async fn claim(&self, operator: Operator) -> Result<Claimed, RpcError> {
+        let (deployment, runner) = (self.deployment.clone(), self.runner.clone());
+        let mut claimed =
+            super::store_call(&self.store, move |store| store.claim(&deployment, &runner)).await?;
+        // The Store lowers the Intent without knowing who will run it.
+        claimed.intent.options.operator = operator;
+        claimed.intent.options.block_unmountable = true;
+        // Each labels its copies with its Deployment's id, as this run does.
+        claimed.intent.options.ended_runs = claimed
+            .ended_runs
+            .iter()
+            .filter_map(|ended| ended.as_str().parse().ok())
+            .collect();
+        Ok(claimed)
+    }
+
     async fn execute(
         &self,
         session: &Session,
@@ -1036,7 +1048,10 @@ impl Run {
         let running: Running<PreparedDeploy, Unprepared> = session.prepare_with(
             input,
             claimed.intent.registry_auth,
-            Some(claimed.intent.options.operator),
+            Some((
+                claimed.intent.options.operator,
+                claimed.intent.options.ended_runs,
+            )),
         )?;
         self.renewing(running.finished(), || running.abort()).await
     }

@@ -1364,6 +1364,7 @@ pub(crate) fn claim(
     let organization = build::organization(tx, id)?;
     let build_order = crate::builders::order(tx, organization.as_str())?;
     let sealed_names = crate::review::sealed::names(tx, stored.summary.environment_id.as_str())?;
+    let ended_runs = ended_runs(tx, &stored.summary)?;
     Ok(Ok(Claimed {
         deployment: stored.summary,
         intent,
@@ -1374,7 +1375,28 @@ pub(crate) fn claim(
         deletes,
         uploads,
         build_order,
+        ended_runs,
     }))
+}
+
+/// The Deployments of `claimed`'s Environment, itself aside, that ran and ended.
+/// Claiming took over each one still running, so it ended Unknown. One queued or
+/// waiting for CI never ran and may yet, so it is not among them.
+fn ended_runs(
+    tx: &mut dyn Tx,
+    claimed: &DeploymentSummary,
+) -> Result<BTreeSet<DeploymentId>, RpcError> {
+    tx.query(
+        "SELECT id FROM config_deployment WHERE environment_id = ?1 AND id <> ?2 \
+         AND status IN ('applied', 'failed', 'unknown', 'cancelled')",
+        &[
+            claimed.environment_id.as_str().into(),
+            claimed.id.as_str().into(),
+        ],
+    )?
+    .iter()
+    .map(|row| row.parse::<DeploymentId>(0, "Deployment"))
+    .collect()
 }
 
 /// Every build receipt of each Service of `environment`'s Project, by runtime name:

@@ -136,6 +136,28 @@ fn after_cancel(token: &CancellationToken) -> tokio::sync::oneshot::Receiver<()>
     cleanup
 }
 
+/// A runner plans with the runs its claim reports ended, so its Deploy removes the
+/// Pending copies they left.
+#[tokio::test]
+async fn a_runner_plans_with_the_runs_its_claim_reports_ended() {
+    let (superseded, actor) = run();
+    take_over(&superseded, &actor);
+    let run = Run {
+        store: superseded.store.clone(),
+        deployment: DeploymentId::parse("00000000-0000-4000-8000-000000000004").unwrap(),
+        runner: RunnerId::parse("other").unwrap(),
+    };
+
+    let claimed = run.claim(Operator::Cloud).await.unwrap();
+
+    assert_eq!(
+        claimed.intent.options.ended_runs,
+        BTreeSet::from([
+            ployz_core::DeploymentLogId::parse(superseded.deployment.as_str()).unwrap()
+        ])
+    );
+}
+
 #[tokio::test]
 async fn a_refusal_that_fails_the_same_way_again_is_recorded_as_one() {
     use crate::deploy::{DeployError, PlanError};

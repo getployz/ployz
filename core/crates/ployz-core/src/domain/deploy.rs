@@ -54,6 +54,14 @@ pub struct PlanOptions {
     #[serde(default, skip_serializing_if = "PruneScope::is_namespace")]
     #[ts(optional, as = "Option<PruneScope>")]
     pub prune: PruneScope,
+    /// The runs that can no longer change the Namespace: each ended, or lost its
+    /// runner to a later claim. A copy one of them left Pending is no run's, so the
+    /// Deploy removes it before starting anything. Only a runner that holds the
+    /// Environment's claim sets it; empty, every Pending copy stays until the Deploy
+    /// succeeds. Never serialized.
+    #[serde(skip)]
+    #[ts(skip)]
+    pub ended_runs: BTreeSet<crate::DeploymentLogId>,
 }
 
 /// How far a full reconciliation removes what its target lacks.
