@@ -113,6 +113,8 @@ macro_rules! rpc_catalog {
                 MACHINE_STORAGE_OBSERVATION_CAPABILITY: ("ployz.machine.storage-observation.v1", Always),
                 /// The daemon refuses each RPC its caller's Management Scope does not reach.
                 MANAGEMENT_SCOPE_CAPABILITY: ("ployz.management.scope.v1", Always),
+                /// `RequestMachineUpgrade` takes an exact version no Release Channel resolves to only from a Full caller.
+                UPGRADE_EXACT_CAPABILITY: ("ployz.machine.upgrade.exact.v1", Always),
                 /// The daemon opens Sealed values and keeps them out of its own logs.
                 ENV_SEALED_CAPABILITY: ("ployz.env.sealed.v1", Always),
                 /// The daemon opens a Build's Sealed values as secret files and keeps them out of its output.

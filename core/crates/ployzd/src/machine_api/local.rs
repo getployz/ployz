@@ -10,8 +10,8 @@ use ployz_core::{
     CapabilityAdvertisement, CertificateMaterialChange, CertificateMaterialPublished, ContainerId,
     ContainerList, ContainerObservation, ContractDescription, EndpointSelected, EnvironmentValues,
     LiveLogTarget, LocalMachinePhase, LogMetadata, LogOrigin, MachineLogService, MachineRpc,
-    OpaquePayload, PROTOCOL_MAJOR, RetainedEnvReply, RoutedAddresses, RoutesRead, Rpc, RpcError,
-    RpcErrorCode, RpcRequestBody, RpcResponse, SelectEndpointRequest, op,
+    ManagementScope, OpaquePayload, PROTOCOL_MAJOR, RetainedEnvReply, RoutedAddresses, RoutesRead,
+    Rpc, RpcError, RpcErrorCode, RpcRequestBody, RpcResponse, SelectEndpointRequest, op,
 };
 use serde_json::Value;
 use tonic::{Request, Response, Status};
@@ -765,9 +765,18 @@ impl MachineRpc for MachineService {
         let cloud_routed = request
             .metadata()
             .contains_key(ployz_core::CLOUD_ROUTED_HEADER);
+        let scope = if from_operator(&request) {
+            ManagementScope::Operator
+        } else {
+            ManagementScope::Full
+        };
         finish(
             self.local
-                .request_upgrade(expect::<op::RequestMachineUpgrade>(request)?, cloud_routed)
+                .request_upgrade(
+                    expect::<op::RequestMachineUpgrade>(request)?,
+                    cloud_routed,
+                    scope,
+                )
                 .await,
         )
     }
@@ -1075,7 +1084,7 @@ fn local_failure(error: LocalMachineError) -> Result<RpcError, Status> {
         LocalMachineError::Admission(crate::mutation::Error::Io(error)) => Err(
             ployz_core::rpc::caused_status(tonic::Code::Internal, &error),
         ),
-        LocalMachineError::Upgrade(error) => Ok(upgrade_error(error)),
+        LocalMachineError::Upgrade(error) => upgrade_error(error),
         LocalMachineError::Sealing(error) => Ok(sealing_error(error)),
         LocalMachineError::Recovery(error) => Ok(recovery_error(error)),
     }
@@ -1129,9 +1138,23 @@ fn recovery_error(error: RecoveryError) -> RpcError {
     }
 }
 
-fn upgrade_error(error: crate::installer::upgrade::Error) -> RpcError {
+#[expect(
+    clippy::result_large_err,
+    reason = "an off-channel refusal fails the call with a Status, as local_failure does"
+)]
+fn upgrade_error(error: crate::installer::upgrade::Error) -> Result<RpcError, Status> {
     use crate::{installer::upgrade::Error, mutation};
     let code = match &error {
+        Error::OffChannel { .. } => {
+            return Err(ployz_core::rpc::hinted_status(
+                tonic::Code::PermissionDenied,
+                &error,
+                serde_json::json!({
+                    "capability": ployz_core::UPGRADE_EXACT_CAPABILITY,
+                    "next": "ployz device request",
+                }),
+            ));
+        }
         Error::NotFound => RpcErrorCode::NotFound,
         Error::AttemptConflict(_) | Error::Busy | Error::Admission(mutation::Error::Busy) => {
             RpcErrorCode::Conflict
@@ -1150,7 +1173,7 @@ fn upgrade_error(error: crate::installer::upgrade::Error) -> RpcError {
         | Error::Upgrade(_)
         | Error::Admission(mutation::Error::Io(_)) => RpcErrorCode::Internal,
     };
-    RpcError::caused(code, &error)
+    Ok(RpcError::caused(code, &error))
 }
 
 #[allow(clippy::result_large_err)]

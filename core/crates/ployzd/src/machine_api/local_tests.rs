@@ -5,7 +5,7 @@ use crate::machine::{LocalMachineStore, RecordOwner, StoreError};
 use ployz_core::labels::CREATION_KEY;
 use ployz_core::{
     ContainerId, ContainerKind, ContainerObservation, ContainerRuntimeObservation, ForgetRequest,
-    MachineId, MachineRelease, MachineRpc, MachineUpgradeAttemptId, Namespace,
+    MachineId, MachineRelease, MachineRpc, MachineUpgradeAttemptId, MachineVersion, Namespace,
     RequestMachineUpgradeRequest, ResolvedServiceSpec, RpcErrorCode, RpcResponseBody,
     RuntimeWatchRequest, ServiceId, op,
 };
@@ -241,6 +241,29 @@ async fn upgrade_rpc_rejects_nonstandard_machine_paths_before_acceptance() {
 
     drop(service);
     std::fs::remove_dir_all(data_dir).unwrap();
+}
+
+#[test]
+fn an_off_channel_upgrade_refusal_names_its_capability() {
+    let status = super::upgrade_error(crate::installer::upgrade::Error::OffChannel {
+        target: MachineVersion::parse("0.3.17-beta.1").unwrap(),
+    })
+    .unwrap_err();
+
+    assert_eq!(status.code(), Code::PermissionDenied);
+    assert!(
+        status.message().contains("needs Full access"),
+        "{}",
+        status.message()
+    );
+    let details = ployz_core::rpc::status_details(status.details()).unwrap();
+    assert_eq!(
+        details
+            .get("capability")
+            .and_then(serde_json::Value::as_str),
+        Some(ployz_core::UPGRADE_EXACT_CAPABILITY),
+        "{details}"
+    );
 }
 
 async fn create_service_container(

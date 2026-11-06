@@ -191,7 +191,17 @@ async fn run_contract_case(case: &str) {
             let data = data.clone();
             let run = run.clone();
             let request = request.clone();
-            async move { super::request(request, super::Downgrade::Refused, data, run, guard).await }
+            async move {
+                super::request(
+                    request,
+                    super::Downgrade::Refused,
+                    super::ReleaseChoice::AnyRelease,
+                    data,
+                    run,
+                    guard,
+                )
+                .await
+            }
         });
         until_launcher(|| root.join("launch-started").exists())
             .await
@@ -234,6 +244,7 @@ async fn run_contract_case(case: &str) {
     let accepted = super::request(
         request.clone(),
         super::Downgrade::Refused,
+        super::ReleaseChoice::AnyRelease,
         data.clone(),
         run.clone(),
         guard,
@@ -266,6 +277,7 @@ async fn run_contract_case(case: &str) {
                 super::request(
                     request,
                     super::Downgrade::Refused,
+                    super::ReleaseChoice::AnyRelease,
                     data.clone(),
                     run.clone(),
                     guard
@@ -283,6 +295,7 @@ async fn run_contract_case(case: &str) {
                 super::request(
                     other,
                     super::Downgrade::Refused,
+                    super::ReleaseChoice::AnyRelease,
                     data.clone(),
                     run.clone(),
                     guard
@@ -685,4 +698,92 @@ fn only_a_direct_connection_downgrades() {
         assert!(policy.admit(Some(&installed), target).is_ok());
     }
     assert!(super::Downgrade::Refused.admit(None, &older).is_ok());
+}
+
+#[tokio::test]
+async fn an_operator_names_only_a_release_a_channel_resolves_to() {
+    let version = |rest: &str| {
+        MachineVersion::parse(format!("{}.{rest}", env!("CARGO_PKG_VERSION_MAJOR"))).unwrap()
+    };
+    let root = tempfile::tempdir().unwrap();
+    let line = root
+        .path()
+        .join(concat!("v", env!("CARGO_PKG_VERSION_MAJOR")));
+    fs::create_dir_all(&line).unwrap();
+    fs::write(line.join("stable"), format!("v{}\n", version("3.16"))).unwrap();
+    fs::write(line.join("beta"), format!("v{}\n", version("3.17-beta.2"))).unwrap();
+    let source = ReleaseSource::Local(root.path().to_owned());
+    let installed = version("3.15");
+    let admit = async |choice: ReleaseChoice, requested: &MachineRelease, target: &str| {
+        choice
+            .admit(requested, &version(target), &source, Some(&installed))
+            .await
+    };
+    let exact = |rest: &str| MachineRelease::Exact(version(rest));
+
+    for (requested, target) in [
+        (MachineRelease::Stable, "3.16"),
+        (MachineRelease::Beta, "3.17-beta.2"),
+        (exact("3.16"), "3.16"),
+        (exact("3.17-beta.2"), "3.17-beta.2"),
+    ] {
+        assert!(
+            admit(ReleaseChoice::ChannelResolved, &requested, target)
+                .await
+                .is_ok(),
+            "an Operator was refused {requested}"
+        );
+    }
+    for off_channel in ["3.17-beta.1", "3.15", "3.14"] {
+        let refused = admit(
+            ReleaseChoice::ChannelResolved,
+            &exact(off_channel),
+            off_channel,
+        )
+        .await;
+        assert!(
+            matches!(&refused, Err(Error::OffChannel { target }) if *target == version(off_channel)),
+            "an Operator chose {off_channel}: {refused:?}"
+        );
+        assert!(
+            admit(ReleaseChoice::AnyRelease, &exact(off_channel), off_channel)
+                .await
+                .is_ok()
+        );
+    }
+}
+
+#[tokio::test]
+async fn a_channel_that_fails_to_resolve_does_not_hide_the_other() {
+    let version = |rest: &str| {
+        MachineVersion::parse(format!("{}.{rest}", env!("CARGO_PKG_VERSION_MAJOR"))).unwrap()
+    };
+    let root = tempfile::tempdir().unwrap();
+    let line = root
+        .path()
+        .join(concat!("v", env!("CARGO_PKG_VERSION_MAJOR")));
+    fs::create_dir_all(&line).unwrap();
+    fs::write(line.join("beta"), format!("v{}\n", version("3.17-beta.2"))).unwrap();
+    let source = ReleaseSource::Local(root.path().to_owned());
+    let installed = version("3.15");
+    let admit = async |target: &str| {
+        ReleaseChoice::ChannelResolved
+            .admit(
+                &MachineRelease::Exact(version(target)),
+                &version(target),
+                &source,
+                Some(&installed),
+            )
+            .await
+    };
+
+    assert!(
+        admit("3.17-beta.2").await.is_ok(),
+        "beta's release was refused while stable could not resolve"
+    );
+    let refused = admit("3.14").await;
+    assert!(
+        matches!(&refused, Err(Error::OffChannel { .. })),
+        "an unresolvable channel did not refuse by capability: {refused:?}"
+    );
 }

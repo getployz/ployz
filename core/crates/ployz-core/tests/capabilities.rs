@@ -17,7 +17,8 @@ use ployz_core::{
     SET_DEVICE_CAPABILITY, SET_MANAGEMENT_CLIENT_CAPABILITY, SET_PUSH_TARGET_CAPABILITY,
     SET_VOLUME_COPY_CAPABILITY, SET_VOLUME_SIZE_CAPABILITY, SHARE_SEALING_KEY_CAPABILITY,
     TAIL_LOGS_CAPABILITY, UPDATE_CONTAINER_LIMITS_CAPABILITY, UPDATE_MACHINE_CAPABILITY,
-    VOLUME_FLOOR_CAPABILITY, VOLUME_SHRINK_CAPABILITY, WRAP_SEALING_KEY_CAPABILITY, op,
+    UPGRADE_EXACT_CAPABILITY, VOLUME_FLOOR_CAPABILITY, VOLUME_SHRINK_CAPABILITY,
+    WRAP_SEALING_KEY_CAPABILITY, op,
 };
 
 /// Capability constants are generated from the catalog, so a typo would stay
@@ -61,6 +62,7 @@ fn catalogued_capabilities_keep_stable_spellings() {
             "ployz.machine.storage-observation.v1",
         ),
         (MANAGEMENT_SCOPE_CAPABILITY, "ployz.management.scope.v1"),
+        (UPGRADE_EXACT_CAPABILITY, "ployz.machine.upgrade.exact.v1"),
         (ENV_SEALED_CAPABILITY, "ployz.env.sealed.v1"),
         (BUILD_SEALED_CAPABILITY, "ployz.build.sealed.v1"),
         (BUILD_GRANT_HOLDER_CAPABILITY, "ployz.build.grant.holder.v1"),
@@ -159,6 +161,7 @@ fn advertised_capability_groups_match_the_frozen_catalog() {
             "ployz.certificates.policy.v1",
             "ployz.machine.storage-observation.v1",
             "ployz.management.scope.v1",
+            "ployz.machine.upgrade.exact.v1",
             "ployz.env.sealed.v1",
             "ployz.build.sealed.v1",
             "ployz.build.grant.holder.v1",
@@ -355,6 +358,10 @@ const ABOVE_FLOOR: &[(&str, &str)] = &[
     (
         "ployz.management.scope.v1",
         "gated: an older daemon serves an Operator caller as Full, so a path that sends a Sealed value first checks every Machine in the Cluster advertises it, and refuses otherwise",
+    ),
+    (
+        "ployz.machine.upgrade.exact.v1",
+        "claims nothing: Ployz Cloud names only a Release Channel, and an older daemon still takes any exact version from an Operator",
     ),
     (
         "ployz.env.sealed.v1",

@@ -431,6 +431,12 @@ runs:
 ployz server upgrade 0.3.0-beta.7 web-1 --connect ssh://root@203.0.113.10
 ```
 
+Only SSH, the server itself, or an [approved device](#approve-a-device) can name an exact version.
+Ployz Cloud, or a CLI that isn't an approved device, can name only the version `stable` or `beta`
+leads to now. A server refuses any other version with
+`ployz.machine.upgrade.exact.v1 needs Full access`, so Ployz Cloud can't choose which release your
+servers run. Run it over SSH, or from a device approved with `ployz device request`.
+
 A version older than the server runs is a downgrade, and Ployz asks before it starts. A newer CLI
 or Ployz Cloud may need something the older release lacks. On 0.3.0-beta.6 or earlier, they can't
 reach the server through the relay at all, and upgrading it again may take

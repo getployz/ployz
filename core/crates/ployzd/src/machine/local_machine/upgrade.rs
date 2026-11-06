@@ -1,6 +1,6 @@
 //! Local ownership of Machine upgrade replay and admission.
 
-use ployz_core::{MachineUpgradeAttempt, RequestMachineUpgradeRequest};
+use ployz_core::{MachineUpgradeAttempt, ManagementScope, RequestMachineUpgradeRequest};
 
 use super::{Error, LocalMachine};
 
@@ -21,6 +21,7 @@ impl LocalMachine {
         &self,
         request: RequestMachineUpgradeRequest,
         cloud_routed: bool,
+        scope: ManagementScope,
     ) -> Result<MachineUpgradeAttempt, Error> {
         let data_dir = self.owner.data_dir().to_owned();
         let run_dir = self.owner.run_dir().to_owned();
@@ -41,6 +42,12 @@ impl LocalMachine {
         crate::installer::upgrade::request(
             request,
             self.downgrade(cloud_routed),
+            match scope {
+                ManagementScope::Full => crate::installer::upgrade::ReleaseChoice::AnyRelease,
+                ManagementScope::Operator => {
+                    crate::installer::upgrade::ReleaseChoice::ChannelResolved
+                }
+            },
             data_dir,
             run_dir,
             installation,

@@ -55,6 +55,12 @@ pub enum Error {
         installed: MachineVersion,
         target: MachineVersion,
     },
+    /// An Operator named an exact release that neither Release Channel resolves to.
+    #[error(
+        "{capability} needs Full access: neither `stable` nor `beta` resolves to {target} on this Machine; run `ployz server upgrade {target}` over SSH or from an approved device",
+        capability = ployz_core::UPGRADE_EXACT_CAPABILITY
+    )]
+    OffChannel { target: MachineVersion },
     /// The requested release could not be parsed or resolved.
     #[error("could not resolve the Machine release")]
     Resolve(#[source] InstallError),
@@ -144,18 +150,50 @@ impl Downgrade {
     }
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum ReleaseChoice {
+    AnyRelease,
+    ChannelResolved,
+}
+
+impl ReleaseChoice {
+    async fn admit(
+        self,
+        requested: &MachineRelease,
+        target: &MachineVersion,
+        source: &ReleaseSource,
+        installed: Option<&MachineVersion>,
+    ) -> Result<(), Error> {
+        if self == Self::AnyRelease || !matches!(requested, MachineRelease::Exact(_)) {
+            return Ok(());
+        }
+        for channel in [MachineRelease::Stable, MachineRelease::Beta] {
+            if super::release::resolve_release(&channel, source, installed)
+                .await
+                .is_ok_and(|resolved| resolved == *target)
+            {
+                return Ok(());
+            }
+        }
+        Err(Error::OffChannel {
+            target: target.clone(),
+        })
+    }
+}
+
 /// Own acceptance and worker launch independently of the requesting client's lifetime.
 /// Dropping the returned future only stops waiting; the task retains exclusive admission.
 pub(crate) fn request(
     request: RequestMachineUpgradeRequest,
     downgrade: Downgrade,
+    choice: ReleaseChoice,
     data_dir: PathBuf,
     run_dir: PathBuf,
     guard: mutation::InstallationGuard,
 ) -> impl Future<Output = Result<MachineUpgradeAttempt, Error>> {
     let task = tokio::spawn(async move {
         let _guard = guard;
-        request_locked(request, downgrade, &data_dir, &run_dir).await
+        request_locked(request, downgrade, choice, &data_dir, &run_dir).await
     });
     async move {
         task.await.map_err(|error| {
@@ -170,6 +208,7 @@ pub(crate) fn request(
 async fn request_locked(
     request: RequestMachineUpgradeRequest,
     downgrade: Downgrade,
+    choice: ReleaseChoice,
     data_dir: &Path,
     run_dir: &Path,
 ) -> Result<MachineUpgradeAttempt, Error> {
@@ -202,6 +241,14 @@ async fn request_locked(
     )
     .await
     .map_err(Error::Resolve)?;
+    choice
+        .admit(
+            &request.release,
+            &target,
+            &ReleaseSource::Published,
+            installed.as_ref(),
+        )
+        .await?;
     downgrade.admit(installed.as_ref(), &target)?;
     if already_installed(&request.release, installed.as_ref(), &target) {
         // Nothing to install or restart: the attempt settles on its first reply.
