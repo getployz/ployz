@@ -2115,6 +2115,71 @@ async fn routed_addresses_stand_while_the_caddy_that_loaded_them_refuses_a_new_l
 const CHALLENGE: &str = r#"{"challenge_token":"LoqXcYV8q5ONbJQxbmR7SCTNo3tiAXDfowyjxAjEuX0","challenge_response":"LoqXcYV8q5ONbJQxbmR7SCTNo3tiAXDfowyjxAjEuX0.AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"}"#;
 
 #[tokio::test]
+async fn caddy_refusing_an_unrouted_hostname_s_certificate_still_applies_every_route() {
+    let WatcherFixture {
+        machine,
+        state,
+        address,
+        server,
+        directory,
+    } = watcher_fixture().await;
+    state.mutate(|parts| {
+        parts.resolved_spec.ports = vec![ingress("good.example.com", 8443, HttpProtocol::Https)];
+    });
+    // No Service publishes gone.example.com any more; its row still holds material.
+    state.write_certificates(&[
+        ("gone.example.com", material_body("gone.example.com")),
+        ("good.example.com", material_body("good.example.com")),
+    ]);
+    let (load_tx, mut load_rx) = mpsc::unbounded_channel();
+    let admin = RefusingAdmin {
+        refused: "https://gone.example.com {",
+        loads: load_tx,
+        running: Arc::default(),
+    };
+    let shutdown = CancellationToken::new();
+    let watcher = tokio::spawn(watch_caddy(
+        machine,
+        ReplicatedStore::new(ApiClient::http1(address, &"a".repeat(64)).unwrap()),
+        no_down,
+        directory.join(CONFIG_FILE),
+        tokio::sync::watch::channel(Default::default()).0,
+        shutdown.clone(),
+        move || std::future::ready(Ok(Some(admin.clone()))),
+    ));
+
+    let loaded = timeout(Duration::from_secs(5), async {
+        loop {
+            let loaded = load_rx.recv().await.unwrap();
+            if loaded.contains("https://good.example.com {") {
+                return loaded;
+            }
+        }
+    })
+    .await
+    .expect("an unrouted hostname's refused certificate blocked every route");
+    assert!(!loaded.contains("https://gone.example.com {"), "{loaded}");
+    let caddyfile = wait_for_caddyfile(
+        &directory.join(CONFIG_FILE),
+        "# - gone.example.com: Caddy refused",
+    )
+    .await;
+    assert!(
+        caddyfile.contains("https://good.example.com {"),
+        "{caddyfile}"
+    );
+    assert!(
+        !caddyfile.contains("https://gone.example.com {"),
+        "{caddyfile}"
+    );
+
+    shutdown.cancel();
+    watcher.await.unwrap().unwrap();
+    server.abort();
+    std::fs::remove_dir_all(directory).unwrap();
+}
+
+#[tokio::test]
 async fn caddy_refusing_one_certificate_still_applies_every_other_route() {
     let WatcherFixture {
         machine,
@@ -2255,11 +2320,12 @@ async fn a_write_without_an_admin_pins_only_certificates_caddy_loaded() {
         vec![ingress("bad.example.com", 8443, HttpProtocol::Https)],
     );
     state.containers.lock().unwrap().push(web);
-    state.write_certificates(&[
+    // new.example.com's row arrives only once the admin is down, so Caddy never loaded it.
+    let loaded_rows = [
         ("bad.example.com", material_body("bad.example.com")),
         ("good.example.com", material_body("good.example.com")),
-        ("new.example.com", material_body("new.example.com")),
-    ]);
+    ];
+    state.write_certificates(&loaded_rows);
     let (load_tx, mut load_rx) = mpsc::unbounded_channel();
     let admin = RefusingAdmin {
         refused: "https://bad.example.com {",
@@ -2285,6 +2351,12 @@ async fn a_write_without_an_admin_pins_only_certificates_caddy_loaded() {
     while load_rx.try_recv().is_ok() {}
 
     admin_up.store(false, Ordering::SeqCst);
+    let [bad, good] = loaded_rows;
+    state.write_certificates(&[
+        bad,
+        good,
+        ("new.example.com", material_body("new.example.com")),
+    ]);
     state.containers.lock().unwrap().push(observation(
         5,
         &machine.id,

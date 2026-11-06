@@ -246,6 +246,15 @@ impl IngressSite {
             .and_then(|certificate| certificate.challenge.as_ref())
     }
 
+    /// The material Caddy pins for this hostname: for its HTTPS route, or for a hostname
+    /// no Service publishes any more, so HTTPS still completes the handshake and answers
+    /// like HTTP. An HTTP-only hostname pins nothing, as before.
+    #[must_use]
+    pub(super) fn pinned(&self) -> Option<&CertificateMaterial> {
+        self.material()
+            .filter(|_| self.publication.is_none() || self.route(HttpProtocol::Https).is_some())
+    }
+
     #[must_use]
     pub(super) fn material(&self) -> Option<&CertificateMaterial> {
         self.certificate
@@ -326,7 +335,14 @@ impl IngressProjection {
             });
         }
         for (hostname, site) in &mut sites {
-            if site.https.is_none() {
+            // A hostname no Service publishes any more keeps its own material pinned, so a
+            // covering wildcard replaces it too: nothing renews ACME material once covered.
+            let unpublished_with_material = site.owner.is_none()
+                && site
+                    .certificate
+                    .as_ref()
+                    .is_some_and(|certificate| certificate.material.is_some());
+            if site.https.is_none() && !unpublished_with_material {
                 continue;
             }
             // Published wildcard material wins over ACME material, which stops renewing once covered.
@@ -764,8 +780,8 @@ enum Probe {
 
 /// The file stem of the certificate the Caddyfile pins for `site`.
 fn pinned_stem(site: &IngressSite) -> Option<String> {
-    site.https()
-        .map(|(material, _)| certificate_file_stem(&site.hostname, material))
+    site.pinned()
+        .map(|material| certificate_file_stem(&site.hostname, material))
 }
 
 /// `projection` with the pinned certificates named in `excluded` left out.
@@ -1225,7 +1241,7 @@ pub(crate) fn write_certificate_files(
     let directory = certificate_directory(config_file)?;
     prepare(&directory)?;
     for site in sites {
-        let Some((material, _)) = site.https() else {
+        let Some(material) = site.pinned() else {
             continue;
         };
         let stem = certificate_file_stem(&site.hostname, material);
@@ -1250,7 +1266,7 @@ pub(crate) fn remove_stale_certificate_files(
     let keep: BTreeSet<String> = sites
         .iter()
         .filter_map(|site| {
-            site.https().map(|(material, _)| {
+            site.pinned().map(|material| {
                 let stem = certificate_file_stem(&site.hostname, material);
                 [format!("{stem}.crt"), format!("{stem}.key")]
             })

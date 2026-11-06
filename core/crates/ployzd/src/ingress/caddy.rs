@@ -308,7 +308,7 @@ https:// {{\n\
     if projection.sites.iter().any(|site| {
         site.proxied(HttpProtocol::Http).is_some()
             || site.challenge().is_some()
-            || site.proxied(HttpProtocol::Https).is_some()
+            || site.pinned().is_some()
     }) {
         output.push_str("\n# Sites generated from Service ports.\n");
     }
@@ -353,20 +353,28 @@ https:// {{\n\
                 &answer,
             );
         }
-        let Some((material, route)) = https else {
+        let Some(material) = site.pinned() else {
             continue;
         };
         let stem = super::certificate_file_stem(&site.hostname, material);
         let tls =
             format!("\ttls {CONTAINER_CERTS_DIR}/{stem}.crt {CONTAINER_CERTS_DIR}/{stem}.key\n");
+        // Pinned material with no HTTPS route left answers like the HTTP catch-all.
+        let (trace, answer) = match https {
+            Some((_, route)) => (published(route), proxy(route)),
+            None => (
+                format!("{unpublished}\timport ployz_log\n"),
+                "\terror NOT_DEPLOYED 404\n".to_owned(),
+            ),
+        };
         write_site(
             &mut output,
             local_machine,
             "https",
             &site.hostname,
-            &format!("{tls}{headers}{}", published(route)),
+            &format!("{tls}{headers}{trace}"),
             None,
-            &proxy(route),
+            &answer,
         );
     }
     write_certificate_errors(&mut output, &projection.sites);
