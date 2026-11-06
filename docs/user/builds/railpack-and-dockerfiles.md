@@ -147,10 +147,13 @@ published there. Its DNS keeps working, so port 53 stays open to any address, pr
 A Dockerfile `ADD` of a URL or Git repository, and every `FROM` image pull, reach the internet
 and nothing on the server running the build or your servers' private network, except the image
 servers Ployz uses to share build images between your servers. Like a build step, they can't
-reach the build server's local network or any other private address either. A base image from a
-registry or mirror on your LAN, or from a cloud registry endpoint at a private address in your
-VPC, won't pull: use its public address. Its DNS keeps working, as for build steps. If Ployz
-can't put these limits in place, the build fails instead of running without them.
+reach a private address on the build server's local network, like a cloud VPC or office LAN,
+except for DNS. So a base image won't pull from a registry or mirror on your LAN, or from any
+registry whose name your network resolves to a private address, like a cloud registry or
+storage endpoint with private DNS in your VPC. Pull from an address that resolves publicly
+instead, for example by turning off private DNS for that endpoint. A LAN reached over public
+IPv6 addresses isn't fenced off. If Ployz can't put these limits in place, the build fails
+instead of running without them.
 
 ## When your servers mix x86 and ARM
 

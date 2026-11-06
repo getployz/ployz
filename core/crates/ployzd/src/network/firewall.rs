@@ -360,9 +360,10 @@ const DNS_PORT: u16 = 53;
 /// Fence one build slot's BuildKit worker. BuildKit runs on the host network,
 /// so a Dockerfile `ADD` of a URL would otherwise reach everything the host
 /// reaches. Fenced, it gets the internet, DNS, its own image contexts and the
-/// mesh image servers, and nothing else on the host, the mesh or a private
-/// network, as build steps get. Its `FROM` pulls go through the same fence, so a
-/// registry or mirror at a private address is out of reach too.
+/// mesh image servers, and nothing else on the host or the mesh. Like a build
+/// step, it reaches no private address except for DNS. Its `FROM` pulls go
+/// through the same fence, so a registry or mirror at a private address is out
+/// of reach too.
 ///
 /// Each family's chain and its OUTPUT hook land in one restore transaction.
 /// The hook goes first in OUTPUT, ahead of any loopback accept.
