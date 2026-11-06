@@ -340,6 +340,23 @@ fn mesh_firewall_policy() {
     send_datagram(&source, "10.210.1.2", "10.210.2.2", 40101);
     assert_eq!(mesh.peer(), "10.210.1.2");
 
+    ns(
+        &target,
+        "iptables",
+        &["-I", "DOCKER-USER", "1", "-i", "ployz-wg", "-j", "DROP"],
+    );
+    let mut shadowed = datagram_server(&container, "10.210.2.2", 40103);
+    send_datagram(&source, "10.210.1.2", "10.210.2.2", 40103);
+    assert_eq!(
+        shadowed.peer_within(1),
+        None,
+        "a DROP above the mesh accept let traffic through"
+    );
+    apply_in_namespace(&target, "10.210.2.0/24", "fdcc::2");
+    let mut restored = datagram_server(&container, "10.210.2.2", 40104);
+    send_datagram(&source, "10.210.1.2", "10.210.2.2", 40104);
+    assert_eq!(restored.peer(), "10.210.1.2");
+
     let mut external = datagram_server(&internet, "198.51.100.2", 40102);
     send_datagram(&source, "10.210.1.2", "198.51.100.2", 40102);
     assert_eq!(external.peer(), "198.51.100.1");
