@@ -8,11 +8,16 @@ export function volumeSupportText(storage: RuntimeMachineRecord["storage"]) {
     : storage === "stateless" ? "Docker only" : "Managed volumes available";
 }
 
+type StatusEvidence = Pick<RuntimeMachineRecord, "membership" | "runningBuilds"> &
+  Partial<Pick<RuntimeMachineRecord, "unanswered">>;
+
 /**
  * The one word a Server's status shows. A `suspect` Server still reads online: SWIM settles suspicion to up or
  * down within seconds (at most ~30s on a small cluster), so a network blip never shows and an outage reads Offline.
+ * A Server whose daemon stopped answering the Runtime Watch's probes reads Offline too, though gossip still reads it up.
  */
-export function serverStatus(machine: Pick<RuntimeMachineRecord, "membership" | "runningBuilds">): ServerStatus {
+export function serverStatus(machine: StatusEvidence): ServerStatus {
+  if (machine.unanswered === true) return "offline";
   switch (machine.membership) {
     case "up":
     case "suspect":
@@ -25,7 +30,7 @@ export function serverStatus(machine: Pick<RuntimeMachineRecord, "membership" | 
 }
 
 /** The Servers that read Offline. What they last reported of their containers is not what runs now. */
-export const offlineServers = (machines: readonly Pick<RuntimeMachineRecord, "id" | "membership" | "runningBuilds">[]): ReadonlySet<string> =>
+export const offlineServers = (machines: readonly (StatusEvidence & Pick<RuntimeMachineRecord, "id">)[]): ReadonlySet<string> =>
   new Set(machines.filter((machine) => serverStatus(machine) === "offline").map((machine) => machine.id));
 
 const RANK = { offline: 0, unknown: 1, building: 2, online: 2 } satisfies Record<ServerStatus, number>;

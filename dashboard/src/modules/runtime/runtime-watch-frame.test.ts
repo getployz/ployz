@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { Option, Schema } from "effect";
+import type { MachineId } from "@ployz/sdk";
 import {
   runtimeSnapshotFromWatchFrame,
   runtimeWatchFrameForTransport,
@@ -146,6 +147,7 @@ describe("runtimeSnapshotFromWatchFrame", () => {
           sealing: null,
           daemonVersion: "0.1.2",
           membership: "suspect",
+          unanswered: false,
           observedContainerCount: 1,
           observedAt: OBSERVED_AT,
         },
@@ -260,6 +262,22 @@ describe("runtimeSnapshotFromWatchFrame", () => {
       volumes: [{ machine_id: "web-1", name: "app_vol-v1", role: "writer", slot_role: null }],
     });
     expect(runtimeSnapshotFromWatchFrame(frame).volumeCopies[0]?.boundBytes).toBeNull();
+  });
+
+  it("reads a Server whose daemon didn't answer the entry's probes as unanswered, and none from a transport from before", () => {
+    const frame = runtimeWatchFrameForTransport(runtimeWatchFrameFixture({
+      machines: [
+        runtimeWatchMachineObservationFixture({ machine: runtimeWatchMachineFixture("machine-a", "edge-a") }),
+        runtimeWatchMachineObservationFixture({ machine: runtimeWatchMachineFixture("machine-b", "edge-b") }),
+      ],
+      unanswered: ["machine-b" as MachineId],
+    }));
+    expect(runtimeSnapshotFromWatchFrame(frame).machines.map((machine) => [machine.id, machine.unanswered]))
+      .toEqual([["machine-a", false], ["machine-b", true]]);
+
+    const { unanswered: _, ...older } = frame;
+    const decoded = Schema.decodeUnknownSync(runtimeWatchFrameSchema)(older);
+    expect(runtimeSnapshotFromWatchFrame(decoded).machines.every((machine) => !machine.unanswered)).toBe(true);
   });
 
   it("reads a Pool's room as unknown from a daemon that doesn't report it, or a transport from before it did", () => {

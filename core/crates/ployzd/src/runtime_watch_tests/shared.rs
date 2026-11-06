@@ -25,6 +25,8 @@ async fn last_disconnect_cancels_an_initial_read_that_never_completes() {
                 },
                 ReceiverStream::new(changes),
                 futures_util::stream::pending(),
+                PROBE_EVERY,
+                |_| async { true },
             ))
         })
         .await
@@ -191,4 +193,64 @@ async fn reconnect_rejects_a_published_error_before_its_sender_is_dropped() {
         .unwrap();
     assert_eq!(next_frame(&mut reconnected).await.machines.len(), 1);
     drop(latest);
+}
+
+#[tokio::test]
+async fn last_disconnect_stops_the_shared_prober() {
+    let entry = machine("edge", ENTRY_ID, 1);
+    let peer = machine("peer", PEER_ID, 2);
+    let probes = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let shared = super::super::RuntimeWatch::default();
+    let snapshot = snapshot(vec![entry.clone(), peer.clone()], Vec::new());
+    let telemetry = peer_sample(&peer, ployz_core::MembershipEvidence::Up, None);
+    let subscribe = || {
+        let (snapshot, telemetry, probes) = (snapshot.clone(), telemetry.clone(), probes.clone());
+        shared.subscribe_with(async move || {
+            Ok(serve_runtime_watch(
+                entry.id,
+                move || {
+                    let snapshot = snapshot.clone();
+                    async move { Ok(snapshot) }
+                },
+                move || {
+                    let telemetry = telemetry.clone();
+                    async move {
+                        LatestSample {
+                            telemetry: Some(telemetry),
+                            observed_at: OBSERVED_AT.into(),
+                        }
+                    }
+                },
+                futures_util::stream::pending(),
+                futures_util::stream::pending(),
+                PROBE_EVERY,
+                move |_| {
+                    probes.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                    async { true }
+                },
+            ))
+        })
+    };
+    let mut first = subscribe().await.unwrap();
+    let mut second = subscribe().await.unwrap();
+    next_frame(&mut first).await;
+    next_frame(&mut second).await;
+    tokio::time::sleep(PROBE_EVERY * 10).await;
+    let rounds = probes.load(std::sync::atomic::Ordering::SeqCst);
+    assert!(rounds > 0, "the peer is probed while a watch is open");
+    assert!(
+        rounds <= 12,
+        "two streams share one prober: {rounds} probes in about ten rounds"
+    );
+
+    drop(first);
+    drop(second);
+    tokio::time::sleep(PROBE_EVERY * 2).await;
+    let stopped = probes.load(std::sync::atomic::Ordering::SeqCst);
+    tokio::time::sleep(PROBE_EVERY * 5).await;
+    assert_eq!(
+        probes.load(std::sync::atomic::Ordering::SeqCst),
+        stopped,
+        "no probes once the last watch closes"
+    );
 }

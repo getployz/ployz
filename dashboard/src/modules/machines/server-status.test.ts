@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { serverListState, serverStatus, sortServers } from "./server-status";
+import { offlineServers, serverListState, serverStatus, sortServers } from "./server-status";
 
 describe("serverStatus", () => {
   it("reads membership as one word, and a suspect Server as online", () => {
@@ -9,6 +9,17 @@ describe("serverStatus", () => {
     expect(serverStatus({ membership: "down", runningBuilds: 0 })).toBe("offline");
     expect(serverStatus({ membership: "unknown", runningBuilds: 0 })).toBe("unknown");
     expect(serverStatus({ membership: "a-later-engine-state", runningBuilds: 0 })).toBe("unknown");
+  });
+
+  it("reads a Server whose daemon stopped answering as offline, though gossip still reads it up", () => {
+    expect(serverStatus({ membership: "up", runningBuilds: 0, unanswered: true })).toBe("offline");
+    expect(serverStatus({ membership: "up", runningBuilds: 2, unanswered: true })).toBe("offline");
+    expect(serverStatus({ membership: "up", runningBuilds: 0, unanswered: false })).toBe("online");
+    // So what its containers last reported reads as unconfirmed, never as Crashed.
+    expect(offlineServers([
+      { id: "a", membership: "up", runningBuilds: 0, unanswered: false },
+      { id: "b", membership: "up", runningBuilds: 0, unanswered: true },
+    ])).toEqual(new Set(["b"]));
   });
 });
 

@@ -644,9 +644,13 @@ state.
 
 ## A server shows Offline
 
-The server's page says **Can't reach web-2**. Services that run only there are down. Stopping Ployz
-with `sudo systemctl stop ployz.socket ployz` doesn't cause this: the server keeps its place among
-your servers until it reboots or you remove it.
+The server's page says **Can't reach web-2**. Services that run only there are down.
+
+Ployz Cloud also shows a server Offline within about ten seconds of Ployz stopping on it, for
+example after `sudo systemctl stop ployz.socket ployz`, because nothing there answers for what it
+runs. Its containers read **Server offline** rather than Crashed, since what they last reported may
+no longer be true. Start Ployz again and the server reads online. Such a stop doesn't remove the
+server: it keeps its place among your servers until it reboots or you remove it.
 
 1. Check at your provider that the server is running, then run `sudo systemctl status ployz` on
    it.

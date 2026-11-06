@@ -13,8 +13,8 @@ use futures_util::{Stream, StreamExt};
 use ployz_core::{
     CertificateAvailability, CertificateBackoff, CertificateHost, CertificateObservation,
     ClusterRoute, ContainerId, ContainerObservation, DockerVolume, DockerVolumeId, IssuanceClock,
-    Machine, MachineId, MachineObservation, MembershipObservation, OpaquePayload,
-    RuntimeWatchFrame, RuntimeWatchIncompleteIds, RuntimeWatchPayloadError,
+    Machine, MachineId, MachineObservation, ManagementAddress, MembershipObservation,
+    OpaquePayload, RuntimeWatchFrame, RuntimeWatchIncompleteIds, RuntimeWatchPayloadError,
     encode_runtime_watch_frame,
 };
 use tokio::sync::{Mutex, mpsc, watch};
@@ -159,7 +159,9 @@ impl RuntimeWatchSnapshot {
 /// Subscribes first, then yields one complete frame immediately. Later frames
 /// are assembled on store wakeups, on a store re-read every 30s that catches a
 /// subscription gone quiet, or on once-per-second membership/RTT samples from
-/// the local admin source and the mesh echo. The notification payload is not
+/// the local admin source and the mesh echo. While it runs, one prober asks each
+/// peer that invites RPC for a cheap read and names those that miss in a row in
+/// `unanswered`; a change in that list yields too. The notification payload is not
 /// the observation. Unchanged observations do not yield, including when only
 /// `observed_at` advances. Store failure ends the stream. Admin telemetry
 /// failure keeps replicated rows.
@@ -179,6 +181,9 @@ pub(crate) async fn serve_replicated_runtime_watch(
         TELEMETRY_SAMPLE_INTERVAL,
     );
     interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+    let dialer = std::sync::Arc::new(crate::runtime_watch_probe::Dialer::new(
+        ployz_core::MANAGEMENT_PORT,
+    ));
     Ok(serve_runtime_watch(
         entry_id,
         move || {
@@ -200,6 +205,11 @@ pub(crate) async fn serve_replicated_runtime_watch(
             interval.tick().await;
             Some(((), interval))
         }),
+        crate::runtime_watch_probe::PROBE_INTERVAL,
+        move |address| {
+            let dialer = dialer.clone();
+            async move { dialer.answers(address).await }
+        },
     ))
 }
 
@@ -212,14 +222,18 @@ pub(crate) async fn serve_replicated_runtime_watch(
 /// reload the snapshot only. `observed_at` is the time of the latest
 /// membership/RTT sample and is ignored when deciding whether the
 /// observation changed.
-fn serve_runtime_watch<L, Fut, S, SFut, C, T>(
+fn serve_runtime_watch<L, Fut, S, SFut, C, T, P, PFut>(
     entry_id: MachineId,
     load: L,
     sample: S,
     changes: C,
     ticks: T,
+    probe_interval: Duration,
+    answers: P,
 ) -> RpcStream
 where
+    P: Fn(ManagementAddress) -> PFut + Send + 'static,
+    PFut: Future<Output = bool> + Send + 'static,
     L: Fn() -> Fut + Send + 'static,
     Fut: Future<Output = Result<RuntimeWatchSnapshot, Error>> + Send,
     S: Fn() -> SFut + Send + 'static,
@@ -229,6 +243,11 @@ where
 {
     let (sender, receiver) = mpsc::channel(8);
     let disconnected = sender.clone();
+    let (peers_tx, peers) = watch::channel(Vec::new());
+    let (unanswered_tx, mut unanswered) = watch::channel(Vec::new());
+    // One prober for every stream on this producer, so open watches don't multiply probes.
+    let prober =
+        crate::runtime_watch_probe::probe_peers(peers, unanswered_tx, probe_interval, answers);
     let producer = async move {
         let mut changes = std::pin::pin!(changes);
         let mut ticks = std::pin::pin!(ticks);
@@ -248,12 +267,26 @@ where
         };
         loop {
             // Keep the snapshot so a tick resamples without another store read.
-            let frame = assemble_runtime_watch_frame(
+            let mut frame = assemble_runtime_watch_frame(
                 snapshot.clone(),
                 &entry_id,
                 latest.telemetry.as_ref(),
                 latest.observed_at.clone(),
             );
+            let probed = probed_peers(&frame, &entry_id);
+            frame.unanswered = unanswered
+                .borrow_and_update()
+                .iter()
+                .filter(|machine| probed.iter().any(|(probed, _)| probed == *machine))
+                .copied()
+                .collect();
+            peers_tx.send_if_modified(|current| {
+                let changed = *current != probed;
+                if changed {
+                    *current = probed;
+                }
+                changed
+            });
             if last
                 .as_ref()
                 .is_none_or(|previous| observation_changed(previous, &frame))
@@ -289,6 +322,7 @@ where
                 Some(()) = ticks.next() => {
                     latest = sample().await;
                 }
+                Ok(()) = unanswered.changed() => {}
                 changed = changes.next() => match changed {
                     Some(Ok(())) => match load().await {
                         Ok(next) => snapshot = next,
@@ -323,6 +357,7 @@ where
             biased;
             () = disconnected.closed() => {}
             () = producer => {}
+            () = prober => {}
         }
     });
     ReceiverStream::new(receiver)
@@ -335,6 +370,7 @@ fn observation_changed(previous: &RuntimeWatchFrame, next: &RuntimeWatchFrame) -
         volumes,
         certificates,
         incomplete_ids,
+        unanswered,
         observed_at: _,
     } = previous;
     let RuntimeWatchFrame {
@@ -343,6 +379,7 @@ fn observation_changed(previous: &RuntimeWatchFrame, next: &RuntimeWatchFrame) -
         volumes: next_volumes,
         certificates: next_certificates,
         incomplete_ids: next_incomplete_ids,
+        unanswered: next_unanswered,
         observed_at: _,
     } = next;
     machines != next_machines
@@ -350,6 +387,21 @@ fn observation_changed(previous: &RuntimeWatchFrame, next: &RuntimeWatchFrame) -
         || volumes != next_volumes
         || certificates != next_certificates
         || incomplete_ids != next_incomplete_ids
+        || unanswered != next_unanswered
+}
+
+/// The peers the entry would call: every Machine but itself whose membership invites RPC.
+/// One that doesn't already reads down, so it needs no probe.
+fn probed_peers(
+    frame: &RuntimeWatchFrame,
+    entry_id: &MachineId,
+) -> Vec<(MachineId, ManagementAddress)> {
+    frame
+        .machines
+        .iter()
+        .filter(|observed| &observed.machine.id != entry_id && observed.invites_rpc())
+        .map(|observed| (observed.machine.id, observed.machine.management_address()))
+        .collect()
 }
 
 /// Assemble one complete Runtime Watch frame.
@@ -390,6 +442,7 @@ pub(crate) fn assemble_runtime_watch_frame(
             volumes: snapshot.volumes.incomplete_ids,
             certificates: snapshot.certificates.incomplete_ids,
         },
+        unanswered: Vec::new(),
         observed_at,
     }
 }

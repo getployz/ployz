@@ -142,6 +142,7 @@ fn runtime_watch_frame_accepts_unknown_fields_and_honest_defaults() {
         defaults.incomplete_ids,
         RuntimeWatchIncompleteIds::default()
     );
+    assert!(defaults.unanswered.is_empty());
     assert_eq!(defaults.observed_at, "2024-01-01T00:00:00Z");
 }
 
@@ -319,6 +320,8 @@ fn expected_frame() -> RuntimeWatchFrame {
             }],
             certificates: vec![CertificateHost::parse("pending.example.com").unwrap()],
         },
+        // The frozen frame predates the field, so an older daemon's frame still decodes.
+        unanswered: Vec::new(),
         observed_at: "2024-01-01T00:00:00Z".into(),
     }
 }

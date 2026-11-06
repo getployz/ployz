@@ -754,10 +754,95 @@ async fn unavailable_sample_after_telemetry_keeps_replicated_rows() {
     assert_eq!(frame.machines.get(1).expect("peer Machine").rtt, None);
 }
 
+#[tokio::test]
+async fn a_peer_whose_daemon_stops_answering_is_named_until_it_answers() {
+    let entry = machine("edge", ENTRY_ID, 1);
+    let peer = machine("peer", PEER_ID, 2);
+    let fixture = WatchFixture::new(snapshot(vec![entry.clone(), peer.clone()], Vec::new()));
+    fixture.set_sample(
+        Some(peer_sample(&peer, ployz_core::MembershipEvidence::Up, None)),
+        OBSERVED_AT,
+    );
+    let (_wake, changes) = mpsc::channel(1);
+    let (_ticks, tick_rx) = mpsc::channel(1);
+    let mut stream = serve_sampled(entry.id, &fixture, changes, tick_rx);
+
+    let first = next_frame(&mut stream).await;
+    assert!(first.unanswered.is_empty());
+
+    fixture.silence(&peer, true);
+    let silent = next_frame(&mut stream).await;
+    assert_eq!(silent.unanswered, vec![peer.id]);
+    assert_eq!(
+        silent.machines.get(1).expect("peer Machine").membership,
+        MembershipObservation::Up,
+        "membership stays as gossip reports it"
+    );
+
+    fixture.silence(&peer, false);
+    let back = next_frame(&mut stream).await;
+    assert!(back.unanswered.is_empty());
+}
+
+#[tokio::test]
+async fn one_missed_probe_names_no_one() {
+    let entry = machine("edge", ENTRY_ID, 1);
+    let peer = machine("peer", PEER_ID, 2);
+    let fixture = WatchFixture::new(snapshot(vec![entry.clone(), peer.clone()], Vec::new()));
+    fixture.set_sample(
+        Some(peer_sample(&peer, ployz_core::MembershipEvidence::Up, None)),
+        OBSERVED_AT,
+    );
+    let (_wake, changes) = mpsc::channel(1);
+    let (_ticks, tick_rx) = mpsc::channel(1);
+    let mut stream = serve_sampled(entry.id, &fixture, changes, tick_rx);
+    next_frame(&mut stream).await;
+
+    // Silent for about one probe round, then answering: never two misses in a row.
+    fixture.silence(&peer, true);
+    tokio::time::sleep(PROBE_EVERY / 2).await;
+    fixture.silence(&peer, false);
+    assert!(
+        tokio::time::timeout(PROBE_EVERY * 10, stream.next())
+            .await
+            .is_err(),
+        "a single miss must not yield a frame"
+    );
+}
+
+#[tokio::test]
+async fn a_peer_membership_already_reads_down_is_not_named() {
+    let entry = machine("edge", ENTRY_ID, 1);
+    let peer = machine("peer", PEER_ID, 2);
+    let fixture = WatchFixture::new(snapshot(vec![entry.clone(), peer.clone()], Vec::new()));
+    fixture.set_sample(
+        Some(peer_sample(
+            &peer,
+            ployz_core::MembershipEvidence::Down,
+            None,
+        )),
+        OBSERVED_AT,
+    );
+    fixture.silence(&peer, true);
+    let (_wake, changes) = mpsc::channel(1);
+    let (_ticks, tick_rx) = mpsc::channel(1);
+    let mut stream = serve_sampled(entry.id, &fixture, changes, tick_rx);
+
+    let first = next_frame(&mut stream).await;
+    assert!(first.unanswered.is_empty());
+    assert!(
+        tokio::time::timeout(PROBE_EVERY * 10, stream.next())
+            .await
+            .is_err(),
+        "a Machine that doesn't invite RPC is never probed"
+    );
+}
+
 #[derive(Clone)]
 struct WatchFixture {
     snapshot: Arc<Mutex<Result<RuntimeWatchSnapshot, String>>>,
     sample: Arc<Mutex<(Option<RuntimeWatchTelemetry>, String)>>,
+    silent: Arc<Mutex<std::collections::BTreeSet<ployz_core::ManagementAddress>>>,
 }
 
 impl WatchFixture {
@@ -765,6 +850,7 @@ impl WatchFixture {
         Self {
             snapshot: Arc::new(Mutex::new(Ok(snapshot))),
             sample: Arc::new(Mutex::new((None, OBSERVED_AT.into()))),
+            silent: Arc::default(),
         }
     }
 
@@ -784,6 +870,15 @@ impl WatchFixture {
         match &*self.snapshot.lock().unwrap() {
             Ok(snapshot) => Ok(snapshot.clone()),
             Err(message) => Err(Error::Protocol(message.clone())),
+        }
+    }
+
+    fn silence(&self, machine: &Machine, silent: bool) {
+        let mut set = self.silent.lock().unwrap();
+        if silent {
+            set.insert(machine.management_address());
+        } else {
+            set.remove(&machine.management_address());
         }
     }
 
@@ -812,6 +907,7 @@ fn serve_sampled(
 ) -> crate::logs::RpcStream {
     let load_fixture = fixture.clone();
     let sample_fixture = fixture.clone();
+    let probe_fixture = fixture.clone();
     serve_runtime_watch(
         entry_id,
         move || {
@@ -824,8 +920,15 @@ fn serve_sampled(
         },
         ReceiverStream::new(changes),
         ReceiverStream::new(ticks),
+        PROBE_EVERY,
+        move |address| {
+            let silent = probe_fixture.silent.lock().unwrap().contains(&address);
+            async move { !silent }
+        },
     )
 }
+
+const PROBE_EVERY: Duration = Duration::from_millis(20);
 
 async fn next_frame(
     stream: &mut (

@@ -32,6 +32,7 @@ function observedSnapshot(): RuntimeSnapshot {
         poolCommittableBytes: null,
         sealing: null,
         membership: "up",
+        unanswered: false,
         observedContainerCount: 1,
         observedAt: "2026-07-01T00:00:00.000Z",
       },
@@ -93,6 +94,7 @@ describe("projectRuntimeMachineRecord", () => {
         poolCommittableBytes: null,
         sealing: null,
         membership: "down",
+        unanswered: false,
         observedContainerCount: 0,
         observedAt: "2026-07-01T00:00:00.000Z",
       }),
@@ -111,6 +113,7 @@ describe("projectRuntimeMachineRecord", () => {
       poolCommittableBytes: null,
       sealing: null,
       membership: "down",
+      unanswered: false,
       observedContainerCount: 0,
       observedAt: "2026-07-01T00:00:00.000Z",
     });
