@@ -1806,6 +1806,18 @@ mod tests {
                 "  c: not started",
             ]
         );
+        assert_eq!(
+            unserved_outcome_lines(&outcome(serde_json::json!([
+                {"service": "a", "result": "unconfirmed"},
+            ]))),
+            ["  a: may serve its new copies: the switch was not confirmed"]
+        );
+        assert_eq!(
+            unserved_outcome_lines(&outcome(serde_json::json!([
+                {"service": "a", "result": "newer"},
+            ]))),
+            ["  a: a newer deploy serves it"]
+        );
         assert!(
             unserved_outcome_lines(&outcome(serde_json::json!([
                 {"service": "a", "result": "new"},
@@ -1813,6 +1825,7 @@ mod tests {
             ])))
             .is_empty()
         );
+        assert!(unserved_outcome_lines(&outcome(serde_json::json!([]))).is_empty());
         assert!(unserved_outcome_lines(&None).is_empty());
     }
 

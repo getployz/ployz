@@ -31,11 +31,10 @@ deploy leaves old replicas running, the row reads like `switched 3/3, 2 left run
 summary adds `2 copies left running`; see
 [Old and new versions answer at once](#old-and-new-versions-answer-at-once). The block
 ends with a summary that counts the Servers involved. When a Service doesn't end up serving its
-new copies, a line per Service follows the summary, as `ployz deployment show` prints it, such
-as `a: serves its new copies`, `b: not switched to its new copies` and `c: not started`.
-In CI or redirected output,
-Ployz prints changes as lines and says `still waiting:` after 30 seconds without a
-change. To capture those lines through a pipe, use `ployz deploy 2>&1 | cat`.
+new copies, `ployz deploy` and `ployz up` follow the summary with a line per Service on stdout,
+as `ployz deployment show` prints it, such as `a: serves its new copies`,
+`b: not switched to its new copies` and `c: not started`. In CI or redirected output, Ployz
+prints changes as lines and says `still waiting:` after 30 seconds without a change. To capture those lines through a pipe, use `ployz deploy 2>&1 | cat`.
 `--json` keeps the result on stdout; progress stays on stderr. `--events FILE` also
 records the existing Deployment events as NDJSON, each naming the Deployment's `id` and
 `number`. Source builds appear against their
