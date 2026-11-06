@@ -332,6 +332,11 @@ these there:
 | TCP 80, TCP and UDP 443 | Anywhere | Your apps over https, and their certificates, on servers that take web traffic |
 | UDP 51820 | Your other servers | Services on different servers reaching each other |
 
+On a server that runs firewalld (`systemctl is-active firewalld` says `active`), also open UDP
+51820 and trust `ployz-wg` in firewalld, as
+[A server that runs firewalld doesn't answer your other servers](../troubleshooting/servers.md#a-server-that-runs-firewalld-doesnt-answer-your-other-servers)
+shows.
+
 ## IPv6-only servers
 
 Ployz downloads its releases from github.com, which has no IPv6 address. When a server can't reach
