@@ -289,12 +289,15 @@ const PRIVATE_V4: [&str; 6] = [
     "168.63.129.16/32",
 ];
 
+/// Unique local and link-local addresses.
+const PRIVATE_V6: [&str; 2] = ["fc00::/7", "fe80::/10"];
+
 /// Build steps have no IPv6 route today; this holds if they ever get one.
 fn ipv6_build_forwarding() -> Vec<String> {
     let mut rules = vec![format!("-o {WIREGUARD_INTERFACE_NAME} -j DROP")];
     rules.extend(dns_returns());
     rules.extend(
-        ["fc00::/7", "fe80::/10"]
+        PRIVATE_V6
             .iter()
             .map(|destination| format!("-d {destination} -j DROP")),
     );
@@ -357,7 +360,10 @@ const DNS_PORT: u16 = 53;
 /// Fence one build slot's BuildKit worker. BuildKit runs on the host network,
 /// so a Dockerfile `ADD` of a URL would otherwise reach everything the host
 /// reaches. Fenced, it gets the internet, DNS, its own image contexts and the
-/// mesh image servers, and nothing else on the host or the mesh.
+/// mesh image servers, and nothing else on the host or the mesh. Like a build
+/// step, it reaches no private address except for DNS. Its `FROM` pulls go
+/// through the same fence, so a registry or mirror at a private address is out
+/// of reach too.
 ///
 /// Each family's chain and its OUTPUT hook land in one restore transaction.
 /// The hook goes first in OUTPUT, ahead of any loopback accept.
@@ -389,15 +395,18 @@ pub fn fence_builder(fence: &ployz_build::Fence) -> Result<(), String> {
     Ok(())
 }
 
-/// Loopback DNS passes, then `drops` fall on the worker's sockets alone. The
-/// cgroup sits on each drop, not on a leading RETURN: a SYN-ACK or reset the
-/// kernel sends without a full socket never matches a cgroup, so a negated
-/// match would fence every host listener's replies.
+/// Loopback DNS passes, then `drops` fall on the worker's sockets alone, then
+/// DNS to any other address passes, since the host's resolver may sit on the
+/// LAN or on link-local, then `private` drops. The cgroup sits on each drop,
+/// not on a leading RETURN: a SYN-ACK or reset the kernel sends without a full
+/// socket never matches a cgroup, so a negated match would fence every host
+/// listener's replies.
 fn fenced(
     fence: &ployz_build::Fence,
     loopback: &str,
     allowed: Vec<String>,
     drops: &[String],
+    private: &[&str],
 ) -> Vec<String> {
     let mut rules: Vec<String> = ["udp", "tcp"]
         .iter()
@@ -412,6 +421,12 @@ fn fenced(
         drops
             .iter()
             .map(|rule| format!("-m cgroup --path {cgroup} {rule} -j DROP")),
+    );
+    rules.extend(dns_returns());
+    rules.extend(
+        private
+            .iter()
+            .map(|destination| format!("-m cgroup --path {cgroup} -d {destination} -j DROP")),
     );
     rules
 }
@@ -446,19 +461,14 @@ fn ipv4_fence(fence: &ployz_build::Fence) -> Vec<String> {
     .iter()
     .map(|output| format!("-o {output}"))
     .collect();
-    for destination in [
-        super::default_cluster_network().to_string(),
-        LINK_LOCAL.into(),
-    ] {
-        drops.push(format!("-d {destination}"));
-    }
-    fenced(fence, "127.0.0.0/8", allowed, &drops)
+    drops.push(format!("-d {}", super::default_cluster_network()));
+    fenced(fence, "127.0.0.0/8", allowed, &drops, &PRIVATE_V4)
 }
 
 fn ipv6_fence(fence: &ployz_build::Fence) -> Vec<String> {
     let allowed = vec![format!("-d fdcc::/16 -p tcp --dport {UNREGISTRY_PORT}")];
-    let drops = ["-d fdcc::/16".to_owned(), "-d fe80::/10".to_owned()];
-    fenced(fence, "::1/128", allowed, &drops)
+    let drops = ["-d fdcc::/16".to_owned()];
+    fenced(fence, "::1/128", allowed, &drops, &PRIVATE_V6)
 }
 
 /// Build steps run on their slot's bridge and get only the internet: nothing
@@ -787,7 +797,8 @@ mod tests {
     }
 
     #[test]
-    fn the_worker_reaches_dns_and_its_image_contexts_but_nothing_else_on_the_host() {
+    fn the_worker_reaches_dns_and_its_image_contexts_but_nothing_else_on_the_host_or_a_private_network()
+     {
         assert_eq!(
             ipv4_fence(&fence(vec![41_234])),
             [
@@ -802,7 +813,14 @@ mod tests {
                 "-m cgroup --path /system.slice/docker-abc.scope -o ployz-wg -j DROP",
                 "-m cgroup --path /system.slice/docker-abc.scope -o docker0 -j DROP",
                 "-m cgroup --path /system.slice/docker-abc.scope -d 10.210.0.0/16 -j DROP",
+                "-p udp --dport 53 -j RETURN",
+                "-p tcp --dport 53 -j RETURN",
                 "-m cgroup --path /system.slice/docker-abc.scope -d 169.254.0.0/16 -j DROP",
+                "-m cgroup --path /system.slice/docker-abc.scope -d 10.0.0.0/8 -j DROP",
+                "-m cgroup --path /system.slice/docker-abc.scope -d 172.16.0.0/12 -j DROP",
+                "-m cgroup --path /system.slice/docker-abc.scope -d 192.168.0.0/16 -j DROP",
+                "-m cgroup --path /system.slice/docker-abc.scope -d 100.64.0.0/10 -j DROP",
+                "-m cgroup --path /system.slice/docker-abc.scope -d 168.63.129.16/32 -j DROP",
             ]
         );
     }
@@ -817,6 +835,9 @@ mod tests {
                 "-d fdcc::/16 -p tcp --dport 7572 -j RETURN",
                 "-m cgroup --path /system.slice/docker-abc.scope -m addrtype --dst-type LOCAL -j DROP",
                 "-m cgroup --path /system.slice/docker-abc.scope -d fdcc::/16 -j DROP",
+                "-p udp --dport 53 -j RETURN",
+                "-p tcp --dport 53 -j RETURN",
+                "-m cgroup --path /system.slice/docker-abc.scope -d fc00::/7 -j DROP",
                 "-m cgroup --path /system.slice/docker-abc.scope -d fe80::/10 -j DROP",
             ]
         );

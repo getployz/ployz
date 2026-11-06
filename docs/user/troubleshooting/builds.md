@@ -61,6 +61,10 @@ Build steps reach the internet. They don't reach your servers' private network, 
 it, or the build server's local network, like a cloud VPC or office LAN. That includes an HTTP
 proxy or a cloud endpoint at a private address, and a port published only on a private address.
 Only port 53 stays open, so DNS keeps working. Move that call out of the build and into the service's start, or fetch the data from the internet.
+The same goes for a Dockerfile `ADD` of a URL and for `FROM`, which can fail with `i/o timeout`:
+a base image on a LAN registry or mirror won't pull, nor will one from a registry whose name
+your network resolves to a private address, like a cloud endpoint with private DNS. Pull from an
+address that resolves publicly instead.
 See
 [What a build can reach](../builds/railpack-and-dockerfiles.md#what-a-build-can-reach).
 

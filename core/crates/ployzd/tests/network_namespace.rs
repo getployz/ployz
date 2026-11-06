@@ -593,7 +593,8 @@ fn build_steps_reach_the_internet_and_dns_but_never_the_host_or_the_lan() {
 
 #[test]
 #[ignore = "requires passwordless sudo, cgroup v2 and Linux network namespaces"]
-fn the_build_worker_reaches_the_image_servers_but_not_the_host_or_the_mesh() {
+fn the_build_worker_reaches_the_image_servers_and_dns_but_not_the_host_the_mesh_or_a_private_network()
+ {
     const CHILD: &str = "PLOYZ_FENCE_CGROUP";
     if let Ok(cgroup) = env::var(CHILD) {
         fence_builder(&ployz_build::Fence {
@@ -609,7 +610,8 @@ fn the_build_worker_reaches_the_image_servers_but_not_the_host_or_the_mesh() {
     let suffix = std::process::id();
     let host = format!("p35-fhost-{suffix}");
     let peer = format!("p35-fpeer-{suffix}");
-    let _namespaces = Namespaces::new([&host, &peer]);
+    let lan = format!("p35-flan-{suffix}");
+    let _namespaces = Namespaces::new([&host, &peer, &lan]);
     let cgroup = Cgroup::new(&format!("/p35-fence-{suffix}"));
     sudo(&[
         "ip", "link", "add", "fence-wg", "type", "veth", "peer", "name", "fpeer-wg",
@@ -646,7 +648,7 @@ fn the_build_worker_reaches_the_image_servers_but_not_the_host_or_the_mesh() {
         .args([
             "--ignored",
             "--exact",
-            "the_build_worker_reaches_the_image_servers_but_not_the_host_or_the_mesh",
+            "the_build_worker_reaches_the_image_servers_and_dns_but_not_the_host_the_mesh_or_a_private_network",
         ])
         .status()
         .unwrap();
@@ -766,6 +768,56 @@ fn the_build_worker_reaches_the_image_servers_but_not_the_host_or_the_mesh() {
             source,
             "the fence caught a process outside it"
         );
+    }
+
+    // Behind the host sits its LAN, with an IPv4 and a unique local IPv6 address.
+    sudo(&[
+        "ip",
+        "link",
+        "add",
+        "flan-host",
+        "type",
+        "veth",
+        "peer",
+        "name",
+        "flan-if",
+    ]);
+    sudo(&["ip", "link", "set", "flan-host", "netns", &host]);
+    sudo(&["ip", "link", "set", "flan-if", "netns", &lan]);
+    ns(&lan, "ip", &["link", "set", "lo", "up"]);
+    configure_link(&host, "flan-host", "192.168.77.1/24");
+    configure_link(&lan, "flan-if", "192.168.77.2/24");
+    for (namespace, interface, address) in [
+        (&host, "flan-host", "fd77::1/64"),
+        (&lan, "flan-if", "fd77::2/64"),
+    ] {
+        ns(
+            namespace,
+            "ip",
+            &["-6", "address", "add", address, "dev", interface, "nodad"],
+        );
+    }
+    for (source, address) in [("192.168.77.1", "192.168.77.2"), ("fd77::1", "fd77::2")] {
+        let mut server = stream_server(&lan, address, 8080);
+        assert!(
+            !cgroup.connects(&host, source, address, 8080),
+            "the fenced worker reached the LAN at {address}"
+        );
+        connect(&host, source, address, 8080);
+        assert_eq!(
+            server.peer(),
+            source,
+            "the fence caught a process outside it on the LAN"
+        );
+    }
+    // A resolver on the LAN still answers the worker.
+    for protocol in ["tcp", "udp"] {
+        let mut resolver = server(protocol, &lan, "192.168.77.2", 53);
+        assert!(
+            cgroup.reaches(protocol, &host, "192.168.77.1", "192.168.77.2", 53),
+            "the fenced worker could not reach a LAN resolver over {protocol}"
+        );
+        assert_eq!(resolver.peer(), "192.168.77.1");
     }
 }
 
