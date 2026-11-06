@@ -59,6 +59,7 @@ macro_rules! rpc_catalog {
                 SetManagementClient: (set_management_client, "SetManagementClient", SetManagementClientRequest, "set_management_client", SetManagementClientResponse, SET_MANAGEMENT_CLIENT_CAPABILITY, "ployz.machine.set-management-client.v1", Always, Operator),
                 SetDevice: (set_device, "SetDevice", SetDeviceRequest, "set_device", DeviceSet, SET_DEVICE_CAPABILITY, "ployz.machine.set-device.v1", Always, Full),
                 SetPushTarget: (set_push_target, "SetPushTarget", SetPushTargetRequest, "set_push_target", PushTargetSet, SET_PUSH_TARGET_CAPABILITY, "ployz.machine.set-push-target.v1", Always, Operator),
+                SetDeviceEnforcement: (set_device_enforcement, "SetDeviceEnforcement", SetDeviceEnforcementRequest, "set_device_enforcement", DeviceEnforcementSet, SET_DEVICE_ENFORCEMENT_CAPABILITY, "ployz.machine.set-device-enforcement.v1", Always, Full),
                 SelectEndpoint: (select_endpoint, "SelectEndpoint", SelectEndpointRequest, "select_endpoint", EndpointSelected, SELECT_ENDPOINT_CAPABILITY, "ployz.network.select-endpoint.v1", Always, Operator),
                 ListMachines: (list_machines, "ListMachines", ListMachinesRequest, "list_machines", MachineList, LIST_MACHINES_CAPABILITY, "ployz.machine.list.v1", Always, Operator),
                 UpdateMachine: (update_machine, "UpdateMachine", UpdateMachineRequest, "update_machine", MachineUpdated, UPDATE_MACHINE_CAPABILITY, "ployz.machine.update.v1", Always, Operator),
@@ -121,6 +122,8 @@ macro_rules! rpc_catalog {
                 BUILD_SEALED_CAPABILITY: ("ployz.build.sealed.v1", Always),
                 /// The daemon mints a Build Grant for a holder's own key and returns no grant secret.
                 BUILD_GRANT_HOLDER_CAPABILITY: ("ployz.build.grant.holder.v1", Always),
+                /// `EnsureContainer` takes a Device-signed restart approval and, under Device enforcement, refuses an Operator's restart step without one.
+                RESTART_APPROVAL_CAPABILITY: ("ployz.restart.device-approval.v1", Always),
             }
         }
     };

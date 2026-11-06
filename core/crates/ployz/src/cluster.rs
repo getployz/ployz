@@ -76,6 +76,9 @@ pub struct Client {
     pub(crate) cluster: Option<Box<crate::connect::ExpectedCluster>>,
     /// Set once a redial finds the entry in another Cluster. Every clone shares it.
     refused: Refusal,
+    /// The Device-signed approval every restart step this client sends carries.
+    restart_approval:
+        Option<Arc<ployz_core::authority::Signed<ployz_core::authority::RestartApproval>>>,
 }
 
 /// The entry a redial found in another Cluster, shared by every clone of a client and
@@ -131,7 +134,19 @@ impl Client {
             confirmed: None,
             cluster: None,
             refused: Refusal::default(),
+            restart_approval: None,
         }
+    }
+
+    /// This client with `approval` on every restart step it sends, for one Service's
+    /// restart, or with none.
+    #[must_use]
+    pub(crate) fn with_restart_approval(
+        mut self,
+        approval: Option<ployz_core::authority::Signed<ployz_core::authority::RestartApproval>>,
+    ) -> Self {
+        self.restart_approval = approval.map(Arc::new);
+        self
     }
 
     /// What the first dial confirmed about the entry's Cluster; None when it expected none.
@@ -1514,9 +1529,12 @@ impl Client {
     ) -> Result<ployz_core::EnsuredContainer, RpcError> {
         let target = MachineTarget::from(machine_id);
         crate::sealed_compat::admit(self, &target, &want).await?;
-        let payload = op::EnsureContainer::into_request(EnsureContainerRequest { want })
-            .encode()
-            .map_err(|error| rpc_error(ConnectError::Codec(error)))?;
+        let payload = op::EnsureContainer::into_request(EnsureContainerRequest {
+            want,
+            approval: self.restart_approval.as_deref().cloned(),
+        })
+        .encode()
+        .map_err(|error| rpc_error(ConnectError::Codec(error)))?;
         apply_timeout(
             timeout,
             self.call_once::<op::EnsureContainer>(payload, Some(&target)),

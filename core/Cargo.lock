@@ -4008,6 +4008,7 @@ name = "ployz-core"
 version = "0.3.17"
 dependencies = [
  "base64 0.22.1",
+ "ed25519-dalek",
  "hpke",
  "ipnet",
  "minisign-verify",
