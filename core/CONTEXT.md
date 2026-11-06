@@ -631,7 +631,7 @@ One named holder slot on a Machine, such as `cloud`, a signed-in computer's `cli
 _Avoid_: Cloud Pairing, user, session, per-user permission
 
 **Management Scope**:
-What a Management Client may do on a Machine, read from its slot: a Device slot holding the key its label names is Full, every other slot is Operator, `cloud` and `cli-<id>` included. Operator drives the Machine but cannot Exec or open a tunnel, and reads no environment value the Machine opened from Sealed ciphertext. Each RPC names the least Scope it needs; a short one is refused with `PermissionDenied` naming the capability. A call over the local socket is Full.
+What a Management Client may do on a Machine, read from its slot: a Device slot holding the key its label names is Full, every other slot is Operator, `cloud` and `cli-<id>` included. Operator drives the Machine but cannot Exec or open a tunnel, cannot Upgrade to an exact release that no Release Channel resolves to, and reads no environment value the Machine opened from Sealed ciphertext. Each RPC names the least Scope it needs; a short one is refused with `PermissionDenied` naming the capability. A call over the local socket is Full.
 _Avoid_: role, permission level, access tier
 
 **Device**:
