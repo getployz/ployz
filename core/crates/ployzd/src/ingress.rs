@@ -147,13 +147,17 @@ impl PublicationTrace {
             let (placement, newest) = grouped
                 .entry(observation.identity())
                 .or_insert_with(|| (BTreeMap::new(), container));
-            if !matches!(observation.rotation(), ployz_core::CopyRotation::Out) {
+            if !retired(container) {
                 placement
                     .entry(observation.machine_id)
                     .and_modify(|count| *count = count.saturating_add(1))
                     .or_insert(NonZeroUsize::MIN);
             }
-            if creation_key(container) > creation_key(newest) {
+            // A copy rotated Out never names the attempt while one that isn't remains, so a
+            // failed attempt's retired copies don't outlast the reload that retired them.
+            if (!retired(container), creation_key(container))
+                > (!retired(newest), creation_key(newest))
+            {
                 *newest = container;
             }
         }
@@ -170,6 +174,14 @@ impl PublicationTrace {
             })
             .collect()
     }
+}
+
+/// Rotated Out for good: only its removal follows, which changes no route.
+fn retired(container: &ServiceContainer) -> bool {
+    matches!(
+        container.as_observation().rotation(),
+        ployz_core::CopyRotation::Out
+    )
 }
 
 /// One Serving Container address and container port.

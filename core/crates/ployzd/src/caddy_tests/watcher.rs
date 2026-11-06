@@ -512,7 +512,9 @@ async fn a_trace_only_change_does_not_reload_caddy() {
         .lock()
         .unwrap()
         .retain(|container| container.container_id != old);
+    let queried = state.container_queries();
     state.send(b"{\"change\":{}}\n");
+    state.wait_for_container_queries(queried + 1).await;
     assert!(
         timeout(Duration::from_millis(500), load_rx.recv())
             .await

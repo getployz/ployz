@@ -130,6 +130,21 @@ fn placement_leaves_out_copies_rotated_out() {
 }
 
 #[test]
+fn a_retired_copy_does_not_name_the_deploy() {
+    let projection = derive(vec![
+        labeled(api(1, &machine('a'), 1), "served"),
+        with(labeled(api(2, &machine('a'), 2), "failed"), |parts| {
+            parts.rotation = Some(ployz_core::CopyRotation::Out);
+        }),
+    ]);
+
+    assert_eq!(
+        trace(&projection).deploy,
+        Some(DeploymentLogId::parse("served").unwrap())
+    );
+}
+
+#[test]
 fn placement_counts_only_the_hostname_owner() {
     // The oldest publisher owns a contested hostname.
     let blog = with(api(9, &machine('b'), 9), |parts| {

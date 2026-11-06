@@ -32,8 +32,8 @@ report.
 | Key | What it shows |
 | --- | --- |
 | `server` | The ID of the server that answered. It stays the same when you rename the server. |
-| `deploy` | The deployment of the newest replica of the service on this domain. It is empty when Ployz can't tell. It can be newer than the replicas taking traffic, for example while a deploy rolls out. |
-| `replicas` | How many replicas of the service each server holds, as `server:count` pairs. Stopped replicas count too, and so do old replicas a deploy hasn't taken out of traffic yet, so this shows where the service is placed, not how many are healthy or which version answers. A replica taken out of traffic for good stops counting. |
+| `deploy` | The deployment of the newest replica of the service on this domain that a deploy hasn't taken out of traffic for good. It is empty when Ployz can't tell. It can be newer than the replicas taking traffic, for example while a deploy rolls out. |
+| `replicas` | How many replicas of the service each server holds, as `server:count` pairs. Stopped replicas count too, and so do old replicas a deploy hasn't taken out of traffic yet, so this shows where the service is placed, not how many are healthy or which version answers. A replica that was taking traffic stops counting when it's taken out for good. |
 | `status` | `ok`, `NOT_RUNNING` or `NOT_DEPLOYED`. See below. |
 | `ip` | The address your server sees the request come from. Behind a proxy, this is the proxy. |
 | `http` | The HTTP version of the request, like `HTTP/2.0`. |
@@ -91,7 +91,9 @@ status. See
 - **`deploy` and `replicas` update when a server's proxy reloads.** It reloads when the routes,
   certificates or proxy on that server change, not for the page alone, since a reload resets its
   count of failed replicas. So a replica that starts without taking traffic yet doesn't show until
-  the next reload, such as when it starts taking traffic.
+  the next reload, such as when it starts taking traffic. A replica removed while it wasn't taking
+  traffic, such as a stopped one or the old replica of a service with a volume, keeps showing until
+  the next reload too.
 - **Each server answers for itself.** Another server can show different `deploy` or `replicas`
   until its proxy reloads too. To ask one server directly, pin the domain to its address:
   `curl --resolve example.com:80:203.0.113.10 http://example.com/.well-known/ployz/trace`.
