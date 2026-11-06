@@ -133,6 +133,10 @@ impl LocalMachine {
         &self,
         request: ShareSealingKeyRequest,
     ) -> Result<SealingKeyShared, super::Error> {
+        self.require_management_access()?;
+        if !self.record().device_enforcement() {
+            return self.share_sealing_key_admitted(request).await;
+        }
         let local = self.clone();
         self.finish_mutation(async move { local.share_sealing_key_admitted(request).await })
             .await
