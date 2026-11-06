@@ -515,6 +515,49 @@ pub(crate) async fn new_token(
     Ok(reply.token)
 }
 
+/// The ID `target` names in `ployz token rm`. Cloud revokes only by ID, a hyphenated
+/// UUID, and refuses every token caller, so such a UUID or a token caller's target goes
+/// as given: an ID Cloud no longer lists, such as a fully revoked one, never resolves to
+/// a token named like it. Otherwise it is the one token named exactly `target`, else as
+/// given.
+///
+/// # Errors
+///
+/// Returns [`LoginError::AmbiguousCredential`] when several tokens have that name, or a
+/// Cloud failure listing them.
+pub(crate) async fn credential_id(
+    credential: &Credential,
+    target: &str,
+) -> Result<String, LoginError> {
+    if matches!(credential, Credential::Token { .. }) || cloud_id(target) {
+        return Ok(target.to_owned());
+    }
+    named_credential(&credentials(credential).await?, target)
+}
+
+/// Cloud's ID shape: the 36-character hyphenated UUID. The uuid crate parses no other
+/// form at that length, so a 32-hex, braced or URN name still resolves as a name.
+fn cloud_id(target: &str) -> bool {
+    target.len() == 36 && uuid::Uuid::try_parse(target).is_ok()
+}
+
+fn named_credential(listed: &Credentials, target: &str) -> Result<String, LoginError> {
+    let mut named: Vec<String> = listed
+        .tokens
+        .iter()
+        .filter(|token| token.name == target)
+        .map(|token| token.id.clone())
+        .collect();
+    match named.len() {
+        0 => Ok(target.to_owned()),
+        1 => Ok(named.remove(0)),
+        _ => Err(LoginError::AmbiguousCredential {
+            name: target.to_owned(),
+            ids: named,
+        }),
+    }
+}
+
 /// Revoke a token of the Organization, or sign out one of the caller's devices, then clear
 /// its Management Client on each Server. Rerun on a revoked id, it retries unconfirmed Servers.
 ///
@@ -1717,6 +1760,100 @@ mod tests {
         let bare = br#"{"_tag":"PublicError","code":"FORBIDDEN","message":"no"}"#;
         let error = answer::<serde_json::Value>(&device, StatusCode::FORBIDDEN, bare).unwrap_err();
         assert!(matches!(error, LoginError::NotMember(slug) if slug == "acme"));
+    }
+
+    #[tokio::test]
+    async fn token_rm_finds_a_token_by_its_exact_name_and_refuses_a_shared_one() {
+        const CI: &str = "00000000-0000-4000-8000-00000000000a";
+        const HEX: &str = "00000000-0000-4000-8000-00000000000f";
+        let entry = |id: &str, name: &str| {
+            serde_json::json!({
+                "id": id, "name": name, "created_at": "2026-11-01", "expires_at": "2027-01-30",
+                "expired": false, "current": false, "kind": "cli", "scope": "full",
+            })
+        };
+        let listed = serde_json::json!({
+            "tokens": [
+                entry(CI, "ci"),
+                entry("00000000-0000-4000-8000-00000000000b", "shared"),
+                entry("00000000-0000-4000-8000-00000000000c", "shared"),
+                // Names in UUID forms Cloud never uses as an ID.
+                entry(HEX, "0000000000004000800000000000000a"),
+                entry("00000000-0000-4000-8000-000000000010", "{00000000-0000-4000-8000-00000000000a}"),
+            ],
+            "devices": [],
+            "revoking": [],
+        });
+        let cloud = fake_cloud(move |route, _| match route {
+            "GET /api/cli/tokens" => (200, listed.clone()),
+            _ => (404, serde_json::json!({ "code": "NOT_FOUND" })),
+        });
+        let (_dir, store) = signed_in_store(&cloud);
+        let device = credential(&store, None, None).await.unwrap();
+
+        assert_eq!(credential_id(&device, "ci").await.unwrap(), CI);
+        assert_eq!(
+            credential_id(&device, "0000000000004000800000000000000a")
+                .await
+                .unwrap(),
+            HEX
+        );
+        assert_eq!(
+            credential_id(&device, "{00000000-0000-4000-8000-00000000000a}")
+                .await
+                .unwrap(),
+            "00000000-0000-4000-8000-000000000010"
+        );
+        assert_eq!(
+            credential_id(&device, "Ci").await.unwrap(),
+            "Ci",
+            "names match exactly"
+        );
+        assert_eq!(
+            credential_id(&device, "d1").await.unwrap(),
+            "d1",
+            "an unknown target goes as given"
+        );
+        let error = credential_id(&device, "shared").await.unwrap_err();
+        assert!(
+            matches!(&error, LoginError::AmbiguousCredential { name, ids } if name == "shared" && ids.len() == 2),
+            "{error}"
+        );
+        assert!(
+            error
+                .to_string()
+                .contains("00000000-0000-4000-8000-00000000000b"),
+            "{error}"
+        );
+        assert_eq!(
+            crate::failure::login_code(&error),
+            ployz_core::RpcErrorCode::Ambiguous
+        );
+    }
+
+    #[tokio::test]
+    async fn token_rm_sends_an_id_or_a_token_caller_s_target_without_listing() {
+        // A fully revoked ID that a live token is named like, as Cloud no longer lists it.
+        const GONE: &str = "00000000-0000-4000-8000-0000000000aa";
+        let cloud = fake_cloud(|route, _| match route {
+            "GET /api/cli/tokens" => (500, serde_json::json!({ "code": "INTERNAL" })),
+            _ => (404, serde_json::json!({ "code": "NOT_FOUND" })),
+        });
+        let (_dir, store) = signed_in_store(&cloud);
+        let device = credential(&store, None, None).await.unwrap();
+
+        assert_eq!(credential_id(&device, GONE).await.unwrap(), GONE);
+        assert_eq!(credential_id(&token(&cloud), "ci").await.unwrap(), "ci");
+        assert!(
+            credential_id(&device, "ci").await.is_err(),
+            "a name needs the list"
+        );
+        assert!(
+            credential_id(&device, "0000000000004000800000000000000a")
+                .await
+                .is_err(),
+            "a 32-hex target is a name: Cloud's IDs are hyphenated"
+        );
     }
 
     #[tokio::test]

@@ -1035,7 +1035,9 @@ impl From<LoginError> for Failure {
             LoginError::TokenRefused => Some(crate::cloud_account::SIGN_IN_PAST_TOKEN),
             LoginError::AgentTokenRefused => Some("ployz mcp login"),
             LoginError::UnknownOrganization(_) => Some("ployz org ls"),
-            LoginError::UnknownCredential(_) => Some("ployz token ls"),
+            LoginError::UnknownCredential(_) | LoginError::AmbiguousCredential { .. } => {
+                Some("ployz token ls")
+            }
             LoginError::Unreachable { .. }
             | LoginError::Unanswered { .. }
             | LoginError::Unsupported(_)
@@ -1072,6 +1074,7 @@ pub(crate) fn login_code(error: &LoginError) -> RpcErrorCode {
         LoginError::UnknownOrganization(_) | LoginError::UnknownCredential(_) => {
             RpcErrorCode::NotFound
         }
+        LoginError::AmbiguousCredential { .. } => RpcErrorCode::Ambiguous,
     }
 }
 
