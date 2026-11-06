@@ -95,7 +95,7 @@ async fn approved_join_uses_only_encrypted_approved_devices_and_cannot_be_redeem
         vec![signer.public().into()]
     );
     assert!(joiner.record().device_enforcement());
-    assert!(matches!(entry.register(request.clone()).await, Ok(_)));
+    assert!(entry.register(request.clone()).await.is_ok());
     assert!(matches!(
         entry
             .approve_join(ApproveJoinRequest {
