@@ -356,7 +356,8 @@ Whoever holds a `full` token can deploy and run commands in your services. A tok
 working at once if you leave the organization, are removed from it, or the organization is
 deleted. Then unset `PLOYZ_TOKEN` and run `ployz login`, or make a new token in an organization
 you're still in. To revoke it,
-find its ID with `ployz token ls`, then run `ployz token rm ID`. If it names a server that's
+run `ployz token rm` with its name or ID from `ployz token ls`. When two tokens share the name,
+it lists their IDs and removes neither: run it again with one ID. If it names a server that's
 offline, run it again once that server is back. Owners and admins see and can revoke every
 organization token in the organization, not only their own. Members see only theirs. OWNER
 says whose each token is: `you`, or the teammate's name, and a teammate's `full` token shows as
