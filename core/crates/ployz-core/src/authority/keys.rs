@@ -18,6 +18,7 @@ use crate::{DeviceCode, DeviceKey};
 #[serde(rename_all = "snake_case")]
 pub enum Purpose {
     Workflow,
+    Join,
 }
 
 impl Purpose {
@@ -25,6 +26,7 @@ impl Purpose {
     pub const fn as_str(self) -> &'static str {
         match self {
             Self::Workflow => "workflow",
+            Self::Join => "join",
         }
     }
 }

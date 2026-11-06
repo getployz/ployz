@@ -173,19 +173,38 @@ impl Service<http::Request<Body>> for MachineApi {
         self.proxy.poll_ready(context)
     }
 
-    fn call(&mut self, request: http::Request<Body>) -> Self::Future {
+    fn call(&mut self, mut request: http::Request<Body>) -> Self::Future {
         let Some(connection) = request
             .extensions()
             .get::<iroh::endpoint::WeakConnectionHandle>()
         else {
-            let scope = if request
-                .headers()
-                .contains_key(ployz_core::OPERATOR_SCOPE_HEADER)
+            let local = request
+                .extensions()
+                .get::<tonic::transport::server::UdsConnectInfo>()
+                .is_some();
+            let scope = if local
+                && !request
+                    .headers()
+                    .contains_key(ployz_core::OPERATOR_SCOPE_HEADER)
             {
-                ManagementScope::Operator
-            } else {
                 ManagementScope::Full
+            } else {
+                ManagementScope::Operator
             };
+            if !local && request.uri().path() == op::SetManagementClient::PATH {
+                return Box::pin(async {
+                    Ok(tonic::Status::permission_denied(
+                        "Management slots require a local or authenticated management connection",
+                    )
+                    .into_http())
+                });
+            }
+            if scope == ManagementScope::Operator {
+                request.headers_mut().insert(
+                    ployz_core::OPERATOR_SCOPE_HEADER,
+                    http::HeaderValue::from_static("1"),
+                );
+            }
             if let Some(refused) = refuse_scope(request.uri().path(), scope) {
                 return Box::pin(async { Ok(refused) });
             }

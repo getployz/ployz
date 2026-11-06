@@ -133,6 +133,15 @@ impl LocalMachine {
         &self,
         request: ShareSealingKeyRequest,
     ) -> Result<SealingKeyShared, super::Error> {
+        let local = self.clone();
+        self.finish_mutation(async move { local.share_sealing_key_admitted(request).await })
+            .await
+    }
+
+    async fn share_sealing_key_admitted(
+        &self,
+        request: ShareSealingKeyRequest,
+    ) -> Result<SealingKeyShared, super::Error> {
         self.require_management_access()?;
         let record = self.record();
         let key = SealingKey::load(self.owner.data_dir())
@@ -145,6 +154,26 @@ impl LocalMachine {
             .ok_or(Error::UnknownMachine(request.machine))?;
         if recipient.public_key != request.public_key {
             return Err(Error::WireGuardKeyMismatch(request.machine).into());
+        }
+        if record.device_enforcement() {
+            let approval = request
+                .join_approval
+                .as_ref()
+                .ok_or(super::Error::JoinRefused(
+                    ployz_core::authority::AuthorityRefusal::Unsigned {
+                        purpose: ployz_core::authority::Purpose::Join,
+                    },
+                ))?;
+            let body = approval.open().map_err(super::Error::JoinRefused)?;
+            if body.machine.id != request.machine || body.sealing_recipient != request.public_key {
+                return Err(super::Error::JoinRefused(
+                    ployz_core::authority::AuthorityRefusal::Mismatch {
+                        field: "a sealing recipient",
+                    },
+                ));
+            }
+            self.verify_join(approval, &body.machine, body.network)?;
+            self.consume_join(request.machine)?;
         }
         let sealed = key.seal_from(record.private_key(), &request.public_key)?;
         tracing::info!(

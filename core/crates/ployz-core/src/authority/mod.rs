@@ -6,11 +6,13 @@
 //! restart approval; joins and other workflows add their own statement types here.
 
 pub mod canonical;
+pub mod join;
 pub mod keys;
 pub mod refusal;
 pub mod restart;
 
 pub use canonical::{CanonicalError, Timestamp};
+pub use join::JoinApproval;
 pub use keys::{KeySignature, Purpose, Signed, Signer, SigningPublicKey, Statement};
 pub use refusal::AuthorityRefusal;
 pub use restart::{RestartApproval, RestartFacts, RestartStep, WorkflowKind};

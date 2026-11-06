@@ -66,6 +66,7 @@ pub(in crate::handlers) fn add(root: &ArgMatches) -> Result<(), Error> {
         let assignment = crate::enrollment::local::save_assignment(
             &history,
             &RegisterRequest {
+                join_approval: None,
                 machine_id: token.id,
                 assigned_subnet: None,
                 initial_policy: policy,
@@ -259,6 +260,7 @@ mod tests {
         let saved = crate::enrollment::local::save_assignment(
             history.path(),
             &RegisterRequest {
+                join_approval: None,
                 machine_id: returning.id,
                 assigned_subnet: None,
                 initial_policy: Default::default(),

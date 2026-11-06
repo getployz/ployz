@@ -74,6 +74,7 @@ mod container;
 pub(crate) use container::CutRefusal;
 #[cfg(test)]
 pub(crate) use container::{EnsurePause, EnsurePausePoint};
+mod join_approval;
 mod management_client;
 mod push_target;
 pub(super) mod restart_approval;
@@ -174,6 +175,12 @@ pub enum Error {
     /// Device enforcement refused an Operator's restart step.
     #[error("{RESTART_APPROVAL_CAPABILITY} needs a Device-signed restart approval")]
     RestartRefused(#[from] ployz_core::authority::AuthorityRefusal),
+    #[error("ployz.machine.join.device-approval.v1 needs a Device-signed join approval: {0}")]
+    JoinRefused(ployz_core::authority::AuthorityRefusal),
+    #[error("could not keep the record of join approvals")]
+    JoinRecord(#[source] std::io::Error),
+    #[error("the join of Machine {0} has already been admitted")]
+    JoinConsumed(MachineId),
     #[error("could not keep the record of restart approvals")]
     ApprovalRecord(#[source] std::io::Error),
     #[error(transparent)]
@@ -703,6 +710,15 @@ impl LocalMachine {
         request: EnrollRequest,
         recovery: Option<RecoverySeed>,
     ) -> Result<Enrolled, Error> {
+        if self.record().device_enforcement()
+            && matches!(&request.role, ployz_core::EnrollAs::Founder { .. })
+        {
+            return Err(Error::JoinRefused(
+                ployz_core::authority::AuthorityRefusal::Unsigned {
+                    purpose: ployz_core::authority::Purpose::Join,
+                },
+            ));
+        }
         let (plan, installation) = self
             .owner
             .mutate(move |store| store.plan_enrollment(request, recovery))
@@ -791,12 +807,17 @@ impl LocalMachine {
             target_versions: BTreeMap::new(),
         };
         let assignment = ployz_core::allocate_enrollment(&request, &snapshot, &[])?;
+        let approval =
+            self.admit_join(&assignment.machine, snapshot.network, request.join_approval)?;
         let sealing_key = SealingKey::load(self.owner.data_dir())
             .unwrap_or_else(|error| {
                 tracing::warn!(%error, "could not read the Sealing Key; registering without it");
                 None
             })
-            .map(|key| key.seal_to(&assignment.machine.public_key))
+            .map(|key| match &approval {
+                Some(approval) => key.seal_join(&assignment.machine.public_key, approval),
+                None => key.seal_to(&assignment.machine.public_key),
+            })
             .transpose()?;
         let machine = publication.register(assignment.machine).await?;
         Ok(registered(

@@ -357,6 +357,9 @@ pub enum Forgotten {
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
 pub struct RegisterRequest {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub join_approval: Option<crate::authority::Signed<crate::authority::JoinApproval>>,
     /// Durable identity of the joining Machine.
     pub machine_id: MachineId,
     /// Client-selected subnet, required for Register publication.
@@ -374,6 +377,24 @@ pub struct RegisterRequest {
     #[serde(default)]
     pub runtime: MachineRuntime,
 }
+
+/// Read the join requests waiting for a Device's approval on this Machine.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
+pub struct PendingJoinsRequest {}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct PendingJoins {
+    pub joins: Vec<crate::authority::JoinApproval>,
+}
+
+/// Carry Device authority to the Machine that will admit the join.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct ApproveJoinRequest {
+    pub approval: crate::authority::Signed<crate::authority::JoinApproval>,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct JoinApproved {}
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
 pub struct ListMachinesRequest {}
@@ -1618,6 +1639,8 @@ define_responses! {
     Registered(Registered) => "registered";
     SetManagementClientResponse(SetManagementClientResponse) => "management_client_set";
     DeviceSet(DeviceSet) => "device_set";
+    PendingJoins(PendingJoins) => "pending_joins";
+    JoinApproved(JoinApproved) => "join_approved";
     PushTargetSet(PushTargetSet) => "push_target_set";
     DeviceEnforcementSet(DeviceEnforcementSet) => "device_enforcement_set";
     EndpointSelected(EndpointSelected) => "endpoint_selected";

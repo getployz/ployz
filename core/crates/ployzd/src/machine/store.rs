@@ -55,6 +55,7 @@ pub(crate) struct Installation {
     body: LocalMachineBody,
     sealing_key: Option<SealingKey>,
     devices: Vec<DeviceKey>,
+    device_enforcement: bool,
     wireguard_mtu: Option<u32>,
     pinned: PinnedAddresses,
 }
@@ -349,7 +350,7 @@ impl LocalMachineStore {
             wireguard_mtu,
             pinned,
         } = request;
-        let (body, sealing_key, devices) = match role {
+        let (body, sealing_key, devices, device_enforcement) = match role {
             EnrollAs::Founder {
                 name,
                 cluster_network,
@@ -369,7 +370,7 @@ impl LocalMachineStore {
                     public_ip,
                     advertised_endpoints,
                 )?;
-                (body, sealing_key, Vec::new())
+                (body, sealing_key, Vec::new(), false)
             }
             EnrollAs::Member { .. } if recovery.is_some() => {
                 return Err(StoreError::RecoveryWithoutFounding);
@@ -389,6 +390,7 @@ impl LocalMachineStore {
                 body,
                 sealing_key,
                 devices,
+                device_enforcement,
                 wireguard_mtu,
                 pinned,
             },
@@ -435,7 +437,7 @@ impl LocalMachineStore {
     fn member(
         &self,
         registration: Registered,
-    ) -> Result<(LocalMachineBody, Option<SealingKey>, Vec<DeviceKey>), StoreError> {
+    ) -> Result<(LocalMachineBody, Option<SealingKey>, Vec<DeviceKey>, bool), StoreError> {
         let Registered {
             assigned_machine: mut machine,
             visible_peers,
@@ -455,9 +457,49 @@ impl LocalMachineStore {
         if machine.advertised_endpoints.is_empty() {
             return Err(StoreError::MissingEndpoints);
         }
-        let sealing_key = sealing_key
-            .map(|sealed| SealingKey::open(&sealed, &self.record.wireguard_private_key))
+        let opened = sealing_key
+            .map(|sealed| SealingKey::open_join(&sealed, &self.record.wireguard_private_key))
             .transpose()?;
+        let (sealing_key, approval) = match opened {
+            Some((key, approval)) => (Some(key), approval),
+            None => (None, None),
+        };
+        let (devices, device_enforcement) = if let Some(approval) = approval {
+            let body = approval.open().map_err(StoreError::JoinRefused)?;
+            let trusted = if self.record.device_enforcement() {
+                self.record.devices().collect()
+            } else {
+                body.devices.clone()
+            };
+            let body = ployz_core::authority::join::verify_signature(
+                &approval,
+                &trusted,
+                ployz_core::authority::Timestamp::now(),
+            )
+            .map_err(StoreError::JoinRefused)?;
+            if body.machine != ployz_core::authority::join::JoinAllocation::from(&machine)
+                || body.sealing_recipient != machine.public_key
+                || sealing_key.as_ref().map(SealingKey::public_key) != Some(body.cluster)
+                || !body.network.contains(&ipnet::Ipv4Net::from(machine.subnet))
+                || body.admitting_machines.is_empty()
+            {
+                return Err(StoreError::JoinRefused(
+                    ployz_core::authority::AuthorityRefusal::Mismatch {
+                        field: "a joining Machine",
+                    },
+                ));
+            }
+            (body.devices, true)
+        } else {
+            if self.record.device_enforcement() {
+                return Err(StoreError::JoinRefused(
+                    ployz_core::authority::AuthorityRefusal::Unsigned {
+                        purpose: ployz_core::authority::Purpose::Join,
+                    },
+                ));
+            }
+            (devices, false)
+        };
         machine.runtime = local_runtime(&self.data_dir);
         Ok((
             LocalMachineBody::Joining {
@@ -467,6 +509,7 @@ impl LocalMachineStore {
             },
             sealing_key,
             devices,
+            device_enforcement,
         ))
     }
 
@@ -474,8 +517,14 @@ impl LocalMachineStore {
         self.require_uninitialized()?;
         let mut installed = self.record.clone();
         installed.body = installation.body;
+        installed.device_enforcement = installation.device_enforcement;
         installed.wireguard_mtu = installation.wireguard_mtu;
         installed.pinned_addresses = installation.pinned;
+        if installation.device_enforcement {
+            installed
+                .management_clients
+                .retain(|label, _| !DeviceCode::reserves(label));
+        }
         installed
             .management_clients
             .extend(installation.devices.into_iter().map(|key| {
@@ -869,6 +918,8 @@ fn display_data_directory(path: &Path) -> String {
 
 #[derive(Debug, Error)]
 pub enum StoreError {
+    #[error("join approval refused: {0}")]
+    JoinRefused(ployz_core::authority::AuthorityRefusal),
     #[error("local Machine record I/O failed")]
     Io(#[from] io::Error),
     #[error("local Machine record JSON is invalid")]
