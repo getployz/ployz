@@ -802,3 +802,191 @@ async fn a_copy_found_unhealthy_while_its_server_left_is_removed_and_the_removal
     assert!(failure.cause.is_empty(), "{failure:?}");
     client.assert_done();
 }
+
+/// `api` with a new image, so its Deploy replaces every copy of the old one.
+fn new_api() -> ployz_core::RequestedServiceSpec {
+    let mut desired = spec(Some(0), Some(healthcheck()), None);
+    desired.container.image = "alpine:new".into();
+    serde_json::from_value(serde_json::to_value(&desired).unwrap()).unwrap()
+}
+
+/// Run `run`'s Deploy of `api` against what `client` holds, with `ended` as the
+/// runs its Store claim reports ended.
+async fn deploy_as(client: &Scripted, run: &str, ended: &[&str]) -> DeployOutcome<ExecutionError> {
+    let options = crate::deploy::PlanOptions {
+        ended_runs: ended
+            .iter()
+            .map(|run| DeploymentLogId::parse(*run).unwrap())
+            .collect(),
+        ..Default::default()
+    };
+    let intent = crate::deploy::DeployIntent::apply_one(test_namespace(), new_api(), options);
+    let plan = crate::deploy::plan_deploy(&intent, &client.snapshot()).unwrap();
+    super::super::execute_operation_sequence(
+        &plan,
+        &DeploymentLogId::parse(run).unwrap(),
+        client,
+        &CancellationToken::new(),
+        None,
+    )
+    .await
+}
+
+fn pending_copies(client: &Scripted) -> Vec<ContainerId> {
+    client
+        .snapshot()
+        .containers
+        .iter()
+        .filter(|copy| copy.rotation == Some(CopyRotation::Pending))
+        .map(|copy| copy.container_id)
+        .collect()
+}
+
+/// Each run's new copy fails its check and its Machine can't remove it, as when the
+/// runner dies or the Server drops off mid-deploy (#2218). Each later run removes
+/// what the one before left before it starts its own copy.
+#[tokio::test(start_paused = true)]
+async fn a_failing_deploy_repeated_leaves_only_its_own_copy() {
+    let machine = machine('1');
+    let serving = container('b');
+    let client = Scripted::new(Vec::new()).with_copy(&machine, &serving, CopyRotation::In);
+    let mut ended = Vec::new();
+    let mut left = None;
+    for (run, new) in [
+        ("run-1", container('c')),
+        ("run-2", container('d')),
+        ("run-3", container('e')),
+    ] {
+        if let Some(earlier) = left {
+            client.add_steps([
+                observed(Call::Inspect(machine, earlier), running()),
+                ok(Call::Remove(machine, earlier)),
+            ]);
+        }
+        client.add_steps([
+            unhealthy_run(machine, &new),
+            failed(Call::Discard(machine, new), "Docker did not answer"),
+        ]);
+
+        let outcome = deploy_as(&client, run, &ended).await;
+
+        assert!(
+            matches!(outcome, DeployOutcome::Failed { .. }),
+            "{outcome:?}"
+        );
+        client.assert_done();
+        ended.push(run);
+        left = Some(new);
+    }
+    assert_eq!(pending_copies(&client), [container('e')]);
+    assert_eq!(client.rotation(&serving), Some(CopyRotation::In));
+}
+
+/// A Pending copy whose run may still act stays: one by a run the claim did not
+/// report ended, and a Replica Move's, whose slot no Deploy names.
+#[tokio::test(start_paused = true)]
+async fn a_failing_deploy_keeps_the_pending_copies_a_live_run_may_own() {
+    let machine = machine('1');
+    let serving = container('b');
+    let live = container('c');
+    let moved = container('d');
+    let new = container('e');
+    let client = Scripted::new(vec![
+        unhealthy_run(machine, &new),
+        ok(Call::Discard(machine, new)),
+    ])
+    .with_copy(&machine, &serving, CopyRotation::In)
+    .with_copy(&machine, &live, CopyRotation::Pending)
+    .with_deploy(&live, &DeploymentLogId::parse("live").unwrap())
+    .with_key(&live, "live:0123456789abcdef:0")
+    .with_copy(&machine, &moved, CopyRotation::Pending)
+    .with_deploy(&moved, &DeploymentLogId::parse("ended").unwrap())
+    .with_key(&moved, &format!("move:{serving}"));
+
+    let outcome = deploy_as(&client, "run-1", &["ended"]).await;
+
+    assert!(
+        matches!(outcome, DeployOutcome::Failed { .. }),
+        "{outcome:?}"
+    );
+    client.assert_done();
+    assert_eq!(pending_copies(&client), [live, moved]);
+}
+
+/// A new copy that failed its check and that its Machine wouldn't remove is named
+/// in the result, not only in a log line.
+#[tokio::test]
+async fn a_new_copy_the_deploy_could_not_remove_is_named_in_its_result() {
+    let machine = machine('1');
+    let new = container('a');
+    let plan = crate::deploy::DeployPlan::for_execution_test(
+        vec![run(
+            &machine,
+            spec(Some(0), Some(healthcheck()), None),
+            false,
+        )],
+        test_namespace(),
+    )
+    .with_machine_names(&[machine]);
+    let client = Scripted::new(vec![
+        unhealthy_run(machine, &new),
+        failed(Call::Discard(machine, new), "Docker did not answer"),
+    ]);
+
+    let (outcome, warnings) =
+        super::flip::reported_warnings(&plan, &client, &CancellationToken::new()).await;
+
+    assert!(
+        matches!(outcome, DeployOutcome::Failed { .. }),
+        "{outcome:?}"
+    );
+    assert_eq!(
+        warnings.iter().map(ToString::to_string).collect::<Vec<_>>(),
+        [super::flip::left_running(
+            &new,
+            "machine-1",
+            "Docker did not answer"
+        )]
+    );
+    client.assert_done();
+}
+
+/// A failed start's discard keeps resending while its Machine is away for longer
+/// than one RPC's deadline, up to the wait for a restart.
+#[tokio::test(start_paused = true)]
+async fn a_failed_start_keeps_removing_its_copy_until_the_restart_wait() {
+    let machine = machine('1');
+    let plan = vec![run(
+        &machine,
+        spec(Some(0), Some(healthcheck()), None),
+        false,
+    )];
+    let away = TARGET_RPC_TIMEOUT * 2;
+    let attempts = usize::try_from(away.as_millis() / RESTART_POLL.as_millis()).unwrap();
+    let mut steps = vec![failed(
+        Call::Run(machine, ContainerKind::ServiceContainer),
+        "start failed",
+    )];
+    steps.extend(
+        std::iter::repeat_with(|| {
+            failed_unavailable(
+                Call::DiscardSlot(machine, ContainerKind::ServiceContainer),
+                "transport error",
+            )
+        })
+        .take(attempts),
+    );
+    steps.push(ok(Call::DiscardSlot(
+        machine,
+        ContainerKind::ServiceContainer,
+    )));
+    let client = Scripted::new(steps);
+
+    let outcome = execute_with(&plan, &client, &CancellationToken::new()).await;
+
+    assert!(
+        matches!(outcome, DeployOutcome::Failed { .. }),
+        "{outcome:?}"
+    );
+    client.assert_done();
+}

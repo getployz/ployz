@@ -703,7 +703,8 @@ impl Session {
 
     /// [`Self::prepare`], pulling private images with `registry_auth`, which a
     /// lowering input never carries. A `runner` plans as that operator and blocks a
-    /// Service whose Volume nothing can mount instead of refusing the Deploy. A
+    /// Service whose Volume nothing can mount instead of refusing the Deploy; it
+    /// removes first the Pending copies its claim's ended runs left. A
     /// failure reaches `finished` as `E`: the `RpcError` the SDK returns, or
     /// [`Unprepared`] for the store runner.
     pub(crate) fn prepare_with<E>(
@@ -713,7 +714,10 @@ impl Session {
             ployz_core::ServiceName,
             ployz_core::RegistryAuth,
         >,
-        runner: Option<ployz_core::Operator>,
+        runner: Option<(
+            ployz_core::Operator,
+            std::collections::BTreeSet<ployz_core::DeploymentLogId>,
+        )>,
     ) -> Result<Running<PreparedDeploy, E>, RpcError>
     where
         E: From<RpcError> + From<Unprepared> + Send + 'static,
@@ -724,9 +728,10 @@ impl Session {
         Ok(Running::spawn(token.clone(), move |reporter| async move {
             let mut captured = capture(input).await?;
             captured.intent.registry_auth = registry_auth;
-            if let Some(operator) = runner {
+            if let Some((operator, ended_runs)) = runner {
                 captured.intent.options.operator = operator;
                 captured.intent.options.block_unmountable = true;
+                captured.intent.options.ended_runs = ended_runs;
             }
             if token.is_cancelled() {
                 return Err(E::from(preparation_error(

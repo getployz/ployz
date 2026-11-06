@@ -118,6 +118,8 @@ struct Recorded {
     r#gen: Gen,
     /// The Deploy label its create carried, as the daemon writes it.
     deploy: Option<DeploymentLogId>,
+    /// The creation key of the slot it was created in, as the daemon labels it.
+    key: Option<CreationKey>,
     rotation: CopyRotation,
     /// In before the run, so a proxy that never acks still lists it.
     in_before: bool,
@@ -133,6 +135,7 @@ impl Recorded {
             kind: observed.kind,
             r#gen: observed.copy_gen(),
             deploy: observed.deploy_label(),
+            key: None,
             rotation: observed.rotation().clone(),
             in_before: *observed.rotation() == CopyRotation::In,
             stopped: false,
@@ -371,6 +374,7 @@ impl Scripted {
                 kind: ContainerKind::ServiceContainer,
                 r#gen,
                 deploy: None,
+                key: None,
                 in_before: rotation == CopyRotation::In,
                 rotation,
                 stopped: false,
@@ -448,6 +452,21 @@ impl Scripted {
             .expect("deploy label on a recorded copy")
             .deploy = Some(deploy.clone());
         self
+    }
+
+    /// The copy was created in a slot keyed `key`, as the daemon labels it.
+    fn with_key(mut self, container_id: &ContainerId, key: &str) -> Self {
+        self.copies
+            .get_mut()
+            .unwrap()
+            .get_mut(container_id)
+            .expect("creation key on a recorded copy")
+            .key = Some(CreationKey::try_from(key.to_owned()).unwrap());
+        self
+    }
+
+    fn add_steps(&self, steps: impl IntoIterator<Item = Step>) {
+        self.steps.lock().unwrap().extend(steps);
     }
 
     fn rotation(&self, container_id: &ContainerId) -> Option<CopyRotation> {
@@ -578,7 +597,25 @@ impl Scripted {
         let containers = copies
             .iter()
             .filter(|(_, copy)| copy.present)
-            .map(|(id, copy)| copy.proxied(id))
+            .map(|(id, copy)| {
+                let mut listed = copy.proxied(id);
+                listed
+                    .try_update(|parts| {
+                        if let Some(deploy) = &copy.deploy {
+                            parts
+                                .labels
+                                .insert(ployz_core::DEPLOYMENT_ID_LABEL.into(), deploy.to_string());
+                        }
+                        if let Some(key) = &copy.key {
+                            parts.labels.insert(
+                                ployz_core::labels::CREATION_KEY.into(),
+                                key.as_str().into(),
+                            );
+                        }
+                    })
+                    .unwrap();
+                listed
+            })
             .collect();
         crate::deploy::DeploySnapshot {
             machines,
@@ -971,6 +1008,7 @@ impl Scripted {
                     new.slot.kind,
                     new.r#gen,
                     new.deployment_id.clone(),
+                    new.slot.creation_key.clone(),
                 ));
                 (call, ContainerLocator::Key(new.slot))
             }
@@ -1026,7 +1064,7 @@ impl Scripted {
             | Reply::Pending
             | Reply::Error(_) => None,
         };
-        if let (Some((service, kind, r#gen, deploy)), Some(id)) = (created, container_id) {
+        if let (Some((service, kind, r#gen, deploy, key)), Some(id)) = (created, container_id) {
             self.copies.lock().unwrap().insert(
                 id,
                 Recorded {
@@ -1035,6 +1073,7 @@ impl Scripted {
                     kind,
                     r#gen,
                     deploy,
+                    key: Some(key),
                     rotation: CopyRotation::Pending,
                     in_before: false,
                     stopped: false,

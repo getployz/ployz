@@ -727,7 +727,73 @@ fn seal_plan(planned: Planned, snapshot: &DeploySnapshot, namespace: &Namespace)
 
 fn plan_operations(intent: &DeployIntent, snapshot: &DeploySnapshot) -> Result<Planned, PlanError> {
     let bound = bind(intent, snapshot)?;
-    assemble_plan(intent, bound, snapshot)
+    let left = left_pending(intent, &bound.requested, snapshot);
+    if left.is_empty() {
+        return assemble_plan(intent, bound, snapshot);
+    }
+    // Placement sees the Machines as they are once these are gone, which they are
+    // before any copy starts.
+    let mut rest = snapshot.clone();
+    rest.containers
+        .retain(|container| !left.contains(&container.container_id));
+    let mut planned = assemble_plan(intent, bound, &rest)?;
+    let first = planned.operations.len();
+    planned
+        .operations
+        .extend(snapshot.containers.iter().filter_map(|container| {
+            left.contains(&container.container_id)
+                .then_some(DeployOperation::RemoveContainer {
+                    machine_id: container.machine_id,
+                    container_id: container.container_id,
+                    purpose: ployz_core::RemoveContainerPurpose::Rollout,
+                })
+        }));
+    planned.groups.insert(
+        0,
+        ServiceGroup {
+            service: None,
+            dependencies: Vec::new(),
+            steps: vec![Step::Parallel((first..planned.operations.len()).collect())],
+            publish: false,
+        },
+    );
+    Ok(planned)
+}
+
+/// The copies that runs in `intent.options.ended_runs` left Pending of a Service this
+/// Deploy places. They were never routed and no run can bring them In, so the Deploy
+/// removes them before it starts anything, and a failing Deploy repeated leaves only
+/// its own. Only a copy in a slot its own run keyed counts: a Replica Move's copy
+/// carries the label of the Deploy it moved, and a Global copy's key names no run.
+fn left_pending(
+    intent: &DeployIntent,
+    requested: &[RequestedServiceSpec],
+    snapshot: &DeploySnapshot,
+) -> BTreeSet<ContainerId> {
+    if intent.options.ended_runs.is_empty() || intent.namespace.is_reserved() {
+        return BTreeSet::new();
+    }
+    snapshot
+        .containers
+        .iter()
+        .filter(|container| {
+            container.namespace == intent.namespace
+                && container.kind == ployz_core::ContainerKind::ServiceContainer
+                && container.rotation == Some(CopyRotation::Pending)
+                && requested
+                    .iter()
+                    .any(|spec| spec.name == *container.service_name())
+                && container.deploy_label().is_some_and(|run| {
+                    intent.options.ended_runs.contains(&run)
+                        && container
+                            .labels
+                            .get(ployz_core::labels::CREATION_KEY)
+                            .and_then(|key| key.strip_prefix(run.as_str()))
+                            .is_some_and(|slot| slot.starts_with(':'))
+                })
+        })
+        .map(|container| container.container_id)
+        .collect()
 }
 
 fn bind(intent: &DeployIntent, snapshot: &DeploySnapshot) -> Result<BoundIntent, PlanError> {

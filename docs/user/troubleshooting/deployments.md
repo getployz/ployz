@@ -166,6 +166,12 @@ or a command's exit code and output.
 - **Give it time to boot.** If you lowered **Healthcheck timeout** under **Settings → Deploy**,
   raise it. Otherwise make your app start faster.
 
+If the server doesn't answer while Ployz stops the new replica, Ployz keeps trying for up to a
+minute. If it still can't stop it, the deploy says
+`web copy 3f9c1e2a7b04 left running on web-2 (web-2 did not answer). The next full deploy cleans it up.`
+That replica never gets requests. Each deploy of the environment first stops the replicas that
+earlier failed deploys of it left, so retrying a failing deploy leaves at most one extra replica.
+
 ## My new version runs out of memory
 
 **The Container ran out of memory under its 16 MiB memLimit**, with the health check's last

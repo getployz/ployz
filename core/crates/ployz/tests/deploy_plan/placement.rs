@@ -1953,6 +1953,104 @@ fn the_next_deploy_removes_the_copies_a_failed_run_left_pending() {
     }
 }
 
+/// A copy a Deploy left Pending, labeled as the daemon labels it: its run, and the
+/// slot that run created it in.
+fn left_by(mut copy: ContainerObservation, run: &str, key: &str) -> ContainerObservation {
+    copy.try_update(|parts| {
+        parts.rotation = Some(ployz_core::CopyRotation::Pending);
+        parts
+            .labels
+            .insert(ployz_core::DEPLOYMENT_ID_LABEL.into(), run.into());
+        parts
+            .labels
+            .insert(ployz_core::labels::CREATION_KEY.into(), key.into());
+    })
+    .unwrap();
+    copy
+}
+
+/// Removals in a group every Service waits for, so they run before any copy
+/// starts, whatever later fails.
+fn removed_first(plan: &ployz::deploy::DeployPlan) -> Vec<ContainerId> {
+    let operations = &plan.preview().operations;
+    plan.groups()
+        .iter()
+        .filter(|group| group.service.is_none() && group.dependencies.is_empty())
+        .flat_map(|group| &group.steps)
+        .flat_map(|step| match step {
+            ployz::deploy::Step::Serial(index) => vec![*index],
+            ployz::deploy::Step::Parallel(indices) => indices.clone(),
+        })
+        .filter_map(|index| {
+            let DeployOperation::RemoveContainer { container_id, .. } =
+                operations.get(index)?.operation
+            else {
+                return None;
+            };
+            Some(container_id)
+        })
+        .collect()
+}
+
+#[test]
+fn a_deploy_removes_first_the_copies_ended_runs_left_pending() {
+    let requested = requested(ServiceMode::Replicated {
+        replicas: NonZeroU32::new(1).unwrap(),
+    });
+    let mut serving = requested.clone();
+    serving.container.image = "ghcr.io/getployz/api:old".into();
+    let service = service_id('a');
+    let mut live = container('b', '1', &serving, &service);
+    live.try_update(|parts| parts.rotation = Some(ployz_core::CopyRotation::In))
+        .unwrap();
+    let snapshot = DeploySnapshot {
+        machines: vec![machine('1', "first")],
+        containers: vec![
+            live,
+            left_by(
+                container('c', '1', &requested, &service),
+                "run-1",
+                "run-1:00000000000000ff:0",
+            ),
+            left_by(
+                container('d', '1', &requested, &service),
+                "run-2",
+                "run-2:00000000000000ff:0",
+            ),
+            left_by(
+                container('e', '1', &requested, &service),
+                "running",
+                "running:00000000000000ff:0",
+            ),
+            left_by(
+                container('f', '1', &requested, &service),
+                "run-1",
+                "move:bbbb",
+            ),
+        ],
+        ..Default::default()
+    };
+    let options = PlanOptions {
+        ended_runs: ["run-1", "run-2"]
+            .into_iter()
+            .map(|run| ployz_core::DeploymentLogId::parse(run).unwrap())
+            .collect(),
+        ..PlanOptions::default()
+    };
+    let intent = DeployIntent::apply_all(Namespace::parse("app").unwrap(), [&requested], options);
+
+    let plan = ployz::deploy::plan_deploy(&intent, &snapshot).unwrap();
+
+    assert_eq!(removed_first(&plan), [container_id('c'), container_id('d')]);
+    let unscoped = DeployIntent::apply_all(
+        Namespace::parse("app").unwrap(),
+        [&requested],
+        PlanOptions::default(),
+    );
+    let plan = ployz::deploy::plan_deploy(&unscoped, &snapshot).unwrap();
+    assert_eq!(removed_first(&plan), []);
+}
+
 #[test]
 fn a_suspect_machine_that_did_not_answer_its_listing_gets_no_new_copy() {
     let requested = requested(ServiceMode::Replicated {

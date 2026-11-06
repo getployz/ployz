@@ -2329,6 +2329,35 @@ fn a_new_runner_leaves_the_replaced_deployment_unknown() {
 }
 
 #[test]
+fn a_claim_names_the_runs_of_its_environment_that_can_no_longer_act() {
+    let (store, who) = shop();
+    admit(&store, &who, 1, &[], None).unwrap();
+    let a = runner("runner-a");
+    store.claim(&id(1), &a).unwrap();
+    store
+        .record(&id(1), &a, RunEvidence::NotExecuted("stopped".into()))
+        .unwrap();
+    admit(&store, &who, 2, &[], None).unwrap();
+    store.claim(&id(2), &runner("runner-b")).unwrap();
+    admit(&store, &who, 3, &[], None).unwrap();
+    let c = runner("runner-c");
+
+    let claimed = store.claim(&id(3), &c).unwrap();
+
+    assert_eq!(
+        claimed.ended_runs,
+        std::collections::BTreeSet::from([id(1), id(2)])
+    );
+    // One queued since may still run, so claiming again doesn't name it.
+    admit(&store, &who, 4, &[], None).unwrap();
+    let again = store.claim(&id(3), &c).unwrap();
+    assert_eq!(
+        again.ended_runs,
+        std::collections::BTreeSet::from([id(1), id(2)])
+    );
+}
+
+#[test]
 fn a_taken_over_run_moves_only_what_it_confirmed_into_applied_state() {
     let (store, who) = shop();
     admit(&store, &who, 1, &[], None).unwrap();

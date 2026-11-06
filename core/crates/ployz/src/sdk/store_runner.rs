@@ -181,6 +181,12 @@ pub async fn run_deployment_expecting(
     // The Store lowers the Intent without knowing who will run it.
     claimed.intent.options.operator = operator;
     claimed.intent.options.block_unmountable = true;
+    // Each labels its copies with its Deployment's id, as this run does.
+    claimed.intent.options.ended_runs = claimed
+        .ended_runs
+        .iter()
+        .filter_map(|ended| ended.as_str().parse().ok())
+        .collect();
     let (targets, built) = match checkouts
         .map_err(Unbuilt::Failed)
         .and_then(|sources| targets(&claimed, sources))
@@ -1036,7 +1042,10 @@ impl Run {
         let running: Running<PreparedDeploy, Unprepared> = session.prepare_with(
             input,
             claimed.intent.registry_auth,
-            Some(claimed.intent.options.operator),
+            Some((
+                claimed.intent.options.operator,
+                claimed.intent.options.ended_runs,
+            )),
         )?;
         self.renewing(running.finished(), || running.abort()).await
     }

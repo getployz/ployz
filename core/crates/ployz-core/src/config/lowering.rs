@@ -512,6 +512,7 @@ pub fn lower_deployment(input: LowerDeploymentInput) -> Result<DeployIntent, Con
             operator: Operator::default(),
             block_unmountable: false,
             prune: input.prune,
+            ended_runs: std::collections::BTreeSet::new(),
         },
     )
     .with_dependencies(dependencies)
