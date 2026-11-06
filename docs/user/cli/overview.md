@@ -245,7 +245,10 @@ Through Ployz Cloud, commands that talk to your servers directly need an owner o
 
 `exec` and `service port-forward` also need an approved device. Run `ployz device request` and
 have an owner or admin approve the code. See
-[Approve a device](../servers/manage-servers.md#approve-a-device).
+[Approve a device](../servers/manage-servers.md#approve-a-device). With
+[device enforcement](../servers/manage-servers.md#require-a-devices-signature-for-restarts) on,
+`service restart` signs each restart with your device key, and a server refuses a restart no
+approved device signed.
 
 `logs`, `ps` and `metrics` work for anyone who can read logs and metrics, including members and
 `read` and `deploy` tokens. Without server access they read through Ployz Cloud instead: `logs`

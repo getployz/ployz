@@ -243,6 +243,30 @@ ployz device rm mmg42klgyq
 `device ls` shows each device and the servers missing it. `device rm` takes it off every server
 that answers.
 
+### Require a device's signature for restarts
+
+By default a server restarts a service for anyone Ployz Cloud lets through. With device
+enforcement on, it restarts only on an approved device's say-so: `ployz service restart` signs
+the restart with your device key, and each server checks that signature against the devices it
+approved before it stops or starts anything. Ployz Cloud carries the signed approval but can't
+make one. A server refuses an approval that is forged, names another service or server, is older
+than 15 minutes, or was already used, including after the server restarts.
+
+```sh
+ployz device enforce
+ployz device enforce --off
+```
+
+`enforce` needs an approved device. It sets every server that answers and lists each server's
+state. A server that's down keeps its old setting. Run `enforce` again once it's back. A server
+from before this setting is listed as missing and restarts as before.
+
+With enforcement on, `service restart` from a device that isn't approved is refused with
+`ployz.restart.device-approval.v1 needs a Device-signed restart approval`. So are `service stop`,
+`service start` and `deploy` through Ployz Cloud, since they stop the same containers and don't
+carry an approval yet. Turn enforcement off to run them. Over `--connect ssh://` everything works
+as before.
+
 ## Change what a server does
 
 Every server runs builds, runs services and takes web traffic. To turn one off, see
