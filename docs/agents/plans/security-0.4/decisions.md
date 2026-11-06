@@ -68,7 +68,9 @@ A proposal describes one complete workflow and its effects. Approval binds its i
 
 #### More than one Cluster per Organization
 
-Organizations will soon run several Clusters. The Sealing public key that `ployz_core::authority` calls "Cluster identity" is stored once per Organization in Cloud (`dashboard/src/modules/machines/tables.ts:543`), so two Clusters may share it. Every approval must therefore name something unique to its Cluster. Machine IDs are minted by each Machine and are unique, so binding the Machines that may act is enough. The restart approval in #3926 binds target Machine IDs, and a test proves another Machine refuses it. Join approvals bind the admitting Machine IDs. A draft proposal names its Cluster per step, so one bundle may span Clusters and each Machine checks only its own steps. Device approval today adds a Device to every Server in the Organization. Whether a Device trusted in one Cluster should be trusted in all of them is an open product decision.
+Not planned yet. The direction: an Organization later runs several Clusters, with a default Cluster and Environments assigned to one, such as production on a production Cluster. Approvals are per Cluster, and nothing crosses Clusters. This work must not block migrating there. It need not build it.
+
+The Sealing public key that `ployz_core::authority` calls "Cluster identity" is stored once per Organization in Cloud (`dashboard/src/modules/machines/tables.ts:543`), so two future Clusters may share it. Every approval therefore also names something unique to its Cluster. Machine IDs are minted by each Machine and are unique, so binding the Machines that may act is enough. The restart approval in #3926 binds target Machine IDs, and a test proves another Machine refuses it. Join approvals bind the admitting Machine IDs. A draft proposal belongs to one Cluster. No current hard blocker is known. Whether one Device approval covers every Cluster or each Cluster approves its own is left to the multi-Cluster work.
 
 #### Draft proposals (thread B)
 
