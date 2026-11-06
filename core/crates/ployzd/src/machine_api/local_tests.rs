@@ -3210,6 +3210,43 @@ mod ensure_container {
         }
 
         #[tokio::test]
+        async fn a_restart_approval_cannot_route_out_then_remove_a_serving_container() {
+            let fixture = enforced("ployzd-enforce-signed-out-gone").await;
+            let service = &fixture.service;
+            let id = present(&ensure(service, run_new("k1", spec("example.test/api:1"))).await)
+                .container_id;
+            fixture
+                .runtime
+                .rotation_turn(&id)
+                .await
+                .unwrap()
+                .write(&ployz_core::CopyRotation::In)
+                .await
+                .unwrap();
+            let signed = fixture.signed(&fixture.approval(&id));
+            for want in [
+                json!({"state":"out", "container":{"id":id}, "allow_empty":true, "expect":null}),
+                json!({"state":"gone", "container":{"id":id}, "drain":0}),
+            ] {
+                refused(
+                    operator_ensure(service, want, Some(&signed)).await,
+                    "names a workflow",
+                );
+            }
+            let observed = fixture
+                .runtime
+                .inspect_managed(&id, &service.local.record().id())
+                .await
+                .unwrap();
+            assert_eq!(observed.rotation(), &ployz_core::CopyRotation::In);
+            assert!(matches!(
+                observed.runtime,
+                ContainerRuntimeObservation::Running { .. }
+            ));
+            std::fs::remove_dir_all(fixture.data_dir).unwrap();
+        }
+
+        #[tokio::test]
         async fn an_operator_cannot_adopt_an_exited_container_with_a_new_creation() {
             let fixture = enforced("ployzd-enforce-adopt").await;
             let service = &fixture.service;
