@@ -1523,10 +1523,11 @@ impl Diagnostic {
                     }
                 }
                 Some(LogText::Withheld {
-                    why: Withheld::NoSecretContext,
+                    why: why @ Withheld::NoSecretContext,
                 }) => writeln!(
                     writer,
-                    "Logs from {service} on {server} withheld: no secret context."
+                    "Logs from {service} on {server} withheld: {}.",
+                    why.reason()
                 )?,
                 Some(LogText::Withheld {
                     why: Withheld::Unanswered,

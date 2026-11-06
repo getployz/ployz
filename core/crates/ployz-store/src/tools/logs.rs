@@ -85,6 +85,19 @@ pub enum Withheld {
     Unanswered,
 }
 
+impl Withheld {
+    /// Why, in words a person reads; JSON keeps the code.
+    #[must_use]
+    pub const fn reason(self) -> &'static str {
+        match self {
+            Self::NoSecretContext => {
+                "Ployz couldn't read the Container's variables, so it can't hide their secret values"
+            }
+            Self::Unanswered => "the Server didn't answer in time",
+        }
+    }
+}
+
 impl LogExcerpt {
     /// Scrub raw log `frames`, chunks of one stream in order, into text that can be shown.
     ///

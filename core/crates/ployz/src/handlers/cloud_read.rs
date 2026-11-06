@@ -171,9 +171,9 @@ pub(super) fn logs(credential: &Credential, asked: LogsAsked<'_>) -> Result<(), 
                     }
                     LogText::Withheld { why } => {
                         ui::note(format_args!(
-                            "{service}@{}: logs withheld ({})",
+                            "{service}@{}: logs withheld: {}.",
                             log.server,
-                            word(why)
+                            why.reason()
                         ));
                     }
                 }

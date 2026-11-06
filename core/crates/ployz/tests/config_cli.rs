@@ -455,8 +455,8 @@ fn runtime_refusal(organization: &str) -> Option<(u16, Value)> {
 }
 
 /// What this Cloud's Servers answer when Cloud reads them: `web-1` has one log line
-/// for runtime Service `web` and nothing for any other, `web-2` does not answer for
-/// `worker` or for containers, and no Server has a metric reading.
+/// for runtime Service `web`, withholds `cache`'s and has nothing for any other, `web-2`
+/// does not answer for `worker` or for containers, and no Server has a metric reading.
 fn servers_read(body: &[u8]) -> Value {
     let ask: Value = serde_json::from_slice(body).unwrap();
     let seen = json!({ "read_at": 0, "from": "server", "unanswered": [] });
@@ -465,6 +465,11 @@ fn servers_read(body: &[u8]) -> Value {
             "servers": [],
             "seen": { "read_at": 0, "from": "server", "unanswered": ["web-2"] },
             "notes": ["web-2 did not answer: timed out"],
+        }),
+        Some("logs") if ask["ask"]["service"] == "cache" => json!({
+            "servers": [{ "server": "web-1", "text": { "status": "withheld", "why": "no_secret_context" } }],
+            "seen": seen,
+            "notes": [],
         }),
         Some("logs") => {
             let servers = if ask["ask"]["service"] == "web" {
@@ -4775,6 +4780,22 @@ fn reading_through_cloud_refuses_a_name_nothing_answered_for() {
                 .to_owned()
         )
     );
+    // Withheld lines say why in words; the JSON keeps the code.
+    let home = tempfile::tempdir().unwrap();
+    let output = linus
+        .command(home.path())
+        .args(["logs", "cache"])
+        .output()
+        .unwrap();
+    let stderr = String::from_utf8(output.stderr).unwrap();
+    assert!(
+        stderr.contains(
+            "cache@web-1: logs withheld: Ployz couldn't read the Container's variables, so it \
+             can't hide their secret values."
+        ),
+        "{stderr}"
+    );
+    assert!(!stderr.contains("no_secret_context"), "{stderr}");
 }
 
 #[test]
