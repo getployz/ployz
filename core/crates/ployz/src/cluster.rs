@@ -160,6 +160,7 @@ impl Client {
     }
 
     async fn full_client(&self, target: &MachineTarget) -> Result<Option<Self>, ConnectError> {
+        self.ended()?;
         if self.full_connections.is_empty()
             || self.entry.is_some_and(|id| id.as_str() == target.as_str())
         {
@@ -174,15 +175,17 @@ impl Client {
                 "Full access needs a direct connection to the target Server".into(),
             ));
         };
-        Box::pin(crate::connect::connect_one(
+        let mut client = Box::pin(crate::connect::connect_one(
             connection,
             &self.source,
             &self.connector,
             false,
             self.cluster.as_ref().map(|cluster| &cluster.expect),
         ))
-        .await
-        .map(Some)
+        .await?;
+        client.refused = self.refused.clone();
+        self.ended()?;
+        Ok(Some(client))
     }
 
     #[must_use]

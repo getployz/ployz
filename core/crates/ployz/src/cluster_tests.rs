@@ -983,6 +983,22 @@ async fn a_call_whose_redial_finds_another_cluster_ends_every_clone() {
     );
     let proxied = client.dial_proxy("tcp", "127.0.0.1:1").await.map(drop);
     assert!(in_another_cluster(&proxied), "{proxied:?}");
+    let target = machine_id('b');
+    let full = client
+        .clone()
+        .with_full_connections(vec![
+            Connection::unix("/scripted/full.sock")
+                .unwrap()
+                .with_machine_id(target),
+        ])
+        .invoke_answered::<op::SetDeviceEnforcement>(
+            ployz_core::SetDeviceEnforcementRequest { enforced: false },
+            &MachineTarget::from(&target),
+            None,
+        )
+        .await
+        .map(drop);
+    assert!(in_another_cluster(&full), "{full:?}");
     assert_eq!(connector.calls(), ended);
 }
 

@@ -193,10 +193,11 @@ impl Service<http::Request<Body>> for MachineApi {
             };
             if !local && request.uri().path() == op::SetManagementClient::PATH {
                 return Box::pin(async {
-                    Ok(tonic::Status::permission_denied(
-                        "Management slots require a local or authenticated management connection",
-                    )
-                    .into_http())
+                    Ok(ployz_core::rpc::hinted_status(
+                        tonic::Code::PermissionDenied,
+                        &NeedsManagementConnection,
+                        serde_json::json!({ "capability": ployz_core::SET_MANAGEMENT_CLIENT_CAPABILITY }),
+                    ).into_http())
                 });
             }
             if scope == ManagementScope::Operator {
@@ -303,6 +304,10 @@ const FULL_ACCESS_NEXT: &str =
 struct NeedsFullAccess {
     capability: &'static str,
 }
+
+#[derive(Debug, thiserror::Error)]
+#[error("Management slots require a local or authenticated management connection")]
+struct NeedsManagementConnection;
 
 fn refuse_scope(path: &str, scope: ManagementScope) -> Option<http::Response<Body>> {
     if ployz_core::scope_of(path).is_none_or(|needed| scope >= needed) {

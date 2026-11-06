@@ -788,9 +788,9 @@ export const enrollMachine = Effect.fn("MachineEnrollment.enrollMachine")(
             code: Schema.Literal("forbidden"),
             details: Schema.Struct({ capability: Schema.Literal("ployz.machine.join.device-approval.v1") }),
           }))(error.cause);
-          return needsApproval
-            ? Effect.fail(new Conflict({ message: "ployz.machine.join.device-approval.v1 requires approval from an existing Device. Approve the join, then rerun the same join command." }))
-            : Effect.fail(error);
+          return Effect.fail(needsApproval
+            ? new Conflict({ message: "ployz.machine.join.device-approval.v1 requires approval from an existing Device. Approve the join, then rerun the same join command.", userFacing: true })
+            : error);
         }));
       return { kind: "join" as const, pairing, storage: request.storage, registration };
     }));

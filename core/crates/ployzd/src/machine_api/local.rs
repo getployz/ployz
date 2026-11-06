@@ -1054,7 +1054,6 @@ fn local_failure(error: LocalMachineError) -> Result<RpcError, Status> {
         LocalMachineError::Departing { server, source } => {
             Ok(local_failure(*source)?.overlapping_leave(&server))
         }
-        LocalMachineError::Store(error) => Ok(store_error(error)),
         LocalMachineError::ManagementRevoked => Err(ployz_core::rpc::caused_status(
             tonic::Code::Unauthenticated,
             &error,
@@ -1070,13 +1069,16 @@ fn local_failure(error: LocalMachineError) -> Result<RpcError, Status> {
                 "next": "ployz service restart from an approved device",
             }),
         )),
-        LocalMachineError::JoinRefused(_) | LocalMachineError::JoinConsumed(_) => {
+        LocalMachineError::JoinRefused(_)
+        | LocalMachineError::JoinConsumed(_)
+        | LocalMachineError::Store(StoreError::JoinRefused(_)) => {
             Err(ployz_core::rpc::hinted_status(
                 tonic::Code::PermissionDenied,
                 &error,
                 serde_json::json!({ "capability": ployz_core::JOIN_APPROVAL_CAPABILITY, "next": "ployz device approve --join CODE from an approved device" }),
             ))
         }
+        LocalMachineError::Store(error) => Ok(store_error(error)),
         LocalMachineError::JoinRecord(_) => Err(internal_response(error)),
         LocalMachineError::ApprovalRecord(_) => Err(internal_response(error)),
         LocalMachineError::NotParticipating => Ok(unavailable("Machine is not participating")),
