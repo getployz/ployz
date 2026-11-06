@@ -14,6 +14,7 @@ import {
 } from "better-auth/plugins";
 import { tanstackStartCookies } from "better-auth/tanstack-start";
 import { Context, Data, Effect, Layer, Option, Redacted, Schema } from "effect";
+import { createHmac } from "node:crypto";
 import { sessionAdditionalFields, userAdditionalFields } from "#/auth/session-fields";
 import { getBetterAuthUrlConfig } from "#/auth/trusted-origins";
 import {
@@ -232,6 +233,7 @@ const SIGN_OUT_PATHS: ReadonlySet<string> = new Set(["/sign-out", "/revoke-sessi
 const signsOut = (ending: { readonly expiresAt: Date }, context: { readonly path?: string } | null | undefined) =>
   ending.expiresAt > new Date() || SIGN_OUT_PATHS.has(context?.path ?? "");
 const decodeDeviceToken = Schema.decodeUnknownOption(Schema.Struct({ device_code: Schema.String }));
+const decodeDeviceGrant = Schema.decodeUnknownOption(Schema.Struct({ access_token: Schema.String }), { onExcessProperty: "preserve" });
 const decodeDeviceApproval = Schema.decodeUnknownOption(
   Schema.Struct({ userCode: Schema.String, organizationId: Schema.String }),
 );
@@ -271,6 +273,28 @@ const deviceOrganizationBinding = (bind: BindDeviceOrganization) => ({
   },
 }) satisfies BetterAuthPlugin;
 
+/**
+ * A session token with its HMAC under the auth secret, as the session cookie holds it. `bearer` takes only this form,
+ * so a copy of the session table signs no one in without the secret.
+ */
+export const signedSessionToken = (token: string, secret: string) =>
+  `${token}.${createHmac("sha256", secret).update(token).digest("base64")}`;
+
+/** better-auth grants a device the bare session token; `ployz login` stores the signed form `bearer` requires. */
+const deviceGrantSigned = {
+  id: "device-grant-signed",
+  hooks: {
+    after: [{
+      matcher: (context) => context.path === DEVICE_TOKEN_PATH,
+      handler: createAuthMiddleware(async (context) => {
+        const grant = decodeDeviceGrant(context.context.returned);
+        if (Option.isNone(grant)) return;
+        return context.json({ ...grant.value, access_token: signedSessionToken(grant.value.access_token, context.context.secret) });
+      }),
+    }],
+  },
+} satisfies BetterAuthPlugin;
+
 // better-auth >= 1.6.11 binds a code to the user whose `GET /device` claims it,
 // so another signed-in user can neither approve nor deny it.
 const cliSignInPlugins = (bind: BindDeviceOrganization) => [
@@ -279,8 +303,9 @@ const cliSignInPlugins = (bind: BindDeviceOrganization) => [
     validateClient: (clientId) => clientId === CLI_CLIENT_ID,
   }),
   deviceOrganizationBinding(bind),
+  deviceGrantSigned,
   bearerSetsNoCookie,
-  bearer(),
+  bearer({ requireSignature: true }),
 ];
 
 function hostedPolarPlugin(

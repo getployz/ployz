@@ -2,13 +2,13 @@ import { testConfigEnvironment } from "#/test/config-environment";
 import { assert, it } from "@effect/vitest";
 import { Cause, ConfigProvider, Effect, Fiber, Layer, Schema } from "effect";
 import { Inngest } from "inngest";
-import { Auth, AuthLive, CLI_CLIENT_ID, Unauthorized } from "#/server/auth.server";
+import { Auth, AuthLive, CLI_CLIENT_ID, signedSessionToken, Unauthorized } from "#/server/auth.server";
 import { AppConfig } from "#/server/config.server";
 import { Database, DatabaseLive } from "#/server/database.server";
 import { account as accountTable, deviceCode, member, session as sessionTable, user as userTable, verification } from "#/modules/identity/tables";
 import { organization as organizationTable } from "#/modules/organization/tables";
 import { hashClaimSecret } from "#/modules/identity/claim-required.server";
-import { eq, like, sql } from "drizzle-orm";
+import { desc, eq, like, sql } from "drizzle-orm";
 import { expect, vi } from "vitest";
 import { Polar } from "#/modules/billing/polar-provider.server";
 import { InngestClient } from "#/modules/inngest/client";
@@ -233,6 +233,13 @@ it.live(
         assert.strictEqual(granted.status, 200);
         const token = granted.json?.access_token ?? assert.fail("no access token");
 
+        const [copied] = yield* drizzle.select({ token: sessionTable.token }).from(sessionTable)
+          .orderBy(desc(sessionTable.createdAt)).limit(1);
+        const bare = copied?.token ?? assert.fail("no device session");
+        assert.strictEqual(token, signedSessionToken(bare, testConfigEnvironment().BETTER_AUTH_SECRET));
+        assert.isNull((yield* call("/get-session", { bearer: bare })).json);
+        assert.isNull(yield* (yield* Auth).getSession(new Headers({ authorization: `Bearer ${bare}` }), { bearer: true }));
+
         const session = yield* call("/get-session", { bearer: token });
         assert.strictEqual(session.json?.user?.email, "owner@example.test");
         assert.isString(session.json?.session?.activeOrganizationId);
@@ -251,7 +258,7 @@ it.live(
         const moved = yield* call("/organization/set-active", { bearer: token, body: { organizationSlug: slug } });
         assert.strictEqual(moved.status, 200);
         assert.deepStrictEqual([moved.cookie, moved.authToken], [undefined, null]);
-        yield* drizzle.update(sessionTable).set({ expiresAt: new Date(Date.now() + 60_000) }).where(eq(sessionTable.token, token));
+        yield* drizzle.update(sessionTable).set({ expiresAt: new Date(Date.now() + 60_000) }).where(eq(sessionTable.token, bare));
         const refreshed = yield* call("/get-session", { bearer: token });
         assert.strictEqual(refreshed.json?.user?.email, "owner@example.test");
         assert.deepStrictEqual([refreshed.cookie, refreshed.authToken], [undefined, null]);
