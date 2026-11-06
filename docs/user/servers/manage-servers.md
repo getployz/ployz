@@ -243,7 +243,7 @@ ployz device rm mmg42klgyq
 `device ls` shows each device and the servers missing it. `device rm` takes it off every server
 that answers.
 
-### Require a device's signature for restarts
+### Require a device's signature for restarts and joins
 
 By default a server restarts a service for anyone Ployz Cloud lets through. With device
 enforcement on, it restarts or stops only on an approved device's say-so. `ployz service restart`
@@ -265,6 +265,15 @@ ployz device enforce --off
 state. A server that's down keeps its old setting. Run `enforce` again once it's back. A server
 from before this setting is reported with its rows missing, the same as one that's down, and
 restarts as before. Upgrade it first.
+
+Enforcement also requires an approved Device to authorize a new server's identity, keys,
+allocation, and initial Devices. See [Approve a join](add-a-server.md#approve-a-join-when-device-enforcement-is-on).
+A joining server inherits enforcement. Approvals name one existing server that may admit the
+join, so another Cluster cannot use the approval even if it shares a Sealing public key.
+
+Mesh connections have Operator access. Full actions such as approving Devices, changing
+enforcement, and `exec` use a direct authenticated connection to each target server. A context
+used for those actions must contain a direct connection to each target.
 
 With enforcement on, `service restart` from a device that isn't approved is refused with
 `ployz.restart.device-approval.v2 needs a Device-signed restart approval`. `service stop` needs

@@ -35,7 +35,13 @@ pub(crate) fn request_command(command: Command) -> Command {
 pub(crate) fn approve_command(command: Command) -> Command {
     base(command, "Approve a device on every server")
         .after_help(concat!("Examples:\n", "  ployz device approve mmg42klgyq"))
-        .arg(positional("code", true).help("The code ployz device request printed"))
+        .arg(positional("code", true).help("The code the requesting device or server printed"))
+        .arg(
+            Arg::new("join")
+                .long("join")
+                .action(ArgAction::SetTrue)
+                .help("Approve a waiting Server join with this device's key"),
+        )
 }
 
 pub(crate) fn list_command(command: Command) -> Command {
@@ -124,6 +130,9 @@ async fn request_with(credential: &Credential, key: DeviceKey) -> Result<Request
 pub(crate) fn approve(root: &ArgMatches) -> Result<(), Error> {
     let leaf = leaf_matches(root);
     let code = typed_code(leaf)?;
+    if leaf.get_flag("join") {
+        return runtime()?.block_on(approve_waiting_join(leaf, code));
+    }
     let store = CredentialStore::beside(&config_path(leaf)?);
     runtime()?.block_on(async {
         let credential = cloud_account::from_env(&store).await?;
@@ -134,6 +143,84 @@ pub(crate) fn approve(root: &ArgMatches) -> Result<(), Error> {
         .await?;
         settled.finish()
     })
+}
+
+async fn approve_waiting_join(leaf: &ArgMatches, code: DeviceCode) -> Result<(), Error> {
+    let mut client = server::connect(leaf, context(leaf)).await?;
+    let reach = Reach::of(&mut client).await?;
+    let secret = key::load(&key::path(&config_path(leaf)?))?.ok_or_else(|| {
+        Error::conflict("Approving a Server join needs this computer's approved Device key.")
+    })?;
+    let signer = ployz_core::authority::Signer::from_seed(&secret);
+    let mut matching = Vec::new();
+    for machine in &reach.asked {
+        let target = MachineTarget::from(machine);
+        let pending = client
+            .invoke::<op::PendingJoins>(ployz_core::PendingJoinsRequest {}, &target, None)
+            .await?;
+        matching.extend(
+            pending
+                .joins
+                .into_iter()
+                .filter(|body| body.code() == code)
+                .map(|body| (*machine, body)),
+        );
+    }
+    let [(admitting, body)] = matching.as_mut_slice() else {
+        return Err(if matching.is_empty() {
+            Error::not_found(format!(
+                "No Server join is waiting for {code}. Run the Server's join command again."
+            ))
+        } else {
+            Error::conflict(
+                "More than one admission is waiting for that join. Nothing was approved. Select one admitting Server with --connect.",
+            )
+        });
+    };
+    body.signer = signer.public().into();
+    let approval = ployz_core::authority::Signed::sign(body, &signer).map_err(Error::command)?;
+    client
+        .invoke::<op::ApproveJoin>(
+            ployz_core::ApproveJoinRequest { approval },
+            &MachineTarget::from(&*admitting),
+            None,
+        )
+        .await?;
+    ui::finish(&json!({ "approved_join": body.machine.id }), || {
+        ui::stream("Approved the Server join. Rerun its join command.")
+    })
+}
+
+pub(super) async fn sign_waiting_join(
+    client: &mut Client,
+    config: &Path,
+    expected: &ployz_core::RegisterRequest,
+) -> Result<bool, Error> {
+    let Some(secret) = key::load(&key::path(config))? else {
+        return Ok(false);
+    };
+    let signer = ployz_core::authority::Signer::from_seed(&secret);
+    let pending = client
+        .call::<op::PendingJoins>(ployz_core::PendingJoinsRequest {}, None)
+        .await?;
+    let Some(mut body) = pending
+        .joins
+        .into_iter()
+        .find(|body| body.machine.id == expected.machine_id)
+    else {
+        return Ok(false);
+    };
+    if !body.machine.matches_request(expected) {
+        return Err(Error::conflict(
+            "The waiting join does not match the Server identity, keys, allocation, or policy requested. Nothing was approved.",
+        ));
+    }
+    body.signer = signer.public().into();
+    let approval = ployz_core::authority::Signed::sign(&body, &signer).map_err(Error::command)?;
+    client
+        .call::<op::ApproveJoin>(ployz_core::ApproveJoinRequest { approval }, None)
+        .await?;
+    Ok(true)
 }
 
 pub(crate) fn remove(root: &ArgMatches) -> Result<(), Error> {

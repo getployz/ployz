@@ -353,3 +353,66 @@ fn each_device_command_parses_and_reaches_its_connection() {
         );
     }
 }
+
+#[tokio::test]
+async fn automatic_join_approval_refuses_clouds_substituted_recipient() {
+    use ployz_core::{
+        PendingJoins, RegisterRequest, SealingPublicKey,
+        authority::{JoinApproval, Signer, Timestamp, join::JoinAllocation},
+    };
+    let directory = tempfile::tempdir().unwrap();
+    let config = directory.path().join("config.yaml");
+    super::key::store(&super::key::path(&config), &[1; 32]).unwrap();
+    let expected_machine = machine('a', "joiner");
+    let expected = RegisterRequest {
+        join_approval: None,
+        machine_id: expected_machine.id,
+        assigned_subnet: Some(expected_machine.subnet),
+        initial_policy: Default::default(),
+        name: expected_machine.name.clone(),
+        storage: ployz_core::StorageChoice::None,
+        public_key: expected_machine.public_key,
+        public_ip: expected_machine.public_ip,
+        advertised_endpoints: expected_machine.advertised_endpoints.clone(),
+        runtime: Default::default(),
+    };
+    let mut allocation = JoinAllocation::from(&expected_machine);
+    allocation.public_key = ployz_core::WireGuardPublicKey([9; 32]);
+    let signer = Signer::from_seed(&[1; 32]);
+    let issued_at = Timestamp::now();
+    let body = JoinApproval {
+        cluster: SealingPublicKey::from_bytes([2; 32]),
+        machine: allocation,
+        network: "10.210.0.0/16".parse().unwrap(),
+        sealing_recipient: ployz_core::WireGuardPublicKey([9; 32]),
+        devices: vec![signer.public().into()],
+        admitting_machines: vec![id('b')],
+        issued_at,
+        expires_at: issued_at.plus(900_000),
+        signer: signer.public().into(),
+    };
+    let (mut client, server) =
+        crate::connect::test_support::rpc_client(move |request: Request<OpaquePayload>| {
+            let body = body.clone();
+            async move {
+                assert!(
+                    matches!(
+                        request.into_inner().decode_request().unwrap().body,
+                        RpcRequestBody::PendingJoins(_)
+                    ),
+                    "a substituted key must never reach ApproveJoin"
+                );
+                Ok(Response::new(
+                    RpcResponse::from(PendingJoins { joins: vec![body] })
+                        .encode()
+                        .unwrap(),
+                ))
+            }
+        })
+        .await;
+    let error = sign_waiting_join(&mut client, &config, &expected)
+        .await
+        .unwrap_err();
+    assert!(error.to_string().contains("does not match"));
+    server.abort();
+}

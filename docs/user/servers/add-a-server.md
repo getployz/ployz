@@ -58,6 +58,33 @@ minutes.
 Add more servers the same way, even at different providers. Nothing moves onto a new server until
 you deploy; see [Scaling](../services/scaling.md#add-a-server).
 
+### Approve a join when device enforcement is on
+
+An existing server must approve the new server before it publishes the assignment or shares
+the Cluster's Sealing Key. When you add a server from an approved computer, the CLI signs that
+approval with your Device key.
+
+A copy-paste join on a new server has no approved Device key. If the join asks for approval,
+copy the code from that server's refusal. From an approved computer, run the command it names:
+
+```sh
+ployz device approve --join CODE
+```
+
+Compare the code with the one printed on the server. Then rerun the same join command on the
+server. Keep its token and options. The approval expires after 15 minutes and admits that
+server once. If admission succeeds but its response is lost, do not request another wrap of
+the Sealing Key. Inspect the servers and finish the existing enrollment.
+
+The joining server trusts exactly the Devices in the signed approval and enables enforcement.
+Ployz Cloud cannot substitute another Device list in that approved join. Without an approval,
+the join works as before and trusts the Devices Cloud sends until a Device re-approves it.
+An enforcing Cluster refuses that unsigned Machine's admission and Sealing Key release.
+
+Pinning the joining server's initial authority through verified SSH or a short code matched in
+the browser is follow-up work. This release does not change the bootstrap default for customers
+who use only the dashboard.
+
 ## Add a standalone server
 
 To start a Cluster outside Ployz Cloud, run this on the Linux server:
