@@ -153,7 +153,12 @@ async fn approve_waiting_join(leaf: &ArgMatches, code: DeviceCode) -> Result<(),
     })?;
     let signer = ployz_core::authority::Signer::from_seed(&secret);
     let mut matching = Vec::new();
-    for machine in &reach.asked {
+    let asked = if leaf.get_one::<String>("connect").is_some() {
+        reach.entry.into_iter().collect()
+    } else {
+        reach.asked
+    };
+    for machine in &asked {
         let target = MachineTarget::from(machine);
         let pending = client
             .invoke::<op::PendingJoins>(ployz_core::PendingJoinsRequest {}, &target, None)
