@@ -3218,12 +3218,12 @@ mod ensure_container {
             ensure(service, json!({"want": stopped(&id)})).await;
             let seen = requests(&fixture.fake).len();
             refused(
-                operator_ensure(service, new["want"].clone(), None).await,
+                operator_ensure(service, new.get("want").unwrap().clone(), None).await,
                 "names a workflow",
             );
             let signed = fixture.signed(&fixture.approval(&id));
             refused(
-                operator_ensure(service, new["want"].clone(), Some(&signed)).await,
+                operator_ensure(service, new.get("want").unwrap().clone(), Some(&signed)).await,
                 "names a workflow",
             );
             let observed = fixture
