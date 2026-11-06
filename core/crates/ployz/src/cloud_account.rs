@@ -515,9 +515,11 @@ pub(crate) async fn new_token(
     Ok(reply.token)
 }
 
-/// The ID `target` names in `ployz token rm`: a listed token, device or revoked credential
-/// by its ID, else the one token named exactly `target`. Anything else stays as given, so
-/// Cloud still answers for an ID it no longer lists.
+/// The ID `target` names in `ployz token rm`. Cloud revokes only by ID, a UUID, and
+/// refuses every token caller, so a UUID or a token caller's target goes as given: an ID
+/// Cloud no longer lists, such as a fully revoked one, never resolves to a token named
+/// like it. Otherwise it is a listed credential's ID, else the one token named exactly
+/// `target`, else as given.
 ///
 /// # Errors
 ///
@@ -527,6 +529,9 @@ pub(crate) async fn credential_id(
     credential: &Credential,
     target: &str,
 ) -> Result<String, LoginError> {
+    if matches!(credential, Credential::Token { .. }) || uuid::Uuid::try_parse(target).is_ok() {
+        return Ok(target.to_owned());
+    }
     named_credential(&credentials(credential).await?, target)
 }
 
@@ -1763,8 +1768,6 @@ mod tests {
     #[tokio::test]
     async fn token_rm_finds_a_token_by_its_exact_name_and_refuses_a_shared_one() {
         const CI: &str = "00000000-0000-4000-8000-00000000000a";
-        const DEVICE: &str = "00000000-0000-4000-8000-00000000000d";
-        const REVOKING: &str = "00000000-0000-4000-8000-00000000000e";
         let entry = |id: &str, name: &str| {
             serde_json::json!({
                 "id": id, "name": name, "created_at": "2026-11-01", "expires_at": "2027-01-30",
@@ -1776,34 +1779,33 @@ mod tests {
                 entry(CI, "ci"),
                 entry("00000000-0000-4000-8000-00000000000b", "shared"),
                 entry("00000000-0000-4000-8000-00000000000c", "shared"),
-                entry("00000000-0000-4000-8000-00000000000f", CI),
+                entry("t9", "t8"),
+                entry("t8", "other"),
             ],
-            "devices": [{ "id": DEVICE, "created_at": "2026-11-01", "expires_at": "2027-01-30", "current": true }],
-            "revoking": [{ "id": REVOKING, "kind": "token", "unconfirmed": [] }],
+            "devices": [{ "id": "d1", "created_at": "2026-11-01", "expires_at": "2027-01-30", "current": true }],
+            "revoking": [{ "id": "r1", "kind": "token", "unconfirmed": [] }],
         });
         let cloud = fake_cloud(move |route, _| match route {
             "GET /api/cli/tokens" => (200, listed.clone()),
             _ => (404, serde_json::json!({ "code": "NOT_FOUND" })),
         });
-        let credential = token(&cloud);
+        let (_dir, store) = signed_in_store(&cloud);
+        let device = credential(&store, None, None).await.unwrap();
 
-        assert_eq!(credential_id(&credential, "ci").await.unwrap(), CI);
+        assert_eq!(credential_id(&device, "ci").await.unwrap(), CI);
         assert_eq!(
-            credential_id(&credential, CI).await.unwrap(),
-            CI,
+            credential_id(&device, "t8").await.unwrap(),
+            "t8",
             "an ID wins over a name"
         );
-        assert_eq!(credential_id(&credential, DEVICE).await.unwrap(), DEVICE);
+        assert_eq!(credential_id(&device, "d1").await.unwrap(), "d1");
+        assert_eq!(credential_id(&device, "r1").await.unwrap(), "r1");
         assert_eq!(
-            credential_id(&credential, REVOKING).await.unwrap(),
-            REVOKING
-        );
-        assert_eq!(
-            credential_id(&credential, "Ci").await.unwrap(),
+            credential_id(&device, "Ci").await.unwrap(),
             "Ci",
             "names match exactly"
         );
-        let error = credential_id(&credential, "shared").await.unwrap_err();
+        let error = credential_id(&device, "shared").await.unwrap_err();
         assert!(
             matches!(&error, LoginError::AmbiguousCredential { name, ids } if name == "shared" && ids.len() == 2),
             "{error}"
@@ -1813,6 +1815,29 @@ mod tests {
                 .to_string()
                 .contains("00000000-0000-4000-8000-00000000000b"),
             "{error}"
+        );
+        assert_eq!(
+            crate::failure::login_code(&error),
+            ployz_core::RpcErrorCode::Ambiguous
+        );
+    }
+
+    #[tokio::test]
+    async fn token_rm_sends_an_id_or_a_token_caller_s_target_without_listing() {
+        // A fully revoked ID that a live token is named like, as Cloud no longer lists it.
+        const GONE: &str = "00000000-0000-4000-8000-0000000000aa";
+        let cloud = fake_cloud(|route, _| match route {
+            "GET /api/cli/tokens" => (500, serde_json::json!({ "code": "INTERNAL" })),
+            _ => (404, serde_json::json!({ "code": "NOT_FOUND" })),
+        });
+        let (_dir, store) = signed_in_store(&cloud);
+        let device = credential(&store, None, None).await.unwrap();
+
+        assert_eq!(credential_id(&device, GONE).await.unwrap(), GONE);
+        assert_eq!(credential_id(&token(&cloud), "ci").await.unwrap(), "ci");
+        assert!(
+            credential_id(&device, "ci").await.is_err(),
+            "a name needs the list"
         );
     }
 

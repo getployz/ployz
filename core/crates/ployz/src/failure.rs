@@ -1074,7 +1074,7 @@ pub(crate) fn login_code(error: &LoginError) -> RpcErrorCode {
         LoginError::UnknownOrganization(_) | LoginError::UnknownCredential(_) => {
             RpcErrorCode::NotFound
         }
-        LoginError::AmbiguousCredential { .. } => RpcErrorCode::InvalidArgument,
+        LoginError::AmbiguousCredential { .. } => RpcErrorCode::Ambiguous,
     }
 }
 

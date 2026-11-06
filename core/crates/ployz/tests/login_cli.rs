@@ -121,7 +121,7 @@ fn fake_cloud(browser: Arc<Mutex<Browser>>, routes: Arc<Mutex<Vec<String>>>) -> 
                     200,
                     json!({
                         "removed": { "id": "t2", "kind": "token" },
-                        "servers": { "confirmed": ["1".repeat(32)], "unconfirmed": [] },
+                        "servers": { "confirmed": ["1".repeat(32)], "unconfirmed": ["2".repeat(32)] },
                     }),
                 ),
                 "GET /api/cli/organizations" => (
@@ -278,12 +278,15 @@ fn token_rm_revokes_a_token_by_the_name_token_ls_shows() {
     routes.lock().unwrap().clear();
 
     let removed = ployz(&config, &["--json", "token", "rm", "grace-ci"]);
-    assert!(removed.status.success(), "{removed:?}");
+    // A Server hasn't confirmed its Clear yet: the result is partial, and the rerun names
+    // the ID, which still finds the token once it leaves the list.
+    assert_eq!(removed.status.code(), Some(3), "{removed:?}");
     assert_eq!(
         json_of(&removed),
         json!({
             "removed": { "id": "t2", "kind": "token" },
-            "servers": { "confirmed": ["1".repeat(32)], "unconfirmed": [] },
+            "servers": { "confirmed": ["1".repeat(32)], "unconfirmed": ["2".repeat(32)] },
+            "next": "ployz token rm t2",
         })
     );
     assert_eq!(
