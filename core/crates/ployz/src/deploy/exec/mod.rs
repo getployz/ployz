@@ -1385,7 +1385,10 @@ async fn remove_stray<C: MachineOperations>(
         drain: Drain::NONE,
         anonymous_volumes: AnonymousVolumes::Remove,
     };
-    let error = match client.ensure_unsettled(machine_id, want, None).await {
+    let error = match client
+        .ensure_unsettled(machine_id, want, Some(RESTART_WAIT))
+        .await
+    {
         Ok(EnsuredContainer::Ensured { .. }) => return,
         Ok(EnsuredContainer::Refused { refusal, .. })
             if matches!(
