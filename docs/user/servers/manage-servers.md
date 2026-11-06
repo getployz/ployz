@@ -262,7 +262,8 @@ ployz device enforce --off
 ```
 
 `enforce` needs an approved device. It sets every server that answers and lists each server's
-state. A server that's down keeps its old setting. Run `enforce` again once it's back. A server
+state. A server that is down or has no direct connection appears as an omission and the
+command exits 3. It keeps its old setting. Run `enforce` again once it is reachable. A server
 from before this setting is reported with its rows missing, the same as one that's down, and
 restarts as before. Upgrade it first.
 
@@ -271,7 +272,7 @@ allocation, and initial Devices. See [Approve a join](add-a-server.md#approve-a-
 A joining server inherits enforcement. Approvals name one existing server that may admit the
 join, so another Cluster cannot use the approval even if it shares a Sealing public key.
 
-Mesh connections have Operator access. Full actions such as approving Devices, changing
+With enforcement on, mesh connections have Operator access. Full actions such as approving Devices, changing
 enforcement, and `exec` use a direct authenticated connection to each target server. A context
 used for those actions must contain a direct connection to each target. With an explicit
 `--connect`, `device approve`, `device rm`, and `device enforce` affect that server only.
