@@ -752,3 +752,38 @@ async fn an_operator_names_only_a_release_a_channel_resolves_to() {
         );
     }
 }
+
+#[tokio::test]
+async fn a_channel_that_fails_to_resolve_does_not_hide_the_other() {
+    let version = |rest: &str| {
+        MachineVersion::parse(format!("{}.{rest}", env!("CARGO_PKG_VERSION_MAJOR"))).unwrap()
+    };
+    let root = tempfile::tempdir().unwrap();
+    let line = root
+        .path()
+        .join(concat!("v", env!("CARGO_PKG_VERSION_MAJOR")));
+    fs::create_dir_all(&line).unwrap();
+    fs::write(line.join("beta"), format!("v{}\n", version("3.17-beta.2"))).unwrap();
+    let source = ReleaseSource::Local(root.path().to_owned());
+    let installed = version("3.15");
+    let admit = async |target: &str| {
+        ReleaseChoice::ChannelResolved
+            .admit(
+                &MachineRelease::Exact(version(target)),
+                &version(target),
+                &source,
+                Some(&installed),
+            )
+            .await
+    };
+
+    assert!(
+        admit("3.17-beta.2").await.is_ok(),
+        "beta's release was refused while stable could not resolve"
+    );
+    let refused = admit("3.14").await;
+    assert!(
+        matches!(&refused, Err(Error::OffChannel { .. })),
+        "an unresolvable channel did not refuse by capability: {refused:?}"
+    );
+}

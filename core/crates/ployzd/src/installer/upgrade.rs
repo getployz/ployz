@@ -168,10 +168,10 @@ impl ReleaseChoice {
             return Ok(());
         }
         for channel in [MachineRelease::Stable, MachineRelease::Beta] {
-            let resolved = super::release::resolve_release(&channel, source, installed)
+            if super::release::resolve_release(&channel, source, installed)
                 .await
-                .map_err(Error::Resolve)?;
-            if resolved == *target {
+                .is_ok_and(|resolved| resolved == *target)
+            {
                 return Ok(());
             }
         }
