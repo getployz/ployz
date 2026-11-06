@@ -74,6 +74,12 @@ That lasts until the web server is created again. To do that now, open the serve
 **Takes web traffic** off, then on again. While it's off, that server doesn't answer on ports 80
 and 443, so do one server at a time.
 
+A replica gets 60 seconds to start its response. If it hasn't by then, a `GET` goes to another
+replica and anything else gets `504 · NO_RESPONSE`, and a replica that hangs like this stops
+getting requests for a while. Server-sent events and websockets are fine as long as they answer
+straight away. For work that takes longer, like a big export, start it in the background and
+have the page check back for the result.
+
 ## This app isn't running
 
 You'll see `503 · NOT_RUNNING`. The service has no healthy replica, so there's nothing to send

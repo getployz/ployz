@@ -296,8 +296,12 @@ https:// {{\n\
 \theader_up X-Forwarded-Proto {{scheme}}\n\
 \t# A powered-off upstream's Machine never answers the dial; give up fast and retry another.\n\
 \t# A request sent on an idle kept-alive connection to it still waits about 14s for retransmits.\n\
+\t# An upstream that accepts but never answers would keep its share of traffic, since only an\n\
+\t# errored request counts toward max_fails. 60s matches nginx and AWS ALB, under Cloudflare's\n\
+\t# 100s; SSE and websockets send their headers at once, so streams outlive it.\n\
 \ttransport http {{\n\
 \t\tdial_timeout 500ms\n\
+\t\tresponse_header_timeout 60s\n\
 \t}}\n\
 }}\n"
     );
