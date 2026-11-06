@@ -91,9 +91,9 @@ impl Withheld {
     pub const fn reason(self) -> &'static str {
         match self {
             Self::NoSecretContext => {
-                "Ployz couldn't check its Containers' variables for secret values, so it can't hide them"
+                "Ployz couldn't check the Containers' variables for secret values, so it can't hide them"
             }
-            Self::Unanswered => "the Server didn't answer",
+            Self::Unanswered => "the logs couldn't be read in time",
         }
     }
 }

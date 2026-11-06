@@ -301,7 +301,9 @@ where
         match read {
             Ok(Some(tail)) => {
                 let super::AgentTail { text, withheld } = tail.into();
-                if !withheld.is_empty() {
+                // Withheld text already says why; the note names what is missing beside lines shown.
+                let all_withheld = matches!(text, ployz_store::tools::LogText::Withheld { .. });
+                if !withheld.is_empty() && !all_withheld {
                     notes.push(format!(
                         "Lines from {} on {} withheld: Ployz couldn't check their variables for secret values, so it can't hide them.",
                         withheld.join(", "),

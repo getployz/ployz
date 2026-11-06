@@ -469,8 +469,8 @@ fn servers_read(body: &[u8]) -> Value {
         Some("logs") if ask["ask"]["service"] == "cache" => json!({
             "servers": [{ "server": "web-1", "text": { "status": "withheld", "why": "no_secret_context" } }],
             "seen": seen,
-            // As Cloud sends it beside withheld text.
-            "notes": ["Lines from cache/abc123def456 on web-1 withheld: Ployz couldn't check their variables for secret values, so it can't hide them."],
+            // Cloud adds no note when the whole text is withheld: the text says why.
+            "notes": [],
         }),
         Some("logs") => {
             let servers = if ask["ask"]["service"] == "web" {
@@ -4797,9 +4797,8 @@ fn reading_through_cloud_refuses_a_name_nothing_answered_for() {
         (
             Some(0),
             String::new(),
-            "cache@web-1: logs withheld: Ployz couldn't check its Containers' variables for secret \
-             values, so it can't hide them.\nLines from cache/abc123def456 on web-1 withheld: \
-             Ployz couldn't check their variables for secret values, so it can't hide them.\n"
+            "cache@web-1: logs withheld: Ployz couldn't check the Containers' variables for secret \
+             values, so it can't hide them.\n"
                 .to_owned()
         )
     );
