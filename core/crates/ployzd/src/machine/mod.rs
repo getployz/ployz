@@ -197,6 +197,12 @@ pub struct LocalMachineRecord {
     /// Off until a Full caller turns it on, so an upgrade changes nothing.
     #[serde(default)]
     device_enforcement: bool,
+    #[serde(default)]
+    trusted_machines: Vec<ployz_core::authority::join::JoinAllocation>,
+    #[serde(default)]
+    membership_cluster: Option<ployz_core::SealingPublicKey>,
+    #[serde(default)]
+    enrollment: Option<ployz_core::EnrollRequest>,
 }
 
 /// Public keys held by one Management Client slot. No secret is persisted.
@@ -293,6 +299,40 @@ impl LocalMachineRecord {
             let key = DeviceKey::from_bytes(slot.accepted()?);
             (DeviceCode::named_by(label) == Some(key.code())).then_some(key)
         })
+    }
+
+    /// Whether this Machine accepts the row as a Cluster member using its own authority.
+    pub(crate) fn accepts_machine(&self, machine: &Machine) -> bool {
+        if !self.device_enforcement {
+            return true;
+        }
+        let matches = |allocation: &ployz_core::authority::join::JoinAllocation| {
+            allocation.id == machine.id
+                && allocation.public_key == machine.public_key
+                && allocation.subnet == machine.subnet
+        };
+        if self.machine().is_some_and(|own| {
+            own.id == machine.id
+                && own.public_key == machine.public_key
+                && own.subnet == machine.subnet
+        }) || self.trusted_machines.iter().any(matches)
+        {
+            return true;
+        }
+        let Some(approval) = &machine.join_approval else {
+            return false;
+        };
+        let Ok(signers) = approval.verified_signers(self.devices().map(Into::into)) else {
+            return false;
+        };
+        let Ok(body) = approval.open() else {
+            return false;
+        };
+
+        matches(&body.machine)
+            && body.sealing_recipient == machine.public_key
+            && signers.contains(&body.signer.into())
+            && self.membership_cluster == Some(body.cluster)
     }
 
     /// Whether `remote` is a key some Clear left in a tombstone.
@@ -522,6 +562,9 @@ impl LocalMachineRecord {
             push_target: None,
             device_slots_vetted: true,
             device_enforcement: false,
+            trusted_machines: Vec::new(),
+            membership_cluster: None,
+            enrollment: None,
         })
     }
 
@@ -637,6 +680,9 @@ impl LocalMachineRecord {
             push_target: self.push_target,
             device_slots_vetted: self.device_slots_vetted,
             device_enforcement: self.device_enforcement,
+            trusted_machines: self.trusted_machines,
+            membership_cluster: self.membership_cluster,
+            enrollment: self.enrollment,
         }
     }
 }

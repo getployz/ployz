@@ -88,10 +88,19 @@ impl LocalMachine {
         self.approvals.require_unused_join(machine)
     }
 
-    pub(crate) fn consume_join(&self, approval: &JoinApproval) -> Result<(), Error> {
-        self.approvals.consume_join(approval, Timestamp::now())?;
+    pub(crate) fn consume_join(
+        &self,
+        result: super::restart_approval::JoinResult,
+    ) -> Result<(), Error> {
+        let machine = result
+            .approval
+            .open()
+            .map_err(Error::JoinRefused)?
+            .machine
+            .id;
+        self.approvals.consume_join(result, Timestamp::now())?;
         let mut joins = self.read_joins()?;
-        joins.proposals.remove(&approval.machine.id);
+        joins.proposals.remove(&machine);
         self.save_joins(joins)
     }
 
@@ -123,6 +132,7 @@ impl LocalMachine {
         machine: &Machine,
         network: ipnet::Ipv4Net,
         approval: Option<Signed<JoinApproval>>,
+        peers: &[Machine],
     ) -> Result<Option<Signed<JoinApproval>>, Error> {
         if !self.record().device_enforcement() {
             return Ok(None);
@@ -136,9 +146,7 @@ impl LocalMachine {
                 .and_then(|proposal| proposal.approval.clone())
         });
         if let Some(approval) = approval {
-            let body =
-                self.verify_join(&approval, &join::JoinAllocation::from(machine), network)?;
-            self.consume_join(&body)?;
+            self.verify_join(&approval, &join::JoinAllocation::from(machine), network)?;
             return Ok(Some(approval));
         }
         let record = self.record();
@@ -147,6 +155,14 @@ impl LocalMachine {
             .map(|key| key.public_key())
             .ok_or(Error::JoinRefused(AuthorityRefusal::NoClusterIdentity))?;
         let issued_at = Timestamp::now();
+        joins
+            .proposals
+            .retain(|_, proposal| proposal.body.expires_at >= issued_at);
+        if !joins.proposals.contains_key(&machine.id) && joins.proposals.len() >= 128 {
+            return Err(Error::JoinRefused(AuthorityRefusal::Mismatch {
+                field: "pending join capacity",
+            }));
+        }
         joins.proposals.insert(
             machine.id,
             Proposal {
@@ -157,6 +173,7 @@ impl LocalMachine {
                     sealing_recipient: machine.public_key,
                     devices: record.devices().collect(),
                     admitting_machines: vec![record.id()],
+                    bootstrap: peers.iter().map(Into::into).collect(),
                     issued_at,
                     expires_at: issued_at
                         .plus(ployz_core::authority::validity::MAX_LIFETIME_MILLIS),

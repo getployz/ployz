@@ -58,6 +58,7 @@ pub(crate) struct Installation {
     device_enforcement: bool,
     wireguard_mtu: Option<u32>,
     pinned: PinnedAddresses,
+    enrollment: EnrollRequest,
 }
 
 impl Installation {
@@ -232,6 +233,9 @@ impl LocalMachineStore {
                     push_target: None,
                     device_slots_vetted: true,
                     device_enforcement: false,
+                    trusted_machines: Vec::new(),
+                    membership_cluster: None,
+                    enrollment: None,
                 };
                 save(&data_dir, &record)?;
                 record
@@ -345,6 +349,26 @@ impl LocalMachineStore {
         request: EnrollRequest,
         recovery: Option<RecoverySeed>,
     ) -> Result<(EnrollPlan, Installation), StoreError> {
+        let enrollment = request.clone();
+        if self.record.enrollment.as_ref() == Some(&request) {
+            return Ok((
+                EnrollPlan::Replay(
+                    self.record
+                        .machine()
+                        .expect("persisted enrollment owns a Machine")
+                        .clone(),
+                ),
+                Installation {
+                    body: self.record.body.clone(),
+                    sealing_key: None,
+                    devices: Vec::new(),
+                    device_enforcement: self.record.device_enforcement,
+                    wireguard_mtu: request.wireguard_mtu,
+                    pinned: request.pinned,
+                    enrollment: request,
+                },
+            ));
+        }
         let EnrollRequest {
             role,
             wireguard_mtu,
@@ -393,6 +417,7 @@ impl LocalMachineStore {
                 device_enforcement,
                 wireguard_mtu,
                 pinned,
+                enrollment,
             },
         ))
     }
@@ -422,6 +447,7 @@ impl LocalMachineStore {
             public_ip,
             advertised_endpoints,
             runtime: local_runtime(&self.data_dir),
+            join_approval: None,
             build_concurrency: None,
         };
         let sealing_key = cluster.recovery.is_none().then(SealingKey::generate);
@@ -440,7 +466,7 @@ impl LocalMachineStore {
     ) -> Result<(LocalMachineBody, Option<SealingKey>, Vec<DeviceKey>, bool), StoreError> {
         let Registered {
             assigned_machine: mut machine,
-            visible_peers,
+            mut visible_peers,
             target_versions,
             sealing_key,
             devices,
@@ -489,6 +515,29 @@ impl LocalMachineStore {
                     },
                 ));
             }
+            visible_peers = body
+                .bootstrap
+                .iter()
+                .map(|allocation| Machine {
+                    join_approval: None,
+                    id: allocation.id,
+                    name: allocation.name.clone(),
+                    subnet: allocation.subnet,
+                    public_key: allocation.public_key,
+                    public_ip: allocation.public_ip,
+                    advertised_endpoints: allocation.advertised_endpoints.clone(),
+                    labels: allocation.policy.labels.clone(),
+                    accepts_builds: allocation.policy.accepts_builds,
+                    accepts_services: allocation.policy.accepts_services,
+                    accepts_ingress: allocation.policy.accepts_ingress,
+                    runtime: Default::default(),
+                    build_concurrency: None,
+                })
+                .collect();
+            if visible_peers.is_empty() {
+                return Err(StoreError::MissingPeers);
+            }
+            machine.join_approval = Some(approval);
             (body.devices, true)
         } else {
             if self.record.device_enforcement() {
@@ -518,6 +567,15 @@ impl LocalMachineStore {
         let mut installed = self.record.clone();
         installed.body = installation.body;
         installed.device_enforcement = installation.device_enforcement;
+        if installation.device_enforcement {
+            installed.trusted_machines =
+                installed.body.bootstrap().iter().map(Into::into).collect();
+        }
+        installed.membership_cluster = installation
+            .sealing_key
+            .as_ref()
+            .map(SealingKey::public_key);
+        installed.enrollment = Some(installation.enrollment);
         installed.wireguard_mtu = installation.wireguard_mtu;
         installed.pinned_addresses = installation.pinned;
         if installation.device_enforcement {
@@ -541,8 +599,14 @@ impl LocalMachineStore {
         Ok(())
     }
 
-    pub(crate) fn set_sealing_key(&self, key: Option<&SealingKey>) -> io::Result<()> {
+    pub(crate) fn set_sealing_key(&mut self, key: Option<&SealingKey>) -> io::Result<()> {
         SealingKey::set(&self.data_dir, key)?;
+        if self.record.device_enforcement && self.record.membership_cluster.is_none() {
+            let mut updated = self.record.clone();
+            updated.membership_cluster = key.map(SealingKey::public_key);
+            save(&self.data_dir, &updated).map_err(io::Error::other)?;
+            self.record = updated;
+        }
         self.sealing
             .send_replace(SealingKey::observe(&self.data_dir));
         Ok(())
@@ -763,12 +827,21 @@ impl LocalMachineStore {
     ///
     /// # Errors
     /// Returns a storage error if the updated record cannot be saved atomically.
-    pub fn set_device_enforcement(&mut self, enforced: bool) -> Result<(), StoreError> {
+    pub fn set_device_enforcement(
+        &mut self,
+        enforced: bool,
+        machines: &[Machine],
+    ) -> Result<(), StoreError> {
         if self.record.device_enforcement == enforced {
             return Ok(());
         }
         let mut updated = self.record.clone();
         updated.device_enforcement = enforced;
+        if enforced {
+            updated.trusted_machines = machines.iter().map(Into::into).collect();
+            updated.membership_cluster =
+                SealingKey::load(&self.data_dir)?.map(|key| key.public_key());
+        }
         save(&self.data_dir, &updated)?;
         self.record = updated;
         Ok(())
@@ -986,6 +1059,7 @@ mod plan_enroll_tests {
             public_ip: None,
             advertised_endpoints: vec![AdvertisedEndpoint("192.0.2.1:51820".parse().unwrap())],
             runtime: Default::default(),
+            join_approval: None,
             build_concurrency: None,
         }
     }
@@ -1348,7 +1422,7 @@ mod device_slot_tests {
     fn device_enforcement_is_off_until_set_and_survives_reopening() {
         let (dir, mut store) = founded();
         assert!(!store.record().device_enforcement());
-        store.set_device_enforcement(true).unwrap();
+        store.set_device_enforcement(true, &[]).unwrap();
 
         let store = reopened(&dir, store);
 

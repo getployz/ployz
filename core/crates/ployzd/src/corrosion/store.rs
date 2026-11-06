@@ -30,6 +30,7 @@ use crate::machine::{LocalMachineBody, LocalMachineError, LocalMachineRecord, Re
 #[derive(Clone)]
 pub struct ReplicatedStore {
     api: ApiClient,
+    authority: Option<RecordOwner>,
     machine_publication: Arc<tokio::sync::Mutex<()>>,
 }
 
@@ -441,8 +442,24 @@ impl ReplicatedStore {
     pub(crate) fn new(api: ApiClient) -> Self {
         Self {
             api,
+            authority: None,
             machine_publication: Arc::new(tokio::sync::Mutex::new(())),
         }
+    }
+
+    pub(crate) fn authorize(&mut self, owner: RecordOwner) {
+        self.authority = Some(owner);
+    }
+
+    pub(crate) fn with_authority(mut self, owner: RecordOwner) -> Self {
+        self.authority = Some(owner);
+        self
+    }
+
+    fn accepts_machine(&self, machine: &Machine) -> bool {
+        self.authority
+            .as_ref()
+            .is_none_or(|owner| owner.record().accepts_machine(machine))
     }
 
     #[cfg(test)]
@@ -655,7 +672,8 @@ impl ReplicatedStore {
         let Some([info]) = rows.first() else {
             return Ok(None);
         };
-        decode_machine(id, text(info, "machine info")?)
+        Ok(decode_machine(id, text(info, "machine info")?)?
+            .filter(|machine| self.accepts_machine(machine)))
     }
 
     pub async fn machines(&self) -> Result<ReplicatedObservations<Machine, MachineId>, Error> {
@@ -666,10 +684,14 @@ impl ReplicatedStore {
                 [],
             ))
             .await?;
-        decode_observations(
+        let mut snapshot = decode_observations(
             id_and_json(query.rows(["id", "info"])?, |id| Ok(MachineId::parse(id)?))?,
             |id, encoded| decode_machine(id.as_str(), encoded),
-        )
+        )?;
+        snapshot
+            .observations
+            .retain(|machine| self.accepts_machine(machine));
+        Ok(snapshot)
     }
 
     pub async fn publish_container(&self, observation: &ContainerObservation) -> Result<(), Error> {

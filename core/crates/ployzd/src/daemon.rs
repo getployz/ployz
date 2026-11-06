@@ -307,7 +307,9 @@ impl Daemon {
                 }
             }
         };
-        let corrosion = start_corrosion(&config, &local).await?;
+        let corrosion = start_corrosion(&config, &local)
+            .await?
+            .map(|running| running.with_authority(local.clone()));
         let replicated_store = corrosion.as_ref().map(|running| running.store().clone());
         let plugin = config
             .volume_plugin_socket

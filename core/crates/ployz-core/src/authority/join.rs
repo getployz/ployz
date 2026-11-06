@@ -61,12 +61,25 @@ impl JoinAllocation {
 
 /// The code identifies both the Machine's durable ID and its locally generated key.
 #[must_use]
-pub fn code(machine: MachineId, key: WireGuardPublicKey) -> crate::DeviceCode {
+pub fn code(machine: MachineId, key: WireGuardPublicKey) -> String {
     let mut digest = Sha256::new();
     digest.update(b"ployz-join-v1\n");
     digest.update(machine.as_str().as_bytes());
     digest.update(key.0);
-    DeviceKey::from_bytes(digest.finalize().into()).code()
+    let digest = digest.finalize();
+    let bits = u128::from_be_bytes(
+        *digest
+            .as_slice()
+            .first_chunk()
+            .expect("SHA-256 has 16 bytes"),
+    );
+    let alphabet = b"abcdefghijklmnopqrstuvwxyz234567";
+    (0..20)
+        .map(|index| {
+            let digit = usize::try_from((bits >> (128 - 5 * (index + 1))) & 31).expect("five bits");
+            char::from(*alphabet.get(digit).expect("five bits index 32 digits"))
+        })
+        .collect()
 }
 
 /// One Device's approval of an allocation, its key recipient and initial trusted Devices.
@@ -82,6 +95,7 @@ pub struct JoinApproval {
     pub devices: Vec<DeviceKey>,
     /// Machine IDs scope the approval even when two Clusters share a Sealing key.
     pub admitting_machines: Vec<MachineId>,
+    pub bootstrap: Vec<JoinAllocation>,
     pub issued_at: Timestamp,
     pub expires_at: Timestamp,
     pub signer: DeviceKey,
@@ -94,7 +108,7 @@ impl Statement for JoinApproval {
 impl JoinApproval {
     /// The code the joining Server prints for a person to compare before approval.
     #[must_use]
-    pub fn code(&self) -> crate::DeviceCode {
+    pub fn code(&self) -> String {
         code(self.machine.id, self.machine.public_key)
     }
 }
@@ -163,4 +177,22 @@ pub fn verify_signature(
     }
     super::validity::verify(body.issued_at, body.expires_at, now)?;
     Ok(body)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn join_code_exposes_one_hundred_bits_and_binds_both_identity_and_key() {
+        let machine = MachineId::random();
+        let key = WireGuardPublicKey([1; 32]);
+        let code = code(machine, key);
+        assert_eq!(code.len(), 20);
+        assert!(
+            code.bytes()
+                .all(|byte| b"abcdefghijklmnopqrstuvwxyz234567".contains(&byte))
+        );
+        assert_ne!(code, super::code(MachineId::random(), key));
+        assert_ne!(code, super::code(machine, WireGuardPublicKey([2; 32])));
+    }
 }

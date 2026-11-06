@@ -182,7 +182,8 @@ impl Service<http::Request<Body>> for MachineApi {
                 .extensions()
                 .get::<tonic::transport::server::UdsConnectInfo>()
                 .is_some();
-            let scope = if local
+            let enforced = self.service.local().record().device_enforcement();
+            let scope = if (local || !enforced)
                 && !request
                     .headers()
                     .contains_key(ployz_core::OPERATOR_SCOPE_HEADER)
@@ -191,7 +192,7 @@ impl Service<http::Request<Body>> for MachineApi {
             } else {
                 ManagementScope::Operator
             };
-            if !local && request.uri().path() == op::SetManagementClient::PATH {
+            if enforced && !local && request.uri().path() == op::SetManagementClient::PATH {
                 return Box::pin(async {
                     Ok(ployz_core::rpc::hinted_status(
                         tonic::Code::PermissionDenied,
@@ -205,6 +206,20 @@ impl Service<http::Request<Body>> for MachineApi {
                     ployz_core::OPERATOR_SCOPE_HEADER,
                     http::HeaderValue::from_static("1"),
                 );
+            }
+            if enforced
+                && !local
+                && ployz_core::scope_of(request.uri().path()) == Some(ManagementScope::Full)
+            {
+                let capability =
+                    ployz_core::capability_of(request.uri().path()).expect("catalogued Full route");
+                return Box::pin(async move {
+                    Ok(ployz_core::rpc::hinted_status(
+                    tonic::Code::PermissionDenied,
+                    &NeedsDirectDevice,
+                    serde_json::json!({ "capability": capability, "next": "Connect directly to the target Server as an approved Device, or over SSH." }),
+                ).into_http())
+                });
             }
             if let Some(refused) = refuse_scope(request.uri().path(), scope) {
                 return Box::pin(async { Ok(refused) });
@@ -308,6 +323,12 @@ struct NeedsFullAccess {
 #[derive(Debug, thiserror::Error)]
 #[error("Management slots require a local or authenticated management connection")]
 struct NeedsManagementConnection;
+
+#[derive(Debug, thiserror::Error)]
+#[error(
+    "This Server enforces Device approval. Connect directly as an approved Device, or over SSH."
+)]
+struct NeedsDirectDevice;
 
 fn refuse_scope(path: &str, scope: ManagementScope) -> Option<http::Response<Body>> {
     if ployz_core::scope_of(path).is_none_or(|needed| scope >= needed) {

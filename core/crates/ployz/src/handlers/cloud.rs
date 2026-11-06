@@ -365,9 +365,7 @@ async fn enroll_current_identity(
     progress(EnrollStage::Enrolling);
     let outcome = match cloud_enroll::enroll(command, url, token, &identity, progress).await {
         Err(error)
-            if error
-                .to_string()
-                .contains(ployz_core::JOIN_APPROVAL_CAPABILITY) =>
+            if error.capability().as_deref() == Some(ployz_core::JOIN_APPROVAL_CAPABILITY) =>
         {
             let config = super::config_path(matches)?;
             if super::device::key::load(&super::device::key::path(&config))?.is_some() {

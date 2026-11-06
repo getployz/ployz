@@ -122,7 +122,11 @@ pub(super) async fn connect_full(
             let connections = selected.connections.clone();
             crate::connect::connect_selected_with(selected, Arc::new(connector))
                 .await
-                .map(|client| client.with_full_connections(connections))
+                .map(|client| {
+                    client
+                        .with_full_connections(connections)
+                        .with_full_single(direct.is_some())
+                })
         }
         Err(error) => Err(error),
     };
@@ -137,7 +141,11 @@ pub(super) async fn connect_full(
     let connections = access.connections.clone();
     dial(matches, access)
         .await?
-        .map(|client| client.with_full_connections(connections))
+        .map(|client| {
+            client
+                .with_full_connections(connections)
+                .with_full_single(direct.is_some())
+        })
         .ok_or_else(no_servers)
 }
 
@@ -2375,6 +2383,7 @@ mod tests {
                 public_ip: public_ip.map(|ip| ip.parse().unwrap()),
                 advertised_endpoints: Vec::new(),
                 runtime: Default::default(),
+                join_approval: None,
                 build_concurrency: None,
             },
             membership,

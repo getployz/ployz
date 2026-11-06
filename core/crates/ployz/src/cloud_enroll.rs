@@ -107,6 +107,24 @@ pub(crate) enum Error {
 struct ResponseLost(#[source] Option<Error>);
 
 impl Error {
+    pub(crate) fn capability(&self) -> Option<String> {
+        let body = match self {
+            Self::Status { body, .. } | Self::CodedConflict { body } => body,
+            Self::Timeout(_)
+            | Self::Connect(_)
+            | Self::Http(_)
+            | Self::Json(_)
+            | Self::TokenRefused
+            | Self::FounderWait
+            | Self::RetrySameCommand { .. }
+            | Self::CloudCantReach => return None,
+        };
+        serde_json::from_str::<serde_json::Value>(body)
+            .ok()?
+            .pointer("/error/details/capability")?
+            .as_str()
+            .map(str::to_owned)
+    }
     fn is_transport(&self) -> bool {
         match self {
             Self::Timeout(error) | Self::Connect(error) | Self::Http(error) => {
@@ -1368,6 +1386,7 @@ mod tests {
                 public_ip: None,
                 advertised_endpoints: Vec::new(),
                 runtime: Default::default(),
+                join_approval: None,
                 build_concurrency: None,
             },
             visible_peers: Vec::new(),

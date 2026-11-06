@@ -129,10 +129,15 @@ async fn request_with(credential: &Credential, key: DeviceKey) -> Result<Request
 
 pub(crate) fn approve(root: &ArgMatches) -> Result<(), Error> {
     let leaf = leaf_matches(root);
-    let code = typed_code(leaf)?;
     if leaf.get_flag("join") {
-        return runtime()?.block_on(approve_waiting_join(leaf, code));
+        let code = leaf
+            .get_one::<String>("code")
+            .expect("required code")
+            .trim()
+            .to_ascii_lowercase();
+        return runtime()?.block_on(approve_waiting_join(leaf, &code));
     }
+    let code = typed_code(leaf)?;
     let store = CredentialStore::beside(&config_path(leaf)?);
     runtime()?.block_on(async {
         let credential = cloud_account::from_env(&store).await?;
@@ -145,7 +150,7 @@ pub(crate) fn approve(root: &ArgMatches) -> Result<(), Error> {
     })
 }
 
-async fn approve_waiting_join(leaf: &ArgMatches, code: DeviceCode) -> Result<(), Error> {
+async fn approve_waiting_join(leaf: &ArgMatches, code: &str) -> Result<(), Error> {
     let mut client = server::connect(leaf, context(leaf)).await?;
     let reach = Reach::of(&mut client).await?;
     let secret = key::load(&key::path(&config_path(leaf)?))?.ok_or_else(|| {
@@ -182,6 +187,7 @@ async fn approve_waiting_join(leaf: &ArgMatches, code: DeviceCode) -> Result<(),
             )
         });
     };
+    show_join(body);
     body.signer = signer.public().into();
     let approval = ployz_core::authority::Signed::sign(body, &signer).map_err(Error::command)?;
     client
@@ -194,6 +200,16 @@ async fn approve_waiting_join(leaf: &ArgMatches, code: DeviceCode) -> Result<(),
     ui::finish(&json!({ "approved_join": body.machine.id }), || {
         ui::stream("Approved the Server join. Rerun its join command.")
     })
+}
+
+fn show_join(body: &ployz_core::authority::JoinApproval) {
+    ui::note(format_args!(
+        "Approving Server {} on {} with endpoints {:?} (join code {}).",
+        body.machine.name,
+        body.machine.subnet,
+        body.machine.advertised_endpoints,
+        body.code()
+    ));
 }
 
 pub(super) async fn sign_waiting_join(
@@ -220,6 +236,7 @@ pub(super) async fn sign_waiting_join(
             "The waiting join does not match the Server identity, keys, allocation, or policy requested. Nothing was approved.",
         ));
     }
+    show_join(&body);
     body.signer = signer.public().into();
     let approval = ployz_core::authority::Signed::sign(&body, &signer).map_err(Error::command)?;
     client
@@ -471,9 +488,18 @@ impl Reach {
     async fn full(client: &mut Client) -> Result<Self, Error> {
         let mut reach = Self::of(client).await?;
         let direct = client.full_machines();
-        if !direct.is_empty() {
+        if client.full_single() {
+            reach.asked.retain(|machine| Some(*machine) == reach.entry);
+            reach.silent.retain(|machine| Some(*machine) == reach.entry);
+        } else if !direct.is_empty() {
+            reach.silent.extend(
+                reach
+                    .asked
+                    .iter()
+                    .filter(|machine| !direct.contains(machine))
+                    .copied(),
+            );
             reach.asked.retain(|machine| direct.contains(machine));
-            reach.silent.retain(|machine| direct.contains(machine));
         }
         Ok(reach)
     }

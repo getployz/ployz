@@ -76,6 +76,7 @@ pub struct Client {
     pub(crate) cluster: Option<Box<crate::connect::ExpectedCluster>>,
     /// Set once a redial finds the entry in another Cluster. Every clone shares it.
     refused: Refusal,
+    full_single: bool,
     full_connections: Arc<Vec<Connection>>,
     /// The Device-signed approval every restart step this client sends carries.
     restart_approval:
@@ -137,12 +138,22 @@ impl Client {
             refused: Refusal::default(),
             restart_approval: None,
             full_connections: Arc::default(),
+            full_single: false,
         }
     }
 
     pub(crate) fn with_full_connections(mut self, connections: Vec<Connection>) -> Self {
         self.full_connections = Arc::new(connections);
         self
+    }
+
+    pub(crate) fn with_full_single(mut self, single: bool) -> Self {
+        self.full_single = single;
+        self
+    }
+
+    pub(crate) fn full_single(&self) -> bool {
+        self.full_single
     }
 
     pub(crate) fn full_machines(&self) -> BTreeSet<MachineId> {
@@ -171,9 +182,7 @@ impl Client {
                 .machine_id()
                 .is_some_and(|id| id.as_str() == target.as_str())
         }) else {
-            return Err(ConnectError::Attempt(
-                "Full access needs a direct connection to the target Server".into(),
-            ));
+            return Ok(None);
         };
         let mut client = Box::pin(crate::connect::connect_one(
             connection,

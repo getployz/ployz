@@ -3033,7 +3033,7 @@ mod ensure_container {
             store
                 .mutate(move |store| {
                     store.approve_device(device).unwrap();
-                    store.set_device_enforcement(true).unwrap();
+                    store.set_device_enforcement(true, &[]).unwrap();
                 })
                 .await
                 .unwrap();

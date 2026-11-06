@@ -176,10 +176,33 @@ impl LocalMachine {
                     },
                 ));
             }
-            self.verify_join(approval, &body.machine, body.network)?;
-            self.consume_join(&body)?;
+            if let Some(stored) = self.approvals.join_result(request.machine)? {
+                if stored.approval != *approval {
+                    return Err(super::Error::JoinConsumed(request.machine));
+                }
+                return match stored.reply {
+                    super::restart_approval::JoinReply::Share(sealed) => {
+                        Ok(SealingKeyShared { sealed })
+                    }
+                    super::restart_approval::JoinReply::Register(_) => {
+                        Err(super::Error::JoinConsumed(request.machine))
+                    }
+                };
+            }
+            let network = super::published_network(&record, self.replicated()?).await?;
+            self.verify_join(
+                approval,
+                &ployz_core::authority::join::JoinAllocation::from(&recipient),
+                network,
+            )?;
         }
         let sealed = key.seal_from(record.private_key(), &request.public_key)?;
+        if record.device_enforcement() {
+            self.consume_join(super::restart_approval::JoinResult {
+                approval: request.join_approval.expect("verified above"),
+                reply: super::restart_approval::JoinReply::Share(sealed.clone()),
+            })?;
+        }
         tracing::info!(
             machine = %record.id(),
             recipient = %request.machine,

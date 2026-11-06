@@ -2,7 +2,7 @@
 //! caller's restart step passes under it, and the record of steps already taken.
 
 use std::{
-    collections::{BTreeMap, BTreeSet},
+    collections::BTreeMap,
     io,
     path::{Path, PathBuf},
     sync::{Arc, Mutex},
@@ -38,6 +38,11 @@ impl LocalMachine {
         let local = self.clone();
         let client = self.management_client;
         self.finish_mutation(async move {
+            let machines = if request.enforced && !local.record().device_enforcement() {
+                local.replicated()?.machines().await?.observations
+            } else {
+                Vec::new()
+            };
             local
                 .owner
                 .mutate(move |store| {
@@ -49,7 +54,7 @@ impl LocalMachine {
                     }) {
                         return Err(Error::NeedsFullScope);
                     }
-                    store.set_device_enforcement(request.enforced)?;
+                    store.set_device_enforcement(request.enforced, &machines)?;
                     Ok(DeviceEnforcementSet {
                         enforced: request.enforced,
                     })
@@ -146,12 +151,25 @@ pub(crate) struct ConsumptionLog {
 
 #[derive(Clone, Debug, Default, Deserialize, Serialize)]
 struct Consumption {
-    #[serde(default, skip_serializing_if = "BTreeSet::is_empty")]
-    joins: BTreeSet<ployz_core::MachineId>,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    joins: BTreeMap<ployz_core::MachineId, JoinResult>,
     #[serde(default)]
     expiry_time_floor: Option<Timestamp>,
     #[serde(flatten)]
     operations: BTreeMap<OperationId, Operation>,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+pub(crate) struct JoinResult {
+    pub approval: Signed<ployz_core::authority::JoinApproval>,
+    pub reply: JoinReply,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(tag = "kind", content = "result", rename_all = "snake_case")]
+pub(crate) enum JoinReply {
+    Register(Box<ployz_core::Registered>),
+    Share(ployz_core::SealedSealingKey),
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -241,6 +259,25 @@ impl ConsumptionLog {
         Ok(())
     }
 
+    pub(crate) fn join_result(
+        &self,
+        machine: ployz_core::MachineId,
+    ) -> Result<Option<JoinResult>, Error> {
+        let mut guard = self
+            .operations
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        if guard.is_none() {
+            *guard = Some(self.load().map_err(Error::JoinRecord)?);
+        }
+        Ok(guard
+            .as_ref()
+            .expect("loaded above")
+            .joins
+            .get(&machine)
+            .cloned())
+    }
+
     pub(crate) fn require_unused_join(&self, machine: ployz_core::MachineId) -> Result<(), Error> {
         let mut guard = self
             .operations
@@ -253,18 +290,14 @@ impl ConsumptionLog {
             .as_ref()
             .expect("loaded above")
             .joins
-            .contains(&machine)
+            .contains_key(&machine)
         {
             return Err(Error::JoinConsumed(machine));
         }
         Ok(())
     }
 
-    pub(crate) fn consume_join(
-        &self,
-        approval: &ployz_core::authority::JoinApproval,
-        now: Timestamp,
-    ) -> Result<(), Error> {
+    pub(crate) fn consume_join(&self, result: JoinResult, now: Timestamp) -> Result<(), Error> {
         let mut guard = self
             .operations
             .lock()
@@ -276,13 +309,15 @@ impl ConsumptionLog {
         let now = consumption
             .expiry_time_floor
             .map_or(now, |floor| now.max(floor));
+        let approval = result.approval.open().map_err(Error::JoinRefused)?;
         ployz_core::authority::validity::verify(approval.issued_at, approval.expires_at, now)
             .map_err(Error::JoinRefused)?;
         let mut updated = consumption.clone();
         updated.expiry_time_floor = Some(now);
-        if !updated.joins.insert(approval.machine.id) {
+        if updated.joins.contains_key(&approval.machine.id) {
             return Err(Error::JoinConsumed(approval.machine.id));
         }
+        updated.joins.insert(approval.machine.id, result);
         let written = serde_json::to_vec(&updated)
             .map_err(io::Error::other)
             .and_then(|contents| crate::filesystem::atomic_write(&self.path, &contents, 0o600))

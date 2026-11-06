@@ -38,7 +38,8 @@ async fn cluster(
         let target = rpc
             .metadata()
             .get("machine")
-            .map(|value| MachineId::parse(value.to_str().unwrap()).unwrap());
+            .map(|value| MachineId::parse(value.to_str().unwrap()).unwrap())
+            .or(Some(id('1')));
         let daemon = ['1', '2', '3']
             .into_iter()
             .zip(daemons)
@@ -386,6 +387,7 @@ async fn automatic_join_approval_refuses_clouds_substituted_recipient() {
         network: "10.210.0.0/16".parse().unwrap(),
         sealing_recipient: ployz_core::WireGuardPublicKey([9; 32]),
         devices: vec![signer.public().into()],
+        bootstrap: Vec::new(),
         admitting_machines: vec![id('b')],
         issued_at,
         expires_at: issued_at.plus(900_000),
@@ -414,5 +416,31 @@ async fn automatic_join_approval_refuses_clouds_substituted_recipient() {
         .await
         .unwrap_err();
     assert!(error.to_string().contains("does not match"));
+    server.abort();
+}
+
+#[tokio::test]
+async fn full_mutations_report_servers_without_a_direct_connection_as_omissions() {
+    let (client, server) = cluster([Daemon::Approves; 3]).await;
+    let connection =
+        crate::context::Connection::tcp("127.0.0.1:7569".parse().unwrap()).with_machine_id(id('1'));
+    let mut client = client.with_full_connections(vec![connection]);
+    let removed = set_everywhere(
+        &mut client,
+        SetDeviceRequest::Remove {
+            code: key(1).code(),
+        },
+    )
+    .await
+    .unwrap();
+    assert_eq!(removed.answers.len(), 1);
+    assert_eq!(removed.gaps.omitted, vec![id('2'), id('3')]);
+    assert_eq!(removed.gaps.outcome().unwrap_err().printed_exit(), Some(3));
+    let reach = Reach::full(&mut client).await.unwrap();
+    let (_, gaps) = reach
+        .fan_out(|_| async { Ok(Some(DeviceEnforcementSet { enforced: true })) })
+        .await;
+    assert_eq!(gaps.omitted, vec![id('2'), id('3')]);
+    assert_eq!(gaps.outcome().unwrap_err().printed_exit(), Some(3));
     server.abort();
 }
