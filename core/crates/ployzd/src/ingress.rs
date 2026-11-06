@@ -127,7 +127,9 @@ pub(crate) struct IngressPublication {
 pub(crate) struct PublicationTrace {
     /// Deployment attempt of the owner's newest Service Container, when it carries a valid one.
     pub(super) deploy: Option<DeploymentLogId>,
-    /// Count of the owner's observed Service Containers per Machine, in any runtime state.
+    /// Count of the owner's observed Service Containers per Machine, in any runtime state,
+    /// leaving out copies rotated Out: only their removal follows, and that removal changes
+    /// no route, so counting them would keep a deploy's old copies on the page.
     pub(super) placement: BTreeMap<MachineId, NonZeroUsize>,
 }
 
@@ -145,10 +147,12 @@ impl PublicationTrace {
             let (placement, newest) = grouped
                 .entry(observation.identity())
                 .or_insert_with(|| (BTreeMap::new(), container));
-            placement
-                .entry(observation.machine_id)
-                .and_modify(|count| *count = count.saturating_add(1))
-                .or_insert(NonZeroUsize::MIN);
+            if !matches!(observation.rotation(), ployz_core::CopyRotation::Out) {
+                placement
+                    .entry(observation.machine_id)
+                    .and_modify(|count| *count = count.saturating_add(1))
+                    .or_insert(NonZeroUsize::MIN);
+            }
             if creation_key(container) > creation_key(newest) {
                 *newest = container;
             }

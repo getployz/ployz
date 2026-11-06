@@ -490,6 +490,30 @@ async fn a_trace_only_change_does_not_reload_caddy() {
     assert!(routed.contains("10.210.1.3:80"), "{routed}");
     assert!(routed.contains(&format!("{}:2", machine.id)), "{routed}");
 
+    // The old copy leaving routing reloads with the count the deploy ends at, so its
+    // removal, which changes no route, leaves nothing stale.
+    // The fixture's first Container is the old `api` copy.
+    let old = state.containers.lock().unwrap()[0].container_id;
+    state.set_rotation(old, CopyRotation::Out);
+    let left = timeout(Duration::from_secs(5), load_rx.recv())
+        .await
+        .expect("a route leaving reloads Caddy")
+        .unwrap();
+    assert!(!left.contains("10.210.1.2:80"), "{left}");
+    assert!(left.contains(&format!("{}:1 ", machine.id)), "{left}");
+    state
+        .containers
+        .lock()
+        .unwrap()
+        .retain(|container| container.container_id != old);
+    state.send(b"{\"change\":{}}\n");
+    assert!(
+        timeout(Duration::from_millis(500), load_rx.recv())
+            .await
+            .is_err(),
+        "removing an Out copy reloaded Caddy"
+    );
+
     shutdown.cancel();
     watcher.await.unwrap().unwrap();
     server.abort();

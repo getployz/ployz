@@ -16,7 +16,8 @@
 //! - the `loaded` cache (`CaddyLoad::skip`), which skips the admin while Caddy
 //!   runs and the last load matches;
 //! - `connect`, and its `Err` arm that counts as a failure without the admin;
-//! - the equal-input skip, and `CaddyCertificates::loaded_only` for a file written
+//! - the equal-input skip (a `Config` stands for inputs equal under `serves_as`,
+//!   which leaves out the trace page's values), and `CaddyCertificates::loaded_only` for a file written
 //!   without the admin;
 //! - `apply_caddy`: `write_certificate_files` (`BeforeServing`), `caddy::load`
 //!   (`BeforeServing`, whether or not Caddy applied the config before the response

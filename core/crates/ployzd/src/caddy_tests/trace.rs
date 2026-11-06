@@ -114,6 +114,22 @@ fn placement_counts_rollout_overlap_and_stopped_leftovers() {
 }
 
 #[test]
+fn placement_leaves_out_copies_rotated_out() {
+    let projection = derive(vec![
+        with(api(1, &machine('a'), 1), |parts| {
+            parts.rotation = Some(ployz_core::CopyRotation::Out);
+        }),
+        api(2, &machine('a'), 2),
+        api(3, &machine('b'), 3),
+    ]);
+
+    assert_eq!(
+        trace(&projection).placement,
+        placement(&[('a', 1), ('b', 1)])
+    );
+}
+
+#[test]
 fn placement_counts_only_the_hostname_owner() {
     // The oldest publisher owns a contested hostname.
     let blog = with(api(9, &machine('b'), 9), |parts| {
