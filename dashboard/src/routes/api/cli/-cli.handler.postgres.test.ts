@@ -737,6 +737,25 @@ it.live(
 );
 
 it.live(
+  "a session token copied from the database is refused; only its signed form acts",
+  () =>
+    Effect.gen(function* () {
+      const layer = yield* cliLayer();
+      yield* Effect.gen(function* () {
+        const { drizzle } = yield* Database;
+        const alice = yield* signUp("alice");
+        const signedIn = yield* resolveCaller(new Headers({ authorization: `Bearer ${alice.session}` }));
+        const [copied] = yield* drizzle.select({ token: session.token }).from(session).where(eq(session.id, signedIn.credential.id));
+        const bare = copied?.token ?? assert.fail("no session row");
+
+        assert.strictEqual((yield* cli("GET", "organizations", { bearer: bare })).status, 401);
+        assert.strictEqual((yield* cli("GET", "organizations", alice)).status, 200);
+      }).pipe(Effect.provide(layer));
+    }),
+  60_000,
+);
+
+it.live(
   "a dashboard Organization switch moves only the browser's session, so the CLI keeps acting where org use put it",
   () =>
     Effect.gen(function* () {

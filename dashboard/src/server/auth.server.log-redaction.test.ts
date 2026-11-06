@@ -8,13 +8,14 @@ import { formatWithOptions } from "node:util";
 import { afterEach, expect, it, vi } from "vitest";
 import { Polar } from "#/modules/billing/polar-provider.server";
 import { InngestClient } from "#/modules/inngest/client";
-import { Auth, AuthLive, logBetterAuth } from "#/server/auth.server";
+import { Auth, AuthLive, logBetterAuth, signedSessionToken } from "#/server/auth.server";
 import { AppConfig } from "#/server/config.server";
 import { DatabaseLive } from "#/server/database.server";
 import { RedactedLogsLive } from "#/server/log-redaction";
 import { publicErrorResponse } from "#/server/public-error";
 
 const FAKE_SESSION_TOKEN = "fake-session-token-0123456789abc";
+const FAKE_BEARER = signedSessionToken(FAKE_SESSION_TOKEN, testConfigEnvironment().BETTER_AUTH_SECRET);
 const FAKE_EMAIL = "fake-user@example.test";
 const FAKE_TOKEN_HASH = "fake-refresh-token-hash-0123456789";
 const FAKE_USER_ID = "00000000-0000-4000-8000-00000fa4e1d0";
@@ -91,7 +92,7 @@ it("keeps a session token and an email out of every log when Better Auth cannot 
         Effect.catch((failure) => Effect.succeed(publicErrorResponse(failure))),
       );
       const session = yield* serve(new Request("http://localhost:3000/api/auth/get-session", {
-        headers: { authorization: `Bearer ${FAKE_SESSION_TOKEN}` },
+        headers: { authorization: `Bearer ${FAKE_BEARER}` },
       }));
       expect(session.status).toBe(500);
       const signIn = yield* serve(new Request("http://localhost:3000/api/auth/sign-in/email", {
@@ -101,7 +102,7 @@ it("keeps a session token and an email out of every log when Better Auth cannot 
       }));
       expect(signIn.status).toBe(500);
       const lookup = yield* Effect.exit(auth.getSession(
-        new Headers({ authorization: `Bearer ${FAKE_SESSION_TOKEN}` }),
+        new Headers({ authorization: `Bearer ${FAKE_BEARER}` }),
         { bearer: true },
       ));
       expect(lookup._tag).toBe("Failure");

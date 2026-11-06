@@ -42,6 +42,10 @@ still forgets the sign-in here and warns that Cloud may still honour it until yo
 `ployz token rm`. An unreadable sign-in is forgotten too, and `ployz login` replaces it. While it
 is unreadable, `PLOYZ_TOKEN` also needs `PLOYZ_CLOUD_URL`.
 
+When a command says `Cloud ended this device's sign-in`, run `ployz login` again. A computer
+that signed in before November 2026 sees this once, because Cloud no longer accepts those older
+sign-ins. Organization Tokens and connected agents keep working.
+
 The sign-in is saved in `~/.config/ployz`, or in `$XDG_CONFIG_HOME/ployz` when
 `XDG_CONFIG_HOME` is an absolute path. Set `PLOYZ_CONFIG` to a file path to keep a separate one.
 
