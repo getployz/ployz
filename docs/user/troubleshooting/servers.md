@@ -772,20 +772,28 @@ minute later. Ployz 0.3.16 and earlier put the rules back only when the server r
 
 ## Servers that run firewalld can't reach each other
 
-On a server that runs firewalld, as RHEL, Rocky, Alma and Fedora do by default, the server doesn't
-finish joining, or joins but its services can't reach your other servers. Ployz opens UDP 51820
-in iptables, but firewalld's zone can still drop that traffic. Open the port in the zone the server's public
-interface uses, on each server that runs firewalld:
+A command or deploy says `! web-2 did not answer; its rows are missing.` with
+`cause: Permission denied (os error 13)`, and its deploys leave copies running. Check whether
+firewalld runs on that server:
+
+```sh
+systemctl is-active firewalld
+```
+
+If it says `active`, firewalld drops traffic your other servers send it, even though Ployz opens its
+ports in iptables. On that server, open UDP 51820 in the zone of its public interface, and trust
+`ployz-wg`, the interface your servers reach each other on:
 
 ```sh
 sudo firewall-cmd --get-active-zones
 sudo firewall-cmd --zone=public --permanent --add-port=51820/udp
+sudo firewall-cmd --zone=trusted --permanent --add-interface=ployz-wg
 sudo firewall-cmd --reload
 ```
 
-Use the zone the first command names in place of `public`. `--permanent` keeps the port open after
-a reboot, and `--reload` applies it now. The reload can also clear Ployz's own iptables rules; Ployz
-puts them back within a minute, as
+Use the zone the first command lists above your public interface, such as `eth0`, in place of
+`public`. `ployz-wg` only carries traffic from your own servers. On some older systems the reload
+also clears Ployz's own iptables rules; Ployz puts them back within a minute, as
 [Services on other servers stop answering after a firewall change](#services-on-other-servers-stop-answering-after-a-firewall-change)
 describes. On Ployz 0.3.16 and earlier, run `sudo systemctl restart ployz` after the reload
 instead.

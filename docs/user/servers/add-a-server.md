@@ -332,8 +332,8 @@ these there:
 | TCP 80, TCP and UDP 443 | Anywhere | Your apps over https, and their certificates, on servers that take web traffic |
 | UDP 51820 | Your other servers | Services on different servers reaching each other |
 
-On a server that runs firewalld, as RHEL, Rocky, Alma and Fedora do by default, also open UDP 51820
-in its firewalld zone, as
+On a server that runs firewalld, which `systemctl is-active firewalld` shows, open UDP 51820 and
+trust `ployz-wg` in firewalld too, as
 [Servers that run firewalld can't reach each other](../troubleshooting/servers.md#servers-that-run-firewalld-cant-reach-each-other)
 shows.
 
