@@ -1069,8 +1069,16 @@ fn local_failure(error: LocalMachineError) -> Result<RpcError, Status> {
                 "next": "ployz service restart from an approved device",
             }),
         )),
+        LocalMachineError::JoinConsumed(_) => Err(ployz_core::rpc::hinted_status(
+            tonic::Code::PermissionDenied,
+            &error,
+            serde_json::json!({
+                "capability": ployz_core::JOIN_APPROVAL_CAPABILITY,
+                "reason": "join_already_admitted",
+                "inspect": ["ployz server ls"],
+            }),
+        )),
         LocalMachineError::JoinRefused(_)
-        | LocalMachineError::JoinConsumed(_)
         | LocalMachineError::Store(StoreError::JoinRefused(_)) => {
             Err(ployz_core::rpc::hinted_status(
                 tonic::Code::PermissionDenied,

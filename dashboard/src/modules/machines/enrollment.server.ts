@@ -788,8 +788,14 @@ export const enrollMachine = Effect.fn("MachineEnrollment.enrollMachine")(
             code: Schema.Literal("forbidden"),
             details: Schema.Struct({ capability: Schema.Literal("ployz.machine.join.device-approval.v1") }),
           }))(error.cause);
+          const alreadyAdmitted = Schema.is(Schema.Struct({
+            details: Schema.Struct({ reason: Schema.Literal("join_already_admitted") }),
+          }))(error.cause);
+          const message = alreadyAdmitted
+            ? "The Server's join was already admitted. Inspect the Server before retrying enrollment."
+            : "ployz.machine.join.device-approval.v1 requires approval from an existing Device. Approve the join, then rerun the same join command.";
           return Effect.fail(needsApproval
-            ? new Conflict({ message: "ployz.machine.join.device-approval.v1 requires approval from an existing Device. Approve the join, then rerun the same join command.", userFacing: true })
+            ? new Conflict({ message, userFacing: true })
             : error);
         }));
       return { kind: "join" as const, pairing, storage: request.storage, registration };
