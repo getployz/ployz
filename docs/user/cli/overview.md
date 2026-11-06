@@ -357,7 +357,8 @@ working at once if you leave the organization, are removed from it, or the organ
 deleted. Then unset `PLOYZ_TOKEN` and run `ployz login`, or make a new token in an organization
 you're still in. To revoke it,
 run `ployz token rm` with its name or ID from `ployz token ls`. When two tokens share the name,
-it lists their IDs and removes neither: run it again with one ID. If it names a server that's
+it lists their IDs and removes neither: run it again with one ID. A token whose name is itself
+an ID, like `0b6e…-…`, comes off only by its own ID. If it names a server that's
 offline, run the `ployz token rm ID` it prints once that server is back: the name may by then
 belong to a new token. Owners and admins see and can revoke every
 organization token in the organization, not only their own. Members see only theirs. OWNER

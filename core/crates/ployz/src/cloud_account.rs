@@ -515,11 +515,11 @@ pub(crate) async fn new_token(
     Ok(reply.token)
 }
 
-/// The ID `target` names in `ployz token rm`. Cloud revokes only by ID, a UUID, and
-/// refuses every token caller, so a UUID or a token caller's target goes as given: an ID
-/// Cloud no longer lists, such as a fully revoked one, never resolves to a token named
-/// like it. Otherwise it is a listed credential's ID, else the one token named exactly
-/// `target`, else as given.
+/// The ID `target` names in `ployz token rm`. Cloud revokes only by ID, a hyphenated
+/// UUID, and refuses every token caller, so such a UUID or a token caller's target goes
+/// as given: an ID Cloud no longer lists, such as a fully revoked one, never resolves to
+/// a token named like it. Otherwise it is the one token named exactly `target`, else as
+/// given.
 ///
 /// # Errors
 ///
@@ -529,22 +529,19 @@ pub(crate) async fn credential_id(
     credential: &Credential,
     target: &str,
 ) -> Result<String, LoginError> {
-    if matches!(credential, Credential::Token { .. }) || uuid::Uuid::try_parse(target).is_ok() {
+    if matches!(credential, Credential::Token { .. }) || cloud_id(target) {
         return Ok(target.to_owned());
     }
     named_credential(&credentials(credential).await?, target)
 }
 
+/// Cloud's ID shape: the 36-character hyphenated UUID. The uuid crate parses no other
+/// form at that length, so a 32-hex, braced or URN name still resolves as a name.
+fn cloud_id(target: &str) -> bool {
+    target.len() == 36 && uuid::Uuid::try_parse(target).is_ok()
+}
+
 fn named_credential(listed: &Credentials, target: &str) -> Result<String, LoginError> {
-    let ids = listed
-        .tokens
-        .iter()
-        .map(|token| &token.id)
-        .chain(listed.devices.iter().map(|device| &device.id))
-        .chain(listed.revoking.iter().map(|revoking| &revoking.id));
-    if ids.into_iter().any(|id| id == target) {
-        return Ok(target.to_owned());
-    }
     let mut named: Vec<String> = listed
         .tokens
         .iter()
@@ -1768,6 +1765,7 @@ mod tests {
     #[tokio::test]
     async fn token_rm_finds_a_token_by_its_exact_name_and_refuses_a_shared_one() {
         const CI: &str = "00000000-0000-4000-8000-00000000000a";
+        const HEX: &str = "00000000-0000-4000-8000-00000000000f";
         let entry = |id: &str, name: &str| {
             serde_json::json!({
                 "id": id, "name": name, "created_at": "2026-11-01", "expires_at": "2027-01-30",
@@ -1779,11 +1777,12 @@ mod tests {
                 entry(CI, "ci"),
                 entry("00000000-0000-4000-8000-00000000000b", "shared"),
                 entry("00000000-0000-4000-8000-00000000000c", "shared"),
-                entry("t9", "t8"),
-                entry("t8", "other"),
+                // Names in UUID forms Cloud never uses as an ID.
+                entry(HEX, "0000000000004000800000000000000a"),
+                entry("00000000-0000-4000-8000-000000000010", "{00000000-0000-4000-8000-00000000000a}"),
             ],
-            "devices": [{ "id": "d1", "created_at": "2026-11-01", "expires_at": "2027-01-30", "current": true }],
-            "revoking": [{ "id": "r1", "kind": "token", "unconfirmed": [] }],
+            "devices": [],
+            "revoking": [],
         });
         let cloud = fake_cloud(move |route, _| match route {
             "GET /api/cli/tokens" => (200, listed.clone()),
@@ -1794,16 +1793,26 @@ mod tests {
 
         assert_eq!(credential_id(&device, "ci").await.unwrap(), CI);
         assert_eq!(
-            credential_id(&device, "t8").await.unwrap(),
-            "t8",
-            "an ID wins over a name"
+            credential_id(&device, "0000000000004000800000000000000a")
+                .await
+                .unwrap(),
+            HEX
         );
-        assert_eq!(credential_id(&device, "d1").await.unwrap(), "d1");
-        assert_eq!(credential_id(&device, "r1").await.unwrap(), "r1");
+        assert_eq!(
+            credential_id(&device, "{00000000-0000-4000-8000-00000000000a}")
+                .await
+                .unwrap(),
+            "00000000-0000-4000-8000-000000000010"
+        );
         assert_eq!(
             credential_id(&device, "Ci").await.unwrap(),
             "Ci",
             "names match exactly"
+        );
+        assert_eq!(
+            credential_id(&device, "d1").await.unwrap(),
+            "d1",
+            "an unknown target goes as given"
         );
         let error = credential_id(&device, "shared").await.unwrap_err();
         assert!(
@@ -1838,6 +1847,12 @@ mod tests {
         assert!(
             credential_id(&device, "ci").await.is_err(),
             "a name needs the list"
+        );
+        assert!(
+            credential_id(&device, "0000000000004000800000000000000a")
+                .await
+                .is_err(),
+            "a 32-hex target is a name: Cloud's IDs are hyphenated"
         );
     }
 
