@@ -99,9 +99,17 @@ function fakeServers() {
     holdClearReply?: Promise<void>;
   }>();
   const aborts = connectionAborts();
-  /** Each Server's labels a Clear left cleared: a key for one of them is refused as cleared, as a daemon refuses it. */
-  const cleared = new Map<string, Set<string>>();
-  const clearedOn = (machine: string) => cleared.get(machine) ?? cleared.set(machine, new Set()).get(machine) ?? new Set<string>();
+  /**
+   * Each Server's cleared slots, by label, with the key a Clear took: that key is refused as cleared, as a daemon refuses
+   * it, until a Set fills the slot again. A key an earlier Set replaced is refused as any unknown key is.
+   */
+  const cleared = new Map<string, Map<string, string>>();
+  const clearedOn = (machine: string) => cleared.get(machine) ?? cleared.set(machine, new Map()).get(machine) ?? new Map<string, string>();
+  const clearSlot = (machine: string, slots: Map<string, string>, label: string) => {
+    const key = slots.get(label);
+    slots.delete(label);
+    if (key !== undefined) clearedOn(machine).set(label, key);
+  };
   let sets = 0;
   let clears = 0;
   let dials = 0;
@@ -116,7 +124,8 @@ function fakeServers() {
         throw new RpcError({ code: "internal", message: "All 1 connections failed", details: null, unanswered: true });
       }
       const holderLabel = connection && "management" in connection ? /^ployz1:[^:]+:(cli-[^:]+):\d+$/u.exec(connection.management)?.[1] : undefined;
-      if (holderLabel !== undefined && clearedOn(connection?.machine_id ?? "").has(holderLabel)) {
+      if (holderLabel !== undefined && connection && "management" in connection
+        && clearedOn(connection.machine_id ?? "").get(holderLabel) === connection.management) {
         throw new RpcError({ code: "unauthenticated", message: "Machine confirmed this Management Client was cleared", details: { management_client: "cleared" } });
       }
       // One that holds no key passes a dial that allows that, as the SDK passes it.
@@ -151,8 +160,7 @@ function fakeServers() {
           const held = server.holdClear;
           server.holdClear = undefined;
           await held;
-          server.slots.delete(label);
-          clearedOn(connection?.machine_id ?? "").add(label);
+          clearSlot(connection?.machine_id ?? "", server.slots, label);
           const reply = server.holdClearReply;
           server.holdClearReply = undefined;
           await reply;
@@ -164,8 +172,8 @@ function fakeServers() {
   });
   /** A Clear of `label` that reaches `machine` late, after whatever Set came before it. */
   const clearLate = (machine: string, label: string) => {
-    servers.get(machine)?.slots.delete(label);
-    clearedOn(machine).add(label);
+    const server = servers.get(machine);
+    if (server !== undefined) clearSlot(machine, server.slots, label);
   };
   return { servers, layer, aborts, clearLate, sets: () => sets, clears: () => clears, dials: () => dials };
 }
@@ -1679,6 +1687,13 @@ it.live(
         assert.deepStrictEqual(healed.refused, []);
 
         // The new holder is the stored one now, and kept.
+        assert.strictEqual((yield* cli("POST", "server-access", alice)).json.connections?.[0]?.management, second);
+        assert.strictEqual(fake.sets(), 2);
+
+        // A slot another Set refilled is not a cleared one: the stored key stays, and nothing is Set again.
+        server.slots.set(label, `ployz1:${machine}:${label}:elsewhere`);
+        fake.clearLate(machine, label);
+        server.slots.set(label, `ployz1:${machine}:${label}:refilled`);
         assert.strictEqual((yield* cli("POST", "server-access", alice)).json.connections?.[0]?.management, second);
         assert.strictEqual(fake.sets(), 2);
       }).pipe(Effect.provide(layer));

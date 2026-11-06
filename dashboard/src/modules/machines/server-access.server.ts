@@ -147,6 +147,9 @@ export const provideServerAccess = Effect.fn("ServerAccess.provide")(function* (
   const results = yield* Effect.forEach(loaded.connections, (cloud) => Effect.gen(function* () {
     const machineId = cloud.machine_id;
     if (machineId === undefined) return yield* Effect.die("an Organization connection names its Machine");
+    // One deadline for this Server, so a stored holder's check and the new holder it provisions after a Clear fit the
+    // dial and Set's time together.
+    const deadline = (yield* Clock.currentTimeMillis) + SERVER_TIMEOUT_MS;
     const holder = and(
       eq(serverAccess.organizationId, caller.organization.id),
       eq(serverAccess.credentialId, caller.credential.id),
@@ -193,7 +196,8 @@ export const provideServerAccess = Effect.fn("ServerAccess.provide")(function* (
     const provisioned: Provisioned = yield* Effect.scoped(Effect.gen(function* () {
       const ployz = yield* Ployz;
       const runLog = Effect.runForkWith(yield* Effect.context());
-      const deadline = (yield* Clock.currentTimeMillis) + SERVER_TIMEOUT_MS;
+      const timeLeft = Clock.currentTimeMillis.pipe(Effect.map((now) => Math.max(1, deadline - now)));
+      const dialBudget = yield* timeLeft;
       const sampled = sampleDialTiming();
       const correlation = dialCorrelation();
       let cloudDialOutcome: DialTimingInput["outcome"] | undefined;
@@ -205,17 +209,16 @@ export const provideServerAccess = Effect.fn("ServerAccess.provide")(function* (
       const dialStarted = performance.now();
       // A Server that now answers for another Cluster is refused, never handed a Management Client.
       const dialed = yield* answered(ployz.connect({
-        connections: [cloud], timeoutMs: SERVER_TIMEOUT_MS, sampleDialTiming: sampled, dialCorrelation: correlation,
+        connections: [cloud], timeoutMs: dialBudget, sampleDialTiming: sampled, dialCorrelation: correlation,
         onDialTiming, expect,
       }, { closeWithin: clusterRead })
-        .pipe(Effect.timeout(SERVER_TIMEOUT_MS)));
+        .pipe(Effect.timeout(dialBudget)));
       const dialMs = performance.now() - dialStarted;
       cloudDialOutcome = dialed.outcome;
       for (const timing of pendingNativeTimings) runLog(logNativeDialTiming(timing, cloudDialOutcome));
       yield* logDialTiming({ stage: "cloud_dial", totalMs: dialMs, outcome: dialed.outcome, sampled, correlation });
       if (dialed.value === null) return { capability: null, refused: dialed.refused, revoked: false };
       const client = dialed.value;
-      const timeLeft = Clock.currentTimeMillis.pipe(Effect.map((now) => Math.max(1, deadline - now)));
       const token = crypto.randomUUID();
       const holding = eq(serverAccess.claim, token);
       let reclaiming = false;
