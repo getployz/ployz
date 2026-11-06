@@ -1385,10 +1385,18 @@ async fn remove_stray<C: MachineOperations>(
         drain: Drain::NONE,
         anonymous_volumes: AnonymousVolumes::Remove,
     };
-    let error = match client
-        .ensure_unsettled(machine_id, want, Some(RESTART_WAIT))
+    let removed = client.ensure_unsettled(machine_id, want, Some(RESTART_WAIT));
+    let answer = tokio::time::timeout(RESTART_WAIT, removed)
         .await
-    {
+        .unwrap_or_else(|_| {
+            Err(crate::cluster::answered_by(
+                machine_id,
+                ConnectError::Rpc(TransportError::budget_expired(
+                    "target Machine RPC timed out",
+                )),
+            ))
+        });
+    let error = match answer {
         Ok(EnsuredContainer::Ensured { .. }) => return,
         Ok(EnsuredContainer::Refused { refusal, .. })
             if matches!(
