@@ -525,7 +525,8 @@ fn unanswered(error: &LoginError) -> bool {
         | LoginError::AwaitingApproval { .. }
         | LoginError::TokenBound
         | LoginError::UnknownOrganization(_)
-        | LoginError::UnknownCredential(_) => false,
+        | LoginError::UnknownCredential(_)
+        | LoginError::AmbiguousCredential { .. } => false,
     }
 }
 

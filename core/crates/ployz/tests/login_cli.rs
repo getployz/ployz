@@ -117,6 +117,13 @@ fn fake_cloud(browser: Arc<Mutex<Browser>>, routes: Arc<Mutex<Vec<String>>>) -> 
                         "revoking": [],
                     }),
                 ),
+                "DELETE /api/cli/tokens/t2" => (
+                    200,
+                    json!({
+                        "removed": { "id": "t2", "kind": "token" },
+                        "servers": { "confirmed": ["1".repeat(32)], "unconfirmed": [] },
+                    }),
+                ),
                 "GET /api/cli/organizations" => (
                     200,
                     json!({ "organizations": [
@@ -261,6 +268,27 @@ fn token_ls_names_whose_each_token_is() {
         json.pointer("/tokens/0/owner"),
         None,
         "an older Cloud names no owner"
+    );
+}
+
+#[test]
+fn token_rm_revokes_a_token_by_the_name_token_ls_shows() {
+    let routes = Arc::new(Mutex::new(Vec::new()));
+    let (_dir, config) = signed_in(routes.clone());
+    routes.lock().unwrap().clear();
+
+    let removed = ployz(&config, &["--json", "token", "rm", "grace-ci"]);
+    assert!(removed.status.success(), "{removed:?}");
+    assert_eq!(
+        json_of(&removed),
+        json!({
+            "removed": { "id": "t2", "kind": "token" },
+            "servers": { "confirmed": ["1".repeat(32)], "unconfirmed": [] },
+        })
+    );
+    assert_eq!(
+        routes.lock().unwrap().as_slice(),
+        ["GET /api/cli/tokens", "DELETE /api/cli/tokens/t2"]
     );
 }
 

@@ -349,7 +349,8 @@ fn may_have_landed(error: &LoginError) -> bool {
         | LoginError::NotMember(_)
         | LoginError::TokenBound
         | LoginError::UnknownOrganization(_)
-        | LoginError::UnknownCredential(_) => false,
+        | LoginError::UnknownCredential(_)
+        | LoginError::AmbiguousCredential { .. } => false,
     }
 }
 

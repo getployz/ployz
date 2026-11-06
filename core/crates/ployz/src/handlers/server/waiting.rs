@@ -316,7 +316,8 @@ pub(super) fn may_have_acted(error: &StoreCallError) -> bool {
             | LoginError::NotMember(_)
             | LoginError::TokenBound
             | LoginError::UnknownOrganization(_)
-            | LoginError::UnknownCredential(_),
+            | LoginError::UnknownCredential(_)
+            | LoginError::AmbiguousCredential { .. },
         ) => false,
     }
 }

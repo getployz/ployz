@@ -51,7 +51,10 @@ pub(super) fn token_list_command(command: Command) -> Command {
 pub(super) fn token_remove_command(command: Command) -> Command {
     command
         .about("Revoke a token or sign out a device, at once")
-        .arg(positional("id", true).help("The token or device ID, from ployz token ls"))
+        .arg(
+            positional("id", true)
+                .help("The token's name or ID, or the device's ID, from ployz token ls"),
+        )
 }
 
 pub(super) fn org_group(command: Command) -> Command {
@@ -241,13 +244,14 @@ pub(super) fn token_list(root: &ArgMatches) -> Result<(), Error> {
 }
 
 pub(super) fn token_remove(root: &ArgMatches) -> Result<(), Error> {
-    let id = leaf_matches(root)
+    let target = leaf_matches(root)
         .get_one::<String>("id")
         .expect("id is required");
     let (removed, servers) = in_cloud(root, async |_, credential| {
-        cloud_account::remove_token(credential, id).await
+        let id = cloud_account::credential_id(credential, target).await?;
+        cloud_account::remove_token(credential, &id).await
     })?;
-    let next = retry_clears(&servers, id);
+    let next = retry_clears(&servers, &removed.id);
     let report = TokenRemoved {
         removed: &removed,
         servers: &servers,

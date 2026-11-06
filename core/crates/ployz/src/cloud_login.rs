@@ -92,6 +92,8 @@ pub(crate) enum LoginError {
     UnknownOrganization(String),
     #[error("no token or signed-in device {0} in this Organization")]
     UnknownCredential(String),
+    #[error("{} tokens in this Organization are named {name}: {}. Name one by its ID", ids.len(), ids.join(", "))]
+    AmbiguousCredential { name: String, ids: Vec<String> },
 }
 
 /// A bearer that never prints.

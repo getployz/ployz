@@ -515,6 +515,47 @@ pub(crate) async fn new_token(
     Ok(reply.token)
 }
 
+/// The ID `target` names in `ployz token rm`: a listed token, device or revoked credential
+/// by its ID, else the one token named exactly `target`. Anything else stays as given, so
+/// Cloud still answers for an ID it no longer lists.
+///
+/// # Errors
+///
+/// Returns [`LoginError::AmbiguousCredential`] when several tokens have that name, or a
+/// Cloud failure listing them.
+pub(crate) async fn credential_id(
+    credential: &Credential,
+    target: &str,
+) -> Result<String, LoginError> {
+    named_credential(&credentials(credential).await?, target)
+}
+
+fn named_credential(listed: &Credentials, target: &str) -> Result<String, LoginError> {
+    let ids = listed
+        .tokens
+        .iter()
+        .map(|token| &token.id)
+        .chain(listed.devices.iter().map(|device| &device.id))
+        .chain(listed.revoking.iter().map(|revoking| &revoking.id));
+    if ids.into_iter().any(|id| id == target) {
+        return Ok(target.to_owned());
+    }
+    let mut named: Vec<String> = listed
+        .tokens
+        .iter()
+        .filter(|token| token.name == target)
+        .map(|token| token.id.clone())
+        .collect();
+    match named.len() {
+        0 => Ok(target.to_owned()),
+        1 => Ok(named.remove(0)),
+        _ => Err(LoginError::AmbiguousCredential {
+            name: target.to_owned(),
+            ids: named,
+        }),
+    }
+}
+
 /// Revoke a token of the Organization, or sign out one of the caller's devices, then clear
 /// its Management Client on each Server. Rerun on a revoked id, it retries unconfirmed Servers.
 ///
@@ -1717,6 +1758,62 @@ mod tests {
         let bare = br#"{"_tag":"PublicError","code":"FORBIDDEN","message":"no"}"#;
         let error = answer::<serde_json::Value>(&device, StatusCode::FORBIDDEN, bare).unwrap_err();
         assert!(matches!(error, LoginError::NotMember(slug) if slug == "acme"));
+    }
+
+    #[tokio::test]
+    async fn token_rm_finds_a_token_by_its_exact_name_and_refuses_a_shared_one() {
+        const CI: &str = "00000000-0000-4000-8000-00000000000a";
+        const DEVICE: &str = "00000000-0000-4000-8000-00000000000d";
+        const REVOKING: &str = "00000000-0000-4000-8000-00000000000e";
+        let entry = |id: &str, name: &str| {
+            serde_json::json!({
+                "id": id, "name": name, "created_at": "2026-11-01", "expires_at": "2027-01-30",
+                "expired": false, "current": false, "kind": "cli", "scope": "full",
+            })
+        };
+        let listed = serde_json::json!({
+            "tokens": [
+                entry(CI, "ci"),
+                entry("00000000-0000-4000-8000-00000000000b", "shared"),
+                entry("00000000-0000-4000-8000-00000000000c", "shared"),
+                entry("00000000-0000-4000-8000-00000000000f", CI),
+            ],
+            "devices": [{ "id": DEVICE, "created_at": "2026-11-01", "expires_at": "2027-01-30", "current": true }],
+            "revoking": [{ "id": REVOKING, "kind": "token", "unconfirmed": [] }],
+        });
+        let cloud = fake_cloud(move |route, _| match route {
+            "GET /api/cli/tokens" => (200, listed.clone()),
+            _ => (404, serde_json::json!({ "code": "NOT_FOUND" })),
+        });
+        let credential = token(&cloud);
+
+        assert_eq!(credential_id(&credential, "ci").await.unwrap(), CI);
+        assert_eq!(
+            credential_id(&credential, CI).await.unwrap(),
+            CI,
+            "an ID wins over a name"
+        );
+        assert_eq!(credential_id(&credential, DEVICE).await.unwrap(), DEVICE);
+        assert_eq!(
+            credential_id(&credential, REVOKING).await.unwrap(),
+            REVOKING
+        );
+        assert_eq!(
+            credential_id(&credential, "Ci").await.unwrap(),
+            "Ci",
+            "names match exactly"
+        );
+        let error = credential_id(&credential, "shared").await.unwrap_err();
+        assert!(
+            matches!(&error, LoginError::AmbiguousCredential { name, ids } if name == "shared" && ids.len() == 2),
+            "{error}"
+        );
+        assert!(
+            error
+                .to_string()
+                .contains("00000000-0000-4000-8000-00000000000b"),
+            "{error}"
+        );
     }
 
     #[tokio::test]
