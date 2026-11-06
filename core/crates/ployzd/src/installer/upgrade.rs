@@ -246,7 +246,6 @@ async fn request_locked(
     )
     .await
     .map_err(Error::Resolve)?;
-    downgrade.admit(installed.as_ref(), &target)?;
     choice
         .admit(
             &request.release,
@@ -255,6 +254,7 @@ async fn request_locked(
             installed.as_ref(),
         )
         .await?;
+    downgrade.admit(installed.as_ref(), &target)?;
     if already_installed(&request.release, installed.as_ref(), &target) {
         // Nothing to install or restart: the attempt settles on its first reply.
         let stored = StoredAttempt {
