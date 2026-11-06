@@ -3008,7 +3008,7 @@ mod ensure_container {
         use ployz_core::{
             DeviceKey, Namespace, OPERATOR_SCOPE_HEADER, OperationId, RESTART_APPROVAL_CAPABILITY,
             SealingPublicKey, ServiceName, SetDeviceEnforcementRequest,
-            authority::{RestartApproval, Signed, Signer, Timestamp, WorkflowKind},
+            authority::{RestartApproval, Signed, Signer, StartingSet, Timestamp, WorkflowKind},
             rpc::status_details,
         };
         use tonic::Status;
@@ -3033,7 +3033,7 @@ mod ensure_container {
             store
                 .mutate(move |store| {
                     store.approve_device(device).unwrap();
-                    store.set_device_enforcement(true, &[]).unwrap();
+                    store.set_device_enforcement(true, Vec::new()).unwrap();
                 })
                 .await
                 .unwrap();
@@ -3536,7 +3536,10 @@ mod ensure_container {
                 .with_management_client([19; 32]);
             assert!(matches!(
                 operator
-                    .set_device_enforcement(SetDeviceEnforcementRequest { enforced: false })
+                    .set_device_enforcement(SetDeviceEnforcementRequest {
+                        enforced: false,
+                        starting_set: None,
+                    })
                     .await,
                 Err(crate::machine::LocalMachineError::NeedsFullScope)
             ));
@@ -3562,22 +3565,29 @@ mod ensure_container {
 
         #[tokio::test]
         async fn the_switch_answers_its_new_state_and_the_record_keeps_it() {
-            let (data_dir, _store, service, _fake) =
+            let (data_dir, store, service, _fake) =
                 fake_docker_service("ployzd-enforce-switch").await;
-            let (replicated, cluster_server) = crate::corrosion::fake_cluster::store().await;
-            replicated
-                .publish_local_machine(service.local.record().machine().unwrap())
+            let signer = Signer::from_seed(&[7; 32]);
+            let device = DeviceKey::from(signer.public());
+            store
+                .mutate(move |store| store.approve_device(device).unwrap())
                 .await
                 .unwrap();
-            let service = service.with_cluster_option(Some((
-                replicated,
-                crate::corrosion::AdminClient::new("/no/admin.sock"),
-            )));
+            let issued_at = Timestamp::now();
+            let set = StartingSet {
+                operation: OperationId::random(),
+                members: vec![service.local.record().machine().unwrap().into()],
+                issued_at,
+                expires_at: issued_at.plus(60_000),
+                signer: device,
+            };
+            let starting_set = Signed::sign(&set, &signer).unwrap();
             for enforced in [true, false] {
                 let reply = service
                     .set_device_enforcement(Request::new(
                         op::SetDeviceEnforcement::into_request(SetDeviceEnforcementRequest {
                             enforced,
+                            starting_set: enforced.then(|| starting_set.clone()),
                         })
                         .encode()
                         .unwrap(),
@@ -3592,7 +3602,6 @@ mod ensure_container {
                 assert_eq!(reply.enforced, enforced);
                 assert_eq!(service.local.record().device_enforcement(), enforced);
             }
-            cluster_server.abort();
             std::fs::remove_dir_all(data_dir).unwrap();
         }
     }

@@ -475,3 +475,26 @@ fn join_summary_names_the_server_subnet_and_endpoints_before_signing() {
         )
     );
 }
+
+#[test]
+fn starting_set_summary_names_each_trusted_server_before_signing() {
+    let first = machine('1', "machine-1");
+    let second = machine('2', "machine-2");
+    let reach = Reach {
+        asked: vec![first.id, second.id],
+        silent: Vec::new(),
+        entry: None,
+        names: BTreeMap::from([(first.id, first.name.clone())]),
+    };
+    assert_eq!(
+        starting_set_summary(&reach, &[(&first).into(), (&second).into()]),
+        format!(
+            "Trusting 2 Servers from the start: machine-1 ({}, {}), {} ({}, {}).",
+            first.subnet, first.id, second.id, second.subnet, second.id
+        )
+    );
+    assert_eq!(
+        starting_set_summary(&reach, &[]),
+        "Trusting 0 Servers from the start: none."
+    );
+}

@@ -352,12 +352,14 @@ impl LocalMachineStore {
         let enrollment = request.clone();
         if self.record.enrollment.as_ref() == Some(&request) {
             let plan = match self.record.phase() {
-                LocalMachinePhase::Joining | LocalMachinePhase::Participating => EnrollPlan::Replay(
-                    self.record
-                        .machine()
-                        .expect("persisted enrollment owns a Machine")
-                        .clone(),
-                ),
+                LocalMachinePhase::Joining | LocalMachinePhase::Participating => {
+                    EnrollPlan::Replay(
+                        self.record
+                            .machine()
+                            .expect("persisted enrollment owns a Machine")
+                            .clone(),
+                    )
+                }
                 LocalMachinePhase::Uninitialized
                 | LocalMachinePhase::Resetting
                 | LocalMachinePhase::Unrecognized(_) => EnrollPlan::Conflict(self.record.now()),
@@ -851,24 +853,32 @@ impl LocalMachineStore {
         Ok(())
     }
 
-    /// Turn Device enforcement on or off in one write. An unchanged setting skips the write.
+    /// Turn Device enforcement on or off in one write, trusting `starting` while on.
+    /// Turning it on afresh replaces the trusted Members; while on, `starting` adds to them.
     ///
     /// # Errors
     /// Returns a storage error if the updated record cannot be saved atomically.
     pub fn set_device_enforcement(
         &mut self,
         enforced: bool,
-        machines: &[Machine],
+        starting: Vec<ployz_core::authority::Member>,
     ) -> Result<(), StoreError> {
-        if self.record.device_enforcement == enforced {
-            return Ok(());
-        }
         let mut updated = self.record.clone();
-        updated.device_enforcement = enforced;
-        if enforced {
-            updated.trusted_machines = machines.iter().map(Into::into).collect();
+        if enforced && !self.record.device_enforcement {
+            updated.trusted_machines.clear();
             updated.membership_cluster =
                 SealingKey::load(&self.data_dir)?.map(|key| key.public_key());
+        }
+        updated.device_enforcement = enforced;
+        if enforced {
+            for member in starting {
+                if !updated.trusted_machines.contains(&member) {
+                    updated.trusted_machines.push(member);
+                }
+            }
+        }
+        if updated == self.record {
+            return Ok(());
         }
         save(&self.data_dir, &updated)?;
         self.record = updated;
@@ -1450,7 +1460,7 @@ mod device_slot_tests {
     fn device_enforcement_is_off_until_set_and_survives_reopening() {
         let (dir, mut store) = founded();
         assert!(!store.record().device_enforcement());
-        store.set_device_enforcement(true, &[]).unwrap();
+        store.set_device_enforcement(true, Vec::new()).unwrap();
 
         let store = reopened(&dir, store);
 

@@ -502,10 +502,13 @@ pub struct PushTargetSet {
 /// Whether this Machine requires a Device-signed approval before an Operator caller
 /// changes a Service. Full scope only, so neither Cloud nor a CLI without an approved
 /// Device can turn it off. Strict for the same reason as [`SetManagementClientRequest`].
-#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+/// Turning it on needs `starting_set`, the Machines a Device approved to trust from the start.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct SetDeviceEnforcementRequest {
     pub enforced: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub starting_set: Option<crate::authority::Signed<crate::authority::StartingSet>>,
 }
 
 /// The Device enforcement setting the Machine now holds.

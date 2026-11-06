@@ -2,7 +2,7 @@ use super::*;
 use ployz_core::{
     ApproveJoinRequest, DeviceKey, EnrollAs, EnrollRequest, SetDeviceEnforcementRequest,
     SetDeviceRequest, ShareSealingKeyRequest,
-    authority::{AuthorityRefusal, Signed, Signer},
+    authority::{AuthorityRefusal, Member, Signed, Signer, StartingSet, Timestamp},
 };
 
 async fn enforce(entry: &LocalMachine, signer: &Signer) {
@@ -12,10 +12,35 @@ async fn enforce(entry: &LocalMachine, signer: &Signer) {
         })
         .await
         .unwrap();
+    let members = entry
+        .replicated()
+        .unwrap()
+        .machines()
+        .await
+        .unwrap()
+        .observations
+        .iter()
+        .map(Into::into)
+        .collect();
     entry
-        .set_device_enforcement(SetDeviceEnforcementRequest { enforced: true })
+        .set_device_enforcement(enforce_request(signer, members))
         .await
         .unwrap();
+}
+
+fn enforce_request(signer: &Signer, members: Vec<Member>) -> SetDeviceEnforcementRequest {
+    let issued_at = Timestamp::now();
+    let set = StartingSet {
+        operation: ployz_core::OperationId::random(),
+        members,
+        issued_at,
+        expires_at: issued_at.plus(60_000),
+        signer: signer.public().into(),
+    };
+    SetDeviceEnforcementRequest {
+        enforced: true,
+        starting_set: Some(Signed::sign(&set, signer).unwrap()),
+    }
 }
 
 #[tokio::test]
@@ -178,7 +203,7 @@ async fn unsigned_enroll_and_share_are_refused_under_enforcement() {
     let signer = Signer::from_seed(&[1; 32]);
     enforce(&entry, &signer).await;
     joiner.approve_device(signer.public().into()).unwrap();
-    joiner.set_device_enforcement(true, &[]).unwrap();
+    joiner.set_device_enforcement(true, Vec::new()).unwrap();
     assert!(matches!(
         joiner.enroll(EnrollRequest {
             role: EnrollAs::Member { registration },
@@ -239,7 +264,8 @@ async fn enforcing_mesh_tcp_never_grants_full_scope_or_slot_administration() {
         client
             .set_device_enforcement(Request::new(
                 op::SetDeviceEnforcement::into_request(SetDeviceEnforcementRequest {
-                    enforced: false
+                    enforced: false,
+                    starting_set: None,
                 })
                 .encode()
                 .unwrap()
@@ -284,7 +310,6 @@ async fn enforcing_mesh_tcp_never_grants_full_scope_or_slot_administration() {
 
 #[tokio::test]
 async fn join_approval_lifetime_and_issue_time_are_bounded_before_admission() {
-    use ployz_core::authority::Timestamp;
     let (entry, replicated, _, directory, server) = participating().await;
     let signer = Signer::from_seed(&[1; 32]);
     enforce(&entry, &signer).await;
@@ -326,10 +351,10 @@ async fn join_approval_lifetime_and_issue_time_are_bounded_before_admission() {
 
 #[tokio::test]
 async fn join_consumption_uses_the_shared_persisted_approval_clock_floor() {
-    use ployz_core::authority::Timestamp;
     let (entry, replicated, _, directory, server) = participating().await;
     let signer = Signer::from_seed(&[1; 32]);
     enforce(&entry, &signer).await;
+    drop(entry);
     std::fs::write(
         directory.join("restart-approvals.json"),
         serde_json::to_vec(&serde_json::json!({
@@ -338,6 +363,11 @@ async fn join_consumption_uses_the_shared_persisted_approval_clock_floor() {
         .unwrap(),
     )
     .unwrap();
+    let owner = RecordOwner::spawn(LocalMachineStore::open(&directory).unwrap()).unwrap();
+    let entry = LocalMachine::new(owner).with_cluster(Some((
+        replicated.clone(),
+        crate::corrosion::AdminClient::new("/no/admin"),
+    )));
     let request = request("joiner", WireGuardPublicKey([2; 32]));
     assert!(entry.register(request.clone()).await.is_err());
     let mut body = entry.pending_joins().unwrap().joins.pop().unwrap();
@@ -574,7 +604,6 @@ async fn lost_register_reply_is_recovered_after_restart_with_the_same_capsule() 
 
 #[tokio::test]
 async fn enrollment_replay_does_not_revalidate_an_expired_approval_or_change_state() {
-    use ployz_core::authority::Timestamp;
     let (entry, _, _, directory, server) = participating().await;
     let signer = Signer::from_seed(&[1; 32]);
     enforce(&entry, &signer).await;
@@ -798,6 +827,133 @@ async fn resending_the_original_enroll_while_resetting_conflicts() {
         joiner.enroll(enrollment),
         Ok(EnrollPlan::Conflict(_))
     ));
+    server.abort();
+    drop(entry);
+    std::fs::remove_dir_all(directory).unwrap();
+}
+
+#[tokio::test]
+async fn enforcement_trusts_only_the_signed_starting_set_not_rows_registered_before_it() {
+    let (entry, raw, founder, directory, server) = participating().await;
+    let late = entry
+        .register(request("late", WireGuardPublicKey([4; 32])))
+        .await
+        .unwrap()
+        .assigned_machine;
+    let signer = Signer::from_seed(&[1; 32]);
+    entry
+        .set_device(SetDeviceRequest::Approve {
+            key: signer.public().into(),
+        })
+        .await
+        .unwrap();
+    entry
+        .set_device_enforcement(enforce_request(&signer, vec![(&founder).into()]))
+        .await
+        .unwrap();
+    assert!(!entry.record().accepts_machine(&late));
+    assert!(
+        !raw.machines()
+            .await
+            .unwrap()
+            .observations
+            .iter()
+            .all(|row| entry.record().accepts_machine(row))
+    );
+    assert!(
+        !entry
+            .replicated()
+            .unwrap()
+            .machines()
+            .await
+            .unwrap()
+            .observations
+            .iter()
+            .any(|row| row.id == late.id)
+    );
+    server.abort();
+    drop(entry);
+    std::fs::remove_dir_all(directory).unwrap();
+}
+
+#[tokio::test]
+async fn enforcement_refuses_a_missing_foreign_misscoped_or_reused_starting_set() {
+    let (entry, _, founder, directory, server) = participating().await;
+    let signer = Signer::from_seed(&[1; 32]);
+    entry
+        .set_device(SetDeviceRequest::Approve {
+            key: signer.public().into(),
+        })
+        .await
+        .unwrap();
+    let refused = |result| matches!(result, Err(LocalMachineError::EnforcementRefused(_)));
+    let unsigned = SetDeviceEnforcementRequest {
+        enforced: true,
+        starting_set: None,
+    };
+    assert!(refused(entry.set_device_enforcement(unsigned).await));
+    let foreign = enforce_request(&Signer::from_seed(&[2; 32]), vec![(&founder).into()]);
+    assert!(refused(entry.set_device_enforcement(foreign).await));
+    let mut other = founder.clone();
+    other.id = MachineId::random();
+    let misscoped = enforce_request(&signer, vec![(&other).into()]);
+    assert!(refused(entry.set_device_enforcement(misscoped).await));
+    assert!(!entry.record().device_enforcement());
+    let approved = enforce_request(&signer, vec![(&founder).into()]);
+    entry
+        .set_device_enforcement(approved.clone())
+        .await
+        .unwrap();
+    entry
+        .set_device_enforcement(SetDeviceEnforcementRequest {
+            enforced: false,
+            starting_set: None,
+        })
+        .await
+        .unwrap();
+    assert!(refused(entry.set_device_enforcement(approved).await));
+    assert!(!entry.record().device_enforcement());
+    server.abort();
+    drop(entry);
+    std::fs::remove_dir_all(directory).unwrap();
+}
+
+#[tokio::test]
+async fn a_saved_bootstrap_peer_outside_the_starting_set_is_not_offered_after_restart() {
+    let (entry, _, founder, directory, server) = participating().await;
+    let join_dir = tempfile::tempdir().unwrap();
+    let mut joiner = LocalMachineStore::open(join_dir.path()).unwrap();
+    let mut joining = request("joiner", joiner.record().private_key().public_key());
+    joining.machine_id = joiner.record().id();
+    let mut registration = entry.register(joining).await.unwrap();
+    let mut unapproved = founder.clone();
+    unapproved.id = MachineId::random();
+    unapproved.public_key = WireGuardPublicKey([9; 32]);
+    unapproved.subnet = "10.210.77.0/24".parse().unwrap();
+    registration.visible_peers.push(unapproved.clone());
+    joiner
+        .enroll(EnrollRequest {
+            role: EnrollAs::Member { registration },
+            wireguard_mtu: None,
+            pinned: Default::default(),
+        })
+        .unwrap();
+    joiner.complete_catch_up().unwrap();
+    let own = joiner.record().machine().unwrap().into();
+    joiner
+        .set_device_enforcement(true, vec![(&founder).into(), own])
+        .unwrap();
+    drop(joiner);
+    let joiner = LocalMachineStore::open(join_dir.path()).unwrap();
+    assert_eq!(
+        joiner
+            .record()
+            .bootstrap()
+            .iter()
+            .map(|row| row.id)
+            .collect::<Vec<_>>(),
+        vec![founder.id]
+    );
     server.abort();
     drop(entry);
     std::fs::remove_dir_all(directory).unwrap();

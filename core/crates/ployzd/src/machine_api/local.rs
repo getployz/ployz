@@ -1069,6 +1069,14 @@ fn local_failure(error: LocalMachineError) -> Result<RpcError, Status> {
                 "next": "ployz service restart from an approved device",
             }),
         )),
+        LocalMachineError::EnforcementRefused(_) => Err(ployz_core::rpc::hinted_status(
+            tonic::Code::PermissionDenied,
+            &error,
+            serde_json::json!({
+                "capability": ployz_core::SET_DEVICE_ENFORCEMENT_CAPABILITY,
+                "next": "ployz device enforce from an approved device",
+            }),
+        )),
         LocalMachineError::JoinConsumed(_) => Err(ployz_core::rpc::hinted_status(
             tonic::Code::PermissionDenied,
             &error,

@@ -198,20 +198,11 @@ pub struct LocalMachineRecord {
     #[serde(default)]
     device_enforcement: bool,
     #[serde(default)]
-    trusted_machines: Vec<ployz_core::authority::join::JoinAllocation>,
+    trusted_machines: Vec<ployz_core::authority::Member>,
     #[serde(default)]
     membership_cluster: Option<ployz_core::SealingPublicKey>,
     #[serde(default)]
     enrollment: Option<ployz_core::EnrollRequest>,
-}
-
-fn same_allocation(
-    allocation: &ployz_core::authority::join::JoinAllocation,
-    machine: &Machine,
-) -> bool {
-    allocation.id == machine.id
-        && allocation.public_key == machine.public_key
-        && allocation.subnet == machine.subnet
 }
 
 /// Public keys held by one Management Client slot. No secret is persisted.
@@ -325,7 +316,7 @@ impl LocalMachineRecord {
             return false;
         };
 
-        same_allocation(&body.machine, machine)
+        ployz_core::authority::Member::from(&body.machine).matches(machine)
             && body.sealing_recipient == machine.public_key
             && signers.contains(&body.signer.into())
             && self.membership_cluster == Some(body.cluster)
@@ -333,11 +324,11 @@ impl LocalMachineRecord {
 
     pub(crate) fn pins_machine(&self, machine: &Machine) -> bool {
         self.machine()
-            .is_some_and(|own| same_allocation(&own.into(), machine))
+            .is_some_and(|own| ployz_core::authority::Member::from(own).matches(machine))
             || self
                 .trusted_machines
                 .iter()
-                .any(|allocation| same_allocation(allocation, machine))
+                .any(|member| member.matches(machine))
     }
 
     /// Whether `remote` is a key some Clear left in a tombstone.
@@ -659,10 +650,15 @@ impl LocalMachineRecord {
         self.body.recovery_seed()
     }
 
-    /// Bootstrap Machines persisted for join and catch-up.
+    /// Bootstrap Machines persisted for join and catch-up that this Machine accepts.
     #[must_use]
-    pub fn bootstrap(&self) -> &[Machine] {
-        self.body.bootstrap()
+    pub fn bootstrap(&self) -> Vec<Machine> {
+        self.body
+            .bootstrap()
+            .iter()
+            .filter(|machine| self.accepts_machine(machine))
+            .cloned()
+            .collect()
     }
 
     /// Minimum store versions this joiner must reach before participating.

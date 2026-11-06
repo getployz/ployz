@@ -15,8 +15,8 @@ use ployz_core::{
     MachineId, MachineIdentity, MachineList, MachineName, MachineObservation, MachineToken,
     MachineUpdated, ManagementAddress, ManagementClientLabel, MembershipEvidence,
     PublicIpDiscovery, RESTART_APPROVAL_CAPABILITY, RecoverySeed, RegisterRequest, Registered,
-    RpcError, RpcErrorCode, RttObservation, RttStatistics, SelectedEndpoint, StorageDeparture,
-    UpdateMachineRequest, synthesize_membership,
+    RpcError, RpcErrorCode, RttObservation, RttStatistics, SET_DEVICE_ENFORCEMENT_CAPABILITY,
+    SelectedEndpoint, StorageDeparture, UpdateMachineRequest, synthesize_membership,
 };
 use thiserror::Error;
 use tokio_util::sync::CancellationToken;
@@ -177,6 +177,8 @@ pub enum Error {
     RestartRefused(#[from] ployz_core::authority::AuthorityRefusal),
     #[error("ployz.machine.join.device-approval.v1 needs a Device-signed join approval: {0}")]
     JoinRefused(ployz_core::authority::AuthorityRefusal),
+    #[error("{SET_DEVICE_ENFORCEMENT_CAPABILITY} needs a Device-signed starting set: {0}")]
+    EnforcementRefused(ployz_core::authority::AuthorityRefusal),
     #[error("could not keep the record of join approvals")]
     JoinRecord(#[source] std::io::Error),
     #[error("the join of Machine {0} has already been admitted")]

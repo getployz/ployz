@@ -154,7 +154,7 @@ impl NetworkPlane {
         }
         let now = SystemTime::now();
         let (peers, _) = attach_peer_selections(
-            peers_for(&machine.id, bootstrap),
+            peers_for(&machine.id, &bootstrap),
             Vec::new(),
             &record.selected_endpoints,
             now,
@@ -506,6 +506,13 @@ impl NetworkPlane {
             }
         };
         let record = local.record();
+        let accepted: BTreeSet<MachineId> = record
+            .bootstrap()
+            .iter()
+            .map(|machine| machine.id)
+            .collect();
+        self.bootstrap_peers
+            .retain(|peer| accepted.contains(&peer.machine_id));
         let Some((planned, set)) = snapshot_peers(
             &self.machine.id,
             snapshot,

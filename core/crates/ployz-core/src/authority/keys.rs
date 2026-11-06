@@ -19,6 +19,7 @@ use crate::{DeviceCode, DeviceKey};
 pub enum Purpose {
     Workflow,
     Join,
+    Enforce,
 }
 
 impl Purpose {
@@ -27,6 +28,7 @@ impl Purpose {
         match self {
             Self::Workflow => "workflow",
             Self::Join => "join",
+            Self::Enforce => "enforce",
         }
     }
 }

@@ -7,8 +7,10 @@ use std::path::Path;
 use clap::{Arg, ArgAction, ArgMatches, Command};
 use ployz_core::{
     DeviceCode, DeviceEnforcementSet, DeviceKey, DeviceSet, InspectRequest, MachineFailure,
-    MachineId, MachineName, MachineTarget, RpcError, SET_DEVICE_CAPABILITY,
-    SET_DEVICE_ENFORCEMENT_CAPABILITY, SetDeviceEnforcementRequest, SetDeviceRequest, op,
+    MachineId, MachineName, MachineTarget, OperationId, RpcError, SET_DEVICE_CAPABILITY,
+    SET_DEVICE_ENFORCEMENT_CAPABILITY, SetDeviceEnforcementRequest, SetDeviceRequest,
+    authority::{Member, Signed, Signer, StartingSet, Timestamp, validity},
+    op,
 };
 use reqwest::Method;
 use serde::{Deserialize, Serialize};
@@ -315,8 +317,17 @@ pub(crate) fn enforce(root: &ArgMatches) -> Result<(), Error> {
     runtime()?.block_on(async {
         let mut client = server::connect_full(leaf, context(leaf)).await?;
         let reach = Reach::full(&mut client).await?;
+        let starting_set = if enforced {
+            Some(sign_starting_set(&config_path(leaf)?, &client, &reach).await?)
+        } else {
+            None
+        };
+        let request = SetDeviceEnforcementRequest {
+            enforced,
+            starting_set,
+        };
         let (answers, gaps) = reach
-            .fan_out(|machine_id| enforce_on(client.clone(), machine_id, enforced))
+            .fan_out(|machine_id| enforce_on(client.clone(), machine_id, request.clone()))
             .await;
         let answers: Vec<Enforcement> = answers
             .into_iter()
@@ -354,16 +365,81 @@ struct Enforcement {
 async fn enforce_on(
     client: Client,
     machine_id: MachineId,
-    enforced: bool,
+    request: SetDeviceEnforcementRequest,
 ) -> Result<Option<DeviceEnforcementSet>, RpcError> {
     let target = MachineTarget::from(&machine_id);
     if !compat::supports(&client, &target, SET_DEVICE_ENFORCEMENT_CAPABILITY).await? {
         return Ok(None);
     }
     client
-        .invoke::<op::SetDeviceEnforcement>(SetDeviceEnforcementRequest { enforced }, &target, None)
+        .invoke::<op::SetDeviceEnforcement>(request, &target, None)
         .await
         .map(Some)
+}
+
+/// Sign the Servers that answer for themselves as the Members every Server trusts once
+/// enforcement is on. A row no Server answers for is left out.
+async fn sign_starting_set(
+    config: &Path,
+    client: &Client,
+    reach: &Reach,
+) -> Result<Signed<StartingSet>, Error> {
+    let secret = key::load(&key::path(config))?.ok_or_else(|| {
+        Error::conflict("Turning on Device enforcement needs this computer's approved Device key.")
+    })?;
+    let signer = Signer::from_seed(&secret);
+    let (answers, _) = reach
+        .fan_out(|machine_id| member_of(client.clone(), machine_id))
+        .await;
+    let members: Vec<Member> = answers.into_iter().map(|(_, member)| member).collect();
+    ui::note(starting_set_summary(reach, &members));
+    let issued_at = Timestamp::now();
+    Signed::sign(
+        &StartingSet {
+            operation: OperationId::random(),
+            members,
+            issued_at,
+            expires_at: issued_at.plus(validity::MAX_LIFETIME_MILLIS),
+            signer: signer.public().into(),
+        },
+        &signer,
+    )
+    .map_err(Error::command)
+}
+
+async fn member_of(client: Client, machine_id: MachineId) -> Result<Option<Member>, RpcError> {
+    let details = client
+        .invoke::<op::Inspect>(
+            InspectRequest::default(),
+            &MachineTarget::from(&machine_id),
+            None,
+        )
+        .await?;
+    Ok(details
+        .machine
+        .as_ref()
+        .filter(|machine| machine.id == machine_id)
+        .map(Member::from))
+}
+
+fn starting_set_summary(reach: &Reach, members: &[Member]) -> String {
+    let servers = members
+        .iter()
+        .map(|member| {
+            format!(
+                "{} ({}, {})",
+                reach.name(&member.id),
+                member.subnet,
+                member.id
+            )
+        })
+        .collect::<Vec<_>>()
+        .join(", ");
+    format!(
+        "Trusting {} Servers from the start: {}.",
+        members.len(),
+        if servers.is_empty() { "none" } else { &servers }
+    )
 }
 
 fn context(leaf: &ArgMatches) -> Option<&str> {

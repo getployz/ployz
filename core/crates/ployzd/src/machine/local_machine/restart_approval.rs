@@ -13,8 +13,8 @@ use ployz_core::{
     LocalMachinePhase, ManagementScope, OperationId, RunTarget, Sealing,
     SetDeviceEnforcementRequest,
     authority::{
-        AuthorityRefusal, Purpose, RestartApproval, RestartFacts, RestartStep, Signed, Timestamp,
-        restart,
+        AuthorityRefusal, Purpose, RestartApproval, RestartFacts, RestartStep, Signed, StartingSet,
+        Timestamp, restart, starting_set,
     },
 };
 use serde::{Deserialize, Serialize};
@@ -25,36 +25,52 @@ const FILE_NAME: &str = "restart-approvals.json";
 
 impl LocalMachine {
     /// Turn Device enforcement on or off under mutation admission, at Full scope only.
+    /// Turning it on trusts only the Members of a Device-signed starting set that names
+    /// this Machine, used once.
     ///
     /// # Errors
     /// Returns [`Error::NeedsFullScope`] for an Operator caller, [`Error::NotParticipating`]
-    /// when this Machine is not participating, admission failures, [`Error::RecordOwner`]
-    /// when the record owner has stopped, and [`Error::Store`] when the record cannot be
-    /// written.
+    /// when this Machine is not participating, [`Error::EnforcementRefused`] for a missing,
+    /// untrusted, expired or reused starting set, admission failures,
+    /// [`Error::RecordOwner`] when the record owner has stopped, and [`Error::Store`] when
+    /// the record cannot be written.
     pub async fn set_device_enforcement(
         &self,
         request: SetDeviceEnforcementRequest,
     ) -> Result<DeviceEnforcementSet, Error> {
-        let local = self.clone();
         let client = self.management_client;
+        let approvals = self.approvals.clone();
+        let owner = self.owner.clone();
         self.finish_mutation(async move {
-            let machines = if request.enforced && !local.record().device_enforcement() {
-                local.replicated()?.machines().await?.observations
-            } else {
-                Vec::new()
-            };
-            local
-                .owner
+            owner
                 .mutate(move |store| {
-                    if store.record().phase() != LocalMachinePhase::Participating {
+                    let record = store.record();
+                    if record.phase() != LocalMachinePhase::Participating {
                         return Err(Error::NotParticipating);
                     }
                     if client.is_some_and(|remote| {
-                        store.record().management_scope(&remote) != Some(ManagementScope::Full)
+                        record.management_scope(&remote) != Some(ManagementScope::Full)
                     }) {
                         return Err(Error::NeedsFullScope);
                     }
-                    store.set_device_enforcement(request.enforced, &machines)?;
+                    let starting = match (request.enforced, &request.starting_set) {
+                        (false, _) => Vec::new(),
+                        (true, None) => {
+                            return Err(Error::EnforcementRefused(AuthorityRefusal::Unsigned {
+                                purpose: Purpose::Enforce,
+                            }));
+                        }
+                        (true, Some(signed)) => {
+                            let own = record.machine().ok_or(Error::NotParticipating)?.into();
+                            let devices: Vec<DeviceKey> = record.devices().collect();
+                            let now = Timestamp::now();
+                            let body = starting_set::verify(signed, &devices, &own, now)
+                                .map_err(Error::EnforcementRefused)?;
+                            approvals.consume_starting_set(&body, now)?;
+                            body.members
+                        }
+                    };
+                    store.set_device_enforcement(request.enforced, starting)?;
                     Ok(DeviceEnforcementSet {
                         enforced: request.enforced,
                     })
@@ -256,6 +272,50 @@ impl ConsumptionLog {
             }
             .into());
         }
+        Ok(())
+    }
+
+    pub(crate) fn consume_starting_set(
+        &self,
+        set: &StartingSet,
+        now: Timestamp,
+    ) -> Result<(), Error> {
+        let mut guard = self
+            .operations
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        if guard.is_none() {
+            *guard = Some(self.load().map_err(Error::ApprovalRecord)?);
+        }
+        let consumption = guard.as_ref().expect("loaded above");
+        let now = consumption
+            .expiry_time_floor
+            .map_or(now, |floor| now.max(floor));
+        ployz_core::authority::validity::verify(set.issued_at, set.expires_at, now)
+            .map_err(Error::EnforcementRefused)?;
+        if consumption.operations.contains_key(&set.operation) {
+            return Err(Error::EnforcementRefused(AuthorityRefusal::Replayed {
+                operation: set.operation,
+            }));
+        }
+        let mut updated = consumption.clone();
+        updated.expiry_time_floor = Some(now);
+        updated.operations.insert(
+            set.operation,
+            Operation {
+                expires_at: set.expires_at,
+                containers: BTreeMap::new(),
+            },
+        );
+        let written = serde_json::to_vec(&updated)
+            .map_err(io::Error::other)
+            .and_then(|contents| crate::filesystem::atomic_write(&self.path, &contents, 0o600))
+            .map_err(Error::ApprovalRecord);
+        if let Err(error) = written {
+            *guard = None;
+            return Err(error);
+        }
+        *guard = Some(updated);
         Ok(())
     }
 

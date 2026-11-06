@@ -79,8 +79,10 @@ rerun the same command to recover the stored capsule, even after the approval ex
 
 A server that receives a valid approved capsule takes its Devices and starting peers only
 from that approval and enables enforcement. Each enforcing server checks new Machine rows
-against its own Devices before accepting them as members or WireGuard peers. Servers already
-present when you enable enforcement are its trusted starting set.
+against its own Devices before accepting them as members or WireGuard peers. The servers in the
+starting set you signed with `ployz device enforce` are trusted without a join approval. A peer
+saved by an older unsigned join that isn't in that set is dropped as a WireGuard and gossip peer,
+including after a restart.
 
 A fresh server has no independent pin for its first authority. If Cloud withholds the
 capsule during an approved join, the new server joins without the Sealing Key and under

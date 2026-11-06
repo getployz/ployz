@@ -262,7 +262,14 @@ ployz device enforce
 ployz device enforce --off
 ```
 
-`enforce` needs an approved device. It sets every server that answers and lists each server's
+`enforce` needs this computer's approved device key. Before it changes anything, it asks each
+server for its own ID, WireGuard key and subnet. It prints that starting set as
+`Trusting N Servers from the start:`, then each server's name, subnet and Machine ID, and signs it. Check
+the list. Each server then trusts only the servers in that signed set, plus servers whose join
+an approved device signed later. A server row that no server answers for is left out, even if
+it was registered just before. A server refuses a set that leaves itself out, is not signed by
+one of its devices, is over 15 minutes old, or was already used. With enforcement already on,
+`enforce` adds the servers in the new set. It sets every server that answers and lists each server's
 state. A server that doesn't answer is listed under failures, and one with no direct connection
 under omissions. Either way the command exits 3, and that server keeps its old setting. Run `enforce` again once it is reachable. A server
 from before this setting is reported with its rows missing, the same as one that's down, and

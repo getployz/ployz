@@ -993,7 +993,10 @@ async fn a_call_whose_redial_finds_another_cluster_ends_every_clone() {
                 .with_machine_id(target),
         ])
         .invoke_answered::<op::SetDeviceEnforcement>(
-            ployz_core::SetDeviceEnforcementRequest { enforced: false },
+            ployz_core::SetDeviceEnforcementRequest {
+                enforced: false,
+                starting_set: None,
+            },
             &MachineTarget::from(&target),
             None,
         )

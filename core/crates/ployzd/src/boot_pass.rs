@@ -464,7 +464,7 @@ impl BootHost for DaemonHost {
         if alone(
             &machines,
             &self.machine_id,
-            self.machine.record().bootstrap(),
+            &self.machine.record().bootstrap(),
         ) {
             return Peers::Alone;
         }

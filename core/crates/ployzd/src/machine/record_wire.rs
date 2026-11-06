@@ -34,7 +34,7 @@ pub(super) struct LocalMachineRecordWire {
     #[serde(default)]
     device_enforcement: bool,
     #[serde(default)]
-    trusted_machines: Vec<ployz_core::authority::join::JoinAllocation>,
+    trusted_machines: Vec<ployz_core::authority::Member>,
     #[serde(default)]
     membership_cluster: Option<ployz_core::SealingPublicKey>,
     #[serde(default)]

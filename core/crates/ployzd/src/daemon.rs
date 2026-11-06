@@ -865,7 +865,7 @@ async fn start_corrosion(
         .parent()
         .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "socket path has no parent"))?;
     let paths = CorrosionPaths::under(&config.data_dir, run_dir);
-    let bootstrap = record.bootstrap().iter().map(|machine| {
+    let bootstrap = record.bootstrap().into_iter().map(|machine| {
         SocketAddr::new(
             IpAddr::V6(machine.management_address().0),
             CORROSION_GOSSIP_PORT,
