@@ -332,6 +332,11 @@ these there:
 | TCP 80, TCP and UDP 443 | Anywhere | Your apps over https, and their certificates, on servers that take web traffic |
 | UDP 51820 | Your other servers | Services on different servers reaching each other |
 
+On a server that runs firewalld, as RHEL, Rocky, Alma and Fedora do by default, also open UDP 51820
+in its firewalld zone, as
+[Servers that run firewalld can't reach each other](../troubleshooting/servers.md#servers-that-run-firewalld-cant-reach-each-other)
+shows.
+
 ## IPv6-only servers
 
 Ployz downloads its releases from github.com, which has no IPv6 address. When a server can't reach

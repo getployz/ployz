@@ -324,7 +324,9 @@ your other servers list it as joined before the wait ran out. Start at step 1.
 
 1. Run the same command again. A first start can take several minutes.
 2. Make sure your servers reach each other on UDP 51820, in both directions, in the server's own
-   firewall and in any firewall your provider runs in front of them.
+   firewall and in any firewall your provider runs in front of them. On a server that runs
+   firewalld, follow
+   [Servers that run firewalld can't reach each other](#servers-that-run-firewalld-cant-reach-each-other).
 3. Read the server's logs with `sudo journalctl -u ployz -n 200`, or the error's `cause:` line
    when the wait reached the server over SSH. Only if they say `refusing to
    change the retained WireGuard interface` or `refusing to replace the existing Docker network`,
@@ -767,6 +769,26 @@ something keeps rewriting the firewall. Find it and have it add its rules below 
 If iptables fails, for example because another program holds its lock for more than 10 seconds,
 the log says `failed to reapply firewall rules` with iptables' reason, and Ployz tries again a
 minute later. Ployz 0.3.16 and earlier put the rules back only when the server restarts.
+
+## Servers that run firewalld can't reach each other
+
+On a server that runs firewalld, as RHEL, Rocky, Alma and Fedora do by default, the server doesn't
+finish joining, or joins but its services can't reach your other servers. Ployz opens UDP 51820
+in iptables, but firewalld's zone can still drop that traffic. Open the port in the zone the server's public
+interface uses, on each server that runs firewalld:
+
+```sh
+sudo firewall-cmd --get-active-zones
+sudo firewall-cmd --zone=public --permanent --add-port=51820/udp
+sudo firewall-cmd --reload
+```
+
+Use the zone the first command names in place of `public`. `--permanent` keeps the port open after
+a reboot, and `--reload` applies it now. The reload can also clear Ployz's own iptables rules; Ployz
+puts them back within a minute, as
+[Services on other servers stop answering after a firewall change](#services-on-other-servers-stop-answering-after-a-firewall-change)
+describes. On Ployz 0.3.16 and earlier, run `sudo systemctl restart ployz` after the reload
+instead.
 
 ## Apps see IPv6 visitors as 10.210.x.1, or services can't reach IPv6 addresses
 
