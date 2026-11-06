@@ -739,11 +739,24 @@ fn sent_strings(token: &CloudEnrollToken, body: &EnrollCallback<'_>) -> Vec<Stri
 }
 
 fn coded_refusal_status(body: &str, sent: &[String], operation: &str) -> Error {
+    let join_approval = serde_json::from_str::<serde_json::Value>(body)
+        .ok()
+        .and_then(|mut parsed| {
+            let details = parsed.as_object_mut()?.remove("details")?;
+            (details == serde_json::json!({ "capability": ployz_core::JOIN_APPROVAL_CAPABILITY }))
+                .then(|| parsed.to_string())
+        });
+    let said = coded_cloud_refusal(join_approval.as_deref().unwrap_or(body), sent);
     Error::CodedConflict {
-        body: coded_cloud_refusal(body, sent).map_or_else(
-            || format!("{operation} rejected"),
-            |said| serde_json::json!({ "error": said }).to_string(),
-        ),
+        body: match (said, join_approval.is_some()) {
+            (Some(said), false) => serde_json::json!({ "error": said }).to_string(),
+            (None, false) => format!("{operation} rejected"),
+            (said, true) => serde_json::json!({
+                "error": said.unwrap_or_else(|| format!("{operation} rejected")),
+                "details": { "capability": ployz_core::JOIN_APPROVAL_CAPABILITY },
+            })
+            .to_string(),
+        },
     }
 }
 
@@ -2524,22 +2537,31 @@ mod tests {
 
 #[cfg(test)]
 mod join_capability_tests {
-    use super::Error;
+    use super::coded_refusal_status;
     #[test]
-    fn join_approval_is_selected_by_details_not_error_text() {
+    fn join_approval_capability_survives_the_refusal_sanitiser_and_only_from_details() {
         let capability = ployz_core::JOIN_APPROVAL_CAPABILITY;
-        let error = |body| Error::CodedConflict { body };
-        assert_eq!(
-            error(
-                serde_json::json!({"error":"Approval needed", "details":{"capability":capability}})
-                    .to_string()
+        let refused = |body: serde_json::Value| {
+            coded_refusal_status(
+                &body.to_string(),
+                &["pmet_secret_token_value".to_owned()],
+                "enrollment",
             )
-            .capability()
-            .as_deref(),
-            Some(capability)
+        };
+        let approval = refused(serde_json::json!({
+            "error": "Approve this join.", "details": {"capability": capability},
+        }));
+        assert_eq!(approval.capability().as_deref(), Some(capability));
+        assert!(approval.to_string().contains("Approve this join."));
+        assert_eq!(
+            refused(serde_json::json!({"error": capability})).capability(),
+            None
         );
         assert_eq!(
-            error(serde_json::json!({"error":capability}).to_string()).capability(),
+            refused(serde_json::json!({
+                "error": "x", "details": {"capability": "pmet_secret_token_value"},
+            }))
+            .capability(),
             None
         );
     }
