@@ -259,13 +259,14 @@ ployz device enforce --off
 
 `enforce` needs an approved device. It sets every server that answers and lists each server's
 state. A server that's down keeps its old setting. Run `enforce` again once it's back. A server
-from before this setting is listed as missing and restarts as before.
+from before this setting is reported with its rows missing, the same as one that's down, and
+restarts as before. Upgrade it first.
 
 With enforcement on, `service restart` from a device that isn't approved is refused with
 `ployz.restart.device-approval.v1 needs a Device-signed restart approval`. So are `service stop`,
-`service start` and `deploy` through Ployz Cloud, since they stop the same containers and don't
-carry an approval yet. Turn enforcement off to run them. Over `--connect ssh://` everything works
-as before.
+`service start` and `deploy` through Ployz Cloud, since they start or stop containers through the
+same steps and don't carry an approval yet. That includes the first deploy of a new service. Turn
+enforcement off to run them. Over `--connect ssh://` everything works as before.
 
 ## Change what a server does
 

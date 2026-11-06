@@ -260,6 +260,9 @@ struct Scripted {
     /// A Held ask on this copy lands, but no reply to it, or to a resend,
     /// ever arrives.
     unanswered_held: BTreeSet<ContainerId>,
+    /// A Held ask on this copy is refused before the Machine acts, as under Device
+    /// enforcement.
+    refused_held: BTreeSet<ContainerId>,
     /// The reason an unanswered In or Held ask fails with.
     unanswered_reason: &'static str,
     /// This many route reads fail before the next one answers.
@@ -327,6 +330,7 @@ impl Scripted {
             answered_error_after_in: BTreeSet::new(),
             unrouted_in: BTreeSet::new(),
             unanswered_held: BTreeSet::new(),
+            refused_held: BTreeSet::new(),
             unanswered_reason: "no answer before the deadline",
             failed_route_reads: Mutex::new(0),
             read_latency: false,
@@ -882,8 +886,18 @@ impl Scripted {
             Decision::Write(to) => to,
         };
         let routing = to == CopyRotation::In;
+        let holding = matches!(to, CopyRotation::Held(_));
         if routing && self.unrouted_in.contains(&container_id) {
             return Err(no_server_named(machine_id));
+        }
+        if holding && self.refused_held.contains(&container_id) {
+            return Err(RpcError {
+                code: RpcErrorCode::from(crate::connect::FORBIDDEN),
+                message: "ployz.restart.device-approval.v1 needs a Device-signed restart approval"
+                    .into(),
+                details: serde_json::Value::Null,
+                cause: Vec::new(),
+            });
         }
         if routing {
             let stopped = self
@@ -926,7 +940,6 @@ impl Scripted {
         if let Some(reads) = left_in.and_then(|service| self.withheld.get(&service)) {
             self.lingering.lock().unwrap().insert(container_id, *reads);
         }
-        let holding = matches!(to, CopyRotation::Held(_));
         self.applied(Move::To(container_id, to));
         if routing && self.answered_error_after_in.contains(&container_id) {
             return Err(error("Docker inspect failed after writing In"));

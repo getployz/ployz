@@ -762,6 +762,37 @@ async fn an_unanswered_held_ask_whose_re_read_fails_brings_the_copy_back_in() {
     }
 }
 
+/// A Machine that refuses the Hold answered before acting, so the copy is as it was.
+/// The command gives the refusal alone, with no bring-in and no word on where it left
+/// the copy.
+#[tokio::test(start_paused = true)]
+async fn a_refused_hold_leaves_the_copy_as_it_was_and_says_only_why() {
+    for (command, verb) in [(Command::Restart, "restarted"), (Command::Stop, "stopped")] {
+        let fake = Scripted {
+            refused_held: BTreeSet::from([container('1')]),
+            ..Scripted::new(vec![inspected()])
+        }
+        .with_copy(&machine('a'), &container('1'), CopyRotation::In);
+        let ran = run_command(command, Recording::of(fake)).await;
+        let error = ran.answer.unwrap_err();
+        assert_eq!(error.code.as_str(), "forbidden", "{command:?}: {error:?}");
+        assert_eq!(
+            error.message,
+            format!(
+                "Container {} was not {verb}: ployz.restart.device-approval.v1 needs a Device-signed restart approval",
+                container('1')
+            ),
+            "{command:?}"
+        );
+        assert_eq!(ran.rotation, Some(CopyRotation::In), "{command:?}");
+        assert!(
+            matches!(ran.wants.as_slice(), [ContainerWant::Held { .. }]),
+            "{command:?} sent {:?}",
+            ran.wants
+        );
+    }
+}
+
 /// A failed restart or stop reads as the reason, then where the copy was left,
 /// however the reason ended: one sentence break, never a doubled or stray one.
 #[tokio::test(start_paused = true)]
