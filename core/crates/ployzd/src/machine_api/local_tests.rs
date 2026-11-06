@@ -3564,6 +3564,15 @@ mod ensure_container {
         async fn the_switch_answers_its_new_state_and_the_record_keeps_it() {
             let (data_dir, _store, service, _fake) =
                 fake_docker_service("ployzd-enforce-switch").await;
+            let (replicated, cluster_server) = crate::corrosion::fake_cluster::store().await;
+            replicated
+                .publish_local_machine(service.local.record().machine().unwrap())
+                .await
+                .unwrap();
+            let service = service.with_cluster_option(Some((
+                replicated,
+                crate::corrosion::AdminClient::new("/no/admin.sock"),
+            )));
             for enforced in [true, false] {
                 let reply = service
                     .set_device_enforcement(Request::new(
@@ -3583,6 +3592,7 @@ mod ensure_container {
                 assert_eq!(reply.enforced, enforced);
                 assert_eq!(service.local.record().device_enforcement(), enforced);
             }
+            cluster_server.abort();
             std::fs::remove_dir_all(data_dir).unwrap();
         }
     }
