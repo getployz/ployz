@@ -48,6 +48,9 @@ use crate::{
 };
 
 const NETWORK_MTU: u32 = 1420;
+/// How long another tool's firewall change may shadow the mesh before the
+/// rules are applied again.
+const FIREWALL_INTERVAL: Duration = Duration::from_secs(60);
 const DOCKER_NETWORK_MANAGED_LABEL: &str = "ployzd.managed";
 
 /// A peer's routes and the MTU set on them, kept while those routes are installed:
@@ -205,7 +208,9 @@ impl NetworkPlane {
     ///
     /// Peers are rebuilt when the view publishes a different snapshot. The device
     /// is polled every second: handshakes and endpoint roaming have no event. An
-    /// operator's endpoint from `choices` goes to WireGuard at once.
+    /// operator's endpoint from `choices` goes to WireGuard at once. The firewall
+    /// is applied again every [`FIREWALL_INTERVAL`], since ufw-docker, a
+    /// firewalld reload or a security agent can rewrite iptables at any time.
     pub async fn run(
         &mut self,
         machines: Option<(ReplicatedStore, MachineView)>,
@@ -213,10 +218,20 @@ impl NetworkPlane {
         mut choices: mpsc::Receiver<EndpointChoice>,
         shutdown: CancellationToken,
     ) -> io::Result<()> {
+        let mut firewall = tokio::time::interval_at(
+            tokio::time::Instant::now() + FIREWALL_INTERVAL,
+            FIREWALL_INTERVAL,
+        );
+        firewall.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
         let Some((replicated, machines)) = machines else {
             drop(choices);
-            shutdown.cancelled().await;
-            return Ok(());
+            loop {
+                tokio::select! {
+                    biased;
+                    () = shutdown.cancelled() => return Ok(()),
+                    _ = firewall.tick() => self.reapply_firewall().await,
+                }
+            }
         };
         let mut machines = machines.watch();
         machines.mark_changed();
@@ -249,6 +264,7 @@ impl NetworkPlane {
                 }
                 Some(choice) = choices.recv() => self.apply_choice(choice, &local).await,
                 Some(report) = path_reports.recv() => self.apply_path(report),
+                _ = firewall.tick() => self.reapply_firewall().await,
                 _ = ticker.tick() => {
                     // A rebuild that couldn't read the store, or only added, tries again here.
                     self.rebuild_when_changed(&replicated, &machines, &mut previous, &local)
@@ -672,6 +688,27 @@ impl NetworkPlane {
             persist_selection(local, peer, endpoint).await;
         }
         let _ = applied.send(outcome);
+    }
+
+    async fn reapply_firewall(&self) {
+        let subnet = self.machine.subnet;
+        let management_address = self.machine.management_address();
+        let applied = tokio::task::spawn_blocking(move || {
+            super::apply_firewall_rules(subnet, management_address)
+        })
+        .await
+        .expect("firewall apply does not panic");
+        match applied {
+            Ok(moved) if moved.is_empty() => {}
+            Ok(moved) => eprintln!(
+                "restored firewall rules that were missing or no longer first: {}",
+                moved.join("; "),
+            ),
+            Err(error) => eprintln!(
+                "failed to reapply firewall rules: {error}",
+                error = ployz_core::error_chain::inline(&error),
+            ),
+        }
     }
 
     async fn rollback_start(&mut self, docker_created: bool, wireguard_created: bool) {

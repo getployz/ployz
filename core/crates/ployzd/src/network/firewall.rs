@@ -1,6 +1,7 @@
 use std::{
     io::Write,
     process::{Command, Stdio},
+    sync::{Mutex, MutexGuard, PoisonError},
 };
 
 use ployz_core::{MANAGEMENT_PORT, MachineSubnet, ManagementAddress, VOLUME_SEND_PORT};
@@ -19,12 +20,26 @@ const BUILD_CHAIN: &str = "PLOYZ-BUILD";
 /// Hooked first in mangle FORWARD for traffic off any build bridge.
 const BUILD_FORWARD_CHAIN: &str = "PLOYZ-BUILD-FORWARD";
 
+/// Each writer here moves hooks from a listing it read first, and a Build's
+/// fence runs beside the network's periodic re-apply. One writer at a time
+/// keeps that listing true when the restore lands.
+static WRITER: Mutex<()> = Mutex::new(());
+
+fn writer() -> MutexGuard<'static, ()> {
+    WRITER.lock().unwrap_or_else(PoisonError::into_inner)
+}
+
 /// Apply the Machine's ingress and forwarding policy, including the private
 /// Machine API, Direct Image Transfer and Volume send endpoints on `management_address`.
 ///
 /// Each address family's policy lands in one restore transaction, so a running
 /// Machine never passes through a state that admits less or more than either the
-/// old policy or the new one.
+/// old policy or the new one. Applying again converges: the Ployz chains are
+/// rewritten whole, and each hook and ordered rule goes back to the top of its
+/// chain when another tool has displaced or deleted it.
+///
+/// Returns each hook or ordered rule that was missing or no longer first, as
+/// `<table> <chain>: <rule>`. A fresh Machine reports them all.
 ///
 /// # Errors
 ///
@@ -33,7 +48,9 @@ const BUILD_FORWARD_CHAIN: &str = "PLOYZ-BUILD-FORWARD";
 pub fn apply_firewall_rules(
     subnet: MachineSubnet,
     management_address: ManagementAddress,
-) -> Result<(), NetworkError> {
+) -> Result<Vec<String>, NetworkError> {
+    let _writer = writer();
+    let mut moved = Vec::new();
     let gateway = subnet.gateway().0;
     let dns_port = dns::PORT;
     let mut ipv4 = mesh_ports();
@@ -42,12 +59,13 @@ pub fn apply_firewall_rules(
             "-i {DOCKER_NETWORK_NAME} -d {gateway} -p {protocol} --dport {dns_port} -j ACCEPT"
         ));
     }
-    let mut ipv4_document = filter_document("iptables", &ipv4)?;
+    let mut ipv4_document = filter_document("iptables", &ipv4, &mut moved)?;
     let nat_moves = move_to_top(
         "iptables",
         "nat",
         "POSTROUTING",
         &format!("-s {subnet} -o {WIREGUARD_INTERFACE_NAME} -j RETURN"),
+        &mut moved,
     )?;
     if !nat_moves.is_empty() {
         ipv4_document.push_str(&format!("*nat\n{nat_moves}COMMIT\n"));
@@ -57,6 +75,7 @@ pub fn apply_firewall_rules(
         "filter",
         "DOCKER-USER",
         &format!("-i {WIREGUARD_INTERFACE_NAME} -o {DOCKER_NETWORK_NAME} -j ACCEPT"),
+        &mut moved,
     )?;
     if !forward_moves.is_empty() {
         ipv4_document.push_str(&format!("*filter\n{forward_moves}COMMIT\n"));
@@ -64,21 +83,28 @@ pub fn apply_firewall_rules(
     ipv4_document.push_str(&build_forward_document(
         "iptables",
         &ipv4_build_forwarding(),
+        &mut moved,
     )?);
     restore("iptables", &ipv4_document)?;
     add_mss_clamp();
     for rule in LOOSE_BUILD_FORWARDING {
         delete_rule("iptables", "mangle", "FORWARD", rule)?;
     }
-    let mut ipv6_document = filter_document("ip6tables", &management_policy(management_address))?;
+    let mut ipv6_document = filter_document(
+        "ip6tables",
+        &management_policy(management_address),
+        &mut moved,
+    )?;
     if docker_ipv6_firewall().is_ok() {
-        ipv6_document.push_str(&container_mesh_fence_document()?);
+        ipv6_document.push_str(&container_mesh_fence_document(&mut moved)?);
     }
     ipv6_document.push_str(&build_forward_document(
         "ip6tables",
         &ipv6_build_forwarding(),
+        &mut moved,
     )?);
-    restore("ip6tables", &ipv6_document)
+    restore("ip6tables", &ipv6_document)?;
+    Ok(moved)
 }
 
 /// A Service Container's TCP to a peer's Service crosses this Machine's router. Its SYN
@@ -121,12 +147,13 @@ fn container_mesh_fence() -> String {
     format!("-i {DOCKER_NETWORK_NAME} -o {WIREGUARD_INTERFACE_NAME} -j DROP")
 }
 
-fn container_mesh_fence_document() -> Result<String, NetworkError> {
+fn container_mesh_fence_document(moved: &mut Vec<String>) -> Result<String, NetworkError> {
     let moves = move_to_top(
         "ip6tables",
         "filter",
         "DOCKER-USER",
         &container_mesh_fence(),
+        moved,
     )?;
     Ok(if moves.is_empty() {
         moves
@@ -157,7 +184,8 @@ fn docker_user_chain() -> bool {
 ///
 /// Returns an error when ip6tables rejects the rule.
 pub(super) fn fence_container_ipv6() -> Result<(), NetworkError> {
-    let document = container_mesh_fence_document()?;
+    let _writer = writer();
+    let document = container_mesh_fence_document(&mut Vec::new())?;
     if document.is_empty() {
         Ok(())
     } else {
@@ -250,7 +278,11 @@ fn build_forward_jump() -> String {
     )
 }
 
-fn build_forward_document(program: &str, rules: &[String]) -> Result<String, NetworkError> {
+fn build_forward_document(
+    program: &str,
+    rules: &[String],
+    moved: &mut Vec<String>,
+) -> Result<String, NetworkError> {
     chain_document(
         program,
         "mangle",
@@ -258,6 +290,7 @@ fn build_forward_document(program: &str, rules: &[String]) -> Result<String, Net
         &build_forward_jump(),
         BUILD_FORWARD_CHAIN,
         rules,
+        moved,
     )
 }
 
@@ -276,6 +309,8 @@ const DNS_PORT: u16 = 53;
 ///
 /// Returns why the fence could not be installed. The Build must not solve.
 pub fn fence_builder(fence: &ployz_build::Fence) -> Result<(), String> {
+    let _writer = writer();
+    let mut moved = Vec::new();
     let chain = format!("{BUILD_CHAIN}{}", fence.slot);
     for (program, rules, forwarding) in [
         ("iptables", ipv4_fence(fence), ipv4_build_forwarding()),
@@ -288,8 +323,9 @@ pub fn fence_builder(fence: &ployz_build::Fence) -> Result<(), String> {
             &format!("-j {chain}"),
             &chain,
             &rules,
+            &mut moved,
         )
-        .and_then(|fence| Ok(fence + &build_forward_document(program, &forwarding)?))
+        .and_then(|fence| Ok(fence + &build_forward_document(program, &forwarding, &mut moved)?))
         .and_then(|document| restore(program, &document))
         .map_err(|error| ployz_core::error_chain::inline(&error))?;
     }
@@ -410,7 +446,11 @@ fn management_policy(management_address: ManagementAddress) -> Vec<String> {
     rules
 }
 
-fn filter_document(program: &str, rules: &[String]) -> Result<String, NetworkError> {
+fn filter_document(
+    program: &str,
+    rules: &[String],
+    moved: &mut Vec<String>,
+) -> Result<String, NetworkError> {
     chain_document(
         program,
         "filter",
@@ -418,6 +458,7 @@ fn filter_document(program: &str, rules: &[String]) -> Result<String, NetworkErr
         &format!("-j {INPUT_CHAIN}"),
         INPUT_CHAIN,
         rules,
+        moved,
     )
 }
 
@@ -430,22 +471,25 @@ fn chain_document(
     jump: &str,
     chain: &str,
     rules: &[String],
+    moved: &mut Vec<String>,
 ) -> Result<String, NetworkError> {
     let mut document = format!("*{table}\n:{chain} - [0:0]\n");
     for rule in rules {
         document.push_str(&format!("-A {chain} {rule}\n"));
     }
-    document.push_str(&move_to_top(program, table, hook, jump)?);
+    document.push_str(&move_to_top(program, table, hook, jump, moved)?);
     document.push_str("COMMIT\n");
     Ok(document)
 }
 
 /// Restore lines that make `rule` the first in `chain`; none when it already is.
+/// A rule that needs them is recorded in `moved`.
 fn move_to_top(
     program: &str,
     table: &str,
     chain: &str,
     rule: &str,
+    moved: &mut Vec<String>,
 ) -> Result<String, NetworkError> {
     let listing = checked_command(program, &["-t", table, "-S", chain])?;
     let expected = format!("-A {chain} {rule}");
@@ -456,6 +500,7 @@ fn move_to_top(
     if first.as_deref() == Some(expected.as_str()) {
         return Ok(String::new());
     }
+    moved.push(format!("{table} {chain}: {rule}"));
     let mut check = vec!["-t", table, "-C", chain];
     check.extend(rule.split(' '));
     let mut moves = String::new();
@@ -491,6 +536,7 @@ fn restore(program: &str, document: &str) -> Result<(), NetworkError> {
 }
 
 pub(super) fn remove_firewall_rules(subnet: MachineSubnet) -> Result<(), NetworkError> {
+    let _writer = writer();
     let mut failures = Vec::new();
     let mut attempt = |result: Result<(), NetworkError>| {
         if let Err(error) = result {
@@ -755,12 +801,14 @@ mod tests {
             }
             restore(
                 "iptables",
-                &build_forward_document("iptables", &ipv4_build_forwarding()).unwrap(),
+                &build_forward_document("iptables", &ipv4_build_forwarding(), &mut Vec::new())
+                    .unwrap(),
             )
             .unwrap();
             restore(
                 "ip6tables",
-                &build_forward_document("ip6tables", &ipv6_build_forwarding()).unwrap(),
+                &build_forward_document("ip6tables", &ipv6_build_forwarding(), &mut Vec::new())
+                    .unwrap(),
             )
             .unwrap();
             remove_firewall_rules("10.210.1.0/24".parse().unwrap()).unwrap();

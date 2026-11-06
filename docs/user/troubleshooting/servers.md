@@ -750,6 +750,18 @@ the two servers, or move one of them. Once full-size packets cross again, the wa
 within a minute. A server on 0.3.6 or earlier doesn't check, so it can't name the cause; a call
 routed through it says `target Machine RPC timed out` instead.
 
+## Services on other servers stop answering after a firewall change
+
+Ployz keeps its own iptables rules first in `INPUT` and Docker's `DOCKER-USER` chain. A tool that
+later inserts rules above them or flushes them, such as ufw-docker, `firewall-cmd --reload` or a
+security agent, can cut services off from other servers. Ployz checks its rules every minute and
+puts back any that are missing or no longer first, so traffic returns within a minute with no
+restart. `journalctl -u ployz` names each rule it put back, as in
+`restored firewall rules that were missing or no longer first: filter DOCKER-USER: -i ployz-wg -o ployz -j ACCEPT`.
+When that line repeats every minute, something keeps rewriting the firewall. Find it and have it
+add its rules below Ployz's. Ployz 0.3.16 and earlier put the rules back only when the server
+restarts.
+
 ## Apps see IPv6 visitors as 10.210.x.1, or services can't reach IPv6 addresses
 
 Through a domain, your app's `X-Forwarded-For` should show each visitor's own address, and a
