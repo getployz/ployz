@@ -21,10 +21,14 @@ use crate::{
     ui::progress::{Detail, Diagnostic, StartFailure},
 };
 
-/// How many Servers one command sets the Ingress Proxy on at once. A cutover or pin
-/// change costs each Server a short gap on 80 and 443, so one at a time keeps every
-/// other Server serving through it.
-const DOORS_AT_ONCE: usize = 1;
+/// How many Servers a role change sets the Ingress Proxy on at once. A cutover or pin
+/// change costs each running Server a short gap on 80 and 443, so one at a time keeps
+/// every other Server serving through it.
+const FOLLOW_AT_ONCE: usize = 1;
+
+/// How many Servers a Deploy repairs at once. Each one's Ingress Proxy is already down,
+/// so a slow Server must not hold back the others.
+const REPAIRS_AT_ONCE: usize = 8;
 
 /// A Server whose Ingress Proxy a command sets.
 #[derive(Clone, Debug, PartialEq)]
@@ -125,13 +129,14 @@ async fn observe_doors(client: &mut Client) -> Result<Doors, Failure> {
     })
 }
 
-/// Ask each of `machines` to set its Public Door for `proxy`, one at a time, in order.
+/// Ask each of `machines` to set its Public Door for `proxy`, `at_once` at a time, in order.
 /// A call whose reply was lost, or that met a restarting daemon, is sent again, since
 /// the daemon converges on a resend.
 async fn set_doors<C: MachineOperations>(
     client: &C,
     machines: &[DoorMachine],
     proxy: ServiceId,
+    at_once: usize,
     cancel: &CancellationToken,
 ) -> Vec<Answer> {
     let client = &RestartTolerant::new(client, cancel);
@@ -139,7 +144,7 @@ async fn set_doors<C: MachineOperations>(
     // caller's future Send for one lifetime only, and a spawned Deploy runner needs all.
     stream::iter(machines.to_vec())
         .map(|machine| set_door(client, machine, proxy, cancel))
-        .buffered(DOORS_AT_ONCE)
+        .buffered(at_once)
         .collect()
         .await
 }
@@ -235,6 +240,7 @@ pub(crate) async fn follow_roles(client: &mut Client) -> Result<Vec<Followed>, N
         &*client,
         &doors.machines,
         doors.proxy,
+        FOLLOW_AT_ONCE,
         &CancellationToken::new(),
     )
     .await;
@@ -376,7 +382,7 @@ pub(crate) async fn fill_slots(
         return Ok(check);
     }
     let doors = observe_doors(client).await?;
-    let answers = set_doors(&*client, &missing, doors.proxy, cancel).await;
+    let answers = set_doors(&*client, &missing, doors.proxy, REPAIRS_AT_ONCE, cancel).await;
     let mut answered = missing
         .iter()
         .zip(answers)
