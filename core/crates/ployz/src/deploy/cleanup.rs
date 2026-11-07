@@ -612,10 +612,9 @@ fn not_admitted(copy: &Copy) -> RpcError {
     }
 }
 
-/// Hooks stay Pending for life, and proxy copies are never routed.
+/// Hooks stay Pending for life, and neither Ingress door is ever routed.
 fn routable(observed: &ContainerObservation) -> bool {
-    observed.kind == ContainerKind::ServiceContainer
-        && observed.identity() != QualifiedService::system_ingress()
+    observed.kind == ContainerKind::ServiceContainer && !observed.identity().is_ingress_door()
 }
 
 async fn stopped<C: MachineOperations>(

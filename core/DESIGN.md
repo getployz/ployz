@@ -223,8 +223,8 @@ component already does.
 without a client, enforce a Machine-local safety boundary, or manage a
 Machine-local resource. Serving infrastructure (Corrosion, Internal DNS, the
 Observe Store) is daemon-owned but outlives every daemon stop, crash, restart
-and upgrade. The Ingress Proxy is the only Service Container the daemon starts
-unasked.
+and upgrade. The Ingress Proxy, its holder and Caddy, is the only Service
+Container the daemon starts unasked.
 
 **Why.** A client update ships instantly. A daemon change must reach every
 Machine in every Cluster.

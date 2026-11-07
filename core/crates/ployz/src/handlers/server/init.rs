@@ -139,25 +139,17 @@ pub(in crate::handlers) fn init(root: &ArgMatches) -> Result<(), Error> {
                 .hint(Hint::Inspect(inspect_recovery.clone()))
         })?;
         if machine.accepts_ingress {
-            let requested = crate::ingress::service_spec(None, Default::default())
+            let followed = crate::ingress::follow_roles(&mut ready)
                 .await
                 .map_err(|error| {
-                    Error::from(error)
-                        .context("Server initialized; ingress image discovery failed.")
-                        .hint(Hint::Next(ingress_recovery.clone()))
+                    ingress_incomplete(
+                        super::super::ingress_hints(error.into(), |args| {
+                            super::super::recovery_command(matches, &context_name, args)
+                        }),
+                        ingress_recovery.clone(),
+                    )
                 })?;
-            let outcome =
-                crate::deploy::apply_requested(&mut ready, &requested, false, false, &context_name)
-                    .await
-                    .map_err(|error| {
-                        ingress_incomplete(
-                            super::super::ingress_hints(Error::from(error), |args| {
-                                super::super::recovery_command(matches, &context_name, args)
-                            }),
-                            ingress_recovery.clone(),
-                        )
-                    })?;
-            return Ok(Some(outcome));
+            return Ok(Some(followed));
         }
         Ok::<_, Error>(None)
     });

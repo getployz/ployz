@@ -17,8 +17,7 @@ use crate::{
     cloud_account::{self, Credential, Settled, StoreCallError},
     cluster::Client,
     connect::ConnectError,
-    deploy::Outcome,
-    ingress::IngressImage,
+    ingress::Followed,
     ui::Hint,
 };
 
@@ -51,8 +50,9 @@ trait UpgradeRequests {
         wait: Duration,
     ) -> Result<MachineUpgradeAttempt, crate::setup_retry::Error<ConnectError>>;
 
-    /// Deploy the Ingress Proxy with `image` onto the Servers holding the ingress role.
-    async fn move_ingress(&mut self, image: IngressImage) -> Result<Option<Outcome>, Error>;
+    /// Bring the Ingress Proxy on every Server holding the ingress role to the Caddy its
+    /// Ployz release pins.
+    async fn move_ingress(&mut self) -> Result<Vec<Followed>, Error>;
 }
 
 impl UpgradeRequests for Client {
@@ -88,8 +88,8 @@ impl UpgradeRequests for Client {
         .await
     }
 
-    async fn move_ingress(&mut self, image: IngressImage) -> Result<Option<Outcome>, Error> {
-        crate::ingress::follow_roles(self, image).await
+    async fn move_ingress(&mut self) -> Result<Vec<Followed>, Error> {
+        Ok(crate::ingress::follow_roles(self).await?)
     }
 }
 
@@ -100,41 +100,25 @@ pub(in crate::handlers) fn upgrade(root: &ArgMatches) -> Result<(), Error> {
         .cloned()
         .ok_or_else(|| Error::usage("upgrade version is required"))?;
     let selectors = string_values(matches, "server");
-    let image = matches.get_one::<String>("ingress-image");
     let allow_downgrade = matches.get_flag("allow-downgrade");
     let version = release.to_string();
     let mut args = vec!["server", "upgrade", version.as_str()];
     args.extend(selectors.iter().map(String::as_str));
     args.extend(allow_downgrade.then_some("--allow-downgrade"));
-    args.extend(
-        image
-            .iter()
-            .flat_map(|image| ["--ingress-image", image.as_str()]),
-    );
     let rerun = super::super::rerun(matches, &args);
     let runtime = runtime()?;
     if let Some(credential) = super::cloud_runs(&runtime, matches)? {
         let direct = direct(root, &args)?;
-        return through_cloud(
-            &runtime,
-            matches,
-            &credential,
-            &release,
-            image.is_some(),
-            &selectors,
-            direct,
-        );
+        return through_cloud(&runtime, matches, &credential, &release, &selectors, direct);
     }
     drop(runtime);
-    let ingress = IngressImage::given_or(image.cloned(), IngressImage::Latest);
     let recovery_matches = matches.clone();
     with_client(root, |client| {
         Box::pin(async move {
             let machines = selected_machines(client, &selectors).await?;
             confirm_downgrades(&machines, &release, allow_downgrade)?;
             let cancellation = crate::cancellation::on_ctrl_c();
-            let (result, outcome) =
-                run_all(client, &machines, release, ingress, rerun, &cancellation).await;
+            let (result, outcome) = run_all(client, &machines, release, rerun, &cancellation).await;
             let outcome = outcome.map_err(|error| {
                 super::super::ingress_hints(error, |args| {
                     super::super::rerun(&recovery_matches, args)
@@ -170,7 +154,6 @@ fn through_cloud(
     matches: &ArgMatches,
     credential: &Credential,
     release: &MachineRelease,
-    pinned_ingress: bool,
     selectors: &[String],
     direct: Option<Hint>,
 ) -> Result<(), Error> {
@@ -190,13 +173,6 @@ fn through_cloud(
             )));
         }
     };
-    if pinned_ingress {
-        return Err(only_direct(
-            "Cloud does not pin the Ingress Proxy image; pass --context for --ingress-image. \
-             No changes made."
-                .into(),
-        ));
-    }
     // Ids route the runs, and only the Engine knows the names prose says.
     let servers = runtime.block_on(async {
         let mut client = super::connect(matches, None).await?;
@@ -449,7 +425,6 @@ async fn run_all(
     client: &mut impl UpgradeRequests,
     machines: &[Machine],
     release: MachineRelease,
-    ingress: IngressImage,
     rerun: String,
     cancellation: &CancellationToken,
 ) -> (Option<serde_json::Value>, Result<(), Error>) {
@@ -560,7 +535,7 @@ async fn run_all(
     // selected daemon, and also on ingress Servers that were not selected.
     let moved = if machines.iter().any(|machine| machine.accepts_ingress) {
         tokio::select! {
-            moved = client.move_ingress(ingress) => moved,
+            moved = client.move_ingress() => moved.map(Some),
             // Its rerun hint finishes the move.
             () = cancellation.cancelled() => Err(Error::cancelled()),
         }
@@ -875,7 +850,7 @@ mod tests {
             panic!("an unaccepted request is not polled")
         }
 
-        async fn move_ingress(&mut self, _image: IngressImage) -> Result<Option<Outcome>, Error> {
+        async fn move_ingress(&mut self) -> Result<Vec<Followed>, Error> {
             panic!("a single-Server run does not move the Ingress Proxy")
         }
     }
@@ -884,7 +859,8 @@ mod tests {
     struct Sequence {
         outcomes: std::collections::VecDeque<MachineUpgradeOutcome>,
         ingress: Option<Error>,
-        moved: Vec<IngressImage>,
+        /// How many times the Ingress Proxy was moved.
+        moved: usize,
     }
 
     impl UpgradeRequests for Sequence {
@@ -922,9 +898,9 @@ mod tests {
             )))
         }
 
-        async fn move_ingress(&mut self, image: IngressImage) -> Result<Option<Outcome>, Error> {
-            self.moved.push(image);
-            self.ingress.take().map_or(Ok(None), Err)
+        async fn move_ingress(&mut self) -> Result<Vec<Followed>, Error> {
+            self.moved += 1;
+            self.ingress.take().map_or(Ok(Vec::new()), Err)
         }
     }
 
@@ -938,17 +914,16 @@ mod tests {
         machines: &[Machine],
         outcomes: Vec<MachineUpgradeOutcome>,
         ingress: Option<Error>,
-    ) -> (Option<Value>, Result<(), Error>, Vec<IngressImage>) {
+    ) -> (Option<Value>, Result<(), Error>, usize) {
         let mut client = Sequence {
             outcomes: outcomes.into(),
             ingress,
-            moved: Vec::new(),
+            moved: 0,
         };
         let (result, outcome) = run_all(
             &mut client,
             machines,
             MachineRelease::parse("1.2.3").unwrap(),
-            IngressImage::Latest,
             "ployz server upgrade 1.2.3 a b".into(),
             &CancellationToken::new(),
         )
@@ -997,13 +972,12 @@ mod tests {
                 }]
                 .into(),
                 ingress: None,
-                moved: Vec::new(),
+                moved: 0,
             };
             let (_, outcome) = run_all(
                 &mut client,
                 &[server],
                 MachineRelease::parse("9.9.9").unwrap(),
-                IngressImage::Latest,
                 "ployz server upgrade 9.9.9 machine-1".into(),
                 &CancellationToken::new(),
             )
@@ -1059,7 +1033,6 @@ mod tests {
             &mut client,
             &[machine('a', 1)],
             MachineRelease::Stable,
-            IngressImage::Latest,
             "ployz server upgrade stable a".into(),
             &CancellationToken::new(),
         )
@@ -1113,7 +1086,7 @@ mod tests {
             })
         }
 
-        async fn move_ingress(&mut self, _image: IngressImage) -> Result<Option<Outcome>, Error> {
+        async fn move_ingress(&mut self) -> Result<Vec<Followed>, Error> {
             panic!("an unfinished upgrade does not move the Ingress Proxy")
         }
     }
@@ -1128,7 +1101,6 @@ mod tests {
             &mut client,
             &[machine('a', 1)],
             MachineRelease::Stable,
-            IngressImage::Latest,
             "ployz server upgrade stable a".into(),
             &CancellationToken::new(),
         )
@@ -1158,7 +1130,6 @@ mod tests {
             &mut client,
             &[machine('a', 1)],
             MachineRelease::Stable,
-            IngressImage::Latest,
             "ployz server upgrade stable a".into(),
             &CancellationToken::new(),
         )
@@ -1198,10 +1169,7 @@ mod tests {
             {
                 unreachable!("a settled request is not polled")
             }
-            async fn move_ingress(
-                &mut self,
-                _image: IngressImage,
-            ) -> Result<Option<Outcome>, Error> {
+            async fn move_ingress(&mut self) -> Result<Vec<Followed>, Error> {
                 std::future::pending().await
             }
         }
@@ -1212,7 +1180,6 @@ mod tests {
             &mut Hangs,
             &[machine('a', 1)],
             MachineRelease::Stable,
-            IngressImage::Latest,
             "ployz server upgrade stable a".into(),
             &cancellation,
         )
@@ -1233,7 +1200,7 @@ mod tests {
         let mut client = Sequence {
             outcomes: vec![MachineUpgradeOutcome::Accepted].into(),
             ingress: None,
-            moved: Vec::new(),
+            moved: 0,
         };
         let mut seen = None;
         let error = run_one(
@@ -1265,7 +1232,7 @@ mod tests {
         let result = result.unwrap();
         assert_eq!(result["attempts"].as_array().unwrap().len(), 1);
         assert_eq!(result["unattempted"], json!([machines[1].id]));
-        assert!(moved.is_empty());
+        assert_eq!(moved, 0);
     }
 
     #[expect(clippy::indexing_slicing, reason = "JSON fixture assertions")]
@@ -1291,7 +1258,7 @@ mod tests {
         let result = result.unwrap();
         assert_eq!(result["attempts"].as_array().unwrap().len(), 2);
         assert_eq!(result["ingress"], Value::Null);
-        assert_eq!(moved, [IngressImage::Latest]);
+        assert_eq!(moved, 1);
     }
 
     #[tokio::test]
@@ -1364,7 +1331,7 @@ mod tests {
 
         outcome.unwrap();
         assert_eq!(result.unwrap()["attempts"].as_array().unwrap().len(), 1);
-        assert!(moved.is_empty());
+        assert_eq!(moved, 0);
     }
 
     #[tokio::test]

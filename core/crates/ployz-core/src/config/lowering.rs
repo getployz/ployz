@@ -474,6 +474,7 @@ pub fn lower_deployment(input: LowerDeploymentInput) -> Result<DeployIntent, Con
                 pid_mode: None,
                 stop_timeout_secs: None,
                 sysctls: BTreeMap::new(),
+                network: None,
             },
             placement: Default::default(),
             ports,

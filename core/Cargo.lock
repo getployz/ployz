@@ -4038,7 +4038,6 @@ dependencies = [
  "rmcp",
  "rusqlite",
  "rustix",
- "semver",
  "serde",
  "serde_json",
  "serde_norway",

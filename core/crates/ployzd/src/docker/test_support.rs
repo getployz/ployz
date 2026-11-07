@@ -37,6 +37,12 @@ pub(crate) struct FakeDocker {
     pub(crate) crash_inside_create: Arc<Mutex<BTreeSet<String>>>,
     /// Volume names and Container IDs whose next inspect answers a Docker 500.
     pub(crate) fail_inspect_once: Arc<Mutex<BTreeSet<String>>>,
+    /// Named mode: Service names whose next Container to start answers this many
+    /// inspects once it runs, then fails the next with a Docker 500.
+    pub(crate) fail_inspect_after_start: Arc<Mutex<BTreeMap<String, usize>>>,
+    /// The Container IDs a start armed from `fail_inspect_after_start`, with the
+    /// inspects each answers before the failing one.
+    pub(crate) failing_inspects: Arc<Mutex<BTreeMap<String, usize>>>,
     pub(crate) existing_container: Arc<Mutex<Option<serde_json::Value>>>,
     pub(crate) volume_users: Arc<Mutex<BTreeMap<String, Vec<serde_json::Value>>>>,
     pub(crate) image_barrier: Option<Arc<tokio::sync::Barrier>>,
@@ -56,6 +62,8 @@ pub(crate) struct FakeDocker {
     pub(crate) restart_after_stop: Arc<AtomicBool>,
     /// Named mode: every start lands, then the process exits at once.
     pub(crate) exit_on_start: Arc<AtomicBool>,
+    /// Named mode: Docker refuses to create a Container of these Service names.
+    pub(crate) refuse_create_of: Arc<Mutex<BTreeSet<String>>>,
     pub(crate) stopped_once: Arc<Mutex<BTreeSet<String>>>,
     /// Named mode: each start of a stopped Container stamps a new `StartedAt`, and a
     /// stop keeps it and stamps `FinishedAt`, as Docker does.
@@ -193,7 +201,20 @@ async fn answer(fake: FakeDocker, method: Method, uri: Uri, body: Bytes) -> Resp
             }
             let id = format!("{}{}", MachineId::random(), MachineId::random());
             let config: serde_json::Value = serde_json::from_slice(&body).unwrap();
-            containers.insert(name.into(), serde_json::json!({"Id": id, "Name": format!("/{name}"), "Config": config, "State":{"Status":"created"}}));
+            if config
+                .pointer("/Labels/ployz.service.name")
+                .and_then(serde_json::Value::as_str)
+                .is_some_and(|service| fake.refuse_create_of.lock().unwrap().contains(service))
+            {
+                return (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    Json(serde_json::json!({"message":"cannot create container"})),
+                )
+                    .into_response();
+            }
+            // Docker answers the host config beside the config, not inside it.
+            let host_config = config.get("HostConfig").cloned().unwrap_or_default();
+            containers.insert(name.into(), serde_json::json!({"Id": id, "Name": format!("/{name}"), "Config": config, "HostConfig": host_config, "State":{"Status":"created"}}));
             return (
                 StatusCode::CREATED,
                 Json(serde_json::json!({"Id":id,"Warnings":[]})),
@@ -230,6 +251,21 @@ async fn answer(fake: FakeDocker, method: Method, uri: Uri, body: Bytes) -> Resp
                         Json(serde_json::json!({"message":"detail temporarily unavailable"})),
                     )
                         .into_response();
+                }
+                if let Some(id) = container.get("Id").and_then(serde_json::Value::as_str) {
+                    let mut failing = fake.failing_inspects.lock().unwrap();
+                    match failing.get_mut(id) {
+                        Some(0) => {
+                            failing.remove(id);
+                            return (
+                                StatusCode::INTERNAL_SERVER_ERROR,
+                                Json(serde_json::json!({"message":"inspect temporarily failed"})),
+                            )
+                                .into_response();
+                        }
+                        Some(left) => *left -= 1,
+                        None => {}
+                    }
                 }
                 if fake.stopped_once.lock().unwrap().remove(&name) {
                     containers.get_mut(&name).unwrap()["State"] =
@@ -318,6 +354,22 @@ async fn answer(fake: FakeDocker, method: Method, uri: Uri, body: Bytes) -> Resp
                         .as_object_mut()
                         .expect("a literal object")
                         .insert("FinishedAt".into(), chrono::Utc::now().to_rfc3339().into());
+                }
+                if status == "running"
+                    && let Some(answered) = container
+                        .pointer("/Config/Labels/ployz.service.name")
+                        .and_then(serde_json::Value::as_str)
+                        .and_then(|service| {
+                            fake.fail_inspect_after_start
+                                .lock()
+                                .unwrap()
+                                .remove(service)
+                        })
+                {
+                    fake.failing_inspects
+                        .lock()
+                        .unwrap()
+                        .insert(container["Id"].as_str().unwrap().to_owned(), answered);
                 }
                 container["State"] = state;
                 return StatusCode::NO_CONTENT.into_response();

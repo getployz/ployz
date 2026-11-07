@@ -1724,6 +1724,7 @@ fn ensure_container_names_the_want_the_observation_and_the_refusal_on_the_wire()
         refusal: ContainerRefusal {
             reason: ContainerRefusalReason::NotFound,
             message: "no Container at the slot".into(),
+            capability: None,
         },
     };
     assert_eq!(
@@ -1751,7 +1752,60 @@ fn ensure_container_names_the_want_the_observation_and_the_refusal_on_the_wire()
     }))
     .unwrap();
     assert_eq!(later.reason, ContainerRefusalReason::Unrecognized);
+    assert_eq!(later.capability, None);
     assert_eq!(ENSURE_CONTAINER_CAPABILITY, "ployz.container.ensure.v1");
+}
+
+#[test]
+fn an_ingress_refusal_names_the_capability_to_upgrade_to() {
+    let refusal: ployz_core::ContainerRefusal = serde_json::from_value(json!({
+        "reason": "invalid_ingress",
+        "message": "upgrade the ployz CLI",
+        "capability": "ployz.ingress.doors.v1"
+    }))
+    .unwrap();
+    assert_eq!(
+        refusal.capability.as_deref(),
+        Some(ployz_core::SET_INGRESS_DOORS_CAPABILITY)
+    );
+
+    let error = refusal.into_error();
+    assert_eq!(error.code, RpcErrorCode::InvalidArgument);
+    assert_eq!(
+        error.details,
+        json!({ "capability": "ployz.ingress.doors.v1" })
+    );
+}
+
+#[test]
+fn ingress_doors_wire_shapes_stay_stable() {
+    use ployz_core::{
+        IngressDoor, IngressDoors, IngressDoorsSet, IngressStage, ServiceId, SetIngressDoorsRequest,
+    };
+
+    let request = SetIngressDoorsRequest {
+        doors: IngressDoors::public(),
+        proxy_service: ServiceId::parse("a".repeat(32)).unwrap(),
+    };
+    assert_eq!(
+        serde_json::to_value(&request).unwrap(),
+        json!({ "doors": ["public"], "proxy_service": "a".repeat(32) })
+    );
+    assert!(request.doors.is_public_only());
+    let newer: IngressDoors = serde_json::from_value(json!(["public", "tailnet"])).unwrap();
+    assert_eq!(
+        newer,
+        IngressDoors([IngressDoor::Public, IngressDoor::Unrecognized].into())
+    );
+    assert!(!newer.is_public_only());
+
+    assert_eq!(
+        serde_json::to_value(IngressDoorsSet::default()).unwrap(),
+        json!({}),
+        "an empty answer carries no field"
+    );
+    let stage: IngressStage = serde_json::from_value(json!("network")).unwrap();
+    assert_eq!(stage, IngressStage::Unrecognized);
 }
 
 #[test]

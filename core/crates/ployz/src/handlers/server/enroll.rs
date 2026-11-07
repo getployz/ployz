@@ -71,11 +71,6 @@ pub(crate) fn command(command: Command) -> Command {
             .value_parser(clap::value_parser!(Ipv4Net))
             .help("Cluster network, when this Server founds the Cluster"),
     )
-    .arg(
-        value("ingress-image", None)
-            .value_parser(crate::ingress::pinned_image)
-            .help("Caddy image to deploy when founding a Cluster"),
-    )
     .arg(switch("reset", None).help("Reset an initialized Server before enrollment"))
     .arg(
         switch("show-recovery-code", None)
@@ -142,7 +137,7 @@ pub(crate) fn add(root: &ArgMatches) -> Result<(), Error> {
 
 /// `server add` switches and values that shape the Server, which a pasted line repeats.
 const SHAPING_SWITCHES: [&str; 2] = ["reset", "yes"];
-const SHAPING_VALUES: [&str; 12] = [
+const SHAPING_VALUES: [&str; 11] = [
     "name",
     "storage",
     "public-ip",
@@ -153,7 +148,6 @@ const SHAPING_VALUES: [&str; 12] = [
     "accepts-services",
     "accepts-ingress",
     "network",
-    "ingress-image",
     "version",
 ];
 
@@ -539,8 +533,6 @@ mod tests {
             "false",
             "--network",
             "10.9.0.0/16",
-            "--ingress-image",
-            "caddy:2.10",
             "--version",
             "0.3.0",
             "--reset",

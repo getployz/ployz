@@ -13,9 +13,9 @@ use bollard::{
 use ployz_core::labels::CREATION_KEY;
 use ployz_core::{
     ContainerId, ContainerKind, ContainerObservation, Gen, Machine, MachineId,
-    MachineStorageObservation, Namespace, ResolvedServiceSpec, ServiceName,
-    ServicePlacementEligibility, ServicePlacementIneligibleReason, ServicePlacementUnknownReason,
-    SlotKey,
+    MachineStorageObservation, Namespace, QualifiedService, ResolvedServiceSpec, ServiceName,
+    ServiceNetwork, ServicePlacementEligibility, ServicePlacementIneligibleReason,
+    ServicePlacementUnknownReason, SlotKey,
 };
 
 #[cfg(test)]
@@ -27,8 +27,8 @@ use crate::{
 };
 
 use super::{
-    ContainerRuntime, Error, LABEL_SERVICE_ID, ManagedLabels, create, docker_error,
-    spec_store::ConfigOperation,
+    ContainerRuntime, Error, IngressRecovery, LABEL_SERVICE_ID, ManagedLabels, create,
+    create::CreationNetwork, docker_error, doors, spec_store::ConfigOperation,
 };
 
 const CONTAINER_NAME_ATTEMPTS: u8 = 4;
@@ -175,12 +175,22 @@ impl ContainerRuntime {
         if create::holds_sealed(kind, spec) {
             self.log_store.admit_sealed().await?;
         }
+        let network = match spec.container.network {
+            None => CreationNetwork::Bridge,
+            Some(ServiceNetwork::IngressHolder) => CreationNetwork::Holder(
+                self.running_holder()
+                    .await?
+                    .ok_or(Error::IngressHolderNotRunning)?,
+            ),
+            Some(ServiceNetwork::Unrecognized) => return Err(Error::UnrecognizedNetwork),
+        };
         let mut body = create::container_create_body(
             &machine.id,
             machine.subnet.gateway(),
             kind,
             namespace,
             spec,
+            &network,
             self.sealing_key_dir.as_deref(),
         )?;
         create::ingress_sysctls(
@@ -562,43 +572,101 @@ impl ContainerRuntime {
         idempotent_lifecycle_result(container_id, result)
     }
 
-    /// Start an Ingress Proxy whose last start failed, unless a request stopped it
-    /// or is about to, or a container was created since `creates` was read or is
-    /// being created.
-    pub(super) async fn start_stranded(&self, container_id: &ContainerId, creates: u64) {
+    /// Carry out one Ingress door recovery, unless a request stopped its Container or
+    /// is about to, or a container was created since `creates` was read or is being
+    /// created. Recovery only starts what exists; it never creates.
+    pub(super) async fn start_stranded(&self, recovery: IngressRecovery, creates: u64) {
+        // Under the doors lock so a route placing the doors never races it.
+        let _doors = self.door_lifecycle().await;
+        let container_id = *recovery.target();
         let gate = self
             .stranded()
             .await
             .gates
-            .entry(*container_id)
+            .entry(container_id)
             .or_default()
             .clone();
         let Ok(_gate) = gate.try_lock() else {
             return;
         };
-        if self.stranded().await.held.contains(container_id) || self.is_withdrawn(container_id) {
+        if self.stranded().await.held.contains(&container_id) || self.is_withdrawn(&container_id) {
             return;
         }
-        let result = async {
-            let inspected = self.ensure_managed(container_id).await?;
-            // A newer Ingress Proxy may be about to take port 80; the next scan decides.
-            if !failed_start(&inspected) || !self.docker.created_nothing_since(creates) {
-                return Ok(());
-            }
-            self.start_inspected(container_id, &inspected).await
-        }
-        .await;
+        let result = self.recover_door(&recovery, creates).await;
         let mut stranded = self.stranded().await;
         match result {
-            Ok(()) => stranded.reported = None,
-            Err(error) if stranded.reported != Some(*container_id) => {
+            Ok(acted) => {
+                if acted {
+                    tracing::info!(?recovery, "{} an Ingress door", recovery.verb());
+                }
+                stranded.reported = None;
+            }
+            Err(error) if stranded.reported != Some(container_id) => {
                 eprintln!(
-                    "Ingress Proxy {container_id} is still not started: {error}",
+                    "Ingress door {container_id} is still not {}: {error}",
+                    recovery.verb(),
                     error = ployz_core::error_chain::inline(&error),
                 );
-                stranded.reported = Some(*container_id);
+                stranded.reported = Some(container_id);
             }
             Err(_) => {}
+        }
+    }
+
+    async fn recover_door(&self, recovery: &IngressRecovery, creates: u64) -> Result<bool, Error> {
+        match recovery {
+            IngressRecovery::StartHolder(container_id)
+            | IngressRecovery::StartCaddy {
+                holder: None,
+                caddy: container_id,
+            } => {
+                let inspected = self.ensure_managed(container_id).await?;
+                // A newer door may be about to take the ports; the next scan decides.
+                if !failed_start(&inspected) || !self.docker.created_nothing_since(creates) {
+                    return Ok(false);
+                }
+                self.start_inspected(container_id, &inspected).await?;
+                Ok(true)
+            }
+            IngressRecovery::StartCaddy {
+                holder: Some(holder),
+                caddy,
+            } => {
+                let inspected = self.ensure_managed(caddy).await?;
+                if !failed_start(&inspected)
+                    || !is_running(&self.ensure_managed(holder).await?)
+                    || !self.docker.created_nothing_since(creates)
+                {
+                    return Ok(false);
+                }
+                self.start_inspected(caddy, &inspected).await?;
+                Ok(true)
+            }
+            IngressRecovery::RejoinCaddy { holder, caddy } => {
+                let holder_now = self.ensure_managed(holder).await?;
+                let caddy_now = self.ensure_managed(caddy).await?;
+                let stale = match (doors::netns_of(&holder_now), doors::netns_of(&caddy_now)) {
+                    (Some(holder_ns), Some(caddy_ns)) => holder_ns != caddy_ns,
+                    _ => false,
+                };
+                if !stale
+                    || doors::joined_to(&caddy_now) != Some(*holder)
+                    || !self.docker.created_nothing_since(creates)
+                {
+                    return Ok(false);
+                }
+                // A stop here is no request's, so it holds nothing: the start that
+                // follows is the same repair.
+                let result = self
+                    .docker
+                    .client
+                    .stop_container(caddy.as_str(), None)
+                    .await;
+                idempotent_lifecycle_result(caddy, result)?;
+                let inspected = self.ensure_managed(caddy).await?;
+                self.start_inspected(caddy, &inspected).await?;
+                Ok(true)
+            }
         }
     }
 
@@ -720,7 +788,14 @@ impl ContainerRuntime {
         self.departing
             .store(true, std::sync::atomic::Ordering::SeqCst);
         let mut config_operation = self.specs.config_operation().await;
-        for container_id in self.docker.managed_container_ids().await? {
+        // A Caddy in a holder's network goes before the holder, so no Container is ever
+        // left in a removed Container's network.
+        let mut managed = self.docker.managed_containers().await?;
+        managed.sort_by_key(|(_, labels)| {
+            ManagedLabels::parse(labels)
+                .is_ok_and(|managed| managed.identity == QualifiedService::system_ingress_holder())
+        });
+        for (container_id, _) in managed {
             match self
                 .docker
                 .client
@@ -814,14 +889,15 @@ impl super::LocalDocker {
     ) -> Result<bollard::models::ContainerCreateResponse, Error> {
         let mut last = self.endpoint_creates.lock().await;
         let bridge = self.bridge().await?;
-        if bridge.capacity.free_endpoints() == 0 {
-            return Err(Error::EndpointCapacity);
-        }
         let on_bridge = body
             .host_config
             .as_ref()
             .and_then(|host| host.network_mode.as_deref())
             == Some(DOCKER_NETWORK_NAME);
+        // A Container in another's network takes no endpoint of its own.
+        if on_bridge && bridge.capacity.free_endpoints() == 0 {
+            return Err(Error::EndpointCapacity);
+        }
         if on_bridge && let Some(subnet) = bridge.subnet {
             let address = super::bridge_address::next(subnet, &bridge.taken, *last)
                 .ok_or(Error::EndpointCapacity)?;
@@ -965,7 +1041,7 @@ pub(super) fn test_machine(machine_id: MachineId, gateway: MachineGateway) -> Ma
 /// Docker clears `State.Error` when a start succeeds, so a container at rest with one
 /// recorded is one whose last start failed: its first, or the one at boot that
 /// leaves it exited with no retry.
-fn failed_start(inspected: &ContainerInspectResponse) -> bool {
+pub(super) fn failed_start(inspected: &ContainerInspectResponse) -> bool {
     inspected.state.as_ref().is_some_and(|state| {
         matches!(
             state.status,
@@ -977,8 +1053,14 @@ fn failed_start(inspected: &ContainerInspectResponse) -> bool {
     })
 }
 
+pub(super) fn is_running(inspected: &ContainerInspectResponse) -> bool {
+    inspected.state.as_ref().and_then(|state| state.status)
+        == Some(ContainerStateStatusEnum::RUNNING)
+}
+
 /// Docker 29 empties a container's networks when its start fails, and a later start
-/// then runs it with no network and no published ports.
+/// then runs it with no network and no published ports. A Container in another's
+/// network has none to lose.
 fn lost_ployz_network(inspected: &ContainerInspectResponse) -> bool {
     let created_on_ployz = inspected
         .host_config
@@ -1528,6 +1610,13 @@ mod tests {
         (runtime, fake, created.container_id)
     }
 
+    fn start_legacy_caddy(caddy: ContainerId) -> IngressRecovery {
+        IngressRecovery::StartCaddy {
+            holder: None,
+            caddy,
+        }
+    }
+
     fn started(fake: &FakeDocker) -> bool {
         fake.requests
             .lock()
@@ -1543,21 +1632,21 @@ mod tests {
         let (runtime, fake, container_id) = stranded(PORT_TAKEN).await;
 
         runtime
-            .start_stranded(&container_id, runtime.docker.creates())
+            .start_stranded(start_legacy_caddy(container_id), runtime.docker.creates())
             .await;
         assert!(started(&fake), "a failed first start is retried");
 
         runtime.stop(&container_id, None, None).await.unwrap();
         fake.requests.lock().unwrap().clear();
         runtime
-            .start_stranded(&container_id, runtime.docker.creates())
+            .start_stranded(start_legacy_caddy(container_id), runtime.docker.creates())
             .await;
         assert!(!started(&fake), "a stopped ingress stays stopped");
 
         runtime.start(&container_id).await.unwrap();
         fake.requests.lock().unwrap().clear();
         runtime
-            .start_stranded(&container_id, runtime.docker.creates())
+            .start_stranded(start_legacy_caddy(container_id), runtime.docker.creates())
             .await;
         assert!(started(&fake), "a requested start lifts the stop");
     }
@@ -1674,7 +1763,7 @@ mod tests {
 
         let _withdrawal = runtime.withdraw(container_id);
         runtime
-            .start_stranded(&container_id, runtime.docker.creates())
+            .start_stranded(start_legacy_caddy(container_id), runtime.docker.creates())
             .await;
 
         assert!(!started(&fake));
@@ -1697,7 +1786,7 @@ mod tests {
             let runtime = runtime.clone();
             async move {
                 runtime
-                    .start_stranded(&container_id, runtime.docker.creates())
+                    .start_stranded(start_legacy_caddy(container_id), runtime.docker.creates())
                     .await
             }
         });
@@ -1734,7 +1823,7 @@ mod tests {
         assert_eq!(lifecycle, ["start", "stop"]);
         fake.requests.lock().unwrap().clear();
         runtime
-            .start_stranded(&container_id, runtime.docker.creates())
+            .start_stranded(start_legacy_caddy(container_id), runtime.docker.creates())
             .await;
         assert!(!started(&fake), "the stop holds");
     }
@@ -1756,7 +1845,7 @@ mod tests {
             let runtime = runtime.clone();
             async move {
                 runtime
-                    .start_stranded(&container_id, runtime.docker.creates())
+                    .start_stranded(start_legacy_caddy(container_id), runtime.docker.creates())
                     .await
             }
         });
@@ -1802,15 +1891,19 @@ mod tests {
         let creating = super::super::Creating::new(&runtime.docker.creates);
         let creates = runtime.docker.creates();
 
-        runtime.start_stranded(&container_id, creates).await;
+        runtime
+            .start_stranded(start_legacy_caddy(container_id), creates)
+            .await;
         assert!(!started(&fake), "a newer ingress may be appearing");
 
         drop(creating);
-        runtime.start_stranded(&container_id, creates).await;
+        runtime
+            .start_stranded(start_legacy_caddy(container_id), creates)
+            .await;
         assert!(!started(&fake), "it appeared after the scan began");
 
         runtime
-            .start_stranded(&container_id, runtime.docker.creates())
+            .start_stranded(start_legacy_caddy(container_id), runtime.docker.creates())
             .await;
         assert!(started(&fake), "the next scan decides");
     }
@@ -1835,7 +1928,9 @@ mod tests {
         *fake.existing_container.lock().unwrap() = stranded;
         fake.requests.lock().unwrap().clear();
 
-        runtime.start_stranded(&container_id, creates).await;
+        runtime
+            .start_stranded(start_legacy_caddy(container_id), creates)
+            .await;
 
         assert!(!started(&fake), "the next scan decides");
     }
@@ -1858,7 +1953,7 @@ mod tests {
             let runtime = runtime.clone();
             async move {
                 runtime
-                    .start_stranded(&container_id, runtime.docker.creates())
+                    .start_stranded(start_legacy_caddy(container_id), runtime.docker.creates())
                     .await
             }
         });
@@ -1875,7 +1970,7 @@ mod tests {
         let (runtime, fake, container_id) = stranded("").await;
 
         runtime
-            .start_stranded(&container_id, runtime.docker.creates())
+            .start_stranded(start_legacy_caddy(container_id), runtime.docker.creates())
             .await;
 
         assert!(!started(&fake));
@@ -1889,7 +1984,7 @@ mod tests {
             stranded_with("exited", PORT_TAKEN, FakeDocker::default()).await;
 
         runtime
-            .start_stranded(&container_id, runtime.docker.creates())
+            .start_stranded(start_legacy_caddy(container_id), runtime.docker.creates())
             .await;
 
         assert!(started(&fake));
@@ -1901,7 +1996,7 @@ mod tests {
             stranded_with("exited", "", FakeDocker::default()).await;
 
         runtime
-            .start_stranded(&container_id, runtime.docker.creates())
+            .start_stranded(start_legacy_caddy(container_id), runtime.docker.creates())
             .await;
 
         assert!(!started(&fake));

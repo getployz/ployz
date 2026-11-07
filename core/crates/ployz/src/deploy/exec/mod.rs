@@ -16,14 +16,14 @@ use ployz_core::{
     ContainerRefusalReason, ContainerRuntimeObservation, ContainerWant, CopyRotation, CreationKey,
     DependencyHealthFailure, DeployEvent, DeployWarning, DeploymentLogId, DockerVolumeId, Drain,
     EnsuredContainer, ExecutionError, ExposedPort, FailedOperation, Gen, HEALTH_POLL_INTERVAL,
-    HealthFailure, HealthVerdict, HookFailure, ImagePulled, InspectContainerRequest,
-    ListContainersRequest, MachineAction, MachineFailure, MachineId, MachineName, MachineTarget,
-    MembershipObservation, Namespace, NewContainer, ObservationGap, ObservationGapReason,
-    ObservationKind, OperationPhase, OutOfMemory, PortPublication, PullPolicy, QualifiedService,
-    ReadRoutesRequest, RemoveContainerPurpose, RemoveVolumeRequest, ResolvedServiceSpec, Retry,
-    RoutesRead, RpcError, RpcErrorCode, RunRotation, RunTarget, ServiceId, ServiceName,
-    ServiceOutcome, SlotKey, StopOptions, TransportProtocol, UpdateContainerLimitsRequest,
-    UpdateOrder, op,
+    HealthFailure, HealthVerdict, HookFailure, ImagePulled, IngressDoorsSet,
+    InspectContainerRequest, ListContainersRequest, MachineAction, MachineFailure, MachineId,
+    MachineName, MachineTarget, MembershipObservation, Namespace, NewContainer, ObservationGap,
+    ObservationGapReason, ObservationKind, OperationPhase, OutOfMemory, PortPublication,
+    PullPolicy, QualifiedService, ReadRoutesRequest, RemoveContainerPurpose, RemoveVolumeRequest,
+    ResolvedServiceSpec, Retry, RoutesRead, RpcError, RpcErrorCode, RunRotation, RunTarget,
+    ServiceId, ServiceName, ServiceOutcome, SetIngressDoorsRequest, SlotKey, StopOptions,
+    TransportProtocol, UpdateContainerLimitsRequest, UpdateOrder, op,
 };
 use sha2::{Digest, Sha256};
 use tokio::sync::mpsc::UnboundedSender;
@@ -240,6 +240,12 @@ pub(crate) trait MachineOperations {
     ) -> Result<RoutesRead, RpcError>;
     /// [`Self::read_routes`] as the entry Machine this client reaches reads it.
     async fn read_entry_routes(&self, service: &QualifiedService) -> Result<RoutesRead, RpcError>;
+    /// Bring `machine_id`'s Ingress Proxy to its daemon's pinned wiring for `request`.
+    async fn set_ingress_doors(
+        &self,
+        machine_id: &MachineId,
+        request: SetIngressDoorsRequest,
+    ) -> Result<IngressDoorsSet, RpcError>;
     /// Dial the entry Machine again on the same connection, after the session a call
     /// went out on closed. None when this client can't.
     async fn redial(&self) -> Option<Result<(), RedialFailure>> {
@@ -411,6 +417,14 @@ impl MachineOperations for Client {
         .await
     }
 
+    async fn set_ingress_doors(
+        &self,
+        machine_id: &MachineId,
+        request: SetIngressDoorsRequest,
+    ) -> Result<IngressDoorsSet, RpcError> {
+        Client::set_ingress_doors(self, machine_id, request).await
+    }
+
     async fn redial(&self) -> Option<Result<(), RedialFailure>> {
         Some(self.redial_shared().await.map_err(|error| {
             let refused = matches!(
@@ -541,7 +555,7 @@ impl From<ExecutionError> for OperationFailure {
 // An entry daemon restart closes the session every call goes out on, so the
 // same connection is dialed again. Do not walk to another connection; that is
 // a different command-entry problem.
-struct RestartTolerant<'a, C> {
+pub(crate) struct RestartTolerant<'a, C> {
     inner: &'a C,
     cancellation: &'a CancellationToken,
     /// How many times the entry was dialed again. Calls that met the same closed
@@ -550,7 +564,7 @@ struct RestartTolerant<'a, C> {
 }
 
 impl<'a, C: MachineOperations> RestartTolerant<'a, C> {
-    fn new(inner: &'a C, cancellation: &'a CancellationToken) -> Self {
+    pub(crate) fn new(inner: &'a C, cancellation: &'a CancellationToken) -> Self {
         Self {
             inner,
             cancellation,
@@ -660,6 +674,7 @@ restart_policy! {
     wait fn ensure_unsettled(&self, machine_id: &MachineId, want: ContainerWant, timeout: Option<Duration>) -> Result<EnsuredContainer, RpcError>;
     wait fn read_routes(&self, machine_id: &MachineId, service: &QualifiedService) -> Result<RoutesRead, RpcError>;
     wait fn read_entry_routes(&self, service: &QualifiedService) -> Result<RoutesRead, RpcError>;
+    wait fn set_ingress_doors(&self, machine_id: &MachineId, request: SetIngressDoorsRequest) -> Result<IngressDoorsSet, RpcError>;
 }
 
 async fn wait_out_restart<T, Fut, Redial>(

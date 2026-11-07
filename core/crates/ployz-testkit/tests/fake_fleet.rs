@@ -579,3 +579,54 @@ fn fleet_id(machine: &str) -> ployz_core::MachineId {
         .unwrap()
         .id
 }
+
+// Catches the fleet answering SetIngressDoors without the two Containers a daemon sets,
+// or a second call making them again.
+#[tokio::test(flavor = "multi_thread")]
+async fn set_ingress_doors_runs_the_holder_and_caddy_once() {
+    use ployz_core::{DoorChange, IngressDoors, ServiceId, SetIngressDoorsRequest};
+
+    let (fleet, _sockets) = start(Scenario::default());
+    let mut client = client(&fleet, "web-1").await;
+    let request = || SetIngressDoorsRequest {
+        doors: IngressDoors::public(),
+        proxy_service: ServiceId::parse("a".repeat(32)).unwrap(),
+    };
+    let target = MachineTarget::parse("web-1").unwrap();
+
+    let first = client
+        .call::<op::SetIngressDoors>(request(), Some(&target))
+        .await
+        .unwrap();
+    let again = client
+        .call::<op::SetIngressDoors>(request(), Some(&target))
+        .await
+        .unwrap();
+
+    let changes = |set: &ployz_core::IngressDoorsSet| {
+        [&set.holder, &set.proxy].map(|outcome| outcome.as_ref().map(|outcome| outcome.change))
+    };
+    assert_eq!(
+        changes(&first),
+        [Some(DoorChange::Created), Some(DoorChange::Created)]
+    );
+    assert_eq!(
+        changes(&again),
+        [Some(DoorChange::Unchanged), Some(DoorChange::Unchanged)]
+    );
+    assert!(
+        fleet
+            .is_running(&name("web-1"), "web-1-ingress-holder")
+            .unwrap()
+    );
+    assert!(fleet.is_running(&name("web-1"), "web-1-ingress").unwrap());
+    assert_eq!(
+        fleet
+            .ledger()
+            .unwrap()
+            .iter()
+            .filter(|entry| entry.command == "set_ingress_doors")
+            .count(),
+        2
+    );
+}

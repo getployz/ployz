@@ -1,17 +1,13 @@
 //! Ingress repair fixtures across several ingress Servers.
 
-use std::collections::BTreeSet;
-
 use ployz_core::{
     ContainerKind, ContainerObservation, ContainerObservationParts, ContainerRuntimeObservation,
-    DeployIntent, HealthObservation, MachineObservation, MembershipObservation, Namespace,
-    PlanOptions, ResolvedUpdateConfig, caddy_service_spec,
+    HealthObservation, MachineObservation, MembershipObservation, Namespace, ResolvedUpdateConfig,
+    caddy_service_spec,
 };
 
 use super::DeploySnapshot;
 use crate::global_fixtures::{container_id, service_id};
-
-const IMAGE: &str = "caddy:2";
 
 pub(in crate::deploy) fn ingress_on(
     hex: char,
@@ -28,7 +24,7 @@ pub(in crate::deploy) fn ingress_on(
             health: HealthObservation::Healthy,
         },
         effective_healthcheck: None,
-        resolved_spec: caddy_service_spec(IMAGE.into(), BTreeSet::new())
+        resolved_spec: caddy_service_spec("caddy:test")
             .to_resolved(service_id('a'), ResolvedUpdateConfig::default())
             .expect("Caddy mounts are scoped"),
         address: None,
@@ -54,9 +50,4 @@ pub(in crate::deploy) fn servers(
         containers,
         ..Default::default()
     }
-}
-
-pub(in crate::deploy) fn ingress_intent() -> DeployIntent {
-    let spec = caddy_service_spec(IMAGE.into(), BTreeSet::new());
-    DeployIntent::apply_all(Namespace::system(), [&spec], PlanOptions::default())
 }

@@ -26,18 +26,19 @@ use ployz_core::{
     ContainerLocator, ContainerNow, ContainerObservation, ContainerObservationParts,
     ContainerRefusal, ContainerRefusalReason, ContainerRuntimeObservation, ContainerWant,
     ContractDescription, CopyRole, CopyRotation, DockerVolume, DockerVolumeId, DockerVolumeName,
-    DockerVolumeStorageObservation, EnsuredContainer, HealthObservation, HistoryContainer,
-    HistoryContainerKind, HistoryRow, HistoryStream, LiveLogTarget, LocalMachinePhase, LogBody,
-    LogDirection, LogEntry, LogHistoryRequest, LogMetadata, LogOrigin, MANAGED_LABEL, Machine,
-    MachineDetails, MachineId, MachineList, MachineName, MachineObservation, MachinePath,
-    MachineRelease, MachineRpc, MachineRpcServer, MachineRuntime, MachineUpgradeAttempt,
-    MachineUpgradeOutcome, MachineVersion, MembershipObservation, NAMESPACE_LABEL, Namespace,
-    OpaquePayload, PROTOCOL_MAJOR, ProvisionedCopy, ProvisionedVolumeMaximumBytes,
-    QualifiedService, RUNTIME_WATCH_MESSAGE_SIZE_LIMIT, ResolvedServiceSpec, RotationEdge,
-    RoutedAddresses, RoutesRead, RoutingRequest, RpcError, RpcErrorCode, RpcRequestBody,
-    RpcResponse, RunTarget, RuntimeWatchFrame, ServiceId, ServiceName, SlotId, SlotRole,
-    StorageBacking, StorageCapacity, VolumeCopy, VolumeCopyView, VolumeInventory,
-    WireGuardPublicKey, WriterEpoch, encode_runtime_watch_frame,
+    DockerVolumeStorageObservation, DoorChange, DoorOutcome, EnsuredContainer, HealthObservation,
+    HistoryContainer, HistoryContainerKind, HistoryRow, HistoryStream, IngressDoorsSet,
+    LiveLogTarget, LocalMachinePhase, LogBody, LogDirection, LogEntry, LogHistoryRequest,
+    LogMetadata, LogOrigin, MANAGED_LABEL, Machine, MachineDetails, MachineId, MachineList,
+    MachineName, MachineObservation, MachinePath, MachineRelease, MachineRpc, MachineRpcServer,
+    MachineRuntime, MachineUpgradeAttempt, MachineUpgradeOutcome, MachineVersion,
+    MembershipObservation, NAMESPACE_LABEL, Namespace, OpaquePayload, PROTOCOL_MAJOR,
+    ProvisionedCopy, ProvisionedVolumeMaximumBytes, QualifiedService,
+    RUNTIME_WATCH_MESSAGE_SIZE_LIMIT, ResolvedServiceSpec, RotationEdge, RoutedAddresses,
+    RoutesRead, RoutingRequest, RpcError, RpcErrorCode, RpcRequestBody, RpcResponse, RunTarget,
+    RuntimeWatchFrame, ServiceId, ServiceName, SlotId, SlotRole, StorageBacking, StorageCapacity,
+    VolumeCopy, VolumeCopyView, VolumeInventory, WireGuardPublicKey, WriterEpoch,
+    encode_runtime_watch_frame,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -828,6 +829,7 @@ impl Fleet {
                 };
                 unary(self.ensure(target, container_id, &request.want)?)
             }
+            RpcRequestBody::SetIngressDoors(_) => unary(self.set_doors(target)?.into()),
             RpcRequestBody::ReadRoutes(request) => unary(self.routes(&request.service).into()),
             RpcRequestBody::ReadRoutedAddresses(_) => unary(
                 RoutedAddresses {
@@ -968,6 +970,7 @@ impl Fleet {
                 refusal: ContainerRefusal {
                     reason: ContainerRefusalReason::NotFound,
                     message: format!("no Container {container_id}"),
+                    capability: None,
                 },
             }
             .into());
@@ -995,6 +998,64 @@ impl Fleet {
             Err(refusal) => EnsuredContainer::Refused { now, refusal },
         }
         .into())
+    }
+
+    /// The Ingress Proxy on `target` as a daemon sets it: the holder, then Caddy, each
+    /// created or started unless it already runs.
+    fn set_doors(&mut self, target: MachineId) -> Result<IngressDoorsSet, Status> {
+        let mut set = IngressDoorsSet::default();
+        for (identity, image) in [
+            (QualifiedService::system_ingress_holder(), "pause"),
+            (QualifiedService::system_ingress(), "caddy"),
+        ] {
+            let machine = self.by_id_mut(target)?;
+            let name = format!("{}-{}", machine.name, identity.name);
+            let found = machine.containers.iter_mut().find(|container| {
+                container.spec.namespace == identity.namespace
+                    && container.spec.service == identity.name
+            });
+            let (id, change) = match found {
+                Some(container) if container.spec.state == RunState::Running => {
+                    (container.id, DoorChange::Unchanged)
+                }
+                Some(container) => {
+                    container.spec.state = RunState::Running;
+                    (container.id, DoorChange::Started)
+                }
+                None => {
+                    let id = container_id(&name);
+                    machine.containers.push(ContainerState {
+                        spec: FleetContainer {
+                            name,
+                            namespace: identity.namespace.clone(),
+                            service: identity.name.clone(),
+                            image: image.into(),
+                            state: RunState::Running,
+                            env: BTreeMap::new(),
+                            deployment: None,
+                            logs: Vec::new(),
+                            rotation: CopyRotation::default(),
+                        },
+                        id,
+                    });
+                    (id, DoorChange::Created)
+                }
+            };
+            let machine = self.by_id(target)?;
+            let container = machine
+                .container(&id)
+                .ok_or_else(|| Status::internal("the set door Container vanished"))?;
+            let outcome = Some(DoorOutcome {
+                now: machine.observe(container)?,
+                change,
+            });
+            if identity == QualifiedService::system_ingress_holder() {
+                set.holder = outcome;
+            } else {
+                set.proxy = outcome;
+            }
+        }
+        Ok(set)
     }
 
     fn routes(&self, service: &QualifiedService) -> RoutesRead {

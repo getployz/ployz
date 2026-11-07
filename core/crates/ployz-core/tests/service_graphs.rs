@@ -278,6 +278,7 @@ fn requested_with_graphs(
             resources: Default::default(),
             stop_timeout_secs: None,
             sysctls: BTreeMap::new(),
+            network: None,
             restart: Default::default(),
         },
         placement: Default::default(),

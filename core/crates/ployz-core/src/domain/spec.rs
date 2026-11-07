@@ -520,6 +520,22 @@ pub struct ServiceContainerSpec {
     pub sysctls: BTreeMap<String, String>,
     #[serde(default)]
     pub restart: RestartPolicy,
+    /// The network namespace the Container joins. Absent means the ployz
+    /// bridge. It never names a Container id, the daemon resolves the holder.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub network: Option<ServiceNetwork>,
+}
+
+/// A network namespace a Container joins instead of the ployz bridge.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "snake_case")]
+pub enum ServiceNetwork {
+    /// The running reserved Ingress holder on the same Machine.
+    IngressHolder,
+    /// A value this build does not know. Creation refuses it.
+    #[serde(other)]
+    Unrecognized,
 }
 
 /// One Service's placement constraints and scoped mounted storage requirements.
@@ -771,7 +787,7 @@ impl ResolvedServiceSpec {
 }
 
 mod serving_shape;
-pub use serving_shape::{PublishedServingShape, ServingShape};
+pub use serving_shape::{PublishedServingShape, ServingShape, global_creation_key};
 
 mod comparison;
 pub use comparison::compare_specs;

@@ -6,7 +6,6 @@
 
 use std::collections::BTreeSet;
 use std::net::IpAddr;
-use std::time::SystemTime;
 
 use ployz_core::{
     DataLossConfirmation, DeploymentLogId, IngressHost, MachineId, MachineObservation, Namespace,
@@ -24,8 +23,8 @@ use crate::{
 
 use super::{
     DeployEvent, DeployIntent, DeployOutcome, DeployPlan, DeployPreview, DeploySnapshot,
-    DeployWarning, ExecutionError, PlanError, PlanOptions, exec::execute_operation_sequence,
-    plan_deploy, planning,
+    DeployWarning, ExecutionError, PlanError, exec::execute_operation_sequence, plan_deploy,
+    planning,
 };
 
 /// Snapshot or planning failure before a Deploy executes.
@@ -63,14 +62,11 @@ impl Client {
     /// # Errors
     ///
     /// Returns when snapshot gathering fails.
-    pub async fn plan_ingress_repairs(
-        &mut self,
-        intent: DeployIntent,
-    ) -> Result<Vec<super::SlotRepair>, DeployError> {
+    pub async fn plan_ingress_repairs(&mut self) -> Result<Vec<super::SlotRepair>, DeployError> {
         let machines = self.machines().await?;
         let read_through = self.entry_machine();
-        let snapshot = gather_deploy_snapshot(self, machines, &intent).await?;
-        let repairs = planning::plan_ingress_repairs(&intent, &snapshot);
+        let snapshot = self.deploy_snapshot(machines).await?;
+        let repairs = planning::plan_ingress_repairs(&snapshot);
         if !repairs
             .iter()
             .any(|repair| matches!(repair.action, super::SlotAction::Unchecked(_)))
@@ -391,17 +387,6 @@ async fn preview_gathered(
     let warnings = hostname_warnings(&preview, &snapshot, intent.cluster_domain.as_ref()).await;
     preview.prepend_warnings(warnings);
     Ok(preview)
-}
-
-pub(crate) fn plan_options(force_recreate: bool, skip_health_monitor: bool) -> PlanOptions {
-    PlanOptions {
-        force_recreate,
-        skip_health_monitor,
-        placement_seed: SystemTime::now()
-            .duration_since(SystemTime::UNIX_EPOCH)
-            .map_or(0, |duration| duration.as_nanos() as u64),
-        ..PlanOptions::default()
-    }
 }
 
 async fn gather_deploy_snapshot(
