@@ -115,6 +115,7 @@ const HOOK_FILES_NOT_COMMANDS = {
 
 /** UI that waits for the server, and why. Everything else applies writes optimistically. */
 const COMMAND_FILES = {
+  "routes/_protected/cloud/$organizationSlug/_org/-components/passkeys-section.tsx": "adding a passkey waits on the browser's authenticator and on the server, which assigns its code",
   "routes/_protected/cloud/$organizationSlug/_project/$projectSlug/$environmentSlug/-components/EnvironmentHistory.tsx": "the Store derives a sealed History inverse and exact overwrite review before staging; it cannot be guessed optimistically",
   "components/service-create-command.tsx": "the server assigns a new project's id and slug, and its canvas can't show the new Service before the Store has it",
   "components/stageable/use-commit-hold.ts": "a committed control keeps showing the value it last wrote until that write settles; the save only releases that hold, and nothing waits on it",
