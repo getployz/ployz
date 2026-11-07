@@ -315,6 +315,9 @@ pub(super) fn add_arguments(
     if !instruction.name.is_empty() {
         arguments.extend(["--name".to_owned(), instruction.name.clone()]);
     }
+    if let Some(cluster_name) = &instruction.cluster_name {
+        arguments.extend(["--cluster-name".to_owned(), cluster_name.clone()]);
+    }
     arguments.extend([
         format!("--accepts-builds={}", policy.accepts_builds),
         format!("--accepts-services={}", policy.accepts_services),

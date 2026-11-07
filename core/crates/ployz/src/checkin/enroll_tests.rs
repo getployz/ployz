@@ -642,6 +642,7 @@ fn the_add_arguments_carry_the_whole_instruction_and_a_root_config_without_home(
             accepts_services: true,
             accepts_ingress: true,
         },
+        cluster_name: None,
     };
 
     let arguments = add_arguments(&instruction, "https://cloud.example", false);
@@ -1103,6 +1104,38 @@ async fn stage_changes_during_a_post_are_coalesced_and_sent_promptly() {
     assert_eq!(next, Next::Enrolled);
     assert_eq!(cloud.stages(), ["installing", "publishing"]);
     assert_eq!(cloud.attempts().len(), 2);
+}
+
+#[test]
+fn a_founder_founds_the_cluster_with_the_name_cloud_sends() {
+    let founder = instruction("none").replace(
+        r#""name":"web-1""#,
+        r#""name":"web-1","clusterName":"acme""#,
+    );
+    let Some(Answer::Enroll(founder)) = wire::answer(founder.as_bytes()) else {
+        panic!("enroll instruction");
+    };
+    let arguments = add_arguments(&founder, "https://cloud.example", true);
+    let root = crate::cli::command()
+        .try_get_matches_from(&arguments)
+        .unwrap();
+    let add = root
+        .subcommand_matches("server")
+        .and_then(|server| server.subcommand_matches("add"))
+        .unwrap();
+    assert_eq!(
+        add.get_one::<String>("cluster-name").map(String::as_str),
+        Some("acme")
+    );
+
+    let Some(Answer::Enroll(joiner)) = wire::answer(instruction("none").as_bytes()) else {
+        panic!("enroll instruction");
+    };
+    assert!(
+        !add_arguments(&joiner, "https://cloud.example", true)
+            .contains(&"--cluster-name".to_owned()),
+        "an instruction without clusterName, as an older Cloud sends, founds with no name"
+    );
 }
 
 #[test]

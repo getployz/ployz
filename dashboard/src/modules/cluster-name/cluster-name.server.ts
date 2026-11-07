@@ -78,7 +78,7 @@ export const renameCluster = Effect.fn("ClusterName.rename")(function* (organiza
   }));
 });
 
-/** A new Cluster holds no name yet: keep the saved one (else the default) and set it once its first Server answers. */
+/** Keep the name the first Server founded with and set it again, the only proof Cloud gets: a founder with an older `ployz`, or one added from the CLI, holds none yet. */
 export const foundClusterName = Effect.fn("ClusterName.found")(function* (organizationId: string) {
   const name = yield* foundingClusterName(organizationId);
   const { drizzle } = yield* Database;
