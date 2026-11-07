@@ -455,9 +455,8 @@ impl LocalMachine {
         &self,
         containers: &ContainerRuntime,
         stopped: &[ContainerId],
-        error: Error,
+        mut error: Error,
     ) -> Error {
-        let mut error = error;
         for id in stopped {
             if let Err(restart) = containers.start(id).await {
                 error = Error::Cleanup(format!(

@@ -4,9 +4,9 @@
 
 use futures_util::{StreamExt, stream};
 use ployz_core::{
-    ContainerObservation, ContainerRuntimeObservation, DoorChange, DoorOutcome, EnvironmentValues,
-    IngressDoors, IngressDoorsFailure, IngressDoorsSet, IngressStage, MachineId, MachineName,
-    MachineObservation, QualifiedService, RowStanding, RpcError, RpcErrorCode,
+    ContainerId, ContainerObservation, ContainerRuntimeObservation, DoorChange, DoorOutcome,
+    EnvironmentValues, IngressDoors, IngressDoorsFailure, IngressDoorsSet, IngressStage, MachineId,
+    MachineName, MachineObservation, QualifiedService, RowStanding, RpcError, RpcErrorCode,
     SET_INGRESS_DOORS_CAPABILITY, ServiceId, ServiceObservation, SetIngressDoorsRequest,
 };
 use ployz_store::{IngressAction, IngressFailure, IngressRepair};
@@ -425,11 +425,7 @@ pub(crate) fn failure_of(set: &IngressDoorsSet) -> Option<IngressFailure> {
 fn not_running(now: &ContainerObservation) -> Option<String> {
     match now.runtime {
         ContainerRuntimeObservation::Running { .. } => None,
-        ContainerRuntimeObservation::Restarting => Some(format!(
-            "its Ingress Proxy keeps crashing and Docker keeps restarting it; see why there \
-             with `docker logs {}`",
-            now.container_id
-        )),
+        ContainerRuntimeObservation::Restarting => Some(crash_looping(&now.container_id)),
         ref other @ (ContainerRuntimeObservation::Created
         | ContainerRuntimeObservation::Paused
         | ContainerRuntimeObservation::Exited { .. }
@@ -439,6 +435,13 @@ fn not_running(now: &ContainerObservation) -> Option<String> {
             Some(format!("it stopped right after starting: it is {other}"))
         }
     }
+}
+
+fn crash_looping(container_id: &ContainerId) -> String {
+    format!(
+        "its Ingress Proxy keeps crashing and Docker keeps restarting it; see why there with \
+         `docker logs {container_id}`"
+    )
 }
 
 /// A port only the holder publishes, so only its stage can find one taken.
@@ -497,10 +500,7 @@ pub(crate) async fn planned_slots(client: &mut Client) -> Result<IngressCheck, F
             SlotAction::Restarting(container_id) => shown(
                 IngressAction::Start,
                 Some(IngressFailure::Failed {
-                    cause: format!(
-                        "its Ingress Proxy keeps crashing and Docker keeps restarting it; \
-                         see why there with `docker logs {container_id}`"
-                    ),
+                    cause: crash_looping(&container_id),
                 }),
             ),
         });

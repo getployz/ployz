@@ -12,7 +12,7 @@ use ployz_core::{
 
 use super::{
     ContainerRuntime, Error, LABEL_MANAGED, LABEL_NAMESPACE, LABEL_SERVICE_NAME, docker_error,
-    lifecycle::failed_start,
+    lifecycle::{failed_start, is_running},
 };
 use crate::docker_image::prepare_image;
 
@@ -160,20 +160,8 @@ impl ContainerRuntime {
                 if observation.kind != ContainerKind::ServiceContainer {
                     continue;
                 }
-                let inspected = match self
-                    .docker
-                    .client
-                    .inspect_container(id.as_str(), None)
-                    .await
-                {
-                    Ok(inspected) => inspected,
-                    Err(error) => {
-                        let error = docker_error(&id, error);
-                        if matches!(error, Error::ContainerNotFound(_)) {
-                            continue;
-                        }
-                        return Err(error);
-                    }
+                let Some(inspected) = self.inspect_present(&id).await? else {
+                    continue;
                 };
                 entries.push(DoorEntry {
                     facts: door_facts(&observation, door, &inspected),
@@ -195,27 +183,37 @@ impl ContainerRuntime {
     pub(super) async fn running_holder(&self) -> Result<Option<ContainerId>, Error> {
         let mut running = Vec::new();
         for (id, _) in self.docker.door_containers(Door::Holder).await? {
-            let inspected = match self
-                .docker
-                .client
-                .inspect_container(id.as_str(), None)
-                .await
-            {
-                Ok(inspected) => inspected,
-                Err(error) => {
-                    let error = docker_error(&id, error);
-                    if matches!(error, Error::ContainerNotFound(_)) {
-                        continue;
-                    }
-                    return Err(error);
-                }
+            let Some(inspected) = self.inspect_present(&id).await? else {
+                continue;
             };
-            let state = inspected.state.as_ref();
-            if state.and_then(|state| state.status) == Some(ContainerStateStatusEnum::RUNNING) {
+            if is_running(&inspected) {
                 running.push((inspected.created.unwrap_or_default(), id));
             }
         }
         Ok(running.into_iter().max().map(|(_, id)| id))
+    }
+
+    /// Docker's inspect of `id`, or `None` once Docker no longer has it.
+    async fn inspect_present(
+        &self,
+        id: &ContainerId,
+    ) -> Result<Option<ContainerInspectResponse>, Error> {
+        match self
+            .docker
+            .client
+            .inspect_container(id.as_str(), None)
+            .await
+        {
+            Ok(inspected) => Ok(Some(inspected)),
+            Err(error) => {
+                let error = docker_error(id, error);
+                if matches!(error, Error::ContainerNotFound(_)) {
+                    Ok(None)
+                } else {
+                    Err(error)
+                }
+            }
+        }
     }
 }
 

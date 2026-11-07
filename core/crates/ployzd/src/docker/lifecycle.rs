@@ -1044,7 +1044,7 @@ pub(super) fn failed_start(inspected: &ContainerInspectResponse) -> bool {
     })
 }
 
-fn is_running(inspected: &ContainerInspectResponse) -> bool {
+pub(super) fn is_running(inspected: &ContainerInspectResponse) -> bool {
     inspected.state.as_ref().and_then(|state| state.status)
         == Some(ContainerStateStatusEnum::RUNNING)
 }
@@ -1601,6 +1601,13 @@ mod tests {
         (runtime, fake, created.container_id)
     }
 
+    fn start_legacy_caddy(caddy: ContainerId) -> IngressRecovery {
+        IngressRecovery::StartCaddy {
+            holder: None,
+            caddy,
+        }
+    }
+
     fn started(fake: &FakeDocker) -> bool {
         fake.requests
             .lock()
@@ -1616,39 +1623,21 @@ mod tests {
         let (runtime, fake, container_id) = stranded(PORT_TAKEN).await;
 
         runtime
-            .start_stranded(
-                IngressRecovery::StartCaddy {
-                    holder: None,
-                    caddy: container_id,
-                },
-                runtime.docker.creates(),
-            )
+            .start_stranded(start_legacy_caddy(container_id), runtime.docker.creates())
             .await;
         assert!(started(&fake), "a failed first start is retried");
 
         runtime.stop(&container_id, None, None).await.unwrap();
         fake.requests.lock().unwrap().clear();
         runtime
-            .start_stranded(
-                IngressRecovery::StartCaddy {
-                    holder: None,
-                    caddy: container_id,
-                },
-                runtime.docker.creates(),
-            )
+            .start_stranded(start_legacy_caddy(container_id), runtime.docker.creates())
             .await;
         assert!(!started(&fake), "a stopped ingress stays stopped");
 
         runtime.start(&container_id).await.unwrap();
         fake.requests.lock().unwrap().clear();
         runtime
-            .start_stranded(
-                IngressRecovery::StartCaddy {
-                    holder: None,
-                    caddy: container_id,
-                },
-                runtime.docker.creates(),
-            )
+            .start_stranded(start_legacy_caddy(container_id), runtime.docker.creates())
             .await;
         assert!(started(&fake), "a requested start lifts the stop");
     }
@@ -1765,13 +1754,7 @@ mod tests {
 
         let _withdrawal = runtime.withdraw(container_id);
         runtime
-            .start_stranded(
-                IngressRecovery::StartCaddy {
-                    holder: None,
-                    caddy: container_id,
-                },
-                runtime.docker.creates(),
-            )
+            .start_stranded(start_legacy_caddy(container_id), runtime.docker.creates())
             .await;
 
         assert!(!started(&fake));
@@ -1794,13 +1777,7 @@ mod tests {
             let runtime = runtime.clone();
             async move {
                 runtime
-                    .start_stranded(
-                        IngressRecovery::StartCaddy {
-                            holder: None,
-                            caddy: container_id,
-                        },
-                        runtime.docker.creates(),
-                    )
+                    .start_stranded(start_legacy_caddy(container_id), runtime.docker.creates())
                     .await
             }
         });
@@ -1837,13 +1814,7 @@ mod tests {
         assert_eq!(lifecycle, ["start", "stop"]);
         fake.requests.lock().unwrap().clear();
         runtime
-            .start_stranded(
-                IngressRecovery::StartCaddy {
-                    holder: None,
-                    caddy: container_id,
-                },
-                runtime.docker.creates(),
-            )
+            .start_stranded(start_legacy_caddy(container_id), runtime.docker.creates())
             .await;
         assert!(!started(&fake), "the stop holds");
     }
@@ -1865,13 +1836,7 @@ mod tests {
             let runtime = runtime.clone();
             async move {
                 runtime
-                    .start_stranded(
-                        IngressRecovery::StartCaddy {
-                            holder: None,
-                            caddy: container_id,
-                        },
-                        runtime.docker.creates(),
-                    )
+                    .start_stranded(start_legacy_caddy(container_id), runtime.docker.creates())
                     .await
             }
         });
@@ -1918,36 +1883,18 @@ mod tests {
         let creates = runtime.docker.creates();
 
         runtime
-            .start_stranded(
-                IngressRecovery::StartCaddy {
-                    holder: None,
-                    caddy: container_id,
-                },
-                creates,
-            )
+            .start_stranded(start_legacy_caddy(container_id), creates)
             .await;
         assert!(!started(&fake), "a newer ingress may be appearing");
 
         drop(creating);
         runtime
-            .start_stranded(
-                IngressRecovery::StartCaddy {
-                    holder: None,
-                    caddy: container_id,
-                },
-                creates,
-            )
+            .start_stranded(start_legacy_caddy(container_id), creates)
             .await;
         assert!(!started(&fake), "it appeared after the scan began");
 
         runtime
-            .start_stranded(
-                IngressRecovery::StartCaddy {
-                    holder: None,
-                    caddy: container_id,
-                },
-                runtime.docker.creates(),
-            )
+            .start_stranded(start_legacy_caddy(container_id), runtime.docker.creates())
             .await;
         assert!(started(&fake), "the next scan decides");
     }
@@ -1973,13 +1920,7 @@ mod tests {
         fake.requests.lock().unwrap().clear();
 
         runtime
-            .start_stranded(
-                IngressRecovery::StartCaddy {
-                    holder: None,
-                    caddy: container_id,
-                },
-                creates,
-            )
+            .start_stranded(start_legacy_caddy(container_id), creates)
             .await;
 
         assert!(!started(&fake), "the next scan decides");
@@ -2003,13 +1944,7 @@ mod tests {
             let runtime = runtime.clone();
             async move {
                 runtime
-                    .start_stranded(
-                        IngressRecovery::StartCaddy {
-                            holder: None,
-                            caddy: container_id,
-                        },
-                        runtime.docker.creates(),
-                    )
+                    .start_stranded(start_legacy_caddy(container_id), runtime.docker.creates())
                     .await
             }
         });
@@ -2026,13 +1961,7 @@ mod tests {
         let (runtime, fake, container_id) = stranded("").await;
 
         runtime
-            .start_stranded(
-                IngressRecovery::StartCaddy {
-                    holder: None,
-                    caddy: container_id,
-                },
-                runtime.docker.creates(),
-            )
+            .start_stranded(start_legacy_caddy(container_id), runtime.docker.creates())
             .await;
 
         assert!(!started(&fake));
@@ -2046,13 +1975,7 @@ mod tests {
             stranded_with("exited", PORT_TAKEN, FakeDocker::default()).await;
 
         runtime
-            .start_stranded(
-                IngressRecovery::StartCaddy {
-                    holder: None,
-                    caddy: container_id,
-                },
-                runtime.docker.creates(),
-            )
+            .start_stranded(start_legacy_caddy(container_id), runtime.docker.creates())
             .await;
 
         assert!(started(&fake));
@@ -2064,13 +1987,7 @@ mod tests {
             stranded_with("exited", "", FakeDocker::default()).await;
 
         runtime
-            .start_stranded(
-                IngressRecovery::StartCaddy {
-                    holder: None,
-                    caddy: container_id,
-                },
-                runtime.docker.creates(),
-            )
+            .start_stranded(start_legacy_caddy(container_id), runtime.docker.creates())
             .await;
 
         assert!(!started(&fake));

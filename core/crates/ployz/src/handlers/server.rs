@@ -1215,8 +1215,8 @@ fn own_start_failure(
 /// Whether `machine` holds no Ingress Proxy Container, neither a Caddy nor a holder, in any
 /// state, in its own listing. A created or exited one may still start, under Docker's
 /// restart policy or the daemon's retry of a stranded proxy, and one another operator
-/// started serves. An empty listing doesn't say
-/// whose it is, so `machine` is asked who it is after it.
+/// started serves. An empty listing doesn't say whose it is, so `machine` is asked who it
+/// is after it.
 async fn nothing_serves(client: &Client, machine: MachineId) -> bool {
     let target = MachineTarget::from(&machine);
     let Ok(listed) = client
