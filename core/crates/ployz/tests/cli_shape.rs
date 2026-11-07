@@ -457,6 +457,26 @@ fn a_cluster_name_past_63_characters_or_not_one_label_is_refused_before_any_serv
 }
 
 #[test]
+fn naming_the_cluster_signed_in_asks_cloud_and_with_a_context_skips_it() {
+    let routes = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+    let cloud = waiting_cloud(routes.clone(), WaitingCloud::of(Vec::new()));
+    let token = [("PLOYZ_TOKEN", "ployz_secret"), ("PLOYZ_CLOUD_URL", &cloud)];
+
+    run_json_with(&["cluster", "name", "beta", "--json"], &token);
+    assert_eq!(
+        routes.lock().unwrap().drain(..).collect::<Vec<_>>(),
+        [r#"POST /api/cli/run/cluster_rename {"input":{"name":"beta"}}"#]
+    );
+
+    let (code, json, _) = run_json_with(
+        &["cluster", "name", "beta", "--context", "staging", "--json"],
+        &token,
+    );
+    assert_ne!(code, Some(0), "{json}");
+    assert!(routes.lock().unwrap().is_empty(), "{json}");
+}
+
+#[test]
 fn founding_a_standalone_cluster_with_json_needs_its_name() {
     let (code, json, stderr) = run_json(&[
         "server",

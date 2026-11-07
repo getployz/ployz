@@ -115,7 +115,8 @@ else you can, including a value it can't read, but it can't delete the organizat
 
 A coding agent working through the CLI can save or deploy a change that removes a running
 service, deletes a volume and its data, detaches a volume from a service, or removes a domain. It
-can also drain or remove a server, or clean up what a deleted environment left on your servers.
+can also drain or remove a server, rename the cluster, or clean up what a deleted environment
+left on your servers.
 It can remove a project, an environment or the whole organization, forget every server, or turn
 an environment's protection off. Ployz refuses that command with `approval_required`, naming what
 it would remove and the approval it opened for you. Every organization works this way, and no

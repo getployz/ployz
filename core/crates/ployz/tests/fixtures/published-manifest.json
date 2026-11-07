@@ -1,6 +1,6 @@
 {
   "format": 1,
-  "revision": "b1ffcae4291c",
+  "revision": "4f8d41bcea64",
   "permissions": [
     "org:read",
     "org:settings",
@@ -148,11 +148,11 @@
       "name": "cluster_rename",
       "path": [
         "cluster",
-        "rename"
+        "name"
       ],
       "about": "Rename the cluster, the <name> in <service>.<namespace>.<name>.ployz.internal",
       "examples": [
-        "ployz cluster rename acme"
+        "ployz cluster name acme"
       ],
       "requires": "servers:operate",
       "kind": "write",

@@ -120,12 +120,12 @@ The namespace is the project and environment, joined by a hyphen. It answers the
 A cluster you add through Ployz Cloud is named after your organization's slug, cut to 63
 characters. To rename it, owners and admins open **Organization → Network**, click **Edit**
 beside **Cluster name**, and click **Save**. The name shows **Pending** until a server is online
-to take it. The [Ployz agent](../account/agent-sidebar.md) and `ployz cluster rename acme` ask for
-an [approval](../account/organizations.md#destructive-actions-ask-first) first, since every
+to take it. `ployz cluster name acme` and the [Ployz agent](../account/agent-sidebar.md) ask
+for an [approval](../account/organizations.md#destructive-actions-ask-first) first, since every
 service's long address changes.
 
-Without Ployz Cloud, name the cluster when you add its first server with `--cluster-name`, or at
-any time on a server with:
+Without Ployz Cloud, name the cluster when you add its first server with `--cluster-name`. Rename
+it at any time, with no approval, with:
 
 ```sh
 ployz cluster name acme

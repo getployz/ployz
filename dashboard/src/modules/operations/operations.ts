@@ -423,7 +423,7 @@ export const OPERATIONS = {
     gate: "approval",
     idempotency: { none: "Saving a name again sets the same name." },
     surfaces: {
-      cli: { absent: "Cloud publishes `ployz cluster rename` as the cluster_rename command, which asks through its own gate." },
+      cli: { absent: "`ployz cluster name <name>` runs the cluster_rename command, which asks through its own gate." },
       agent: { absent: "Agents call the published cluster_rename command." },
       ui: {
         fn: "renameClusterServerFn",

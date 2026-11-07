@@ -138,7 +138,7 @@ The generated base hostname an Organization holds from Hosted DNS, owned by the 
 _Avoid_: Hosted DNS hostname as runtime state, generated domain as pairing state, observed cluster domain
 
 **Cluster Name**:
-The Engine's name for an Organization's Cluster, one DNS label that every Service's long private address carries (`<service>.<namespace>.<name>.ployz.internal`). Cloud keeps the name it wants and the name a Server last confirmed, since the Engine offers no read of it: a first Server founds the Cluster with the saved name or the Organization slug cut to 63 characters, and a rename waits, retried, until a Server is online to take it. A Server too old to take it refuses, and Settings shows why. Settings renames at once; `ployz cluster rename` and agents ask for an Approval.
+The Engine's name for an Organization's Cluster, one DNS label that every Service's long private address carries (`<service>.<namespace>.<name>.ployz.internal`). Cloud keeps the name it wants and the name a Server last confirmed, since the Engine offers no read of it: a first Server founds the Cluster with the saved name or the Organization slug cut to 63 characters, and a rename waits, retried, until a Server is online to take it. A Server too old to take it refuses, and Settings shows why. Settings renames at once; `ployz cluster name <name>` and agents ask for an Approval.
 _Avoid_: Cluster Domain, organization slug, hostname
 
 **Deployment Page**:

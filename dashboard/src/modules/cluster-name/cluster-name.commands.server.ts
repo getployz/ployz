@@ -10,9 +10,9 @@ const rename = OPERATIONS["cluster.rename"];
 export const clusterRename = defineCommand({
   name: "cluster_rename",
   requires: rename.requires,
-  path: ["cluster", "rename"],
+  path: ["cluster", "name"],
   about: "Rename the cluster, the <name> in <service>.<namespace>.<name>.ployz.internal",
-  examples: ["ployz cluster rename acme"],
+  examples: ["ployz cluster name acme"],
   kind: "write",
   removes: false,
   gate: {
@@ -28,6 +28,6 @@ export const clusterRename = defineCommand({
   run: (caller, input) => caller.support !== null
     ? Effect.succeed(refused("forbidden", "Only an owner or admin of this Organization can do this."))
     : renameCluster(caller.organization.id, input.name).pipe(
-      Effect.map(({ name }) => ({ ok: true, output: { name }, message: `Named the cluster ${name}.` }) as const),
+      Effect.map(({ name }) => ({ ok: true, output: { name }, message: `Named the Cluster ${name}.` }) as const),
     ),
 });
