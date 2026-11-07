@@ -65,8 +65,7 @@ impl LocalMachine {
         .await
     }
 
-    /// Approve one Device on this Machine, or remove every key under a code, under
-    /// mutation admission.
+    /// Approve one Device on this Machine, or remove one, under mutation admission.
     ///
     /// The scope recheck runs on the Machine the caller dialed: a Device removed there
     /// while its own request waited for admission changes nothing. A routed call reaches
@@ -75,6 +74,7 @@ impl LocalMachine {
     ///
     /// # Errors
     /// Returns [`Error::NeedsFullScope`] when the caller holds no Device slot,
+    /// [`Error::DeviceIsPasskey`] when a trusted passkey has the Device's key,
     /// [`Error::NotParticipating`] when this Machine is not participating, admission
     /// failures, [`Error::RecordOwner`] when the record owner has stopped, and
     /// [`Error::Store`] when the record cannot be written.
@@ -92,6 +92,14 @@ impl LocalMachine {
                     Ok(match request {
                         SetDeviceRequest::Approve { key } => {
                             let code = key.code();
+                            if store
+                                .record()
+                                .passkeys()
+                                .iter()
+                                .any(|held| held.passkey.code() == code)
+                            {
+                                return Err(Error::DeviceIsPasskey(code));
+                            }
                             if store.approve_device(key)? {
                                 DeviceSet::Approved { code }
                             } else {
@@ -99,17 +107,10 @@ impl LocalMachine {
                             }
                         }
                         SetDeviceRequest::Remove { code } => {
-                            let removed = store.remove_trusted_key(code)?;
-                            for (kind, gone) in
-                                [("device", removed.device), ("passkey", removed.passkey)]
-                            {
-                                if gone {
-                                    tracing::info!(
-                                        "trusted key removed kind={kind} code={code} by={by}"
-                                    );
-                                }
-                            }
-                            if removed.device || removed.passkey {
+                            if store.remove_device(code)? {
+                                tracing::info!(
+                                    "trusted key removed kind=device code={code} by={by}"
+                                );
                                 DeviceSet::Removed { code }
                             } else {
                                 DeviceSet::NotPresent { code }
@@ -122,8 +123,8 @@ impl LocalMachine {
         .await
     }
 
-    /// Approve one passkey on this Machine under mutation admission, with the same
-    /// Full-scope recheck as [`Self::set_device`]. The approver is this Machine's own view
+    /// Approve or remove one passkey on this Machine under mutation admission, with the
+    /// same Full-scope recheck as [`Self::set_device`]. The approver is this Machine's own view
     /// of the caller, from [`Self::full_caller`].
     ///
     /// # Errors
@@ -144,8 +145,20 @@ impl LocalMachine {
                     if record.phase() != LocalMachinePhase::Participating {
                         return Err(Error::NotParticipating);
                     }
-                    let approved_by = caller.full_caller(record)?;
-                    let SetPasskeyRequest::Approve { passkey } = request;
+                    let by = caller.full_caller(record)?;
+                    let passkey = match request {
+                        SetPasskeyRequest::Approve { passkey } => passkey,
+                        SetPasskeyRequest::Remove { code } => {
+                            return Ok(if store.remove_passkey(code)? {
+                                tracing::info!(
+                                    "trusted key removed kind=passkey code={code} by={by}"
+                                );
+                                DeviceSet::Removed { code }
+                            } else {
+                                DeviceSet::NotPresent { code }
+                            });
+                        }
+                    };
                     let code = passkey.code();
                     if record.devices().any(|device| device.code() == code) {
                         return Err(Error::PasskeyIsDevice(code));
@@ -161,11 +174,9 @@ impl LocalMachine {
                     Ok(
                         if store.approve_passkey(TrustedPasskey {
                             passkey: *passkey,
-                            approved_by,
+                            approved_by: by,
                         })? {
-                            tracing::info!(
-                                "trusted key added kind=passkey code={code} by={approved_by}"
-                            );
+                            tracing::info!("trusted key added kind=passkey code={code} by={by}");
                             DeviceSet::Approved { code }
                         } else {
                             DeviceSet::AlreadyApproved { code }
@@ -707,20 +718,37 @@ mod tests {
                 code: device.code()
             }]
         );
-        let remove = SetDeviceRequest::Remove { code };
+        let remove = SetPasskeyRequest::Remove { code };
         assert_eq!(
-            caller.set_device(remove.clone()).await.unwrap(),
+            caller.set_passkey(remove.clone()).await.unwrap(),
             DeviceSet::Removed { code }
         );
         assert!(local.record().passkeys().is_empty());
         assert_eq!(
-            caller.set_device(remove).await.unwrap(),
+            caller.set_passkey(remove).await.unwrap(),
             DeviceSet::NotPresent { code }
         );
     }
 
     #[tokio::test]
-    async fn a_device_removing_its_own_code_also_removes_the_passkey_that_shares_it() {
+    async fn removing_a_device_leaves_a_passkey_under_the_same_code_trusted() {
+        let dir = tempfile::tempdir().unwrap();
+        let local = participating(dir.path()).await;
+        let key = *iroh::SecretKey::generate().public().as_bytes();
+        let code = passkey(key).code();
+        local.set_passkey(approve(passkey(key))).await.unwrap();
+        assert_eq!(
+            local
+                .set_device(SetDeviceRequest::Remove { code })
+                .await
+                .unwrap(),
+            DeviceSet::NotPresent { code }
+        );
+        assert_eq!(local.record().passkeys().len(), 1);
+    }
+
+    #[tokio::test]
+    async fn a_device_with_a_trusted_passkeys_key_is_refused() {
         let dir = tempfile::tempdir().unwrap();
         let local = participating(dir.path()).await;
         let shared = device();
@@ -728,25 +756,11 @@ mod tests {
             .set_passkey(approve(passkey(*shared.as_bytes())))
             .await
             .unwrap();
-        local
-            .set_device(SetDeviceRequest::Approve { key: shared })
-            .await
-            .unwrap();
-        let caller = local.clone().with_management_client(*shared.as_bytes());
-        assert_eq!(
-            caller
-                .set_device(SetDeviceRequest::Remove {
-                    code: shared.code()
-                })
-                .await
-                .unwrap(),
-            DeviceSet::Removed {
-                code: shared.code()
-            }
-        );
-        let record = local.record();
-        assert_eq!(record.devices().count(), 0);
-        assert!(record.passkeys().is_empty());
+        assert!(matches!(
+            local.set_device(SetDeviceRequest::Approve { key: shared }).await,
+            Err(Error::DeviceIsPasskey(code)) if code == shared.code()
+        ));
+        assert_eq!(local.record().devices().count(), 0);
     }
 
     #[tokio::test]

@@ -1128,7 +1128,9 @@ fn local_failure(error: LocalMachineError) -> Result<RpcError, Status> {
             Err(Status::unavailable("Cluster is not available"))
         }
         LocalMachineError::DockerUnavailable => Ok(unavailable("Docker is not available")),
-        LocalMachineError::PasskeyIsDevice(_) | LocalMachineError::CredentialHeld { .. } => {
+        LocalMachineError::PasskeyIsDevice(_)
+        | LocalMachineError::DeviceIsPasskey(_)
+        | LocalMachineError::CredentialHeld { .. } => {
             Ok(RpcError::caused(RpcErrorCode::Conflict, &error))
         }
         LocalMachineError::MissingAssignment

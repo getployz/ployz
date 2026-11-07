@@ -670,9 +670,9 @@ async fn set_on<T: Rpc<Response = DeviceSet>>(
     client.invoke::<T>(request, &target, None).await.map(Some)
 }
 
-/// Remove every key `code` names on one Server, the Device and any passkey, in the one
-/// Machine-side step [`SetDeviceRequest::Remove`] takes. Read first are the passkeys the
-/// Device approved there, which stay trusted.
+/// Remove the key `code` names on one Server: the passkey it lists under the code, else
+/// its Device, since a Server never trusts both under one code. For a Device, read first
+/// are the passkeys it approved there, which stay trusted.
 async fn remove_on(
     client: Client,
     machine_id: MachineId,
@@ -682,14 +682,23 @@ async fn remove_on(
     if !compat::supports(&client, &target, SET_DEVICE_CAPABILITY).await? {
         return Ok(None);
     }
-    let approved_passkeys = client
+    let passkeys = client
         .invoke::<op::Inspect>(InspectRequest::default(), &target, None)
         .await?
-        .passkeys
+        .passkeys;
+    if passkeys
+        .iter()
+        .any(|trusted| trusted.passkey.code() == code)
+    {
+        let set = client
+            .invoke::<op::SetPasskey>(SetPasskeyRequest::Remove { code }, &target, None)
+            .await?;
+        return Ok(Some(set.into()));
+    }
+    let approved_passkeys = passkeys
         .into_iter()
         .filter(|trusted| trusted.approved_by == PasskeyApprover::Device { code })
         .map(|trusted| trusted.passkey.code())
-        .filter(|passkey| *passkey != code)
         .collect();
     let set = client
         .invoke::<op::SetDevice>(SetDeviceRequest::Remove { code }, &target, None)

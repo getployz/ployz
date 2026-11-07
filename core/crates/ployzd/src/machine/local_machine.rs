@@ -151,6 +151,8 @@ pub enum Error {
     NeedsFullScope,
     #[error("passkey {0} has the same key as an approved Device")]
     PasskeyIsDevice(DeviceCode),
+    #[error("device {0} has the same key as a trusted passkey")]
+    DeviceIsPasskey(DeviceCode),
     #[error("passkey {held} already holds this passkey's credential ID")]
     CredentialHeld { held: DeviceCode },
     #[error("Machine is not participating")]

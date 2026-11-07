@@ -112,13 +112,18 @@ async fn cluster(
                     founding: Default::default(),
                 })
             }
-            RpcRequestBody::SetDevice(SetDeviceRequest::Remove { code }) => {
-                RpcResponse::from(if daemon == Some(Daemon::PredatesPasskeys) {
+            RpcRequestBody::SetPasskey(SetPasskeyRequest::Remove { code })
+                if daemon == Some(Daemon::ApprovedPasskey) && code == passkey_key(1).code() =>
+            {
+                RpcResponse::from(DeviceSet::Removed { code })
+            }
+            RpcRequestBody::SetDevice(SetDeviceRequest::Remove { code }) => RpcResponse::from(
+                if daemon == Some(Daemon::PredatesPasskeys) || code != key(1).code() {
                     DeviceSet::NotPresent { code }
                 } else {
                     DeviceSet::Removed { code }
-                })
-            }
+                },
+            ),
             RpcRequestBody::SetDevice(_) => {
                 let code = key(0).code();
                 RpcResponse::from(if daemon == Some(Daemon::AlreadyApproved) {
@@ -670,6 +675,38 @@ async fn rm_names_each_passkey_the_removed_device_approved_which_stays_trusted()
     assert_eq!(
         json.get("approved_passkeys"),
         Some(&json!([passkey_key(1).code()]))
+    );
+    server.abort();
+}
+
+#[tokio::test]
+async fn rm_on_a_passkey_code_removes_the_passkey() {
+    let (mut client, server) = cluster([
+        Daemon::ApprovedPasskey,
+        Daemon::PredatesPasskeys,
+        Daemon::PredatesPasskeys,
+    ])
+    .await;
+    let code = passkey_key(1).code();
+
+    let removed = set_everywhere(&mut client, |client, machine_id| {
+        remove_on(client, machine_id, code)
+    })
+    .await
+    .unwrap();
+
+    let outcomes: Vec<_> = removed
+        .answers
+        .iter()
+        .map(|answer| (answer.machine_id, answer.outcome.set))
+        .collect();
+    assert_eq!(
+        outcomes,
+        [
+            (id('1'), DeviceSet::Removed { code }),
+            (id('2'), DeviceSet::NotPresent { code }),
+            (id('3'), DeviceSet::NotPresent { code }),
+        ]
     );
     server.abort();
 }

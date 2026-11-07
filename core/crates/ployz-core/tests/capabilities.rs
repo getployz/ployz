@@ -353,7 +353,7 @@ const ABOVE_FLOOR: &[(&str, &str)] = &[
     ),
     (
         "ployz.machine.set-passkey.v1",
-        "gated: `ployz device approve --passkey` checks each Machine's contract first, names a Server whose daemon lacks it as missing and exits partial",
+        "gated: `ployz device approve --passkey` checks each Machine's contract first, names a Server whose daemon lacks it as missing and exits partial; `device rm` calls it only on a Machine whose Inspect lists a passkey under the code",
     ),
     (
         "ployz.restart.device-approval.v2",

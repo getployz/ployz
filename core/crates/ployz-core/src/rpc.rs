@@ -463,9 +463,9 @@ pub struct SetManagementClientResponse {
 /// Approve a Device on this Machine, or remove one, at Full scope only.
 ///
 /// `Approve` carries the Device's public key, never a secret; the Machine stores it in
-/// the slot the key's [`DeviceCode`] names. `Remove` stops trusting every key under the
-/// code, the Device and any passkey, in one write, since an EdDSA passkey and a Device
-/// with the same key share a code. Strict for the same reason as
+/// the slot the key's [`DeviceCode`] names, and is refused while a trusted passkey holds
+/// that key, so a code names one kind of key. `Remove` clears only the Device slot; a
+/// passkey is removed by [`SetPasskeyRequest::Remove`]. Strict for the same reason as
 /// [`SetManagementClientRequest`].
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
@@ -485,9 +485,8 @@ pub enum DeviceSet {
     NotPresent { code: DeviceCode },
 }
 
-/// Approve a passkey on this Machine, at Full scope only. The Machine records who
-/// approved it from its own view of the caller, never from the request.
-/// [`SetDeviceRequest::Remove`] removes it.
+/// Approve a passkey on this Machine, or remove one, at Full scope only. The Machine
+/// records who approved it from its own view of the caller, never from the request.
 ///
 /// A passkey only approves workflows: it gets no Management Client slot, so it never
 /// connects. Strict for the same reason as [`SetManagementClientRequest`].
@@ -496,6 +495,9 @@ pub enum DeviceSet {
 pub enum SetPasskeyRequest {
     Approve {
         passkey: Box<crate::authority::Passkey>,
+    },
+    Remove {
+        code: DeviceCode,
     },
 }
 

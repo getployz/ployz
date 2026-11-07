@@ -71,13 +71,6 @@ impl Installation {
     }
 }
 
-/// Which kinds of trusted key a removal took away.
-#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
-pub struct RemovedKeys {
-    pub device: bool,
-    pub passkey: bool,
-}
-
 /// What an Enroll does on this Machine.
 #[derive(Clone, Debug, PartialEq)]
 pub enum EnrollPlan {
@@ -809,34 +802,34 @@ impl LocalMachineStore {
         Ok(true)
     }
 
-    /// Stop trusting every key `code` names, the Device slot and any passkey, in one
-    /// write, so removing one kind can never leave the other trusted.
+    /// Clear the Device slot `code` names. Returns `false` when it holds no live key.
     ///
     /// # Errors
     /// Returns a storage error if the updated record cannot be saved atomically.
-    pub fn remove_trusted_key(&mut self, code: DeviceCode) -> Result<RemovedKeys, StoreError> {
+    pub fn remove_device(&mut self, code: DeviceCode) -> Result<bool, StoreError> {
         let label = code.label();
-        let mut updated = self.record.clone();
-        let device = updated
+        let live = self
+            .record
             .management_clients
             .get(&label)
-            .copied()
-            .and_then(ManagementClientSlot::live);
-        if let Some(was) = device {
-            updated
-                .management_clients
-                .insert(label, ManagementClientSlot::Cleared { was });
-        }
+            .is_some_and(|slot| slot.live().is_some());
+        self.clear_management_client(&label)?;
+        Ok(live)
+    }
+
+    /// Stop trusting the passkey `code` names. Returns `false` when none is trusted.
+    ///
+    /// # Errors
+    /// Returns a storage error if the updated record cannot be saved atomically.
+    pub fn remove_passkey(&mut self, code: DeviceCode) -> Result<bool, StoreError> {
+        let mut updated = self.record.clone();
         updated.passkeys.retain(|held| held.passkey.code() != code);
-        let removed = RemovedKeys {
-            device: device.is_some(),
-            passkey: updated.passkeys.len() != self.record.passkeys.len(),
-        };
-        if removed.device || removed.passkey {
-            save(&self.data_dir, &updated)?;
-            self.record = updated;
+        if updated.passkeys.len() == self.record.passkeys.len() {
+            return Ok(false);
         }
-        Ok(removed)
+        save(&self.data_dir, &updated)?;
+        self.record = updated;
+        Ok(true)
     }
 
     /// Trust `trusted` to approve workflows. Returns `false` when a passkey with its code
