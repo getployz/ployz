@@ -103,7 +103,8 @@ enum Reply {
         Option<ployz_core::HealthcheckSpec>,
         Option<LastHealthCheck>,
     ),
-    ObservedIngress(ContainerRuntimeObservation),
+    /// A copy of a reserved Ingress door, the Caddy or its holder.
+    ObservedDoor(QualifiedService, ContainerRuntimeObservation),
     Pending,
     Error(RpcError),
 }
@@ -916,7 +917,7 @@ impl Scripted {
                     | Reply::CreatedAfter(..)
                     | Reply::OkAfter(_)
                     | Reply::Observed(..)
-                    | Reply::ObservedIngress(_) => {
+                    | Reply::ObservedDoor(..) => {
                         panic!("scripted restart requires Ok, Settled or Error")
                     }
                 }
@@ -1073,7 +1074,7 @@ impl Scripted {
             | Reply::OkAfter(_)
             | Reply::Listed(_)
             | Reply::Observed(..)
-            | Reply::ObservedIngress(_)
+            | Reply::ObservedDoor(..)
             | Reply::Pending
             | Reply::Error(_) => None,
         };
@@ -1113,7 +1114,7 @@ impl Scripted {
             }
             Reply::Error(error) => Err(error),
             Reply::Pending => std::future::pending().await,
-            Reply::Listed(_) | Reply::Observed(..) | Reply::ObservedIngress(_) => {
+            Reply::Listed(_) | Reply::Observed(..) | Reply::ObservedDoor(..) => {
                 panic!("scripted ensure requires Created, Ok or Error")
             }
         };
@@ -1214,7 +1215,7 @@ impl MachineOperations for Scripted {
             | Reply::CreatedAfter(..)
             | Reply::OkAfter(_)
             | Reply::Observed(..)
-            | Reply::ObservedIngress(_)
+            | Reply::ObservedDoor(..)
             | Reply::Pending => {
                 panic!("scripted list requires Listed or Error")
             }
@@ -1384,12 +1385,12 @@ impl MachineOperations for Scripted {
                     leaving: false,
                 })
             }
-            Reply::ObservedIngress(runtime) => {
+            Reply::ObservedDoor(door, runtime) => {
                 let mut container = observation(machine_id, container_id, runtime);
                 container
                     .try_update(|parts| {
-                        parts.namespace = Namespace::system();
-                        parts.resolved_spec.name = ServiceName::parse("ingress").unwrap();
+                        parts.namespace = door.namespace;
+                        parts.resolved_spec.name = door.name;
                     })
                     .unwrap();
                 Ok(ContainerDetails {
@@ -1470,7 +1471,7 @@ fn unit(reply: Reply) -> Result<(), RpcError> {
         | Reply::CreatedAfter(..)
         | Reply::OkAfter(_)
         | Reply::Observed(..)
-        | Reply::ObservedIngress(_)
+        | Reply::ObservedDoor(..)
         | Reply::Pending => {
             panic!("scripted mutation requires Ok or Error")
         }
@@ -1772,7 +1773,10 @@ fn observed(call: Call, runtime: ContainerRuntimeObservation) -> Step {
 }
 
 fn observed_ingress(call: Call, runtime: ContainerRuntimeObservation) -> Step {
-    Step(call, Reply::ObservedIngress(runtime))
+    Step(
+        call,
+        Reply::ObservedDoor(QualifiedService::system_ingress(), runtime),
+    )
 }
 
 fn listed(service: &QualifiedService, containers: Vec<ContainerObservation>) -> Step {

@@ -1007,3 +1007,43 @@ async fn stop_start_restart_never_admit_a_failed_deploys_pending_copy() {
         );
     }
 }
+
+/// Neither Ingress door is ever routed, so a user stop, start or restart runs it as it
+/// is: it stays Pending, and nothing says it was left unrouted.
+#[tokio::test(start_paused = true)]
+async fn user_commands_run_either_ingress_door_unrouted() {
+    let (machine, copy) = (machine('a'), container('1'));
+    for door in [
+        QualifiedService::system_ingress(),
+        QualifiedService::system_ingress_holder(),
+    ] {
+        type Calls = &'static [fn(MachineId, ContainerId) -> Call];
+        let commands: [(Command, Calls); 3] = [
+            (Command::Stop, &[Call::Stop]),
+            (Command::Start, &[Call::Restart]),
+            (Command::Restart, &[Call::Stop, Call::Restart]),
+        ];
+        for (command, calls) in commands {
+            let steps = std::iter::once(Step(
+                Call::Inspect(machine, copy),
+                Reply::ObservedDoor(door.clone(), running()),
+            ))
+            .chain(calls.iter().map(|call| copy_call(*call)))
+            .collect();
+            let fake = Scripted::new(steps).with_copy_at(
+                &door,
+                &machine,
+                &copy,
+                CopyRotation::Pending,
+                ployz_core::Gen::FIRST,
+            );
+            let ran = run_command(command, Recording::of(fake)).await;
+            assert!(ran.answer.is_ok(), "{door} {command:?}: {:?}", ran.answer);
+            assert_eq!(
+                ran.rotation,
+                Some(CopyRotation::Pending),
+                "{door} {command:?}"
+            );
+        }
+    }
+}
