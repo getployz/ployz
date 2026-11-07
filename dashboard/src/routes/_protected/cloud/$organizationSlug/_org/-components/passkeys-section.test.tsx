@@ -5,7 +5,7 @@ import { cleanup, render, screen } from "@testing-library/react";
 import { Suspense } from "react";
 import { afterEach, expect, it, vi } from "vitest";
 import * as passkeyFunctions from "#/modules/passkeys/passkeys.functions";
-import { passkeyReads, PasskeysSection } from "./passkeys-section";
+import { PasskeysSection } from "./passkeys-section";
 
 afterEach(() => {
   cleanup();
@@ -48,5 +48,4 @@ it("hides passkeys from a support visit without asking for them", async () => {
   const list = await renderAs("support");
   expect(screen.queryByRole("heading", { name: "Passkeys" })).toBeNull();
   expect(list).not.toHaveBeenCalled();
-  expect(passkeyReads("acme", "support")).toEqual([]);
 });

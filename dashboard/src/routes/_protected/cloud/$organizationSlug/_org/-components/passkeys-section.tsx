@@ -19,10 +19,6 @@ export const approveCommand = (code: string, on: "server" | "device") =>
 
 const organizationRoute = getRouteApi("/_protected/cloud/$organizationSlug");
 
-/** A passkey belongs to a member, so a support visit neither reads nor shows the section. */
-export const passkeyReads = (organizationSlug: string, access: "member" | "support") =>
-  access === "member" ? [passkeysQueryOptions(organizationSlug)] : [];
-
 /**
  * Passkeys that let you approve changes from this browser. Adding one here only files it: a Server trusts it once
  * someone runs the approve command on it, and each row says what a Server reports.
