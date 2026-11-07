@@ -38,7 +38,8 @@ async fn cluster(
         let target = rpc
             .metadata()
             .get("machine")
-            .map(|value| MachineId::parse(value.to_str().unwrap()).unwrap());
+            .map(|value| MachineId::parse(value.to_str().unwrap()).unwrap())
+            .or(Some(id('1')));
         let daemon = ['1', '2', '3']
             .into_iter()
             .zip(daemons)
@@ -352,4 +353,154 @@ fn each_device_command_parses_and_reaches_its_connection() {
             "{args:?} {via:?}"
         );
     }
+}
+
+#[tokio::test]
+async fn automatic_join_approval_refuses_clouds_substituted_recipient() {
+    use ployz_core::{
+        PendingJoins, RegisterRequest, SealingPublicKey,
+        authority::{JoinApproval, Signer, Timestamp, join::JoinAllocation},
+    };
+    let directory = tempfile::tempdir().unwrap();
+    let config = directory.path().join("config.yaml");
+    super::key::store(&super::key::path(&config), &[1; 32]).unwrap();
+    let expected_machine = machine('a', "joiner");
+    let expected = RegisterRequest {
+        join_approval: None,
+        machine_id: expected_machine.id,
+        assigned_subnet: Some(expected_machine.subnet),
+        initial_policy: Default::default(),
+        name: expected_machine.name.clone(),
+        storage: ployz_core::StorageChoice::None,
+        public_key: expected_machine.public_key,
+        public_ip: expected_machine.public_ip,
+        advertised_endpoints: expected_machine.advertised_endpoints.clone(),
+        runtime: Default::default(),
+    };
+    let mut allocation = JoinAllocation::from(&expected_machine);
+    allocation.public_key = ployz_core::WireGuardPublicKey([9; 32]);
+    let signer = Signer::from_seed(&[1; 32]);
+    let issued_at = Timestamp::now();
+    let body = JoinApproval {
+        cluster: SealingPublicKey::from_bytes([2; 32]),
+        machine: allocation,
+        network: "10.210.0.0/16".parse().unwrap(),
+        sealing_recipient: ployz_core::WireGuardPublicKey([9; 32]),
+        devices: vec![signer.public().into()],
+        bootstrap: Vec::new(),
+        admitting_machines: vec![id('b')],
+        issued_at,
+        expires_at: issued_at.plus(900_000),
+        signer: signer.public().into(),
+    };
+    let (mut client, server) =
+        crate::connect::test_support::rpc_client(move |request: Request<OpaquePayload>| {
+            let body = body.clone();
+            async move {
+                assert!(
+                    matches!(
+                        request.into_inner().decode_request().unwrap().body,
+                        RpcRequestBody::PendingJoins(_)
+                    ),
+                    "a substituted key must never reach ApproveJoin"
+                );
+                Ok(Response::new(
+                    RpcResponse::from(PendingJoins { joins: vec![body] })
+                        .encode()
+                        .unwrap(),
+                ))
+            }
+        })
+        .await;
+    let error = sign_waiting_join(&mut client, &config, &expected)
+        .await
+        .unwrap_err();
+    assert!(error.to_string().contains("does not match"));
+    server.abort();
+}
+
+#[tokio::test]
+async fn full_mutations_report_servers_without_a_direct_connection_as_omissions() {
+    let (client, server) = cluster([Daemon::Approves; 3]).await;
+    let connection =
+        crate::context::Connection::tcp("127.0.0.1:7569".parse().unwrap()).with_machine_id(id('1'));
+    let mut client = client.with_full_connections(vec![connection]);
+    let removed = set_everywhere(
+        &mut client,
+        SetDeviceRequest::Remove {
+            code: key(1).code(),
+        },
+    )
+    .await
+    .unwrap();
+    assert_eq!(removed.answers.len(), 1);
+    assert_eq!(removed.gaps.omitted, vec![id('2'), id('3')]);
+    assert_eq!(removed.gaps.outcome().unwrap_err().printed_exit(), Some(3));
+    let reach = Reach::full(&mut client).await.unwrap();
+    let (_, gaps) = reach
+        .fan_out(|_| async { Ok(Some(DeviceEnforcementSet { enforced: true })) })
+        .await;
+    assert_eq!(gaps.omitted, vec![id('2'), id('3')]);
+    assert_eq!(gaps.outcome().unwrap_err().printed_exit(), Some(3));
+    server.abort();
+}
+
+#[test]
+fn join_summary_names_the_server_subnet_and_endpoints_before_signing() {
+    use ployz_core::{
+        AdvertisedEndpoint, SealingPublicKey,
+        authority::{JoinApproval, Timestamp, join::JoinAllocation},
+    };
+    let mut joiner = machine('a', "joiner");
+    joiner.subnet = "10.210.7.0/24".parse().unwrap();
+    joiner.advertised_endpoints = vec![AdvertisedEndpoint("[2001:db8::7]:51820".parse().unwrap())];
+    let issued_at = Timestamp::now();
+    let body = JoinApproval {
+        cluster: SealingPublicKey::from_bytes([2; 32]),
+        machine: JoinAllocation::from(&joiner),
+        network: "10.210.0.0/16".parse().unwrap(),
+        sealing_recipient: joiner.public_key,
+        devices: Vec::new(),
+        bootstrap: Vec::new(),
+        admitting_machines: vec![id('b')],
+        issued_at,
+        expires_at: issued_at.plus(900_000),
+        signer: key(1),
+    };
+    assert_eq!(
+        join_summary(&body),
+        format!(
+            "Approving Server joiner on 10.210.7.0/24 with endpoints [2001:db8::7]:51820 (join code {}).",
+            body.code()
+        )
+    );
+}
+
+#[test]
+fn starting_set_summary_names_each_trusted_server_before_signing() {
+    let first = machine('1', "machine-1");
+    let second = machine('2', "machine-2");
+    let reach = Reach {
+        asked: vec![first.id, second.id],
+        silent: Vec::new(),
+        entry: None,
+        names: BTreeMap::from([(first.id, first.name.clone())]),
+    };
+    assert_eq!(
+        starting_set_summary(&reach, &[(&first).into(), (&second).into()]),
+        format!(
+            "Trusting 2 Servers from the start: machine-1 ({}, {}, key {}), {} ({}, {}, key {}).",
+            first.subnet,
+            first.id,
+            first.public_key.fingerprint(),
+            second.id,
+            second.subnet,
+            second.id,
+            second.public_key.fingerprint()
+        )
+    );
+    assert_eq!(
+        starting_set_summary(&reach, &[]),
+        "Trusting 0 Servers from the start: none."
+    );
 }

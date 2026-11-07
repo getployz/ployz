@@ -43,6 +43,7 @@ fn projection(
         public_ip: None,
         advertised_endpoints: Vec::new(),
         runtime: Default::default(),
+        join_approval: None,
         build_concurrency: None,
     };
     derive(&machine, containers, certificates)
@@ -1189,6 +1190,7 @@ async fn failed_load_preserves_the_last_caddyfile() {
             format!("192.0.2.1:{MACHINE_API_PORT}").parse().unwrap(),
         )],
         runtime: Default::default(),
+        join_approval: None,
         build_concurrency: None,
     };
     let admin = FakeAdmin {
@@ -1264,6 +1266,7 @@ async fn reconcile_writes_routed_and_unrouted_material_and_tolerates_a_stray_dir
             format!("192.0.2.1:{MACHINE_API_PORT}").parse().unwrap(),
         )],
         runtime: Default::default(),
+        join_approval: None,
         build_concurrency: None,
     };
     let observations = [observation(
@@ -1354,6 +1357,7 @@ async fn reconcile_writes_material_for(hostname: &str) {
             format!("192.0.2.1:{MACHINE_API_PORT}").parse().unwrap(),
         )],
         runtime: Default::default(),
+        join_approval: None,
         build_concurrency: None,
     };
     let observations = [observation(

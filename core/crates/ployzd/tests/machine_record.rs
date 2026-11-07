@@ -148,6 +148,7 @@ fn initialize_and_join_persist_the_only_supported_transitions() {
         public_ip: None,
         advertised_endpoints: vec![AdvertisedEndpoint("192.0.2.2:51820".parse().unwrap())],
         runtime: Default::default(),
+        join_approval: None,
         build_concurrency: None,
     };
     second
@@ -908,6 +909,7 @@ fn sample_machine(id: MachineId, public_key: ployz_core::WireGuardPublicKey) -> 
         public_ip: None,
         advertised_endpoints: vec![AdvertisedEndpoint("192.0.2.1:51820".parse().unwrap())],
         runtime: Default::default(),
+        join_approval: None,
         build_concurrency: None,
     }
 }

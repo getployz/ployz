@@ -352,6 +352,25 @@ impl MachineRpc for MachineService {
         )
     }
 
+    async fn pending_joins(
+        &self,
+        request: Request<OpaquePayload>,
+    ) -> Result<Response<OpaquePayload>, Status> {
+        expect::<op::PendingJoins>(request)?;
+        finish(self.local.pending_joins())
+    }
+
+    async fn approve_join(
+        &self,
+        request: Request<OpaquePayload>,
+    ) -> Result<Response<OpaquePayload>, Status> {
+        finish(
+            self.local
+                .approve_join(expect::<op::ApproveJoin>(request)?)
+                .await,
+        )
+    }
+
     async fn register(
         &self,
         request: Request<OpaquePayload>,
@@ -1035,7 +1054,6 @@ fn local_failure(error: LocalMachineError) -> Result<RpcError, Status> {
         LocalMachineError::Departing { server, source } => {
             Ok(local_failure(*source)?.overlapping_leave(&server))
         }
-        LocalMachineError::Store(error) => Ok(store_error(error)),
         LocalMachineError::ManagementRevoked => Err(ployz_core::rpc::caused_status(
             tonic::Code::Unauthenticated,
             &error,
@@ -1051,6 +1069,33 @@ fn local_failure(error: LocalMachineError) -> Result<RpcError, Status> {
                 "next": "ployz service restart from an approved device",
             }),
         )),
+        LocalMachineError::EnforcementRefused(_) => Err(ployz_core::rpc::hinted_status(
+            tonic::Code::PermissionDenied,
+            &error,
+            serde_json::json!({
+                "capability": ployz_core::SET_DEVICE_ENFORCEMENT_CAPABILITY,
+                "next": "ployz device enforce from an approved device",
+            }),
+        )),
+        LocalMachineError::JoinConsumed(_) => Err(ployz_core::rpc::hinted_status(
+            tonic::Code::PermissionDenied,
+            &error,
+            serde_json::json!({
+                "capability": ployz_core::JOIN_APPROVAL_CAPABILITY,
+                "reason": "join_already_admitted",
+                "inspect": ["ployz server ls"],
+            }),
+        )),
+        LocalMachineError::JoinRefused(_)
+        | LocalMachineError::Store(StoreError::JoinRefused(_)) => {
+            Err(ployz_core::rpc::hinted_status(
+                tonic::Code::PermissionDenied,
+                &error,
+                serde_json::json!({ "capability": ployz_core::JOIN_APPROVAL_CAPABILITY, "next": "ployz device approve --join CODE from an approved device" }),
+            ))
+        }
+        LocalMachineError::Store(error) => Ok(store_error(error)),
+        LocalMachineError::JoinRecord(_) => Err(internal_response(error)),
         LocalMachineError::ApprovalRecord(_) => Err(internal_response(error)),
         LocalMachineError::NotParticipating => Ok(unavailable("Machine is not participating")),
         LocalMachineError::ClusterStoreUnavailable => {
@@ -1227,6 +1272,7 @@ fn unavailable(message: &str) -> RpcError {
 
 fn store_error(error: StoreError) -> RpcError {
     let code = match error {
+        StoreError::JoinRefused(_) => RpcErrorCode::from("forbidden"),
         StoreError::AlreadyResetting
         | StoreError::AlreadyInitialized
         | StoreError::NotParticipating

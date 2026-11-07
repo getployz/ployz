@@ -7,8 +7,10 @@ use std::path::Path;
 use clap::{Arg, ArgAction, ArgMatches, Command};
 use ployz_core::{
     DeviceCode, DeviceEnforcementSet, DeviceKey, DeviceSet, InspectRequest, MachineFailure,
-    MachineId, MachineName, MachineTarget, RpcError, SET_DEVICE_CAPABILITY,
-    SET_DEVICE_ENFORCEMENT_CAPABILITY, SetDeviceEnforcementRequest, SetDeviceRequest, op,
+    MachineId, MachineName, MachineTarget, OperationId, RpcError, SET_DEVICE_CAPABILITY,
+    SET_DEVICE_ENFORCEMENT_CAPABILITY, SetDeviceEnforcementRequest, SetDeviceRequest,
+    authority::{Member, Signed, Signer, StartingSet, Timestamp, validity},
+    op,
 };
 use reqwest::Method;
 use serde::{Deserialize, Serialize};
@@ -35,7 +37,13 @@ pub(crate) fn request_command(command: Command) -> Command {
 pub(crate) fn approve_command(command: Command) -> Command {
     base(command, "Approve a device on every server")
         .after_help(concat!("Examples:\n", "  ployz device approve mmg42klgyq"))
-        .arg(positional("code", true).help("The code ployz device request printed"))
+        .arg(positional("code", true).help("The code the requesting device or server printed"))
+        .arg(
+            Arg::new("join")
+                .long("join")
+                .action(ArgAction::SetTrue)
+                .help("Approve a waiting Server join with this device's key"),
+        )
 }
 
 pub(crate) fn list_command(command: Command) -> Command {
@@ -123,6 +131,14 @@ async fn request_with(credential: &Credential, key: DeviceKey) -> Result<Request
 
 pub(crate) fn approve(root: &ArgMatches) -> Result<(), Error> {
     let leaf = leaf_matches(root);
+    if leaf.get_flag("join") {
+        let code = leaf
+            .get_one::<String>("code")
+            .expect("required code")
+            .trim()
+            .to_ascii_lowercase();
+        return runtime()?.block_on(approve_waiting_join(leaf, &code));
+    }
     let code = typed_code(leaf)?;
     let store = CredentialStore::beside(&config_path(leaf)?);
     runtime()?.block_on(async {
@@ -134,6 +150,116 @@ pub(crate) fn approve(root: &ArgMatches) -> Result<(), Error> {
         .await?;
         settled.finish()
     })
+}
+
+async fn approve_waiting_join(leaf: &ArgMatches, code: &str) -> Result<(), Error> {
+    let mut client = server::connect(leaf, context(leaf)).await?;
+    let reach = Reach::of(&mut client).await?;
+    let secret = key::load(&key::path(&config_path(leaf)?))?.ok_or_else(|| {
+        Error::conflict("Approving a Server join needs this computer's approved Device key.")
+    })?;
+    let signer = ployz_core::authority::Signer::from_seed(&secret);
+    let mut matching = Vec::new();
+    let asked = if leaf.get_one::<String>("connect").is_some() {
+        reach.entry.into_iter().collect()
+    } else {
+        reach.asked
+    };
+    for machine in &asked {
+        let target = MachineTarget::from(machine);
+        let pending = client
+            .invoke::<op::PendingJoins>(ployz_core::PendingJoinsRequest {}, &target, None)
+            .await?;
+        matching.extend(
+            pending
+                .joins
+                .into_iter()
+                .filter(|body| body.code() == code)
+                .map(|body| (*machine, body)),
+        );
+    }
+    let [(admitting, body)] = matching.as_mut_slice() else {
+        return Err(if matching.is_empty() {
+            Error::not_found(format!(
+                "No Server join is waiting for {code}. Run the Server's join command again."
+            ))
+        } else {
+            Error::conflict(
+                "More than one admission is waiting for that join. Nothing was approved. Select one admitting Server with --connect.",
+            )
+        });
+    };
+    show_join(body);
+    body.signer = signer.public().into();
+    let approval = ployz_core::authority::Signed::sign(body, &signer).map_err(Error::command)?;
+    client
+        .invoke::<op::ApproveJoin>(
+            ployz_core::ApproveJoinRequest { approval },
+            &MachineTarget::from(&*admitting),
+            None,
+        )
+        .await?;
+    ui::finish(&json!({ "approved_join": body.machine.id }), || {
+        ui::stream("Approved the Server join. Rerun its join command.")
+    })
+}
+
+fn show_join(body: &ployz_core::authority::JoinApproval) {
+    ui::note(join_summary(body));
+}
+
+fn join_summary(body: &ployz_core::authority::JoinApproval) -> String {
+    let endpoints = body
+        .machine
+        .advertised_endpoints
+        .iter()
+        .map(|endpoint| endpoint.0.to_string())
+        .collect::<Vec<_>>()
+        .join(", ");
+    format!(
+        "Approving Server {} on {} with endpoints {} (join code {}).",
+        body.machine.name,
+        body.machine.subnet,
+        if endpoints.is_empty() {
+            "none"
+        } else {
+            &endpoints
+        },
+        body.code()
+    )
+}
+
+pub(super) async fn sign_waiting_join(
+    client: &mut Client,
+    config: &Path,
+    expected: &ployz_core::RegisterRequest,
+) -> Result<bool, Error> {
+    let Some(secret) = key::load(&key::path(config))? else {
+        return Ok(false);
+    };
+    let signer = ployz_core::authority::Signer::from_seed(&secret);
+    let pending = client
+        .call::<op::PendingJoins>(ployz_core::PendingJoinsRequest {}, None)
+        .await?;
+    let Some(mut body) = pending
+        .joins
+        .into_iter()
+        .find(|body| body.machine.id == expected.machine_id)
+    else {
+        return Ok(false);
+    };
+    if !body.machine.matches_request(expected) {
+        return Err(Error::conflict(
+            "The waiting join does not match the Server identity, keys, allocation, or policy requested. Nothing was approved.",
+        ));
+    }
+    show_join(&body);
+    body.signer = signer.public().into();
+    let approval = ployz_core::authority::Signed::sign(&body, &signer).map_err(Error::command)?;
+    client
+        .call::<op::ApproveJoin>(ployz_core::ApproveJoinRequest { approval }, None)
+        .await?;
+    Ok(true)
 }
 
 pub(crate) fn remove(root: &ArgMatches) -> Result<(), Error> {
@@ -190,9 +316,18 @@ pub(crate) fn enforce(root: &ArgMatches) -> Result<(), Error> {
     let enforced = !leaf.get_flag("off");
     runtime()?.block_on(async {
         let mut client = server::connect_full(leaf, context(leaf)).await?;
-        let reach = Reach::of(&mut client).await?;
+        let reach = Reach::full(&mut client).await?;
+        let starting_set = if enforced {
+            Some(sign_starting_set(&config_path(leaf)?, &client, &reach).await?)
+        } else {
+            None
+        };
+        let request = SetDeviceEnforcementRequest {
+            enforced,
+            starting_set,
+        };
         let (answers, gaps) = reach
-            .fan_out(|machine_id| enforce_on(client.clone(), machine_id, enforced))
+            .fan_out(|machine_id| enforce_on(client.clone(), machine_id, request.clone()))
             .await;
         let answers: Vec<Enforcement> = answers
             .into_iter()
@@ -230,16 +365,82 @@ struct Enforcement {
 async fn enforce_on(
     client: Client,
     machine_id: MachineId,
-    enforced: bool,
+    request: SetDeviceEnforcementRequest,
 ) -> Result<Option<DeviceEnforcementSet>, RpcError> {
     let target = MachineTarget::from(&machine_id);
     if !compat::supports(&client, &target, SET_DEVICE_ENFORCEMENT_CAPABILITY).await? {
         return Ok(None);
     }
     client
-        .invoke::<op::SetDeviceEnforcement>(SetDeviceEnforcementRequest { enforced }, &target, None)
+        .invoke::<op::SetDeviceEnforcement>(request, &target, None)
         .await
         .map(Some)
+}
+
+/// Sign the Servers that answer for themselves as the Members every Server trusts once
+/// enforcement is on. A row no Server answers for is left out.
+async fn sign_starting_set(
+    config: &Path,
+    client: &Client,
+    reach: &Reach,
+) -> Result<Signed<StartingSet>, Error> {
+    let secret = key::load(&key::path(config))?.ok_or_else(|| {
+        Error::conflict("Turning on Device enforcement needs this computer's approved Device key.")
+    })?;
+    let signer = Signer::from_seed(&secret);
+    let (answers, _) = reach
+        .fan_out(|machine_id| member_of(client.clone(), machine_id))
+        .await;
+    let members: Vec<Member> = answers.into_iter().map(|(_, member)| member).collect();
+    ui::note(starting_set_summary(reach, &members));
+    let issued_at = Timestamp::now();
+    Signed::sign(
+        &StartingSet {
+            operation: OperationId::random(),
+            members,
+            issued_at,
+            expires_at: issued_at.plus(validity::MAX_LIFETIME_MILLIS),
+            signer: signer.public().into(),
+        },
+        &signer,
+    )
+    .map_err(Error::command)
+}
+
+async fn member_of(client: Client, machine_id: MachineId) -> Result<Option<Member>, RpcError> {
+    let details = client
+        .invoke::<op::Inspect>(
+            InspectRequest::default(),
+            &MachineTarget::from(&machine_id),
+            None,
+        )
+        .await?;
+    Ok(details
+        .machine
+        .as_ref()
+        .filter(|machine| machine.id == machine_id)
+        .map(Member::from))
+}
+
+fn starting_set_summary(reach: &Reach, members: &[Member]) -> String {
+    let servers = members
+        .iter()
+        .map(|member| {
+            format!(
+                "{} ({}, {}, key {})",
+                reach.name(&member.id),
+                member.subnet,
+                member.id,
+                member.public_key.fingerprint()
+            )
+        })
+        .collect::<Vec<_>>()
+        .join(", ");
+    format!(
+        "Trusting {} Servers from the start: {}.",
+        members.len(),
+        if servers.is_empty() { "none" } else { &servers }
+    )
 }
 
 fn context(leaf: &ArgMatches) -> Option<&str> {
@@ -291,7 +492,7 @@ async fn approve_with<T>(
 }
 
 async fn set_everywhere(client: &mut Client, request: SetDeviceRequest) -> Result<Settled, Error> {
-    let reach = Reach::of(client).await?;
+    let reach = Reach::full(client).await?;
     let (answers, gaps) = reach
         .fan_out(|machine_id| set_on(client.clone(), machine_id, request.clone()))
         .await;
@@ -376,6 +577,25 @@ struct Reach {
 }
 
 impl Reach {
+    async fn full(client: &mut Client) -> Result<Self, Error> {
+        let mut reach = Self::of(client).await?;
+        let direct = client.full_machines();
+        if client.full_single() {
+            reach.asked.retain(|machine| Some(*machine) == reach.entry);
+            reach.silent.retain(|machine| Some(*machine) == reach.entry);
+        } else if !direct.is_empty() {
+            reach.silent.extend(
+                reach
+                    .asked
+                    .iter()
+                    .filter(|machine| !direct.contains(machine))
+                    .copied(),
+            );
+            reach.asked.retain(|machine| direct.contains(machine));
+        }
+        Ok(reach)
+    }
+
     async fn of(client: &mut Client) -> Result<Self, Error> {
         let machines = client.machines().await?;
         let (asked, silent) = machines

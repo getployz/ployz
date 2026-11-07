@@ -1074,6 +1074,7 @@ fn joiner_machine() -> Machine {
         public_ip: None,
         advertised_endpoints: vec![AdvertisedEndpoint("192.0.2.2:51820".parse().unwrap())],
         runtime: Default::default(),
+        join_approval: None,
         build_concurrency: None,
     }
 }
@@ -1091,6 +1092,7 @@ pub fn founder_machine() -> Machine {
         public_ip: None,
         advertised_endpoints: vec![AdvertisedEndpoint("192.0.2.1:51820".parse().unwrap())],
         runtime: Default::default(),
+        join_approval: None,
         build_concurrency: None,
     }
 }

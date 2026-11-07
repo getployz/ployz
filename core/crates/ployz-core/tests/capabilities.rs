@@ -68,7 +68,7 @@ fn catalogued_capabilities_keep_stable_spellings() {
         (BUILD_GRANT_HOLDER_CAPABILITY, "ployz.build.grant.holder.v1"),
         (
             SET_DEVICE_ENFORCEMENT_CAPABILITY,
-            "ployz.machine.set-device-enforcement.v1",
+            "ployz.machine.set-device-enforcement.v2",
         ),
         (
             RESTART_APPROVAL_CAPABILITY,
@@ -155,9 +155,11 @@ fn advertised_capability_groups_match_the_frozen_catalog() {
             "ployz.sealing.recover.v1",
             "ployz.machine.register.v1",
             "ployz.machine.set-management-client.v1",
+            "ployz.machine.join.pending.v1",
+            "ployz.machine.join.approve.v1",
             "ployz.machine.set-device.v1",
             "ployz.machine.set-push-target.v1",
-            "ployz.machine.set-device-enforcement.v1",
+            "ployz.machine.set-device-enforcement.v2",
             "ployz.network.select-endpoint.v1",
             "ployz.machine.list.v1",
             "ployz.machine.update.v1",
@@ -167,6 +169,7 @@ fn advertised_capability_groups_match_the_frozen_catalog() {
             "ployz.sealing.install.v1",
             "ployz.machine.leave.v1",
             "ployz.machine.forget.v1",
+            "ployz.machine.join.device-approval.v1",
             "ployz.certificates.policy.v1",
             "ployz.machine.storage-observation.v1",
             "ployz.management.scope.v1",
@@ -342,7 +345,7 @@ const ABOVE_FLOOR: &[(&str, &str)] = &[
         "gated: the SDK checks the contract before calling",
     ),
     (
-        "ployz.machine.set-device-enforcement.v1",
+        "ployz.machine.set-device-enforcement.v2",
         "gated: `ployz device enforce` checks each Machine's contract first, names a Server whose daemon lacks it as missing and exits partial",
     ),
     (
@@ -420,6 +423,18 @@ const ABOVE_FLOOR: &[(&str, &str)] = &[
     (
         "ployz.machine.set-device.v1",
         "gated: `ployz device` checks each Machine's contract first, names a Server whose daemon lacks it as missing and exits partial",
+    ),
+    (
+        "ployz.machine.join.pending.v1",
+        "refused legibly: `ployz device approve --join` stops at a Server whose daemon lacks it, and the refusal names the capability",
+    ),
+    (
+        "ployz.machine.join.approve.v1",
+        "unreached: ApproveJoin goes only to the Machine that listed the pending join, which has it",
+    ),
+    (
+        "ployz.machine.join.device-approval.v1",
+        "falls back: an older daemon never refuses Register with it, so the join proceeds unsigned as before",
     ),
 ];
 

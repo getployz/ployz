@@ -428,6 +428,7 @@ impl BackfillClient for Client {
     ) -> Result<SealedSealingKey, RpcError> {
         self.read::<op::ShareSealingKey>(
             ShareSealingKeyRequest {
+                join_approval: None,
                 machine: recipient,
                 public_key,
             },

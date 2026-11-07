@@ -58,6 +58,46 @@ minutes.
 Add more servers the same way, even at different providers. Nothing moves onto a new server until
 you deploy; see [Scaling](../services/scaling.md#add-a-server).
 
+### Approve a join when device enforcement is on
+
+An existing server must approve the new server before it publishes the assignment or shares
+the Cluster's Sealing Key. When you add a server from an approved computer, the CLI signs that
+approval with your Device key.
+
+A copy-paste join on a new server has no approved Device key. If the join asks for approval,
+copy the code from that server's refusal. From an approved computer, run the command it names:
+
+```sh
+ployz device approve --join CODE
+```
+
+Compare the 20-character code with the one printed on the server. The code carries 100 bits
+of the Server identity and key fingerprint. Check the name, subnet, and endpoints the CLI
+shows before it signs. Then rerun the same join command on the server, keeping its token and
+options. A new admission needs an approval less than 15 minutes old. If the reply is lost,
+rerun the same command to recover the stored capsule, even after the approval expires.
+
+A server that receives a valid approved capsule takes its Devices and starting peers only
+from that approval and enables enforcement. Each enforcing server checks new Machine rows
+against its own Devices before accepting them as members or WireGuard peers. The servers in the
+starting set you signed with `ployz device enforce` are trusted without a join approval. A peer
+saved by an older unsigned join that isn't in that set is dropped as a WireGuard and gossip peer,
+including after a restart.
+
+A fresh server has no independent pin for its first authority. If Cloud withholds the
+capsule during an approved join, the new server joins without the Sealing Key and under
+Devices Cloud chose, with enforcement off. Honest servers can peer with it because you
+approved its ID and key. It cannot decrypt sealed secrets or admit other servers to the
+enforcing Cluster. Each honest server refuses a new Machine whose membership its own
+Device did not sign. Cloud can also forge a capsule under its own Sealing Key and Devices,
+but honest servers refuse that forged membership and never wrap the real Sealing Key to
+an unapproved key. Without an approval, bootstrap keeps today's behavior and takes Cloud's
+Devices and peers.
+
+Pinning the joining server's initial authority through verified SSH or a short code matched in
+the browser is follow-up work. This release does not change the bootstrap default for customers
+who use only the dashboard.
+
 ## Add a standalone server
 
 To start a Cluster outside Ployz Cloud, run this on the Linux server:

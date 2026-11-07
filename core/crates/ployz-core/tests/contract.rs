@@ -1826,6 +1826,7 @@ fn sealing_key_backfill_rpcs_have_one_typed_wire_contract() {
         RpcRequestBody::GenerateSealingKey(ployz_core::GenerateSealingKeyRequest {})
     );
     let share = ployz_core::ShareSealingKeyRequest {
+        join_approval: None,
         machine,
         public_key: ployz_core::WireGuardPublicKey([7; 32]),
     };

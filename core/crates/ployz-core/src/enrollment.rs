@@ -152,6 +152,7 @@ pub fn allocate_enrollment(
     }
     let mut identity = request.clone();
     identity.assigned_subnet = None;
+    identity.join_approval = None;
     identity.runtime = Default::default();
     let existing = saved.iter().find(|a| a.machine.id == id);
     if saved.iter().any(|a| a.network != snapshot.network) {
@@ -196,6 +197,7 @@ pub fn allocate_enrollment(
         accepts_builds: request.initial_policy.accepts_builds,
         accepts_services: request.initial_policy.accepts_services,
         accepts_ingress: request.initial_policy.accepts_ingress,
+        join_approval: None,
         build_concurrency: None,
     };
     for other in snapshot
@@ -230,6 +232,7 @@ mod tests {
 
     fn request(seed: u8) -> RegisterRequest {
         RegisterRequest {
+            join_approval: None,
             machine_id: MachineId::parse(format!("{seed:032x}")).unwrap(),
             assigned_subnet: None,
             initial_policy: Default::default(),

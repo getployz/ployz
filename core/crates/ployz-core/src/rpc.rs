@@ -357,6 +357,9 @@ pub enum Forgotten {
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
 pub struct RegisterRequest {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub join_approval: Option<crate::authority::Signed<crate::authority::JoinApproval>>,
     /// Durable identity of the joining Machine.
     pub machine_id: MachineId,
     /// Client-selected subnet, required for Register publication.
@@ -374,6 +377,24 @@ pub struct RegisterRequest {
     #[serde(default)]
     pub runtime: MachineRuntime,
 }
+
+/// Read the join requests waiting for a Device's approval on this Machine.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
+pub struct PendingJoinsRequest {}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct PendingJoins {
+    pub joins: Vec<crate::authority::JoinApproval>,
+}
+
+/// Carry Device authority to the Machine that will admit the join.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct ApproveJoinRequest {
+    pub approval: crate::authority::Signed<crate::authority::JoinApproval>,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct JoinApproved {}
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
 pub struct ListMachinesRequest {}
@@ -481,10 +502,13 @@ pub struct PushTargetSet {
 /// Whether this Machine requires a Device-signed approval before an Operator caller
 /// changes a Service. Full scope only, so neither Cloud nor a CLI without an approved
 /// Device can turn it off. Strict for the same reason as [`SetManagementClientRequest`].
-#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+/// Turning it on needs `starting_set`, the Machines a Device approved to trust from the start.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct SetDeviceEnforcementRequest {
     pub enforced: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub starting_set: Option<crate::authority::Signed<crate::authority::StartingSet>>,
 }
 
 /// The Device enforcement setting the Machine now holds.
@@ -1618,6 +1642,8 @@ define_responses! {
     Registered(Registered) => "registered";
     SetManagementClientResponse(SetManagementClientResponse) => "management_client_set";
     DeviceSet(DeviceSet) => "device_set";
+    PendingJoins(PendingJoins) => "pending_joins";
+    JoinApproved(JoinApproved) => "join_approved";
     PushTargetSet(PushTargetSet) => "push_target_set";
     DeviceEnforcementSet(DeviceEnforcementSet) => "device_enforcement_set";
     EndpointSelected(EndpointSelected) => "endpoint_selected";
@@ -2377,6 +2403,7 @@ mod set_management_client_wire {
             public_ip: None,
             advertised_endpoints: vec![AdvertisedEndpoint("192.0.2.1:51820".parse().unwrap())],
             runtime: Default::default(),
+            join_approval: None,
             build_concurrency: None,
         }
     }

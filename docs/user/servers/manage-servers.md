@@ -241,9 +241,10 @@ ployz device rm mmg42klgyq
 ```
 
 `device ls` shows each device and the servers missing it. `device rm` takes it off every server
-that answers.
+that answers. A server that doesn't answer is listed under failures, and one with no direct
+connection under omissions. Either way the command exits 3.
 
-### Require a device's signature for restarts
+### Require a device's signature for restarts and joins
 
 By default a server restarts a service for anyone Ployz Cloud lets through. With device
 enforcement on, it restarts or stops only on an approved device's say-so. `ployz service restart`
@@ -261,10 +262,36 @@ ployz device enforce
 ployz device enforce --off
 ```
 
-`enforce` needs an approved device. It sets every server that answers and lists each server's
-state. A server that's down keeps its old setting. Run `enforce` again once it's back. A server
+`enforce` needs this computer's approved device key. Before it changes anything, it asks each
+server for its own ID, WireGuard key and subnet. It prints that starting set as
+`Trusting N Servers from the start:`, then each server's name, subnet, Machine ID and WireGuard key
+fingerprint, and signs it. Check the list. Each server then trusts only the servers in that signed set, plus servers whose join
+an approved device signed later. A server row that no server answers for is left out, even if
+it was registered just before. A server refuses a set that leaves itself out, is not signed by
+one of its devices, is over 15 minutes old, or was already used. With enforcement already on,
+`enforce` adds the servers in the new set. It sets every server that answers and lists each server's
+state. A server that doesn't answer is listed under failures, and one with no direct connection
+under omissions. Either way the command exits 3, and that server keeps its old setting. Run `enforce` again once it is reachable. A server
 from before this setting is reported with its rows missing, the same as one that's down, and
 restarts as before. Upgrade it first.
+
+The starting set is trust on first use, like the first SSH connection to a host. It is only as
+trustworthy as Ployz Cloud is at the moment you turn enforcement on. To check it, run
+`sudo ployz status` on each server and compare its **wireguard key** line with the fingerprint
+printed next to that server. If they differ, run `ployz device enforce --off` and don't trust that set.
+
+Enforcement also requires an approved Device to authorize a new server's identity, keys,
+allocation, and initial Devices. See [Approve a join](add-a-server.md#approve-a-join-when-device-enforcement-is-on).
+A joining server inherits enforcement. Approvals name one existing server that may admit the
+join, so another Cluster cannot use the approval even if it shares a Sealing public key.
+Each server keeps an approved server as a member once it has seen it. Removing the device that
+signed the join does not disconnect that server. Use `ployz server rm` to remove it.
+
+With enforcement on, mesh connections have Operator access. Full actions such as approving Devices, changing
+enforcement, and `exec` use a direct authenticated connection to each target server. A context
+used for those actions must contain a direct connection to each target. With an explicit
+`--connect`, `device approve`, `device rm`, and `device enforce` affect that server only.
+To approve the first Device through SSH, repeat the command on each server.
 
 With enforcement on, `service restart` from a device that isn't approved is refused with
 `ployz.restart.device-approval.v2 needs a Device-signed restart approval`. `service stop` needs
