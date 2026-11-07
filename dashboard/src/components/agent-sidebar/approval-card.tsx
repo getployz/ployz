@@ -10,7 +10,7 @@ import { TraceLine } from "#/components/ui/trace";
 import { Textarea } from "#/components/ui/textarea";
 import { useMinute } from "#/hooks/use-minute";
 import { cn } from "#/lib/utils";
-import { approvalBadge, approvalSubject, type ApprovalDecision, destroyedLine, droppedLine, losesVolumeAccess, prunes, redeployLine } from "#/modules/approvals/approvals";
+import { approvalBadge, approvalSubject, type ApprovalDecision, destroyedLine, droppedLine, losesVolumeAccess, prunes, redeployLine, shownRestart } from "#/modules/approvals/approvals";
 import { lossMoment } from "#/modules/volume-placement/volume-placement";
 import { toErrorMessage } from "#/lib/error-message";
 import { approvalOptions, approverApprovals, decideApproval, landDecision, refetchApprovals, runsRestart, type ApprovalView } from "./approvals.queries";
@@ -49,6 +49,8 @@ function PendingCard({ organizationSlug, approval }: { organizationSlug: string;
   const { effects } = approval.review;
   const subject = approvalSubject(approval.command, approval.review);
   const redeploy = redeployLine(approval.command, approval.review);
+  // The name Servers know a restarted Service by, which the approvals this card makes carry.
+  const restart = shownRestart(approval.review);
   const place = subject.project === null ? subject.name : `${subject.project}/${subject.name}`;
   const { asked, others } = reviewedChanges(approval.command, approval.review);
   const waits = approval.protected && approval.yours;
@@ -87,6 +89,9 @@ function PendingCard({ organizationSlug, approval }: { organizationSlug: string;
       </CardHeader>
       <CardContent className="flex flex-col gap-2">
         {redeploy !== null && <p className="text-xs">{redeploy}</p>}
+        {restart !== null && (
+          <p className="text-xs text-muted-foreground">On servers <code className="font-mono">{restart.namespace}/{restart.runtime}</code></p>
+        )}
         {(effects.length > 0 || prunes(approval.review)) && (
           <ul aria-label={losesVolumeAccess(approval.review) ? "Effects" : "Destroys"} className="flex flex-col gap-1 rounded-lg bg-destructive/10 px-2.5 py-2 text-xs">
             {effects.map((effect) => {

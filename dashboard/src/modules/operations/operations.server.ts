@@ -235,11 +235,16 @@ export const runVolume = (
         : { ok: false, refusal: inserted.refusal, busy: inserted.busy } as const));
   })));
 
-/** What a stop or restart interrupts, as a human approves it; a start interrupts nothing. */
+/**
+ * What a stop or restart interrupts, as a human approves it; a start interrupts nothing. Its preview names the Namespace
+ * and runtime name Servers know the Service by, which an approver's browser puts in the approvals it makes.
+ */
 const interrupts = (input: {
   readonly environmentId: string;
   readonly place: string;
   readonly service: string;
+  readonly namespace: string;
+  readonly runtime: string;
   readonly verb: ServiceVerb;
   readonly only: ServerRef | null;
 }): OperationAsked | null => {
@@ -248,7 +253,12 @@ const interrupts = (input: {
     subject: `service:${input.environmentId}/${input.service}`,
     verb: input.verb,
     name: `${input.service} in ${input.place}${input.only === null ? "" : ` on ${input.only.name}`}`,
-    preview: { environment: input.environmentId, service: input.service, only: input.only === null ? null : { machine: input.only.machine } },
+    preview: {
+      environment: input.environmentId,
+      service: input.service,
+      namespace: input.namespace,
+      runtime: input.runtime,
+      only: input.only === null ? null : { machine: input.only.machine } },
     effects: [{
       kind: input.verb === "stop" ? "stops_service" : "restarts_service",
       name: input.service,
