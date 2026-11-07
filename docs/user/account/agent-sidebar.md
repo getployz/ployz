@@ -55,6 +55,7 @@ replied. It can:
   mirror, or restore a volume from a server's copy (**volume mirror**, **volume move**,
   **volume release**, **volume mirror remove**, **volume restore**). To refresh a mirror, ask for a
   **volume mirror** to the same server again.
+- Rename the cluster, which asks you first (**cluster rename**).
 - Read a connected GitHub repository, or tell you how to connect one (**github ls**,
   **github connect**).
 

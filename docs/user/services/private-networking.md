@@ -117,15 +117,24 @@ in, `NAME.NAMESPACE.CLUSTER.ployz.internal`, such as `postgres.shop-production.a
 The namespace is the project and environment, joined by a hyphen. It answers the same addresses as
 `postgres.internal`, so the long name still works when a lookup reaches the cluster from outside it.
 
-Name the cluster when you add its first server with `--cluster-name`, or at any time with:
+A cluster you add through Ployz Cloud is named after your organization's slug, cut to 63
+characters. To rename it, owners and admins open **Organization → Network**, click **Edit**
+beside **Cluster name**, and click **Save**. The name shows **Pending** until a server is online
+to take it. The [Ployz agent](../account/agent-sidebar.md) and `ployz cluster rename acme` ask for
+an [approval](../account/organizations.md#destructive-actions-ask-first) first, since every
+service's long address changes.
+
+Without Ployz Cloud, name the cluster when you add its first server with `--cluster-name`, or at
+any time on a server with:
 
 ```sh
 ployz cluster name acme
 ```
 
 `ployz cluster name` alone prints the current name. A name is up to 63 lowercase letters, digits
-and hyphens. Renaming takes up to 30 seconds to reach each server, and then the old name stops
-resolving. Until a cluster has a name, the long names don't resolve.
+and hyphens, and starts and ends with a letter or digit. Renaming takes up to 30 seconds to reach
+each server, and then the old name stops resolving. Until a cluster has a name, the long names
+don't resolve.
 
 ## Connect from your laptop
 

@@ -37,10 +37,12 @@ were. An organization token can't make an organization, so sign in with `ployz l
 In the sidebar, click **Organization** for its settings:
 
 - **General**: your organization's **Display name**. Owners and admins can change it: type a new
-  one and press Enter or click the check. Its URL stays the same. Below it, your organization's
-  **Domain**, which your services' free addresses live under.
-  Until you generate your first domain, it reads **No domain yet**. Below it, **Allow support access**, and **Forget all
-  servers** for when your servers were deleted.
+  one and press Enter or click the check. Its URL stays the same. Below it, **Allow support
+  access**, and **Forget all servers** for when your servers were deleted.
+- **Network**: your **Cluster name**, which your services' long private addresses carry. See
+  [Name your cluster](../services/private-networking.md#name-your-cluster). Below it, your
+  organization's **Domain**, which your services' free addresses live under. Until you generate
+  your first domain, it reads **No domain yet**.
 - **Members**: who's in the organization, their roles, and, for owners and admins, pending
   invites. See
   [Invite people](#invite-people).
