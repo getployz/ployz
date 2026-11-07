@@ -83,5 +83,5 @@ export const approvalRestartTargetServerFn = createServerFn({ method: "GET" })
     const found = yield* findService(access.organization.id, apply.environmentId, apply.service);
     if (found === null) return null;
     const target = yield* restartTarget(access.organization.id, found);
-    return target === null ? null : { environmentId: apply.environmentId, environmentName: found.environment, namespace: found.namespace, ...target };
+    return target === null ? null : { environmentId: apply.environmentId, service: apply.service, environmentName: found.environment, namespace: found.namespace, ...target };
   })));

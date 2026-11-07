@@ -60,7 +60,7 @@ function PendingCard({ organizationSlug, approval }: { organizationSlug: string;
     setSending(true);
     setRefused(null);
     const approving = "approve" in decision && runsRestart(approval);
-    const approvals = approving ? await approverApprovals(organizationSlug, approval.id).catch((error: Error) => {
+    const approvals = approving ? await approverApprovals(organizationSlug, approval).catch((error: Error) => {
       setRefused(toErrorMessage(error, "Your passkey didn't answer. Try again."));
       return null;
     }) : undefined;
