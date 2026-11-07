@@ -3,7 +3,7 @@ import { useQuery } from "@tanstack/react-query";
 import { createFileRoute, useNavigate } from "@tanstack/react-router";
 import { useServerFn } from "@tanstack/react-start";
 import { Effect, Option, Schema } from "effect";
-import { getClusterDomainCollection, getOrganizationEnrollmentCollection } from "#/collections/collections";
+import { getOrganizationEnrollmentCollection } from "#/collections/collections";
 import { reconcileCollection } from "#/collections/query-collection";
 import { useCollectionScope } from "#/collections/use-collection-scope";
 import { prefetchRemoteWithStoreViews } from "#/collections/route-data";
@@ -15,8 +15,7 @@ import { githubOfferQueryOptions, organizationGithubQueryOptions } from "#/modul
 import { GithubSettings } from "#/routes/_protected/cloud/$organizationSlug/_org/-components/github-settings";
 import { BUILD_ORDER_QUERY, BuildsSettings } from "#/routes/_protected/cloud/$organizationSlug/_org/-components/builds-settings";
 import { PendingEnrollmentResetSection } from "#/routes/_protected/cloud/$organizationSlug/_org/-components/PendingEnrollmentResetSection";
-import { ClusterDomainSection } from "#/routes/_protected/cloud/$organizationSlug/_org/-components/ClusterDomainSection";
-import { checkClusterDomainNowServerFn } from "#/modules/cluster-domain/cluster-domain.functions";
+import { NetworkSection } from "#/routes/_protected/cloud/$organizationSlug/_org/-components/NetworkSection";
 import { projectsQuery } from "#/modules/config-store/store-view.queries";
 import { organizationMembersQueryOptions } from "#/modules/organization/members.queries";
 import { organizationTokensQueryOptions } from "#/modules/identity/organization-token.queries";
@@ -27,7 +26,7 @@ import { SupportAccessSection } from "#/routes/_protected/cloud/$organizationSlu
 import { OrganizationNameSection } from "#/routes/_protected/cloud/$organizationSlug/_org/-components/organization-name-section";
 import { StoreOrganizationDanger } from "#/routes/_protected/cloud/$organizationSlug/_org/-components/store-organization-danger";
 
-const settingsSectionSchema = Schema.Literals(["general", "members", "tokens", "github", "builds"]);
+const settingsSectionSchema = Schema.Literals(["general", "network", "members", "tokens", "github", "builds"]);
 
 // Not `tab`: search keys share one type across routes, and the service panel's `tab` means something else.
 const settingsSearchSchema = Schema.Struct({
@@ -60,7 +59,7 @@ function RouteComponent() {
   return (
     <DashboardPage width="content" title="Organization">
       {/* The rail, or on phones the strip under the top bar, picks the section. */}
-      {section === "builds" ? <BuildsSettings organizationSlug={organizationSlug} /> : section === "members" ? <MembersSettings organizationSlug={organizationSlug} /> : section === "tokens" ? <TokensSettings organizationSlug={organizationSlug} /> : section === "github" ? (
+      {section === "network" ? <NetworkSection organizationSlug={organizationSlug} /> : section === "builds" ? <BuildsSettings organizationSlug={organizationSlug} /> : section === "members" ? <MembersSettings organizationSlug={organizationSlug} /> : section === "tokens" ? <TokensSettings organizationSlug={organizationSlug} /> : section === "github" ? (
         <GithubSettings
           organizationSlug={organizationSlug}
           notice={connect}
@@ -71,7 +70,6 @@ function RouteComponent() {
         <div className="flex flex-col gap-6">
           <OrganizationNameSection organizationSlug={organizationSlug} />
           <EnrollmentSection organizationSlug={organizationSlug} />
-          <ClusterDomainSettings organizationSlug={organizationSlug} />
           {supportAvailable ? <SupportAccessSection organizationSlug={organizationSlug} /> : null}
           <StoreOrganizationDanger organizationSlug={organizationSlug} />
         </div>
@@ -96,18 +94,6 @@ function EnrollmentSection({ organizationSlug }: { organizationSlug: string }) {
       onCompleted={() => {
         void reconcileCollection(enrollment);
       }}
-    />
-  );
-}
-
-function ClusterDomainSettings({ organizationSlug }: { organizationSlug: string }) {
-  const { data: rows } = useLiveSuspenseQuery(getClusterDomainCollection(organizationSlug, useCollectionScope()));
-  const checkNow = useServerFn(checkClusterDomainNowServerFn);
-  return (
-    <ClusterDomainSection
-      organizationSlug={organizationSlug}
-      domain={rows[0] ?? null}
-      onCheck={() => checkNow({ data: { organizationSlug } })}
     />
   );
 }
