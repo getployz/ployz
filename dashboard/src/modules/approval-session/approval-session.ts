@@ -54,6 +54,7 @@ export const readSession = (): ApprovalSession | null => current?.session ?? nul
 
 const covers = (session: ApprovalSession, scope: ApprovalScope) =>
   session.scope.environmentId === scope.environmentId
+  && session.scope.namespace === scope.namespace
   && session.scope.cluster === scope.cluster
   && scope.machines.every((machine) => session.scope.machines.includes(machine));
 
@@ -187,10 +188,13 @@ const operationId = () => hex(crypto.getRandomValues(new Uint8Array(16)));
 
 /**
  * One approval per container for a restart of `service`, each signed by the session's browser key and lasting its full
- * 15 minutes, which the session still covers. Keyed by container ID, as Cloud forwards them.
+ * 15 minutes, which the session still covers. Keyed by container ID, as Cloud forwards them. Signs `namespace` as
+ * given, and only when the session's grant names it, so a session for another Environment never signs this one.
  */
-export async function approveRestart(service: string, copies: readonly RestartCopy[], now = Date.now()): Promise<Record<string, Signed>> {
-  if (current === null || current.session.expiresAt - now < APPROVAL_MS) throw new SessionRefused("Confirm it's you again.");
+export async function approveRestart(namespace: string, service: string, copies: readonly RestartCopy[], now = Date.now()): Promise<Record<string, Signed>> {
+  if (current === null || current.session.expiresAt - now < APPROVAL_MS || current.session.scope.namespace !== namespace) {
+    throw new SessionRefused("Confirm it's you again.");
+  }
   const { session, grant, publicKey, key } = current;
   const entries = await Promise.all(copies.map(async ({ machine, container }) => {
     const body = canonicalJson({
@@ -200,7 +204,7 @@ export async function approveRestart(service: string, copies: readonly RestartCo
       issued_at: now,
       kind: "restart",
       machines: [machine],
-      namespace: session.scope.namespace,
+      namespace,
       operation: operationId(),
       service,
       signer: { browser: publicKey },

@@ -77,6 +77,8 @@ describe("promptReason", () => {
   it("prompts for a Server or an action the grant doesn't name", () => {
     const live = session(production, now + 1_800_000);
     expect(promptReason(live, { ...production, machines: ["33333333333333333333333333333333"] }, "restart", now)).toBe("scope");
+    // The same Environment ID under another Namespace is another Environment to the Machine, so it prompts.
+    expect(promptReason(live, { ...production, namespace: "payments-prod" }, "restart", now)).toBe("scope");
     expect(promptReason(live, production, "stop", now)).toBe("scope");
   });
 

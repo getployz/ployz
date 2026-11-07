@@ -61,7 +61,7 @@ export async function restartApprovals(target: RestartTarget) {
   const { enforced, scope } = restartScope(target.environment, target.copies, target.machines, target.environmentMachines);
   if (!enforced || scope === null) return undefined;
   if (!(await ensureApproval(scope, "restart"))) return null;
-  return approveRestart(target.runtime, target.copies.map((copy) => ({ machine: copy.machineId, container: copy.id })));
+  return approveRestart(target.environment.namespace, target.runtime, target.copies.map((copy) => ({ machine: copy.machineId, container: copy.id })));
 }
 
 export function ApprovalPrompt() {
