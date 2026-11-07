@@ -21,6 +21,7 @@ import {
   createSyncClusterDomain,
 } from "#/modules/cluster-domain/sync.inngest";
 import { createServerUpgradeFunctions } from "#/modules/server-upgrade/server-upgrade.inngest";
+import { createClusterNameFunctions } from "#/modules/cluster-name/cluster-name.inngest";
 import { createRetireServerAccess } from "#/modules/machines/server-access.inngest";
 import { createPruneOrganizationChangeLog } from "#/modules/organization/change-log.inngest";
 import { createSweepExpiredVerifications } from "#/modules/identity/verification-sweep.inngest";
@@ -62,6 +63,7 @@ export function createInngestFunctions(inngest: PloyzInngest) {
     createSweepExpiredVerifications(inngest),
     createSyncClusterDomain(inngest),
     createScheduleClusterDomainSync(inngest),
+    ...createClusterNameFunctions(inngest),
     createEnsureClusterSealingKey(inngest),
     createResealVariables(inngest),
     ...createServerUpgradeFunctions(inngest),

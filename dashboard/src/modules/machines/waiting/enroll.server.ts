@@ -9,6 +9,7 @@ import { isDeadFoundingClaim, lockOrganizationEnrollment, revokeOrganizationPair
 import { machineEnrollmentToken, organizationMachine } from "#/modules/machines/tables";
 import type { StoredReport } from "#/modules/machines/waiting/checkin-wire";
 import { cancelServerEnrollments, openFounderAttempt } from "#/modules/machines/waiting/enrollment-run.server";
+import { foundingClusterName } from "#/modules/cluster-name/cluster-name.server";
 import { machineNameFromHostname } from "#/modules/machines/waiting/names";
 import {
   COMMITTED_STAGES,
@@ -90,6 +91,8 @@ export function planServerEnrollment(
   candidates: ReadonlyArray<EnrollCandidate>,
   organization: {
     readonly hasFirst: boolean;
+    /** The Cluster Name a founder founds with; read only when there is no first Server yet. */
+    readonly clusterName?: string | undefined;
     /** Names the Organization's Servers and open enrollments hold, and per waiting server those its own Machine holds. */
     readonly takenNames: ReadonlySet<string>;
     readonly heldNames: ReadonlyMap<string, ReadonlySet<string>>;
@@ -154,12 +157,17 @@ export function planServerEnrollment(
     taken.add(name);
     return name;
   };
+  const { clusterName } = organization;
+  const instructionFor = (row: EnrollCandidate, storage: EnrollStorage): EnrollInstruction => {
+    const instruction = { name: nameFor(row), storage, policy };
+    return row.id === founder && clusterName !== undefined ? { ...instruction, clusterName } : instruction;
+  };
   const rows = ordered.map(({ row, storage }): PlannedEnrollment => ({
     waitingServerId: row.id,
     fleetTokenId: row.fleetTokenId,
     hostname: row.report.hostname,
     role: row.id === founder ? "founder" : "joiner",
-    instruction: { name: nameFor(row), storage, policy },
+    instruction: instructionFor(row, storage),
   }));
   const long = rows.find((row) => row.instruction.name.length > 63);
   if (long !== undefined) return { kind: "refused", message: `${long.instruction.name} is over 63 characters. Choose a shorter name pattern.` };
@@ -304,7 +312,7 @@ const planEnrollment = Effect.fn("ServerEnrollment.plan")(function* (
   const plan = planServerEnrollment(
     input,
     ids.length === 0 ? [] : yield* candidatesOf(organizationId, ids, mode === "start"),
-    { hasFirst, ...yield* takenNames(organizationId, ids) },
+    { hasFirst, clusterName: hasFirst ? undefined : yield* foundingClusterName(organizationId), ...yield* takenNames(organizationId, ids) },
   );
   if (plan.kind === "refused") return yield* new Validation({ message: plan.message, userFacing: true });
   return { ...plan, founded };

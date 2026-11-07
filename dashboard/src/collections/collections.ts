@@ -1,6 +1,7 @@
 import type { CollectionName, CollectionRead } from "./read.contract";
 import type { OrganizationEnrollmentRow } from "#/modules/machines/enrollment";
 import type { ClusterDomainRow } from "#/modules/cluster-domain/cluster-domain";
+import type { ClusterNameRow } from "#/modules/cluster-name/cluster-name";
 import type { ServerUpgradeSettingsRow } from "#/modules/server-upgrade/server-upgrade";
 import type { SupportAccessRow } from "#/modules/support-access/support-access";
 import { createChangeCollection } from "#/collections/query-collection";
@@ -27,6 +28,8 @@ function changeCollection<Row extends object>(table: CollectionName, getKey: (ro
 export const getCanvasPositionsCollection = changeCollection<CanvasPositionRow>("environment_canvas_node_position", canvasPositionKey);
 export const getOrganizationEnrollmentCollection = changeCollection<OrganizationEnrollmentRow>("organization_enrollment", (row) => row.id);
 export const getClusterDomainCollection = changeCollection<ClusterDomainRow>("organization_cluster_domain", (row) => row.id);
+/** The Organization's Cluster Name as Cloud keeps it: no row reads as the default, or unset on a Cluster founded before names. */
+export const getClusterNameCollection = changeCollection<ClusterNameRow>("organization_cluster_name", (row) => row.id);
 /** The Organization's Server upgrade settings: no row reads as the defaults. */
 export const getServerUpgradeSettingsCollection = changeCollection<ServerUpgradeSettingsRow>("organization_server_upgrades", (row) => row.id);
 /** Whether the Organization lets Ployz support open it: no row reads as off. */
@@ -40,6 +43,7 @@ export const orgStoreTables = {
   environment_canvas_node_position: getCanvasPositionsCollection,
   organization_enrollment: getOrganizationEnrollmentCollection,
   organization_cluster_domain: getClusterDomainCollection,
+  organization_cluster_name: getClusterNameCollection,
   organization_server_upgrades: getServerUpgradeSettingsCollection,
   organization_support_access: getSupportAccessCollection,
 } satisfies Record<CollectionName, (organizationSlug: string, scope: CollectionScope) => object>;

@@ -62,6 +62,7 @@ export const changeSources = {
   volume_placement: { key: ["volume_id"] },
   namespace_cleanup: { key: ["id"] },
   organization_server_upgrades: { key: ["organization_id"] },
+  organization_cluster_name: { key: ["organization_id"] },
   organization_support_access: { key: ["organization_id"] },
   operation_approvals: { key: ["id"] },
   organization_github_installation: { key: ["installation_id"] },

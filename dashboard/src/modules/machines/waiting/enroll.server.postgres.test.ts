@@ -167,6 +167,22 @@ it("starts the first server and its joiners, each on its own role-bound token, w
   expect(await outbox()).toEqual(["server/enrollment.requested", "server/enrollment.requested"]);
 });
 
+it("tells only the first server the Cluster Name: the one saved, else the slug cut to one 63-character label", async () => {
+  const slug = "a".repeat(70);
+  await harness.pool.query("update organization set slug = $1 where id = $2", [slug, adaOrg]);
+  const [a, b] = await waiting("web-a", "web-b");
+  if (a === undefined || b === undefined) throw new Error("two hosts");
+  const input = { ids: [a.id ?? "", b.id ?? ""], first: a.id, ...plainly } as const;
+  const previewed = await run(previewServerEnrollment(ada, { organizationSlug: slug, ...input }));
+  expect(previewed.rows.map((row) => [row.role, row.instruction.clusterName])).toEqual([["founder", "a".repeat(63)], ["joiner", undefined]]);
+  await harness.pool.query("insert into organization_cluster_name (organization_id, name) values ($1, 'acme')", [adaOrg]);
+  await run(startServerEnrollment(ada, { organizationSlug: slug, ...input }));
+  const { rows } = await harness.pool.query<{ role: string; cluster_name: string | null }>(
+    "select role, instruction->>'clusterName' as cluster_name from server_enrollment order by role",
+  );
+  expect(rows).toEqual([{ role: "founder", cluster_name: "acme" }, { role: "joiner", cluster_name: null }]);
+});
+
 it("joins servers added while the first server is on its way, and skips a host already enrolling", async () => {
   const [a, b, c] = await waiting("web-a", "web-b", "web-c");
   if (a === undefined || b === undefined || c === undefined) throw new Error("three hosts");
