@@ -8,7 +8,7 @@ use std::{
 };
 
 use hickory_server::proto::{
-    op::{Message, Metadata, Query as WireQuery},
+    op::{Message, Metadata, Query as WireQuery, ResponseCode},
     rr::{Name, RData, Record, RecordType, rdata::A},
 };
 use ployz_core::{CopyRotation, MachineId};
@@ -306,6 +306,50 @@ async fn a_quiet_subscription_is_caught_by_the_refresh() {
 
     shutdown.cancel();
     assert_eq!(process.await.unwrap().unwrap(), DnsExit::Stopped);
+}
+
+#[tokio::test]
+async fn a_renamed_cluster_moves_its_alias_on_the_refresh() {
+    let harness = Harness::new();
+    harness.publish_replicas(2).await;
+    let shutdown = CancellationToken::new();
+    let process = harness.spawn(&shutdown);
+    harness.wait_for_replicas(2).await;
+    let acme = "api.app.acme.ployz.internal.";
+    let beta = "api.app.beta.ployz.internal.";
+    assert_eq!(code_of(&harness, acme).await, ResponseCode::NXDomain);
+
+    let store = harness.cluster.store();
+    for (name, answers, refused) in [("acme", acme, beta), ("beta", beta, acme)] {
+        store
+            .publish_cluster_name(&ployz_core::ClusterName::parse(name).unwrap())
+            .await
+            .unwrap();
+        let listen = harness.listen();
+        eventually(move || async move {
+            let answered = ask_udp(listen, answers, SILENCE)
+                .await
+                .map(|message| a_records(&message).len());
+            if answered == Some(2) {
+                Ok(())
+            } else {
+                Err(format!("{answers} answered {answered:?}"))
+            }
+        })
+        .await;
+        assert_eq!(code_of(&harness, refused).await, ResponseCode::NXDomain);
+    }
+
+    shutdown.cancel();
+    assert_eq!(process.await.unwrap().unwrap(), DnsExit::Stopped);
+}
+
+async fn code_of(harness: &Harness, name: &str) -> ResponseCode {
+    ask_udp(harness.listen(), name, SILENCE)
+        .await
+        .expect("an answer")
+        .metadata
+        .response_code
 }
 
 #[tokio::test]

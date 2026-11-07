@@ -49,7 +49,7 @@ mod upgrade;
 mod waiting;
 
 use add::add;
-pub(super) use enroll::{enroll_token, requested_storage};
+pub(super) use enroll::{enroll_token, founding_cluster_name, joined_unnamed, requested_storage};
 pub(super) use helpers::{
     Joining, STARTING, check_listed, confirm, connect_direct, enroll, enroll_for_recovery,
     inspect_token, leave, machine_name, pinned, requested_name, token_request,

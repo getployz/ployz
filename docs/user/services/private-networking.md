@@ -110,6 +110,23 @@ The private name starts as the service's name, and renaming the service keeps it
 References follow the new name. Services that typed the old one stop reaching it, so update
 them in the same deploy.
 
+## Name your cluster
+
+A cluster's name gives every service a second private name that says which cluster it lives
+in, `NAME.NAMESPACE.CLUSTER.ployz.internal`, such as `postgres.shop-production.acme.ployz.internal`.
+The namespace is the project and environment, joined by a hyphen. It answers the same addresses as
+`postgres.internal`, so the long name still works when a lookup reaches the cluster from outside it.
+
+Name the cluster when you add its first server with `--cluster-name`, or at any time with:
+
+```sh
+ployz cluster name acme
+```
+
+`ployz cluster name` alone prints the current name. A name is up to 63 lowercase letters, digits
+and hyphens. Renaming takes up to 30 seconds to reach each server, and then the old name stops
+resolving. Until a cluster has a name, the long names don't resolve.
+
 ## Connect from your laptop
 
 Domains carry http and https only, so to reach a service like a database from your own

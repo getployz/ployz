@@ -149,7 +149,7 @@ The exact service configuration attached to a Service Container when it is creat
 _Avoid_: Current service spec, canonical service spec
 
 **Namespace**:
-The observer-derived ownership group of the Containers one Environment deploys, named in their labels and Internal DNS. It is not a persisted resource or a workflow. `ployz-system` is reserved for Ployz infrastructure.
+The observer-derived ownership group of the Containers one Environment deploys, named in their labels and Internal DNS. It is not a persisted resource or a workflow. `ployz-system` is reserved for Ployz infrastructure, and `ployz` for the Cluster Name alias.
 _Avoid_: Project (the product grouping), Compose project, deployment resource
 
 **Direct Image Transfer**:
@@ -552,6 +552,10 @@ _Avoid_: Activated configuration, accepted configuration
 **Internal DNS Answer**:
 An observer-local, TTL-zero A answer derived from Serving Containers and optionally filtered by this Machine's Membership Observations. It is not persisted or Cluster truth even though the DNS response is authoritative for the `.internal` zone.
 _Avoid_: Service registry record, Cluster-wide endpoint set
+
+**Cluster Name**:
+One DNS label naming a Cluster, stored as the optional replicated `cluster` key `name`; the last name written wins. Internal DNS answers `<service>.<namespace>.<cluster>.ployz.internal` as `<service>.<namespace>.internal` when the label is this Machine's read of the name, and NXDOMAIN for any other label or while the Cluster has none. It is not unique: two Clusters may share one.
+_Avoid_: cluster ID, Cluster Domain, Organization slug
 
 **Caller Namespace**:
 The Namespace attributed to an Internal DNS query by matching its source Container Address to exactly one visible Service Container or Hook Container. It is observer-relative attribution, not authenticated identity; zero or several matches mean there is no Caller Namespace. A `{service}.internal` query uses that Namespace as the missing label; without a Caller Namespace the name is NXDOMAIN.

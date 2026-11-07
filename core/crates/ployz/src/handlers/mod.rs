@@ -13,6 +13,7 @@ pub(crate) mod build;
 pub(crate) mod catalog;
 pub(crate) mod cloud;
 mod cloud_read;
+pub(crate) mod cluster;
 pub(crate) mod config;
 pub(crate) mod config_item;
 pub(crate) mod context;

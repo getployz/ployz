@@ -9,13 +9,13 @@ use std::{
 
 use futures_util::StreamExt;
 use hickory_server::Server;
-use ployz_core::{ContainerObservation, MachineId};
+use ployz_core::MachineId;
 use tokio::signal::unix::{SignalKind, signal};
 use tokio_stream::wrappers::IntervalStream;
 use tokio_util::sync::CancellationToken;
 
 use super::{
-    Answers, Handler, ProjectionInputs, Upstreams,
+    Answers, Handler, ProjectionInputs, Snapshot, Upstreams,
     listeners::{Keeper, Listeners, SystemdKeeper, adopt, names},
     run_server,
     service::{Probe, Successor},
@@ -253,8 +253,8 @@ impl Session {
     ) -> io::Result<Option<(Answers, Connection)>> {
         loop {
             match self.connect().await {
-                Ok((connection, observations)) => {
-                    self.inputs.observations = observations;
+                Ok((connection, snapshot)) => {
+                    self.inputs.load(snapshot);
                     let answers = Answers::loaded(self.inputs.build(), local_subnet, upstreams);
                     return Ok(Some((answers, connection)));
                 }
@@ -306,8 +306,8 @@ impl Session {
                     return Ok(());
                 }
                 match self.connect().await {
-                    Ok((connection, observations)) => {
-                        self.inputs.observations = observations;
+                    Ok((connection, snapshot)) => {
+                        self.inputs.load(snapshot);
                         answers.replace(self.inputs.build())?;
                         keeper.status("serving after reconnecting to Corrosion")?;
                         self.backoff.reset();
@@ -322,10 +322,10 @@ impl Session {
         }
     }
 
-    async fn connect(&self) -> Result<(Connection, Vec<ContainerObservation>), Attempt> {
+    async fn connect(&self) -> Result<(Connection, Snapshot), Attempt> {
         let token = read_token(&self.endpoint.token_file).map_err(|_| Attempt::NoToken)?;
         let replicated = ReplicatedStore::new(ApiClient::new(self.endpoint.api, &token)?);
-        let (changes, observations) = subscribe_then_snapshot(&replicated).await?;
+        let (changes, snapshot) = subscribe_then_snapshot(&replicated).await?;
         let view_shutdown = CancellationToken::new();
         let machines = MachineView::start(replicated.clone(), view_shutdown.clone());
         let admin = AdminClient::new(&self.endpoint.admin_socket);
@@ -338,7 +338,7 @@ impl Session {
                 token,
                 view_shutdown,
             },
-            observations,
+            snapshot,
         ))
     }
 
@@ -352,16 +352,27 @@ impl Session {
 
 async fn subscribe_then_snapshot(
     replicated: &ReplicatedStore,
-) -> Result<(Subscription, Vec<ContainerObservation>), CorrosionError> {
+) -> Result<(Subscription, Snapshot), CorrosionError> {
     let changes = replicated.subscribe_container_changes().await?;
-    let observations = load_snapshot(replicated).await?;
-    Ok((changes, observations))
+    let snapshot = load_snapshot(replicated).await?;
+    Ok((changes, snapshot))
 }
 
-async fn load_snapshot(
-    replicated: &ReplicatedStore,
-) -> Result<Vec<ContainerObservation>, CorrosionError> {
-    Ok(replicated.containers().await?.observations)
+/// A Cluster Name that fails to read leaves the alias answering NXDOMAIN until a
+/// later snapshot reads it, rather than holding back the Container observations.
+async fn load_snapshot(replicated: &ReplicatedStore) -> Result<Snapshot, CorrosionError> {
+    let observations = replicated.containers().await?.observations;
+    let cluster = replicated.cluster_name().await.unwrap_or_else(|error| {
+        eprintln!(
+            "Internal DNS answers no Cluster alias: {error}",
+            error = ployz_core::error_chain::inline(&error),
+        );
+        None
+    });
+    Ok(Snapshot {
+        observations,
+        cluster,
+    })
 }
 
 fn read_token(path: &Path) -> io::Result<String> {
@@ -431,8 +442,8 @@ async fn watch_projection(
                     ))));
                 }
                 match loaded {
-                    Ok(observations) if started == epoch.load(Ordering::Relaxed) => {
-                        inputs.observations = observations;
+                    Ok(snapshot) if started == epoch.load(Ordering::Relaxed) => {
+                        inputs.load(snapshot);
                         pending_snapshot = false;
                         true
                     }
@@ -479,8 +490,8 @@ async fn reload_snapshot(
     epoch: &AtomicU64,
 ) -> bool {
     match load_snapshot(replicated).await {
-        Ok(observations) => {
-            inputs.observations = observations;
+        Ok(snapshot) => {
+            inputs.load(snapshot);
             *pending = false;
             epoch.fetch_add(1, Ordering::Relaxed);
             true

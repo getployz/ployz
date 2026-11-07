@@ -549,6 +549,36 @@ impl Session {
             .map(drop)
     }
 
+    /// Name the Cluster through the entry Machine. The last name written wins across the
+    /// Cluster, and each Machine's Internal DNS answers the alias once the name reaches it.
+    ///
+    /// # Errors
+    /// Returns `unsupported` when the Machine predates Cluster Names, `unavailable` off a
+    /// participating Machine, and transport errors.
+    pub async fn set_cluster_name(
+        &self,
+        name: ployz_core::ClusterName,
+    ) -> Result<ployz_core::ClusterNamed, RpcError> {
+        let description = self.about().await?;
+        if !description.supports(ployz_core::SET_CLUSTER_NAME_CAPABILITY) {
+            return Err(name_refusal(
+                RpcError {
+                    code: RpcErrorCode::Unsupported,
+                    message: format!(
+                        "{} is not advertised",
+                        ployz_core::SET_CLUSTER_NAME_CAPABILITY
+                    ),
+                    details: Value::Null,
+                    cause: Vec::new(),
+                },
+                op::SetClusterName::PATH,
+                &MachineTarget::from(&description.machine_id),
+            ));
+        }
+        self.unary::<op::SetClusterName>(ployz_core::SetClusterNameRequest { name })
+            .await
+    }
+
     /// Set `label`'s Management Client slot to a fresh client key and return its Management
     /// Capability. A repeated Set rotates the key; the previous one works until the new one is used.
     ///

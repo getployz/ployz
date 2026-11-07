@@ -26,8 +26,8 @@ use hickory_server::{
 };
 use ipnet::Ipv4Net;
 use ployz_core::{
-    ContainerObservation, MachineId, Namespace, ProxyRoutes, QualifiedService, ServiceId,
-    proxy_routes, reachable_routes, service_containers,
+    ClusterName, ContainerObservation, MachineId, Namespace, ProxyRoutes, QualifiedService,
+    ServiceId, proxy_routes, reachable_routes, service_containers,
 };
 use tokio::{
     io::{AsyncReadExt, AsyncWriteExt},
@@ -75,19 +75,33 @@ struct Projection {
     identities: HashMap<QualifiedService, ServiceAddresses>,
     machine_identities: HashMap<MachineServiceTarget, Vec<Ipv4Addr>>,
     caller_namespaces: HashMap<Ipv4Addr, Namespace>,
+    cluster: Option<ClusterName>,
 }
 
 struct ProjectionInputs {
     observations: Vec<ContainerObservation>,
+    cluster: Option<ClusterName>,
     down: DownMachines,
     /// Kept while no copy of a Service is reachable.
     routed: ProxyRoutes,
 }
 
+/// What one read of Corrosion gives the projection.
+struct Snapshot {
+    observations: Vec<ContainerObservation>,
+    cluster: Option<ClusterName>,
+}
+
 impl ProjectionInputs {
+    fn load(&mut self, snapshot: Snapshot) {
+        self.observations = snapshot.observations;
+        self.cluster = snapshot.cluster;
+    }
+
     fn new(local_id: MachineId) -> Self {
         Self {
             observations: Vec::new(),
+            cluster: None,
             down: DownMachines::new(local_id),
             routed: ProxyRoutes::new(),
         }
@@ -103,7 +117,8 @@ impl ProjectionInputs {
         let reachable = reachable_routes(&routes, &self.observations, |machine| {
             self.down.contains(machine)
         });
-        let projection = Projection::from_routes(&self.observations, &reachable);
+        let mut projection = Projection::from_routes(&self.observations, &reachable);
+        projection.cluster.clone_from(&self.cluster);
         self.routed = routes;
         projection
     }
@@ -157,6 +172,7 @@ impl Projection {
             identities,
             machine_identities,
             caller_namespaces: unique_caller_namespaces(observations),
+            cluster: None,
         }
     }
 
@@ -167,8 +183,12 @@ impl Projection {
         local_subnet: Ipv4Net,
         source: IpAddr,
     ) -> ResponsePlan {
-        match parse(name) {
+        match parse(name, self.cluster.as_ref()) {
             Query::Forward => ResponsePlan::Forward,
+            Query::NxDomain => ResponsePlan::Internal {
+                code: ResponseCode::NXDomain,
+                answers: Vec::new(),
+            },
             Query::Internal(query) => {
                 self.plan_internal(name, record_type, local_subnet, query, source)
             }

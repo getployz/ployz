@@ -1,12 +1,15 @@
 //! Parse an Internal DNS name into a typed query.
 
 use hickory_server::proto::rr::Name;
-use ployz_core::{MachineId, Namespace, QualifiedService, ServiceId, ServiceName};
+use ployz_core::{ClusterName, MachineId, Namespace, QualifiedService, ServiceId, ServiceName};
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(super) enum Query {
     Forward,
     Internal(InternalQuery),
+    /// A name under `ployz.internal` whose cluster label is not this Cluster's name,
+    /// or any such name while the Cluster has none.
+    NxDomain,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -27,11 +30,11 @@ pub(super) struct MachineServiceTarget {
 }
 
 #[must_use]
-pub(super) fn parse(name: &Name) -> Query {
-    parse_fqdn(&name.to_utf8().to_ascii_lowercase())
+pub(super) fn parse(name: &Name, cluster: Option<&ClusterName>) -> Query {
+    parse_fqdn(&name.to_utf8().to_ascii_lowercase(), cluster)
 }
 
-fn parse_fqdn(fqdn: &str) -> Query {
+fn parse_fqdn(fqdn: &str, cluster: Option<&ClusterName>) -> Query {
     let selector = if fqdn == "internal." {
         ""
     } else if let Some(selector) = fqdn.strip_suffix(".internal.") {
@@ -39,7 +42,15 @@ fn parse_fqdn(fqdn: &str) -> Query {
     } else {
         return Query::Forward;
     };
-    Query::Internal(parse_internal(selector))
+    let Some(aliased) = selector.strip_suffix(".ployz") else {
+        return Query::Internal(parse_internal(selector));
+    };
+    let (selector, label) = aliased.rsplit_once('.').unwrap_or(("", aliased));
+    if cluster.is_some_and(|cluster| cluster.as_str() == label) {
+        Query::Internal(parse_internal(selector))
+    } else {
+        Query::NxDomain
+    }
 }
 
 fn parse_internal(selector: &str) -> InternalQuery {
@@ -194,8 +205,70 @@ mod tests {
         }
     }
 
+    #[test]
+    fn the_cluster_alias_reads_as_the_name_without_it() {
+        let acme = ClusterName::parse("acme").unwrap();
+        for (alias, short) in [
+            (
+                "postgres.prod.acme.ployz.internal.",
+                "postgres.prod.internal.",
+            ),
+            ("postgres.acme.ployz.internal.", "postgres.internal."),
+            (
+                "Postgres.Prod.ACME.ployz.internal.",
+                "postgres.prod.internal.",
+            ),
+            (
+                "web.shop.nearest.acme.ployz.internal.",
+                "web.shop.nearest.internal.",
+            ),
+            ("acme.ployz.internal.", "internal."),
+        ] {
+            assert_eq!(in_cluster(alias, Some(&acme)), query(short), "{alias}");
+        }
+    }
+
+    #[test]
+    fn a_foreign_or_unset_cluster_label_is_nxdomain() {
+        let acme = ClusterName::parse("acme").unwrap();
+        for name in [
+            "postgres.prod.other.ployz.internal.",
+            "other.ployz.internal.",
+            "postgres.prod.acme.ployz.ployz.internal.",
+        ] {
+            assert_eq!(in_cluster(name, Some(&acme)), Query::NxDomain, "{name}");
+        }
+        assert_eq!(
+            in_cluster("postgres.prod.acme.ployz.internal.", None),
+            Query::NxDomain
+        );
+    }
+
+    #[test]
+    fn short_forms_ignore_the_cluster_name() {
+        let acme = ClusterName::parse("acme").unwrap();
+        for name in [
+            "postgres.prod.internal.",
+            "postgres.internal.",
+            "ployz.internal.",
+            "web.acme.internal.",
+        ] {
+            assert_eq!(in_cluster(name, Some(&acme)), query(name), "{name}");
+        }
+        assert_eq!(
+            query("ployz.internal."),
+            internal(InternalQuery::CallerService(
+                ServiceName::parse("ployz").unwrap()
+            ))
+        );
+    }
+
     fn query(name: &str) -> Query {
-        parse(&Name::from_ascii(name).unwrap())
+        in_cluster(name, None)
+    }
+
+    fn in_cluster(name: &str, cluster: Option<&ClusterName>) -> Query {
+        parse(&Name::from_ascii(name).unwrap(), cluster)
     }
 
     fn internal(query: InternalQuery) -> Query {

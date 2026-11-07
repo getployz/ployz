@@ -117,6 +117,8 @@ pub(crate) enum Verb {
     Move,
     Restore,
     Resize,
+    /// Rename the Cluster, which moves its Internal DNS alias.
+    SetClusterName,
 }
 
 impl Verb {
@@ -138,6 +140,7 @@ impl Verb {
             Self::Move => "move",
             Self::Restore => "restore",
             Self::Resize => "resize",
+            Self::SetClusterName => "rename",
         }
     }
 
@@ -159,13 +162,14 @@ impl Verb {
             Self::Move => "moved",
             Self::Restore => "restored",
             Self::Resize => "resized",
+            Self::SetClusterName => "renamed",
         }
     }
 
     /// `this change to web-2`, but `this removal of web-1`.
     fn preposition(self) -> &'static str {
         match self {
-            Self::Set => "to",
+            Self::Set | Self::SetClusterName => "to",
             Self::Publish
             | Self::Deploy
             | Self::Retry
@@ -634,6 +638,17 @@ mod tests {
             super::for_another_approver(&credential, "a1"),
             "An owner or admin who didn't ask must approve a1 in Ployz Cloud at http://cloud.test, or with ployz org approval approve a1."
         );
+    }
+
+    #[test]
+    fn a_cluster_rename_reads_as_a_rename_to_its_new_name() {
+        let asked: Asked = serde_json::from_value(serde_json::json!({
+            "approval_id": "a1", "approval": "d1", "effects": [],
+            "operation": { "verb": "set_cluster_name", "name": "acme" },
+        }))
+        .unwrap();
+        assert_eq!(asked.verb(), Verb::SetClusterName);
+        assert_eq!(asked.what(asked.verb()), "this rename to acme");
     }
 
     #[test]

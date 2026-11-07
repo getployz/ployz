@@ -900,8 +900,11 @@ def enroll(run, commands, node, private):
     # --no-install requires --storage none, yet managed Volumes work: the image ran `ployzd install --storage zfs`,
     # and the daemon creates the Machine Pool on the first Volume, as on a real Server.
     public = public_ip(node["address"])
+    # A standalone founder names its Cluster; a release CLI that predates Cluster Names takes no name.
+    founder = "cloud" not in run and not run.get("cli") and node is run["machines"][0]
     result = cli(run, commands, ["--json", "server", "add", node["ssh"],
                        *([] if "cloud" in run else ["--standalone"]), "--no-install", "--storage", "none", "--yes",
+                       *(["--cluster-name", "verify"] if founder else []),
                        "--name", node["name"], "--ssh-key", str(private / "id_ed25519"),
                        "--public-ip", public, "--wg-endpoint", node["endpoint"], "--wg-mtu", "1420"], check=False)
     response = enrolled(node, result, commands.evidence)
