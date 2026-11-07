@@ -71,6 +71,7 @@ it("names a Cluster rename by the private addresses it moves", () => {
   expect(approvalBadge("set_cluster_name", rename("acme"))).toBe("Renames cluster");
   expect(renamedAddresses(rename("acme"))).toEqual({ from: "*.acme.ployz.internal", to: "*.beta.ployz.internal" });
   expect(renamedAddresses(rename(null))).toEqual({ from: null, to: "*.beta.ployz.internal" });
+  expect(renamedAddresses(rename("beta"))).toEqual({ from: "*.beta.ployz.internal", to: "*.beta.ployz.internal" });
   expect(renamedAddresses(asTestDouble<ApprovalReview>()({ effects: [], operation: { verb: "move", name: "pg", preview: {} } }))).toBeNull();
 });
 

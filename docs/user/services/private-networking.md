@@ -122,7 +122,8 @@ characters. To rename it, owners and admins open **Organization → Network**, c
 beside **Cluster name**, and click **Save**. The name shows **Pending** until a server is online
 to take it. `ployz cluster name acme` and the [Ployz agent](../account/agent-sidebar.md) ask
 for an [approval](../account/organizations.md#destructive-actions-ask-first) first, since every
-service's long address changes.
+service's long address changes. The approval names the addresses your servers answer now, even
+while another rename is still pending.
 
 Without Ployz Cloud, name the cluster when you add its first server with `--cluster-name`. Rename
 it at any time, with no approval, with:

@@ -25,7 +25,7 @@ export const defaultClusterName = (organizationSlug: string) =>
 export type ClusterNameRow = {
   readonly id: string;
   readonly name: string;
-  /** The name a Server last confirmed the Cluster holds; null until one does. */
+  /** The name a Server last confirmed the Cluster holds; null until one does, or once a set went unanswered. */
   readonly appliedName: string | null;
   /** Why the Cluster refused `name`; null unless it did. */
   readonly refusal: string | null;
