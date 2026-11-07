@@ -775,6 +775,7 @@ pub fn local_runtime(data_dir: &Path) -> MachineRuntime {
         store_syncs_commits: store_filesystem.as_deref().map(|name| name != "tmpfs"),
         store_filesystem,
         capabilities: ployz_core::served_capabilities(),
+        device_enforcement: None,
         management_identity: None,
         leaving: false,
     }

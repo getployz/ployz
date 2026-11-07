@@ -429,7 +429,7 @@ async fn acted<T, F: std::future::Future<Output = Result<T, RpcError>>>(
 
 async fn started(service: support::DeployService) -> Started {
     acted(service, |session, machine| async move {
-        start_one(&session, machine, container_id('1')).await
+        start_one(&session, machine, container_id('1'), None).await
     })
     .await
     .unwrap()
@@ -444,7 +444,7 @@ async fn a_start_never_routes_a_copy_no_deploy_brought_in() {
     let service = support::DeployService::new(support::machine('a', "one"));
     let rotations = service.rotations();
     let error = acted(service, |session, machine| async move {
-        start_one(&session, machine, container_id('1')).await
+        start_one(&session, machine, container_id('1'), None).await
     })
     .await
     .unwrap_err();
@@ -492,7 +492,7 @@ async fn a_start_whose_copy_cannot_be_read_starts_nothing() {
         support::DeployService::new(support::machine('a', "one")).fail_inspects("inspect failed");
     let mutations = service.mutating_rpcs();
     let error = acted(service, |session, machine| async move {
-        start_one(&session, machine, container_id('1')).await
+        start_one(&session, machine, container_id('1'), None).await
     })
     .await
     .unwrap_err();
@@ -506,7 +506,7 @@ async fn a_start_of_an_out_copy_is_refused_and_says_to_deploy_again() {
         .with_rotation(container_id('1'), CopyRotation::Out);
     let mutations = service.mutating_rpcs();
     let error = acted(service, |session, machine| async move {
-        start_one(&session, machine, container_id('1')).await
+        start_one(&session, machine, container_id('1'), None).await
     })
     .await
     .unwrap_err();
@@ -525,7 +525,7 @@ async fn a_stop_of_an_in_copy_holds_it_so_a_start_can_bring_it_back() {
     let rotations = service.rotations();
     let removed = service.removed_containers();
     acted(service, |session, machine| async move {
-        stop_one(&session, machine, container_id('1')).await
+        stop_one(&session, machine, container_id('1'), None).await
     })
     .await
     .unwrap();
@@ -538,6 +538,47 @@ async fn a_stop_of_an_in_copy_holds_it_so_a_start_can_bring_it_back() {
         Some(CopyRotation::Held(_))
     ));
     assert!(removed.lock().unwrap().is_empty());
+}
+
+#[tokio::test]
+async fn a_stop_and_a_start_carry_their_approval_on_every_step() {
+    let signer = ployz_core::authority::Signer::from_seed(&[1; 32]);
+    let approval = ployz_core::authority::Signed::sign(
+        &ployz_core::authority::RestartApproval {
+            cluster: ployz_core::SealingPublicKey::from_bytes([9; 32]),
+            operation: ployz_core::OperationId::random(),
+            kind: ployz_core::authority::WorkflowKind::Restart,
+            namespace: ployz_core::Namespace::parse("app").unwrap(),
+            service: ployz_core::ServiceName::parse("web").unwrap(),
+            machines: Vec::new(),
+            container: container_id('1'),
+            issued_at: ployz_core::authority::Timestamp::now(),
+            expires_at: ployz_core::authority::Timestamp::now(),
+            signer: ployz_core::authority::SignerKey::Device(signer.public().into()),
+        },
+        &signer,
+    )
+    .unwrap();
+    let service = support::DeployService::new(support::machine('a', "one"))
+        .with_rotation(container_id('1'), CopyRotation::In);
+    let approvals = service.approvals();
+    let sent = approval.clone();
+    acted(service, |session, machine| async move {
+        stop_one(&session, machine, container_id('1'), Some(sent.clone())).await?;
+        start_one(&session, machine, container_id('1'), Some(sent))
+            .await
+            .map(drop)
+    })
+    .await
+    .unwrap();
+    let approvals = approvals.lock().unwrap();
+    assert!(approvals.len() >= 2, "{approvals:?}");
+    assert!(
+        approvals
+            .iter()
+            .all(|carried| carried.as_ref() == Some(&approval)),
+        "{approvals:?}"
+    );
 }
 
 #[tokio::test]

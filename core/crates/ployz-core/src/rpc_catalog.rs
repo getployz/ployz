@@ -129,6 +129,8 @@ macro_rules! rpc_catalog {
                 BUILD_GRANT_HOLDER_CAPABILITY: ("ployz.build.grant.holder.v1", Always),
                 /// `EnsureContainer` takes a Device-signed restart approval and, under Device enforcement, refuses an Operator's restart step without one.
                 RESTART_APPROVAL_CAPABILITY: ("ployz.restart.device-approval.v2", Always),
+                /// A restart approval may be signed by a browser key under a trusted passkey's session grant that rides in its envelope.
+                RESTART_SESSION_GRANT_CAPABILITY: ("ployz.restart.session-grant.v1", Always),
             }
         }
     };

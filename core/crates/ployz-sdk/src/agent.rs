@@ -139,14 +139,25 @@ impl Client {
         to_json(&copies)
     }
 
-    /// Stop Container `container` on `machine`.
+    /// Stop Container `container` on `machine`, carrying `approval` for a Machine under
+    /// Device enforcement.
     ///
     /// # Errors
-    /// Returns the Machine's refusal, or the transport's error when it did not answer.
+    /// Returns `invalid_argument` for a malformed approval, the Machine's refusal, or the
+    /// transport's error when it did not answer.
     #[napi]
-    pub async fn stop_container(&self, machine: String, container: String) -> Result<()> {
+    pub async fn stop_container(
+        &self,
+        machine: String,
+        container: String,
+        #[napi(ts_arg_type = "Signed | null")] approval: Option<serde_json::Value>,
+    ) -> Result<()> {
         let (machine, container) = ids(&machine, &container)?;
-        ployz::sdk::agent::stop_one(&self.inner, machine, container)
+        let approval = approval
+            .map(from_js)
+            .transpose()
+            .map_err(invalid_argument)?;
+        ployz::sdk::agent::stop_one(&self.inner, machine, container, approval)
             .await
             .map_err(rpc_to_napi)
     }
@@ -169,12 +180,24 @@ impl Client {
     /// its health could not be read, or `unhealthy` when it failed its healthcheck or did
     /// not pass it in time.
     ///
+    /// `approval` rides every step, for a Machine under Device enforcement.
+    ///
     /// # Errors
-    /// Returns the Machine's refusal, or the transport's error when it did not answer.
+    /// Returns `invalid_argument` for a malformed approval, the Machine's refusal, or the
+    /// transport's error when it did not answer.
     #[napi(ts_return_type = "Promise<'serving' | 'unconfirmed' | 'unhealthy'>")]
-    pub async fn start_container(&self, machine: String, container: String) -> Result<String> {
+    pub async fn start_container(
+        &self,
+        machine: String,
+        container: String,
+        #[napi(ts_arg_type = "Signed | null")] approval: Option<serde_json::Value>,
+    ) -> Result<String> {
         let (machine, container) = ids(&machine, &container)?;
-        ployz::sdk::agent::start_one(&self.inner, machine, container)
+        let approval = approval
+            .map(from_js)
+            .transpose()
+            .map_err(invalid_argument)?;
+        ployz::sdk::agent::start_one(&self.inner, machine, container, approval)
             .await
             .map(|started| started.as_str().to_owned())
             .map_err(rpc_to_napi)

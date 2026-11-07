@@ -10,7 +10,7 @@ use ployz_core::{
     CopyRotation, HealthFailure, HealthObservation, LiveServices, MachineFailure, MachineId,
     MachineName, MachineObservation, OperationId, QualifiedService, RpcError, RpcErrorCode,
     Sealing, ServiceContainer, ServiceObservation, ServiceSelector,
-    authority::{RestartApproval, Signed, Signer, Timestamp, WorkflowKind},
+    authority::{RestartApproval, Signed, Signer, SignerKey, Timestamp, WorkflowKind},
     select_service,
 };
 use serde::Serialize;
@@ -583,7 +583,7 @@ fn restart_approvals(
                 container: container.container_id,
                 issued_at,
                 expires_at: issued_at.plus(ployz_core::authority::restart::MAX_LIFETIME_MILLIS),
-                signer: signer.public().into(),
+                signer: SignerKey::Device(signer.public().into()),
             };
             Signed::sign(&approval, &signer)
                 .map(|signed| (container.container_id, signed))

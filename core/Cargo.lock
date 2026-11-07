@@ -4213,6 +4213,7 @@ dependencies = [
  "chrono",
  "clap",
  "defguard_wireguard_rs",
+ "ed25519-dalek",
  "fastrand",
  "fs2",
  "futures-util",

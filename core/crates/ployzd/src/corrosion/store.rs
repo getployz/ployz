@@ -82,6 +82,7 @@ impl MachinePublicationGuard<'_> {
                 machine.runtime.running_builds = overlay.running_builds;
                 machine.runtime.pool_committable_bytes = overlay.pool_committable_bytes;
                 machine.runtime.sealing = overlay.sealing;
+                machine.runtime.device_enforcement = Some(local.device_enforcement());
                 machine.runtime.management_identity = Some(local.management_secret().public_key());
                 Some(machine)
             }
