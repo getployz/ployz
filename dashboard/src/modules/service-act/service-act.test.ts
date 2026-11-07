@@ -1,6 +1,6 @@
 import type { MachineId } from "@ployz/sdk";
 import { describe, expect, it } from "vitest";
-import { endOf, progressOf, type ServiceActBefore, type ServiceActLeg } from "./service-act";
+import { endOf, type EnforcementFrame, enforcesIn, progressOf, type ServiceActBefore, type ServiceActLeg } from "./service-act";
 
 const before: ServiceActBefore = { copies: [{ server: "a", machine: "m-a", container: "web-1", state: "running", hook: false }], unanswered: [{ machine: "m-b" as MachineId, name: "b" }] };
 const moved: ServiceActLeg[] = [{ server: "a", machine: "m-a", container: "web-1", hook: false, stop: "done", start: "done", reason: null }];
@@ -73,5 +73,25 @@ describe("progressOf", () => {
       { server: "a", machine: "m-a", container: "web-2", hook: false, stop: "failed", start: null, reason: "a couldn't stop it." },
     ];
     expect(endOf("stop", answered, stopped, null)).toEqual({ state: "failed", reason: "a couldn't stop it." });
+  });
+});
+
+describe("enforcesIn", () => {
+  const frame = (enforcement: boolean | null | undefined): EnforcementFrame => ({
+    containers: [{ namespace: "shop", machine_id: "m-a" }, { namespace: "other", machine_id: "m-b" }],
+    machines: [
+      { machine: { id: "m-a", runtime: enforcement === undefined ? {} : { device_enforcement: enforcement } } },
+      { machine: { id: "m-b", runtime: { device_enforcement: true } } },
+    ],
+  });
+
+  it("asks for an approval when a Server running the Environment's containers enforces", () => {
+    expect(enforcesIn(frame(true), "shop")).toBe(true);
+  });
+
+  it("asks nothing when those Servers don't enforce or never said, whatever other Environments' Servers do", () => {
+    expect(enforcesIn(frame(false), "shop")).toBe(false);
+    expect(enforcesIn(frame(null), "shop")).toBe(false);
+    expect(enforcesIn(frame(undefined), "shop")).toBe(false);
   });
 });

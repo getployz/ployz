@@ -1,6 +1,6 @@
 import "@tanstack/react-start/server-only";
 import { createHash } from "node:crypto";
-import type { AcceptedLoss, DestructiveEffect, EnvironmentRef, MachineId, MachineName, ServerRef, ServiceVerb } from "@ployz/sdk";
+import type { AcceptedLoss, DestructiveEffect, EnvironmentRef, MachineId, MachineName, ServerRef, ServiceVerb, Signed } from "@ployz/sdk";
 import { Effect, Schema } from "effect";
 import { Uuid } from "#/lib/schema";
 import { askAgain, carriedInto, gateOperation, operationDigest, type OperationAsked, redeemApproval, type Redeeming, unheldApproval } from "#/modules/approvals/approvals.server";
@@ -286,6 +286,8 @@ export const actService = (
     readonly verb: ServiceVerb;
     readonly only: ServerRef | null;
     readonly digest: string;
+    /** The browser's approval for each Container, forwarded to Servers that enforce. */
+    readonly approvals?: Readonly<Record<string, Signed>>;
   },
   call: OperationCall,
 ) =>

@@ -420,4 +420,5 @@ fn the_browser_writes_this_grant_body_and_challenge() {
         hex,
         "3f6c4b9b3dc458f09a5b0ec4dd6b15a4e0794a22641b2b0ecc2523002b56888a"
     );
+    assert_eq!(browser().public().code().to_string(), "72asyextvn");
 }

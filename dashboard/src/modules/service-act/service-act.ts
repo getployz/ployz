@@ -109,3 +109,15 @@ export const legOf = (leg: ServiceActLeg): Leg => ({
   started: leg.start === null ? null : RECEIPTS[leg.start],
   reason: leg.reason,
 });
+
+/** The parts of a Runtime Watch frame that say which Servers run an Environment and whether they enforce. */
+export type EnforcementFrame = {
+  readonly containers: readonly { readonly namespace: string; readonly machine_id: string }[];
+  readonly machines: readonly { readonly machine: { readonly id: string; readonly runtime: { readonly device_enforcement?: boolean | null } } }[];
+};
+
+/** Whether a Server running a container in `namespace` reports that it enforces. Absent reports claim nothing. */
+export function enforcesIn(frame: EnforcementFrame, namespace: string) {
+  const hosts = new Set(frame.containers.filter((container) => container.namespace === namespace).map((container) => container.machine_id));
+  return frame.machines.some(({ machine }) => hosts.has(machine.id) && machine.runtime.device_enforcement === true);
+}
