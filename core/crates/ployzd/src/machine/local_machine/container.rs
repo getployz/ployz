@@ -992,14 +992,24 @@ impl LocalMachine {
 
     /// Moves no rotation. An In want only re-checks itself before a start.
     async fn ensure_docker(&self, want: ContainerWant) -> Result<EnsuredContainer, Error> {
+        if !self.wants_door(&want).await? {
+            return self.ensure_unlocked(want).await;
+        }
         // A stop or remove of a door waits for a doors route under way, so the route
-        // never finds the Container it just started gone under it.
-        let _doors = if self.wants_door(&want).await? {
-            let containers = self.containers.as_ref().ok_or(Error::DockerUnavailable)?;
-            Some(containers.door_lifecycle().await)
-        } else {
-            None
-        };
+        // never finds the Container it just started gone under it. The work is detached
+        // with the lock, so a caller that stops waiting cannot free the lock while a
+        // stop it began still runs.
+        let containers = self.containers.as_ref().ok_or(Error::DockerUnavailable)?;
+        let doors = containers.door_lifecycle().await;
+        let local = self.clone();
+        tokio::spawn(async move {
+            let _doors = doors;
+            local.ensure_unlocked(want).await
+        })
+        .await?
+    }
+
+    async fn ensure_unlocked(&self, want: ContainerWant) -> Result<EnsuredContainer, Error> {
         let settled_spec = if let ContainerWant::Running {
             container: RunTarget::New(new),
             ..

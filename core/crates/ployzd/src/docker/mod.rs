@@ -358,9 +358,10 @@ impl ContainerRuntime {
         }
     }
 
-    /// Holds the Ingress door lifecycle until the guard drops.
-    pub(crate) async fn door_lifecycle(&self) -> tokio::sync::MutexGuard<'_, ()> {
-        self.doors.lock().await
+    /// Holds the Ingress door lifecycle until the guard drops. The guard is owned so
+    /// work detached from its caller holds it until that work ends.
+    pub(crate) async fn door_lifecycle(&self) -> tokio::sync::OwnedMutexGuard<()> {
+        Arc::clone(&self.doors).lock_owned().await
     }
 
     /// Opens Sealed env values with the Sealing Key kept in `data_dir`.

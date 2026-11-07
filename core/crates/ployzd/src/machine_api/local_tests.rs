@@ -1515,6 +1515,71 @@ mod ingress_doors {
     }
 
     #[tokio::test]
+    async fn a_door_stop_whose_caller_left_holds_the_doors_until_it_lands() {
+        let (data_dir, _store, service, _fake, runtime) =
+            fake_docker_service_keeping_runtime("ployzd-doors-detached-stop").await;
+        let machine = service.local.record().id();
+        set_doors(&service, doors_request(), false)
+            .await
+            .unwrap()
+            .unwrap();
+        let holder = runtime
+            .door_inventory(&machine)
+            .await
+            .unwrap()
+            .into_iter()
+            .find(|entry| entry.facts.door == crate::docker::Door::Holder)
+            .unwrap()
+            .facts
+            .id;
+
+        let mut stopping = runtime.subscribe_stopping_for_test();
+        let stop = tokio::spawn({
+            let service = service.clone();
+            async move {
+                ensure(
+                    &service,
+                    json!({"want":{"state":"stopped", "container":{"id":holder}, "drain":2000}}),
+                )
+                .await
+            }
+        });
+        tokio::time::timeout(
+            std::time::Duration::from_secs(10),
+            stopping.wait_for(|stopping| stopping.contains_key(&holder)),
+        )
+        .await
+        .expect("the holder's stop began its drain")
+        .unwrap();
+        stop.abort();
+        assert!(stop.await.unwrap_err().is_cancelled());
+        assert!(
+            futures_util::poll!(std::pin::pin!(runtime.door_lifecycle())).is_pending(),
+            "the stop its caller left still holds the doors through its drain"
+        );
+
+        let placing = tokio::spawn({
+            let service = service.clone();
+            async move { set_doors(&service, doors_request(), false).await }
+        });
+        let set = placing.await.unwrap().unwrap().unwrap();
+        assert_eq!(set.failure, None, "{set:?}");
+        assert_eq!(
+            set.holder.map(|holder| holder.change),
+            Some(DoorChange::Started),
+            "the route sees the holder the stop left at rest"
+        );
+        assert!(
+            at_rest_by_id(&runtime, &machine)
+                .await
+                .iter()
+                .all(|(_, at_rest)| !at_rest),
+            "both doors run once the route answers"
+        );
+        std::fs::remove_dir_all(data_dir).unwrap();
+    }
+
+    #[tokio::test]
     async fn a_legacy_deploy_without_the_role_is_refused() {
         let (data_dir, store, service, fake) =
             fake_docker_service("ployzd-doors-legacy-role").await;
