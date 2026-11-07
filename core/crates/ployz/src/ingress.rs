@@ -353,10 +353,11 @@ pub struct IngressCheck {
     pub unchecked: Vec<String>,
 }
 
-/// Set the Ingress Proxy on every Server with the ingress role. Each daemon brings back
-/// a missing or stopped one, and moves an older one to the wiring it pins; one that
-/// already runs as pinned is left alone and reported as nothing. Each Server's answer
-/// stands on its own, and a failure only reports.
+/// Bring back the Ingress Proxy on every Server with the ingress role whose observation
+/// shows none Docker can start, or one at rest. A Server whose Ingress Proxy runs is not
+/// asked, so a Deploy never moves a running one to new pins; `ployz server upgrade` and
+/// `ployz server set` do. Each Server's answer stands on its own, and a failure only
+/// reports.
 ///
 /// # Errors
 ///
@@ -365,20 +366,33 @@ pub(crate) async fn fill_slots(
     client: &mut Client,
     cancel: &CancellationToken,
 ) -> Result<IngressCheck, Failure> {
-    let doors = observe_doors(client).await?;
+    let Planned { check, missing } = plan_slots(client).await?;
     if cancel.is_cancelled() {
         return Ok(IngressCheck::default());
     }
-    let answers = set_doors(&*client, &doors.machines, doors.proxy, cancel).await;
-    let mut check = IngressCheck::default();
-    for (machine, answer) in doors.machines.iter().zip(answers) {
-        match checked(machine, answer) {
-            Ok(Some(repair)) => check.repairs.push(repair),
-            Ok(None) => {}
-            Err(cause) => check.unchecked.push(cause),
+    if missing.is_empty() {
+        return Ok(check);
+    }
+    let doors = observe_doors(client).await?;
+    let answers = set_doors(&*client, &missing, doors.proxy, cancel).await;
+    let mut answered = missing
+        .iter()
+        .zip(answers)
+        .map(|(machine, answer)| (machine.id, checked(machine, answer)))
+        .collect::<std::collections::BTreeMap<_, _>>();
+    let mut filled = IngressCheck {
+        repairs: Vec::new(),
+        unchecked: check.unchecked,
+    };
+    for planned in check.repairs {
+        match answered.remove(&planned.machine) {
+            None => filled.repairs.push(planned),
+            Some(Ok(Some(repair))) => filled.repairs.push(repair),
+            Some(Ok(None)) => {}
+            Some(Err(cause)) => filled.unchecked.push(cause),
         }
     }
-    Ok(check)
+    Ok(filled)
 }
 
 /// One Server's repair from its answer: `None` when its Ingress Proxy already ran as
@@ -494,29 +508,39 @@ fn stage_failure(failure: &IngressDoorsFailure) -> IngressFailure {
 }
 
 /// The repairs [`fill_slots`] would run, by Server, from what each one lists; runs
-/// nothing. A Server whose daemon predates SetIngressDoors is unchecked, since it keeps
-/// the Ingress Proxy it runs.
+/// nothing. A Server whose daemon predates SetIngressDoors and needs a repair is
+/// unchecked, since it keeps the Ingress Proxy it runs.
 ///
 /// # Errors
 ///
 /// Fails when observation fails.
 pub(crate) async fn planned_slots(client: &mut Client) -> Result<IngressCheck, Failure> {
+    Ok(plan_slots(client).await?.check)
+}
+
+/// What each ingress Server's observation asks of its Ingress Proxy.
+struct Planned {
+    check: IngressCheck,
+    /// The Servers with none Docker can start, or one at rest, to set the doors on.
+    missing: Vec<DoorMachine>,
+}
+
+async fn plan_slots(client: &mut Client) -> Result<Planned, Failure> {
     let machines = client.machines().await?;
     let doors = door_machines(&machines);
     let mut check = IngressCheck::default();
-    for machine in doors.iter().filter(|machine| !machine.supported) {
-        check
-            .unchecked
-            .push(crate::ui::row(&unsupported(&machine.name)));
-    }
+    let mut missing = Vec::new();
     for repair in client.plan_ingress_repairs().await? {
         let Some(machine) = doors.iter().find(|machine| machine.id == repair.machine_id) else {
             continue;
         };
-        if !machine.supported {
+        let server = machine.name.to_string();
+        if !machine.supported && !matches!(repair.action, SlotAction::Unchecked(_)) {
+            check
+                .unchecked
+                .push(crate::ui::row(&unsupported(&machine.name)));
             continue;
         }
-        let server = machine.name.to_string();
         let shown = |action, failure| IngressRepair {
             machine: machine.id,
             server: server.clone(),
@@ -530,8 +554,14 @@ pub(crate) async fn planned_slots(client: &mut Client) -> Result<IngressCheck, F
                     .push(format!("{server} went unobserved ({cause})"));
                 continue;
             }
-            SlotAction::Create => shown(IngressAction::Create, None),
-            SlotAction::Start(_) => shown(IngressAction::Start, None),
+            SlotAction::Create => {
+                missing.push(machine.clone());
+                shown(IngressAction::Create, None)
+            }
+            SlotAction::Start(_) => {
+                missing.push(machine.clone());
+                shown(IngressAction::Start, None)
+            }
             SlotAction::Restarting(container_id) => shown(
                 IngressAction::Start,
                 Some(IngressFailure::Failed {
@@ -540,7 +570,7 @@ pub(crate) async fn planned_slots(client: &mut Client) -> Result<IngressCheck, F
             ),
         });
     }
-    Ok(check)
+    Ok(Planned { check, missing })
 }
 
 /// Why the ingress check through `server` failed, on one line. A connection failure

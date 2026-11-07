@@ -446,3 +446,67 @@ fn a_failed_follow_names_each_server_and_how_its_start_failed() {
     assert_eq!(fine.len(), 1);
     assert_eq!(fine[0].server.to_string(), "two");
 }
+
+/// A one-Server fleet whose Ingress Proxy holder runs and whose Caddy is in `caddy`.
+fn fleet_with_caddy(
+    caddy: ployz_testkit::fake_fleet::RunState,
+) -> ployz_testkit::fake_fleet::FleetFile {
+    serde_json::from_value(serde_json::json!({"machines": [{
+        "name": "edge", "id": "1".repeat(32), "version": "0.4.0", "online": true,
+        "containers": [
+            {"id": "edge-ingress-holder", "namespace": "ployz-system",
+             "service": "ingress-holder", "image": "pause", "state": "running"},
+            {"id": "edge-ingress", "namespace": "ployz-system", "service": "ingress",
+             "image": "caddy", "state": caddy},
+        ],
+    }]}))
+    .unwrap()
+}
+
+#[tokio::test]
+async fn a_deploy_sets_the_doors_only_where_caddy_is_at_rest() {
+    use ployz_testkit::fake_fleet::{FakeFleet, RunState, Scenario};
+    for (caddy, sets) in [(RunState::Running, 0), (RunState::Exited, 1)] {
+        let sockets = tempfile::tempdir().unwrap();
+        let fleet = FakeFleet::start(
+            fleet_with_caddy(caddy),
+            Scenario::default(),
+            sockets.path(),
+            None,
+        )
+        .unwrap();
+        let socket = fleet.socket(&MachineName::parse("edge").unwrap()).unwrap();
+        let mut client = crate::connect::connect_selected_with(
+            crate::context::SelectedConnections {
+                source: crate::context::ConnectionSource::Direct,
+                connections: vec![crate::context::Connection::unix(socket).unwrap()],
+            },
+            std::sync::Arc::new(crate::connect::SystemConnector::default()),
+        )
+        .await
+        .unwrap();
+
+        let check = fill_slots(&mut client, &CancellationToken::new())
+            .await
+            .unwrap();
+
+        let set = fleet
+            .ledger()
+            .unwrap()
+            .into_iter()
+            .filter(|entry| entry.command == "set_ingress_doors")
+            .count();
+        assert_eq!(set, sets, "{caddy:?}: {check:?}");
+        assert!(check.unchecked.is_empty(), "{caddy:?}: {check:?}");
+        let actions = check
+            .repairs
+            .iter()
+            .map(|repair| (repair.action, repair.failure.is_none()))
+            .collect::<Vec<_>>();
+        let expected = match caddy {
+            RunState::Running => vec![],
+            RunState::Exited => vec![(IngressAction::Start, true)],
+        };
+        assert_eq!(actions, expected, "{caddy:?}: {check:?}");
+    }
+}
