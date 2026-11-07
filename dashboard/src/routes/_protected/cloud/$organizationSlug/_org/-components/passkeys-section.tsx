@@ -85,7 +85,7 @@ export function PasskeyList({ view }: { view: PasskeysView }) {
           commit="none"
           actions={<TrustBadge passkey={passkey} />}
         >
-          {passkey.servers.length > 1 || !trustedEverywhere(passkey) ? <ServerTrustList servers={passkey.servers} /> : null}
+          {passkey.servers.length > 1 ? <ServerTrustList servers={passkey.servers} /> : null}
           {trustedEverywhere(passkey) ? null : <WaitingSteps code={passkey.code} />}
         </SettingsListItem>
       ))}
