@@ -488,7 +488,7 @@ impl NetworkPlane {
     }
 
     /// Whether the snapshot is settled. `false` when the store couldn't be read, or when
-    /// only adding kept peers the store can't yet vouch for, so a later tick reads again.
+    /// the device keeps a peer the snapshot doesn't list, so a later tick reads again.
     async fn rebuild(
         &mut self,
         replicated: &ReplicatedStore,
@@ -522,6 +522,7 @@ impl NetworkPlane {
         ) else {
             return Ok(true);
         };
+        let host = self.wireguard.read_interface_data()?;
         let answered = match set {
             PeerSet::Bootstrap => None,
             PeerSet::Snapshot => {
@@ -530,16 +531,18 @@ impl NetworkPlane {
                     .iter()
                     .map(|machine| machine.id)
                     .collect::<BTreeSet<_>>();
-                if record.device_enforcement() {
-                    match replicated.removed_machines().await {
-                        Ok(removed) => answered.extend(removed),
-                        Err(error) => {
-                            eprintln!(
-                                "failed to read which Machines this Corrosion store removed: {error}",
-                                error = ployz_core::error_chain::inline(&error),
-                            );
-                            return Ok(false);
-                        }
+                let unlisted = record.unlisted_trusted_machines(
+                    |key| host.peers.contains_key(&Key::new(key.0)),
+                    &answered,
+                );
+                match replicated.removed_machines(&unlisted).await {
+                    Ok(removed) => answered.extend(removed),
+                    Err(error) => {
+                        eprintln!(
+                            "failed to read which Machines this Corrosion store removed: {error}",
+                            error = ployz_core::error_chain::inline(&error),
+                        );
+                        return Ok(false);
                     }
                 }
                 Some(answered)
@@ -548,11 +551,9 @@ impl NetworkPlane {
         let selected = &record.selected_endpoints;
         let now = SystemTime::now();
         let mut previous = std::mem::take(&mut self.endpoint_peers);
-        let host = self.wireguard.read_interface_data()?;
         seed_retained_selections(&planned, &mut previous, &host.peers, now);
         let (planned, _) = attach_peer_selections(planned, previous, selected, now);
-        let settled = set == PeerSet::Snapshot || host.peers.is_empty() && planned.is_empty();
-        self.apply_peers(&planned, set, &record, answered.as_ref())?;
+        let settled = self.apply_peers(&planned, set, &record, answered.as_ref())?;
         self.endpoint_peers = planned;
         // Only an installed selection is worth remembering across a restart.
         for peer in &self.endpoint_peers {
@@ -612,13 +613,14 @@ impl NetworkPlane {
         port_held_elsewhere(WIREGUARD_PORT, failure)
     }
 
+    /// Whether the plan settled, as [`PeerChanges::settled`] says.
     fn apply_peers(
         &mut self,
         peers: &[MeshPeer],
         set: PeerSet,
         record: &LocalMachineRecord,
         answered: Option<&BTreeSet<MachineId>>,
-    ) -> Result<(), NetworkError> {
+    ) -> Result<bool, NetworkError> {
         let wg_peers = peers
             .iter()
             .map(|peer| wireguard_peer(peer, peer.selected()))
@@ -663,7 +665,7 @@ impl NetworkPlane {
                 })
                 .collect(),
         );
-        Ok(())
+        Ok(changes.settled)
     }
 
     async fn poll_endpoints(&mut self, local: &RecordOwner) {
@@ -1665,6 +1667,9 @@ struct PeerChanges<'peers> {
     updates: Vec<&'peers Peer>,
     removals: Vec<&'peers Key>,
     routes: BTreeSet<IpNet>,
+    /// `false` while the device keeps a peer the plan doesn't list, or while a bootstrap
+    /// plan has peers on either side, so the caller applies a later read again.
+    settled: bool,
 }
 
 fn peer_changes<'peers>(
@@ -1691,10 +1696,12 @@ fn peer_changes<'peers>(
                     || current.persistent_keepalive_interval != peer.persistent_keepalive_interval)
         })
         .collect::<Vec<_>>();
-    let removals = installed
+    let (kept, removals): (Vec<_>, Vec<_>) = installed
         .keys()
-        .filter(|key| !planned.iter().any(|peer| &peer.public_key == *key) && !keeps_unlisted(key))
-        .collect::<Vec<_>>();
+        .filter(|key| !planned.iter().any(|peer| &peer.public_key == *key))
+        .partition(|key| keeps_unlisted(key));
+    let settled =
+        kept.is_empty() && (set == PeerSet::Snapshot || installed.is_empty() && planned.is_empty());
     let routes = peer_routes(
         installed
             .values()
@@ -1710,6 +1717,7 @@ fn peer_changes<'peers>(
         updates,
         removals,
         routes,
+        settled,
     })
 }
 

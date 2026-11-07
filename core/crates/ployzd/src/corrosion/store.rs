@@ -1438,14 +1438,24 @@ impl ReplicatedStore {
         }
     }
 
-    /// Machines whose row this store held and then deleted, as `server rm` does: a deleted
-    /// row keeps its cr-sqlite key.
-    pub(crate) async fn removed_machines(&self) -> Result<BTreeSet<MachineId>, Error> {
+    /// Which of `ids` name a Machine whose row this store held and then deleted, as `server
+    /// rm` does: a deleted row keeps its cr-sqlite key.
+    pub(crate) async fn removed_machines(
+        &self,
+        ids: &[MachineId],
+    ) -> Result<BTreeSet<MachineId>, Error> {
+        if ids.is_empty() {
+            return Ok(BTreeSet::new());
+        }
         let query = self
             .api
             .query(Statement::new(
-                "SELECT id FROM machines__crsql_pks WHERE id NOT IN (SELECT id FROM machines)",
-                [],
+                format!(
+                    "SELECT id FROM machines__crsql_pks WHERE id IN ({}) \
+                     AND NOT EXISTS (SELECT 1 FROM machines WHERE machines.id = machines__crsql_pks.id)",
+                    vec!["?"; ids.len()].join(", "),
+                ),
+                ids.iter().map(|id| json!(id)),
             ))
             .await?;
         query

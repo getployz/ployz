@@ -340,6 +340,24 @@ impl LocalMachineRecord {
         })
     }
 
+    /// Trusted Members whose key is `installed` and whose ID `listed` lacks. Under
+    /// enforcement each stays until the store shows its row deleted, so only these need
+    /// that evidence. Empty with enforcement off.
+    pub(crate) fn unlisted_trusted_machines(
+        &self,
+        installed: impl Fn(&WireGuardPublicKey) -> bool,
+        listed: &BTreeSet<MachineId>,
+    ) -> Vec<MachineId> {
+        if !self.device_enforcement {
+            return Vec::new();
+        }
+        self.trusted_machines
+            .iter()
+            .filter(|member| installed(&member.public_key) && !listed.contains(&member.id))
+            .map(|member| member.id)
+            .collect()
+    }
+
     pub(crate) fn pins_machine(&self, machine: &Machine) -> bool {
         self.machine()
             .is_some_and(|own| ployz_core::authority::Member::from(own).matches(machine))
