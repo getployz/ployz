@@ -244,6 +244,36 @@ ployz device rm mmg42klgyq
 that answers. A server that doesn't answer is listed under failures, and one with no direct
 connection under omissions. Either way the command exits 3.
 
+### Add a passkey
+
+A passkey lets you approve changes from your browser. Each server trusts it to approve workflows
+and nothing else: it can't open a connection, run `exec`, or approve a device. You don't need a
+device to add one.
+
+1. In Ployz Cloud, open **Account** in your Organization and choose **Add passkey**. Your browser
+   asks you to create it. Ployz Cloud then shows a code, such as `q3x7mfk2pa`.
+2. On a server, run:
+
+   ```sh
+   sudo ployz device approve --passkey q3x7mfk2pa
+   ```
+
+   An admin can run the same command from an approved device instead.
+
+`approve --passkey` reads the passkey from Ployz Cloud, checks that its key matches the code,
+shows its account, and asks before it adds it to every server. Pass `--yes` to skip the question.
+The passkey is tied to the Ployz Cloud address your CLI signed in to, never to one Ployz Cloud
+names. Until a server lists it, Account shows **Not yet approved by a device**. A passkey
+Ployz Cloud filed but no server approved approves nothing.
+
+The installer reminds you of this step when a server finishes installing.
+
+`ployz device ls` lists each passkey under your devices as `passkey, approve-only`, with its
+account. `ployz device rm <code>` removes it from every server, like a device.
+
+Passkeys can't approve anything yet. Approving restarts and deploys with a passkey arrives in a
+later release.
+
 ### Require a device's signature for restarts and joins
 
 By default a server restarts a service for anyone Ployz Cloud lets through. With device
