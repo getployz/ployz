@@ -480,6 +480,9 @@ of the **Servers** page and turn on **Upgrade automatically**. Only an owner or 
 starts upgrading right away, then checks every hour. Turn the switch off to go back to upgrading by
 hand.
 
+Automatic upgrades wait until a release has been out for 3 days, so a new release reaches your
+servers up to 3 days after it ships. To take a release sooner, upgrade by hand.
+
 Servers that are offline or building are skipped and upgrade at a later check. An offline server
 that's behind reads **Upgrades to `0.3.1` when it's back** on its page.
 

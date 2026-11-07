@@ -46,6 +46,7 @@ what is missing or invalid.
 | `BETTER_AUTH_TRUSTED_ORIGINS`, `PORT` | no | `PORT` defaults to 3000 |
 | `POLAR_ACCESS_TOKEN`, `POLAR_WEBHOOK_SECRET`, `POLAR_PRODUCT_ID`, `POLAR_SERVER` | no | all or none; none disables billing and every Organization is unlimited |
 | `UPTIME_ENABLED` | no | `true` on the dashboard when an uptime checker (`uptime/`) runs; unset hides uptime |
+| `AUTOMATIC_UPGRADE_RELEASE_AGE_HOURS` | no | how old a release must be before automatic upgrades take it; defaults to `72`, `0` takes it as soon as it's out. Manual upgrades never wait |
 | `ANALYTICS_ENABLED` | no | `true` on a Self-hosted Cloud to issue analytics salts and store pageviews; Ployz-hosted Cloud is always on |
 | `POSTHOG_KEY`, `POSTHOG_HOST` | no | product analytics, Ployz-hosted only; no key disables it. `POSTHOG_HOST` defaults to PostHog US Cloud; `pnpm posthog:backfill` sends existing users and Organizations once |
 
