@@ -733,7 +733,8 @@ async fn rm_on_a_passkey_code_removes_the_passkey() {
         ]
     );
     let json = serde_json::to_value(removed.answers.first().unwrap()).unwrap();
-    assert_eq!(json.get("outcome"), Some(&json!("removed_passkey")));
+    assert_eq!(json.get("outcome"), Some(&json!("removed")));
+    assert_eq!(json.get("kind"), Some(&json!("passkey")));
     server.abort();
 }
 
@@ -935,5 +936,50 @@ fn ls_lists_passkeys_under_the_devices_with_their_account_and_approvers() {
             { "machine_id": id('1'), "by": "server" },
             { "machine_id": id('3'), "by": "device", "code": key(0).code() },
         ]))
+    );
+}
+
+#[test]
+fn rm_json_keeps_the_removed_outcome_and_adds_the_kind() {
+    let answer = |removed| Answer {
+        machine_id: id('1'),
+        server: "machine-1".to_owned(),
+        outcome: Outcome::Removed(removed),
+    };
+    let device = key(0).code();
+    let passkey = key(1).code();
+    assert_eq!(
+        serde_json::to_value(answer(TrustedKeyRemoved::RemovedDevice {
+            code: device,
+            approved_passkeys: vec![passkey],
+        }))
+        .unwrap(),
+        json!({
+            "machine_id": id('1'),
+            "server": "machine-1",
+            "outcome": "removed",
+            "code": device,
+            "kind": "device",
+            "approved_passkeys": [passkey],
+        })
+    );
+    assert_eq!(
+        serde_json::to_value(answer(TrustedKeyRemoved::RemovedPasskey { code: passkey })).unwrap(),
+        json!({
+            "machine_id": id('1'),
+            "server": "machine-1",
+            "outcome": "removed",
+            "code": passkey,
+            "kind": "passkey",
+        })
+    );
+    assert_eq!(
+        serde_json::to_value(answer(TrustedKeyRemoved::NotPresent { code: device })).unwrap(),
+        json!({
+            "machine_id": id('1'),
+            "server": "machine-1",
+            "outcome": "not_present",
+            "code": device,
+        })
     );
 }

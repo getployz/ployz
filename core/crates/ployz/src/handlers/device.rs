@@ -873,7 +873,46 @@ struct Answer {
 #[serde(untagged)]
 enum Outcome {
     Set(DeviceSet),
+    #[serde(serialize_with = "removal_json")]
     Removed(TrustedKeyRemoved),
+}
+
+/// `device rm --json` keeps main's `outcome: removed` and adds the kind beside it.
+#[derive(Serialize)]
+#[serde(tag = "outcome", rename_all = "snake_case")]
+enum RemovalJson<'a> {
+    Removed {
+        code: DeviceCode,
+        kind: &'static str,
+        #[serde(skip_serializing_if = "<[_]>::is_empty")]
+        approved_passkeys: &'a [DeviceCode],
+    },
+    NotPresent {
+        code: DeviceCode,
+    },
+}
+
+fn removal_json<S: serde::Serializer>(
+    removed: &TrustedKeyRemoved,
+    serializer: S,
+) -> Result<S::Ok, S::Error> {
+    let json = match removed {
+        TrustedKeyRemoved::RemovedDevice {
+            code,
+            approved_passkeys,
+        } => RemovalJson::Removed {
+            code: *code,
+            kind: "device",
+            approved_passkeys,
+        },
+        TrustedKeyRemoved::RemovedPasskey { code } => RemovalJson::Removed {
+            code: *code,
+            kind: "passkey",
+            approved_passkeys: &[],
+        },
+        TrustedKeyRemoved::NotPresent { code } => RemovalJson::NotPresent { code: *code },
+    };
+    json.serialize(serializer)
 }
 
 impl From<DeviceSet> for Outcome {
