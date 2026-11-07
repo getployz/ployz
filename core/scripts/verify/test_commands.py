@@ -122,7 +122,8 @@ class Add(unittest.TestCase):
         self.backend = unittest.mock.Mock()
 
     def add(self, provision):
-        with unittest.mock.patch.object(cluster, "preflight"), \
+        with unittest.mock.patch.object(cluster.boat, "boat_json"), \
+             unittest.mock.patch.object(cluster.boat, "shortfalls", return_value=[]), \
              unittest.mock.patch.object(cluster, "provision", side_effect=provision), \
              unittest.mock.patch.object(cluster, "enroll"), \
              unittest.mock.patch.object(cluster, "wait_ready"), \
@@ -139,6 +140,13 @@ class Add(unittest.TestCase):
         saved = cluster.json.loads(Path(self.run_["manifest"]).read_text())
         self.assertEqual([node["name"] for node in saved["machines"]], ["machine-1", "machine-2", "machine-4"])
         self.assertEqual(saved["machines"][2]["daemon"], self.run_["machines"][0]["daemon"])
+
+    def test_the_new_machine_is_ready_once_it_lists_itself_up_while_a_peer_is_down(self):
+        listing = cluster.json.dumps(dict(servers=[dict(machine=dict(id="m1"), membership="down"),
+                                                   dict(machine=dict(id="m3"), membership="up")])).encode()
+        node = dict(name="machine-3", ssh="root@203.0.113.3:22", machine_id="m3")
+        with unittest.mock.patch.object(cluster, "cli", return_value=cluster.subprocess.CompletedProcess([], 3, listing, b"")):
+            cluster.joined({}, unittest.mock.Mock(evidence="/evidence"), node, 1)
 
     def test_roles_enroll_the_server_with_only_those_roles(self):
         calls = []

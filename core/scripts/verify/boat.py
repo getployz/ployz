@@ -739,7 +739,6 @@ class Provider:
             raise RuntimeError("Boat cannot start the Machines the pool did not cover now.\n" + "\n".join(problems))
 
     def discard(self, name, why):
-        """Delete a Machine's sandbox, which up's claim or a failed add no longer wants; one Boat would not delete stays for down."""
         sandbox = (self.record()["sandboxes"].get(name) or {}).get("id")
         if not sandbox:
             return

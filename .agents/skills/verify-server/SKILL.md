@@ -52,7 +52,7 @@ new=$(scripts/verify-cluster add "$run")                  # prints machine-3, th
 scripts/verify-cluster add --roles ingress "$run"         # only the ingress role; from builds, services, ingress
 ```
 
-The new Machine runs machine-1's daemon from the run's artifacts, so `add` builds nothing; run `update` first to change it. `add` then waits until `doctor` passes on every Machine, or, while `power off` has stopped one, until the new Machine lists itself up. On Boat it launches a fresh sandbox at one start rather than claiming from the pool, since a parked sandbox can share a Boat node with a Machine the run holds. On failure `add` deletes the new guest and leaves the manifest as it was, and the next `add` takes the next name; if enrollment had committed, the Cluster may still list the failed Machine. `add` refuses `--bare` runs and runs that enrolled a release Machine on the checkout daemon.
+The new Machine runs machine-1's daemon from the run's artifacts, so `add` builds nothing; run `update` first to change it. `add` then waits until `doctor` passes on every Machine, or, while `power off` has stopped one, until the new Machine lists itself up; its Ingress Proxy may then wait for `server set <name> --accepts-ingress=true` after `power on`, as `add` says. On Boat it launches a fresh sandbox at one start rather than claiming from the pool, since a parked sandbox can share a Boat node with a Machine the run holds. On failure `add` deletes the new guest and leaves the manifest as it was, and the next `add` takes the next name; if enrollment had committed, the Cluster may still list the failed Machine. `add` refuses `--bare` runs and runs that enrolled a release Machine on the checkout daemon.
 
 ## Drive the feature
 

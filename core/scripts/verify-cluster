@@ -867,11 +867,11 @@ def launch(args, run, private, total_started):
         raise
 
 
-def provision(run, backend, node, daemon, built):
-    """Boot one Machine with this run's SSH key and its daemon running, ready to enroll; `built` waits for the binaries."""
+def provision(run, backend, node, daemon, wait_for_binaries):
+    """Boot one Machine with this run's SSH key and its daemon running, ready to enroll."""
     backend.start(node)
     if run.get("bare"):
-        built()
+        wait_for_binaries()
         stage_bare(run, backend, node, daemon)
         node["address"] = backend.address(node)
         return
@@ -883,7 +883,7 @@ def provision(run, backend, node, daemon, built):
                         f" pkill -f {listener} || true; for i in $(seq 50); do pgrep -f {listener} >/dev/null || break; sleep 0.1; done;"
                         " rm -f /etc/ssh/ssh_host_*; ssh-keygen -A; systemctl start ssh.socket ssh.service"])
     if daemon["source"] in LOCAL or daemon["version"] != run["bootstrap_release"]:
-        built()
+        wait_for_binaries()
         install(run, backend, node, daemon)
     else:
         # The release and its units are already installed in this image.
@@ -907,13 +907,20 @@ def roles_arg(text):
 
 
 def add(run, commands, backend, roles):
-    """Boot one more Machine on machine-1's daemon and enroll it into the run's Cluster; print its name."""
+    # main read the manifest before taking the lock, and an add that finished since then changed it.
+    run.update(json.loads(Path(run["manifest"]).read_text()))
     if run.get("bare"):
         raise RuntimeError("add enrolls a Machine, and a --bare run enrolls none")
     if run.get("bridged"):
         raise RuntimeError("add can't enroll a release Machine through the checkout daemon; up a run whose --daemon choices need no bridge")
-    state = run.get("provider_state", {})
-    preflight(argparse.Namespace(provider=run["provider"], machines=1, memory=state.get("memory"), disk=state.get("disk")))
+    if run["provider"] == "boat":
+        # boat.preflight counts parked sandboxes, and add never claims one.
+        problems = boat.shortfalls(1, boat.boat_json("limits"))
+        if problems:
+            raise RuntimeError("Boat cannot start the Machine now.\n" + "\n".join(problems))
+    else:
+        state = run["provider_state"]
+        preflight(argparse.Namespace(provider=run["provider"], machines=1, memory=state.get("memory"), disk=state.get("disk")))
     started = time.monotonic()
     # A name a failed add used stays retired: its enrollment may have committed.
     name = f"machine-{len(run['machines']) + len(run.get('discarded', [])) + 1}"
@@ -935,6 +942,7 @@ def add(run, commands, backend, roles):
         print(f"{name}: add failed; removing its guest.{committed} Evidence: {commands.evidence}", file=sys.stderr)
         backend.discard(name, "add failed")
         run["machines"].remove(node)
+        run["setup_follow_up_errors"] = [error for error in run.get("setup_follow_up_errors", []) if error["machine"] != name]
         run.setdefault("discarded", []).append(name)
         save(run)
         raise
@@ -944,12 +952,15 @@ def add(run, commands, backend, roles):
 
 
 def joined(run, commands, node, seconds):
-    """Wait until the Machine's own Entry lists it up."""
     deadline = time.monotonic() + seconds
     while True:
         observed = cli(run, commands, ["--json", "--connect", "ssh://" + node["ssh"], "server", "ls"], check=False, timeout=5)
-        if not observed.returncode and any(server["machine"]["id"] == node["machine_id"] and server["membership"] == "up"
-                for server in json.loads(observed.stdout)["servers"]):
+        try:
+            # server ls exits 3, still listing every Server, while a peer is down.
+            servers = json.loads(observed.stdout)["servers"] if observed.returncode in (0, 3) else []
+        except (ValueError, KeyError):
+            servers = []
+        if any(server["machine"]["id"] == node["machine_id"] and server["membership"] == "up" for server in servers):
             return
         if time.monotonic() >= deadline:
             raise RuntimeError(f"{node['name']}: committed enrollment never became ready; see {commands.evidence}")
@@ -957,7 +968,7 @@ def joined(run, commands, node, seconds):
 
 
 def enroll(run, commands, node, private, roles=None):
-    """Enroll one Machine and give its Server the public IP the internet reaches it on; `roles` None keeps every role."""
+    """Enroll one Machine and give its Server the public IP the internet reaches it on."""
     # Cloud enrollment pins --public-ip and --wg-endpoint as a direct join does, from 0.3.8 on (#3516).
     # --no-install requires --storage none, yet managed Volumes work: the image ran `ployzd install --storage zfs`,
     # and the daemon creates the Machine Pool on the first Volume, as on a real Server.
@@ -979,8 +990,12 @@ def enroll(run, commands, node, private, roles=None):
         print(f"{node['name']}: enrollment committed with a follow-up failure; checking readiness. Evidence: {commands.evidence}", file=sys.stderr)
         joined(run, commands, node, 30)
         if roles is None or "ingress" in roles:
-            # Complete the same Ingress Proxy follow-up offered by the CLI.
-            cli(run, commands, ["--json", "server", "set", node["machine_id"], "--accepts-ingress=true"])
+            # Complete the same Ingress Proxy follow-up offered by the CLI. It can't finish while a peer is powered off.
+            started = cli(run, commands, ["--json", "server", "set", node["machine_id"], "--accepts-ingress=true"],
+                          check=not run.get("powered_off"))
+            if started.returncode:
+                print(f"{node['name']}: its Ingress Proxy did not start while a Machine is powered off; rerun "
+                      f"`server set {node['name']} --accepts-ingress=true` after power on", file=sys.stderr)
     if "cloud" in run and public != "none":
         # A release CLI before 0.3.8 enrolls through Cloud with the address the daemon looked up, on Boat the node's shared NAT IPv4.
         cli(run, commands, ["--json", "server", "set", node["machine_id"], "--public-ip", public])
