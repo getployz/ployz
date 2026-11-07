@@ -40,6 +40,8 @@ export type EnrollInstruction = {
   readonly name: string;
   readonly storage: EnrollStorage;
   readonly policy: EnrollPolicy;
+  /** The founder's only: the Cluster Name it founds with, its `--cluster-name`. */
+  readonly clusterName?: string;
 };
 
 export type EnrollmentFailure = { readonly stage: EnrollmentStage | null; readonly message: string };

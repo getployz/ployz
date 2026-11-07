@@ -178,9 +178,13 @@ pub(crate) const BUILD: Verb =
     Verb::internal("build", Never, build::command, build::build).refuses_json();
 pub(crate) const CLOUD_RESET: Verb =
     Verb::cloud("cloud reset", Always, cloud::reset_command, cloud::reset);
-pub(crate) const CLUSTER_NAME: Verb =
-    Verb::cloud("cluster name", Never, cluster::name_command, cluster::name)
-        .docs("services/private-networking.md");
+pub(crate) const CLUSTER_NAME: Verb = Verb::cloud(
+    "cluster name",
+    Depends,
+    cluster::name_command,
+    cluster::name,
+)
+.docs("services/private-networking.md");
 pub(crate) const COMPLETION: Verb =
     Verb::local("completion", Never, crate::cli::completion, completion).refuses_json();
 pub(crate) const CONFIG_ADD: Verb = Verb::cloud(

@@ -8,7 +8,7 @@ export const APPROVAL_STATUSES = ["pending", "approved", "denied", "superseded"]
 export type ApprovalStatus = (typeof APPROVAL_STATUSES)[number];
 
 /** The operations `ployz` and agents run through Cloud that may wait for a human. Upgrade and a Service start never do. */
-export type OperationVerb = "drain" | "set" | "clean" | "remove" | "forget" | "release" | "remove_mirror" | "stop" | "restart" | "unprotect" | "move" | "restore" | "resize";
+export type OperationVerb = "drain" | "set" | "clean" | "remove" | "forget" | "release" | "remove_mirror" | "stop" | "restart" | "unprotect" | "move" | "restore" | "resize" | "set_cluster_name";
 
 /** An operation as a human approves it: its verb, what it acts on by name, and the preview its digest covers. */
 export type OperationReview = { verb: OperationVerb; name: string; preview: JsonValue; subject?: string };
@@ -65,7 +65,10 @@ const capitalized = (word: string) => `${word.charAt(0).toUpperCase()}${word.sli
  * write also names its Project, which the card shows and a denial leaves out.
  */
 export function approvalSubject(command: string, review: ApprovalReview) {
-  if ("operation" in review) return { verb: capitalized(review.operation.verb), name: review.operation.name, project: null };
+  if ("operation" in review) {
+    const verb = review.operation.verb === "set_cluster_name" ? "Rename cluster" : capitalized(review.operation.verb);
+    return { verb, name: review.operation.name, project: null };
+  }
   const verb = command === "publish" ? "Save" : command === "retry" ? (shutsDownAgain(review) ? "Shut down" : rollsBack(review) ? "Roll back" : "Redeploy") : command === "remove" ? "Remove"
     : command === "shut_down" ? "Shut down" : command === "sync" ? "Sync" : command === "take" ? "Take" : command === "cancel" ? "Cancel" : "Deploy";
   return { verb, name: review.diff.environment.name, project: review.diff.environment.project };
@@ -113,6 +116,17 @@ export function destroyedLines(command: string, review: ApprovalReview) {
   return [...lines, `Also removes any other service running in this environment${dropped === null ? "" : `. ${dropped}`}`];
 }
 
+const RenamePreview = Schema.Struct({ from: Schema.NullOr(Schema.String), to: Schema.String });
+
+/** The private addresses a Cluster rename moves, as the card shows them; null for anything else. */
+export function renamedAddresses(review: ApprovalReview) {
+  if (!("operation" in review) || review.operation.verb !== "set_cluster_name") return null;
+  const preview = Schema.decodeUnknownOption(RenamePreview)(review.operation.preview);
+  if (preview._tag === "None") return null;
+  const { from, to } = preview.value;
+  return { from: from === null ? null : `*.${from}.ployz.internal`, to: `*.${to}.ployz.internal` };
+}
+
 /** A Server removal: its Volumes' data stays on the disk, so the card lists effects rather than destruction. */
 export const losesVolumeAccess = (review?: ApprovalReview) => review !== undefined && "operation" in review
   && review.operation.verb === "remove" && review.operation.subject?.startsWith("server:") === true;
@@ -132,6 +146,7 @@ export function approvalBadge(command: string, review: ApprovalReview) {
   if (command === "move") return "Moves volume";
   if (command === "restore") return "Restores volume";
   if (command === "resize") return "Resizes volume";
+  if (command === "set_cluster_name") return "Renames cluster";
   if (command === "release" && effects.length === 0) return "Releases volume";
   if (effects.length === 0) return prunes(review) ? "Removes other services" : "Deploys";
   if (effects.every((effect) => effect.kind === "deletes_volume")) {

@@ -1,6 +1,6 @@
 {
   "format": 1,
-  "revision": "1a8585c2c438",
+  "revision": "423762250ddb",
   "permissions": [
     "org:read",
     "org:settings",
@@ -143,6 +143,54 @@
         "additionalProperties": false
       },
       "render": "record"
+    },
+    {
+      "name": "cluster_rename",
+      "path": [
+        "cluster",
+        "name"
+      ],
+      "about": "Rename the Cluster, which changes every Service's long private address, such as db.prod.acme.ployz.internal",
+      "examples": [
+        "ployz cluster name acme"
+      ],
+      "requires": "servers:operate",
+      "kind": "write",
+      "gate": "ask",
+      "removes": false,
+      "agents": true,
+      "typed": null,
+      "positional": [
+        "name"
+      ],
+      "input": {
+        "type": "object",
+        "properties": {
+          "name": {
+            "type": "string",
+            "maxLength": 63,
+            "pattern": "^[a-z0-9](?:[a-z0-9-]*[a-z0-9])?$",
+            "description": "The new name, such as acme"
+          }
+        },
+        "required": [
+          "name"
+        ],
+        "additionalProperties": false
+      },
+      "output": {
+        "type": "object",
+        "properties": {
+          "name": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "name"
+        ],
+        "additionalProperties": false
+      },
+      "render": "message"
     },
     {
       "name": "org_approval_ls",

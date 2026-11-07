@@ -242,6 +242,7 @@ describe("every Org Store collection reads its changes from the Organization cha
       [organizationId, "0".repeat(32)]);
     await sql("insert into organization_cluster_domain (organization_id, endpoint, name, encrypted_token, reserved_at, lease_renewed_at) values ($1, 'https://dns.example.test/', 'acme.ployz.test', '{}', now(), now())",
       [organizationId]);
+    await sql("insert into organization_cluster_name (organization_id, name) values ($1, 'acme')", [organizationId]);
     await sql("insert into organization_server_upgrades (organization_id, automatic) values ($1, false)", [organizationId]);
     await sql("insert into organization_support_access (organization_id, allowed) values ($1, false)", [organizationId]);
   }, 60_000);

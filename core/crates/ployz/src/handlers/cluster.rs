@@ -7,8 +7,11 @@ use serde::Serialize;
 use serde_json::json;
 
 use super::{Error, leaf_matches, runtime, server};
+use crate::approval::{self, Verb};
 use crate::cli::{base, positional};
+use crate::cloud_account::{Credential, Via};
 use crate::cluster::Client;
+use crate::published;
 use crate::ui::{self, Hint};
 
 pub(crate) fn group(command: Command) -> Command {
@@ -17,12 +20,14 @@ pub(crate) fn group(command: Command) -> Command {
 
 pub(crate) fn name_command(command: Command) -> Command {
     base(command, "Show or set the Cluster's name")
+        .long_about("Show or set the Cluster's name. A rename changes every Service's long private address, such as db.prod.acme.ployz.internal. Through Ployz Cloud, a rename asks for an Approval first.")
         .after_help(concat!(
             "Examples:\n",
             "  ployz cluster name\n",
             "  ployz cluster name acme"
         ))
         .arg(positional("name", false).help("The new name, such as acme"))
+        .arg(crate::cli::approval())
 }
 
 #[derive(Serialize)]
@@ -37,7 +42,13 @@ pub(crate) fn name(root: &ArgMatches) -> Result<(), Error> {
         .map(|name| parse(name))
         .transpose()?;
     let context = leaf.get_one::<String>("context").map(String::as_str);
-    runtime()?.block_on(async {
+    let runtime = runtime()?;
+    if let Some(name) = &given
+        && let Some(credential) = server::cloud_runs(&runtime, leaf)?
+    {
+        return through_cloud(&runtime, leaf, &credential, name);
+    }
+    runtime.block_on(async {
         let client = server::connect(leaf, context).await?;
         match given {
             Some(name) => {
@@ -63,7 +74,48 @@ pub(crate) fn name(root: &ArgMatches) -> Result<(), Error> {
     })
 }
 
-pub(crate) const VALID_NAME: &str = "Cluster names are up to 63 lowercase letters, digits and hyphens, starting and ending with a letter or digit.";
+fn through_cloud(
+    runtime: &tokio::runtime::Runtime,
+    leaf: &ArgMatches,
+    credential: &Credential,
+    name: &ClusterName,
+) -> Result<(), Error> {
+    let ran = approval::approved(
+        runtime,
+        credential,
+        Verb::SetClusterName,
+        leaf.get_one::<String>("approval").cloned(),
+        |id| server::approved_rerun(leaf, &["cluster", "name", name.as_str()], id),
+        async |approval| {
+            let key = uuid::Uuid::new_v4().to_string();
+            let input = json!({ "name": name.as_str() });
+            published::run_on(
+                credential,
+                Via::Cli,
+                "cluster_rename",
+                input,
+                approval,
+                &key,
+            )
+            .await
+            .0
+        },
+    )?;
+    let named = Named {
+        cluster: ClusterNamed {
+            name: Some(name.clone()),
+        },
+    };
+    let sentence = ran.message.unwrap_or_else(|| saved(name.as_str()));
+    ui::done(&named, sentence)
+}
+
+fn saved(name: &str) -> String {
+    format!("Saved {name} as the Cluster's name. It applies when a Server is online.")
+}
+
+pub(crate) const VALID_NAME: &str =
+    "Use up to 63 lowercase letters, digits and hyphens. Start and end with a letter or digit.";
 
 pub(crate) fn parse(name: &str) -> Result<ClusterName, Error> {
     ClusterName::parse(name).map_err(|_| {

@@ -13,6 +13,7 @@ use std::{
 use serde_json::{Value, json};
 
 const ASKED_REMOVE: &str = r#"{"error":{"code":"approval_required","message":"A human must approve this remove of acme before it runs.","details":{"approval_id":"apr_9","approval":"remove:abc","effects":[{"kind":"removes_organization","name":"acme","node":"o1","path":"organizations/o1"}],"operation":{"verb":"remove","name":"acme"},"organization":"acme"}}}"#;
+const ASKED_RENAME: &str = r#"{"error":{"code":"approval_required","message":"A human must approve this rename to beta before it runs.","details":{"approval_id":"apr_9","approval":"set_cluster_name:abc","effects":[],"operation":{"verb":"set_cluster_name","name":"beta"},"organization":"acme"}}}"#;
 const ASKED_FORGET: &str = r#"{"error":{"code":"approval_required","message":"A human must approve this forget of acme before it runs.","details":{"approval_id":"apr_9","approval":"forget:abc","effects":[{"kind":"removes_server","name":"web-1","node":"b","path":"servers/b"}],"operation":{"verb":"forget","name":"acme"},"organization":"acme"}}}"#;
 
 /// Each approval-gated request's route, with the approval it carried.
@@ -109,6 +110,12 @@ fn fake_cloud_answering(seen: Seen, confirms: bool, answer: Answer) -> String {
                     json!({ "organization": "acme", "servers": [], "volumes": [], "cancelled": [] }).to_string(),
                 ),
                 "POST /api/cli/forget-servers" => ("409 Conflict", ASKED_FORGET.to_owned()),
+                "POST /api/cli/run/cluster_rename" if approved => (
+                    "200 OK",
+                    json!({ "output": { "name": "beta" }, "message": "Saved beta as the Cluster's name. It applies when a Server is online." })
+                        .to_string(),
+                ),
+                "POST /api/cli/run/cluster_rename" => ("409 Conflict", ASKED_RENAME.to_owned()),
                 "POST /api/cli/server-access" => (
                     "200 OK",
                     json!({ "connections": [], "unreachable": ["a".repeat(32)] }).to_string(),
@@ -155,6 +162,7 @@ fn fake_cloud_answering(seen: Seen, confirms: bool, answer: Answer) -> String {
             };
             if route.starts_with("DELETE /api/cli/organizations/")
                 || route == "POST /api/cli/forget-servers"
+                || route == "POST /api/cli/run/cluster_rename"
             {
                 seen.lock().unwrap().push((route, approval));
             }
@@ -219,10 +227,10 @@ fn json_of(output: &Output) -> Value {
 }
 
 #[test]
-fn org_rm_and_forgetting_every_server_wait_on_an_approval_their_retry_carries() {
+fn org_rm_forgetting_every_server_and_a_cluster_rename_wait_on_an_approval_their_retry_carries() {
     let seen = Arc::default();
     let cloud = fake_cloud(Arc::clone(&seen), true);
-    let cases: [(&[&str], &str, &str); 2] = [
+    let cases: [(&[&str], &str, &str); 3] = [
         (
             &["org", "rm", "acme", "--confirm", "acme"],
             "DELETE /api/cli/organizations/o1",
@@ -232,6 +240,11 @@ fn org_rm_and_forgetting_every_server_wait_on_an_approval_their_retry_carries() 
             &["server", "forget", "--confirm", "acme"],
             "POST /api/cli/forget-servers",
             "server forget --confirm acme --approval apr_9",
+        ),
+        (
+            &["cluster", "name", "beta"],
+            "POST /api/cli/run/cluster_rename",
+            "cluster name beta --approval apr_9",
         ),
     ];
     for (args, route, retry) in cases {

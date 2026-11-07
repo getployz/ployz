@@ -28,6 +28,7 @@ export const changeNameSources = {
   environment_canvas_node_position: ["environment_canvas_node_position"],
   organization_enrollment: ["organization_pairing"],
   organization_cluster_domain: ["organization_cluster_domain"],
+  organization_cluster_name: ["organization_cluster_name"],
   organization_server_upgrades: ["organization_server_upgrades"],
   organization_support_access: ["organization_support_access"],
   server_upgrade: ["server_upgrade_attempt"],

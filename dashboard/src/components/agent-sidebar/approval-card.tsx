@@ -10,7 +10,7 @@ import { TraceLine } from "#/components/ui/trace";
 import { Textarea } from "#/components/ui/textarea";
 import { useMinute } from "#/hooks/use-minute";
 import { cn } from "#/lib/utils";
-import { approvalBadge, approvalSubject, type ApprovalDecision, destroyedLine, droppedLine, losesVolumeAccess, prunes, redeployLine } from "#/modules/approvals/approvals";
+import { approvalBadge, approvalSubject, type ApprovalDecision, destroyedLine, droppedLine, losesVolumeAccess, prunes, redeployLine, renamedAddresses } from "#/modules/approvals/approvals";
 import { lossMoment } from "#/modules/volume-placement/volume-placement";
 import { approvalOptions, decideApproval, landDecision, refetchApprovals, type ApprovalView } from "./approvals.queries";
 import { type ChangeLine, reviewedChanges } from "./approval-review";
@@ -48,6 +48,8 @@ function PendingCard({ organizationSlug, approval }: { organizationSlug: string;
   const { effects } = approval.review;
   const subject = approvalSubject(approval.command, approval.review);
   const redeploy = redeployLine(approval.command, approval.review);
+  const renamed = renamedAddresses(approval.review);
+  const destroys = approval.command !== "set_cluster_name";
   const place = subject.project === null ? subject.name : `${subject.project}/${subject.name}`;
   const { asked, others } = reviewedChanges(approval.command, approval.review);
   const waits = approval.protected && approval.yours;
@@ -67,7 +69,7 @@ function PendingCard({ organizationSlug, approval }: { organizationSlug: string;
   const deny = () => decide({ reject: reason?.trim() ? { reason: reason.trim() } : {} });
 
   return (
-    <Card state="destructive" size="sm" aria-label={`${subject.verb} ${place} needs approval`}>
+    <Card state={destroys ? "destructive" : undefined} size="sm" aria-label={`${subject.verb} ${place} needs approval`}>
       <CardHeader className="flex items-center justify-between gap-2">
         <div className="flex min-w-0 flex-col gap-0.5">
           <CardTitle>{subject.verb} {place}</CardTitle>
@@ -75,10 +77,13 @@ function PendingCard({ organizationSlug, approval }: { organizationSlug: string;
             {approval.asker && !approval.yours && <>Asked by {approval.asker} · </>}<RelativeTime date={new Date(approval.created_at)} />
           </CardDescription>
         </div>
-        <Badge variant="destructive">{approvalBadge(approval.command, approval.review)}</Badge>
+        <Badge variant={destroys ? "destructive" : "secondary"}>{approvalBadge(approval.command, approval.review)}</Badge>
       </CardHeader>
       <CardContent className="flex flex-col gap-2">
         {redeploy !== null && <p className="text-xs">{redeploy}</p>}
+        {renamed !== null && (
+          <p className="font-mono text-xs break-all">{renamed.from === null ? renamed.to : `${renamed.from} → ${renamed.to}`}</p>
+        )}
         {(effects.length > 0 || prunes(approval.review)) && (
           <ul aria-label={losesVolumeAccess(approval.review) ? "Effects" : "Destroys"} className="flex flex-col gap-1 rounded-lg bg-destructive/10 px-2.5 py-2 text-xs">
             {effects.map((effect) => {
@@ -127,7 +132,7 @@ function PendingCard({ organizationSlug, approval }: { organizationSlug: string;
       {waits ? (
         <CardFooter><p className="text-xs text-muted-foreground">Waiting on an owner or admin.</p></CardFooter>
       ) : <CardFooter className="gap-1.5">
-        <Button size="sm" variant="destructive" disabled={sending} onClick={() => void approve()}>
+        <Button size="sm" variant={destroys ? "destructive" : "default"} disabled={sending} onClick={() => void approve()}>
           Approve
         </Button>
         <Button size="sm" variant="outline" disabled={sending} onClick={() => void deny()}>
