@@ -642,7 +642,7 @@ fn the_add_arguments_carry_the_whole_instruction_and_a_root_config_without_home(
             accepts_services: true,
             accepts_ingress: true,
         },
-        cluster_name: None,
+        founding_cluster_name: None,
     };
 
     let arguments = add_arguments(&instruction, "https://cloud.example", false);

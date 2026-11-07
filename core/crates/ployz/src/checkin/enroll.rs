@@ -315,7 +315,7 @@ pub(super) fn add_arguments(
     if !instruction.name.is_empty() {
         arguments.extend(["--name".to_owned(), instruction.name.clone()]);
     }
-    if let Some(cluster_name) = &instruction.cluster_name {
+    if let Some(cluster_name) = &instruction.founding_cluster_name {
         arguments.extend(["--cluster-name".to_owned(), cluster_name.clone()]);
     }
     arguments.extend([

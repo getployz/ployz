@@ -74,7 +74,6 @@ pub(crate) fn name(root: &ArgMatches) -> Result<(), Error> {
     })
 }
 
-/// Cloud keeps the name it wants and sets it on a Server, so its record stays the Cluster's.
 fn through_cloud(
     runtime: &tokio::runtime::Runtime,
     leaf: &ArgMatches,

@@ -87,9 +87,8 @@ pub(crate) struct EnrollInstruction {
     pub(crate) name: String,
     pub(crate) storage: EnrollStorage,
     pub(crate) policy: EnrollPolicy,
-    /// The name a founder founds the Cluster with. Cloud leaves it out for a joiner.
-    #[serde(default)]
-    pub(crate) cluster_name: Option<String>,
+    #[serde(default, rename = "clusterName")]
+    pub(crate) founding_cluster_name: Option<String>,
 }
 
 #[derive(Clone, Debug, Deserialize, PartialEq, Eq)]
