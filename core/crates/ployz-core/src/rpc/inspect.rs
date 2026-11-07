@@ -45,6 +45,10 @@ pub struct MachineDetails {
     /// Labels of Management Client slots holding an accepted or pending key.
     #[serde(default)]
     pub management_clients: Vec<ManagementClientLabel>,
+    /// The passkeys this Machine trusts to approve workflows. A daemon from before
+    /// passkeys omits it.
+    #[serde(default)]
+    pub passkeys: Vec<crate::authority::TrustedPasskey>,
     /// How this Machine came to its Cluster. A daemon from before 0.3.15 omits it.
     #[serde(default)]
     pub founding: crate::Founding,

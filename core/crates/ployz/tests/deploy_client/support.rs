@@ -1024,6 +1024,7 @@ impl FakeMachine for DeployService {
             advertised_endpoints: Vec::new(),
             store_version: BTreeMap::new(),
             rtts: Vec::new(),
+            passkeys: Vec::new(),
             management_clients: Vec::new(),
             telemetry,
             storage: self.machines.first().and_then(|machine| machine.storage),

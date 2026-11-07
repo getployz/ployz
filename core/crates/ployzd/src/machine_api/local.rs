@@ -397,6 +397,17 @@ impl MachineRpc for MachineService {
         )
     }
 
+    async fn set_passkey(
+        &self,
+        request: Request<OpaquePayload>,
+    ) -> Result<Response<OpaquePayload>, Status> {
+        finish(
+            self.local
+                .set_passkey(expect::<op::SetPasskey>(request)?)
+                .await,
+        )
+    }
+
     async fn set_push_target(
         &self,
         request: Request<OpaquePayload>,

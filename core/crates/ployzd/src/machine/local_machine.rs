@@ -555,6 +555,7 @@ impl LocalMachine {
             store_version,
             rtts,
             management_clients: record.management_clients().cloned().collect(),
+            passkeys: record.passkeys().to_vec(),
             founding: record.founding(),
             telemetry,
             storage,

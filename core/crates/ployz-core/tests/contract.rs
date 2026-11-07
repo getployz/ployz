@@ -1977,6 +1977,7 @@ fn machine_upgrade_request_and_receipt_have_one_typed_wire_contract() {
         store_version: BTreeMap::new(),
         rtts: Vec::new(),
         management_clients: Vec::new(),
+        passkeys: Vec::new(),
         telemetry: None,
         storage: None,
         upgrade: None,

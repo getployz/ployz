@@ -234,6 +234,7 @@ impl LocalMachineStore {
                     device_slots_vetted: true,
                     device_enforcement: false,
                     trusted_machines: Vec::new(),
+                    passkeys: Vec::new(),
                     membership_cluster: None,
                     enrollment: None,
                 };
@@ -814,6 +815,46 @@ impl LocalMachineStore {
             .is_some_and(|slot| slot.live().is_some());
         self.clear_management_client(&label)?;
         Ok(live)
+    }
+
+    /// Trust `trusted` to approve workflows. Returns `false` when a passkey with its code
+    /// is already trusted, which keeps its first approval.
+    ///
+    /// # Errors
+    /// Returns a storage error if the updated record cannot be saved atomically.
+    pub fn approve_passkey(
+        &mut self,
+        trusted: ployz_core::authority::TrustedPasskey,
+    ) -> Result<bool, StoreError> {
+        let code = trusted.passkey.code();
+        if self
+            .record
+            .passkeys
+            .iter()
+            .any(|held| held.passkey.code() == code)
+        {
+            return Ok(false);
+        }
+        let mut updated = self.record.clone();
+        updated.passkeys.push(trusted);
+        save(&self.data_dir, &updated)?;
+        self.record = updated;
+        Ok(true)
+    }
+
+    /// Stop trusting the passkey `code` names. Returns `false` when none is trusted.
+    ///
+    /// # Errors
+    /// Returns a storage error if the updated record cannot be saved atomically.
+    pub fn remove_passkey(&mut self, code: DeviceCode) -> Result<bool, StoreError> {
+        let mut updated = self.record.clone();
+        updated.passkeys.retain(|held| held.passkey.code() != code);
+        if updated.passkeys.len() == self.record.passkeys.len() {
+            return Ok(false);
+        }
+        save(&self.data_dir, &updated)?;
+        self.record = updated;
+        Ok(true)
     }
 
     /// Replace the push target in one write. An unchanged target skips the write.

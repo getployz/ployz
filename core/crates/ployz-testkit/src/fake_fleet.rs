@@ -762,6 +762,7 @@ impl Fleet {
                         store_version: BTreeMap::new(),
                         rtts: Vec::new(),
                         management_clients: Vec::new(),
+                        passkeys: Vec::new(),
                         telemetry: None,
                         storage: None,
                         upgrade: machine.upgrades.last().cloned(),

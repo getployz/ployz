@@ -36,6 +36,8 @@ pub(super) struct LocalMachineRecordWire {
     #[serde(default)]
     trusted_machines: Vec<ployz_core::authority::Member>,
     #[serde(default)]
+    passkeys: Vec<ployz_core::authority::TrustedPasskey>,
+    #[serde(default)]
     membership_cluster: Option<ployz_core::SealingPublicKey>,
     #[serde(default)]
     enrollment: Option<ployz_core::EnrollRequest>,
@@ -57,6 +59,7 @@ impl TryFrom<LocalMachineRecordWire> for LocalMachineRecord {
         record.device_slots_vetted = wire.device_slots_vetted;
         record.device_enforcement = wire.device_enforcement;
         record.trusted_machines = wire.trusted_machines;
+        record.passkeys = wire.passkeys;
         record.membership_cluster = wire.membership_cluster;
         record.enrollment = wire.enrollment;
         Ok(record)

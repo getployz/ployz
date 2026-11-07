@@ -483,6 +483,18 @@ pub enum DeviceSet {
     NotPresent { code: DeviceCode },
 }
 
+/// Approve a passkey on this Machine, or remove one, at Full scope only. The Machine
+/// records who approved it from its own view of the caller, never from the request.
+///
+/// A passkey only approves workflows: it gets no Management Client slot, so it never
+/// connects. Strict for the same reason as [`SetManagementClientRequest`].
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
+pub enum SetPasskeyRequest {
+    Approve { passkey: crate::authority::Passkey },
+    Remove { code: DeviceCode },
+}
+
 /// Where this Machine's observe process pushes crash events, or `None` to stop pushing.
 ///
 /// Strict for the same reason as [`SetManagementClientRequest`].
@@ -2619,7 +2631,7 @@ mod streaming_routing_tests {
     }
 
     #[test]
-    fn only_exec_set_device_and_the_recovery_code_routes_need_full_scope() {
+    fn only_exec_device_and_passkey_changes_and_the_recovery_code_routes_need_full_scope() {
         assert_eq!(
             crate::rpc_catalog!(full_scope_routes),
             [
@@ -2627,6 +2639,7 @@ mod streaming_routing_tests {
                 "RecoverSealingKey",
                 "SetDevice",
                 "SetDeviceEnforcement",
+                "SetPasskey",
                 "Exec"
             ]
         );

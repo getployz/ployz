@@ -632,6 +632,7 @@ impl FakeMachine for JoinDaemon {
                 .clone(),
             store_version: Default::default(),
             rtts: Vec::new(),
+            passkeys: Vec::new(),
             management_clients: self
                 .inner
                 .cloud_managed

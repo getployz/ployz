@@ -15,10 +15,11 @@ use ployz_core::{
     REMOVE_VOLUME_CAPABILITY, REQUEST_MACHINE_UPGRADE_CAPABILITY, RESTART_APPROVAL_CAPABILITY,
     RETAINED_ENV_CAPABILITY, RUNTIME_WATCH_CAPABILITY, Rpc, SEED_VOLUME_CAPABILITY,
     SELECT_ENDPOINT_CAPABILITY, SET_DEVICE_CAPABILITY, SET_DEVICE_ENFORCEMENT_CAPABILITY,
-    SET_MANAGEMENT_CLIENT_CAPABILITY, SET_PUSH_TARGET_CAPABILITY, SET_VOLUME_COPY_CAPABILITY,
-    SET_VOLUME_SIZE_CAPABILITY, SHARE_SEALING_KEY_CAPABILITY, TAIL_LOGS_CAPABILITY,
-    UPDATE_CONTAINER_LIMITS_CAPABILITY, UPDATE_MACHINE_CAPABILITY, UPGRADE_EXACT_CAPABILITY,
-    VOLUME_FLOOR_CAPABILITY, VOLUME_SHRINK_CAPABILITY, WRAP_SEALING_KEY_CAPABILITY, op,
+    SET_MANAGEMENT_CLIENT_CAPABILITY, SET_PASSKEY_CAPABILITY, SET_PUSH_TARGET_CAPABILITY,
+    SET_VOLUME_COPY_CAPABILITY, SET_VOLUME_SIZE_CAPABILITY, SHARE_SEALING_KEY_CAPABILITY,
+    TAIL_LOGS_CAPABILITY, UPDATE_CONTAINER_LIMITS_CAPABILITY, UPDATE_MACHINE_CAPABILITY,
+    UPGRADE_EXACT_CAPABILITY, VOLUME_FLOOR_CAPABILITY, VOLUME_SHRINK_CAPABILITY,
+    WRAP_SEALING_KEY_CAPABILITY, op,
 };
 
 /// Capability constants are generated from the catalog, so a typo would stay
@@ -70,6 +71,7 @@ fn catalogued_capabilities_keep_stable_spellings() {
             SET_DEVICE_ENFORCEMENT_CAPABILITY,
             "ployz.machine.set-device-enforcement.v2",
         ),
+        (SET_PASSKEY_CAPABILITY, "ployz.machine.set-passkey.v1"),
         (
             RESTART_APPROVAL_CAPABILITY,
             "ployz.restart.device-approval.v2",
@@ -160,6 +162,7 @@ fn advertised_capability_groups_match_the_frozen_catalog() {
             "ployz.machine.set-device.v1",
             "ployz.machine.set-push-target.v1",
             "ployz.machine.set-device-enforcement.v2",
+            "ployz.machine.set-passkey.v1",
             "ployz.network.select-endpoint.v1",
             "ployz.machine.list.v1",
             "ployz.machine.update.v1",
@@ -347,6 +350,10 @@ const ABOVE_FLOOR: &[(&str, &str)] = &[
     (
         "ployz.machine.set-device-enforcement.v2",
         "gated: `ployz device enforce` checks each Machine's contract first, names a Server whose daemon lacks it as missing and exits partial",
+    ),
+    (
+        "ployz.machine.set-passkey.v1",
+        "gated: `ployz device approve --passkey` and `device rm` check each Machine's contract first, name a Server whose daemon lacks it as missing and exit partial",
     ),
     (
         "ployz.restart.device-approval.v2",

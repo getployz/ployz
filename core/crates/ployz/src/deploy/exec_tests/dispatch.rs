@@ -611,6 +611,7 @@ async fn removal_sent(purpose: ployz_core::RemoveContainerPurpose) -> Vec<Contai
                     | RpcRequestBody::PendingJoins(_)
                     | RpcRequestBody::ApproveJoin(_)
                     | RpcRequestBody::SetDeviceEnforcement(_)
+                    | RpcRequestBody::SetPasskey(_)
                     | RpcRequestBody::SelectEndpoint(_)
                     | RpcRequestBody::ListMachines(_)
                     | RpcRequestBody::UpdateMachine(_)
