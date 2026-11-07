@@ -70,15 +70,19 @@ describe("promptReason", () => {
     expect(promptReason(null, production, "restart", now)).toBe("first");
     expect(promptReason(session(production, now - 1), production, "restart", now)).toBe("expired");
     const fixApi = { ...production, environmentId: "env-fix-api", environmentName: "fix-api", namespace: "fix-api" };
-    expect(promptReason(session(fixApi, now + 600_000), production, "restart", now)).toBe("scope");
-    expect(promptReason(session(production, now + 600_000), production, "restart", now)).toBeNull();
+    expect(promptReason(session(fixApi, now + 1_800_000), production, "restart", now)).toBe("scope");
+    expect(promptReason(session(production, now + 1_800_000), production, "restart", now)).toBeNull();
   });
 
-  it("prompts for a Server or an action the grant doesn't name, and in a session's last minute", () => {
-    const live = session(production, now + 600_000);
+  it("prompts for a Server or an action the grant doesn't name", () => {
+    const live = session(production, now + 1_800_000);
     expect(promptReason(live, { ...production, machines: ["33333333333333333333333333333333"] }, "restart", now)).toBe("scope");
     expect(promptReason(live, production, "stop", now)).toBe("scope");
-    expect(promptReason(session(production, now + 59_000), production, "restart", now)).toBe("expired");
+  });
+
+  it("prompts again once less than one approval's 15 minutes is left, so no approval is cut short", () => {
+    expect(promptReason(session(production, now + 15 * 60_000 - 1), production, "restart", now)).toBe("expired");
+    expect(promptReason(session(production, now + 15 * 60_000), production, "restart", now)).toBeNull();
   });
 });
 
@@ -86,12 +90,13 @@ describe("restartScope", () => {
   const held = { kind: "held", public_key: production.cluster };
   const environment = { environmentId: "env-production", environmentName: "production", namespace: "production" };
 
-  it("names the copies' Cluster and every Server holding its key, once a host enforces", () => {
+  it("names the copies' Cluster and the Servers in it that run the Environment, once a host enforces", () => {
     const result = restartScope(environment, [{ machineId: "22222222222222222222222222222222" }], [
       { id: "22222222222222222222222222222222", sealing: held, deviceEnforcement: true },
       { id: "11111111111111111111111111111111", sealing: held },
       { id: "33333333333333333333333333333333", sealing: { kind: "held", public_key: "other" } },
-    ]);
+      { id: "44444444444444444444444444444444", sealing: held },
+    ], ["11111111111111111111111111111111", "22222222222222222222222222222222", "33333333333333333333333333333333"]);
     expect(result).toEqual({
       enforced: true,
       scope: { ...environment, cluster: production.cluster, machines: ["11111111111111111111111111111111", "22222222222222222222222222222222"] },
@@ -99,7 +104,7 @@ describe("restartScope", () => {
   });
 
   it("asks nothing of Servers that don't enforce", () => {
-    expect(restartScope(environment, [{ machineId: "m" }], [{ id: "m", sealing: held, deviceEnforcement: false }]).enforced).toBe(false);
+    expect(restartScope(environment, [{ machineId: "m" }], [{ id: "m", sealing: held, deviceEnforcement: false }], ["m"]).enforced).toBe(false);
   });
 });
 

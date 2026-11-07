@@ -11,6 +11,7 @@ import { type PloyzSdkError, refusedApproval, rpcErrorCode } from "#/modules/run
 import {
   type ActiveServiceActState,
   alreadyThere,
+  copiesIn,
   endOf,
   enforcesIn,
   legOf,
@@ -186,12 +187,34 @@ const writeLegs = (request: ActRequest, runId: string, legs: ServiceActLeg[]) =>
     .pipe(Effect.map((rows) => rows.length > 0));
 
 /**
- * Whether a Server running the Environment's containers reports that it enforces, so a restart sent without the
- * browser's approvals would only be refused there. Cloud can't tell when it can't read the Servers, and sends it anyway.
+ * Whether a Server running a copy of the Service reports that it enforces, so a restart sent without approvals would
+ * only be refused there. Cloud can't tell when it can't read the Servers, and sends it anyway.
  */
-export const environmentEnforces = Effect.fn("ServiceAct.enforces")(function* (organizationId: string, namespace: string) {
+export const serviceEnforces = Effect.fn("ServiceAct.enforces")(function* (organizationId: string, service: { readonly namespace: string; readonly runtime: string }) {
   const frame = yield* firstRuntimeFrame(organizationId).pipe(Effect.orElseSucceed(() => null));
-  return frame !== null && enforcesIn(frame, namespace);
+  return frame !== null && enforcesIn(frame, `${service.namespace}/${service.runtime}`);
+});
+
+/**
+ * What a browser needs to approve a restart of the Service: its copies, the Servers, and which of them run the
+ * Environment. Null when Cloud can't read the Servers.
+ */
+export const restartTarget = Effect.fn("ServiceAct.restartTarget")(function* (
+  organizationId: string,
+  service: { readonly namespace: string; readonly runtime: string },
+) {
+  const frame = yield* firstRuntimeFrame(organizationId).pipe(Effect.orElseSucceed(() => null));
+  if (frame === null) return null;
+  return {
+    runtime: service.runtime,
+    copies: copiesIn(frame, `${service.namespace}/${service.runtime}`).map((copy) => ({ id: copy.container_id, machineId: copy.machine_id })),
+    machines: frame.machines.map(({ machine }) => ({
+      id: machine.id,
+      sealing: machine.runtime.sealing ?? null,
+      deviceEnforcement: machine.runtime.device_enforcement ?? null,
+    })),
+    environmentMachines: [...new Set(frame.containers.filter((container) => container.namespace === service.namespace).map((container) => container.machine_id))],
+  };
 });
 
 export const actOnContainer = Effect.fn("ServiceAct.leg")(function* (
@@ -240,7 +263,7 @@ export const actOnContainer = Effect.fn("ServiceAct.leg")(function* (
         error instanceof ServerLacks
           ? ["failed", `${leg.server} needs a newer Ployz to ${side} it.`] as const
           : refusedApproval(error)
-          ? ["failed", `${leg.server} refused to ${side} it without an approval it trusts.`] as const
+          ? ["failed", `${leg.server} didn't accept your approval.`] as const
           : rpcErrorCode(error) === "unavailable"
           ? ["unknown", `${leg.server} didn't answer.`] as const
           : ["failed", `${leg.server} couldn't ${side} it.`] as const,

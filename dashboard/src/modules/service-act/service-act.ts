@@ -110,14 +110,25 @@ export const legOf = (leg: ServiceActLeg): Leg => ({
   reason: leg.reason,
 });
 
-/** The parts of a Runtime Watch frame that say which Servers run an Environment and whether they enforce. */
+type FrameContainer = { readonly container_id: string; readonly machine_id: string };
+
+/** The parts of a Runtime Watch frame that say which Servers run a Service and whether they enforce. */
 export type EnforcementFrame = {
-  readonly containers: readonly { readonly namespace: string; readonly machine_id: string }[];
+  readonly services: readonly { readonly identity: string; readonly containers: readonly FrameContainer[]; readonly hook_containers: readonly FrameContainer[] }[];
   readonly machines: readonly { readonly machine: { readonly id: string; readonly runtime: { readonly device_enforcement?: boolean | null } } }[];
 };
 
-/** Whether a Server running a container in `namespace` reports that it enforces. Absent reports claim nothing. */
-export function enforcesIn(frame: EnforcementFrame, namespace: string) {
-  const hosts = new Set(frame.containers.filter((container) => container.namespace === namespace).map((container) => container.machine_id));
+/** The copies the Servers report of the Service `identity` (`namespace/runtime`), its hooks included. */
+export function copiesIn(frame: Pick<EnforcementFrame, "services">, identity: string) {
+  const service = frame.services.find((candidate) => candidate.identity === identity);
+  return service === undefined ? [] : [...service.containers, ...service.hook_containers];
+}
+
+/**
+ * Whether a Server running a copy of the Service `identity` reports that it enforces, as the browser decides before it
+ * prompts. Servers that run only other Services, and absent reports, claim nothing.
+ */
+export function enforcesIn(frame: EnforcementFrame, identity: string) {
+  const hosts = new Set(copiesIn(frame, identity).map((copy) => copy.machine_id));
   return frame.machines.some(({ machine }) => hosts.has(machine.id) && machine.runtime.device_enforcement === true);
 }

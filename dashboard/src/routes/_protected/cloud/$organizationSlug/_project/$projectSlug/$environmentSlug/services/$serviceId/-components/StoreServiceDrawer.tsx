@@ -134,8 +134,8 @@ export function StoreServiceDrawer({ params }: { params: { organizationSlug: str
   const uptimeEnabled = useUptimeEnabled(organizationSlug);
   const navigate = useNavigate({ from: SERVICE_ROUTE_TO });
   const service = services.find((candidate) => candidate.id === params.serviceId);
-  const act = useServiceAct({ organizationSlug, environmentId, environmentName: params.environmentSlug, namespace, service: service?.name ?? "" });
   const asks = useProtectedAsk(organizationSlug, store);
+  const act = useServiceAct({ organizationSlug, environmentId, environmentName: params.environmentSlug, namespace, service: service?.name ?? "", asks });
   const shownName = useStorePendingName(organizationSlug, store, "service", service?.name ?? "");
   const arriving = useStorePendingNodes(organizationSlug, store).arriving.some((ghost) => ghost.id === params.serviceId);
   // A stale link, or removed while open (from the CLI; the drawer's own Delete closes it).

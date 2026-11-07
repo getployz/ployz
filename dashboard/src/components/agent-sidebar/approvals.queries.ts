@@ -1,6 +1,13 @@
 import { queryOptions, type QueryClient } from "@tanstack/react-query";
+import type { Signed } from "@ployz/sdk";
+import { restartApprovals } from "#/modules/approval-session/approval-prompt";
 import type { ApprovalDecision } from "#/modules/approvals/approvals";
-import { decideApprovalServerFn, getApprovalServerFn, listPendingApprovalsServerFn } from "#/modules/approvals/approvals.functions";
+import {
+  approvalRestartTargetServerFn,
+  decideApprovalServerFn,
+  getApprovalServerFn,
+  listPendingApprovalsServerFn,
+} from "#/modules/approvals/approvals.functions";
 
 export type ApprovalView = Awaited<ReturnType<typeof getApprovalServerFn>>;
 
@@ -38,10 +45,30 @@ export type Decided = ApprovalView;
  * Approve exactly the digest shown, or deny with a reason, as the CLI does. Answers the refusal's message when Cloud
  * says no, such as a plan that changed since the card drew.
  */
-export async function decideApproval(organizationSlug: string, id: string, decision: ApprovalDecision): Promise<{ ok: true; decided: Decided } | { ok: false; message: string }> {
-  const answer = await decideApprovalServerFn({ data: { organizationSlug, id, decision } }).catch(() => null);
+export async function decideApproval(
+  organizationSlug: string,
+  id: string,
+  decision: ApprovalDecision,
+  approvals?: Readonly<Record<string, Signed>>,
+): Promise<{ ok: true; decided: Decided } | { ok: false; message: string }> {
+  const answer = await decideApprovalServerFn({ data: { organizationSlug, id, decision, approvals } }).catch(() => null);
   if (answer === null) return { ok: false, message: "Cloud didn't take that answer. Try again." };
   return answer.ok ? { ok: true, decided: answer.approval } : answer;
+}
+
+/** Whether approving `approval` runs a restart, which Servers that enforce take only with the approver's passkey. */
+export const runsRestart = (approval: Pick<ApprovalView, "review">) =>
+  "operation" in approval.review && approval.review.operation.verb === "restart";
+
+/**
+ * The approvals a restart ask needs once approved, made in this browser after one passkey prompt. Undefined when it
+ * needs none; null when the person cancels.
+ */
+export async function approverApprovals(organizationSlug: string, id: string) {
+  const target = await approvalRestartTargetServerFn({ data: { organizationSlug, id } });
+  if (target === null) return undefined;
+  const { environmentId, environmentName, namespace, ...rest } = target;
+  return restartApprovals({ environment: { environmentId, environmentName, namespace }, ...rest });
 }
 
 /** Show a decision at once, then reread every approval: the badge and the waiting list drop it. */

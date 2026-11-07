@@ -15,8 +15,8 @@ import { actAlert, actBadge } from "#/modules/service-act/service-act-view";
 import { refetchApprovals } from "#/components/agent-sidebar/approvals.queries";
 import { actServiceServerFn } from "#/modules/service-act/service-act.functions";
 import { serviceActKeys, useLatestServiceAct } from "#/modules/service-act/service-act.queries";
-import { ensureApproval } from "#/modules/approval-session/approval-prompt";
-import { approveRestart, restartScope } from "#/modules/approval-session/approval-session";
+import { restartApprovals } from "#/modules/approval-session/approval-prompt";
+import { useEnvironmentMachines } from "#/providers/runtime-provider";
 import { useRuntimeLens } from "#/modules/runtime/use-runtime-lens";
 import type { StoreService } from "./StoreServiceDrawer";
 import { useServiceRuntime } from "./useServiceRuntime";
@@ -30,6 +30,8 @@ type Subject = {
   readonly environmentName: string;
   readonly namespace: string | null;
   readonly service: string;
+  /** The Environment is Protected and the person can't protect it: an owner or admin approves, from their own browser. */
+  readonly asks: boolean;
 };
 
 /** What a press acts on as the Servers report it: the Engine's Service name, its copies, and the Servers. */
@@ -38,16 +40,18 @@ export type Press = ReturnType<typeof usePress>;
 export function usePress(state: StoreService, namespace: string | null) {
   const runtime = useServiceRuntime(state, namespace);
   const { machines } = useRuntimeLens(state.organizationSlug);
+  const environmentMachines = useEnvironmentMachines(namespace);
   return {
     runtimeService: runtime === null ? null : runtime.identity.slice(runtime.identity.indexOf("/") + 1),
     copies: runtime === null ? [] : [...runtime.containers, ...runtime.hookContainers],
     machines,
+    environmentMachines,
   };
 }
 
 /**
  * The request id is minted here so a retried POST admits the same run instead of a second one. On Servers that enforce,
- * a restart first asks for a passkey session, once an hour, and carries one approval per copy.
+ * a restart first asks for a passkey session and carries one approval per copy, unless an owner must approve it.
  */
 export function useServiceAct(subject: Subject) {
   const queryClient = useQueryClient();
@@ -65,12 +69,11 @@ export function useServiceAct(subject: Subject) {
     return () => clearTimeout(timer);
   }, [requested]);
 
-  const approvalsFor = async (verb: ServiceVerb, press: Press) => {
-    if (verb !== "restart" || subject.namespace === null || press.runtimeService === null) return undefined;
-    const { enforced, scope } = restartScope({ ...subject, namespace: subject.namespace }, press.copies, press.machines);
-    if (!enforced || scope === null) return undefined;
-    if (!(await ensureApproval(scope, "restart"))) return null;
-    return approveRestart(press.runtimeService, press.copies.map((copy) => ({ machine: copy.machineId, container: copy.id })));
+  // A press an owner must approve asks nothing of this browser: the owner's passkey approves it with the ask.
+  const approvalsFor = (verb: ServiceVerb, press: Press) => {
+    if (verb !== "restart" || subject.asks || subject.namespace === null || press.runtimeService === null) return undefined;
+    const environment = { environmentId, environmentName: subject.environmentName, namespace: subject.namespace };
+    return restartApprovals({ environment, runtime: press.runtimeService, copies: press.copies, machines: press.machines, environmentMachines: press.environmentMachines });
   };
 
   const act = async (verb: ServiceVerb, press: Press) => {
@@ -103,7 +106,7 @@ export function useServiceAct(subject: Subject) {
   };
 
   const pending = requested !== null && !arrived ? requested.verb : null;
-  return { badge: actBadge(latest, pending), alert: pending === null ? actAlert(latest) : null, act, environmentId: subject.environmentId };
+  return { badge: actBadge(latest, pending), alert: pending === null ? actAlert(latest) : null, act };
 }
 
 export type ServiceAct = ReturnType<typeof useServiceAct>;

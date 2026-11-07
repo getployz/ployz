@@ -77,21 +77,34 @@ describe("progressOf", () => {
 });
 
 describe("enforcesIn", () => {
+  const copy = (machine: string) => ({ container_id: `c-${machine}`, machine_id: machine });
   const frame = (enforcement: boolean | null | undefined): EnforcementFrame => ({
-    containers: [{ namespace: "shop", machine_id: "m-a" }, { namespace: "other", machine_id: "m-b" }],
+    services: [
+      { identity: "shop/web", containers: [copy("m-a")], hook_containers: [] },
+      { identity: "shop/api", containers: [copy("m-b")], hook_containers: [copy("m-c")] },
+    ],
     machines: [
       { machine: { id: "m-a", runtime: enforcement === undefined ? {} : { device_enforcement: enforcement } } },
-      { machine: { id: "m-b", runtime: { device_enforcement: true } } },
+      { machine: { id: "m-b", runtime: { device_enforcement: false } } },
+      { machine: { id: "m-c", runtime: { device_enforcement: true } } },
     ],
   });
 
-  it("asks for an approval when a Server running the Environment's containers enforces", () => {
-    expect(enforcesIn(frame(true), "shop")).toBe(true);
+  it("asks for an approval when a Server running the Service's copies enforces", () => {
+    expect(enforcesIn(frame(true), "shop/web")).toBe(true);
   });
 
-  it("asks nothing when those Servers don't enforce or never said, whatever other Environments' Servers do", () => {
-    expect(enforcesIn(frame(false), "shop")).toBe(false);
-    expect(enforcesIn(frame(null), "shop")).toBe(false);
-    expect(enforcesIn(frame(undefined), "shop")).toBe(false);
+  it("asks nothing when its Servers don't enforce or never said, though another Service's Server in the Environment does", () => {
+    expect(enforcesIn(frame(false), "shop/web")).toBe(false);
+    expect(enforcesIn(frame(null), "shop/web")).toBe(false);
+    expect(enforcesIn(frame(undefined), "shop/web")).toBe(false);
+  });
+
+  it("counts a Server that runs only the Service's hook", () => {
+    expect(enforcesIn(frame(false), "shop/api")).toBe(true);
+  });
+
+  it("asks nothing for a Service no Server reports", () => {
+    expect(enforcesIn(frame(true), "shop/worker")).toBe(false);
   });
 });

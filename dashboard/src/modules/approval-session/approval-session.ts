@@ -12,10 +12,11 @@ import { asBoolean, asFiniteNumber, asRecord, asString } from "#/lib/json";
 
 /** How long one passkey prompt lasts. Servers cap a grant at an hour. */
 export const SESSION_MINUTES = 60;
-/** How long one approval lasts, within its grant. Servers cap it at `validity::MAX_LIFETIME_MILLIS`. */
+/**
+ * How long one approval lasts. Servers cap it at `validity::MAX_LIFETIME_MILLIS`. A session with less than this left
+ * prompts again, so every approval gets its whole window inside the grant and a rolling restart can't outlive it.
+ */
 const APPROVAL_MS = 15 * 60_000;
-/** A session this close to its end prompts again, so an approval never arrives already expired. */
-const ENDING_MS = 60_000;
 
 export const SESSION_FAMILIES = ["restart"] as const satisfies readonly ActionFamily[];
 
@@ -59,7 +60,7 @@ const covers = (session: ApprovalSession, scope: ApprovalScope) =>
 /** Why a press in `scope` must prompt, or null while the session covers it. */
 export function promptReason(session: ApprovalSession | null, scope: ApprovalScope, family: ActionFamily, now = Date.now()): PromptReason | null {
   if (session === null) return "first";
-  if (session.expiresAt - now < ENDING_MS) return "expired";
+  if (session.expiresAt - now < APPROVAL_MS) return "expired";
   if (!covers(session, scope) || !session.families.includes(family)) return "scope";
   return null;
 }
@@ -185,17 +186,17 @@ export type RestartCopy = { readonly machine: string; readonly container: string
 const operationId = () => hex(crypto.getRandomValues(new Uint8Array(16)));
 
 /**
- * One approval per container for a restart of `service`, each signed by the session's browser key and lasting at most
- * 15 minutes inside the grant. Keyed by container ID, as Cloud forwards them.
+ * One approval per container for a restart of `service`, each signed by the session's browser key and lasting its full
+ * 15 minutes, which the session still covers. Keyed by container ID, as Cloud forwards them.
  */
 export async function approveRestart(service: string, copies: readonly RestartCopy[], now = Date.now()): Promise<Record<string, Signed>> {
-  if (current === null || current.session.expiresAt - now < ENDING_MS) throw new SessionRefused("Confirm it's you again.");
+  if (current === null || current.session.expiresAt - now < APPROVAL_MS) throw new SessionRefused("Confirm it's you again.");
   const { session, grant, publicKey, key } = current;
   const entries = await Promise.all(copies.map(async ({ machine, container }) => {
     const body = canonicalJson({
       cluster: session.scope.cluster,
       container,
-      expires_at: Math.min(now + APPROVAL_MS, session.expiresAt),
+      expires_at: now + APPROVAL_MS,
       issued_at: now,
       kind: "restart",
       machines: [machine],
@@ -218,8 +219,8 @@ type ScopeMachine = {
 
 /**
  * Whether a press on these copies needs an approval, and the scope its grant names: the Cluster the copies' Servers hold
- * the Sealing Key of, and every Server that holds the same key. A Server that never reported enforcement asks nothing,
- * since its own check is the one that counts.
+ * the Sealing Key of, and the Servers in that Cluster that run the Environment. A Server that never reported enforcement
+ * asks nothing, since its own check is the one that counts.
  */
 export type RestartScope = { readonly enforced: boolean; readonly scope: ApprovalScope | null };
 
@@ -227,12 +228,16 @@ export function restartScope(
   environment: { readonly environmentId: string; readonly environmentName: string; readonly namespace: string },
   copies: readonly { readonly machineId: string }[],
   machines: readonly ScopeMachine[],
+  environmentMachines: readonly string[],
 ): RestartScope {
   const hosting = new Set(copies.map((copy) => copy.machineId));
   const hosts = machines.filter((machine) => hosting.has(machine.id));
   const enforced = hosts.some((machine) => machine.deviceEnforcement === true);
   const cluster = hosts.flatMap((machine) => machine.sealing?.kind === "held" && machine.sealing.public_key ? [machine.sealing.public_key] : [])[0];
   if (cluster === undefined) return { enforced, scope: null };
-  const members = machines.filter((machine) => machine.sealing?.kind === "held" && machine.sealing.public_key === cluster).map((machine) => machine.id);
+  const running = new Set(environmentMachines);
+  const members = machines
+    .filter((machine) => running.has(machine.id) && machine.sealing?.kind === "held" && machine.sealing.public_key === cluster)
+    .map((machine) => machine.id);
   return { enforced, scope: { ...environment, cluster, machines: [...new Set([...members, ...hosting])].sort() } };
 }

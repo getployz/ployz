@@ -258,6 +258,15 @@ const interrupts = (input: {
   };
 };
 
+/** Whether this stop or restart waits for someone who can protect its Protected Environment, rather than running. */
+export const asksProtector = Effect.fn("Operations.asksProtector")(function* (
+  caller: Caller,
+  input: { readonly environmentId: string; readonly project: string; readonly environment: string; readonly verb: ServiceVerb },
+) {
+  if (input.verb === "start" || protectorOnly(caller, input.environment) === null) return false;
+  return yield* environmentProtected(caller.organization.id, input.project, input.environmentId);
+});
+
 /**
  * A stop or restart in a Protected Environment by someone who can't protect it waits for someone who can, even from
  * the dashboard, which keeps what to run as its asker once approved.
@@ -267,8 +276,7 @@ const guarded = Effect.fn("Operations.guarded")(function* (
   input: { readonly environmentId: string; readonly project: string; readonly environment: string; readonly service: string; readonly verb: ServiceVerb },
   asked: OperationAsked,
 ) {
-  if (input.verb === "start" || protectorOnly(caller, input.environment) === null) return asked;
-  if (!(yield* environmentProtected(caller.organization.id, input.project, input.environmentId))) return asked;
+  if (input.verb === "start" || !(yield* asksProtector(caller, input))) return asked;
   const apply = caller.via === "dashboard" ? { apply: { environmentId: input.environmentId, service: input.service, verb: input.verb } } : {};
   return { ...asked, protected: input.environment, ...apply } satisfies OperationAsked;
 });
