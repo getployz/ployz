@@ -11,7 +11,7 @@ Engine PRs land before Cloud PRs, in this order. E0, E1, E2, E3, E4, C1, C2, C3,
 
 One box is one unit of work. Every box names the evidence that checks it. A nested box is a sub-step of the box above it. Check a box only when its evidence exists, a file, a log line, a screenshot, a test run, or a SHA. The body is a how-to. The appendices explain and record.
 
-`<plugin root>` is `/home/codex/.claude/plugins/cache/t3-pstack/t3-pstack/2.2.1`. Paths without a leading slash are relative to the repo root.
+`<plugin root>` is the installed t3-pstack plugin's directory, the one that holds its `skills/` and `agents/`. Paths without a leading slash are relative to the repo root.
 
 The program runs `<plugin root>/skills/poteto-mode/playbooks/autopilot-stack.md`. Owners stop every PR at verified and green. The operator lands every PR. No owner merges.
 
@@ -51,7 +51,7 @@ Tests alone are not sufficient verification. A PR is verified only when its unit
   - [ ] C3 after C2.
   - [ ] C4 after E4 and C1.
   - [ ] C5 after C2 and C4.
-- [ ] Hold the file boundaries. E0 touches only `scripts/verify-cluster` and `scripts/verify/**`. E1 to E4 touch only `core/**`, `docs/user/**`, `core/CONTEXT.md`, and `core/DESIGN.md`. C1 to C5 touch only `dashboard/**`, `docs/user/**`, and `dashboard/CONTEXT.md`.
+- [ ] Hold the file boundaries. E0 touches only `core/scripts/verify-cluster`, `core/scripts/verify/**`, and `.claude/skills/verify-server/SKILL.md`. E1 to E4 touch only `core/**`, `docs/user/**`, `core/CONTEXT.md`, and `core/DESIGN.md`. C1 to C5 touch only `dashboard/**`, `docs/user/**`, and `dashboard/CONTEXT.md`.
 - [ ] Hold the review gate. E2, E3, E4, C1, C2, C3, C4, and C5 change an interaction. They wait for the operator's review in chat with screenshots and a video before the operator lands them.
 - [ ] Each PR body names every `core/DESIGN.md` bet it touches and the choice it changed, per `AGENTS.md`. Each engine PR body argues the Stable promise for its new route and capability.
 
@@ -61,7 +61,7 @@ Tests alone are not sufficient verification. A PR is verified only when its unit
 - [ ] Open the PR ready, never draft, per **Opening a PR**. Use the run's built-in PR tool when it has one, else `origin pr create --status open --base <base-branch>` or `gh pr create --base <base-branch>` according to the resolved forge. A stack child targets its parent branch.
 - [ ] Run the repo's lint and typecheck once before the PR-facing push. Push with hooks on. Engine PRs run `cargo fmt --check` and `cargo clippy -p <crate>` for the crates they touch. Cloud PRs run `pnpm typecheck` and `pnpm lint` in `dashboard/`. Never run the full suite locally.
 - [ ] Run `/deslop` before each commit and `/no-comments` before review.
-- [ ] Cloud PRs and CLI PRs run the `ui-copy` skill at `.claude/skills/ui-copy/SKILL.md` over every user-facing string they add or change, before review.
+- [ ] Every PR, E0 to E4 and C1 to C5, runs the `ui-copy` skill at `.claude/skills/ui-copy/SKILL.md` before review, over every user-facing string it adds or changes. That covers CLI output and help, `ployz status` lines, refusal and error text, Approval cards and their terminal prompts, published-command descriptions that agents read, and `docs/user`. The PR body lists the strings it rewrote.
 - [ ] Run `/interrogate` with the `interrogate reviewers` panel before opening each PR, per poteto-mode.
 - [ ] Triage every Bugbot and security-reviewer comment per `../references/bugbot-triage.md`.
 - [ ] Rebase onto current trunk before the code-ready report and babysit. Keep that merge base in fix rounds. Rebase again only at merge prep, on a `git merge-tree` conflict with trunk, on a CI failure that comes from a change on trunk, or when a known concurrent change to the same files lands.
@@ -79,10 +79,10 @@ Tests alone are not sufficient verification. A PR is verified only when its unit
 Each live lane runs in its own worktree at the PR head. Engine lanes drive real Machines through verify-server. Cloud lanes drive the dashboard through verify-dashboard.
 
 - [ ] `git fetch origin <head-branch> && git checkout <head SHA>`.
-- [ ] Engine lanes. Run `run=$(scripts/verify-cluster up --machines 2)`, then `scripts/verify-cluster doctor "$run"`. Pre-pull the pinned pause, cloudflared, and tailscale digests with `exec` before any timed step.
+- [ ] Engine lanes. Run `run=$(core/scripts/verify-cluster up --machines 2)`, then `core/scripts/verify-cluster doctor "$run"`. Pre-pull the pinned pause, cloudflared, and tailscale digests with `exec` before any timed step.
 - [ ] Cloud lanes. Run `SERVERS=1 scripts/verify/up.sh` in `dashboard/`, wait for its ready line, then drive the browser with agent-browser.
-- [ ] Deliver input only through `scripts/verify-cluster cli`, `scripts/verify-cluster exec`, and agent-browser. Read-only diagnostics are `docker inspect`, `ss -ltn`, `journalctl -u ployz`, `dig`, and `ployz status --json`.
-- [ ] Tear down with `scripts/verify-cluster down "$run"` or `scripts/verify/down.sh`. A Boat sandbox stops after one hour, so start lanes that wait on operator route approvals last.
+- [ ] Deliver input only through `core/scripts/verify-cluster cli`, `core/scripts/verify-cluster exec`, and agent-browser. Read-only diagnostics are `docker inspect`, `ss -ltn`, `journalctl -u ployz`, `dig`, and `ployz status --json`.
+- [ ] Tear down with `core/scripts/verify-cluster down "$run"` or `scripts/verify/down.sh` in `dashboard/`. A Boat sandbox stops after one hour, so start lanes that wait on operator route approvals last.
 - [ ] Save every screenshot to `/tmp/swarm-<pr-id>/worker-<n>/<slug>.png` and every terminal transcript to `/tmp/swarm-<pr-id>/worker-<n>/<slug>.txt`, and return the paths with the report.
 
 ## Add a joining Machine to a verify run (E0)
@@ -91,7 +91,7 @@ Each live lane runs in its own worktree at the PR head. Engine lanes drive real 
 
 **Files.**
 
-- [ ] Edit `scripts/verify-cluster`.
+- [ ] Edit `core/scripts/verify-cluster`.
 - [ ] Edit `.claude/skills/verify-server/SKILL.md`.
 
 **Build.**
@@ -101,12 +101,12 @@ Each live lane runs in its own worktree at the PR head. Engine lanes drive real 
 
 **You see.**
 
-- [ ] `scripts/verify-cluster add "$run"` prints `machine-3`, and `scripts/verify-cluster cli "$run" -- server ls` lists three Machines.
+- [ ] `core/scripts/verify-cluster add "$run"` prints `machine-3`, and `core/scripts/verify-cluster cli "$run" -- server ls` lists three Machines.
 
 **Verify, unit.** Tests alone are not sufficient verification. A PR is verified only when its unit, live, and perf boxes are all checked.
 
-- [ ] `shellcheck scripts/verify-cluster` reports nothing new. Run `shellcheck scripts/verify-cluster`.
-- [ ] `scripts/verify-cluster add --help` prints usage and exits 0. Run `scripts/verify-cluster add --help`.
+- [ ] `shellcheck core/scripts/verify-cluster` reports nothing new. Run `shellcheck core/scripts/verify-cluster`.
+- [ ] `core/scripts/verify-cluster add --help` prints usage and exits 0. Run `core/scripts/verify-cluster add --help`.
 
 **Verify, live.** Tests alone are not sufficient verification. A PR is verified only when its unit, live, and perf boxes are all checked. Ten lanes on `claudeAgent/claude-opus-5-5` at the PR head, per the boot recipe.
 
@@ -817,14 +817,14 @@ Each live lane runs in its own worktree at the PR head. Engine lanes drive real 
 
 ## Appendix A. Prototype evidence
 
-Each question below was settled by a run. The artifacts live in `/tmp/tunnel-proto/` and are summarized in `docs/agents/design/cluster-ingress/design.md`.
+Each question below was settled by a run. The run artifacts stayed on the machine that ran them. `docs/agents/design/cluster-ingress/design.md` summarizes them.
 
 - Named-tunnel connectors share one remote config, give no load spread, and fail over in about five seconds when one dies. A dead origin behind a live connector returns 502. An http origin loops on redirect. Two-level wildcards fail on a free zone. Quick tunnels are unusable. This was prototype 1 on zenploy.dev, with every tunnel and record deleted afterwards.
-- A connector joined to Caddy's netns strands when Caddy restarts. This was prototype 2, and the review repro is in `t3-b3c10a29/.audit/tunnel-review/docker-output.txt`.
+- A connector joined to Caddy's netns strands when Caddy restarts. This was prototype 2.
 - A pause holder fixes it. The connector survived a Caddy crash, `docker restart`, and remove and recreate, with zero connector restarts.
 - The loopback trust boundary holds. A bridge container could neither reach the loopback listener nor forge `CF-Connecting-IP`.
 - Tailscale as a userspace subnet router serves Postgres, UDP, and internal DNS, and fails over in about 16 seconds with no failback. Linux clients need `--accept-routes`. This was a verify-server run on Boat.
-- The onboarding shape comes from a prototype in the real dashboard, branch `proto/cluster-onboarding-ui` at `e98345aeaa`, with screenshots in `/tmp/cluster-ui-proto/`. Variant A keeps today's first-run card and adds one collapsed Cloudflare disclosure. Variant B, a two-choice Set up your cluster card, made every new user read a choice most don't need and tripled the card's height. Tailscale moved to an Integrations page.
+- The onboarding shape comes from a prototype in the real dashboard. Variant A keeps today's first-run card and adds one collapsed Cloudflare disclosure. Variant B, a two-choice Set up your cluster card, made every new user read a choice most don't need and tripled the card's height. Tailscale moved to an Integrations page.
 
 Still unproven, and owned by the PR named.
 
