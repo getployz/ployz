@@ -1621,7 +1621,10 @@ fn only_the_loopback_peer_may_set_the_client_address_on_the_tunnel_port() {
         .expect("global options block")
         .0;
     let loopback = automatic_site_block(global, "127.0.0.1:8480");
-    assert_eq!(loopback, "trusted_proxies static 127.0.0.1/32 ::1/128");
+    assert_eq!(
+        loopback,
+        "trusted_proxies static 127.0.0.1/32 ::1/128 client_ip_headers CF-Connecting-IP"
+    );
     assert!(
         !global.contains("servers :8480"),
         "a bare port matches no server bound to an address: {global}"

@@ -54,7 +54,7 @@ pub(super) fn servers_options() -> String {
     }
     let _ = write!(
         output,
-        "\tservers {LOOPBACK_BIND}:{LOOPBACK_PORT} {{\n\t\ttrusted_proxies static {LOOPBACK_RANGES}\n\t}}\n"
+        "\tservers {LOOPBACK_BIND}:{LOOPBACK_PORT} {{\n\t\ttrusted_proxies static {LOOPBACK_RANGES}\n\t\tclient_ip_headers CF-Connecting-IP\n\t}}\n"
     );
     output
 }
