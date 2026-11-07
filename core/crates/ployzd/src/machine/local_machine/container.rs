@@ -989,7 +989,8 @@ impl LocalMachine {
     /// Moves no rotation. An In want only re-checks itself before a start.
     async fn ensure_docker(&self, want: ContainerWant) -> Result<EnsuredContainer, Error> {
         if !self.wants_door(&want).await? {
-            return self.ensure_unlocked(want).await;
+            // Boxed so the door check keeps every ensure's future the size it was.
+            return Box::pin(self.ensure_unlocked(want)).await;
         }
         // A stop or remove of a door waits for a doors route under way, so the route
         // never finds the Container it just started gone under it. The work is detached

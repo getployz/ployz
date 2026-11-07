@@ -116,12 +116,15 @@ async fn observe_doors(client: &mut Client) -> Result<Doors, Failure> {
     // A Server that failed its listing may run the Ingress Proxy under an id a fresh one
     // would replace. One that isn't reachable at all is past asking either way.
     if !observed && let Some(failure) = live.containers.failures.first() {
-        return Err(Failure::unavailable(format!(
-            "Server {} didn't list its containers, so which Ingress Proxy the Cluster runs is \
-             unknown: {}",
-            failure.machine_id,
-            crate::ui::row(&failure.error)
-        )));
+        return Err(Failure::caused(
+            RpcErrorCode::Unavailable,
+            format!(
+                "Server {} didn't list its containers, so which Ingress Proxy the Cluster runs is \
+                 unknown.",
+                failure.machine_id
+            ),
+            failure.error.clone(),
+        ));
     }
     Ok(Doors {
         machines: door_machines(&machines),
