@@ -1549,7 +1549,7 @@ pub(super) fn set_command(command: Command) -> Command {
 
 pub(super) fn upgrade_command(command: Command) -> Command {
     base(command, "Upgrade the daemon on explicitly selected Servers, one at a time")
-                .long_about("Upgrade the daemon on explicitly selected Servers, one at a time, stopping at the first failure. When every daemon upgraded and any selected Server holds the ingress role, every Server with that role then brings its Ingress Proxy to the Caddy its new Ployz release pins. Signed in to Cloud without --context or --connect, Cloud runs each upgrade along the Organization's Release Channel; an exact version needs --context.")
+                .long_about("Upgrade the daemon on explicitly selected Servers, one at a time, stopping at the first failure. When every daemon upgraded and any selected Server holds the ingress role, every Server with that role then moves its Ingress Proxy to the Caddy that release ships. Signed in to Cloud without --context or --connect, Cloud runs each upgrade along the Organization's Release Channel; an exact version needs --context.")
                 .arg_required_else_help(true)
                 .arg(
                     positional("version", true)

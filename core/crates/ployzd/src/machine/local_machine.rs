@@ -183,12 +183,9 @@ pub enum Error {
     Cluster(#[from] crate::corrosion::Error),
     #[error(transparent)]
     IngressProxyServiceSpec(#[from] ployz_core::IngressProxyServiceSpecError),
-    #[error(
-        "{} places only the Public Door",
-        ployz_core::SET_INGRESS_DOORS_CAPABILITY
-    )]
+    #[error("this Server opens only the Public Door")]
     UnsupportedDoors,
-    #[error("Ingress door {container_id} is {runtime} after its start")]
+    #[error("Ingress Proxy container {container_id} is {runtime} right after starting")]
     DoorNotRunning {
         container_id: ContainerId,
         runtime: ployz_core::ContainerRuntimeObservation,

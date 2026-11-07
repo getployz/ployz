@@ -1654,9 +1654,9 @@ pub enum Error {
     ContainerNotFound(ContainerId),
     #[error("Docker name '{0}' is occupied by incompatible creation inputs")]
     SlotNameOccupied(String),
-    #[error("no Ingress holder is running on this Machine to join")]
+    #[error("no Ingress Proxy holder is running on this Server")]
     IngressHolderNotRunning,
-    #[error("the spec names a network this daemon does not recognise")]
+    #[error("the spec names a network this Server's Ployz doesn't know")]
     UnrecognizedNetwork,
     #[error("image pull failed")]
     ImagePull(#[source] bollard::errors::Error),

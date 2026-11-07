@@ -379,7 +379,7 @@ images from ghcr.io.
   Docker's default never rotates container logs, so they can fill the disk; see
   [The server's disk is filling up](../troubleshooting/servers.md#the-servers-disk-is-filling-up).
 - **Which Caddy runs?** The one the server's Ployz release ships with. Upgrading Ployz on the
-  server moves its web server to the Caddy the new release pins.
+  server moves its web server to the new release's Caddy.
 - **A server that never joined doesn't hold up the next one.** If a token was used but its server
   never joined, `ployz server ls` lists it as down with no version and warns that it hasn't
   joined and may still be joining. `ployz status` shows the same. Both name

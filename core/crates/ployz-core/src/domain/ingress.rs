@@ -28,7 +28,7 @@ pub fn ingress_upstream(address: ContainerAddress, port: NonZeroU16) -> String {
 
 /// Invalid wiring for a reserved Ingress door identity.
 #[derive(Debug, thiserror::Error)]
-#[error("reserved Ingress door spec matches no canonical Caddy or holder wiring")]
+#[error("this isn't an Ingress Proxy spec Ployz builds")]
 pub struct IngressProxyServiceSpecError;
 
 /// Whether a Machine's Ingress Proxy answers on host ports 80 and 443.

@@ -905,10 +905,7 @@ impl LocalMachine {
                 now: self.container_now(&locator).await?,
                 refusal: ContainerRefusal {
                     reason: ContainerRefusalReason::InvalidIngress,
-                    message: "this Server places its Ingress Proxy through \
-                              ployz.ingress.doors.v1 and builds its own spec; upgrade \
-                              the ployz CLI"
-                        .into(),
+                    message: "upgrade the ployz CLI to change this Server's Ingress Proxy".into(),
                     capability,
                 },
             });
@@ -964,8 +961,7 @@ impl LocalMachine {
                     refusal: ContainerRefusal {
                         reason: ContainerRefusalReason::InvalidIngress,
                         message: format!(
-                            "{message}; this Server places its Ingress Proxy through \
-                             ployz.ingress.doors.v1, upgrade the ployz CLI"
+                            "{message}; upgrade the ployz CLI to change this Server's Ingress Proxy"
                         ),
                         capability,
                     },
