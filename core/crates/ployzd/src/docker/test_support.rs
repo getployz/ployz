@@ -56,6 +56,8 @@ pub(crate) struct FakeDocker {
     pub(crate) restart_after_stop: Arc<AtomicBool>,
     /// Named mode: every start lands, then the process exits at once.
     pub(crate) exit_on_start: Arc<AtomicBool>,
+    /// Named mode: Docker refuses to create a Container of these Service names.
+    pub(crate) refuse_create_of: Arc<Mutex<BTreeSet<String>>>,
     pub(crate) stopped_once: Arc<Mutex<BTreeSet<String>>>,
     /// Named mode: each start of a stopped Container stamps a new `StartedAt`, and a
     /// stop keeps it and stamps `FinishedAt`, as Docker does.
@@ -193,6 +195,17 @@ async fn answer(fake: FakeDocker, method: Method, uri: Uri, body: Bytes) -> Resp
             }
             let id = format!("{}{}", MachineId::random(), MachineId::random());
             let config: serde_json::Value = serde_json::from_slice(&body).unwrap();
+            if config
+                .pointer("/Labels/ployz.service.name")
+                .and_then(serde_json::Value::as_str)
+                .is_some_and(|service| fake.refuse_create_of.lock().unwrap().contains(service))
+            {
+                return (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    Json(serde_json::json!({"message":"cannot create container"})),
+                )
+                    .into_response();
+            }
             // Docker answers the host config beside the config, not inside it.
             let host_config = config.get("HostConfig").cloned().unwrap_or_default();
             containers.insert(name.into(), serde_json::json!({"Id": id, "Name": format!("/{name}"), "Config": config, "HostConfig": host_config, "State":{"Status":"created"}}));

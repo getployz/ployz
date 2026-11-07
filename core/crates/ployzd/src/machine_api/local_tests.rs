@@ -1244,6 +1244,167 @@ mod ingress_doors {
         std::fs::remove_dir_all(data_dir).unwrap();
     }
 
+    fn caddy_create_refused(fake: &FakeDocker) {
+        fake.refuse_create_of
+            .lock()
+            .unwrap()
+            .insert("ingress".into());
+    }
+
+    fn caddy_start_exits(fake: &FakeDocker) {
+        fake.exit_on_start
+            .store(true, std::sync::atomic::Ordering::SeqCst);
+    }
+
+    /// Each door Container on `machine`, holders first, with whether it is at rest.
+    async fn at_rest_by_id(
+        runtime: &crate::docker::ContainerRuntime,
+        machine: &MachineId,
+    ) -> Vec<(ployz_core::ContainerId, bool)> {
+        runtime
+            .door_inventory(machine)
+            .await
+            .unwrap()
+            .iter()
+            .map(|entry| {
+                (
+                    entry.facts.id,
+                    crate::ingress::at_rest(&entry.facts.runtime),
+                )
+            })
+            .collect()
+    }
+
+    #[tokio::test]
+    async fn an_older_clis_deploy_whose_caddy_fails_leaves_the_old_one_stopped() {
+        type Fail = fn(&FakeDocker);
+        let failures: [(&str, Fail); 2] = [
+            ("refused", caddy_create_refused),
+            ("exited", caddy_start_exits),
+        ];
+        for (failure, fail) in failures {
+            let (data_dir, _store, service, fake, runtime) =
+                fake_docker_service_keeping_runtime("ployzd-doors-failed-caddy").await;
+            let machine = service.local.record().id();
+            set_doors(&service, doors_request(), false)
+                .await
+                .unwrap()
+                .unwrap();
+            let doors = runtime.door_inventory(&machine).await.unwrap();
+            let caddy_of = |door| {
+                doors
+                    .iter()
+                    .find(|entry| entry.facts.door == door)
+                    .unwrap()
+                    .facts
+                    .id
+            };
+            let (holder, observed) = (
+                caddy_of(crate::docker::Door::Holder),
+                caddy_of(crate::docker::Door::Proxy),
+            );
+            ensure(
+                &service,
+                json!({"want":{"state":"stopped", "container":{"id":observed}, "drain":0}}),
+            )
+            .await;
+
+            fail(&fake);
+            let reply = ensure(&service, legacy_caddy_want()).await;
+            refused_for_doors(&reply, ContainerRefusalReason::InvalidIngress);
+            assert_eq!(
+                at_rest_by_id(&runtime, &machine).await,
+                vec![(holder, false), (observed, true)],
+                "{failure}: the holder runs and the old Caddy is left stopped, alone"
+            );
+
+            fake.exit_on_start
+                .store(false, std::sync::atomic::Ordering::SeqCst);
+            let restarted = ensure(
+                &service,
+                json!({"want":{"state":"running", "rotation":"pending",
+                               "container":{"existing":{"id":observed}}}}),
+            )
+            .await;
+            assert!(
+                matches!(restarted, EnsuredContainer::Ensured { .. }),
+                "{failure}: the older CLI starts the Caddy it stopped again: {restarted:?}"
+            );
+            std::fs::remove_dir_all(data_dir).unwrap();
+        }
+    }
+
+    /// A port-publishing Caddy from before the holder, as an older daemon placed it.
+    async fn legacy_caddy(
+        service: &MachineService,
+        runtime: &crate::docker::ContainerRuntime,
+    ) -> ployz_core::ContainerId {
+        let record = service.local.record();
+        let machine = record.machine().unwrap();
+        let spec = crate::images::legacy_caddy_for_tests("caddy:2")
+            .to_resolved(proxy_id(), Default::default())
+            .unwrap();
+        let created = runtime
+            .create_for_test(
+                &machine.id,
+                machine.subnet.gateway(),
+                ployz_core::ContainerKind::ServiceContainer,
+                &ployz_core::Namespace::system(),
+                &spec,
+            )
+            .await
+            .unwrap();
+        runtime.start(&created.container_id).await.unwrap();
+        created.container_id
+    }
+
+    #[tokio::test]
+    async fn a_cutover_whose_caddy_fails_brings_the_legacy_caddy_back() {
+        let (data_dir, _store, service, fake, runtime) =
+            fake_docker_service_keeping_runtime("ployzd-doors-cutover").await;
+        let machine = service.local.record().id();
+        let legacy = legacy_caddy(&service, &runtime).await;
+        caddy_create_refused(&fake);
+        let set = set_doors(&service, doors_request(), false)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            set.failure.as_ref().map(|failure| failure.stage),
+            Some(ployz_core::IngressStage::Proxy),
+            "{set:?}"
+        );
+        assert_eq!(set.holder, None, "the new holder is gone: {set:?}");
+        assert_eq!(
+            at_rest_by_id(&runtime, &machine).await,
+            vec![(legacy, false)],
+            "the holder made for the cutover is removed, and the legacy Caddy the route \
+             stopped runs again"
+        );
+
+        ensure(
+            &service,
+            json!({"want":{"state":"stopped", "container":{"id":legacy}, "drain":0}}),
+        )
+        .await;
+        let reply = ensure(&service, legacy_caddy_want()).await;
+        refused_for_doors(&reply, ContainerRefusalReason::InvalidIngress);
+        assert_eq!(
+            at_rest_by_id(&runtime, &machine).await,
+            vec![(legacy, true)],
+            "a legacy Caddy the older CLI stopped stays stopped for its compensation"
+        );
+
+        fake.refuse_create_of.lock().unwrap().clear();
+        let set = set_doors(&service, doors_request(), false)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(set.failure, None, "{set:?}");
+        assert_eq!(set.retired, vec![legacy]);
+        std::fs::remove_dir_all(data_dir).unwrap();
+    }
+
     #[tokio::test]
     async fn a_legacy_deploy_without_the_role_is_refused() {
         let (data_dir, store, service, fake) =

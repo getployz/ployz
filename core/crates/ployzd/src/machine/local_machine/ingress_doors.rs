@@ -2,16 +2,18 @@
 //! network namespace and host ports, and the Caddy that joins it.
 //!
 //! The route reads what Docker has, plans the whole change, then carries it out one
-//! stage at a time. The holder goes first, since the Caddy is created in its network.
-//! A Caddy from before the holder published the ports itself, so it is stopped before
-//! the holder starts and started again when the holder cannot.
+//! stage at a time. Every Container it replaces is stopped first and removed only once
+//! the new holder and Caddy run, so a replacement that fails leaves the old ones to
+//! start again. The holder goes before the Caddy, since the Caddy is created in its
+//! network. A Caddy from before the holder published the ports itself, so it is stopped
+//! before the holder starts.
 
 use std::time::Duration;
 
 use ployz_core::{
     ContainerId, ContainerKind, ContainerRuntimeObservation, DoorChange, DoorOutcome, Gen,
-    IngressDoorsFailure, IngressDoorsSet, IngressStage, Namespace, RpcError, RpcErrorCode,
-    SetIngressDoorsRequest, global_creation_key,
+    IngressDoorsFailure, IngressDoorsSet, IngressStage, Namespace, ResolvedServiceSpec, RpcError,
+    RpcErrorCode, SetIngressDoorsRequest, global_creation_key,
 };
 
 use super::{Error, LocalMachine};
@@ -31,7 +33,7 @@ pub(super) enum HolderStep {
     Keep(ContainerId),
     /// A canonical holder exists at rest.
     Start(ContainerId),
-    Create,
+    Create(Replacing),
 }
 
 /// What the route does with the Caddy.
@@ -43,26 +45,42 @@ pub(super) enum ProxyStep {
     Start(ContainerId),
     /// A canonical Caddy runs in a network the holder no longer has.
     Rejoin(ContainerId),
-    Create,
+    Create(Replacing),
 }
 
-/// A Caddy from before the holder, which publishes the ports itself.
+/// The newest Container of the same door a creation replaces. The old one keeps its
+/// name until the new one runs, so the new one is named for what it replaces.
+pub(super) type Replacing = Option<ContainerId>;
+
+/// A door Container the route replaces.
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub(super) struct LegacyCaddy {
+pub(super) struct Retiree {
     pub(super) id: ContainerId,
+    /// It ran when planned, so a replacement that fails starts it again.
     pub(super) running: bool,
 }
 
 /// The whole change, decided before any effect.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(super) struct DoorPlan {
-    /// Joined Caddys that are not the canonical one, stopped and removed first.
-    pub(super) retire_caddys: Vec<ContainerId>,
-    /// Stopped before the holder starts, removed once it runs.
-    pub(super) legacy: Vec<LegacyCaddy>,
-    pub(super) retire_holders: Vec<ContainerId>,
+    /// Joined Caddys that are not the canonical one.
+    pub(super) retire_caddys: Vec<Retiree>,
+    /// Caddys from before the holder, which publish the ports themselves.
+    pub(super) legacy: Vec<Retiree>,
+    pub(super) retire_holders: Vec<Retiree>,
     pub(super) holder: HolderStep,
     pub(super) proxy: ProxyStep,
+}
+
+impl DoorPlan {
+    /// Every Container the plan replaces, in the order they stop: each Caddy before
+    /// any holder, so none is left in a network that goes.
+    fn retirees(&self) -> impl Iterator<Item = &Retiree> {
+        self.retire_caddys
+            .iter()
+            .chain(&self.legacy)
+            .chain(&self.retire_holders)
+    }
 }
 
 fn usable(entry: &DoorEntry) -> bool {
@@ -80,6 +98,28 @@ fn newest<'entry>(entries: &[&'entry DoorEntry]) -> Option<&'entry DoorEntry> {
             entry.facts.id,
         )
     })
+}
+
+fn retirees(entries: &[&DoorEntry], kept: Option<ContainerId>) -> Vec<Retiree> {
+    entries
+        .iter()
+        .filter(|entry| Some(entry.facts.id) != kept)
+        .map(|entry| Retiree {
+            id: entry.facts.id,
+            running: !entry.facts.at_rest(),
+        })
+        .collect()
+}
+
+/// The newest of `entries` not `kept`. A Container named for replacing it would be
+/// newer still, so no Container holds the name a creation that replaces it takes.
+fn replacing(entries: &[&DoorEntry], kept: Option<ContainerId>) -> Replacing {
+    entries
+        .iter()
+        .filter(|entry| Some(entry.facts.id) != kept)
+        .map(|entry| (entry.facts.created_at, entry.facts.id))
+        .max()
+        .map(|(_, id)| id)
 }
 
 /// Decide the change from the inventory. `fresh_caddy` replaces the canonical Caddy
@@ -104,11 +144,6 @@ pub(super) fn plan_doors(
         .collect::<Vec<_>>();
     let holder = newest(&canonical_holders);
     let holder_id = holder.map(|entry| entry.facts.id);
-    let retire_holders = holders
-        .iter()
-        .filter(|entry| Some(entry.facts.id) != holder_id)
-        .map(|entry| entry.facts.id)
-        .collect();
     let holder_step = match holder {
         Some(entry)
             if matches!(
@@ -120,26 +155,17 @@ pub(super) fn plan_doors(
             HolderStep::Keep(entry.facts.id)
         }
         Some(entry) => HolderStep::Start(entry.facts.id),
-        None => HolderStep::Create,
+        None => HolderStep::Create(replacing(&holders, None)),
     };
 
     let caddys = inventory
         .iter()
         .filter(|entry| entry.facts.door == Door::Proxy)
         .collect::<Vec<_>>();
-    let legacy = caddys
-        .iter()
-        .filter(|entry| entry.observation.resolved_spec.container.network.is_none())
-        .map(|entry| LegacyCaddy {
-            id: entry.facts.id,
-            running: !entry.facts.at_rest(),
-        })
-        .collect();
-    let joined = caddys
+    let (joined, legacy): (Vec<_>, Vec<_>) = caddys
         .iter()
         .copied()
-        .filter(|entry| entry.observation.resolved_spec.container.network.is_some())
-        .collect::<Vec<_>>();
+        .partition(|entry| entry.observation.resolved_spec.container.network.is_some());
     let canonical_caddys = joined
         .iter()
         .copied()
@@ -152,11 +178,6 @@ pub(super) fn plan_doors(
         .collect::<Vec<_>>();
     let caddy = newest(&canonical_caddys).filter(|_| !fresh_caddy);
     let caddy_id = caddy.map(|entry| entry.facts.id);
-    let retire_caddys = joined
-        .iter()
-        .filter(|entry| Some(entry.facts.id) != caddy_id)
-        .map(|entry| entry.facts.id)
-        .collect();
     let proxy_step = match caddy {
         Some(entry) if entry.facts.running() => {
             let stale = match (&holder_step, holder.and_then(|holder| holder.facts.netns)) {
@@ -174,12 +195,12 @@ pub(super) fn plan_doors(
             ProxyStep::Keep(entry.facts.id)
         }
         Some(entry) => ProxyStep::Start(entry.facts.id),
-        None => ProxyStep::Create,
+        None => ProxyStep::Create(replacing(&joined, None)),
     };
     DoorPlan {
-        retire_caddys,
-        legacy,
-        retire_holders,
+        retire_caddys: retirees(&joined, caddy_id),
+        legacy: retirees(&legacy, None),
+        retire_holders: retirees(&holders, holder_id),
         holder: holder_step,
         proxy: proxy_step,
     }
@@ -194,6 +215,27 @@ fn stage_failure(stage: IngressStage, error: &Error) -> IngressDoorsFailure {
         RpcError::caused(RpcErrorCode::Internal, error)
     };
     IngressDoorsFailure { stage, error }
+}
+
+/// A door stage that failed, with the Container it created and could not start.
+struct Failed {
+    error: Error,
+    created: Option<ContainerId>,
+}
+
+impl From<Error> for Failed {
+    fn from(error: Error) -> Self {
+        Self {
+            error,
+            created: None,
+        }
+    }
+}
+
+impl From<crate::docker::Error> for Failed {
+    fn from(error: crate::docker::Error) -> Self {
+        Error::from(error).into()
+    }
 }
 
 impl LocalMachine {
@@ -254,84 +296,112 @@ impl LocalMachine {
         let inventory = containers.door_inventory(&machine_id).await?;
         let plan = plan_doors(&inventory, specs, fresh_caddy);
         let mut set = IngressDoorsSet::default();
-        match self
-            .place_holder(containers, specs, &plan, &mut set.retired)
-            .await
-        {
-            Ok(holder) => set.holder = Some(holder),
-            Err(error) => {
+        let mut stopped = Vec::new();
+        for retiree in plan.retirees() {
+            if let Err(error) = self.stop_retiree(containers, retiree, &mut stopped).await {
+                let error = self.restore(containers, &[], &stopped, error).await;
                 set.failure = Some(stage_failure(IngressStage::Holder, &error));
                 return Ok(set);
             }
         }
+        let (holder, created_holder) = match self.place_holder(containers, specs, &plan).await {
+            Ok(placed) => placed,
+            Err(failed) => {
+                let created = Vec::from_iter(failed.created);
+                let error = self
+                    .restore(containers, &created, &stopped, failed.error)
+                    .await;
+                set.failure = Some(stage_failure(IngressStage::Holder, &error));
+                return Ok(set);
+            }
+        };
+        set.holder = Some(holder);
         match self.place_proxy(containers, specs, &plan).await {
             Ok(proxy) => set.proxy = Some(proxy),
-            Err(error) => set.failure = Some(stage_failure(IngressStage::Proxy, &error)),
+            Err(failed) => {
+                let replaced =
+                    matches!(plan.proxy, ProxyStep::Create(_)) && plan.retirees().next().is_some();
+                let error = if replaced {
+                    // The old Ingress Proxy is still there to come back to, so nothing
+                    // this call made may stay to take its ports or its admin socket.
+                    if created_holder.is_some() {
+                        set.holder = None;
+                    }
+                    let created = failed
+                        .created
+                        .into_iter()
+                        .chain(created_holder)
+                        .collect::<Vec<_>>();
+                    self.restore(containers, &created, &stopped, failed.error)
+                        .await
+                } else {
+                    failed.error
+                };
+                set.failure = Some(stage_failure(IngressStage::Proxy, &error));
+                return Ok(set);
+            }
+        }
+        for retiree in plan.retirees() {
+            match containers.remove(&retiree.id, true, true).await {
+                Ok(()) => set.retired.push(retiree.id),
+                Err(crate::docker::Error::ContainerNotFound(_)) => {}
+                // Stopped and held, it serves nothing, and the next call retires it.
+                Err(error) => tracing::warn!(
+                    container = %retiree.id,
+                    error = %ployz_core::error_chain::inline(&error),
+                    "could not remove a replaced Ingress door"
+                ),
+            }
         }
         Ok(set)
     }
 
+    async fn stop_retiree(
+        &self,
+        containers: &ContainerRuntime,
+        retiree: &Retiree,
+        stopped: &mut Vec<ContainerId>,
+    ) -> Result<(), Error> {
+        self.door_effect()?;
+        match containers.stop(&retiree.id, None, None).await {
+            Ok(()) => {
+                if retiree.running {
+                    stopped.push(retiree.id);
+                }
+                Ok(())
+            }
+            Err(crate::docker::Error::ContainerNotFound(_)) => Ok(()),
+            Err(error) => Err(error.into()),
+        }
+    }
+
+    /// The holder's outcome, and its id when this call created it.
     async fn place_holder(
         &self,
         containers: &ContainerRuntime,
         specs: &DoorSpecs,
         plan: &DoorPlan,
-        retired: &mut Vec<ContainerId>,
-    ) -> Result<DoorOutcome, Error> {
-        // Every Caddy goes before any holder, so none is left in a removed network.
-        for id in plan.retire_caddys.iter().chain(&plan.retire_holders) {
-            self.retire_door(containers, id).await?;
-            retired.push(*id);
-        }
-        let mut stopped_legacy = Vec::new();
-        for legacy in plan.legacy.iter().filter(|legacy| legacy.running) {
-            self.door_effect()?;
-            containers.stop(&legacy.id, None, None).await?;
-            stopped_legacy.push(legacy.id);
-        }
+    ) -> Result<(DoorOutcome, Option<ContainerId>), Failed> {
         let (id, change) = match &plan.holder {
             HolderStep::Keep(id) => (*id, DoorChange::Unchanged),
-            HolderStep::Start(id) => match self.start_door(containers, id).await {
-                Ok(()) => (*id, DoorChange::Started),
-                Err(error) => {
-                    return Err(self
-                        .restore_legacy(containers, &stopped_legacy, error)
-                        .await);
-                }
-            },
-            HolderStep::Create => {
-                let created = match self.create_door(&specs.holder).await {
-                    Ok(created) => created,
-                    Err(error) => {
-                        return Err(self
-                            .restore_legacy(containers, &stopped_legacy, error)
-                            .await);
-                    }
-                };
+            HolderStep::Start(id) => {
+                self.start_door(containers, id).await?;
+                (*id, DoorChange::Started)
+            }
+            HolderStep::Create(replacing) => {
+                let created = self.create_door(&specs.holder, *replacing).await?;
                 if let Err(error) = self.start_door(containers, &created.container_id).await {
-                    // The ports are the legacy Caddy's again, so the holder that could
-                    // not take them must not stay to take them later.
-                    let error = match containers.remove(&created.container_id, true, true).await {
-                        Ok(()) => error,
-                        Err(removal) => Error::Cleanup(format!(
-                            "{}; removing the new holder failed too: {}",
-                            ployz_core::error_chain::inline(&error),
-                            ployz_core::error_chain::inline(&removal),
-                        )),
-                    };
-                    return Err(self
-                        .restore_legacy(containers, &stopped_legacy, error)
-                        .await);
+                    return Err(Failed {
+                        error,
+                        created: Some(created.container_id),
+                    });
                 }
                 (created.container_id, DoorChange::Created)
             }
         };
-        for legacy in &plan.legacy {
-            self.retire_door(containers, &legacy.id).await?;
-            retired.push(legacy.id);
-        }
         let now = containers.inspect_managed(&id, &self.record().id()).await?;
-        Ok(DoorOutcome { now, change })
+        let created = (change == DoorChange::Created).then_some(id);
+        Ok((DoorOutcome { now, change }, created))
     }
 
     async fn place_proxy(
@@ -339,7 +409,7 @@ impl LocalMachine {
         containers: &ContainerRuntime,
         specs: &DoorSpecs,
         plan: &DoorPlan,
-    ) -> Result<DoorOutcome, Error> {
+    ) -> Result<DoorOutcome, Failed> {
         let (id, change) = match &plan.proxy {
             ProxyStep::Keep(id) => (*id, DoorChange::Unchanged),
             ProxyStep::Start(id) => {
@@ -352,9 +422,14 @@ impl LocalMachine {
                 self.start_door(containers, id).await?;
                 (*id, DoorChange::Rejoined)
             }
-            ProxyStep::Create => {
-                let created = self.create_door(&specs.proxy).await?;
-                self.start_door(containers, &created.container_id).await?;
+            ProxyStep::Create(replacing) => {
+                let created = self.create_door(&specs.proxy, *replacing).await?;
+                if let Err(error) = self.start_door(containers, &created.container_id).await {
+                    return Err(Failed {
+                        error,
+                        created: Some(created.container_id),
+                    });
+                }
                 (created.container_id, DoorChange::Created)
             }
         };
@@ -389,21 +464,6 @@ impl LocalMachine {
         Ok(())
     }
 
-    async fn retire_door(
-        &self,
-        containers: &ContainerRuntime,
-        id: &ContainerId,
-    ) -> Result<(), Error> {
-        self.door_effect()?;
-        match containers.stop(id, None, None).await {
-            Ok(()) => {}
-            Err(crate::docker::Error::ContainerNotFound(_)) => return Ok(()),
-            Err(error) => return Err(error.into()),
-        }
-        containers.remove(id, true, true).await?;
-        Ok(())
-    }
-
     async fn start_door(
         &self,
         containers: &ContainerRuntime,
@@ -434,14 +494,20 @@ impl LocalMachine {
 
     async fn create_door(
         &self,
-        spec: &ployz_core::ResolvedServiceSpec,
+        spec: &ResolvedServiceSpec,
+        replacing: Replacing,
     ) -> Result<crate::docker::ContainerCreated, Error> {
         self.door_effect()?;
+        let key = global_creation_key(spec);
+        let key = match replacing {
+            Some(old) => format!("{key}:replace:{old}"),
+            None => key,
+        };
         self.create_container_admitted(
             ContainerKind::ServiceContainer,
             &Namespace::system(),
             spec,
-            Some(global_creation_key(spec)),
+            Some(key),
             None,
             Gen::FIRST,
             ImagePull::Prepared,
@@ -449,18 +515,29 @@ impl LocalMachine {
         .await
     }
 
-    /// Start the legacy Caddys stopped for a holder that then failed, and fold a
-    /// failure of that into `error`.
-    async fn restore_legacy(
+    /// Remove the doors this call `created`, newest first, then start again the ones
+    /// it `stopped` while they ran, holders before the Caddys in their networks. A
+    /// failure of either is folded into `error`.
+    async fn restore(
         &self,
         containers: &ContainerRuntime,
+        created: &[ContainerId],
         stopped: &[ContainerId],
         mut error: Error,
     ) -> Error {
-        for id in stopped {
+        for id in created {
+            if let Err(removal) = containers.remove(id, true, true).await {
+                error = Error::Cleanup(format!(
+                    "{}; removing the new Ingress door {id} failed too: {}",
+                    ployz_core::error_chain::inline(&error),
+                    ployz_core::error_chain::inline(&removal),
+                ));
+            }
+        }
+        for id in stopped.iter().rev() {
             if let Err(restart) = containers.start(id).await {
                 error = Error::Cleanup(format!(
-                    "{}; starting the previous Ingress Proxy {id} again failed: {}",
+                    "{}; starting the previous Ingress door {id} again failed: {}",
                     ployz_core::error_chain::inline(&error),
                     ployz_core::error_chain::inline(&restart),
                 ));
@@ -550,6 +627,13 @@ mod tests {
         entry(id, Door::Proxy, &legacy, 0, runtime)
     }
 
+    fn retiree(id: char, running: bool) -> Retiree {
+        Retiree {
+            id: self::id(id),
+            running,
+        }
+    }
+
     #[test]
     fn an_absent_pair_is_created() {
         assert_eq!(
@@ -558,8 +642,8 @@ mod tests {
                 retire_caddys: vec![],
                 legacy: vec![],
                 retire_holders: vec![],
-                holder: HolderStep::Create,
-                proxy: ProxyStep::Create,
+                holder: HolderStep::Create(None),
+                proxy: ProxyStep::Create(None),
             }
         );
     }
@@ -601,21 +685,23 @@ mod tests {
         );
         assert_eq!(plan.holder, HolderStep::Keep(id('a')));
         assert_eq!(plan.proxy, ProxyStep::Keep(id('b')));
-        assert!(plan.retire_caddys.is_empty());
-        assert!(plan.retire_holders.is_empty());
-        assert!(plan.legacy.is_empty());
+        assert_eq!(plan.retirees().count(), 0);
     }
 
     #[test]
-    fn a_fresh_caddy_replaces_the_canonical_one_first() {
+    fn a_fresh_caddy_is_named_for_the_canonical_one_it_replaces() {
         let plan = plan_doors(
-            &[holder('a', running()), caddy('b', 'a', running())],
+            &[holder('a', running()), caddy('b', 'a', created())],
             &specs(),
             true,
         );
         assert_eq!(plan.holder, HolderStep::Keep(id('a')));
-        assert_eq!(plan.proxy, ProxyStep::Create);
-        assert_eq!(plan.retire_caddys, vec![id('b')]);
+        assert_eq!(plan.proxy, ProxyStep::Create(Some(id('b'))));
+        assert_eq!(
+            plan.retire_caddys,
+            vec![retiree('b', false)],
+            "a Caddy an older Deploy stopped is not started again if the new one fails"
+        );
     }
 
     #[test]
@@ -630,10 +716,17 @@ mod tests {
             &specs(),
             false,
         );
-        assert_eq!(plan.holder, HolderStep::Create);
-        assert_eq!(plan.retire_holders, vec![id('a')]);
-        assert_eq!(plan.retire_caddys, vec![id('b')]);
-        assert_eq!(plan.proxy, ProxyStep::Create);
+        assert_eq!(plan.holder, HolderStep::Create(Some(id('a'))));
+        assert_eq!(plan.retire_holders, vec![retiree('a', true)]);
+        assert_eq!(plan.retire_caddys, vec![retiree('b', true)]);
+        assert_eq!(plan.proxy, ProxyStep::Create(Some(id('b'))));
+        assert_eq!(
+            plan.retirees()
+                .map(|retiree| retiree.id)
+                .collect::<Vec<_>>(),
+            vec![id('b'), id('a')],
+            "the Caddy stops before the holder whose network it is in"
+        );
 
         let mut old = specs();
         old.proxy.container.image = "docker.io/library/caddy:2.11.4".into();
@@ -646,23 +739,21 @@ mod tests {
             false,
         );
         assert_eq!(plan.holder, HolderStep::Keep(id('a')));
-        assert_eq!(plan.retire_caddys, vec![id('b')]);
-        assert_eq!(plan.proxy, ProxyStep::Create);
+        assert_eq!(plan.retire_caddys, vec![retiree('b', true)]);
+        assert_eq!(plan.proxy, ProxyStep::Create(Some(id('b'))));
     }
 
     #[test]
     fn a_legacy_caddy_is_stopped_for_the_holder_and_retired() {
         let plan = plan_doors(&[legacy_caddy('a', running())], &specs(), true);
-        assert_eq!(
-            plan.legacy,
-            vec![LegacyCaddy {
-                id: id('a'),
-                running: true
-            }]
-        );
+        assert_eq!(plan.legacy, vec![retiree('a', true)]);
         assert!(plan.retire_caddys.is_empty());
-        assert_eq!(plan.holder, HolderStep::Create);
-        assert_eq!(plan.proxy, ProxyStep::Create);
+        assert_eq!(plan.holder, HolderStep::Create(None));
+        assert_eq!(
+            plan.proxy,
+            ProxyStep::Create(None),
+            "a legacy Caddy's spec names no joined Caddy's slot"
+        );
     }
 
     #[test]
@@ -679,7 +770,22 @@ mod tests {
             false,
         );
         assert_eq!(plan.proxy, ProxyStep::Keep(id('b')));
-        assert_eq!(plan.retire_caddys, vec![id('d'), id('e')]);
+        assert_eq!(
+            plan.retire_caddys,
+            vec![retiree('d', false), retiree('e', true)]
+        );
+    }
+
+    #[test]
+    fn a_replacement_is_named_for_the_newest_caddy_it_replaces() {
+        let mut old = specs();
+        old.proxy.container.image = "docker.io/library/caddy:2.11.4".into();
+        let mut stale = entry('b', Door::Proxy, &old.proxy, 2, created());
+        stale.facts.joined_to = Some(id('a'));
+        let mut newer = caddy('d', 'f', created());
+        newer.facts.created_at = 5;
+        let plan = plan_doors(&[holder('a', running()), stale, newer], &specs(), false);
+        assert_eq!(plan.proxy, ProxyStep::Create(Some(id('d'))));
     }
 
     #[test]
@@ -718,8 +824,12 @@ mod tests {
             &specs(),
             false,
         );
-        assert_eq!(plan.holder, HolderStep::Create);
-        assert_eq!(plan.retire_holders, vec![id('a')]);
-        assert_eq!(plan.retire_caddys, vec![id('b')]);
+        assert_eq!(
+            plan.holder,
+            HolderStep::Create(Some(id('a'))),
+            "the dead holder still holds the canonical name"
+        );
+        assert_eq!(plan.retire_holders, vec![retiree('a', false)]);
+        assert_eq!(plan.retire_caddys, vec![retiree('b', false)]);
     }
 }
