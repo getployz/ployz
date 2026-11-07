@@ -1,6 +1,6 @@
 import { startRegistration } from "@simplewebauthn/browser";
 import { useMutation, useQueryClient, useSuspenseQuery } from "@tanstack/react-query";
-import { useParams } from "@tanstack/react-router";
+import { getRouteApi } from "@tanstack/react-router";
 import { KeyRoundIcon } from "lucide-react";
 import { useState } from "react";
 import { SettingsList, SettingsListItem } from "#/components/settings/settings-list";
@@ -17,12 +17,23 @@ import { CopyBlock } from "../~/servers/-components/copy-block";
 export const approveCommand = (code: string, on: "server" | "device") =>
   `${on === "server" ? "sudo " : ""}ployz device approve --passkey ${code}`;
 
+const organizationRoute = getRouteApi("/_protected/cloud/$organizationSlug");
+
+/** A passkey belongs to a member, so a support visit neither reads nor shows the section. */
+export const passkeyReads = (organizationSlug: string, access: "member" | "support") =>
+  access === "member" ? [passkeysQueryOptions(organizationSlug)] : [];
+
 /**
  * Passkeys that let you approve changes from this browser. Adding one here only files it: a Server trusts it once
  * someone runs the approve command on it, and each row says what a Server reports.
  */
 export function PasskeysSection() {
-  const { organizationSlug } = useParams({ from: "/_protected/cloud/$organizationSlug" });
+  const { organizationSlug } = organizationRoute.useParams();
+  const { access } = organizationRoute.useLoaderData();
+  return access === "member" ? <MemberPasskeys organizationSlug={organizationSlug} /> : null;
+}
+
+function MemberPasskeys({ organizationSlug }: { organizationSlug: string }) {
   const queryClient = useQueryClient();
   const { data } = useSuspenseQuery(passkeysQueryOptions(organizationSlug));
   const [failure, setFailure] = useState<string | null>(null);
