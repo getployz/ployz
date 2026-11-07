@@ -1,5 +1,3 @@
-//! `ployz cluster`: the Cluster as a whole.
-
 use clap::{ArgMatches, Command};
 use ployz_core::{
     ClusterName, ClusterNamed, DescribeContractRequest, READ_CLUSTER_NAME_CAPABILITY,
@@ -67,10 +65,8 @@ pub(crate) fn name(root: &ArgMatches) -> Result<(), Error> {
     })
 }
 
-/// What a Cluster Name may hold, said to the person who typed one.
 pub(crate) const VALID_NAME: &str = "Cluster names are up to 63 lowercase letters, digits and hyphens, starting and ending with a letter or digit.";
 
-/// The name a person typed, refused with what a Cluster Name may hold.
 pub(crate) fn parse(name: &str) -> Result<ClusterName, Error> {
     ClusterName::parse(name).map_err(|_| {
         Error::detailed(
@@ -81,11 +77,6 @@ pub(crate) fn parse(name: &str) -> Result<ClusterName, Error> {
     })
 }
 
-/// Name the Cluster through `client`'s entry Server, and answer the name it now holds.
-///
-/// # Errors
-/// Returns `unsupported` when that Server's daemon can't name a Cluster, and its refusal
-/// or a transport failure otherwise.
 pub(crate) async fn set(client: &Client, name: ClusterName) -> Result<ClusterNamed, Error> {
     require(client, SET_CLUSTER_NAME_CAPABILITY).await?;
     Ok(client

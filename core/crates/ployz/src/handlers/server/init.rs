@@ -192,33 +192,35 @@ pub(in crate::handlers) fn init(root: &ArgMatches) -> Result<(), Error> {
     crate::ui::emit_committed(result, ingress.map(drop).and(named.map(drop)))
 }
 
-/// The name a founder gives its Cluster: `--cluster-name`, or one asked for at a terminal.
-/// `--json` never asks, so there the flag is required. A script without `--json` that
-/// can't be asked founds an unnamed Cluster, as before Cluster Names.
 fn founding_name(matches: &ArgMatches) -> Result<Option<ClusterName>, Error> {
     if let Some(name) = super::founding_cluster_name(matches)? {
         return Ok(Some(name));
     }
-    if !crate::ui::json() && !crate::ui::can_prompt() {
+    if crate::ui::json() {
+        return Err(unnamed_founding());
+    }
+    if !crate::ui::can_prompt() {
         return Ok(None);
     }
     crate::ui::input(
         "Name this Cluster",
         |typed: &str| ClusterName::parse(typed).map_err(|_| crate::handlers::cluster::VALID_NAME),
-        || {
-            Error::detailed(
-                RpcErrorCode::InvalidArgument,
-                "A new Cluster needs a name. Pass --cluster-name.",
-                json!({ "flag": "--cluster-name" }),
-            )
-            .hint(Hint::Retry(crate::handlers::typed_with(&[
-                "--cluster-name",
-                "<name>",
-            ])))
-        },
+        unnamed_founding,
         "Cancelled. No Server was set up.",
     )
     .map(Some)
+}
+
+fn unnamed_founding() -> Error {
+    Error::detailed(
+        RpcErrorCode::InvalidArgument,
+        "A new Cluster needs a name. Pass --cluster-name.",
+        json!({ "flag": "--cluster-name" }),
+    )
+    .hint(Hint::Retry(crate::handlers::typed_with(&[
+        "--cluster-name",
+        "<name>",
+    ])))
 }
 
 /// The initial Server is committed but its Ingress Proxy deploy failed.

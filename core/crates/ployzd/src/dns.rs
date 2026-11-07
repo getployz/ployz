@@ -86,7 +86,6 @@ struct ProjectionInputs {
     routed: ProxyRoutes,
 }
 
-/// What one read of Corrosion gives the projection.
 struct Snapshot {
     observations: Vec<ContainerObservation>,
     cluster: Option<ClusterName>,

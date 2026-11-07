@@ -688,7 +688,7 @@ impl ContainerRuntime {
                 !labels.contains_key(LABEL_GEN)
                     && ManagedLabels::parse(labels).is_ok_and(|managed| {
                         managed.kind == ContainerKind::ServiceContainer
-                            && !managed.identity.namespace.is_reserved()
+                            && !managed.identity.namespace.is_system()
                     })
             })
             .map(|(id, _)| *id)

@@ -63,7 +63,6 @@ pub(crate) fn confirm(
     }
 }
 
-/// Ask for one value that `parse` accepts, asking again until it does. Ctrl-C declines.
 pub(crate) fn input<T, E: std::fmt::Display>(
     question: &str,
     parse: impl Fn(&str) -> Result<T, E>,

@@ -358,8 +358,6 @@ async fn subscribe_then_snapshot(
     Ok((changes, snapshot))
 }
 
-/// A Cluster Name that fails to read leaves the alias answering NXDOMAIN until a
-/// later snapshot reads it, rather than holding back the Container observations.
 async fn load_snapshot(replicated: &ReplicatedStore) -> Result<Snapshot, CorrosionError> {
     let observations = replicated.containers().await?.observations;
     let cluster = replicated.cluster_name().await.unwrap_or_else(|error| {

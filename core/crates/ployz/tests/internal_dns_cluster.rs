@@ -85,6 +85,7 @@ async fn internal_dns_tracks_healthy_replicated_containers() {
     };
     let expected = by_machine.values().copied().collect::<Vec<_>>();
     assert_internal_selectors(&probe, &service_id, &machines, &by_machine, &expected).await;
+    assert_cluster_alias(&probe, &expected).await;
     assert_answer_modes(
         &probe,
         *by_machine.get(&first_machine.id).unwrap(),
@@ -447,6 +448,32 @@ async fn assert_internal_selectors(
             .filter(|line| line.contains("\tIN\tA\t"))
             .all(|line| line.split_whitespace().nth(1).is_some_and(|ttl| ttl == "0"))
     );
+}
+
+async fn assert_cluster_alias(probe: &DnsProbe<'_>, expected: &[Ipv4Addr]) {
+    let alias = "dns-api.app.acme.ployz.internal";
+    assert!(probe.dig(alias, "A", false).contains("status: NXDOMAIN"));
+    probe
+        .cluster
+        .machine_shell(0, "ployz cluster name acme")
+        .unwrap();
+    let expected = sorted(expected.to_vec());
+    poll_until(
+        Duration::from_secs(60),
+        &format!("{alias} resolves to {expected:?}"),
+        async || {
+            let answer = probe.dig(alias, "A", false);
+            if sorted(dig_addresses(&answer)) == expected {
+                Ok(())
+            } else {
+                Err(answer)
+            }
+        },
+    )
+    .await
+    .unwrap();
+    let foreign = probe.dig("dns-api.app.other.ployz.internal", "AAAA", false);
+    assert!(foreign.contains("status: NXDOMAIN"), "{foreign}");
 }
 
 fn assert_answer_modes(probe: &DnsProbe<'_>, local_address: Ipv4Addr, expected: &[Ipv4Addr]) {

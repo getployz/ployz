@@ -454,7 +454,6 @@ fn standalone(root: &ArgMatches) -> Result<(), Error> {
     }
 }
 
-/// `--cluster-name`, refused with what a Cluster Name may hold.
 pub(in crate::handlers) fn founding_cluster_name(
     matches: &ArgMatches,
 ) -> Result<Option<ClusterName>, Error> {
@@ -464,7 +463,6 @@ pub(in crate::handlers) fn founding_cluster_name(
         .transpose()
 }
 
-/// A joining Server keeps its Cluster's name, so `--cluster-name` named nothing.
 pub(in crate::handlers) fn joined_unnamed() {
     crate::ui::warn(
         "This Server joined an existing Cluster, so --cluster-name was ignored. Rename the Cluster with ployz cluster name.",

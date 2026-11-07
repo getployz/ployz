@@ -117,7 +117,6 @@ pub(crate) enum Verb {
     Move,
     Restore,
     Resize,
-    /// Rename the Cluster, which moves its Internal DNS alias.
     SetClusterName,
 }
 

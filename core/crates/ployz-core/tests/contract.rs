@@ -247,6 +247,8 @@ fn namespace_accepts_lowercase_dns_labels() {
     assert!(Namespace::parse("ployz-system").unwrap().is_reserved());
     assert!(Namespace::parse("ployz").unwrap().is_reserved());
     assert!(!Namespace::parse("ployz-app").unwrap().is_reserved());
+    assert!(Namespace::parse("ployz-system").unwrap().is_system());
+    assert!(!Namespace::parse("ployz").unwrap().is_system());
     assert_eq!(Namespace::system().as_str(), "ployz-system");
     assert!(!Namespace::parse("shop").unwrap().is_reserved());
 }

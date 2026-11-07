@@ -7,8 +7,6 @@ use ployz_core::{ClusterName, MachineId, Namespace, QualifiedService, ServiceId,
 pub(super) enum Query {
     Forward,
     Internal(InternalQuery),
-    /// A name under `ployz.internal` whose cluster label is not this Cluster's name,
-    /// or any such name while the Cluster has none.
     NxDomain,
 }
 

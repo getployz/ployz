@@ -661,7 +661,14 @@ impl Namespace {
         Self::parse(Self::SYSTEM).expect("the reserved Namespace is a valid DNS label")
     }
 
-    /// Whether this name is reserved for Ployz infrastructure.
+    /// Whether this is the Namespace of Ployz infrastructure, which drains, removals and
+    /// teardown leave to Ployz.
+    #[must_use]
+    pub fn is_system(&self) -> bool {
+        self.as_str() == Self::SYSTEM
+    }
+
+    /// Whether users may not create this Namespace: the system one, or the Internal DNS alias.
     #[must_use]
     pub fn is_reserved(&self) -> bool {
         matches!(self.as_str(), Self::SYSTEM | Self::ALIAS)
