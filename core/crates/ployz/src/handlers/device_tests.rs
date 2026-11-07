@@ -1,6 +1,7 @@
 use std::os::unix::fs::PermissionsExt;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
+use ployz_core::authority::trusted_key::PasskeyAlgorithm;
 use ployz_core::{
     CapabilityName, ContractDescription, DeviceKey, DeviceSet, MachineList, MachineObservation,
     MembershipObservation, OpaquePayload, PROTOCOL_MAJOR, RpcRequestBody, RpcResponse,
@@ -26,6 +27,10 @@ enum Daemon {
     AlreadyApproved,
     Unreachable,
     PredatesDevices,
+    /// Holds no Device at the code, but a passkey.
+    HoldsPasskey,
+    /// Holds no Device at the code and has never heard of passkeys.
+    PredatesPasskeys,
 }
 
 async fn cluster(
@@ -64,14 +69,31 @@ async fn cluster(
                 machine_id: target.unwrap(),
                 protocol_major: PROTOCOL_MAJOR,
                 daemon_version: "fixture".into(),
-                capabilities: (daemon != Some(Daemon::PredatesDevices))
-                    .then(|| CapabilityName::parse(SET_DEVICE_CAPABILITY).unwrap())
-                    .into_iter()
-                    .collect(),
+                capabilities: match daemon {
+                    Some(Daemon::PredatesDevices) => Vec::new(),
+                    Some(Daemon::PredatesPasskeys) => vec![SET_DEVICE_CAPABILITY],
+                    _ => vec![SET_DEVICE_CAPABILITY, SET_PASSKEY_CAPABILITY],
+                }
+                .into_iter()
+                .map(|capability| CapabilityName::parse(capability).unwrap())
+                .collect(),
                 sealing: None,
             }),
             RpcRequestBody::SetDevice(_) if daemon == Some(Daemon::Unreachable) => {
                 return Err(Status::unavailable("machine-2 is down"));
+            }
+            RpcRequestBody::SetDevice(SetDeviceRequest::Remove { code })
+                if matches!(
+                    daemon,
+                    Some(Daemon::HoldsPasskey | Daemon::PredatesPasskeys)
+                ) =>
+            {
+                RpcResponse::from(DeviceSet::NotPresent { code })
+            }
+            RpcRequestBody::SetPasskey(SetPasskeyRequest::Remove { code })
+                if daemon == Some(Daemon::HoldsPasskey) =>
+            {
+                RpcResponse::from(DeviceSet::Removed { code })
             }
             RpcRequestBody::SetDevice(_) => {
                 let code = key(0).code();
@@ -88,8 +110,16 @@ async fn cluster(
     .await
 }
 
-fn approve() -> SetDeviceRequest {
-    SetDeviceRequest::Approve { key: key(0) }
+async fn approve_everywhere(client: &mut Client) -> Result<Settled, Error> {
+    set_everywhere(client, |client, machine_id| {
+        set_on::<op::SetDevice>(
+            client,
+            machine_id,
+            SET_DEVICE_CAPABILITY,
+            SetDeviceRequest::Approve { key: key(0) },
+        )
+    })
+    .await
 }
 
 fn token(cloud: String) -> Credential {
@@ -211,7 +241,7 @@ async fn one_failing_machine_is_a_partial_result_that_names_it() {
     let (mut client, server) =
         cluster([Daemon::Approves, Daemon::Unreachable, Daemon::Approves]).await;
 
-    let settled = set_everywhere(&mut client, approve()).await.unwrap();
+    let settled = approve_everywhere(&mut client).await.unwrap();
 
     assert_eq!(settled.answers.len(), 2);
     let failed: Vec<_> = settled
@@ -231,7 +261,7 @@ async fn one_failing_machine_is_a_partial_result_that_names_it() {
 async fn when_no_machine_answers_only_the_gaps_print() {
     let (mut client, server) = cluster([Daemon::Unreachable; 3]).await;
 
-    let settled = set_everywhere(&mut client, approve()).await.unwrap();
+    let settled = approve_everywhere(&mut client).await.unwrap();
 
     assert!(settled.answers.is_empty());
     assert_eq!(settled.gaps.failures.len(), 3);
@@ -244,7 +274,7 @@ async fn when_no_machine_answers_only_the_gaps_print() {
 async fn rerunning_where_every_machine_already_approved_succeeds() {
     let (mut client, server) = cluster([Daemon::AlreadyApproved; 3]).await;
 
-    let settled = set_everywhere(&mut client, approve()).await.unwrap();
+    let settled = approve_everywhere(&mut client).await.unwrap();
 
     assert!(
         settled
@@ -262,7 +292,7 @@ async fn a_machine_without_a_device_roster_is_an_omission() {
     let (mut client, server) =
         cluster([Daemon::Approves, Daemon::PredatesDevices, Daemon::Approves]).await;
 
-    let settled = set_everywhere(&mut client, approve()).await.unwrap();
+    let settled = approve_everywhere(&mut client).await.unwrap();
 
     assert_eq!(settled.gaps.omitted, [id('2')]);
     assert!(settled.gaps.failures.is_empty());
@@ -425,12 +455,9 @@ async fn full_mutations_report_servers_without_a_direct_connection_as_omissions(
     let connection =
         crate::context::Connection::tcp("127.0.0.1:7569".parse().unwrap()).with_machine_id(id('1'));
     let mut client = client.with_full_connections(vec![connection]);
-    let removed = set_everywhere(
-        &mut client,
-        SetDeviceRequest::Remove {
-            code: key(1).code(),
-        },
-    )
+    let removed = set_everywhere(&mut client, |client, machine_id| {
+        remove_on(client, machine_id, key(1).code())
+    })
     .await
     .unwrap();
     assert_eq!(removed.answers.len(), 1);
@@ -503,4 +530,112 @@ fn starting_set_summary_names_each_trusted_server_before_signing() {
         starting_set_summary(&reach, &[]),
         "Trusting 0 Servers from the start: none."
     );
+}
+
+fn passkey_key(seed: u8) -> PasskeyPublicKey {
+    let key = iroh::SecretKey::from_bytes(&[seed; 32]).public();
+    PasskeyPublicKey::parse(PasskeyAlgorithm::Eddsa, key.as_bytes()).unwrap()
+}
+
+fn waiting_passkey(public_key: PasskeyPublicKey) -> serde_json::Value {
+    json!({
+        "credential_id": "AQID",
+        "public_key": public_key,
+        "account": "ada@example.com",
+        "relying_party": { "id": "evil.example", "origin": "https://evil.example" },
+    })
+}
+
+#[tokio::test]
+async fn a_waiting_passkey_answers_for_this_clis_cloud_not_the_one_cloud_names() {
+    let cloud = crate::cloud_login::tests::fake_cloud(|route, _| {
+        assert_eq!(
+            route,
+            format!("GET /api/cli/passkey-requests/{}", passkey_key(1).code())
+        );
+        (200, waiting_passkey(passkey_key(1)))
+    });
+    let credential = token(cloud.clone());
+
+    let passkey = pending_passkey(&credential, passkey_key(1).code())
+        .await
+        .unwrap();
+
+    let cloud = url::Url::parse(&cloud).unwrap();
+    assert_eq!(passkey.public_key, passkey_key(1));
+    assert_eq!(passkey.account.as_str(), "ada@example.com");
+    assert_eq!(passkey.relying_party, RelyingParty::of(&cloud).unwrap());
+}
+
+#[tokio::test]
+async fn a_passkey_whose_key_does_not_hash_to_the_code_is_refused() {
+    let cloud =
+        crate::cloud_login::tests::fake_cloud(|_, _| (200, waiting_passkey(passkey_key(2))));
+
+    let error = pending_passkey(&token(cloud), passkey_key(1).code())
+        .await
+        .unwrap_err();
+
+    assert!(error.report().message.contains("doesn't match"));
+}
+
+#[tokio::test]
+async fn rm_removes_a_passkey_where_no_device_has_the_code() {
+    let (mut client, server) = cluster([
+        Daemon::HoldsPasskey,
+        Daemon::PredatesPasskeys,
+        Daemon::Approves,
+    ])
+    .await;
+    let code = passkey_key(1).code();
+
+    let removed = set_everywhere(&mut client, |client, machine_id| {
+        remove_on(client, machine_id, code)
+    })
+    .await
+    .unwrap();
+
+    let outcome = |hex| {
+        removed
+            .answers
+            .iter()
+            .find(|answer| answer.machine_id == id(hex))
+            .map(|answer| answer.set)
+    };
+    assert_eq!(outcome('1'), Some(DeviceSet::Removed { code }));
+    assert_eq!(outcome('2'), Some(DeviceSet::NotPresent { code }));
+    server.abort();
+}
+
+#[test]
+fn ls_lists_passkeys_under_the_devices_with_their_account() {
+    let account = PasskeyAccount::parse("ada@example.com").unwrap();
+    let passkey = (
+        passkey_key(1).code(),
+        KeyKind::Passkey {
+            account: account.clone(),
+        },
+    );
+    let roster = roster(&[
+        (
+            id('1'),
+            vec![passkey.clone(), (key(0).code(), KeyKind::Device)],
+        ),
+        (id('2'), vec![(key(0).code(), KeyKind::Device)]),
+    ]);
+
+    let rows: Vec<_> = roster
+        .iter()
+        .map(|row| (row.code, row.key.clone(), row.missing.clone()))
+        .collect();
+    assert_eq!(
+        rows,
+        [
+            (key(0).code(), KeyKind::Device, Vec::new()),
+            (passkey.0, KeyKind::Passkey { account }, vec![id('2')]),
+        ]
+    );
+    let json = serde_json::to_value(roster.get(1).unwrap()).unwrap();
+    assert_eq!(json.get("kind"), Some(&json!("passkey")));
+    assert_eq!(json.get("account"), Some(&json!("ada@example.com")));
 }

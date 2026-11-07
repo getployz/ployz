@@ -256,7 +256,7 @@ fn a_passkey_never_signs_an_envelope_even_when_its_key_is_ed25519() {
 fn a_public_key_round_trips_and_its_code_hashes_its_bytes() {
     let key = Authenticator::es256(7).public_key();
     let json = serde_json::to_value(key).unwrap();
-    assert_eq!(json["algorithm"], "es256");
+    assert_eq!(json.get("algorithm"), Some(&serde_json::json!("es256")));
     assert_eq!(
         serde_json::from_value::<PasskeyPublicKey>(json).unwrap(),
         key

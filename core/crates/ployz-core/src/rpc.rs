@@ -491,8 +491,12 @@ pub enum DeviceSet {
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 pub enum SetPasskeyRequest {
-    Approve { passkey: crate::authority::Passkey },
-    Remove { code: DeviceCode },
+    Approve {
+        passkey: Box<crate::authority::Passkey>,
+    },
+    Remove {
+        code: DeviceCode,
+    },
 }
 
 /// Where this Machine's observe process pushes crash events, or `None` to stop pushing.

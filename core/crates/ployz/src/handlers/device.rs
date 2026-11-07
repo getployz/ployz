@@ -7,9 +7,14 @@ use std::path::Path;
 use clap::{Arg, ArgAction, ArgMatches, Command};
 use ployz_core::{
     DeviceCode, DeviceEnforcementSet, DeviceKey, DeviceSet, InspectRequest, MachineFailure,
-    MachineId, MachineName, MachineTarget, OperationId, RpcError, SET_DEVICE_CAPABILITY,
-    SET_DEVICE_ENFORCEMENT_CAPABILITY, SetDeviceEnforcementRequest, SetDeviceRequest,
-    authority::{Member, Signed, Signer, StartingSet, Timestamp, validity},
+    MachineId, MachineName, MachineTarget, OperationId, Rpc, RpcError, RpcErrorCode,
+    SET_DEVICE_CAPABILITY, SET_DEVICE_ENFORCEMENT_CAPABILITY, SET_PASSKEY_CAPABILITY,
+    SetDeviceEnforcementRequest, SetDeviceRequest, SetPasskeyRequest,
+    authority::{
+        Member, Passkey, PasskeyAccount, PasskeyPublicKey, Signed, Signer, StartingSet, Timestamp,
+        trusted_key::{CredentialId, RelyingParty},
+        validity,
+    },
     op,
 };
 use reqwest::Method;
@@ -18,7 +23,7 @@ use serde_json::json;
 use tokio::task::JoinSet;
 
 use super::{Error, config_path, leaf_matches, runtime, server};
-use crate::cli::{base, positional};
+use crate::cli::{base, positional, yes};
 use crate::cloud_account::{self, Credential};
 use crate::cloud_login::{CredentialStore, LoginError};
 use crate::connect::Client;
@@ -35,25 +40,39 @@ pub(crate) fn request_command(command: Command) -> Command {
 }
 
 pub(crate) fn approve_command(command: Command) -> Command {
-    base(command, "Approve a device on every server")
-        .after_help(concat!("Examples:\n", "  ployz device approve mmg42klgyq"))
-        .arg(positional("code", true).help("The code the requesting device or server printed"))
+    base(command, "Approve a device or a passkey on every server")
+        .after_help(concat!(
+            "Examples:\n",
+            "  ployz device approve mmg42klgyq\n",
+            "  sudo ployz device approve --passkey hq3vbn5x2c"
+        ))
+        .arg(positional("code", true).help(
+            "The code the requesting device or server printed, or the passkey's code from Ployz Cloud",
+        ))
         .arg(
             Arg::new("join")
                 .long("join")
                 .action(ArgAction::SetTrue)
                 .help("Approve a waiting Server join with this device's key"),
         )
+        .arg(
+            Arg::new("passkey")
+                .long("passkey")
+                .action(ArgAction::SetTrue)
+                .conflicts_with("join")
+                .help("Approve a passkey added in Ployz Cloud, which may approve workflows and nothing else"),
+        )
+        .arg(yes("Approve the passkey without asking"))
 }
 
 pub(crate) fn list_command(command: Command) -> Command {
-    base(command, "List approved devices")
+    base(command, "List approved devices and passkeys")
 }
 
 pub(crate) fn remove_command(command: Command) -> Command {
-    base(command, "Remove a device from every server")
+    base(command, "Remove a device or a passkey from every server")
         .after_help(concat!("Examples:\n", "  ployz device rm mmg42klgyq"))
-        .arg(positional("code", true).help("The device's code, from ployz device ls"))
+        .arg(positional("code", true).help("The device's or passkey's code, from ployz device ls"))
 }
 
 pub(crate) fn enforce_command(command: Command) -> Command {
@@ -141,15 +160,98 @@ pub(crate) fn approve(root: &ArgMatches) -> Result<(), Error> {
     }
     let code = typed_code(leaf)?;
     let store = CredentialStore::beside(&config_path(leaf)?);
+    if leaf.get_flag("passkey") {
+        return runtime()?.block_on(approve_passkey(leaf, &store, code));
+    }
     runtime()?.block_on(async {
         let credential = cloud_account::from_env(&store).await?;
         let settled = approve_with(&credential, code, async |request| {
             let mut client = server::connect_full(leaf, context(leaf)).await?;
-            set_everywhere(&mut client, request).await
+            set_everywhere(&mut client, |client, machine_id| {
+                set_on::<op::SetDevice>(client, machine_id, SET_DEVICE_CAPABILITY, request.clone())
+            })
+            .await
         })
         .await?;
         settled.finish()
     })
+}
+
+/// Show the passkey waiting at `code`, ask, then add it to every Server.
+async fn approve_passkey(
+    leaf: &ArgMatches,
+    store: &CredentialStore,
+    code: DeviceCode,
+) -> Result<(), Error> {
+    let credential = cloud_account::from_env(store).await?;
+    let passkey = pending_passkey(&credential, code).await?;
+    ui::note(format!(
+        "Passkey {code} for {}. It can approve workflows on these servers and nothing else.",
+        passkey.account
+    ));
+    if !leaf.get_flag("yes") {
+        ui::confirm(
+            &format!("Approve passkey {code} for {}?", passkey.account),
+            || {
+                Error::coded(
+                    RpcErrorCode::ConfirmationRequired,
+                    format!("Approving passkey {code} needs confirmation. Nothing changed."),
+                )
+                .hint(Hint::Retry(super::typed_with(&["--yes"])))
+            },
+            "Nothing approved.",
+        )?;
+    }
+    let mut client = server::connect_full(leaf, context(leaf)).await?;
+    let request = SetPasskeyRequest::Approve {
+        passkey: Box::new(passkey),
+    };
+    set_everywhere(&mut client, |client, machine_id| {
+        set_on::<op::SetPasskey>(client, machine_id, SET_PASSKEY_CAPABILITY, request.clone())
+    })
+    .await?
+    .finish()
+}
+
+/// The passkey waiting in Cloud at `code`, refused unless its key hashes to `code`. Its
+/// relying party comes from this CLI's own Cloud URL, so Cloud can't point a Server at
+/// another site.
+async fn pending_passkey(credential: &Credential, code: DeviceCode) -> Result<Passkey, Error> {
+    let path = format!("passkey-requests/{code}");
+    let pending = match cloud_account::call::<PendingPasskey>(credential, Method::GET, &path, None)
+        .await
+    {
+        Err(LoginError::Status { body, .. })
+            if cloud_account::refusal(body.as_bytes())
+                .is_some_and(|refused| refused.code == RpcErrorCode::NotFound) =>
+        {
+            return Err(Error::not_found(format!(
+                "No passkey waits for {code}. Add one again in your Ployz Cloud account; it waits 24h."
+            )));
+        }
+        reply => reply?,
+    };
+    let cloud = url::Url::parse(credential.cloud()).map_err(Error::command)?;
+    let passkey = Passkey {
+        credential_id: pending.credential_id,
+        public_key: pending.public_key,
+        account: pending.account,
+        relying_party: RelyingParty::of(&cloud)?,
+    };
+    if passkey.code() != code {
+        return Err(Error::conflict(format!(
+            "The passkey Ployz Cloud returned doesn't match {code}. Nothing changed."
+        )));
+    }
+    Ok(passkey)
+}
+
+/// A passkey waiting in Cloud. Only its key's code makes it trustworthy.
+#[derive(Deserialize)]
+struct PendingPasskey {
+    credential_id: CredentialId,
+    public_key: PasskeyPublicKey,
+    account: PasskeyAccount,
 }
 
 async fn approve_waiting_join(leaf: &ArgMatches, code: &str) -> Result<(), Error> {
@@ -267,9 +369,11 @@ pub(crate) fn remove(root: &ArgMatches) -> Result<(), Error> {
     let code = typed_code(leaf)?;
     runtime()?.block_on(async {
         let mut client = server::connect_full(leaf, context(leaf)).await?;
-        set_everywhere(&mut client, SetDeviceRequest::Remove { code })
-            .await?
-            .finish()
+        set_everywhere(&mut client, |client, machine_id| {
+            remove_on(client, machine_id, code)
+        })
+        .await?
+        .finish()
     })
 }
 
@@ -283,7 +387,7 @@ pub(crate) fn list(root: &ArgMatches) -> Result<(), Error> {
             .await;
         let roster = roster(&answers);
         let mut table = Table::new(
-            ["DEVICE", "SERVERS", "MISSING ON"],
+            ["DEVICE", "KIND", "ACCOUNT", "SERVERS", "MISSING ON"],
             "No devices. Approve one with ployz device approve <code>.",
         );
         for device in &roster {
@@ -299,8 +403,14 @@ pub(crate) fn list(root: &ArgMatches) -> Result<(), Error> {
             } else {
                 Tone::Change
             };
+            let (kind, account) = match &device.key {
+                KeyKind::Device => ("device", ""),
+                KeyKind::Passkey { account } => ("passkey, approve-only", account.as_str()),
+            };
             table.row([
                 Cell::from(device.code.as_str()),
+                Cell::from(kind),
+                Cell::from(account),
                 Cell::status(on, tone),
                 Cell::from(missing),
             ]);
@@ -491,10 +601,14 @@ async fn approve_with<T>(
     set(SetDeviceRequest::Approve { key: pending.key }).await
 }
 
-async fn set_everywhere(client: &mut Client, request: SetDeviceRequest) -> Result<Settled, Error> {
+async fn set_everywhere<F, Fut>(client: &mut Client, set: F) -> Result<Settled, Error>
+where
+    F: Fn(Client, MachineId) -> Fut,
+    Fut: Future<Output = Result<Option<DeviceSet>, RpcError>> + Send + 'static,
+{
     let reach = Reach::full(client).await?;
     let (answers, gaps) = reach
-        .fan_out(|machine_id| set_on(client.clone(), machine_id, request.clone()))
+        .fan_out(|machine_id| set(client.clone(), machine_id))
         .await;
     Ok(Settled {
         answers: answers
@@ -509,25 +623,50 @@ async fn set_everywhere(client: &mut Client, request: SetDeviceRequest) -> Resul
     })
 }
 
-async fn set_on(
+async fn set_on<T: Rpc<Response = DeviceSet>>(
     client: Client,
     machine_id: MachineId,
-    request: SetDeviceRequest,
+    capability: &'static str,
+    request: T::Request,
 ) -> Result<Option<DeviceSet>, RpcError> {
     let target = MachineTarget::from(&machine_id);
-    if !compat::supports(&client, &target, SET_DEVICE_CAPABILITY).await? {
+    if !compat::supports(&client, &target, capability).await? {
         return Ok(None);
     }
-    client
-        .invoke::<op::SetDevice>(request, &target, None)
-        .await
-        .map(Some)
+    client.invoke::<T>(request, &target, None).await.map(Some)
+}
+
+/// Remove the Device `code` names, or else the passkey it names. A Server from before
+/// passkeys answers for its Devices alone.
+async fn remove_on(
+    client: Client,
+    machine_id: MachineId,
+    code: DeviceCode,
+) -> Result<Option<DeviceSet>, RpcError> {
+    let removed = set_on::<op::SetDevice>(
+        client.clone(),
+        machine_id,
+        SET_DEVICE_CAPABILITY,
+        SetDeviceRequest::Remove { code },
+    )
+    .await?;
+    if !matches!(removed, Some(DeviceSet::NotPresent { .. })) {
+        return Ok(removed);
+    }
+    let passkey = set_on::<op::SetPasskey>(
+        client,
+        machine_id,
+        SET_PASSKEY_CAPABILITY,
+        SetPasskeyRequest::Remove { code },
+    )
+    .await?;
+    Ok(passkey.or(removed))
 }
 
 async fn devices_on(
     client: Client,
     machine_id: MachineId,
-) -> Result<Option<Vec<DeviceCode>>, RpcError> {
+) -> Result<Option<Vec<(DeviceCode, KeyKind)>>, RpcError> {
     let target = MachineTarget::from(&machine_id);
     if !compat::supports(&client, &target, SET_DEVICE_CAPABILITY).await? {
         return Ok(None);
@@ -535,13 +674,20 @@ async fn devices_on(
     let details = client
         .invoke::<op::Inspect>(InspectRequest::default(), &target, None)
         .await?;
-    Ok(Some(
-        details
-            .management_clients
-            .iter()
-            .filter_map(DeviceCode::named_by)
-            .collect(),
-    ))
+    let devices = details
+        .management_clients
+        .iter()
+        .filter_map(DeviceCode::named_by)
+        .map(|code| (code, KeyKind::Device));
+    let passkeys = details.passkeys.into_iter().map(|trusted| {
+        (
+            trusted.passkey.code(),
+            KeyKind::Passkey {
+                account: trusted.passkey.account,
+            },
+        )
+    });
+    Ok(Some(devices.chain(passkeys).collect()))
 }
 
 pub(super) fn request_hint() -> Hint {
@@ -700,20 +846,37 @@ impl Settled {
 #[derive(Serialize)]
 struct Device {
     code: DeviceCode,
+    #[serde(flatten)]
+    key: KeyKind,
     machines: Vec<MachineId>,
     missing: Vec<MachineId>,
 }
 
-fn roster(answers: &[(MachineId, Vec<DeviceCode>)]) -> Vec<Device> {
-    let mut on = BTreeMap::<DeviceCode, Vec<MachineId>>::new();
-    for (machine_id, codes) in answers {
-        for code in codes {
-            on.entry(*code).or_default().push(*machine_id);
+/// What a listed key is: a Device that manages Servers, or a passkey that only approves
+/// workflows, shown with the Cloud account it belongs to.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+enum KeyKind {
+    Device,
+    Passkey { account: PasskeyAccount },
+}
+
+/// One row per key, Devices first, then passkeys under them.
+fn roster(answers: &[(MachineId, Vec<(DeviceCode, KeyKind)>)]) -> Vec<Device> {
+    let mut on = BTreeMap::<(bool, DeviceCode), (KeyKind, Vec<MachineId>)>::new();
+    for (machine_id, keys) in answers {
+        for (code, key) in keys {
+            let passkey = matches!(key, KeyKind::Passkey { .. });
+            on.entry((passkey, *code))
+                .or_insert_with(|| (key.clone(), Vec::new()))
+                .1
+                .push(*machine_id);
         }
     }
     on.into_iter()
-        .map(|(code, machines)| Device {
+        .map(|((_, code), (key, machines))| Device {
             code,
+            key,
             missing: answers
                 .iter()
                 .map(|(machine_id, _)| *machine_id)

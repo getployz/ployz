@@ -149,7 +149,7 @@ impl LocalMachine {
                         SetPasskeyRequest::Approve { passkey } => {
                             let code = passkey.code();
                             if store.approve_passkey(TrustedPasskey {
-                                passkey,
+                                passkey: *passkey,
                                 approved_by,
                             })? {
                                 tracing::info!(
@@ -597,7 +597,7 @@ mod tests {
         let local = participating(dir.path()).await;
         let key = *iroh::SecretKey::generate().public().as_bytes();
         let approve = SetPasskeyRequest::Approve {
-            passkey: passkey(key),
+            passkey: Box::new(passkey(key)),
         };
         let code = passkey(key).code();
         assert_eq!(
@@ -636,7 +636,7 @@ mod tests {
             assert!(matches!(
                 caller
                     .set_passkey(SetPasskeyRequest::Approve {
-                        passkey: passkey(key)
+                        passkey: Box::new(passkey(key))
                     })
                     .await,
                 Err(Error::NeedsFullScope)
@@ -659,15 +659,20 @@ mod tests {
         let code = passkey(key).code();
         caller
             .set_passkey(SetPasskeyRequest::Approve {
-                passkey: passkey(key),
+                passkey: Box::new(passkey(key)),
             })
             .await
             .unwrap();
         assert_eq!(
-            local.record().passkeys()[0].approved_by,
-            PasskeyApprover::Device {
+            local
+                .record()
+                .passkeys()
+                .iter()
+                .map(|trusted| trusted.approved_by)
+                .collect::<Vec<_>>(),
+            [PasskeyApprover::Device {
                 code: device.code()
-            }
+            }]
         );
         let remove = SetPasskeyRequest::Remove { code };
         assert_eq!(

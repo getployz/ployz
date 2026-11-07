@@ -296,6 +296,7 @@ impl LocalMachineRecord {
             .map(|(label, _)| label)
     }
 
+    #[must_use]
     pub fn passkeys(&self) -> &[ployz_core::authority::TrustedPasskey] {
         &self.passkeys
     }
