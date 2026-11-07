@@ -6,8 +6,9 @@ use ts_rs::TS;
 
 use super::{
     canonical::Timestamp,
-    keys::{Purpose, Signed, SigningPublicKey, Statement},
+    keys::{Purpose, Signed, Statement},
     refusal::AuthorityRefusal,
+    trusted_key::TrustedKeys,
 };
 use crate::{
     ContainerId, ContainerLocator, ContainerWant, DeviceKey, MachineId, Namespace, OperationId,
@@ -120,7 +121,7 @@ pub struct RestartFacts<'a> {
     /// The Sealing public key this Machine holds, or `None` while it holds none.
     pub cluster: Option<SealingPublicKey>,
     pub machine: &'a MachineId,
-    pub devices: &'a [DeviceKey],
+    pub trusted: &'a TrustedKeys,
     /// The Service the requested Container belongs to.
     pub namespace: &'a Namespace,
     pub service: &'a ServiceName,
@@ -129,7 +130,8 @@ pub struct RestartFacts<'a> {
     pub now: Timestamp,
 }
 
-/// Check `approval` is one of this Machine's Devices approving exactly this request.
+/// Check `approval` is one of this Machine's Devices approving exactly this request. Its
+/// passkeys sign no envelope, so they are never among the signers.
 ///
 /// # Errors
 /// Returns the first [`AuthorityRefusal`] found: a signature problem, a malformed body,
@@ -139,8 +141,7 @@ pub fn verify(
     approval: &Signed<RestartApproval>,
     facts: &RestartFacts<'_>,
 ) -> Result<RestartApproval, AuthorityRefusal> {
-    let signers =
-        approval.verified_signers(facts.devices.iter().copied().map(SigningPublicKey::from))?;
+    let signers = approval.verified_signers(facts.trusted.signing_keys())?;
     let body = approval.open()?;
     let Some(cluster) = facts.cluster else {
         return Err(AuthorityRefusal::NoClusterIdentity);
@@ -202,7 +203,7 @@ mod tests {
 
     struct Machine {
         id: MachineId,
-        devices: Vec<DeviceKey>,
+        trusted: TrustedKeys,
         namespace: Namespace,
         service: ServiceName,
         container: ContainerId,
@@ -213,7 +214,7 @@ mod tests {
             RestartFacts {
                 cluster: Some(SealingPublicKey::from_bytes([9; 32])),
                 machine: &self.id,
-                devices: &self.devices,
+                trusted: &self.trusted,
                 namespace: &self.namespace,
                 service: &self.service,
                 container: &self.container,
@@ -226,7 +227,10 @@ mod tests {
     fn machine(approved: &[&Signer]) -> Machine {
         Machine {
             id: MachineId::parse("2222222222222222222222222222222b").unwrap(),
-            devices: approved.iter().map(|signer| device(signer)).collect(),
+            trusted: TrustedKeys {
+                devices: approved.iter().map(|signer| device(signer)).collect(),
+                passkeys: Vec::new(),
+            },
             namespace: Namespace::parse("app").unwrap(),
             service: ServiceName::parse("api").unwrap(),
             container: ContainerId::parse("a".repeat(64)).unwrap(),
@@ -241,6 +245,25 @@ mod tests {
         assert_eq!(
             verify(&signed, &machine.facts()).unwrap(),
             approval(&signer)
+        );
+    }
+
+    #[test]
+    fn a_trusted_passkey_signing_an_envelope_as_if_it_were_a_device_is_refused() {
+        let passkey_seed = signer(3);
+        let mut machine = machine(&[&signer(1)]);
+        machine
+            .trusted
+            .passkeys
+            .push(crate::authority::trusted_key::tests::trusted_eddsa_passkey(
+                &[3; 32],
+            ));
+        let signed = Signed::sign(&approval(&passkey_seed), &passkey_seed).unwrap();
+        assert_eq!(
+            verify(&signed, &machine.facts()),
+            Err(AuthorityRefusal::UnknownKey {
+                key: passkey_seed.public()
+            })
         );
     }
 

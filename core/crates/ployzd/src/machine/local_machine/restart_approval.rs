@@ -115,7 +115,7 @@ impl LocalMachine {
             }
             .into());
         };
-        let devices: Vec<DeviceKey> = record.devices().collect();
+        let trusted = record.trusted_keys();
         let identity = observed.identity();
         let machine = record.id();
         let now = Timestamp::now();
@@ -128,7 +128,7 @@ impl LocalMachine {
             &RestartFacts {
                 cluster,
                 machine: &machine,
-                devices: &devices,
+                trusted: &trusted,
                 namespace: &identity.namespace,
                 service: &identity.name,
                 container: &observed.container_id,

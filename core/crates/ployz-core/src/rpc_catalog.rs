@@ -62,6 +62,8 @@ macro_rules! rpc_catalog {
                 SetDevice: (set_device, "SetDevice", SetDeviceRequest, "set_device", DeviceSet, SET_DEVICE_CAPABILITY, "ployz.machine.set-device.v1", Always, Full),
                 SetPushTarget: (set_push_target, "SetPushTarget", SetPushTargetRequest, "set_push_target", PushTargetSet, SET_PUSH_TARGET_CAPABILITY, "ployz.machine.set-push-target.v1", Always, Operator),
                 SetDeviceEnforcement: (set_device_enforcement, "SetDeviceEnforcement", SetDeviceEnforcementRequest, "set_device_enforcement", DeviceEnforcementSet, SET_DEVICE_ENFORCEMENT_CAPABILITY, "ployz.machine.set-device-enforcement.v2", Always, Full),
+                SetPasskey: (set_passkey, "SetPasskey", SetPasskeyRequest, "set_passkey", DeviceSet, SET_PASSKEY_CAPABILITY, "ployz.machine.set-passkey.v1", Always, Full),
+                RemoveTrustedKey: (remove_trusted_key, "RemoveTrustedKey", RemoveTrustedKeyRequest, "remove_trusted_key", TrustedKeyRemoved, REMOVE_TRUSTED_KEY_CAPABILITY, "ployz.machine.remove-trusted-key.v1", Always, Full),
                 SelectEndpoint: (select_endpoint, "SelectEndpoint", SelectEndpointRequest, "select_endpoint", EndpointSelected, SELECT_ENDPOINT_CAPABILITY, "ployz.network.select-endpoint.v1", Always, Operator),
                 ListMachines: (list_machines, "ListMachines", ListMachinesRequest, "list_machines", MachineList, LIST_MACHINES_CAPABILITY, "ployz.machine.list.v1", Always, Operator),
                 UpdateMachine: (update_machine, "UpdateMachine", UpdateMachineRequest, "update_machine", MachineUpdated, UPDATE_MACHINE_CAPABILITY, "ployz.machine.update.v1", Always, Operator),

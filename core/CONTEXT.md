@@ -638,6 +638,10 @@ _Avoid_: role, permission level, access tier
 A person's computer a Machine admits at Full Scope, named by the code of its management public key: the first 10 base32 characters of its SHA-256. Its slot is `device-<code>`, and only a Full caller adds or removes one, so Cloud can relay a Device's request but never approve it. A joining Machine takes the issuing member's Devices from its registration, never from Corrosion.
 _Avoid_: device login, signed-in computer (that is a `cli-<id>` Management Client), user, roster as a replicated table
 
+**Passkey**:
+A person's browser WebAuthn credential a Machine trusts to approve Workflows and nothing else: it opens no connection, signs no envelope, and manages no Device. It is named like a Device, by the code of its public key, and only a Full caller adds or removes it on each Machine, which records who approved it. Cloud files a registered passkey under its code, but that row makes no Machine trust it.
+_Avoid_: passkey login, passkey Device, approved row
+
 **Management Proof**:
 A Management Client's signature, by its client key, over keying material only one management connection exports, sent first on that connection. The Machine admits the client key it proves, never the connection's transport key, so each process dials under a key of its own and processes holding one Management Capability never share a relay identity. It cannot be replayed on another connection.
 _Avoid_: session token, login, transport key as identity

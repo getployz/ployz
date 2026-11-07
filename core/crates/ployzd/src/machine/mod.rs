@@ -199,6 +199,9 @@ pub struct LocalMachineRecord {
     device_enforcement: bool,
     #[serde(default)]
     trusted_machines: Vec<ployz_core::authority::Member>,
+    /// Passkeys a Full caller approved here. They approve workflows only and hold no slot.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    passkeys: Vec<ployz_core::authority::TrustedPasskey>,
     #[serde(default)]
     membership_cluster: Option<ployz_core::SealingPublicKey>,
     #[serde(default)]
@@ -291,6 +294,20 @@ impl LocalMachineRecord {
             .iter()
             .filter(|(_, slot)| slot.live().is_some())
             .map(|(label, _)| label)
+    }
+
+    #[must_use]
+    pub fn passkeys(&self) -> &[ployz_core::authority::TrustedPasskey] {
+        &self.passkeys
+    }
+
+    /// Every key this Machine trusts, from its own record: its Devices and its passkeys.
+    #[must_use]
+    pub fn trusted_keys(&self) -> ployz_core::authority::TrustedKeys {
+        ployz_core::authority::TrustedKeys {
+            devices: self.devices().collect(),
+            passkeys: self.passkeys.clone(),
+        }
     }
 
     /// Keys of the approved Devices: accepted slots whose `device-` label names their key.
@@ -595,6 +612,7 @@ impl LocalMachineRecord {
             device_slots_vetted: true,
             device_enforcement: false,
             trusted_machines: Vec::new(),
+            passkeys: Vec::new(),
             membership_cluster: None,
             enrollment: None,
         })
@@ -718,6 +736,7 @@ impl LocalMachineRecord {
             device_slots_vetted: self.device_slots_vetted,
             device_enforcement: self.device_enforcement,
             trusted_machines: self.trusted_machines,
+            passkeys: self.passkeys,
             membership_cluster: self.membership_cluster,
             enrollment: self.enrollment,
         }

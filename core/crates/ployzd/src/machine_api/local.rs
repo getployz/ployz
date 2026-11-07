@@ -79,6 +79,21 @@ impl MachineService {
         self
     }
 
+    /// This Machine, marked when `request` came over its own local socket. A routed call
+    /// reaches its target over the mesh, so only the Server the caller sits at is marked.
+    fn caller<T>(&self, request: &Request<T>) -> LocalMachine {
+        let local = self.local.clone();
+        if request
+            .extensions()
+            .get::<tonic::transport::server::UdsConnectInfo>()
+            .is_some()
+        {
+            local.on_local_socket()
+        } else {
+            local
+        }
+    }
+
     #[must_use]
     pub(super) fn with_cluster_option(
         mut self,
@@ -390,9 +405,26 @@ impl MachineRpc for MachineService {
         &self,
         request: Request<OpaquePayload>,
     ) -> Result<Response<OpaquePayload>, Status> {
+        let local = self.caller(&request);
+        finish(local.set_device(expect::<op::SetDevice>(request)?).await)
+    }
+
+    async fn set_passkey(
+        &self,
+        request: Request<OpaquePayload>,
+    ) -> Result<Response<OpaquePayload>, Status> {
+        let local = self.caller(&request);
+        finish(local.set_passkey(expect::<op::SetPasskey>(request)?).await)
+    }
+
+    async fn remove_trusted_key(
+        &self,
+        request: Request<OpaquePayload>,
+    ) -> Result<Response<OpaquePayload>, Status> {
+        let local = self.caller(&request);
         finish(
-            self.local
-                .set_device(expect::<op::SetDevice>(request)?)
+            local
+                .remove_trusted_key(expect::<op::RemoveTrustedKey>(request)?)
                 .await,
         )
     }
@@ -1108,6 +1140,11 @@ fn local_failure(error: LocalMachineError) -> Result<RpcError, Status> {
             Err(Status::unavailable("Cluster is not available"))
         }
         LocalMachineError::DockerUnavailable => Ok(unavailable("Docker is not available")),
+        LocalMachineError::PasskeyIsDevice(_)
+        | LocalMachineError::DeviceIsPasskey(_)
+        | LocalMachineError::CredentialHeld { .. } => {
+            Ok(RpcError::caused(RpcErrorCode::Conflict, &error))
+        }
         LocalMachineError::MissingAssignment
         | LocalMachineError::DeviceSlot
         | LocalMachineError::InvalidPushTarget(_)
