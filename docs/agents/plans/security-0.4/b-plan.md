@@ -77,6 +77,8 @@ Outcome. A person adds a passkey in account settings, an existing Full Device ap
 
 **Depends on.** PR #3939 (`t3/sec04-join-approval`), for `Purpose` and `validity`, and the thread A owner's agreement on the `TrustedKey` record in Appendix B, gap 5.
 
+**Decided 2026-11-07 (gap 5 agreed).** The approve-only `TrustedKey` record stands. It must work for browser-only customers, so add a first-key path that needs no CLI Device: `sudo ployz device approve --passkey CODE` run on any Server's own terminal (local socket, Full) enrolls the passkey, and the installer offers it at the end of install. Later passkeys are approved by a trusted Device or by an existing passkey through its own prompt, never through a live session. Use RustCrypto `p256` for ES256.
+
 **Files.**
 
 - [ ] Create `core/crates/ployz-core/src/authority/trusted_key.rs` with `TrustedKey`, `KeyKind::{Device, Passkey}`, `KeyAuthority::{Manage, ApproveWorkflows}` and `PasskeyPublicKey` (COSE ES256 or EdDSA).
