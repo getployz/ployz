@@ -35,8 +35,10 @@ pub(super) struct LocalMachineRecordWire {
     device_enforcement: bool,
     #[serde(default)]
     trusted_machines: Vec<ployz_core::authority::Member>,
+    /// Read one by one in [`readable_passkeys`], so an entry a newer daemon wrote never
+    /// stops the record from loading.
     #[serde(default)]
-    passkeys: Vec<ployz_core::authority::TrustedPasskey>,
+    passkeys: Vec<serde_json::Value>,
     #[serde(default)]
     membership_cluster: Option<ployz_core::SealingPublicKey>,
     #[serde(default)]
@@ -59,7 +61,7 @@ impl TryFrom<LocalMachineRecordWire> for LocalMachineRecord {
         record.device_slots_vetted = wire.device_slots_vetted;
         record.device_enforcement = wire.device_enforcement;
         record.trusted_machines = wire.trusted_machines;
-        record.passkeys = wire.passkeys;
+        record.passkeys = readable_passkeys(wire.passkeys);
         record.membership_cluster = wire.membership_cluster;
         record.enrollment = wire.enrollment;
         Ok(record)
@@ -81,4 +83,22 @@ fn pins_when_none_stored(record: &LocalMachineRecord) -> PinnedAddresses {
         public_ip: predates_pins,
         advertised_endpoints: predates_pins,
     }
+}
+
+/// The trusted passkeys this daemon can read. One it can't, such as one with an algorithm a
+/// newer daemon added, is logged and left out: it approves nothing here, and the next save
+/// drops it.
+fn readable_passkeys(
+    entries: Vec<serde_json::Value>,
+) -> Vec<ployz_core::authority::TrustedPasskey> {
+    entries
+        .into_iter()
+        .filter_map(|entry| match serde_json::from_value(entry) {
+            Ok(trusted) => Some(trusted),
+            Err(error) => {
+                tracing::warn!(%error, "skipped a trusted passkey this daemon can't read");
+                None
+            }
+        })
+        .collect()
 }

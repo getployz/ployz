@@ -46,8 +46,11 @@ pub struct MachineDetails {
     #[serde(default)]
     pub management_clients: Vec<ManagementClientLabel>,
     /// The passkeys this Machine trusts to approve workflows. A daemon from before
-    /// passkeys omits it.
-    #[serde(default)]
+    /// passkeys omits it, and an entry this build can't read is left out.
+    #[serde(
+        default,
+        deserialize_with = "crate::authority::trusted_key::readable_passkeys"
+    )]
     pub passkeys: Vec<crate::authority::TrustedPasskey>,
     /// How this Machine came to its Cluster. A daemon from before 0.3.15 omits it.
     #[serde(default)]

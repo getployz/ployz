@@ -231,8 +231,10 @@ ployz device approve mmg42klgyq
 For your first device, approve it over SSH on a server. Run `ployz login` there first, then the
 same `ployz device approve`. A request lasts 24 hours.
 
-`approve` checks that the key Ployz Cloud returns matches the code, then adds it to every server
-and lists what each server did. A server that's down when you approve doesn't get the device.
+`approve` refuses a key from Ployz Cloud that doesn't hash to the code you typed. It says the
+device gets Full access to every server you approve it on, and asks first. Pass `--yes` to skip
+the question. Take the code from the person who ran `ployz device request`, not from a web page.
+It then adds the device to every server and lists what each server did. A server that's down when you approve doesn't get the device.
 Run `approve` again once it's back.
 
 ```sh
@@ -261,16 +263,26 @@ device to add one.
    Run there, it adds the passkey to that server only. An admin can run the same command once
    from an approved device instead, which adds it to every server.
 
-`approve --passkey` reads the passkey from Ployz Cloud, checks that its key matches the code,
-shows its account, and asks before it adds it. Pass `--yes` to skip the question.
+`approve --passkey` reads the passkey from Ployz Cloud, refuses one whose key doesn't hash to the
+code you typed, shows its account, and asks before it adds it. Pass `--yes` to skip the question.
+The code itself comes from the Ployz Cloud page, so approving trusts that page to show your own
+passkey's code.
 The passkey is tied to the Ployz Cloud address your CLI signed in to, never to one Ployz Cloud
 names. Until a server lists it, Account shows **Not yet approved by a device**. A passkey
 Ployz Cloud filed but no server approved approves nothing.
 
 The installer reminds you of this step when a server finishes installing.
 
+A server that joins later doesn't have your passkeys. Run `approve --passkey` there too.
+
 `ployz device ls` lists each passkey under your devices as `passkey, approve-only`, with its
-account. `ployz device rm <code>` removes it from every server, like a device.
+account and who approved it on each server: a device, or `on <server>` for that server's own
+terminal. `ployz device rm <code>` removes every key under the code from every server that
+answers, both the device and a passkey that shares its code. Removing a device leaves the passkeys
+it approved in place, and `rm` names each one that stays trusted.
+
+When someone leaves the Organization, run `ployz device rm` on each of their passkeys as well as
+their devices.
 
 Passkeys can't approve anything yet. Approving restarts and deploys with a passkey arrives in a
 later release.

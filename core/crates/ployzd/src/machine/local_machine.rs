@@ -10,13 +10,14 @@ use std::{
 };
 
 use ployz_core::{
-    ContainerDetails, ContainerId, EnrollRequest, Enrolled, ForgetRequest, Forgotten,
-    InspectRequest, LeaveRequest, Left, LeftPhase, LocalMachinePhase, Machine, MachineDetails,
-    MachineId, MachineIdentity, MachineList, MachineName, MachineObservation, MachineToken,
-    MachineUpdated, ManagementAddress, ManagementClientLabel, MembershipEvidence,
-    PublicIpDiscovery, RESTART_APPROVAL_CAPABILITY, RecoverySeed, RegisterRequest, Registered,
-    RpcError, RpcErrorCode, RttObservation, RttStatistics, SET_DEVICE_ENFORCEMENT_CAPABILITY,
-    SelectedEndpoint, StorageDeparture, UpdateMachineRequest, synthesize_membership,
+    ContainerDetails, ContainerId, ContainerObservation, DeviceCode, EnrollRequest, Enrolled,
+    ForgetRequest, Forgotten, InspectRequest, LeaveRequest, Left, LeftPhase, LocalMachinePhase,
+    Machine, MachineDetails, MachineId, MachineIdentity, MachineList, MachineName,
+    MachineObservation, MachineToken, MachineUpdated, ManagementAddress, ManagementClientLabel,
+    MembershipEvidence, PublicIpDiscovery, RESTART_APPROVAL_CAPABILITY, RecoverySeed,
+    RegisterRequest, Registered, RpcError, RpcErrorCode, RttObservation, RttStatistics,
+    SET_DEVICE_ENFORCEMENT_CAPABILITY, SelectedEndpoint, StorageDeparture, UpdateMachineRequest,
+    synthesize_membership,
 };
 use thiserror::Error;
 use tokio_util::sync::CancellationToken;
@@ -44,6 +45,8 @@ const REDISCOVERY_RETRY_MAX: Duration = Duration::from_secs(5);
 pub struct LocalMachine {
     owner: RecordOwner,
     management_client: Option<[u8; 32]>,
+    /// Whether this call came over this Server's local socket, rather than the mesh.
+    local_socket: bool,
     cluster: Option<ClusterContext>,
     containers: Option<ContainerRuntime>,
     plugin: crate::storage::Plugin,
@@ -146,6 +149,10 @@ pub enum Error {
     DeviceSlot,
     #[error("only an approved Device manages Devices")]
     NeedsFullScope,
+    #[error("passkey {0} has the same key as an approved Device")]
+    PasskeyIsDevice(DeviceCode),
+    #[error("passkey {held} already holds this passkey's credential ID")]
+    CredentialHeld { held: DeviceCode },
     #[error("Machine is not participating")]
     NotParticipating,
     #[error("Cluster store is not available")]
@@ -224,6 +231,7 @@ impl LocalMachine {
             approvals: owner.restart_approvals(),
             owner,
             management_client: None,
+            local_socket: false,
             cluster: None,
             containers: None,
             plugin: crate::storage::Plugin::default(),
@@ -281,6 +289,13 @@ impl LocalMachine {
     #[must_use]
     pub(crate) fn with_management_client(mut self, remote: [u8; 32]) -> Self {
         self.management_client = Some(remote);
+        self
+    }
+
+    /// Mark subsequent calls as from this Server's local socket: its terminal, or SSH.
+    #[must_use]
+    pub(crate) fn on_local_socket(mut self) -> Self {
+        self.local_socket = true;
         self
     }
 

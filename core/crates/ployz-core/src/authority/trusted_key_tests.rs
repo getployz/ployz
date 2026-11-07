@@ -282,7 +282,86 @@ fn a_key_off_its_curve_or_of_the_wrong_length_is_refused() {
 #[test]
 fn an_account_that_could_rewrite_a_terminal_is_refused() {
     assert!(PasskeyAccount::parse("ada@example.com\u{1b}[2J").is_err());
+    assert!(PasskeyAccount::parse("ada\u{202E}moc.elpmaxe@").is_err());
+    assert!(PasskeyAccount::parse("ada\u{200B}@example.com").is_err());
     assert!(PasskeyAccount::parse("").is_err());
     assert!(PasskeyAccount::parse(&"a".repeat(255)).is_err());
     assert!(PasskeyAccount::parse("ada@example.com").is_ok());
+}
+
+#[test]
+fn passkeys_sharing_a_credential_id_answer_only_for_their_own_signature() {
+    let decoy = Authenticator::es256(7);
+    let holder = Authenticator::eddsa([5; 32]);
+    let mut decoy_passkey = decoy.passkey();
+    decoy_passkey.credential_id = holder.passkey().credential_id;
+    let trusted = TrustedKeys {
+        devices: Vec::new(),
+        passkeys: [decoy_passkey, holder.passkey()]
+            .map(|passkey| TrustedPasskey {
+                passkey,
+                approved_by: PasskeyApprover::Server,
+            })
+            .into(),
+    };
+    let approved = trusted
+        .passkey_approval(Purpose::Workflow, &holder.answer(&HONEST), CHALLENGE)
+        .unwrap();
+    assert_eq!(approved.passkey.code(), holder.passkey().code());
+}
+
+#[test]
+fn an_inspect_answer_from_a_newer_daemon_keeps_the_passkeys_it_can_read() {
+    let readable = serde_json::to_value(TrustedPasskey {
+        passkey: Authenticator::es256(7).passkey(),
+        approved_by: PasskeyApprover::Server,
+    })
+    .unwrap();
+    let mut newer = readable.clone();
+    set_field(
+        &mut newer,
+        &["approved_by"],
+        serde_json::json!({ "by": "passkey", "code": "aaaaaaaaaa" }),
+    );
+    set_field(
+        &mut newer,
+        &["passkey", "transports"],
+        serde_json::json!(["usb"]),
+    );
+    let mut unreadable = readable.clone();
+    set_field(
+        &mut unreadable,
+        &["passkey", "public_key", "algorithm"],
+        serde_json::json!("rs256"),
+    );
+
+    #[derive(Deserialize)]
+    struct Details {
+        #[serde(deserialize_with = "readable_passkeys")]
+        passkeys: Vec<TrustedPasskey>,
+    }
+    let details: Details = serde_json::from_value(serde_json::json!({
+        "passkeys": [readable, newer, unreadable],
+    }))
+    .unwrap();
+    assert_eq!(
+        details
+            .passkeys
+            .iter()
+            .map(|trusted| trusted.approved_by)
+            .collect::<Vec<_>>(),
+        [PasskeyApprover::Server, PasskeyApprover::Unknown]
+    );
+}
+
+/// Set the field at `path` in `value`, adding it when absent.
+fn set_field(value: &mut serde_json::Value, path: &[&str], new: serde_json::Value) {
+    let (last, parents) = path.split_last().unwrap();
+    let parent = parents
+        .iter()
+        .fold(value, |value, key| value.get_mut(*key).unwrap());
+    parent
+        .as_object_mut()
+        .unwrap()
+        .insert((*last).to_owned(), new);
 }

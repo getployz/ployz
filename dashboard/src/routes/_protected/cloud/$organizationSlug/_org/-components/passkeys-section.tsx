@@ -13,7 +13,9 @@ import { passkeysQueryOptions, type PasskeyRow, type PasskeysView } from "#/modu
 import { RelativeTime } from "#/components/relative-time";
 import { CopyBlock } from "../~/servers/-components/copy-block";
 
-export const approveCommand = (code: string) => `sudo ployz device approve --passkey ${code}`;
+/** On a server the command needs root for the local socket; a computer with an approved device runs it as the user. */
+export const approveCommand = (code: string, on: "server" | "device") =>
+  `${on === "server" ? "sudo " : ""}ployz device approve --passkey ${code}`;
 
 /**
  * Passkeys that let you approve changes from this browser. Adding one here only files it: a Server trusts it once
@@ -87,6 +89,7 @@ function ApprovalBadge({ passkey, observed }: { passkey: PasskeyRow; observed: b
   const approval = passkey.approval;
   if (approval?.by === "device") return <Badge variant="success">Approved by device {approval.code}</Badge>;
   if (approval?.by === "server") return <Badge variant="success">Approved on {approval.server}</Badge>;
+  if (approval?.by === "trusted") return <Badge variant="success">Trusted by {approval.server}</Badge>;
   if (!observed) return <Badge variant="warning">No server answered</Badge>;
   return <Badge variant="outline">Not yet approved by a device</Badge>;
 }
@@ -94,10 +97,10 @@ function ApprovalBadge({ passkey, observed }: { passkey: PasskeyRow; observed: b
 function WaitingSteps({ code }: { code: string }) {
   return (
     <div className="flex flex-col gap-2 pt-2">
-      <p className="text-sm text-muted-foreground">
-        Run this on each of your servers, or once on a computer with an approved device, and check the code matches:
-      </p>
-      <CopyBlock value={approveCommand(code)} />
+      <p className="text-sm text-muted-foreground">Run this on each of your servers:</p>
+      <CopyBlock value={approveCommand(code, "server")} />
+      <p className="text-sm text-muted-foreground">Or run this once on a computer with an approved device:</p>
+      <CopyBlock value={approveCommand(code, "device")} />
     </div>
   );
 }

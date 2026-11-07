@@ -121,8 +121,14 @@ export const readPasskeyRequest = Effect.fn("Passkeys.readRequest")(function* (o
   };
 });
 
-/** Who approved a passkey, as one Server reports it, or null while no Server that answered trusts it. */
-export type PasskeyApproval = { readonly by: "device"; readonly code: string; readonly server: string } | { readonly by: "server"; readonly server: string } | null;
+/**
+ * Who approved a passkey, as one Server reports it, or null while no Server that answered trusts it. `server` means on
+ * that Server's own terminal; `trusted` covers a call routed to it, and an approver a newer daemon names.
+ */
+export type PasskeyApproval =
+  | { readonly by: "device"; readonly code: string; readonly server: string }
+  | { readonly by: "server" | "trusted"; readonly server: string }
+  | null;
 
 /**
  * The passkeys this person added in the Organization, newest first, each with what the first Server to answer says
@@ -151,7 +157,8 @@ export const approvalOf = (passkeys: readonly { code: string; trusted: TrustedPa
   const held = passkeys.find((passkey) => passkey.code === code);
   if (held === undefined) return null;
   const by = held.trusted.approved_by;
-  return by.by === "device" ? { by: "device", code: by.code, server } : { by: "server", server };
+  if (by.by === "device") return { by: "device", code: by.code, server };
+  return { by: by.by === "server" ? "server" : "trusted", server };
 };
 
 /** One Server's own list of trusted passkeys, read from it directly, or none when no Server answers. */

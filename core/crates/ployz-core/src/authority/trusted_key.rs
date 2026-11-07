@@ -9,7 +9,7 @@
 use std::fmt;
 
 use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Deserializer, Serialize};
 use sha2::{Digest, Sha256};
 use ts_rs::TS;
 use url::Url;
@@ -36,7 +36,6 @@ pub enum PasskeyAlgorithm {
 
 /// The wire form: the algorithm and the key's bytes as unpadded base64url.
 #[derive(Serialize, Deserialize, TS)]
-#[serde(deny_unknown_fields)]
 #[ts(rename = "PasskeyPublicKey")]
 struct PublicKeyWire {
     algorithm: PasskeyAlgorithm,
@@ -86,7 +85,9 @@ impl PasskeyPublicKey {
     }
 
     /// Whether `signature` is this key's signature over `message`: DER-encoded ECDSA over
-    /// SHA-256 for ES256, strict Ed25519 for EdDSA.
+    /// SHA-256 for ES256, strict Ed25519 for EdDSA. An ES256 signature verifies in either
+    /// S form: WebAuthn lets an authenticator return a high S, and nothing keys on a
+    /// signature's bytes, since the challenge binds each answer.
     #[must_use]
     pub fn verifies(&self, message: &[u8], signature: &[u8]) -> bool {
         use p256::ecdsa::signature::Verifier as _;
@@ -218,7 +219,9 @@ impl From<CredentialId> for Base64Url {
 }
 
 /// The Cloud account a passkey belongs to, shown beside it. Cloud names it, so it is only
-/// a label: printable, at most 254 characters, never an identity a Machine checks.
+/// a label: printable, at most 254 characters, never an identity a Machine checks. Control
+/// and Unicode format characters, such as the bidi override U+202E, are refused so Cloud
+/// can't make a terminal show another account.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
 #[serde(try_from = "String", into = "String")]
 #[ts(type = "string")]
@@ -228,7 +231,12 @@ impl PasskeyAccount {
     /// # Errors
     /// Returns a [`ValueError`] for an empty, overlong or unprintable account.
     pub fn parse(value: &str) -> Result<Self, ValueError> {
-        if value.is_empty() || value.chars().count() > 254 || value.chars().any(char::is_control) {
+        if value.is_empty()
+            || value.chars().count() > 254
+            || value
+                .chars()
+                .any(|character| character.is_control() || is_format(character))
+        {
             return Err(ValueError::new(
                 "passkey account",
                 value,
@@ -242,6 +250,34 @@ impl PasskeyAccount {
     pub fn as_str(&self) -> &str {
         &self.0
     }
+}
+
+/// Unicode's format characters (general category Cf): invisible, and some reorder text.
+const fn is_format(character: char) -> bool {
+    matches!(
+        character,
+        '\u{AD}'
+            | '\u{600}'..='\u{605}'
+            | '\u{61C}'
+            | '\u{6DD}'
+            | '\u{70F}'
+            | '\u{890}'..='\u{891}'
+            | '\u{8E2}'
+            | '\u{180E}'
+            | '\u{200B}'..='\u{200F}'
+            | '\u{202A}'..='\u{202E}'
+            | '\u{2060}'..='\u{2064}'
+            | '\u{2066}'..='\u{206F}'
+            | '\u{FEFF}'
+            | '\u{FFF9}'..='\u{FFFB}'
+            | '\u{110BD}'
+            | '\u{110CD}'
+            | '\u{13430}'..='\u{1343F}'
+            | '\u{1BCA0}'..='\u{1BCA3}'
+            | '\u{1D173}'..='\u{1D17A}'
+            | '\u{E0001}'
+            | '\u{E0020}'..='\u{E007F}'
+    )
 }
 
 impl fmt::Display for PasskeyAccount {
@@ -267,7 +303,6 @@ impl From<PasskeyAccount> for String {
 /// Where a passkey answers: the WebAuthn relying party ID it was made for, and the page
 /// origin a person approves on. The CLI takes both from its own Cloud URL.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
-#[serde(deny_unknown_fields)]
 pub struct RelyingParty {
     pub id: String,
     #[ts(type = "string")]
@@ -294,7 +329,6 @@ impl RelyingParty {
 
 /// A passkey as a Full caller approves it on a Machine.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
-#[serde(deny_unknown_fields)]
 pub struct Passkey {
     pub credential_id: CredentialId,
     pub public_key: PasskeyPublicKey,
@@ -377,7 +411,6 @@ struct ClientData {
 /// A passkey's answer to a WebAuthn `navigator.credentials.get` call, every part unpadded
 /// base64url as the browser returns it.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
-#[serde(deny_unknown_fields)]
 pub struct PasskeyAssertion {
     pub credential_id: CredentialId,
     pub authenticator_data: Base64Url,
@@ -385,14 +418,20 @@ pub struct PasskeyAssertion {
     pub signature: Base64Url,
 }
 
-/// Who approved a passkey on this Machine, as the Machine saw its caller: a Device's
-/// connection, or a Full caller with no Device (the Server's own terminal, SSH, or a call
-/// routed from such a caller's entry Machine).
+/// Who approved a passkey on this Machine, as the Machine saw its caller.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
 #[serde(tag = "by", rename_all = "snake_case")]
 pub enum PasskeyApprover {
+    /// A Device's own connection to this Machine.
     Device { code: DeviceCode },
+    /// A caller on this Server's local socket: its terminal, or SSH to it.
     Server,
+    /// A Full call that reached this Machine over the mesh, routed from another Machine
+    /// that checked its caller. This Machine can't name that caller.
+    Routed,
+    /// An approver a newer daemon recorded, which this one can't name.
+    #[serde(other)]
+    Unknown,
 }
 
 impl fmt::Display for PasskeyApprover {
@@ -400,16 +439,32 @@ impl fmt::Display for PasskeyApprover {
         match self {
             Self::Device { code } => write!(formatter, "device {code}"),
             Self::Server => formatter.write_str("server"),
+            Self::Routed => formatter.write_str("routed"),
+            Self::Unknown => formatter.write_str("unknown"),
         }
     }
 }
 
 /// A passkey this Machine trusts to approve workflows, and nothing else.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
-#[serde(deny_unknown_fields)]
 pub struct TrustedPasskey {
     pub passkey: Passkey,
     pub approved_by: PasskeyApprover,
+}
+
+/// Read a list of trusted passkeys, skipping each entry this build can't read, such as
+/// one a newer daemon wrote with an algorithm it doesn't know. Skipping fails closed: that
+/// passkey approves nothing here.
+///
+/// # Errors
+/// Returns the deserializer's error when the value is not a list.
+pub fn readable_passkeys<'de, D: Deserializer<'de>>(
+    deserializer: D,
+) -> Result<Vec<TrustedPasskey>, D::Error> {
+    Ok(Vec::<serde_json::Value>::deserialize(deserializer)?
+        .into_iter()
+        .filter_map(|entry| serde_json::from_value(entry).ok())
+        .collect())
 }
 
 /// Every key one Machine trusts, read from its own record and nothing Cloud wrote.
@@ -429,29 +484,42 @@ impl TrustedKeys {
     /// The trusted passkey that answered `assertion` to `challenge`, when a statement of
     /// `purpose` may rest on a passkey at all. Only workflows may.
     ///
+    /// A credential ID is the authenticator's claim, not a key, so every trusted passkey
+    /// under it is tried and only a verifying signature picks one.
+    ///
     /// # Errors
     /// Returns [`AuthorityRefusal::ApproveOnly`] for any purpose but a workflow,
     /// [`AuthorityRefusal::UnknownPasskey`] when no trusted passkey has the assertion's
-    /// credential, and the assertion's own refusal when it does not verify.
+    /// credential, and the first candidate's refusal when none verifies.
     pub fn passkey_approval(
         &self,
         purpose: Purpose,
         assertion: &PasskeyAssertion,
         challenge: &[u8],
     ) -> Result<&TrustedPasskey, AuthorityRefusal> {
-        let trusted = self
+        let mut candidates = self
             .passkeys
             .iter()
-            .find(|trusted| trusted.passkey.credential_id == assertion.credential_id)
-            .ok_or(AuthorityRefusal::UnknownPasskey)?;
+            .filter(|trusted| trusted.passkey.credential_id == assertion.credential_id);
+        let first = candidates.next().ok_or(AuthorityRefusal::UnknownPasskey)?;
         if purpose != Purpose::Workflow {
             return Err(AuthorityRefusal::ApproveOnly {
-                code: trusted.passkey.code(),
+                code: first.passkey.code(),
                 purpose,
             });
         }
-        trusted.passkey.verify_assertion(assertion, challenge)?;
-        Ok(trusted)
+        let refusal = match first.passkey.verify_assertion(assertion, challenge) {
+            Ok(()) => return Ok(first),
+            Err(refusal) => refusal,
+        };
+        candidates
+            .find(|trusted| {
+                trusted
+                    .passkey
+                    .verify_assertion(assertion, challenge)
+                    .is_ok()
+            })
+            .ok_or(refusal)
     }
 }
 

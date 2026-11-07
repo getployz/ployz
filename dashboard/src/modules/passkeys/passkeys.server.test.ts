@@ -17,4 +17,9 @@ describe("approvalOf", () => {
       .toEqual({ by: "device", code: "dddddddddd", server: "web-1" });
     expect(approvalOf([trusted("aaaaaaaaaa", { by: "server" })], "aaaaaaaaaa", "web-1")).toEqual({ by: "server", server: "web-1" });
   });
+
+  it("claims no terminal approval for a call routed to the Server or an approver it can't name", () => {
+    expect(approvalOf([trusted("aaaaaaaaaa", { by: "routed" })], "aaaaaaaaaa", "web-1")).toEqual({ by: "trusted", server: "web-1" });
+    expect(approvalOf([trusted("aaaaaaaaaa", { by: "unknown" })], "aaaaaaaaaa", "web-1")).toEqual({ by: "trusted", server: "web-1" });
+  });
 });
