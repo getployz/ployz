@@ -83,7 +83,10 @@ Open the service and click **⋮** next to its name. A running service offers **
 - **Restart** goes one container at a time, across every server, so the others keep serving.
   The header counts them, like **Restarting 4/12**. If a container doesn't come back, the restart
   stops there and leaves the rest untouched. The service shows why, like **Container 4 on web-2
-  didn't come back**, with **Retry**.
+  didn't come back**, with **Retry**. On servers with
+  [device enforcement](../servers/manage-servers.md#require-a-devices-signature-for-restarts-and-joins)
+  on, the first press asks for your [passkey](../servers/manage-servers.md#add-a-passkey), and
+  presses in the next 60 minutes don't ask again.
 - **Stop** asks first: every server stops sending the service requests, then every container
   stops, until you start the service or deploy. The containers stay on your servers. A stopped
   service reads **Stopped**, even when your app exits with an error code on shutdown, as some
