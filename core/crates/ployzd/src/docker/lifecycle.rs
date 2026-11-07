@@ -595,7 +595,12 @@ impl ContainerRuntime {
         let result = self.recover_door(&recovery, creates).await;
         let mut stranded = self.stranded().await;
         match result {
-            Ok(()) => stranded.reported = None,
+            Ok(acted) => {
+                if acted {
+                    tracing::info!(?recovery, "{} an Ingress door", recovery.verb());
+                }
+                stranded.reported = None;
+            }
             Err(error) if stranded.reported != Some(container_id) => {
                 eprintln!(
                     "Ingress door {container_id} is still not {}: {error}",
@@ -608,7 +613,7 @@ impl ContainerRuntime {
         }
     }
 
-    async fn recover_door(&self, recovery: &IngressRecovery, creates: u64) -> Result<(), Error> {
+    async fn recover_door(&self, recovery: &IngressRecovery, creates: u64) -> Result<bool, Error> {
         match recovery {
             IngressRecovery::StartHolder(container_id)
             | IngressRecovery::StartCaddy {
@@ -618,9 +623,10 @@ impl ContainerRuntime {
                 let inspected = self.ensure_managed(container_id).await?;
                 // A newer door may be about to take the ports; the next scan decides.
                 if !failed_start(&inspected) || !self.docker.created_nothing_since(creates) {
-                    return Ok(());
+                    return Ok(false);
                 }
-                self.start_inspected(container_id, &inspected).await
+                self.start_inspected(container_id, &inspected).await?;
+                Ok(true)
             }
             IngressRecovery::StartCaddy {
                 holder: Some(holder),
@@ -631,9 +637,10 @@ impl ContainerRuntime {
                     || !is_running(&self.ensure_managed(holder).await?)
                     || !self.docker.created_nothing_since(creates)
                 {
-                    return Ok(());
+                    return Ok(false);
                 }
-                self.start_inspected(caddy, &inspected).await
+                self.start_inspected(caddy, &inspected).await?;
+                Ok(true)
             }
             IngressRecovery::RejoinCaddy { holder, caddy } => {
                 let holder_now = self.ensure_managed(holder).await?;
@@ -646,7 +653,7 @@ impl ContainerRuntime {
                     || doors::joined_to(&caddy_now) != Some(*holder)
                     || !self.docker.created_nothing_since(creates)
                 {
-                    return Ok(());
+                    return Ok(false);
                 }
                 // A stop here is no request's, so it holds nothing: the start that
                 // follows is the same repair.
@@ -657,7 +664,8 @@ impl ContainerRuntime {
                     .await;
                 idempotent_lifecycle_result(caddy, result)?;
                 let inspected = self.ensure_managed(caddy).await?;
-                self.start_inspected(caddy, &inspected).await
+                self.start_inspected(caddy, &inspected).await?;
+                Ok(true)
             }
         }
     }
