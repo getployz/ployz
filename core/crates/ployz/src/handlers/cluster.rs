@@ -22,9 +22,7 @@ pub(crate) fn name_command(command: Command) -> Command {
             "  ployz cluster name\n",
             "  ployz cluster name acme"
         ))
-        .arg(positional("name", false).help(
-            "The new name, one DNS label such as acme. Services answer at postgres.prod.acme.ployz.internal",
-        ))
+        .arg(positional("name", false).help("The new name, such as acme"))
 }
 
 #[derive(Serialize)]

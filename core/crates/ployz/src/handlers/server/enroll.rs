@@ -465,7 +465,7 @@ pub(in crate::handlers) fn founding_cluster_name(
 
 pub(in crate::handlers) fn joined_unnamed() {
     crate::ui::warn(
-        "This Server joined an existing Cluster, so --cluster-name was ignored. Rename the Cluster with ployz cluster name.",
+        "--cluster-name is ignored when joining a Cluster. Rename it with ployz cluster name.",
     );
 }
 
