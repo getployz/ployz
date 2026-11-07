@@ -112,7 +112,7 @@ fn fake_cloud_answering(seen: Seen, confirms: bool, answer: Answer) -> String {
                 "POST /api/cli/forget-servers" => ("409 Conflict", ASKED_FORGET.to_owned()),
                 "POST /api/cli/run/cluster_rename" if approved => (
                     "200 OK",
-                    json!({ "output": { "name": "beta" }, "message": "Named the Cluster beta." })
+                    json!({ "output": { "name": "beta" }, "message": "Saved beta as the Cluster's name. It applies when a Server is online." })
                         .to_string(),
                 ),
                 "POST /api/cli/run/cluster_rename" => ("409 Conflict", ASKED_RENAME.to_owned()),

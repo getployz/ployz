@@ -2,21 +2,19 @@ import { Schema } from "effect";
 
 export const CLUSTER_NAME_MAX = 63;
 
-export const CLUSTER_NAME_TOO_LONG = `${CLUSTER_NAME_MAX} characters at most.`;
-export const CLUSTER_NAME_RULE = "Use lowercase letters, numbers and hyphens. Start and end with a letter or number.";
+export const CLUSTER_NAME_RULE = `Use up to ${CLUSTER_NAME_MAX} lowercase letters, digits and hyphens. Start and end with a letter or digit.`;
 
 const LABEL = /^[a-z0-9](?:[a-z0-9-]*[a-z0-9])?$/u;
 
 /** One DNS label, as the Engine's `ClusterName` takes it. */
 export const ClusterName = Schema.String.check(
-  Schema.isMaxLength(CLUSTER_NAME_MAX, { message: CLUSTER_NAME_TOO_LONG }),
+  Schema.isMaxLength(CLUSTER_NAME_MAX, { message: CLUSTER_NAME_RULE }),
   Schema.isPattern(LABEL, { message: CLUSTER_NAME_RULE }),
 );
 
 /** Why `name` can't be a Cluster Name, or null when it can. */
 export function clusterNameProblem(name: string) {
-  if (name.length > CLUSTER_NAME_MAX) return CLUSTER_NAME_TOO_LONG;
-  return LABEL.test(name) ? null : CLUSTER_NAME_RULE;
+  return name.length <= CLUSTER_NAME_MAX && LABEL.test(name) ? null : CLUSTER_NAME_RULE;
 }
 
 /** The name a first Server founds the Cluster with when nobody chose one: the Organization slug, cut to one DNS label. */

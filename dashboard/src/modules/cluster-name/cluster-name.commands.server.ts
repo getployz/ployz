@@ -11,7 +11,7 @@ export const clusterRename = defineCommand({
   name: "cluster_rename",
   requires: rename.requires,
   path: ["cluster", "name"],
-  about: "Rename the cluster, the <name> in <service>.<namespace>.<name>.ployz.internal",
+  about: "Rename the Cluster, which changes every Service's long private address, such as db.prod.acme.ployz.internal",
   examples: ["ployz cluster name acme"],
   kind: "write",
   removes: false,
@@ -22,12 +22,12 @@ export const clusterRename = defineCommand({
   agents: true,
   typed: null,
   positional: ["name"],
-  input: Schema.Struct({ name: ClusterName.annotate({ description: "The new name: one DNS label, such as acme" }) }),
+  input: Schema.Struct({ name: ClusterName.annotate({ description: "The new name, such as acme" }) }),
   output: Schema.Struct({ name: Schema.String }),
   render: "message",
   run: (caller, input) => caller.support !== null
     ? Effect.succeed(refused("forbidden", "Only an owner or admin of this Organization can do this."))
     : renameCluster(caller.organization.id, input.name).pipe(
-      Effect.map(({ name }) => ({ ok: true, output: { name }, message: `Named the Cluster ${name}.` }) as const),
+      Effect.map(({ name }) => ({ ok: true, output: { name }, message: `Saved ${name} as the Cluster's name. It applies when a Server is online.` }) as const),
     ),
 });

@@ -1,6 +1,6 @@
 {
   "format": 1,
-  "revision": "4f8d41bcea64",
+  "revision": "423762250ddb",
   "permissions": [
     "org:read",
     "org:settings",
@@ -150,7 +150,7 @@
         "cluster",
         "name"
       ],
-      "about": "Rename the cluster, the <name> in <service>.<namespace>.<name>.ployz.internal",
+      "about": "Rename the Cluster, which changes every Service's long private address, such as db.prod.acme.ployz.internal",
       "examples": [
         "ployz cluster name acme"
       ],
@@ -170,7 +170,7 @@
             "type": "string",
             "maxLength": 63,
             "pattern": "^[a-z0-9](?:[a-z0-9-]*[a-z0-9])?$",
-            "description": "The new name: one DNS label, such as acme"
+            "description": "The new name, such as acme"
           }
         },
         "required": [

@@ -9,7 +9,7 @@ it("defaults to the slug cut to one DNS label, never ending on a hyphen", () => 
 
 it("names the rule a name breaks", () => {
   expect(clusterNameProblem("acme-2")).toBeNull();
-  expect(clusterNameProblem("a".repeat(64))).toBe("63 characters at most.");
+  expect(clusterNameProblem("a".repeat(64))).toBe("Use up to 63 lowercase letters, digits and hyphens. Start and end with a letter or digit.");
   for (const bad of ["Acme", "-acme", "acme-", "a_b", ""]) expect(clusterNameProblem(bad)).not.toBeNull();
 });
 

@@ -74,7 +74,7 @@ pub(crate) fn command(command: Command) -> Command {
     .arg(
         value("cluster-name", None)
             .value_name("NAME")
-            .help("Name the Cluster, when this Server founds it"),
+            .help("Name the new Cluster, when this Server starts one"),
     )
     .arg(
         value("ingress-image", None)

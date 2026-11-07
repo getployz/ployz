@@ -20,7 +20,7 @@ pub(crate) fn group(command: Command) -> Command {
 
 pub(crate) fn name_command(command: Command) -> Command {
     base(command, "Show or set the Cluster's name")
-        .long_about("Show or set the Cluster's name, the <name> in <service>.<namespace>.<name>.ployz.internal. Signed in to Cloud without --context or --connect, Cloud renames it once a human approves.")
+        .long_about("Show or set the Cluster's name. A rename changes every Service's long private address, such as db.prod.acme.ployz.internal. Through Ployz Cloud, a rename asks for an Approval first.")
         .after_help(concat!(
             "Examples:\n",
             "  ployz cluster name\n",
@@ -106,13 +106,16 @@ fn through_cloud(
             name: Some(name.clone()),
         },
     };
-    let sentence = ran
-        .message
-        .unwrap_or_else(|| format!("Named the Cluster {}.", name.as_str()));
+    let sentence = ran.message.unwrap_or_else(|| saved(name.as_str()));
     ui::done(&named, sentence)
 }
 
-pub(crate) const VALID_NAME: &str = "Cluster names are up to 63 lowercase letters, digits and hyphens, starting and ending with a letter or digit.";
+fn saved(name: &str) -> String {
+    format!("Saved {name} as the Cluster's name. It applies when a Server is online.")
+}
+
+pub(crate) const VALID_NAME: &str =
+    "Use up to 63 lowercase letters, digits and hyphens. Start and end with a letter or digit.";
 
 pub(crate) fn parse(name: &str) -> Result<ClusterName, Error> {
     ClusterName::parse(name).map_err(|_| {

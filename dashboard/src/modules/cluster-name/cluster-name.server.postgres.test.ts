@@ -76,7 +76,12 @@ it("renames from the dashboard at once, and asks a human first from the CLI or a
   expect(await approvals()).toBe(0);
 
   for (const via of ["agent", "cli"] as const) {
-    expect(await as(via, { name: "beta" })).toMatchObject({ ok: false, refusal: { code: "approval_required", message: "A human must approve renaming the cluster to beta before it runs.", writes: "none" } });
+    expect(await as(via, { name: "beta" })).toMatchObject({ ok: false, refusal: {
+      code: "approval_required",
+      message: "A human must approve renaming the Cluster to beta before it runs.",
+      details: { operation: { verb: "set_cluster_name", name: "beta", preview: { from: "acme", to: "beta" } } },
+      writes: "none",
+    } });
   }
   expect(await approvals()).toBe(1);
   expect((await row())?.name).toBe("acme");
@@ -105,10 +110,10 @@ it("supersedes a pending rename once the name moves, so its card never shows a s
 });
 
 it("refuses a name that isn't one DNS label, naming the rule", async () => {
-  expect(await as("dashboard", { name: "a".repeat(64) })).toMatchObject({ ok: false, refusal: { code: "invalid_argument", message: "63 characters at most." } });
+  expect(await as("dashboard", { name: "a".repeat(64) })).toMatchObject({ ok: false, refusal: { code: "invalid_argument", message: "Use up to 63 lowercase letters, digits and hyphens. Start and end with a letter or digit." } });
   expect(await as("dashboard", { name: "Acme Prod" })).toMatchObject({
     ok: false,
-    refusal: { code: "invalid_argument", message: "Use lowercase letters, numbers and hyphens. Start and end with a letter or number." },
+    refusal: { code: "invalid_argument", message: "Use up to 63 lowercase letters, digits and hyphens. Start and end with a letter or digit." },
   });
   expect(await row()).toBeUndefined();
 });

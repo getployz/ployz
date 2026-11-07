@@ -85,9 +85,24 @@ pub(crate) struct Operation {
     name: String,
     #[serde(default)]
     subject: Option<String>,
+    #[serde(default)]
+    preview: Option<serde_json::Value>,
 }
 
 impl Operation {
+    fn renamed_addresses(&self) -> String {
+        let to = format!("*.{}.ployz.internal", self.name);
+        match self
+            .preview
+            .as_ref()
+            .and_then(|preview| preview.get("from"))
+            .and_then(serde_json::Value::as_str)
+        {
+            Some(from) => format!("*.{from}.ployz.internal → {to}"),
+            None => to,
+        }
+    }
+
     fn loses_volume_access(&self) -> bool {
         // A reset keeps Volume data on the Server's disk; a forget is for a Server that may be gone.
         self.verb == Verb::Remove
@@ -284,6 +299,11 @@ impl Asked {
                     lost.restored
                 ));
             }
+        }
+        if let Subject::Operation(operation) = &self.subject
+            && operation.verb == Verb::SetClusterName
+        {
+            lines.push(format!("  ~ {}", operation.renamed_addresses()));
         }
         if let Some(redeploy) = &self.redeploy
             && let Some(undoes) = deployments(&redeploy.rolls_back)
@@ -648,6 +668,32 @@ mod tests {
         .unwrap();
         assert_eq!(asked.verb(), Verb::SetClusterName);
         assert_eq!(asked.what(asked.verb()), "this rename to acme");
+    }
+
+    #[test]
+    fn a_cluster_rename_shows_the_private_addresses_it_moves() {
+        let review = |preview: serde_json::Value| {
+            let asked: Asked = serde_json::from_value(serde_json::json!({
+                "approval_id": "a1", "approval": "d1", "effects": [], "organization": "ada",
+                "operation": { "verb": "set_cluster_name", "name": "beta", "preview": preview },
+            }))
+            .unwrap();
+            asked.review_in(asked.verb(), &chrono::Utc)
+        };
+        assert_eq!(
+            review(serde_json::json!({ "from": "alpha", "to": "beta" })),
+            [
+                "This rename in Organization ada:",
+                "  ~ *.alpha.ployz.internal → *.beta.ployz.internal",
+            ]
+        );
+        assert_eq!(
+            review(serde_json::json!({ "from": null, "to": "beta" })),
+            [
+                "This rename in Organization ada:",
+                "  ~ *.beta.ployz.internal"
+            ]
+        );
     }
 
     #[test]

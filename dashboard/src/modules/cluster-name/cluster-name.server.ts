@@ -113,7 +113,7 @@ export const applyClusterName = Effect.fn("ClusterName.apply")(function* (organi
   }
   const refusal = answer.failure._tag === "TimeoutError" ? null : refusalOf(answer.failure);
   if (refusal === null) {
-    yield* Effect.logWarning("The Cluster Name waits for a Server that answers.", answer.failure).pipe(Effect.annotateLogs({ organizationId }));
+    yield* Effect.logWarning("No Server answered, so the Cluster Name stays pending.", answer.failure).pipe(Effect.annotateLogs({ organizationId }));
     return "waiting" satisfies ClusterNameApplied;
   }
   yield* drizzle.update(organizationClusterName).set({ refusal, updatedAt: new Date() }).where(same);
