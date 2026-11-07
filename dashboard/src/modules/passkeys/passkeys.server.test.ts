@@ -9,17 +9,17 @@ const trusted = (code: string, approvedBy: TrustedPasskey["approved_by"]) => ({
 
 describe("approvalOf", () => {
   it("says a passkey Cloud holds is not approved until a Server lists it", () => {
-    expect(approvalOf([trusted("bbbbbbbbbb", { by: "server" })], "aaaaaaaaaa", "web-1")).toBeNull();
+    expect(approvalOf([trusted("bbbbbbbbbb", { by: "server" })], "aaaaaaaaaa")).toBeNull();
   });
 
   it("names the Device or the Server the Server reports as the approver", () => {
-    expect(approvalOf([trusted("aaaaaaaaaa", { by: "device", code: "dddddddddd" })], "aaaaaaaaaa", "web-1"))
-      .toEqual({ by: "device", code: "dddddddddd", server: "web-1" });
-    expect(approvalOf([trusted("aaaaaaaaaa", { by: "server" })], "aaaaaaaaaa", "web-1")).toEqual({ by: "server", server: "web-1" });
+    expect(approvalOf([trusted("aaaaaaaaaa", { by: "device", code: "dddddddddd" })], "aaaaaaaaaa"))
+      .toEqual({ by: "device", code: "dddddddddd" });
+    expect(approvalOf([trusted("aaaaaaaaaa", { by: "server" })], "aaaaaaaaaa")).toEqual({ by: "server" });
   });
 
   it("claims no terminal approval for a call routed to the Server or an approver it can't name", () => {
-    expect(approvalOf([trusted("aaaaaaaaaa", { by: "routed" })], "aaaaaaaaaa", "web-1")).toEqual({ by: "trusted", server: "web-1" });
-    expect(approvalOf([trusted("aaaaaaaaaa", { by: "unknown" })], "aaaaaaaaaa", "web-1")).toEqual({ by: "trusted", server: "web-1" });
+    expect(approvalOf([trusted("aaaaaaaaaa", { by: "routed" })], "aaaaaaaaaa")).toEqual({ by: "trusted" });
+    expect(approvalOf([trusted("aaaaaaaaaa", { by: "unknown" })], "aaaaaaaaaa")).toEqual({ by: "trusted" });
   });
 });

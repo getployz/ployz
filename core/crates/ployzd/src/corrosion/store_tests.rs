@@ -231,6 +231,7 @@ async fn publication_guard_rechecks_the_local_phase() {
     );
     let (mut machine, local) = participating_record();
     machine.runtime.management_identity = Some(local.management_secret().public_key());
+    machine.runtime.device_enforcement = Some(local.device_enforcement());
     let publication = store.machine_publication().await;
     assert_eq!(
         publication.publishable_machine(&local, RuntimeOverlay::default()),

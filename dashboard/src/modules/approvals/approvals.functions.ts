@@ -1,8 +1,12 @@
 import { createServerFn } from "@tanstack/react-start";
+import type { Signed } from "@ployz/sdk";
 import { Effect, Schema } from "effect";
 import { ApprovalDecision } from "#/modules/approvals/approvals";
 import { decideAndApply } from "#/modules/approvals/apply.server";
-import { askerNames, type ApprovalView } from "#/modules/approvals/approvals.server";
+import { askerNames, type ApprovalView, readAsker } from "#/modules/approvals/approvals.server";
+import { ApprovalsInput } from "#/modules/approval-session/approvals-input";
+import { findService } from "#/modules/config-store/store-lookup.server";
+import { restartTarget } from "#/modules/service-act/service-act.server";
 import { freshApproval, freshOperationDigest, freshPendingApprovals } from "#/modules/machines/server-operations.server";
 import { type Access, requireAccess } from "#/modules/organization/access.server";
 import { approvalForSupport } from "#/modules/support-access/support-view";
@@ -44,13 +48,40 @@ export const getApprovalServerFn = createServerFn({ method: "GET" })
  */
 export const decideApprovalServerFn = createServerFn({ method: "POST" })
   .middleware([publicErrorMiddleware, actorMiddleware])
-  .validator(strictValidator(Schema.Struct({ organizationSlug: Schema.String, id: Schema.String, decision: ApprovalDecision })))
+  .validator(strictValidator(Schema.Struct({
+    organizationSlug: Schema.String,
+    id: Schema.String,
+    decision: ApprovalDecision,
+    /** For a restart on Servers that enforce: one approval per container, from the approver's passkey session. */
+    approvals: Schema.optional(ApprovalsInput),
+  })))
   .handler(({ context, data }) => runActor(context, Effect.gen(function* () {
     const access = yield* requireAccess(context.actor, data.organizationSlug, "approvals:answer");
-    const decided = yield* decideAndApply({ ...access, via: "dashboard" }, data.id, data.decision, freshOperationDigest).pipe(
+    // SAFETY: the schema bounds each field's shape; Servers parse and verify the rest.
+    const approvals = data.approvals as Readonly<Record<string, Signed>> | undefined;
+    const decided = yield* decideAndApply({ ...access, via: "dashboard" }, data.id, data.decision, freshOperationDigest, approvals).pipe(
       Effect.catchTag("NotFound", (missing) => Effect.succeed({ ok: false as const, refusal: { message: missing.message } })),
     );
     return decided.ok
       ? { ok: true as const, approval: yield* shownOne(access, decided.approval) }
       : { ok: false as const, message: decided.refusal.message };
+  })));
+
+/**
+ * The restart a dashboard ask runs once approved, as the approver's browser needs it to make approvals: the Service's
+ * copies and the Servers. Null for anything else, or when Cloud can't read the Servers.
+ */
+export const approvalRestartTargetServerFn = createServerFn({ method: "GET" })
+  .middleware([publicErrorMiddleware, actorMiddleware])
+  .validator(strictValidator(Schema.Struct({ organizationSlug: Schema.String, id: Schema.String })))
+  .handler(({ context, data }) => runActor(context, Effect.gen(function* () {
+    const access = yield* requireAccess(context.actor, data.organizationSlug, "approvals:answer");
+    const asker = yield* readAsker(access.organization.id, data.id);
+    if (asker === undefined || "diff" in asker.review) return null;
+    const apply = asker.review.apply;
+    if (apply === undefined || !("service" in apply) || apply.verb !== "restart") return null;
+    const found = yield* findService(access.organization.id, apply.environmentId, apply.service);
+    if (found === null) return null;
+    const target = yield* restartTarget(access.organization.id, found);
+    return target === null ? null : { environmentId: apply.environmentId, service: apply.service, environmentName: found.environment, namespace: found.namespace, ...target };
   })));

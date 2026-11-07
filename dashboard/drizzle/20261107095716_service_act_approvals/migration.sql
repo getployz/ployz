@@ -1,0 +1,2 @@
+ALTER TABLE "service_act" ADD COLUMN "approvals" jsonb;--> statement-breakpoint
+ALTER TABLE "service_act" ADD CONSTRAINT "service_act_approvals_check" CHECK ("approvals" is null or jsonb_typeof("approvals") = 'object');

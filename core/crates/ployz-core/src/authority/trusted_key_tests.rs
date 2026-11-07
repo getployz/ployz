@@ -5,28 +5,28 @@ use sha2::{Digest, Sha256};
 use super::*;
 use crate::authority::{Signed, StartingSet, Timestamp};
 
-const CHALLENGE: &[u8] = b"the canonical body's digest";
+pub(crate) const CHALLENGE: &[u8] = b"the canonical body's digest";
 
-fn relying_party() -> RelyingParty {
+pub(crate) fn relying_party() -> RelyingParty {
     RelyingParty::of(&Url::parse("https://ployz.cloud/some/page").unwrap()).unwrap()
 }
 
 /// A passkey and the authenticator that answers for it.
-enum Authenticator {
+pub(crate) enum Authenticator {
     Es256(p256::ecdsa::SigningKey),
     EdDsa(ed25519_dalek::SigningKey),
 }
 
 impl Authenticator {
-    fn es256(seed: u8) -> Self {
+    pub(crate) fn es256(seed: u8) -> Self {
         Self::Es256(p256::ecdsa::SigningKey::from_slice(&[seed; 32]).unwrap())
     }
 
-    fn eddsa(seed: [u8; 32]) -> Self {
+    pub(crate) fn eddsa(seed: [u8; 32]) -> Self {
         Self::EdDsa(ed25519_dalek::SigningKey::from_bytes(&seed))
     }
 
-    fn public_key(&self) -> PasskeyPublicKey {
+    pub(crate) fn public_key(&self) -> PasskeyPublicKey {
         match self {
             Self::Es256(key) => PasskeyPublicKey::parse(
                 PasskeyAlgorithm::Es256,
@@ -40,7 +40,7 @@ impl Authenticator {
         }
     }
 
-    fn passkey(&self) -> Passkey {
+    pub(crate) fn passkey(&self) -> Passkey {
         Passkey {
             credential_id: credential(*self.public_key().as_bytes().last().unwrap()),
             public_key: self.public_key(),
@@ -49,7 +49,7 @@ impl Authenticator {
         }
     }
 
-    fn sign(&self, message: &[u8]) -> Vec<u8> {
+    pub(crate) fn sign(&self, message: &[u8]) -> Vec<u8> {
         match self {
             Self::Es256(key) => {
                 let signature: p256::ecdsa::Signature = key.sign(message);
@@ -61,7 +61,7 @@ impl Authenticator {
 
     /// What the browser returns for `navigator.credentials.get`, built from parts a test can
     /// spoil one at a time.
-    fn answer(&self, answer: &Answer) -> PasskeyAssertion {
+    pub(crate) fn answer(&self, answer: &Answer) -> PasskeyAssertion {
         let client_data = serde_json::json!({
             "type": answer.kind,
             "challenge": URL_SAFE_NO_PAD.encode(answer.challenge),
@@ -84,15 +84,15 @@ impl Authenticator {
     }
 }
 
-struct Answer<'a> {
-    kind: &'a str,
-    challenge: &'a [u8],
-    origin: &'a str,
-    rp_id: &'a str,
-    flags: u8,
+pub(crate) struct Answer<'a> {
+    pub(crate) kind: &'a str,
+    pub(crate) challenge: &'a [u8],
+    pub(crate) origin: &'a str,
+    pub(crate) rp_id: &'a str,
+    pub(crate) flags: u8,
 }
 
-const HONEST: Answer<'static> = Answer {
+pub(crate) const HONEST: Answer<'static> = Answer {
     kind: "webauthn.get",
     challenge: CHALLENGE,
     origin: "https://ployz.cloud",
@@ -104,7 +104,7 @@ fn credential(tag: u8) -> CredentialId {
     CredentialId::try_from(Base64Url::new(vec![tag, 1, 2, 3])).unwrap()
 }
 
-fn trusting(authenticator: &Authenticator) -> TrustedKeys {
+pub(crate) fn trusting(authenticator: &Authenticator) -> TrustedKeys {
     TrustedKeys {
         devices: vec![DeviceKey::from_bytes([1; 32])],
         passkeys: vec![TrustedPasskey {

@@ -186,6 +186,7 @@ fn advertised_capability_groups_match_the_frozen_catalog() {
             "ployz.build.sealed.v1",
             "ployz.build.grant.holder.v1",
             "ployz.restart.device-approval.v2",
+            "ployz.restart.session-grant.v1",
         ]
     );
     assert_eq!(
@@ -367,6 +368,10 @@ const ABOVE_FLOOR: &[(&str, &str)] = &[
     (
         "ployz.restart.device-approval.v2",
         "falls back: an older daemon ignores the approval on EnsureContainer and restarts as before, since it enforces nothing",
+    ),
+    (
+        "ployz.restart.session-grant.v1",
+        "gated: Cloud attaches a browser approval only for a Machine that advertises it; an older enforcing Machine refuses the restart and the dashboard names that Server",
     ),
     (
         "ployz.image.pull.v1",

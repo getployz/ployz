@@ -16,9 +16,20 @@ pub fn verify(
     expires_at: Timestamp,
     now: Timestamp,
 ) -> Result<(), AuthorityRefusal> {
-    if expires_at < issued_at
-        || expires_at.as_millis() - issued_at.as_millis() > MAX_LIFETIME_MILLIS
-    {
+    verify_within(issued_at, expires_at, now, MAX_LIFETIME_MILLIS)
+}
+
+/// [`verify`] with a lifetime cap of `max_lifetime` milliseconds.
+///
+/// # Errors
+/// As [`verify`].
+pub fn verify_within(
+    issued_at: Timestamp,
+    expires_at: Timestamp,
+    now: Timestamp,
+    max_lifetime: u64,
+) -> Result<(), AuthorityRefusal> {
+    if expires_at < issued_at || expires_at.as_millis() - issued_at.as_millis() > max_lifetime {
         return Err(AuthorityRefusal::Mismatch {
             field: "a lifetime",
         });

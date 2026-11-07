@@ -254,9 +254,10 @@ device to add one.
 
 1. In Ployz Cloud, open **Account** in your Organization and choose **Add passkey**. Your browser
    asks you to create it. Ployz Cloud then shows a code, such as `q3x7mfk2pa`.
-2. On each server, run:
+2. On each server, sign in to Ployz Cloud, then approve the passkey:
 
    ```sh
+   sudo ployz login
    sudo ployz device approve --passkey q3x7mfk2pa
    ```
 
@@ -268,8 +269,9 @@ code you typed, shows its account, and asks before it adds it. Pass `--yes` to s
 The code itself comes from the Ployz Cloud page, so approving trusts that page to show your own
 passkey's code.
 The passkey is tied to the Ployz Cloud address your CLI signed in to, never to one Ployz Cloud
-names. Until a server lists it, Account shows **Not yet approved by a device**. A passkey
-Ployz Cloud filed but no server approved approves nothing.
+names. Account asks each server whether it trusts the passkey and shows the answer, like
+**Trusted on 1 of 2 servers**, with each server's state underneath and the steps until every
+server trusts it. A passkey Ployz Cloud filed but no server approved approves nothing.
 
 The installer reminds you of this step when a server finishes installing.
 
@@ -285,8 +287,9 @@ stays trusted.
 When someone leaves the Organization, run `ployz device rm` on each of their passkeys as well as
 their devices.
 
-Passkeys can't approve anything yet. Approving restarts and deploys with a passkey arrives in a
-later release.
+A passkey approves restarts from the dashboard on servers with
+[device enforcement](#require-a-devices-signature-for-restarts-and-joins) on. Approving deploys
+with a passkey arrives in a later release.
 
 ### Require a device's signature for restarts and joins
 
@@ -336,6 +339,18 @@ enforcement, and `exec` use a direct authenticated connection to each target ser
 used for those actions must contain a direct connection to each target. With an explicit
 `--connect`, `device approve`, `device rm`, and `device enforce` affect that server only.
 To approve the first Device through SSH, repeat the command on each server.
+
+**Restart** in the dashboard asks for your passkey the first time you press it. Your browser
+then holds a key that approves restarts in that Environment, on its servers, for 60 minutes.
+Later presses in that window don't ask again. The key never leaves the browser tab, and closing or reloading
+the tab ends the window. Each press still sends one approval per container, lasting at most
+15 minutes, and the server checks it, the passkey's grant of the browser key and the passkey
+itself before it stops anything. Its log names the passkey that approved the restart. A grant
+that was changed after the passkey answered, names another Environment or server, or lasts over
+an hour is refused. Ployz Cloud carries the grant but can't make one, so it can't restart a
+container on its own. A server before 0.4 can't check a passkey's grant, so the dashboard sends
+it none and an enforcing one refuses the restart: use `ployz service restart` there. With
+enforcement on, **Stop** in the dashboard is refused too; use `ployz service stop`.
 
 With enforcement on, `service restart` from a device that isn't approved is refused with
 `ployz.restart.device-approval.v2 needs a Device-signed restart approval`. `service stop` needs

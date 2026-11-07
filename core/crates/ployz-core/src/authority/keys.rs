@@ -7,8 +7,10 @@ use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use ts_rs::TS;
 
 use super::{
-    canonical::{self, CanonicalError, hex_bytes, write_hex},
+    canonical::{self, CanonicalError, Timestamp, hex_bytes, write_hex},
     refusal::AuthorityRefusal,
+    session::{Grant, SessionGrant},
+    trusted_key::TrustedKeys,
 };
 use crate::{DeviceCode, DeviceKey};
 
@@ -202,15 +204,20 @@ impl KeySignature {
     }
 }
 
-/// A statement as it travels: its canonical body, exactly as signed, and its signatures.
-/// On the wire it has the same shape for every statement, which the TypeScript side
-/// sees as one type.
+/// A statement as it travels: its canonical body, exactly as signed, its signatures, and
+/// the session grants that vouch for a browser key among the signers. On the wire it has
+/// the same shape for every statement, which the TypeScript side sees as one type.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
 #[serde(deny_unknown_fields)]
 #[ts(concrete(T = super::restart::RestartApproval))]
 pub struct Signed<T> {
     pub body: String,
     pub signatures: Vec<KeySignature>,
+    /// Absent from a Device's envelope, which keeps the bytes a daemon from before grants
+    /// reads. A daemon from before grants refuses an envelope that carries one.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    #[ts(optional, as = "Option<Vec<SessionGrant>>")]
+    pub grants: Vec<SessionGrant>,
     #[serde(skip)]
     #[ts(skip)]
     statement: PhantomData<T>,
@@ -227,8 +234,24 @@ impl<T: Statement> Signed<T> {
         Ok(Self {
             body,
             signatures,
+            grants: Vec::new(),
             statement: PhantomData,
         })
+    }
+
+    /// Encode `statement`, sign it with a browser key, and carry the grant that vouches
+    /// for that key.
+    ///
+    /// # Errors
+    /// Returns a [`CanonicalError`] when the statement has no canonical form.
+    pub fn sign_under(
+        statement: &T,
+        signer: &Signer,
+        grant: SessionGrant,
+    ) -> Result<Self, CanonicalError> {
+        let mut signed = Self::sign(statement, signer)?;
+        signed.grants.push(grant);
+        Ok(signed)
     }
 
     /// Parse the body, refusing it unless it is canonical. Checks no signature.
@@ -277,5 +300,86 @@ impl<T: Statement> Signed<T> {
                 Ok(signature.key)
             })
             .collect()
+    }
+
+    /// Who signed this statement, each checked against `trusted` at `now`: a Device it
+    /// trusts, or a browser key a grant in this envelope vouches for. A grant only says
+    /// what its key may do; the statement's own check decides whether its scope covers
+    /// this statement.
+    ///
+    /// # Errors
+    /// Returns [`AuthorityRefusal::Unsigned`] when there is no signature,
+    /// [`AuthorityRefusal::UnknownKey`] when a key is neither a trusted Device nor named
+    /// by a grant here, [`AuthorityRefusal::BadSignature`] when a signature does not
+    /// verify, and the grant's refusal from [`SessionGrant::verify`].
+    pub fn approvers(
+        &self,
+        trusted: &TrustedKeys,
+        now: Timestamp,
+    ) -> Result<Vec<Approver>, AuthorityRefusal> {
+        if self.signatures.is_empty() {
+            return Err(AuthorityRefusal::Unsigned {
+                purpose: T::PURPOSE,
+            });
+        }
+        let input = self.signing_input();
+        self.signatures
+            .iter()
+            .map(|signature| {
+                let device = trusted.signing_keys().any(|key| key == signature.key);
+                let grant = (!device)
+                    .then(|| {
+                        self.grants
+                            .iter()
+                            .find(|grant| grant.browser_key() == Some(signature.key))
+                    })
+                    .flatten();
+                if !device && grant.is_none() {
+                    return Err(AuthorityRefusal::UnknownKey { key: signature.key });
+                }
+                if !signature.verifies(&input) {
+                    return Err(AuthorityRefusal::BadSignature { key: signature.key });
+                }
+                Ok(match grant {
+                    None => Approver::Device(signature.key),
+                    Some(grant) => Approver::Browser {
+                        key: signature.key,
+                        grant: grant.verify(trusted, now)?,
+                    },
+                })
+            })
+            .collect()
+    }
+}
+
+/// A signer whose signature on a statement verified, and what vouches for it.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum Approver {
+    /// A Device this Machine trusts.
+    Device(SigningPublicKey),
+    /// A browser key a passkey this Machine trusts lent `grant`.
+    Browser { key: SigningPublicKey, grant: Grant },
+}
+
+impl Approver {
+    #[must_use]
+    pub const fn key(&self) -> SigningPublicKey {
+        match self {
+            Self::Device(key) | Self::Browser { key, .. } => *key,
+        }
+    }
+}
+
+impl fmt::Display for Approver {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Device(key) => write!(formatter, "device {}", key.code()),
+            Self::Browser { key, grant } => write!(
+                formatter,
+                "passkey {} via browser key {}",
+                grant.passkey,
+                key.code()
+            ),
+        }
     }
 }
