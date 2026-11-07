@@ -21,8 +21,10 @@ use crate::{
     ui::progress::{Detail, Diagnostic, StartFailure},
 };
 
-/// How many Servers one command sets the Ingress Proxy on at once.
-const DOORS_AT_ONCE: usize = 8;
+/// How many Servers one command sets the Ingress Proxy on at once. A cutover or pin
+/// change costs each Server a short gap on 80 and 443, so one at a time keeps every
+/// other Server serving through it.
+const DOORS_AT_ONCE: usize = 1;
 
 /// A Server whose Ingress Proxy a command sets.
 #[derive(Clone, Debug, PartialEq)]
@@ -123,7 +125,7 @@ async fn observe_doors(client: &mut Client) -> Result<Doors, Failure> {
     })
 }
 
-/// Ask each of `machines` to set its Public Door for `proxy`, a few at a time, in order.
+/// Ask each of `machines` to set its Public Door for `proxy`, one at a time, in order.
 /// A call whose reply was lost, or that met a restarting daemon, is sent again, since
 /// the daemon converges on a resend.
 async fn set_doors<C: MachineOperations>(
