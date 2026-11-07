@@ -10,14 +10,13 @@ use std::{
 };
 
 use ployz_core::{
-    ContainerDetails, ContainerId, ContainerObservation, DeviceCode, EnrollRequest, Enrolled,
-    ForgetRequest, Forgotten, InspectRequest, LeaveRequest, Left, LeftPhase, LocalMachinePhase,
-    Machine, MachineDetails, MachineId, MachineIdentity, MachineList, MachineName,
-    MachineObservation, MachineToken, MachineUpdated, ManagementAddress, ManagementClientLabel,
-    MembershipEvidence, PublicIpDiscovery, RESTART_APPROVAL_CAPABILITY, RecoverySeed,
-    RegisterRequest, Registered, RpcError, RpcErrorCode, RttObservation, RttStatistics,
-    SET_DEVICE_ENFORCEMENT_CAPABILITY, SelectedEndpoint, StorageDeparture, UpdateMachineRequest,
-    synthesize_membership,
+    ContainerDetails, ContainerId, DeviceCode, EnrollRequest, Enrolled, ForgetRequest, Forgotten,
+    InspectRequest, LeaveRequest, Left, LeftPhase, LocalMachinePhase, Machine, MachineDetails,
+    MachineId, MachineIdentity, MachineList, MachineName, MachineObservation, MachineToken,
+    MachineUpdated, ManagementAddress, ManagementClientLabel, MembershipEvidence,
+    PublicIpDiscovery, RESTART_APPROVAL_CAPABILITY, RecoverySeed, RegisterRequest, Registered,
+    RpcError, RpcErrorCode, RttObservation, RttStatistics, SET_DEVICE_ENFORCEMENT_CAPABILITY,
+    SelectedEndpoint, StorageDeparture, UpdateMachineRequest, synthesize_membership,
 };
 use thiserror::Error;
 use tokio_util::sync::CancellationToken;
