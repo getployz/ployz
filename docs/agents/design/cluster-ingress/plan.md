@@ -96,7 +96,7 @@ Each live lane runs in its own worktree at the PR head. Engine lanes drive real 
 
 **Build.**
 
-- [ ] Add the `add` action to `scripts/verify-cluster`. It boots one bare guest, enrolls it into the run's existing Cluster with the run's join token, and prints the new Machine's name. Every later PR needs it to prove Global catch-up on a joining Machine.
+- [ ] Add the `add` action to `core/scripts/verify-cluster`. It boots one guest, enrolls it into the run's existing Cluster the way `up` enrolled the others, and prints the new Machine's name. Every later PR needs it to prove Global catch-up on a joining Machine.
 - [ ] Document `add` in the verify-server skill's action list.
 
 **You see.**
@@ -112,7 +112,7 @@ Each live lane runs in its own worktree at the PR head. Engine lanes drive real 
 
 - [ ] Lane 1. Regression lane against trunk. Run `up --machines 2` then `doctor` at trunk and head. Save `up-two.txt`. Pass when both runs report two healthy Machines.
 - [ ] Lane 2. Run `add` on a two-Machine run. Save `add-third.txt`. Pass when `server ls` shows three Machines in state ready.
-- [ ] Lane 3. Deploy `whoami` as a Global, then `add`. Save `global-catch-up.txt`. Pass when the new Machine runs a `whoami` container within five minutes.
+- [ ] Lane 3. Run `add --roles ingress` on a run whose Machines accept ingress, so the Ingress Proxy is the Global to catch up. A user Service cannot be made Global today. Save `global-catch-up.txt`. Pass when the new Machine runs the Ingress Proxy within five minutes.
 - [ ] Lane 4. Run `add` twice. Save `add-twice.txt`. Pass when the run holds four distinct Machines and no name repeats.
 - [ ] Lane 5. Run `add` on a run made with `--cloud`. Save `add-cloud.txt`. Pass when the Machine joins through the Cloud path and appears in the dashboard Servers list.
 - [ ] Lane 6. Run `add` with a revoked join token. Save `add-revoked.txt`. Pass when it exits nonzero and names the token as the cause.
