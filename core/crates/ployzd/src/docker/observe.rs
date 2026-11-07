@@ -659,7 +659,6 @@ fn ingress_recovery(doors: &[DoorFacts], complete: bool) -> Option<IngressRecove
         .filter(|facts| facts.door == Door::Proxy)
         .collect::<Vec<_>>();
     if holders.is_empty() {
-        // Before the holder, the Caddy published the ports itself.
         let legacy = caddys
             .iter()
             .copied()

@@ -1079,7 +1079,6 @@ async fn join_places_observed_ingress_on_this_machine() {
     let stdout = String::from_utf8_lossy(&output.stdout);
     assert!(stdout.contains("Joined Server joiner"), "{stdout}");
     assert!(daemon.ensure_requests().is_empty());
-    // One call sets both doors, for the Caddy the founder runs.
     assert_eq!(
         daemon.door_requests(),
         [ployz_core::SetIngressDoorsRequest {

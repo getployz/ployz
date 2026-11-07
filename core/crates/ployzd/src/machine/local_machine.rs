@@ -183,13 +183,11 @@ pub enum Error {
     Cluster(#[from] crate::corrosion::Error),
     #[error(transparent)]
     IngressProxyServiceSpec(#[from] ployz_core::IngressProxyServiceSpecError),
-    /// The route asked for Doors this daemon cannot place: only the Public Door exists.
     #[error(
         "{} places only the Public Door",
         ployz_core::SET_INGRESS_DOORS_CAPABILITY
     )]
     UnsupportedDoors,
-    /// A started Ingress door was not observed running.
     #[error("Ingress door {container_id} is {runtime} after its start")]
     DoorNotRunning {
         container_id: ContainerId,

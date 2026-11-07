@@ -565,7 +565,6 @@ pub fn plan_ingress_repairs(snapshot: &DeploySnapshot) -> Vec<SlotRepair> {
                 HeldIngress::Restarting(restarting) => {
                     SlotAction::Restarting(restarting.container_id)
                 }
-                // The daemon retires a dead one and creates its own in its place.
                 HeldIngress::Dead(_) | HeldIngress::None => SlotAction::Create,
             },
         });

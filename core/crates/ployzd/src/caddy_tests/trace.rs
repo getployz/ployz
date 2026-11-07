@@ -444,7 +444,6 @@ fn every_site_and_the_error_page_set_the_ployz_headers() {
     assert_eq!(sites.len(), 10, "{sites:?}");
     for address in sites {
         let site = site_text(&caddyfile, address);
-        // A Tunnel door site imports the headers through its own snippet.
         let import = if address.ends_with(":8480") {
             format!("\timport loopback_site {a}\n")
         } else {

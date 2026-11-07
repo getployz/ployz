@@ -1529,7 +1529,6 @@ async fn routed_addresses_leave_out_an_https_route_caddy_has_no_certificate_for(
     ));
 
     let loaded = next_load(&mut load_rx).await;
-    // The public listeners proxy nothing for it; only the Tunnel door's site does.
     assert!(
         !loaded.contains("\nhttps://secure.example.com {"),
         "{loaded}"

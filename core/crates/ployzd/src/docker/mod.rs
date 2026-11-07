@@ -1653,10 +1653,8 @@ pub enum Error {
     ContainerNotFound(ContainerId),
     #[error("Docker name '{0}' is occupied by incompatible creation inputs")]
     SlotNameOccupied(String),
-    /// A spec joins the Ingress holder's network, and no holder runs here.
     #[error("no Ingress holder is running on this Machine to join")]
     IngressHolderNotRunning,
-    /// A spec names a network this daemon does not know.
     #[error("the spec names a network this daemon does not recognise")]
     UnrecognizedNetwork,
     #[error("image pull failed")]

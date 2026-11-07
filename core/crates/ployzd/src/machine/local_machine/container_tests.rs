@@ -113,7 +113,6 @@ async fn fresh_service_revocation_preserves_management_and_trusted_ingress() {
         .await
         .unwrap_err();
     assert!(error.to_string().contains("accept"), "{error}");
-    // The reserved identity admits only the daemon's own door specs.
     let error = local
         .create_container(
             ContainerKind::ServiceContainer,

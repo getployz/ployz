@@ -3573,7 +3573,6 @@ async fn a_service_that_switched_before_a_sibling_failed_reads_switched() {
         Some(&ployz_core::OperationStatus::Unexecuted),
         "the abort left api's old copy unremoved"
     );
-    // The Node Outcome says api's Service is deployed (#3696).
     let recorded = ployz_core::config::project_runtime_outcome(
         plan.preview(),
         serde_json::json!({ "version": 1, "outcome": outcome }),

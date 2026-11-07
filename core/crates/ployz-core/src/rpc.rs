@@ -1517,13 +1517,11 @@ pub enum IngressDoor {
 pub struct IngressDoors(pub BTreeSet<IngressDoor>);
 
 impl IngressDoors {
-    /// Only the Public Door.
     #[must_use]
     pub fn public() -> Self {
         Self(BTreeSet::from([IngressDoor::Public]))
     }
 
-    /// Whether the set is exactly the Public Door.
     #[must_use]
     pub fn is_public_only(&self) -> bool {
         *self == Self::public()

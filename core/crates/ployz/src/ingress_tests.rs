@@ -73,7 +73,6 @@ fn an_unchecked_ingress_names_the_server_and_why() {
         unchecked(&silent, Some("box-node-09c8".into()), None),
         "Server box-node-09c8 isn't answering (no reply)"
     );
-    // Unnamed, it keeps the whole line.
     assert_eq!(unchecked(&silent, None, None), crate::ui::row(&silent));
 
     let answered = Failure::from(ConnectError::Remote(error(
@@ -85,14 +84,12 @@ fn an_unchecked_ingress_names_the_server_and_why() {
         "Docker is down (on Server box-node-09c8)"
     );
 
-    // A failure this process had itself names no Server.
     let local = Failure::usage("no Cluster selected");
     assert_eq!(
         unchecked(&local, Some("box-node-09c8".into()), None),
         crate::ui::row(&local)
     );
 
-    // A connection that failed names its own Server, over the one the caller passed.
     let refused = Failure::from(ConnectError::AllFailed {
         relayed: false,
         selection: crate::context::ConnectionSource::Cloud,
@@ -169,7 +166,6 @@ fn only_reachable_staying_ingress_servers_get_doors() {
             .map(|door| (door.name.to_string(), door.supported))
             .collect::<Vec<_>>(),
         [
-            // A row that lists no capabilities predates the list and is asked.
             ("one".to_owned(), true),
             ("five".to_owned(), false),
             ("six".to_owned(), true),
@@ -206,7 +202,6 @@ fn the_newest_observed_proxy_is_the_one_every_server_follows() {
         proxy_service(&services),
         crate::global_fixtures::service_id('2')
     );
-    // With none observed, each call is a fresh id the caller then reuses.
     assert_ne!(proxy_service(&[]), proxy_service(&[]));
 }
 

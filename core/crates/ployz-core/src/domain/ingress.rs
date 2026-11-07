@@ -34,9 +34,7 @@ pub struct IngressProxyServiceSpecError;
 /// Whether a Machine's Ingress Proxy answers on host ports 80 and 443.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum IngressPorts {
-    /// Host ports 80 and 443 are published.
     Public,
-    /// No host port is published.
     Closed,
 }
 

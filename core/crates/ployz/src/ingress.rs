@@ -89,7 +89,6 @@ pub(crate) fn proxy_service(services: &[ServiceObservation]) -> ServiceId {
 enum Answer {
     Set(Box<IngressDoorsSet>),
     Refused(RpcError),
-    /// The command was cancelled before the Server answered.
     Cancelled,
 }
 
@@ -361,7 +360,6 @@ fn checked(machine: &DoorMachine, answer: Answer) -> Result<Option<IngressRepair
         Answer::Cancelled => Err(format!(
             "{server} was still starting its Ingress Proxy when the Deploy was cancelled"
         )),
-        // An older daemon keeps the Ingress Proxy it runs.
         Answer::Refused(error) if error.code == RpcErrorCode::Unsupported => {
             Err(crate::ui::row(&error))
         }

@@ -1676,7 +1676,6 @@ fn every_routed_hostname_has_a_tunnel_site_that_keeps_the_visitors_scheme() {
     assert!(unknown.contains("error NOT_DEPLOYED 404"), "{unknown}");
     assert!(unknown.contains("import loopback_site"), "{unknown}");
 
-    // An https route without material has no public https site, but the door's site.
     let local = MachineId::parse("a".repeat(32)).unwrap();
     let observations = vec![observation(
         1,
