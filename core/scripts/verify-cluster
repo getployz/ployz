@@ -825,34 +825,7 @@ def launch(args, run, private, total_started):
                                " -i " + shlex.quote(str(private / "id_ed25519")) +
                                ' -o GlobalKnownHostsFile=/dev/null "$@"\n')
             wrapper.chmod(0o755)
-            def start(node):
-                backend.start(node)
-                if args.bare:
-                    binaries.result()
-                    stage_bare(run, backend, node, boot[node["name"]])
-                    node["address"] = backend.address(node)
-                    return
-                backend.push(node, private / "id_ed25519.pub", "/root/.ssh/authorized_keys")
-                # A Boat clone can carry an sshd listener systemd no longer tracks; stopping ssh leaves it on port 22,
-                # where ssh.socket then fails to bind. Killing only listeners keeps open SSH sessions.
-                listener = shlex.quote(r"^sshd: [^ ]*sshd -D \[listener\]")
-                backend.exec(node, ["bash", "-ec", "chmod 700 /root/.ssh; chmod 600 /root/.ssh/authorized_keys; systemctl stop ssh.service ssh.socket;"
-                                    f" pkill -f {listener} || true; for i in $(seq 50); do pgrep -f {listener} >/dev/null || break; sleep 0.1; done;"
-                                    " rm -f /etc/ssh/ssh_host_*; ssh-keygen -A; systemctl start ssh.socket ssh.service"])
-                daemon = boot[node["name"]]
-                if daemon["source"] in LOCAL or daemon["version"] != run["bootstrap_release"]:
-                    binaries.result()
-                    install(run, backend, node, daemon)
-                else:
-                    # The release and its units are already installed in this image.
-                    backend.exec(node, ["bash", "-ec", """
-observe=
-if [ -e /etc/systemd/system/ployz-observe.service ]; then observe=ployz-observe.service; fi
-systemctl enable --now ployz.socket ployz-volume-plugin.socket ployz.service $observe
-"""])
-                node["address"] = backend.address(node)
-                node["ssh"], node["endpoint"] = backend.ssh(node), endpoint(node["address"])
-            parallel(start, run["machines"])
+            parallel(lambda node: provision(run, backend, node, boot[node["name"]], binaries.result), run["machines"])
             binaries.result()
             if paired:
                 run["cloud"] = cloud.result()
@@ -894,7 +867,107 @@ systemctl enable --now ployz.socket ployz-volume-plugin.socket ployz.service $ob
         raise
 
 
-def enroll(run, commands, node, private):
+def provision(run, backend, node, daemon, wait_for_binaries):
+    """Boot one Machine with this run's SSH key and its daemon running, ready to enroll."""
+    backend.start(node)
+    if run.get("bare"):
+        wait_for_binaries()
+        stage_bare(run, backend, node, daemon)
+        node["address"] = backend.address(node)
+        return
+    backend.push(node, Path(run["manifest"]).parent / "private" / "id_ed25519.pub", "/root/.ssh/authorized_keys")
+    # A Boat clone can carry an sshd listener systemd no longer tracks; stopping ssh leaves it on port 22,
+    # where ssh.socket then fails to bind. Killing only listeners keeps open SSH sessions.
+    listener = shlex.quote(r"^sshd: [^ ]*sshd -D \[listener\]")
+    backend.exec(node, ["bash", "-ec", "chmod 700 /root/.ssh; chmod 600 /root/.ssh/authorized_keys; systemctl stop ssh.service ssh.socket;"
+                        f" pkill -f {listener} || true; for i in $(seq 50); do pgrep -f {listener} >/dev/null || break; sleep 0.1; done;"
+                        " rm -f /etc/ssh/ssh_host_*; ssh-keygen -A; systemctl start ssh.socket ssh.service"])
+    if daemon["source"] in LOCAL or daemon["version"] != run["bootstrap_release"]:
+        wait_for_binaries()
+        install(run, backend, node, daemon)
+    else:
+        # The release and its units are already installed in this image.
+        backend.exec(node, ["bash", "-ec", """
+observe=
+if [ -e /etc/systemd/system/ployz-observe.service ]; then observe=ployz-observe.service; fi
+systemctl enable --now ployz.socket ployz-volume-plugin.socket ployz.service $observe
+"""])
+    node["address"] = backend.address(node)
+    node["ssh"], node["endpoint"] = backend.ssh(node), endpoint(node["address"])
+
+
+ROLES = ("builds", "services", "ingress")
+
+
+def roles_arg(text):
+    chosen = set(text.split(","))
+    if not chosen <= set(ROLES):
+        raise argparse.ArgumentTypeError(f"choose from {', '.join(ROLES)}, comma-separated")
+    return chosen
+
+
+def add(run, commands, backend, roles):
+    # main read the manifest before taking the lock, and an add that finished since then changed it.
+    run.update(json.loads(Path(run["manifest"]).read_text()))
+    if run.get("bare"):
+        raise RuntimeError("add enrolls a Machine, and a --bare run enrolls none")
+    if run.get("bridged"):
+        raise RuntimeError("add can't enroll a release Machine through the checkout daemon; up a run whose --daemon choices need no bridge")
+    if run["provider"] == "boat":
+        # boat.preflight counts parked sandboxes, and add never claims one.
+        problems = boat.shortfalls(1, boat.boat_json("limits"))
+        if problems:
+            raise RuntimeError("Boat cannot start the Machine now.\n" + "\n".join(problems))
+    else:
+        state = run["provider_state"]
+        preflight(argparse.Namespace(provider=run["provider"], machines=1, memory=state.get("memory"), disk=state.get("disk")))
+    started = time.monotonic()
+    # A name a failed add used stays retired: its enrollment may have committed.
+    name = f"machine-{len(run['machines']) + len(run.get('discarded', [])) + 1}"
+    node = dict(name=name, daemon=dict(run["machines"][0]["daemon"]))
+    run["machines"].append(node)
+    save(run)
+    try:
+        provision(run, backend, node, node["daemon"], lambda: None)
+        save(run)
+        enroll(run, commands, node, Path(run["manifest"]).parent / "private", roles)
+        save(run)
+        if run.get("powered_off"):
+            # doctor needs every Machine up, so with one powered off only the new Machine's own view is checked.
+            joined(run, commands, node, 60)
+        else:
+            wait_ready(run, commands, backend)
+    except BaseException:
+        committed = " The Cluster may still list it; `server forget` it." if "machine_id" in node else ""
+        print(f"{name}: add failed; removing its guest.{committed} Evidence: {commands.evidence}", file=sys.stderr)
+        backend.discard(name, "add failed")
+        run["machines"].remove(node)
+        run["setup_follow_up_errors"] = [error for error in run.get("setup_follow_up_errors", []) if error["machine"] != name]
+        run.setdefault("discarded", []).append(name)
+        save(run)
+        raise
+    run["timings"]["add_" + name] = round(time.monotonic() - started, 3)
+    save(run)
+    print(name)
+
+
+def joined(run, commands, node, seconds):
+    deadline = time.monotonic() + seconds
+    while True:
+        observed = cli(run, commands, ["--json", "--connect", "ssh://" + node["ssh"], "server", "ls"], check=False, timeout=5)
+        try:
+            # server ls exits 3, still listing every Server, while a peer is down.
+            servers = json.loads(observed.stdout)["servers"] if observed.returncode in (0, 3) else []
+        except (ValueError, KeyError):
+            servers = []
+        if any(server["machine"]["id"] == node["machine_id"] and server["membership"] == "up" for server in servers):
+            return
+        if time.monotonic() >= deadline:
+            raise RuntimeError(f"{node['name']}: committed enrollment never became ready; see {commands.evidence}")
+        time.sleep(0.25)
+
+
+def enroll(run, commands, node, private, roles=None):
     """Enroll one Machine and give its Server the public IP the internet reaches it on."""
     # Cloud enrollment pins --public-ip and --wg-endpoint as a direct join does, from 0.3.8 on (#3516).
     # --no-install requires --storage none, yet managed Volumes work: the image ran `ployzd install --storage zfs`,
@@ -903,7 +976,9 @@ def enroll(run, commands, node, private):
     result = cli(run, commands, ["--json", "server", "add", node["ssh"],
                        *([] if "cloud" in run else ["--standalone"]), "--no-install", "--storage", "none", "--yes",
                        "--name", node["name"], "--ssh-key", str(private / "id_ed25519"),
-                       "--public-ip", public, "--wg-endpoint", node["endpoint"], "--wg-mtu", "1420"], check=False)
+                       "--public-ip", public, "--wg-endpoint", node["endpoint"], "--wg-mtu", "1420",
+                       *([f"--accepts-{role}={str(role in roles).lower()}" for role in ROLES] if roles is not None else [])],
+                 check=False)
     response = enrolled(node, result, commands.evidence)
     follow_up = response.get("follow_up_error", {})
     node["machine_id"] = response["server"]["machine"]["id"]
@@ -913,17 +988,14 @@ def enroll(run, commands, node, private):
         # rerunning `add --yes` would reset the committed founder.
         run.setdefault("setup_follow_up_errors", []).append({"machine": node["name"], **follow_up})
         print(f"{node['name']}: enrollment committed with a follow-up failure; checking readiness. Evidence: {commands.evidence}", file=sys.stderr)
-        deadline = time.monotonic() + 30
-        while True:
-            observed = cli(run, commands, ["--json", "--connect", "ssh://" + node["ssh"], "server", "ls"], check=False, timeout=5)
-            if not observed.returncode and any(server["machine"]["id"] == node["machine_id"] and server["membership"] == "up"
-                    for server in json.loads(observed.stdout)["servers"]):
-                break
-            if time.monotonic() >= deadline:
-                raise RuntimeError(f"{node['name']}: committed enrollment never became ready; see {commands.evidence}")
-            time.sleep(0.25)
-        # Complete the same Ingress Proxy follow-up offered by the CLI.
-        cli(run, commands, ["--json", "server", "set", node["machine_id"], "--accepts-ingress=true"])
+        joined(run, commands, node, 30)
+        if roles is None or "ingress" in roles:
+            # Complete the same Ingress Proxy follow-up offered by the CLI. It can't finish while a peer is powered off.
+            started = cli(run, commands, ["--json", "server", "set", node["machine_id"], "--accepts-ingress=true"],
+                          check=not run.get("powered_off"))
+            if started.returncode:
+                print(f"{node['name']}: its Ingress Proxy did not start while a Machine is powered off; rerun "
+                      f"`server set {node['name']} --accepts-ingress=true` after power on", file=sys.stderr)
     if "cloud" in run and public != "none":
         # A release CLI before 0.3.8 enrolls through Cloud with the address the daemon looked up, on Boat the node's shared NAT IPv4.
         cli(run, commands, ["--json", "server", "set", node["machine_id"], "--public-ip", public])
@@ -993,8 +1065,13 @@ def main():
     reaping.add_argument("--older-than", type=float, default=24, metavar="HOURS", help="Age that makes a run removable; 24 by default")
     reaping.add_argument("--force", action="store_true", help="Also remove runs whose owner process is still alive")
     reaping.add_argument("--yes", action="store_true", help="Remove the runs marked remove")
-    for action in ["doctor", "update", "down", "exec", "cli", "power", "partition", "runner", "probe", "dns-soak", "approve", "deny"]:
+    for action in ["doctor", "update", "add", "down", "exec", "cli", "power", "partition", "runner", "probe", "dns-soak", "approve", "deny"]:
         command = actions.add_parser(action)
+        if action == "add":
+            command.description = ("Boot one more Machine on machine-1's daemon, enroll it into the run's Cluster, "
+                                   "wait until doctor passes, and print its name")
+            command.add_argument("--roles", type=roles_arg, metavar="ROLE[,ROLE…]",
+                                 help=f"The roles it takes, from {', '.join(ROLES)}; all of them by default")
         if action in ["power", "partition"]:
             command.add_argument("state", choices=["on", "off"])
         if action == "runner":
@@ -1131,6 +1208,8 @@ def main():
         if args.action == "down":
             teardown(run, commands, backend)
             print(f"Removed cluster. Evidence: {commands.evidence}")
+        elif args.action == "add":
+            add(run, commands, backend, args.roles)
         else:
             select_daemons(run, commands, args.daemon or [], default="checkout")
             select_cli(run, commands)
