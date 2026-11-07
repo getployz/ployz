@@ -303,7 +303,7 @@ def approve_device(run, commands):
     code = json.loads(cli(run, commands, ["--json", "device", "request"], device=True).stdout)["code"]
     # A device is approved from an approved device or over SSH on a Server; this one is the first.
     for machine in run["machines"]:
-        cli(run, commands, ["device", "approve", code, "--connect", "ssh://" + machine["ssh"]], device=True, timeout=120)
+        cli(run, commands, ["device", "approve", code, "--yes", "--connect", "ssh://" + machine["ssh"]], device=True, timeout=120)
     run["device"] = code
     save(run)
 
