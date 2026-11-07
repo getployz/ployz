@@ -30,6 +30,7 @@ fn founder() -> Machine {
         public_ip: None,
         advertised_endpoints: Vec::new(),
         runtime: Default::default(),
+        join_approval: None,
         build_concurrency: None,
     }
 }
@@ -45,6 +46,7 @@ fn departing() -> ployz_core::MachineDetails {
         machine: Some(machine),
         store_version: Default::default(),
         rtts: Vec::new(),
+        passkeys: Vec::new(),
         management_clients: Vec::new(),
         telemetry: None,
         storage: None,
@@ -312,6 +314,7 @@ async fn restarting_cluster_store(
                     advertised_endpoints: Vec::new(),
                     store_version: Default::default(),
                     rtts: Vec::new(),
+                    passkeys: Vec::new(),
                     management_clients: Vec::new(),
                     telemetry: None,
                     storage: None,
@@ -394,6 +397,7 @@ fn readiness_after_a_join_waits_for_the_restart_without_blaming_the_network() {
                         advertised_endpoints: Vec::new(),
                         store_version: Default::default(),
                         rtts: Vec::new(),
+                        passkeys: Vec::new(),
                         management_clients: Vec::new(),
                         telemetry: None,
                         storage: None,

@@ -1,8 +1,14 @@
 import type { MachineId, MachineRuntime, RegisterRequest } from "@ployz/sdk";
-import { Effect, Schema, SchemaGetter } from "effect";
+import { Data, Effect, Schema, SchemaGetter } from "effect";
 import type { JsonValue } from "#/db/tables";
 import { Uuid } from "#/lib/schema";
 import { RecoveryBackup, SealingPublicKey } from "#/modules/machines/sealing-key";
+
+export class JoinApprovalRequired extends Data.TaggedError("JoinApprovalRequired")<{ readonly message: string }> {
+  readonly publicErrorCategory = "conflict";
+  readonly userFacing = true;
+  readonly details = { capability: "ployz.machine.join.device-approval.v1" };
+}
 
 export const MACHINE_ID_PATTERN = /^[0-9a-f]{32}$/u;
 export const ENROLLMENT_TOKEN_TTL_MS = 24 * 60 * 60 * 1000;

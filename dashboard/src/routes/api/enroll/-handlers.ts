@@ -9,6 +9,7 @@ import {
   Validation,
 } from "#/server/public-error";
 import {
+  JoinApprovalRequired,
   ENROLLMENT_PROTOCOL_VERSION,
   enrollmentCallbackBodySchema,
   enrollmentIdentitySchema,
@@ -23,7 +24,7 @@ import {
 
 type EnrollmentResponseBody =
   | EnrollResponse
-  | { error: string }
+  | { error: string; details?: { capability: string } }
   | { machineId: string; recoveryBackupDigest?: string | undefined };
 
 function response(body: EnrollmentResponseBody, status: number, code?: PublicError["code"]) {
@@ -54,8 +55,11 @@ function failureResponse(cause: unknown, route: "join" | "completion" | "setup r
       Effect.runFork(log(`Enrollment ${route} ${kind}.`, logged));
     },
   });
+  const body = cause instanceof JoinApprovalRequired
+    ? { error: publicError.message, details: cause.details }
+    : { error: publicError.message };
   return response(
-    { error: publicError.message },
+    body,
     statusForPublicError(publicError),
     isUserFacing(cause) && publicError.code !== "INTERNAL" ? publicError.code : undefined,
   );

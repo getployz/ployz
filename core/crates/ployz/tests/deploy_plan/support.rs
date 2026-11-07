@@ -127,6 +127,7 @@ pub(super) fn machine(hex: char, name: &str) -> MachineObservation {
             public_ip: None,
             advertised_endpoints: Vec::<AdvertisedEndpoint>::new(),
             runtime: Default::default(),
+            join_approval: None,
             build_concurrency: None,
         },
         MembershipObservation::Up,

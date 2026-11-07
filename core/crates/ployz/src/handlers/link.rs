@@ -619,10 +619,19 @@ impl ThisServer {
     }
 }
 
+/// This host's Machine key, so a person can check the fingerprint `device enforce` prints.
+#[derive(Serialize)]
+struct ThisMachine {
+    wireguard_key: String,
+    fingerprint: String,
+}
+
 #[derive(Serialize)]
 struct Status {
     #[serde(skip_serializing_if = "Option::is_none")]
     this_server: Option<ThisServer>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    this_machine: Option<ThisMachine>,
     identity: Option<Identity>,
     scope: Scope,
     /// The Environment the scope resolves to; none when it doesn't resolve.
@@ -641,6 +650,7 @@ pub(super) fn status(root: &ArgMatches) -> Result<(), Error> {
     let matches = leaf_matches(root);
     crate::context::Config::load_or_empty(config_path(matches)?)?;
     let this_server = this_server();
+    let this_machine = this_machine();
     let store = reachable(root)?;
     let identity = store.as_ref().map(identity).transpose()?;
     let scope = scope(matches)?;
@@ -768,6 +778,7 @@ pub(super) fn status(root: &ArgMatches) -> Result<(), Error> {
         });
     let status = Status {
         this_server,
+        this_machine,
         identity,
         scope,
         environment: diff.map(|diff| diff.environment),
@@ -811,10 +822,22 @@ fn this_server() -> Option<ThisServer> {
     Some(ThisServer::read(checkin, left, stopped))
 }
 
+fn this_machine() -> Option<ThisMachine> {
+    let details = super::runtime()
+        .ok()?
+        .block_on(crate::checkin::local_machine(LOCAL_INSPECT))?;
+    let key = details.machine?.public_key;
+    Some(ThisMachine {
+        wireguard_key: key.to_string(),
+        fingerprint: key.fingerprint(),
+    })
+}
+
 #[cfg(test)]
 pub(super) fn rendered(attention: Vec<Attention>) -> String {
     let status = Status {
         this_server: None,
+        this_machine: None,
         identity: Some(Identity {
             credential: "local",
             cloud: None,
@@ -878,6 +901,9 @@ fn status_record(status: &Status) -> Fields {
             "checked in",
             crate::checkin::ago(checkin.at, chrono::Utc::now()),
         );
+    }
+    if let Some(machine) = &status.this_machine {
+        record.push("wireguard key", &machine.fingerprint);
     }
     let Some(identity) = &status.identity else {
         record.push("signed in as", "no one");
@@ -1377,6 +1403,7 @@ mod tests {
                 left,
                 stopped,
             )),
+            this_machine: None,
             identity: None,
             scope: Scope {
                 project: None,
@@ -1403,6 +1430,37 @@ mod tests {
             status_on(false).starts_with("this server = Joined\nchecked in = "),
             "{}",
             status_on(false)
+        );
+    }
+
+    #[test]
+    fn status_on_a_server_shows_the_fingerprint_device_enforce_prints() {
+        let key = ployz_core::WireGuardPublicKey([3; 32]);
+        let status = Status {
+            this_server: None,
+            this_machine: Some(ThisMachine {
+                wireguard_key: key.to_string(),
+                fingerprint: key.fingerprint(),
+            }),
+            identity: None,
+            scope: Scope {
+                project: None,
+                environment: None,
+                link: None,
+            },
+            environment: None,
+            staged: None,
+            deploying: Vec::new(),
+            attention: Vec::new(),
+        };
+        let mut out = Vec::new();
+        status_record(&status).write(&mut out, false).unwrap();
+        assert_eq!(
+            anstream::adapter::strip_str(&String::from_utf8(out).unwrap()).to_string(),
+            format!(
+                "wireguard key = {}\nsigned in as = no one\n",
+                key.fingerprint()
+            )
         );
     }
 

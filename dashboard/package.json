@@ -72,6 +72,8 @@
     "@posthog/mcp": "0.22.3",
     "@react-email/render": "^2.1.0",
     "@shadcn/react": "^0.3.1",
+    "@simplewebauthn/browser": "13.3.0",
+    "@simplewebauthn/server": "13.3.3",
     "@tanstack/ai": "0.68.0",
     "@tanstack/ai-anthropic": "0.21.1",
     "@tanstack/ai-client": "0.39.2",

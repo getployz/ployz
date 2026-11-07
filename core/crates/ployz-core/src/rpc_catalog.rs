@@ -57,9 +57,13 @@ macro_rules! rpc_catalog {
                 RecoverSealingKey: (recover_sealing_key, "RecoverSealingKey", RecoverSealingKeyRequest, "recover_sealing_key", SealingKeyRecovered, RECOVER_SEALING_KEY_CAPABILITY, "ployz.sealing.recover.v1", Always, Full),
                 Register: (register, "Register", RegisterRequest, "register", Registered, REGISTER_MACHINE_CAPABILITY, "ployz.machine.register.v1", Always, Operator),
                 SetManagementClient: (set_management_client, "SetManagementClient", SetManagementClientRequest, "set_management_client", SetManagementClientResponse, SET_MANAGEMENT_CLIENT_CAPABILITY, "ployz.machine.set-management-client.v1", Always, Operator),
+                PendingJoins: (pending_joins, "PendingJoins", PendingJoinsRequest, "pending_joins", PendingJoins, PENDING_JOINS_CAPABILITY, "ployz.machine.join.pending.v1", Always, Operator),
+                ApproveJoin: (approve_join, "ApproveJoin", ApproveJoinRequest, "approve_join", JoinApproved, APPROVE_JOIN_CAPABILITY, "ployz.machine.join.approve.v1", Always, Operator),
                 SetDevice: (set_device, "SetDevice", SetDeviceRequest, "set_device", DeviceSet, SET_DEVICE_CAPABILITY, "ployz.machine.set-device.v1", Always, Full),
                 SetPushTarget: (set_push_target, "SetPushTarget", SetPushTargetRequest, "set_push_target", PushTargetSet, SET_PUSH_TARGET_CAPABILITY, "ployz.machine.set-push-target.v1", Always, Operator),
-                SetDeviceEnforcement: (set_device_enforcement, "SetDeviceEnforcement", SetDeviceEnforcementRequest, "set_device_enforcement", DeviceEnforcementSet, SET_DEVICE_ENFORCEMENT_CAPABILITY, "ployz.machine.set-device-enforcement.v1", Always, Full),
+                SetDeviceEnforcement: (set_device_enforcement, "SetDeviceEnforcement", SetDeviceEnforcementRequest, "set_device_enforcement", DeviceEnforcementSet, SET_DEVICE_ENFORCEMENT_CAPABILITY, "ployz.machine.set-device-enforcement.v2", Always, Full),
+                SetPasskey: (set_passkey, "SetPasskey", SetPasskeyRequest, "set_passkey", DeviceSet, SET_PASSKEY_CAPABILITY, "ployz.machine.set-passkey.v1", Always, Full),
+                RemoveTrustedKey: (remove_trusted_key, "RemoveTrustedKey", RemoveTrustedKeyRequest, "remove_trusted_key", TrustedKeyRemoved, REMOVE_TRUSTED_KEY_CAPABILITY, "ployz.machine.remove-trusted-key.v1", Always, Full),
                 SelectEndpoint: (select_endpoint, "SelectEndpoint", SelectEndpointRequest, "select_endpoint", EndpointSelected, SELECT_ENDPOINT_CAPABILITY, "ployz.network.select-endpoint.v1", Always, Operator),
                 ListMachines: (list_machines, "ListMachines", ListMachinesRequest, "list_machines", MachineList, LIST_MACHINES_CAPABILITY, "ployz.machine.list.v1", Always, Operator),
                 UpdateMachine: (update_machine, "UpdateMachine", UpdateMachineRequest, "update_machine", MachineUpdated, UPDATE_MACHINE_CAPABILITY, "ployz.machine.update.v1", Always, Operator),
@@ -105,6 +109,7 @@ macro_rules! rpc_catalog {
                 Build: (build, "Build", "build", BUILD_CAPABILITY, "ployz.build.v1", Container, Operator),
             }
             capabilities {
+                JOIN_APPROVAL_CAPABILITY: ("ployz.machine.join.device-approval.v1", Always),
                 /// `SetVolumeCopy` honours `gen`, takes the `floor` want and refuses `stale`.
                 VOLUME_FLOOR_CAPABILITY: ("ployz.volume.copy.floor.v1", Container),
                 /// `SetVolumeSize` takes `allow_shrink` and lowers a bound down to its floor.

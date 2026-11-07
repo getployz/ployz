@@ -17,6 +17,7 @@ import { Ployz, type PloyzProviderError, type PloyzSdkError, type PloyzSession, 
 import { ClusterOutOfTime, clusterRead, OrganizationRuntime, SESSION_CLOSE_CLUSTER_MS, withClusterBudget } from "#/modules/runtime/organization-runtime.server";
 import { PostHog } from "#/modules/analytics/posthog.server";
 import {
+  JoinApprovalRequired,
   enrollmentExpiry,
   MANAGEMENT_CAPABILITY_LENGTH,
   mintedEnrollment,
@@ -783,7 +784,21 @@ export const enrollMachine = Effect.fn("MachineEnrollment.enrollMachine")(
       // The assignment commits before dispatch; a lost response is never replayed.
       const registration = joined
         ? { assigned_machine: joined, visible_peers: snapshot.machines.filter((machine) => machine !== joined), target_versions: snapshot.target_versions }
-        : yield* session.register(assignment);
+        : yield* session.register(assignment).pipe(Effect.catchTag("PloyzProviderError", (error) => {
+          const needsApproval = Schema.is(Schema.Struct({
+            code: Schema.Literal("forbidden"),
+            details: Schema.Struct({ capability: Schema.Literal("ployz.machine.join.device-approval.v1") }),
+          }))(error.cause);
+          const alreadyAdmitted = Schema.is(Schema.Struct({
+            details: Schema.Struct({ reason: Schema.Literal("join_already_admitted") }),
+          }))(error.cause);
+          const message = alreadyAdmitted
+            ? "The Server's join was already admitted. Inspect the Server before retrying enrollment."
+            : "ployz.machine.join.device-approval.v1 requires approval from an existing Device. Approve the join, then rerun the same join command.";
+          return Effect.fail(needsApproval
+            ? new JoinApprovalRequired({ message })
+            : error);
+        }));
       return { kind: "join" as const, pairing, storage: request.storage, registration };
     }));
   },

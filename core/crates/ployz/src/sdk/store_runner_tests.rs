@@ -446,6 +446,7 @@ async fn a_build_reports_the_server_it_runs_on_by_name() {
                         public_ip: None,
                         advertised_endpoints: Vec::new(),
                         runtime: Default::default(),
+                        join_approval: None,
                         build_concurrency: None,
                     },
                     reason: super::super::prepare::BuilderReason::Spread,

@@ -10,13 +10,13 @@ use std::{
 };
 
 use ployz_core::{
-    ContainerDetails, ContainerId, EnrollRequest, Enrolled, ForgetRequest, Forgotten,
+    ContainerDetails, ContainerId, DeviceCode, EnrollRequest, Enrolled, ForgetRequest, Forgotten,
     InspectRequest, LeaveRequest, Left, LeftPhase, LocalMachinePhase, Machine, MachineDetails,
     MachineId, MachineIdentity, MachineList, MachineName, MachineObservation, MachineToken,
     MachineUpdated, ManagementAddress, ManagementClientLabel, MembershipEvidence,
     PublicIpDiscovery, RESTART_APPROVAL_CAPABILITY, RecoverySeed, RegisterRequest, Registered,
-    RpcError, RpcErrorCode, RttObservation, RttStatistics, SelectedEndpoint, StorageDeparture,
-    UpdateMachineRequest, synthesize_membership,
+    RpcError, RpcErrorCode, RttObservation, RttStatistics, SET_DEVICE_ENFORCEMENT_CAPABILITY,
+    SelectedEndpoint, StorageDeparture, UpdateMachineRequest, synthesize_membership,
 };
 use thiserror::Error;
 use tokio_util::sync::CancellationToken;
@@ -44,6 +44,8 @@ const REDISCOVERY_RETRY_MAX: Duration = Duration::from_secs(5);
 pub struct LocalMachine {
     owner: RecordOwner,
     management_client: Option<[u8; 32]>,
+    /// Whether this call came over this Server's local socket, rather than the mesh.
+    local_socket: bool,
     cluster: Option<ClusterContext>,
     containers: Option<ContainerRuntime>,
     plugin: crate::storage::Plugin,
@@ -75,6 +77,7 @@ mod ingress_doors;
 pub(crate) use container::CutRefusal;
 #[cfg(test)]
 pub(crate) use container::{EnsurePause, EnsurePausePoint};
+mod join_approval;
 mod management_client;
 mod push_target;
 pub(super) mod restart_approval;
@@ -146,6 +149,12 @@ pub enum Error {
     DeviceSlot,
     #[error("only an approved Device manages Devices")]
     NeedsFullScope,
+    #[error("passkey {0} has the same key as an approved Device")]
+    PasskeyIsDevice(DeviceCode),
+    #[error("device {0} has the same key as a trusted passkey")]
+    DeviceIsPasskey(DeviceCode),
+    #[error("passkey {held} already holds this passkey's credential ID")]
+    CredentialHeld { held: DeviceCode },
     #[error("Machine is not participating")]
     NotParticipating,
     #[error("Cluster store is not available")]
@@ -175,6 +184,14 @@ pub enum Error {
     /// Device enforcement refused an Operator's restart step.
     #[error("{RESTART_APPROVAL_CAPABILITY} needs a Device-signed restart approval")]
     RestartRefused(#[from] ployz_core::authority::AuthorityRefusal),
+    #[error("ployz.machine.join.device-approval.v1 needs a Device-signed join approval: {0}")]
+    JoinRefused(ployz_core::authority::AuthorityRefusal),
+    #[error("{SET_DEVICE_ENFORCEMENT_CAPABILITY} needs a Device-signed starting set: {0}")]
+    EnforcementRefused(ployz_core::authority::AuthorityRefusal),
+    #[error("could not keep the record of join approvals")]
+    JoinRecord(#[source] std::io::Error),
+    #[error("the join of Machine {0} has already been admitted")]
+    JoinConsumed(MachineId),
     #[error("could not keep the record of restart approvals")]
     ApprovalRecord(#[source] std::io::Error),
     #[error(transparent)]
@@ -223,6 +240,7 @@ impl LocalMachine {
             approvals: owner.restart_approvals(),
             owner,
             management_client: None,
+            local_socket: false,
             cluster: None,
             containers: None,
             plugin: crate::storage::Plugin::default(),
@@ -283,9 +301,19 @@ impl LocalMachine {
         self
     }
 
+    /// Mark subsequent calls as from this Server's local socket: its terminal, or SSH.
+    #[must_use]
+    pub(crate) fn on_local_socket(mut self) -> Self {
+        self.local_socket = true;
+        self
+    }
+
     #[must_use]
     pub(crate) fn with_cluster(mut self, cluster: Option<(ReplicatedStore, AdminClient)>) -> Self {
-        self.cluster = cluster.map(|(replicated, admin)| ClusterContext { replicated, admin });
+        self.cluster = cluster.map(|(replicated, admin)| ClusterContext {
+            replicated: replicated.with_authority(self.owner.clone()),
+            admin,
+        });
         self
     }
 
@@ -551,6 +579,7 @@ impl LocalMachine {
             store_version,
             rtts,
             management_clients: record.management_clients().cloned().collect(),
+            passkeys: record.passkeys().to_vec(),
             founding: record.founding(),
             telemetry,
             storage,
@@ -711,6 +740,15 @@ impl LocalMachine {
         request: EnrollRequest,
         recovery: Option<RecoverySeed>,
     ) -> Result<Enrolled, Error> {
+        if self.record().device_enforcement()
+            && matches!(&request.role, ployz_core::EnrollAs::Founder { .. })
+        {
+            return Err(Error::JoinRefused(
+                ployz_core::authority::AuthorityRefusal::Unsigned {
+                    purpose: ployz_core::authority::Purpose::Join,
+                },
+            ));
+        }
         let (plan, installation) = self
             .owner
             .mutate(move |store| store.plan_enrollment(request, recovery))
@@ -787,33 +825,92 @@ impl LocalMachine {
     async fn publish_assignment(&self, request: RegisterRequest) -> Result<Registered, Error> {
         let replicated = self.replicated()?;
         let publication = replicated.machine_publication().await;
-        // Other Machines' rows are not consulted: Cloud owns concurrency. A Register
-        // takes back its id's `forgotten-id:` forget and replaces its id's row, unless
-        // this Entry's copy carries the `self_published` mark and the same key
-        // (`registration_upsert`). It never writes a Management Identity. The reply is
-        // the row it sent, not read back: when the row is kept, the stored row differs
-        // from it, and `target_versions` may lack the version an overwrite would make.
         let snapshot = ployz_core::EnrollmentSnapshot {
             network: published_network(&self.record(), replicated).await?,
-            machines: Vec::new(),
-            target_versions: BTreeMap::new(),
+            machines: replicated.machines().await?.observations,
+            target_versions: replicated.version().await?,
         };
-        let assignment = ployz_core::allocate_enrollment(&request, &snapshot, &[])?;
-        let sealing_key = SealingKey::load(self.owner.data_dir())
-            .unwrap_or_else(|error| {
+        let mut assignment = ployz_core::allocate_enrollment(
+            &request,
+            &ployz_core::EnrollmentSnapshot {
+                machines: Vec::new(),
+                ..snapshot.clone()
+            },
+            &[],
+        )?;
+        if self.record().device_enforcement() {
+            if let Some(stored) = self.approvals.join_result(request.machine_id)? {
+                if ployz_core::authority::join::JoinAllocation::from(&assignment.machine)
+                    != stored.approval.open().map_err(Error::JoinRefused)?.machine
+                    || request
+                        .join_approval
+                        .as_ref()
+                        .is_some_and(|approval| approval != &stored.approval)
+                {
+                    return Err(Error::JoinConsumed(request.machine_id));
+                }
+                let restart_approval::JoinReply::Register(registration) = stored.reply else {
+                    return Err(Error::JoinConsumed(request.machine_id));
+                };
+                publication
+                    .register(registration.assigned_machine.clone())
+                    .await?;
+                return Ok(*registration);
+            }
+            let subnet = ipnet::Ipv4Net::from(assignment.machine.subnet);
+            if snapshot.machines.iter().any(|peer| {
+                let other = ipnet::Ipv4Net::from(peer.subnet);
+                subnet.contains(&other.network()) || other.contains(&subnet.network())
+            }) {
+                return Err(Error::JoinRefused(
+                    ployz_core::authority::AuthorityRefusal::Mismatch {
+                        field: "an unused subnet",
+                    },
+                ));
+            }
+        }
+        let approval = self.admit_join(
+            &assignment.machine,
+            snapshot.network,
+            request.join_approval,
+            &snapshot.machines,
+        )?;
+        assignment.machine.join_approval = approval.clone();
+        assignment.machine.runtime.management_identity = None;
+        let held = match SealingKey::load(self.owner.data_dir()) {
+            Ok(key) => key,
+            Err(error) if !self.record().device_enforcement() => {
                 tracing::warn!(%error, "could not read the Sealing Key; registering without it");
                 None
+            }
+            Err(error) => return Err(Error::JoinRecord(error)),
+        };
+        let sealing_key = held
+            .map(|key| match &approval {
+                Some(approval) => key.seal_join(&assignment.machine.public_key, approval),
+                None => key.seal_to(&assignment.machine.public_key),
             })
-            .map(|key| key.seal_to(&assignment.machine.public_key))
             .transpose()?;
-        let machine = publication.register(assignment.machine).await?;
-        Ok(registered(
-            machine,
-            replicated.machines().await?.observations,
-            replicated.version().await?,
+        let mut registration = registered(
+            assignment.machine,
+            snapshot.machines,
+            snapshot.target_versions,
             sealing_key,
             self.record().devices().collect(),
-        ))
+        );
+        if let Some(approval) = approval {
+            self.consume_join(restart_approval::JoinResult {
+                approval,
+                reply: restart_approval::JoinReply::Register(Box::new(registration.clone())),
+            })?;
+        }
+        publication
+            .register(registration.assigned_machine.clone())
+            .await?;
+        if !self.record().device_enforcement() {
+            registration.target_versions = replicated.version().await?;
+        }
+        Ok(registration)
     }
 
     /// Membership Observation of Machines visible from this participating Machine.
@@ -1607,6 +1704,7 @@ mod tests {
                 format!("203.0.113.{seed}:51820").parse().unwrap(),
             )],
             runtime: MachineRuntime::default(),
+            join_approval: None,
             build_concurrency: None,
         }
     }

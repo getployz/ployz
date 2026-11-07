@@ -107,6 +107,24 @@ pub(crate) enum Error {
 struct ResponseLost(#[source] Option<Error>);
 
 impl Error {
+    pub(crate) fn capability(&self) -> Option<String> {
+        let body = match self {
+            Self::Status { body, .. } | Self::CodedConflict { body } => body,
+            Self::Timeout(_)
+            | Self::Connect(_)
+            | Self::Http(_)
+            | Self::Json(_)
+            | Self::TokenRefused
+            | Self::FounderWait
+            | Self::RetrySameCommand { .. }
+            | Self::CloudCantReach => return None,
+        };
+        serde_json::from_str::<serde_json::Value>(body)
+            .ok()?
+            .pointer("/details/capability")?
+            .as_str()
+            .map(str::to_owned)
+    }
     fn is_transport(&self) -> bool {
         match self {
             Self::Timeout(error) | Self::Connect(error) | Self::Http(error) => {
@@ -721,11 +739,24 @@ fn sent_strings(token: &CloudEnrollToken, body: &EnrollCallback<'_>) -> Vec<Stri
 }
 
 fn coded_refusal_status(body: &str, sent: &[String], operation: &str) -> Error {
+    let join_approval = serde_json::from_str::<serde_json::Value>(body)
+        .ok()
+        .and_then(|mut parsed| {
+            let details = parsed.as_object_mut()?.remove("details")?;
+            (details == serde_json::json!({ "capability": ployz_core::JOIN_APPROVAL_CAPABILITY }))
+                .then(|| parsed.to_string())
+        });
+    let said = coded_cloud_refusal(join_approval.as_deref().unwrap_or(body), sent);
     Error::CodedConflict {
-        body: coded_cloud_refusal(body, sent).map_or_else(
-            || format!("{operation} rejected"),
-            |said| serde_json::json!({ "error": said }).to_string(),
-        ),
+        body: match (said, join_approval.is_some()) {
+            (Some(said), false) => serde_json::json!({ "error": said }).to_string(),
+            (None, false) => format!("{operation} rejected"),
+            (said, true) => serde_json::json!({
+                "error": said.unwrap_or_else(|| format!("{operation} rejected")),
+                "details": { "capability": ployz_core::JOIN_APPROVAL_CAPABILITY },
+            })
+            .to_string(),
+        },
     }
 }
 
@@ -1368,6 +1399,7 @@ mod tests {
                 public_ip: None,
                 advertised_endpoints: Vec::new(),
                 runtime: Default::default(),
+                join_approval: None,
                 build_concurrency: None,
             },
             visible_peers: Vec::new(),
@@ -2499,6 +2531,38 @@ mod tests {
         assert_eq!(
             json.get("diskAvailableBytes"),
             Some(&serde_json::json!(85_899_345_920_u64))
+        );
+    }
+}
+
+#[cfg(test)]
+mod join_capability_tests {
+    use super::coded_refusal_status;
+    #[test]
+    fn join_approval_capability_survives_the_refusal_sanitiser_and_only_from_details() {
+        let capability = ployz_core::JOIN_APPROVAL_CAPABILITY;
+        let refused = |body: serde_json::Value| {
+            coded_refusal_status(
+                &body.to_string(),
+                &["pmet_secret_token_value".to_owned()],
+                "enrollment",
+            )
+        };
+        let approval = refused(serde_json::json!({
+            "error": "Approve this join.", "details": {"capability": capability},
+        }));
+        assert_eq!(approval.capability().as_deref(), Some(capability));
+        assert!(approval.to_string().contains("Approve this join."));
+        assert_eq!(
+            refused(serde_json::json!({"error": capability})).capability(),
+            None
+        );
+        assert_eq!(
+            refused(serde_json::json!({
+                "error": "x", "details": {"capability": "pmet_secret_token_value"},
+            }))
+            .capability(),
+            None
         );
     }
 }

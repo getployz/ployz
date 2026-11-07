@@ -175,6 +175,7 @@ impl SealingKey {
         self.seal(&OpModeS::Base, INFO, recipient)
     }
 
+    #[cfg(test)]
     pub(crate) fn open(
         sealed: &SealedSealingKey,
         wireguard: &WireGuardPrivateKey,
@@ -220,8 +221,48 @@ impl SealingKey {
         Self::open_with(&OpModeR::Auth(sender), SHARE_INFO, sealed, recipient)
     }
 
+    pub(crate) fn seal_join(
+        &self,
+        recipient: &WireGuardPublicKey,
+        approval: &ployz_core::authority::Signed<ployz_core::authority::JoinApproval>,
+    ) -> Result<SealedSealingKey, SealError> {
+        let mut payload = Zeroizing::new(self.0.to_vec());
+        payload.extend(serde_json::to_vec(approval).expect("signed join serializes"));
+        Self::seal_bytes(&payload, &OpModeS::Base, INFO, recipient)
+    }
+
+    pub(crate) fn open_join(
+        sealed: &SealedSealingKey,
+        recipient: &WireGuardPrivateKey,
+    ) -> Result<
+        (
+            Self,
+            Option<ployz_core::authority::Signed<ployz_core::authority::JoinApproval>>,
+        ),
+        OpenError,
+    > {
+        let payload = Self::open_bytes(&OpModeR::Base, INFO, sealed, recipient)?;
+        let (bytes, body) = payload.split_at_checked(32).ok_or(OpenError::Malformed)?;
+        let key = Self(bytes.try_into().map_err(|_| OpenError::Malformed)?);
+        let approval = if body.is_empty() {
+            None
+        } else {
+            Some(serde_json::from_slice(body).map_err(|_| OpenError::Malformed)?)
+        };
+        Ok((key, approval))
+    }
+
     fn seal(
         &self,
+        mode: &OpModeS<Kem>,
+        info: &[u8],
+        recipient: &WireGuardPublicKey,
+    ) -> Result<SealedSealingKey, SealError> {
+        Self::seal_bytes(&self.0, mode, info, recipient)
+    }
+
+    fn seal_bytes(
+        plaintext: &[u8],
         mode: &OpModeS<Kem>,
         info: &[u8],
         recipient: &WireGuardPublicKey,
@@ -233,7 +274,7 @@ impl SealingKey {
                 mode,
                 &recipient,
                 info,
-                &self.0,
+                plaintext,
                 &[],
                 &mut OsRng.unwrap_err(),
             )
@@ -249,6 +290,18 @@ impl SealingKey {
         sealed: &SealedSealingKey,
         recipient: &WireGuardPrivateKey,
     ) -> Result<Self, OpenError> {
+        let opened = Self::open_bytes(mode, info, sealed, recipient)?;
+        <[u8; 32]>::try_from(opened.as_slice())
+            .map(Self)
+            .map_err(|_| OpenError::Malformed)
+    }
+
+    fn open_bytes(
+        mode: &OpModeR<Kem>,
+        info: &[u8],
+        sealed: &SealedSealingKey,
+        recipient: &WireGuardPrivateKey,
+    ) -> Result<Zeroizing<Vec<u8>>, OpenError> {
         let bytes = sealed.as_bytes();
         if bytes.len() < ENCAPPED_KEY_LEN {
             return Err(OpenError::Malformed);
@@ -269,9 +322,7 @@ impl SealingKey {
             )
             .map_err(|_| OpenError::Unopenable)?,
         );
-        <[u8; 32]>::try_from(opened.as_slice())
-            .map(Self)
-            .map_err(|_| OpenError::Malformed)
+        Ok(opened)
     }
 
     /// Opens one env value sealed to this key under `aad`, or `None` when it

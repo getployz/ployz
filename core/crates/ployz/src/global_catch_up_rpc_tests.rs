@@ -107,6 +107,7 @@ async fn real_catch_up_client_retries_readiness_and_placement_to_their_budget() 
                                     store_version: Default::default(),
                                     rtts: Vec::new(),
                                     management_clients: Vec::new(),
+                                    passkeys: Vec::new(),
                                     telemetry: Some(
                                         ployz_core::TelemetryObservation::BridgeCapacity {
                                             bridge: BridgeEndpointCapacity::new(10, 0),
@@ -240,6 +241,7 @@ async fn catch_up_uses_primitives_and_never_replaces_a_key_conflict_or_unknown_s
                                 store_version: Default::default(),
                                 rtts: Vec::new(),
                                 management_clients: Vec::new(),
+                                passkeys: Vec::new(),
                                 telemetry: Some(ployz_core::TelemetryObservation::BridgeCapacity {
                                     bridge: BridgeEndpointCapacity::new(
                                         1,
@@ -456,6 +458,7 @@ async fn top_level_catch_up_uses_fresh_target_eligibility_and_reuses_hidden_full
                             store_version: Default::default(),
                             rtts: Vec::new(),
                             management_clients: Vec::new(),
+                            passkeys: Vec::new(),
                             storage: None,
                             upgrade: None,
                             telemetry: Some(TelemetryObservation::BridgeCapacity {
@@ -616,6 +619,7 @@ async fn an_ineligible_target_retires_its_own_in_copy() {
                                 store_version: Default::default(),
                                 rtts: Vec::new(),
                                 management_clients: Vec::new(),
+                                passkeys: Vec::new(),
                                 storage: None,
                                 upgrade: None,
                                 telemetry: None,
@@ -888,6 +892,7 @@ async fn catch_up_over_matching_copy(rotation: CopyRotation) -> OverMatching {
                         store_version: Default::default(),
                         rtts: Vec::new(),
                         management_clients: Vec::new(),
+                        passkeys: Vec::new(),
                         storage: None,
                         upgrade: None,
                         telemetry: Some(TelemetryObservation::BridgeCapacity {
@@ -1096,6 +1101,7 @@ async fn provisioned_globals_use_target_storage_and_report_unknown() {
                             store_version: Default::default(),
                             rtts: Vec::new(),
                             management_clients: Vec::new(),
+                            passkeys: Vec::new(),
                             storage,
                             upgrade: None,
                             telemetry: Some(ployz_core::TelemetryObservation::BridgeCapacity {
@@ -1269,6 +1275,7 @@ async fn catch_up_beside_doors(role: bool) -> BesideDoors {
                         store_version: Default::default(),
                         rtts: Vec::new(),
                         management_clients: Vec::new(),
+                        passkeys: Vec::new(),
                         storage: None,
                         upgrade: None,
                         telemetry: None,

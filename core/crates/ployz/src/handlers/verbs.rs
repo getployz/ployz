@@ -290,7 +290,7 @@ pub(crate) const DEPLOYMENT_START: Verb = Verb::cloud(
 .needs(Permission::ChangesDeploy);
 pub(crate) const DEVICE_APPROVE: Verb = Verb::local(
     "device approve",
-    Never,
+    Always,
     device::approve_command,
     device::approve,
 )

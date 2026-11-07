@@ -257,6 +257,7 @@ fn expected_frame() -> RuntimeWatchFrame {
                     management_identity: None,
                     leaving: false,
                 },
+                join_approval: None,
                 build_concurrency: None,
                 },
                 MembershipObservation::Up,

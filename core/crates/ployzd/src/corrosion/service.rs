@@ -305,6 +305,11 @@ fn report(ensured: Result<Ensure, Error>, failing: &mut bool, every: Duration) {
 }
 
 impl RunningCorrosion {
+    pub(crate) fn with_authority(mut self, owner: crate::machine::RecordOwner) -> Self {
+        self.store.authorize(owner);
+        self
+    }
+
     #[must_use]
     pub fn store(&self) -> &ReplicatedStore {
         &self.store

@@ -118,7 +118,14 @@ pub(super) async fn connect_full(
             selected.connections = as_device(selected.connections, &key)?;
             let connector =
                 SystemConnector::default().with_ssh_timeout(crate::cli::ssh_timeout(matches));
-            crate::connect::connect_selected_with(selected, Arc::new(connector)).await
+            let connections = selected.connections.clone();
+            crate::connect::connect_selected_with(selected, Arc::new(connector))
+                .await
+                .map(|client| {
+                    client
+                        .with_full_connections(connections)
+                        .with_full_single(direct.is_some())
+                })
         }
         Err(error) => Err(error),
     };
@@ -130,7 +137,15 @@ pub(super) async fn connect_full(
     }
     let mut access = cloud_account::server_access(&credential).await?;
     access.connections = as_device(access.connections, &key)?;
-    dial(matches, access).await?.ok_or_else(no_servers)
+    let connections = access.connections.clone();
+    dial(matches, access)
+        .await?
+        .map(|client| {
+            client
+                .with_full_connections(connections)
+                .with_full_single(direct.is_some())
+        })
+        .ok_or_else(no_servers)
 }
 
 /// `connections`, each Management Capability one dialing as the Device whose key is at `key`
@@ -2349,6 +2364,7 @@ mod tests {
                 public_ip: public_ip.map(|ip| ip.parse().unwrap()),
                 advertised_endpoints: Vec::new(),
                 runtime: Default::default(),
+                join_approval: None,
                 build_concurrency: None,
             },
             membership,

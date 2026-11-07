@@ -307,7 +307,9 @@ impl Daemon {
                 }
             }
         };
-        let corrosion = start_corrosion(&config, &local).await?;
+        let corrosion = start_corrosion(&config, &local)
+            .await?
+            .map(|running| running.with_authority(local.clone()));
         let replicated_store = corrosion.as_ref().map(|running| running.store().clone());
         let plugin = config
             .volume_plugin_socket
@@ -863,7 +865,7 @@ async fn start_corrosion(
         .parent()
         .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "socket path has no parent"))?;
     let paths = CorrosionPaths::under(&config.data_dir, run_dir);
-    let bootstrap = record.bootstrap().iter().map(|machine| {
+    let bootstrap = record.bootstrap().into_iter().map(|machine| {
         SocketAddr::new(
             IpAddr::V6(machine.management_address().0),
             CORROSION_GOSSIP_PORT,

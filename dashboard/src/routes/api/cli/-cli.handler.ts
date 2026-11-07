@@ -23,6 +23,7 @@ import {
 import { refusal } from "#/modules/config-store/config-store.server";
 import { DEVICE_KEY } from "#/modules/devices/device-code";
 import { readDeviceRequest, requestDevice } from "#/modules/devices/device-request.server";
+import { readPasskeyRequest } from "#/modules/passkeys/passkeys.server";
 import { rustMachineIdSchema } from "#/modules/machines/enrollment";
 import { checkForgetServers, forgetServers, forgetServersAsked } from "#/modules/machines/forget-servers.server";
 import { FLEET_TOKEN_LIFETIMES, FleetTokenName } from "#/modules/machines/waiting/fleet-token";
@@ -429,6 +430,14 @@ export const handleCliRequest = Effect.fn("Cli.handle")(function* (request: Requ
       const pending = yield* readDeviceRequest(caller.organization.id, decodeURIComponent(id ?? "").trim().toLowerCase());
       if (pending === null) return missingRefusal("No such Device request.");
       return { code: pending.code, key: pending.key, expires_at: pending.expiresAt.toISOString() };
+    }
+    case "GET passkey-requests/:id": {
+      if (caller.credential.kind !== "session") return personOnly("Only a signed-in person can read a passkey request.");
+      const lacking = lacks({ ...caller, support: null }, "servers:shell");
+      if (lacking !== null) return refusal({ code: "forbidden", message: lacking, details: null });
+      const pending = yield* readPasskeyRequest(caller.organization.id, decodeURIComponent(id ?? "").trim().toLowerCase());
+      if (pending === null) return missingRefusal("No such passkey request.");
+      return pending;
     }
     case "POST server-access": {
       const access = yield* provideServerAccess(caller);
