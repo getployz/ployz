@@ -45,7 +45,7 @@ const ActServiceInput = Schema.Struct({
   verb: Schema.Literals(SERVICE_ACT_VERBS),
   requestId: Schema.String.check(Schema.isPattern(/^[A-Za-z0-9_-]{8,64}$/)),
   /** One approval per container ID, from the browser's passkey session. */
-  approvals: Schema.optionalKey(Schema.Record(hexOf(64), ApprovalInput)),
+  approvals: Schema.optional(Schema.Record(hexOf(64), ApprovalInput)),
 });
 
 export const actServiceServerFn = createServerFn({ method: "POST" })

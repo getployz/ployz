@@ -263,6 +263,12 @@ export function asSdkFailure(operation: string, cause: unknown): PloyzSdkError {
 }
 
 /** The code of the runtime's RPC error a failure carries, such as "not_found"; undefined for any other failure. */
+/** A Server with device enforcement on refused a stop or start whose approval it can't trust, or that had none. */
+const RefusedApproval = Schema.Struct({ details: Schema.Struct({ capability: Schema.Literal("ployz.restart.device-approval.v2") }) });
+
+export const refusedApproval = (error: PloyzSdkError) =>
+  "cause" in error && Option.isSome(Schema.decodeUnknownOption(RefusedApproval)(error.cause));
+
 export function rpcErrorCode(error: PloyzSdkError) {
   return rpcCode("cause" in error ? error.cause : undefined);
 }

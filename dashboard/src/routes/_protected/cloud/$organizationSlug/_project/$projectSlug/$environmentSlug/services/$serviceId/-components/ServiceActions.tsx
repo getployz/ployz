@@ -51,7 +51,8 @@ export function usePress(state: StoreService, namespace: string | null) {
  */
 export function useServiceAct(subject: Subject) {
   const queryClient = useQueryClient();
-  const latest = useLatestServiceAct(subject);
+  const { organizationSlug, environmentId, service } = subject;
+  const latest = useLatestServiceAct({ organizationSlug, environmentId, service });
   const [requested, setRequested] = useState<{ readonly verb: ServiceVerb; readonly id: string } | null>(null);
   const arrived = requested !== null && latest?.id === requested.id;
 
@@ -83,7 +84,6 @@ export function useServiceAct(subject: Subject) {
     if (approvals === null) return;
     const requestId = crypto.randomUUID();
     setRequested({ verb, id: requestId });
-    const { organizationSlug, environmentId, service } = subject;
     actServiceServerFn({ data: { organizationSlug, environmentId, service, verb, requestId, approvals } }).then(
       (result) => {
         if ("requested" in result) {

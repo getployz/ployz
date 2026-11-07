@@ -7,7 +7,7 @@ import type { Admission } from "#/modules/operations/keyed.server";
 import { enqueueEvent } from "#/modules/operations/outbox.server";
 import { requirements, ServerLacks, serverSupports } from "#/modules/runtime/daemon-compat";
 import { firstRuntimeFrame, OrganizationRuntime } from "#/modules/runtime/organization-runtime.server";
-import { type PloyzSdkError, rpcErrorCode } from "#/modules/runtime/ployz.server";
+import { type PloyzSdkError, refusedApproval, rpcErrorCode } from "#/modules/runtime/ployz.server";
 import {
   type ActiveServiceActState,
   alreadyThere,
@@ -239,6 +239,8 @@ export const actOnContainer = Effect.fn("ServiceAct.leg")(function* (
       Effect.catch((error) => Effect.succeed(
         error instanceof ServerLacks
           ? ["failed", `${leg.server} needs a newer Ployz to ${side} it.`] as const
+          : refusedApproval(error)
+          ? ["failed", `${leg.server} refused to ${side} it without an approval it trusts.`] as const
           : rpcErrorCode(error) === "unavailable"
           ? ["unknown", `${leg.server} didn't answer.`] as const
           : ["failed", `${leg.server} couldn't ${side} it.`] as const,
