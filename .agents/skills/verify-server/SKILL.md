@@ -43,6 +43,17 @@ The first run for an image recipe prepares Ubuntu with Docker, real ZFS, Corrosi
 
 A committed enrollment can return a startup follow-up failure. The helper retains that failure in `setup_follow_up_errors`, checks readiness for up to 30 seconds and completes the public ingress recovery command. It reports setup failures in stderr and evidence; inspect and report these when enrollment itself is the feature under verification.
 
+## Add a joining Machine
+
+`add` boots one more Machine into a ready run and enrolls it into the run's Cluster, the way `up` enrolls a later Machine: `server add` over SSH, through Cloud on a `--cloud` run. Use it to check what a Machine that joins an existing Cluster catches up on, such as a Global deployed before it joined.
+
+```bash
+new=$(scripts/verify-cluster add "$run")                  # prints machine-3, then machine-4, …
+scripts/verify-cluster add --roles ingress "$run"         # only the ingress role; from builds, services, ingress
+```
+
+The new Machine runs machine-1's daemon from the run's artifacts, so `add` builds nothing; run `update` first to change it. `add` then waits until `doctor` passes on every Machine, or, while `power off` has stopped one, until the new Machine lists itself up. On Boat it launches a fresh sandbox at one start rather than claiming from the pool, since a parked sandbox can share a Boat node with a Machine the run holds. On failure `add` deletes the new guest and leaves the manifest as it was, and the next `add` takes the next name; if enrollment had committed, the Cluster may still list the failed Machine. `add` refuses `--bare` runs and runs that enrolled a release Machine on the checkout daemon.
+
 ## Drive the feature
 
 ```bash

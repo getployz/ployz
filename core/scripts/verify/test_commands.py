@@ -109,6 +109,50 @@ class EnrollPublicIp(unittest.TestCase):
             self.assertEqual(self.public_ip_flag(calls[0]), "none")
 
 
+class Add(unittest.TestCase):
+    """add boots and enrolls one more Machine under a name no earlier add used."""
+
+    def setUp(self):
+        directory = tempfile.TemporaryDirectory()
+        self.addCleanup(directory.cleanup)
+        self.run_ = dict(manifest=str(Path(directory.name) / "cluster.json"), provider="boat", timings={},
+                         machines=[dict(name=f"machine-{index}", daemon=dict(source="checkout", version="0.4.0"))
+                                   for index in (1, 2)])
+        cluster.save(self.run_)
+        self.backend = unittest.mock.Mock()
+
+    def add(self, provision):
+        with unittest.mock.patch.object(cluster, "preflight"), \
+             unittest.mock.patch.object(cluster, "provision", side_effect=provision), \
+             unittest.mock.patch.object(cluster, "enroll"), \
+             unittest.mock.patch.object(cluster, "wait_ready"), \
+             contextlib.redirect_stdout(io.StringIO()) as printed, contextlib.redirect_stderr(io.StringIO()):
+            cluster.add(self.run_, unittest.mock.Mock(evidence="/evidence"), self.backend, None)
+        return printed.getvalue()
+
+    def test_a_failed_add_removes_its_guest_and_the_next_add_takes_a_new_name(self):
+        with self.assertRaises(RuntimeError):
+            self.add(RuntimeError("boat new failed"))
+        self.backend.discard.assert_called_once_with("machine-3", "add failed")
+        self.assertEqual([node["name"] for node in self.run_["machines"]], ["machine-1", "machine-2"])
+        self.assertEqual(self.add(None), "machine-4\n")
+        saved = cluster.json.loads(Path(self.run_["manifest"]).read_text())
+        self.assertEqual([node["name"] for node in saved["machines"]], ["machine-1", "machine-2", "machine-4"])
+        self.assertEqual(saved["machines"][2]["daemon"], self.run_["machines"][0]["daemon"])
+
+    def test_roles_enroll_the_server_with_only_those_roles(self):
+        calls = []
+
+        def cli(run, commands, args, **kwargs):
+            calls.append(args)
+            added = cluster.json.dumps(dict(server=dict(machine=dict(id="m3")))).encode()
+            return cluster.subprocess.CompletedProcess(args, 0, added, b"")
+        node = dict(name="machine-3", ssh="root@203.0.113.1:22", address="10.0.0.3", endpoint="10.0.0.3:51820")
+        with unittest.mock.patch.object(cluster, "cli", cli):
+            cluster.enroll({}, unittest.mock.Mock(evidence="/evidence"), node, Path("/private"), {"ingress"})
+        self.assertEqual(calls[0][-3:], ["--accepts-builds=false", "--accepts-services=false", "--accepts-ingress=true"])
+
+
 class CloudCredentials(unittest.TestCase):
     """On a --cloud run, `cli` holds the Organization Token, and --device the seeded owner's approved device."""
 
