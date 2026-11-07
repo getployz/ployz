@@ -1048,6 +1048,38 @@ async fn a_store_has_held_another_machine_once_its_key_arrived() {
     server.abort();
 }
 
+/// `server rm` deletes the row and leaves its cr-sqlite key, while a row that has not
+/// arrived leaves neither.
+#[tokio::test]
+async fn a_deleted_machine_row_reads_as_removed() {
+    let present = MachineId::random();
+    let deleted = MachineId::random();
+    let db = rusqlite::Connection::open_in_memory().unwrap();
+    db.execute_batch(
+        "CREATE TABLE machines__crsql_pks (__crsql_key INTEGER PRIMARY KEY, id);
+         CREATE TABLE machines (id PRIMARY KEY, info);",
+    )
+    .unwrap();
+    for id in [present, deleted] {
+        db.execute(
+            "INSERT INTO machines__crsql_pks (id) VALUES (?)",
+            [id.to_string()],
+        )
+        .unwrap();
+    }
+    db.execute(
+        "INSERT INTO machines (id, info) VALUES (?, '{}')",
+        [present.to_string()],
+    )
+    .unwrap();
+    let (store, server) = identity_store(db).await;
+    assert_eq!(
+        store.removed_machines().await.unwrap(),
+        std::collections::BTreeSet::from([deleted])
+    );
+    server.abort();
+}
+
 #[tokio::test]
 async fn catch_up_waits_for_pending_target_transactions() {
     use super::{Statement, wait_for_catch_up};

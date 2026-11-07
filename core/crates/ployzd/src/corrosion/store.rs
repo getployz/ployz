@@ -1438,6 +1438,23 @@ impl ReplicatedStore {
         }
     }
 
+    /// Machines whose row this store held and then deleted, as `server rm` does: a deleted
+    /// row keeps its cr-sqlite key.
+    pub(crate) async fn removed_machines(&self) -> Result<BTreeSet<MachineId>, Error> {
+        let query = self
+            .api
+            .query(Statement::new(
+                "SELECT id FROM machines__crsql_pks WHERE id NOT IN (SELECT id FROM machines)",
+                [],
+            ))
+            .await?;
+        query
+            .rows(["id"])?
+            .into_iter()
+            .map(|[id]| Ok(MachineId::parse(text(&id, "removed Machine ID")?)?))
+            .collect()
+    }
+
     /// Each actor's highest version this store holds with no hole below it: a catch-up
     /// target.
     pub async fn version(&self) -> Result<BTreeMap<String, i64>, Error> {

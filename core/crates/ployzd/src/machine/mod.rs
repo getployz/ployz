@@ -1,7 +1,7 @@
 //! Local Machine record persistence and Live Observation operations.
 
 use std::{
-    collections::BTreeMap,
+    collections::{BTreeMap, BTreeSet},
     fs::{self, OpenOptions},
     io::{self, Read, Seek, SeekFrom},
     os::unix::fs::OpenOptionsExt,
@@ -322,14 +322,22 @@ impl LocalMachineRecord {
             && self.membership_cluster == Some(body.cluster)
     }
 
-    /// Whether a WireGuard peer no row names may stay while the store catches up. Under
-    /// enforcement only a trusted Member may.
-    pub(crate) fn keeps_unlisted_peer(&self, key: &WireGuardPublicKey) -> bool {
-        !self.device_enforcement
-            || self
-                .trusted_machines
-                .iter()
-                .any(|member| member.public_key == *key)
+    /// Whether an installed WireGuard peer no accepted row names may stay. `answered` holds
+    /// the IDs a complete snapshot has an accepted row or a removal for, and is `None` while
+    /// the store can't say who left. With enforcement off the peer stays until such a
+    /// snapshot. Under enforcement only a trusted Member stays, until the snapshot answers
+    /// for its ID, so a missing or refused row never cuts the peers carrying gossip.
+    pub(crate) fn keeps_unlisted_peer(
+        &self,
+        key: &WireGuardPublicKey,
+        answered: Option<&BTreeSet<MachineId>>,
+    ) -> bool {
+        if !self.device_enforcement {
+            return answered.is_none();
+        }
+        self.trusted_machines.iter().any(|member| {
+            member.public_key == *key && answered.is_none_or(|ids| !ids.contains(&member.id))
+        })
     }
 
     pub(crate) fn pins_machine(&self, machine: &Machine) -> bool {
