@@ -647,6 +647,7 @@ async fn a_broken_device_key_still_sends_an_unsigned_restart() {
                     environment: None,
                     image_id: None,
                     last_check: None,
+                    leaving: false,
                     run: None,
                 }),
                 RpcRequestBody::EnsureContainer(request) => {
