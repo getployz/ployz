@@ -217,25 +217,16 @@ fn stage_failure(stage: IngressStage, error: &Error) -> IngressDoorsFailure {
     IngressDoorsFailure { stage, error }
 }
 
-/// A door stage that failed, with the Container it created and could not start.
-struct Failed {
-    error: Error,
-    created: Option<ContainerId>,
-}
-
-impl From<Error> for Failed {
-    fn from(error: Error) -> Self {
-        Self {
-            error,
-            created: None,
-        }
-    }
-}
-
-impl From<crate::docker::Error> for Failed {
-    fn from(error: crate::docker::Error) -> Self {
-        Error::from(error).into()
-    }
+/// Every Docker effect a converge made, recorded as Docker answers each request, so
+/// a failure undoes exactly what the call did and nothing it found.
+#[derive(Default)]
+struct Effects {
+    /// Retirees that ran until this call stopped them, in stop order.
+    stopped: Vec<ContainerId>,
+    /// Doors at rest that this call started, recorded before the start request.
+    started: Vec<ContainerId>,
+    /// Doors this call created, in creation order.
+    created: Vec<ContainerId>,
 }
 
 impl LocalMachine {
@@ -286,6 +277,22 @@ impl LocalMachine {
         .await
     }
 
+    /// Carry out the plan in three stages: stop, holder, proxy.
+    ///
+    /// The stop stage stops every door the plan replaces before anything starts,
+    /// Caddys before holders, so a legacy Caddy has let go of 80 and 443 before the
+    /// holder takes them. The proxy stage stops only a Caddy it rejoins, and starts it
+    /// again at once. No new Caddy starts while an old one runs, so two Caddys never
+    /// run at once. Replaced doors are removed only once the new holder and Caddy run.
+    /// A removal that fails leaves that door stopped, and the next call retires it.
+    ///
+    /// Each effect is recorded in [`Effects`] as Docker answers it. A failure in the
+    /// stop or holder stage, or in a proxy stage that creates a Caddy to replace doors
+    /// the plan retires, undoes the record: it removes what the call created, stops
+    /// what it started, then starts again what it stopped while it ran. The previous
+    /// doors start again only once nothing the call made still runs. Any other proxy
+    /// failure leaves the completed holder stage in place with nothing to come back to,
+    /// and the next call starts or replaces the Caddy.
     async fn converge_doors_admitted(
         &self,
         containers: &ContainerRuntime,
@@ -296,50 +303,23 @@ impl LocalMachine {
         let inventory = containers.door_inventory(&machine_id).await?;
         let plan = plan_doors(&inventory, specs, fresh_caddy);
         let mut set = IngressDoorsSet::default();
-        let mut stopped = Vec::new();
-        for retiree in plan.retirees() {
-            if let Err(error) = self.stop_retiree(containers, retiree, &mut stopped).await {
-                let error = self.restore(containers, &[], &stopped, error).await;
-                set.failure = Some(stage_failure(IngressStage::Holder, &error));
-                return Ok(set);
-            }
-        }
-        let (holder, created_holder) = match self.place_holder(containers, specs, &plan).await {
-            Ok(placed) => placed,
-            Err(failed) => {
-                let created = Vec::from_iter(failed.created);
-                let error = self
-                    .restore(containers, &created, &stopped, failed.error)
-                    .await;
-                set.failure = Some(stage_failure(IngressStage::Holder, &error));
-                return Ok(set);
-            }
-        };
-        set.holder = Some(holder);
-        match self.place_proxy(containers, specs, &plan).await {
-            Ok(proxy) => set.proxy = Some(proxy),
-            Err(failed) => {
-                let replaced =
-                    matches!(plan.proxy, ProxyStep::Create(_)) && plan.retirees().next().is_some();
-                let error = if replaced {
-                    // The old Ingress Proxy is still there to come back to, so nothing
-                    // this call made may stay to take its ports or its admin socket.
-                    if created_holder.is_some() {
-                        set.holder = None;
-                    }
-                    let created = failed
-                        .created
-                        .into_iter()
-                        .chain(created_holder)
-                        .collect::<Vec<_>>();
-                    self.restore(containers, &created, &stopped, failed.error)
-                        .await
-                } else {
-                    failed.error
-                };
-                set.failure = Some(stage_failure(IngressStage::Proxy, &error));
-                return Ok(set);
-            }
+        let mut effects = Effects::default();
+        if let Err((stage, error)) = self
+            .place_doors(containers, specs, &plan, &mut set, &mut effects)
+            .await
+        {
+            let undo = stage == IngressStage::Holder
+                || (matches!(plan.proxy, ProxyStep::Create(_)) && plan.retirees().next().is_some());
+            let error = if undo {
+                set.holder = set
+                    .holder
+                    .filter(|holder| holder.change == DoorChange::Unchanged);
+                self.undo(containers, &effects, error).await
+            } else {
+                error
+            };
+            set.failure = Some(stage_failure(stage, &error));
+            return Ok(set);
         }
         for retiree in plan.retirees() {
             match containers.remove(&retiree.id, true, true).await {
@@ -356,17 +336,46 @@ impl LocalMachine {
         Ok(set)
     }
 
+    /// The stop, holder and proxy stages, filling `set` as each completes. A failure
+    /// names its stage, and the stop stage reports as the holder's.
+    async fn place_doors(
+        &self,
+        containers: &ContainerRuntime,
+        specs: &DoorSpecs,
+        plan: &DoorPlan,
+        set: &mut IngressDoorsSet,
+        effects: &mut Effects,
+    ) -> Result<(), (IngressStage, Error)> {
+        let holder_stage = |error| (IngressStage::Holder, error);
+        for retiree in plan.retirees() {
+            self.stop_retiree(containers, retiree, effects)
+                .await
+                .map_err(holder_stage)?;
+        }
+        set.holder = Some(
+            self.place_holder(containers, specs, plan, effects)
+                .await
+                .map_err(holder_stage)?,
+        );
+        set.proxy = Some(
+            self.place_proxy(containers, specs, plan, effects)
+                .await
+                .map_err(|error| (IngressStage::Proxy, error))?,
+        );
+        Ok(())
+    }
+
     async fn stop_retiree(
         &self,
         containers: &ContainerRuntime,
         retiree: &Retiree,
-        stopped: &mut Vec<ContainerId>,
+        effects: &mut Effects,
     ) -> Result<(), Error> {
         self.door_effect()?;
         match containers.stop(&retiree.id, None, None).await {
             Ok(()) => {
                 if retiree.running {
-                    stopped.push(retiree.id);
+                    effects.stopped.push(retiree.id);
                 }
                 Ok(())
             }
@@ -375,33 +384,28 @@ impl LocalMachine {
         }
     }
 
-    /// The holder's outcome, and its id when this call created it.
     async fn place_holder(
         &self,
         containers: &ContainerRuntime,
         specs: &DoorSpecs,
         plan: &DoorPlan,
-    ) -> Result<(DoorOutcome, Option<ContainerId>), Failed> {
+        effects: &mut Effects,
+    ) -> Result<DoorOutcome, Error> {
         let (id, change) = match &plan.holder {
             HolderStep::Keep(id) => (*id, DoorChange::Unchanged),
             HolderStep::Start(id) => {
+                effects.started.push(*id);
                 self.start_door(containers, id).await?;
                 (*id, DoorChange::Started)
             }
             HolderStep::Create(replacing) => {
-                let created = self.create_door(&specs.holder, *replacing).await?;
-                if let Err(error) = self.start_door(containers, &created.container_id).await {
-                    return Err(Failed {
-                        error,
-                        created: Some(created.container_id),
-                    });
-                }
-                (created.container_id, DoorChange::Created)
+                let id = self.create_door(&specs.holder, *replacing, effects).await?;
+                self.start_door(containers, &id).await?;
+                (id, DoorChange::Created)
             }
         };
         let now = containers.inspect_managed(&id, &self.record().id()).await?;
-        let created = (change == DoorChange::Created).then_some(id);
-        Ok((DoorOutcome { now, change }, created))
+        Ok(DoorOutcome { now, change })
     }
 
     async fn place_proxy(
@@ -409,10 +413,12 @@ impl LocalMachine {
         containers: &ContainerRuntime,
         specs: &DoorSpecs,
         plan: &DoorPlan,
-    ) -> Result<DoorOutcome, Failed> {
+        effects: &mut Effects,
+    ) -> Result<DoorOutcome, Error> {
         let (id, change) = match &plan.proxy {
             ProxyStep::Keep(id) => (*id, DoorChange::Unchanged),
             ProxyStep::Start(id) => {
+                effects.started.push(*id);
                 self.start_door(containers, id).await?;
                 (*id, DoorChange::Started)
             }
@@ -423,14 +429,9 @@ impl LocalMachine {
                 (*id, DoorChange::Rejoined)
             }
             ProxyStep::Create(replacing) => {
-                let created = self.create_door(&specs.proxy, *replacing).await?;
-                if let Err(error) = self.start_door(containers, &created.container_id).await {
-                    return Err(Failed {
-                        error,
-                        created: Some(created.container_id),
-                    });
-                }
-                (created.container_id, DoorChange::Created)
+                let id = self.create_door(&specs.proxy, *replacing, effects).await?;
+                self.start_door(containers, &id).await?;
+                (id, DoorChange::Created)
             }
         };
         let now = containers.inspect_managed(&id, &self.record().id()).await?;
@@ -492,41 +493,49 @@ impl LocalMachine {
         }
     }
 
+    /// Create a door and record it in `effects` as soon as Docker names it.
     async fn create_door(
         &self,
         spec: &ResolvedServiceSpec,
         replacing: Replacing,
-    ) -> Result<crate::docker::ContainerCreated, Error> {
+        effects: &mut Effects,
+    ) -> Result<ContainerId, Error> {
         self.door_effect()?;
         let key = global_creation_key(spec);
         let key = match replacing {
             Some(old) => format!("{key}:replace:{old}"),
             None => key,
         };
-        self.create_container_admitted(
-            ContainerKind::ServiceContainer,
-            &Namespace::system(),
-            spec,
-            Some(key),
-            None,
-            Gen::FIRST,
-            ImagePull::Prepared,
-        )
-        .await
+        let created = self
+            .create_container_admitted(
+                ContainerKind::ServiceContainer,
+                &Namespace::system(),
+                spec,
+                Some(key),
+                None,
+                Gen::FIRST,
+                ImagePull::Prepared,
+            )
+            .await?;
+        effects.created.push(created.container_id);
+        Ok(created.container_id)
     }
 
-    /// Remove the doors this call `created`, newest first, then start again the ones
-    /// it `stopped` while they ran, holders before the Caddys in their networks. A
-    /// failure of either is folded into `error`.
-    async fn restore(
+    /// Undo `effects`: remove the doors the call created and stop the ones it started,
+    /// each Caddy before the holder whose network it is in. Only then start again the
+    /// ones it stopped while they ran, holders before their Caddys. A failure of any
+    /// step is folded into `error`, and one that leaves a door of this call running or
+    /// present keeps the previous doors stopped.
+    async fn undo(
         &self,
         containers: &ContainerRuntime,
-        created: &[ContainerId],
-        stopped: &[ContainerId],
+        effects: &Effects,
         mut error: Error,
     ) -> Error {
-        for id in created {
+        let mut cleared = true;
+        for id in effects.created.iter().rev() {
             if let Err(removal) = containers.remove(id, true, true).await {
+                cleared = false;
                 error = Error::Cleanup(format!(
                     "{}; removing the new Ingress door {id} failed too: {}",
                     ployz_core::error_chain::inline(&error),
@@ -534,7 +543,27 @@ impl LocalMachine {
                 ));
             }
         }
-        for id in stopped.iter().rev() {
+        for id in effects.started.iter().rev() {
+            if let Err(stop) = containers.stop(id, None, None).await {
+                cleared = false;
+                error = Error::Cleanup(format!(
+                    "{}; stopping the Ingress door {id} again failed too: {}",
+                    ployz_core::error_chain::inline(&error),
+                    ployz_core::error_chain::inline(&stop),
+                ));
+            }
+        }
+        if !cleared {
+            return if effects.stopped.is_empty() {
+                error
+            } else {
+                Error::Cleanup(format!(
+                    "{}; the previous Ingress doors stay stopped",
+                    ployz_core::error_chain::inline(&error),
+                ))
+            };
+        }
+        for id in effects.stopped.iter().rev() {
             if let Err(restart) = containers.start(id).await {
                 error = Error::Cleanup(format!(
                     "{}; starting the previous Ingress door {id} again failed: {}",

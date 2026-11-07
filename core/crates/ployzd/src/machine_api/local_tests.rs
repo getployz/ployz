@@ -1405,6 +1405,115 @@ mod ingress_doors {
         std::fs::remove_dir_all(data_dir).unwrap();
     }
 
+    fn inspect_fails_after_start(fake: &FakeDocker, service: &str) {
+        fake.fail_inspect_after_start
+            .lock()
+            .unwrap()
+            .insert(service.into(), 1);
+    }
+
+    #[tokio::test]
+    async fn a_cutover_whose_inspect_fails_after_a_start_brings_the_legacy_caddy_back() {
+        let stages = [
+            ("ingress-holder", ployz_core::IngressStage::Holder),
+            ("ingress", ployz_core::IngressStage::Proxy),
+        ];
+        for (service, stage) in stages {
+            let (data_dir, _store, service_api, fake, runtime) =
+                fake_docker_service_keeping_runtime("ployzd-doors-cutover-inspect").await;
+            let machine = service_api.local.record().id();
+            let legacy = legacy_caddy(&service_api, &runtime).await;
+            inspect_fails_after_start(&fake, service);
+            let set = set_doors(&service_api, doors_request(), false)
+                .await
+                .unwrap()
+                .unwrap();
+            assert_eq!(
+                set.failure.as_ref().map(|failure| failure.stage),
+                Some(stage),
+                "{service}: {set:?}"
+            );
+            assert_eq!(
+                set.holder, None,
+                "{service}: the new holder is gone: {set:?}"
+            );
+            assert_eq!(
+                at_rest_by_id(&runtime, &machine).await,
+                vec![(legacy, false)],
+                "{service}: every door the cutover created is removed, and the legacy Caddy \
+                 runs again alone"
+            );
+            std::fs::remove_dir_all(data_dir).unwrap();
+        }
+    }
+
+    #[tokio::test]
+    async fn a_fresh_caddy_whose_inspect_fails_after_its_start_leaves_one_caddy() {
+        let (data_dir, _store, service, fake, runtime) =
+            fake_docker_service_keeping_runtime("ployzd-doors-fresh-inspect").await;
+        let machine = service.local.record().id();
+        set_doors(&service, doors_request(), false)
+            .await
+            .unwrap()
+            .unwrap();
+        let before = at_rest_by_id(&runtime, &machine).await;
+        assert_eq!(before.len(), 2, "{before:?}");
+
+        inspect_fails_after_start(&fake, "ingress");
+        let reply = ensure(&service, legacy_caddy_want()).await;
+        refused_for_doors(&reply, ContainerRefusalReason::InvalidIngress);
+        assert_eq!(
+            at_rest_by_id(&runtime, &machine).await,
+            before,
+            "the new Caddy is removed and the old one runs again, never beside it"
+        );
+        std::fs::remove_dir_all(data_dir).unwrap();
+    }
+
+    #[tokio::test]
+    async fn a_cutover_that_started_the_holder_stops_it_before_the_legacy_caddy_returns() {
+        let (data_dir, _store, service, fake, runtime) =
+            fake_docker_service_keeping_runtime("ployzd-doors-started-holder").await;
+        let machine = service.local.record().id();
+        set_doors(&service, doors_request(), false)
+            .await
+            .unwrap()
+            .unwrap();
+        let mut holder = None;
+        for entry in runtime.door_inventory(&machine).await.unwrap() {
+            runtime.stop(&entry.facts.id, None, None).await.unwrap();
+            match entry.facts.door {
+                crate::docker::Door::Holder => holder = Some(entry.facts.id),
+                crate::docker::Door::Proxy => {
+                    runtime.remove(&entry.facts.id, true, true).await.unwrap();
+                }
+            }
+        }
+        let holder = holder.unwrap();
+        let legacy = legacy_caddy(&service, &runtime).await;
+
+        caddy_create_refused(&fake);
+        let set = set_doors(&service, doors_request(), false)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            set.failure.as_ref().map(|failure| failure.stage),
+            Some(ployz_core::IngressStage::Proxy),
+            "{set:?}"
+        );
+        assert_eq!(
+            set.holder, None,
+            "the holder the call started is stopped: {set:?}"
+        );
+        assert_eq!(
+            at_rest_by_id(&runtime, &machine).await,
+            vec![(holder, true), (legacy, false)],
+            "the holder lets go of the ports before the legacy Caddy runs again"
+        );
+        std::fs::remove_dir_all(data_dir).unwrap();
+    }
+
     #[tokio::test]
     async fn a_legacy_deploy_without_the_role_is_refused() {
         let (data_dir, store, service, fake) =
