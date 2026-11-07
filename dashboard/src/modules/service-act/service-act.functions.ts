@@ -56,7 +56,7 @@ export const actServiceServerFn = createServerFn({ method: "POST" })
     const found = yield* findService(caller.organization.id, data.environmentId, data.service);
     if (found === null) return yield* new NotFound({ message: "The service was not found." });
     if (data.verb === "restart" && Object.keys(data.approvals ?? {}).length === 0 && (yield* environmentEnforces(caller.organization.id, found.namespace))) {
-      return yield* new Conflict({ message: "Its servers need your passkey's approval. Reload the page and restart again.", userFacing: true });
+      return yield* new Conflict({ message: "Reload the page and try again.", userFacing: true });
     }
     const tool = `service_${data.verb}` as const;
     const body = { environmentId: data.environmentId, service: data.service, only: null };

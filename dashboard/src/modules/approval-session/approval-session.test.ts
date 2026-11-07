@@ -7,7 +7,6 @@ import {
   grantChallenge,
   hex,
   keyCode,
-  minutesLeft,
   promptReason,
   restartScope,
   signingInput,
@@ -80,7 +79,6 @@ describe("promptReason", () => {
     expect(promptReason(live, { ...production, machines: ["33333333333333333333333333333333"] }, "restart", now)).toBe("scope");
     expect(promptReason(live, production, "stop", now)).toBe("scope");
     expect(promptReason(session(production, now + 59_000), production, "restart", now)).toBe("expired");
-    expect(minutesLeft(session(production, now + 3_600_000), now)).toBe(60);
   });
 });
 

@@ -67,6 +67,6 @@ it("keeps the steps, sign-in first, until every server trusts the passkey", () =
     { server: "web-2", approval: { by: "device", code: "dddddddddd" } },
   ] }] }} />);
   expect(screen.getByText("Trusted on every server")).toBeDefined();
-  expect(screen.getByText("Approved by device dddddddddd")).toBeDefined();
+  expect(screen.getByText("web-1").nextSibling?.textContent).toBe("Trusted");
   expect(screen.queryByText("sudo ployz login")).toBeNull();
 });

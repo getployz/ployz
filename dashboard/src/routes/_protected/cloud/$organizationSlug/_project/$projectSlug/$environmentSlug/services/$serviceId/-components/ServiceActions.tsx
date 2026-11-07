@@ -15,7 +15,7 @@ import { actAlert, actBadge } from "#/modules/service-act/service-act-view";
 import { refetchApprovals } from "#/components/agent-sidebar/approvals.queries";
 import { actServiceServerFn } from "#/modules/service-act/service-act.functions";
 import { serviceActKeys, useLatestServiceAct } from "#/modules/service-act/service-act.queries";
-import { ApprovalSessionBadge, ensureApproval } from "#/modules/approval-session/approval-prompt";
+import { ensureApproval } from "#/modules/approval-session/approval-prompt";
 import { approveRestart, restartScope } from "#/modules/approval-session/approval-session";
 import { useRuntimeLens } from "#/modules/runtime/use-runtime-lens";
 import type { StoreService } from "./StoreServiceDrawer";
@@ -120,7 +120,6 @@ export function ServiceActions({ state, namespace, act, asks }: { state: StoreSe
 
   return (
     <>
-      <ApprovalSessionBadge environmentId={act.environmentId} />
       {act.badge !== null ? (
         <Badge variant="outline"><Spinner data-icon="inline-start" />{act.badge}</Badge>
       ) : stopped ? (

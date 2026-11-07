@@ -64,10 +64,6 @@ export function promptReason(session: ApprovalSession | null, scope: ApprovalSco
   return null;
 }
 
-/** Whole minutes the session still covers, rounded up; zero once it can no longer approve. */
-export const minutesLeft = (session: ApprovalSession, now = Date.now()) =>
-  session.expiresAt - now < ENDING_MS ? 0 : Math.ceil((session.expiresAt - now) / 60_000);
-
 /** `ployz_core::authority::canonical`: sorted ASCII keys, no whitespace, no null, only safe non-negative integers. */
 export function canonicalJson(value: JsonValue): string {
   if (value === null) throw new Error("A signed body holds no null.");
@@ -143,7 +139,7 @@ async function browserKey(): Promise<CryptoKeyPair> {
     // Non-extractable: the private half can sign in this page and can never be read out of it.
     return await crypto.subtle.generateKey({ name: "Ed25519" }, false, ["sign", "verify"]);
   } catch {
-    throw new SessionRefused("Your browser can't hold an approval key here. Restart from the CLI with your device instead.");
+    throw new SessionRefused("This browser can't use a passkey here. Use the CLI instead.");
   }
 }
 
@@ -193,7 +189,7 @@ const operationId = () => hex(crypto.getRandomValues(new Uint8Array(16)));
  * 15 minutes inside the grant. Keyed by container ID, as Cloud forwards them.
  */
 export async function approveRestart(service: string, copies: readonly RestartCopy[], now = Date.now()): Promise<Record<string, Signed>> {
-  if (current === null || current.session.expiresAt - now < ENDING_MS) throw new SessionRefused("Your approval ended. Confirm it's you again.");
+  if (current === null || current.session.expiresAt - now < ENDING_MS) throw new SessionRefused("Confirm it's you again.");
   const { session, grant, publicKey, key } = current;
   const entries = await Promise.all(copies.map(async ({ machine, container }) => {
     const body = canonicalJson({

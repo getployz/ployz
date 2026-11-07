@@ -341,9 +341,8 @@ used for those actions must contain a direct connection to each target. With an 
 To approve the first Device through SSH, repeat the command on each server.
 
 **Restart** in the dashboard asks for your passkey the first time you press it. Your browser
-then holds a key that approves restarts in that Environment, on its servers, for 60 minutes, and
-the button shows how long is left, like **Approved for production · 42 min left**. Later presses
-in that window don't ask again. The key never leaves the browser tab, and closing or reloading
+then holds a key that approves restarts in that Environment, on its servers, for 60 minutes.
+Later presses in that window don't ask again. The key never leaves the browser tab, and closing or reloading
 the tab ends the window. Each press still sends one approval per container, lasting at most
 15 minutes, and the server checks it, the passkey's grant of the browser key and the passkey
 itself before it stops anything. Its log names the passkey that approved the restart. A grant

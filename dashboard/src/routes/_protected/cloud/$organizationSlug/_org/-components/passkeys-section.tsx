@@ -45,7 +45,7 @@ function MemberPasskeys({ organizationSlug }: { organizationSlug: string }) {
   });
   return (
     <SettingsSection id="passkeys" title="Passkeys"
-      description="A passkey lets you approve changes from this browser. A server trusts it only after you approve it there."
+      description="Approve changes from this browser."
       action={(
         <Button variant="outline" size="sm" disabled={add.isPending} onClick={() => add.mutate()}>
           Add passkey
@@ -65,7 +65,7 @@ function AddFailed({ message }: { message: string }) {
     <Alert variant="destructive">
       <AlertTitle>This browser couldn't add a passkey.</AlertTitle>
       <AlertDescription>
-        Try a browser or device with a passkey, or approve changes from a terminal with an approved device instead:
+        Try another browser, or approve from the CLI:
         <code className="font-mono">ployz device request</code>
       </AlertDescription>
     </Alert>
@@ -108,8 +108,6 @@ function TrustBadge({ passkey }: { passkey: PasskeyRow }) {
 const trustText = ({ approval }: ServerTrust) =>
   approval === "unanswered" ? "Didn't answer"
   : approval === null ? "Not yet approved"
-  : approval.by === "device" ? `Approved by device ${approval.code}`
-  : approval.by === "server" ? "Approved on the server"
   : "Trusted";
 
 function ServerTrustList({ servers }: { servers: readonly ServerTrust[] }) {
@@ -128,10 +126,10 @@ function ServerTrustList({ servers }: { servers: readonly ServerTrust[] }) {
 function WaitingSteps({ code }: { code: string }) {
   return (
     <div className="flex flex-col gap-2 pt-2">
-      <p className="text-sm text-muted-foreground">On each server that doesn't trust it yet, sign in to Ployz Cloud, then approve it:</p>
+      <p className="text-sm text-muted-foreground">Approve it on each server:</p>
       <CopyBlock value="sudo ployz login" />
       <CopyBlock value={approveCommand(code, "server")} />
-      <p className="text-sm text-muted-foreground">Or run this once on a computer with an approved device:</p>
+      <p className="text-sm text-muted-foreground">Or once from an approved device:</p>
       <CopyBlock value={approveCommand(code, "device")} />
     </div>
   );
