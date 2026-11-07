@@ -7,11 +7,12 @@ use std::{
 };
 
 use ployz_core::{
-    CapabilityAdvertisement, CertificateMaterialChange, CertificateMaterialPublished, ContainerId,
-    ContainerList, ContainerObservation, ContractDescription, EndpointSelected, EnvironmentValues,
-    LiveLogTarget, LocalMachinePhase, LogMetadata, LogOrigin, MachineLogService, MachineRpc,
-    ManagementScope, OpaquePayload, PROTOCOL_MAJOR, RetainedEnvReply, RoutedAddresses, RoutesRead,
-    Rpc, RpcError, RpcErrorCode, RpcRequestBody, RpcResponse, SelectEndpointRequest, op,
+    CapabilityAdvertisement, CertificateMaterialChange, CertificateMaterialPublished, ClusterNamed,
+    ContainerId, ContainerList, ContainerObservation, ContractDescription, EndpointSelected,
+    EnvironmentValues, LiveLogTarget, LocalMachinePhase, LogMetadata, LogOrigin, MachineLogService,
+    MachineRpc, ManagementScope, OpaquePayload, PROTOCOL_MAJOR, RetainedEnvReply, RoutedAddresses,
+    RoutesRead, Rpc, RpcError, RpcErrorCode, RpcRequestBody, RpcResponse, SelectEndpointRequest,
+    op,
 };
 use serde_json::Value;
 use tonic::{Request, Response, Status};
@@ -985,6 +986,38 @@ impl MachineRpc for MachineService {
         respond(RoutedAddresses {
             routes: self.published_routes.borrow().addresses.clone(),
         })
+    }
+
+    async fn read_cluster_name(
+        &self,
+        request: Request<OpaquePayload>,
+    ) -> Result<Response<OpaquePayload>, Status> {
+        expect::<op::ReadClusterName>(request)?;
+        let replicated = match self.ready_replicated() {
+            Ok(replicated) => replicated,
+            Err(error) => return respond(error),
+        };
+        match replicated.cluster_name().await {
+            Ok(name) => respond(ClusterNamed { name }),
+            Err(error) => respond(cluster_store_error(error)),
+        }
+    }
+
+    async fn set_cluster_name(
+        &self,
+        request: Request<OpaquePayload>,
+    ) -> Result<Response<OpaquePayload>, Status> {
+        let request = expect::<op::SetClusterName>(request)?;
+        let replicated = match self.ready_replicated() {
+            Ok(replicated) => replicated,
+            Err(error) => return respond(error),
+        };
+        match replicated.publish_cluster_name(&request.name).await {
+            Ok(()) => respond(ClusterNamed {
+                name: Some(request.name),
+            }),
+            Err(error) => respond(cluster_store_error(error)),
+        }
     }
 }
 

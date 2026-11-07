@@ -18,7 +18,7 @@ pub enum NamespaceError {
 ///
 /// Returns [`NamespaceError::Reserved`] when `name` is `ployz-system`.
 pub fn refuse_reserved(name: &Namespace) -> Result<(), NamespaceError> {
-    if name.is_reserved() {
+    if name.is_system() {
         Err(NamespaceError::Reserved { name: name.clone() })
     } else {
         Ok(())
@@ -32,11 +32,12 @@ mod tests {
     #[test]
     fn reserved_names_parse_and_are_refused() {
         let name = Namespace::parse("ployz-system").unwrap();
-        assert!(name.is_reserved());
+        assert!(name.is_system());
         assert_eq!(
             refuse_reserved(&name).unwrap_err().to_string(),
             "Namespace 'ployz-system' is reserved for Ployz infrastructure"
         );
+        refuse_reserved(&Namespace::parse("ployz").unwrap()).unwrap();
         refuse_reserved(&Namespace::parse("shop").unwrap()).unwrap();
     }
 }

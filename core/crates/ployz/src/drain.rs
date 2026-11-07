@@ -56,7 +56,7 @@ pub enum DrainScope {
 
 impl DrainScope {
     fn includes(&self, service: &QualifiedService) -> bool {
-        !service.namespace.is_reserved()
+        !service.namespace.is_system()
             && match self {
                 Self::EveryNamespace => true,
                 Self::Owned { namespaces } => namespaces.contains(&service.namespace),
@@ -611,7 +611,7 @@ async fn execute<C: DrainClient>(
         Ok(services) => Remaining::Observed {
             unchosen: services
                 .iter()
-                .filter(|service| !service.namespace.is_reserved() && !scope.includes(service))
+                .filter(|service| !service.namespace.is_system() && !scope.includes(service))
                 .cloned()
                 .collect(),
             services,

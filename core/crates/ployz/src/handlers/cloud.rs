@@ -178,6 +178,7 @@ where
     let initial_policy = super::server::enrollment_policy(matches)?;
     let url = cloud_enroll::enroll_url(cloud_url);
     let requested_name = super::server::requested_name(matches)?;
+    let cluster_name = super::server::founding_cluster_name(matches)?;
     let requested_storage = super::server::requested_storage(matches);
     // `--public-ip` and `--wg-endpoint` shape the identity Cloud registers, and pin what the
     // daemon would otherwise rediscover, as a direct join does (#3515).
@@ -215,6 +216,9 @@ where
     match outcome {
         Outcome::Join(join) => {
             report.enrolled(join.storage.choice(), false);
+            if cluster_name.is_some() {
+                super::server::joined_unnamed();
+            }
             enroll_join(
                 command,
                 matches,
@@ -685,6 +689,17 @@ where
     )
     .await?;
 
+    let unnamed = match super::server::founding_cluster_name(matches)? {
+        Some(name) => {
+            let next = super::rerun(matches, &["cluster", "name", name.as_str()]);
+            super::cluster::set(&ready, name).await.err().map(|error| {
+                error
+                    .context("Server initialized; the Cluster has no name yet.")
+                    .hint(Hint::Next(next))
+            })
+        }
+        None => None,
+    };
     let mut partial = None;
     if machine.accepts_ingress
         && let Some(requested) = ingress
@@ -705,6 +720,12 @@ where
                 partial = Some(incomplete(error));
             }
             Err(error) => return Err(incomplete(error)),
+        }
+    }
+    if let Some(error) = unnamed {
+        match &partial {
+            Some(_) => ui::warn(error.to_string()),
+            None => partial = Some(error),
         }
     }
     let sealing = sealing(&mut ready).await?;

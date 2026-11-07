@@ -23,6 +23,7 @@ use super::{ApiClient, ReplicatedStore};
 #[derive(Clone)]
 struct ClusterKv {
     network: Option<String>,
+    name: Option<String>,
     /// The awaited Sealing public key as it stood when the network was written,
     /// so a test awaits the write instead of polling.
     network_written: tokio::sync::watch::Sender<Option<Option<String>>>,
@@ -69,6 +70,7 @@ impl ClusterKv {
         let (certificate_changes, _) = broadcast::channel(16);
         Self {
             network: Some("10.210.0.0/16".into()),
+            name: None,
             network_written: tokio::sync::watch::Sender::new(None),
             sealing_public_key: tokio::sync::watch::Sender::new(None),
             sealing_awaits_recovery: None,
@@ -488,6 +490,9 @@ fn query(kv: &Mutex<ClusterKv>, statement: Statement) -> Result<Bytes, StatusCod
                 json!(kv.sealing_awaits_recovery.clone()),
             ]],
         ),
+        "SELECT value FROM cluster WHERE key = 'name'" => {
+            events(&["value"], kv.name.iter().map(|name| vec![json!(name)]))
+        }
         "SELECT value FROM cluster WHERE key = 'network'" => events(
             &["value"],
             kv.network.iter().map(|network| vec![json!(network)]),
@@ -537,6 +542,9 @@ fn execute(kv: &Mutex<ClusterKv>, statements: Vec<Statement>) -> Bytes {
                 kv.network = Some(text_param(&statement.params, 0).to_owned());
                 let awaited = kv.sealing_awaits_recovery.clone();
                 kv.network_written.send_replace(Some(awaited));
+            }
+            query if query.starts_with("INSERT INTO cluster (key, value) VALUES ('name', ?)") => {
+                kv.name = Some(text_param(&statement.params, 0).to_owned());
             }
             query
                 if query.starts_with(

@@ -9,9 +9,9 @@ use serde::Serialize;
 #[cfg(feature = "verify-faults")]
 use super::debug;
 use super::{
-    Handler, account, build, catalog, cloud, completion, config, config_item, context, deploy,
-    device, docs, domain, env, github, link, login, mcp, metrics, operator, project, recovery,
-    review, server, service, up, volume,
+    Handler, account, build, catalog, cloud, cluster, completion, config, config_item, context,
+    deploy, device, docs, domain, env, github, link, login, mcp, metrics, operator, project,
+    recovery, review, server, service, up, volume,
 };
 use Approval::{Always, Depends, Never};
 
@@ -178,6 +178,9 @@ pub(crate) const BUILD: Verb =
     Verb::internal("build", Never, build::command, build::build).refuses_json();
 pub(crate) const CLOUD_RESET: Verb =
     Verb::cloud("cloud reset", Always, cloud::reset_command, cloud::reset);
+pub(crate) const CLUSTER_NAME: Verb =
+    Verb::cloud("cluster name", Never, cluster::name_command, cluster::name)
+        .docs("services/private-networking.md");
 pub(crate) const COMPLETION: Verb =
     Verb::local("completion", Never, crate::cli::completion, completion).refuses_json();
 pub(crate) const CONFIG_ADD: Verb = Verb::cloud(
@@ -816,6 +819,7 @@ pub(crate) const VOLUME_SYNC: Verb = Verb::cloud(
 pub(crate) const VERBS: &[Verb] = &[
     BUILD,
     CLOUD_RESET,
+    CLUSTER_NAME,
     COMPLETION,
     CONFIG_ADD,
     CONFIG_INSPECT,
@@ -951,6 +955,10 @@ const GROUPS: &[Group] = &[
     Group {
         path: "cloud",
         command: cloud::group,
+    },
+    Group {
+        path: "cluster",
+        command: cluster::group,
     },
     Group {
         path: "config",
