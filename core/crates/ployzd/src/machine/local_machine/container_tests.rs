@@ -98,7 +98,7 @@ async fn fresh_service_revocation_preserves_management_and_trusted_ingress() {
         .await
         .unwrap();
     assert!(fake.existing_container.lock().unwrap().is_none());
-    let ingress = ployz_core::caddy_service_spec("caddy:test".into(), Default::default())
+    let ingress = crate::images::legacy_caddy_for_tests("caddy:test")
         .to_resolved(ServiceId::random(), Default::default())
         .unwrap();
     let error = local
@@ -113,11 +113,27 @@ async fn fresh_service_revocation_preserves_management_and_trusted_ingress() {
         .await
         .unwrap_err();
     assert!(error.to_string().contains("accept"), "{error}");
-    local
+    // The reserved identity admits only the daemon's own door specs.
+    let error = local
         .create_container(
             ContainerKind::ServiceContainer,
             &Namespace::system(),
             &ingress,
+            None,
+            None,
+            None,
+        )
+        .await
+        .unwrap_err();
+    assert!(
+        matches!(error, super::Error::IngressProxyServiceSpec(_)),
+        "{error}"
+    );
+    local
+        .create_container(
+            ContainerKind::ServiceContainer,
+            &Namespace::system(),
+            &crate::images::DoorSpecs::public(ServiceId::random()).holder,
             None,
             None,
             None,

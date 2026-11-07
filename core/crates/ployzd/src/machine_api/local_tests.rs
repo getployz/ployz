@@ -848,6 +848,7 @@ async fn fake_docker_service_keeping_runtime(
     let store = RecordOwner::spawn(store).unwrap();
     let (runtime, fake) = fake_runtime_with(FakeDocker {
         named_containers: Some(Arc::new(Mutex::new(BTreeMap::new()))),
+        list_named: true,
         ..Default::default()
     })
     .await;
@@ -856,6 +857,371 @@ async fn fake_docker_service_keeping_runtime(
     // `true` lists no pools, which reads as ZFS ready whatever the host has.
     service.local = service.local.with_zpool("true");
     (data_dir, store, service, fake, runtime)
+}
+
+mod ingress_doors {
+    //! The Ingress doors route and the legacy Caddy Deploy it translates, against the
+    //! fake Docker: who may call it, and what each answers.
+
+    use axum::http::Method;
+    use ployz_core::{
+        ContainerNow, ContainerRefusalReason, DoorChange, EnsuredContainer, IngressDoorsSet,
+        OPERATOR_SCOPE_HEADER, QualifiedService, RESTART_APPROVAL_CAPABILITY, RpcError,
+        SET_INGRESS_DOORS_CAPABILITY, rpc::status_details,
+    };
+    use serde_json::{Value, json};
+    use tonic::Status;
+
+    use super::*;
+    use crate::docker::test_support::FakeDocker;
+    use crate::images::DoorSpecs;
+
+    fn proxy_id() -> ServiceId {
+        ServiceId::parse("c".repeat(32)).unwrap()
+    }
+
+    fn doors_request() -> Value {
+        json!({"doors": ["public"], "proxy_service": proxy_id()})
+    }
+
+    /// The route's answer: a `Status` fails the call, an `RpcError` answers it.
+    async fn set_doors(
+        service: &MachineService,
+        body: Value,
+        operator: bool,
+    ) -> Result<Result<IngressDoorsSet, RpcError>, Status> {
+        let mut request = Request::new(
+            op::SetIngressDoors::into_request(serde_json::from_value(body).unwrap())
+                .encode()
+                .unwrap(),
+        );
+        if operator {
+            request
+                .metadata_mut()
+                .insert(OPERATOR_SCOPE_HEADER, "1".parse().unwrap());
+        }
+        let response = service
+            .set_ingress_doors(request)
+            .await?
+            .into_inner()
+            .decode_response()
+            .unwrap();
+        if let RpcResponseBody::Error(error) = response.body {
+            return Ok(Err(error));
+        }
+        let shown = format!("{response:?}");
+        Ok(Ok(response
+            .decode::<op::SetIngressDoors>()
+            .unwrap_or_else(|error| panic!("{error}: {shown}"))))
+    }
+
+    /// A legacy Deploy's want: the Caddy spec an older CLI builds, under its slot.
+    fn legacy_caddy_want() -> Value {
+        let spec = crate::images::legacy_caddy_for_tests("caddy:2")
+            .to_resolved(proxy_id(), Default::default())
+            .unwrap();
+        door_want(&spec)
+    }
+
+    fn door_want(spec: &ployz_core::ResolvedServiceSpec) -> Value {
+        json!({"want":{"state":"running", "rotation":"pending", "container":{"new":{
+            "slot": {"namespace":"ployz-system", "service": spec.name, "kind":"service_container",
+                     "creation_key": ployz_core::global_creation_key(spec)},
+            "resolved_spec": spec, "gen":1}}}})
+    }
+
+    async fn ensure(service: &MachineService, request: Value) -> EnsuredContainer {
+        service
+            .ensure_container(Request::new(
+                op::EnsureContainer::into_request(serde_json::from_value(request).unwrap())
+                    .encode()
+                    .unwrap(),
+            ))
+            .await
+            .unwrap()
+            .into_inner()
+            .decode_response()
+            .unwrap()
+            .decode::<op::EnsureContainer>()
+            .unwrap()
+    }
+
+    #[track_caller]
+    fn refused_for_doors(reply: &EnsuredContainer, reason: ContainerRefusalReason) {
+        let EnsuredContainer::Refused { refusal, .. } = reply else {
+            panic!("expected a refusal, got {reply:?}");
+        };
+        assert_eq!(refusal.reason, reason, "{}", refusal.message);
+        assert_eq!(
+            refusal.capability.as_deref(),
+            Some(SET_INGRESS_DOORS_CAPABILITY),
+            "{}",
+            refusal.message
+        );
+    }
+
+    fn docker_calls(fake: &FakeDocker) -> usize {
+        fake.requests.lock().unwrap().len()
+    }
+
+    async fn no_ingress(store: &RecordOwner) {
+        store
+            .mutate(|store| {
+                store.update(
+                    serde_json::from_value(json!({"accepts_ingress": false})).unwrap(),
+                    &[],
+                )
+            })
+            .await
+            .unwrap()
+            .unwrap();
+    }
+
+    #[tokio::test]
+    async fn the_route_places_both_doors_and_then_changes_nothing() {
+        let (data_dir, _store, service, fake, runtime) =
+            fake_docker_service_keeping_runtime("ployzd-doors-place").await;
+        let set = set_doors(&service, doors_request(), false)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(set.failure, None, "{set:?}");
+        let holder = set.holder.unwrap();
+        let proxy = set.proxy.unwrap();
+        assert_eq!(holder.change, DoorChange::Created);
+        assert_eq!(proxy.change, DoorChange::Created);
+        assert_eq!(
+            holder.now.identity(),
+            QualifiedService::system_ingress_holder()
+        );
+        assert_eq!(proxy.now.identity(), QualifiedService::system_ingress());
+        assert!(matches!(
+            holder.now.runtime,
+            ContainerRuntimeObservation::Running { .. }
+        ));
+        assert!(matches!(
+            proxy.now.runtime,
+            ContainerRuntimeObservation::Running { .. }
+        ));
+        let specs = DoorSpecs::public(proxy_id());
+        assert_eq!(proxy.now.resolved_spec, specs.proxy);
+        assert_eq!(holder.now.resolved_spec, specs.holder);
+        let inventory = runtime
+            .door_inventory(&service.local.record().id())
+            .await
+            .unwrap();
+        assert_eq!(inventory.len(), 2);
+        let caddy = inventory
+            .iter()
+            .find(|entry| entry.facts.door == crate::docker::Door::Proxy)
+            .unwrap();
+        assert_eq!(caddy.facts.joined_to, Some(holder.now.container_id));
+
+        let seen = docker_calls(&fake);
+        let again = set_doors(&service, doors_request(), false)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(again.failure, None, "{again:?}");
+        assert_eq!(again.holder.unwrap().change, DoorChange::Unchanged);
+        assert_eq!(again.proxy.unwrap().change, DoorChange::Unchanged);
+        assert!(again.retired.is_empty());
+        let since = fake.requests.lock().unwrap().split_off(seen);
+        assert!(
+            since.iter().all(|(method, _)| *method == Method::GET),
+            "a converged Machine is only read: {since:?}"
+        );
+        std::fs::remove_dir_all(data_dir).unwrap();
+    }
+
+    #[tokio::test]
+    async fn only_the_public_door_is_placed() {
+        let (data_dir, _store, service, fake) = fake_docker_service("ployzd-doors-public").await;
+        let seen = docker_calls(&fake);
+        let error = set_doors(
+            &service,
+            json!({"doors": ["public", "tunnel"], "proxy_service": proxy_id()}),
+            false,
+        )
+        .await
+        .unwrap()
+        .unwrap_err();
+        assert_eq!(
+            error.code,
+            RpcErrorCode::InvalidArgument,
+            "{}",
+            error.message
+        );
+        assert_eq!(
+            error.details.get("capability"),
+            Some(&json!(SET_INGRESS_DOORS_CAPABILITY))
+        );
+        assert_eq!(docker_calls(&fake), seen);
+        std::fs::remove_dir_all(data_dir).unwrap();
+    }
+
+    #[tokio::test]
+    async fn an_operator_under_enforcement_is_refused_before_docker() {
+        let (data_dir, store, service, fake) = fake_docker_service("ployzd-doors-enforced").await;
+        store
+            .mutate(|store| store.set_device_enforcement(true).unwrap())
+            .await
+            .unwrap();
+        let seen = docker_calls(&fake);
+        let status = set_doors(&service, doors_request(), true)
+            .await
+            .unwrap_err();
+        assert_eq!(
+            status.code(),
+            Code::PermissionDenied,
+            "{}",
+            status.message()
+        );
+        assert_eq!(
+            status_details(status.details()).unwrap().get("capability"),
+            Some(&json!(RESTART_APPROVAL_CAPABILITY))
+        );
+        assert_eq!(
+            docker_calls(&fake),
+            seen,
+            "no Docker call before the refusal"
+        );
+        std::fs::remove_dir_all(data_dir).unwrap();
+    }
+
+    #[tokio::test]
+    async fn a_machine_without_the_ingress_role_refuses_the_route() {
+        let (data_dir, store, service, fake) = fake_docker_service("ployzd-doors-role").await;
+        no_ingress(&store).await;
+        let seen = docker_calls(&fake);
+        let error = set_doors(&service, doors_request(), false)
+            .await
+            .unwrap()
+            .unwrap_err();
+        assert_eq!(error.code, RpcErrorCode::Conflict, "{}", error.message);
+        assert!(error.message.contains("role"), "{}", error.message);
+        assert_eq!(docker_calls(&fake), seen);
+        std::fs::remove_dir_all(data_dir).unwrap();
+    }
+
+    #[tokio::test]
+    async fn a_legacy_deploy_is_answered_with_the_joined_caddy() {
+        let (data_dir, _store, service, fake, runtime) =
+            fake_docker_service_keeping_runtime("ployzd-doors-legacy").await;
+        let first = ensure(&service, legacy_caddy_want()).await;
+        let EnsuredContainer::Ensured {
+            now: ContainerNow::Present(caddy),
+            health: None,
+        } = &first
+        else {
+            panic!("expected the joined Caddy, got {first:?}");
+        };
+        let specs = DoorSpecs::public(proxy_id());
+        assert_eq!(
+            caddy.resolved_spec, specs.proxy,
+            "the CLI's spec never reaches Docker"
+        );
+        let bodies = fake.request_bodies.lock().unwrap().clone();
+        let caddy_body = bodies
+            .iter()
+            .find(|(path, body)| {
+                path.ends_with("/containers/create")
+                    && body.pointer("/Labels/ployz.service.name") == Some(&json!("ingress"))
+            })
+            .map(|(_, body)| body.clone())
+            .expect("the Caddy was created");
+        let holder_id = runtime
+            .door_inventory(&service.local.record().id())
+            .await
+            .unwrap()
+            .into_iter()
+            .find(|entry| entry.facts.door == crate::docker::Door::Holder)
+            .unwrap()
+            .facts
+            .id;
+        assert_eq!(
+            caddy_body.pointer("/HostConfig/NetworkMode"),
+            Some(&json!(format!("container:{holder_id}")))
+        );
+        assert_eq!(caddy_body.pointer("/HostConfig/PortBindings"), None);
+
+        let second = ensure(&service, legacy_caddy_want()).await;
+        let EnsuredContainer::Ensured {
+            now: ContainerNow::Present(replaced),
+            ..
+        } = &second
+        else {
+            panic!("expected the joined Caddy, got {second:?}");
+        };
+        assert_ne!(
+            replaced.container_id, caddy.container_id,
+            "a Deploy never answers a Caddy that existed before it"
+        );
+        assert!(matches!(
+            runtime
+                .inspect_managed(&caddy.container_id, &service.local.record().id())
+                .await,
+            Err(crate::docker::Error::ContainerNotFound(_))
+        ));
+        assert_eq!(
+            runtime
+                .door_inventory(&service.local.record().id())
+                .await
+                .unwrap()
+                .len(),
+            2,
+            "one holder and one Caddy remain"
+        );
+        std::fs::remove_dir_all(data_dir).unwrap();
+    }
+
+    #[tokio::test]
+    async fn a_legacy_deploy_without_the_role_is_refused() {
+        let (data_dir, store, service, fake) =
+            fake_docker_service("ployzd-doors-legacy-role").await;
+        no_ingress(&store).await;
+        let seen = docker_calls(&fake);
+        let reply = ensure(&service, legacy_caddy_want()).await;
+        let EnsuredContainer::Refused { refusal, .. } = &reply else {
+            panic!("expected a refusal, got {reply:?}");
+        };
+        assert_eq!(refusal.reason, ContainerRefusalReason::NotEligible);
+        assert!(
+            fake.requests
+                .lock()
+                .unwrap()
+                .iter()
+                .skip(seen)
+                .all(|(method, _)| *method == Method::GET),
+            "a refusal only reads"
+        );
+        std::fs::remove_dir_all(data_dir).unwrap();
+    }
+
+    #[tokio::test]
+    async fn door_specs_sent_through_ensure_container_are_refused() {
+        let (data_dir, _store, service, fake) = fake_docker_service("ployzd-doors-ensure").await;
+        let specs = DoorSpecs::public(proxy_id());
+        let seen = docker_calls(&fake);
+        refused_for_doors(
+            &ensure(&service, door_want(&specs.holder)).await,
+            ContainerRefusalReason::InvalidIngress,
+        );
+        refused_for_doors(
+            &ensure(&service, door_want(&specs.proxy)).await,
+            ContainerRefusalReason::InvalidIngress,
+        );
+        assert!(
+            fake.requests
+                .lock()
+                .unwrap()
+                .iter()
+                .skip(seen)
+                .all(|(method, _)| *method == Method::GET),
+            "a refusal only reads"
+        );
+        std::fs::remove_dir_all(data_dir).unwrap();
+    }
 }
 
 mod set_volume_copy {

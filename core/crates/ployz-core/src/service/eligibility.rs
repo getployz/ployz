@@ -35,7 +35,11 @@ pub enum ServicePlacementUnknownReason {
 }
 
 impl RequestedServiceSpec {
-    /// Assess role admission with the Namespace identity required for trusted Ingress.
+    /// Assess role admission for this spec under its qualified identity.
+    ///
+    /// Identity alone decides the role gate. The two Ingress door identities
+    /// need `accepts_ingress` whatever their shape, because the daemon is what
+    /// admits or refuses the shape.
     #[must_use]
     pub fn placement_eligibility_in_namespace(
         &self,
@@ -43,8 +47,8 @@ impl RequestedServiceSpec {
         machine: &Machine,
         storage: Option<&MachineStorageObservation>,
     ) -> ServicePlacementEligibility {
-        let ingress = *namespace == crate::QualifiedService::system_ingress().namespace
-            && crate::validate_requested_ingress_service_spec(self).is_ok();
+        let ingress =
+            crate::QualifiedService::new(namespace.clone(), self.name.clone()).is_ingress_door();
         placement_eligibility(
             &self.placement,
             self.volume_graph(),
@@ -56,7 +60,11 @@ impl RequestedServiceSpec {
 }
 
 impl ResolvedServiceSpec {
-    /// Assess role admission with the Namespace identity required for trusted Ingress.
+    /// Assess role admission for this spec under its qualified identity.
+    ///
+    /// Identity alone decides the role gate. The two Ingress door identities
+    /// need `accepts_ingress` whatever their shape, because the daemon is what
+    /// admits or refuses the shape.
     #[must_use]
     pub fn placement_eligibility_in_namespace(
         &self,
@@ -64,8 +72,8 @@ impl ResolvedServiceSpec {
         machine: &Machine,
         storage: Option<&MachineStorageObservation>,
     ) -> ServicePlacementEligibility {
-        let ingress = *namespace == crate::QualifiedService::system_ingress().namespace
-            && crate::validate_ingress_service_spec(self).is_ok();
+        let ingress =
+            crate::QualifiedService::new(namespace.clone(), self.name.clone()).is_ingress_door();
         placement_eligibility(
             &self.placement,
             self.volume_graph(),
@@ -312,55 +320,59 @@ mod tests {
     }
 
     #[test]
-    fn role_admission_requires_reserved_caddy_identity_and_complete_wiring() {
+    fn role_admission_follows_the_door_identities_whatever_the_shape() {
         let mut machine = machine("edge");
         machine.accepts_services = false;
         machine.accepts_ingress = true;
-        machine.accepts_builds = true;
-        let reserved = crate::QualifiedService::system_ingress().namespace;
+        let reserved = crate::Namespace::system();
         let app = crate::Namespace::parse("app").unwrap();
-        let caddy = crate::caddy_service_spec("caddy:test".into(), Default::default());
         let denied = ServicePlacementEligibility::Ineligible(
             ServicePlacementIneligibleReason::WorkNotAccepted,
         );
+        let at = |name: &str| {
+            let mut spec = requested(Placement::default(), ServiceVolumeGraph::default());
+            spec.name = crate::ServiceName::parse(name).unwrap();
+            spec
+        };
+
+        for door in ["ingress", "ingress-holder"] {
+            let noncanonical = at(door);
+            let resolved = noncanonical
+                .to_resolved(ServiceId::random(), ResolvedUpdateConfig::default())
+                .unwrap();
+            assert_eq!(
+                noncanonical.placement_eligibility_in_namespace(&reserved, &machine, None),
+                ServicePlacementEligibility::Eligible,
+                "{door} is gated on accepts_ingress",
+            );
+            assert_eq!(
+                resolved.placement_eligibility_in_namespace(&reserved, &machine, None),
+                ServicePlacementEligibility::Eligible,
+                "{door} is gated on accepts_ingress",
+            );
+            assert_eq!(
+                noncanonical.placement_eligibility_in_namespace(&app, &machine, None),
+                denied,
+                "{door} outside ployz-system is an ordinary Service",
+            );
+        }
+        let ordinary = at("metrics");
         assert_eq!(
-            caddy.placement_eligibility_in_namespace(&reserved, &machine, None),
-            ServicePlacementEligibility::Eligible
-        );
-        assert_eq!(
-            caddy.placement_eligibility_in_namespace(&app, &machine, None),
+            ordinary.placement_eligibility_in_namespace(&reserved, &machine, None),
             denied
         );
-        let mut forged = caddy.clone();
-        forged.container.command = vec!["sh".into()];
-        assert_eq!(
-            forged.placement_eligibility_in_namespace(&reserved, &machine, None),
-            denied
-        );
-        let resolved = caddy
-            .to_resolved(ServiceId::random(), ResolvedUpdateConfig::default())
-            .unwrap();
-        assert_eq!(
-            resolved.placement_eligibility_in_namespace(&reserved, &machine, None),
-            ServicePlacementEligibility::Eligible
-        );
-        assert_eq!(
-            resolved.placement_eligibility_in_namespace(&app, &machine, None),
-            denied
-        );
-        assert_eq!(
-            crate::ServiceStorageSpec::from(&resolved).placement_eligibility(&machine, None),
-            denied
-        );
+
         machine.accepts_ingress = false;
         machine.accepts_services = true;
+        for door in ["ingress", "ingress-holder"] {
+            assert_eq!(
+                at(door).placement_eligibility_in_namespace(&reserved, &machine, None),
+                denied,
+                "{door} needs accepts_ingress",
+            );
+        }
         assert_eq!(
-            resolved.placement_eligibility_in_namespace(&reserved, &machine, None),
-            denied
-        );
-        assert_eq!(
-            requested(Placement::default(), ServiceVolumeGraph::default())
-                .placement_eligibility_in_namespace(&app, &machine, None),
+            ordinary.placement_eligibility_in_namespace(&reserved, &machine, None),
             ServicePlacementEligibility::Eligible
         );
     }

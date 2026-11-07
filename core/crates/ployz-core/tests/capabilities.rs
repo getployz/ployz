@@ -15,10 +15,11 @@ use ployz_core::{
     REMOVE_VOLUME_CAPABILITY, REQUEST_MACHINE_UPGRADE_CAPABILITY, RESTART_APPROVAL_CAPABILITY,
     RETAINED_ENV_CAPABILITY, RUNTIME_WATCH_CAPABILITY, Rpc, SEED_VOLUME_CAPABILITY,
     SELECT_ENDPOINT_CAPABILITY, SET_DEVICE_CAPABILITY, SET_DEVICE_ENFORCEMENT_CAPABILITY,
-    SET_MANAGEMENT_CLIENT_CAPABILITY, SET_PUSH_TARGET_CAPABILITY, SET_VOLUME_COPY_CAPABILITY,
-    SET_VOLUME_SIZE_CAPABILITY, SHARE_SEALING_KEY_CAPABILITY, TAIL_LOGS_CAPABILITY,
-    UPDATE_CONTAINER_LIMITS_CAPABILITY, UPDATE_MACHINE_CAPABILITY, UPGRADE_EXACT_CAPABILITY,
-    VOLUME_FLOOR_CAPABILITY, VOLUME_SHRINK_CAPABILITY, WRAP_SEALING_KEY_CAPABILITY, op,
+    SET_INGRESS_DOORS_CAPABILITY, SET_MANAGEMENT_CLIENT_CAPABILITY, SET_PUSH_TARGET_CAPABILITY,
+    SET_VOLUME_COPY_CAPABILITY, SET_VOLUME_SIZE_CAPABILITY, SHARE_SEALING_KEY_CAPABILITY,
+    TAIL_LOGS_CAPABILITY, UPDATE_CONTAINER_LIMITS_CAPABILITY, UPDATE_MACHINE_CAPABILITY,
+    UPGRADE_EXACT_CAPABILITY, VOLUME_FLOOR_CAPABILITY, VOLUME_SHRINK_CAPABILITY,
+    WRAP_SEALING_KEY_CAPABILITY, op,
 };
 
 /// Capability constants are generated from the catalog, so a typo would stay
@@ -117,6 +118,7 @@ fn catalogued_capabilities_keep_stable_spellings() {
             READ_ROUTED_ADDRESSES_CAPABILITY,
             "ployz.serving.routed-addresses.v1",
         ),
+        (SET_INGRESS_DOORS_CAPABILITY, "ployz.ingress.doors.v1"),
         (UPDATE_MACHINE_CAPABILITY, "ployz.machine.update.v1"),
         (GENERATE_SEALING_KEY_CAPABILITY, "ployz.sealing.generate.v1"),
         (SHARE_SEALING_KEY_CAPABILITY, "ployz.sealing.share.v1"),
@@ -215,6 +217,7 @@ fn advertised_capability_groups_match_the_frozen_catalog() {
             "ployz.certificates.publish.v1",
             "ployz.serving.routes.v1",
             "ployz.serving.routed-addresses.v1",
+            "ployz.ingress.doors.v1",
             "ployz.runtime.watch.v1",
         ]
     );
@@ -372,6 +375,10 @@ const ABOVE_FLOOR: &[(&str, &str)] = &[
     (
         "ployz.serving.routed-addresses.v1",
         "claims nothing: status names no stale address for a Server whose daemon refuses it",
+    ),
+    (
+        "ployz.ingress.doors.v1",
+        "gated: the CLI calls SetIngressDoors only on Machines advertising it, falls back: an older daemon keeps its running Ingress Proxy and the CLI names the Server as needing a newer Ployz, claims nothing: no proxy change on that Machine",
     ),
     (
         "ployz.management.scope.v1",

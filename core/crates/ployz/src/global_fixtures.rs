@@ -70,6 +70,7 @@ pub(crate) fn requested(mode: ServiceMode) -> RequestedServiceSpec {
             resources: ContainerResources::default(),
             stop_timeout_secs: None,
             sysctls: Default::default(),
+            network: None,
             restart: RestartPolicy::default(),
         },
         placement: Placement::default(),

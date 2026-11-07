@@ -397,7 +397,7 @@ mod tests {
     /// gives the plan that cause, for the notices execution words later (#3521).
     #[test]
     fn the_plan_keeps_the_servers_whose_listing_large_packets_explain() {
-        use crate::deploy::planning::ingress_repairs::{ingress_intent, servers};
+        use crate::deploy::planning::ingress_repairs::servers;
 
         let dropped = Some(PathObservation {
             mtu: 1420,
@@ -438,7 +438,13 @@ mod tests {
             },
         ];
 
-        let plan = crate::deploy::plan_deploy(&ingress_intent(), &snapshot).expect("a plan");
+        let spec = crate::global_fixtures::requested(ployz_core::ServiceMode::Global);
+        let intent = ployz_core::DeployIntent::apply_all(
+            ployz_core::Namespace::parse("app").unwrap(),
+            [&spec],
+            ployz_core::PlanOptions::default(),
+        );
+        let plan = crate::deploy::plan_deploy(&intent, &snapshot).expect("a plan");
 
         assert_eq!(
             plan.dropped_large_packets(),

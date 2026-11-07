@@ -359,7 +359,9 @@ generated addresses stop pointing at it within the hour, or when you click **Che
 and 443; to keep the internet out for good, also close them in its firewall.
 
 Turn the switch on and the row reads **Starting the web server…** until the web server runs there,
-then your domains point at it. When the web server can't start, say because something else on the
+then your domains point at it. The web server is two containers: `ingress-holder` holds ports 80
+and 443, and `ingress` is Caddy, which shares its network. `docker ps` on the server lists both,
+with the ports on `ingress-holder`. When the web server can't start, say because something else on the
 server holds port 80, the switch goes back off and the section says why: **Couldn't start web
 traffic · Port 80 is in use on web-1. Free it, then try again.** Fix the cause and click **Retry**.
 If it still can't start, the section says why again and the switch stays off.
@@ -370,14 +372,14 @@ starts the web server, so while the web server starts, the line under the switch
 isn't running, so your domains don't point here.** When the role was off and the command sees that no
 web server is left on the server, it turns the role back off and says why. That happens when something
 else holds the port: `Web traffic stays off on web-1: port 80 or 443 is in use. Free it, then try
-again.` It also happens when the web server stopped right after it started and Ployz removed it. The
+again.` The
 command exits with code 3, and the line under the switch reads **Web traffic is off**. If turning the
 role back off fails too, it says so and prints the command that turns it off.
 
 Any other failed start leaves the role on, says `Server updated; the Ingress Proxy did not follow`
 with the cause, and exits with code 3. That covers an image that won't pull, any other error from
-Docker, a web server Ployz couldn't remove, a server that stopped answering, and a role that was
-already on. It also covers a server that still has a web server after the failure: an older one Ployz
+Docker, a web server that keeps crashing (the cause names the `docker logs` command that shows why),
+a server that stopped answering, and a role that was already on. It also covers a server that still has a web server after the failure: an older one Ployz
 started again, or one another `ployz` or Ployz Cloud started there meanwhile. Until a web server runs
 there, the page reads **The web server isn't running, so your domains don't point here.** To try again
 from Ployz Cloud, turn the switch off, then on.

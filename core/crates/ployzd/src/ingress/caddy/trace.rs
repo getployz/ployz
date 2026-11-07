@@ -38,13 +38,32 @@ pub(super) const CLOUDFLARE_RANGES: [&str; 22] = [
     "2c0f:f248::/32",
 ];
 
-/// The `servers` global option that reads the visitor's address from a Cloudflare peer.
-pub(super) fn cloudflare_client_ip_servers() -> String {
-    format!(
-        "\tservers {{\n\t\ttrusted_proxies static {}\n\t\tclient_ip_headers CF-Connecting-IP\n\t}}\n",
-        CLOUDFLARE_RANGES.join(" ")
-    )
+/// The `servers` global options. The public listeners read the visitor's address from
+/// a Cloudflare peer, and the loopback listener from the Tunnel door beside it. Caddy
+/// applies an unaddressed block to every server, the loopback one included, so each
+/// listener is addressed; the loopback block names the bound address, since a bare
+/// port matches no server bound to an address.
+pub(super) fn servers_options() -> String {
+    let mut output = String::new();
+    for address in [":80", ":443"] {
+        let _ = write!(
+            output,
+            "\tservers {address} {{\n\t\ttrusted_proxies static {}\n\t\tclient_ip_headers CF-Connecting-IP\n\t}}\n",
+            CLOUDFLARE_RANGES.join(" ")
+        );
+    }
+    let _ = write!(
+        output,
+        "\tservers {LOOPBACK_BIND}:{LOOPBACK_PORT} {{\n\t\ttrusted_proxies static {LOOPBACK_RANGES}\n\t}}\n"
+    );
+    output
 }
+
+/// Where the loopback site listens: the Tunnel door dials it on the Machine itself.
+pub(super) const LOOPBACK_PORT: u16 = 8480;
+pub(super) const LOOPBACK_BIND: &str = "127.0.0.1";
+pub(super) const LOOPBACK_BIND_V6: &str = "::1";
+const LOOPBACK_RANGES: &str = "127.0.0.1/32 ::1/128";
 
 /// One line of the page. Keys are only ever appended, so readers can rely on the order.
 struct TraceField {

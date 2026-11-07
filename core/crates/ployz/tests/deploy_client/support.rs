@@ -1479,6 +1479,73 @@ impl FakeMachine for DeployService {
             expires_in_seconds: 600,
         }))
     }
+    /// The holder then Caddy, each created once per Machine and running as Containers
+    /// here run. A start error fails the holder's stage, as a taken port does.
+    async fn set_ingress_doors(
+        &self,
+        request: Request<OpaquePayload>,
+    ) -> Result<Response<OpaquePayload>, Status> {
+        self.record_mutation();
+        let machine_id = machine_from_metadata(&request)?;
+        let RpcRequestBody::SetIngressDoors(doors) =
+            request.into_inner().decode_request().unwrap().body
+        else {
+            return Err(Status::invalid_argument("expected set_ingress_doors"));
+        };
+        if let Some(error) = self.start_error(machine_id) {
+            self.rival_starts(machine_id);
+            return encoded(RpcResponse::from(ployz_core::IngressDoorsSet {
+                failure: Some(ployz_core::IngressDoorsFailure {
+                    stage: ployz_core::IngressStage::Holder,
+                    error: error.clone(),
+                }),
+                ..Default::default()
+            }));
+        }
+        let mut set = ployz_core::IngressDoorsSet::default();
+        for (identity, spec) in [
+            (
+                QualifiedService::system_ingress_holder(),
+                ployz_core::holder_service_spec("pause:test", ployz_core::IngressPorts::Public),
+            ),
+            (
+                QualifiedService::system_ingress(),
+                ployz_core::caddy_service_spec("caddy:test"),
+            ),
+        ] {
+            let key = format!("doors:{machine_id}:{identity}");
+            let existing = self.slots.lock().unwrap().get(&key).copied();
+            let container_id = existing.unwrap_or_else(|| {
+                let n = self.containers.fetch_add(1, Ordering::SeqCst) + 1;
+                let container_id = ContainerId::parse(format!("{n:064x}")).unwrap();
+                self.slots.lock().unwrap().insert(key, container_id);
+                container_id
+            });
+            let resolved_spec = spec
+                .to_resolved(doors.proxy_service, ResolvedUpdateConfig::default())
+                .expect("door mounts are scoped");
+            let mut now = self.observed(machine_id, container_id, resolved_spec);
+            now.try_update(|parts| parts.namespace = identity.namespace.clone())
+                .unwrap();
+            if self.lists_created && existing.is_none() {
+                self.listed_containers.lock().unwrap().push(now.clone());
+            }
+            let outcome = Some(ployz_core::DoorOutcome {
+                now,
+                change: if existing.is_some() {
+                    ployz_core::DoorChange::Unchanged
+                } else {
+                    ployz_core::DoorChange::Created
+                },
+            });
+            if identity == QualifiedService::system_ingress() {
+                set.proxy = outcome;
+            } else {
+                set.holder = outcome;
+            }
+        }
+        encoded(RpcResponse::from(set))
+    }
     async fn read_routes(
         &self,
         request: Request<OpaquePayload>,
@@ -1836,8 +1903,8 @@ pub(super) fn machine(hex: char, name: &str) -> MachineObservation {
             labels: Default::default(),
             accepts_builds: true,
             accepts_services: true,
-            // An ingress Machine with no Ingress Proxy running makes a deploy look up the
-            // latest Caddy on Docker Hub, which these tests must not reach.
+            // An ingress Machine makes every deploy set its Ingress Proxy, which tests of
+            // other work don't want in their counts.
             accepts_ingress: false,
             id: MachineId::parse(hex.to_string().repeat(32)).unwrap(),
             name: MachineName::parse(name).unwrap(),

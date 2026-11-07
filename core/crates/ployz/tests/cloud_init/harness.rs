@@ -129,6 +129,7 @@ struct JoinInner {
     create_attempts: AtomicUsize,
     transient_create_failures: AtomicUsize,
     ensure_requests: Mutex<Vec<NewContainer>>,
+    door_requests: Mutex<Vec<ployz_core::SetIngressDoorsRequest>>,
     keys: Mutex<BTreeMap<CreationKey, ContainerId>>,
     ensure_attempts: AtomicUsize,
     transient_ensure_failures: AtomicUsize,
@@ -175,6 +176,7 @@ impl JoinDaemon {
                 create_attempts: AtomicUsize::new(0),
                 transient_create_failures: AtomicUsize::new(0),
                 ensure_requests: Mutex::new(Vec::new()),
+                door_requests: Mutex::new(Vec::new()),
                 keys: Mutex::new(BTreeMap::new()),
                 ensure_attempts: AtomicUsize::new(0),
                 transient_ensure_failures: AtomicUsize::new(0),
@@ -378,6 +380,10 @@ impl JoinDaemon {
 
     pub fn ensure_requests(&self) -> Vec<NewContainer> {
         self.inner.ensure_requests.lock().unwrap().clone()
+    }
+
+    pub fn door_requests(&self) -> Vec<ployz_core::SetIngressDoorsRequest> {
+        self.inner.door_requests.lock().unwrap().clone()
     }
 
     pub fn ensure_attempts(&self) -> usize {
@@ -950,6 +956,120 @@ impl FakeMachine for JoinDaemon {
             | ContainerWant::Held { .. } => unused(),
         }
     }
+    /// Set the Ingress Proxy as a daemon does: the holder, then Caddy, each created
+    /// once. Attempts and failures count with ensures, as they replace the ingress ones.
+    async fn set_ingress_doors(
+        &self,
+        request: Request<OpaquePayload>,
+    ) -> Result<Response<OpaquePayload>, Status> {
+        let decoded = request
+            .into_inner()
+            .decode_request()
+            .map_err(|error| Status::invalid_argument(error.to_string()))?;
+        let RpcRequestBody::SetIngressDoors(doors) = decoded.body else {
+            return Err(Status::invalid_argument("expected SetIngressDoors"));
+        };
+        self.inner.create_attempts.fetch_add(1, Ordering::SeqCst);
+        self.inner.ensure_attempts.fetch_add(1, Ordering::SeqCst);
+        if consume_transient_failure(&self.inner.transient_ensure_failures) {
+            return Err(Status::unavailable("transient ensure failure"));
+        }
+        if self.inner.fail_ensure.load(Ordering::SeqCst) {
+            return rpc_ok(RpcError {
+                code: RpcErrorCode::Unavailable,
+                message: "ensure failed".into(),
+                details: serde_json::Value::Null,
+                cause: Vec::new(),
+            });
+        }
+        let proxy = doors.proxy_service;
+        let mut changed = false;
+        self.inner.door_requests.lock().unwrap().push(doors);
+        let mut set = ployz_core::IngressDoorsSet::default();
+        for (identity, spec, service_id) in [
+            (
+                ployz_core::QualifiedService::system_ingress_holder(),
+                ployz_core::holder_service_spec("pause:test", ployz_core::IngressPorts::Public),
+                ployz_core::ServiceId::parse("d".repeat(32)).unwrap(),
+            ),
+            (
+                ployz_core::QualifiedService::system_ingress(),
+                ployz_core::caddy_service_spec("caddy:test"),
+                proxy,
+            ),
+        ] {
+            let machine_id = self.inner.registration.assigned_machine.id;
+            let mut containers = self.inner.containers.lock().unwrap();
+            let (now, change) = match containers.iter_mut().find(|container| {
+                container.machine_id == machine_id && container.identity() == identity
+            }) {
+                Some(container)
+                    if matches!(
+                        container.runtime,
+                        ContainerRuntimeObservation::Running { .. }
+                    ) =>
+                {
+                    (container.clone(), ployz_core::DoorChange::Unchanged)
+                }
+                Some(container) => {
+                    container
+                        .try_update(|parts| {
+                            parts.runtime = ContainerRuntimeObservation::Running {
+                                health: HealthObservation::Healthy,
+                            };
+                        })
+                        .unwrap();
+                    (container.clone(), ployz_core::DoorChange::Started)
+                }
+                None => {
+                    let n = containers.len() + 1;
+                    let container =
+                        ContainerObservation::try_from(ployz_core::ContainerObservationParts {
+                            rotation: None,
+                            r#gen: None,
+                            container_id: ContainerId::parse(format!("{n:064x}")).unwrap(),
+                            display_name: identity.name.to_string(),
+                            created_at_unix_nanos: n as i64,
+                            machine_id,
+                            namespace: identity.namespace.clone(),
+                            kind: ContainerKind::ServiceContainer,
+                            runtime: ContainerRuntimeObservation::Running {
+                                health: HealthObservation::Healthy,
+                            },
+                            effective_healthcheck: None,
+                            resolved_spec: spec
+                                .to_resolved(
+                                    service_id,
+                                    ployz_core::ResolvedUpdateConfig::default(),
+                                )
+                                .expect("door mounts are scoped"),
+                            address: None,
+                            labels: Default::default(),
+                            stopped: false,
+                            run: None,
+                        })
+                        .unwrap();
+                    containers.push(container.clone());
+                    (container, ployz_core::DoorChange::Created)
+                }
+            };
+            drop(containers);
+            changed |= change != ployz_core::DoorChange::Unchanged;
+            let outcome = Some(ployz_core::DoorOutcome { now, change });
+            if identity == ployz_core::QualifiedService::system_ingress() {
+                set.proxy = outcome;
+            } else {
+                set.holder = outcome;
+            }
+        }
+        if changed {
+            self.record("deploy_ingress");
+        }
+        if consume_transient_failure(&self.inner.transient_create_failures) {
+            return Err(Status::unavailable("lost Ingress container creation reply"));
+        }
+        rpc_ok(set)
+    }
     async fn list_images(
         &self,
         _request: Request<OpaquePayload>,
@@ -1028,7 +1148,7 @@ pub fn registration() -> Registered {
 }
 
 pub fn ingress_on(machine: &Machine) -> ContainerObservation {
-    let spec = ployz_core::caddy_service_spec("caddy:2.10.0".into(), Default::default());
+    let spec = ployz_core::caddy_service_spec("caddy:2.10.0");
     let spec = spec
         .to_resolved(
             ployz_core::ServiceId::parse("c".repeat(32)).unwrap(),

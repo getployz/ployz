@@ -640,6 +640,7 @@ async fn removal_sent(purpose: ployz_core::RemoveContainerPurpose) -> Vec<Contai
                     | RpcRequestBody::PublishCertificateMaterial(_)
                     | RpcRequestBody::ReadRoutes(_)
                     | RpcRequestBody::ReadRoutedAddresses(_)
+                    | RpcRequestBody::SetIngressDoors(_)
                     | RpcRequestBody::MetricHistory(_)
                     | RpcRequestBody::RetainedEnv(_)
                     | RpcRequestBody::LogHistory(_)
@@ -1137,7 +1138,7 @@ async fn proxy_copies_never_routed_always_removable() {
 /// there to leave unchecked. One whose listing failed any other way still is (#3151).
 #[test]
 fn an_ingress_server_the_entry_no_longer_lists_is_not_left_unchecked() {
-    use crate::deploy::planning::ingress_repairs::{ingress_intent, ingress_on, servers};
+    use crate::deploy::planning::ingress_repairs::{ingress_on, servers};
     use crate::deploy::{SlotAction, plan_ingress_repairs};
 
     let serving = crate::global_fixtures::machine('1', "edge-1");
@@ -1158,14 +1159,11 @@ fn an_ingress_server_the_entry_no_longer_lists_is_not_left_unchecked() {
         },
     ];
 
-    let unchecked: Vec<_> = plan_ingress_repairs(&ingress_intent(), &snapshot)
+    let unchecked: Vec<_> = plan_ingress_repairs(&snapshot)
         .into_iter()
         .filter_map(|repair| match repair.action {
             SlotAction::Unchecked(cause) => Some((repair.machine_id, cause)),
-            SlotAction::Create(_)
-            | SlotAction::Start(_)
-            | SlotAction::Dead(_)
-            | SlotAction::Restarting(_) => None,
+            SlotAction::Create | SlotAction::Start(_) | SlotAction::Restarting(_) => None,
         })
         .collect();
 
@@ -1181,7 +1179,7 @@ fn an_ingress_server_the_entry_no_longer_lists_is_not_left_unchecked() {
 fn an_ingress_server_that_is_leaving_is_neither_filled_nor_left_unchecked() {
     use std::collections::BTreeMap;
 
-    use crate::deploy::planning::ingress_repairs::{ingress_intent, ingress_on, servers};
+    use crate::deploy::planning::ingress_repairs::{ingress_on, servers};
     use crate::deploy::{SlotAction, plan_ingress_repairs};
 
     let leaving = |hex, name| {
@@ -1223,16 +1221,13 @@ fn an_ingress_server_that_is_leaving_is_neither_filled_nor_left_unchecked() {
         timed_out(&versioned_silent),
     ];
 
-    let repairs: BTreeMap<_, _> = plan_ingress_repairs(&ingress_intent(), &snapshot)
+    let repairs: BTreeMap<_, _> = plan_ingress_repairs(&snapshot)
         .into_iter()
         .map(|repair| {
             let action = match repair.action {
-                SlotAction::Create(Ok(_)) => "create".to_owned(),
+                SlotAction::Create => "create".to_owned(),
                 SlotAction::Unchecked(cause) => format!("unchecked: {cause}"),
-                action @ (SlotAction::Create(Err(_))
-                | SlotAction::Start(_)
-                | SlotAction::Dead(_)
-                | SlotAction::Restarting(_)) => panic!("{action:?}"),
+                action @ (SlotAction::Start(_) | SlotAction::Restarting(_)) => panic!("{action:?}"),
             };
             (repair.machine_id, action)
         })
@@ -1257,7 +1252,7 @@ fn an_ingress_server_that_is_leaving_is_neither_filled_nor_left_unchecked() {
 /// failed changes nothing (#3288).
 #[test]
 fn an_unchecked_server_that_left_since_the_plan_read_is_dropped() {
-    use crate::deploy::planning::ingress_repairs::{ingress_intent, ingress_on, servers};
+    use crate::deploy::planning::ingress_repairs::{ingress_on, servers};
     use crate::deploy::{SlotAction, plan_ingress_repairs, without_departed};
 
     let serving = crate::global_fixtures::machine('1', "edge-1");
@@ -1285,7 +1280,7 @@ fn an_unchecked_server_that_left_since_the_plan_read_is_dropped() {
         timed_out(&silent),
         timed_out(&marked_versioned),
     ];
-    let planned = plan_ingress_repairs(&ingress_intent(), &snapshot);
+    let planned = plan_ingress_repairs(&snapshot);
     let unchecked = |repairs: &[crate::deploy::SlotRepair]| {
         repairs
             .iter()
@@ -1322,106 +1317,6 @@ fn an_unchecked_server_that_left_since_the_plan_read_is_dropped() {
         unchecked(&without_departed(planned, None)),
         [marked.id, gone.id, silent.id, marked_versioned.id]
     );
-}
-
-#[tokio::test]
-async fn ingress_create_cleanup_never_names_a_sibling() {
-    use crate::deploy::{
-        DeployIntent, DeploySnapshot, PlanOptions, SlotAction, plan_ingress_repairs,
-    };
-    use ployz_core::{
-        Machine, MachineName, MachineObservation, MembershipObservation, WireGuardPublicKey,
-    };
-
-    let server = |hex: char| {
-        MachineObservation::new(
-            Machine {
-                id: machine(hex),
-                name: MachineName::parse(format!("server-{hex}")).unwrap(),
-                subnet: format!("10.210.{hex}.0/24").parse().unwrap(),
-                public_key: WireGuardPublicKey([hex as u8; 32]),
-                public_ip: None,
-                labels: Default::default(),
-                accepts_builds: true,
-                accepts_services: true,
-                accepts_ingress: true,
-                advertised_endpoints: Vec::new(),
-                runtime: Default::default(),
-                build_concurrency: None,
-            },
-            MembershipObservation::Up,
-        )
-    };
-    let ingress = ployz_core::caddy_service_spec("caddy:test".into(), Default::default());
-    let proxy = |hex: char, on: char| {
-        let mut observed = observation(&machine(on), &container(hex), healthy());
-        observed
-            .try_update(|parts| {
-                parts.namespace = Namespace::system();
-                parts.resolved_spec.name = ingress.name.clone();
-                parts.labels.insert(CREATION_KEY.into(), hex.to_string());
-            })
-            .unwrap();
-        observed
-    };
-    let snapshot = DeploySnapshot {
-        machines: vec![server('1'), server('2'), server('3')],
-        containers: vec![proxy('a', '1'), proxy('b', '2')],
-        ..Default::default()
-    };
-    let intent = DeployIntent::apply_all(Namespace::system(), [&ingress], PlanOptions::default());
-    let [repair] = plan_ingress_repairs(&intent, &snapshot).try_into().unwrap();
-    assert_eq!(repair.machine_id, machine('3'));
-    let SlotAction::Create(Ok(plan)) = repair.action else {
-        panic!(
-            "expected a create on the empty Server, got {:?}",
-            repair.action
-        );
-    };
-    let siblings = [
-        (machine('1'), container('a')),
-        (machine('2'), container('b')),
-    ];
-    let new = container('c');
-    let mut client = Scripted {
-        observations: Some(snapshot.containers.clone()),
-        ..Scripted::new(vec![created(
-            Call::Run(machine('3'), ContainerKind::ServiceContainer),
-            &new,
-        )])
-    };
-    for (machine_id, container_id) in &siblings {
-        client = client.with_copy_at(
-            &QualifiedService::system_ingress(),
-            machine_id,
-            container_id,
-            CopyRotation::Pending,
-            Gen::FIRST,
-        );
-    }
-
-    let outcome = super::super::execute_operation_sequence(
-        &plan,
-        &run_id(),
-        &client,
-        &CancellationToken::new(),
-        None,
-    )
-    .await;
-
-    assert!(
-        matches!(outcome, DeployOutcome::Success { .. }),
-        "{outcome:?}"
-    );
-    assert!(
-        client.moves().is_empty(),
-        "no want reaches a running sibling proxy: {:?}",
-        client.moves()
-    );
-    for (_, sibling) in siblings {
-        assert_eq!(client.rotation(&sibling), Some(CopyRotation::Pending));
-    }
-    client.assert_done();
 }
 
 /// Only work that starts a Container reads as starting. A removal's row says

@@ -1529,7 +1529,20 @@ async fn routed_addresses_leave_out_an_https_route_caddy_has_no_certificate_for(
     ));
 
     let loaded = next_load(&mut load_rx).await;
-    assert!(!loaded.contains("10.210.1.2:8443"), "{loaded}");
+    // The public listeners proxy nothing for it; only the Tunnel door's site does.
+    assert!(
+        !loaded.contains("\nhttps://secure.example.com {"),
+        "{loaded}"
+    );
+    let tunnel = loaded
+        .find("\nhttp://secure.example.com:8480 {\n")
+        .map(|start| {
+            let end = loaded[start + 1..].find("\n}\n").unwrap();
+            &loaded[start..=start + end]
+        })
+        .expect("the Tunnel door's site");
+    assert!(tunnel.contains("10.210.1.2:8443"), "{tunnel}");
+    assert_eq!(loaded.matches("10.210.1.2:8443").count(), 1, "{loaded}");
     timeout(
         Duration::from_secs(5),
         published.wait_for(|published| {
@@ -1541,7 +1554,7 @@ async fn routed_addresses_leave_out_an_https_route_caddy_has_no_certificate_for(
         }),
     )
     .await
-    .expect("Caddy proxies only web.example.com until secure.example.com has a certificate")
+    .expect("Caddy publishes only web.example.com until secure.example.com has a certificate")
     .unwrap();
 
     shutdown.cancel();

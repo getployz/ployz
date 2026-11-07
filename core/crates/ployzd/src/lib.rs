@@ -29,6 +29,7 @@ pub mod docker;
 pub mod faults;
 pub(crate) mod filesystem;
 mod host_capacity;
+pub(crate) mod images;
 pub(crate) mod ingress;
 pub mod installer;
 pub mod logs;

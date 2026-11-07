@@ -59,6 +59,21 @@ impl LocalMachine {
         .await
     }
 
+    /// Under Device enforcement an Operator caller's deploy, which creates or replaces
+    /// Containers, is refused: only a Device-approved restart step passes.
+    ///
+    /// # Errors
+    /// Returns [`Error::RestartRefused`] under enforcement.
+    pub(crate) fn admit_operator_deploy(&self) -> Result<(), Error> {
+        if self.record().device_enforcement() {
+            return Err(AuthorityRefusal::Mismatch {
+                field: "a workflow",
+            }
+            .into());
+        }
+        Ok(())
+    }
+
     /// Under Device enforcement, let an Operator caller's restart step through only with
     /// an approved Device's approval of exactly this restart, and record the step so the
     /// same approval never runs it again. New-creation requests need deploy authorization
@@ -80,10 +95,8 @@ impl LocalMachine {
             return Ok(want);
         }
         let Some((step, locator)) = RestartStep::of(&want) else {
-            return Err(AuthorityRefusal::Mismatch {
-                field: "a workflow",
-            }
-            .into());
+            self.admit_operator_deploy()?;
+            return Ok(want);
         };
         let approval = approval.ok_or(AuthorityRefusal::Unsigned {
             purpose: Purpose::Workflow,

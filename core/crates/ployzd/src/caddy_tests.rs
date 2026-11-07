@@ -157,8 +157,13 @@ fn every_reverse_proxy_balances_by_load_dials_briefly_and_bounds_the_wait_for_he
         .collect::<Vec<_>>();
     assert!(proxies.len() >= 2, "{caddyfile}");
     for (proxy, body) in proxies {
-        assert_eq!(body.trim(), "import common_proxy", "{proxy}");
+        assert!(
+            ["import common_proxy", "import loopback_proxy"].contains(&body.trim()),
+            "{proxy}: {body}"
+        );
     }
+    let loopback = automatic_site_block(&caddyfile, "(loopback_proxy)");
+    assert!(loopback.starts_with("import common_proxy "), "{loopback}");
 }
 
 #[test]
@@ -210,20 +215,23 @@ fn only_cloudflare_peers_may_set_the_client_address() {
         .and_then(|(_, rest)| rest.split_once("\n}\n"))
         .expect("global options block")
         .0;
-    let trusted = global
-        .lines()
-        .find_map(|line| line.trim().strip_prefix("trusted_proxies static "))
-        .expect("trusted_proxies line");
-    let mut ranges = trusted.split(' ').collect::<Vec<_>>();
-    ranges.sort_unstable();
     let mut expected = super::trace::CLOUDFLARE_RANGES.to_vec();
     expected.sort_unstable();
-    assert_eq!(ranges, expected, "every Cloudflare range, each once");
-    assert!(
-        global.contains("\n\t\tclient_ip_headers CF-Connecting-IP\n"),
-        "{global}"
-    );
-    assert_eq!(caddyfile.matches("servers {").count(), 1);
+    for address in [":80", ":443"] {
+        let block = automatic_site_block(global, address);
+        let trusted = block
+            .split_once("trusted_proxies static ")
+            .and_then(|(_, rest)| rest.split_once(" client_ip_headers CF-Connecting-IP"))
+            .expect("trusted_proxies line")
+            .0;
+        let mut ranges = trusted.split(' ').collect::<Vec<_>>();
+        ranges.sort_unstable();
+        assert_eq!(
+            ranges, expected,
+            "every Cloudflare range, each once, on {address}"
+        );
+    }
+    assert_eq!(caddyfile.matches("servers ").count(), 3);
 
     let proxy = automatic_site_block(&caddyfile, "(common_proxy)");
     assert!(
@@ -454,7 +462,12 @@ fn contested_custom_hostname_keeps_one_qualified_service_upstream_set() {
         "loser must not join the winner's upstream pool: {caddyfile}"
     );
     assert_eq!(
-        caddyfile.matches("http://api.example.com").count(),
+        caddyfile.matches("http://api.example.com {").count(),
+        1,
+        "{caddyfile}"
+    );
+    assert_eq!(
+        caddyfile.matches("http://api.example.com:8480 {").count(),
         1,
         "{caddyfile}"
     );
@@ -1597,4 +1610,95 @@ fn observation(
         run: None,
     })
     .unwrap()
+}
+
+#[test]
+fn only_the_loopback_peer_may_set_the_client_address_on_the_tunnel_port() {
+    let caddyfile = render_caddyfile(&renderer_projection(), "TIMESTAMP");
+    let global = caddyfile
+        .split_once("\n{\n")
+        .and_then(|(_, rest)| rest.split_once("\n}\n"))
+        .expect("global options block")
+        .0;
+    let loopback = automatic_site_block(global, "127.0.0.1:8480");
+    assert_eq!(loopback, "trusted_proxies static 127.0.0.1/32 ::1/128");
+    assert!(
+        !global.contains("servers :8480"),
+        "a bare port matches no server bound to an address: {global}"
+    );
+}
+
+#[test]
+fn every_routed_hostname_has_a_tunnel_site_that_keeps_the_visitors_scheme() {
+    let caddyfile = render_caddyfile(&renderer_projection(), "TIMESTAMP");
+
+    let site = automatic_site_block(&caddyfile, "(loopback_site)");
+    assert!(site.starts_with("bind 127.0.0.1 ::1 "), "{site}");
+    assert!(
+        site.contains("@plain header X-Forwarded-Proto http redir @plain https://{host}{uri} 308"),
+        "{site}"
+    );
+    assert!(
+        site.contains(
+            "@noproto header !X-Forwarded-Proto request_header @noproto X-Forwarded-Proto https"
+        ),
+        "{site}"
+    );
+    let proxy = automatic_site_block(&caddyfile, "(loopback_proxy)");
+    assert_eq!(
+        proxy,
+        "import common_proxy header_up X-Forwarded-Proto {header.X-Forwarded-Proto}"
+    );
+
+    let secure = automatic_site_block(&caddyfile, "http://secure.example.com:8480");
+    assert!(
+        secure.contains("import loopback_site aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"),
+        "{secure}"
+    );
+    assert!(
+        secure.contains("reverse_proxy 10.210.1.3:8443 { import loopback_proxy }"),
+        "{secure}"
+    );
+    assert!(secure.contains("import ployz_requests app api"), "{secure}");
+    assert!(
+        !secure.contains("tls "),
+        "the door terminates TLS: {secure}"
+    );
+    let plain = automatic_site_block(&caddyfile, "http://example.com:8480");
+    assert!(
+        plain.contains("reverse_proxy 10.210.1.2:8080 10.210.2.2:8080 { import loopback_proxy }"),
+        "{plain}"
+    );
+    assert!(!plain.contains("acme-challenge/Loq"), "{plain}");
+    let empty = automatic_site_block(&caddyfile, "http://empty.example.com:8480");
+    assert!(empty.contains("error NOT_RUNNING 503"), "{empty}");
+    let unknown = automatic_site_block(&caddyfile, "http://:8480");
+    assert!(unknown.contains("error NOT_DEPLOYED 404"), "{unknown}");
+    assert!(unknown.contains("import loopback_site"), "{unknown}");
+
+    // An https route without material has no public https site, but the door's site.
+    let local = MachineId::parse("a".repeat(32)).unwrap();
+    let observations = vec![observation(
+        1,
+        &local,
+        "api",
+        Some([10, 210, 1, 2]),
+        vec![ingress("new.example.com", 8443, HttpProtocol::Https)],
+    )];
+    let caddyfile = caddyfile_for(
+        &local,
+        "node-a",
+        &service_containers(observations),
+        "TIMESTAMP",
+        &BTreeMap::new(),
+    );
+    assert!(
+        !caddyfile.contains("\nhttps://new.example.com {"),
+        "{caddyfile}"
+    );
+    let tunnel = automatic_site_block(&caddyfile, "http://new.example.com:8480");
+    assert!(
+        tunnel.contains("reverse_proxy 10.210.1.2:8443 { import loopback_proxy }"),
+        "{tunnel}"
+    );
 }

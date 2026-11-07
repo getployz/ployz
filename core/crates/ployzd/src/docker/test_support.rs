@@ -193,7 +193,9 @@ async fn answer(fake: FakeDocker, method: Method, uri: Uri, body: Bytes) -> Resp
             }
             let id = format!("{}{}", MachineId::random(), MachineId::random());
             let config: serde_json::Value = serde_json::from_slice(&body).unwrap();
-            containers.insert(name.into(), serde_json::json!({"Id": id, "Name": format!("/{name}"), "Config": config, "State":{"Status":"created"}}));
+            // Docker answers the host config beside the config, not inside it.
+            let host_config = config.get("HostConfig").cloned().unwrap_or_default();
+            containers.insert(name.into(), serde_json::json!({"Id": id, "Name": format!("/{name}"), "Config": config, "HostConfig": host_config, "State":{"Status":"created"}}));
             return (
                 StatusCode::CREATED,
                 Json(serde_json::json!({"Id":id,"Warnings":[]})),

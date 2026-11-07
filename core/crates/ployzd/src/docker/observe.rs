@@ -13,7 +13,10 @@ use ployz_core::{
 };
 use tokio_util::sync::CancellationToken;
 
-use super::{ContainerRuntime, Error, LABEL_MANAGED, LABEL_NAMESPACE};
+use super::{
+    ContainerRuntime, Error, LABEL_MANAGED, LABEL_NAMESPACE,
+    doors::{Door, DoorFacts, door_facts},
+};
 use crate::corrosion::{LocalContainerSnapshot, LocalVolumeSnapshot, ReplicatedStore};
 use crate::machine::RecordOwner;
 
@@ -334,18 +337,30 @@ impl ContainerRuntime {
         let inventory = self.managed_inventory().await?;
         let mut live = LocalContainerSnapshot::from_inventory(inventory);
         let container_ids = live.ids().cloned().collect::<Vec<_>>();
-        let mut observed = Vec::with_capacity(container_ids.len());
+        let mut doors = Vec::new();
+        let mut complete = true;
         for container_id in &container_ids {
             match self.inspect_managed(container_id, &machine_id).await {
                 Ok(observation) => {
                     live.observed(redacted_container(&observation));
-                    observed.push(observation);
+                    match self.door_facts_of(&observation).await {
+                        Ok(Some(facts)) => doors.push(facts),
+                        Ok(None) => {}
+                        Err(error) => {
+                            complete = false;
+                            eprintln!(
+                                "failed to inspect Ingress door {container_id}: {error}",
+                                error = ployz_core::error_chain::inline(&error),
+                            );
+                        }
+                    }
                 }
                 Err(error) => {
+                    complete = false;
                     eprintln!(
                         "failed to inspect managed container {container_id}: {error}",
                         error = ployz_core::error_chain::inline(&error),
-                    )
+                    );
                 }
             }
         }
@@ -361,9 +376,10 @@ impl ContainerRuntime {
             .await?;
         self.first_synced
             .send_if_modified(|synced| !std::mem::replace(synced, true));
-        // The one Service Container the daemon starts unasked, and only while this Machine
-        // participates and accepts ingress. It starts an existing container; it never
-        // creates, replaces, moves or removes one.
+        // The Ingress doors, the holder and its Caddy, are the only Service Containers the
+        // daemon starts unasked, and only while this Machine participates and accepts
+        // ingress. It starts an existing container, or restarts a Caddy left in a
+        // holder's old network; it never creates, replaces, moves or removes one.
         // Started after the guard drops, so a slow Docker start never stalls publication.
         // A reset that takes the guard meanwhile removes the container anyway. The record
         // is read again here, so a policy change that committed during publication holds.
@@ -373,14 +389,33 @@ impl ContainerRuntime {
             && local
                 .machine()
                 .is_some_and(|machine| machine.accepts_ingress)
-            && let Some(container_id) =
-                stranded_ingress(&observed, observed.len() == container_ids.len())
+            && let Some(recovery) = ingress_recovery(&doors, complete)
         {
             // Off the event loop, so a slow Docker start never delays later scans.
             let runtime = self.clone();
-            tokio::spawn(async move { runtime.start_stranded(&container_id, creates).await });
+            tokio::spawn(async move { runtime.start_stranded(recovery, creates).await });
         }
         Ok(())
+    }
+
+    /// The Docker facts of a reserved Ingress Container, or `None` for any other.
+    async fn door_facts_of(
+        &self,
+        observation: &ContainerObservation,
+    ) -> Result<Option<DoorFacts>, Error> {
+        if observation.kind != ContainerKind::ServiceContainer {
+            return Ok(None);
+        }
+        let Some(door) = Door::of(&observation.identity()) else {
+            return Ok(None);
+        };
+        let inspected = self
+            .docker
+            .client
+            .inspect_container(observation.container_id.as_str(), None)
+            .await
+            .map_err(|error| super::docker_error(&observation.container_id, error))?;
+        Ok(Some(door_facts(observation, door, &inspected)))
     }
 
     async fn sync_volume_observations(&self, sink: &ObservationSink) -> Result<(), Error> {
@@ -561,26 +596,124 @@ fn local_volume_changes(
     }
 }
 
-/// The newest local Ingress Proxy, when no local one runs.
+/// One Ingress door recovery a scan decided on.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) enum IngressRecovery {
+    /// A holder at rest whose last start failed.
+    StartHolder(ContainerId),
+    /// A Caddy at rest whose last start failed: one joined to the running `holder`,
+    /// or a Caddy from before the holder when none exists.
+    StartCaddy {
+        holder: Option<ContainerId>,
+        caddy: ContainerId,
+    },
+    /// A running Caddy left in a network namespace the running holder no longer has.
+    RejoinCaddy {
+        holder: ContainerId,
+        caddy: ContainerId,
+    },
+}
+
+impl IngressRecovery {
+    /// The Container the recovery starts.
+    pub(super) fn target(&self) -> &ContainerId {
+        match self {
+            Self::StartHolder(id) => id,
+            Self::StartCaddy { caddy, .. } | Self::RejoinCaddy { caddy, .. } => caddy,
+        }
+    }
+
+    pub(super) fn verb(&self) -> &'static str {
+        match self {
+            Self::StartHolder(_) | Self::StartCaddy { .. } => "started",
+            Self::RejoinCaddy { .. } => "rejoined",
+        }
+    }
+}
+
+/// The one recovery this scan calls for, if any.
 ///
-/// Docker's restart policy covers an ingress that ran and died, not one whose start
-/// failed, such as when another process held port 80 at enrollment or at boot. The
-/// candidate's inspect decides whether its last start failed. A scan that could not
-/// inspect every container may have missed a running one, so it names nothing.
-fn stranded_ingress(observations: &[ContainerObservation], complete: bool) -> Option<ContainerId> {
+/// Docker's restart policy covers a door that ran and died, not one whose start
+/// failed, such as when another process held port 80 at enrollment or at boot, and
+/// it never moves a Caddy into the network of a holder that restarted. A scan that
+/// could not inspect every container may have missed a running one, so it names
+/// nothing. A Caddy is never selected while its holder is stopped, restarting or
+/// unknown: it would join nothing. Unknown evidence does nothing.
+fn ingress_recovery(doors: &[DoorFacts], complete: bool) -> Option<IngressRecovery> {
     if !complete {
         return None;
     }
-    let ingresses = observations.iter().filter(|observation| {
-        observation.kind == ContainerKind::ServiceContainer
-            && crate::ingress::is_system_ingress(observation)
-    });
-    let at_rest = ingresses
-        .clone()
-        .all(|observation| crate::ingress::at_rest(&observation.runtime));
-    let newest = ingresses
-        .max_by_key(|observation| (observation.created_at_unix_nanos, observation.container_id))?;
-    at_rest.then_some(newest.container_id)
+    let newest = |facts: &[&DoorFacts]| {
+        facts
+            .iter()
+            .copied()
+            .max_by_key(|facts| (facts.created_at, facts.id))
+            .cloned()
+    };
+    let holders = doors
+        .iter()
+        .filter(|facts| facts.door == Door::Holder)
+        .collect::<Vec<_>>();
+    let caddys = doors
+        .iter()
+        .filter(|facts| facts.door == Door::Proxy)
+        .collect::<Vec<_>>();
+    if holders.is_empty() {
+        // Before the holder, the Caddy published the ports itself.
+        let legacy = caddys
+            .iter()
+            .copied()
+            .filter(|facts| facts.joined_to.is_none())
+            .collect::<Vec<_>>();
+        if !caddys.iter().all(|facts| facts.at_rest()) {
+            return None;
+        }
+        let caddy = newest(&legacy)?;
+        return caddy.failed_start.then_some(IngressRecovery::StartCaddy {
+            holder: None,
+            caddy: caddy.id,
+        });
+    }
+    if holders.iter().all(|facts| facts.at_rest()) {
+        let holder = newest(&holders)?;
+        return holder
+            .failed_start
+            .then_some(IngressRecovery::StartHolder(holder.id));
+    }
+    let mut running = holders.iter().copied().filter(|facts| facts.running());
+    let (Some(holder), None) = (running.next(), running.next()) else {
+        return None;
+    };
+    if holders
+        .iter()
+        .any(|facts| !facts.running() && !facts.at_rest())
+    {
+        return None;
+    }
+    let joined = caddys
+        .iter()
+        .copied()
+        .filter(|facts| facts.joined_to == Some(holder.id))
+        .collect::<Vec<_>>();
+    if let Some(caddy) = joined.iter().find(|facts| facts.running()) {
+        return match (holder.netns, caddy.netns) {
+            (Some(holder_ns), Some(caddy_ns)) if holder_ns != caddy_ns => {
+                Some(IngressRecovery::RejoinCaddy {
+                    holder: holder.id,
+                    caddy: caddy.id,
+                })
+            }
+            _ => None,
+        };
+    }
+    if !joined.iter().all(|facts| facts.at_rest()) {
+        return None;
+    }
+    let caddy = newest(&joined)?;
+    caddy.failed_start.then_some(IngressRecovery::StartCaddy {
+        holder: Some(holder.id),
+        caddy: caddy.id,
+    })
 }
 
 #[cfg(test)]
@@ -591,112 +724,235 @@ mod tests {
     use serde_json::json;
 
     use super::{
-        local_container_changes, local_volume_changes, observe_copies, redacted_container,
-        stranded_ingress,
+        IngressRecovery, ingress_recovery, local_container_changes, local_volume_changes,
+        observe_copies, redacted_container,
     };
     use crate::corrosion::{LocalContainerSnapshot, LocalVolumeSnapshot};
-
-    fn container(
-        id: char,
-        namespace: &str,
-        name: &str,
-        created_at: i64,
-        runtime: serde_json::Value,
-    ) -> ContainerObservation {
-        serde_json::from_value(json!({
-            "container_id": id.to_string().repeat(64),
-            "display_name": format!("{name}-{id}"),
-            "created_at_unix_nanos": created_at,
-            "machine_id": "b".repeat(32),
-            "namespace": namespace,
-            "kind": "service_container",
-            "runtime": runtime,
-            "resolved_spec": {
-                "service_id": "c".repeat(32),
-                "name": name,
-                "mode": { "mode": "replicated", "replicas": 1 },
-                "container": { "image": "caddy:2", "pull_policy": "missing" }
-            }
-        }))
-        .unwrap()
-    }
-
-    fn ingress(id: char, created_at: i64, runtime: serde_json::Value) -> ContainerObservation {
-        container(id, "ployz-system", "ingress", created_at, runtime)
-    }
+    use crate::docker::{Door, DoorFacts, NetnsId};
 
     fn id(id: char) -> ContainerId {
         ContainerId::parse(id.to_string().repeat(64)).unwrap()
     }
 
+    fn door(id_char: char, door: Door, created_at: i64, runtime: serde_json::Value) -> DoorFacts {
+        DoorFacts {
+            id: id(id_char),
+            door,
+            created_at,
+            runtime: serde_json::from_value(runtime).unwrap(),
+            failed_start: false,
+            joined_to: None,
+            netns: None,
+        }
+    }
+
+    fn holder(id: char, created_at: i64, runtime: serde_json::Value) -> DoorFacts {
+        door(id, Door::Holder, created_at, runtime)
+    }
+
+    fn caddy(id: char, created_at: i64, runtime: serde_json::Value) -> DoorFacts {
+        door(id, Door::Proxy, created_at, runtime)
+    }
+
+    fn joined(mut facts: DoorFacts, holder: char) -> DoorFacts {
+        facts.joined_to = Some(id(holder));
+        facts
+    }
+
+    fn failed(mut facts: DoorFacts) -> DoorFacts {
+        facts.failed_start = true;
+        facts
+    }
+
+    fn in_netns(mut facts: DoorFacts, ino: u64) -> DoorFacts {
+        facts.netns = Some(NetnsId::new(ino));
+        facts
+    }
+
+    fn created() -> serde_json::Value {
+        json!({ "state": "created" })
+    }
+
+    fn running() -> serde_json::Value {
+        json!({ "state": "running", "health": "healthy" })
+    }
+
     #[test]
-    fn ingress_that_never_started_is_started_again() {
-        let created = json!({ "state": "created" });
+    fn a_holder_whose_start_failed_is_started_again() {
         assert_eq!(
-            stranded_ingress(&[ingress('a', 1, created)], true),
-            Some(id('a'))
+            ingress_recovery(&[failed(holder('a', 1, created()))], true),
+            Some(IngressRecovery::StartHolder(id('a')))
+        );
+        assert_eq!(
+            ingress_recovery(&[holder('a', 1, created())], true),
+            None,
+            "a holder Docker never tried to start is left alone"
+        );
+        assert_eq!(
+            ingress_recovery(
+                &[
+                    failed(holder('a', 1, created())),
+                    failed(holder('d', 2, json!({ "state": "exited", "code": 128 }))),
+                ],
+                true
+            ),
+            Some(IngressRecovery::StartHolder(id('d'))),
+            "the newest holder at rest is the candidate"
         );
     }
 
     #[test]
-    fn newest_ingress_at_rest_is_the_candidate_when_none_runs() {
+    fn a_caddy_is_never_selected_while_its_holder_is_not_running() {
+        let caddy = failed(joined(caddy('c', 2, created()), 'a'));
         assert_eq!(
-            stranded_ingress(
-                &[
-                    ingress('a', 1, json!({ "state": "exited", "code": 0 })),
-                    ingress('d', 2, json!({ "state": "created" })),
-                ],
-                true
-            ),
-            Some(id('d'))
+            ingress_recovery(&[holder('a', 1, created()), caddy.clone()], true),
+            None,
+            "a stopped holder with no failed start starts nothing"
         );
         assert_eq!(
-            stranded_ingress(
+            ingress_recovery(
                 &[
-                    ingress('a', 2, json!({ "state": "exited", "code": 255 })),
-                    ingress('d', 1, json!({ "state": "created" })),
+                    holder('a', 1, json!({ "state": "restarting" })),
+                    caddy.clone()
                 ],
-                true
-            ),
-            Some(id('a'))
-        );
-    }
-
-    #[test]
-    fn ingress_is_left_alone_while_one_runs_or_belongs_to_an_app() {
-        let created = json!({ "state": "created" });
-        let running = json!({ "state": "running", "health": "healthy" });
-        assert_eq!(
-            stranded_ingress(
-                &[ingress('a', 1, running), ingress('d', 2, created.clone())],
                 true
             ),
             None
         );
         assert_eq!(
-            stranded_ingress(
+            ingress_recovery(
                 &[
-                    ingress('a', 2, json!({ "state": "restarting" })),
-                    ingress('d', 1, created.clone()),
+                    holder('a', 1, json!({ "unrecognized": { "raw": "odd" } })),
+                    caddy
                 ],
                 true
             ),
             None
         );
+    }
+
+    #[test]
+    fn a_joined_caddy_whose_start_failed_is_started_once_the_holder_runs() {
         assert_eq!(
-            stranded_ingress(
-                &[container('a', "app", "ingress", 1, created.clone())],
+            ingress_recovery(
+                &[
+                    holder('a', 1, running()),
+                    failed(joined(caddy('c', 2, created()), 'a'))
+                ],
+                true
+            ),
+            Some(IngressRecovery::StartCaddy {
+                holder: Some(id('a')),
+                caddy: id('c'),
+            })
+        );
+        assert_eq!(
+            ingress_recovery(
+                &[
+                    holder('a', 1, running()),
+                    failed(joined(caddy('c', 2, created()), 'b'))
+                ],
+                true
+            ),
+            None,
+            "a Caddy joined to another holder is not this holder's"
+        );
+        assert_eq!(
+            ingress_recovery(
+                &[
+                    holder('a', 1, running()),
+                    joined(caddy('c', 2, running()), 'a'),
+                    failed(joined(caddy('d', 3, created()), 'a')),
+                ],
+                true
+            ),
+            None,
+            "one Caddy runs, so none is started"
+        );
+    }
+
+    #[test]
+    fn a_running_caddy_in_the_holders_old_namespace_is_rejoined() {
+        assert_eq!(
+            ingress_recovery(
+                &[
+                    in_netns(holder('a', 1, running()), 10),
+                    in_netns(joined(caddy('c', 2, running()), 'a'), 11),
+                ],
+                true
+            ),
+            Some(IngressRecovery::RejoinCaddy {
+                holder: id('a'),
+                caddy: id('c'),
+            })
+        );
+        assert_eq!(
+            ingress_recovery(
+                &[
+                    in_netns(holder('a', 1, running()), 10),
+                    in_netns(joined(caddy('c', 2, running()), 'a'), 10),
+                ],
+                true
+            ),
+            None,
+            "a Caddy in the holder's namespace is where it belongs"
+        );
+        assert_eq!(
+            ingress_recovery(
+                &[
+                    in_netns(holder('a', 1, running()), 10),
+                    joined(caddy('c', 2, running()), 'a'),
+                ],
+                true
+            ),
+            None,
+            "an unknown namespace is no evidence"
+        );
+    }
+
+    #[test]
+    fn without_a_holder_the_legacy_caddy_rule_holds() {
+        assert_eq!(
+            ingress_recovery(&[failed(caddy('a', 1, created()))], true),
+            Some(IngressRecovery::StartCaddy {
+                holder: None,
+                caddy: id('a'),
+            })
+        );
+        assert_eq!(
+            ingress_recovery(
+                &[
+                    failed(caddy('a', 1, json!({ "state": "exited", "code": 0 }))),
+                    failed(caddy('d', 2, created())),
+                ],
+                true
+            ),
+            Some(IngressRecovery::StartCaddy {
+                holder: None,
+                caddy: id('d'),
+            })
+        );
+        assert_eq!(
+            ingress_recovery(
+                &[caddy('a', 1, running()), failed(caddy('d', 2, created()))],
                 true
             ),
             None
         );
-        assert_eq!(stranded_ingress(&[], true), None);
+        assert_eq!(
+            ingress_recovery(&[failed(joined(caddy('a', 1, created()), 'e'))], true),
+            None,
+            "a Caddy joined to a holder that is gone has no network to start in"
+        );
+        assert_eq!(ingress_recovery(&[], true), None);
     }
 
     #[test]
-    fn a_scan_that_could_not_inspect_every_container_starts_no_ingress() {
-        let created = json!({ "state": "created" });
-        assert_eq!(stranded_ingress(&[ingress('a', 1, created)], false), None);
+    fn a_scan_that_could_not_inspect_every_container_recovers_nothing() {
+        assert_eq!(
+            ingress_recovery(&[failed(holder('a', 1, created()))], false),
+            None
+        );
     }
 
     #[test]
@@ -800,7 +1056,7 @@ mod tests {
 
     #[test]
     fn publication_keeps_caddy_admin_so_redacted_caddy_stays_valid() {
-        let mut spec = ployz_core::caddy_service_spec("caddy:test".into(), Default::default())
+        let mut spec = crate::images::legacy_caddy_for_tests("caddy:test")
             .to_resolved(
                 ployz_core::ServiceId::parse("c".repeat(32)).unwrap(),
                 ployz_core::ResolvedUpdateConfig::default(),

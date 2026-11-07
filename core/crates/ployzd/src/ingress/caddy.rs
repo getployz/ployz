@@ -2,8 +2,7 @@
 
 use chrono::{SecondsFormat, Utc};
 use ployz_core::{
-    HOSTNAME_VERIFY_PATH, HttpProtocol, INGRESS_VERIFY_PATH, IngressHost, Machine, MachineId,
-    ingress_upstream,
+    HOSTNAME_VERIFY_PATH, HttpProtocol, INGRESS_VERIFY_PATH, Machine, MachineId, ingress_upstream,
 };
 use reqwest::{Client, StatusCode, header};
 use serde_json::Value;
@@ -248,7 +247,7 @@ fn render_caddyfile(projection: &IngressProjection, timestamp: &str) -> String {
     let _ = write!(
         output,
         "{{\n{debug}\tauto_https off\n{}\tlog default {{\n\t\texclude http.stdlib events\n{}\t}}\n}}\n\n",
-        trace::cloudflare_client_ip_servers(),
+        trace::servers_options(),
         visitor_filter(
             "\t\t",
             &[&VISITOR_FIELDS[..], &CONNECTION_FIELDS[..]].concat()
@@ -303,8 +302,28 @@ https:// {{\n\
 \t\tdial_timeout 500ms\n\
 \t\tresponse_header_timeout 60s\n\
 \t}}\n\
-}}\n"
+}}\n\
+\n\
+# The Tunnel door reaches this Machine's routes on loopback and terminates TLS itself. It says\n\
+# what the visitor used in X-Forwarded-Proto, which defaults to https when it says nothing.\n\
+(loopback_site) {{\n\
+\tbind {} {}\n\
+\timport ployz_headers {{args[0]}}\n\
+\t@plain header X-Forwarded-Proto http\n\
+\tredir @plain https://{{host}}{{uri}} 308\n\
+\t@noproto header !X-Forwarded-Proto\n\
+\trequest_header @noproto X-Forwarded-Proto https\n\
+}}\n\
+\n\
+# The later header_up replaces the scheme Caddy saw with the one the door reported.\n\
+(loopback_proxy) {{\n\
+\timport common_proxy\n\
+\theader_up X-Forwarded-Proto {{header.X-Forwarded-Proto}}\n\
+}}\n",
+        trace::LOOPBACK_BIND,
+        trace::LOOPBACK_BIND_V6,
     );
+    write_loopback_sites(&mut output, projection, &unpublished, &hostname_verify);
     if projection.sites.iter().any(|site| {
         site.proxied(HttpProtocol::Http).is_some()
             || site.challenge().is_some()
@@ -347,7 +366,7 @@ https:// {{\n\
                 &mut output,
                 local_machine,
                 "http",
-                &site.hostname,
+                site.hostname.as_str(),
                 &format!("{headers}{trace}{hostname_verify}"),
                 site.challenge(),
                 &answer,
@@ -371,7 +390,7 @@ https:// {{\n\
             &mut output,
             local_machine,
             "https",
-            &site.hostname,
+            site.hostname.as_str(),
             &format!("{tls}{headers}{trace}"),
             None,
             &answer,
@@ -379,6 +398,59 @@ https:// {{\n\
     }
     write_certificate_errors(&mut output, &projection.sites);
     output
+}
+
+/// The loopback sites the Tunnel door reaches: one per routed hostname, with or without
+/// Certificate Material, since the door terminates TLS itself, and a catch-all that answers
+/// a hostname it does not route like the public one.
+fn write_loopback_sites(
+    output: &mut String,
+    projection: &IngressProjection,
+    unpublished: &str,
+    hostname_verify: &str,
+) {
+    let local_machine = &projection.machine.id;
+    let port = trace::LOOPBACK_PORT;
+    let loopback = format!("\timport loopback_site {local_machine}\n");
+    let _ = write!(
+        output,
+        "\n# Unknown hostnames through the Tunnel door.\n\
+http://:{port} {{\n\
+{loopback}{unpublished}{hostname_verify}\
+\terror NOT_DEPLOYED 404\n\
+\timport error_page {local_machine}\n\
+\timport ployz_log\n\
+}}\n"
+    );
+    for site in &projection.sites {
+        // The https route is what the visitor asked for through the door; an http-only
+        // hostname serves its http route to the visitor the door sends on.
+        let Some(endpoints) = site
+            .route(HttpProtocol::Https)
+            .or_else(|| site.route(HttpProtocol::Http))
+        else {
+            continue;
+        };
+        let publication = site
+            .publication
+            .as_ref()
+            .expect("a routed site has a publication");
+        let trace = format!(
+            "{}\timport ployz_requests {} {}\n",
+            trace::published_import(local_machine, &publication.trace, endpoints),
+            publication.owner.namespace,
+            publication.owner.name
+        );
+        write_site(
+            output,
+            local_machine,
+            "http",
+            &format!("{}:{port}", site.hostname),
+            &format!("{loopback}{trace}{hostname_verify}"),
+            None,
+            &loopback_proxy(endpoints),
+        );
+    }
 }
 
 /// Each routed hostname with the upstreams it proxies to, e.g. `http://web.test=[10.0.0.1:8080]`.
@@ -536,11 +608,20 @@ const REDIRECT_TO_HTTPS: &str = "\thandle {\n\t\theader cache-control \"max-age=
 
 /// Proxies to `endpoints`, or answers `NOT_RUNNING` when there are none.
 fn proxy(endpoints: &[IngressEndpoint]) -> String {
+    proxy_with(endpoints, "common_proxy")
+}
+
+/// The same through the Tunnel door, which already said the visitor's scheme.
+fn loopback_proxy(endpoints: &[IngressEndpoint]) -> String {
+    proxy_with(endpoints, "loopback_proxy")
+}
+
+fn proxy_with(endpoints: &[IngressEndpoint], snippet: &str) -> String {
     if endpoints.is_empty() {
         return "\terror NOT_RUNNING 503\n".to_owned();
     }
     format!(
-        "\treverse_proxy {} {{\n\t\timport common_proxy\n\t}}\n\
+        "\treverse_proxy {} {{\n\t\timport {snippet}\n\t}}\n\
 \tlog_append upstream {{http.reverse_proxy.upstream.hostport}}\n",
         endpoints
             .iter()
@@ -554,7 +635,7 @@ fn write_site(
     output: &mut String,
     machine: &MachineId,
     protocol: &str,
-    hostname: &IngressHost,
+    address: &str,
     directives: &str,
     challenge: Option<&CertificateChallenge>,
     answer: &str,
@@ -571,7 +652,7 @@ fn write_site(
         .unwrap_or_default();
     let _ = write!(
         output,
-        "\n{protocol}://{hostname} {{\n{directives}{handle}{answer}\timport error_page {machine}\n}}\n"
+        "\n{protocol}://{address} {{\n{directives}{handle}{answer}\timport error_page {machine}\n}}\n"
     );
 }
 

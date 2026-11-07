@@ -1054,6 +1054,14 @@ impl MachineOperations for Recording {
     ) -> Result<ployz_core::RoutesRead, RpcError> {
         MachineOperations::read_entry_routes(&self.client, service).await
     }
+
+    async fn set_ingress_doors(
+        &self,
+        machine_id: &MachineId,
+        request: ployz_core::SetIngressDoorsRequest,
+    ) -> Result<ployz_core::IngressDoorsSet, RpcError> {
+        MachineOperations::set_ingress_doors(&self.client, machine_id, request).await
+    }
 }
 
 fn left_running(

@@ -123,6 +123,14 @@ impl MachineOperations for Recording {
     async fn read_entry_routes(&self, service: &QualifiedService) -> Result<RoutesRead, RpcError> {
         self.fake.read_entry_routes(service).await
     }
+
+    async fn set_ingress_doors(
+        &self,
+        machine_id: &MachineId,
+        request: ployz_core::SetIngressDoorsRequest,
+    ) -> Result<ployz_core::IngressDoorsSet, RpcError> {
+        self.fake.set_ingress_doors(machine_id, request).await
+    }
 }
 
 #[derive(Clone, Copy, Debug)]

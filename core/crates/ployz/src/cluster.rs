@@ -5,21 +5,22 @@ use std::{
 };
 
 use futures_util::future::join_all;
+pub(crate) use ployz_core::global_creation_key;
 use ployz_core::{
     BridgeEndpointCapacity, ByteCapacity, ContainerAction, ContainerId, ContainerNow,
     ContainerObservation, ContainerWant, CopyRole, DataLoss, DataLossConfirmation,
     DescribeContractRequest, DockerVolumeId, DockerVolumeName, EnsureContainerRequest,
-    EnvironmentValues, ForgetRequest, Forgotten, InspectRequest, InspectStorageRequest,
-    InspectTelemetry, LeaveRequest, Left, ListContainersRequest, ListImagesRequest,
-    ListMachinesRequest, ListVolumesRequest, LiveServices, LocalMachineRemoved,
+    EnvironmentValues, ForgetRequest, Forgotten, IngressDoorsSet, InspectRequest,
+    InspectStorageRequest, InspectTelemetry, LeaveRequest, Left, ListContainersRequest,
+    ListImagesRequest, ListMachinesRequest, ListVolumesRequest, LiveServices, LocalMachineRemoved,
     MACHINE_STORAGE_OBSERVATION_CAPABILITY, Machine, MachineFailure, MachineId, MachineImages,
     MachineLabelKey, MachineName, MachineObservation, MachineRpcClient, MachineStorageObservation,
     MachineSuccess, MachineTarget, MachineUpdate, NameMatches, Namespace, ObservedDataLoss,
     OpaquePayload, PartialResult, RUNTIME_WATCH_MESSAGE_SIZE_LIMIT, RemoveVolumeRequest,
-    RemoveVolumesRequest, ResolvedServiceSpec, Rpc, RpcError, RpcErrorCode, RpcResponseBody,
-    RuntimeWatchFrame, RuntimeWatchRequest, StopOptions, StorageCapacity, TelemetryObservation,
-    UnconfirmedDataLoss, VolumeInventory, VolumeRemoval, VolumeRemovalOutcome,
-    decode_runtime_watch_frame, derive_live_services, op,
+    RemoveVolumesRequest, Rpc, RpcError, RpcErrorCode, RpcResponseBody, RuntimeWatchFrame,
+    RuntimeWatchRequest, SetIngressDoorsRequest, StopOptions, StorageCapacity,
+    TelemetryObservation, UnconfirmedDataLoss, VolumeInventory, VolumeRemoval,
+    VolumeRemovalOutcome, decode_runtime_watch_frame, derive_live_services, op,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
@@ -1506,6 +1507,25 @@ impl Client {
             .map(|(now, _)| now)
     }
 
+    /// Bring `machine`'s Ingress Proxy, its holder and Caddy, to its daemon's pinned
+    /// wiring for `request`'s Doors. The daemon may pull both images first, so no client
+    /// deadline applies, as for a Deploy's create. A daemon from before the route
+    /// answers Unsupported, naming `machine`.
+    ///
+    /// # Errors
+    ///
+    /// Returns the daemon's refusal, or the transport failure naming `machine`. A Docker
+    /// stage that failed after an earlier one completed answers in the result's `failure`.
+    pub async fn set_ingress_doors(
+        &self,
+        machine: &MachineId,
+        request: SetIngressDoorsRequest,
+    ) -> Result<IngressDoorsSet, RpcError> {
+        self.invoke_answered::<op::SetIngressDoors>(request, &MachineTarget::from(machine), None)
+            .await
+            .map_err(|error| answered_by(machine, error))
+    }
+
     pub(crate) async fn ensure_settled(
         &self,
         machine_id: &MachineId,
@@ -2470,12 +2490,3 @@ fn admitted(started: UserStarted) -> Result<(), RpcError> {
 #[cfg(test)]
 #[path = "cluster_tests.rs"]
 mod tests;
-
-/// One Global revision per target; Namespace and kind are scoped by the SlotKey.
-pub(crate) fn global_creation_key(spec: &ResolvedServiceSpec) -> String {
-    format!(
-        "global:{}:{}",
-        spec.service_id,
-        spec.serving_shape().token()
-    )
-}

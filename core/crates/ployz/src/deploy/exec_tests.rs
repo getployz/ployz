@@ -1144,6 +1144,7 @@ fn refusal(reason: ContainerRefusalReason, message: &str) -> ContainerRefusal {
     ContainerRefusal {
         reason,
         message: message.into(),
+        capability: None,
     }
 }
 
@@ -1348,6 +1349,14 @@ impl MachineOperations for Scripted {
             }
         }
         self.read_at(None, service).await
+    }
+
+    async fn set_ingress_doors(
+        &self,
+        _machine_id: &MachineId,
+        _request: ployz_core::SetIngressDoorsRequest,
+    ) -> Result<ployz_core::IngressDoorsSet, RpcError> {
+        unreachable!("a Deploy never places the Ingress Proxy")
     }
 
     async fn inspect_container(

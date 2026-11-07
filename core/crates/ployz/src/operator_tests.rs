@@ -1329,6 +1329,7 @@ fn container_on(
                 resources: Default::default(),
                 stop_timeout_secs: None,
                 sysctls: Default::default(),
+                network: None,
                 restart: RestartPolicy::default(),
             },
             placement: Default::default(),

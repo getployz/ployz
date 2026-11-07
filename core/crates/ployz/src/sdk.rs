@@ -103,9 +103,7 @@ fn unprepared(
         error: preparation_error(error, cancellation_requested),
     }
 }
-pub(crate) use logs::{
-    AgentTail, container_env, failed_tail, process_tail, service_tail, tail_frames,
-};
+pub(crate) use logs::{AgentTail, container_env, process_tail, service_tail, tail_frames};
 pub use logs::{
     ContainerLogInput, ContainerLogRecord, ContainerLogStream, LogHistoryInput, LogHistoryRecord,
     LogHistoryStream,

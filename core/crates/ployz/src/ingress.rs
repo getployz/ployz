@@ -1,13 +1,13 @@
-//! Ingress Proxy identity and deployment boundaries.
+//! The Ingress Proxy: each Server with the ingress role asks its own daemon to bring the
+//! holder and the Caddy in its network to the wiring that daemon pins, through
+//! SetIngressDoors. Nothing here builds a spec or names an image.
 
-use std::{collections::BTreeSet, future::Future};
-
-use futures_util::future::join_all;
+use futures_util::{StreamExt, stream};
 use ployz_core::{
-    ContainerId, ContainerLocator, ContainerNow, ContainerObservation, ContainerWant,
-    DeployOutcome, EnvironmentValues, FailedOperation, HealthFailure, MachineId, MachineName,
-    MachineObservation, PlacementConstraint, QualifiedService, RequestedServiceSpec, RpcError,
-    RunRotation, RunTarget, caddy_service_spec,
+    ContainerObservation, ContainerRuntimeObservation, DoorChange, DoorOutcome, EnvironmentValues,
+    IngressDoors, IngressDoorsFailure, IngressDoorsSet, IngressStage, MachineId, MachineName,
+    MachineObservation, QualifiedService, RowStanding, RpcError, RpcErrorCode,
+    SET_INGRESS_DOORS_CAPABILITY, ServiceId, ServiceObservation, SetIngressDoorsRequest,
 };
 use ployz_store::{IngressAction, IngressFailure, IngressRepair};
 use serde::{Deserialize, Serialize};
@@ -15,65 +15,298 @@ use tokio_util::sync::CancellationToken;
 use ts_rs::TS;
 
 use crate::{
-    cluster::HealthWaitError,
-    connect::{Client, ConnectError, TARGET_RPC_TIMEOUT},
-    deploy::{DeployIntent, DeployPlan, Outcome, SlotAction},
+    connect::{Client, ConnectError},
+    deploy::{MachineOperations, RestartTolerant, SlotAction},
     failure::Failure,
+    ui::progress::{Detail, Diagnostic, StartFailure},
 };
 
-mod caddy;
-pub use caddy::{IngressImageError, pinned_image};
+/// How many Servers one command sets the Ingress Proxy on at once.
+const DOORS_AT_ONCE: usize = 8;
 
-/// Build the Caddy ingress Service Spec.
-///
-/// # Errors
-///
-/// Returns when the Caddy image cannot be discovered.
-pub async fn service_spec(
-    image: Option<String>,
-    constraints: BTreeSet<PlacementConstraint>,
-) -> Result<RequestedServiceSpec, IngressImageError> {
-    let image = match image {
-        Some(image) => image,
-        None => caddy::latest_image().await?,
-    };
-    Ok(caddy_service_spec(image, constraints))
-}
-
-/// The Caddy image a reconcile of the Ingress Proxy runs.
+/// A Server whose Ingress Proxy a command sets.
 #[derive(Clone, Debug, PartialEq)]
-pub(crate) enum IngressImage {
-    /// The image the Ingress Proxy runs now; the latest when it runs nowhere.
-    Keep,
-    /// The latest stable Caddy 2 image.
-    Latest,
-    /// An operator-pinned image.
-    Given(String),
+pub(crate) struct DoorMachine {
+    pub(crate) id: MachineId,
+    pub(crate) name: MachineName,
+    /// Whether its daemon may serve SetIngressDoors. One that advertises other
+    /// capabilities but not this one keeps the Ingress Proxy it runs, and is named as
+    /// needing a newer Ployz.
+    pub(crate) supported: bool,
 }
 
-impl IngressImage {
-    pub(crate) fn given_or(given: Option<String>, otherwise: Self) -> Self {
-        given.map_or(otherwise, Self::Given)
+/// The Servers that should run the Ingress Proxy: reachable, holding the ingress role, and
+/// not leaving.
+pub(crate) fn door_machines(observed: &[MachineObservation]) -> Vec<DoorMachine> {
+    observed
+        .iter()
+        .filter(|machine| {
+            machine.invites_rpc()
+                && machine.machine.accepts_ingress
+                && match machine.machine.standing() {
+                    RowStanding::Registered | RowStanding::Versioned => true,
+                    RowStanding::Leaving { .. } => false,
+                }
+        })
+        .map(|machine| {
+            let capabilities = &machine.machine.runtime.capabilities;
+            DoorMachine {
+                id: machine.machine.id,
+                name: machine.machine.name.clone(),
+                // An empty list is a row that predates it, which claims nothing, so the
+                // daemon is asked and answers for itself.
+                supported: capabilities.is_empty()
+                    || capabilities.contains(SET_INGRESS_DOORS_CAPABILITY),
+            }
+        })
+        .collect()
+}
+
+/// The Ingress Proxy Service every Server's doors derive from: the observed one, its
+/// newest copy's when copies disagree, else a fresh id. A command calls this once, so
+/// every Server it sets derives its holder from one id.
+pub(crate) fn proxy_service(services: &[ServiceObservation]) -> ServiceId {
+    services
+        .iter()
+        .filter(|service| service.identity == QualifiedService::system_ingress())
+        .filter_map(|service| {
+            let newest = service
+                .containers
+                .iter()
+                .map(|copy| {
+                    let copy = copy.as_observation();
+                    (copy.created_at_unix_nanos, copy.container_id)
+                })
+                .max()?;
+            Some((newest, service.service_id))
+        })
+        .max()
+        .map_or_else(ServiceId::random, |(_, service_id)| service_id)
+}
+
+/// What one Server's daemon answered, or why it wasn't asked to the end.
+#[derive(Debug)]
+enum Answer {
+    Set(Box<IngressDoorsSet>),
+    Refused(RpcError),
+    /// The command was cancelled before the Server answered.
+    Cancelled,
+}
+
+/// The Servers' Ingress Proxies observed in full, with every Server that should run one.
+struct Doors {
+    machines: Vec<DoorMachine>,
+    proxy: ServiceId,
+}
+
+async fn observe_doors(client: &mut Client) -> Result<Doors, Failure> {
+    let machines = client.machines().await?;
+    let live = client
+        .live_services_from(&machines, EnvironmentValues::Redacted)
+        .await?;
+    let services = live.services();
+    let observed = services
+        .iter()
+        .any(|service| service.identity == QualifiedService::system_ingress());
+    // A Server that failed its listing may run the Ingress Proxy under an id a fresh one
+    // would replace. One that isn't reachable at all is past asking either way.
+    if !observed && let Some(failure) = live.containers.failures.first() {
+        return Err(Failure::unavailable(format!(
+            "Server {} didn't list its containers, so which Ingress Proxy the Cluster runs is \
+             unknown: {}",
+            failure.machine_id,
+            crate::ui::row(&failure.error)
+        )));
+    }
+    Ok(Doors {
+        machines: door_machines(&machines),
+        proxy: proxy_service(&services),
+    })
+}
+
+/// Ask each of `machines` to set its Public Door for `proxy`, a few at a time, in order.
+/// A call whose reply was lost, or that met a restarting daemon, is sent again, since
+/// the daemon converges on a resend.
+async fn set_doors<C: MachineOperations>(
+    client: &C,
+    machines: &[DoorMachine],
+    proxy: ServiceId,
+    cancel: &CancellationToken,
+) -> Vec<Answer> {
+    let client = &RestartTolerant::new(client, cancel);
+    // Each future owns its Server, since one borrowing from the slice leaves the
+    // caller's future Send for one lifetime only, and a spawned Deploy runner needs all.
+    stream::iter(machines.to_vec())
+        .map(|machine| set_door(client, machine, proxy, cancel))
+        .buffered(DOORS_AT_ONCE)
+        .collect()
+        .await
+}
+
+async fn set_door<C: MachineOperations>(
+    client: &C,
+    machine: DoorMachine,
+    proxy: ServiceId,
+    cancel: &CancellationToken,
+) -> Answer {
+    if !machine.supported {
+        return Answer::Refused(unsupported(&machine.name));
+    }
+    let request = SetIngressDoorsRequest {
+        doors: IngressDoors::public(),
+        proxy_service: proxy,
+    };
+    tokio::select! {
+        answer = client.set_ingress_doors(&machine.id, request) => match answer {
+            Ok(set) => Answer::Set(Box::new(set)),
+            Err(error) => Answer::Refused(error),
+        },
+        () = cancel.cancelled() => Answer::Cancelled,
     }
 }
 
-/// Deploy the Ingress Proxy so it runs on exactly the Servers that hold the ingress role,
-/// keeping its observed placement constraints. `None`: no Ingress Proxy runs and no Server
-/// holds the role, so nothing was deployed.
+/// The refusal for a Server whose daemon predates SetIngressDoors.
+fn unsupported(server: &MachineName) -> RpcError {
+    let details = serde_json::json!({
+        "target": server.to_string(),
+        "capability": SET_INGRESS_DOORS_CAPABILITY,
+    });
+    let refusal = ployz_core::CapabilityRefusal::new(&RpcErrorCode::Unsupported, details.clone())
+        .expect("the details name a target and a capability");
+    RpcError {
+        code: RpcErrorCode::Unsupported,
+        message: refusal.to_string(),
+        details,
+        cause: Vec::new(),
+    }
+}
+
+/// One Server's Ingress Proxy after [`follow_roles`] set it.
+#[derive(Clone, Debug, PartialEq, Serialize)]
+pub(crate) struct Followed {
+    pub(crate) machine: MachineId,
+    pub(crate) server: MachineName,
+    #[serde(flatten)]
+    pub(crate) set: IngressDoorsSet,
+}
+
+/// Set the Ingress Proxy on every Server that holds the ingress role. Turning the role off
+/// removes nothing here.
 ///
 /// # Errors
 ///
-/// Fails when observation, image discovery or the deploy fails.
-pub(crate) async fn follow_roles(
-    client: &mut Client,
-    image: IngressImage,
-) -> Result<Option<Outcome>, Failure> {
-    let (_, Some(requested)) = wanted(client, image).await? else {
-        return Ok(None);
+/// Fails when observation fails, or when any Server's Ingress Proxy isn't running after,
+/// naming each such Server. The first one's failure is the diagnostic's.
+pub(crate) async fn follow_roles(client: &mut Client) -> Result<Vec<Followed>, Failure> {
+    let doors = observe_doors(client).await?;
+    let answers = set_doors(
+        &*client,
+        &doors.machines,
+        doors.proxy,
+        &CancellationToken::new(),
+    )
+    .await;
+    followed(doors.machines, answers)
+}
+
+/// [`follow_roles`]'s result from each Server's answer, in the same order.
+fn followed(machines: Vec<DoorMachine>, answers: Vec<Answer>) -> Result<Vec<Followed>, Failure> {
+    let mut followed = Vec::new();
+    let mut failed = Vec::new();
+    for (machine, answer) in machines.into_iter().zip(answers) {
+        match answer {
+            Answer::Set(set) => match failure_of(&set) {
+                None => followed.push(Followed {
+                    machine: machine.id,
+                    server: machine.name,
+                    set: *set,
+                }),
+                Some(failure) => failed.push(Unfollowed::of_set(machine, &set, failure)),
+            },
+            Answer::Refused(error) => failed.push(Unfollowed {
+                said: crate::ui::row(&error),
+                cause: crate::ui::row(&error),
+                machine,
+                refused: None,
+                start: None,
+            }),
+            Answer::Cancelled => unreachable!("following the roles is never cancelled"),
+        }
+    }
+    let Some(first) = failed.first() else {
+        return Ok(followed);
     };
-    Ok(Some(
-        crate::deploy::apply_requested(client, &requested, false, false, "the Cluster").await?,
-    ))
+    let lines = failed
+        .iter()
+        .map(|failed| format!("{}: {}", failed.machine.name, failed.said))
+        .collect::<Vec<_>>();
+    let diagnostic = Diagnostic {
+        failed_machine: Some(first.machine.id),
+        start_failure: first.start,
+        failures: failed
+            .iter()
+            .map(|failed| Detail {
+                message: format!(
+                    "The Ingress Proxy on {} isn't running.",
+                    failed.machine.name
+                ),
+                causes: vec![failed.cause.clone()],
+            })
+            .collect(),
+        ..Diagnostic::default()
+    };
+    let failure = match &first.refused {
+        // Docker's words stay a `cause:` line under ours, as a headline that quotes this
+        // failure would swallow them otherwise.
+        Some(error) => Failure::caused(RpcErrorCode::Unavailable, lines.join("; "), error.clone()),
+        None => Failure::coded(RpcErrorCode::Unavailable, lines.join("; ")),
+    };
+    Err(failure.with_diagnostic(diagnostic))
+}
+
+/// One Server whose Ingress Proxy isn't running after [`follow_roles`].
+struct Unfollowed {
+    machine: DoorMachine,
+    /// What failed, in our words.
+    said: String,
+    /// Why, on one line.
+    cause: String,
+    /// What Docker answered the stage that failed.
+    refused: Option<RpcError>,
+    start: Option<StartFailure>,
+}
+
+impl Unfollowed {
+    fn of_set(machine: DoorMachine, set: &IngressDoorsSet, failure: IngressFailure) -> Self {
+        let cause = failure.cause().to_owned();
+        let Some(stage) = &set.failure else {
+            // The daemon set both, and one isn't running, so the start is what failed.
+            return Self {
+                machine,
+                said: cause.clone(),
+                cause,
+                refused: None,
+                start: Some(StartFailure::Unhealthy),
+            };
+        };
+        let component = match stage.stage {
+            IngressStage::Holder => "holder",
+            IngressStage::Proxy => "Caddy",
+            IngressStage::Unrecognized => "Container",
+        };
+        Self {
+            machine,
+            said: format!("Docker refused its Ingress Proxy {component}"),
+            cause,
+            refused: Some(stage.error.clone()),
+            start: match failure {
+                IngressFailure::PortTaken { .. } => Some(StartFailure::PortTaken),
+                // Any other refusal, such as a bad mount, is no reason to take the role
+                // back: the role isn't what failed.
+                IngressFailure::Failed { .. } => None,
+            },
+        }
+    }
 }
 
 /// What an ingress start did, or would do, on each Server that holds the ingress role.
@@ -84,84 +317,201 @@ pub struct IngressCheck {
     pub unchecked: Vec<String>,
 }
 
-/// Bring back the Ingress Proxy on every Server with the ingress role where it is
-/// missing or stopped, with the image it runs elsewhere. Never replaces, stops or
-/// removes one; each Server's repair runs on its own, and a failure only reports.
+/// Set the Ingress Proxy on every Server with the ingress role. Each daemon brings back
+/// a missing or stopped one, and moves an older one to the wiring it pins; one that
+/// already runs as pinned is left alone and reported as nothing. Each Server's answer
+/// stands on its own, and a failure only reports.
 ///
 /// # Errors
 ///
-/// Fails when observation, image discovery or planning fails.
+/// Fails when observation fails.
 pub(crate) async fn fill_slots(
     client: &mut Client,
     cancel: &CancellationToken,
 ) -> Result<IngressCheck, Failure> {
-    let Slots { runs, unchecked } = slot_repairs(client).await?;
+    let doors = observe_doors(client).await?;
     if cancel.is_cancelled() {
         return Ok(IngressCheck::default());
     }
-    let client = &*client;
-    let settled = join_all(runs.into_iter().map(|(shown, work)| async move {
-        let failure = match work {
-            None => return Ok(shown),
-            Some(Work::Create(plan)) => failure(&client.confirm(&plan, cancel, None).await),
-            Some(Work::Start(container_id)) => {
-                match started(
-                    client.ensure_container(
-                        &shown.machine,
-                        ContainerWant::Running {
-                            container: RunTarget::Existing(ContainerLocator::Id(container_id)),
-                            rotation: RunRotation::Pending,
-                        },
-                        Some(TARGET_RPC_TIMEOUT),
-                    ),
-                    client.wait_until_ready(&shown.machine, &container_id, cancel),
-                    cancel,
-                )
-                .await
-                {
-                    Started::Settled(failure) => failure,
-                    Started::Cancelled => {
-                        return Err(format!(
-                            "{} was still starting its Ingress Proxy when the Deploy was cancelled",
-                            shown.server
-                        ));
-                    }
-                }
-            }
-        };
-        Ok(IngressRepair { failure, ..shown })
-    }))
-    .await;
-    let mut check = IngressCheck {
-        repairs: Vec::new(),
-        unchecked,
-    };
-    for slot in settled {
-        match slot {
-            Ok(repair) => check.repairs.push(repair),
+    let answers = set_doors(&*client, &doors.machines, doors.proxy, cancel).await;
+    let mut check = IngressCheck::default();
+    for (machine, answer) in doors.machines.iter().zip(answers) {
+        match checked(machine, answer) {
+            Ok(Some(repair)) => check.repairs.push(repair),
+            Ok(None) => {}
             Err(cause) => check.unchecked.push(cause),
         }
     }
     Ok(check)
 }
 
-/// The repairs [`fill_slots`] would run, by Server; runs nothing.
+/// One Server's repair from its answer: `None` when its Ingress Proxy already ran as
+/// pinned, and the unchecked cause when nothing on it is known.
+fn checked(machine: &DoorMachine, answer: Answer) -> Result<Option<IngressRepair>, String> {
+    let server = machine.name.to_string();
+    let repair = |action, failure| {
+        Ok(Some(IngressRepair {
+            machine: machine.id,
+            server: server.clone(),
+            action,
+            failure,
+        }))
+    };
+    match answer {
+        Answer::Cancelled => Err(format!(
+            "{server} was still starting its Ingress Proxy when the Deploy was cancelled"
+        )),
+        // An older daemon keeps the Ingress Proxy it runs.
+        Answer::Refused(error) if error.code == RpcErrorCode::Unsupported => {
+            Err(crate::ui::row(&error))
+        }
+        Answer::Refused(error) if error.target_unanswered() => Err(format!(
+            "Server {server} isn't answering ({})",
+            crate::ui::row(&error)
+        )),
+        Answer::Refused(error) => repair(
+            IngressAction::Create,
+            Some(IngressFailure::Failed {
+                cause: crate::ui::row(&error),
+            }),
+        ),
+        Answer::Set(set) => {
+            let failure = failure_of(&set);
+            match (action_of(&set), failure) {
+                (None, None) => Ok(None),
+                (action, failure) => repair(action.unwrap_or(IngressAction::Create), failure),
+            }
+        }
+    }
+}
+
+/// What the daemon did: a create when it made either component, a start when it only
+/// started or rejoined one, and nothing when both already ran as pinned.
+fn action_of(set: &IngressDoorsSet) -> Option<IngressAction> {
+    let changes = [&set.holder, &set.proxy]
+        .into_iter()
+        .flatten()
+        .map(|outcome| outcome.change);
+    let mut action = None;
+    for change in changes {
+        match change {
+            DoorChange::Created => return Some(IngressAction::Create),
+            DoorChange::Started | DoorChange::Rejoined => action = Some(IngressAction::Start),
+            DoorChange::Unchanged | DoorChange::Unrecognized => {}
+        }
+    }
+    action
+}
+
+/// Why the Ingress Proxy isn't running after `set`, or `None` when the holder and Caddy
+/// both run.
+pub(crate) fn failure_of(set: &IngressDoorsSet) -> Option<IngressFailure> {
+    if let Some(failure) = &set.failure {
+        return Some(stage_failure(failure));
+    }
+    for (component, outcome) in [("holder", &set.holder), ("Caddy", &set.proxy)] {
+        let Some(DoorOutcome { now, .. }) = outcome else {
+            return Some(IngressFailure::Failed {
+                cause: format!("its daemon set no Ingress Proxy {component}"),
+            });
+        };
+        if let Some(cause) = not_running(now) {
+            return Some(IngressFailure::Failed { cause });
+        }
+    }
+    None
+}
+
+fn not_running(now: &ContainerObservation) -> Option<String> {
+    match now.runtime {
+        ContainerRuntimeObservation::Running { .. } => None,
+        ContainerRuntimeObservation::Restarting => Some(format!(
+            "its Ingress Proxy keeps crashing and Docker keeps restarting it; see why there \
+             with `docker logs {}`",
+            now.container_id
+        )),
+        ref other @ (ContainerRuntimeObservation::Created
+        | ContainerRuntimeObservation::Paused
+        | ContainerRuntimeObservation::Exited { .. }
+        | ContainerRuntimeObservation::Removing
+        | ContainerRuntimeObservation::Dead
+        | ContainerRuntimeObservation::Unknown { .. }) => {
+            Some(format!("it stopped right after starting: it is {other}"))
+        }
+    }
+}
+
+/// A port only the holder publishes, so only its stage can find one taken.
+fn stage_failure(failure: &IngressDoorsFailure) -> IngressFailure {
+    let cause = crate::ui::row(&failure.error);
+    let held = failure.stage == IngressStage::Holder
+        && std::iter::once(&failure.error.message)
+            .chain(&failure.error.cause)
+            .any(|cause| port_taken(cause));
+    if held {
+        IngressFailure::PortTaken { cause }
+    } else {
+        IngressFailure::Failed { cause }
+    }
+}
+
+/// The repairs [`fill_slots`] would run, by Server, from what each one lists; runs
+/// nothing. A Server whose daemon predates SetIngressDoors is unchecked, since it keeps
+/// the Ingress Proxy it runs.
 ///
 /// # Errors
 ///
-/// Fails when observation, image discovery or planning fails.
+/// Fails when observation fails.
 pub(crate) async fn planned_slots(client: &mut Client) -> Result<IngressCheck, Failure> {
-    let Slots { runs, unchecked } = slot_repairs(client).await?;
-    Ok(IngressCheck {
-        repairs: runs.into_iter().map(|(shown, _)| shown).collect(),
-        unchecked,
-    })
+    let machines = client.machines().await?;
+    let doors = door_machines(&machines);
+    let mut check = IngressCheck::default();
+    for machine in doors.iter().filter(|machine| !machine.supported) {
+        check
+            .unchecked
+            .push(crate::ui::row(&unsupported(&machine.name)));
+    }
+    for repair in client.plan_ingress_repairs().await? {
+        let Some(machine) = doors.iter().find(|machine| machine.id == repair.machine_id) else {
+            continue;
+        };
+        if !machine.supported {
+            continue;
+        }
+        let server = machine.name.to_string();
+        let shown = |action, failure| IngressRepair {
+            machine: machine.id,
+            server: server.clone(),
+            action,
+            failure,
+        };
+        check.repairs.push(match repair.action {
+            SlotAction::Unchecked(cause) => {
+                check
+                    .unchecked
+                    .push(format!("{server} went unobserved ({cause})"));
+                continue;
+            }
+            SlotAction::Create => shown(IngressAction::Create, None),
+            SlotAction::Start(_) => shown(IngressAction::Start, None),
+            SlotAction::Restarting(container_id) => shown(
+                IngressAction::Start,
+                Some(IngressFailure::Failed {
+                    cause: format!(
+                        "its Ingress Proxy keeps crashing and Docker keeps restarting it; \
+                         see why there with `docker logs {container_id}`"
+                    ),
+                }),
+            ),
+        });
+    }
+    Ok(check)
 }
 
 /// Why the ingress check through `server` failed, on one line. A connection failure
 /// names the Server it went to, and when no daemon replied, says it isn't answering
-/// with the transport's last word. Any other failure, such as the image lookup this
-/// process makes itself, is about no Server and keeps its whole line.
+/// with the transport's last word. Any other failure is about no Server and keeps its
+/// whole line.
 pub(crate) fn unchecked(
     failure: &Failure,
     server: Option<String>,
@@ -193,204 +543,9 @@ pub(crate) fn unchecked(
     }
 }
 
-enum Work {
-    Create(Box<DeployPlan>),
-    Start(ContainerId),
-}
-
-/// Each Server's repair with its work, or `None` with the failure that kept it from
-/// planning; and the Servers left unchecked.
-#[derive(Default)]
-struct Slots {
-    runs: Vec<(IngressRepair, Option<Work>)>,
-    unchecked: Vec<String>,
-}
-
-async fn slot_repairs(client: &mut Client) -> Result<Slots, Failure> {
-    let (machines, Some(requested)) = wanted(client, IngressImage::Keep).await? else {
-        return Ok(Slots::default());
-    };
-    let intent = DeployIntent::apply_one(
-        QualifiedService::system_ingress().namespace,
-        requested,
-        crate::deploy::plan_options(false, false),
-    );
-    let mut slots = Slots::default();
-    for repair in client.plan_ingress_repairs(intent).await? {
-        let server = machines
-            .iter()
-            .find(|entry| entry.machine.id == repair.machine_id)
-            .map_or_else(
-                || repair.machine_id.to_string(),
-                |entry| entry.machine.name.to_string(),
-            );
-        let shown = |action, failure| IngressRepair {
-            machine: repair.machine_id,
-            server: server.clone(),
-            action,
-            failure,
-        };
-        let run = match repair.action {
-            SlotAction::Unchecked(cause) => {
-                slots
-                    .unchecked
-                    .push(format!("{server} went unobserved ({cause})"));
-                continue;
-            }
-            SlotAction::Start(container_id) => (
-                shown(IngressAction::Start, None),
-                Some(Work::Start(container_id)),
-            ),
-            SlotAction::Dead(container_id) => (
-                shown(
-                    IngressAction::Start,
-                    Some(IngressFailure::Failed {
-                        cause: format!(
-                            "its Ingress Proxy container is dead, which Docker won't start; \
-                             remove it there with `docker rm -f {container_id}`"
-                        ),
-                    }),
-                ),
-                None,
-            ),
-            SlotAction::Restarting(container_id) => (
-                shown(
-                    IngressAction::Start,
-                    Some(IngressFailure::Failed {
-                        cause: format!(
-                            "its Ingress Proxy keeps crashing and Docker keeps restarting it; \
-                             see why there with `docker logs {container_id}`"
-                        ),
-                    }),
-                ),
-                None,
-            ),
-            SlotAction::Create(Ok(plan)) => {
-                (shown(IngressAction::Create, None), Some(Work::Create(plan)))
-            }
-            SlotAction::Create(Err(error)) => (
-                shown(
-                    IngressAction::Create,
-                    Some(IngressFailure::Failed {
-                        cause: error.to_string(),
-                    }),
-                ),
-                None,
-            ),
-        };
-        slots.runs.push(run);
-    }
-    Ok(slots)
-}
-
-/// How starting a stopped Ingress Proxy ended.
-#[derive(Debug, PartialEq)]
-enum Started {
-    /// The failure of the start itself, or of the container staying up through the
-    /// readiness window `ployz service start` waits; none once it stayed up.
-    Settled(Option<IngressFailure>),
-    /// The Deploy was cancelled before it knew whether the container stayed up.
-    Cancelled,
-}
-
-async fn started(
-    ensured: impl Future<Output = Result<ContainerNow, RpcError>>,
-    ready: impl Future<Output = Result<(), HealthWaitError<RpcError>>>,
-    cancel: &CancellationToken,
-) -> Started {
-    let ensured = tokio::select! {
-        ensured = ensured => ensured,
-        () = cancel.cancelled() => return Started::Cancelled,
-    };
-    if let Err(error) = ensured {
-        return Started::Settled(Some(classify(crate::ui::row(&error))));
-    }
-    Started::Settled(match ready.await {
-        Ok(()) => None,
-        Err(HealthWaitError::Health(HealthFailure::Cancelled)) => return Started::Cancelled,
-        Err(HealthWaitError::Health(failure)) => Some(IngressFailure::Failed {
-            cause: format!("it stopped right after starting: {failure}"),
-        }),
-        Err(HealthWaitError::Inspect(error)) => Some(classify(format!(
-            "it started, but checking that it stayed up failed: {}",
-            crate::ui::row(&error)
-        ))),
-    })
-}
-
-fn failure(outcome: &Outcome) -> Option<IngressFailure> {
-    match outcome {
-        DeployOutcome::Failed { failed, .. } => Some(classify(match failed {
-            FailedOperation::Operation { error, .. }
-            | FailedOperation::Replacement { error, .. } => error.to_string(),
-        })),
-        DeployOutcome::Success { .. } | DeployOutcome::Interrupted { .. } => None,
-    }
-}
-
-fn classify(cause: String) -> IngressFailure {
-    if port_taken(&cause) {
-        IngressFailure::PortTaken { cause }
-    } else {
-        IngressFailure::Failed { cause }
-    }
-}
-
 /// Whether Docker's `cause` says something else holds a port the Ingress Proxy publishes.
 pub(crate) fn port_taken(cause: &str) -> bool {
     cause.contains("address already in use") || cause.contains("port is already allocated")
-}
-
-async fn wanted(
-    client: &mut Client,
-    image: IngressImage,
-) -> Result<(Vec<MachineObservation>, Option<RequestedServiceSpec>), Failure> {
-    let machines = client.machines().await?;
-    let live = client
-        .live_services_from(&machines, EnvironmentValues::Redacted)
-        .await?;
-    let observed = live
-        .services()
-        .into_iter()
-        .find(|service| service.identity == QualifiedService::system_ingress())
-        .and_then(|service| {
-            service.observed_global_slot_spec().map(|spec| Running {
-                image: spec.container.image.clone(),
-                constraints: spec.placement.constraints.clone(),
-            })
-        });
-    let any_role = machines.iter().any(|entry| entry.machine.accepts_ingress);
-    let Some((image, constraints)) = desired(image, observed.as_ref(), any_role) else {
-        return Ok((machines, None));
-    };
-    let spec = service_spec(image, constraints).await?;
-    Ok((machines, Some(spec)))
-}
-
-/// What the observed Ingress Proxy runs.
-struct Running {
-    image: String,
-    constraints: BTreeSet<PlacementConstraint>,
-}
-
-/// The image (`None`: discover the latest) and constraints the Ingress Proxy should run with.
-fn desired(
-    image: IngressImage,
-    observed: Option<&Running>,
-    any_role: bool,
-) -> Option<(Option<String>, BTreeSet<PlacementConstraint>)> {
-    if observed.is_none() && !any_role {
-        return None;
-    }
-    let image = match image {
-        IngressImage::Given(image) => Some(image),
-        IngressImage::Keep => observed.map(|running| running.image.clone()),
-        IngressImage::Latest => None,
-    };
-    let constraints = observed
-        .map(|running| running.constraints.clone())
-        .unwrap_or_default();
-    Some((image, constraints))
 }
 
 /// True when this observation is the reserved Ingress Proxy Service.
@@ -400,277 +555,5 @@ pub fn is_system_ingress(observation: &ContainerObservation) -> bool {
 }
 
 #[cfg(test)]
-mod tests {
-    use std::future::ready;
-
-    use ployz_core::{ContainerRuntimeObservation, PlacementConstraint, RpcErrorCode, ServiceMode};
-
-    use super::*;
-
-    fn absent() -> ContainerNow {
-        ContainerNow::Absent {
-            of: ContainerLocator::Id(ContainerId::parse("1".repeat(64)).unwrap()),
-        }
-    }
-
-    #[test]
-    fn an_unchecked_ingress_names_the_server_and_why() {
-        let silent = Failure::from(ConnectError::Rpc(
-            crate::connect::TransportError::budget_expired("no reply"),
-        ));
-        assert_eq!(
-            unchecked(&silent, Some("box-node-09c8".into()), None),
-            "Server box-node-09c8 isn't answering (no reply)"
-        );
-        // Unnamed, it keeps the whole line.
-        assert_eq!(unchecked(&silent, None, None), crate::ui::row(&silent));
-
-        let answered = Failure::from(ConnectError::Remote(RpcError {
-            code: RpcErrorCode::Internal,
-            message: "Docker is down".into(),
-            details: serde_json::Value::Null,
-            cause: Vec::new(),
-        }));
-        assert_eq!(
-            unchecked(&answered, Some("box-node-09c8".into()), None),
-            "Docker is down (on Server box-node-09c8)"
-        );
-
-        // A failure this process had itself, like the image lookup, names no Server.
-        let local = Failure::from(IngressImageError::Timeout(
-            "Docker Hub didn't answer".into(),
-        ));
-        assert_eq!(
-            unchecked(&local, Some("box-node-09c8".into()), None),
-            crate::ui::row(&local)
-        );
-
-        // A connection that failed names its own Server, over the one the caller passed.
-        let refused = Failure::from(ConnectError::AllFailed {
-            relayed: false,
-            selection: crate::context::ConnectionSource::Cloud,
-            attempts: 1,
-            server: Some("web-2".into()),
-            retry: ployz_core::Retry::Never,
-            reached: false,
-            last: Some(Box::new(ConnectError::Io(std::io::Error::from(
-                std::io::ErrorKind::ConnectionRefused,
-            )))),
-        });
-        assert_eq!(
-            unchecked(&refused, Some("other".into()), None),
-            "Server web-2 isn't answering (connection refused)"
-        );
-
-        let machine_id = MachineId::parse("1".repeat(32)).unwrap();
-        let raw = Failure::from(ConnectError::AllFailed {
-            relayed: false,
-            selection: crate::context::ConnectionSource::Cloud,
-            attempts: 1,
-            server: Some(machine_id.to_string()),
-            retry: ployz_core::Retry::Never,
-            reached: false,
-            last: Some(Box::new(ConnectError::Io(std::io::Error::from(
-                std::io::ErrorKind::ConnectionRefused,
-            )))),
-        });
-        let machine_name = MachineName::parse("machine-1").unwrap();
-        assert_eq!(
-            unchecked(
-                &raw,
-                Some(machine_id.to_string()),
-                Some((&machine_id, &machine_name))
-            ),
-            "Server machine-1 isn't answering (connection refused)"
-        );
-        assert_eq!(
-            unchecked(&raw, Some(machine_id.to_string()), None),
-            format!("Server {machine_id} isn't answering (connection refused)")
-        );
-        let id_shaped_name = "2".repeat(32);
-        let other_name = MachineName::parse("machine-2").unwrap();
-        assert_eq!(
-            unchecked(
-                &silent,
-                Some(id_shaped_name.clone()),
-                Some((&machine_id, &other_name)),
-            ),
-            format!("Server {id_shaped_name} isn't answering (no reply)")
-        );
-    }
-
-    #[tokio::test]
-    async fn a_start_that_stays_up_is_repaired() {
-        assert_eq!(
-            started(
-                ready(Ok(absent())),
-                ready(Ok(())),
-                &CancellationToken::new()
-            )
-            .await,
-            Started::Settled(None)
-        );
-    }
-
-    #[tokio::test]
-    async fn a_cancelled_deploy_stops_waiting_on_a_start() {
-        let cancel = CancellationToken::new();
-        cancel.cancel();
-        assert_eq!(
-            started(std::future::pending(), ready(Ok(())), &cancel).await,
-            Started::Cancelled
-        );
-    }
-
-    #[tokio::test]
-    async fn a_deploy_cancelled_while_a_start_proves_it_stays_up_leaves_it_unchecked() {
-        let cancel = CancellationToken::new();
-        let cancelled_wait = async {
-            cancel.cancel();
-            Err(HealthWaitError::Health(HealthFailure::Cancelled))
-        };
-        assert_eq!(
-            started(ready(Ok(absent())), cancelled_wait, &cancel).await,
-            Started::Cancelled
-        );
-    }
-
-    #[tokio::test]
-    async fn a_start_refused_for_a_held_port_says_the_port_is_taken() {
-        let refused = RpcError {
-            code: RpcErrorCode::Internal,
-            message: "Docker operation failed".into(),
-            details: serde_json::Value::Null,
-            cause: vec![
-                "Docker responded with status code 500: driver failed programming external \
-                 connectivity on endpoint ployz-system-caddy: Error starting userland proxy: \
-                 listen tcp4 0.0.0.0:80: bind: address already in use"
-                    .into(),
-            ],
-        };
-        let Started::Settled(Some(IngressFailure::PortTaken { cause })) = started(
-            ready(Err(refused)),
-            ready(Ok(())),
-            &CancellationToken::new(),
-        )
-        .await
-        else {
-            panic!("a held port is a taken port");
-        };
-        assert!(
-            cause.contains("0.0.0.0:80: bind: address already in use"),
-            "{cause}"
-        );
-    }
-
-    #[tokio::test]
-    async fn a_start_that_exits_right_away_fails_with_the_exit() {
-        let exited = HealthWaitError::Health(HealthFailure::Runtime {
-            observation: ContainerRuntimeObservation::Exited { code: 1 },
-            last_check: None,
-        });
-        let Started::Settled(Some(IngressFailure::Failed { cause })) = started(
-            ready(Ok(absent())),
-            ready(Err(exited)),
-            &CancellationToken::new(),
-        )
-        .await
-        else {
-            panic!("an exited start is a failed repair");
-        };
-        assert!(cause.contains("exited with code 1"), "{cause}");
-    }
-
-    /// A create a newer repair already serves past had its Ingress Proxy removed again,
-    /// so that Server is still without ingress and the repair must say so.
-    #[test]
-    fn a_create_a_newer_repair_serves_past_is_a_failed_repair() {
-        let lost = DeployOutcome::Failed {
-            completed: Vec::new(),
-            failed: FailedOperation::Operation {
-                operation: ployz_core::DeployOperation::RemoveContainer {
-                    machine_id: ployz_core::MachineId::parse("a".repeat(32)).unwrap(),
-                    container_id: ContainerId::parse("c".repeat(64)).unwrap(),
-                    purpose: ployz_core::RemoveContainerPurpose::Retire,
-                },
-                error: ployz_core::ExecutionError::NewerServing {
-                    service: QualifiedService::system_ingress(),
-                },
-            },
-            unexecuted: Vec::new(),
-            services: Vec::new(),
-        };
-        let Some(IngressFailure::Failed { cause }) = failure(&lost) else {
-            panic!("a lost race is a failed repair: {:?}", failure(&lost));
-        };
-        assert!(cause.contains("newer deploy is already serving"), "{cause}");
-    }
-
-    #[tokio::test]
-    async fn builds_the_caddy_service_spec() {
-        let constraints: BTreeSet<_> =
-            [PlacementConstraint::parse("node.labels.edge==true").unwrap()].into();
-        let caddy = service_spec(
-            Some("registry.test/caddy@sha256:caddy".into()),
-            constraints.clone(),
-        )
-        .await
-        .unwrap();
-
-        assert_eq!(caddy.name, QualifiedService::system_ingress().name);
-        assert_eq!(caddy.mode, ServiceMode::Global);
-        assert_eq!(caddy.placement.constraints, constraints);
-        assert_eq!(
-            caddy.container.command,
-            ["caddy", "run", "-c", "/config/caddy/Caddyfile"]
-        );
-        assert_eq!(caddy.ports.len(), 3);
-    }
-
-    fn running(image: &str) -> Running {
-        Running {
-            image: image.into(),
-            constraints: [PlacementConstraint::parse("node.labels.edge==true").unwrap()].into(),
-        }
-    }
-
-    #[test]
-    fn a_role_change_keeps_the_running_image_and_constraints() {
-        let observed = running("caddy:2.9.1");
-        let (image, constraints) = desired(IngressImage::Keep, Some(&observed), false).unwrap();
-        assert_eq!(image.as_deref(), Some("caddy:2.9.1"));
-        assert_eq!(constraints, observed.constraints);
-    }
-
-    #[test]
-    fn the_first_ingress_role_deploys_the_latest_image_unconstrained() {
-        assert_eq!(
-            desired(IngressImage::Keep, None, true),
-            Some((None, BTreeSet::new()))
-        );
-    }
-
-    #[test]
-    fn no_proxy_and_no_role_deploys_nothing() {
-        assert_eq!(desired(IngressImage::Latest, None, false), None);
-        assert_eq!(
-            desired(IngressImage::Given("caddy:2".into()), None, false),
-            None
-        );
-    }
-
-    #[test]
-    fn an_upgrade_moves_to_the_latest_or_pinned_image_keeping_constraints() {
-        let observed = running("caddy:2.9.1");
-        let (latest, constraints) = desired(IngressImage::Latest, Some(&observed), true).unwrap();
-        assert_eq!(latest, None);
-        assert_eq!(constraints, observed.constraints);
-        let (pinned, _) = desired(
-            IngressImage::Given("caddy:2.10.2".into()),
-            Some(&observed),
-            true,
-        )
-        .unwrap();
-        assert_eq!(pinned.as_deref(), Some("caddy:2.10.2"));
-    }
-}
+#[path = "ingress_tests.rs"]
+mod tests;

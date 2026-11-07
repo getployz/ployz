@@ -545,44 +545,95 @@ async fn own_superseded_copies_retire_after_in() {
 }
 
 #[tokio::test(start_paused = true)]
-async fn a_proxy_copy_skips_rotation() {
+async fn the_ingress_proxy_is_set_once_through_its_doors() {
     let joiner = machine('1', "joiner");
     let founder = machine('f', "founder");
-    let ingress = QualifiedService::system_ingress();
     let held = rotated(
         running_on(&founder, 'a'),
         CopyRotation::Held(DeploymentLogId::parse("dep-a").unwrap()),
     );
-    let service = global_service(ingress.clone(), 'a', Placement::default(), held);
-    let mut client = fake(&joiner, vec![service]);
-    client.target_services = Some(vec![
-        global_service(
-            ingress.clone(),
-            'a',
-            Placement::default(),
-            running_on(&joiner, 'b'),
-        ),
-        global_service(ingress, 'a', Placement::default(), running_on(&joiner, 'c')),
-    ]);
-    client.run_result = Ok(Some(container_id('b')));
+    let caddy = global_service(
+        QualifiedService::system_ingress(),
+        'a',
+        Placement::default(),
+        held,
+    );
+    let holder = global_service(
+        QualifiedService::system_ingress_holder(),
+        'b',
+        Placement::default(),
+        running_on(&founder, 'b'),
+    );
+    let mut client = fake(&joiner, vec![caddy, holder]);
+
     catch_up(&mut client, &joiner).await.unwrap();
+
     assert_eq!(
-        client.run_calls.len(),
-        1,
-        "a Held proxy copy is still the source"
+        client.door_calls,
+        [service_id('a')],
+        "one call, for the observed Caddy, covers both doors"
     );
     assert!(
-        client.brought_in.is_empty(),
-        "the proxy stays Pending for life"
+        client.run_calls.is_empty(),
+        "no door identity reaches the ordinary copy path"
     );
+    assert!(client.brought_in.is_empty());
     assert!(client.retired.is_empty());
     assert!(client.removed.is_empty());
+}
+
+// Catches a joiner with the ingress role going without an Ingress Proxy because no Server
+// runs one yet.
+#[tokio::test(start_paused = true)]
+async fn a_joiner_with_the_role_gets_doors_when_no_server_runs_them() {
+    let joiner = machine('1', "joiner");
+    let mut client = fake(&joiner, Vec::new());
+
+    catch_up(&mut client, &joiner).await.unwrap();
+
+    assert_eq!(client.door_calls.len(), 1);
+
+    let mut without_role = machine('2', "plain");
+    without_role.accepts_ingress = false;
+    let mut client = fake(&without_role, Vec::new());
+    catch_up(&mut client, &without_role).await.unwrap();
+    assert!(client.door_calls.is_empty());
+}
+
+// Catches catch-up calling a Caddy that crashes after the daemon set it caught up.
+#[tokio::test(start_paused = true)]
+async fn a_caddy_that_is_not_running_after_its_doors_fails_catch_up() {
+    let joiner = machine('1', "joiner");
+    let founder = machine('f', "founder");
+    let mut client = fake(
+        &joiner,
+        vec![global_service(
+            QualifiedService::system_ingress(),
+            'a',
+            Placement::default(),
+            running_on(&founder, 'a'),
+        )],
+    );
+    let mut set = doors_on(&joiner);
+    if let Some(proxy) = &mut set.proxy {
+        proxy
+            .now
+            .try_update(|parts| parts.runtime = ContainerRuntimeObservation::Restarting)
+            .unwrap();
+    }
+    client.doors_result = Ok(Some(set));
+
+    let error = catch_up(&mut client, &joiner).await.unwrap_err();
+
+    assert!(message(error, &joiner).contains("keeps crashing"));
 }
 
 #[tokio::test(start_paused = true)]
 async fn interruption_settles_started_work_and_only_reports_unresolved_globals() {
     for excluded in [false, true] {
-        let joiner = machine('1', "joiner");
+        let mut joiner = machine('1', "joiner");
+        // No Ingress Proxy work, so the two Globals are the only ones.
+        joiner.accepts_ingress = false;
         let founder = machine('f', "founder");
         let first = qualified("app", "api");
         let second = qualified("app", "worker");
@@ -652,6 +703,8 @@ struct FakeCatchUpClient {
     target_services: Option<Vec<ServiceObservation>>,
     run_calls: Vec<NewContainer>,
     run_result: Result<Option<ContainerId>, RpcError>,
+    door_calls: Vec<ServiceId>,
+    doors_result: Result<Option<IngressDoorsSet>, RpcError>,
     bring_in: FakeBringIn,
     brought_in: Vec<Copy>,
     retired: Vec<Copy>,
@@ -673,6 +726,8 @@ fn fake(joiner: &Machine, services: Vec<ServiceObservation>) -> FakeCatchUpClien
         target_services: None,
         run_calls: Vec::new(),
         run_result: Ok(Some(container_id('a'))),
+        door_calls: Vec::new(),
+        doors_result: Ok(Some(doors_on(joiner))),
         bring_in: FakeBringIn::In,
         brought_in: Vec::new(),
         retired: Vec::new(),
@@ -684,6 +739,19 @@ fn fake(joiner: &Machine, services: Vec<ServiceObservation>) -> FakeCatchUpClien
         relisted: None,
         listings: 0,
         starting: std::collections::VecDeque::new(),
+    }
+}
+
+/// The answer of a daemon that created the holder and Caddy on `machine`, both running.
+fn doors_on(machine: &Machine) -> IngressDoorsSet {
+    let created = |hex| ployz_core::DoorOutcome {
+        now: running_on(machine, hex),
+        change: ployz_core::DoorChange::Created,
+    };
+    IngressDoorsSet {
+        holder: Some(created('d')),
+        proxy: Some(created('e')),
+        ..IngressDoorsSet::default()
     }
 }
 
@@ -758,6 +826,17 @@ impl CatchUpClient for FakeCatchUpClient {
         }))
     }
 
+    async fn run_doors(
+        &mut self,
+        machine_id: &MachineId,
+        proxy_service: ServiceId,
+        _cancel: &tokio_util::sync::CancellationToken,
+    ) -> Result<Option<IngressDoorsSet>, RpcError> {
+        assert_eq!(machine_id, &self.machine_id);
+        self.door_calls.push(proxy_service);
+        self.doors_result.clone()
+    }
+
     async fn bring_in(
         &mut self,
         copy: &Copy,
@@ -769,6 +848,7 @@ impl CatchUpClient for FakeCatchUpClient {
             FakeBringIn::Refused(reason) => BroughtIn::Refused(ContainerRefusal {
                 reason: *reason,
                 message: format!("owner refused In: {reason:?}"),
+                capability: None,
             }),
         })
     }
