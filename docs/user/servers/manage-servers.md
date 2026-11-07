@@ -252,16 +252,17 @@ device to add one.
 
 1. In Ployz Cloud, open **Account** in your Organization and choose **Add passkey**. Your browser
    asks you to create it. Ployz Cloud then shows a code, such as `q3x7mfk2pa`.
-2. On a server, run:
+2. On each server, run:
 
    ```sh
    sudo ployz device approve --passkey q3x7mfk2pa
    ```
 
-   An admin can run the same command from an approved device instead.
+   Run there, it adds the passkey to that server only. An admin can run the same command once
+   from an approved device instead, which adds it to every server.
 
 `approve --passkey` reads the passkey from Ployz Cloud, checks that its key matches the code,
-shows its account, and asks before it adds it to every server. Pass `--yes` to skip the question.
+shows its account, and asks before it adds it. Pass `--yes` to skip the question.
 The passkey is tied to the Ployz Cloud address your CLI signed in to, never to one Ployz Cloud
 names. Until a server lists it, Account shows **Not yet approved by a device**. A passkey
 Ployz Cloud filed but no server approved approves nothing.

@@ -95,7 +95,7 @@ function WaitingSteps({ code }: { code: string }) {
   return (
     <div className="flex flex-col gap-2 pt-2">
       <p className="text-sm text-muted-foreground">
-        Run this on one of your servers, or on a computer with an approved device, and check the code matches:
+        Run this on each of your servers, or once on a computer with an approved device, and check the code matches:
       </p>
       <CopyBlock value={approveCommand(code)} />
     </div>

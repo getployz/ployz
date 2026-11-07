@@ -298,7 +298,7 @@ async fn install(
         }
     }
     crate::ui::note(
-        "To approve changes from your browser, add a passkey in your Ployz Cloud account once this server joins, then run here:\n  sudo ployz device approve --passkey <code>",
+        "To approve changes from your browser, add a passkey in your Ployz Cloud account once this server joins, then run this on each server:\n  sudo ployz device approve --passkey <code>",
     );
     Ok(())
 }
