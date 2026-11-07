@@ -14,9 +14,9 @@ use ployz_core::{
     InspectRequest, LeaveRequest, Left, LeftPhase, LocalMachinePhase, Machine, MachineDetails,
     MachineId, MachineIdentity, MachineList, MachineName, MachineObservation, MachineToken,
     MachineUpdated, ManagementAddress, ManagementClientLabel, MembershipEvidence,
-    PublicIpDiscovery, RecoverySeed, RegisterRequest, Registered, RpcError, RpcErrorCode,
-    RttObservation, RttStatistics, SelectedEndpoint, StorageDeparture, UpdateMachineRequest,
-    synthesize_membership,
+    PublicIpDiscovery, RESTART_APPROVAL_CAPABILITY, RecoverySeed, RegisterRequest, Registered,
+    RpcError, RpcErrorCode, RttObservation, RttStatistics, SelectedEndpoint, StorageDeparture,
+    UpdateMachineRequest, synthesize_membership,
 };
 use thiserror::Error;
 use tokio_util::sync::CancellationToken;
@@ -50,6 +50,7 @@ pub struct LocalMachine {
     zpool: PathBuf,
     proc_root: PathBuf,
     settled: container::SettledCreations,
+    approvals: Arc<restart_approval::ConsumptionLog>,
     #[cfg(test)]
     peers: Option<PeerInspect>,
     #[cfg(test)]
@@ -75,6 +76,7 @@ pub(crate) use container::CutRefusal;
 pub(crate) use container::{EnsurePause, EnsurePausePoint};
 mod management_client;
 mod push_target;
+pub(super) mod restart_approval;
 mod sealing;
 pub(crate) use sealing::Error as SealingError;
 mod sealing_recovery;
@@ -169,6 +171,11 @@ pub enum Error {
     EmptyUpdate,
     #[error("push target {0}")]
     InvalidPushTarget(&'static str),
+    /// Device enforcement refused an Operator's restart step.
+    #[error("{RESTART_APPROVAL_CAPABILITY} needs a Device-signed restart approval")]
+    RestartRefused(#[from] ployz_core::authority::AuthorityRefusal),
+    #[error("could not keep the record of restart approvals")]
+    ApprovalRecord(#[source] std::io::Error),
     #[error(transparent)]
     RecordOwner(#[from] RecordOwnerStopped),
     #[error(transparent)]
@@ -205,6 +212,7 @@ impl LocalMachine {
     #[must_use]
     pub fn new(owner: RecordOwner) -> Self {
         Self {
+            approvals: owner.restart_approvals(),
             owner,
             management_client: None,
             cluster: None,

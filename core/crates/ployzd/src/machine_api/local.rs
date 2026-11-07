@@ -386,6 +386,14 @@ impl MachineRpc for MachineService {
         finish(self.local.set_push_target(request).await)
     }
 
+    async fn set_device_enforcement(
+        &self,
+        request: Request<OpaquePayload>,
+    ) -> Result<Response<OpaquePayload>, Status> {
+        let request = expect::<op::SetDeviceEnforcement>(request)?;
+        finish(self.local.set_device_enforcement(request).await)
+    }
+
     async fn select_endpoint(
         &self,
         request: Request<OpaquePayload>,
@@ -470,8 +478,21 @@ impl MachineRpc for MachineService {
         &self,
         request: Request<OpaquePayload>,
     ) -> Result<Response<OpaquePayload>, Status> {
+        let operator = from_operator(&request);
         let request = expect::<op::EnsureContainer>(request)?;
-        finish(self.local.ensure_container(request.want).await)
+        let want = if operator {
+            match self
+                .local
+                .admit_operator_restart(request.want, request.approval.as_ref())
+                .await
+            {
+                Ok(want) => want,
+                Err(error) => return local_error(error),
+            }
+        } else {
+            request.want
+        };
+        finish(self.local.ensure_container(want).await)
     }
 
     async fn update_container_limits(
@@ -1022,6 +1043,15 @@ fn local_failure(error: LocalMachineError) -> Result<RpcError, Status> {
         LocalMachineError::OnlyCloudManagesSlots | LocalMachineError::NeedsFullScope => Err(
             ployz_core::rpc::caused_status(tonic::Code::PermissionDenied, &error),
         ),
+        LocalMachineError::RestartRefused(_) => Err(ployz_core::rpc::hinted_status(
+            tonic::Code::PermissionDenied,
+            &error,
+            serde_json::json!({
+                "capability": ployz_core::RESTART_APPROVAL_CAPABILITY,
+                "next": "ployz service restart from an approved device",
+            }),
+        )),
+        LocalMachineError::ApprovalRecord(_) => Err(internal_response(error)),
         LocalMachineError::NotParticipating => Ok(unavailable("Machine is not participating")),
         LocalMachineError::ClusterStoreUnavailable => {
             Ok(unavailable("Cluster store is not available"))

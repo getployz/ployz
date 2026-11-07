@@ -295,6 +295,13 @@ pub(crate) const DEVICE_APPROVE: Verb = Verb::local(
     device::approve,
 )
 .docs("servers/manage-servers.md");
+pub(crate) const DEVICE_ENFORCE: Verb = Verb::local(
+    "device enforce",
+    Never,
+    device::enforce_command,
+    device::enforce,
+)
+.docs("servers/manage-servers.md");
 pub(crate) const DEVICE_LS: Verb =
     Verb::local("device ls", Never, device::list_command, device::list)
         .docs("servers/manage-servers.md");
@@ -841,6 +848,7 @@ pub(crate) const VERBS: &[Verb] = &[
     DEPLOYMENT_SHOW,
     DEPLOYMENT_START,
     DEVICE_APPROVE,
+    DEVICE_ENFORCE,
     DEVICE_LS,
     DEVICE_RM,
     DEVICE_REQUEST,

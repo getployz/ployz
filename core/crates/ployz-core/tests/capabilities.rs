@@ -12,13 +12,13 @@ use ployz_core::{
     PREPARE_VOLUMES_CAPABILITY, PRUNE_IMAGES_CAPABILITY, PUBLISH_CERTIFICATE_MATERIAL_CAPABILITY,
     PULL_IMAGE_CAPABILITY, PULL_IMAGE_FROM_MACHINE_CAPABILITY, READ_ROUTED_ADDRESSES_CAPABILITY,
     READ_ROUTES_CAPABILITY, RECOVER_SEALING_KEY_CAPABILITY, REGISTER_MACHINE_CAPABILITY,
-    REMOVE_VOLUME_CAPABILITY, REQUEST_MACHINE_UPGRADE_CAPABILITY, RETAINED_ENV_CAPABILITY,
-    RUNTIME_WATCH_CAPABILITY, Rpc, SEED_VOLUME_CAPABILITY, SELECT_ENDPOINT_CAPABILITY,
-    SET_DEVICE_CAPABILITY, SET_MANAGEMENT_CLIENT_CAPABILITY, SET_PUSH_TARGET_CAPABILITY,
-    SET_VOLUME_COPY_CAPABILITY, SET_VOLUME_SIZE_CAPABILITY, SHARE_SEALING_KEY_CAPABILITY,
-    TAIL_LOGS_CAPABILITY, UPDATE_CONTAINER_LIMITS_CAPABILITY, UPDATE_MACHINE_CAPABILITY,
-    UPGRADE_EXACT_CAPABILITY, VOLUME_FLOOR_CAPABILITY, VOLUME_SHRINK_CAPABILITY,
-    WRAP_SEALING_KEY_CAPABILITY, op,
+    REMOVE_VOLUME_CAPABILITY, REQUEST_MACHINE_UPGRADE_CAPABILITY, RESTART_APPROVAL_CAPABILITY,
+    RETAINED_ENV_CAPABILITY, RUNTIME_WATCH_CAPABILITY, Rpc, SEED_VOLUME_CAPABILITY,
+    SELECT_ENDPOINT_CAPABILITY, SET_DEVICE_CAPABILITY, SET_DEVICE_ENFORCEMENT_CAPABILITY,
+    SET_MANAGEMENT_CLIENT_CAPABILITY, SET_PUSH_TARGET_CAPABILITY, SET_VOLUME_COPY_CAPABILITY,
+    SET_VOLUME_SIZE_CAPABILITY, SHARE_SEALING_KEY_CAPABILITY, TAIL_LOGS_CAPABILITY,
+    UPDATE_CONTAINER_LIMITS_CAPABILITY, UPDATE_MACHINE_CAPABILITY, UPGRADE_EXACT_CAPABILITY,
+    VOLUME_FLOOR_CAPABILITY, VOLUME_SHRINK_CAPABILITY, WRAP_SEALING_KEY_CAPABILITY, op,
 };
 
 /// Capability constants are generated from the catalog, so a typo would stay
@@ -66,6 +66,14 @@ fn catalogued_capabilities_keep_stable_spellings() {
         (ENV_SEALED_CAPABILITY, "ployz.env.sealed.v1"),
         (BUILD_SEALED_CAPABILITY, "ployz.build.sealed.v1"),
         (BUILD_GRANT_HOLDER_CAPABILITY, "ployz.build.grant.holder.v1"),
+        (
+            SET_DEVICE_ENFORCEMENT_CAPABILITY,
+            "ployz.machine.set-device-enforcement.v1",
+        ),
+        (
+            RESTART_APPROVAL_CAPABILITY,
+            "ployz.restart.device-approval.v2",
+        ),
         (LIST_CONTAINERS_CAPABILITY, "ployz.container.list.v1"),
         (INSPECT_CONTAINER_CAPABILITY, "ployz.container.inspect.v1"),
         (ENSURE_CONTAINER_CAPABILITY, "ployz.container.ensure.v1"),
@@ -149,6 +157,7 @@ fn advertised_capability_groups_match_the_frozen_catalog() {
             "ployz.machine.set-management-client.v1",
             "ployz.machine.set-device.v1",
             "ployz.machine.set-push-target.v1",
+            "ployz.machine.set-device-enforcement.v1",
             "ployz.network.select-endpoint.v1",
             "ployz.machine.list.v1",
             "ployz.machine.update.v1",
@@ -165,6 +174,7 @@ fn advertised_capability_groups_match_the_frozen_catalog() {
             "ployz.env.sealed.v1",
             "ployz.build.sealed.v1",
             "ployz.build.grant.holder.v1",
+            "ployz.restart.device-approval.v2",
         ]
     );
     assert_eq!(
@@ -330,6 +340,14 @@ const ABOVE_FLOOR: &[(&str, &str)] = &[
     (
         "ployz.machine.set-push-target.v1",
         "gated: the SDK checks the contract before calling",
+    ),
+    (
+        "ployz.machine.set-device-enforcement.v1",
+        "gated: `ployz device enforce` checks each Machine's contract first, names a Server whose daemon lacks it as missing and exits partial",
+    ),
+    (
+        "ployz.restart.device-approval.v2",
+        "falls back: an older daemon ignores the approval on EnsureContainer and restarts as before, since it enforces nothing",
     ),
     (
         "ployz.image.pull.v1",

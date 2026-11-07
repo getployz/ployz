@@ -4,10 +4,11 @@
 use std::collections::BTreeMap;
 use std::path::Path;
 
-use clap::{ArgMatches, Command};
+use clap::{Arg, ArgAction, ArgMatches, Command};
 use ployz_core::{
-    DeviceCode, DeviceKey, DeviceSet, InspectRequest, MachineFailure, MachineId, MachineName,
-    MachineTarget, RpcError, SetDeviceRequest, op,
+    DeviceCode, DeviceEnforcementSet, DeviceKey, DeviceSet, InspectRequest, MachineFailure,
+    MachineId, MachineName, MachineTarget, RpcError, SET_DEVICE_CAPABILITY,
+    SET_DEVICE_ENFORCEMENT_CAPABILITY, SetDeviceEnforcementRequest, SetDeviceRequest, op,
 };
 use reqwest::Method;
 use serde::{Deserialize, Serialize};
@@ -45,6 +46,24 @@ pub(crate) fn remove_command(command: Command) -> Command {
     base(command, "Remove a device from every server")
         .after_help(concat!("Examples:\n", "  ployz device rm mmg42klgyq"))
         .arg(positional("code", true).help("The device's code, from ployz device ls"))
+}
+
+pub(crate) fn enforce_command(command: Command) -> Command {
+    base(
+        command,
+        "Require an approved device's signature on every service restart",
+    )
+    .after_help(concat!(
+        "Examples:\n",
+        "  ployz device enforce\n",
+        "  ployz device enforce --off"
+    ))
+    .arg(
+        Arg::new("off")
+            .long("off")
+            .action(ArgAction::SetTrue)
+            .help("Let restarts through without a device's signature again"),
+    )
 }
 
 pub(crate) fn request(root: &ArgMatches) -> Result<(), Error> {
@@ -166,6 +185,63 @@ pub(crate) fn list(root: &ArgMatches) -> Result<(), Error> {
     })
 }
 
+pub(crate) fn enforce(root: &ArgMatches) -> Result<(), Error> {
+    let leaf = leaf_matches(root);
+    let enforced = !leaf.get_flag("off");
+    runtime()?.block_on(async {
+        let mut client = server::connect_full(leaf, context(leaf)).await?;
+        let reach = Reach::of(&mut client).await?;
+        let (answers, gaps) = reach
+            .fan_out(|machine_id| enforce_on(client.clone(), machine_id, enforced))
+            .await;
+        let answers: Vec<Enforcement> = answers
+            .into_iter()
+            .map(|(machine_id, set)| Enforcement {
+                server: reach.name(&machine_id),
+                machine_id,
+                enforced: set.enforced,
+            })
+            .collect();
+        let gaps = reach.named(gaps);
+        let mut table = Table::new(["SERVER", "DEVICE ENFORCEMENT"], "No servers answered.");
+        for answer in &answers {
+            let (state, tone) = if answer.enforced {
+                ("on", Tone::Good)
+            } else {
+                ("off", Tone::Change)
+            };
+            table.row([Cell::from(&answer.server), Cell::status(state, tone)]);
+        }
+        ui::finish_fanout("machines", &answers, &gaps, || {
+            if !answers.is_empty() || gaps.is_complete() {
+                ui::rows(&table);
+            }
+        })
+    })
+}
+
+#[derive(Serialize)]
+struct Enforcement {
+    machine_id: MachineId,
+    server: String,
+    enforced: bool,
+}
+
+async fn enforce_on(
+    client: Client,
+    machine_id: MachineId,
+    enforced: bool,
+) -> Result<Option<DeviceEnforcementSet>, RpcError> {
+    let target = MachineTarget::from(&machine_id);
+    if !compat::supports(&client, &target, SET_DEVICE_ENFORCEMENT_CAPABILITY).await? {
+        return Ok(None);
+    }
+    client
+        .invoke::<op::SetDeviceEnforcement>(SetDeviceEnforcementRequest { enforced }, &target, None)
+        .await
+        .map(Some)
+}
+
 fn context(leaf: &ArgMatches) -> Option<&str> {
     leaf.get_one::<String>("context").map(String::as_str)
 }
@@ -238,7 +314,7 @@ async fn set_on(
     request: SetDeviceRequest,
 ) -> Result<Option<DeviceSet>, RpcError> {
     let target = MachineTarget::from(&machine_id);
-    if !compat::sets_devices(&client, &target).await? {
+    if !compat::supports(&client, &target, SET_DEVICE_CAPABILITY).await? {
         return Ok(None);
     }
     client
@@ -252,7 +328,7 @@ async fn devices_on(
     machine_id: MachineId,
 ) -> Result<Option<Vec<DeviceCode>>, RpcError> {
     let target = MachineTarget::from(&machine_id);
-    if !compat::sets_devices(&client, &target).await? {
+    if !compat::supports(&client, &target, SET_DEVICE_CAPABILITY).await? {
         return Ok(None);
     }
     let details = client
@@ -271,22 +347,24 @@ pub(super) fn request_hint() -> Hint {
     Hint::Next("ployz device request".into())
 }
 
-/// Daemons from before Devices. Delete once every supported daemon sets them.
+/// Daemons from before Devices, or before Device enforcement. Delete once every supported
+/// daemon has both.
 mod compat {
-    use ployz_core::{DescribeContractRequest, MachineTarget, RpcError, SET_DEVICE_CAPABILITY, op};
+    use ployz_core::{DescribeContractRequest, MachineTarget, RpcError, op};
 
     use crate::connect::Client;
 
-    /// Whether the Machine at `target` keeps a Device roster; one that doesn't is an
+    /// Whether the Machine at `target` promises `capability`; one that doesn't is an
     /// omission, not a failure.
-    pub(super) async fn sets_devices(
+    pub(super) async fn supports(
         client: &Client,
         target: &MachineTarget,
+        capability: &str,
     ) -> Result<bool, RpcError> {
         Ok(client
             .invoke::<op::DescribeContract>(DescribeContractRequest {}, target, None)
             .await?
-            .supports(SET_DEVICE_CAPABILITY))
+            .supports(capability))
     }
 }
 

@@ -815,7 +815,10 @@ fn gone(container: ContainerId) -> ContainerWant {
 }
 
 async fn ensure(node: &Node, want: ContainerWant) -> EnsuredContainer {
-    let request = op::EnsureContainer::into_request(EnsureContainerRequest { want });
+    let request = op::EnsureContainer::into_request(EnsureContainerRequest {
+        want,
+        approval: None,
+    });
     node.service
         .ensure_container(Request::new(request.encode().unwrap()))
         .await
@@ -2426,7 +2429,10 @@ fn creation_on_wire(
             container: RunTarget::New(new),
             rotation: RunRotation::Pending,
         };
-        let request = op::EnsureContainer::into_request(EnsureContainerRequest { want });
+        let request = op::EnsureContainer::into_request(EnsureContainerRequest {
+            want,
+            approval: None,
+        });
         service
             .ensure_container(Request::new(request.encode().unwrap()))
             .await

@@ -71,6 +71,7 @@ async fn client(fleet: &FakeFleet, machine: &str) -> Client {
 
 fn stop(container: &str) -> EnsureContainerRequest {
     EnsureContainerRequest {
+        approval: None,
         want: ContainerWant::Stopped {
             container: ContainerLocator::Id(container_id(container)),
             drain: Drain::NONE,
@@ -266,6 +267,7 @@ async fn an_unmodeled_command_is_recorded_and_answers_unimplemented() {
     let error = client
         .call::<op::EnsureContainer>(
             EnsureContainerRequest {
+                approval: None,
                 want: ContainerWant::Gone {
                     container: ContainerLocator::Id(container_id("app-staging-web-1")),
                     drain: Drain::NONE,
@@ -322,7 +324,13 @@ async fn a_held_copy_leaves_every_live_route_and_only_its_run_brings_it_back() {
     };
     let ensure = async |client: &mut Client, want| {
         client
-            .call::<op::EnsureContainer>(EnsureContainerRequest { want }, on_web_1.as_ref())
+            .call::<op::EnsureContainer>(
+                EnsureContainerRequest {
+                    want,
+                    approval: None,
+                },
+                on_web_1.as_ref(),
+            )
             .await
             .unwrap()
     };

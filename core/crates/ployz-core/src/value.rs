@@ -310,6 +310,14 @@ hex_id_newtype!(
     "32 lowercase hexadecimal characters"
 );
 hex_id_newtype!(
+    /// One approved operation its signer minted. A Machine consumes each step once,
+    /// so a retry after consumption needs a fresh approval.
+    OperationId,
+    "operation ID",
+    32,
+    "32 lowercase hexadecimal characters"
+);
+hex_id_newtype!(
     /// Identity of one bounded Machine upgrade attempt.
     MachineUpgradeAttemptId,
     "Machine upgrade attempt ID",
@@ -344,6 +352,16 @@ hex_id_newtype!(
 
 impl MachineId {
     /// Random 32-character lowercase hexadecimal Machine ID.
+    #[must_use]
+    pub fn random() -> Self {
+        let mut hex = [0_u8; 32];
+        uuid::Uuid::new_v4().simple().encode_lower(&mut hex);
+        Self(hex)
+    }
+}
+
+impl OperationId {
+    /// Random 32-character lowercase hexadecimal operation ID.
     #[must_use]
     pub fn random() -> Self {
         let mut hex = [0_u8; 32];

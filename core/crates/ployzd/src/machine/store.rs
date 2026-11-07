@@ -230,6 +230,7 @@ impl LocalMachineStore {
                     pinned_addresses: PinnedAddresses::default(),
                     push_target: None,
                     device_slots_vetted: true,
+                    device_enforcement: false,
                 };
                 save(&data_dir, &record)?;
                 record
@@ -704,6 +705,21 @@ impl LocalMachineStore {
         }
         let mut updated = self.record.clone();
         updated.push_target = url;
+        save(&self.data_dir, &updated)?;
+        self.record = updated;
+        Ok(())
+    }
+
+    /// Turn Device enforcement on or off in one write. An unchanged setting skips the write.
+    ///
+    /// # Errors
+    /// Returns a storage error if the updated record cannot be saved atomically.
+    pub fn set_device_enforcement(&mut self, enforced: bool) -> Result<(), StoreError> {
+        if self.record.device_enforcement == enforced {
+            return Ok(());
+        }
+        let mut updated = self.record.clone();
+        updated.device_enforcement = enforced;
         save(&self.data_dir, &updated)?;
         self.record = updated;
         Ok(())
@@ -1275,6 +1291,17 @@ mod device_slot_tests {
         assert_eq!(record.management_scope(key().as_bytes()), None);
         assert_eq!(record.devices().count(), 0);
         assert!(record.clears_management_client(key().as_bytes()));
+    }
+
+    #[test]
+    fn device_enforcement_is_off_until_set_and_survives_reopening() {
+        let (dir, mut store) = founded();
+        assert!(!store.record().device_enforcement());
+        store.set_device_enforcement(true).unwrap();
+
+        let store = reopened(&dir, store);
+
+        assert!(store.record().device_enforcement());
     }
 
     #[test]

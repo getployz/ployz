@@ -76,6 +76,9 @@ pub struct Client {
     pub(crate) cluster: Option<Box<crate::connect::ExpectedCluster>>,
     /// Set once a redial finds the entry in another Cluster. Every clone shares it.
     refused: Refusal,
+    /// The Device-signed approval every restart step this client sends carries.
+    restart_approval:
+        Option<Arc<ployz_core::authority::Signed<ployz_core::authority::RestartApproval>>>,
 }
 
 /// The entry a redial found in another Cluster, shared by every clone of a client and
@@ -131,7 +134,17 @@ impl Client {
             confirmed: None,
             cluster: None,
             refused: Refusal::default(),
+            restart_approval: None,
         }
+    }
+
+    #[must_use]
+    pub(crate) fn with_restart_approval(
+        mut self,
+        approval: Option<ployz_core::authority::Signed<ployz_core::authority::RestartApproval>>,
+    ) -> Self {
+        self.restart_approval = approval.map(Arc::new);
+        self
     }
 
     /// What the first dial confirmed about the entry's Cluster; None when it expected none.
@@ -1514,9 +1527,12 @@ impl Client {
     ) -> Result<ployz_core::EnsuredContainer, RpcError> {
         let target = MachineTarget::from(machine_id);
         crate::sealed_compat::admit(self, &target, &want).await?;
-        let payload = op::EnsureContainer::into_request(EnsureContainerRequest { want })
-            .encode()
-            .map_err(|error| rpc_error(ConnectError::Codec(error)))?;
+        let payload = op::EnsureContainer::into_request(EnsureContainerRequest {
+            want,
+            approval: self.restart_approval.as_deref().cloned(),
+        })
+        .encode()
+        .map_err(|error| rpc_error(ConnectError::Codec(error)))?;
         apply_timeout(
             timeout,
             self.call_once::<op::EnsureContainer>(payload, Some(&target)),
@@ -1531,6 +1547,10 @@ impl Client {
         action: ContainerAction,
         signal: Option<String>,
         grace_period_seconds: Option<u16>,
+        approvals: &HashMap<
+            ContainerId,
+            ployz_core::authority::Signed<ployz_core::authority::RestartApproval>,
+        >,
         cancellation: &CancellationToken,
     ) -> PartialResult<ContainerId, ContainerOperationFailure> {
         let mut tasks = JoinSet::new();
@@ -1546,7 +1566,8 @@ impl Client {
             let machine_id = observation.machine_id;
             let container_id = observation.container_id;
             let handle = tasks.spawn(change_on_machine(
-                self.clone(),
+                self.clone()
+                    .with_restart_approval(approvals.get(&container_id).cloned()),
                 machine_id,
                 container_id,
                 action,

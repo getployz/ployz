@@ -31,6 +31,7 @@ use crate::{
     MachineLogService, MachineName, MachineObservation, MachineRuntime, MachineUpdate,
     ManagementCapability, ManagementClientLabel, Namespace, PinnedAddresses, PullPolicy,
     QualifiedService, ResolvedServiceSpec, SelectedEndpoint, StorageChoice, WireGuardPublicKey,
+    authority::{RestartApproval, Signed},
 };
 
 mod docker;
@@ -477,6 +478,21 @@ pub struct PushTargetSet {
     pub url: Option<url::Url>,
 }
 
+/// Whether this Machine requires a Device-signed approval before an Operator caller
+/// changes a Service. Full scope only, so neither Cloud nor a CLI without an approved
+/// Device can turn it off. Strict for the same reason as [`SetManagementClientRequest`].
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SetDeviceEnforcementRequest {
+    pub enforced: bool,
+}
+
+/// The Device enforcement setting the Machine now holds.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
+pub struct DeviceEnforcementSet {
+    pub enforced: bool,
+}
+
 /// An operator's endpoint for reaching `peer` from the Machine that takes the request.
 ///
 /// It sets only that Machine's own Selected Endpoint; `peer`'s record is unchanged.
@@ -516,6 +532,12 @@ pub enum ContainerLocator {
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
 pub struct EnsureContainerRequest {
     pub want: ContainerWant,
+    /// A Device's approval of the restart this want is a step of. A Machine under
+    /// Device enforcement requires it from an Operator caller; an older daemon
+    /// ignores it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub approval: Option<Signed<RestartApproval>>,
 }
 
 /// The state a driver wants one Container in. The Machine converges to it and
@@ -1597,6 +1619,7 @@ define_responses! {
     SetManagementClientResponse(SetManagementClientResponse) => "management_client_set";
     DeviceSet(DeviceSet) => "device_set";
     PushTargetSet(PushTargetSet) => "push_target_set";
+    DeviceEnforcementSet(DeviceEnforcementSet) => "device_enforcement_set";
     EndpointSelected(EndpointSelected) => "endpoint_selected";
     MachineList(MachineList) => "machine_list";
     ContainerList(ContainerList) => "container_list";
@@ -2572,7 +2595,13 @@ mod streaming_routing_tests {
     fn only_exec_set_device_and_the_recovery_code_routes_need_full_scope() {
         assert_eq!(
             crate::rpc_catalog!(full_scope_routes),
-            ["WrapSealingKey", "RecoverSealingKey", "SetDevice", "Exec"]
+            [
+                "WrapSealingKey",
+                "RecoverSealingKey",
+                "SetDevice",
+                "SetDeviceEnforcement",
+                "Exec"
+            ]
         );
         assert_eq!(super::scope_of("/ployz.rpc.v1.MachineRpc/Nope"), None);
     }

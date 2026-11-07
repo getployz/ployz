@@ -243,6 +243,36 @@ ployz device rm mmg42klgyq
 `device ls` shows each device and the servers missing it. `device rm` takes it off every server
 that answers.
 
+### Require a device's signature for restarts
+
+By default a server restarts a service for anyone Ployz Cloud lets through. With device
+enforcement on, it restarts or stops only on an approved device's say-so. `ployz service restart`
+and `ployz service stop` sign their steps with your device key, and each server checks that signature against the devices it
+approved before it stops or starts anything. Ployz Cloud carries the signed approval but can't
+make one. Each approval names one container, so a captured approval cannot stop a second copy.
+The CLI signs a fresh approval just before each copy of a rolling restart. Restart approvals
+permit only holding, stopping and starting that container. Stop approvals permit only holding
+and stopping it. Neither permits removing it. A server refuses an approval that is forged, names another service, server or container, lasts over 15 minutes, or
+was already used, including after the server restarts. It allows two minutes of clock difference
+when checking the issue time and expiry.
+
+```sh
+ployz device enforce
+ployz device enforce --off
+```
+
+`enforce` needs an approved device. It sets every server that answers and lists each server's
+state. A server that's down keeps its old setting. Run `enforce` again once it's back. A server
+from before this setting is reported with its rows missing, the same as one that's down, and
+restarts as before. Upgrade it first.
+
+With enforcement on, `service restart` from a device that isn't approved is refused with
+`ployz.restart.device-approval.v2 needs a Device-signed restart approval`. `service stop` needs
+the same approval. `service start` and `deploy` are refused through Ployz Cloud, since they start
+or stop containers through the same steps and don't carry an approval yet. That includes the first deploy of a new service. Turn
+enforcement off to run them. Over `--connect ssh://` everything works as before. If your device
+key cannot be loaded, restart and stop go unsigned and still work where enforcement is off.
+
 ## Change what a server does
 
 Every server runs builds, runs services and takes web traffic. To turn one off, see
