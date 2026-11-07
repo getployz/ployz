@@ -28,8 +28,8 @@ use ployz_core::{
     AdvertisedEndpoint, ContainerId, DescribeContractRequest, DeviceKey, EnrollAs, EnrollRequest,
     ExecConfig, ExecOptions, ExecRequestFrame, ForgottenAnswer, MANAGEMENT_ALPN, MachineId,
     MachineName, MachineRpcClient, ManagementCapability, ManagementClientLabel, ManagementIdentity,
-    OpaquePayload, RpcErrorCode, SetDeviceRequest, SetManagementClientRequest, TUNNEL_ALPN,
-    TUNNEL_FAILED, TUNNEL_OPEN, op,
+    OpaquePayload, RemoveTrustedKeyRequest, RpcErrorCode, SetDeviceRequest,
+    SetManagementClientRequest, TUNNEL_ALPN, TUNNEL_FAILED, TUNNEL_OPEN, TrustedKeyRemoved, op,
 };
 use ployzd::{
     corrosion::ReplicatedStore,
@@ -790,6 +790,104 @@ async fn only_a_device_execs_or_tunnels() {
 
     shutdown.cancel();
     server.await.unwrap();
+}
+
+/// A Device that removes itself revokes the connection it asked on, yet still receives
+/// what the removal did, since the removal had already committed.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_device_removing_itself_receives_the_outcome() {
+    let (_map, relay_url, _relay) = run_relay_server().await.unwrap();
+    let (_dir, owner, local) = participating().await;
+    let device = SecretKey::generate();
+    let key = DeviceKey::from_bytes(*device.public().as_bytes());
+    local
+        .set_device(SetDeviceRequest::Approve { key })
+        .await
+        .unwrap();
+    let capability = ManagementCapability::new(
+        local.record().management_secret().public_key(),
+        device.to_bytes(),
+    );
+    let endpoint = management::bind(
+        local.record().management_secret(),
+        &ManagementConfig {
+            relay_url: relay_url.clone(),
+            port: 0,
+            relay_tls: CaTlsConfig::insecure_skip_verify(),
+        },
+    )
+    .await
+    .unwrap();
+    let shutdown = CancellationToken::new();
+    let server = tokio::spawn(management::serve(
+        endpoint,
+        local.clone(),
+        AnswersAfterRevocation(MachineApi::builder(owner).build()),
+        Arc::default(),
+        None::<ReplicatedStore>,
+        shutdown.clone(),
+    ));
+    let connector = SystemConnector::default().with_management_relay(ManagementRelay::custom(
+        relay_url,
+        CaTlsConfig::insecure_skip_verify(),
+    ));
+    let channel = connector.connect(&connection(&capability)).await.unwrap();
+
+    let removed = MachineRpcClient::new(channel)
+        .remove_trusted_key(
+            op::RemoveTrustedKey::into_request(RemoveTrustedKeyRequest { code: key.code() })
+                .encode()
+                .unwrap(),
+        )
+        .await
+        .expect("the caller must receive its own removal")
+        .into_inner()
+        .decode_response()
+        .unwrap()
+        .decode::<op::RemoveTrustedKey>()
+        .unwrap();
+
+    assert_eq!(
+        removed,
+        TrustedKeyRemoved::RemovedDevice {
+            code: key.code(),
+            approved_passkeys: Vec::new(),
+        }
+    );
+    assert!(matches!(
+        connector.connect(&connection(&capability)).await,
+        Err(ConnectError::ClientCleared)
+    ));
+    shutdown.cancel();
+    server.await.unwrap();
+}
+
+/// Holds each RemoveTrustedKey answer until the revocation its removal published has
+/// drained the connection, which an unheld answer would race.
+#[derive(Clone)]
+struct AnswersAfterRevocation(MachineApi);
+
+impl Service<http::Request<Body>> for AnswersAfterRevocation {
+    type Response = http::Response<Body>;
+    type Error = Infallible;
+    type Future = Pin<Box<dyn Future<Output = Result<Self::Response, Self::Error>> + Send>>;
+
+    fn poll_ready(&mut self, cx: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
+        self.0.poll_ready(cx)
+    }
+
+    fn call(&mut self, request: http::Request<Body>) -> Self::Future {
+        let held = request.uri().path() == <op::RemoveTrustedKey as ployz_core::Rpc>::PATH;
+        let answer = self.0.call(request);
+        Box::pin(async move {
+            let answer = answer.await;
+            if held {
+                // real-wait: the drain is internal to the connection; no event exposes it.
+                tokio::time::sleep(Duration::from_millis(500)).await;
+            }
+            answer
+        })
+    }
 }
 
 /// Open a tunnel the way a v0.3.4 CLI does. It prints a close reason only under

@@ -10,7 +10,7 @@ use ployz_core::{
     MachineId, MachineName, MachineTarget, OperationId, REMOVE_TRUSTED_KEY_CAPABILITY,
     RemoveTrustedKeyRequest, Rpc, RpcError, RpcErrorCode, SET_DEVICE_CAPABILITY,
     SET_DEVICE_ENFORCEMENT_CAPABILITY, SET_PASSKEY_CAPABILITY, SetDeviceEnforcementRequest,
-    SetDeviceRequest, SetPasskeyRequest, TrustedKeyKind, TrustedKeyRemoved,
+    SetDeviceRequest, SetPasskeyRequest, TrustedKeyRemoved,
     authority::{
         Member, Passkey, PasskeyAccount, PasskeyApprover, PasskeyPublicKey, Signed, Signer,
         StartingSet, Timestamp,
@@ -673,59 +673,38 @@ async fn set_on<T: Rpc<Response = DeviceSet>>(
 
 /// Remove the key `code` names on one Server, Device or passkey. The Server picks the
 /// kind under the admission its approvals take, so an approval since any read here is
-/// still removed. A Server older than remove-trusted-key.v1 holds no passkey, so
-/// set-device.v1 removes all it trusts under the code. A removed Device's passkeys are
-/// read afterwards only to warn that they stay trusted.
+/// still removed, and names a removed Device's passkeys in the same answer, since a
+/// Device that removed itself can no longer ask. A Server older than
+/// remove-trusted-key.v1 holds no passkey, so set-device.v1 removes all it trusts under
+/// the code.
 async fn remove_on(
     client: Client,
     machine_id: MachineId,
     code: DeviceCode,
-) -> Result<Option<Outcome>, RpcError> {
+) -> Result<Option<TrustedKeyRemoved>, RpcError> {
     let target = MachineTarget::from(&machine_id);
-    let removed = if compat::supports(&client, &target, REMOVE_TRUSTED_KEY_CAPABILITY).await? {
-        client
+    if compat::supports(&client, &target, REMOVE_TRUSTED_KEY_CAPABILITY).await? {
+        return client
             .invoke::<op::RemoveTrustedKey>(RemoveTrustedKeyRequest { code }, &target, None)
-            .await?
-    } else if compat::supports(&client, &target, SET_DEVICE_CAPABILITY).await? {
-        match client
-            .invoke::<op::SetDevice>(SetDeviceRequest::Remove { code }, &target, None)
-            .await?
-        {
-            DeviceSet::Removed { code } => TrustedKeyRemoved::Removed {
-                code,
-                kind: TrustedKeyKind::Device,
-            },
-            DeviceSet::NotPresent { code }
-            | DeviceSet::Approved { code }
-            | DeviceSet::AlreadyApproved { code } => TrustedKeyRemoved::NotPresent { code },
-        }
-    } else {
-        return Ok(None);
-    };
-    let device_removed = matches!(
-        removed,
-        TrustedKeyRemoved::Removed {
-            kind: TrustedKeyKind::Device,
-            ..
-        }
-    );
-    let approved_passkeys = if device_removed {
-        client
-            .invoke::<op::Inspect>(InspectRequest::default(), &target, None)
             .await
-            .map(|details| details.passkeys)
-            .unwrap_or_default()
-            .into_iter()
-            .filter(|trusted| trusted.approved_by == PasskeyApprover::Device { code })
-            .map(|trusted| trusted.passkey.code())
-            .collect()
-    } else {
-        Vec::new()
+            .map(Some);
+    }
+    if !compat::supports(&client, &target, SET_DEVICE_CAPABILITY).await? {
+        return Ok(None);
+    }
+    let removed = match client
+        .invoke::<op::SetDevice>(SetDeviceRequest::Remove { code }, &target, None)
+        .await?
+    {
+        DeviceSet::Removed { code } => TrustedKeyRemoved::RemovedDevice {
+            code,
+            approved_passkeys: Vec::new(),
+        },
+        DeviceSet::NotPresent { code }
+        | DeviceSet::Approved { code }
+        | DeviceSet::AlreadyApproved { code } => TrustedKeyRemoved::NotPresent { code },
     };
-    Ok(Some(Outcome {
-        change: Change::Removed(removed),
-        approved_passkeys,
-    }))
+    Ok(Some(removed))
 }
 
 /// One key a Server lists, with who approved it there when it is a passkey.
@@ -889,29 +868,23 @@ struct Answer {
     outcome: Outcome,
 }
 
-/// What one Server changed. For a removed Device, also the passkeys it had approved
-/// there, which stay trusted until removed by their own code.
-#[derive(Serialize)]
-struct Outcome {
-    #[serde(flatten)]
-    change: Change,
-    #[serde(skip_serializing_if = "Vec::is_empty")]
-    approved_passkeys: Vec<DeviceCode>,
-}
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
+/// What one Server changed.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
 #[serde(untagged)]
-enum Change {
+enum Outcome {
     Set(DeviceSet),
     Removed(TrustedKeyRemoved),
 }
 
 impl From<DeviceSet> for Outcome {
     fn from(set: DeviceSet) -> Self {
-        Self {
-            change: Change::Set(set),
-            approved_passkeys: Vec::new(),
-        }
+        Self::Set(set)
+    }
+}
+
+impl From<TrustedKeyRemoved> for Outcome {
+    fn from(removed: TrustedKeyRemoved) -> Self {
+        Self::Removed(removed)
     }
 }
 
@@ -923,20 +896,14 @@ impl Settled {
         }
         let mut table = Table::new(["SERVER", "RESULT"], "No servers answered.");
         for answer in &self.answers {
-            let result = match answer.outcome.change {
-                Change::Set(DeviceSet::Approved { .. }) => "approved",
-                Change::Set(DeviceSet::AlreadyApproved { .. }) => "already approved",
-                Change::Set(DeviceSet::Removed { .. })
-                | Change::Removed(TrustedKeyRemoved::Removed {
-                    kind: TrustedKeyKind::Device,
-                    ..
-                }) => "removed device",
-                Change::Removed(TrustedKeyRemoved::Removed {
-                    kind: TrustedKeyKind::Passkey,
-                    ..
-                }) => "removed passkey",
-                Change::Set(DeviceSet::NotPresent { .. })
-                | Change::Removed(TrustedKeyRemoved::NotPresent { .. }) => "not present",
+            let result = match answer.outcome {
+                Outcome::Set(DeviceSet::Approved { .. }) => "approved",
+                Outcome::Set(DeviceSet::AlreadyApproved { .. }) => "already approved",
+                Outcome::Set(DeviceSet::Removed { .. })
+                | Outcome::Removed(TrustedKeyRemoved::RemovedDevice { .. }) => "removed device",
+                Outcome::Removed(TrustedKeyRemoved::RemovedPasskey { .. }) => "removed passkey",
+                Outcome::Set(DeviceSet::NotPresent { .. })
+                | Outcome::Removed(TrustedKeyRemoved::NotPresent { .. }) => "not present",
             };
             table.row([Cell::from(&answer.server), Cell::status(result, Tone::Good)]);
         }
@@ -947,7 +914,13 @@ impl Settled {
     fn warn_approved_passkeys(&self, code: DeviceCode) {
         let mut left = BTreeMap::<DeviceCode, Vec<&str>>::new();
         for answer in &self.answers {
-            for passkey in &answer.outcome.approved_passkeys {
+            let Outcome::Removed(TrustedKeyRemoved::RemovedDevice {
+                approved_passkeys, ..
+            }) = &answer.outcome
+            else {
+                continue;
+            };
+            for passkey in approved_passkeys {
                 left.entry(*passkey).or_default().push(&answer.server);
             }
         }

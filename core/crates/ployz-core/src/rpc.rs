@@ -511,24 +511,22 @@ pub struct RemoveTrustedKeyRequest {
 
 /// What a [`RemoveTrustedKeyRequest`] removed. Each outcome is final, so a rerun reports
 /// `NotPresent` rather than failing.
-#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
 #[serde(tag = "outcome", rename_all = "snake_case")]
 pub enum TrustedKeyRemoved {
-    Removed {
+    RemovedDevice {
         code: DeviceCode,
-        kind: TrustedKeyKind,
+        /// Passkeys the removed Device had approved here, read in the same mutation.
+        /// They stay trusted, and a Device that removed itself can no longer look.
+        #[serde(default)]
+        approved_passkeys: Vec<DeviceCode>,
+    },
+    RemovedPasskey {
+        code: DeviceCode,
     },
     NotPresent {
         code: DeviceCode,
     },
-}
-
-/// The kind of trusted key a code named.
-#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
-#[serde(rename_all = "snake_case")]
-pub enum TrustedKeyKind {
-    Device,
-    Passkey,
 }
 
 /// Where this Machine's observe process pushes crash events, or `None` to stop pushing.

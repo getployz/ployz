@@ -3,7 +3,7 @@
 use ployz_core::{
     DeviceCode, DeviceSet, LocalMachinePhase, ManagementCapability, RemoveTrustedKeyRequest,
     SetDeviceRequest, SetManagementClientRequest, SetManagementClientResponse, SetPasskeyRequest,
-    TrustedKeyKind, TrustedKeyRemoved,
+    TrustedKeyRemoved,
     authority::{PasskeyApprover, TrustedPasskey},
 };
 
@@ -200,15 +200,25 @@ impl LocalMachine {
                         return Err(Error::NotParticipating);
                     }
                     let by = caller.full_caller(store.record())?;
-                    let (kind, label) = if store.remove_device(code)? {
-                        (TrustedKeyKind::Device, "device")
-                    } else if store.remove_passkey(code)? {
-                        (TrustedKeyKind::Passkey, "passkey")
-                    } else {
-                        return Ok(TrustedKeyRemoved::NotPresent { code });
-                    };
-                    tracing::info!("trusted key removed kind={label} code={code} by={by}");
-                    Ok(TrustedKeyRemoved::Removed { code, kind })
+                    if store.remove_device(code)? {
+                        tracing::info!("trusted key removed kind=device code={code} by={by}");
+                        let approver = PasskeyApprover::Device { code };
+                        return Ok(TrustedKeyRemoved::RemovedDevice {
+                            code,
+                            approved_passkeys: store
+                                .record()
+                                .passkeys()
+                                .iter()
+                                .filter(|trusted| trusted.approved_by == approver)
+                                .map(|trusted| trusted.passkey.code())
+                                .collect(),
+                        });
+                    }
+                    if store.remove_passkey(code)? {
+                        tracing::info!("trusted key removed kind=passkey code={code} by={by}");
+                        return Ok(TrustedKeyRemoved::RemovedPasskey { code });
+                    }
+                    Ok(TrustedKeyRemoved::NotPresent { code })
                 })
                 .await?
         })
@@ -756,16 +766,48 @@ mod tests {
         );
         assert_eq!(
             caller.remove_trusted_key(remove(code)).await.unwrap(),
-            TrustedKeyRemoved::Removed {
-                code,
-                kind: TrustedKeyKind::Passkey
-            }
+            TrustedKeyRemoved::RemovedPasskey { code }
         );
         assert!(local.record().passkeys().is_empty());
         assert_eq!(
             caller.remove_trusted_key(remove(code)).await.unwrap(),
             TrustedKeyRemoved::NotPresent { code }
         );
+    }
+
+    #[tokio::test]
+    async fn a_device_removing_itself_learns_the_passkeys_it_approved_which_stay_trusted() {
+        let dir = tempfile::tempdir().unwrap();
+        let local = participating(dir.path()).await;
+        let device = device();
+        local
+            .set_device(SetDeviceRequest::Approve { key: device })
+            .await
+            .unwrap();
+        let caller = local.clone().with_management_client(*device.as_bytes());
+        let mine = [
+            passkey_with_credential(*iroh::SecretKey::generate().public().as_bytes(), "AQID"),
+            passkey_with_credential(*iroh::SecretKey::generate().public().as_bytes(), "BAUG"),
+        ];
+        for passkey in &mine {
+            caller.set_passkey(approve(passkey.clone())).await.unwrap();
+        }
+        let servers =
+            passkey_with_credential(*iroh::SecretKey::generate().public().as_bytes(), "BwgJ");
+        local.set_passkey(approve(servers)).await.unwrap();
+
+        assert_eq!(
+            caller
+                .remove_trusted_key(remove(device.code()))
+                .await
+                .unwrap(),
+            TrustedKeyRemoved::RemovedDevice {
+                code: device.code(),
+                approved_passkeys: mine.iter().map(|passkey| passkey.code()).collect(),
+            }
+        );
+        assert_eq!(local.record().devices().count(), 0);
+        assert_eq!(local.record().passkeys().len(), 3);
     }
 
     fn remove(code: DeviceCode) -> RemoveTrustedKeyRequest {
@@ -792,10 +834,7 @@ mod tests {
 
         assert_eq!(
             local.remove_trusted_key(remove(code)).await.unwrap(),
-            TrustedKeyRemoved::Removed {
-                code,
-                kind: TrustedKeyKind::Passkey
-            }
+            TrustedKeyRemoved::RemovedPasskey { code }
         );
         assert!(!trusts_any(&local, code));
         assert_eq!(
@@ -822,9 +861,9 @@ mod tests {
 
         assert_eq!(
             local.remove_trusted_key(remove(code)).await.unwrap(),
-            TrustedKeyRemoved::Removed {
+            TrustedKeyRemoved::RemovedDevice {
                 code,
-                kind: TrustedKeyKind::Device
+                approved_passkeys: Vec::new()
             }
         );
         assert!(!trusts_any(&local, code));
