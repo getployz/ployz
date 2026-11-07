@@ -5,7 +5,7 @@ import {
   type RegistrationResponseJSON,
   verifyRegistrationResponse,
 } from "@simplewebauthn/server";
-import { and, asc, eq, gt, sql } from "drizzle-orm";
+import { and, desc, eq, gt, sql } from "drizzle-orm";
 import { Data, Effect, Option } from "effect";
 import type { Actor } from "#/modules/identity/actor";
 import { user, verification } from "#/modules/identity/tables";
@@ -134,11 +134,11 @@ export const listPasskeys = Effect.fn("Passkeys.list")(function* (actor: Actor, 
   const rows = yield* drizzle.select({ code: passkeyRequest.code, createdAt: passkeyRequest.createdAt, account: passkeyRequest.account })
     .from(passkeyRequest)
     .where(and(eq(passkeyRequest.organizationId, organizationId), eq(passkeyRequest.userId, actor.userId)))
-    .orderBy(asc(passkeyRequest.createdAt));
+    .orderBy(desc(passkeyRequest.createdAt));
   const trusted = rows.length === 0 ? Option.none() : yield* trustedPasskeys(organizationId);
   return {
     observed: Option.isSome(trusted),
-    passkeys: rows.reverse().map((row) => ({
+    passkeys: rows.map((row) => ({
       code: row.code,
       account: row.account,
       createdAt: row.createdAt.toISOString(),
