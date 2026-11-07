@@ -624,6 +624,7 @@ async fn enrollment_replay_does_not_revalidate_an_expired_approval_or_change_sta
     };
     joiner.enroll(enrollment.clone()).unwrap();
     let before = std::fs::read(join_dir.path().join("machine.json")).unwrap();
+    // real-wait: approval expiry reads the wall clock, which paused time does not move.
     tokio::time::sleep(std::time::Duration::from_millis(510)).await;
     assert!(entry.register(request).await.is_ok());
     assert!(matches!(
