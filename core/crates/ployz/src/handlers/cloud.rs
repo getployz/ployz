@@ -679,15 +679,12 @@ where
     if machine.accepts_ingress
         && let Err(error) = crate::ingress::follow_roles(&mut ready).await
     {
-        // An Ingress Proxy that failed on another Server, as one a resumed founding finds,
+        // An Ingress Proxy that failed only on other Servers, as a resumed founding finds,
         // does not hold back publication, as a joiner's catch-up failure does not.
-        let elsewhere = error
-            .diagnostic()
-            .and_then(|diagnostic| diagnostic.failed_machine)
-            .is_some_and(|failed| failed != machine.id);
+        let elsewhere = error.only_elsewhere(&machine.id);
         let error = ingress_incomplete(
             command,
-            super::ingress_hints(error, |args| super::rerun(matches, args)),
+            super::ingress_hints(error.into(), |args| super::rerun(matches, args)),
         );
         if !elsewhere {
             return Err(error);

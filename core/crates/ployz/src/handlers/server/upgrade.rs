@@ -89,7 +89,7 @@ impl UpgradeRequests for Client {
     }
 
     async fn move_ingress(&mut self) -> Result<Vec<Followed>, Error> {
-        crate::ingress::follow_roles(self).await
+        Ok(crate::ingress::follow_roles(self).await?)
     }
 }
 

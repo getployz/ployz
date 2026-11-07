@@ -1126,7 +1126,7 @@ pub(crate) async fn apply_update(
             }
             Err(error) => return Err(unobserved(error)),
         }
-        crate::ingress::follow_roles(client).await
+        Ok(crate::ingress::follow_roles(client).await?)
     }
     .await;
     let (ingress, follow_up) = match followed {

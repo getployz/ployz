@@ -189,6 +189,37 @@ pub(crate) struct Followed {
     pub(crate) set: IngressDoorsSet,
 }
 
+/// Why [`follow_roles`] failed, with every Server whose Ingress Proxy isn't running after.
+#[derive(Debug)]
+pub(crate) struct NotFollowed {
+    pub(crate) failure: Failure,
+    /// Empty when observation failed, so no Server's outcome is known.
+    failed: Vec<MachineId>,
+}
+
+impl NotFollowed {
+    /// Whether every Server that failed is one other than `machine`, as when a resumed
+    /// founding finds an Ingress Proxy down on a Server that joined since.
+    pub(crate) fn only_elsewhere(&self, machine: &MachineId) -> bool {
+        !self.failed.is_empty() && !self.failed.contains(machine)
+    }
+}
+
+impl From<Failure> for NotFollowed {
+    fn from(failure: Failure) -> Self {
+        Self {
+            failure,
+            failed: Vec::new(),
+        }
+    }
+}
+
+impl From<NotFollowed> for Failure {
+    fn from(not_followed: NotFollowed) -> Self {
+        not_followed.failure
+    }
+}
+
 /// Set the Ingress Proxy on every Server that holds the ingress role. Turning the role off
 /// removes nothing here.
 ///
@@ -196,7 +227,7 @@ pub(crate) struct Followed {
 ///
 /// Fails when observation fails, or when any Server's Ingress Proxy isn't running after,
 /// naming each such Server. The first one's failure is the diagnostic's.
-pub(crate) async fn follow_roles(client: &mut Client) -> Result<Vec<Followed>, Failure> {
+pub(crate) async fn follow_roles(client: &mut Client) -> Result<Vec<Followed>, NotFollowed> {
     let doors = observe_doors(client).await?;
     let answers = set_doors(
         &*client,
@@ -209,7 +240,10 @@ pub(crate) async fn follow_roles(client: &mut Client) -> Result<Vec<Followed>, F
 }
 
 /// [`follow_roles`]'s result from each Server's answer, in the same order.
-fn followed(machines: Vec<DoorMachine>, answers: Vec<Answer>) -> Result<Vec<Followed>, Failure> {
+fn followed(
+    machines: Vec<DoorMachine>,
+    answers: Vec<Answer>,
+) -> Result<Vec<Followed>, NotFollowed> {
     let mut followed = Vec::new();
     let mut failed = Vec::new();
     for (machine, answer) in machines.into_iter().zip(answers) {
@@ -260,7 +294,10 @@ fn followed(machines: Vec<DoorMachine>, answers: Vec<Answer>) -> Result<Vec<Foll
         Some(error) => Failure::caused(RpcErrorCode::Unavailable, lines.join("; "), error.clone()),
         None => Failure::coded(RpcErrorCode::Unavailable, lines.join("; ")),
     };
-    Err(failure.with_diagnostic(diagnostic))
+    Err(NotFollowed {
+        failure: failure.with_diagnostic(diagnostic),
+        failed: failed.iter().map(|failed| failed.machine.id).collect(),
+    })
 }
 
 /// One Server whose Ingress Proxy isn't running after [`follow_roles`].

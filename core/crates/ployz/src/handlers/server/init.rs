@@ -143,7 +143,7 @@ pub(in crate::handlers) fn init(root: &ArgMatches) -> Result<(), Error> {
                 .await
                 .map_err(|error| {
                     ingress_incomplete(
-                        super::super::ingress_hints(error, |args| {
+                        super::super::ingress_hints(error.into(), |args| {
                             super::super::recovery_command(matches, &context_name, args)
                         }),
                         ingress_recovery.clone(),

@@ -386,7 +386,10 @@ fn a_failed_follow_names_each_server_and_how_its_start_failed() {
 
     let failure = followed(machines.clone(), answers).unwrap_err();
 
-    let diagnostic = failure.diagnostic().expect("a failed follow is diagnosed");
+    let diagnostic = failure
+        .failure
+        .diagnostic()
+        .expect("a failed follow is diagnosed");
     assert_eq!(diagnostic.failed_machine, Some(machines[0].id));
     assert_eq!(diagnostic.start_failure, Some(StartFailure::PortTaken));
     assert_eq!(
@@ -409,7 +412,7 @@ fn a_failed_follow_names_each_server_and_how_its_start_failed() {
         ))],
     )
     .unwrap_err();
-    assert_eq!(refused.diagnostic().unwrap().start_failure, None);
+    assert_eq!(refused.failure.diagnostic().unwrap().start_failure, None);
 
     let crashing = followed(
         vec![machines[1].clone()],
@@ -424,9 +427,16 @@ fn a_failed_follow_names_each_server_and_how_its_start_failed() {
     )
     .unwrap_err();
     assert_eq!(
-        crashing.diagnostic().unwrap().start_failure,
+        crashing.failure.diagnostic().unwrap().start_failure,
         Some(StartFailure::Unhealthy)
     );
+
+    assert!(
+        !failure.only_elsewhere(&machines[2].id),
+        "a founding Server that failed after another holds publication back"
+    );
+    assert!(failure.only_elsewhere(&machines[1].id));
+    assert!(!NotFollowed::from(Failure::unavailable("unobserved")).only_elsewhere(&machines[1].id));
 
     let fine = followed(
         vec![machines[1].clone()],
