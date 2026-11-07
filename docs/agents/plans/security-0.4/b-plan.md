@@ -533,6 +533,8 @@ An Organization can hold several Clusters. Approvals stay inside one Cluster bec
 
 ## Appendix D. Open decision, session length and action families
 
+**Decided 2026-11-07 by Nick: 60 minutes per Environment, not 15.** The session grant gets its own 60-minute cap. Each statement the browser key signs keeps `validity::MAX_LIFETIME_MILLIS` (15 minutes), so a grant can outlive any one approval but no approval outlives its grant. Update B1's grant type, B2's copy ("next 60 minutes") and the expiry tests to match. The text below is the earlier recommendation, kept for its reasoning.
+
 Recommendation. Confirm the plan's choice. One passkey prompt opens 15 minutes for one Environment and the families `start`, `stop`, `restart`, `deploy` and `settings`. Volume deletion, removing a Service that holds a Volume, pruning and any other change that loses data asks every time, one change per prompt, with the loss named in the dialog. An agent proposal asks once per proposal even inside a live session, because the step list is the agent's text and the prompt binds the person to it.
 
 Why 15 minutes. It equals `validity::MAX_LIFETIME_MILLIS`, so the grant needs no new core constant and no statement can outlive its grant. It covers a normal deploy-check-restart loop (the prototype's deploy took under two minutes). A longer window would need a core change and widen what a stolen page can do.

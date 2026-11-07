@@ -37,5 +37,5 @@
 The open decisions table in plan.md still holds. These three are new or sharper:
 
 1. **First Device for dashboard-only customers.** Recommendation: SSH approval stays the rule. During first server install, the install command also prints a short code the user matches against their browser.
-2. **Session length.** Recommendation: 15 minutes per Environment for deploy, settings, start, stop and restart. Volume and other destructive workflows are approved one at a time.
+2. **Session length. Decided 2026-11-07: 60 minutes per Environment** for deploy, settings, start, stop and restart. Volume and other destructive workflows are approved one at a time, and an agent proposal always asks once. The session grant gets its own 60-minute cap. Each button press is still a separate statement with the 15-minute cap from #3926, so no single approval lives longer than today.
 3. **Minter and DNS hosting.** Which cloud account, who can deploy it, and how its own deploys are kept out of np1's reach.
