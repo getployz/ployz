@@ -1176,6 +1176,75 @@ mod ingress_doors {
     }
 
     #[tokio::test]
+    async fn an_older_clis_deploy_on_a_converged_machine_keeps_a_caddy_running() {
+        let (data_dir, _store, service, _fake, runtime) =
+            fake_docker_service_keeping_runtime("ployzd-doors-older-cli").await;
+        let machine = service.local.record().id();
+        set_doors(&service, doors_request(), false)
+            .await
+            .unwrap()
+            .unwrap();
+        let observed = runtime
+            .door_inventory(&machine)
+            .await
+            .unwrap()
+            .into_iter()
+            .find(|entry| entry.facts.door == crate::docker::Door::Proxy)
+            .unwrap()
+            .facts
+            .id;
+
+        let stopped = ensure(
+            &service,
+            json!({"want":{"state":"stopped", "container":{"id":observed}, "drain":0}}),
+        )
+        .await;
+        assert!(
+            matches!(stopped, EnsuredContainer::Ensured { .. }),
+            "{stopped:?}"
+        );
+        let created = ensure(&service, legacy_caddy_want()).await;
+        let EnsuredContainer::Ensured {
+            now: ContainerNow::Present(created),
+            ..
+        } = &created
+        else {
+            panic!("expected the joined Caddy, got {created:?}");
+        };
+        assert_ne!(created.container_id, observed);
+        let retired = ensure(
+            &service,
+            json!({"want":{"state":"gone", "container":{"id":observed}, "drain":0}}),
+        )
+        .await;
+        assert!(
+            !matches!(retired, EnsuredContainer::Refused { .. }),
+            "{retired:?}"
+        );
+
+        let doors = runtime.door_inventory(&machine).await.unwrap();
+        assert_eq!(doors.len(), 2, "one holder and one Caddy remain");
+        for entry in &doors {
+            assert!(
+                matches!(
+                    entry.facts.runtime,
+                    ployz_core::ContainerRuntimeObservation::Running { .. }
+                ),
+                "{:?} runs: {:?}",
+                entry.facts.door,
+                entry.facts.runtime
+            );
+        }
+        assert!(
+            doors
+                .iter()
+                .any(|entry| entry.facts.id == created.container_id),
+            "the Caddy the older CLI was answered with is the one running"
+        );
+        std::fs::remove_dir_all(data_dir).unwrap();
+    }
+
+    #[tokio::test]
     async fn a_legacy_deploy_without_the_role_is_refused() {
         let (data_dir, store, service, fake) =
             fake_docker_service("ployzd-doors-legacy-role").await;
