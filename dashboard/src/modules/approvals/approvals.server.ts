@@ -451,8 +451,8 @@ export const requestApproval = Effect.fn("Approvals.request")(function* (
 /** An operation that may wait for a human: its sweep key, verb, name, preview, and what it destroys. */
 export type OperationAsked = {
   /**
-   * `server:<machine id>`, `servers:<organization id>`, `organization:<organization id>`, `namespace:<name>`,
-   * `volume:<volume id>`, `member:<user id>`, `invite:<invite id>`, `service:<environment id>/<name>`,
+   * `server:<machine id>`, `servers:<organization id>`, `organization:<organization id>`, `cluster:<organization id>`,
+   * `namespace:<name>`, `volume:<volume id>`, `member:<user id>`, `invite:<invite id>`, `service:<environment id>/<name>`,
    * `environment:<environment id>` or `project:<name>`.
    */
   subject: string;
@@ -469,6 +469,8 @@ export type OperationAsked = {
    * instead of starting another. The gate leaves such an approval unspent; it spends every other one on its one run.
    */
   recorded?: true;
+  /** It asks from the CLI or an agent though it destroys nothing, as a Cluster rename does: old private names stop answering. */
+  alwaysAsks?: true;
 };
 
 const requestOperationApproval = Effect.fn("Approvals.requestOperation")(function* (
@@ -549,7 +551,7 @@ export const gateOperation = Effect.fn("Approvals.gateOperation")(function* (
   if (caller.via === "dashboard" && asked.protected === undefined) return { ok: true, approvalId: null };
   const trusted = yield* redeemApproval(caller, approvalId, { command: asked.verb, subject: asked.subject });
   if (!trusted.ok) return trusted;
-  if (asked.effects.length === 0 && asked.protected === undefined) return { ok: true, approvalId: null };
+  if (asked.effects.length === 0 && asked.protected === undefined && asked.alwaysAsks === undefined) return { ok: true, approvalId: null };
   if (asked.protected === undefined && !(yield* hasApprover(caller.organization.id))) return { ok: true, approvalId: null };
   const digest = operationDigest(asked);
   if (approvalId !== null && trusted.approval !== "required" && trusted.approval.approved === digest) {
