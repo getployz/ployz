@@ -291,6 +291,7 @@ https:// {{\n\
 \t# A trusted Cloudflare peer would pass its incoming X-Forwarded-* through; the app gets only\n\
 \t# what Caddy vouches for, so trusting Cloudflare changes nothing but the client address.\n\
 \theader_up X-Forwarded-For {{client_ip}}\n\
+\theader_up CF-Connecting-IP {{client_ip}}\n\
 \theader_up X-Forwarded-Host {{hostport}}\n\
 \theader_up X-Forwarded-Proto {{scheme}}\n\
 \t# A powered-off upstream's Machine never answers the dial; give up fast and retry another.\n\

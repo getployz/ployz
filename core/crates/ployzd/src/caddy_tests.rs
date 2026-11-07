@@ -236,8 +236,8 @@ fn only_cloudflare_peers_may_set_the_client_address() {
     let proxy = automatic_site_block(&caddyfile, "(common_proxy)");
     assert!(
         proxy.contains(
-            "header_up X-Forwarded-For {client_ip} header_up X-Forwarded-Host {hostport} \
-             header_up X-Forwarded-Proto {scheme}"
+            "header_up X-Forwarded-For {client_ip} header_up CF-Connecting-IP {client_ip} \
+             header_up X-Forwarded-Host {hostport} header_up X-Forwarded-Proto {scheme}"
         ),
         "forwarded headers from a trusted peer never reach the app: {proxy}"
     );
@@ -1623,7 +1623,7 @@ fn only_the_loopback_peer_may_set_the_client_address_on_the_tunnel_port() {
     let loopback = automatic_site_block(global, "127.0.0.1:8480");
     assert_eq!(
         loopback,
-        "trusted_proxies static 127.0.0.1/32 ::1/128 client_ip_headers CF-Connecting-IP"
+        "trusted_proxies static 127.0.0.1/32 ::1/128 client_ip_headers CF-Connecting-IP X-Forwarded-For"
     );
     assert!(
         !global.contains("servers :8480"),
