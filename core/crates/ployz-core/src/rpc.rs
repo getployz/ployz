@@ -464,9 +464,9 @@ pub struct SetManagementClientResponse {
 ///
 /// `Approve` carries the Device's public key, never a secret; the Machine stores it in
 /// the slot the key's [`DeviceCode`] names, and is refused while a trusted passkey holds
-/// that key, so a code names one kind of key. `Remove` clears only the Device slot; a
-/// passkey is removed by [`SetPasskeyRequest::Remove`]. Strict for the same reason as
-/// [`SetManagementClientRequest`].
+/// that key, so a code names one kind of key. `Remove` clears only the Device slot;
+/// [`RemoveTrustedKeyRequest`] removes whichever kind holds a code. Strict for the same
+/// reason as [`SetManagementClientRequest`].
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 pub enum SetDeviceRequest {
@@ -485,8 +485,9 @@ pub enum DeviceSet {
     NotPresent { code: DeviceCode },
 }
 
-/// Approve a passkey on this Machine, or remove one, at Full scope only. The Machine
-/// records who approved it from its own view of the caller, never from the request.
+/// Approve a passkey on this Machine at Full scope only. The Machine records who
+/// approved it from its own view of the caller, never from the request.
+/// [`RemoveTrustedKeyRequest`] removes one.
 ///
 /// A passkey only approves workflows: it gets no Management Client slot, so it never
 /// connects. Strict for the same reason as [`SetManagementClientRequest`].
@@ -496,9 +497,38 @@ pub enum SetPasskeyRequest {
     Approve {
         passkey: Box<crate::authority::Passkey>,
     },
-    Remove {
+}
+
+/// Stop trusting the key `code` names on this Machine, at Full scope only, whether a
+/// Device or a passkey holds it. The Machine picks the kind under the same admission as
+/// the approvals, so no approval between a caller's read and this removal survives it.
+/// Strict for the same reason as [`SetManagementClientRequest`].
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct RemoveTrustedKeyRequest {
+    pub code: DeviceCode,
+}
+
+/// What a [`RemoveTrustedKeyRequest`] removed. Each outcome is final, so a rerun reports
+/// `NotPresent` rather than failing.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
+#[serde(tag = "outcome", rename_all = "snake_case")]
+pub enum TrustedKeyRemoved {
+    Removed {
+        code: DeviceCode,
+        kind: TrustedKeyKind,
+    },
+    NotPresent {
         code: DeviceCode,
     },
+}
+
+/// The kind of trusted key a code named.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "snake_case")]
+pub enum TrustedKeyKind {
+    Device,
+    Passkey,
 }
 
 /// Where this Machine's observe process pushes crash events, or `None` to stop pushing.
@@ -1660,6 +1690,7 @@ define_responses! {
     Registered(Registered) => "registered";
     SetManagementClientResponse(SetManagementClientResponse) => "management_client_set";
     DeviceSet(DeviceSet) => "device_set";
+    TrustedKeyRemoved(TrustedKeyRemoved) => "trusted_key_removed";
     PendingJoins(PendingJoins) => "pending_joins";
     JoinApproved(JoinApproved) => "join_approved";
     PushTargetSet(PushTargetSet) => "push_target_set";
@@ -2637,7 +2668,7 @@ mod streaming_routing_tests {
     }
 
     #[test]
-    fn only_exec_device_and_passkey_changes_and_the_recovery_code_routes_need_full_scope() {
+    fn only_exec_trusted_key_changes_and_the_recovery_code_routes_need_full_scope() {
         assert_eq!(
             crate::rpc_catalog!(full_scope_routes),
             [
@@ -2646,6 +2677,7 @@ mod streaming_routing_tests {
                 "SetDevice",
                 "SetDeviceEnforcement",
                 "SetPasskey",
+                "RemoveTrustedKey",
                 "Exec"
             ]
         );

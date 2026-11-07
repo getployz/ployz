@@ -12,14 +12,14 @@ use ployz_core::{
     PREPARE_VOLUMES_CAPABILITY, PRUNE_IMAGES_CAPABILITY, PUBLISH_CERTIFICATE_MATERIAL_CAPABILITY,
     PULL_IMAGE_CAPABILITY, PULL_IMAGE_FROM_MACHINE_CAPABILITY, READ_ROUTED_ADDRESSES_CAPABILITY,
     READ_ROUTES_CAPABILITY, RECOVER_SEALING_KEY_CAPABILITY, REGISTER_MACHINE_CAPABILITY,
-    REMOVE_VOLUME_CAPABILITY, REQUEST_MACHINE_UPGRADE_CAPABILITY, RESTART_APPROVAL_CAPABILITY,
-    RETAINED_ENV_CAPABILITY, RUNTIME_WATCH_CAPABILITY, Rpc, SEED_VOLUME_CAPABILITY,
-    SELECT_ENDPOINT_CAPABILITY, SET_DEVICE_CAPABILITY, SET_DEVICE_ENFORCEMENT_CAPABILITY,
-    SET_MANAGEMENT_CLIENT_CAPABILITY, SET_PASSKEY_CAPABILITY, SET_PUSH_TARGET_CAPABILITY,
-    SET_VOLUME_COPY_CAPABILITY, SET_VOLUME_SIZE_CAPABILITY, SHARE_SEALING_KEY_CAPABILITY,
-    TAIL_LOGS_CAPABILITY, UPDATE_CONTAINER_LIMITS_CAPABILITY, UPDATE_MACHINE_CAPABILITY,
-    UPGRADE_EXACT_CAPABILITY, VOLUME_FLOOR_CAPABILITY, VOLUME_SHRINK_CAPABILITY,
-    WRAP_SEALING_KEY_CAPABILITY, op,
+    REMOVE_TRUSTED_KEY_CAPABILITY, REMOVE_VOLUME_CAPABILITY, REQUEST_MACHINE_UPGRADE_CAPABILITY,
+    RESTART_APPROVAL_CAPABILITY, RETAINED_ENV_CAPABILITY, RUNTIME_WATCH_CAPABILITY, Rpc,
+    SEED_VOLUME_CAPABILITY, SELECT_ENDPOINT_CAPABILITY, SET_DEVICE_CAPABILITY,
+    SET_DEVICE_ENFORCEMENT_CAPABILITY, SET_MANAGEMENT_CLIENT_CAPABILITY, SET_PASSKEY_CAPABILITY,
+    SET_PUSH_TARGET_CAPABILITY, SET_VOLUME_COPY_CAPABILITY, SET_VOLUME_SIZE_CAPABILITY,
+    SHARE_SEALING_KEY_CAPABILITY, TAIL_LOGS_CAPABILITY, UPDATE_CONTAINER_LIMITS_CAPABILITY,
+    UPDATE_MACHINE_CAPABILITY, UPGRADE_EXACT_CAPABILITY, VOLUME_FLOOR_CAPABILITY,
+    VOLUME_SHRINK_CAPABILITY, WRAP_SEALING_KEY_CAPABILITY, op,
 };
 
 /// Capability constants are generated from the catalog, so a typo would stay
@@ -72,6 +72,10 @@ fn catalogued_capabilities_keep_stable_spellings() {
             "ployz.machine.set-device-enforcement.v2",
         ),
         (SET_PASSKEY_CAPABILITY, "ployz.machine.set-passkey.v1"),
+        (
+            REMOVE_TRUSTED_KEY_CAPABILITY,
+            "ployz.machine.remove-trusted-key.v1",
+        ),
         (
             RESTART_APPROVAL_CAPABILITY,
             "ployz.restart.device-approval.v2",
@@ -163,6 +167,7 @@ fn advertised_capability_groups_match_the_frozen_catalog() {
             "ployz.machine.set-push-target.v1",
             "ployz.machine.set-device-enforcement.v2",
             "ployz.machine.set-passkey.v1",
+            "ployz.machine.remove-trusted-key.v1",
             "ployz.network.select-endpoint.v1",
             "ployz.machine.list.v1",
             "ployz.machine.update.v1",
@@ -353,7 +358,11 @@ const ABOVE_FLOOR: &[(&str, &str)] = &[
     ),
     (
         "ployz.machine.set-passkey.v1",
-        "gated: `ployz device approve --passkey` checks each Machine's contract first, names a Server whose daemon lacks it as missing and exits partial; `device rm` calls it only on a Machine whose Inspect lists a passkey under the code",
+        "gated: `ployz device approve --passkey` checks each Machine's contract first, names a Server whose daemon lacks it as missing and exits partial",
+    ),
+    (
+        "ployz.machine.remove-trusted-key.v1",
+        "falls back: `ployz device rm` calls set-device.v1 Remove on an older daemon, which can hold no passkey",
     ),
     (
         "ployz.restart.device-approval.v2",

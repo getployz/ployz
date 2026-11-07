@@ -417,6 +417,18 @@ impl MachineRpc for MachineService {
         finish(local.set_passkey(expect::<op::SetPasskey>(request)?).await)
     }
 
+    async fn remove_trusted_key(
+        &self,
+        request: Request<OpaquePayload>,
+    ) -> Result<Response<OpaquePayload>, Status> {
+        let local = self.caller(&request);
+        finish(
+            local
+                .remove_trusted_key(expect::<op::RemoveTrustedKey>(request)?)
+                .await,
+        )
+    }
+
     async fn set_push_target(
         &self,
         request: Request<OpaquePayload>,

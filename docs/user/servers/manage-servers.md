@@ -278,7 +278,7 @@ A server that joins later doesn't have your passkeys. Run `approve --passkey` th
 `ployz device ls` lists each passkey under your devices as `passkey, approve-only`, with its
 account and who approved it on each server: a device, or `on <server>` for that server's own
 terminal. `ployz device rm <code>` removes the device or passkey under the code from every server
-that answers. A server refuses a passkey and a device with the same key, so a code names one of
+that answers, and shows which one each server removed, or `not present`. A server refuses a passkey and a device with the same key, so a code names one of
 them. Removing a device leaves the passkeys it approved in place, and `rm` names each one that
 stays trusted.
 
