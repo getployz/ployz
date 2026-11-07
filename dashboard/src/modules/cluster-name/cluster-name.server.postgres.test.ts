@@ -6,7 +6,7 @@ import { afterAll, beforeAll, beforeEach, expect, it, vi } from "vitest";
 import { asTestDouble } from "#/lib/test-double";
 import { operationApprovals } from "#/modules/approvals/tables";
 import { clusterRename } from "#/modules/cluster-name/cluster-name.commands.server";
-import { applyClusterName, foundClusterName, listUnappliedClusterNames } from "#/modules/cluster-name/cluster-name.server";
+import { applyClusterName, foundClusterName, freshRenameDigest, listUnappliedClusterNames, renameCluster } from "#/modules/cluster-name/cluster-name.server";
 import { organizationClusterName } from "#/modules/cluster-name/tables";
 import type { Caller } from "#/modules/identity/actor";
 import { InngestClient } from "#/modules/inngest/client";
@@ -35,12 +35,11 @@ const runtime = asTestDouble<OrganizationRuntime["Service"]>()({ cancel: () => E
 const run = <A, E>(effect: Effect.Effect<A, E, Database | InngestClient | OrganizationRuntime>) =>
   harness.runEffect(effect.pipe(Effect.provideService(InngestClient, inngest), Effect.provideService(OrganizationRuntime, runtime)));
 
-const as = (via: Caller["via"], input: JsonValue) => run(clusterRename.invoke({
+const as = (via: Caller["via"], input: JsonValue, who: Pick<Caller, "role" | "support"> = { role: "owner", support: null }) => run(clusterRename.invoke({
   userId: ADA,
   organization: { id: ORG, slug: SLUG },
   credential: { kind: "session", id: "ada-session" },
-  role: "owner",
-  support: null,
+  ...who,
   via,
 }, input, { approvalId: null, key: null }));
 
@@ -77,12 +76,32 @@ it("renames from the dashboard at once, and asks a human first from the CLI or a
   expect(await approvals()).toBe(0);
 
   for (const via of ["agent", "cli"] as const) {
-    expect(await as(via, { name: "beta" })).toMatchObject({ ok: false, refusal: { code: "approval_required", writes: "none" } });
+    expect(await as(via, { name: "beta" })).toMatchObject({ ok: false, refusal: { code: "approval_required", message: "A human must approve renaming the cluster to beta before it runs.", writes: "none" } });
   }
   expect(await approvals()).toBe(1);
   expect((await row())?.name).toBe("acme");
   const [asked] = await harness.db.select({ review: operationApprovals.review, subject: operationApprovals.subject }).from(operationApprovals);
   expect(asked).toMatchObject({ subject: `cluster:${ORG}`, review: { effects: [], operation: { verb: "set_cluster_name", name: "beta", preview: { from: "acme", to: "beta" } } } });
+});
+
+it("never lets a support visit rename the Cluster", async () => {
+  const support = { role: null, support: { variables: true, configs: true, logs: true } };
+  expect(await as("dashboard", { name: "by-support" }, support)).toMatchObject({ ok: false, refusal: { code: "forbidden" } });
+  expect(await row()).toBeUndefined();
+});
+
+it("supersedes a pending rename once the name moves, so its card never shows a stale name", async () => {
+  await as("dashboard", { name: "acme" });
+  await as("cli", { name: "beta" });
+  const [asked] = await harness.db.select({ digest: operationApprovals.digest, review: operationApprovals.review }).from(operationApprovals);
+  const review = asked?.review;
+  if (asked === undefined || review === undefined || !("operation" in review)) throw new Error("an operation approval");
+  const fresh = () => run(freshRenameDigest(ORG, asked.digest, review.operation.preview));
+  expect(await fresh()).toBe(asked.digest);
+  await as("dashboard", { name: "gamma" });
+  expect(await fresh()).not.toBe(asked.digest);
+  await as("dashboard", { name: "beta" });
+  expect(await fresh()).toBeNull();
 });
 
 it("refuses a name that isn't one DNS label, naming the rule", async () => {
@@ -125,6 +144,20 @@ it("keeps a name saved while a set was in flight pending", async () => {
   session = connected((name) => Effect.promise(() => harness.pool.query("update organization_cluster_name set name = 'beta'")).pipe(Effect.as(name)));
   expect(await run(applyClusterName(ORG))).toBe("waiting");
   expect(await row()).toMatchObject({ name: "beta", appliedName: null });
+});
+
+it("sends a name renamed back to while another was in flight, never trusting the old confirmation", async () => {
+  await founded();
+  await as("dashboard", { name: "acme" });
+  session = connected((name) => Effect.succeed(name));
+  expect(await run(applyClusterName(ORG))).toBe("current");
+  await as("dashboard", { name: "beta" });
+  session = connected((name) => Effect.promise(() => run(renameCluster(ORG, "acme"))).pipe(Effect.as(name)));
+  expect(await run(applyClusterName(ORG))).toBe("waiting");
+  session = connected((name) => Effect.succeed(name));
+  expect(await run(applyClusterName(ORG))).toBe("current");
+  expect(named).toEqual(["acme", "beta", "acme"]);
+  expect(await row()).toMatchObject({ name: "acme", appliedName: "acme" });
 });
 
 it("shows why a Server too old for Cluster Names refused, and tries again later", async () => {

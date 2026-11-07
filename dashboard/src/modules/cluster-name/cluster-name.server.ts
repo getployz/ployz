@@ -1,7 +1,9 @@
 import "@tanstack/react-start/server-only";
 import { randomUUID } from "node:crypto";
 import { and, eq, isNotNull, isNull, ne, or } from "drizzle-orm";
-import { Effect } from "effect";
+import type { JsonValue } from "@ployz/sdk";
+import { Effect, Schema } from "effect";
+import { operationDigest, type OperationAsked } from "#/modules/approvals/approvals.server";
 import { type ClusterNameRow, defaultClusterName } from "#/modules/cluster-name/cluster-name";
 import { organizationClusterName } from "#/modules/cluster-name/tables";
 import { createClusterNameRequestedEvent } from "#/modules/inngest/events";
@@ -28,6 +30,29 @@ export const readClusterName = Effect.fn("ClusterName.read")(function* (organiza
   return row satisfies ClusterNameRow | undefined;
 });
 
+/** What renaming to `to` asks a human from the CLI or an agent: the private addresses move from the current name. */
+export const renameAsked = Effect.fn("ClusterName.asked")(function* (organizationId: string, to: string) {
+  const row = yield* readClusterName(organizationId);
+  return {
+    subject: `cluster:${organizationId}`,
+    verb: "set_cluster_name",
+    name: to,
+    preview: { from: row?.name ?? null, to },
+    effects: [],
+    alwaysAsks: true,
+  } satisfies OperationAsked;
+});
+
+const Renamed = Schema.Struct({ to: Schema.String });
+
+/** A pending rename's digest as the name stands now: none once the Cluster holds its name, so a rename since supersedes it. */
+export const freshRenameDigest = Effect.fn("ClusterName.freshDigest")(function* (organizationId: string, stored: string, preview: JsonValue) {
+  const renamed = Schema.decodeUnknownOption(Renamed)(preview);
+  if (renamed._tag === "None") return stored;
+  const asked = yield* renameAsked(organizationId, renamed.value.to);
+  return asked.preview.from === renamed.value.to ? null : operationDigest(asked);
+});
+
 const requestApply = (organizationId: string) =>
   enqueueEvent(createClusterNameRequestedEvent({ id: `cluster-name-${randomUUID()}`, organizationId }));
 
@@ -46,7 +71,7 @@ export const renameCluster = Effect.fn("ClusterName.rename")(function* (organiza
   return yield* database.transaction(Effect.gen(function* () {
     const { drizzle } = yield* Database;
     const [row] = yield* drizzle.insert(organizationClusterName).values({ organizationId, name })
-      .onConflictDoUpdate({ target: organizationClusterName.organizationId, set: { name, refusal: null, updatedAt: new Date() } })
+      .onConflictDoUpdate({ target: organizationClusterName.organizationId, set: { name, appliedName: null, refusal: null, updatedAt: new Date() } })
       .returning(columns);
     yield* requestApply(organizationId);
     return row ?? (yield* Effect.die("an upsert returned no row"));

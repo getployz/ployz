@@ -504,9 +504,10 @@ const requestOperationApproval = Effect.fn("Approvals.requestOperation")(functio
     operation: { ...operation, subject: asked.subject },
     organization: caller.organization.slug,
   };
+  const what = asked.verb === "set_cluster_name" ? `renaming the cluster to ${asked.name}` : `this ${asked.verb.replaceAll("_", " ")} of ${asked.name}`;
   return {
     code: "approval_required",
-    message: `A human must approve this ${asked.verb.replaceAll("_", " ")} of ${asked.name} before it runs.`,
+    message: `A human must approve ${what} before it runs.`,
     details: asked.protected === undefined ? details : { ...details, protected: { environment: asked.protected } },
   } satisfies StoreRefusal;
 });

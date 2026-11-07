@@ -40,7 +40,7 @@ function ClusterNameSection({ organizationSlug }: { organizationSlug: string }) 
           commit="none"
           control={(
             <>
-              {view.name === null ? <span className="text-sm text-muted-foreground">Not set</span> : <span className="font-mono text-sm">{view.name}</span>}
+              {view.name === null ? <span className="text-sm text-muted-foreground">Not set</span> : <span className="font-mono text-sm break-all">{view.name}</span>}
               {view.state === "pending" ? <Badge variant="info">Pending</Badge> : view.state === "refused" ? <Badge variant="warning">Not applied</Badge> : null}
               {editable ? (
                 <Button type="button" variant="outline" size="sm" onClick={() => setDraft(view.name ?? defaultClusterName(organizationSlug))}>Edit</Button>

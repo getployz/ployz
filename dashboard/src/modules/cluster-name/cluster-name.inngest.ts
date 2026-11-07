@@ -48,8 +48,8 @@ export const createClusterNameFunctions = (inngest: PloyzInngest, runEffect: Eff
       id: "apply-cluster-name",
       retries: 3,
       triggers: [{ event: clusterNameRequestedEventType }, { event: configFirstServerJoinedEventType }],
-      // The newest request replaces a run sleeping between tries: each try reads the name saved last.
-      singleton: { key: "event.data.organizationId", mode: "cancel" },
+      // One set at a time per Organization, so an older set never lands after a newer one. Each try reads the name saved last.
+      concurrency: [{ key: "event.data.organizationId", limit: 1 }],
     },
     async ({ event, step }) => executeApplyClusterName({ event, step }, runEffect),
   ),

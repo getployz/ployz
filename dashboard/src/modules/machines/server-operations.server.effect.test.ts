@@ -9,6 +9,7 @@ import { makeOrganizationRuntimeLayer, ORGANIZATION_CONNECT_TIMEOUT } from "#/mo
 import { makePloyzLayer } from "#/modules/runtime/ployz.server";
 import { runtimeWatchFrameFixture } from "#/modules/runtime/runtime-watch-frame.test-fixture";
 import { noPairingChanges } from "#/test/organization-runtime";
+import { Database } from "#/server/database.server";
 import { Conflict } from "#/server/public-error";
 
 const connections: Connection[] = [{ management: "ployz1:preferred" }];
@@ -115,7 +116,9 @@ it.effect("an approval's preview whose Cluster never sends a frame keeps the sto
       },
     }));
     const stored = "stored-digest";
-    const refreshing = yield* freshOperationDigest("org-1", `server:${machineId}`, "remove", stored, {}).pipe(Effect.provide(layer), Effect.forkChild);
+    const refreshing = yield* freshOperationDigest("org-1", `server:${machineId}`, "remove", stored, {}).pipe(
+      Effect.provide(layer), Effect.provideService(Database, asTestDouble<Database["Service"]>()({})), Effect.forkChild,
+    );
     yield* Deferred.await(watching);
     yield* TestClock.adjust("5 seconds");
     assert.strictEqual(yield* Fiber.join(refreshing), stored);
