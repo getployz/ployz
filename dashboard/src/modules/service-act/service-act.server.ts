@@ -263,7 +263,8 @@ export const actOnContainer = Effect.fn("ServiceAct.leg")(function* (
         error instanceof ServerLacks
           ? ["failed", `${leg.server} needs a newer Ployz to ${side} it.`] as const
           : refusedApproval(error)
-          ? ["failed", `${leg.server} didn't accept your approval.`] as const
+          // A leg sent without an approval is one only an approved device can run, such as a stop under enforcement.
+          ? ["failed", approval === null ? `${leg.server} needs an approved device. Use ployz service ${row.verb}.` : `${leg.server} didn't accept the approval.`] as const
           : rpcErrorCode(error) === "unavailable"
           ? ["unknown", `${leg.server} didn't answer.`] as const
           : ["failed", `${leg.server} couldn't ${side} it.`] as const,

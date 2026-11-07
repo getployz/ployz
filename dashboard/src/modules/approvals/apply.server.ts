@@ -122,6 +122,6 @@ export const decideAndApply = <R = never>(
   if (failed === null) return decided;
   yield* undoApproval(decider.organization.id, id, failed.moved);
   const then = failed.moved ? "The plan changed, so it has to be asked again." : "It's still waiting for approval.";
-  const refusal: StoreRefusal = { code: "conflict", message: `Approved, but it didn't run: ${failed.message} ${then}`, details: null };
+  const refusal: StoreRefusal = { code: "conflict", message: `It didn't run: ${failed.message} ${then}`, details: null };
   return { ok: false as const, refusal };
 }).pipe(Effect.withSpan("Approvals.decideAndApply"));
