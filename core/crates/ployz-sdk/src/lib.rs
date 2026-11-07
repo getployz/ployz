@@ -423,6 +423,22 @@ impl Client {
         to_json(&self.inner.inspect().await.map_err(rpc_to_napi)?)
     }
 
+    /// Inspect `machine` through this session's entry.
+    ///
+    /// # Errors
+    /// Returns `invalid_argument` for a malformed Machine ID, or transport or inspection
+    /// errors.
+    #[napi(ts_return_type = "Promise<MachineDetails>")]
+    pub async fn inspect_machine(&self, machine: String) -> Result<serde_json::Value> {
+        to_json(
+            &self
+                .inner
+                .inspect_machine(&machine)
+                .await
+                .map_err(rpc_to_napi)?,
+        )
+    }
+
     /// Read enrollment facts from this confirmed Entry Machine.
     ///
     /// # Errors

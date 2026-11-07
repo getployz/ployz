@@ -116,6 +116,11 @@ class Provider:
                    "-c", "security.secureboot=false")
         self.wait_agent(node)
 
+    def discard(self, name, why):
+        print(f"{name}: deleting its VM: {why}", file=sys.stderr)
+        if not self.incus("info", name, check=False).returncode:
+            self.incus("delete", name, "--force")
+
     def power_off(self, node):
         # --force cuts power: no shutdown hooks, no flushed page cache.
         if self.state(node) != "STOPPED":

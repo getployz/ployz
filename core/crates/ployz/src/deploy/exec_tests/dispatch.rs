@@ -608,6 +608,11 @@ async fn removal_sent(purpose: ployz_core::RemoveContainerPurpose) -> Vec<Contai
                     | RpcRequestBody::SetManagementClient(_)
                     | RpcRequestBody::SetDevice(_)
                     | RpcRequestBody::SetPushTarget(_)
+                    | RpcRequestBody::PendingJoins(_)
+                    | RpcRequestBody::ApproveJoin(_)
+                    | RpcRequestBody::SetDeviceEnforcement(_)
+                    | RpcRequestBody::SetPasskey(_)
+                    | RpcRequestBody::RemoveTrustedKey(_)
                     | RpcRequestBody::SelectEndpoint(_)
                     | RpcRequestBody::ListMachines(_)
                     | RpcRequestBody::UpdateMachine(_)
@@ -860,6 +865,7 @@ async fn global_stop_first_retry_replays_retained_candidate_with_no_free_endpoin
         accepts_ingress: true,
         advertised_endpoints: Vec::new(),
         runtime: Default::default(),
+        join_approval: None,
         build_concurrency: None,
     };
     let mut desired = spec(None, None, None);
@@ -1348,6 +1354,7 @@ async fn ingress_create_cleanup_never_names_a_sibling() {
                 accepts_ingress: true,
                 advertised_endpoints: Vec::new(),
                 runtime: Default::default(),
+                join_approval: None,
                 build_concurrency: None,
             },
             MembershipObservation::Up,

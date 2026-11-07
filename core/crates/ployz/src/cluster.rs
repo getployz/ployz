@@ -76,6 +76,11 @@ pub struct Client {
     pub(crate) cluster: Option<Box<crate::connect::ExpectedCluster>>,
     /// Set once a redial finds the entry in another Cluster. Every clone shares it.
     refused: Refusal,
+    full_single: bool,
+    full_connections: Arc<Vec<Connection>>,
+    /// The Device-signed approval every restart step this client sends carries.
+    restart_approval:
+        Option<Arc<ployz_core::authority::Signed<ployz_core::authority::RestartApproval>>>,
 }
 
 /// The entry a redial found in another Cluster, shared by every clone of a client and
@@ -131,7 +136,74 @@ impl Client {
             confirmed: None,
             cluster: None,
             refused: Refusal::default(),
+            restart_approval: None,
+            full_connections: Arc::default(),
+            full_single: false,
         }
+    }
+
+    pub(crate) fn with_full_connections(mut self, connections: Vec<Connection>) -> Self {
+        self.full_connections = Arc::new(connections);
+        self
+    }
+
+    pub(crate) fn with_full_single(mut self, single: bool) -> Self {
+        self.full_single = single;
+        self
+    }
+
+    pub(crate) fn full_single(&self) -> bool {
+        self.full_single
+    }
+
+    pub(crate) fn full_machines(&self) -> BTreeSet<MachineId> {
+        if self.full_connections.is_empty() {
+            return BTreeSet::new();
+        }
+        self.entry
+            .into_iter()
+            .chain(
+                self.full_connections
+                    .iter()
+                    .filter_map(|connection| connection.machine_id().copied()),
+            )
+            .collect()
+    }
+
+    async fn full_client(&self, target: &MachineTarget) -> Result<Option<Self>, ConnectError> {
+        self.ended()?;
+        if self.full_connections.is_empty()
+            || self.entry.is_some_and(|id| id.as_str() == target.as_str())
+        {
+            return Ok(None);
+        }
+        let Some(connection) = self.full_connections.iter().find(|connection| {
+            connection
+                .machine_id()
+                .is_some_and(|id| id.as_str() == target.as_str())
+        }) else {
+            return Ok(None);
+        };
+        let mut client = Box::pin(crate::connect::connect_one(
+            connection,
+            &self.source,
+            &self.connector,
+            false,
+            self.cluster.as_ref().map(|cluster| &cluster.expect),
+        ))
+        .await?;
+        client.refused = self.refused.clone();
+        self.ended()?;
+        Ok(Some(client))
+    }
+
+    #[must_use]
+    pub(crate) fn with_restart_approval(
+        mut self,
+        approval: Option<ployz_core::authority::Signed<ployz_core::authority::RestartApproval>>,
+    ) -> Self {
+        self.restart_approval = approval.map(Arc::new);
+        self
     }
 
     /// What the first dial confirmed about the entry's Cluster; None when it expected none.
@@ -749,9 +821,16 @@ impl Client {
         target: &MachineTarget,
         input: impl tokio_stream::Stream<Item = OpaquePayload> + Send + 'static,
     ) -> Result<Streaming<OpaquePayload>, TransportError> {
-        let mut rpc = self.machine_rpc().await?;
+        let direct = self
+            .full_client(target)
+            .await
+            .map_err(TransportError::client_ended)?;
+        let mut rpc = direct.as_ref().unwrap_or(self).machine_rpc().await?;
         Ok(rpc
-            .exec(target_request(self.until_ended(input), Some(target)))
+            .exec(target_request(
+                self.until_ended(input),
+                direct.is_none().then_some(target),
+            ))
             .await
             .map_err(|status| TransportError::from(status).name_refusal(op::Exec::PATH, target))?
             .into_inner())
@@ -831,7 +910,16 @@ impl Client {
         payload: OpaquePayload,
         target: Option<&MachineTarget>,
     ) -> Result<T::Response, ConnectError> {
-        let mut grpc = self.grpc().await?;
+        let direct = if ployz_core::scope_of(T::PATH) == Some(ployz_core::ManagementScope::Full) {
+            match target {
+                Some(target) => self.full_client(target).await?,
+                None => None,
+            }
+        } else {
+            None
+        };
+        let mut grpc = direct.as_ref().unwrap_or(self).grpc().await?;
+        let target = if direct.is_some() { None } else { target };
         let response = grpc
             .unary(
                 target_request(payload, target),
@@ -1514,9 +1602,12 @@ impl Client {
     ) -> Result<ployz_core::EnsuredContainer, RpcError> {
         let target = MachineTarget::from(machine_id);
         crate::sealed_compat::admit(self, &target, &want).await?;
-        let payload = op::EnsureContainer::into_request(EnsureContainerRequest { want })
-            .encode()
-            .map_err(|error| rpc_error(ConnectError::Codec(error)))?;
+        let payload = op::EnsureContainer::into_request(EnsureContainerRequest {
+            want,
+            approval: self.restart_approval.as_deref().cloned(),
+        })
+        .encode()
+        .map_err(|error| rpc_error(ConnectError::Codec(error)))?;
         apply_timeout(
             timeout,
             self.call_once::<op::EnsureContainer>(payload, Some(&target)),
@@ -1531,6 +1622,10 @@ impl Client {
         action: ContainerAction,
         signal: Option<String>,
         grace_period_seconds: Option<u16>,
+        approvals: &HashMap<
+            ContainerId,
+            ployz_core::authority::Signed<ployz_core::authority::RestartApproval>,
+        >,
         cancellation: &CancellationToken,
     ) -> PartialResult<ContainerId, ContainerOperationFailure> {
         let mut tasks = JoinSet::new();
@@ -1546,7 +1641,8 @@ impl Client {
             let machine_id = observation.machine_id;
             let container_id = observation.container_id;
             let handle = tasks.spawn(change_on_machine(
-                self.clone(),
+                self.clone()
+                    .with_restart_approval(approvals.get(&container_id).cloned()),
                 machine_id,
                 container_id,
                 action,

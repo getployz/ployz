@@ -203,6 +203,7 @@ async fn exec_service_logs_and_machine_logs_cross_a_real_two_machine_cluster() {
             ContainerAction::Remove,
             None,
             None,
+            &std::collections::HashMap::new(),
             &tokio_util::sync::CancellationToken::new(),
         )
         .await;

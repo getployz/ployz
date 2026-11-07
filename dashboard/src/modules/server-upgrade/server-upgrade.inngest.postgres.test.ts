@@ -2,7 +2,7 @@ import type { MachineId, MachineUpgradeAttempt, MachineUpgradeAttemptId, Runtime
 import { InngestTestEngine } from "@inngest/test";
 import { ConfigProvider, Effect, Layer } from "effect";
 import { Inngest } from "inngest";
-import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
+import { afterAll, beforeAll, beforeEach, describe, expect, it, onTestFinished, vi } from "vitest";
 import { asTestDouble } from "#/lib/test-double";
 import { PostHog, type PostHogService } from "#/modules/analytics/posthog.server";
 import { InngestClient } from "#/modules/inngest/client";
@@ -45,8 +45,15 @@ const serverId = ids.machineId;
 /** The newest release the stable pointer names; the beta pointer names `publishedBeta`, or the same with none. */
 let published = "0.2.2";
 let publishedBeta: string | null = null;
-const release = vi.spyOn(globalThis, "fetch").mockImplementation(async (url) =>
-  new Response(`v${String(url).endsWith("/beta") ? publishedBeta ?? published : published}\n`));
+/** When GitHub says each release was published; a release missing here was published long ago. */
+const publishedAt = new Map<string, string>();
+/** The `AUTOMATIC_UPGRADE_RELEASE_AGE_HOURS` the runner configures; unset is the 72-hour default. */
+let releaseAgeHours: string | undefined;
+const release = vi.spyOn(globalThis, "fetch").mockImplementation(async (url) => {
+  const tag = /\/releases\/tags\/v(.+)$/u.exec(String(url));
+  if (tag !== null) return Response.json({ published_at: publishedAt.get(tag[1] ?? "") ?? "2020-01-01T00:00:00Z" });
+  return new Response(`v${String(url).endsWith("/beta") ? publishedBeta ?? published : published}\n`);
+});
 const inngest = new Inngest({ id: "server-upgrade-test" });
 const send = vi.spyOn(inngest, "send").mockResolvedValue({ ids: [] });
 
@@ -89,10 +96,14 @@ describe("roll-out-server-upgrade", () => {
     if (answer.outcome !== "running") log.push(`${answer.outcome} ${machine}`);
     return Effect.andThen(outlive, Effect.succeed(attempt(attemptId, answer)));
   };
+  const configEnvironment = () => {
+    const env = { ...testConfigEnvironment(), APP_URL: "https://cloud.example.com", DATABASE_URL: harness.databaseUrl };
+    return releaseAgeHours === undefined ? env : { ...env, AUTOMATIC_UPGRADE_RELEASE_AGE_HOURS: releaseAgeHours };
+  };
   const runEffect = makeInngestEffectRunner(<A, E>(operation: Effect.Effect<A, E, Database | OrganizationRuntime | InngestClient | AppConfig>) =>
     harness.runEffect(operation.pipe(
       Effect.provide(AppConfig.layer.pipe(Layer.provide(ConfigProvider.layer(ConfigProvider.fromEnv({
-        env: { ...testConfigEnvironment(), APP_URL: "https://cloud.example.com", DATABASE_URL: harness.databaseUrl },
+        env: configEnvironment(),
       }))))),
       Effect.provideService(InngestClient, inngest),
       Effect.provideService(PostHog, {
@@ -182,6 +193,8 @@ describe("roll-out-server-upgrade", () => {
     identified = [];
     published = "0.2.2";
     publishedBeta = null;
+    publishedAt.clear();
+    releaseAgeHours = undefined;
     send.mockClear();
     await harness.pool.query(`
       truncate table organization, "user", operation_outbox cascade;
@@ -499,6 +512,55 @@ describe("roll-out-server-upgrade", () => {
       clock.mockRestore();
 
       expect(requests.map(({ machine }) => machine)).toEqual([serverId("1"), serverId("2"), serverId("3")]);
+    });
+
+    it("an automatic rollout waits 72 hours after a release is published; a manual Upgrade doesn't", async () => {
+      // Its own release line, so this pointer and release date stay out of the other tests' caches.
+      published = "5.0.1";
+      const now = Date.now();
+      publishedAt.set("5.0.1", new Date(now).toISOString());
+      frame = runtimeWatchFrameFixture({ machines: [server("1", "web-1", "5.0.0"), server("2", "web-2", "5.0.0")] });
+
+      await rollOut(null, "automatic");
+      expect(requests).toEqual([]);
+      expect(release).toHaveBeenCalledWith("https://api.github.com/repos/getployz/ployz/releases/tags/v5.0.1", expect.anything());
+
+      await rollOut(serverId("1"));
+      expect(requests.map(({ machine }) => machine)).toEqual([serverId("1")]);
+      frame = runtimeWatchFrameFixture({ machines: [server("1", "web-1", "5.0.1"), server("2", "web-2", "5.0.0")] });
+      requests = [];
+
+      const clock = vi.spyOn(Date, "now").mockReturnValue(now + 71 * 60 * 60_000);
+      onTestFinished(() => clock.mockRestore());
+      await rollOut(null, "automatic");
+      expect(requests).toEqual([]);
+      clock.mockReturnValue(now + 72 * 60 * 60_000);
+      await rollOut(null, "automatic");
+
+      expect(requests.map(({ machine }) => machine)).toEqual([serverId("2")]);
+    });
+
+    it("AUTOMATIC_UPGRADE_RELEASE_AGE_HOURS=0 takes a release as soon as it's out, without reading its date", async () => {
+      releaseAgeHours = "0";
+      published = "6.0.1";
+      publishedAt.set("6.0.1", new Date().toISOString());
+      frame = runtimeWatchFrameFixture({ machines: [server("1", "web-1", "6.0.0")] });
+      release.mockClear();
+
+      await rollOut(null, "automatic");
+
+      expect(requests.map(({ machine }) => machine)).toEqual([serverId("1")]);
+      expect(release.mock.calls.map(([url]) => String(url))).not.toContainEqual(expect.stringContaining("api.github.com"));
+    });
+
+    it("an automatic rollout upgrades nothing while the release's date can't be read", async () => {
+      published = "7.0.1";
+      frame = runtimeWatchFrameFixture({ machines: [server("1", "web-1", "7.0.0")] });
+      release.mockImplementationOnce(async () => new Response("v7.0.1\n")).mockImplementationOnce(async () => new Response(null, { status: 503 }));
+
+      await rollOut(null, "automatic");
+
+      expect(requests).toEqual([]);
     });
 
     it("a successful manual Upgrade of the halted release lifts the halt", async () => {

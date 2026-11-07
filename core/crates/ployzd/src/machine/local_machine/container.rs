@@ -1196,7 +1196,10 @@ impl LocalMachine {
         drop(self.owner.admission_lock().write_owned().await);
     }
 
-    async fn container_now(&self, locator: &ContainerLocator) -> Result<ContainerNow, Error> {
+    pub(super) async fn container_now(
+        &self,
+        locator: &ContainerLocator,
+    ) -> Result<ContainerNow, Error> {
         let containers = self.containers.as_ref().ok_or(Error::DockerUnavailable)?;
         let machine_id = self.record().id();
         let observed = match locator {

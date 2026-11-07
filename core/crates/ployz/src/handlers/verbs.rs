@@ -293,9 +293,16 @@ pub(crate) const DEPLOYMENT_START: Verb = Verb::cloud(
 .needs(Permission::ChangesDeploy);
 pub(crate) const DEVICE_APPROVE: Verb = Verb::local(
     "device approve",
-    Never,
+    Always,
     device::approve_command,
     device::approve,
+)
+.docs("servers/manage-servers.md");
+pub(crate) const DEVICE_ENFORCE: Verb = Verb::local(
+    "device enforce",
+    Never,
+    device::enforce_command,
+    device::enforce,
 )
 .docs("servers/manage-servers.md");
 pub(crate) const DEVICE_LS: Verb =
@@ -845,6 +852,7 @@ pub(crate) const VERBS: &[Verb] = &[
     DEPLOYMENT_SHOW,
     DEPLOYMENT_START,
     DEVICE_APPROVE,
+    DEVICE_ENFORCE,
     DEVICE_LS,
     DEVICE_RM,
     DEVICE_REQUEST,

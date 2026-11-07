@@ -1647,6 +1647,7 @@ fn ensure_container_names_the_want_the_observation_and_the_refusal_on_the_wire()
         "creation_key": "deploy/slot-1"
     });
     let running = EnsureContainerRequest {
+        approval: None,
         want: ContainerWant::Running {
             container: RunTarget::New(NewContainer {
                 r#gen: ployz_core::Gen::FIRST,
@@ -1829,6 +1830,7 @@ fn sealing_key_backfill_rpcs_have_one_typed_wire_contract() {
         RpcRequestBody::GenerateSealingKey(ployz_core::GenerateSealingKeyRequest {})
     );
     let share = ployz_core::ShareSealingKeyRequest {
+        join_approval: None,
         machine,
         public_key: ployz_core::WireGuardPublicKey([7; 32]),
     };
@@ -1979,6 +1981,7 @@ fn machine_upgrade_request_and_receipt_have_one_typed_wire_contract() {
         store_version: BTreeMap::new(),
         rtts: Vec::new(),
         management_clients: Vec::new(),
+        passkeys: Vec::new(),
         telemetry: None,
         storage: None,
         upgrade: None,

@@ -72,6 +72,9 @@ impl Default for InitialMachinePolicy {
 /// One Machine's durable advertised record.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
 pub struct Machine {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub join_approval: Option<crate::authority::Signed<crate::authority::JoinApproval>>,
     /// Operator classifications used by placement constraints.
     pub labels: BTreeMap<MachineLabelKey, MachineLabelValue>,
     /// Whether to admit new Builds; revocation preserves existing work.
@@ -191,6 +194,11 @@ pub struct MachineRuntime {
     /// record, so empty claims nothing.
     #[ts(as = "Option<BTreeSet<String>>", optional)]
     pub capabilities: BTreeSet<String>,
+    /// Whether this Machine requires a customer key's approval before an Operator caller
+    /// changes a Service. Live, never persisted. Absent when unobserved and from older
+    /// daemons, so absence claims nothing.
+    #[ts(optional = nullable)]
+    pub device_enforcement: Option<bool>,
     /// The daemon's Management Identity as 64 hex digits, so a member can tell a
     /// Machine that asks whether the Cluster forgot it. Absent from a record written
     /// by a daemon that predates the field, so absence claims nothing.
@@ -1013,6 +1021,7 @@ mod placement_tests {
             public_ip: None,
             advertised_endpoints: Vec::new(),
             runtime: Default::default(),
+            join_approval: None,
             build_concurrency: None,
         }
     }

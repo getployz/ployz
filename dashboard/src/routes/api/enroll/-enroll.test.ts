@@ -8,7 +8,7 @@ import {
   handleMachineEnrollmentJoin,
   handleMachineSetupReport,
 } from "#/routes/api/enroll/-handlers";
-import type { SetupReport } from "#/modules/machines/enrollment";
+import { JoinApprovalRequired, type SetupReport } from "#/modules/machines/enrollment";
 
 const mocks = {
   enroll: vi.fn(),
@@ -446,6 +446,15 @@ describe("machine enrollment routes", () => {
     expect(callbackResponse.status).toBe(422);
     expect(joinBody).not.toContain(token);
     expect(callbackBody).not.toContain(token);
+  });
+
+  it("returns the join approval capability as data", async () => {
+    mocks.enroll.mockReturnValue(Effect.fail(new JoinApprovalRequired({ message: "Approve this join." })));
+    const response = await join(identity);
+    expect(response.status).toBe(409);
+    expect(await response.json()).toEqual({
+      error: "Approve this join.", details: { capability: "ployz.machine.join.device-approval.v1" },
+    });
   });
 
   it("preserves a user-facing conflict and adds its public code", async () => {

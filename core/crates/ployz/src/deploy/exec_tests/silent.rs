@@ -33,6 +33,7 @@ fn holder(hex: char) -> Machine {
             architecture: "x86_64".into(),
             ..Default::default()
         },
+        join_approval: None,
         build_concurrency: None,
     }
 }

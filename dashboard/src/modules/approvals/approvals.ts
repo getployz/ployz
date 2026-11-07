@@ -1,5 +1,6 @@
 import type { Asks, ConfigCommand, DestructiveEffect, DestructiveKind, DiffView, EnvironmentRef, JsonValue, NodeChange } from "@ployz/sdk";
 import { Schema } from "effect";
+import { asRecord, asString } from "#/lib/json";
 import type { Caller } from "#/modules/identity/actor";
 import { rollbackConfirm } from "#/modules/config-store/store-deployments";
 import { holds } from "#/modules/support-access/support-view";
@@ -69,6 +70,21 @@ export function approvalSubject(command: string, review: ApprovalReview) {
   const verb = command === "publish" ? "Save" : command === "retry" ? (shutsDownAgain(review) ? "Shut down" : rollsBack(review) ? "Roll back" : "Redeploy") : command === "remove" ? "Remove"
     : command === "shut_down" ? "Shut down" : command === "sync" ? "Sync" : command === "take" ? "Take" : command === "cancel" ? "Cancel" : "Deploy";
   return { verb, name: review.diff.environment.name, project: review.diff.environment.project };
+}
+
+/**
+ * The restart an approval card shows, as Servers know it: the Environment and Service from the ask, and the Namespace and
+ * runtime name its approvals carry. Null for anything else, or an ask made before its preview named them.
+ */
+export function shownRestart(review: ApprovalReview) {
+  if (!("operation" in review) || review.operation.verb !== "restart") return null;
+  const preview = asRecord(review.operation.preview);
+  const environment = asString(preview?.["environment"]);
+  const service = asString(preview?.["service"]);
+  const namespace = asString(preview?.["namespace"]);
+  const runtime = asString(preview?.["runtime"]);
+  if (environment === null || service === null || namespace === null || runtime === null) return null;
+  return { environment, service, namespace, runtime };
 }
 
 /** An approval's verb and name for a list, a Store write's Environment under its Project: "Deploy" "shop/production". */

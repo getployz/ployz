@@ -610,7 +610,10 @@ async fn ensure(
 ) -> ployz_core::ContainerNow {
     client
         .call::<op::EnsureContainer>(
-            EnsureContainerRequest { want },
+            EnsureContainerRequest {
+                want,
+                approval: None,
+            },
             Some(&MachineTarget::from(&machine_id)),
         )
         .await

@@ -12,7 +12,7 @@ use tokio::time::Instant;
 use tokio_util::sync::CancellationToken;
 
 use super::MachineOperations;
-use crate::connect::{TARGET_RPC_TIMEOUT, in_rpc_timeout, stop_rpc_timeout};
+use crate::connect::{FORBIDDEN, TARGET_RPC_TIMEOUT, in_rpc_timeout, stop_rpc_timeout};
 use crate::ui::{then_sentence, with_reason};
 
 pub(crate) const ACK_POLL: Duration = Duration::from_millis(200);
@@ -525,6 +525,15 @@ pub(crate) async fn user_restart<C: MachineOperations>(
             "Container {} was not restarted: the wait for its proxies was cancelled.",
             copy.container_id
         ))),
+        Err(error) if error.code.as_str() == FORBIDDEN => {
+            return Err(RpcError {
+                message: with_reason(
+                    format_args!("Container {} was not restarted", copy.container_id),
+                    &error.message,
+                ),
+                ..error
+            });
+        }
         // The ask may have landed, so the copy is restored as if Held.
         Err(error) => Err(RpcError {
             message: with_reason(
@@ -705,7 +714,8 @@ fn rotation_name(rotation: &CopyRotation) -> &'static str {
 }
 
 /// A stop that ends while its proxies drop the copy withdrew a serving copy for
-/// nothing, so it goes back In, as a restart does when its wait fails.
+/// nothing, so it goes back In, as a restart does when its wait fails. A refusal was
+/// answered before the Machine acted, so the copy is as it was and only the reason is said.
 async fn not_stopped<C: MachineOperations>(
     client: &C,
     copy: &Copy,
@@ -713,6 +723,13 @@ async fn not_stopped<C: MachineOperations>(
     run: DeploymentLogId,
     mut error: RpcError,
 ) -> RpcError {
+    error.message = with_reason(
+        format_args!("Container {} was not stopped", copy.container_id),
+        &error.message,
+    );
+    if error.code.as_str() == FORBIDDEN {
+        return error;
+    }
     let held = Copy {
         rotation: CopyRotation::Held(run.clone()),
         ..copy.clone()
@@ -723,13 +740,7 @@ async fn not_stopped<C: MachineOperations>(
             "It is left running and Held."
         }
     };
-    error.message = then_sentence(
-        &with_reason(
-            format_args!("Container {} was not stopped", copy.container_id),
-            &error.message,
-        ),
-        back,
-    );
+    error.message = then_sentence(&error.message, back);
     error
 }
 

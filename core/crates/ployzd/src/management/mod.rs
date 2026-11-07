@@ -438,8 +438,8 @@ async fn revoked(mut records: watch::Receiver<Arc<LocalMachineRecord>>, remote: 
 }
 
 /// The Machine API as one management connection serves it: each request carries its
-/// connection, and once the connection drains every stream but `SetManagementClient`
-/// and `SetDevice` ends.
+/// connection, and once the connection drains every stream ends but the ones that can
+/// revoke their own caller: `SetManagementClient`, `SetDevice` and `RemoveTrustedKey`.
 #[derive(Clone)]
 struct ConnectionApi<S> {
     api: S,
@@ -466,7 +466,7 @@ where
     fn call(&mut self, request: http::Request<hyper::body::Incoming>) -> Self::Future {
         let may_revoke_caller = matches!(
             request.uri().path(),
-            op::SetManagementClient::PATH | op::SetDevice::PATH
+            op::SetManagementClient::PATH | op::SetDevice::PATH | op::RemoveTrustedKey::PATH
         );
         let mut request = request.map(Body::new);
         request

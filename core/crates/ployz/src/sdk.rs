@@ -613,6 +613,26 @@ impl Session {
             .await
     }
 
+    /// Inspect `machine` through the entry, as [`Self::inspect`] does the entry itself.
+    ///
+    /// # Errors
+    /// Returns `invalid_argument` for a malformed Machine Target, cancellation, or the
+    /// Machine's Inspect error, or the transport's when it did not answer.
+    pub async fn inspect_machine(
+        &self,
+        machine: &str,
+    ) -> Result<ployz_core::MachineDetails, RpcError> {
+        let target =
+            MachineTarget::parse(machine).map_err(|error| invalid_argument(error.to_string()))?;
+        let client = self.client()?;
+        self.until_closed(client.invoke::<op::Inspect>(
+            ployz_core::InspectRequest::default(),
+            &target,
+            Some(crate::connect::TARGET_RPC_TIMEOUT),
+        ))
+        .await
+    }
+
     /// Publish or clear Certificate Material for one hostname or single-level wildcard.
     /// Set and Clear are idempotent, so transport drops are retried.
     ///

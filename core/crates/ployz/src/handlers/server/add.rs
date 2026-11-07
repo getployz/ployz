@@ -66,6 +66,7 @@ pub(in crate::handlers) fn add(root: &ArgMatches) -> Result<(), Error> {
         let assignment = crate::enrollment::local::save_assignment(
             &history,
             &RegisterRequest {
+                join_approval: None,
                 machine_id: token.id,
                 assigned_subnet: None,
                 initial_policy: policy,
@@ -79,7 +80,35 @@ pub(in crate::handlers) fn add(root: &ArgMatches) -> Result<(), Error> {
             &snapshot,
         )?;
         let assigned = assignment.machine.clone();
-        let registration = crate::enrollment::publish_enrollment(&mut entry, &assignment).await?;
+        let registration = match crate::enrollment::publish_enrollment(&mut entry, &assignment)
+            .await
+        {
+            Err(error)
+                if error.code == ployz_core::RpcErrorCode::from("forbidden")
+                    && error
+                        .details
+                        .get("capability")
+                        .and_then(serde_json::Value::as_str)
+                        == Some(ployz_core::JOIN_APPROVAL_CAPABILITY) =>
+            {
+                if !crate::handlers::device::sign_waiting_join(
+                    &mut entry,
+                    config.path(),
+                    &ployz_core::RegisterRequest {
+                        assigned_subnet: Some(assigned.subnet),
+                        ..assignment.request.clone()
+                    },
+                )
+                .await?
+                {
+                    let code = ployz_core::authority::join::code(assigned.id, assigned.public_key);
+                    return Err(Error::from(error)
+                        .hint(Hint::Next(format!("ployz device approve --join {code}"))));
+                }
+                crate::enrollment::publish_enrollment(&mut entry, &assignment).await?
+            }
+            result => result?,
+        };
         helpers::enroll(
             &mut target_client,
             EnrollRequest {
@@ -259,6 +288,7 @@ mod tests {
         let saved = crate::enrollment::local::save_assignment(
             history.path(),
             &RegisterRequest {
+                join_approval: None,
                 machine_id: returning.id,
                 assigned_subnet: None,
                 initial_policy: Default::default(),
@@ -371,6 +401,7 @@ mod tests {
             public_ip: None,
             advertised_endpoints: Vec::new(),
             runtime: Default::default(),
+            join_approval: None,
             build_concurrency: None,
         }
     }
