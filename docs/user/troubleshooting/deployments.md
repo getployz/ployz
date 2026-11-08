@@ -72,9 +72,10 @@ lines when the deploy failed. When a newer deployment, such as a push, takes the
 one you were following without shipping all of its services, the CLI says
 `Deployment #3 was superseded by #4 (push bbe4f9e).` and points at `ployz deployment show 4`.
 When a newer deploy takes over the environment while one running on your machine is still going,
-yours stops at its next step, and the CLI says `Deployment #3 was replaced by #4 before it
-finished.` and points at `ployz deployment show 4`. What #3 changed before it stopped shows as
-unknown.
+yours stops at its next step. When it stopped before recording what it ran, the CLI says
+`Deployment #3 was replaced by #4 before it finished.` and points at `ployz deployment show 4`,
+and what #3 changed before it stopped shows as unknown. When it recorded what it ran as
+interrupted, the CLI says `Deployment #3 did not complete.`
 
 A failed deploy exits with code 1. A Deployment that applied but whose result is missing
 a Server, or that left an old container running because its Server didn't answer, exits

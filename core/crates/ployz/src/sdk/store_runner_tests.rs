@@ -74,6 +74,7 @@ fn admitted(upload: Option<ployz_store::UploadedSource>) -> (Run, ployz_store::A
             store,
             deployment,
             runner,
+            over: OnceLock::new(),
         },
         actor,
     )
@@ -146,6 +147,7 @@ async fn a_runner_plans_with_the_runs_its_claim_reports_ended() {
         store: superseded.store.clone(),
         deployment: DeploymentId::parse("00000000-0000-4000-8000-000000000004").unwrap(),
         runner: RunnerId::parse("other").unwrap(),
+        over: OnceLock::new(),
     };
 
     let claimed = run.claim(Operator::Cloud).await.unwrap();
@@ -236,7 +238,10 @@ async fn renewing_aborts_but_keeps_owned_work_driven_until_cleanup_finishes() {
 async fn renewing_aborts_once_the_store_hands_the_environment_to_another_runner() {
     let (run, actor) = run();
     take_over(&run, &actor);
-    assert_eq!(run.status().await.unwrap(), DeploymentStatus::Unknown);
+    assert_eq!(
+        run.record(RunEvidence::Alive).await.unwrap().status,
+        DeploymentStatus::Unknown
+    );
     let token = CancellationToken::new();
     let work = async {
         token.cancelled().await;
@@ -335,8 +340,9 @@ async fn a_run_stays_lost_when_a_later_read_fails() {
     };
     let read = run.record(RunEvidence::Alive).await.unwrap_err();
     assert_eq!(read.code, RpcErrorCode::NotFound);
-    assert!(
-        run.lost_to_another_runner().await,
+    assert_eq!(
+        run.standing().await,
+        Standing::Over(Over::Lost),
         "a read that fails after the takeover lets the run go on"
     );
 }
@@ -389,16 +395,123 @@ async fn a_run_taken_over_after_its_last_read_keeps_its_outcome_as_interrupted()
         completed: Vec::new(),
         services: Vec::new(),
     };
-    let recorded = run
-        .record(RunEvidence::Executed {
-            progress: Vec::new(),
-            outcome: Box::new(outcome),
-            removed: Vec::new(),
-        })
-        .await;
+    let recorded = run.executed(outcome, Vec::new(), Vec::new()).await;
     let summary = recorded.expect("the store refuses the run's outcome, and nothing keeps it");
     assert_eq!(summary.status, DeploymentStatus::Unknown);
     assert_eq!(kept_summary(&run, &actor), Some(interrupted_summary()));
+}
+
+/// A lost run whose outcome the store refused sends it again as Interrupted only when it
+/// tried to delete no Volume, since the store reads an Interrupted outcome's removed
+/// Volumes as never attempted.
+#[tokio::test]
+async fn a_lost_run_that_tried_to_delete_a_volume_keeps_the_refusal() {
+    let volume = ployz_core::DockerVolumeId {
+        machine_id: MachineId::parse("a".repeat(32)).unwrap(),
+        name: ployz_core::DockerVolumeName::parse("app_data").unwrap(),
+    };
+    let removal = |outcome| ployz_core::VolumeRemoval {
+        id: volume.clone(),
+        outcome,
+    };
+    let cases = [
+        (ployz_core::VolumeRemovalOutcome::Omitted, true),
+        (ployz_core::VolumeRemovalOutcome::Removed, false),
+        (
+            ployz_core::VolumeRemovalOutcome::Failed {
+                error: RpcError {
+                    code: RpcErrorCode::Unavailable,
+                    message: "no reply".into(),
+                    details: Value::Null,
+                    cause: Vec::new(),
+                },
+            },
+            false,
+        ),
+    ];
+    for (outcome, resent) in cases {
+        let (run, actor) = run();
+        prepared(&run).await;
+        take_over(&run, &actor);
+        let success = DeployOutcome::Success {
+            completed: Vec::new(),
+            services: Vec::new(),
+        };
+        let recorded = run
+            .executed(success, Vec::new(), vec![removal(outcome.clone())])
+            .await;
+        if resent {
+            assert_eq!(recorded.unwrap().status, DeploymentStatus::Unknown);
+            assert_eq!(kept_summary(&run, &actor), Some(interrupted_summary()));
+        } else {
+            assert_eq!(
+                recorded.unwrap_err().code,
+                RpcErrorCode::Conflict,
+                "{outcome:?}"
+            );
+            assert_eq!(kept_summary(&run, &actor), None, "{outcome:?}");
+        }
+    }
+}
+
+/// Each answer to a record, as the standing the run acts on.
+#[tokio::test]
+async fn a_read_is_the_standing_its_status_or_error_code_names() {
+    let (run, _) = run();
+    let summary = run.record(RunEvidence::Alive).await.unwrap();
+    let read = |status| {
+        let mut summary = summary.clone();
+        summary.status = status;
+        standing(&Ok(summary))
+    };
+    let failed = |code| {
+        standing(&Err(RpcError {
+            code,
+            message: String::new(),
+            details: Value::Null,
+            cause: Vec::new(),
+        }))
+    };
+    assert_eq!(read(DeploymentStatus::Running), Standing::Keep);
+    assert_eq!(read(DeploymentStatus::Cancelling), Standing::Cancel);
+    assert_eq!(read(DeploymentStatus::Unknown), Standing::Over(Over::Lost));
+    for ended in [
+        DeploymentStatus::Applied,
+        DeploymentStatus::Failed,
+        DeploymentStatus::Cancelled,
+        DeploymentStatus::WaitingForCi,
+        DeploymentStatus::Queued,
+        DeploymentStatus::Superseded,
+    ] {
+        assert_eq!(read(ended), Standing::Over(Over::Ended), "{ended:?}");
+    }
+    assert_eq!(failed(RpcErrorCode::Conflict), Standing::Over(Over::Ended));
+    for unread in [
+        RpcErrorCode::Unavailable,
+        RpcErrorCode::NotFound,
+        RpcErrorCode::Internal,
+    ] {
+        assert_eq!(failed(unread.clone()), Standing::Unread, "{unread:?}");
+    }
+}
+
+/// The first read that says the store no longer holds the run is the one every later
+/// read says: an ended Deployment's refusal cannot turn a lost run into an ended one.
+#[tokio::test]
+async fn the_first_read_that_says_the_run_is_over_is_the_one_it_keeps() {
+    let (run, actor) = run();
+    take_over(&run, &actor);
+    assert_eq!(run.standing().await, Standing::Over(Over::Lost));
+    let run = Run {
+        store: run.store.clone(),
+        runner: RunnerId::parse("other").unwrap(),
+        ..run
+    };
+    assert_eq!(
+        run.record(RunEvidence::Alive).await.unwrap_err().code,
+        RpcErrorCode::Conflict
+    );
+    assert_eq!(run.standing().await, Standing::Over(Over::Lost));
 }
 
 #[test]
