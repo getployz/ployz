@@ -179,7 +179,7 @@ export type StoreGithubCheck = "waiting" | "done" | { failed: string };
  * A Deployment cancelled or replaced meanwhile stops it. An Organization that can't use the installation any more
  * (disconnected, or GitHub suspended or uninstalled it) can't read what GitHub built, so its builds stop and the
  * Deployment fails with why. A run past its budget is cancelled and ended. A run that hasn't checked in by the start
- * limit (`startLimit`: another Builder follows) is skipped and cancelled; GitHub keeps one that started.
+ * limit (`startLimit`: another Builder follows) is skipped and cancelled; GitHub keeps one whose check-in committed.
  */
 export const checkStoreGithubBuild = Effect.fn("StoreGithub.check")(function* (
   organizationId: string, target: StoreGithubTarget, seen: { ended: boolean; startLimit: boolean },
@@ -198,23 +198,23 @@ export const checkStoreGithubBuild = Effect.fn("StoreGithub.check")(function* (
     yield* cancelStoreGithubBuilds(deploymentId);
     return { failed: refusal.message };
   }
-  const finish = (timedOut: boolean) => Effect.gen(function* () {
+  const finish = (look: "start_limit" | "budget" | "ended") => Effect.gen(function* () {
     const { connections, expect } = yield* deployDialOf(organizationId);
-    const finished = yield* storeTry(() => store.githubFinish(target.build, timedOut, connections, expect));
+    const finished = yield* storeTry(() => store.githubFinish(target.build, look, connections, expect));
     return finished === "waiting" ? "waiting" as const : "done" as const;
   });
   if (build.checked_in_at !== null && Date.now() - build.checked_in_at * 1000 > GITHUB_RUN_BUDGET_MS) {
     yield* cancelDispatchedGithubRun(build.run);
-    return yield* finish(true);
+    return yield* finish("budget");
   }
   if (build.grant === null) {
-    if (seen.ended || (yield* runEnded(build))) return yield* finish(false);
+    if (seen.ended || (yield* runEnded(build))) return yield* finish("ended");
     if (!seen.startLimit) return "waiting" as const;
-    const found = yield* finish(true);
+    const found = yield* finish("start_limit");
     if (found === "done") yield* cancelDispatchedGithubRun(build.run);
     return found;
   }
-  if (seen.ended || build.ended !== null || (yield* runEnded(build))) return yield* finish(false);
+  if (seen.ended || build.ended !== null || (yield* runEnded(build))) return yield* finish("ended");
   return "waiting" as const;
 });
 
@@ -303,7 +303,7 @@ export const recordStoreGithubBuildSteps = Effect.fn("StoreGithub.steps")(functi
     if (reported.ended) {
       const { connections, expect } = yield* deployDialOf(build.organization);
       // The walk's next look ends it otherwise.
-      yield* storeTry(() => store.githubFinish(buildId, false, connections, expect)).pipe(
+      yield* storeTry(() => store.githubFinish(buildId, "ended", connections, expect)).pipe(
         Effect.catch((error) => Effect.logWarning("Could not end a reported GitHub build.", error)),
       );
       yield* sendInngestEvent(createGithubBuildRunCompletedEvent({ id: `reported-${buildId}`, runId: build.run.run_id })).pipe(

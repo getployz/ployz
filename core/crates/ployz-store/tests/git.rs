@@ -1225,7 +1225,11 @@ fn a_server_cannot_report_on_a_build_a_github_run_still_holds() {
         }
         let runner = RunnerId::parse("cloud-1").unwrap();
         store.claim(&id.deployment, &runner).unwrap();
-        for status in [BuildStatus::Building, BuildStatus::Built, BuildStatus::Failed] {
+        for status in [
+            BuildStatus::Building,
+            BuildStatus::Built,
+            BuildStatus::Failed,
+        ] {
             let report = RunEvidence::Build(BuildReport {
                 service: ServiceName::parse("web").unwrap(),
                 status,
@@ -1263,6 +1267,40 @@ fn a_server_cannot_report_on_a_build_a_github_run_still_holds() {
                 1
             );
         }
+    }
+}
+
+#[test]
+fn a_server_cannot_report_on_a_build_a_github_run_ended() {
+    for (end, status) in [
+        (
+            GithubEnd::Built {
+                receipt: json!({ "fingerprint": "f".repeat(64) }),
+            },
+            BuildStatus::Built,
+        ),
+        (
+            GithubEnd::Failed {
+                message: "a build step failed".into(),
+            },
+            BuildStatus::Failed,
+        ),
+    ] {
+        let (store, who) = shop();
+        let id = dispatched(&store, &who);
+        store.github_check_in(&id, RUN, &grant()).unwrap();
+        assert_eq!(store.github_end(&id, Some(RUN), &end).unwrap(), status);
+        let runner = RunnerId::parse("cloud-1").unwrap();
+        store.claim(&id.deployment, &runner).unwrap();
+        let error = store
+            .record(
+                &id.deployment,
+                &runner,
+                report(BuildStatus::Building, None, ""),
+            )
+            .expect_err("GitHub's run ended the build");
+        assert_eq!(error.code, RpcErrorCode::Conflict, "{status:?}");
+        assert_eq!(held(&store, &id).status, status, "GitHub's end stands");
     }
 }
 

@@ -6,7 +6,7 @@ use super::runner_cancellation::{CutCleanup, cut_cleanup};
 use super::support::*;
 use ployz::connect::ClusterExpectation;
 use ployz::context::Connection;
-use ployz::sdk::{GithubFinish, GithubKey, GithubStart};
+use ployz::sdk::{GithubFinish, GithubKey, GithubLook, GithubStart};
 use ployz_core::config::ServiceGitAccess;
 use ployz_core::{MachineId, MachineObservation, RpcError, SealingPublicKey, ServiceName};
 use ployz_store::{
@@ -323,10 +323,15 @@ async fn a_github_finish_fails_at_once_on_a_grant_machine_of_another_cluster() {
             fingerprint: "f".repeat(64),
         };
         store.github_check_in(&id, RUN, &grant).unwrap();
-        let finished =
-            ployz::sdk::github_finish(Arc::clone(&store), id.clone(), false, connections, expect)
-                .await
-                .unwrap();
+        let finished = ployz::sdk::github_finish(
+            Arc::clone(&store),
+            id.clone(),
+            GithubLook::Ended,
+            connections,
+            expect,
+        )
+        .await
+        .unwrap();
         let query = BuildLogQuery {
             deployment: id.deployment.clone(),
             service: id.service.clone(),
@@ -384,9 +389,17 @@ async fn the_start_limit_keeps_a_run_whose_check_in_committed_before_it_settled(
     };
 
     let cases = [
-        (own_id, false, "its Machine read the grant: nothing pushed yet"),
+        (
+            own_id,
+            false,
+            "its Machine read the grant: nothing pushed yet",
+        ),
         (silent_id, false, "its Machine doesn't answer"),
-        (own_id, true, "it reported Built, and its Machine read nothing pushed"),
+        (
+            own_id,
+            true,
+            "it reported Built, and its Machine read nothing pushed",
+        ),
     ];
     let mut found = Vec::new();
     for (machine, reported, case) in cases {
@@ -398,7 +411,7 @@ async fn the_start_limit_keeps_a_run_whose_check_in_committed_before_it_settled(
         let finished = ployz::sdk::github_finish(
             Arc::clone(&store),
             id.clone(),
-            true,
+            GithubLook::StartLimit,
             connections.clone(),
             expecting(7),
         )
@@ -422,10 +435,15 @@ async fn the_start_limit_keeps_a_run_whose_check_in_committed_before_it_settled(
     assert_eq!(found, kept, "each run that checked in keeps the build");
 
     let (store, _, id) = dispatched();
-    let finished =
-        ployz::sdk::github_finish(Arc::clone(&store), id.clone(), true, connections, expecting(7))
-            .await
-            .unwrap();
+    let finished = ployz::sdk::github_finish(
+        Arc::clone(&store),
+        id.clone(),
+        GithubLook::StartLimit,
+        connections,
+        expecting(7),
+    )
+    .await
+    .unwrap();
     assert_eq!(finished, GithubFinish::Ended(BuildStatus::Pending));
     assert_eq!(
         store.github_build(&id).unwrap(),

@@ -274,11 +274,11 @@ it.live("a Store build's start, check-in and finish reach a Server of the pairin
     expect(errors.count()).toBe(2);
     expect(yield* provided(recordStoreGithubBuildSteps(runner("steps"), BUILD, JSON.stringify({ from: 0, events: [] }))))
       .toEqual({ received: 1 });
-    expect(githubFinish).toHaveBeenLastCalledWith(BUILD, false, servers, expectation);
+    expect(githubFinish).toHaveBeenLastCalledWith(BUILD, "ended", servers, expectation);
     expect(yield* provided(checkStoreGithubBuild(ORGANIZATION, { ...target, installationId: 7 }, { ended: true, startLimit: false })))
       .toBe("done");
     expect(githubFinish).toHaveBeenCalledTimes(2);
-    expect(githubFinish).toHaveBeenLastCalledWith(BUILD, false, servers, expectation);
+    expect(githubFinish).toHaveBeenLastCalledWith(BUILD, "ended", servers, expectation);
   }), 60_000);
 
 it.live("a build GitHub passed on before its run checked in is no longer GitHub's, even once the next Builder claims it", () =>
@@ -299,7 +299,7 @@ it.live("a build GitHub passed on before its run checked in is no longer GitHub'
     }));
     // The start limit passes it on before any grant, the same Skip a check-in records when only the next Builder can
     // build a sealed value. That one needs a Machine to answer the mint, which no test here runs.
-    expect(yield* Effect.promise(() => store.githubFinish(BUILD, true, []))).toEqual({ ended: "pending" });
+    expect(yield* Effect.promise(() => store.githubFinish(BUILD, "start_limit", []))).toEqual({ ended: "pending" });
     expect(yield* Effect.promise(() => store.githubBuild(BUILD))).toEqual({ passed_on: { why: "no runner started the build in time" } });
 
     const target = {

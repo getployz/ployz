@@ -40,7 +40,7 @@ mod store_runner;
 pub use build::{BuildOutcome, OutsideBuild};
 pub use deploy::ImageCleanup;
 pub use github_build::{
-    GithubCheckIn, GithubFinish, GithubKey, GithubReported, GithubStart, github_cancel,
+    GithubCheckIn, GithubFinish, GithubKey, GithubLook, GithubReported, GithubStart, github_cancel,
     github_check_in, github_finish, github_report, github_start,
 };
 pub use running::Running;
