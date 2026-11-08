@@ -155,6 +155,7 @@ impl LocalMachine {
             .consume(&approved.body, &observed.container_id, step, now)?;
         tracing::info!(
             operation = %approved.body.operation,
+            proposal = ?approved.body.proposal,
             ?step,
             "{} approved by {}",
             approved.body.kind,
@@ -437,6 +438,7 @@ mod tests {
             issued_at: at(0),
             expires_at: Timestamp::from_millis(expires_at).unwrap(),
             signer: ployz_core::authority::SignerKey::Device(DeviceKey::from_bytes([2; 32])),
+            proposal: None,
         }
     }
 
