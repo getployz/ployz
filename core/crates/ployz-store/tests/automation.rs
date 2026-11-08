@@ -1257,6 +1257,7 @@ fn deploy_pr_5(store: &ConfigStore, who: &Actor, n: u8) -> ployz_store::Deployme
                 services: vec![ServiceName::parse("web").unwrap()],
                 version: None,
                 upload: None,
+                approval: None,
                 accept_volume_loss: Vec::new(),
                 message: None,
                 prune: false,

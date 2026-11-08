@@ -1893,6 +1893,7 @@ fn two_first_reports_of_a_pull_request_take_turns() {
                 services: Vec::new(),
                 version: None,
                 upload: None,
+                approval: None,
                 accept_volume_loss: Vec::new(),
                 message: None,
                 prune: false,
