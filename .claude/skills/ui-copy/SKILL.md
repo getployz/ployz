@@ -12,13 +12,13 @@ The rule is `dashboard/DESIGN.md` rule 9: plain words, short sentences, and a hi
 ```bash
 git diff origin/main -U0 -- dashboard/src core/crates ':!*tests.rs' ':!*/tests/*' ':!*.test.*' \
   | grep -E '^\+[^+]' | grep -vE '^\+\s*(//|/\*|\*|#\[)' \
-  | grep -E '"[A-Z][^"]{2,}"|>[A-Z][^<{]{2,}<|["`][^"`]*[[:alpha:]]+ [[:alpha:]]+|^\+\s*[[:alpha:]][^"`]* [[:alpha:]][^"`]*["`][,;)]*$|^\+\s*([^"`;=(){}<>]|\{[[:alnum:]_.]+\})*[[:alpha:]]+ [[:alpha:]]+([^"`;=(){}<>]|\{[[:alnum:]_.]+\})*$'
+  | grep -E '"[[:alpha:]][^"]{2,}"|>[[:alpha:]][^<{]{2,}<|["`][^"`]*[[:alpha:]]+ [[:alpha:]]+|^\+\s*[[:alpha:]][^"`]* [[:alpha:]][^"`]*["`][,;)]*$|^\+\s*([^"`;=(){}<>]|\{[[:alnum:]_.]+\})*[[:alpha:]]+ [[:alpha:]]+([^"`;=(){}<>]|\{[[:alnum:]_.]+\})*$'
 ```
 
 The last grep's alternatives, in order, catch:
 
-1. A capitalized single-word string, such as `"Network"`.
-2. JSX text between tags on one line, such as `>Save<`.
+1. A single-word string in any case, such as `"Network"` or a status cell `"online"`. It also returns some identifiers and map keys. Skip those by eye.
+2. JSX text between tags on one line, in any case, such as `>Save<` or `>online<`.
 3. Any string of two or more words, whatever its first character, so `format!("{} is not advertised")`, `"--cluster-name is ignored…"` and template literals count. It also catches the first line of a multi-line string.
 4. The closing line of a multi-line string.
 5. A line of bare words: JSX text on its own line, such as `Applies when a server is online.`, or the middle of a multi-line string.
@@ -50,8 +50,8 @@ For each string, ask what the user does differently after reading it. If nothing
 ## Keep it consistent
 
 - **One casing per term per surface.** Take the term from the CONTEXT.md that owns the surface: `core/CONTEXT.md` for CLI and engine text, `dashboard/CONTEXT.md` for the dashboard. Match the casing the surface's existing strings use, so a new string never puts "the Cluster" beside "the cluster".
-- **One rule, one wording.** When the engine and the dashboard enforce the same rule, both say it in the same words. A Cluster Name check reads "Use lowercase letters, numbers and hyphens." in both places, not that in the dashboard and "one DNS label: up to 63 lowercase letters, digits and '-'" from the engine.
-- **A success line is true when it prints.** Report only what has happened. If the change is saved but waits on a Server, say "Saved. Applies when a server is online.", not "Named the Cluster beta."
+- **One rule, one wording.** When the engine and the dashboard enforce the same rule, both say it in the same words. A Cluster Name check reads "Use up to 63 lowercase letters, digits and hyphens. Start and end with a letter or digit." in both places, not that in the dashboard and "one DNS label: up to 63 lowercase letters, digits and '-'" from the engine.
+- **A success line is true when it prints.** Report only what has happened. If the change is saved but waits on a Server, say "Saved. Applies when a Server is online.", not "Named the Cluster beta."
 
 ## Before and after
 
