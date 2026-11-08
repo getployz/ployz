@@ -10,7 +10,8 @@ import { type PostgresTestHarness, startPostgresTestHarness } from "#/test/postg
 const ORG = "00000000-0000-4000-8000-00000000c2a1";
 const SLUG = "acme";
 const API_TOKEN = "cf-api-token-that-must-never-be-stored";
-const TUNNEL_TOKEN = "tunnel-token-goes-to-the-cluster";
+/** A tunnel token as Cloudflare mints them: base64 JSON naming the account, the tunnel and the connector's secret. */
+const TUNNEL_TOKEN = Buffer.from(JSON.stringify({ a: "a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1", t: "bd0e0af1-d7e0-4d84-8bc3-d1ca9338a9ad", s: Buffer.alloc(64, 9).toString("base64") })).toString("base64");
 
 let harness: PostgresTestHarness;
 
@@ -18,13 +19,24 @@ type Call = { readonly method: string; readonly path: string; readonly body: Sch
 
 const PROBE = "{}";
 
+type Options = {
+  readonly dnsStatus?: number;
+  readonly existingRecord?: string;
+  /** What the tunnel create answers with as its token; null leaves it out, so the token is read on request. */
+  readonly tokenOnCreate?: string | null;
+  readonly recordsStatus?: number;
+  readonly deleteStatus?: number;
+  /** Runs as the record is created: the moment something else can move while setup is between its Cloudflare calls. */
+  readonly onRecord?: () => Promise<void>;
+};
+
 /** A Cloudflare with one zone, remembering the tunnels and records written to it. */
-function cloudflare(options: { readonly dnsStatus?: number; readonly existingRecord?: string } = {}) {
+function cloudflare(options: Options = {}) {
   const calls: Call[] = [];
   const made: Schema.Json[] = [];
   const alive = new Set<string>();
   const records: Schema.Json[] = [];
-  const fetch = (input: string | URL | Request, init?: RequestInit) => {
+  const fetch = async (input: string | URL | Request, init?: RequestInit) => {
     const url = new URL(String(input));
     const path = `${url.pathname.replace("/client/v4", "")}${url.search}`;
     const method = init?.method ?? "GET";
@@ -35,20 +47,25 @@ function cloudflare(options: { readonly dnsStatus?: number; readonly existingRec
     const probe = JSON.stringify(body) === PROBE;
     if (method === "POST" && path === "/zones/z1/dns_records") {
       if (probe) return reply(options.dnsStatus ?? 400);
+      await options.onRecord?.();
       records.push(body ?? null);
       return reply(200, body ?? null);
     }
     if (method === "GET" && path.startsWith("/zones/z1/dns_records?")) {
+      if (options.recordsStatus !== undefined) return reply(options.recordsStatus);
       return reply(200, options.existingRecord === undefined ? [] : [{ id: "r1", content: options.existingRecord }]);
     }
     if (method === "POST" && path === "/accounts/a1/cfd_tunnel") {
       if (probe) return reply(400);
       made.push(body ?? null);
       alive.add("t1");
-      return reply(200, { id: "t1", token: TUNNEL_TOKEN });
+      const token = options.tokenOnCreate === undefined ? TUNNEL_TOKEN : options.tokenOnCreate;
+      return reply(200, token === null ? { id: "t1" } : { id: "t1", token });
     }
+    if (method === "GET" && path === "/accounts/a1/cfd_tunnel/t1/token") return reply(200, options.tokenOnCreate ?? TUNNEL_TOKEN);
     if (method === "GET" && path.startsWith("/accounts/a1/cfd_tunnel?")) return reply(200, []);
     if (method === "DELETE" && path === "/accounts/a1/cfd_tunnel/t1") {
+      if (options.deleteStatus !== undefined) return reply(options.deleteStatus);
       alive.delete("t1");
       return reply(200, {});
     }
@@ -68,8 +85,8 @@ function cluster(take: (doors: readonly string[]) => readonly string[] = (doors)
   const session: ScopedRuntimeClientSession = {
     status: "connected",
     connected: asTestDouble<PloyzSession>()({
-      setIngressDoors: (doors: readonly string[], token?: string | null) => {
-        sets.push({ doors, token: token ?? undefined });
+      setIngressDoors: (doors: readonly string[], token?: Redacted.Redacted<string>) => {
+        sets.push({ doors, token: token === undefined ? undefined : Redacted.value(token) });
         return Effect.succeed({ machines: [{ server: "s1", doors: take(doors) }], failures: [] });
       },
     }),
@@ -84,6 +101,7 @@ const setUp = (zone: string, http: CloudflareHttp, runtime: OrganizationRuntime[
   ));
 
 const setupRows = async () => (await harness.pool.query("select zone, tunnel_id, tunnel_name, state from organization_cloudflare_ingress")).rows;
+const switching = () => harness.pool.query("insert into ingress_doors_attempt (id, organization_id, want, state) values (gen_random_uuid(), $1, 'tunnel', 'pending')", [ORG]);
 
 beforeAll(async () => {
   harness = await startPostgresTestHarness();
@@ -155,6 +173,64 @@ it("deletes the tunnel it made, and writes no record, when the servers don't tak
   const { runtime, sets } = cluster(() => ["public"]);
   await expect(setUp("example.com", http, runtime)).rejects.toMatchObject({ message: expect.stringContaining("Nothing was changed.") });
   expect(records).toEqual([]);
+  expect(alive.size).toBe(0);
+  expect(sets.map(({ doors }) => doors)).toEqual([["public", "tunnel"], ["public"]]);
+  expect(await setupRows()).toEqual([]);
+});
+
+it("reads the tunnel's token on request when Cloudflare sends none with the tunnel", async () => {
+  const { http, calls } = cloudflare({ tokenOnCreate: null });
+  const { runtime, sets } = cluster();
+  expect(await setUp("example.com", http, runtime)).toMatchObject({ state: "set_up" });
+  expect(sets).toEqual([{ doors: ["public", "tunnel"], token: TUNNEL_TOKEN }]);
+  expect(calls.map(({ method, path }) => `${method} ${path}`)).toContain("GET /accounts/a1/cfd_tunnel/t1/token");
+});
+
+it("deletes the tunnel and asks no Server to run it when its token isn't one a connector can start on", async () => {
+  const { http, alive, records } = cloudflare({ tokenOnCreate: "eyJub3QiOiJhIHRva2VuIn0=" });
+  const { runtime, sets } = cluster();
+  await expect(setUp("example.com", http, runtime)).rejects.toMatchObject({ message: expect.stringContaining("Nothing was changed.") });
+  expect(sets).toEqual([]);
+  expect(alive.size).toBe(0);
+  expect(records).toEqual([]);
+  expect(await setupRows()).toEqual([]);
+});
+
+it("deletes the tunnel and closes the tunnel door again when the record lookup fails", async () => {
+  const { http, alive } = cloudflare({ recordsStatus: 500 });
+  const { runtime, sets } = cluster();
+  await expect(setUp("example.com", http, runtime)).rejects.toMatchObject({ message: expect.stringContaining("Nothing was changed.") });
+  expect(sets.map(({ doors }) => doors)).toEqual([["public", "tunnel"], ["public"]]);
+  expect(alive.size).toBe(0);
+  expect(await setupRows()).toEqual([]);
+});
+
+it("says the tunnel is the user's to delete when Cloudflare won't delete it after a failure", async () => {
+  const { http, alive } = cloudflare({ deleteStatus: 403 });
+  const { runtime } = cluster(() => ["public"]);
+  const failure = await setUp("example.com", http, runtime).then(() => null, (error: { message: string }) => error.message);
+  expect(failure).toContain("Delete the tunnel ployz-acme in Cloudflare.");
+  expect(failure).not.toContain("Nothing was changed.");
+  expect(alive.has("t1")).toBe(true);
+  expect(await setupRows()).toEqual([]);
+});
+
+it("refuses while a switch is under way, before anything is created", async () => {
+  await harness.pool.query("insert into organization_cloudflare_ingress (organization_id, zone, tunnel_id, tunnel_name, state) values ($1, 'example.com', 't0', 'ployz-acme', 'set_up')", [ORG]);
+  await switching();
+  const { http, calls } = cloudflare();
+  const { runtime, sets } = cluster();
+  await expect(setUp("example.com", http, runtime)).rejects.toMatchObject({ message: "A switch is under way. Wait for it to finish, then set up." });
+  expect(calls).toEqual([]);
+  expect(sets).toEqual([]);
+  expect(await setupRows()).toMatchObject([{ tunnel_id: "t0", state: "set_up" }]);
+});
+
+it("never lands its row over a switch that started meanwhile: it undoes the tunnel and the doors instead", async () => {
+  const { http, alive, records } = cloudflare({ onRecord: () => switching().then(() => undefined) });
+  const { runtime, sets } = cluster();
+  await expect(setUp("example.com", http, runtime)).rejects.toMatchObject({ message: "A switch is under way. Wait for it to finish, then set up. Nothing was changed." });
+  expect(records).toHaveLength(1);
   expect(alive.size).toBe(0);
   expect(sets.map(({ doors }) => doors)).toEqual([["public", "tunnel"], ["public"]]);
   expect(await setupRows()).toEqual([]);

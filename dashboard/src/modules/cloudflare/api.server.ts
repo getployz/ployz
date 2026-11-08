@@ -1,5 +1,6 @@
 import "@tanstack/react-start/server-only";
 import { Data, Effect, Redacted, Schema } from "effect";
+import { isTunnelToken } from "#/modules/cloudflare/tunnel-token";
 import { type CloudflareZone, PERMISSIONS, type PermissionKey } from "#/modules/cloudflare/zone";
 
 /**
@@ -11,7 +12,8 @@ const BASE = "https://api.cloudflare.com/client/v4";
 const REQUEST_TIMEOUT_MS = 15_000;
 
 export class CloudflareError extends Data.TaggedError("CloudflareError")<{
-  readonly kind: "token_rejected" | "missing_permission" | "refused" | "unreachable";
+  /** `unusable_answer`: Cloudflare answered, but not with what the operation needs, such as a tunnel token a connector can't start on. */
+  readonly kind: "token_rejected" | "missing_permission" | "refused" | "unreachable" | "unusable_answer";
   readonly operation: string;
   readonly permission?: PermissionKey;
   readonly detail?: string;
@@ -80,7 +82,7 @@ export const listZones = Effect.fn("Cloudflare.listZones")(function* (http: Clou
   const answer = yield* call(http, token, "list zones", "GET", "/zones?per_page=50&status=active");
   if (!answer.success) return yield* refusal(answer, "list zones", "zones");
   const zones = yield* Schema.decodeUnknownEffect(Zones)(answer.result).pipe(
-    Effect.mapError(() => new CloudflareError({ kind: "refused", operation: "list zones" })),
+    Effect.mapError(() => new CloudflareError({ kind: "unusable_answer", operation: "list zones" })),
   );
   return zones.map((zone): CloudflareZone => ({ id: zone.id, name: zone.name, accountId: zone.account.id }));
 });
@@ -108,7 +110,11 @@ const Tunnel = Schema.Struct({ id: Schema.String, token: Schema.optional(Schema.
 const Records = Schema.Array(Schema.Struct({ id: Schema.String, content: Schema.String }));
 
 const decoded = <S extends Schema.Top>(schema: S, operation: string, value: Payload) =>
-  Schema.decodeUnknownEffect(schema)(value).pipe(Effect.mapError(() => new CloudflareError({ kind: "refused", operation })));
+  Schema.decodeUnknownEffect(schema)(value).pipe(Effect.mapError(() => new CloudflareError({ kind: "unusable_answer", operation })));
+
+/** The tunnel token Cloudflare sent, once it is one a connector can start on. */
+const usableToken = (operation: string, value: string) =>
+  isTunnelToken(value) ? Effect.succeed(Redacted.make(value)) : Effect.fail(new CloudflareError({ kind: "unusable_answer", operation }));
 
 /** The tunnel named `name`, when the account holds one. */
 export const findTunnel = Effect.fn("Cloudflare.findTunnel")(function* (
@@ -120,15 +126,20 @@ export const findTunnel = Effect.fn("Cloudflare.findTunnel")(function* (
   return found?.id ?? null;
 });
 
-/** A tunnel whose routes the connector's local config owns, so no Cloudflare ingress rule is stored for it. */
+/**
+ * A tunnel whose routes the connector's local config owns, so no Cloudflare ingress rule is stored for it. Cloudflare
+ * sends the connector's token with the tunnel today; when it doesn't, or sends one a connector can't start on, `token`
+ * is null and {@link tunnelToken} reads it.
+ * The tunnel exists once this returns, whatever the token, so a caller that stops after it deletes it.
+ */
 export const createTunnel = Effect.fn("Cloudflare.createTunnel")(function* (
   http: CloudflareHttp, token: Redacted.Redacted<string>, accountId: string, name: string,
 ) {
   const answer = yield* call(http, token, "create tunnel", "POST", `/accounts/${accountId}/cfd_tunnel`, { name, config_src: "local" });
   if (!answer.success) return yield* refusal(answer, "create tunnel", "tunnel");
   const tunnel = yield* decoded(Tunnel, "create tunnel", answer.result);
-  if (tunnel.token === undefined) return yield* new CloudflareError({ kind: "refused", operation: "create tunnel" });
-  return { id: tunnel.id, token: Redacted.make(tunnel.token) };
+  // The tunnel exists from here on, so nothing may fail past this point: the caller needs the id to undo it.
+  return { id: tunnel.id, token: tunnel.token !== undefined && isTunnelToken(tunnel.token) ? Redacted.make(tunnel.token) : null };
 });
 
 /** The token a connector runs the tunnel with. */
@@ -137,12 +148,15 @@ export const tunnelToken = Effect.fn("Cloudflare.tunnelToken")(function* (
 ) {
   const answer = yield* call(http, token, "read tunnel token", "GET", `/accounts/${accountId}/cfd_tunnel/${tunnelId}/token`);
   if (!answer.success) return yield* refusal(answer, "read tunnel token", "tunnel");
-  const value = yield* decoded(Schema.String, "read tunnel token", answer.result);
-  return Redacted.make(value);
+  return yield* usableToken("read tunnel token", yield* decoded(Schema.String, "read tunnel token", answer.result));
 });
 
+/** Whether the tunnel is gone afterwards. Deleting one already deleted succeeds, so this converges. */
 export const deleteTunnel = (http: CloudflareHttp, token: Redacted.Redacted<string>, accountId: string, tunnelId: string) =>
-  call(http, token, "delete tunnel", "DELETE", `/accounts/${accountId}/cfd_tunnel/${tunnelId}`).pipe(Effect.asVoid);
+  call(http, token, "delete tunnel", "DELETE", `/accounts/${accountId}/cfd_tunnel/${tunnelId}`).pipe(
+    Effect.map((answer) => answer.success),
+    Effect.catch(() => Effect.succeed(false)),
+  );
 
 /** The CNAME records already named `name` in the zone. */
 export const findRecords = Effect.fn("Cloudflare.findRecords")(function* (
@@ -160,12 +174,13 @@ export const createRecord = Effect.fn("Cloudflare.createRecord")(function* (
   if (!answer.success) return yield* refusal(answer, "create record", "dns");
 });
 
-/** Cloudflare's refusal in words, for the message a user reads. */
+/** Cloudflare's refusal in words, for the message a user reads. What it left behind is the caller's to say. */
 export const refusalWords = (error: CloudflareError) => {
   switch (error.kind) {
     case "token_rejected": return "Cloudflare didn't accept that token. Copy it again from your Cloudflare profile.";
-    case "missing_permission": return `That token can't do this. Add the "${PERMISSIONS[error.permission ?? "zones"]}" permission and paste it again. Nothing was changed.`;
-    case "unreachable": return "Cloudflare didn't answer. Try again in a moment. Nothing was changed.";
-    case "refused": return `Cloudflare refused the ${error.operation}${error.detail ? `: ${error.detail}` : ""}. Nothing was changed.`;
+    case "missing_permission": return `That token can't do this. Add the "${PERMISSIONS[error.permission ?? "zones"]}" permission and paste it again.`;
+    case "unreachable": return "Cloudflare didn't answer. Try again in a moment.";
+    case "refused": return `Cloudflare refused the ${error.operation}${error.detail ? `: ${error.detail}` : ""}.`;
+    case "unusable_answer": return `Cloudflare's answer to the ${error.operation} wasn't one Ployz can use. Try again in a moment.`;
   }
 };
