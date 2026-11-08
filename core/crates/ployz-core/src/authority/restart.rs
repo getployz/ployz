@@ -22,6 +22,7 @@ use crate::{
 pub enum WorkflowKind {
     Restart,
     Stop,
+    Start,
 }
 
 impl WorkflowKind {
@@ -34,6 +35,7 @@ impl WorkflowKind {
                 RestartStep::Hold | RestartStep::Stop | RestartStep::Start
             ),
             Self::Stop => matches!(step, RestartStep::Hold | RestartStep::Stop),
+            Self::Start => step == RestartStep::Start,
         }
     }
 
@@ -43,7 +45,18 @@ impl WorkflowKind {
         match self {
             Self::Restart => ActionFamily::Restart,
             Self::Stop => ActionFamily::Stop,
+            Self::Start => ActionFamily::Start,
         }
+    }
+}
+
+impl std::fmt::Display for WorkflowKind {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str(match self {
+            Self::Restart => "restart",
+            Self::Stop => "stop",
+            Self::Start => "start",
+        })
     }
 }
 
@@ -353,7 +366,11 @@ mod tests {
     fn a_signed_workflow_permits_only_its_own_steps() {
         let signer = signer(1);
         let machine = machine(&[&signer]);
-        for kind in [WorkflowKind::Restart, WorkflowKind::Stop] {
+        for kind in [
+            WorkflowKind::Restart,
+            WorkflowKind::Stop,
+            WorkflowKind::Start,
+        ] {
             let signed = Signed::sign(
                 &RestartApproval {
                     kind,
@@ -363,9 +380,9 @@ mod tests {
             )
             .unwrap();
             for (step, allowed) in [
-                (RestartStep::Hold, true),
-                (RestartStep::Stop, true),
-                (RestartStep::Start, kind == WorkflowKind::Restart),
+                (RestartStep::Hold, kind != WorkflowKind::Start),
+                (RestartStep::Stop, kind != WorkflowKind::Start),
+                (RestartStep::Start, kind != WorkflowKind::Stop),
                 (RestartStep::Out, false),
                 (RestartStep::Remove, false),
             ] {

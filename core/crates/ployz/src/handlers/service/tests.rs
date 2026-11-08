@@ -718,6 +718,7 @@ fn each_copy_gets_its_own_container_bound_approval() {
     for (action, kind) in [
         (ContainerAction::Restart, WorkflowKind::Restart),
         (ContainerAction::Stop, WorkflowKind::Stop),
+        (ContainerAction::Start, WorkflowKind::Start),
     ] {
         let approvals = restart_approvals(
             &key,

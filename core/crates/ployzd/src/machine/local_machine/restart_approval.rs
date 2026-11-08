@@ -155,7 +155,8 @@ impl LocalMachine {
         tracing::info!(
             operation = %approved.body.operation,
             ?step,
-            "restart approved by {}",
+            "{} approved by {}",
+            approved.body.kind,
             approved.by
         );
         let locator = match &mut want {

@@ -134,6 +134,8 @@ macro_rules! rpc_catalog {
                 RESTART_APPROVAL_CAPABILITY: ("ployz.restart.device-approval.v2", Always),
                 /// A restart approval may be signed by a browser key under a trusted passkey's session grant that rides in its envelope.
                 RESTART_SESSION_GRANT_CAPABILITY: ("ployz.restart.session-grant.v1", Always),
+                /// A restart approval may be of kind `start`, which permits only an existing Container's start step.
+                START_APPROVAL_CAPABILITY: ("ployz.restart.start-approval.v1", Always),
             }
         }
     };
