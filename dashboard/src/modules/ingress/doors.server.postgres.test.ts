@@ -24,12 +24,14 @@ const sets: string[][] = [];
 
 /** A Cluster publishing no hostname, so a switch finds nothing to move and starts nothing. */
 const EMPTY_FRAME = { machines: [], services: [], containers: [], incomplete_ids: { machines: [], containers: [], certificates: [] } };
+/** A look that missed a Server: what it publishes is unknown. */
+const PARTIAL_FRAME = { ...EMPTY_FRAME, incomplete_ids: { machines: ["m2"], containers: [], certificates: [] } };
 
-/** Servers that hold the doors they are told, unless `held` says what they hold instead. */
-const answering = (held: (doors: readonly string[]) => readonly string[] = (doors) => doors): ScopedRuntimeClientSession => ({
+/** Servers that hold the doors they are told, unless `held` says what they hold instead, showing `frame` when watched. */
+const answering = (held: (doors: readonly string[]) => readonly string[] = (doors) => doors, frame: Effect.Effect<unknown, Error> = Effect.succeed(EMPTY_FRAME)): ScopedRuntimeClientSession => ({
   status: "connected",
   connected: asTestDouble<PloyzSession>()({
-    watchFirstFrame: () => Effect.succeed(EMPTY_FRAME),
+    watchFirstFrame: () => frame,
     setIngressDoors: (doors: readonly string[]) => {
       sets.push([...doors]);
       return Effect.succeed({ machines: [{ server: "s1", doors: held(doors) }], failures: [] });
@@ -59,9 +61,9 @@ const run = <A, E>(effect: Effect.Effect<A, E, Database | OrganizationRuntime | 
     Effect.provideService(GithubApi, unused.github),
   ));
 
-const setup = (state: "set_up" | "active" | "left") => harness.pool.query(
-  "insert into organization_cloudflare_ingress (organization_id, zone, tunnel_id, tunnel_name, state) values ($1, 'example.com', 't1', 'ployz-acme', $2) on conflict (organization_id) do update set state = $2",
-  [ORG, state],
+const setup = (state: "set_up" | "active" | "left" | "setting_up") => harness.pool.query(
+  "insert into organization_cloudflare_ingress (organization_id, zone, tunnel_id, tunnel_name, state) values ($1, 'example.com', $3, 'ployz-acme', $2) on conflict (organization_id) do update set state = $2, tunnel_id = $3",
+  [ORG, state, state === "setting_up" ? null : "t1"],
 );
 const attempts = async () => (await harness.pool.query("select id, state, want, stage, failure from ingress_doors_attempt order by requested_at")).rows;
 const stateNow = async () => (await harness.pool.query("select state from organization_cloudflare_ingress")).rows[0]?.state;
@@ -148,6 +150,35 @@ it("moves nothing when a Server doesn't take both doors, and says so", async () 
   expect(sets).toEqual([["public", "tunnel"]]);
   expect(await stateNow()).toBe("set_up");
   expect(await attempts()).toMatchObject([{ state: "failed", failure: "s1 still has other doors open." }]);
+});
+
+it("stops with both doors open, before the source moves, when the Servers show no frame", async () => {
+  await setup("set_up");
+  session = answering((doors) => doors, Effect.fail(new Error("no frame in time")));
+  const request = await asked("tunnel");
+  expect(await run(executeDoorsOnce(request, RUN))).toMatchObject({ state: "failed" });
+  expect(sets).toEqual([["public", "tunnel"]]);
+  expect(await stateNow()).toBe("set_up");
+  expect(await attempts()).toMatchObject([{ state: "failed", stage: "moving", failure: "Your servers didn't answer. Try again once they do." }]);
+});
+
+it("stops the same way when the frame missed a Server, since it may publish an address that would be left behind", async () => {
+  await setup("active");
+  session = answering((doors) => doors, Effect.succeed(PARTIAL_FRAME));
+  const request = await asked("public");
+  expect(await run(executeDoorsOnce(request, RUN))).toMatchObject({ state: "failed" });
+  expect(sets).toEqual([["public", "tunnel"]]);
+  expect(await stateNow()).toBe("active");
+  expect(await attempts()).toMatchObject([{ state: "failed", failure: "Some servers didn't answer, so an address may be missing. Try again once they do." }]);
+});
+
+it("refuses a switch either way while a setup holds the Cluster, and lets one through once the setup went stale", async () => {
+  await setup("setting_up");
+  await expect(run(requestDoorsSwitch({ organizationId: ORG, userId: ADA, to: "tunnel" }))).rejects.toMatchObject({ message: "Cloudflare is being set up. Wait for it to finish, then switch." });
+  await expect(run(requestDoorsSwitch({ organizationId: ORG, userId: ADA, to: "public" }))).rejects.toMatchObject({ message: "Cloudflare is being set up. Wait for it to finish, then switch." });
+  expect(await attempts()).toEqual([]);
+  await harness.pool.query("update organization_cloudflare_ingress set updated_at = now() - interval '11 minutes'");
+  await expect(run(requestDoorsSwitch({ organizationId: ORG, userId: ADA, to: "tunnel" }))).rejects.toMatchObject({ message: "Set up Cloudflare first, then switch to it." });
 });
 
 it("fails the switch without asking when no Server answers", async () => {

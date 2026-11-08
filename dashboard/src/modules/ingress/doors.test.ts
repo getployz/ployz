@@ -2,8 +2,20 @@ import { Effect } from "effect";
 import { describe, expect, it } from "vitest";
 import type { RuntimeWatchView } from "@ployz/sdk";
 import { doorsOpenOn } from "#/modules/cluster-domain/ingress-running";
-import { type CloudflareSetup, doorsGap, doorWords, type LatestDoorsChange, movedHostnames, redeployScope, switchProblem, switchProgress } from "#/modules/ingress/doors";
-import { runSwitch, switchSteps, type SwitchPorts } from "#/modules/ingress/doors.run";
+import {
+  type CloudflareSetup,
+  doorsGap,
+  doorWords,
+  type LatestDoorsChange,
+  movedHostnames,
+  type MovedHostname,
+  observationGap,
+  redeployScope,
+  switchProblem,
+  switchProgress,
+  unservedMoves,
+} from "#/modules/ingress/doors";
+import { redeployMoved, type RedeployPorts, runSwitch, switchSteps, type SwitchPorts } from "#/modules/ingress/doors.run";
 import { asTestDouble } from "#/lib/test-double";
 
 const answer = (...perServer: ReadonlyArray<readonly string[]>) => ({
@@ -11,13 +23,22 @@ const answer = (...perServer: ReadonlyArray<readonly string[]>) => ({
   failures: [],
 });
 
-/** Ports that record what the switch did, with the Doors each Server holds after every set, and why a redeploy stuck. */
-function ports(held: (doors: readonly string[]) => ReturnType<typeof answer>, log: string[], stuck: string | null = null): SwitchPorts<never, never, never> {
+const MOVE: MovedHostname = { from: "web-prod.acme.ployz.app", to: "web-prod.example.com", namespace: "shop-prod", service: "web" };
+
+/**
+ * Ports that record what the switch did, with the Doors each Server holds after every set, what the Servers showed as
+ * moving (or why Cloud couldn't tell), and why a redeploy stuck.
+ */
+function ports(
+  held: (doors: readonly string[]) => ReturnType<typeof answer>, log: string[],
+  { stuck = null, seen = { moves: [MOVE] } }: { stuck?: string | null; seen?: { moves: readonly MovedHostname[] } | { failure: string } } = {},
+): SwitchPorts<never, never, never> {
   return {
     open: (doors) => Effect.sync(() => { log.push(`open ${doors.join("+")}`); return held(doors); }),
     at: (stage) => Effect.sync(() => { log.push(`at ${stage}`); }),
+    moving: () => Effect.sync(() => { log.push("moving"); return seen; }),
     flip: () => Effect.sync(() => { log.push("flip"); }),
-    redeploy: () => Effect.sync(() => { log.push("redeploy"); return stuck; }),
+    redeploy: (moves) => Effect.sync(() => { log.push(`redeploy ${moves.map(({ to }) => to).join(",")}`); return stuck; }),
   };
 }
 
@@ -26,7 +47,7 @@ describe("the two-step door switch", () => {
     const log: string[] = [];
     const end = await Effect.runPromise(runSwitch("tunnel", ports((doors) => answer(doors, doors), log)));
     expect(end).toEqual({ ok: true });
-    expect(log).toEqual(["at opening", "open public+tunnel", "at moving", "flip", "redeploy", "at closing", "open tunnel"]);
+    expect(log).toEqual(["at opening", "open public+tunnel", "at moving", "moving", "flip", "redeploy web-prod.example.com", "at closing", "open tunnel"]);
   });
 
   it("goes back the same way, ending on public ports", async () => {
@@ -45,9 +66,17 @@ describe("the two-step door switch", () => {
 
   it("keeps both Doors open and says why when an Environment doesn't redeploy under the new source", async () => {
     const log: string[] = [];
-    const end = await Effect.runPromise(runSwitch("tunnel", ports((doors) => answer(doors), log, "shop/production didn't redeploy: it would delete pg-data.")));
+    const end = await Effect.runPromise(runSwitch("tunnel", ports((doors) => answer(doors), log, { stuck: "shop/production didn't redeploy: it would delete pg-data." })));
     expect(end).toEqual({ ok: false, failure: "shop/production didn't redeploy: it would delete pg-data." });
-    expect(log).toEqual(["at opening", "open public+tunnel", "at moving", "flip", "redeploy"]);
+    expect(log).toEqual(["at opening", "open public+tunnel", "at moving", "moving", "flip", "redeploy web-prod.example.com"]);
+  });
+
+  it("stops with both Doors open, before the source moves, when a look at the Servers missed some", async () => {
+    const log: string[] = [];
+    const gap = "Some servers didn't answer, so an address may be missing. Try again once they do.";
+    const end = await Effect.runPromise(runSwitch("tunnel", ports((doors) => answer(doors), log, { seen: { failure: gap } })));
+    expect(end).toEqual({ ok: false, failure: gap });
+    expect(log).toEqual(["at opening", "open public+tunnel", "at moving", "moving"]);
   });
 
   it("leaves both Doors open when closing the old one fails", async () => {
@@ -93,8 +122,8 @@ describe("what a switch moves", () => {
     ]);
     expect(redeployScope(moving, owners, runtimeNames)).toEqual({
       environments: [
-        { project: "shop", environment: "production", services: ["api", "web"] },
-        { project: "docs", environment: "main", services: ["site"] },
+        { namespace: "shop-prod", project: "shop", environment: "production", services: ["api", "web"] },
+        { namespace: "docs-main", project: "docs", environment: "main", services: ["site"] },
       ],
       left: [],
     });
@@ -108,8 +137,74 @@ describe("what a switch moves", () => {
   });
 });
 
+describe("what the Servers showed", () => {
+  const seen = (partial: boolean, ...hostnames: string[]) => ({
+    servers: [], hostnames: hostnames.map((hostname) => ({ hostname, namespace: "shop-prod", service: "web" })), partial,
+  });
+
+  it("names what stops a switch from trusting one look: no Server answered, or not every one", () => {
+    expect(observationGap(null)).toBe("Your servers didn't answer. Try again once they do.");
+    expect(observationGap(seen(true))).toBe("Some servers didn't answer, so an address may be missing. Try again once they do.");
+    expect(observationGap(seen(false))).toBeNull();
+  });
+
+  it("finds the moves whose new address its Namespace doesn't publish yet", () => {
+    expect(unservedMoves(seen(false, "web-prod.acme.ployz.app").hostnames, [MOVE])).toEqual([MOVE]);
+    expect(unservedMoves(seen(false, "web-prod.example.com").hostnames, [MOVE])).toEqual([]);
+    expect(unservedMoves([{ hostname: "web-prod.example.com", namespace: "other", service: "web" }], [MOVE])).toEqual([MOVE]);
+  });
+});
+
+describe("redeploying what moves", () => {
+  const scope = [{ namespace: "shop-prod", project: "shop", environment: "production", services: ["web"] }];
+  const fast = { poll: "5 millis", limit: "40 millis" } as const;
+  /** A Store whose Deployments end as `status`, and Servers publishing `served` on each look. */
+  const ports = (status: "applied" | "superseded" | "failed", served: ReadonlyArray<ReadonlyArray<string> | null>, log: string[]): RedeployPorts<never, never> => {
+    let looks = 0;
+    return {
+      deploy: ({ project, environment, services }) => Effect.sync(() => { log.push(`deploy ${project}/${environment} ${services.join(",")}`); return { id: "d1" }; }),
+      ended: () => Effect.sync(() => { log.push(`ended ${status}`); return status; }),
+      observe: () => Effect.sync(() => {
+        const now = served[Math.min(looks, served.length - 1)] ?? null;
+        looks += 1;
+        return now === null ? null : { servers: [], hostnames: now.map((hostname) => ({ hostname, namespace: "shop-prod", service: "web" })), partial: false };
+      }),
+    };
+  };
+
+  it("ends once the Servers publish every moved address, however the Deployment ended", async () => {
+    const log: string[] = [];
+    expect(await Effect.runPromise(redeployMoved([MOVE], scope, ports("superseded", [["web-prod.acme.ployz.app"], ["web-prod.example.com"]], log), fast))).toBeNull();
+    expect(log).toEqual(["deploy shop/production web", "ended superseded"]);
+  });
+
+  it("doesn't take a superseded Deployment as proof: an address never served names its Environment", async () => {
+    const end = await Effect.runPromise(redeployMoved([MOVE], scope, ports("superseded", [["web-prod.acme.ployz.app"]], []), fast));
+    expect(end).toBe("web-prod.example.com isn't served yet. Check the deployments of shop/production, then switch again.");
+  });
+
+  it("says why when the Servers stop answering after the Deployment, instead of taking that as served", async () => {
+    const end = await Effect.runPromise(redeployMoved([MOVE], scope, ports("applied", [null], []), fast));
+    expect(end).toBe("Your servers didn't answer. Try again once they do.");
+  });
+
+  it("stops at a Deployment that failed, without looking at the Servers", async () => {
+    const log: string[] = [];
+    const end = await Effect.runPromise(redeployMoved([MOVE], scope, ports("failed", [["web-prod.example.com"]], log), fast));
+    expect(end).toBe("shop/production didn't redeploy. Check its deployments, then switch again.");
+    expect(log).toEqual(["deploy shop/production web", "ended failed"]);
+  });
+
+  it("deploys nothing when nothing moves", async () => {
+    const log: string[] = [];
+    expect(await Effect.runPromise(redeployMoved([], scope, ports("applied", [], log), fast))).toBeNull();
+    expect(log).toEqual([]);
+  });
+});
+
 describe("when the Cluster can switch", () => {
-  const setup = (state: CloudflareSetup["state"]): CloudflareSetup => ({ zone: "example.com", tunnelName: "ployz-acme", tunnelId: "t1", state });
+  const setup = (state: "set_up" | "active" | "left"): CloudflareSetup => ({ zone: "example.com", tunnelName: "ployz-acme", tunnelId: "t1", state });
+  const settingUp: CloudflareSetup = { zone: "example.com", tunnelName: "ployz-acme", tunnelId: null, state: "setting_up" };
 
   it("goes to Cloudflare only once it is set up and not yet in use", () => {
     expect(switchProblem(null, "tunnel")).toBe("Set up Cloudflare first, then switch to it.");
@@ -121,6 +216,11 @@ describe("when the Cluster can switch", () => {
   it("goes back to public ports from anywhere but public ports", () => {
     expect(switchProblem(setup("active"), "public")).toBeNull();
     expect(switchProblem(setup("left"), "public")).toBe("This Cluster already uses public ports.");
+  });
+
+  it("refuses both ways while a setup holds the Cluster", () => {
+    expect(switchProblem(settingUp, "tunnel")).toBe("Cloudflare is being set up. Wait for it to finish, then switch.");
+    expect(switchProblem(settingUp, "public")).toBe("Cloudflare is being set up. Wait for it to finish, then switch.");
   });
 
   const ended = (want: "tunnel" | "public", state: "failed" | "finished"): LatestDoorsChange => state === "failed"
@@ -165,6 +265,15 @@ describe("the Doors the Servers hold", () => {
     expect(doorWords(seen(["public", "tunnel"], ["tunnel"]), "public")).toBe("Open on 1 of 2 servers.");
     expect(doorWords(seen(["public", "tunnel"], ["tunnel"]), "tunnel")).toBe("Open on every server.");
     expect(doorWords(seen(["tunnel"]), "public")).toBe("Closed on every server.");
+  });
+
+  it("never calls a Door open or closed on every Server from a look that missed some", () => {
+    const partial = (...doors: ReadonlyArray<readonly ("public" | "tunnel")[]>) => ({
+      servers: doors.map((held, index) => ({ id: `m${index + 1}`, name: `s${index + 1}`, doors: held })), hostnames: [], partial: true,
+    });
+    expect(doorWords(partial(["tunnel"]), "tunnel")).toBe("Open on 1 of 1 servers. Some servers didn't answer.");
+    expect(doorWords(partial(["tunnel"]), "public")).toBe("Open on 0 of 1 servers. Some servers didn't answer.");
+    expect(doorWords(partial(), "public")).toBe("Some servers didn't answer.");
   });
 });
 
