@@ -159,7 +159,7 @@ const openSession = Effect.fn("ServerWebTraffic.openSession")(function* (organiz
 const decodeMessage = Schema.decodeUnknownOption(Schema.Struct({ message: Schema.String }));
 
 /** What the Engine said when it refused. */
-function refusalWords(error: PloyzSdkError) {
+export function refusalWords(error: PloyzSdkError) {
   const rpc = decodeMessage("cause" in error ? error.cause : undefined);
   const message = Option.isSome(rpc) ? rpc.value.message : error.message;
   return message.trim().length > 0 ? message.trim() : "Your servers didn't answer.";

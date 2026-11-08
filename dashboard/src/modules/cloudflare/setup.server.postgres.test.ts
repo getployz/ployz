@@ -1,0 +1,183 @@
+import { Effect, Redacted, type Schema } from "effect";
+import { afterAll, beforeAll, beforeEach, expect, it } from "vitest";
+import { asTestDouble } from "#/lib/test-double";
+import { CloudflareHttp } from "#/modules/cloudflare/api.server";
+import { listCloudflareZoneNames, setUpCloudflare } from "#/modules/cloudflare/setup.server";
+import { OrganizationRuntime, type ScopedRuntimeClientSession } from "#/modules/runtime/organization-runtime.server";
+import type { PloyzSession } from "#/modules/runtime/ployz.server";
+import { type PostgresTestHarness, startPostgresTestHarness } from "#/test/postgres";
+
+const ORG = "00000000-0000-4000-8000-00000000c2a1";
+const SLUG = "acme";
+const API_TOKEN = "cf-api-token-that-must-never-be-stored";
+const TUNNEL_TOKEN = "tunnel-token-goes-to-the-cluster";
+
+let harness: PostgresTestHarness;
+
+type Call = { readonly method: string; readonly path: string; readonly body: Schema.Json | undefined };
+
+const PROBE = "{}";
+
+/** A Cloudflare with one zone, remembering the tunnels and records written to it. */
+function cloudflare(options: { readonly dnsStatus?: number; readonly existingRecord?: string } = {}) {
+  const calls: Call[] = [];
+  const made: Schema.Json[] = [];
+  const alive = new Set<string>();
+  const records: Schema.Json[] = [];
+  const fetch = (input: string | URL | Request, init?: RequestInit) => {
+    const url = new URL(String(input));
+    const path = `${url.pathname.replace("/client/v4", "")}${url.search}`;
+    const method = init?.method ?? "GET";
+    const body: Schema.Json | undefined = init?.body == null ? undefined : JSON.parse(String(init.body));
+    calls.push({ method, path, body });
+    const reply = (status: number, result?: Schema.Json) => Promise.resolve(new Response(JSON.stringify({ success: status < 300, errors: status < 300 ? [] : [{ code: 1, message: "no" }], result }), { status }));
+    if (path.startsWith("/zones?")) return reply(200, [{ id: "z1", name: "example.com", account: { id: "a1" } }]);
+    const probe = JSON.stringify(body) === PROBE;
+    if (method === "POST" && path === "/zones/z1/dns_records") {
+      if (probe) return reply(options.dnsStatus ?? 400);
+      records.push(body ?? null);
+      return reply(200, body ?? null);
+    }
+    if (method === "GET" && path.startsWith("/zones/z1/dns_records?")) {
+      return reply(200, options.existingRecord === undefined ? [] : [{ id: "r1", content: options.existingRecord }]);
+    }
+    if (method === "POST" && path === "/accounts/a1/cfd_tunnel") {
+      if (probe) return reply(400);
+      made.push(body ?? null);
+      alive.add("t1");
+      return reply(200, { id: "t1", token: TUNNEL_TOKEN });
+    }
+    if (method === "GET" && path.startsWith("/accounts/a1/cfd_tunnel?")) return reply(200, []);
+    if (method === "DELETE" && path === "/accounts/a1/cfd_tunnel/t1") {
+      alive.delete("t1");
+      return reply(200, {});
+    }
+    return reply(404);
+  };
+  return { http: new CloudflareHttp({ fetch }), calls, made, alive, records };
+}
+
+/** The calls that wrote something, leaving out the permission probes (an empty body) and the reads. */
+const writesOf = (calls: readonly Call[]) => calls.filter(({ method, body }) => method !== "GET" && JSON.stringify(body) !== PROBE);
+
+type Set = { readonly doors: readonly string[]; readonly token: string | undefined };
+
+/** A Cluster whose Servers take any doors they are told, unless `take` says otherwise. */
+function cluster(take: (doors: readonly string[]) => readonly string[] = (doors) => doors) {
+  const sets: Set[] = [];
+  const session: ScopedRuntimeClientSession = {
+    status: "connected",
+    connected: asTestDouble<PloyzSession>()({
+      setIngressDoors: (doors: readonly string[], token?: string | null) => {
+        sets.push({ doors, token: token ?? undefined });
+        return Effect.succeed({ machines: [{ server: "s1", doors: take(doors) }], failures: [] });
+      },
+    }),
+  };
+  const runtime = asTestDouble<OrganizationRuntime["Service"]>()({ cancel: () => Effect.void, open: () => Effect.succeed(session) });
+  return { sets, runtime };
+}
+
+const setUp = (zone: string, http: CloudflareHttp, runtime: OrganizationRuntime["Service"]) =>
+  harness.runEffect(setUpCloudflare(ORG, { token: Redacted.make(API_TOKEN), zone }, http).pipe(
+    Effect.provideService(OrganizationRuntime, runtime),
+  ));
+
+const setupRows = async () => (await harness.pool.query("select zone, tunnel_id, tunnel_name, state from organization_cloudflare_ingress")).rows;
+
+beforeAll(async () => {
+  harness = await startPostgresTestHarness();
+}, 60_000);
+
+afterAll(async () => {
+  await harness.stop();
+});
+
+beforeEach(async () => {
+  await harness.pool.query(`
+    truncate table operation_outbox, organization cascade;
+    insert into organization (id, name, slug) values ('${ORG}', 'Acme', '${SLUG}');
+  `);
+});
+
+/** Every table's rows as text, so a secret can be searched for anywhere the database holds it. */
+const everything = async () => {
+  const { rows } = await harness.pool.query<{ table_name: string }>("select table_name from information_schema.tables where table_schema = 'public' and table_type = 'BASE TABLE'");
+  const dumps = await Promise.all(rows.map(async ({ table_name }) => (await harness.pool.query(`select t::text as row from "${table_name}" t`)).rows.map((row) => String(row.row)).join("\n")));
+  return dumps.join("\n");
+};
+
+it("sets up a zone with one wildcard record, a tunnel and both doors, and moves nothing", async () => {
+  const { http, calls, records, made, alive } = cloudflare();
+  const { runtime, sets } = cluster();
+  expect(await setUp("example.com", http, runtime)).toMatchObject({ zone: "example.com", tunnelId: "t1", state: "set_up" });
+
+  expect(records).toEqual([{ type: "CNAME", name: "*.example.com", content: "t1.cfargotunnel.com", proxied: true, ttl: 1 }]);
+  expect(made).toEqual([{ name: "ployz-acme", config_src: "local" }]);
+  expect(alive.has("t1")).toBe(true);
+  expect(sets).toEqual([{ doors: ["public", "tunnel"], token: TUNNEL_TOKEN }]);
+  expect(await setupRows()).toEqual([{ zone: "example.com", tunnel_id: "t1", tunnel_name: "ployz-acme", state: "set_up" }]);
+  expect(writesOf(calls).map(({ method, path }) => `${method} ${path}`)).toEqual(["POST /accounts/a1/cfd_tunnel", "POST /zones/z1/dns_records"]);
+  expect(calls.at(-1)).toMatchObject({ method: "POST", path: "/zones/z1/dns_records" });
+});
+
+it("keeps the API token out of every table and the outbox, and the tunnel token out of every table", async () => {
+  const { http } = cloudflare();
+  const { runtime } = cluster();
+  await setUp("example.com", http, runtime);
+  const dump = await everything();
+  expect(dump).not.toContain(API_TOKEN);
+  expect(dump).not.toContain(TUNNEL_TOKEN);
+  expect((await harness.pool.query("select count(*)::int as n from operation_outbox")).rows[0]).toEqual({ n: 0 });
+});
+
+it("refuses a subdomain of a zone before touching anything", async () => {
+  const { http, calls } = cloudflare();
+  const { runtime, sets } = cluster();
+  await expect(setUp("apps.example.com", http, runtime)).rejects.toMatchObject({ message: expect.stringContaining("Addresses go one level below the zone") });
+  expect(calls.filter(({ method }) => method !== "GET")).toEqual([]);
+  expect(sets).toEqual([]);
+  expect(await setupRows()).toEqual([]);
+});
+
+it("names the missing permission and changes nothing when the token can't edit DNS", async () => {
+  const { http, calls, alive } = cloudflare({ dnsStatus: 403 });
+  const { runtime, sets } = cluster();
+  await expect(setUp("example.com", http, runtime)).rejects.toMatchObject({ message: expect.stringContaining("Zone: DNS: Edit") });
+  expect(writesOf(calls)).toEqual([]);
+  expect(alive.size).toBe(0);
+  expect(sets).toEqual([]);
+  expect(await setupRows()).toEqual([]);
+});
+
+it("deletes the tunnel it made, and writes no record, when the servers don't take both doors", async () => {
+  const { http, records, alive } = cloudflare();
+  const { runtime, sets } = cluster(() => ["public"]);
+  await expect(setUp("example.com", http, runtime)).rejects.toMatchObject({ message: expect.stringContaining("Nothing was changed.") });
+  expect(records).toEqual([]);
+  expect(alive.size).toBe(0);
+  expect(sets.map(({ doors }) => doors)).toEqual([["public", "tunnel"], ["public"]]);
+  expect(await setupRows()).toEqual([]);
+});
+
+it("leaves an existing record at the zone's wildcard alone, and stops when it points elsewhere", async () => {
+  const { http, records, alive } = cloudflare({ existingRecord: "other.example.net" });
+  const { runtime } = cluster();
+  await expect(setUp("example.com", http, runtime)).rejects.toMatchObject({ message: expect.stringContaining("already points somewhere else") });
+  expect(records).toEqual([]);
+  expect(alive.size).toBe(0);
+  expect(await setupRows()).toEqual([]);
+});
+
+it("accepts a wildcard that already points at the tunnel, writing nothing more", async () => {
+  const { http, records } = cloudflare({ existingRecord: "t1.cfargotunnel.com" });
+  const { runtime } = cluster();
+  expect(await setUp("example.com", http, runtime)).toMatchObject({ state: "set_up" });
+  expect(records).toEqual([]);
+});
+
+it("lists the zone names a token can see without changing anything", async () => {
+  const { http, calls } = cloudflare();
+  expect(await harness.runEffect(listCloudflareZoneNames(Redacted.make(API_TOKEN), http))).toEqual(["example.com"]);
+  expect(calls).toHaveLength(1);
+});

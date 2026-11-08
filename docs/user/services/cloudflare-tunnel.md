@@ -11,7 +11,44 @@ Cloudflare in front of every request.
 Both doors work with the same services and domains. Ployz runs the tunnel on every server that
 takes web traffic, so a request reaches your app whichever server Cloudflare picks.
 
-## Open the tunnel
+## Switch from Settings
+
+Open **Settings → Network**. **Web traffic** lists the two ways your servers answer. **Public
+ports** is in use until you switch.
+
+1. Create an API token in your Cloudflare profile with **Zone: Zone: Read**,
+   **Zone: DNS: Edit** and **Account: Cloudflare Tunnel: Edit**.
+2. Next to **Cloudflare Tunnel**, click **Set up**, paste the token and click **Find zones**.
+3. Pick the zone and click **Set up**. Use the zone itself, like `example.com`, not a
+   subdomain of it. Your apps get names one level below it, like `web-prod.example.com`, which
+   Cloudflare's free certificate covers.
+
+Ployz uses the token for this one step and doesn't keep it. A token missing a permission names
+it, and nothing changes.
+
+Setup adds a tunnel named `ployz-<your organization>` and one proxied `*.example.com` record to
+your zone. It never touches `example.com` itself or a record you already have. Your addresses
+stay where they are until you switch.
+
+Click **Review and switch**. The review lists every address that moves, like
+`web-prod.acme.ployz.app → web-prod.example.com`. The old ones stop working. Click **Switch**
+and follow **Step 1 of 3** to **Step 3 of 3**. Expect a short interruption.
+
+Custom domains stay as they are. Add each to your tunnel's DNS in Cloudflare, as the CLI steps
+below show.
+
+### Switch back
+
+Click **Switch back** next to **Public ports** and review the same way. Your servers publish
+ports 80 and 443 again and your addresses return to your organization's domain. The tunnel and
+the `*.example.com` record stay in your Cloudflare account. Delete them there when you're done
+with them.
+
+`ployz cluster web-traffic cloudflare` and `ployz cluster web-traffic public` ask for the same
+switch from the CLI. They wait for an owner or admin to approve it in the dashboard, as do
+agents.
+
+## Open the tunnel from the CLI
 
 1. In Cloudflare, under **Zero Trust → Networks → Tunnels**, create a tunnel and copy its token.
    Don't follow Cloudflare's install steps; Ployz runs the connector for you.

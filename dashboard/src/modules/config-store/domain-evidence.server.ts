@@ -2,6 +2,7 @@ import "@tanstack/react-start/server-only";
 import { Resolver } from "node:dns/promises";
 import type { ClusterDomainStatus as StoreClusterDomainStatus, ConfigDomainEvidence, DnsLookup, PublishedHostname, RuntimeWatchView } from "@ployz/sdk";
 import { Clock, Effect, Option, Schema } from "effect";
+import { activeCloudflareZone } from "#/modules/cloudflare/source.server";
 import { clusterDomainStatus } from "#/modules/cluster-domain/cluster-domain";
 import { loadClusterDomain, reserveClusterDomain } from "#/modules/cluster-domain/cluster-domain.server";
 import type { OrganizationClusterDomain } from "#/modules/cluster-domain/tables";
@@ -47,6 +48,16 @@ function clusterDomain(row: OrganizationClusterDomain | null): ConfigDomainEvide
     : { kind: state.reason };
   return { name: row.name, status: seen };
 }
+
+/**
+ * The Cluster Domain the Store expands generated names under. Behind Cloudflare it is the user's zone, always ready,
+ * and reserves nothing; otherwise it is the Hosted name, reserved first when the call generates a domain.
+ */
+const clusterDomainOf = Effect.fn("ConfigStore.clusterDomainOf")(function* (organizationId: string, reserve: boolean) {
+  const zone = yield* activeCloudflareZone(organizationId);
+  if (zone !== null) return { name: zone, status: { kind: "ready" } } satisfies NonNullable<ConfigDomainEvidence["cluster_domain"]>;
+  return clusterDomain(reserve ? yield* reserveClusterDomain(organizationId) : yield* loadClusterDomain(organizationId));
+});
 
 /**
  * The hostnames the Servers publish now, each with the Namespace and Service publishing it. As in the runtime's
@@ -152,8 +163,7 @@ export const gatherDomainEvidence = Effect.fn("ConfigStore.gatherDomainEvidence"
   if ("command" in wanted) {
     if (wanted.command !== "admit") {
       const generates = wanted.command === "set_generated_domain" || (adding !== undefined && (adding.hostname ?? null) === null);
-      const row = generates ? yield* reserveClusterDomain(organizationId) : yield* loadClusterDomain(organizationId);
-      const edit: ConfigDomainEvidence = { ...nothing, cluster_domain: clusterDomain(row) };
+      const edit: ConfigDomainEvidence = { ...nothing, cluster_domain: yield* clusterDomainOf(organizationId, generates) };
       const published = yield* recentlyPublished(organizationId);
       if (published) edit.published = published;
       return edit;
@@ -162,14 +172,13 @@ export const gatherDomainEvidence = Effect.fn("ConfigStore.gatherDomainEvidence"
       Effect.option,
     );
     const generated = Option.getOrUndefined(domains)?.domains.some((domain) => domain.kind === "generated") ?? false;
-    const row = generated ? yield* reserveClusterDomain(organizationId) : yield* loadClusterDomain(organizationId);
     // A Deploy refuses a hostname another Namespace publishes: it looks at the Cluster (or a look from seconds ago).
-    const deploy: ConfigDomainEvidence = { ...nothing, cluster_domain: clusterDomain(row) };
+    const deploy: ConfigDomainEvidence = { ...nothing, cluster_domain: yield* clusterDomainOf(organizationId, generated) };
     const seen = generated ? yield* observeClusterRecently(organizationId, false) : null;
     if (seen) deploy.published = seen.published;
     return deploy;
   }
-  const named: ConfigDomainEvidence = { ...nothing, cluster_domain: clusterDomain(yield* loadClusterDomain(organizationId)) };
+  const named: ConfigDomainEvidence = { ...nothing, cluster_domain: yield* clusterDomainOf(organizationId, false) };
   if (wanted.query !== "domains" && wanted.query !== "domain") return named;
   const evidence: ConfigDomainEvidence = { ...named, ...(yield* observeClusterRecently(organizationId, wanted.query === "domain")) };
   if (wanted.query === "domains") return evidence;
