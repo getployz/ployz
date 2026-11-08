@@ -105,14 +105,25 @@ const done = { kind: "done" } as const;
  * Start a build on GitHub: reuse the Service's latest image when a Machine still holds it for this commit, skip GitHub
  * when it can't take it (no GitHub App access, no build workflow, several platforms, GitHub or the Cluster
  * unreachable), else dispatch the workflow on the runner native to its platform. Workflow inputs are visible on GitHub,
- * so they never carry secrets: the runner fetches those at check-in.
+ * so they never carry secrets: the runner fetches those at check-in. A build a run already holds, as when a retried
+ * step's first try handed it off and lost the answer, is followed, not started again: no other Builder may take it
+ * until that run lets it go.
  */
 export const startStoreGithubBuild = Effect.fn("StoreGithub.start")(function* (organizationId: string, target: StoreGithubTarget) {
+  // The run that holds the build, to follow. A build no run has held yet is not found.
+  const holder = heldGithubBuild(target.build).pipe(
+    Effect.catchIf(refusedWith("not_found"), () => Effect.succeed(null)),
+    Effect.map((held) => held?.status === "building" ? { kind: "dispatched", runId: held.run.run_id } satisfies StoreGithubStart : null),
+  );
+  const following = yield* holder;
+  if (following !== null) return following;
+  // A write refused since the read above: the build started or ended meanwhile, maybe by the first try's hand-off
+  // committing late. Follow whichever run holds it now.
+  const refused = holder.pipe(Effect.map((held) => held ?? done));
   const store = yield* cloudStore;
   const skip = (message: string) => storeTry(() => store.githubSkip(target.build, message)).pipe(
-    // It started or ended meanwhile (a retried step): nothing to do.
-    Effect.catchIf(refusedWith("conflict"), () => Effect.void),
     Effect.as<StoreGithubStart>(done),
+    Effect.catchIf(refusedWith("conflict"), () => refused),
   );
   if (target.installationId === null) {
     // A Service whose image a Server still holds reads as reused, not as waiting on an App it doesn't need.
@@ -121,7 +132,8 @@ export const startStoreGithubBuild = Effect.fn("StoreGithub.start")(function* (o
       Effect.tap(({ foreign }) => logForeignServers(organizationId, foreign)),
       Effect.catchIf(refusedWith("conflict"), () => Effect.succeed(null)),
     );
-    if (start === null || start.kind === "reused") return done;
+    if (start === null) return yield* refused;
+    if (start.kind === "reused") return done;
     return yield* skip(`GitHub builds need the Ployz GitHub App on ${target.repository}`);
   }
   const installationId = target.installationId;
@@ -149,21 +161,15 @@ export const startStoreGithubBuild = Effect.fn("StoreGithub.start")(function* (o
     // The run must not build untracked: whatever stops Cloud recording it (cancelled or replaced meanwhile, a
     // failure it retries) cancels it first.
     const cancel = cancelGithubRun({ access, fullName, runId: run.runId }).pipe(Effect.ignore);
-    const handed = yield* storeTry(() => store.githubDispatched(target.build, {
+    yield* storeTry(() => store.githubDispatched(target.build, {
       run_id: run.runId, run_url: run.runUrl, workflow_ref: run.workflowRef, repository: fullName, installation_id: installationId,
-    })).pipe(
-      Effect.as(true),
-      Effect.catchIf(refusedWith("conflict"), () => cancel.pipe(Effect.as(false))),
-      Effect.onError(() => cancel),
-    );
-    if (!handed) return done;
+    })).pipe(Effect.onError(() => cancel));
     return { kind: "dispatched", runId: run.runId } satisfies StoreGithubStart;
   }).pipe(
     // GitHub failing before dispatch is GitHub being unusable, not the build failing.
     Effect.catchTag("GithubObservationError", (error) => skip(`GitHub couldn't take the build: ${error.message}`)),
     Effect.catchTag("GithubDisconnected", (error) => skip(error.message)),
-    // Started or ended by a retried step already.
-    Effect.catchIf(refusedWith("conflict"), () => Effect.succeed(done)),
+    Effect.catchIf(refusedWith("conflict"), () => refused),
   );
 });
 
@@ -179,7 +185,7 @@ export type StoreGithubCheck = "waiting" | "done" | { failed: string };
  * A Deployment cancelled or replaced meanwhile stops it. An Organization that can't use the installation any more
  * (disconnected, or GitHub suspended or uninstalled it) can't read what GitHub built, so its builds stop and the
  * Deployment fails with why. A run past its budget is cancelled and ended. A run that hasn't checked in by the start
- * limit (`startLimit`: another Builder follows) is skipped and cancelled; GitHub keeps one that started.
+ * limit (`startLimit`: another Builder follows) is skipped and cancelled; GitHub keeps one whose check-in committed.
  */
 export const checkStoreGithubBuild = Effect.fn("StoreGithub.check")(function* (
   organizationId: string, target: StoreGithubTarget, seen: { ended: boolean; startLimit: boolean },
@@ -198,23 +204,23 @@ export const checkStoreGithubBuild = Effect.fn("StoreGithub.check")(function* (
     yield* cancelStoreGithubBuilds(deploymentId);
     return { failed: refusal.message };
   }
-  const finish = (timedOut: boolean) => Effect.gen(function* () {
+  const finish = (look: "start_limit" | "budget" | "ended") => Effect.gen(function* () {
     const { connections, expect } = yield* deployDialOf(organizationId);
-    const finished = yield* storeTry(() => store.githubFinish(target.build, timedOut, connections, expect));
+    const finished = yield* storeTry(() => store.githubFinish(target.build, look, connections, expect));
     return finished === "waiting" ? "waiting" as const : "done" as const;
   });
   if (build.checked_in_at !== null && Date.now() - build.checked_in_at * 1000 > GITHUB_RUN_BUDGET_MS) {
     yield* cancelDispatchedGithubRun(build.run);
-    return yield* finish(true);
+    return yield* finish("budget");
   }
   if (build.grant === null) {
-    if (seen.ended || (yield* runEnded(build))) return yield* finish(false);
+    if (seen.ended || (yield* runEnded(build))) return yield* finish("ended");
     if (!seen.startLimit) return "waiting" as const;
-    const found = yield* finish(true);
+    const found = yield* finish("start_limit");
     if (found === "done") yield* cancelDispatchedGithubRun(build.run);
     return found;
   }
-  if (seen.ended || build.ended !== null || (yield* runEnded(build))) return yield* finish(false);
+  if (seen.ended || build.ended !== null || (yield* runEnded(build))) return yield* finish("ended");
   return "waiting" as const;
 });
 
@@ -303,7 +309,7 @@ export const recordStoreGithubBuildSteps = Effect.fn("StoreGithub.steps")(functi
     if (reported.ended) {
       const { connections, expect } = yield* deployDialOf(build.organization);
       // The walk's next look ends it otherwise.
-      yield* storeTry(() => store.githubFinish(buildId, false, connections, expect)).pipe(
+      yield* storeTry(() => store.githubFinish(buildId, "ended", connections, expect)).pipe(
         Effect.catch((error) => Effect.logWarning("Could not end a reported GitHub build.", error)),
       );
       yield* sendInngestEvent(createGithubBuildRunCompletedEvent({ id: `reported-${buildId}`, runId: build.run.run_id })).pipe(

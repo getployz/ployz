@@ -637,9 +637,10 @@ impl ConfigStore {
         to_json(reported)
     }
 
-    /// End a build whose run reported its end, completed or ran out of time:
-    /// `"waiting"` while its Machine can't read the grant, else `{ended: status}`. A
-    /// grant Machine of another Cluster than `expect`'s fails it at once.
+    /// End a build at Cloud's `look`: the start limit, the run past its budget, or the
+    /// run ended. `"waiting"` while its Machine can't read the grant, or when the start
+    /// limit finds the run checked in, else `{ended: status}`. A grant Machine of
+    /// another Cluster than `expect`'s fails it at once.
     ///
     /// # Errors
     /// Returns a storage error, or `conflict` when it ended meanwhile.
@@ -647,22 +648,17 @@ impl ConfigStore {
     pub async fn github_finish(
         &self,
         build: String,
-        timed_out: bool,
+        #[napi(ts_arg_type = "\"start_limit\" | \"budget\" | \"ended\"")] look: serde_json::Value,
         #[napi(ts_arg_type = "Connection[]")] connections: serde_json::Value,
         #[napi(ts_arg_type = "{ sealingPublicKey: string; allowUnverified?: boolean } | null")]
         expect: Option<serde_json::Value>,
     ) -> Result<serde_json::Value> {
         let (build, connections) = (github_id(&build)?, crate::parse_connections(connections)?);
+        let look = decode(look, "Expected a GitHub look")?;
         let expect = crate::parse_expect(expect)?;
         to_json(
-            ployz::sdk::github_finish(
-                Arc::clone(&self.store),
-                build,
-                timed_out,
-                connections,
-                expect,
-            )
-            .await,
+            ployz::sdk::github_finish(Arc::clone(&self.store), build, look, connections, expect)
+                .await,
         )
     }
 
