@@ -344,23 +344,6 @@ async fn user_stop_start_restart_remove() {
     assert_eq!(ran.rotation, Some(CopyRotation::Out));
     assert_eq!(ran.wants, [stopped()]);
 
-    let mut fake = Scripted::new(vec![inspected()]).with_copy(
-        &machine('a'),
-        &container('1'),
-        CopyRotation::In,
-    );
-    fake.acks.insert(machine('b'), Ack::Never);
-    let ran = run_command(Command::Stop, Recording::of(fake)).await;
-    let error = ran.answer.as_ref().unwrap_err();
-    assert_eq!(error.code, RpcErrorCode::Unavailable, "{error:?}");
-    assert!(error.message.contains("left running and Held"), "{error:?}");
-    assert!(
-        error.message.contains(&machine('b').to_string()),
-        "{error:?}"
-    );
-    let run = held_run(&ran.rotation);
-    assert_eq!(ran.wants, [held(&run, CopyRotation::In)]);
-
     let ran = row(
         Command::Start,
         CopyRotation::Held(theirs.clone()),
@@ -595,6 +578,35 @@ async fn a_start_or_restart_of_a_copy_older_than_an_in_copy_reports_it_left_unro
             ran.rotation
         );
         assert_eq!(ran.fake.rotation(&newer), Some(CopyRotation::In));
+    }
+}
+
+/// A Server whose daemon is stopped confirms nothing, and a stop asked for the copy
+/// to stop. Once the wait for that proxy ends, the stop goes on: the copy is not left
+/// running and Held, unrouted everywhere, and a second stop on a copy an earlier one
+/// left Held does not wait out the same proxy again (#3995).
+#[tokio::test(start_paused = true)]
+async fn a_stop_goes_on_when_a_proxy_never_confirms_the_copy_unlisted() {
+    let theirs = DeploymentLogId::parse("stopped-before").unwrap();
+    for rotation in [CopyRotation::In, CopyRotation::Held(theirs.clone())] {
+        let mut fake = Scripted::new(vec![inspected(), copy_call(Call::Stop)]).with_copy(
+            &machine('a'),
+            &container('1'),
+            rotation.clone(),
+        );
+        fake.acks.insert(machine('b'), Ack::Never);
+        let ran = run_command(Command::Stop, Recording::of(fake)).await;
+        ran.answer.unwrap();
+        let run = match &rotation {
+            CopyRotation::Held(run) => run.clone(),
+            CopyRotation::Pending | CopyRotation::In | CopyRotation::Out => held_run(&ran.rotation),
+        };
+        assert_eq!(
+            ran.wants,
+            [held(&run, rotation.clone()), stopped()],
+            "{rotation:?}"
+        );
+        assert_eq!(ran.rotation, Some(CopyRotation::Held(run)), "{rotation:?}");
     }
 }
 
