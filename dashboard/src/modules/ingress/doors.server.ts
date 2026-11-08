@@ -143,13 +143,19 @@ export const reviewSwitch = Effect.fn("IngressDoors.review")(function* (organiza
 
 const Switched = Schema.Struct({ to: Schema.Literals(["tunnel", "public"]) });
 
-/** A pending switch's digest as the Cluster stands now: none once the Cluster is where it asked to go. */
+/**
+ * A pending switch's digest as the Cluster stands now: none once the Cluster is where it asked to go. A switch refused
+ * for now, while Cloudflare is being set up or until it is, keeps its digest, so the approval waits and the request it
+ * lets through is refused with the reason, instead of being superseded and asked again at once.
+ */
 export const freshSwitchDigest = Effect.fn("IngressDoors.freshDigest")(function* (organizationId: string, stored: string, preview: JsonValue) {
   const switched = Schema.decodeUnknownOption(Switched)(preview);
   if (switched._tag === "None") return stored;
+  const { to } = switched.value;
   const setup = yield* loadCloudflareSetup(organizationId);
-  if (switchProblem(setup, switched.value.to, yield* latestChange(organizationId)) !== null) return null;
-  return operationDigest(yield* switchAsked(organizationId, switched.value.to));
+  if (switchProblem(setup, to, yield* latestChange(organizationId)) === null) return operationDigest(yield* switchAsked(organizationId, to));
+  const there = to === "tunnel" ? setup?.state === "active" : setup === null || setup.state === "left";
+  return there ? null : stored;
 });
 
 const enqueueSwitch = (row: AttemptRow) => enqueueEvent(createIngressDoorsRequestedEvent({ attemptId: row.id, organizationId: row.organizationId }));
