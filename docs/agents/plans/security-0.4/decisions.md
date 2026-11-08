@@ -16,3 +16,12 @@ No Machine sees the other Machines' steps end, so none can refuse step 3 because
 ran. The card and `proposal_status` show where each step got, which is how a person notices.
 Closing this would mean each Machine learning the earlier steps' ends through a signed chain,
 which the program's remaining slices don't need.
+
+**The card's names come from Cloud.** The proposal card's project, environment and service names,
+and the single-step card's title, are what Cloud serves. The browser checks them against the Store
+view, which also comes from Cloud, so that check catches a row that changed under the card, not a
+Cloud that lies. Servers check the namespace and runtime name against the container's labels.
+
+Residual: a compromised Cloud could mislabel a restart, stop or start the owner approved, within
+those three verbs. Accepted: the bar is that Cloud can't run anything else, read secrets, take data
+off Servers, or add Servers or Devices, and a label can't do any of those.

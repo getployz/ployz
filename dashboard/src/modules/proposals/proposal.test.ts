@@ -98,4 +98,11 @@ describe("ranOutReason", () => {
     expect(ranOutReason([stop, start, api, { ...api, verb: "start" as const }], 3, [])).toBe("The approval ran out. Start api yourself.");
     expect(ranOutReason([stop, { ...stop, verb: "restart" as const }, api], 2, [])).toBe("The approval ran out. Stop api yourself.");
   });
+  it("keeps a Service stopped on the Servers a later start or restart left out", () => {
+    const onA = { machine: "m-a" as MachineId, name: "A" };
+    const onB = { machine: "m-b" as MachineId, name: "B" };
+    expect(ranOutReason([stop, { ...stop, verb: "restart" as const, only: onA }, api], 2, [])).toBe("The approval ran out. Start web yourself.");
+    expect(ranOutReason([{ ...stop, only: onA }, { ...stop, only: onB }, { ...start, only: onA }, api], 3, [])).toBe("The approval ran out. Start web yourself.");
+    expect(ranOutReason([{ ...stop, only: onA }, { ...start, only: onA }, api], 2, [])).toBe("The approval ran out. Stop api yourself.");
+  });
 });

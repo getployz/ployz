@@ -1,4 +1,4 @@
-import type { ServerRef, ServiceVerb, Signed } from "@ployz/sdk";
+import type { MachineId, ServerRef, ServiceVerb, Signed } from "@ployz/sdk";
 import { APPROVAL_RAN_OUT, leftStopped, type ServiceActLeg } from "#/modules/service-act/service-act";
 
 export const PROPOSAL_STATUSES = ["draft", "presented", "approved", "denied"] as const;
@@ -59,19 +59,27 @@ const listed = (names: readonly string[]) =>
 
 /**
  * Why step `index` halted when the approval ran out: what the person has to start now, which is every Service an
- * earlier step stopped and none started again, with this step's own when it is a start or its legs left a copy
- * stopped; or, with nothing stopped, the step left to them.
+ * earlier step stopped on a Server no later step started it on again, with this step's own when it is a start or
+ * its legs left a copy stopped; or, with nothing stopped, the step left to them.
  */
 export function ranOutReason(steps: readonly ProposalStep[], index: number, legs: readonly ServiceActLeg[]) {
-  const stopped = new Set<string>();
+  // Each stopped Service's Servers: the one a step's `only` named, or null for a stop across every Server.
+  const stopped = new Map<string, Set<MachineId | null>>();
   for (const step of steps.slice(0, index)) {
-    if (step.verb === "stop") stopped.add(stepName(step));
-    else stopped.delete(stepName(step));
+    const name = stepName(step);
+    const machine = step.only?.machine ?? null;
+    if (step.verb === "stop") stopped.set(name, (stopped.get(name) ?? new Set()).add(machine));
+    else if (machine === null) stopped.delete(name);
+    else {
+      const servers = stopped.get(name);
+      servers?.delete(machine);
+      if (servers?.size === 0) stopped.delete(name);
+    }
   }
   const step = steps[index];
   if (step === undefined) return APPROVAL_RAN_OUT;
-  if (step.verb === "start" || legs.some(leftStopped)) stopped.add(stepName(step));
-  return stopped.size === 0 ? `${APPROVAL_RAN_OUT} ${stepTitle(step)} yourself.` : `${APPROVAL_RAN_OUT} Start ${listed([...stopped])} yourself.`;
+  if (step.verb === "start" || legs.some(leftStopped)) stopped.set(stepName(step), new Set([step.only?.machine ?? null]));
+  return stopped.size === 0 ? `${APPROVAL_RAN_OUT} ${stepTitle(step)} yourself.` : `${APPROVAL_RAN_OUT} Start ${listed([...stopped.keys()])} yourself.`;
 }
 
 /** What a step takes away while it runs, as the card's Destroys list words it; null for a start. */
