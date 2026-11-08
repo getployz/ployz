@@ -1058,61 +1058,77 @@ async fn a_held_pass_wakes_when_the_shared_clock_passes() {
     task.abort();
 }
 
-/// Whichever rank's probe refuses a hostname records the refusal, so the row says why and
-/// when the Cluster tries again, even when the lowest Machine id runs no certificate loop.
+/// Only rank 0 records a refusal. Were rank 1 to record one, it would replace a passed
+/// Authority clock at one failure, so rank 0's next failed order would count its backoff from
+/// one again.
 #[tokio::test]
-async fn a_refusal_is_recorded_by_whichever_rank_sees_it() {
+async fn only_rank_0_records_a_refusal() {
     let hostname = host(UNREACHED);
-    // Machine "a" is rank 0 and runs no loop here, as a Down or leaving Machine does.
     let (store, task) = replica(&["a", "b"], UNREACHED).await;
+    let backed_off = IssuanceClock::new(
+        3,
+        SystemTime::now() - Duration::from_secs(1),
+        IssuanceFailure::Authority,
+    );
+    store
+        .record_certificate_failure(
+            &hostname,
+            None,
+            "order for the hostname is invalid",
+            backed_off,
+        )
+        .await
+        .unwrap();
     let account_dir =
         std::env::temp_dir().join(format!("ployzd-acme-refused-{}", MachineId::random()));
+    let directory = Some(NO_DIRECTORY_SERVER.to_owned());
+    let pass = |seed| {
+        let (store, directory, account_dir) = (&store, &directory, &account_dir);
+        async move {
+            issue_wanted(
+                store,
+                directory,
+                account_dir,
+                &machine_id(seed),
+                &mut BTreeMap::new(),
+            )
+            .await
+            .unwrap();
+            store.certificate_row(&host(UNREACHED)).await.unwrap()
+        }
+    };
 
-    issue_wanted(
-        &store,
-        &Some(NO_DIRECTORY_SERVER.to_owned()),
-        &account_dir,
-        &machine_id("b"),
-        &mut BTreeMap::new(),
-    )
-    .await
-    .unwrap();
-    let row = store.certificate_row(&hostname).await.unwrap();
+    let seeded = store.certificate_row(&hostname).await.unwrap();
+    let row = pass("b").await;
+    assert_eq!(row, seeded, "rank 1 recorded");
+    let row = pass("a").await;
     assert!(
         row.last_error()
             .is_some_and(|reason| reason.contains(UNREACHED)),
-        "rank 1 recorded no refusal: {row:?}"
-    );
-    assert!(
-        row.clock()
-            .is_some_and(|clock| matches!(clock.last_failure(), IssuanceFailure::Refused(_))),
-        "rank 1 recorded no clock: {row:?}"
+        "rank 0 recorded no refusal: {row:?}"
     );
     task.abort();
 }
 
-/// A pass that stops before the gate is blocked, as a held pass is: the policy refusal, a
-/// policy with no directory, and an Err from a read before the gate each end every hostname's
-/// rank delay, so the first pass through the gate after them starts it again.
+/// A pass that stops before the gate because the policy refuses or names no directory is
+/// blocked, as a held pass is: it ends every hostname's rank delay, so the first pass through
+/// the gate after it starts the delay again.
 #[tokio::test]
 async fn a_pass_that_stops_before_the_gate_ends_the_rank_delay() {
     let account_dir =
         std::env::temp_dir().join(format!("ployzd-acme-early-{}", MachineId::random()));
     let directory = Some(NO_DIRECTORY_SERVER.to_owned());
-    let waiting = || {
-        BTreeMap::from([(
-            host(UNREACHED),
-            HostIssuance::Waiting {
-                orderable_since: tokio::time::Instant::now(),
-            },
-        )])
-    };
     for (policy, stops) in [
         (r#"{"challenge_kind":"dns-01"}"#, "the policy refusal"),
         (r#"{"directory_url":""}"#, "no directory"),
     ] {
         let (store, task) = replica_under(Some(policy), &["a", "b"], UNREACHED).await;
-        let mut kept = waiting();
+        let mut kept = BTreeMap::from([(
+            host(UNREACHED),
+            HostIssuance::Waiting {
+                orderable_since: tokio::time::Instant::now(),
+            },
+        )]);
         let wait = issue_wanted(
             &store,
             &directory,
@@ -1126,20 +1142,46 @@ async fn a_pass_that_stops_before_the_gate_ends_the_rank_delay() {
         assert!(kept.is_empty(), "{stops} kept {kept:?}");
         task.abort();
     }
+}
+
+/// A read that fails keeps the delay a hostname has earned, so passes that alternate between
+/// an open gate and an Err still order once the delay has passed.
+#[tokio::test]
+async fn a_read_error_keeps_the_rank_delay_earned() {
+    let account_dir = std::env::temp_dir().join(format!("ployzd-acme-err-{}", MachineId::random()));
     let (store, task) = replica(&["a", "b"], UNREACHED).await;
     task.abort();
     let _ = task.await;
-    let mut kept = waiting();
-    issue_wanted(
-        &store,
-        &directory,
-        &account_dir,
-        &machine_id("b"),
-        &mut kept,
-    )
-    .await
-    .unwrap_err();
-    assert!(kept.is_empty(), "an Err before the gate kept {kept:?}");
+    let start = tokio::time::Instant::now();
+    let wall = SystemTime::now();
+    let mut kept = BTreeMap::new();
+    for pass in 1..=3_u32 {
+        let now = start + RANK_STEP / 2 * pass;
+        let prev = kept.get(&host(UNREACHED)).copied();
+        kept.insert(
+            host(UNREACHED),
+            stepped(prev, None, reaches(), 1, now, wall),
+        );
+        let before = kept.clone();
+        issue_wanted(
+            &store,
+            &Some(NO_DIRECTORY_SERVER.to_owned()),
+            &account_dir,
+            &machine_id("b"),
+            &mut kept,
+        )
+        .await
+        .unwrap_err();
+        assert_eq!(kept, before, "an Err before the gate changed the states");
+    }
+    assert_eq!(
+        kept.get(&host(UNREACHED)).copied(),
+        Some(HostIssuance::Order {
+            route: ployz_core::ClusterRoute::Direct,
+            orderable_since: start + RANK_STEP / 2,
+        }),
+        "rank 1 orders a step after its first open pass, though every other pass failed"
+    );
 }
 
 fn reaches() -> HostnameVerdict {
@@ -1200,7 +1242,10 @@ fn a_hold_or_a_refusal_starts_the_rank_delay_again_at_the_next_open_gate() {
         );
         assert_eq!(
             stepped(prev, Some(&passed), reaches(), 0, now, wall),
-            HostIssuance::Order(ployz_core::ClusterRoute::Direct),
+            HostIssuance::Order {
+                route: ployz_core::ClusterRoute::Direct,
+                orderable_since: now
+            },
             "rank 0 owes no delay after {prev:?}"
         );
     }
@@ -1209,7 +1254,10 @@ fn a_hold_or_a_refusal_starts_the_rank_delay_again_at_the_next_open_gate() {
     });
     assert_eq!(
         stepped(waiting, Some(&passed), reaches(), 1, now, wall),
-        HostIssuance::Order(ployz_core::ClusterRoute::Direct),
+        HostIssuance::Order {
+            route: ployz_core::ClusterRoute::Direct,
+            orderable_since: long_ago
+        },
         "a Waiting state keeps its start while the gate stays open"
     );
 }
@@ -1234,21 +1282,83 @@ fn the_rank_delay_runs_from_the_first_open_pass() {
             orderable_since: start
         }
     );
+    let order = HostIssuance::Order {
+        route: ployz_core::ClusterRoute::Direct,
+        orderable_since: start,
+    };
     assert_eq!(
         stepped(waiting, None, reaches(), 1, start + RANK_STEP, wall),
-        HostIssuance::Order(ployz_core::ClusterRoute::Direct)
+        order
     );
     assert_eq!(
-        stepped(
-            Some(HostIssuance::Order(ployz_core::ClusterRoute::Direct)),
-            None,
-            reaches(),
-            1,
-            start,
-            wall
-        ),
-        HostIssuance::Order(ployz_core::ClusterRoute::Direct),
+        stepped(Some(order), None, reaches(), 1, start + RANK_STEP, wall),
+        order,
         "an order whose failure left no clock is retried at once, its delay spent"
+    );
+}
+
+/// An order keeps the start of its rank delay, and each open pass checks it against the
+/// current rank, so a Machine whose rank rose waits out the longer delay.
+#[test]
+fn a_rank_that_rises_after_an_order_waits_its_new_delay() {
+    let start = tokio::time::Instant::now();
+    let wall = UNIX_EPOCH + Duration::from_secs(1_000_000);
+    let order = Some(HostIssuance::Order {
+        route: ployz_core::ClusterRoute::Direct,
+        orderable_since: start,
+    });
+    assert_eq!(
+        stepped(order, None, reaches(), 2, start + RANK_STEP, wall),
+        HostIssuance::Waiting {
+            orderable_since: start
+        },
+        "a lower-id Machine joined, so rank 1 became rank 2"
+    );
+    assert_eq!(
+        stepped(order, None, reaches(), 2, start + RANK_STEP * 2, wall),
+        HostIssuance::Order {
+            route: ployz_core::ClusterRoute::Direct,
+            orderable_since: start
+        }
+    );
+}
+
+/// A Waiting hostname wakes no later than one step, so a hold of a step or more meets a pass
+/// and starts the delay again. Rank 2 first passes at 1 s. Rank 0's order fails at 2 s, and
+/// its clock holds until 60 s. Rank 2 wakes at 31 s, inside the hold, and then waits its two
+/// steps from 60 s, rather than ordering at 61 s beside rank 0.
+#[test]
+fn a_waiting_rank_meets_a_hold_of_one_step() {
+    let start = tokio::time::Instant::now();
+    let wall = UNIX_EPOCH + Duration::from_secs(1_000_000);
+    let machine = machine_id("a");
+    let policy = default_policy();
+    let at = |secs| {
+        (
+            start + Duration::from_secs(secs),
+            wall + Duration::from_secs(secs),
+        )
+    };
+    let held = clocked(IssuanceFailure::Authority, wall + Duration::from_secs(60));
+
+    let (now, then) = at(1);
+    let first = stepped(None, None, reaches(), 2, now, then);
+    let sleep = wake(first, 2, now, then, &machine, &policy);
+    assert_eq!(sleep, RANK_STEP, "rank 2 slept through the hold");
+
+    let (now, then) = at(1 + sleep.as_secs());
+    let second = stepped(Some(first), Some(&held), reaches(), 2, now, then);
+    assert_eq!(second, HostIssuance::Held(held.clock().unwrap()));
+    let sleep = wake(second, 2, now, then, &machine, &policy);
+    assert_eq!(sleep, Duration::from_secs(29));
+
+    let (now, then) = at(60);
+    assert_eq!(
+        stepped(Some(second), Some(&held), reaches(), 2, now, then),
+        HostIssuance::Waiting {
+            orderable_since: now
+        },
+        "rank 2 orders beside rank 0"
     );
 }
 
@@ -1404,10 +1514,16 @@ fn a_held_hostname_wakes_when_its_clock_passes_or_at_its_next_probe() {
             },
             2
         ),
-        Duration::from_secs(60)
+        RANK_STEP
     );
     assert_eq!(
-        wake_of(HostIssuance::Order(ployz_core::ClusterRoute::Direct), 1),
+        wake_of(
+            HostIssuance::Order {
+                route: ployz_core::ClusterRoute::Direct,
+                orderable_since: now
+            },
+            1
+        ),
         RANK_STEP
     );
     assert_eq!(
