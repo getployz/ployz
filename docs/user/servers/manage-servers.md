@@ -287,20 +287,21 @@ stays trusted.
 When someone leaves the Organization, run `ployz device rm` on each of their passkeys as well as
 their devices.
 
-A passkey approves restarts from the dashboard on servers with
+A passkey approves restarts, stops and starts from the dashboard on servers with
 [device enforcement](#require-a-devices-signature-for-restarts-and-joins) on. Approving deploys
 with a passkey arrives in a later release.
 
 ### Require a device's signature for restarts and joins
 
 By default a server restarts a service for anyone Ployz Cloud lets through. With device
-enforcement on, it restarts or stops only on an approved device's say-so. `ployz service restart`
-and `ployz service stop` sign their steps with your device key, and each server checks that signature against the devices it
+enforcement on, it restarts, stops or starts only on an approved device's or passkey's say-so.
+`ployz service restart`, `ployz service stop` and `ployz service start` sign their steps with your device key, and each server checks that signature against the devices it
 approved before it stops or starts anything. Ployz Cloud carries the signed approval but can't
 make one. Each approval names one container, so a captured approval cannot stop a second copy.
 The CLI signs a fresh approval just before each copy of a rolling restart. Restart approvals
 permit only holding, stopping and starting that container. Stop approvals permit only holding
-and stopping it. Neither permits removing it. A server refuses an approval that is forged, names another service, server or container, lasts over 15 minutes, or
+and stopping it. Start approvals permit only starting it. None permits removing it. Removing a
+volume doesn't need an approval yet. A server refuses an approval that is forged, names another service, server or container, lasts over 15 minutes, or
 was already used, including after the server restarts. It allows two minutes of clock difference
 when checking the issue time and expiry.
 
