@@ -1,5 +1,6 @@
 //! The reserved Ingress doors as Docker shows them: the holder that owns the Ingress
-//! Proxy's network namespace, and the Caddy that joins it.
+//! Proxy's network namespace, the Caddy that joins it, and the Tunnel Connector that
+//! joins it too.
 
 use std::os::unix::fs::MetadataExt;
 use std::path::Path;
@@ -21,18 +22,17 @@ use crate::docker_image::prepare_image;
 pub(crate) enum Door {
     Holder,
     Proxy,
+    Tunnel,
 }
 
 impl Door {
+    pub(crate) const ALL: [Self; 3] = [Self::Holder, Self::Proxy, Self::Tunnel];
+
     #[must_use]
     pub(crate) fn of(identity: &QualifiedService) -> Option<Self> {
-        if *identity == QualifiedService::system_ingress_holder() {
-            Some(Self::Holder)
-        } else if *identity == QualifiedService::system_ingress() {
-            Some(Self::Proxy)
-        } else {
-            None
-        }
+        Self::ALL
+            .into_iter()
+            .find(|door| door.identity() == *identity)
     }
 
     #[must_use]
@@ -40,6 +40,7 @@ impl Door {
         match self {
             Self::Holder => QualifiedService::system_ingress_holder(),
             Self::Proxy => QualifiedService::system_ingress(),
+            Self::Tunnel => QualifiedService::system_tunnel(),
         }
     }
 }
@@ -146,7 +147,7 @@ impl ContainerRuntime {
         machine_id: &MachineId,
     ) -> Result<Vec<DoorEntry>, Error> {
         let mut entries = Vec::new();
-        for door in [Door::Holder, Door::Proxy] {
+        for door in Door::ALL {
             for (id, _) in self.docker.door_containers(door).await? {
                 let observation = match self.inspect_managed(&id, machine_id).await {
                     Ok(observation) => observation,

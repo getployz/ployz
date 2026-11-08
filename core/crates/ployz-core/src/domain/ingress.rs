@@ -10,7 +10,8 @@ use crate::{
     PlacementConstraint, PortPublication, PullPolicy, QualifiedService, RawVolumeSource,
     RequestedServiceSpec, ResolvedServiceSpec, RestartPolicy, ServiceContainerSpec, ServiceMode,
     ServiceMount, ServiceMountGraph, ServiceNetwork, ServiceVolume, ServiceVolumeGraph,
-    ServiceVolumeReference, TransportProtocol, UpdateConfig,
+    ServiceVolumeReference, TransportProtocol, UpdateConfig, tunnel_sealed_token,
+    tunnel_service_spec,
 };
 
 const CADDY_INGRESS_COMMAND: [&str; 4] = ["caddy", "run", "-c", "/config/caddy/Caddyfile"];
@@ -47,6 +48,8 @@ pub enum IngressWiring {
     JoinedProxy,
     /// The holder that owns the network namespace and, when public, the host ports.
     Holder(IngressPorts),
+    /// The Tunnel Connector that joins the holder's network and publishes nothing.
+    Tunnel,
 }
 
 impl IngressWiring {
@@ -55,7 +58,9 @@ impl IngressWiring {
     pub fn ports(self) -> IngressPorts {
         match self {
             Self::LegacyProxy | Self::Holder(IngressPorts::Public) => IngressPorts::Public,
-            Self::JoinedProxy | Self::Holder(IngressPorts::Closed) => IngressPorts::Closed,
+            Self::JoinedProxy | Self::Holder(IngressPorts::Closed) | Self::Tunnel => {
+                IngressPorts::Closed
+            }
         }
     }
 }
@@ -110,18 +115,27 @@ fn legacy_caddy_spec(
     }
 }
 
-/// Every canonical door spec for this image and placement, in recognition order.
+/// Every canonical door spec with this spec's image, placement and, for the Tunnel
+/// Connector, sealed token, in recognition order.
 ///
-/// Image and placement are free for all three families. Every other field is fixed.
+/// Image and placement are free for every family, and the token label for the
+/// connector. Every other field is fixed.
 fn canonical_doors(
-    image: &str,
+    container: &ServiceContainerSpec,
     constraints: &BTreeSet<PlacementConstraint>,
-) -> [(IngressWiring, RequestedServiceSpec); 4] {
+) -> Vec<(IngressWiring, RequestedServiceSpec)> {
+    let image = container.image.as_str();
     let placed = |mut spec: RequestedServiceSpec| {
         spec.placement.constraints.clone_from(constraints);
         spec
     };
-    [
+    let tunnel = tunnel_sealed_token(&container.labels).map(|token| {
+        (
+            IngressWiring::Tunnel,
+            placed(tunnel_service_spec(image, &token)),
+        )
+    });
+    vec![
         (
             IngressWiring::LegacyProxy,
             legacy_caddy_spec(image.to_owned(), constraints.clone()),
@@ -139,6 +153,9 @@ fn canonical_doors(
             placed(holder_service_spec(image, IngressPorts::Closed)),
         ),
     ]
+    .into_iter()
+    .chain(tunnel)
+    .collect()
 }
 
 /// Recognise a requested spec as one canonical Ingress door wiring.
@@ -149,7 +166,7 @@ fn canonical_doors(
 pub fn validate_requested_ingress_service_spec(
     spec: &RequestedServiceSpec,
 ) -> Result<IngressWiring, IngressProxyServiceSpecError> {
-    canonical_doors(&spec.container.image, &spec.placement.constraints)
+    canonical_doors(&spec.container, &spec.placement.constraints)
         .into_iter()
         .find_map(|(wiring, expected)| (expected == *spec).then_some(wiring))
         .ok_or(IngressProxyServiceSpecError)
@@ -167,7 +184,7 @@ pub fn validate_ingress_service_spec(
     if spec.update.monitor_millis.is_some() {
         return Err(IngressProxyServiceSpecError);
     }
-    canonical_doors(&spec.container.image, &spec.placement.constraints)
+    canonical_doors(&spec.container, &spec.placement.constraints)
         .into_iter()
         .find_map(|(wiring, expected)| {
             let expected = expected
@@ -186,7 +203,7 @@ fn holder_container(image: String) -> ServiceContainerSpec {
     }
 }
 
-fn caddy_container(image: String) -> ServiceContainerSpec {
+pub(crate) fn caddy_container(image: String) -> ServiceContainerSpec {
     ServiceContainerSpec {
         image,
         command: CADDY_INGRESS_COMMAND.map(str::to_owned).into(),

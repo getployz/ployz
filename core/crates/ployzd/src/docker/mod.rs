@@ -17,6 +17,7 @@ pub(crate) use peer_pull::ImageProxy;
 mod spec_store;
 mod stream;
 mod telemetry;
+mod tunnel_token;
 mod unregistry;
 mod volume;
 
@@ -333,6 +334,8 @@ pub struct ContainerRuntime {
     /// before the admission turn and before any per-id gate.
     doors: Arc<tokio::sync::Mutex<()>>,
     sealing_key_dir: Option<PathBuf>,
+    /// Where Machine paths such as the tunnel token's resolve. `/` outside tests.
+    machine_root: PathBuf,
     log_store: LogStore,
     /// Set when a Leave begins removing every managed Container, and cleared only when
     /// that Leave fails, so a committed Leave keeps it set.
@@ -353,9 +356,18 @@ impl ContainerRuntime {
             stranded: Arc::default(),
             doors: Arc::default(),
             sealing_key_dir: None,
+            machine_root: PathBuf::from("/"),
             log_store: LogStore::default(),
             departing: Arc::default(),
         }
+    }
+
+    /// Resolves Machine paths under `root` instead of `/`.
+    #[cfg(test)]
+    #[must_use]
+    pub(crate) fn with_machine_root(mut self, root: PathBuf) -> Self {
+        self.machine_root = root;
+        self
     }
 
     /// Holds the Ingress door lifecycle until the guard drops. The guard is owned so

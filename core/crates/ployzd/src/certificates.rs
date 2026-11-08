@@ -19,9 +19,10 @@ use instant_acme::{
 };
 use ployz_core::{
     CertificateHost, CertificateKeyType, CertificatePolicy, ClusterRoute, ContainerKind,
-    ContainerObservation, HOSTNAME_VERIFY_PATH, HttpProtocol, IngressHost, IssuanceFailure,
-    IssuanceGate, Machine, MachineId, PortPublication, VerifyAnswer, hostname_verdict,
-    issuance_failure_clock, issuance_gate, refusal_reason, resolve_certificate_policy,
+    ContainerObservation, HOSTNAME_VERIFY_PATH, HttpProtocol, IngressHost, IngressPorts,
+    IngressWiring, IssuanceFailure, IssuanceGate, Machine, MachineId, PortPublication,
+    VerifyAnswer, hostname_verdict, issuance_failure_clock, issuance_gate, refusal_reason,
+    resolve_certificate_policy, validate_ingress_service_spec,
 };
 use reqwest::{Client, redirect::Policy};
 use thiserror::Error;
@@ -224,6 +225,53 @@ pub(crate) fn challenge_probe_addresses(
         .collect()
 }
 
+/// Why no certificate is ordered while every Server uses the Tunnel Door.
+const TUNNEL_SERVES: &str =
+    "Cloudflare serves the certificate while every Server uses the Tunnel Door";
+
+/// Which Servers hold the Public Door open, from their running door Containers, and
+/// which hold it closed for the Tunnel Door. A Server with both, mid-switch, is open.
+#[derive(Debug, Default, PartialEq, Eq)]
+pub(crate) struct DoorStanding {
+    pub(crate) public: BTreeSet<MachineId>,
+    pub(crate) closed: BTreeSet<MachineId>,
+}
+
+pub(crate) fn door_standing(observations: &[ContainerObservation]) -> DoorStanding {
+    let mut standing = DoorStanding::default();
+    for observation in observations
+        .iter()
+        .filter(|observation| observation.runtime.may_serve())
+        .filter(|observation| observation.identity().is_ingress_door())
+    {
+        match validate_ingress_service_spec(&observation.resolved_spec).ok() {
+            Some(IngressWiring::LegacyProxy | IngressWiring::Holder(IngressPorts::Public)) => {
+                standing.public.insert(observation.machine_id);
+            }
+            Some(IngressWiring::Holder(IngressPorts::Closed)) => {
+                standing.closed.insert(observation.machine_id);
+            }
+            Some(IngressWiring::JoinedProxy | IngressWiring::Tunnel) | None => {}
+        }
+    }
+    standing
+        .closed
+        .retain(|machine_id| !standing.public.contains(machine_id));
+    standing
+}
+
+/// The Machines that take part in ordering: every one but those with the Public Door
+/// closed, which Let's Encrypt can't reach.
+pub(crate) fn ordering_machines<'m>(
+    machines: &'m [Machine],
+    standing: &'m DoorStanding,
+) -> impl Iterator<Item = &'m MachineId> {
+    machines
+        .iter()
+        .map(|machine| &machine.id)
+        .filter(|machine_id| !standing.closed.contains(machine_id))
+}
+
 fn ingress_challenge_ips(
     machines: &[Machine],
     observations: &[ContainerObservation],
@@ -235,9 +283,10 @@ fn ingress_challenge_ips(
         })
         .map(|observation| observation.machine_id)
         .collect();
+    let standing = door_standing(observations);
     machines
         .iter()
-        .filter(|machine| ingress.contains(&machine.id))
+        .filter(|machine| ingress.contains(&machine.id) && !standing.closed.contains(&machine.id))
         .flat_map(machine_challenge_ips)
         .collect()
 }
@@ -462,16 +511,32 @@ async fn issue_wanted(
         return Ok(RETRY_INTERVAL);
     }
     let machines = store.machines().await?;
+    let standing = door_standing(&containers.observations);
+    if standing.public.is_empty() && !standing.closed.is_empty() {
+        for hostname in &wanted {
+            match store
+                .record_certificate_error(hostname, TUNNEL_SERVES)
+                .await?
+            {
+                AcmeWrite::Changed | AcmeWrite::Kept => {}
+                AcmeWrite::Moved => eprintln!(
+                    "did not record why no certificate is ordered for {hostname}: its row changed on every attempt"
+                ),
+            }
+        }
+        return Ok(RETRY_INTERVAL);
+    }
+    if standing.closed.contains(machine_id) {
+        return Ok(RETRY_INTERVAL);
+    }
     let cluster = cluster_addresses(&machines.observations);
-    let machine_ids: Vec<_> = machines
-        .observations
-        .iter()
-        .map(|machine| machine.id)
+    let machine_ids: Vec<_> = ordering_machines(&machines.observations, &standing)
+        .copied()
         .collect();
     let verify_client = probe_client(policy.probe_timeout())?;
     let rank = machine_rank(
         machine_id,
-        machines.observations.iter().map(|machine| &machine.id),
+        ordering_machines(&machines.observations, &standing),
     );
     let now = Instant::now();
     let wall = SystemTime::now();

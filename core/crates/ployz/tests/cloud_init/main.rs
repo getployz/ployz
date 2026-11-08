@@ -1084,6 +1084,7 @@ async fn join_places_observed_ingress_on_this_machine() {
         [ployz_core::SetIngressDoorsRequest {
             doors: ployz_core::IngressDoors::public(),
             proxy_service: ployz_core::ServiceId::parse("c".repeat(32)).unwrap(),
+            sealed_token: None,
         }]
     );
 }

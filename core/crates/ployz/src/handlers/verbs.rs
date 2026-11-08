@@ -10,8 +10,8 @@ use serde::Serialize;
 use super::debug;
 use super::{
     Handler, account, build, catalog, cloud, cluster, completion, config, config_item, context,
-    deploy, device, docs, domain, env, github, link, login, mcp, metrics, operator, project,
-    recovery, review, server, service, up, volume,
+    deploy, device, docs, domain, env, github, ingress, link, login, mcp, metrics, operator,
+    project, recovery, review, server, service, up, volume,
 };
 use Approval::{Always, Depends, Never};
 
@@ -437,6 +437,17 @@ pub(crate) const GITHUB_TREE: Verb =
     Verb::cloud("github tree", Never, github::tree_command, github::tree).docs("deploy/github.md");
 pub(crate) const HISTORY: Verb =
     Verb::cloud("history", Never, review::history_command, review::history).docs("cli/overview.md");
+pub(crate) const INGRESS: Verb =
+    Verb::cloud("ingress", Never, ingress::show_command, ingress::show)
+        .docs("services/cloudflare-tunnel.md");
+pub(crate) const INGRESS_USE: Verb = Verb::cloud(
+    "ingress use",
+    Never,
+    ingress::use_command,
+    ingress::use_doors_on,
+)
+.stdin(&[("--token-stdin", Stdin::Only)])
+.docs("services/cloudflare-tunnel.md");
 pub(crate) const HISTORY_RESTORE: Verb = Verb::cloud(
     "history restore",
     Never,
@@ -893,6 +904,8 @@ pub(crate) const VERBS: &[Verb] = &[
     GITHUB_TREE,
     HISTORY,
     HISTORY_RESTORE,
+    INGRESS,
+    INGRESS_USE,
     HISTORY_UNDO,
     LINK,
     LOGIN,

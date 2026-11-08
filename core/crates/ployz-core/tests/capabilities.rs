@@ -16,11 +16,11 @@ use ployz_core::{
     REQUEST_MACHINE_UPGRADE_CAPABILITY, RESTART_APPROVAL_CAPABILITY, RETAINED_ENV_CAPABILITY,
     RUNTIME_WATCH_CAPABILITY, Rpc, SEED_VOLUME_CAPABILITY, SELECT_ENDPOINT_CAPABILITY,
     SET_CLUSTER_NAME_CAPABILITY, SET_DEVICE_CAPABILITY, SET_DEVICE_ENFORCEMENT_CAPABILITY,
-    SET_INGRESS_DOORS_CAPABILITY, SET_MANAGEMENT_CLIENT_CAPABILITY, SET_PASSKEY_CAPABILITY,
-    SET_PUSH_TARGET_CAPABILITY, SET_VOLUME_COPY_CAPABILITY, SET_VOLUME_SIZE_CAPABILITY,
-    SHARE_SEALING_KEY_CAPABILITY, TAIL_LOGS_CAPABILITY, UPDATE_CONTAINER_LIMITS_CAPABILITY,
-    UPDATE_MACHINE_CAPABILITY, UPGRADE_EXACT_CAPABILITY, VOLUME_FLOOR_CAPABILITY,
-    VOLUME_SHRINK_CAPABILITY, WRAP_SEALING_KEY_CAPABILITY, op,
+    SET_INGRESS_DOORS_CAPABILITY, SET_INGRESS_TUNNEL_CAPABILITY, SET_MANAGEMENT_CLIENT_CAPABILITY,
+    SET_PASSKEY_CAPABILITY, SET_PUSH_TARGET_CAPABILITY, SET_VOLUME_COPY_CAPABILITY,
+    SET_VOLUME_SIZE_CAPABILITY, SHARE_SEALING_KEY_CAPABILITY, TAIL_LOGS_CAPABILITY,
+    UPDATE_CONTAINER_LIMITS_CAPABILITY, UPDATE_MACHINE_CAPABILITY, UPGRADE_EXACT_CAPABILITY,
+    VOLUME_FLOOR_CAPABILITY, VOLUME_SHRINK_CAPABILITY, WRAP_SEALING_KEY_CAPABILITY, op,
 };
 
 /// Capability constants are generated from the catalog, so a typo would stay
@@ -125,6 +125,7 @@ fn catalogued_capabilities_keep_stable_spellings() {
             "ployz.serving.routed-addresses.v1",
         ),
         (SET_INGRESS_DOORS_CAPABILITY, "ployz.ingress.doors.v1"),
+        (SET_INGRESS_TUNNEL_CAPABILITY, "ployz.ingress.tunnel.v1"),
         (READ_CLUSTER_NAME_CAPABILITY, "ployz.cluster.name.read.v1"),
         (SET_CLUSTER_NAME_CAPABILITY, "ployz.cluster.name.v1"),
         (UPDATE_MACHINE_CAPABILITY, "ployz.machine.update.v1"),
@@ -236,6 +237,7 @@ fn advertised_capability_groups_match_the_frozen_catalog() {
             "ployz.cluster.name.read.v1",
             "ployz.cluster.name.v1",
             "ployz.runtime.watch.v1",
+            "ployz.ingress.tunnel.v1",
         ]
     );
 }
@@ -388,6 +390,10 @@ const ABOVE_FLOOR: &[(&str, &str)] = &[
     (
         "ployz.image.pull.v1",
         "falls back: an older daemon pulls when it creates the Container",
+    ),
+    (
+        "ployz.ingress.tunnel.v1",
+        "gated: `ployz ingress use tunnel` checks each Machine's contract first and names a Server whose daemon lacks it as needing an upgrade; an older daemon refuses the Tunnel Door as unsupported",
     ),
     (
         "ployz.volume.size.set.v1",

@@ -7,7 +7,8 @@ use hpke::{
     kdf::HkdfSha256, kem::X25519HkdfSha256,
 };
 use ployz_core::{
-    Ciphertext, SEALED_VALUE_INFO, SealedSealingKey, Sealing, SealingPublicKey, WireGuardPublicKey,
+    Ciphertext, PLATFORM_SEALED_INFO, PlatformPurpose, SEALED_VALUE_INFO, SealedSealingKey,
+    Sealing, SealingPublicKey, WireGuardPublicKey,
 };
 use rand_core::{OsRng, TryRngCore as _};
 use thiserror::Error;
@@ -328,13 +329,34 @@ impl SealingKey {
     /// Opens one env value sealed to this key under `aad`, or `None` when it
     /// does not open.
     pub(crate) fn open_value(&self, aad: &[u8], sealed: &Ciphertext) -> Option<Zeroizing<Vec<u8>>> {
+        self.open_under(SEALED_VALUE_INFO, aad, sealed)
+    }
+
+    /// Opens a value the platform sealed to this Cluster for `purpose`, or `None`
+    /// when it does not open: sealed for another Cluster, another purpose, or as
+    /// an env value.
+    pub(crate) fn open_platform(
+        &self,
+        purpose: PlatformPurpose,
+        sealed: &Ciphertext,
+    ) -> Option<Zeroizing<Vec<u8>>> {
+        let aad = purpose.associated_data(&self.public_key());
+        self.open_under(PLATFORM_SEALED_INFO, &aad, sealed)
+    }
+
+    fn open_under(
+        &self,
+        info: &[u8],
+        aad: &[u8],
+        sealed: &Ciphertext,
+    ) -> Option<Zeroizing<Vec<u8>>> {
         let (encapped, ciphertext) = sealed.as_bytes().split_at_checked(ENCAPPED_KEY_LEN)?;
         let encapped = <Kem as hpke::Kem>::EncappedKey::from_bytes(encapped).ok()?;
         hpke::single_shot_open::<ChaCha20Poly1305, HkdfSha256, Kem>(
             &OpModeR::Base,
             &self.private(),
             &encapped,
-            SEALED_VALUE_INFO,
+            info,
             ciphertext,
             aad,
         )

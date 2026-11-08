@@ -119,6 +119,10 @@ Keep ports 80 and 443 open on the servers that take web traffic: they use port 8
 certificates. Once a domain has its certificate, `http://` links redirect to `https://` with the
 same path. Until then, plain http shows **Nothing is deployed here**.
 
+Servers that can't open ports can serve every domain through a
+[Cloudflare Tunnel](cloudflare-tunnel.md) instead. Cloudflare then holds the certificate, and the
+DNS records point at the tunnel rather than at your servers.
+
 ## Check a domain's status
 
 Each domain's row shows its status after the port, like **→ Uses PORT · Issuing certificate**.

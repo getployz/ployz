@@ -1,13 +1,18 @@
 //! The Ingress Proxy: each Server with the ingress role asks its own daemon to bring the
-//! holder and the Caddy in its network to the wiring that daemon pins, through
-//! SetIngressDoors. Nothing here builds a spec or names an image.
+//! holder, the Caddy in its network and the Tunnel Connector to the wiring that daemon
+//! pins, through SetIngressDoors. Nothing here builds a spec or names an image.
+
+use std::collections::BTreeMap;
 
 use futures_util::{StreamExt, stream};
 use ployz_core::{
-    ContainerId, ContainerObservation, ContainerRuntimeObservation, DoorChange, DoorOutcome,
-    EnvironmentValues, IngressDoors, IngressDoorsFailure, IngressDoorsSet, IngressStage, MachineId,
-    MachineName, MachineObservation, QualifiedService, RowStanding, RpcError, RpcErrorCode,
-    SET_INGRESS_DOORS_CAPABILITY, ServiceId, ServiceObservation, SetIngressDoorsRequest,
+    Ciphertext, ContainerId, ContainerObservation, ContainerRuntimeObservation, DoorChange,
+    DoorOutcome, EnvironmentValues, IngressDoor, IngressDoors, IngressDoorsFailure,
+    IngressDoorsSet, IngressPorts, IngressStage, IngressWiring, MachineFailure, MachineId,
+    MachineName, MachineObservation, PartialResult, PlatformPurpose, QualifiedService, RowStanding,
+    RpcError, RpcErrorCode, SET_INGRESS_DOORS_CAPABILITY, SET_INGRESS_TUNNEL_CAPABILITY, Sealing,
+    SealingPublicKey, ServiceId, ServiceObservation, SetIngressDoorsRequest, seal_platform,
+    tunnel_sealed_token, validate_ingress_service_spec,
 };
 use ployz_store::{IngressAction, IngressFailure, IngressRepair};
 use serde::{Deserialize, Serialize};
@@ -39,6 +44,22 @@ pub(crate) struct DoorMachine {
     /// capabilities but not this one keeps the Ingress Proxy it runs, and is named as
     /// needing a newer Ployz.
     pub(crate) supported: bool,
+    /// Whether its daemon opens the Tunnel Door. One that doesn't keeps its Doors and is
+    /// named as needing a newer Ployz when the Cluster uses the tunnel.
+    pub(crate) tunnels: bool,
+}
+
+impl DoorMachine {
+    /// The refusal for this Server when its daemon can't set `doors`, if any.
+    fn refusal(&self, doors: &IngressDoors) -> Option<RpcError> {
+        if !self.supported {
+            return Some(unsupported(&self.name, SET_INGRESS_DOORS_CAPABILITY));
+        }
+        if doors.has(IngressDoor::Tunnel) && !self.tunnels {
+            return Some(unsupported(&self.name, SET_INGRESS_TUNNEL_CAPABILITY));
+        }
+        None
+    }
 }
 
 /// The Servers that should run the Ingress Proxy: reachable, holding the ingress role, and
@@ -63,9 +84,96 @@ pub(crate) fn door_machines(observed: &[MachineObservation]) -> Vec<DoorMachine>
                 // daemon is asked and answers for itself.
                 supported: capabilities.is_empty()
                     || capabilities.contains(SET_INGRESS_DOORS_CAPABILITY),
+                tunnels: capabilities.is_empty()
+                    || capabilities.contains(SET_INGRESS_TUNNEL_CAPABILITY),
             }
         })
         .collect()
+}
+
+/// The Doors the Cluster's Ingress Proxies hold, with the sealed tunnel token the Tunnel
+/// Connector carries. Every Server a command sets gets these, so a joiner opens the same
+/// Doors as the rest.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct ClusterDoors {
+    pub(crate) doors: IngressDoors,
+    pub(crate) sealed_token: Option<Ciphertext>,
+}
+
+impl ClusterDoors {
+    #[cfg(test)]
+    pub(crate) fn public() -> Self {
+        Self {
+            doors: IngressDoors::public(),
+            sealed_token: None,
+        }
+    }
+
+    fn request(&self, proxy: ServiceId) -> SetIngressDoorsRequest {
+        SetIngressDoorsRequest {
+            doors: self.doors.clone(),
+            proxy_service: proxy,
+            sealed_token: self.sealed_token.clone(),
+        }
+    }
+}
+
+/// The Doors the Cluster holds, read from the newest holder any Server runs and the
+/// newest Tunnel Connector with a token. A Cluster with no holder and no connector holds
+/// the Public Door, as every Cluster did before the Tunnel Door existed.
+pub(crate) fn cluster_doors(services: &[ServiceObservation]) -> ClusterDoors {
+    let newest = |identity: QualifiedService| {
+        services
+            .iter()
+            .filter(|service| service.identity == identity)
+            .flat_map(|service| service.containers.iter().map(|copy| copy.as_observation()))
+            .max_by_key(|copy| (copy.created_at_unix_nanos, copy.container_id))
+    };
+    let sealed_token = newest(QualifiedService::system_tunnel())
+        .and_then(|tunnel| tunnel_sealed_token(&tunnel.resolved_spec.container.labels));
+    let ports = newest(QualifiedService::system_ingress_holder())
+        .and_then(|holder| validate_ingress_service_spec(&holder.resolved_spec).ok())
+        .map_or(IngressPorts::Public, IngressWiring::ports);
+    let doors = match (ports, sealed_token.is_some()) {
+        (_, false) => IngressDoors::public(),
+        (IngressPorts::Public, true) => IngressDoors::both(),
+        (IngressPorts::Closed, true) => IngressDoors::tunnel(),
+    };
+    ClusterDoors {
+        doors,
+        sealed_token,
+    }
+}
+
+/// The Doors each Server holds open now: the Public Door when a holder with the host
+/// ports, or an older Caddy publishing them, runs there, and the Tunnel Door when a
+/// Tunnel Connector runs there. A Server with no running door Container holds none.
+pub(crate) fn machine_doors(services: &[ServiceObservation]) -> BTreeMap<MachineId, IngressDoors> {
+    let mut doors: BTreeMap<MachineId, IngressDoors> = BTreeMap::new();
+    for service in services
+        .iter()
+        .filter(|service| service.identity.is_ingress_door())
+    {
+        for copy in service.containers.iter().map(|copy| copy.as_observation()) {
+            if !matches!(copy.runtime, ContainerRuntimeObservation::Running { .. }) {
+                continue;
+            }
+            let door = match validate_ingress_service_spec(&copy.resolved_spec).ok() {
+                Some(IngressWiring::LegacyProxy | IngressWiring::Holder(IngressPorts::Public)) => {
+                    IngressDoor::Public
+                }
+                Some(IngressWiring::Tunnel) => IngressDoor::Tunnel,
+                Some(IngressWiring::JoinedProxy | IngressWiring::Holder(IngressPorts::Closed))
+                | None => continue,
+            };
+            doors
+                .entry(copy.machine_id)
+                .or_insert_with(|| IngressDoors(Default::default()))
+                .0
+                .insert(door);
+        }
+    }
+    doors
 }
 
 /// The Ingress Proxy Service every Server's doors derive from: the observed one, its
@@ -99,12 +207,68 @@ enum Answer {
 }
 
 /// The Servers' Ingress Proxies observed in full, with every Server that should run one.
-struct Doors {
-    machines: Vec<DoorMachine>,
-    proxy: ServiceId,
+pub(crate) struct Doors {
+    pub(crate) machines: Vec<DoorMachine>,
+    pub(crate) proxy: ServiceId,
+    pub(crate) cluster: ClusterDoors,
+    /// What each Server holds open now, by Server; one that listed nothing is absent.
+    pub(crate) open: BTreeMap<MachineId, IngressDoors>,
+    /// The listing the rest derives from, with the Servers that didn't answer it.
+    pub(crate) listed: PartialResult<Vec<ContainerObservation>, RpcError>,
+    /// The Cluster's Sealing Key, from the first Server that holds it.
+    pub(crate) sealing: Option<SealingPublicKey>,
 }
 
-async fn observe_doors(client: &mut Client) -> Result<Doors, Failure> {
+/// The Doors to open: `doors`, with `token` sealed to the Cluster when the Tunnel Door is
+/// among them, or the token the Cluster already runs when none is given.
+///
+/// # Errors
+///
+/// Fails when the Tunnel Door needs a token and none is given or observed, or when no
+/// Server holds the Sealing Key to seal it for.
+pub(crate) fn cluster_doors_for(
+    observed: &Doors,
+    doors: IngressDoors,
+    token: Option<&str>,
+) -> Result<ClusterDoors, Failure> {
+    if !doors.has(IngressDoor::Tunnel) {
+        return Ok(ClusterDoors {
+            doors,
+            sealed_token: None,
+        });
+    }
+    let sealed_token = match token {
+        Some(token) => {
+            let Some(sealing) = &observed.sealing else {
+                return Err(Failure::coded(
+                    RpcErrorCode::Unavailable,
+                    "No online Server holds the Cluster's Sealing Key, so the tunnel token can't \
+                     be sealed.",
+                ));
+            };
+            seal_platform(sealing, PlatformPurpose::IngressTunnel, token.as_bytes()).map_err(
+                |error| {
+                    Failure::caused(
+                        RpcErrorCode::Internal,
+                        "Could not seal the tunnel token for this Cluster",
+                        error,
+                    )
+                },
+            )?
+        }
+        None => observed.cluster.sealed_token.clone().ok_or_else(|| {
+            Failure::usage(
+                "The Tunnel Door needs the tunnel's Cloudflare token. Pipe it with --token-stdin.",
+            )
+        })?,
+    };
+    Ok(ClusterDoors {
+        doors,
+        sealed_token: Some(sealed_token),
+    })
+}
+
+pub(crate) async fn observe_doors(client: &mut Client) -> Result<Doors, Failure> {
     let machines = client.machines().await?;
     let live = client
         .live_services_from(&machines, EnvironmentValues::Redacted)
@@ -126,19 +290,30 @@ async fn observe_doors(client: &mut Client) -> Result<Doors, Failure> {
             failure.error.clone(),
         ));
     }
+    let sealing = machines
+        .iter()
+        .find_map(|machine| match &machine.machine.runtime.sealing {
+            Some(Sealing::Held { public_key }) => Some(*public_key),
+            Some(Sealing::NeedsAccess | Sealing::AwaitsRecovery { .. }) | None => None,
+        });
     Ok(Doors {
         machines: door_machines(&machines),
         proxy: proxy_service(&services),
+        cluster: cluster_doors(&services),
+        open: machine_doors(&services),
+        listed: live.containers,
+        sealing,
     })
 }
 
-/// Ask each of `machines` to set its Public Door for `proxy`, `at_once` at a time, in order.
+/// Ask each of `machines` to set `doors` for `proxy`, `at_once` at a time, in order.
 /// A call whose reply was lost, or that met a restarting daemon, is sent again, since
 /// the daemon converges on a resend.
 async fn set_doors<C: MachineOperations>(
     client: &C,
     machines: &[DoorMachine],
     proxy: ServiceId,
+    doors: &ClusterDoors,
     at_once: usize,
     cancel: &CancellationToken,
 ) -> Vec<Answer> {
@@ -146,7 +321,7 @@ async fn set_doors<C: MachineOperations>(
     // Each future owns its Server, since one borrowing from the slice leaves the
     // caller's future Send for one lifetime only, and a spawned Deploy runner needs all.
     stream::iter(machines.to_vec())
-        .map(|machine| set_door(client, machine, proxy, cancel))
+        .map(|machine| set_door(client, machine, proxy, doors, cancel))
         .buffered(at_once)
         .collect()
         .await
@@ -156,15 +331,13 @@ async fn set_door<C: MachineOperations>(
     client: &C,
     machine: DoorMachine,
     proxy: ServiceId,
+    doors: &ClusterDoors,
     cancel: &CancellationToken,
 ) -> Answer {
-    if !machine.supported {
-        return Answer::Refused(unsupported(&machine.name));
+    if let Some(refusal) = machine.refusal(&doors.doors) {
+        return Answer::Refused(refusal);
     }
-    let request = SetIngressDoorsRequest {
-        doors: IngressDoors::public(),
-        proxy_service: proxy,
-    };
+    let request = doors.request(proxy);
     tokio::select! {
         answer = client.set_ingress_doors(&machine.id, request) => match answer {
             Ok(set) => Answer::Set(Box::new(set)),
@@ -174,11 +347,11 @@ async fn set_door<C: MachineOperations>(
     }
 }
 
-/// The refusal for a Server whose daemon predates SetIngressDoors.
-fn unsupported(server: &MachineName) -> RpcError {
+/// The refusal for a Server whose daemon predates `capability`.
+fn unsupported(server: &MachineName, capability: &str) -> RpcError {
     let details = serde_json::json!({
         "target": server.to_string(),
-        "capability": SET_INGRESS_DOORS_CAPABILITY,
+        "capability": capability,
     });
     let refusal = ployz_core::CapabilityRefusal::new(&RpcErrorCode::Unsupported, details.clone())
         .expect("the details name a target and a capability");
@@ -243,11 +416,150 @@ pub(crate) async fn follow_roles(client: &mut Client) -> Result<Vec<Followed>, N
         &*client,
         &doors.machines,
         doors.proxy,
+        &doors.cluster,
         FOLLOW_AT_ONCE,
         &CancellationToken::new(),
     )
     .await;
     followed(doors.machines, answers)
+}
+
+/// One Server's Doors after a command set or read them.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, TS)]
+pub struct MachineDoors {
+    pub machine: MachineId,
+    pub server: String,
+    /// The Doors open on it, by name; empty when it holds none open.
+    pub doors: Vec<String>,
+}
+
+/// What [`use_doors`] left on every Server with the ingress role.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize, TS)]
+pub struct DoorsChanged {
+    pub machines: Vec<MachineDoors>,
+    /// Each Server whose Doors aren't as asked after, with why.
+    pub failures: Vec<MachineFailure<RpcError>>,
+}
+
+/// Open `doors` on every Server with the ingress role, one at a time. A switch to the
+/// Tunnel Door opens the tunnel beside the Public Door on every Server first, so the
+/// host ports close only once every Server's connector can take the traffic.
+///
+/// # Errors
+///
+/// Fails when observation fails. A Server's own refusal or Docker failure is one of the
+/// result's failures, never an error.
+pub(crate) async fn use_doors(
+    client: &mut Client,
+    observed: Doors,
+    doors: ClusterDoors,
+    cancel: &CancellationToken,
+) -> Result<DoorsChanged, Failure> {
+    let mut machines = observed.machines;
+    let mut failures = Vec::new();
+    machines.retain(|machine| match machine.refusal(&doors.doors) {
+        Some(error) => {
+            failures.push(MachineFailure {
+                machine_id: machine.id,
+                error,
+            });
+            false
+        }
+        None => true,
+    });
+    let steps = if doors.doors == IngressDoors::tunnel() {
+        vec![
+            ClusterDoors {
+                doors: IngressDoors::both(),
+                sealed_token: doors.sealed_token.clone(),
+            },
+            doors,
+        ]
+    } else {
+        vec![doors]
+    };
+    let mut changed = DoorsChanged::default();
+    for step in &steps {
+        let answers = set_doors(
+            &*client,
+            &machines,
+            observed.proxy,
+            step,
+            FOLLOW_AT_ONCE,
+            cancel,
+        )
+        .await;
+        let mut kept = Vec::new();
+        changed.machines.clear();
+        for (machine, answer) in machines.into_iter().zip(answers) {
+            match answer {
+                Answer::Set(set) => match failure_of(&set) {
+                    None => {
+                        changed.machines.push(MachineDoors {
+                            machine: machine.id,
+                            server: machine.name.to_string(),
+                            doors: doors_of(&set),
+                        });
+                        kept.push(machine);
+                    }
+                    Some(failure) => failures.push(MachineFailure {
+                        machine_id: machine.id,
+                        error: RpcError {
+                            code: RpcErrorCode::Unavailable,
+                            message: format!(
+                                "The Ingress Proxy on {} isn't running: {}",
+                                machine.name,
+                                failure.cause()
+                            ),
+                            details: serde_json::Value::Null,
+                            cause: Vec::new(),
+                        },
+                    }),
+                },
+                Answer::Refused(error) => failures.push(MachineFailure {
+                    machine_id: machine.id,
+                    error,
+                }),
+                Answer::Cancelled => failures.push(MachineFailure {
+                    machine_id: machine.id,
+                    error: RpcError {
+                        code: RpcErrorCode::Unavailable,
+                        message: format!(
+                            "{} was still setting its Doors when the command was cancelled",
+                            machine.name
+                        ),
+                        details: serde_json::Value::Null,
+                        cause: Vec::new(),
+                    },
+                }),
+            }
+        }
+        machines = kept;
+        if cancel.is_cancelled() {
+            break;
+        }
+    }
+    changed.failures = failures;
+    Ok(changed)
+}
+
+/// The Doors `set` left open, by name: the Public Door when the holder publishes the
+/// host ports, the Tunnel Door when a connector runs.
+fn doors_of(set: &IngressDoorsSet) -> Vec<String> {
+    let mut doors = Vec::new();
+    let public = set.holder.as_ref().is_some_and(|holder| {
+        matches!(
+            validate_ingress_service_spec(&holder.now.resolved_spec).ok(),
+            Some(IngressWiring::Holder(IngressPorts::Public) | IngressWiring::LegacyProxy)
+        )
+    });
+    if public {
+        doors.push(IngressDoor::Public.as_str().to_owned());
+    }
+    if set.tunnel.is_some() {
+        doors.push(IngressDoor::Tunnel.as_str().to_owned());
+    }
+    doors
 }
 
 /// [`follow_roles`]'s result from each Server's answer, in the same order.
@@ -339,6 +651,7 @@ impl Unfollowed {
         let component = match stage.stage {
             IngressStage::Holder => "holder",
             IngressStage::Proxy => "Caddy",
+            IngressStage::Tunnel => "Tunnel Connector",
             IngressStage::Unrecognized => "Container",
         };
         Self {
@@ -385,7 +698,15 @@ pub(crate) async fn fill_slots(
         return Ok(check);
     }
     let doors = observe_doors(client).await?;
-    let answers = set_doors(&*client, &missing, doors.proxy, REPAIRS_AT_ONCE, cancel).await;
+    let answers = set_doors(
+        &*client,
+        &missing,
+        doors.proxy,
+        &doors.cluster,
+        REPAIRS_AT_ONCE,
+        cancel,
+    )
+    .await;
     let mut answered = missing
         .iter()
         .zip(answers)
@@ -445,10 +766,10 @@ fn checked(machine: &DoorMachine, answer: Answer) -> Result<Option<IngressRepair
     }
 }
 
-/// What the daemon did: a create when it made either component, a start when it only
-/// started or rejoined one, and nothing when both already ran as pinned.
+/// What the daemon did: a create when it made any component, a start when it only
+/// started or rejoined one, and nothing when all already ran as pinned.
 fn action_of(set: &IngressDoorsSet) -> Option<IngressAction> {
-    let changes = [&set.holder, &set.proxy]
+    let changes = [&set.holder, &set.proxy, &set.tunnel]
         .into_iter()
         .flatten()
         .map(|outcome| outcome.change);
@@ -464,7 +785,7 @@ fn action_of(set: &IngressDoorsSet) -> Option<IngressAction> {
 }
 
 /// Why the Ingress Proxy isn't running after `set`, or `None` when the holder and Caddy
-/// both run.
+/// both run, and the Tunnel Connector when the daemon set one.
 pub(crate) fn failure_of(set: &IngressDoorsSet) -> Option<IngressFailure> {
     if let Some(failure) = &set.failure {
         return Some(stage_failure(failure));
@@ -478,6 +799,11 @@ pub(crate) fn failure_of(set: &IngressDoorsSet) -> Option<IngressFailure> {
         if let Some(cause) = not_running(now) {
             return Some(IngressFailure::Failed { cause });
         }
+    }
+    if let Some(DoorOutcome { now, .. }) = &set.tunnel
+        && let Some(cause) = not_running(now)
+    {
+        return Some(IngressFailure::Failed { cause });
     }
     None
 }
@@ -547,9 +873,10 @@ async fn plan_slots(client: &mut Client) -> Result<Planned, Failure> {
         };
         let server = machine.name.to_string();
         if !machine.supported && !matches!(repair.action, SlotAction::Unchecked(_)) {
-            check
-                .unchecked
-                .push(crate::ui::row(&unsupported(&machine.name)));
+            check.unchecked.push(crate::ui::row(&unsupported(
+                &machine.name,
+                SET_INGRESS_DOORS_CAPABILITY,
+            )));
             continue;
         }
         let shown = |action, failure| IngressRepair {

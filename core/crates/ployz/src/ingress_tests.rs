@@ -15,6 +15,7 @@ fn door(hex: char, name: &str) -> DoorMachine {
         id: machine.id,
         name: machine.name,
         supported: true,
+        tunnels: true,
     }
 }
 
@@ -346,7 +347,10 @@ fn a_deploy_reports_what_each_daemon_did() {
 fn a_server_nothing_is_known_about_is_unchecked() {
     let one = door('a', "one");
 
-    let Err(older) = checked(&one, Answer::Refused(unsupported(&one.name))) else {
+    let Err(older) = checked(
+        &one,
+        Answer::Refused(unsupported(&one.name, SET_INGRESS_DOORS_CAPABILITY)),
+    ) else {
         panic!("an older daemon is unchecked");
     };
     assert_eq!(

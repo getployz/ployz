@@ -591,6 +591,7 @@ async fn set_ingress_doors_runs_the_holder_and_caddy_once() {
     let request = || SetIngressDoorsRequest {
         doors: IngressDoors::public(),
         proxy_service: ServiceId::parse("a".repeat(32)).unwrap(),
+        sealed_token: None,
     };
     let target = MachineTarget::parse("web-1").unwrap();
 

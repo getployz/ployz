@@ -13,10 +13,10 @@ use ployz_core::{
 use serde_json::json;
 
 use super::{
-    CHALLENGE_WAIT, IssuanceAction, RANK_STEP, challenge_probe_addresses, directory_from_env,
-    ingress_challenge_ips, issuance_action, machine_jitter, machine_rank, material_validity,
-    order_certificate, poll_wait, probe_client, renewal_window, run, verify_answers,
-    wait_for_http01, wanted_certificate_hosts,
+    CHALLENGE_WAIT, DoorStanding, IssuanceAction, RANK_STEP, challenge_probe_addresses,
+    directory_from_env, door_standing, ingress_challenge_ips, issuance_action, machine_jitter,
+    machine_rank, material_validity, order_certificate, ordering_machines, poll_wait, probe_client,
+    renewal_window, run, verify_answers, wait_for_http01, wanted_certificate_hosts,
 };
 use crate::corrosion::{
     CertificateChallenge, CertificateMaterial, CertificateRow, fake_cluster::FakeCluster,
@@ -519,6 +519,62 @@ fn ingress_challenge_ips_come_from_running_ingress_machines() {
     assert_eq!(
         ingress_challenge_ips(&[local, remote], &[ingress, down, user]),
         BTreeSet::from([ip("192.0.2.1")])
+    );
+}
+
+fn door_on(machine: &Machine, spec: &ResolvedServiceSpec) -> ContainerObservation {
+    let mut door = observation(4, spec.name.as_str(), Vec::new());
+    door.try_update(|parts| {
+        parts.machine_id = machine.id;
+        parts.namespace = Namespace::system();
+        parts.resolved_spec = spec.clone();
+    })
+    .unwrap();
+    door
+}
+
+#[test]
+fn a_server_with_the_public_door_closed_is_never_ranked_or_probed() {
+    let open = machine_with_endpoint("a", "192.0.2.1");
+    let closed = machine_with_endpoint("b", "192.0.2.2");
+    let proxy = ServiceId::parse("c".repeat(32)).unwrap();
+    let token = ployz_core::Ciphertext::from_bytes(vec![7; 48]);
+    let public = crate::images::DoorSpecs::public(proxy);
+    let tunnel =
+        crate::images::DoorSpecs::new(proxy, ployz_core::IngressPorts::Closed, Some(&token));
+    let observations = [
+        door_on(&open, &public.holder),
+        door_on(&open, &public.proxy),
+        door_on(&closed, &tunnel.holder),
+        door_on(&closed, &tunnel.proxy),
+        door_on(&closed, tunnel.tunnel.as_ref().unwrap()),
+    ];
+    let standing = door_standing(&observations);
+    assert_eq!(
+        standing,
+        DoorStanding {
+            public: BTreeSet::from([open.id]),
+            closed: BTreeSet::from([closed.id]),
+        }
+    );
+    let machines = [open.clone(), closed.clone()];
+    assert_eq!(
+        ordering_machines(&machines, &standing).collect::<Vec<_>>(),
+        [&open.id]
+    );
+    assert_eq!(
+        ingress_challenge_ips(&machines, &observations),
+        BTreeSet::from([ip("192.0.2.1")]),
+        "a closed Server answers no challenge"
+    );
+
+    let both = [
+        door_on(&closed, &tunnel.holder),
+        door_on(&closed, &public.holder),
+    ];
+    assert!(
+        door_standing(&both).closed.is_empty(),
+        "a Server mid-switch, with a public holder still up, is open"
     );
 }
 

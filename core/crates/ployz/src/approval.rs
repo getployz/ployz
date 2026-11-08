@@ -133,6 +133,7 @@ pub(crate) enum Verb {
     Restore,
     Resize,
     SetClusterName,
+    SetIngressDoors,
 }
 
 impl Verb {
@@ -155,6 +156,7 @@ impl Verb {
             Self::Restore => "restore",
             Self::Resize => "resize",
             Self::SetClusterName => "rename",
+            Self::SetIngressDoors => "door change",
         }
     }
 
@@ -177,13 +179,14 @@ impl Verb {
             Self::Restore => "restored",
             Self::Resize => "resized",
             Self::SetClusterName => "renamed",
+            Self::SetIngressDoors => "changed",
         }
     }
 
     /// `this change to web-2`, but `this removal of web-1`.
     fn preposition(self) -> &'static str {
         match self {
-            Self::Set | Self::SetClusterName => "to",
+            Self::Set | Self::SetClusterName | Self::SetIngressDoors => "to",
             Self::Publish
             | Self::Deploy
             | Self::Retry

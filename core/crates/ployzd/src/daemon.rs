@@ -524,6 +524,12 @@ impl Daemon {
                 ) else {
                     return Ok(());
                 };
+                if let Err(error) = runtime.restore_tunnel_token(&local_id).await {
+                    tracing::warn!(
+                        error = %ployz_core::error_chain::inline(&error),
+                        "could not write the tunnel token again; the Tunnel Connector keeps retrying until the next `ployz ingress use`"
+                    );
+                }
                 let first_synced = runtime.first_synced();
                 let machine = crate::machine::LocalMachine::new(local.clone())
                     .with_containers(Some(runtime))

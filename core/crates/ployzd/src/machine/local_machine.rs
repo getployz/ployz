@@ -200,8 +200,14 @@ pub enum Error {
     Cluster(#[from] crate::corrosion::Error),
     #[error(transparent)]
     IngressProxyServiceSpec(#[from] ployz_core::IngressProxyServiceSpecError),
-    #[error("this Server opens only the Public Door")]
+    #[error("this Server opens only the Public and Tunnel Doors")]
     UnsupportedDoors,
+    #[error("the Tunnel Door needs a sealed tunnel token")]
+    TunnelTokenMissing,
+    #[error(transparent)]
+    TunnelToken(crate::sealed_env::OpenError),
+    #[error("could not write the tunnel token for the Tunnel Connector")]
+    TunnelTokenFile(#[source] std::io::Error),
     #[error("Ingress Proxy container {container_id} is {runtime} right after starting")]
     DoorNotRunning {
         container_id: ContainerId,

@@ -1232,7 +1232,19 @@ fn local_failure(error: LocalMachineError) -> Result<RpcError, Status> {
                 cause: Vec::new(),
             })
         }
-        LocalMachineError::DoorNotRunning { .. } => {
+        LocalMachineError::TunnelTokenMissing => Ok(RpcError {
+            code: RpcErrorCode::InvalidArgument,
+            message: error.to_string(),
+            details: serde_json::json!({ "capability": ployz_core::SET_INGRESS_TUNNEL_CAPABILITY }),
+            cause: Vec::new(),
+        }),
+        LocalMachineError::TunnelToken(_) => Ok(RpcError {
+            code: RpcErrorCode::InvalidArgument,
+            message: error.to_string(),
+            details: Value::Null,
+            cause: Vec::new(),
+        }),
+        LocalMachineError::DoorNotRunning { .. } | LocalMachineError::TunnelTokenFile(_) => {
             Ok(RpcError::caused(RpcErrorCode::Internal, &error))
         }
         LocalMachineError::Docker(error) => Ok(RpcError::from(&error)),

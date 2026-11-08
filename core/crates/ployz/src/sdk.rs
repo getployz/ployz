@@ -1168,6 +1168,50 @@ impl Session {
         .await
     }
 
+    /// Open `doors` on every Server with the ingress role: `public`, `tunnel`, or both.
+    /// A tunnel takes `token`, the Cloudflare tunnel token, sealed to the Cluster here;
+    /// without one it keeps the token the Cluster already runs.
+    ///
+    /// # Errors
+    ///
+    /// Returns a generated [`RpcError`] when the session is closed, a door name is
+    /// unknown, the tunnel needs a token, no Server holds the Sealing Key, or
+    /// observation fails. A Server's own refusal is one of the result's failures.
+    pub async fn set_ingress_doors(
+        &self,
+        doors: &[String],
+        token: Option<&str>,
+    ) -> Result<crate::ingress::DoorsChanged, RpcError> {
+        let doors = doors
+            .iter()
+            .map(|door| {
+                serde_json::from_value::<ployz_core::IngressDoor>(Value::String(door.clone()))
+                    .map_err(|_| {
+                        invalid_argument(format!("{door} is not a Door: public or tunnel"))
+                    })
+            })
+            .collect::<Result<std::collections::BTreeSet<_>, _>>()?;
+        if doors.is_empty() {
+            return Err(invalid_argument(
+                "name at least one Door: public or tunnel".into(),
+            ));
+        }
+        let doors = ployz_core::IngressDoors(doors);
+        let mut client = self.client()?;
+        let cancel = &self.inner.cancel;
+        self.until_closed(async {
+            let observed = crate::ingress::observe_doors(&mut client)
+                .await
+                .map_err(|failure| failure.report())?;
+            let doors = crate::ingress::cluster_doors_for(&observed, doors, token)
+                .map_err(|failure| failure.report())?;
+            crate::ingress::use_doors(&mut client, observed, doors, cancel)
+                .await
+                .map_err(|failure| failure.report())
+        })
+        .await
+    }
+
     /// Stop serving web traffic on `machine` once its ingress role is off: wait until this
     /// entry observes the role, so nothing it plans next recreates the proxy, then stop and
     /// remove its Ingress Proxy. Nothing else stops it; the daemon never stops serving
