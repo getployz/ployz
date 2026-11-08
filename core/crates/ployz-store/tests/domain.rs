@@ -15,7 +15,7 @@ use ployz_store::{
     DomainQuery, DomainRow, DomainStatus, DomainsQuery, EnvironmentId, EnvironmentName,
     EnvironmentRef, Hostname, OrganizationId, PlanQuery, ProjectId, ProjectName, Publish,
     PublishedHostname, Query, RemoveDomain, RenameProject, Retry, RunEvidence, RunnerId,
-    ServiceLineageId, SetGeneratedDomain, Trusted, View, Written,
+    ServiceLineageId, SetGeneratedDomain, Trusted, TunnelEvidence, View, Written,
 };
 use serde_json::{Value, json};
 
@@ -947,6 +947,26 @@ fn a_custom_domain_under_the_cluster_domain_is_refused() {
     store
         .write_trusted(&who, &add(Some("notcluster.example.com"), None), &cloud())
         .unwrap();
+}
+
+#[test]
+fn behind_a_tunnel_a_custom_domain_may_sit_in_the_users_own_zone() {
+    let (store, who) = shop();
+    let mut trusted = cloud();
+    trusted.domains.cluster_domain.as_mut().unwrap().name = host("acme-apps.com");
+    let refused = store
+        .write_trusted(&who, &add(Some("shop.acme-apps.com"), None), &trusted)
+        .unwrap_err();
+    assert_eq!(refused.code, RpcErrorCode::InvalidArgument);
+    trusted.domains.tunnel = Some(TunnelEvidence {
+        target: host("0a1b2c.cfargotunnel.com"),
+        reached: Vec::new(),
+    });
+    for hostname in ["shop.acme-apps.com", "a.b.acme-apps.com"] {
+        store
+            .write_trusted(&who, &add(Some(hostname), None), &trusted)
+            .unwrap();
+    }
 }
 
 /// `cloud()` with `hostname` published by `service` in Namespace `namespace`.

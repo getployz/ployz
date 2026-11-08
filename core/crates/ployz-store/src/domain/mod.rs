@@ -409,10 +409,13 @@ pub(crate) fn add_domain(
         ));
     }
     let mut environment = scope::lock(tx, who, &add.environment)?;
-    // Hostnames under the Cluster Domain are Ployz's to hand out, never custom.
+    // Hostnames under a Cluster Domain Ployz reserved are Ployz's to hand out, never custom. Behind a Cloudflare
+    // Tunnel the zone is the user's own, and a name in it is as good as any other.
     let cluster = cluster_of(tx, &environment, trusted)?;
     let own = environment.service(&add.service)?;
-    if let (Some(hostname), Some(cluster)) = (&add.hostname, &cluster) {
+    if let (Some(hostname), Some(cluster), None) =
+        (&add.hostname, &cluster, &trusted.domains.tunnel)
+    {
         let (hostname, cluster) = (hostname.as_str(), cluster.as_str());
         if hostname == cluster || hostname.ends_with(&format!(".{cluster}")) {
             return Err(error::invalid(

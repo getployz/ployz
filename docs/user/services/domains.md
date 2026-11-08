@@ -83,7 +83,8 @@ New custom domains must be hostnames you own. Ployz refuses IP addresses, names 
 last label is all digits, invalid punycode `xn--` labels, `ployz.app` and its subdomains,
 and names in your organization's Cluster Domain zone. Use generated domains for Ployz's
 reserved zones. Older stored domains remain readable and removable. You can re-add one
-on the same service and environment to change its port. Names in your organization's Cluster Domain zone still require generated domains.
+on the same service and environment to change its port. Names in your organization's Cluster Domain zone still require generated domains, unless your servers are
+[behind a Cloudflare Tunnel](#behind-a-cloudflare-tunnel): the zone is then your own.
 
 For an invalid hostname, `ployz domain add` names the reason and exits with code 2.
 Drop any URL scheme, port or path. A hostname cannot contain underscores or wildcards.

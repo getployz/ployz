@@ -205,6 +205,8 @@ export const gatherDomainEvidence = Effect.fn("ConfigStore.gatherDomainEvidence"
       const edit: ConfigDomainEvidence = { ...nothing, cluster_domain: yield* clusterDomainOf(organizationId, cloudflare, generates) };
       const published = yield* recentlyPublished(organizationId);
       if (published) edit.published = published;
+      // Behind Cloudflare the zone is the user's own, so a custom domain may sit in it.
+      if (cloudflare !== null) edit.tunnel = { target: cloudflare.target, reached: [] };
       return edit;
     }
     const domains = yield* storeTry(() => read({ query: "domains", environment: environmentOf(wanted.environment), service: null })).pipe(
