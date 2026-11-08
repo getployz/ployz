@@ -8,7 +8,7 @@ use futures_util::future::join_all;
 pub(crate) use ployz_core::global_creation_key;
 use ployz_core::{
     BridgeEndpointCapacity, ByteCapacity, ContainerAction, ContainerId, ContainerNow,
-    ContainerObservation, ContainerWant, CopyRole, DataLoss, DataLossConfirmation,
+    ContainerObservation, ContainerWant, CopyRole, DataLoss, DataLossConfirmation, Departed,
     DescribeContractRequest, DockerVolumeId, DockerVolumeName, EnsureContainerRequest,
     EnvironmentValues, ForgetRequest, Forgotten, IngressDoorsSet, InspectRequest,
     InspectStorageRequest, InspectTelemetry, LeaveRequest, Left, ListContainersRequest,
@@ -1241,9 +1241,7 @@ impl Client {
     ) -> Result<LocalMachineRemoved, RpcError> {
         let machines = self.machines().await.map_err(RpcError::from)?;
         let Some(observation) = listed_unless_forgotten(machine, &machines)? else {
-            return Ok(LocalMachineRemoved {
-                reset_warning: Some(RESET_UNCONFIRMED.into()),
-            });
+            return Ok(Departed::AlreadyForgotten.into());
         };
         let selected = observation.machine.id;
         let current = self
@@ -2024,11 +2022,6 @@ pub(crate) fn visible_machine<'list>(
         .expect("resolved Machine came from this list"))
 }
 
-/// The reset warning of a removal that found its Machine already gone: a missing row proves
-/// Forget ran, not that the reset did.
-const RESET_UNCONFIRMED: &str =
-    "its reset couldn't be confirmed: it was already gone from the Cluster";
-
 /// `machine`'s listed observation, or `None` when it is a Machine ID the list no longer
 /// holds: an earlier removal already forgot it. A name that doesn't resolve stays NotFound.
 ///
@@ -2230,7 +2223,7 @@ pub(crate) async fn evict_machine(
 
 /// Leave on `machine`, then Forget its row through the entry unless it is the entry. Both
 /// are idempotent. A Leave the entry can't route finds no row: Forget already ran, and
-/// whether the reset did is unknown, so the reply carries a warning saying so.
+/// whether the reset did is unknown, so it departed [`Departed::AlreadyForgotten`].
 ///
 /// A Forget that fails after the target answered Left carries that reply as
 /// [`LeftNotForgotten`]: a retry can no longer reach the target, and the reply is the only
@@ -2240,34 +2233,31 @@ async fn depart(
     machine: MachineId,
     current: MachineId,
 ) -> Result<LocalMachineRemoved, RpcError> {
-    let (reset_warning, left) = match client
+    let departed = match client
         .call::<op::Leave>(LeaveRequest {}, Some(&MachineTarget::from(&machine)))
         .await
     {
-        Ok(Left::Left { reset_warning, .. }) => (reset_warning, true),
+        Ok(Left::Left { reset_warning, .. }) => Departed::Reset {
+            row_warning: reset_warning,
+        },
         Ok(Left::Refused { error, .. }) => return Err(error),
-        Err(error) if error.is_unreachable() => (
-            Some(format!(
-                "target is unreachable; removing shared rows: {}",
-                crate::ui::row(&error)
-            )),
-            false,
-        ),
+        Err(error) if error.is_unreachable() => Departed::Unreachable {
+            cause: crate::ui::row(&error),
+        },
         Err(error) => match RpcError::from(error) {
-            gone if gone.code == RpcErrorCode::NotFound => (Some(RESET_UNCONFIRMED.into()), false),
+            gone if gone.code == RpcErrorCode::NotFound => Departed::AlreadyForgotten,
             error => return Err(error),
         },
     };
     if machine != current
         && let Err(error) = forget(client, machine).await
     {
-        return Err(if left {
-            LeftNotForgotten::carried_by(error, reset_warning)
-        } else {
-            error
+        return Err(match departed {
+            Departed::Reset { row_warning } => LeftNotForgotten::carried_by(error, row_warning),
+            Departed::Unreachable { .. } | Departed::AlreadyForgotten => error,
         });
     }
-    Ok(LocalMachineRemoved { reset_warning })
+    Ok(departed.into())
 }
 
 /// A Forget that failed after its target answered Left. The failed Forget's error carries

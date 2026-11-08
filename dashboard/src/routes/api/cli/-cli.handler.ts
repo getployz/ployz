@@ -560,7 +560,12 @@ function serverRemoval(attempt: MachineRemoveAttemptView) {
     case "running":
       return { state: attempt.state };
     case "succeeded":
-      return { state: attempt.state, reset_warning: attempt.result.resetWarning, release: attempt.result.release };
+      return {
+        state: attempt.state,
+        reset_warning: attempt.result.resetWarning,
+        departed: attempt.result.departed ?? null,
+        release: attempt.result.release,
+      };
     case "missing_identities":
       return refusal({
         code: "invalid_argument",

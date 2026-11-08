@@ -2058,3 +2058,38 @@ fn machine_upgrade_request_and_receipt_have_one_typed_wire_contract() {
         details
     );
 }
+
+/// A removal's `reset_warning` is its departure's prose, and a decoded one is rebuilt from
+/// the departure, so the two can't disagree.
+#[test]
+fn a_removal_reset_warning_follows_its_departure() {
+    use ployz_core::{Departed, LocalMachineRemoved};
+    let committed = LocalMachineRemoved::from(Departed::Reset {
+        row_warning: Some("replicated delete failed".into()),
+    });
+    assert_eq!(committed.reset_warning(), Some("replicated delete failed"));
+    assert_eq!(
+        LocalMachineRemoved::from(Departed::AlreadyForgotten).reset_warning(),
+        Some("its reset couldn't be confirmed: it was already gone from the Cluster")
+    );
+    assert_eq!(
+        LocalMachineRemoved::from(Departed::Unreachable {
+            cause: "connection refused".into()
+        })
+        .reset_warning(),
+        Some("target is unreachable; removing shared rows: connection refused")
+    );
+    assert_eq!(
+        LocalMachineRemoved::from(Departed::Reset { row_warning: None }).reset_warning(),
+        None
+    );
+    let decoded: LocalMachineRemoved = serde_json::from_value(serde_json::json!({
+        "reset_warning": "not what happened",
+        "departed": { "kind": "reset", "row_warning": null },
+    }))
+    .unwrap();
+    assert_eq!(
+        decoded,
+        LocalMachineRemoved::from(Departed::Reset { row_warning: None })
+    );
+}

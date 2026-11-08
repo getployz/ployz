@@ -6,9 +6,9 @@ use tokio::time::timeout;
 async fn machine_removal_reports_complete_and_partial_results() {
     for (warning, invalid_config) in [
         (None, false),
-        (Some("Docker reset failed: busy volume"), false),
+        (Some("replicated delete failed: store unavailable"), false),
         (None, true),
-        (Some("Docker reset failed: busy volume"), true),
+        (Some("replicated delete failed: store unavailable"), true),
     ] {
         let service = DiscoveryService::new(test_description());
         *service.reset_warning.lock().unwrap() = warning.map(str::to_owned);
@@ -42,11 +42,8 @@ async fn machine_removal_reports_complete_and_partial_results() {
         if invalid_config {
             std::fs::remove_file(config).unwrap();
         }
-        assert_eq!(
-            output.status.success(),
-            warning.is_none() && !invalid_config,
-            "{output:?}"
-        );
+        // The daemon's warning comes after its reset committed: the removal is no partial one.
+        assert_eq!(output.status.success(), !invalid_config, "{output:?}");
         assert_eq!(*resets.lock().unwrap(), [machine_id('a')]);
         assert!(erased.lock().unwrap().is_empty());
         let stdout = String::from_utf8_lossy(&output.stdout);
@@ -66,33 +63,28 @@ async fn machine_removal_reports_complete_and_partial_results() {
         }
         if let Some(warning) = warning {
             assert!(stderr.contains(warning), "{stderr}");
-            assert!(!stdout.contains("Deleted volume"), "{stdout}");
-        } else {
-            assert!(
-                stdout.contains("Reset left the data of Volume data on one."),
-                "{stdout}"
-            );
         }
+        assert!(
+            stdout.contains("Reset left the data of Volume data on one."),
+            "{stdout}"
+        );
         assert!(!stderr.contains("No changes made"), "{stderr}");
         server.abort();
     }
 }
 
 #[tokio::test]
-async fn a_reset_warning_and_the_volume_note_read_as_sentences() {
+async fn a_reset_row_warning_reads_as_a_sentence() {
     for (warning, read) in [
         (
-            "Docker reset failed: busy volume",
-            "Server one was not fully cleaned up or reset: Docker reset failed: busy volume. Reset does not erase volume data.",
+            "replicated delete failed: store unavailable",
+            "Server one reset, but its own row removal failed: replicated delete failed: store unavailable.",
         ),
         (
-            "Docker reset failed: busy volume.",
-            "Server one was not fully cleaned up or reset: Docker reset failed: busy volume. Reset does not erase volume data.",
+            "replicated delete failed: store unavailable.",
+            "Server one reset, but its own row removal failed: replicated delete failed: store unavailable.",
         ),
-        (
-            "",
-            "Server one was not fully cleaned up or reset. Reset does not erase volume data.",
-        ),
+        ("", "Server one reset, but its own row removal failed."),
     ] {
         let service = DiscoveryService::new(test_description());
         *service.reset_warning.lock().unwrap() = Some(warning.to_owned());
@@ -613,6 +605,129 @@ async fn a_server_already_gone_from_the_cluster_says_cloud_let_go_and_its_reset_
     // `--json` tells a dropped row from a kept hold too.
     let result: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
     assert_eq!(result.get("cloud_kept"), Some(&json!(false)), "{result}");
+}
+
+/// The daemon's own reset warning comes only after its reset committed: its row removal
+/// failed. The removal is a reset, not a partial one.
+#[tokio::test]
+async fn a_reset_whose_own_row_removal_failed_reads_as_a_reset() {
+    let service = DiscoveryService::new(test_description());
+    *service.reset_warning.lock().unwrap() = Some("replicated delete failed".to_owned());
+    let output = remove_server(
+        &service,
+        Dial::Connect,
+        "one",
+        &[],
+        &["--confirm", "one", "--accept-volume-loss", "data"],
+    )
+    .await;
+    assert!(output.status.success(), "{output:?}");
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        !stderr.contains("not fully cleaned up or reset"),
+        "{stderr}"
+    );
+    assert!(
+        stderr.contains(
+            "! Server one reset, but its own row removal failed: replicated delete failed.\n"
+        ),
+        "{stderr}"
+    );
+    let result: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(
+        result.get("departed"),
+        Some(&json!({ "kind": "reset", "row_warning": "replicated delete failed" })),
+        "{result}"
+    );
+    assert_eq!(
+        result.get("reset_warning"),
+        Some(&json!("replicated delete failed")),
+        "{result}"
+    );
+}
+
+/// Cloud's removal of a Server that reset, but whose own row removal failed, is no partial one.
+#[tokio::test]
+async fn a_cloud_removal_whose_reset_committed_reads_as_a_reset() {
+    let (cloud, _, _) = fake_cloud(
+        r#"{"state":"succeeded","reset_warning":"replicated delete failed","departed":{"kind":"reset","row_warning":"replicated delete failed"},"release":{"kind":"others_remain"}}"#,
+        false,
+    );
+    let mut service = DiscoveryService::new(test_description());
+    service.machines.push(machine('c', "two"));
+    let (output, _) = remove_cloud_server(
+        service,
+        "two",
+        &[("PLOYZ_TOKEN", "ployz_acme"), ("PLOYZ_CLOUD_URL", &cloud)],
+        &["--confirm", "two", "--accept-volume-loss", "data"],
+    )
+    .await;
+    assert!(output.status.success(), "{output:?}");
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("Removed Server two."), "{stderr}");
+    assert!(
+        !stderr.contains("Cloud let go of Server two, but"),
+        "{stderr}"
+    );
+    assert!(
+        !stderr.contains("not fully cleaned up or reset"),
+        "{stderr}"
+    );
+    assert!(
+        stderr.contains(
+            "! Server two reset, but its own row removal failed: replicated delete failed.\n"
+        ),
+        "{stderr}"
+    );
+}
+
+/// A Leave that failed as unavailable, or that the entry could no longer route, leaves no
+/// confirmed reset: the removal is partial.
+#[tokio::test]
+async fn a_removal_whose_reset_is_unproven_is_partial() {
+    let unroutable = RpcError {
+        code: RpcErrorCode::NotFound,
+        message: "unknown Machine".into(),
+        details: serde_json::Value::Null,
+        cause: Vec::new(),
+    };
+    for (unavailable, error, kind, doubt) in [
+        (
+            true,
+            None,
+            "unreachable",
+            "! Server one was not fully cleaned up or reset: target is unreachable; removing shared rows: ",
+        ),
+        (
+            false,
+            Some(unroutable),
+            "already_forgotten",
+            "! Server one was not fully cleaned up or reset: its reset couldn't be confirmed: it was already gone from the Cluster. Reset does not erase volume data.\n",
+        ),
+    ] {
+        let mut service = DiscoveryService::new(test_description());
+        service.leave_unavailable = unavailable;
+        service.leave_error = error;
+        let output = remove_server(
+            &service,
+            Dial::Connect,
+            "one",
+            &[],
+            &["--confirm", "one", "--accept-volume-loss", "data"],
+        )
+        .await;
+        assert_eq!(output.status.code(), Some(3), "{kind}: {output:?}");
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert!(stderr.contains(doubt), "{kind}: {stderr}");
+        let result: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+        assert_eq!(
+            result
+                .get("departed")
+                .and_then(|departed| departed.get("kind")),
+            Some(&json!(kind)),
+            "{result}"
+        );
+    }
 }
 
 #[tokio::test]

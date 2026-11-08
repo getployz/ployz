@@ -20,7 +20,7 @@ use crate::handlers::{
     data_loss::{Typed, VolumeEffect, VolumeLabels, volume_label},
     leaf_matches, store, typed_with,
 };
-use ployz_core::{DataLoss, DockerVolumeName, EnvironmentValues};
+use ployz_core::{DataLoss, Departed, DockerVolumeName, EnvironmentValues};
 use ployz_store::{EnvironmentRef, NamespacesQuery, VolumesQuery, docker_volume};
 use serde_json::json;
 
@@ -331,6 +331,7 @@ fn leave(root: &ArgMatches, removal: Removal) -> Result<(), Error> {
     };
     runtime.block_on(async {
         let mut reset_failure = None;
+        let mut departed = None;
         let mut cloud_released = None;
         let mut cloud_kept = None;
 
@@ -347,6 +348,7 @@ fn leave(root: &ArgMatches, removal: Removal) -> Result<(), Error> {
             )
             .await?;
             reset_failure = removed.reset_warning;
+            departed = removed.departed;
             if let Release::Kept { reason } = &removed.release {
                 crate::ui::warn(format!("Cloud keeps its hold on the Cluster: {reason}"));
             }
@@ -377,8 +379,15 @@ fn leave(root: &ArgMatches, removal: Removal) -> Result<(), Error> {
                     .remove_machine(&selected_target, &confirmation, Remover::Operator)
                     .await
                     .map_err(|error| reset_removal_refusal(error, selected.name.as_str()))?;
-            reset_failure = removed.reset_warning;
+            reset_failure = removed.reset_warning().map(str::to_owned);
+            departed = Some(removed.departed().clone());
         }
+        // A Server that reset leaves no doubt, though its own row removal failed after. An
+        // older Cloud doesn't say how it departed, so its warning still reads as doubt.
+        let reset_doubt = match &departed {
+            Some(Departed::Reset { .. }) => None,
+            _ => reset_failure.as_deref(),
+        };
         crate::ui::stream(format_args!(
             "{} Server {}.",
             match removal {
@@ -416,7 +425,7 @@ fn leave(root: &ArgMatches, removal: Removal) -> Result<(), Error> {
             crate::ui::stream("Cloud let go of the Cluster: this Organization has no Server now. Its Environments keep their config; nothing runs until you add a Server.");
             crate::ui::hint(&Hint::Next("ployz server add".into()));
         }
-        if let Some(reason) = &reset_failure
+        if let Some(reason) = reset_doubt
             && cloud_kept == Some(false)
         {
             // Cloud lets go only of a Server the Cluster already forgot, so only its reset is in doubt.
@@ -424,7 +433,7 @@ fn leave(root: &ArgMatches, removal: Removal) -> Result<(), Error> {
                 &format!("Cloud let go of Server {}, but {reason}", selected.name),
                 "Reset does not erase volume data.",
             ));
-        } else if let Some(reason) = &reset_failure {
+        } else if let Some(reason) = reset_doubt {
             crate::ui::warn(crate::ui::then_sentence(
                 &crate::ui::with_reason(
                     format_args!("Server {} was not fully cleaned up or reset", selected.name),
@@ -433,6 +442,18 @@ fn leave(root: &ArgMatches, removal: Removal) -> Result<(), Error> {
                 "Reset does not erase volume data.",
             ));
         } else if removal == Removal::Reset {
+            if let Some(Departed::Reset {
+                row_warning: Some(warning),
+            }) = &departed
+            {
+                crate::ui::warn(crate::ui::sentence(crate::ui::with_reason(
+                    format_args!(
+                        "Server {} reset, but its own row removal failed",
+                        selected.name
+                    ),
+                    warning,
+                )));
+            }
             for loss in &observed.data_loss {
                 crate::ui::stream(format_args!(
                     "Reset left the data of Volume {} on {}.",
@@ -444,7 +465,7 @@ fn leave(root: &ArgMatches, removal: Removal) -> Result<(), Error> {
                 crate::ui::stream("Wipe or reinstall the Server's disk to erase that data; sudo ployz-uninstall keeps the data.");
             }
         }
-        let stopped = if removal == Removal::Reset && reset_failure.is_none() {
+        let stopped = if removal == Removal::Reset && reset_doubt.is_none() {
             Stopped::Yes
         } else {
             Stopped::Unproven
@@ -460,6 +481,7 @@ fn leave(root: &ArgMatches, removal: Removal) -> Result<(), Error> {
         crate::ui::emit(&json!({
             "server": super::server_json(&selected),
             "reset_warning": reset_failure,
+            "departed": departed,
             "data_loss": observed.data_loss,
             "under_replicated": short.under_replicated,
             "no_copies": short.no_copies,
@@ -480,7 +502,7 @@ fn leave(root: &ArgMatches, removal: Removal) -> Result<(), Error> {
                 })
                 .map_err(|error| error.context("Server removed; local context cleanup failed."))?;
         }
-        if reset_failure.is_some() {
+        if reset_doubt.is_some() {
             return Err(Error::partial());
         }
         Ok::<_, Error>(())
