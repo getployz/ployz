@@ -13,13 +13,16 @@ import {
   type ApprovalScope,
   type ApprovalSession,
   approveAct,
+  approveProposal,
   type PromptReason,
+  type ProposalStepTarget,
   promptReason,
   readSession,
   SessionRefused,
   startSession,
   subscribe,
 } from "./approval-session";
+import { strandedByProposal } from "#/modules/proposals/proposal";
 import { needsNewerPloyz, strandedByStop } from "#/modules/service-act/service-act";
 
 type Ask = { readonly scope: ApprovalScope; readonly reason: PromptReason; readonly resolve: (approved: boolean) => void };
@@ -37,9 +40,12 @@ const subscribeAsk = (listener: () => void) => {
 
 export const useApprovalSession = (): ApprovalSession | null => useSyncExternalStore(subscribe, readSession, () => null);
 
-/** Resolves true when a live session covers the press, at once or after one prompt; false when the person cancels. */
-export function ensureApproval(scope: ApprovalScope, family: ActionFamily): Promise<boolean> {
-  const reason = promptReason(readSession(), scope, family);
+/**
+ * Resolves true when a live session covers the press, at once or after one prompt; false when the person cancels. A
+ * `proposal` prompts every time: the one press that signs a whole plan is never borrowed from an earlier session.
+ */
+export function ensureApproval(scope: ApprovalScope, family: ActionFamily | "proposal"): Promise<boolean> {
+  const reason = family === "proposal" ? "proposal" : promptReason(readSession(), scope, family);
   if (reason === null) return Promise.resolve(true);
   pendingAsk?.resolve(false);
   return new Promise((resolve) => setAsk({ scope, reason, resolve }));
@@ -66,6 +72,37 @@ export async function actApprovals(verb: ServiceVerb, target: ActTarget) {
   if (!enforced || scope === null) return undefined;
   if (!(await ensureApproval(scope, verb))) return null;
   return approveAct(verb, scope, target.runtime, target.copies.map((copy) => ({ machine: copy.machineId, container: copy.id, hook: copy.hook })));
+}
+
+/** A proposal as the browser approves it: each step's copies, and the Servers, in one Environment. */
+export type ProposalTarget = {
+  readonly environment: ActTarget["environment"];
+  readonly steps: readonly { readonly verb: ServiceVerb; readonly runtime: string; readonly copies: ActTarget["copies"] }[];
+  readonly machines: ActTarget["machines"];
+  readonly environmentMachines: ActTarget["environmentMachines"];
+};
+
+/**
+ * One bundle over every step, after exactly one prompt. Null when the person cancels. Throws, before any prompt, for a
+ * step a Server couldn't take: one that hasn't learnt proposals, or a stop it couldn't start again.
+ */
+export async function proposalApprovals(target: ProposalTarget) {
+  for (const step of target.steps) {
+    const older = strandedByProposal(step.copies, target.machines);
+    if (older !== null) throw new Error(needsNewerPloyz(older, step.verb));
+    const stranded = step.verb === "stop" ? strandedByStop(step.copies, target.machines) : null;
+    if (stranded !== null) throw new Error(needsNewerPloyz(stranded, "stop"));
+  }
+  const copies = target.steps.flatMap((step) => step.copies);
+  const { scope } = actScope(target.environment, copies, target.machines, target.environmentMachines);
+  if (scope === null) throw new Error("Cloud couldn't check the servers. Try again.");
+  if (!(await ensureApproval(scope, "proposal"))) return null;
+  const steps: ProposalStepTarget[] = target.steps.map((step) => ({
+    verb: step.verb,
+    runtime: step.runtime,
+    copies: step.copies.map((copy) => ({ machine: copy.machineId, container: copy.id, hook: copy.hook })),
+  }));
+  return approveProposal(steps, scope);
 }
 
 export function ApprovalPrompt() {

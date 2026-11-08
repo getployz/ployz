@@ -306,6 +306,8 @@ export const actService = (
     readonly digest: string;
     /** The browser's approval for each Container, forwarded to Servers that enforce. */
     readonly approvals?: Readonly<Record<string, Signed>>;
+    /** The proposal this run is a step of. */
+    readonly proposal?: { readonly id: string; readonly step: number };
   },
   call: OperationCall,
 ) =>

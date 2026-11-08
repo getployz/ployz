@@ -139,6 +139,8 @@ macro_rules! rpc_catalog {
                 START_APPROVAL_CAPABILITY: ("ployz.restart.start-approval.v1", Always),
                 /// `SetIngressDoors` takes the Tunnel Door with a `sealed_token`, and places the Tunnel Connector.
                 SET_INGRESS_TUNNEL_CAPABILITY: ("ployz.ingress.tunnel.v1", Cluster),
+                /// A restart approval may be an unsigned step of a signed proposal bundle that rides in its envelope.
+                PROPOSAL_APPROVAL_CAPABILITY: ("ployz.restart.proposal.v1", Always),
             }
         }
     };

@@ -4162,7 +4162,10 @@ mod ensure_container {
         use ployz_core::{
             DeviceKey, Namespace, OPERATOR_SCOPE_HEADER, OperationId, RESTART_APPROVAL_CAPABILITY,
             SealingPublicKey, ServiceName, SetDeviceEnforcementRequest,
-            authority::{RestartApproval, Signed, Signer, StartingSet, Timestamp, WorkflowKind},
+            authority::{
+                ProposalApproval, ProposalRef, ProposalStep, RestartApproval, Signed, Signer,
+                StartingSet, StepDigest, Timestamp, WorkflowKind, canonical,
+            },
             rpc::status_details,
         };
         use tonic::Status;
@@ -4219,6 +4222,7 @@ mod ensure_container {
                     issued_at: Timestamp::now(),
                     expires_at: Timestamp::now().plus(60_000),
                     signer: ployz_core::authority::SignerKey::Device(self.signer.public().into()),
+                    proposal: None,
                 }
             }
 
@@ -4777,6 +4781,91 @@ mod ensure_container {
             ));
             refused(
                 operator_ensure(&fixture.restarted(), started(&id), Some(&approval)).await,
+                "already ran this step",
+            );
+            std::fs::remove_dir_all(fixture.data_dir).unwrap();
+        }
+
+        #[tokio::test]
+        async fn a_proposal_step_runs_once_in_its_bundle_and_a_swapped_step_is_refused() {
+            let fixture = enforced("ployzd-enforce-proposal").await;
+            let service = &fixture.service;
+            let first = present(&ensure(service, run_new("k1", spec("example.test/api:1"))).await)
+                .container_id;
+            let second = present(&ensure(service, run_new("k2", spec("example.test/api:1"))).await)
+                .container_id;
+            let bundle_operation = OperationId::random();
+            let steps = [
+                RestartApproval {
+                    kind: WorkflowKind::Stop,
+                    proposal: Some(ProposalRef {
+                        operation: bundle_operation,
+                        index: 0,
+                    }),
+                    ..fixture.approval(&first)
+                },
+                RestartApproval {
+                    kind: WorkflowKind::Stop,
+                    proposal: Some(ProposalRef {
+                        operation: bundle_operation,
+                        index: 1,
+                    }),
+                    ..fixture.approval(&second)
+                },
+            ];
+            let plan = ProposalApproval {
+                cluster: fixture.cluster,
+                environment: Namespace::parse("app").unwrap(),
+                operation: bundle_operation,
+                steps: steps
+                    .iter()
+                    .enumerate()
+                    .map(|(index, step)| ProposalStep {
+                        index: u32::try_from(index).unwrap(),
+                        kind: step.kind,
+                        digest: StepDigest::of(&canonical::to_canonical(step).unwrap()),
+                    })
+                    .collect(),
+                issued_at: steps.first().unwrap().issued_at,
+                expires_at: steps.first().unwrap().expires_at,
+                signer: ployz_core::authority::SignerKey::Device(fixture.signer.public().into()),
+            };
+            let bundle = Signed::sign(&plan, &fixture.signer).unwrap();
+            let [stop_first, stop_second] = steps;
+            let step = |body: &RestartApproval| Signed::proposed(body, bundle.clone()).unwrap();
+
+            refused(
+                operator_ensure(service, stopped(&first), Some(&step(&stop_second))).await,
+                "names a Container",
+            );
+            let swapped = RestartApproval {
+                proposal: Some(ProposalRef {
+                    operation: bundle_operation,
+                    index: 1,
+                }),
+                ..stop_first.clone()
+            };
+            refused(
+                operator_ensure(service, stopped(&first), Some(&step(&swapped))).await,
+                "names a step",
+            );
+            operator_ensure(service, stopped(&first), Some(&step(&stop_first)))
+                .await
+                .unwrap();
+            refused(
+                operator_ensure(service, stopped(&first), Some(&step(&stop_first))).await,
+                "already ran this step",
+            );
+            operator_ensure(service, stopped(&second), Some(&step(&stop_second)))
+                .await
+                .unwrap();
+            refused(
+                operator_ensure(
+                    &fixture.restarted(),
+                    stopped(&second),
+                    Some(&step(&stop_second)),
+                )
+                .await,
                 "already ran this step",
             );
             std::fs::remove_dir_all(fixture.data_dir).unwrap();
