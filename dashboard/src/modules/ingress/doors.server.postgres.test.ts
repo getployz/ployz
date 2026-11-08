@@ -224,4 +224,14 @@ it("drops a pending approval for a switch the Cluster has already made", async (
   const stored = "digest";
   expect(await run(freshSwitchDigest(ORG, stored, { to: "tunnel" }))).toBeNull();
   expect(await run(freshSwitchDigest(ORG, stored, { unrelated: true }))).toBe(stored);
+  await harness.pool.query("update organization_cloudflare_ingress set state = 'left'");
+  expect(await run(freshSwitchDigest(ORG, stored, { to: "public" }))).toBeNull();
+});
+
+it("keeps a pending approval for a switch refused only for now, while Cloudflare is being set up or until it is", async () => {
+  const stored = "digest";
+  expect(await run(freshSwitchDigest(ORG, stored, { to: "tunnel" }))).toBe(stored);
+  await setup("setting_up");
+  expect(await run(freshSwitchDigest(ORG, stored, { to: "tunnel" }))).toBe(stored);
+  expect(await run(freshSwitchDigest(ORG, stored, { to: "public" }))).toBe(stored);
 });
