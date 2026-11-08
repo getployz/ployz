@@ -251,6 +251,156 @@ async fn renewing_aborts_once_the_store_hands_the_environment_to_another_runner(
     assert_eq!(result, "aborted");
 }
 
+/// `forget_cluster` (ployz-store teardown.rs) cancels every Deployment in flight without
+/// waiting on its runner; every later read of it answers "This Deployment already ended".
+fn forget_cluster(run: &Run) {
+    run.store
+        .system(
+            &ployz_store::OrganizationId::parse("test").unwrap(),
+            &ployz_store::SystemEvent::ClusterForgotten,
+            &ployz_store::Trusted::default(),
+        )
+        .unwrap();
+}
+
+/// Whether `connecting` lets go of a dial that never ends within a few of its polls.
+async fn connecting_lets_go(run: &Run) -> bool {
+    let dial = std::future::pending::<Result<(), RpcError>>();
+    tokio::time::timeout(Duration::from_secs(5), run.connecting(dial))
+        .await
+        .is_ok()
+}
+
+#[tokio::test]
+async fn renewing_aborts_once_the_store_ended_the_run() {
+    let (run, _) = run();
+    forget_cluster(&run);
+    let token = CancellationToken::new();
+    let work = async {
+        token.cancelled().await;
+        "aborted"
+    };
+    let result = tokio::time::timeout(
+        Duration::from_secs(5),
+        run.renewing(work, || token.cancel()),
+    )
+    .await
+    .expect("renewing keeps the work going for a Deployment the store ended");
+    assert_eq!(result, "aborted");
+}
+
+#[tokio::test]
+async fn connecting_stops_once_the_store_hands_the_environment_to_another_runner() {
+    let (run, actor) = run();
+    take_over(&run, &actor);
+    assert!(
+        connecting_lets_go(&run).await,
+        "connecting dials on after the store said the run is Unknown"
+    );
+}
+
+#[tokio::test]
+async fn connecting_stops_once_the_store_ended_the_run() {
+    let (run, _) = run();
+    forget_cluster(&run);
+    assert!(
+        connecting_lets_go(&run).await,
+        "connecting dials on for a Deployment the store ended"
+    );
+}
+
+/// The store never hands a Deployment it set Unknown back, so a read that fails after
+/// one said Unknown still leaves the run lost.
+#[tokio::test]
+async fn a_run_stays_lost_when_a_later_read_fails() {
+    let (run, actor) = run();
+    take_over(&run, &actor);
+    let token = CancellationToken::new();
+    tokio::time::timeout(
+        Duration::from_secs(5),
+        run.renewing(token.cancelled(), || token.cancel()),
+    )
+    .await
+    .expect("renewing aborts once it reads the takeover");
+    // A Store that never held the Deployment: every later read fails.
+    let run = Run {
+        store: Arc::new(
+            ConfigStore::open(
+                "sqlite::memory:",
+                ployz_store::SealingKey::new(b"test").unwrap(),
+            )
+            .unwrap(),
+        ),
+        ..run
+    };
+    let read = run.record(RunEvidence::Alive).await.unwrap_err();
+    assert_eq!(read.code, RpcErrorCode::NotFound);
+    assert!(
+        run.lost_to_another_runner().await,
+        "a read that fails after the takeover lets the run go on"
+    );
+}
+
+/// The Deployment `run` claimed, with an empty Deploy Preview recorded.
+async fn prepared(run: &Run) {
+    let claimed = run.claim(Operator::Cloud).await.unwrap();
+    let preview = serde_json::from_value(serde_json::json!({
+        "namespace": claimed.intent.namespace,
+        "operations": [], "warnings": [], "would_remove": [], "preserved_volumes": [],
+    }))
+    .unwrap();
+    run.record(RunEvidence::Prepared(preview)).await.unwrap();
+}
+
+/// What the store kept as the outcome of `run`'s execution.
+fn kept_summary(run: &Run, actor: &ployz_store::Actor) -> Option<Value> {
+    let view = run
+        .store
+        .read(
+            actor,
+            &DeploymentQuery {
+                id: run.deployment.clone(),
+            },
+        )
+        .unwrap();
+    match view.deployment.outcome {
+        Some(ployz_store::Outcome::Executed { summary, .. }) => Some(summary),
+        _ => None,
+    }
+}
+
+fn interrupted_summary() -> Value {
+    serde_json::to_value(ployz_core::config::RuntimeOutcomeSummary::Failed {
+        completed: 0,
+        unexecuted: 0,
+        reason: ployz_core::config::RuntimeFailureKind::Interrupted,
+    })
+    .unwrap()
+}
+
+/// A takeover that lands after the run's last read: the run sends what executing did,
+/// and the store keeps it as Interrupted, the one outcome it takes from a lost run.
+#[tokio::test]
+async fn a_run_taken_over_after_its_last_read_keeps_its_outcome_as_interrupted() {
+    let (run, actor) = run();
+    prepared(&run).await;
+    take_over(&run, &actor);
+    let outcome = DeployOutcome::Success {
+        completed: Vec::new(),
+        services: Vec::new(),
+    };
+    let recorded = run
+        .record(RunEvidence::Executed {
+            progress: Vec::new(),
+            outcome: Box::new(outcome),
+            removed: Vec::new(),
+        })
+        .await;
+    let summary = recorded.expect("the store refuses the run's outcome, and nothing keeps it");
+    assert_eq!(summary.status, DeploymentStatus::Unknown);
+    assert_eq!(kept_summary(&run, &actor), Some(interrupted_summary()));
+}
+
 #[test]
 fn a_taken_over_run_reports_what_it_completed_and_leaves_the_stopped_operation_unexecuted() {
     let operation = |id: char| DeployOperation::RemoveContainer {
