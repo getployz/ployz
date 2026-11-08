@@ -54,7 +54,8 @@ impl IssuanceClock {
 /// Distinct from the daemon's rank / due-time `IssuanceAction` (`Order` / `Renew`).
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum IssuanceGate {
-    Nothing,
+    /// The shared clock holds until its `next_attempt_at`, and the verdict leaves it standing.
+    Hold(IssuanceClock),
     Refuse {
         refusal: Refusal,
         clock: IssuanceClock,
@@ -73,13 +74,13 @@ pub fn issuance_gate(
     backoff_base: Duration,
     backoff_cap: Duration,
 ) -> IssuanceGate {
-    let waiting = clock.is_some_and(|clock| clock.next_attempt_at() > now);
-    let verdict_changed = clock.is_some_and(|clock| {
-        matches!(clock.last_failure(), IssuanceFailure::Refused(last)
-            if verdict != HostnameVerdict::Refused(last))
-    });
-    if waiting && !verdict_changed {
-        return IssuanceGate::Nothing;
+    if let Some(clock) = clock {
+        let waiting = clock.next_attempt_at() > now;
+        let verdict_changed = matches!(clock.last_failure(), IssuanceFailure::Refused(last)
+            if verdict != HostnameVerdict::Refused(last));
+        if waiting && !verdict_changed {
+            return IssuanceGate::Hold(clock);
+        }
     }
     match verdict {
         HostnameVerdict::ReachesCluster(route) => IssuanceGate::Order(route),
@@ -180,42 +181,43 @@ mod tests {
 
     #[test]
     fn authority_backoff_is_served_out() {
-        let clock = Some(clock(
+        let held = clock(
             IssuanceFailure::Authority,
             1,
             now() + Duration::from_secs(3600),
-        ));
-        assert_eq!(
-            decide(
-                clock,
-                HostnameVerdict::ReachesCluster(ClusterRoute::Direct),
-                now()
-            ),
-            IssuanceGate::Nothing
         );
         assert_eq!(
             decide(
-                clock,
+                Some(held),
+                HostnameVerdict::ReachesCluster(ClusterRoute::Direct),
+                now()
+            ),
+            IssuanceGate::Hold(held)
+        );
+        assert_eq!(
+            decide(
+                Some(held),
                 HostnameVerdict::Refused(Refusal::DoesNotResolve),
                 now()
             ),
-            IssuanceGate::Nothing
+            IssuanceGate::Hold(held)
         );
     }
 
     #[test]
     fn unchanged_resolve_backoff_is_served_out() {
+        let held = clock(
+            IssuanceFailure::Refused(Refusal::DoesNotResolve),
+            1,
+            now() + Duration::from_secs(3600),
+        );
         assert_eq!(
             decide(
-                Some(clock(
-                    IssuanceFailure::Refused(Refusal::DoesNotResolve),
-                    1,
-                    now() + Duration::from_secs(3600),
-                )),
+                Some(held),
                 HostnameVerdict::Refused(Refusal::DoesNotResolve),
                 now(),
             ),
-            IssuanceGate::Nothing
+            IssuanceGate::Hold(held)
         );
     }
 
