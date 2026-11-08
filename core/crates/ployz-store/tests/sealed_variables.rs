@@ -130,6 +130,7 @@ fn try_deploy(store: &ConfigStore) -> Result<ployz_store::Claimed, RpcError> {
             message: None,
             prune: false,
             no_prune: false,
+            approval: None,
         }),
         &ployz_store::Trusted::default(),
     )?;

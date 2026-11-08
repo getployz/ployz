@@ -310,6 +310,7 @@ fn admit_deploy(store: &ConfigStore, who: &Actor, environment: &str, n: u8) {
                 message: None,
                 prune: false,
                 no_prune: false,
+                approval: None,
             }),
         )
         .unwrap();
@@ -1009,6 +1010,7 @@ fn with_no_server_left_a_removal_applies_at_once() {
             message: None,
             prune: false,
             no_prune: false,
+            approval: None,
         }),
         &none_left,
     ));
@@ -1033,6 +1035,7 @@ fn a_forgotten_cluster_leaves_nothing_deployed_and_its_removal_forgotten() {
                 message: None,
                 prune: false,
                 no_prune: false,
+                approval: None,
             }),
         )
         .unwrap();
@@ -1997,6 +2000,7 @@ fn nothing_builds_on_a_removal_whose_deployment_failed() {
         message: None,
         prune: false,
         no_prune: false,
+        approval: None,
     }))));
     being_removed(write(ployz_store::Command::Publish(Publish {
         id: None,

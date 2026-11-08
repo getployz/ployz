@@ -160,6 +160,7 @@ fn admit(
         message: None,
         prune: false,
         no_prune: false,
+        approval: None,
     };
     choose(&mut deploy);
     store.write(who, &Admit::Deploy(deploy))

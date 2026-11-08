@@ -328,6 +328,10 @@ trustworthy as Ployz Cloud is at the moment you turn enforcement on. To check it
 `sudo ployz status` on each server and compare its **wireguard key** line with the fingerprint
 printed next to that server. If they differ, run `ployz device enforce --off` and don't trust that set.
 
+Enforcement also covers deploys: a server creates a container only from a spec an approved
+device signed with `ployz deploy`, and only from an image pinned by digest. See
+[Deploy to servers that enforce device approval](../deploy/deployments.md#deploy-to-servers-that-enforce-device-approval).
+
 Enforcement also requires an approved Device to authorize a new server's identity, keys,
 allocation, and initial Devices. See [Approve a join](add-a-server.md#approve-a-join-when-device-enforcement-is-on).
 A joining server inherits enforcement. Approvals name one existing server that may admit the

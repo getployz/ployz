@@ -173,6 +173,7 @@ fn admit(store: &ConfigStore, n: u8) -> Result<DeploymentId, RpcError> {
             message: None,
             prune: false,
             no_prune: false,
+            approval: None,
         }),
         &ployz_store::Trusted::default(),
     )?;
@@ -329,6 +330,7 @@ fn references_that_resolve_past_any_container_refuse_only_a_deploy_that_starts_t
                 message: None,
                 prune: false,
                 no_prune: false,
+                approval: None,
             }),
             &ployz_store::Trusted::default(),
         )

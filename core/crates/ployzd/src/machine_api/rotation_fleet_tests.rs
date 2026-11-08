@@ -819,6 +819,7 @@ async fn ensure(node: &Node, want: ContainerWant) -> EnsuredContainer {
     let request = op::EnsureContainer::into_request(EnsureContainerRequest {
         want,
         approval: None,
+        deploy: None,
     });
     node.service
         .ensure_container(Request::new(request.encode().unwrap()))
@@ -2433,6 +2434,7 @@ fn creation_on_wire(
         let request = op::EnsureContainer::into_request(EnsureContainerRequest {
             want,
             approval: None,
+            deploy: None,
         });
         service
             .ensure_container(Request::new(request.encode().unwrap()))

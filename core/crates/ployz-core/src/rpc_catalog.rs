@@ -140,6 +140,8 @@ macro_rules! rpc_catalog {
                 SET_INGRESS_TUNNEL_CAPABILITY: ("ployz.ingress.tunnel.v1", Cluster),
                 /// A restart approval may be an unsigned step of a signed proposal bundle that rides in its envelope.
                 PROPOSAL_APPROVAL_CAPABILITY: ("ployz.restart.proposal.v1", Always),
+                /// `EnsureContainer` takes a deploy approval and, under Device enforcement, creates an Operator's Container only when its spec matches a digest it approves.
+                DEPLOY_APPROVAL_CAPABILITY: ("ployz.container.deploy-approval.v1", Always),
             }
         }
     };

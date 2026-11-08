@@ -213,6 +213,7 @@ pub fn admit(
                 message: None,
                 prune: false,
                 no_prune: false,
+                approval: None,
             }),
             &ployz_store::Trusted::default(),
         )

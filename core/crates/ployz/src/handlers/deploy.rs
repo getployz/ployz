@@ -4,6 +4,7 @@
 //! hidden in-process Store this CLI is the Deployment's runner: it claims it,
 //! prepares and confirms it on the Cluster, and records what happened.
 
+mod approve;
 #[cfg(test)]
 mod follow_tests;
 mod progress;
@@ -293,6 +294,12 @@ pub(super) fn upload_and_ship(
         .map(|(dir, listing)| uploaded_source(dir, listing))
         .transpose()?;
     let id = DeploymentId::parse(mint())?;
+    // An upload builds an image no Device can name before it exists.
+    let device = match &listing {
+        Some(_) => None,
+        None => approve::sign(matches, store, &id, (&environment, &services))?,
+    };
+    let version = version.or_else(|| device.as_ref().map(|device| device.version.clone()));
     if let Some((dir, listing)) = &listing {
         store.upload(&id, dir, listing)?;
     }
@@ -307,9 +314,14 @@ pub(super) fn upload_and_ship(
             message,
             prune: false,
             no_prune,
+            approval: device
+                .as_ref()
+                .map(|device| Box::new(device.signed.clone())),
         }))
         .map_err(|error| store.accepting(store.at_review(error, "diff")))?;
-    execute(matches, store, &admitted, source.as_deref(), events)
+    let mut shipped = execute(matches, store, &admitted, source.as_deref(), events)?;
+    shipped.approved = device.map(|device| device.approved).unwrap_or_default();
+    Ok(shipped)
 }
 
 /// Refuse `--detach` on the hidden local Store before anything is queued: it runs
@@ -377,6 +389,17 @@ pub(super) struct Shipped {
     /// The run found no upload or usable image, so `hint` uploads one.
     pub(super) needs_upload: bool,
     pub(super) presented: bool,
+    /// What this Device approved for each Service, when a Server enforces Device approval.
+    pub(super) approved: Vec<approve::Approved>,
+}
+
+/// A Deployment's view with what this Device approved, under `--json`.
+#[derive(serde::Serialize)]
+struct WithApproved<'a> {
+    #[serde(flatten)]
+    view: &'a DeploymentView,
+    #[serde(skip_serializing_if = "<[_]>::is_empty")]
+    approved: &'a [approve::Approved],
 }
 
 impl Shipped {
@@ -384,12 +407,15 @@ impl Shipped {
         if let Some(skipped) = prune_skipped(&self.view.deployment, self.view.preview.as_ref()) {
             ui::warn(skipped);
         }
+        let result = WithApproved {
+            view: &self.view,
+            approved: &self.approved,
+        };
+        let next = Next::new(&result, Some(self.hint.clone()));
         if self.presented {
-            ui::finish(&Next::new(&self.view, Some(self.hint.clone())), || {
-                say_unserved(&self.view);
-            })?;
+            ui::finish(&next, || say_unserved(&self.view))?;
         } else {
-            finish_view(&self.view, Some(self.hint.clone()))?;
+            ui::finish(&next, || say_view(&self.view))?;
         }
         if self.needs_upload {
             ui::hint(&Hint::Next(self.hint));
@@ -565,6 +591,7 @@ pub(super) fn execute(
         ran,
         needs_upload,
         presented: !detached,
+        approved: Vec::new(),
     })
 }
 
@@ -1015,6 +1042,7 @@ fn plan(
     let plan = store.read(&PlanQuery {
         environment: environment(matches)?,
         services,
+        target: false,
     })?;
     let hint = store.again(&["--expect-version", plan.version.as_str()]);
     let (ingress, ingress_unchecked) = match ingress_check(matches) {

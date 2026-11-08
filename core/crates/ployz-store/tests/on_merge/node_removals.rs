@@ -660,6 +660,7 @@ fn deploy_by_hand(
                 message: None,
                 prune: false,
                 no_prune: false,
+                approval: None,
             }),
             &Trusted::default(),
         )
@@ -1418,6 +1419,7 @@ fn a_deploy_that_takes_over_a_teardown_takes_the_config_it_removes_too() {
                 &ployz_store::PlanQuery {
                     environment: at("production"),
                     services: Vec::new(),
+                    target: false,
                 },
             )
             .unwrap()

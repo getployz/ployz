@@ -166,6 +166,7 @@ fn pinned() -> (Arc<ConfigStore>, Actor, GithubBuildId) {
         message: None,
         prune: false,
         no_prune: false,
+        approval: None,
     });
     store
         .write_trusted(&who, &deploy, &Trusted::default())

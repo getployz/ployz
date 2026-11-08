@@ -157,6 +157,7 @@ fn admit_only(store: &ConfigStore, who: &Actor, n: u8, services: &[&str]) -> Res
                 message: None,
                 prune: false,
                 no_prune: false,
+                approval: None,
             }),
             &Trusted::default(),
         )
