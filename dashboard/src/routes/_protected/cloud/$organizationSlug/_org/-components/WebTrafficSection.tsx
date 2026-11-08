@@ -257,7 +257,7 @@ function SwitchDialog({ organizationSlug, to, onOpenChange, onConfirm }: {
                 {moves.map(({ from, to: next }) => (
                   <Item key={from} variant="outline" size="xs" data-row={from}>
                     <ItemContent className="min-w-0">
-                      <ItemTitle className="font-mono break-all">{from} → {next}</ItemTitle>
+                      <ItemTitle className="font-mono break-words">{from} → {next}</ItemTitle>
                     </ItemContent>
                   </Item>
                 ))}
