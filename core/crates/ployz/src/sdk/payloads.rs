@@ -80,6 +80,7 @@ fn typescript_declarations() -> String {
     declarations.add::<crate::sealing_backfill::BackfillSealingKeyReport>();
     declarations.add::<crate::drain::DrainScope>();
     declarations.add::<crate::ingress::DoorsChanged>();
+    declarations.add::<crate::private_access::AccessChanged>();
     declarations.add::<crate::ingress::IngressCheck>();
     declarations.add::<ExecutionError>();
     declarations.add::<LocalMachineRemoved>();

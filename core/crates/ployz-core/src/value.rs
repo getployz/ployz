@@ -794,6 +794,22 @@ impl QualifiedService {
         )
     }
 
+    /// Reserved Private Access router that advertises the Cluster network to a tailnet.
+    #[must_use]
+    pub fn system_tailscale() -> Self {
+        Self::new(
+            Namespace::system(),
+            ServiceName::parse("tailscale").expect("tailscale is a DNS-label Service Name"),
+        )
+    }
+
+    /// Whether this is the reserved Private Access router. It is placed only through
+    /// SetPrivateAccess.
+    #[must_use]
+    pub fn is_private_access_router(&self) -> bool {
+        *self == Self::system_tailscale()
+    }
+
     /// Whether this is one of the three reserved Ingress Proxy identities: the holder,
     /// Caddy, or the Tunnel Connector. All three are placed only through SetIngressDoors.
     #[must_use]

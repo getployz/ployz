@@ -348,7 +348,7 @@ async fn set_door<C: MachineOperations>(
 }
 
 /// The refusal for a Server whose daemon predates `capability`.
-fn unsupported(server: &MachineName, capability: &str) -> RpcError {
+pub(crate) fn unsupported(server: &MachineName, capability: &str) -> RpcError {
     let details = serde_json::json!({
         "target": server.to_string(),
         "capability": capability,

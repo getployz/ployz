@@ -297,6 +297,14 @@ impl MachineOperations for Cluster {
     ) -> Result<ployz_core::IngressDoorsSet, RpcError> {
         unreachable!("retirement never places the Ingress Proxy")
     }
+
+    async fn set_private_access(
+        &self,
+        _machine_id: &MachineId,
+        _request: ployz_core::SetPrivateAccessRequest,
+    ) -> Result<ployz_core::PrivateAccessSet, RpcError> {
+        unreachable!("retirement never places the Private Access router")
+    }
 }
 
 fn copy_on(machine: &Machine, hex: char, rotation: CopyRotation) -> ContainerObservation {

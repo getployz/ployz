@@ -10,16 +10,18 @@
 //! A new copy carries its source's deploy label and gen, starts Pending and
 //! is brought In through the owner, which refuses a copy older than an In
 //! one. The Ingress Proxy is never copied: the joiner's own daemon builds its
-//! holder and Caddy through SetIngressDoors, once, for the observed proxy id.
+//! holder and Caddy through SetIngressDoors, once, for the observed proxy id. The
+//! Private Access router is never copied either: the joiner's own daemon builds it
+//! through SetPrivateAccess from the sealed auth key an observed router carries.
 
 use ployz_core::{
-    AnonymousVolumes, BridgeEndpointCapacity, ContainerKind, ContainerObservation,
+    AnonymousVolumes, BridgeEndpointCapacity, Ciphertext, ContainerKind, ContainerObservation,
     ContainerRefusalReason, ContainerRuntimeObservation, ContainerWant, CopyRotation, CreationKey,
     EnvironmentValues, HealthFailure, HealthVerdict, IngressDoorsSet, InspectRequest,
     ListContainersRequest, LiveServices, Machine, MachineId, MachineTarget, NewContainer,
-    PartialResult, QualifiedService, ResolvedServiceSpec, RpcError, RunRotation, RunTarget,
-    ServiceId, ServiceMode, ServiceObservation, ServicePlacementEligibility,
-    SetIngressDoorsRequest, SlotKey, op,
+    PartialResult, PrivateAccessSet, QualifiedService, ResolvedServiceSpec, RpcError, RunRotation,
+    RunTarget, ServiceId, ServiceMode, ServiceObservation, ServicePlacementEligibility,
+    SetIngressDoorsRequest, SetPrivateAccessRequest, SlotKey, op,
 };
 use tokio_util::sync::CancellationToken;
 
@@ -89,6 +91,12 @@ pub(crate) trait CatchUpClient {
         doors: ClusterDoors,
         cancel: &CancellationToken,
     ) -> Result<Option<IngressDoorsSet>, RpcError>;
+    /// Place `machine_id`'s Private Access router with the auth key `sealed`.
+    async fn run_private_access(
+        &mut self,
+        machine_id: &MachineId,
+        sealed: Ciphertext,
+    ) -> Result<PrivateAccessSet, RpcError>;
     async fn bring_in(
         &mut self,
         copy: &Copy,
@@ -279,6 +287,21 @@ impl CatchUpClient for Client {
         .map(Some)
     }
 
+    async fn run_private_access(
+        &mut self,
+        machine_id: &MachineId,
+        sealed: Ciphertext,
+    ) -> Result<PrivateAccessSet, RpcError> {
+        self.set_private_access(
+            machine_id,
+            SetPrivateAccessRequest {
+                enabled: true,
+                sealed_auth_key: Some(sealed),
+            },
+        )
+        .await
+    }
+
     async fn bring_in(
         &mut self,
         copy: &Copy,
@@ -395,7 +418,7 @@ pub(crate) fn joined_catch_up_error(
     }
     .to_owned();
     for identity in &error.unresolved {
-        if *identity != QualifiedService::system_ingress() {
+        if *identity != QualifiedService::system_ingress() && !identity.is_private_access_router() {
             message.push_str(&format!(
                 " To finish, redeploy Namespace Service `{identity}`."
             ));
@@ -410,6 +433,8 @@ pub(crate) fn joined_catch_up_error(
                 &server.id.to_string(),
                 "--accepts-ingress=true",
             ]))
+        } else if identity.is_private_access_router() {
+            crate::ui::Hint::Retry(command(&["private-access", "on", "--auth-key-stdin"]))
         } else {
             crate::ui::Hint::Inspect(command(&[
                 "logs",
@@ -567,6 +592,9 @@ enum CatchUpWork {
     /// The holder, Caddy and Tunnel Connector, which the joiner's daemon builds for this
     /// Ingress Proxy Service with the Cluster's Doors. No door identity is ever copied.
     Ingress(ServiceId, ClusterDoors),
+    /// The Private Access router, which the joiner's daemon builds from this sealed auth
+    /// key. The router is never copied.
+    PrivateAccess(Ciphertext),
 }
 
 struct Started {
@@ -613,12 +641,15 @@ fn may_still_run(target: &[ContainerObservation], started: &Started) -> bool {
     })
 }
 
-/// One source per observed Global, the Ingress Proxy's two door identities as one. A
-/// joiner with the ingress role gets the Ingress Proxy even when none runs anywhere.
+/// One source per observed Global, the Ingress Proxy's door identities as one and the
+/// Private Access router as its sealed auth key. A joiner with the ingress role gets the
+/// Ingress Proxy even when none runs anywhere.
 fn sources(services: &[ServiceObservation], takes_ingress: bool) -> Vec<Source> {
     let mut sources: Vec<Source> = services
         .iter()
-        .filter(|service| !service.identity.is_ingress_door())
+        .filter(|service| {
+            !service.identity.is_ingress_door() && !service.identity.is_private_access_router()
+        })
         .filter_map(|service| {
             let copies = || service.containers.iter().map(|c| c.as_observation());
             let newest = copies().max_by(|a, b| {
@@ -663,6 +694,12 @@ fn sources(services: &[ServiceObservation], takes_ingress: bool) -> Vec<Source> 
                 crate::ingress::proxy_service(services),
                 crate::ingress::cluster_doors(services),
             ),
+        });
+    }
+    if let Some(sealed) = crate::private_access::cluster_sealed_key(services) {
+        sources.push(Source {
+            identity: QualifiedService::system_tailscale(),
+            work: CatchUpWork::PrivateAccess(sealed),
         });
     }
     sources
@@ -799,6 +836,24 @@ pub(crate) async fn catch_up_globals<C: CatchUpClient>(
         let identity = source.identity;
         let origin = match source.work {
             CatchUpWork::Service(origin) => origin,
+            CatchUpWork::PrivateAccess(sealed) => {
+                observe(CatchUpFact::Creating(identity.clone()));
+                let failure = match client.run_private_access(&this_machine.id, sealed).await {
+                    Ok(set) => crate::private_access::failure_of(&set),
+                    Err(error) => Some(crate::ui::row(&error)),
+                };
+                match failure {
+                    None => {
+                        unresolved.retain(|service| service != &identity);
+                        observe(CatchUpFact::Running(identity));
+                    }
+                    Some(failure) => {
+                        failures.push((identity.clone(), failure));
+                        observe(CatchUpFact::Failed(identity));
+                    }
+                }
+                continue;
+            }
             CatchUpWork::Ingress(proxy_service, doors) => {
                 observe(CatchUpFact::Creating(identity.clone()));
                 let failure = match client

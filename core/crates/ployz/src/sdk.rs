@@ -1212,6 +1212,44 @@ impl Session {
         .await
     }
 
+    /// Turn Private Access on or off on every Server: run the Tailscale router with
+    /// `auth_key`, sealed to the Cluster here, or remove it. `auth_key` is required to
+    /// turn it on and ignored when it turns off.
+    ///
+    /// # Errors
+    ///
+    /// Returns a generated [`RpcError`] when the session is closed, the key is missing
+    /// or empty, no Server holds the Sealing Key, or observation fails. A Server's own
+    /// refusal or a router that did not serve is one of the result's failures.
+    pub async fn set_private_access(
+        &self,
+        enabled: bool,
+        auth_key: Option<&str>,
+    ) -> Result<crate::private_access::AccessChanged, RpcError> {
+        let auth_key = auth_key.map(str::trim).filter(|key| !key.is_empty());
+        if enabled && auth_key.is_none() {
+            return Err(invalid_argument(
+                "Private Access needs a Tailscale auth key.".into(),
+            ));
+        }
+        let mut client = self.client()?;
+        let cancel = &self.inner.cancel;
+        self.until_closed(async {
+            let observed = crate::private_access::observe_access(&mut client)
+                .await
+                .map_err(|failure| failure.report())?;
+            Ok(match auth_key.filter(|_| enabled) {
+                Some(key) => {
+                    let sealed = crate::private_access::seal_key(&observed, key)
+                        .map_err(|failure| failure.report())?;
+                    crate::private_access::turn_on(&client, observed.machines, sealed, cancel).await
+                }
+                None => crate::private_access::turn_off(&client, observed.machines, cancel).await,
+            })
+        })
+        .await
+    }
+
     /// Stop serving web traffic on `machine` once its ingress role is off: wait until this
     /// entry observes the role, so nothing it plans next recreates the proxy, then stop and
     /// remove its Ingress Proxy. Nothing else stops it; the daemon never stops serving

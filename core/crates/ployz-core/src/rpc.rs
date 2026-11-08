@@ -1724,6 +1724,56 @@ pub struct IngressDoorsSet {
     pub failure: Option<IngressDoorsFailure>,
 }
 
+/// Turn Private Access on or off on this Machine: place the Tailscale router that
+/// advertises the Cluster network to a tailnet, or remove it.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
+pub struct SetPrivateAccessRequest {
+    pub enabled: bool,
+    /// The Tailscale auth key sealed to this Cluster under the `private-access`
+    /// Platform sealing purpose. Required to turn Private Access on and ignored
+    /// when it turns off. A client sends it only to a daemon advertising
+    /// `ployz.private-access.v1`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub sealed_auth_key: Option<Ciphertext>,
+}
+
+/// Why a Private Access router is not serving.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "snake_case")]
+pub enum PrivateAccessProblem {
+    /// Tailscale refused the auth key: it is revoked, expired or not valid.
+    KeyRefused,
+    /// The router did not stay running.
+    NotRunning,
+    #[serde(other)]
+    Unrecognized,
+}
+
+/// A router that was placed and then did not serve.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, TS)]
+pub struct PrivateAccessFailure {
+    pub problem: PrivateAccessProblem,
+    /// The last thing the router said, without the auth key.
+    pub detail: String,
+}
+
+/// What [`SetPrivateAccessRequest`] did on one Machine.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize, TS)]
+pub struct PrivateAccessSet {
+    /// The router once placed. Absent when Private Access turned off.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub router: Option<DoorOutcome>,
+    /// Routers the route removed.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub retired: Vec<ContainerId>,
+    /// Set when the router was placed and did not serve.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub failure: Option<PrivateAccessFailure>,
+}
+
 /// Read the Cluster Name on the target Machine's replica.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
 pub struct ReadClusterNameRequest {}
@@ -1960,6 +2010,7 @@ define_responses! {
     RoutesRead(RoutesRead) => "routes_read";
     RoutedAddresses(RoutedAddresses) => "routed_addresses";
     IngressDoorsSet(IngressDoorsSet) => "ingress_doors_set";
+    PrivateAccessSet(PrivateAccessSet) => "private_access_set";
     ClusterNamed(ClusterNamed) => "cluster_named";
     MachineUpdated(MachineUpdated) => "machine_updated";
     MachineUpgradeAttempt(MachineUpgradeAttempt) => "machine_upgrade_attempt";

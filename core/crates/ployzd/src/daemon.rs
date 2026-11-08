@@ -530,6 +530,12 @@ impl Daemon {
                         "could not write the tunnel token again; the Tunnel Connector keeps retrying until the next `ployz ingress use`"
                     );
                 }
+                if let Err(error) = runtime.restore_private_access_key(&local_id).await {
+                    tracing::warn!(
+                        error = %ployz_core::error_chain::inline(&error),
+                        "could not write the Tailscale auth key again; the Private Access router keeps retrying until the next `ployz private-access on`"
+                    );
+                }
                 let first_synced = runtime.first_synced();
                 let machine = crate::machine::LocalMachine::new(local.clone())
                     .with_containers(Some(runtime))

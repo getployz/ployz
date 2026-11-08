@@ -1,24 +1,39 @@
-//! Reserved Ingress door validation at the Machine trust boundary.
+//! Reserved Ingress door and Private Access router validation at the Machine trust
+//! boundary.
 
+use ipnet::Ipv4Net;
 use ployz_core::{IngressProxyServiceSpecError, Namespace, ResolvedServiceSpec};
 
 use super::LocalMachineError;
-use crate::images::DoorSpecs;
+use crate::images::{DoorSpecs, private_access_built_here};
 
-/// Admit one Service Container spec immediately before creation: at either reserved
-/// Ingress door identity only a spec this daemon built itself, and elsewhere only a
-/// spec in its own network.
+/// Whether `namespace` and `spec` name the Private Access router, which is admitted
+/// against the Cluster network.
+pub(crate) fn is_private_access_router(namespace: &Namespace, spec: &ResolvedServiceSpec) -> bool {
+    ployz_core::QualifiedService::new(namespace.clone(), spec.name.clone())
+        .is_private_access_router()
+}
+
+/// Admit one Service Container spec immediately before creation: at a reserved
+/// Ingress door or the Private Access router identity only a spec this daemon built
+/// itself, and elsewhere only a spec in its own network. `network` is the Cluster
+/// network the router spec is built for, and the caller reads it only for the router.
 ///
 /// # Errors
 ///
-/// Returns when the spec is a reserved door this daemon did not build, or joins a
+/// Returns when the spec is a reserved identity this daemon did not build, or joins a
 /// network from outside the reserved doors.
 pub(crate) fn admit_reserved_door(
     namespace: &Namespace,
     spec: &ResolvedServiceSpec,
+    network: Option<Ipv4Net>,
 ) -> Result<(), LocalMachineError> {
     let identity = ployz_core::QualifiedService::new(namespace.clone(), spec.name.clone());
-    if identity.is_ingress_door() {
+    if identity.is_private_access_router() {
+        if !network.is_some_and(|network| private_access_built_here(namespace, spec, network)) {
+            return Err(LocalMachineError::PrivateAccessRouterSpec);
+        }
+    } else if identity.is_ingress_door() {
         if !DoorSpecs::built_here(namespace, spec) {
             return Err(IngressProxyServiceSpecError.into());
         }
@@ -40,8 +55,8 @@ mod tests {
     #[test]
     fn the_daemons_own_doors_are_admitted() {
         let specs = specs();
-        assert!(admit_reserved_door(&Namespace::system(), &specs.holder).is_ok());
-        assert!(admit_reserved_door(&Namespace::system(), &specs.proxy).is_ok());
+        assert!(admit_reserved_door(&Namespace::system(), &specs.holder, None).is_ok());
+        assert!(admit_reserved_door(&Namespace::system(), &specs.proxy, None).is_ok());
     }
 
     #[test]
@@ -52,20 +67,48 @@ mod tests {
                 Default::default(),
             )
             .unwrap();
-        assert!(admit_reserved_door(&Namespace::system(), &legacy).is_err());
+        assert!(admit_reserved_door(&Namespace::system(), &legacy, None).is_err());
         let mut other = specs().proxy;
         other.container.image = "caddy:2".into();
-        assert!(admit_reserved_door(&Namespace::system(), &other).is_err());
+        assert!(admit_reserved_door(&Namespace::system(), &other, None).is_err());
+    }
+
+    fn router(network: Ipv4Net) -> ResolvedServiceSpec {
+        crate::images::private_access_router(
+            network,
+            &ployz_core::Ciphertext::from_bytes(vec![9; 48]),
+        )
+    }
+
+    // Catches the router being admitted for any network, image or namespace other than
+    // the one this daemon built it for: the key file is mounted into whatever runs.
+    #[test]
+    fn the_daemons_own_router_is_admitted_and_nothing_else_under_its_name() {
+        let network: Ipv4Net = "10.210.0.0/16".parse().unwrap();
+        let spec = router(network);
+        assert!(admit_reserved_door(&Namespace::system(), &spec, Some(network)).is_ok());
+        assert!(admit_reserved_door(&Namespace::system(), &spec, None).is_err());
+        let other: Ipv4Net = "10.211.0.0/16".parse().unwrap();
+        assert!(admit_reserved_door(&Namespace::system(), &spec, Some(other)).is_err());
+        let mut swapped = spec.clone();
+        swapped.container.image = "tailscale/tailscale:latest".into();
+        assert!(admit_reserved_door(&Namespace::system(), &swapped, Some(network)).is_err());
+        let mut mounted = spec;
+        mounted.container.environment.insert(
+            "TS_ROUTES".into(),
+            ployz_core::EnvValue::Text("0.0.0.0/0".into()),
+        );
+        assert!(admit_reserved_door(&Namespace::system(), &mounted, Some(network)).is_err());
     }
 
     #[test]
     fn an_app_spec_may_not_join_the_holders_network() {
         let mut app = specs().proxy;
         app.name = "web".parse().unwrap();
-        assert!(admit_reserved_door(&Namespace::parse("app").unwrap(), &app).is_err());
+        assert!(admit_reserved_door(&Namespace::parse("app").unwrap(), &app, None).is_err());
         app.container.network = None;
-        assert!(admit_reserved_door(&Namespace::parse("app").unwrap(), &app).is_ok());
+        assert!(admit_reserved_door(&Namespace::parse("app").unwrap(), &app, None).is_ok());
         app.container.network = Some(ServiceNetwork::Unrecognized);
-        assert!(admit_reserved_door(&Namespace::parse("app").unwrap(), &app).is_err());
+        assert!(admit_reserved_door(&Namespace::parse("app").unwrap(), &app, None).is_err());
     }
 }

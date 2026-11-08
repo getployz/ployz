@@ -16,11 +16,11 @@ use ployz_core::{
     MACHINE_STORAGE_OBSERVATION_CAPABILITY, Machine, MachineFailure, MachineId, MachineImages,
     MachineLabelKey, MachineName, MachineObservation, MachineRpcClient, MachineStorageObservation,
     MachineSuccess, MachineTarget, MachineUpdate, NameMatches, Namespace, ObservedDataLoss,
-    OpaquePayload, PartialResult, RUNTIME_WATCH_MESSAGE_SIZE_LIMIT, RemoveVolumeRequest,
-    RemoveVolumesRequest, Rpc, RpcError, RpcErrorCode, RpcResponseBody, RuntimeWatchFrame,
-    RuntimeWatchRequest, SetIngressDoorsRequest, StopOptions, StorageCapacity,
-    TelemetryObservation, UnconfirmedDataLoss, VolumeInventory, VolumeRemoval,
-    VolumeRemovalOutcome, decode_runtime_watch_frame, derive_live_services, op,
+    OpaquePayload, PartialResult, PrivateAccessSet, RUNTIME_WATCH_MESSAGE_SIZE_LIMIT,
+    RemoveVolumeRequest, RemoveVolumesRequest, Rpc, RpcError, RpcErrorCode, RpcResponseBody,
+    RuntimeWatchFrame, RuntimeWatchRequest, SetIngressDoorsRequest, SetPrivateAccessRequest,
+    StopOptions, StorageCapacity, TelemetryObservation, UnconfirmedDataLoss, VolumeInventory,
+    VolumeRemoval, VolumeRemovalOutcome, decode_runtime_watch_frame, derive_live_services, op,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
@@ -1595,6 +1595,25 @@ impl Client {
         request: SetIngressDoorsRequest,
     ) -> Result<IngressDoorsSet, RpcError> {
         self.invoke_answered::<op::SetIngressDoors>(request, &MachineTarget::from(machine), None)
+            .await
+            .map_err(|error| answered_by(machine, error))
+    }
+
+    /// Turn Private Access on or off on `machine`: place the Tailscale router with the
+    /// sealed auth key, or remove it. The router's start is awaited, with no deadline
+    /// beyond the daemon's own settle window. A daemon from before the route answers
+    /// Unsupported, naming `machine`.
+    ///
+    /// # Errors
+    ///
+    /// Returns the daemon's refusal, or the transport failure naming `machine`. A router
+    /// that was placed and did not serve answers in the result's `failure`.
+    pub async fn set_private_access(
+        &self,
+        machine: &MachineId,
+        request: SetPrivateAccessRequest,
+    ) -> Result<PrivateAccessSet, RpcError> {
+        self.invoke_answered::<op::SetPrivateAccess>(request, &MachineTarget::from(machine), None)
             .await
             .map_err(|error| answered_by(machine, error))
     }

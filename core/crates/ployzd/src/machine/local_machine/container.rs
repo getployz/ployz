@@ -24,7 +24,7 @@ use ployz_core::{
 };
 
 use self::rotation::RotationWant;
-use super::super::ingress::admit_reserved_door;
+use super::super::ingress::{admit_reserved_door, is_private_access_router};
 use super::{Error, LocalMachine};
 use crate::docker::{
     ContainerCreated, ContainerRequest, ContainerRuntime, ImageIngest, RotationTurn, Withdrawal,
@@ -1438,7 +1438,14 @@ impl LocalMachine {
                     kind,
                     namespace,
                     spec,
-                    admission: async { admit_reserved_door(namespace, spec) },
+                    admission: async {
+                        let network = if is_private_access_router(namespace, spec) {
+                            Some(self.cluster_network().await?)
+                        } else {
+                            None
+                        };
+                        admit_reserved_door(namespace, spec, network)
+                    },
                     storage: self.observe_storage(),
                 },
             )
@@ -1776,6 +1783,7 @@ fn create_refusal(error: Error) -> Result<ContainerRefusal, Error> {
             | OpenError::Unbound(_)
             | OpenError::Unopenable(_)
             | OpenError::TunnelToken
+            | OpenError::PrivateAccessKey
             | OpenError::ShortLine(_) => ContainerRefusalReason::SealedValueUnopenable,
         },
         _ => return Err(error),

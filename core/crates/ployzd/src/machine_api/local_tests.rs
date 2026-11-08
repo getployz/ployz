@@ -1802,6 +1802,216 @@ mod ingress_doors {
     }
 }
 
+mod private_access {
+    //! The Private Access route against the fake Docker: who it answers, what it
+    //! places, and what it leaves on the Machine.
+
+    use ployz_core::{
+        DoorChange, OPERATOR_SCOPE_HEADER, PlatformPurpose, PrivateAccessSet, QualifiedService,
+        RpcError, SET_PRIVATE_ACCESS_CAPABILITY,
+    };
+    use serde_json::{Value, json};
+    use tonic::Status;
+
+    use super::*;
+    use crate::images::private_access_router;
+
+    async fn set_access(
+        service: &MachineService,
+        body: Value,
+    ) -> Result<Result<PrivateAccessSet, RpcError>, Status> {
+        let mut request = Request::new(
+            op::SetPrivateAccess::into_request(serde_json::from_value(body).unwrap())
+                .encode()
+                .unwrap(),
+        );
+        request
+            .metadata_mut()
+            .insert(OPERATOR_SCOPE_HEADER, "1".parse().unwrap());
+        let response = service
+            .set_private_access(request)
+            .await?
+            .into_inner()
+            .decode_response()
+            .unwrap();
+        if let RpcResponseBody::Error(error) = response.body {
+            return Ok(Err(error));
+        }
+        let shown = format!("{response:?}");
+        Ok(Ok(response
+            .decode::<op::SetPrivateAccess>()
+            .unwrap_or_else(|error| panic!("{error}: {shown}"))))
+    }
+
+    fn key_file(data_dir: &std::path::Path) -> std::path::PathBuf {
+        data_dir.join("root/run/ployz/tailscale/auth-key")
+    }
+
+    #[tokio::test]
+    async fn on_places_the_router_on_the_opened_key_and_off_removes_both() {
+        let (data_dir, _store, service, _fake, runtime, cluster) =
+            fake_docker_service_sealing("ployzd-access-on-off").await;
+        let machine = service.local.record().id();
+        let sealed = cluster.seal_platform(PlatformPurpose::PrivateAccess, b"tskey-auth-test");
+        let on = json!({"enabled": true, "sealed_auth_key": sealed});
+
+        let set = set_access(&service, on.clone()).await.unwrap().unwrap();
+        assert_eq!(set.failure, None, "{set:?}");
+        let router = set.router.unwrap();
+        assert_eq!(router.change, DoorChange::Created);
+        assert_eq!(router.now.identity(), QualifiedService::system_tailscale());
+        let network = service.local.cluster_network().await.unwrap();
+        assert_eq!(
+            router.now.resolved_spec,
+            private_access_router(network, &sealed)
+        );
+        assert_eq!(
+            std::fs::read(key_file(&data_dir)).unwrap(),
+            b"tskey-auth-test"
+        );
+
+        let again = set_access(&service, on).await.unwrap().unwrap();
+        assert_eq!(again.router.unwrap().change, DoorChange::Unchanged);
+        assert_eq!(runtime.routers(&machine).await.unwrap().len(), 1);
+
+        let off = set_access(&service, json!({"enabled": false}))
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(off.router, None);
+        assert_eq!(off.retired.len(), 1, "{off:?}");
+        assert!(runtime.routers(&machine).await.unwrap().is_empty());
+        assert!(
+            !key_file(&data_dir).exists(),
+            "the key leaves with the router"
+        );
+
+        let off_again = set_access(&service, json!({"enabled": false}))
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(off_again, PrivateAccessSet::default());
+        std::fs::remove_dir_all(data_dir).unwrap();
+    }
+
+    #[tokio::test]
+    async fn a_new_key_replaces_the_router() {
+        let (data_dir, _store, service, _fake, runtime, cluster) =
+            fake_docker_service_sealing("ployzd-access-rekey").await;
+        let machine = service.local.record().id();
+        let first = cluster.seal_platform(PlatformPurpose::PrivateAccess, b"first");
+        let second = cluster.seal_platform(PlatformPurpose::PrivateAccess, b"second");
+        let before = set_access(&service, json!({"enabled": true, "sealed_auth_key": first}))
+            .await
+            .unwrap()
+            .unwrap()
+            .router
+            .unwrap();
+        let after = set_access(
+            &service,
+            json!({"enabled": true, "sealed_auth_key": second}),
+        )
+        .await
+        .unwrap()
+        .unwrap();
+        let router = after.router.unwrap();
+        assert_eq!(router.change, DoorChange::Created);
+        assert_ne!(router.now.container_id, before.now.container_id);
+        assert_eq!(after.retired, vec![before.now.container_id]);
+        assert_eq!(runtime.routers(&machine).await.unwrap().len(), 1);
+        assert_eq!(std::fs::read(key_file(&data_dir)).unwrap(), b"second");
+        runtime.remove_private_access_key().unwrap();
+        std::fs::remove_dir_all(data_dir).unwrap();
+    }
+
+    #[tokio::test]
+    async fn on_needs_a_key_this_cluster_opens_and_reaches_no_docker_without_one() {
+        let (data_dir, _store, service, fake, _runtime, _cluster) =
+            fake_docker_service_sealing("ployzd-access-key").await;
+        let seen = fake.requests.lock().unwrap().len();
+        let missing = set_access(&service, json!({"enabled": true}))
+            .await
+            .unwrap()
+            .unwrap_err();
+        assert_eq!(
+            missing.code,
+            RpcErrorCode::InvalidArgument,
+            "{}",
+            missing.message
+        );
+        assert_eq!(
+            missing.details.get("capability"),
+            Some(&json!(SET_PRIVATE_ACCESS_CAPABILITY))
+        );
+
+        let other = crate::sealed_env::test_support::Cluster::new();
+        let foreign = other.seal_platform(PlatformPurpose::PrivateAccess, b"tskey-auth-test");
+        let unopenable = set_access(
+            &service,
+            json!({"enabled": true, "sealed_auth_key": foreign}),
+        )
+        .await
+        .unwrap()
+        .unwrap_err();
+        assert_eq!(unopenable.code, RpcErrorCode::InvalidArgument);
+        assert_eq!(unopenable.details.get("capability"), None);
+
+        let tunnel = other.seal_platform(PlatformPurpose::IngressTunnel, b"cf-token");
+        assert!(
+            set_access(
+                &service,
+                json!({"enabled": true, "sealed_auth_key": tunnel})
+            )
+            .await
+            .unwrap()
+            .is_err(),
+            "a tunnel token's purpose does not open as an auth key"
+        );
+        assert_eq!(
+            fake.requests.lock().unwrap().len(),
+            seen,
+            "nothing reaches Docker without a key"
+        );
+        assert!(!key_file(&data_dir).exists());
+        std::fs::remove_dir_all(data_dir).unwrap();
+    }
+
+    #[tokio::test]
+    async fn the_router_runs_on_a_machine_that_accepts_only_ingress() {
+        let (data_dir, store, service, _fake, runtime, cluster) =
+            fake_docker_service_sealing("ployzd-access-ingress-only").await;
+        store
+            .mutate(|store| {
+                store.update(
+                    serde_json::from_value(json!({"accepts_services": false})).unwrap(),
+                    &[],
+                )
+            })
+            .await
+            .unwrap()
+            .unwrap();
+        let sealed = cluster.seal_platform(PlatformPurpose::PrivateAccess, b"tskey-auth-test");
+        let set = set_access(
+            &service,
+            json!({"enabled": true, "sealed_auth_key": sealed}),
+        )
+        .await
+        .unwrap()
+        .unwrap();
+        assert_eq!(set.failure, None, "{set:?}");
+        assert_eq!(
+            runtime
+                .routers(&service.local.record().id())
+                .await
+                .unwrap()
+                .len(),
+            1
+        );
+        runtime.remove_private_access_key().unwrap();
+        std::fs::remove_dir_all(data_dir).unwrap();
+    }
+}
+
 mod set_volume_copy {
     //! The daemon half of SetVolumeCopy against a fake Docker and a fake plugin: the
     //! Container side of the cut and of a Writer start, and the refusals that stop

@@ -32,6 +32,7 @@ pub(crate) mod login;
 pub(crate) mod mcp;
 pub(crate) mod metrics;
 pub(crate) mod operator;
+pub(crate) mod private_access;
 pub(crate) mod project;
 pub(crate) mod recovery;
 pub(crate) mod review;

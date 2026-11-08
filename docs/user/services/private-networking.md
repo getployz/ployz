@@ -144,6 +144,37 @@ computer, forward a port with the CLI, as in
 [Connect from your laptop](databases.md#connect-from-your-laptop). The [CLI](../cli/overview.md)
 page shows how to point it at your project and environment.
 
+### Reach the private network from Tailscale
+
+Every server can join your tailnet as a subnet router. Any device on the tailnet then reaches
+your services at their private addresses, on any port and protocol.
+
+1. In the Tailscale admin console, open **Settings → Keys** and create a reusable auth key
+   tagged `tag:ployz`.
+2. Run `ployz private-access on` and paste the key, or pipe it:
+
+   ```sh
+   ployz private-access on --auth-key-stdin < auth-key.txt
+   ```
+
+   The key is sealed to your cluster and never printed.
+3. In the admin console, open **Machines**, then **ployz-router**, then **Edit route settings**,
+   and approve the route. Do this once per server, unless your tailnet auto-approves the tag.
+4. On a Linux device, run `tailscale up --accept-routes`. Other systems accept the route on
+   their own.
+
+`ployz private-access` shows which servers run a router. A server added later runs one too.
+If Tailscale refuses the key, `ployz private-access on` names the server. Run it again with a
+new key.
+
+If the router a device uses stops, the device moves to another in about 16 seconds. It stays
+there when the first one returns. Services see the router's private address as the client.
+
+Ployz doesn't set up Tailscale DNS, so use a service's private address.
+
+To remove the routers and the key, run `ployz private-access off`. Remove the routers from the
+Tailscale admin console too.
+
 ## Good to know
 
 - **Names stay inside one environment.** In staging, `postgres.internal` is staging's

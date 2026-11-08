@@ -2886,6 +2886,56 @@ fn ingress_use_with_stdin(args: &[&str], stdin: &[u8]) -> std::process::Output {
 }
 
 #[test]
+fn private_access_help_names_the_key_switch_and_the_tailscale_steps() {
+    let help = |args: &[&str]| {
+        let output = ProcessCommand::new(env!("CARGO_BIN_EXE_ployz"))
+            .args(args)
+            .output()
+            .unwrap();
+        let stdout = String::from_utf8(output.stdout).unwrap();
+        assert_eq!(output.status.code(), Some(0), "{args:?}: {stdout}");
+        stdout
+    };
+    let on = help(&["private-access", "on", "--help"]);
+    for needle in ["--auth-key-stdin", "--accept-routes", "tailnet"] {
+        assert!(on.contains(needle), "{needle}: {on}");
+    }
+    let off = help(&["private-access", "off", "--help"]);
+    assert!(off.contains("auth key"), "{off}");
+    assert!(!off.contains("--auth-key-stdin"), "{off}");
+    assert!(help(&["private-access", "--help"]).contains("router"));
+}
+
+#[test]
+fn private_access_on_reads_its_key_from_stdin_and_off_takes_none() {
+    let output = ingress_use_with_stdin(&["private-access", "on", "--auth-key-stdin"], b"\n");
+    let stderr = String::from_utf8(output.stderr).unwrap();
+    assert_eq!(output.status.code(), Some(2), "{stderr}");
+    assert!(stderr.contains("stdin holds no auth key"), "{stderr}");
+
+    let output = ingress_use_with_stdin(
+        &["--json", "private-access", "on", "--auth-key-stdin"],
+        &vec![b'x'; 5000],
+    );
+    let stdout = String::from_utf8(output.stdout).unwrap();
+    assert_eq!(output.status.code(), Some(2), "{stdout}");
+    assert!(stdout.contains("over 4096 bytes"), "{stdout}");
+    assert!(!stdout.contains(&"x".repeat(32)), "{stdout}");
+
+    for args in [
+        &["private-access", "off", "--auth-key-stdin"][..],
+        &[
+            "private-access",
+            "on",
+            "tskey-auth-pasted-on-the-command-line",
+        ],
+    ] {
+        let (code, stderr) = run_human(args);
+        assert_eq!(code, Some(2), "{args:?}: {stderr}");
+    }
+}
+
+#[test]
 fn checkin_help_names_install_and_the_token_file() {
     let output = ProcessCommand::new(env!("CARGO_BIN_EXE_ployz"))
         .args(["server", "checkin", "--help"])
