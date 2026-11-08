@@ -19,10 +19,11 @@ use instant_acme::{
 };
 use ployz_core::{
     CertificateHost, CertificateKeyType, CertificatePolicy, ClusterRoute, ContainerKind,
-    ContainerObservation, HOSTNAME_VERIFY_PATH, HttpProtocol, IngressHost, IngressPorts,
-    IngressWiring, IssuanceFailure, IssuanceGate, Machine, MachineId, PortPublication,
-    TUNNEL_SERVES_CERTIFICATE, VerifyAnswer, hostname_verdict, issuance_failure_clock,
-    issuance_gate, refusal_reason, resolve_certificate_policy, validate_ingress_service_spec,
+    ContainerObservation, HOSTNAME_VERIFY_PATH, HostnameVerdict, HttpProtocol, IngressHost,
+    IngressPorts, IngressWiring, IssuanceClock, IssuanceFailure, IssuanceGate, Machine, MachineId,
+    PortPublication, Refusal, TUNNEL_SERVES_CERTIFICATE, VerifyAnswer, hostname_verdict,
+    issuance_failure_clock, issuance_gate, refusal_reason, resolve_certificate_policy,
+    validate_ingress_service_spec,
 };
 use reqwest::{Client, redirect::Policy};
 use thiserror::Error;
@@ -205,6 +206,154 @@ fn poll_wait(
     match action_due(row, rank, elapsed, now, machine_id, policy) {
         (IssuanceAction::Order | IssuanceAction::Renew, _) => RANK_STEP,
         (IssuanceAction::Nothing, due_in) => due_in.min(RETRY_INTERVAL),
+    }
+}
+
+/// This Machine's view of one wanted Ingress Hostname after a pass of its certificate loop.
+/// It lives only in the loop's memory: each Machine keeps its own, from its own row, verdict
+/// and rank.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum HostIssuance {
+    /// The row holds Certificate Material whose renewal is not due before `renew_due`.
+    Issued { renew_due: SystemTime },
+    /// The gate let the pass through, and the rank delay runs from `orderable_since`: this
+    /// Machine's first pass through the gate since its state was anything but `Waiting` or
+    /// `Order`, or since it had none.
+    Waiting { orderable_since: Instant },
+    /// The shared backoff clock holds the hostname.
+    Held(IssuanceClock),
+    /// This Machine's Hostname Verdict refuses the hostname, and `clock` is the backoff it
+    /// records.
+    Refused {
+        refusal: Refusal,
+        clock: IssuanceClock,
+    },
+    /// Order a first certificate along the route, the rank delay from `orderable_since` passed.
+    Order {
+        route: ClusterRoute,
+        orderable_since: Instant,
+    },
+    /// Renew along the route.
+    Renew(ClusterRoute),
+}
+
+/// `Issued` when the row holds material whose renewal is not due, so the pass needs no probe.
+fn issued(
+    row: Option<&CertificateRow>,
+    rank: usize,
+    wall: SystemTime,
+    machine_id: &MachineId,
+    policy: &CertificatePolicy,
+) -> Option<HostIssuance> {
+    row.and_then(CertificateRow::material)?;
+    match action_due(row, rank, Duration::ZERO, wall, machine_id, policy) {
+        (IssuanceAction::Nothing, wait) => Some(HostIssuance::Issued {
+            renew_due: saturating_add(wall, wait),
+        }),
+        (IssuanceAction::Order | IssuanceAction::Renew, _) => None,
+    }
+}
+
+/// The next state of a hostname this pass probed: `prev` is its state after this Machine's
+/// last pass, and `row` the row this pass read. A hold or a refusal ends the rank delay, so
+/// the first pass the gate lets through after one starts it again.
+#[expect(
+    clippy::too_many_arguments,
+    reason = "every input of one transition, each a value the pass read"
+)]
+fn step(
+    prev: Option<HostIssuance>,
+    row: Option<&CertificateRow>,
+    verdict: HostnameVerdict,
+    rank: usize,
+    now: Instant,
+    wall: SystemTime,
+    machine_id: &MachineId,
+    policy: &CertificatePolicy,
+) -> HostIssuance {
+    let route = match issuance_gate(
+        row.and_then(CertificateRow::clock),
+        verdict,
+        wall,
+        policy.backoff_base(),
+        policy.backoff_cap(),
+    ) {
+        IssuanceGate::Hold(clock) => return HostIssuance::Held(clock),
+        IssuanceGate::Refuse { refusal, clock } => {
+            return HostIssuance::Refused { refusal, clock };
+        }
+        IssuanceGate::Order(route) => route,
+    };
+    if row.and_then(CertificateRow::material).is_some() {
+        return HostIssuance::Renew(route);
+    }
+    // An order keeps its start, so a rank or a policy that changed since asks for its own
+    // delay.
+    let orderable_since = match prev {
+        Some(
+            HostIssuance::Waiting { orderable_since }
+            | HostIssuance::Order {
+                orderable_since, ..
+            },
+        ) => orderable_since,
+        Some(
+            HostIssuance::Issued { .. }
+            | HostIssuance::Held(_)
+            | HostIssuance::Refused { .. }
+            | HostIssuance::Renew(_),
+        )
+        | None => now,
+    };
+    let elapsed = now.saturating_duration_since(orderable_since);
+    match issuance_action(row, rank, elapsed, wall, machine_id, policy) {
+        IssuanceAction::Order | IssuanceAction::Renew => HostIssuance::Order {
+            route,
+            orderable_since,
+        },
+        IssuanceAction::Nothing => HostIssuance::Waiting { orderable_since },
+    }
+}
+
+/// How long the loop may sleep before `state` wants another pass. A clock that holds wakes
+/// the loop when it passes, and no later than its next probe: `RANK_STEP` after a refusal,
+/// which a changed verdict lifts early, and `RETRY_INTERVAL` after an authority failure, which
+/// only time lifts.
+fn wake(
+    state: HostIssuance,
+    rank: usize,
+    now: Instant,
+    wall: SystemTime,
+    machine_id: &MachineId,
+    policy: &CertificatePolicy,
+) -> Duration {
+    match state {
+        HostIssuance::Issued { renew_due } => renew_due
+            .duration_since(wall)
+            .unwrap_or(Duration::ZERO)
+            .min(RETRY_INTERVAL),
+        // Asks to sleep at most one step, so it meets a hold of a step or more while the loop keeps
+        // that sleep. A read Err's 60 s wait, or another hostname's obtain, can miss the hold.
+        HostIssuance::Waiting { orderable_since } => poll_wait(
+            None,
+            rank,
+            now.saturating_duration_since(orderable_since),
+            wall,
+            machine_id,
+            policy,
+        )
+        .min(RANK_STEP),
+        HostIssuance::Held(clock) | HostIssuance::Refused { clock, .. } => {
+            let probe = match clock.last_failure() {
+                IssuanceFailure::Refused(_) => RANK_STEP,
+                IssuanceFailure::Authority => RETRY_INTERVAL,
+            };
+            clock
+                .next_attempt_at()
+                .duration_since(wall)
+                .unwrap_or(Duration::ZERO)
+                .min(probe)
+        }
+        HostIssuance::Order { .. } | HostIssuance::Renew(_) => RANK_STEP,
     }
 }
 
@@ -410,7 +559,7 @@ pub(crate) async fn run(
     shutdown: CancellationToken,
 ) {
     let account_dir = data_dir.join("acme");
-    let mut first_seen = BTreeMap::new();
+    let mut hosts = BTreeMap::new();
     loop {
         let subscribed = tokio::select! {
             subscribed = store.subscribe_container_changes() => subscribed,
@@ -432,7 +581,7 @@ pub(crate) async fn run(
                 &directory_default,
                 &account_dir,
                 &machine_id,
-                &mut first_seen,
+                &mut hosts,
             )
             .await
             {
@@ -467,13 +616,27 @@ async fn wait_to_resubscribe(shutdown: &CancellationToken) -> bool {
     }
 }
 
-async fn issue_wanted(
+/// What a pass reads before it decides any hostname.
+struct PassInputs {
+    policy: CertificatePolicy,
+    directory: String,
+    wanted: BTreeSet<IngressHost>,
+    rows: BTreeMap<CertificateHost, CertificateRow>,
+    machine_ids: Vec<MachineId>,
+    cluster: Vec<IpAddr>,
+    verify_client: Client,
+    rank: usize,
+}
+
+/// The pass's reads, or `None` when it stops before deciding any hostname: the Certificate
+/// Policy is refused, which every Machine records for every wanted hostname, it has no
+/// directory, no hostname is wanted, every Server uses the Tunnel Door, which every Machine
+/// records the same way, or this Machine's Public Door is closed.
+async fn read_pass(
     store: &ReplicatedStore,
     directory_default: &Option<String>,
-    account_dir: &Path,
     machine_id: &MachineId,
-    first_seen: &mut BTreeMap<IngressHost, Instant>,
-) -> Result<Duration, Error> {
+) -> Result<Option<PassInputs>, Error> {
     let policy = match resolve_certificate_policy(
         store.certificate_policy().await?.as_deref(),
         &CertificatePolicy::built_in(directory_default.clone()),
@@ -493,18 +656,17 @@ async fn issue_wanted(
                     ),
                 }
             }
-            return Ok(RETRY_INTERVAL);
+            return Ok(None);
         }
     };
-    let Some(directory) = policy.directory_url() else {
-        return Ok(RETRY_INTERVAL);
+    let Some(directory) = policy.directory_url().map(str::to_owned) else {
+        return Ok(None);
     };
     let containers = store.containers().await?;
-    let mut rows = store.certificate_state().await?;
+    let rows = store.certificate_state().await?;
     let wanted = wanted_certificate_hosts(containers.observations.iter(), &rows);
-    first_seen.retain(|hostname, _| wanted.contains(hostname));
     if wanted.is_empty() {
-        return Ok(RETRY_INTERVAL);
+        return Ok(None);
     }
     let machines = store.machines().await?;
     let standing = door_standing(&containers.observations);
@@ -520,94 +682,106 @@ async fn issue_wanted(
                 ),
             }
         }
-        return Ok(RETRY_INTERVAL);
+        return Ok(None);
     }
     if standing.closed.contains(machine_id) {
-        return Ok(RETRY_INTERVAL);
+        return Ok(None);
     }
-    let cluster = cluster_addresses(&machines.observations);
-    let machine_ids: Vec<_> = ordering_machines(&machines.observations, &standing)
-        .copied()
-        .collect();
     let verify_client = probe_client(policy.probe_timeout())?;
     let rank = machine_rank(
         machine_id,
         ordering_machines(&machines.observations, &standing),
     );
+    Ok(Some(PassInputs {
+        policy,
+        directory,
+        wanted,
+        rows,
+        machine_ids: ordering_machines(&machines.observations, &standing)
+            .copied()
+            .collect(),
+        cluster: cluster_addresses(&machines.observations),
+        verify_client,
+        rank,
+    }))
+}
+
+async fn issue_wanted(
+    store: &ReplicatedStore,
+    directory_default: &Option<String>,
+    account_dir: &Path,
+    machine_id: &MachineId,
+    hosts: &mut BTreeMap<IngressHost, HostIssuance>,
+) -> Result<Duration, Error> {
+    // A read Err returns with `hosts` as it was, so an error does not cost a delay already
+    // earned. A pass the policy or a missing directory stops is a blocked pass, as a hold is.
+    let Some(PassInputs {
+        policy,
+        directory,
+        wanted,
+        rows,
+        machine_ids,
+        cluster,
+        verify_client,
+        rank,
+    }) = read_pass(store, directory_default, machine_id).await?
+    else {
+        hosts.clear();
+        return Ok(RETRY_INTERVAL);
+    };
+    hosts.retain(|hostname, _| wanted.contains(hostname));
     let now = Instant::now();
     let wall = SystemTime::now();
     let mut to_order = Vec::new();
     for hostname in &wanted {
         let row = rows.get(hostname.as_str());
-        let elapsed = match row.and_then(CertificateRow::material) {
-            Some(_) => {
-                first_seen.remove(hostname);
-                Duration::ZERO
-            }
+        let state = match issued(row, rank, wall, machine_id, &policy) {
+            Some(state) => state,
             None => {
-                let seen = if let Some(&seen) = first_seen.get(hostname) {
-                    seen
-                } else {
-                    first_seen.insert(hostname.clone(), now);
-                    now
-                };
-                now.saturating_duration_since(seen)
+                let addresses = resolve_host(hostname)
+                    .await
+                    .into_iter()
+                    .map(|address| SocketAddr::new(address, 80))
+                    .collect::<Vec<_>>();
+                let answers = verify_answers(&verify_client, hostname, &addresses).await;
+                let verdict = hostname_verdict(&answers, &machine_ids, &cluster);
+                let prev = hosts.get(hostname).copied();
+                step(prev, row, verdict, rank, now, wall, machine_id, &policy)
             }
         };
-        let due = issuance_action(row, rank, elapsed, wall, machine_id, &policy);
-        if row.and_then(CertificateRow::material).is_some()
-            && !matches!(due, IssuanceAction::Order | IssuanceAction::Renew)
-        {
-            continue;
-        }
-        let addresses = resolve_host(hostname)
-            .await
-            .into_iter()
-            .map(|address| SocketAddr::new(address, 80))
-            .collect::<Vec<_>>();
-        let answers = verify_answers(&verify_client, hostname, &addresses).await;
-        let verdict = hostname_verdict(&answers, &machine_ids, &cluster);
-        let gate = issuance_gate(
-            row.and_then(CertificateRow::clock),
-            verdict,
-            wall,
-            policy.backoff_base(),
-            policy.backoff_cap(),
-        );
-        let route = match gate {
-            IssuanceGate::Nothing => continue,
-            IssuanceGate::Refuse { refusal, clock } => {
-                first_seen.remove(hostname);
-                if rank == 0 {
-                    let reason = refusal_reason(hostname, refusal, &cluster);
-                    let tried = row.and_then(CertificateRow::material);
-                    match store
-                        .record_certificate_failure(hostname, tried, reason, clock)
-                        .await
-                    {
-                        Ok(AcmeWrite::Changed | AcmeWrite::Kept) => {}
-                        Ok(AcmeWrite::Moved) if tried.is_some() => eprintln!(
-                            "did not record certificate refusal for {hostname}: its row no longer holds the failed material as ACME material"
-                        ),
-                        Ok(AcmeWrite::Moved) => eprintln!(
-                            "did not record certificate refusal for {hostname}: its row changed on every attempt"
-                        ),
-                        Err(error) => eprintln!(
-                            "failed to record certificate refusal for {hostname}: {error}",
-                            error = ployz_core::error_chain::inline(&error),
-                        ),
-                    }
+        hosts.insert(hostname.clone(), state);
+        match state {
+            HostIssuance::Refused { refusal, clock } if rank == 0 => {
+                let reason = refusal_reason(hostname, refusal, &cluster);
+                let tried = row.and_then(CertificateRow::material);
+                match store
+                    .record_certificate_failure(hostname, tried, reason, clock)
+                    .await
+                {
+                    Ok(AcmeWrite::Changed | AcmeWrite::Kept) => {}
+                    Ok(AcmeWrite::Moved) if tried.is_some() => eprintln!(
+                        "did not record certificate refusal for {hostname}: its row no longer holds the failed material as ACME material"
+                    ),
+                    Ok(AcmeWrite::Moved) => eprintln!(
+                        "did not record certificate refusal for {hostname}: its row changed on every attempt"
+                    ),
+                    Err(error) => eprintln!(
+                        "failed to record certificate refusal for {hostname}: {error}",
+                        error = ployz_core::error_chain::inline(&error),
+                    ),
                 }
-                continue;
             }
-            IssuanceGate::Order(route) => route,
-        };
-        if matches!(due, IssuanceAction::Order | IssuanceAction::Renew) {
-            to_order.push((hostname, route));
+            HostIssuance::Order { route, .. } | HostIssuance::Renew(route) => {
+                to_order.push((hostname, route));
+            }
+            HostIssuance::Issued { .. }
+            | HostIssuance::Waiting { .. }
+            | HostIssuance::Held(_)
+            | HostIssuance::Refused { .. } => {}
         }
     }
     if !to_order.is_empty() {
-        account(directory, &policy, account_dir).await?;
+        account(&directory, &policy, account_dir).await?;
         let results = join_all(to_order.iter().map(|(hostname, route)| {
             obtain(
                 store,
@@ -658,26 +832,12 @@ async fn issue_wanted(
                 }
             }
         }
-        rows = store.certificate_state().await?;
     }
     let now = Instant::now();
     let wall = SystemTime::now();
-    Ok(wanted
-        .iter()
-        .map(|hostname| {
-            let elapsed = first_seen
-                .get(hostname)
-                .map(|seen| now.saturating_duration_since(*seen))
-                .unwrap_or(Duration::ZERO);
-            poll_wait(
-                rows.get(hostname.as_str()),
-                rank,
-                elapsed,
-                wall,
-                machine_id,
-                &policy,
-            )
-        })
+    Ok(hosts
+        .values()
+        .map(|state| wake(*state, rank, now, wall, machine_id, &policy))
         .min()
         .unwrap_or(RETRY_INTERVAL))
 }

@@ -4,20 +4,24 @@
 //! `core/crates/ployzd/src/certificates.rs`; every other path is written in full from the repo
 //! root.
 //!
-//! Each daemon runs one certificate loop, `run` (:359-415), once it participates
-//! (core/crates/ployzd/src/daemon.rs:494-507). Each pass of `issue_wanted` (:424-603) reads the
-//! row, keeps a loop-local `first_seen` instant for the hostname (:367, :480-485), and pushes the
-//! hostname to `to_order` only when `action_due` says the Machine's rank delay has passed since
-//! `first_seen` (:87-105) and `issuance_gate` lets it through
-//! (core/crates/ployz-core/src/domain/issuance.rs:65-97). The rank is the Machine's place among
-//! every `machines` row (:465-468). A gate that refuses removes `first_seen` (:512); a gate that
-//! holds leaves it (:510).
+//! Each daemon runs one certificate loop, `run` (:509-565), once it participates
+//! (core/crates/ployzd/src/daemon.rs:496-509). Each pass of `issue_wanted` (:647-781) reads the
+//! row, and `step` moves the loop-local `HostIssuance` it keeps for the hostname (:211-314, :517,
+//! :686-690). The hostname is pushed to `to_order` only when `issuance_gate` lets it through
+//! (core/crates/ployz-core/src/domain/issuance.rs:66-98) and `issuance_action` says the
+//! Machine's rank delay has passed since `Waiting`'s `orderable_since` (:291-313). The rank is
+//! the Machine's place among every `machines` row (:625-630).
 //!
-//! The finding: `first_seen` keeps aging through a hold of the shared clock, and through a pass
-//! that returns before the gate. Rank 0's order fails, and its record writes an Authority clock
-//! (:552-578). Rank 1's pass inserts `first_seen`, and its passes are held until the clock
-//! passes. By then rank 1 is past its rank delay, so it pushes the hostname in the same tick as
-//! rank 0.
+//! `orderable_since` is the Machine's first pass the gate let through since the gate last held
+//! or refused the hostname, or since the policy or a missing directory stopped a pass before
+//! the gate (:291-305, :666-669). A read that returns Err keeps it. Only rank 0 records a
+//! refusal (:692-711).
+//!
+//! The code before this change, `as_it_was` in the tests, kept the first pass's instant through
+//! a hold and through a pass that stopped before the gate.
+//! Rank 0's order failed, and its record wrote an Authority clock. Rank 1's passes were held
+//! until the clock passed, by when rank 1 was past its rank delay, so it pushed the hostname in
+//! the same tick as rank 0.
 
 use std::{
     fmt::Write as _,
@@ -30,11 +34,11 @@ use ployz_core::{
 };
 use stateright::{Model, Property};
 
-/// `CHALLENGE_WAIT` (:40).
+/// `CHALLENGE_WAIT` (:42).
 const CHALLENGE_WAIT: Duration = Duration::from_secs(30);
-/// `RETRY_INTERVAL` (:42).
+/// `RETRY_INTERVAL` (:44).
 const RETRY_INTERVAL: Duration = Duration::from_secs(60);
-/// `RANK_STEP` (:44-45).
+/// `RANK_STEP` (:46-47).
 const RANK_STEP: Duration = CHALLENGE_WAIT;
 
 /// Machines in the model. Slot `who` holds the Machine whose id sorts `who`th, so its rank is
@@ -46,36 +50,36 @@ const AGE_CAP: u8 = (MACHINES - 1) as u8;
 /// The most failures a recorded clock may count. A step that would record more is not taken.
 const MAX_FAILURES: u32 = 2;
 
-/// `machine_rank` (:54-61), over Machine slots, whose order is their ids' order.
+/// `machine_rank` (:56-63), over Machine slots, whose order is their ids' order.
 fn machine_rank(this: usize, machines: impl IntoIterator<Item = usize>) -> usize {
     machines.into_iter().filter(|id| *id < this).count()
 }
 
-/// The rank `machine_rank` gives slot `who` among every `machines` row (:465-468).
+/// The rank `machine_rank` gives slot `who` among every `machines` row (:627-630).
 fn rank(who: usize) -> usize {
     machine_rank(who, 0..MACHINES)
 }
 
-/// `rank_delay` (:79-81).
+/// `rank_delay` (:81-83).
 fn rank_delay(rank: usize, step: Duration) -> Duration {
     step.saturating_mul(u32::try_from(rank).unwrap_or(u32::MAX))
 }
 
-/// `issuance_step` (:83-85).
+/// `issuance_step` (:85-87).
 fn issuance_step(policy: &CertificatePolicy) -> Duration {
     RANK_STEP.max(policy.probe_timeout())
 }
 
-/// `IssuanceAction` (:47-52) without `Renew`, which only the renewal arm returns.
+/// `IssuanceAction` (:49-54) without `Renew`, which only the renewal arm returns.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum IssuanceAction {
     Nothing,
     Order,
 }
 
-/// `action_due` (:87-122). Its `None` arm (:97-105) is copied. Its `Some(material)` arm is
-/// renewal (:106-120), which the model leaves out: with material the model answers as that arm
-/// does when `renew_at` cannot read the certificate (:119).
+/// `action_due` (:89-124). Its `None` arm (:99-107) is copied. Its `Some(material)` arm is
+/// renewal (:108-122), which the model leaves out: with material the model answers as that arm
+/// does when `renew_at` cannot read the certificate (:121).
 fn action_due(
     material: bool,
     rank: usize,
@@ -95,8 +99,8 @@ fn action_due(
     (action, wait)
 }
 
-/// `poll_wait` (:195-207): how long the loop sleeps after a pass, unless a container change
-/// wakes it first (:402-409). Only the story prints it.
+/// `poll_wait` (:197-209), which `wake` answers for a `Waiting` hostname, no later than
+/// `RANK_STEP` (:335-343). Only the story prints it.
 fn poll_wait(
     material: bool,
     rank: usize,
@@ -107,6 +111,16 @@ fn poll_wait(
         (IssuanceAction::Order, _) => RANK_STEP,
         (IssuanceAction::Nothing, due_in) => due_in.min(RETRY_INTERVAL),
     }
+}
+
+/// `wake` (:320-357) for a hostname the gate held or refused: until `clock` passes, and no later
+/// than the next probe. Only the story prints it.
+fn held_wake(clock: Clock) -> Duration {
+    let probe = match clock.last {
+        Failure::DoesNotResolve => RANK_STEP,
+        Failure::Authority => RETRY_INTERVAL,
+    };
+    (tick() * u32::from(clock.left)).min(probe)
 }
 
 /// The built-in Certificate Policy (core/crates/ployz-core/src/domain/certificate_policy.rs:93-103).
@@ -121,7 +135,7 @@ fn tick() -> Duration {
     issuance_step(&built_in())
 }
 
-/// The instant every pass in the current tick reads as `now` and `wall` (:469-470). Only
+/// The instant every pass in the current tick reads as `now` and `wall` (:671-672). Only
 /// differences from it matter. It sits far enough past the epoch that an order's wall, ticks
 /// back, exists.
 fn now() -> SystemTime {
@@ -242,7 +256,7 @@ impl Clock {
 
     /// The model's own reading of the rule the gate keeps: the clock has not passed, and the
     /// verdict leaves it standing, which only a different verdict after a refusal does not
-    /// (core/crates/ployz-core/src/domain/issuance.rs:65, :76-83).
+    /// (core/crates/ployz-core/src/domain/issuance.rs:77-84).
     fn holds(self, verdict: Verdict) -> bool {
         self.left > 0
             && !(self.last == Failure::DoesNotResolve && verdict != Verdict::DoesNotResolve)
@@ -250,14 +264,14 @@ impl Clock {
 }
 
 /// Which `last_error` a recorded refusal holds. Only `record_certificate_error` compares it
-/// (core/crates/ployzd/src/corrosion/store.rs:1028-1030), and only with the policy's reason.
+/// (core/crates/ployzd/src/corrosion/store.rs:1243-1244), and only with the policy's reason.
 #[derive(Clone, Copy, Debug, Hash, PartialEq, Eq)]
 enum Reason {
-    /// `refusal_reason` for DoesNotResolve (:514).
+    /// `refusal_reason` for DoesNotResolve (:693).
     DoesNotResolve,
-    /// The failed order's error (:570).
+    /// The failed order's error (:755).
     Authority,
-    /// The Certificate Policy's refusal (:441).
+    /// The Certificate Policy's refusal (:604).
     Policy,
 }
 
@@ -268,7 +282,7 @@ struct Recorded {
     clock: Option<Clock>,
 }
 
-/// The hostname's `CertificateRow::Acme` (core/crates/ployzd/src/corrosion/certificate.rs:221-233),
+/// The hostname's `CertificateRow::Acme` (core/crates/ployzd/src/corrosion/certificate.rs:221-235),
 /// one row that every Machine reads as soon as it is written. Its challenge is left out: no step
 /// reads it.
 #[derive(Clone, Copy, Debug, Default, Hash, PartialEq, Eq)]
@@ -278,12 +292,12 @@ struct Row {
 }
 
 impl Row {
-    /// `CertificateRow::clock` (core/crates/ployzd/src/corrosion/certificate.rs:324-328).
+    /// `CertificateRow::clock` (core/crates/ployzd/src/corrosion/certificate.rs:326-330).
     fn clock(self) -> Option<Clock> {
         self.refusal.and_then(|refusal| refusal.clock)
     }
 
-    /// `CertificateRow::last_error` (core/crates/ployzd/src/corrosion/certificate.rs:318-322).
+    /// `CertificateRow::last_error` (core/crates/ployzd/src/corrosion/certificate.rs:320-324).
     fn last_error(self) -> Option<Reason> {
         self.refusal.map(|refusal| refusal.reason)
     }
@@ -306,14 +320,14 @@ enum Policy {
     Repaired,
 }
 
-/// An `obtain` in flight inside `join_all` (:540-551). What the failure record needs from its
-/// pass (:558-571) travels with it.
+/// An `obtain` in flight inside `join_all` (:723-734). What the failure record needs from its
+/// pass (:741-750) travels with it.
 #[derive(Clone, Copy, Debug, Hash, PartialEq, Eq)]
 struct Order {
-    /// The failures and last failure of the pass's snapshot clock (:559), which is all of it
-    /// `issuance_failure_clock` reads (core/crates/ployz-core/src/domain/issuance.rs:116-119).
+    /// The failures and last failure of the pass's snapshot clock (:742), which is all of it
+    /// `issuance_failure_clock` reads (core/crates/ployz-core/src/domain/issuance.rs:117-120).
     snapshot: Option<(u8, Failure)>,
-    /// Ticks since its pass, whose `wall` the failure clock counts from (:470, :561), capped at
+    /// Ticks since its pass, whose `wall` the failure clock counts from (:672, :744), capped at
     /// `ago_cap`.
     ago: u8,
 }
@@ -321,12 +335,13 @@ struct Order {
 /// One Machine's certificate loop and what its probe sees.
 #[derive(Clone, Copy, Debug, Hash, PartialEq, Eq)]
 struct Machine {
-    /// What this Machine's next probe sees (:495-501).
+    /// What this Machine's next probe sees (:679-685).
     verdict: Verdict,
-    /// Its loop's `first_seen` entry for the hostname, as an age in ticks capped at `AGE_CAP`
-    /// (:367, :480-486).
-    first_seen: Option<u8>,
-    /// Its obtain in flight. The loop passes again only once it ends (:538-551).
+    /// The age of its loop's `orderable_since` for the hostname, in ticks capped at `AGE_CAP`:
+    /// `Some` while its `HostIssuance` is `Waiting`, or `Order`, which is past every rank delay
+    /// (:291-313). `None` while it is anything else or absent (:517, :666-670).
+    orderable_since: Option<u8>,
+    /// Its obtain in flight. The loop passes again only once it ends (:721-734).
     obtaining: Option<Order>,
     /// The property's: ticks since this Machine's first pass after its last blocked pass,
     /// capped at `AGE_CAP`. None before its first pass, and after a blocked pass until the next.
@@ -341,12 +356,12 @@ enum Record {
     /// It returned Err and wrote nothing.
     Lost,
     /// `record_certificate_error` found the same reason and wrote nothing
-    /// (core/crates/ployzd/src/corrosion/store.rs:1028-1030).
+    /// (core/crates/ployzd/src/corrosion/store.rs:1243-1244).
     Same,
     /// `record_certificate_failure` found material and wrote nothing
-    /// (core/crates/ployzd/src/corrosion/store.rs:987-990).
+    /// (core/crates/ployzd/src/corrosion/store.rs:1189-1190).
     HasMaterial,
-    /// The Machine is not rank 0, so it records no refusal (:513).
+    /// The Machine is not rank 0, so it records no refusal, unless `Broken::any_rank_records`.
     NotRankZero,
 }
 
@@ -376,37 +391,45 @@ impl Gate {
 /// The branch the last step took.
 #[derive(Clone, Copy, Debug, Hash, PartialEq, Eq)]
 enum Branch {
-    /// The policy refusal: `record_certificate_error`, then return (:436-445). `dropped` says
-    /// the write replaced a clock; `reset` says the fix dropped a `first_seen` entry.
+    /// The policy refusal: `record_certificate_error`, then return (:599-614). `dropped` says
+    /// the write replaced a clock; `reset` says `hosts.clear` dropped an `orderable_since`.
     PolicyRefused {
         who: usize,
         record: Record,
         dropped: bool,
         reset: bool,
     },
-    /// No directory: return (:447-449). `reset` says the fix dropped a `first_seen` entry.
+    /// No directory: return (:616-618). `reset` says `hosts.clear` dropped an
+    /// `orderable_since`.
     NoDirectory { who: usize, reset: bool },
-    /// A call before the gate returned Err, and `issue_wanted` returned it. `reset` says the
-    /// fix dropped a `first_seen` entry.
+    /// A call before the gate returned Err, and `issue_wanted` returned it with `hosts` as it
+    /// was. `reset` says an `orderable_since` was dropped, only under
+    /// `Broken::error_clears_hosts`.
     Errored { who: usize, reset: bool },
-    /// The row holds material: `first_seen` removed (:476), and the hostname skipped (:490-494).
+    /// The row holds material whose renewal is not due: `Issued`, and the hostname skipped
+    /// (:239-254, :676-677).
     HasMaterial { who: usize },
-    /// The gate answered Nothing: continue (:510). `due` says `action_due` answered Order;
-    /// `reset` says the fix dropped `first_seen`.
+    /// The gate answered Hold (:280). `due` says the rank delay had passed since the
+    /// `orderable_since` the pass found; `reset` says the pass dropped it.
     Held { who: usize, due: bool, reset: bool },
-    /// The gate answered Refuse (:511-531).
-    Refused { who: usize, record: Record },
-    /// The gate answered Order, and the rank delay has not passed.
+    /// The gate answered Refuse (:281-283, :692-711). `over_authority` says the record wrote
+    /// over an Authority clock.
+    Refused {
+        who: usize,
+        record: Record,
+        over_authority: bool,
+    },
+    /// The gate answered Order, and the rank delay has not passed (:312).
     Waiting { who: usize, gate: Gate },
-    /// Pushed to `to_order` (:534-536). `early` says it came less than the Machine's rank
+    /// Pushed to `to_order` (:308-311, :712-714). `early` says it came less than the Machine's rank
     /// delay after its first pass since its last blocked pass.
     Pushed { who: usize, gate: Gate, early: bool },
-    /// `obtain`'s recheck found material and returned (:623-635).
+    /// `obtain`'s recheck found material and returned (:801-813).
     Rechecked { who: usize },
-    /// `obtain` ordered, and `publish_certificate` wrote the material (:654-656).
+    /// `obtain` ordered, and `publish_certificate` wrote the material (:668-670).
     /// `over_material` says its re-read found material.
     Issued { who: usize, over_material: bool },
-    /// `obtain` ordered and failed, and its record ran (:552-578). `from` is the snapshot
+    /// `obtain` ordered and failed, and its record ran (:735-772). `from` is the snapshot
     /// clock's last failure; `late` says the order ended ticks after its pass;
     /// `over_material` says its re-read found material.
     Failed {
@@ -423,11 +446,11 @@ enum Branch {
 /// How `obtain` ends.
 #[derive(Clone, Copy, Debug, Hash, PartialEq, Eq)]
 enum Ends {
-    /// The re-read row holds material, and the recheck returns (:623-635).
+    /// The re-read row holds material, and the recheck returns (:801-813).
     Rechecked,
-    /// The order succeeds (:637-656).
+    /// The order succeeds (:815-846).
     Issued,
-    /// The order fails; `recorded` says `record_certificate_failure` returned Ok (:565-578).
+    /// The order fails; `recorded` says `record_certificate_failure` returned Ok (:751-770).
     Failed { recorded: bool },
 }
 
@@ -437,7 +460,7 @@ enum Action {
     /// makes returns Err.
     Pass { who: usize, lost: bool },
     /// Machine `who`'s loop runs one pass of `issue_wanted`, and a call before the gate returns
-    /// Err: a store read (:432, :437-438, :450-451, :457) or `probe_client` (:464).
+    /// Err: a store read (:595, :600-601, :619-620, :625) or `probe_client` (:626).
     Errs(usize),
     /// Machine `who`'s obtain ends.
     Obtain { who: usize, ends: Ends },
@@ -485,6 +508,18 @@ impl State {
         )
     }
 
+    /// A Machine above rank 0 wrote its refusal over an Authority clock.
+    fn reset_authority_backoff(&self) -> bool {
+        matches!(
+            self.took,
+            Some(Branch::Refused {
+                who: 1..,
+                record: Record::Wrote,
+                over_authority: true,
+            })
+        )
+    }
+
     /// An obtain ordered though the row it re-read held material.
     fn ordered_over_material(&self) -> bool {
         matches!(
@@ -502,12 +537,25 @@ impl State {
     }
 }
 
-/// Which model a `COVERAGE` row is reached on.
+/// Which models a `COVERAGE` row is reached on: every model, or only those that keep or that
+/// take out one guard.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Reach {
     Both,
-    /// Only with the fix.
-    Fix,
+    /// Unless `Broken::hold_keeps_orderable_since`.
+    HoldResets,
+    /// Unless `Broken::early_return_keeps_orderable_since`.
+    EarlyReturnResets,
+}
+
+impl Reach {
+    fn on(self, broken: Broken) -> bool {
+        match self {
+            Self::Both => true,
+            Self::HoldResets => !broken.hold_keeps_orderable_since,
+            Self::EarlyReturnResets => !broken.early_return_keeps_orderable_since,
+        }
+    }
 }
 
 /// One `sometimes`: a branch the code handles, read from the state that took it.
@@ -521,9 +569,9 @@ fn took(state: &State, branch: Branch) -> bool {
     state.took == Some(branch)
 }
 
-/// Each branch the bounds reach, on both models or only with the fix.
-/// `current_code_breaks_only_the_rank_delay` and `the_fix_keeps_the_rank_delay` expect every row
-/// their model reaches.
+/// Each branch the bounds reach, on every model or only on those `Reach` names.
+/// `the_code_keeps_every_property` and `the_code_as_it_was_breaks_only_the_rank_delay` expect
+/// every row their model reaches.
 const COVERAGE: &[Coverage] = &[
     Coverage {
         name: "the policy refusal records its reason and drops the row's clock",
@@ -576,6 +624,17 @@ const COVERAGE: &[Coverage] = &[
         reached: |_, state| matches!(state.took, Some(Branch::Errored { .. })),
     },
     Coverage {
+        name: ERROR_KEEPS_THE_DELAY,
+        reach: Reach::Both,
+        reached: |_, state| {
+            matches!(
+                state.took,
+                Some(Branch::Errored { who, reset: false })
+                    if state.machine(who).orderable_since.is_some()
+            )
+        },
+    },
+    Coverage {
         name: "a pass skips the hostname once the row holds material",
         reach: Reach::Both,
         reached: |_, state| matches!(state.took, Some(Branch::HasMaterial { .. })),
@@ -599,12 +658,13 @@ const COVERAGE: &[Coverage] = &[
         name: "rank 0 refuses and records the refusal and its clock",
         reach: Reach::Both,
         reached: |_, state| {
-            took(
-                state,
-                Branch::Refused {
+            matches!(
+                state.took,
+                Some(Branch::Refused {
                     who: 0,
                     record: Record::Wrote,
-                },
+                    ..
+                })
             ) && state
                 .row
                 .clock()
@@ -625,15 +685,16 @@ const COVERAGE: &[Coverage] = &[
         },
     },
     Coverage {
-        name: "rank 1 refuses and records nothing, and the row holds no reason",
+        name: RANK_1_RECORDS_NOTHING,
         reach: Reach::Both,
         reached: |_, state| {
-            took(
-                state,
-                Branch::Refused {
+            matches!(
+                state.took,
+                Some(Branch::Refused {
                     who: 1,
                     record: Record::NotRankZero,
-                },
+                    ..
+                })
             ) && state.row.refusal.is_none()
         },
     },
@@ -780,7 +841,7 @@ const COVERAGE: &[Coverage] = &[
         },
     },
     Coverage {
-        name: "a restart empties first_seen",
+        name: "a restart empties hosts",
         reach: Reach::Both,
         reached: |_, state| {
             matches!(
@@ -788,7 +849,7 @@ const COVERAGE: &[Coverage] = &[
                 Some(Branch::Restarted {
                     who,
                     ended_order: false,
-                }) if state.machine(who).first_seen.is_none()
+                }) if state.machine(who).orderable_since.is_none()
             )
         },
     },
@@ -821,27 +882,26 @@ const COVERAGE: &[Coverage] = &[
         },
     },
     Coverage {
-        name: "the fix drops first_seen on a held pass",
-        reach: Reach::Fix,
+        name: "a held pass drops orderable_since",
+        reach: Reach::HoldResets,
         reached: |_, state| {
             matches!(
                 state.took,
                 Some(Branch::Held { who, reset: true, .. })
-                    if state.machine(who).first_seen.is_none()
+                    if state.machine(who).orderable_since.is_none()
             )
         },
     },
     Coverage {
-        name: "the fix drops first_seen on a pass that returns before the gate",
-        reach: Reach::Fix,
+        name: "a pass that stops before the gate drops orderable_since",
+        reach: Reach::EarlyReturnResets,
         reached: |_, state| {
             matches!(
                 state.took,
                 Some(
                     Branch::PolicyRefused { who, reset: true, .. }
                         | Branch::NoDirectory { who, reset: true }
-                        | Branch::Errored { who, reset: true }
-                ) if state.machine(who).first_seen.is_none()
+                ) if state.machine(who).orderable_since.is_none()
             )
         },
     },
@@ -860,43 +920,67 @@ const COVERAGE: &[Coverage] = &[
     },
 ];
 
-/// A guard taken out, to show the check catches what it prevents. The first four are guards
-/// the code has; the last two are parts of the fix.
+/// A guard taken out, to show the check catches what it prevents.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 #[expect(
     clippy::struct_excessive_bools,
     reason = "each flag removes one independent guard"
 )]
 struct Broken {
-    /// `IssuanceGate::Nothing => continue` (:510) replaced by ordering along
-    /// `ClusterRoute::Direct`, the model's only route, as `IssuanceGate::Order` does.
+    /// `IssuanceGate::Hold(clock) => return HostIssuance::Held(clock)` (:280) replaced by
+    /// ordering along `ClusterRoute::Direct`, the model's only route, as `IssuanceGate::Order`
+    /// does.
     hold_orders: bool,
-    /// `first_seen.remove(hostname);` (:512) deleted.
-    refusal_keeps_first_seen: bool,
-    /// `if rank == 0` (:513) read as `if true`.
+    /// A pass after a refused one keeps the `orderable_since` before the refusal, where `step`
+    /// starts it again (:301).
+    refusal_keeps_orderable_since: bool,
+    /// A pass after a held one keeps the `orderable_since` before the hold, where `step` starts
+    /// it again (:300).
+    hold_keeps_orderable_since: bool,
+    /// `hosts.clear()` (:667) deleted, so a pass the policy or a missing directory stops keeps
+    /// `orderable_since`.
+    early_return_keeps_orderable_since: bool,
+    /// A read that returns Err clears `hosts` too, and counts as a blocked pass, where
+    /// `issue_wanted` returns the Err with `hosts` as it was (:665).
+    error_clears_hosts: bool,
+    /// The refusal record (:692-711) made at every rank, not only at rank 0.
     any_rank_records: bool,
-    /// `obtain`'s recheck (:624-635) deleted.
+    /// `obtain`'s recheck (:802-813) deleted.
     obtain_skips_recheck: bool,
-    /// The fix's drop of `first_seen` on a held pass deleted.
-    fix_hold_keeps_first_seen: bool,
-    /// The fix's drop of `first_seen` on a pass that returns before the gate deleted.
-    fix_early_return_keeps_first_seen: bool,
+    /// A Waiting, held or refused hostname wakes the loop at `poll_wait`'s answer, as the code
+    /// before this change did, rather than at `wake`'s (:335-354). No property reads it; only
+    /// the story's wait does.
+    sleeps_as_poll_wait: bool,
 }
+
+/// The code before this change: a hold, and a pass that stopped before the gate, kept
+/// `orderable_since`, and every hostname woke the loop at `poll_wait`'s answer.
+const AS_IT_WAS: Broken = Broken {
+    hold_orders: false,
+    refusal_keeps_orderable_since: false,
+    hold_keeps_orderable_since: true,
+    early_return_keeps_orderable_since: true,
+    error_clears_hosts: false,
+    any_rank_records: false,
+    obtain_skips_recheck: false,
+    sleeps_as_poll_wait: true,
+};
+
+const RANK_1_RECORDS_NOTHING: &str =
+    "rank 1 refuses and records nothing, and the row holds no reason";
+const ERROR_KEEPS_THE_DELAY: &str = "a call before the gate returns Err, and orderable_since stays";
 
 /// Two Machines' certificate loops over one Ingress Hostname.
 #[derive(Clone, Copy, Debug, Default)]
 struct AcmeIssuance {
-    /// The fix: a pass whose gate answers Nothing drops `first_seen`, as a refused pass does
-    /// (:512), and so does a pass that returns before the gate, with Ok or Err.
-    fix: bool,
     broken: Broken,
 }
 
-/// `record_certificate_failure` with no material tried (core/crates/ployzd/src/corrosion/store.rs:977-994):
-/// `acme_row` reads the row; with material it writes nothing; otherwise it upserts
-/// `with_backoff`, which keeps the material and replaces the refusal
-/// (core/crates/ployzd/src/corrosion/certificate.rs:279-291, :364-377). `None` when the write
-/// would be lost but none would be made.
+/// `record_certificate_failure` with no material tried
+/// (core/crates/ployzd/src/corrosion/store.rs:1178-1196): `write_acme_row` reads the row; with
+/// material it writes nothing; otherwise it writes `with_backoff`, which keeps the material and
+/// replaces the refusal (core/crates/ployzd/src/corrosion/certificate.rs:281-293, :366-379).
+/// `None` when the write would be lost but none would be made.
 fn record_failure(row: &mut Row, reason: Reason, clock: Clock, lost: bool) -> Option<Record> {
     if row.material {
         return (!lost).then_some(Record::HasMaterial);
@@ -918,25 +1002,15 @@ fn block(machine: &mut Machine) {
 }
 
 impl AcmeIssuance {
-    /// The fix drops `first_seen` on a held pass.
-    fn resets_on_hold(self) -> bool {
-        self.fix && !self.broken.fix_hold_keeps_first_seen
-    }
-
-    /// The fix drops `first_seen` on a pass that returns before the gate.
-    fn resets_on_early_return(self) -> bool {
-        self.fix && !self.broken.fix_early_return_keeps_first_seen
-    }
-
-    /// A pass that returns before the gate: before `first_seen.retain` (:436-451), or with an
-    /// Err from a call after it (:457, :464). The fix drops the entry there; the code keeps it.
-    /// Says whether an entry was dropped.
+    /// A pass the policy or a missing directory stops before the gate: `read_pass` answers
+    /// `None` (:586-645), and `issue_wanted` clears `hosts` (:666-669). Says whether an
+    /// `orderable_since` was dropped.
     fn early_return(self, machine: &mut Machine) -> bool {
         block(machine);
-        self.resets_on_early_return() && machine.first_seen.take().is_some()
+        !self.broken.early_return_keeps_orderable_since && machine.orderable_since.take().is_some()
     }
 
-    /// One pass of `issue_wanted` (:424-536) by Machine `who`, for the one hostname. A record
+    /// One pass of `issue_wanted` (:647-720) by Machine `who`, for the one hostname. A record
     /// that returns Err writes nothing (`lost`). `None` when `lost` but the pass makes no
     /// record.
     #[expect(
@@ -947,10 +1021,10 @@ impl AcmeIssuance {
         let rank = rank(who);
         let policy = built_in();
         match state.policy {
-            // :436-445: every Machine records the policy's reason for every wanted hostname,
-            // with `record_certificate_error` (core/crates/ployzd/src/corrosion/store.rs:1020-1033),
+            // :599-614: every Machine records the policy's reason for every wanted hostname,
+            // with `record_certificate_error` (core/crates/ployzd/src/corrosion/store.rs:1237-1250),
             // whose `with_error` keeps the material and replaces the refusal with the reason and
-            // no clock (core/crates/ployzd/src/corrosion/certificate.rs:354-377).
+            // no clock (core/crates/ployzd/src/corrosion/certificate.rs:356-379).
             Policy::Refused => {
                 let dropped = state.row.clock().is_some();
                 let record = if state.row.last_error() == Some(Reason::Policy) {
@@ -976,7 +1050,7 @@ impl AcmeIssuance {
                 });
                 return Some(());
             }
-            // :447-449.
+            // :616-618.
             Policy::NoDirectory => {
                 if lost {
                     return None;
@@ -987,24 +1061,26 @@ impl AcmeIssuance {
             }
             Policy::BuiltIn | Policy::Repaired => {}
         }
-        // :450-453: the row is read once; the hostname is wanted, so `retain` keeps its entry.
+        // :619-621, :670: the row is read once; the hostname is wanted, so `retain` keeps its
+        // entry.
         let snapshot = state.row;
         let machine = state.machine_mut(who);
         if snapshot.material {
-            // :474-476, then :489-494: with material `action_due` answers Nothing in the model.
+            // :676-677: with material `action_due` answers Nothing in the model, so `issued`
+            // answers `Issued`.
             if lost {
                 return None;
             }
-            machine.first_seen = None;
+            machine.orderable_since = None;
             block(machine);
             state.took = Some(Branch::HasMaterial { who });
             return Some(());
         }
-        // :479-486.
-        let age = *machine.first_seen.get_or_insert(0);
-        // :489.
+        // :291-306: the pass's `orderable_since` is the one it found, or this pass.
+        let found = machine.orderable_since;
+        let age = found.unwrap_or(0);
         let (due, _) = action_due(false, rank, tick() * u32::from(age), &policy);
-        // :495-508.
+        // :679-685, :273-279.
         let verdict = machine.verdict;
         let clock = snapshot.clock();
         let gate = match issuance_gate(
@@ -1014,37 +1090,37 @@ impl AcmeIssuance {
             policy.backoff_base(),
             policy.backoff_cap(),
         ) {
-            IssuanceGate::Nothing if self.broken.hold_orders => {
+            IssuanceGate::Hold(_) if self.broken.hold_orders => {
                 IssuanceGate::Order(ClusterRoute::Direct)
             }
-            gate @ (IssuanceGate::Nothing
+            gate @ (IssuanceGate::Hold(_)
             | IssuanceGate::Refuse { .. }
             | IssuanceGate::Order(_)) => gate,
         };
         match gate {
-            // :510, and the fix's drop.
-            IssuanceGate::Nothing => {
+            // :280, and the next pass starts `orderable_since` again (:300).
+            IssuanceGate::Hold(_) => {
                 if lost {
                     return None;
                 }
                 block(machine);
-                let reset = self.resets_on_hold();
-                if reset {
-                    machine.first_seen = None;
-                }
+                let reset = !self.broken.hold_keeps_orderable_since;
+                machine.orderable_since = (!reset).then_some(age);
                 state.took = Some(Branch::Held {
                     who,
                     due: due == IssuanceAction::Order,
-                    reset,
+                    reset: reset && found.is_some(),
                 });
             }
-            // :511-531.
+            // :281-283, the next pass starts `orderable_since` again (:301), and the record
+            // (:692-711).
             IssuanceGate::Refuse { refusal, clock } => {
                 assert_eq!(refusal, Refusal::DoesNotResolve);
-                if !self.broken.refusal_keeps_first_seen {
-                    machine.first_seen = None;
-                }
+                machine.orderable_since = self.broken.refusal_keeps_orderable_since.then_some(age);
                 block(machine);
+                let over_authority = snapshot
+                    .clock()
+                    .is_some_and(|clock| clock.last == Failure::Authority);
                 let record = if rank == 0 || self.broken.any_rank_records {
                     record_failure(
                         &mut state.row,
@@ -1057,14 +1133,19 @@ impl AcmeIssuance {
                 } else {
                     Record::NotRankZero
                 };
-                state.took = Some(Branch::Refused { who, record });
+                state.took = Some(Branch::Refused {
+                    who,
+                    record,
+                    over_authority: over_authority && record == Record::Wrote,
+                });
             }
-            // :532-536.
+            // :284, :307-313, :712-714.
             IssuanceGate::Order(route) => {
                 if lost {
                     return None;
                 }
                 assert_eq!(route, ClusterRoute::Direct);
+                machine.orderable_since = Some(age);
                 let since = *machine.unblocked.get_or_insert(0);
                 let gate = Gate::of(clock, verdict);
                 state.took = Some(if due == IssuanceAction::Order {
@@ -1085,21 +1166,21 @@ impl AcmeIssuance {
         Some(())
     }
 
-    /// `obtain` (:614-658) and the failure record after `join_all` (:552-578), as one step.
+    /// `obtain` (:792-848) and the failure record after `join_all` (:735-772), as one step.
     fn obtain(self, state: &mut State, who: usize, ends: Ends) -> Option<()> {
         let order = state.machine(who).obtaining?;
-        // :623.
+        // :801.
         let reread = state.row;
-        // :624-635: with material, `issuance_action` answers Nothing in the model.
+        // :802-813: with material, `issuance_action` answers Nothing in the model.
         let rechecks = reread.material && !self.broken.obtain_skips_recheck;
         let over_material = reread.material;
         let policy = built_in();
         state.took = Some(match (rechecks, ends) {
             (true, Ends::Rechecked) => Branch::Rechecked { who },
             (true, Ends::Issued | Ends::Failed { .. }) | (false, Ends::Rechecked) => return None,
-            // :637-656: `publish_certificate` writes `CertificateRow::issued`, material with no
-            // challenge and no refusal (core/crates/ployzd/src/corrosion/store.rs:851-865,
-            // core/crates/ployzd/src/corrosion/certificate.rs:255-259).
+            // :815-846: `publish_certificate` writes `CertificateRow::issued`, material with no
+            // challenge and no refusal (core/crates/ployzd/src/corrosion/store.rs:966-986,
+            // core/crates/ployzd/src/corrosion/certificate.rs:259-261).
             (false, Ends::Issued) => {
                 state.row = Row {
                     material: true,
@@ -1108,7 +1189,7 @@ impl AcmeIssuance {
                 Branch::Issued { who, over_material }
             }
             (false, Ends::Failed { recorded }) => {
-                // :558-564, with the pass's snapshot clock and wall.
+                // :741-747, with the pass's snapshot clock and wall.
                 let wall = now() - tick() * u32::from(order.ago);
                 let clock = issuance_failure_clock(
                     order.snapshot.map(|(failures, last)| {
@@ -1119,7 +1200,7 @@ impl AcmeIssuance {
                     policy.backoff_base(),
                     policy.backoff_cap(),
                 );
-                // :565-578: the snapshot held no material (:568-569).
+                // :748-770: the snapshot held no material (:748-750).
                 let record = record_failure(
                     &mut state.row,
                     Reason::Authority,
@@ -1149,7 +1230,7 @@ impl AcmeIssuance {
         }
         let ago_cap = ago_cap();
         for machine in &mut state.machines {
-            machine.first_seen = machine.first_seen.map(|age| (age + 1).min(AGE_CAP));
+            machine.orderable_since = machine.orderable_since.map(|age| (age + 1).min(AGE_CAP));
             machine.unblocked = machine.unblocked.map(|age| (age + 1).min(AGE_CAP));
             if let Some(order) = &mut machine.obtaining {
                 order.ago = (order.ago + 1).min(ago_cap);
@@ -1157,12 +1238,12 @@ impl AcmeIssuance {
         }
     }
 
-    /// A daemon restart: `run` builds an empty `first_seen` (:367), and an obtain in flight
+    /// A daemon restart: `run` builds an empty `hosts` (:517), and an obtain in flight
     /// ends with nothing recorded.
     fn restart(state: &mut State, who: usize) {
         let machine = state.machine_mut(who);
         let ended_order = machine.obtaining.take().is_some();
-        machine.first_seen = None;
+        machine.orderable_since = None;
         state.took = Some(Branch::Restarted { who, ended_order });
     }
 }
@@ -1176,7 +1257,7 @@ impl Model for AcmeIssuance {
     fn init_states(&self) -> Vec<State> {
         let machine = Machine {
             verdict: Verdict::Direct,
-            first_seen: None,
+            orderable_since: None,
             obtaining: None,
             unblocked: None,
         };
@@ -1190,7 +1271,7 @@ impl Model for AcmeIssuance {
 
     /// Each Machine's pass or obtain in slot order, then the tick, each probe change, each
     /// restart and the operator's edits. The order decides only which of the shortest paths a
-    /// story shows. Nothing is fair: a container change wakes a loop at any time (:402-409), so
+    /// story shows. Nothing is fair: a container change wakes a loop at any time (:552-559), so
     /// a pass is offered at any tick, and a Machine may also skip ticks.
     fn actions(&self, state: &State, actions: &mut Vec<Action>) {
         for who in 0..MACHINES {
@@ -1215,7 +1296,7 @@ impl Model for AcmeIssuance {
             (0..MACHINES)
                 .filter(|who| {
                     let machine = state.machine(*who);
-                    machine.first_seen.is_some() || machine.obtaining.is_some()
+                    machine.orderable_since.is_some() || machine.obtaining.is_some()
                 })
                 .map(Action::Restart),
         );
@@ -1237,7 +1318,11 @@ impl Model for AcmeIssuance {
         match action {
             Action::Pass { who, lost } => self.pass(&mut state, who, lost)?,
             Action::Errs(who) => {
-                let reset = self.early_return(state.machine_mut(who));
+                let machine = state.machine_mut(who);
+                let reset = self.broken.error_clears_hosts && {
+                    block(machine);
+                    machine.orderable_since.take().is_some()
+                };
                 state.took = Some(Branch::Errored { who, reset });
             }
             Action::Obtain { who, ends } => self.obtain(&mut state, who, ends)?,
@@ -1263,11 +1348,14 @@ impl Model for AcmeIssuance {
             Property::always(NO_ORDER_OVER_MATERIAL, |_, state: &State| {
                 !state.ordered_over_material()
             }),
+            Property::always(AUTHORITY_BACKOFF_KEPT, |_, state: &State| {
+                !state.reset_authority_backoff()
+            }),
         ];
         properties.extend(
             COVERAGE
                 .iter()
-                .filter(|row| self.fix || row.reach == Reach::Both)
+                .filter(|row| row.reach.on(self.broken))
                 .map(|row| Property::sometimes(row.name, row.reached)),
         );
         properties
@@ -1276,6 +1364,7 @@ impl Model for AcmeIssuance {
 
 const RANK_DELAY_KEPT: &str = "a Machine of rank r pushes the hostname to to_order only r issuance steps or more after its first pass since its last blocked pass";
 const HOLD_KEPT: &str = "no pass pushes the hostname to to_order while its snapshot's clock holds and its verdict leaves the clock standing";
+const AUTHORITY_BACKOFF_KEPT: &str = "no Machine above rank 0 writes its refusal over an Authority clock, so none resets the Authority backoff to one failure";
 const NO_ORDER_OVER_MATERIAL: &str =
     "no obtain orders while the row it re-reads holds material that is not due for renewal";
 
@@ -1331,10 +1420,12 @@ fn row_words(row: Row) -> String {
 
 fn machine_words(who: usize, machine: Machine) -> String {
     format!(
-        "{}: probe {:?}, first_seen {}, {}, unblocked {}",
+        "{}: probe {:?}, orderable_since {}, {}, unblocked {}",
         name(who),
         machine.verdict,
-        machine.first_seen.map_or_else(|| "none".to_owned(), age),
+        machine
+            .orderable_since
+            .map_or_else(|| "none".to_owned(), age),
         machine.obtaining.map_or_else(
             || "no obtain".to_owned(),
             |order| format!("obtain in flight from a pass {} ago", age_of(order.ago))
@@ -1396,18 +1487,29 @@ fn story(model: &AcmeIssuance, path: &[(State, Option<Action>)]) -> String {
     story
 }
 
-/// What a pass found in `first_seen`.
-fn first_seen_words(before: Machine) -> String {
-    match before.first_seen {
-        None => "no first_seen, so it is inserted now (:480-485)".to_owned(),
-        Some(ticks) => format!("first_seen is {} old (:480-486)", age(ticks)),
+/// The `orderable_since` a pass found.
+fn found_words(before: Machine) -> String {
+    match before.orderable_since {
+        None => "no orderable_since".to_owned(),
+        Some(ticks) => format!("orderable_since is {} old", age(ticks)),
+    }
+}
+
+/// The `orderable_since` a pass that the gate let through runs its rank delay from.
+fn runs_from_words(before: Machine) -> String {
+    match before.orderable_since {
+        None => "the rank delay runs from this pass (:291-305)".to_owned(),
+        Some(ticks) => format!(
+            "the rank delay runs from orderable_since, {} old (:291-297)",
+            age(ticks)
+        ),
     }
 }
 
 fn verdict_words(verdict: Verdict) -> &'static str {
     match verdict {
-        Verdict::Direct => "its probe sees the hostname reach the Cluster directly (:495-501)",
-        Verdict::DoesNotResolve => "its probe finds the hostname does not resolve (:495-501)",
+        Verdict::Direct => "its probe sees the hostname reach the Cluster directly (:679-685)",
+        Verdict::DoesNotResolve => "its probe finds the hostname does not resolve (:679-685)",
     }
 }
 
@@ -1420,12 +1522,14 @@ fn gate_words(gate: Gate) -> &'static str {
     }
 }
 
-/// What the fix did on a pass that returned before the gate.
-fn reset_words(reset: bool) -> &'static str {
+/// What a pass that stopped before the gate did to `orderable_since`.
+fn reset_words(model: &AcmeIssuance, reset: bool) -> &'static str {
     if reset {
-        "; the fix drops first_seen"
+        "; issue_wanted clears hosts, dropping orderable_since (:666-669)"
+    } else if model.broken.early_return_keeps_orderable_since {
+        "; hosts is kept (under Broken)"
     } else {
-        ""
+        "; issue_wanted clears hosts (:666-669)"
     }
 }
 
@@ -1434,18 +1538,51 @@ fn reread_words(over_material: bool) -> &'static str {
     if over_material {
         "the re-read row holds material, but the recheck is skipped (under Broken)"
     } else {
-        "the re-read row holds no material (:623-624)"
+        "the re-read row holds no material (:801-802)"
     }
 }
 
-/// `poll_wait` (:195-207) after a pass or an obtain of Machine `who`, from `after`.
-fn wait_words(who: usize, after: &State) -> String {
+/// How long Machine `who`'s loop sleeps after the pass or obtain from `before` to `after`,
+/// unless a container change wakes it first (:552-559): `wake` (:320-357), or `poll_wait` under
+/// `Broken::sleeps_as_poll_wait`.
+fn wait_words(model: &AcmeIssuance, who: usize, before: &State, after: &State) -> String {
     let machine = after.machine(who);
-    let elapsed = tick() * u32::from(machine.first_seen.unwrap_or(0));
-    format!(
-        "poll_wait answers {} s (:195-207)",
-        poll_wait(after.row.material, rank(who), elapsed, &built_in()).as_secs()
-    )
+    let poll = || {
+        let elapsed = tick() * u32::from(machine.orderable_since.unwrap_or(0));
+        poll_wait(after.row.material, rank(who), elapsed, &built_in())
+    };
+    let held = match after.took {
+        _ if model.broken.sleeps_as_poll_wait => None,
+        Some(Branch::Held { .. }) => before.row.clock(),
+        Some(Branch::Refused { .. }) => {
+            match issuance_gate(
+                before.row.clock().map(Clock::real),
+                before.machine(who).verdict.real(),
+                now(),
+                built_in().backoff_base(),
+                built_in().backoff_cap(),
+            ) {
+                IssuanceGate::Refuse { clock, .. } => Some(Clock::of(clock)),
+                IssuanceGate::Hold(_) | IssuanceGate::Order(_) => {
+                    unreachable!("the pass refused")
+                }
+            }
+        }
+        _ => None,
+    };
+    match held {
+        Some(clock) => format!(
+            "wake answers {} s, when the clock passes or at the next probe (:344-354)",
+            held_wake(clock).as_secs()
+        ),
+        None if model.broken.sleeps_as_poll_wait => {
+            format!("poll_wait answers {} s (under Broken)", poll().as_secs())
+        }
+        None => format!(
+            "wake answers {} s (:320-357)",
+            poll().min(RANK_STEP).as_secs()
+        ),
+    }
 }
 
 /// `action` from `before`, read with `after` for the branch it took.
@@ -1480,9 +1617,10 @@ fn reads_as(model: &AcmeIssuance, before: &State, action: Action, after: &State)
         | Action::Obtain { who, .. } => who,
     };
     let machine = before.machine(who);
+    let wait = || wait_words(model, who, before, after);
     let what = match after.took {
         Some(Branch::Restarted { ended_order, .. }) => format!(
-            "the daemon restarts, and run builds an empty first_seen (:367){}; the loop starts again once the daemon participates (core/crates/ployzd/src/daemon.rs:494-507)",
+            "the daemon restarts, and run builds an empty hosts (:517){}; the loop starts again once the daemon participates (core/crates/ployzd/src/daemon.rs:496-509)",
             if ended_order {
                 "; the obtain in flight ends with nothing recorded"
             } else {
@@ -1490,98 +1628,101 @@ fn reads_as(model: &AcmeIssuance, before: &State, action: Action, after: &State)
             }
         ),
         Some(Branch::PolicyRefused { record, dropped, reset, .. }) => format!(
-            "pass: resolve_certificate_policy refuses the policy, so record_certificate_error records its reason (:431-443, core/crates/ployzd/src/corrosion/store.rs:1020-1033): {}; the pass returns before first_seen.retain and the gate{}, and run sleeps 60 s ({})",
+            "pass: resolve_certificate_policy refuses the policy, so record_certificate_error records its reason (:594-614, core/crates/ployzd/src/corrosion/store.rs:1237-1250): {}; read_pass stops before the gate{}, and run sleeps 60 s ({})",
             match record {
                 Record::Wrote if dropped =>
-                    "with_error keeps the material and replaces the refusal with the reason and no clock, dropping the clock (core/crates/ployzd/src/corrosion/certificate.rs:354-377)",
+                    "with_error keeps the material and replaces the refusal with the reason and no clock, dropping the clock (core/crates/ployzd/src/corrosion/certificate.rs:356-379)",
                 Record::Wrote =>
-                    "with_error keeps the material and replaces the refusal with the reason and no clock (core/crates/ployzd/src/corrosion/certificate.rs:354-377)",
+                    "with_error keeps the material and replaces the refusal with the reason and no clock (core/crates/ployzd/src/corrosion/certificate.rs:356-379)",
                 Record::Same =>
-                    "the row already holds that reason, so it writes nothing (core/crates/ployzd/src/corrosion/store.rs:1028-1030)",
+                    "the row already holds that reason, so it writes nothing (core/crates/ployzd/src/corrosion/store.rs:1243-1244)",
                 Record::Lost => "it returns Err and writes nothing",
                 Record::HasMaterial | Record::NotRankZero => unreachable!("the policy refusal records with record_certificate_error"),
             },
-            reset_words(reset),
+            reset_words(model, reset),
             if record == Record::Lost {
-                "the Err, :394-400"
+                "the Err, :544-550"
             } else {
-                ":444"
+                ":668"
             }
         ),
         Some(Branch::NoDirectory { reset, .. }) => format!(
-            "pass: the policy has no directory, so the pass returns before first_seen.retain and the gate{}, and run sleeps 60 s (:447-449)",
-            reset_words(reset)
+            "pass: the policy has no directory, so read_pass stops before the gate (:616-618){}, and run sleeps 60 s (:668)",
+            reset_words(model, reset)
         ),
         Some(Branch::Errored { reset, .. }) => format!(
-            "pass: a call before the gate returns Err, so issue_wanted returns it before the gate{}, and run prints \"failed to obtain certificates: <error>\" and waits 60 s (:394-400)",
-            reset_words(reset)
+            "pass: a call before the gate returns Err, so issue_wanted returns it{}, and run prints \"failed to obtain certificates: <error>\" and waits 60 s (:544-550)",
+            if reset {
+                ", clearing hosts and dropping orderable_since (under Broken)"
+            } else {
+                " with hosts as it was (:665)"
+            }
         ),
-        Some(Branch::HasMaterial { .. }) => "pass: the row holds material, so first_seen is removed (:474-476), and with no renewal due the hostname is skipped (:489-494)".to_owned(),
-        Some(Branch::Held { due, reset, .. }) => format!(
-            "pass: {}, and action_due answers {} (:489, :95-104); {}; issuance_gate answers Nothing: {} (core/crates/ployz-core/src/domain/issuance.rs:76-83), so continue (:510), and {}; {}",
-            first_seen_words(machine),
-            if due { "Order" } else { "Nothing" },
+        Some(Branch::HasMaterial { .. }) => "pass: the row holds material with no renewal due, so issued answers Issued and the hostname is skipped (:239-254, :676-677)".to_owned(),
+        Some(Branch::Held { due, .. }) => format!(
+            "pass: {}{}; {}; issuance_gate answers Hold: {} (core/crates/ployz-core/src/domain/issuance.rs:77-84), so {}; {}",
+            found_words(machine),
+            if due { ", past its rank delay" } else { "" },
             verdict_words(machine.verdict),
             before.row.clock().map_or_else(String::new, clock_words),
-            if reset {
-                "the fix drops first_seen"
+            if model.broken.hold_keeps_orderable_since {
+                "the hostname stays Waiting from that orderable_since (under Broken)"
             } else {
-                "first_seen stays"
+                "the hostname is Held, and the next pass the gate lets through starts orderable_since again (:280, :300)"
             },
-            wait_words(who, after)
+            wait()
         ),
         Some(Branch::Refused { record, .. }) => format!(
-            "pass: {}; {}; issuance_gate answers Refuse with {} (core/crates/ployz-core/src/domain/issuance.rs:84-95), so {}; {}; {}",
-            first_seen_words(machine),
+            "pass: {}; {}; issuance_gate answers Refuse with {} (core/crates/ployz-core/src/domain/issuance.rs:85-97), so {}; {}; {}",
+            found_words(machine),
             verdict_words(machine.verdict),
             after
                 .row
                 .clock()
                 .filter(|_| record == Record::Wrote)
                 .map_or_else(|| "a clock".to_owned(), clock_words),
-            if model.broken.refusal_keeps_first_seen {
-                "first_seen stays (under Broken)"
+            if model.broken.refusal_keeps_orderable_since {
+                "the hostname stays Waiting from that orderable_since (under Broken)"
             } else {
-                "first_seen is removed (:512)"
+                "the hostname is Refused, and the next pass the gate lets through starts orderable_since again (:281-283, :301)"
             },
             match record {
-                Record::Wrote if who != 0 => "it records the reason and the clock with record_certificate_failure, though it is not rank 0 (under Broken)",
-                Record::Wrote => "rank 0 records the reason and the clock with record_certificate_failure (:513-528)",
-                Record::Lost if who != 0 => "its record_certificate_failure returns Err and writes nothing, though it is not rank 0 (under Broken)",
-                Record::Lost => "rank 0's record_certificate_failure returns Err and writes nothing, which is only logged (:513-528)",
-                Record::NotRankZero => "it is not rank 0, so it records nothing (:513)",
+                Record::Wrote if rank(who) > 0 => "it records the reason and the clock with record_certificate_failure, though it is not rank 0 (under Broken)",
+                Record::Wrote => "it records the reason and the clock with record_certificate_failure (:692-711)",
+                Record::Lost => "its record_certificate_failure returns Err and writes nothing, which is only logged (:706-709)",
+                Record::NotRankZero => "it is not rank 0, so it records nothing (:692)",
                 Record::HasMaterial | Record::Same => unreachable!("the pass's snapshot held no material"),
             },
-            wait_words(who, after)
+            wait()
         ),
         Some(Branch::Waiting { gate, .. }) => format!(
-            "pass: {}, and action_due answers Nothing: its rank delay has not passed (:489, :95-104); {}; issuance_gate answers Order, as {} (core/crates/ployz-core/src/domain/issuance.rs:76-85), and the hostname is not pushed (:534); {}",
-            first_seen_words(machine),
+            "pass: {}; issuance_gate answers Order, as {} (core/crates/ployz-core/src/domain/issuance.rs:77-86); {}, and issuance_action answers Nothing, as it has not passed (:306-312, :70-79), so the hostname is Waiting and not pushed; {}",
             verdict_words(machine.verdict),
             gate_words(gate),
-            wait_words(who, after)
+            runs_from_words(machine),
+            wait()
         ),
         Some(Branch::Pushed { gate, early, .. }) => format!(
-            "pass: {}, and action_due answers Order (:489, :95-104); {}; {}; the hostname is pushed to to_order (:534-536){}, and account and obtain are next (:538-551)",
-            first_seen_words(machine),
+            "pass: {}; {}; {}, and issuance_action answers Order (:306-311); the hostname is pushed to to_order (:712-714){}, and account and obtain are next (:721-734)",
             verdict_words(machine.verdict),
             if gate == Gate::Held {
-                "issuance_gate answers Nothing, as the clock holds, but the pass orders along Direct as Order would (under Broken)".to_owned()
+                "issuance_gate answers Hold, as the clock holds, but the pass orders along Direct as Order would (under Broken)".to_owned()
             } else {
                 format!(
-                    "issuance_gate answers Order, as {} (core/crates/ployz-core/src/domain/issuance.rs:76-85)",
+                    "issuance_gate answers Order, as {} (core/crates/ployz-core/src/domain/issuance.rs:77-86)",
                     gate_words(gate)
                 )
             },
+            runs_from_words(machine),
             if early {
                 ", less than its rank delay after its first pass since its last blocked pass"
             } else {
                 ""
             }
         ),
-        Some(Branch::Rechecked { .. }) => "obtain: certificate_row re-reads the row, which holds material, and the recheck returns (:623-635)".to_owned(),
+        Some(Branch::Rechecked { .. }) => "obtain: certificate_row re-reads the row, which holds material, and the recheck returns (:801-813)".to_owned(),
         Some(Branch::Issued { over_material, .. }) => format!(
-            "obtain: {}, so it orders and is issued, and publish_certificate writes the material with no challenge and no refusal (:637-656, core/crates/ployzd/src/corrosion/store.rs:851-865, core/crates/ployzd/src/corrosion/certificate.rs:255-259); the next pass skips the hostname (:476, :490-494)",
+            "obtain: {}, so it orders and is issued, and publish_certificate writes the material with no challenge and no refusal (:815-846, core/crates/ployzd/src/corrosion/store.rs:966-986, core/crates/ployzd/src/corrosion/certificate.rs:259-261); the next pass skips the hostname (:676-677)",
             reread_words(over_material)
         ),
         Some(Branch::Failed {
@@ -1591,7 +1732,7 @@ fn reads_as(model: &AcmeIssuance, before: &State, action: Action, after: &State)
         }) => {
             let ago = machine.obtaining.map_or(0, |order| order.ago);
             format!(
-                "obtain: {}, so it orders, and the order fails; issue_wanted prints \"failed to obtain certificate for <hostname>: <error>\" (:553-557), and issuance_failure_clock counts from the pass's wall{} and its snapshot clock (:558-564); {}; {}",
+                "obtain: {}, so it orders, and the order fails; issue_wanted prints \"failed to obtain certificate for <hostname>: <error>\" (:736-740), and issuance_failure_clock counts from the pass's wall{} and its snapshot clock (:741-747); {}; {}",
                 reread_words(over_material),
                 if ago == 0 {
                     String::new()
@@ -1600,17 +1741,17 @@ fn reads_as(model: &AcmeIssuance, before: &State, action: Action, after: &State)
                 },
                 match record {
                     Record::Wrote => format!(
-                        "record_certificate_failure writes {} (:565-573, core/crates/ployzd/src/corrosion/store.rs:987-994)",
+                        "record_certificate_failure writes {} (:751-760, core/crates/ployzd/src/corrosion/store.rs:1186-1196)",
                         after.row.clock().map_or_else(String::new, clock_words)
                     ),
-                    Record::Lost => "record_certificate_failure returns Err and writes nothing, which is only logged (:574-578)".to_owned(),
-                    Record::HasMaterial => "record_certificate_failure finds material and writes nothing (core/crates/ployzd/src/corrosion/store.rs:987-990)".to_owned(),
+                    Record::Lost => "record_certificate_failure returns Err and writes nothing, which is only logged (:767-769)".to_owned(),
+                    Record::HasMaterial => "record_certificate_failure finds material and writes nothing (core/crates/ployzd/src/corrosion/store.rs:1189-1190)".to_owned(),
                     Record::Same | Record::NotRankZero => unreachable!("an authority failure records with record_certificate_failure"),
                 },
                 if after.row.material {
-                    "the next pass skips the hostname (:476, :490-494)".to_owned()
+                    "the next pass skips the hostname (:676-677)".to_owned()
                 } else {
-                    wait_words(who, after)
+                    wait()
                 }
             )
         }
@@ -1640,20 +1781,13 @@ mod tests {
         AcmeIssuance::default()
     }
 
-    /// The fix: a held pass, and a pass that returns before the gate, drop `first_seen`.
-    fn fixed() -> AcmeIssuance {
-        AcmeIssuance {
-            fix: true,
-            ..as_is()
-        }
+    /// The code before this change.
+    fn as_it_was() -> AcmeIssuance {
+        without(AS_IT_WAS)
     }
 
-    fn as_is_without(broken: Broken) -> AcmeIssuance {
-        AcmeIssuance { broken, ..as_is() }
-    }
-
-    fn fixed_without(broken: Broken) -> AcmeIssuance {
-        AcmeIssuance { broken, ..fixed() }
+    fn without(broken: Broken) -> AcmeIssuance {
+        AcmeIssuance { broken }
     }
 
     /// Every state `model` reaches. An empty `AnyOf` never matches, so the checker does not
@@ -1776,12 +1910,12 @@ mod tests {
         Action::Pass { who, lost: false }
     }
 
-    /// The finding's schedule, with each pass at a time `poll_wait` allows. At 0 s, rank 0's
-    /// pass pushes the hostname, and its order fails; the record writes an Authority clock,
-    /// 60 s out, and `poll_wait` answers 30 s. Rank 1's pass inserts `first_seen` and is held;
-    /// `poll_wait` answers 30 s. At 30 s both are held, rank 1 now Order-due, and both
-    /// `poll_wait`s answer `RANK_STEP`, 30 s (:204). At 60 s the clock has passed, and both
-    /// push the hostname.
+    /// The authority hold's schedule. At 0 s, rank 0's pass pushes the hostname, and its order
+    /// fails; the record writes an Authority clock, 60 s out. Rank 1's pass is held. At 30 s both
+    /// are held, and at 60 s the clock has passed. Before this change rank 1's held passes kept
+    /// their first pass's instant and `poll_wait` woke it at 30 s and 60 s; now `wake` answers
+    /// when the clock passes (:344-354), and a container change can wake a loop at any time
+    /// (:552-559).
     const THE_HOLD: [Action; 9] = [
         pass(R0),
         Action::Obtain {
@@ -1797,18 +1931,92 @@ mod tests {
         pass(R1),
     ];
 
-    /// The finding. Rank 0's order fails, and its record writes an Authority clock, 60 s out
-    /// (:552-578). Rank 1's pass inserts `first_seen` (:483), and the gate holds it (:510). A
-    /// tick later rank 1 is Order-due and still held, and `first_seen` stays. Once the clock
-    /// passes, rank 0 and rank 1 both push the hostname in the same tick, though rank 1 has
-    /// waited no rank delay since its last held pass.
+    /// `schedule` then a tick and one more pass by rank 1, which pushes the hostname with its
+    /// rank delay kept.
+    fn rank_1_pushes_a_tick_later(schedule: &[Action]) {
+        let mut later = schedule.to_vec();
+        later.extend([Action::Tick, pass(R1)]);
+        assert!(matches!(
+            last(&follow(as_is(), &later)).took,
+            Some(Branch::Pushed {
+                who: R1,
+                early: false,
+                ..
+            })
+        ));
+    }
+
+    /// Rank 0's order fails, and its record writes an Authority clock, 60 s out (:735-772).
+    /// Rank 1's passes are held (:280). Once the clock passes, rank 0 pushes the hostname, and
+    /// rank 1's first pass the gate lets through starts its rank delay (:300), so it pushes a
+    /// tick later. On the code as it was, rank 1's held passes kept `orderable_since`, and it
+    /// pushed in the same tick as rank 0, with no rank delay since its last held pass.
     ///
     /// The checker keeps one path to each state, the first in BFS order. A shorter path ends
-    /// in the same state, so the test replays this schedule with `follow`, and then asks the
+    /// in the same state, so the test replays the old schedule with `follow`, and then asks the
     /// checker for its first path to the same broken state.
     #[test]
-    fn current_code_lets_rank_1_order_with_rank_0_after_an_authority_hold() {
+    fn an_authority_hold_restarts_rank_1_s_delay() {
         let path = follow(as_is(), &THE_HOLD);
+        assert_eq!(
+            branches(&path),
+            [
+                Branch::Pushed {
+                    who: R0,
+                    gate: Gate::NoClock,
+                    early: false
+                },
+                Branch::Failed {
+                    who: R0,
+                    record: Record::Wrote,
+                    from: None,
+                    late: false,
+                    over_material: false
+                },
+                Branch::Held {
+                    who: R1,
+                    due: false,
+                    reset: false
+                },
+                Branch::Held {
+                    who: R0,
+                    due: true,
+                    reset: true
+                },
+                Branch::Held {
+                    who: R1,
+                    due: false,
+                    reset: false
+                },
+                Branch::Pushed {
+                    who: R0,
+                    gate: Gate::Passed,
+                    early: false
+                },
+                Branch::Waiting {
+                    who: R1,
+                    gate: Gate::Passed
+                },
+            ]
+        );
+        let recorded = path
+            .get(2)
+            .expect("the failure record's state")
+            .0
+            .row
+            .clock()
+            .expect("the record wrote a clock");
+        assert_eq!(
+            recorded,
+            Clock {
+                failures: 1,
+                left: 2,
+                last: Failure::Authority
+            }
+        );
+        rank_1_pushes_a_tick_later(&THE_HOLD);
+
+        let path = follow(as_it_was(), &THE_HOLD);
         assert_eq!(
             branches(&path),
             [
@@ -1851,36 +2059,22 @@ mod tests {
                 },
             ]
         );
-        let recorded = path
-            .get(2)
-            .expect("the failure record's state")
-            .0
-            .row
-            .clock()
-            .expect("the record wrote a clock");
-        assert_eq!(
-            recorded,
-            Clock {
-                failures: 1,
-                left: 2,
-                last: Failure::Authority
-            }
-        );
         let broken = last(&path);
         assert!(broken.early());
-        assert_eq!(broken.machine(R1).first_seen, Some(AGE_CAP));
+        assert_eq!(broken.machine(R1).orderable_since, Some(AGE_CAP));
         assert!(broken.machine(R0).obtaining.is_some());
         assert!(broken.machine(R1).obtaining.is_some());
-        let found = breaks_where(as_is(), RANK_DELAY_KEPT, move |path| last(path) == broken);
+        let found = breaks_where(as_it_was(), RANK_DELAY_KEPT, move |path| {
+            last(path) == broken
+        });
         assert_eq!(last(&found), broken);
     }
 
     /// The verdict change's schedule. Both probes find the hostname does not resolve. At 0 s,
-    /// rank 0 refuses and records a DoesNotResolve clock, 60 s out (:511-528), and `poll_wait`
-    /// answers 30 s, since `first_seen` was removed (:512). Rank 1's pass inserts `first_seen`,
-    /// and the gate holds it; `poll_wait` answers 30 s. DNS is fixed, and at 30 s both probes
-    /// reach the Cluster, which differs from the clock's refusal, so the gate opens with 30 s
-    /// still on the clock (core/crates/ployz-core/src/domain/issuance.rs:77-83).
+    /// rank 0 refuses and records a DoesNotResolve clock, 60 s out, and rank 1's pass is held.
+    /// DNS is fixed, and at 30 s both probes reach the Cluster, which differs from the clock's
+    /// refusal, so the gate opens with 30 s still on the clock
+    /// (core/crates/ployz-core/src/domain/issuance.rs:77-84).
     const THE_VERDICT_CHANGE: [Action; 9] = [
         Action::Probe(R0),
         Action::Probe(R1),
@@ -1893,18 +2087,46 @@ mod tests {
         pass(R1),
     ];
 
-    /// The second route. A DoesNotResolve clock holds rank 1 while its `first_seen` ages. When
-    /// the verdict changes, `issuance_gate` opens before the clock passes (issuance.rs:77-83),
-    /// and rank 0 and rank 1 push the hostname in the same tick.
+    /// A DoesNotResolve clock holds rank 1. When the verdict changes, `issuance_gate` opens
+    /// before the clock passes, and rank 1's first pass through it starts its rank delay. On the
+    /// code as it was, rank 1 pushed in the same tick as rank 0.
     #[test]
-    fn current_code_lets_rank_1_order_with_rank_0_when_the_verdict_changes_during_a_refused_hold() {
+    fn a_verdict_change_after_a_refused_hold_restarts_rank_1_s_delay() {
         let path = follow(as_is(), &THE_VERDICT_CHANGE);
         assert_eq!(
             branches(&path),
             [
                 Branch::Refused {
                     who: R0,
-                    record: Record::Wrote
+                    record: Record::Wrote,
+                    over_authority: false
+                },
+                Branch::Held {
+                    who: R1,
+                    due: false,
+                    reset: false
+                },
+                Branch::Pushed {
+                    who: R0,
+                    gate: Gate::VerdictChanged,
+                    early: false
+                },
+                Branch::Waiting {
+                    who: R1,
+                    gate: Gate::VerdictChanged
+                },
+            ]
+        );
+        rank_1_pushes_a_tick_later(&THE_VERDICT_CHANGE);
+
+        let path = follow(as_it_was(), &THE_VERDICT_CHANGE);
+        assert_eq!(
+            branches(&path),
+            [
+                Branch::Refused {
+                    who: R0,
+                    record: Record::Wrote,
+                    over_authority: false
                 },
                 Branch::Held {
                     who: R1,
@@ -1934,17 +2156,18 @@ mod tests {
             }),
             "the clock had not passed"
         );
-        let found = breaks_where(as_is(), RANK_DELAY_KEPT, move |path| last(path) == broken);
+        let found = breaks_where(as_it_was(), RANK_DELAY_KEPT, move |path| {
+            last(path) == broken
+        });
         assert_eq!(last(&found), broken);
     }
 
-    /// The policy refusal's schedule, with rank 0 on time. At 0 s rank 1's pass inserts
-    /// `first_seen` and waits out its rank delay; `poll_wait` answers 30 s. The operator sets a
-    /// policy the daemon refuses, and rank 0's first pass, also at 0 s, records the policy's
-    /// reason and returns before the gate; `run` sleeps 60 s (:444). At 30 s rank 1's pass
-    /// returns the same way. The operator repairs the policy. At 60 s rank 0's sleep ends and it
-    /// pushes the hostname. A container change wakes rank 1's loop at that moment (:370,
-    /// :402-409), and rank 1 pushes too.
+    /// The policy refusal's schedule, with rank 0 on time. At 0 s rank 1's pass waits out its
+    /// rank delay. The operator sets a policy the daemon refuses, and rank 0's first pass, also
+    /// at 0 s, records the policy's reason and stops before the gate; `run` sleeps 60 s (:668).
+    /// At 30 s rank 1's pass stops the same way. The operator repairs the policy. At 60 s rank
+    /// 0's sleep ends and it pushes the hostname, and a container change wakes rank 1's loop
+    /// at that moment (:552-559).
     const THE_POLICY_REFUSAL: [Action; 9] = [
         pass(R1),
         Action::Operator(Policy::Refused),
@@ -1957,12 +2180,12 @@ mod tests {
         pass(R1),
     ];
 
-    /// A policy refusal returns before `first_seen.retain` and the gate (:436-445), so
-    /// `first_seen` keeps aging through it, and its `record_certificate_error` drops any clock.
-    /// The refusal holds rank 0 back for the same span, so once the policy is repaired rank 0
-    /// and rank 1 push the hostname in the same tick.
+    /// A policy refusal stops the pass before the gate, and `issue_wanted` clears `hosts`
+    /// (:666-669), so rank 1's next pass starts its rank delay. On the code as it was, rank 1's
+    /// `orderable_since` aged through the refusal, and once the policy was repaired rank 0 and
+    /// rank 1 pushed the hostname in the same tick.
     #[test]
-    fn current_code_lets_rank_1_order_with_rank_0_after_a_policy_refusal() {
+    fn a_policy_refusal_restarts_rank_1_s_delay() {
         let path = follow(as_is(), &THE_POLICY_REFUSAL);
         assert_eq!(
             branches(&path),
@@ -1981,32 +2204,42 @@ mod tests {
                     who: R1,
                     record: Record::Same,
                     dropped: false,
-                    reset: false
+                    reset: true
                 },
                 Branch::Pushed {
                     who: R0,
                     gate: Gate::NoClock,
                     early: false
                 },
-                Branch::Pushed {
+                Branch::Waiting {
                     who: R1,
-                    gate: Gate::NoClock,
-                    early: true
+                    gate: Gate::NoClock
                 },
             ]
         );
+        rank_1_pushes_a_tick_later(&THE_POLICY_REFUSAL);
+
+        let path = follow(as_it_was(), &THE_POLICY_REFUSAL);
+        assert_eq!(
+            branches(&path).last(),
+            Some(&Branch::Pushed {
+                who: R1,
+                gate: Gate::NoClock,
+                early: true
+            })
+        );
         let broken = last(&path);
-        assert!(broken.early());
-        let found = breaks_where(as_is(), RANK_DELAY_KEPT, move |path| last(path) == broken);
+        let found = breaks_where(as_it_was(), RANK_DELAY_KEPT, move |path| {
+            last(path) == broken
+        });
         assert_eq!(last(&found), broken);
     }
 
-    /// The error's schedule, with rank 0 on time. At 0 s rank 1's pass inserts `first_seen` and
-    /// waits out its rank delay; `poll_wait` answers 30 s. Rank 0's first pass, also at 0 s,
-    /// returns Err before the gate, and `run` waits `RETRY_INTERVAL`, 60 s (:394-400). At 30 s
-    /// rank 1's pass returns Err the same way. At 60 s rank 0's sleep ends and it pushes the
-    /// hostname, and a container change wakes rank 1's loop to push too, as in the policy
-    /// refusal's schedule.
+    /// The error's schedule, with rank 0 on time. At 0 s rank 1's pass waits out its rank
+    /// delay. Rank 0's first pass, also at 0 s, returns Err before the gate, and `run` waits
+    /// `RETRY_INTERVAL`, 60 s (:544-550). At 30 s rank 1's pass returns Err the same way. At
+    /// 60 s rank 0's sleep ends and it pushes the hostname, and a container change wakes rank
+    /// 1's loop, as in the policy refusal's schedule.
     const THE_ERROR: [Action; 7] = [
         pass(R1),
         Action::Errs(R0),
@@ -2017,12 +2250,18 @@ mod tests {
         pass(R1),
     ];
 
-    /// A pass that returns Err before the gate keeps `first_seen`, as the policy refusal does,
-    /// so it ages through the error. The error holds rank 0 back too, so rank 0 and rank 1 then
-    /// push the hostname in the same tick.
+    /// A read that returns Err keeps `hosts` (:665), so the delay rank 1 earned before it
+    /// still counts: passes that alternate between an open gate and an Err still push the
+    /// hostname. Clearing `hosts` on an Err, as `Broken::error_clears_hosts` does, breaks no
+    /// `always`, as it only delays: rank 1 waits again after every Err, so with an Err every
+    /// other pass it never pushes, and the row where an Err keeps `orderable_since` is never
+    /// reached. The error's schedule meets rank 0 in the same tick on both models, as the code
+    /// before this change did: that meeting is after an outage both Machines saw, and no
+    /// blocked pass of rank 1's is in it.
     #[test]
-    fn current_code_lets_rank_1_order_with_rank_0_after_an_error_before_the_gate() {
-        let path = follow(as_is(), &THE_ERROR);
+    fn a_read_error_keeps_rank_1_s_delay() {
+        let alternating = [pass(R1), Action::Tick, Action::Errs(R1), pass(R1)];
+        let path = follow(as_is(), &alternating);
         assert_eq!(
             branches(&path),
             [
@@ -2031,45 +2270,88 @@ mod tests {
                     gate: Gate::NoClock
                 },
                 Branch::Errored {
-                    who: R0,
-                    reset: false
-                },
-                Branch::Errored {
                     who: R1,
                     reset: false
                 },
                 Branch::Pushed {
-                    who: R0,
+                    who: R1,
                     gate: Gate::NoClock,
                     early: false
                 },
-                Branch::Pushed {
-                    who: R1,
-                    gate: Gate::NoClock,
-                    early: true
-                },
             ]
         );
-        let broken = last(&path);
-        assert!(broken.early());
-        let found = breaks_where(as_is(), RANK_DELAY_KEPT, move |path| last(path) == broken);
-        assert_eq!(last(&found), broken);
+        for model in [as_is(), as_it_was()] {
+            assert_eq!(
+                last(&follow(model, &THE_ERROR)).took,
+                Some(Branch::Pushed {
+                    who: R1,
+                    gate: Gate::NoClock,
+                    early: false
+                })
+            );
+        }
+
+        let model = without(Broken {
+            error_clears_hosts: true,
+            ..Broken::default()
+        });
+        let path = follow(model, &alternating);
+        assert_eq!(
+            last(&path).took,
+            Some(Branch::Waiting {
+                who: R1,
+                gate: Gate::NoClock
+            })
+        );
+        let checker = check(model);
+        println!(
+            "an Err clears hosts: {} states",
+            checker.unique_state_count()
+        );
+        assert!(
+            checker.discovery(ERROR_KEEPS_THE_DELAY).is_none(),
+            "{ERROR_KEEPS_THE_DELAY} is reached"
+        );
+        for property in model.properties() {
+            if property.name == ERROR_KEEPS_THE_DELAY {
+                continue;
+            }
+            let found = checker.discovery(property.name).is_some();
+            match property.expectation {
+                Expectation::Always => assert!(!found, "{} breaks", property.name),
+                Expectation::Sometimes => assert!(found, "{} is never reached", property.name),
+                Expectation::Eventually => unreachable!("the model has no eventually"),
+            }
+        }
     }
 
-    /// The code as it is breaks only `RANK_DELAY_KEPT`, and reaches every row that is not
-    /// `Reach::Fix`. The checker's first broken path is printed too.
+    /// The code keeps all four `always` properties, and reaches every `sometimes` it has.
     #[test]
-    fn current_code_breaks_only_the_rank_delay() {
+    fn the_code_keeps_every_property() {
         let checker = check(as_is());
         println!("as is: {} states", checker.unique_state_count());
+        checker.assert_properties();
+    }
+
+    /// The code as it was broke only `RANK_DELAY_KEPT`, and reached every row it has. The
+    /// checker's first broken path is printed too.
+    #[test]
+    fn the_code_as_it_was_breaks_only_the_rank_delay() {
+        let model = as_it_was();
+        let checker = check(model);
+        println!("as it was: {} states", checker.unique_state_count());
         assert!(checker.discovery(RANK_DELAY_KEPT).is_some());
         assert!(checker.discovery(HOLD_KEPT).is_none(), "{HOLD_KEPT} breaks");
         assert!(
             checker.discovery(NO_ORDER_OVER_MATERIAL).is_none(),
             "{NO_ORDER_OVER_MATERIAL} breaks"
         );
-        assert!(last(&breaks(as_is(), RANK_DELAY_KEPT)).early());
-        for row in COVERAGE.iter().filter(|row| row.reach == Reach::Both) {
+        assert!(
+            checker.discovery(AUTHORITY_BACKOFF_KEPT).is_none(),
+            "{AUTHORITY_BACKOFF_KEPT} breaks"
+        );
+        assert!(last(&breaks(model, RANK_DELAY_KEPT)).early());
+        for row in COVERAGE.iter().filter(|row| row.reach.on(model.broken)) {
             assert!(
                 checker.discovery(row.name).is_some(),
                 "{} is never reached",
@@ -2078,12 +2360,12 @@ mod tests {
         }
     }
 
-    /// The gate's hold (:510). With `continue` read as an order along Direct, a pass orders
-    /// while the clock holds. A held DoesNotResolve verdict has no route to order along, so the
-    /// break orders along Direct, the model's only route; the second path shows it.
+    /// The gate's hold (:280). With it read as an order along Direct, a pass orders while the
+    /// clock holds. A held DoesNotResolve verdict has no route to order along, so the break
+    /// orders along Direct, the model's only route; the second path shows it.
     #[test]
     fn the_gate_holds_while_the_clock_holds() {
-        let model = as_is_without(Broken {
+        let model = without(Broken {
             hold_orders: true,
             ..Broken::default()
         });
@@ -2103,12 +2385,12 @@ mod tests {
         );
     }
 
-    /// `obtain`'s recheck (:624-635). Without it, an obtain whose re-read finds material that
+    /// `obtain`'s recheck (:802-813). Without it, an obtain whose re-read finds material that
     /// another Machine published orders anyway.
     #[test]
     fn obtain_rechecks_material() {
         let path = breaks(
-            as_is_without(Broken {
+            without(Broken {
                 obtain_skips_recheck: true,
                 ..Broken::default()
             }),
@@ -2117,8 +2399,8 @@ mod tests {
         assert!(last(&path).ordered_over_material());
     }
 
-    /// Rank 1 refuses with no clock recorded yet, its verdict changes, and it pushes the
-    /// hostname a tick later. `poll_wait` after the refused pass answers 30 s.
+    /// Rank 1 refuses with no clock recorded yet, its verdict changes, and it passes again a
+    /// tick later.
     const REFUSED_THEN_REACHED: [Action; 5] = [
         Action::Probe(R1),
         pass(R1),
@@ -2127,13 +2409,13 @@ mod tests {
         pass(R1),
     ];
 
-    /// The refusal reset (:512). Under the fix without it, rank 1 refuses with no clock
-    /// recorded yet, the verdict changes, and rank 1 is then Order-due at once. With it, rank 1
+    /// The refusal's restart (:301). Without it, rank 1 refuses, the verdict changes, and rank
+    /// 1 is Order-due at once on the `orderable_since` its refused pass started. With it, rank 1
     /// waits out its rank delay.
     #[test]
     fn a_refusal_restarts_the_rank_delay() {
-        let model = fixed_without(Broken {
-            refusal_keeps_first_seen: true,
+        let model = without(Broken {
+            refusal_keeps_orderable_since: true,
             ..Broken::default()
         });
         let path = follow(model, &REFUSED_THEN_REACHED);
@@ -2142,7 +2424,8 @@ mod tests {
             [
                 Branch::Refused {
                     who: R1,
-                    record: Record::NotRankZero
+                    record: Record::NotRankZero,
+                    over_authority: false
                 },
                 Branch::Pushed {
                     who: R1,
@@ -2152,7 +2435,7 @@ mod tests {
             ]
         );
         assert!(last(&breaks(model, RANK_DELAY_KEPT)).early());
-        let path = follow(fixed(), &REFUSED_THEN_REACHED);
+        let path = follow(as_is(), &REFUSED_THEN_REACHED);
         assert_eq!(
             last(&path).took,
             Some(Branch::Waiting {
@@ -2162,83 +2445,12 @@ mod tests {
         );
     }
 
-    const RANK_1_RECORDS_NOTHING: &str =
-        "rank 1 refuses and records nothing, and the row holds no reason";
-
-    /// Only rank 0 records a refusal (:513). No `always` property here needs that: with any
-    /// rank recording, the fix still keeps all three. What changes is that the row where rank 1
-    /// refuses and records nothing goes unreached, and every other row is still reached.
+    /// The hold's restart (:300). Without it, the authority hold and the verdict change let
+    /// rank 1 push with rank 0.
     #[test]
-    fn only_rank_zero_records_a_refusal() {
-        let model = fixed_without(Broken {
-            any_rank_records: true,
-            ..Broken::default()
-        });
-        let checker = check(model);
-        println!(
-            "fixed, any rank records: {} states",
-            checker.unique_state_count()
-        );
-        for property in model.properties() {
-            let found = checker.discovery(property.name).is_some();
-            match property.expectation {
-                Expectation::Always => assert!(!found, "{} breaks", property.name),
-                Expectation::Sometimes => assert_eq!(
-                    found,
-                    property.name != RANK_1_RECORDS_NOTHING,
-                    "{}",
-                    property.name
-                ),
-                Expectation::Eventually => unreachable!("the model has no eventually"),
-            }
-        }
-    }
-
-    /// The fix holds all three `always` properties, and every `sometimes` it reaches is
-    /// reached.
-    #[test]
-    fn the_fix_keeps_the_rank_delay() {
-        let checker = check(fixed());
-        println!("fixed: {} states", checker.unique_state_count());
-        checker.assert_properties();
-    }
-
-    /// Each finding's schedule under the fix. Rank 1's last pass inserts `first_seen` and waits
-    /// out its rank delay, since the held, refused, policy-refused or errored pass before it
-    /// dropped the entry; a tick later it pushes the hostname.
-    #[test]
-    fn the_fix_waits_on_each_finding_s_schedule() {
-        for schedule in [
-            &THE_HOLD[..],
-            &THE_VERDICT_CHANGE[..],
-            &THE_POLICY_REFUSAL[..],
-            &THE_ERROR[..],
-        ] {
-            let path = follow(fixed(), schedule);
-            assert!(matches!(
-                last(&path).took,
-                Some(Branch::Waiting { who: R1, .. })
-            ));
-            let mut later = schedule.to_vec();
-            later.extend([Action::Tick, pass(R1)]);
-            let path = follow(fixed(), &later);
-            assert!(matches!(
-                last(&path).took,
-                Some(Branch::Pushed {
-                    who: R1,
-                    early: false,
-                    ..
-                })
-            ));
-        }
-    }
-
-    /// Without the drop on a held pass, the fix lets the authority hold and the verdict change
-    /// through.
-    #[test]
-    fn the_fix_needs_its_hold_reset() {
-        let model = fixed_without(Broken {
-            fix_hold_keeps_first_seen: true,
+    fn a_held_pass_restarts_the_rank_delay() {
+        let model = without(Broken {
+            hold_keeps_orderable_since: true,
             ..Broken::default()
         });
         assert!(last(&follow(model, &THE_HOLD)).early());
@@ -2254,14 +2466,13 @@ mod tests {
         )));
     }
 
-    /// Without the drop on a pass that returns before the gate, a policy refusal lets rank 1
-    /// order with rank 0 once it is repaired, and so do a policy with no directory and an Err
-    /// before the gate. The second schedule is the first with the policy left without a
-    /// directory.
+    /// `hosts.clear()` (:667). Without it, a policy refusal lets rank 1 order with rank 0 once
+    /// it is repaired, and so does a policy with no directory. The second schedule is the first
+    /// with the policy left without a directory.
     #[test]
-    fn the_fix_needs_its_early_return_reset() {
-        let model = fixed_without(Broken {
-            fix_early_return_keeps_first_seen: true,
+    fn a_pass_that_stops_before_the_gate_restarts_the_rank_delay() {
+        let model = without(Broken {
+            early_return_keeps_orderable_since: true,
             ..Broken::default()
         });
         assert!(last(&follow(model, &THE_POLICY_REFUSAL)).early());
@@ -2278,19 +2489,98 @@ mod tests {
                 .any(|(state, _)| matches!(state.took, Some(Branch::NoDirectory { who: R1, .. })))
         );
         assert!(last(&path).early());
-        assert!(last(&follow(model, &THE_ERROR)).early());
         assert!(last(&breaks(model, RANK_DELAY_KEPT)).early());
+        let path = follow(as_is(), &no_directory);
+        assert!(matches!(
+            last(&path).took,
+            Some(Branch::Waiting { who: R1, .. })
+        ));
     }
 
-    /// A restart empties `first_seen` (:367). Late in the hold it ends the finding's route: on
-    /// the hold's schedule, rank 1's daemon restarts after the gate opens and before its last
-    /// pass, and that pass inserts `first_seen` and waits out its rank delay. This is only the
-    /// late case; `an_early_restart_does_not_end_the_route` is the early one.
+    /// Rank 0's order fails and its record writes an Authority clock. Two ticks on the clock
+    /// has passed, rank 1's probe finds the hostname does not resolve, and rank 1 passes. Then
+    /// rank 0 pushes the hostname again, and its order fails again.
+    const THE_REFUSAL_OVER_AUTHORITY: [Action; 8] = [
+        pass(R0),
+        Action::Obtain {
+            who: R0,
+            ends: Ends::Failed { recorded: true },
+        },
+        Action::Tick,
+        Action::Tick,
+        Action::Probe(R1),
+        pass(R1),
+        pass(R0),
+        Action::Obtain {
+            who: R0,
+            ends: Ends::Failed { recorded: true },
+        },
+    ];
+
+    /// Only rank 0 records a refusal (:692). Were rank 1 to record one too, its refusal would
+    /// replace a passed Authority clock at one failure, and rank 0's next failed order would
+    /// back off from one failure again. The model has one refusal kind, so the other cost, two
+    /// ranks that refuse for different reasons rewriting the row each pass, is the `ployzd`
+    /// test `only_rank_0_records_a_refusal`'s to show.
     #[test]
-    fn a_restart_restarts_the_rank_delay() {
+    fn only_rank_0_records_a_refusal() {
+        let path = follow(as_is(), &THE_REFUSAL_OVER_AUTHORITY);
+        let refused = path
+            .iter()
+            .find_map(|(state, _)| match state.took {
+                Some(branch @ Branch::Refused { .. }) => Some((branch, state.row)),
+                _ => None,
+            })
+            .expect("rank 1 refuses");
+        assert_eq!(
+            refused.0,
+            Branch::Refused {
+                who: R1,
+                record: Record::NotRankZero,
+                over_authority: false
+            }
+        );
+        assert_eq!(refused.1.last_error(), Some(Reason::Authority));
+        assert_eq!(
+            last(&path).row.clock(),
+            Some(Clock {
+                failures: 2,
+                left: 4,
+                last: Failure::Authority
+            }),
+            "rank 0's second failure doubles its backoff"
+        );
+
+        let model = without(Broken {
+            any_rank_records: true,
+            ..Broken::default()
+        });
+        let path = follow(model, &THE_REFUSAL_OVER_AUTHORITY);
+        assert!(
+            path.iter()
+                .any(|(state, _)| state.reset_authority_backoff())
+        );
+        assert_eq!(
+            last(&path).row.clock(),
+            Some(Clock {
+                failures: 1,
+                left: 2,
+                last: Failure::Authority
+            }),
+            "rank 0's second failure backs off from one failure"
+        );
+        assert!(last(&breaks(model, AUTHORITY_BACKOFF_KEPT)).reset_authority_backoff());
+    }
+
+    /// A restart empties `hosts` (:517). On the code as it was, a late restart ended the hold's
+    /// route: rank 1's daemon restarted after the gate opened and before its last pass, and
+    /// that pass waited out its rank delay. `the_old_route_survived_an_early_restart` is the
+    /// early case.
+    #[test]
+    fn a_late_restart_ended_the_old_route() {
         let mut schedule = THE_HOLD.to_vec();
         schedule.insert(schedule.len() - 1, Action::Restart(R1));
-        let path = follow(as_is(), &schedule);
+        let path = follow(as_it_was(), &schedule);
         assert_eq!(
             last(&path).took,
             Some(Branch::Waiting {
@@ -2300,15 +2590,13 @@ mod tests {
         );
     }
 
-    /// A restart early in the hold does not end the route. The next held pass inserts
-    /// `first_seen` again (:480-485), and it ages through the rest of the hold. Here rank 1's
-    /// daemon restarts right after its first held pass, and rank 1 still pushes with rank 0 when
-    /// the gate opens.
+    /// On the code as it was, a restart early in the hold did not end the route: the next held
+    /// pass started `orderable_since` again, and it aged through the rest of the hold.
     #[test]
-    fn an_early_restart_does_not_end_the_route() {
+    fn the_old_route_survived_an_early_restart() {
         let mut schedule = THE_HOLD.to_vec();
         schedule.insert(3, Action::Restart(R1));
-        let path = follow(as_is(), &schedule);
+        let path = follow(as_it_was(), &schedule);
         assert_eq!(
             last(&path).took,
             Some(Branch::Pushed {
@@ -2319,17 +2607,19 @@ mod tests {
         );
     }
 
-    /// The meeting at the opening is one schedule, not a cadence. Both Machines' rechecks come
-    /// 60 s after the gate opens, and rank 1 still pushes with rank 0.
+    /// The old meeting at the opening was one schedule, not a cadence: with both Machines'
+    /// passes 60 s after the gate opened, rank 1 still pushed with rank 0. The code as it is
+    /// keeps the rank delay on the same schedule.
     #[test]
-    fn a_late_recheck_still_lets_rank_1_order_with_rank_0() {
+    fn the_old_route_survived_a_late_recheck() {
         let mut schedule = THE_HOLD[..7].to_vec();
         schedule.extend([Action::Tick, Action::Tick, pass(R0), pass(R1)]);
-        let path = follow(as_is(), &schedule);
-        let broken = last(&path);
+        let broken = last(&follow(as_it_was(), &schedule));
         assert!(broken.early());
         assert!(broken.machine(R0).obtaining.is_some());
         assert!(broken.machine(R1).obtaining.is_some());
+        let kept = last(&follow(as_is(), &schedule));
+        assert!(matches!(kept.took, Some(Branch::Waiting { who: R1, .. })));
     }
 
     /// One pass by `who` from `state` under `model`, with no lost record.
@@ -2339,12 +2629,17 @@ mod tests {
             .expect("the pass is taken")
     }
 
-    /// The fix's drop on each state a pass can meet, beside the code's: no clock; an Authority
-    /// clock not yet due; an unchanged DoesNotResolve clock not yet due; a clock that is due; a
-    /// DoesNotResolve clock whose verdict changed; material present, where the pass skips at
-    /// :490-494; and rank 0, which owes no delay.
+    /// A pass on each state it can meet, under the code and the code as it was: no clock; an
+    /// Authority clock not yet due; an unchanged DoesNotResolve clock not yet due; a clock that
+    /// is due; a DoesNotResolve clock whose verdict changed; a DoesNotResolve verdict with no
+    /// clock; material present, where the pass skips at :676-677; and rank 0, which owes no
+    /// delay.
     #[test]
-    fn the_fix_on_each_edge_state() {
+    #[expect(
+        clippy::too_many_lines,
+        reason = "one block per edge state, each beside the code as it was"
+    )]
+    fn a_pass_on_each_edge_state() {
         let start = as_is()
             .init_states()
             .into_iter()
@@ -2364,12 +2659,12 @@ mod tests {
                 }),
             }),
         };
-        // Rank 1, past its rank delay since its first pass and since its first_seen.
+        // Rank 1, past its rank delay since its first pass and since its orderable_since.
         let aged = |row: Row, verdict: Verdict| {
             let mut state = State { row, ..start };
             let machine = state.machine_mut(R1);
             machine.verdict = verdict;
-            machine.first_seen = Some(AGE_CAP);
+            machine.orderable_since = Some(AGE_CAP);
             machine.unblocked = Some(AGE_CAP);
             state
         };
@@ -2391,7 +2686,7 @@ mod tests {
             ),
         ];
         for (name, state, gate) in open {
-            for model in [as_is(), fixed()] {
+            for model in [as_is(), as_it_was()] {
                 let after = passed(model, &state, R1);
                 assert_eq!(
                     after.took,
@@ -2402,7 +2697,7 @@ mod tests {
                     }),
                     "{name}"
                 );
-                assert_eq!(after.machine(R1).first_seen, Some(AGE_CAP), "{name}");
+                assert_eq!(after.machine(R1).orderable_since, Some(AGE_CAP), "{name}");
             }
         }
         let held = [
@@ -2417,8 +2712,8 @@ mod tests {
         ];
         for (name, state) in held {
             let code = passed(as_is(), &state, R1);
-            let fix = passed(fixed(), &state, R1);
-            for (after, reset) in [(code, false), (fix, true)] {
+            let was = passed(as_it_was(), &state, R1);
+            for (after, reset) in [(code, true), (was, false)] {
                 assert_eq!(
                     after.took,
                     Some(Branch::Held {
@@ -2430,8 +2725,22 @@ mod tests {
                 );
                 assert_eq!(after.machine(R1).unblocked, None, "{name}");
             }
-            assert_eq!(code.machine(R1).first_seen, Some(AGE_CAP), "{name}");
-            assert_eq!(fix.machine(R1).first_seen, None, "{name}");
+            assert_eq!(code.machine(R1).orderable_since, None, "{name}");
+            assert_eq!(was.machine(R1).orderable_since, Some(AGE_CAP), "{name}");
+        }
+        let refused = aged(Row::default(), Verdict::DoesNotResolve);
+        for model in [as_is(), as_it_was()] {
+            let after = passed(model, &refused, R1);
+            assert_eq!(
+                after.took,
+                Some(Branch::Refused {
+                    who: R1,
+                    record: Record::NotRankZero,
+                    over_authority: false
+                })
+            );
+            assert_eq!(after.row.last_error(), None);
+            assert_eq!(after.machine(R1).orderable_since, None);
         }
         let material = aged(
             Row {
@@ -2440,22 +2749,22 @@ mod tests {
             },
             Verdict::Direct,
         );
-        for model in [as_is(), fixed()] {
+        for model in [as_is(), as_it_was()] {
             let after = passed(model, &material, R1);
             assert_eq!(after.took, Some(Branch::HasMaterial { who: R1 }));
-            assert_eq!(after.machine(R1).first_seen, None);
+            assert_eq!(after.machine(R1).orderable_since, None);
         }
-        // After a held pass under the fix: no first_seen, and no pass since the block.
+        // After a held pass: no orderable_since, and no pass since the block.
         let mut dropped = State {
             row: clocked(Failure::Authority, 0),
             ..start
         };
         for who in [R0, R1] {
             let machine = dropped.machine_mut(who);
-            machine.first_seen = None;
+            machine.orderable_since = None;
             machine.unblocked = None;
         }
-        let rank_0 = passed(fixed(), &dropped, R0);
+        let rank_0 = passed(as_is(), &dropped, R0);
         assert_eq!(
             rank_0.took,
             Some(Branch::Pushed {
@@ -2465,7 +2774,7 @@ mod tests {
             }),
             "rank 0 owes no delay"
         );
-        let rank_1 = passed(fixed(), &dropped, R1);
+        let rank_1 = passed(as_is(), &dropped, R1);
         assert_eq!(
             rank_1.took,
             Some(Branch::Waiting {
@@ -2489,7 +2798,7 @@ mod tests {
         assert_eq!(ago_cap(), 4);
     }
 
-    /// The failure record counts from the pass's `wall` (:561), so an order that ends ticks
+    /// The failure record counts from the pass's `wall` (:744), so an order that ends ticks
     /// after its pass writes a clock with that much less left. A second Authority failure backs
     /// off 120 s, `ago_cap`'s 4 ticks: an order 3 ticks late leaves 30 s on it, and one 4 ticks
     /// late leaves none, as does any later one.

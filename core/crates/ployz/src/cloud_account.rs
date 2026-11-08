@@ -7,7 +7,7 @@
 
 use std::{collections::BTreeMap, time::Duration};
 
-use ployz_core::{MachineId, MachineName, RpcError};
+use ployz_core::{Departed, MachineId, MachineName, RpcError};
 use reqwest::{Method, StatusCode};
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 
@@ -1053,9 +1053,21 @@ pub(crate) async fn remove_organization(
 /// What Cloud's removal of a Server did.
 #[derive(Debug, Deserialize)]
 pub(crate) struct CloudRemoval {
-    /// Why the reset didn't finish, if it didn't: Cloud keeps its hold on the last Server, else drops the row.
+    /// `departed` as prose, and all an older Cloud says.
     pub(crate) reset_warning: Option<String>,
+    /// How the Server left. None from an older Cloud, for an attempt row older than the tag, for
+    /// a removal without a reset, or for a kind of departure newer than this CLI.
+    #[serde(default, deserialize_with = "known_departed")]
+    pub(crate) departed: Option<Departed>,
     pub(crate) release: Release,
+}
+
+/// A departure this CLI knows, or none: a newer Cloud may send a kind it doesn't.
+fn known_departed<'de, D: serde::Deserializer<'de>>(
+    deserializer: D,
+) -> Result<Option<Departed>, D::Error> {
+    Ok(Option::<serde_json::Value>::deserialize(deserializer)?
+        .and_then(|departed| serde_json::from_value(departed).ok()))
 }
 
 /// What became of Cloud's hold once the Server was gone.
@@ -1515,6 +1527,39 @@ fn answer<T: DeserializeOwned>(
 mod tests {
     use super::*;
     use crate::cloud_login::tests::fake_cloud;
+
+    #[test]
+    fn a_removal_reads_its_departure_and_an_older_or_newer_cloud_reads_without_one() {
+        let departed = |body: &str| serde_json::from_str::<CloudRemoval>(body).unwrap().departed;
+        let release = r#""release":{"kind":"others_remain"}"#;
+        assert_eq!(
+            departed(&format!(
+                r#"{{"reset_warning":"replicated delete failed","departed":{{"kind":"reset","row_warning":"replicated delete failed"}},{release}}}"#
+            )),
+            Some(Departed::Reset {
+                row_warning: Some("replicated delete failed".into())
+            })
+        );
+        assert_eq!(
+            departed(&format!(r#"{{"reset_warning":null,{release}}}"#)),
+            None,
+            "an older Cloud"
+        );
+        assert_eq!(
+            departed(&format!(
+                r#"{{"reset_warning":null,"departed":null,{release}}}"#
+            )),
+            None,
+            "a row older than the tag"
+        );
+        assert_eq!(
+            departed(&format!(
+                r#"{{"reset_warning":"moved","departed":{{"kind":"moved"}},{release}}}"#
+            )),
+            None,
+            "a newer Cloud"
+        );
+    }
 
     #[test]
     fn a_removal_the_cli_stopped_waiting_on_says_when_to_forget_but_not_to_now() {
