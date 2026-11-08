@@ -63,6 +63,16 @@ denied. Only you approve, in the dashboard. The agent can't approve its own requ
 `ployz org approval approve` refuses it too with `forbidden`, before it asks for the
 organization's slug, with or without a terminal and in `--json`.
 
+## Restart several services at once
+
+Instead of one approval per call, the agent can plan service restarts, stops and starts as a
+proposal. You approve it once in the dashboard, and the steps run in order. The agent gets a link
+to the proposal and follows it with `proposal_status`. See
+[Ployz agent](agent-sidebar.md#approve-several-steps-at-once) for the card.
+
+The agent never holds your approval. It can't approve a call or a proposal, and what you sign in
+the browser never reaches it.
+
 ## Disconnect
 
 To disconnect one agent, click **Disconnect** on its row under **Account → Connected agents**. Each
