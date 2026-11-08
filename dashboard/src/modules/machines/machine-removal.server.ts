@@ -215,12 +215,12 @@ export const releaseLeavingLanesActivity = (input: {
 const RESET_UNCONFIRMED = "its reset couldn't be confirmed: it was already gone from the Cluster";
 
 /**
- * What a removed Server leaves of Cloud's hold. A Server that was unreachable left without a reset, a partial outcome:
- * it may keep Cloud's key, so Cloud keeps its row and its pairing. Otherwise `dropRemovedServer` drops the Server's row
- * of the witnessed pairing, as after a reset whose own row removal on the Server failed. When a reset took that
- * pairing's last Server, the Store lets go of everything that ran, and then Cloud forgets the pairing. A Server taken
- * out without a reset loses its row but never lets go of the Cluster. A Server the Cluster had already forgotten is
- * listed nowhere else, so its row goes while other Servers keep the pairing; as the last, Cloud keeps its hold.
+ * What a removed Server leaves of Cloud's hold. A Server whose Leave was unreachable may not have reset, a partial
+ * outcome: it may keep Cloud's key, so Cloud keeps its row and its pairing. Otherwise `dropRemovedServer` drops the
+ * Server's row of the witnessed pairing, as after a reset whose own row removal on the Server failed. When a reset took
+ * that pairing's last Server, the Store lets go of everything that ran, and then Cloud forgets the pairing. A Server
+ * taken out without a reset loses its row but never lets go of the Cluster. A Server the Cluster had already forgotten
+ * is listed nowhere else, so its row goes while other Servers keep the pairing; as the last, Cloud keeps its hold.
  */
 export const releaseServerActivity = Effect.fn("MachineRemoval.release")(function* (input: {
   organizationId: string; machineId: MachineId; generation: string; resetWarning: string | null; departed?: Departed;

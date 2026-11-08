@@ -627,6 +627,12 @@ async fn a_reset_whose_own_row_removal_failed_reads_as_a_reset() {
         !stderr.contains("not fully cleaned up or reset"),
         "{stderr}"
     );
+    assert!(
+        stderr.contains(
+            "! Server one reset, but its own row removal failed: replicated delete failed.\n"
+        ),
+        "{stderr}"
+    );
     let result: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
     assert_eq!(
         result.get("departed"),
@@ -667,6 +673,61 @@ async fn a_cloud_removal_whose_reset_committed_reads_as_a_reset() {
         !stderr.contains("not fully cleaned up or reset"),
         "{stderr}"
     );
+    assert!(
+        stderr.contains(
+            "! Server two reset, but its own row removal failed: replicated delete failed.\n"
+        ),
+        "{stderr}"
+    );
+}
+
+/// A Leave that never answered, or that the entry could no longer route, leaves the reset
+/// unproven: the removal is partial.
+#[tokio::test]
+async fn a_removal_whose_reset_is_unproven_is_partial() {
+    let unroutable = RpcError {
+        code: RpcErrorCode::NotFound,
+        message: "unknown Machine".into(),
+        details: serde_json::Value::Null,
+        cause: Vec::new(),
+    };
+    for (unavailable, error, kind, doubt) in [
+        (
+            true,
+            None,
+            "unreachable",
+            "! Server one was not fully cleaned up or reset: target is unreachable; removing shared rows: ",
+        ),
+        (
+            false,
+            Some(unroutable),
+            "already_forgotten",
+            "! Server one was not fully cleaned up or reset: its reset couldn't be confirmed: it was already gone from the Cluster. Reset does not erase volume data.\n",
+        ),
+    ] {
+        let mut service = DiscoveryService::new(test_description());
+        service.leave_unavailable = unavailable;
+        service.leave_error = error;
+        let output = remove_server(
+            &service,
+            Dial::Connect,
+            "one",
+            &[],
+            &["--confirm", "one", "--accept-volume-loss", "data"],
+        )
+        .await;
+        assert_eq!(output.status.code(), Some(3), "{kind}: {output:?}");
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert!(stderr.contains(doubt), "{kind}: {stderr}");
+        let result: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+        assert_eq!(
+            result
+                .get("departed")
+                .and_then(|departed| departed.get("kind")),
+            Some(&json!(kind)),
+            "{result}"
+        );
+    }
 }
 
 #[tokio::test]

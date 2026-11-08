@@ -1737,7 +1737,8 @@ pub enum Departed {
     /// It answered Leave with [`Left::Left`]: its reset committed. `row_warning` is that
     /// reply's `reset_warning`, why its own row removal failed after the reset.
     Reset { row_warning: Option<String> },
-    /// Its Leave was unreachable, so its row was forgotten without a reset.
+    /// No reply to its Leave came back, so its reset can't be confirmed: it may have reset and
+    /// lost the reply. Its row was forgotten anyway.
     Unreachable { cause: String },
     /// It was already gone from the Cluster: a Forget ran, and whether its reset did is unknown.
     AlreadyForgotten,

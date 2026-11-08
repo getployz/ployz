@@ -1055,8 +1055,8 @@ pub(crate) async fn remove_organization(
 pub(crate) struct CloudRemoval {
     /// `departed` as prose, and all an older Cloud says.
     pub(crate) reset_warning: Option<String>,
-    /// How the Server left. None from an older Cloud, for a removal without a reset, or for a
-    /// kind of departure newer than this CLI.
+    /// How the Server left. None from an older Cloud, for an attempt row older than the tag, for
+    /// a removal without a reset, or for a kind of departure newer than this CLI.
     #[serde(default, deserialize_with = "known_departed")]
     pub(crate) departed: Option<Departed>,
     pub(crate) release: Release,
