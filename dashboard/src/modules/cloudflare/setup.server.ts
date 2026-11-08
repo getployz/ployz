@@ -7,6 +7,7 @@ import {
   checkEditPermissions,
   createRecord,
   createTunnel,
+  deleteRecord,
   deleteTunnel,
   findRecords,
   findTunnel,
@@ -62,7 +63,7 @@ const setupProblem = Effect.fn("Cloudflare.setupProblem")(function* (organizatio
  * Cluster is asked to run it, both Doors are open and answering before the wildcard record points names at it, and the
  * row is the last thing written, under the lock a switch takes, so neither lands over the other. The API token is `Redacted` throughout,
  * used for these calls and then dropped; the tunnel's own token goes `Redacted` to the Cluster, which seals it. Every
- * way out after the tunnel exists undoes what was done, and says so when Cloudflare kept the tunnel.
+ * way out after the tunnel exists undoes what was done, and names what Cloudflare kept.
  */
 export const setUpCloudflare = Effect.fn("Cloudflare.setUp")(function* (
   organizationId: string,
@@ -95,12 +96,19 @@ export const setUpCloudflare = Effect.fn("Cloudflare.setUp")(function* (
     : { id: found, token: null, made: false };
 
   let doorsAsked = false;
-  /** Put back what the steps below changed: the Doors first, so no connector holds the tunnel, then the tunnel this setup made. What is left for the user, in words. */
+  let recordId: string | null = null;
+  /**
+   * Put back what the steps below changed: the Doors first, so no connector holds the tunnel, then the record and the
+   * tunnel this setup made. What is left for the user, in words.
+   */
   const undo = Effect.gen(function* () {
     if (doorsAsked) yield* session.connected.setIngressDoors(["public"]).pipe(Effect.ignoreCause({ log: true, message: "Public door not restored after a failed setup" }));
-    const gone = tunnel.made ? yield* deleteTunnel(http, input.token, zone.accountId, tunnel.id) : true;
-    if (!gone) yield* Effect.logWarning(`Cloudflare kept tunnel ${tunnel.id} after a failed setup`);
-    return gone ? "Nothing was changed." : `Delete the tunnel ${tunnelName} in Cloudflare.`;
+    const recordGone = recordId === null ? true : yield* deleteRecord(http, input.token, zone.id, recordId);
+    const tunnelGone = tunnel.made ? yield* deleteTunnel(http, input.token, zone.accountId, tunnel.id) : true;
+    const kept = [recordGone ? null : name, tunnelGone ? null : `the tunnel ${tunnelName}`].filter((item) => item !== null);
+    if (kept.length === 0) return "Nothing was changed.";
+    yield* Effect.logWarning(`Cloudflare kept ${kept.join(" and ")} after a failed setup`);
+    return `Delete ${kept.join(" and ")} in Cloudflare.`;
   });
 
   const finish = Effect.gen(function* () {
@@ -111,7 +119,7 @@ export const setUpCloudflare = Effect.fn("Cloudflare.setUp")(function* (
     const gap = doorsGap(answered.success, BOTH);
     if (gap !== null) return yield* refuse(gap);
 
-    if (there.length === 0) yield* createRecord(http, input.token, zone.id, wildcardRecord(zone.name, tunnel.id));
+    if (there.length === 0) recordId = yield* createRecord(http, input.token, zone.id, wildcardRecord(zone.name, tunnel.id));
 
     return yield* database.transaction(Effect.gen(function* () {
       yield* lockIngressRows(organizationId);

@@ -28,6 +28,8 @@ type Options = {
   readonly deleteStatus?: number;
   /** The account already holds the tunnel setup would name. */
   readonly existingTunnel?: boolean;
+  /** What Cloudflare answers when the record this setup wrote is deleted; 200 when unset. */
+  readonly recordDeleteStatus?: number;
   /** Runs as the record is created: the moment something else can move while setup is between its Cloudflare calls. */
   readonly onRecord?: () => Promise<void>;
 };
@@ -51,7 +53,12 @@ function cloudflare(options: Options = {}) {
       if (probe) return reply(options.dnsStatus ?? 400);
       await options.onRecord?.();
       records.push(body ?? null);
-      return reply(200, body ?? null);
+      return reply(200, { id: "r-made" });
+    }
+    if (method === "DELETE" && path === "/zones/z1/dns_records/r-made") {
+      if (options.recordDeleteStatus !== undefined) return reply(options.recordDeleteStatus);
+      records.length = 0;
+      return reply(200, {});
     }
     if (method === "GET" && path.startsWith("/zones/z1/dns_records?")) {
       if (options.recordsStatus !== undefined) return reply(options.recordsStatus);
@@ -230,15 +237,25 @@ it("refuses while a switch is under way, before anything is created", async () =
   expect(await setupRows()).toMatchObject([{ tunnel_id: "t0", state: "set_up" }]);
 });
 
-it("never lands its row over a switch that started meanwhile: it closes the tunnel door, drops the tunnel's connections and deletes it", async () => {
+it("never lands its row over a switch that started meanwhile: it closes the tunnel door, deletes the record it wrote, drops the tunnel's connections and deletes it", async () => {
   const { http, alive, calls, records } = cloudflare({ onRecord: () => switching().then(() => undefined) });
   const { runtime, sets } = cluster();
   await expect(setUp("example.com", http, runtime)).rejects.toMatchObject({ message: "A switch is under way. Wait for it to finish, then set up. Nothing was changed." });
-  expect(records).toHaveLength(1);
+  expect(records).toEqual([]);
   expect(alive.size).toBe(0);
   expect(sets.map(({ doors }) => doors)).toEqual([["public", "tunnel"], ["public"]]);
   const deletes = calls.filter(({ method }) => method === "DELETE").map(({ path }) => path);
-  expect(deletes).toEqual(["/accounts/a1/cfd_tunnel/t1/connections", "/accounts/a1/cfd_tunnel/t1"]);
+  expect(deletes).toEqual(["/zones/z1/dns_records/r-made", "/accounts/a1/cfd_tunnel/t1/connections", "/accounts/a1/cfd_tunnel/t1"]);
+  expect(await setupRows()).toEqual([]);
+});
+
+it("names the record when Cloudflare keeps it after a failed setup, never claiming nothing changed", async () => {
+  const { http, alive, records } = cloudflare({ onRecord: () => switching().then(() => undefined), recordDeleteStatus: 500 });
+  const { runtime } = cluster();
+  const failure = await setUp("example.com", http, runtime).then(() => null, (error: { message: string }) => error.message);
+  expect(failure).toBe("A switch is under way. Wait for it to finish, then set up. Delete *.example.com in Cloudflare.");
+  expect(records).toHaveLength(1);
+  expect(alive.size).toBe(0);
   expect(await setupRows()).toEqual([]);
 });
 

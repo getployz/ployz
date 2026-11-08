@@ -107,6 +107,7 @@ export const checkEditPermissions = Effect.fn("Cloudflare.checkEditPermissions")
 
 const Tunnels = Schema.Array(Schema.Struct({ id: Schema.String }));
 const Tunnel = Schema.Struct({ id: Schema.String, token: Schema.optional(Schema.String) });
+const Record = Schema.Struct({ id: Schema.String });
 const Records = Schema.Array(Schema.Struct({ id: Schema.String, content: Schema.String }));
 
 const decoded = <S extends Schema.Top>(schema: S, operation: string, value: Payload) =>
@@ -173,12 +174,21 @@ export const findRecords = Effect.fn("Cloudflare.findRecords")(function* (
   return yield* decoded(Records, "find records", answer.result);
 });
 
+/** Writes the record and answers its id, so a setup that fails later can take it back. */
 export const createRecord = Effect.fn("Cloudflare.createRecord")(function* (
   http: CloudflareHttp, token: Redacted.Redacted<string>, zoneId: string, record: Readonly<Record<string, Schema.Json>>,
 ) {
   const answer = yield* call(http, token, "create record", "POST", `/zones/${zoneId}/dns_records`, record);
   if (!answer.success) return yield* refusal(answer, "create record", "dns");
+  return (yield* decoded(Record, "create record", answer.result)).id;
 });
+
+/** Deletes a record this Cloud wrote. True once it is gone; false when Cloudflare kept it, for the caller to say so. */
+export const deleteRecord = (http: CloudflareHttp, token: Redacted.Redacted<string>, zoneId: string, recordId: string) =>
+  call(http, token, "delete record", "DELETE", `/zones/${zoneId}/dns_records/${recordId}`).pipe(
+    Effect.map((answer) => answer.success),
+    Effect.catch(() => Effect.succeed(false)),
+  );
 
 /** Cloudflare's refusal in words, for the message a user reads. What it left behind is the caller's to say. */
 export const refusalWords = (error: CloudflareError) => {
