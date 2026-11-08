@@ -226,6 +226,16 @@ pub enum ContainerNotFoundReason {
     NoResolvedSpec,
 }
 
+impl ContainerNotFoundReason {
+    /// The `reason` of a Container's `NotFound` RPC error, if it is one of the frozen names.
+    #[must_use]
+    pub fn from_details(details: &serde_json::Value) -> Option<Self> {
+        details
+            .get("reason")
+            .and_then(|reason| Self::deserialize(reason).ok())
+    }
+}
+
 /// Request fresh storage commitments and physical backing capacity.
 #[derive(Clone, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
 pub struct InspectStorageRequest {}

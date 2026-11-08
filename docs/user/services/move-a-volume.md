@@ -83,6 +83,10 @@ because Ployz restarted there, it can't tell exactly when the service started. T
 gives an estimate and says why: `web was stopped about 43s (its start was retried)`. While the old replica is stopped, `ployz status` names it as not serving, with the
 code it exited with. The row goes once the replica on `web-2` runs.
 
+If `web-1` still has the old replica's container but holds no Ployz spec under its id, Ployz
+doesn't remove it. The move still finishes, and its last line ends with the
+container's id, like `web was stopped 26s; <container id> stays on web-1, not removed.`
+
 If `web` has one replica, its domain answers
 [`503 · NOT_RUNNING`](../troubleshooting/app-not-reachable.md#this-app-isnt-running) from about when
 the old replica stops until the replica on `web-2` serves. Clients can retry at once rather than

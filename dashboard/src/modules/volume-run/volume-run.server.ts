@@ -1434,21 +1434,39 @@ export const startWriter = Effect.fn("VolumeRun.startWriter")(function* (ctx: Ru
   });
 }, Effect.scoped);
 
-/** Removes the stopped Service containers the Move left on `machines`; a rerun finds the ones already gone gone. */
+/**
+ * Removes the stopped Service containers the Move left on `machines`; a rerun finds the ones already gone gone. Returns
+ * a sentence for each that stays.
+ */
 export const removeKept = Effect.fn("VolumeRun.removeKept")(function* (ctx: RunContext, inngestRunId: string, machines: readonly MachineRef[]) {
   yield* requireOwner(ctx.id, inngestRunId);
   const containers = yield* serviceContainers(ctx.organizationId, ctx.dockerVolume);
+  const stays: string[] = [];
   for (const container of containers) {
     const machine = machines.find((candidate) => candidate.id === container.machine_id);
     if (machine === undefined || container.runtime.state === "running") continue;
-    yield* removeContainer(ctx, inngestRunId, machine, container.container_id);
+    const stay = yield* removeContainer(ctx, inngestRunId, machine, container.container_id);
+    if (stay !== null) stays.push(stay);
   }
+  return stays;
 });
 
+/** The remove's answer when Docker has the Container and its Server holds no Resolved Service Spec under its ID. */
+const KeptWithoutSpec = Schema.Struct({
+  code: Schema.Literal("conflict"),
+  details: Schema.Struct({ reason: Schema.Literal("no_resolved_spec") }),
+});
+
+const keptWithoutSpec = (error: PloyzSdkError) =>
+  "cause" in error && Option.isSome(Schema.decodeUnknownOption(KeptWithoutSpec)(error.cause));
+
+/** Removes one Container, or returns the sentence saying it stays when its Server holds no spec for it. */
 export const removeContainer = Effect.fn("VolumeRun.removeContainer")(function* (ctx: RunContext, inngestRunId: string, machine: MachineRef, containerId: ContainerId) {
   yield* requireOwner(ctx.id, inngestRunId);
   const session = yield* openSession(ctx.organizationId);
-  yield* session.removeContainer(machine.id, containerId).pipe(
+  return yield* session.removeContainer(machine.id, containerId).pipe(
+    Effect.as(null),
+    Effect.catchIf(keptWithoutSpec, () => Effect.succeed(`${containerId} stays on ${machine.name}, not removed`)),
     Effect.mapError((error) => new Error(`removing ${ctx.volumeName}'s old Container on ${machine.name}: ${sdkFailureMessage(error, [machine])}`)),
   );
 }, Effect.scoped);

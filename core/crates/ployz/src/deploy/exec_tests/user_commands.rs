@@ -525,7 +525,10 @@ async fn a_remove_of_a_container_its_machine_holds_without_a_spec_says_it_stays(
         Call::Inspect(machine('a'), container('1')),
         Reply::Error(RpcError {
             code: RpcErrorCode::NotFound,
-            message: format!("resolved spec not found in machine.db for {}", container('1')),
+            message: format!(
+                "resolved spec not found in machine.db for {}",
+                container('1')
+            ),
             details: serde_json::json!({ "reason": "no_resolved_spec" }),
             cause: Vec::new(),
         }),
@@ -547,6 +550,13 @@ async fn a_remove_of_a_container_its_machine_holds_without_a_spec_says_it_stays(
             "Container {} was not removed: Docker on its Server has it, and the Server holds no Resolved Service Spec under its ID.",
             container('1')
         )
+    );
+    assert_eq!(
+        error.cause,
+        [format!(
+            "resolved spec not found in machine.db for {}",
+            container('1')
+        )]
     );
     assert!(ran.wants.is_empty());
 }
