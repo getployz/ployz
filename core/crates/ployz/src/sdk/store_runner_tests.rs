@@ -1725,6 +1725,7 @@ fn the_runner_writes_each_approved_image_into_its_spec_before_planning() {
         issued_at,
         expires_at: issued_at.plus(60_000),
         signer: SignerKey::Device(signer.public().into()),
+        proposal: None,
     };
     let approval = Signed::sign(&body, &signer).unwrap();
     let mut target = vec![

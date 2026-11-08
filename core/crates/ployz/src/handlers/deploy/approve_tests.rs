@@ -1,10 +1,10 @@
-use ployz_core::authority::PayloadDigest;
-use ployz_core::{Namespace, RequestedServiceSpec};
+use std::collections::BTreeMap;
+
+use ployz_core::authority::{ApprovedChange, PayloadDigest};
+use ployz_core::{Namespace, RequestedServiceSpec, ServiceName};
 use serde_json::json;
 
-use super::{
-    Approved, Enforcing, Probe, enforced, host_sensitive, line, pin_tags, signable, unpinnable,
-};
+use super::{Enforcing, Probe, enforced, pin_tags, signable, unpinnable};
 use crate::image::PinError;
 
 const PINNED: &str =
@@ -31,32 +31,35 @@ fn spec(image: &str) -> RequestedServiceSpec {
     .unwrap()
 }
 
-fn approved(spec: &RequestedServiceSpec) -> Approved {
-    Approved {
-        service: spec.name.clone(),
-        image: spec.container.image.clone(),
-        tag: None,
-        digest: PayloadDigest::of(spec, &Namespace::parse("app").unwrap()).unwrap(),
-        host: host_sensitive(spec),
-    }
+fn approved(spec: &RequestedServiceSpec) -> ApprovedChange {
+    change(spec, &BTreeMap::new())
+}
+
+fn change(spec: &RequestedServiceSpec, pins: &BTreeMap<ServiceName, String>) -> ApprovedChange {
+    let [change] = ApprovedChange::of(
+        std::slice::from_ref(spec),
+        &Namespace::parse("app").unwrap(),
+        pins,
+    )
+    .unwrap()
+    .try_into()
+    .unwrap();
+    change
 }
 
 /// `spec`'s tag as this CLI pins it: the Servers run `PINNED`, the Saved State says `tag`.
-fn pinned(tag: &str) -> Approved {
-    let mut spec = spec(PINNED);
-    let digest = PayloadDigest::of(&spec, &Namespace::parse("app").unwrap()).unwrap();
-    spec.container.image = PINNED.to_owned();
-    Approved {
-        tag: Some(tag.to_owned()),
-        digest,
-        ..approved(&spec)
-    }
+fn pinned(tag: &str) -> ApprovedChange {
+    let spec = spec(tag);
+    change(
+        &spec,
+        &BTreeMap::from([(spec.name.clone(), PINNED.to_owned())]),
+    )
 }
 
 #[test]
 fn a_pinned_tag_prints_its_tag_and_the_digest_it_resolved_to() {
     assert_eq!(
-        line(&pinned("nginx:1.29-alpine")),
+        pinned("nginx:1.29-alpine").line(),
         "Approved web: nginx:1.29-alpine → @sha256:0123456789ab… (privileged, device \
          /dev/fuse:/dev/fuse, adds NET_ADMIN, host port 8080, binds /srv, hook migrate --up)"
     );
@@ -68,7 +71,7 @@ fn a_pinned_tag_prints_its_tag_and_the_digest_it_resolved_to() {
 #[test]
 fn the_approved_line_names_the_image_digest_and_what_the_host_gives() {
     assert_eq!(
-        line(&approved(&spec(PINNED))),
+        approved(&spec(PINNED)).line(),
         "Approved web: nginx@sha256:0123456789ab… (privileged, device /dev/fuse:/dev/fuse, adds \
          NET_ADMIN, host port 8080, binds /srv, hook migrate --up)"
     );

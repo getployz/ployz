@@ -8175,6 +8175,7 @@ fn device_approval(
         issued_at,
         expires_at: issued_at.plus(60_000),
         signer: SignerKey::Device(signer.public().into()),
+        proposal: None,
     };
     Signed::sign(&body, &signer).unwrap()
 }

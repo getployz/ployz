@@ -78,6 +78,7 @@ impl LocalMachine {
         }
         tracing::info!(
             kind = %new.slot.kind,
+            proposal = ?approved.body.proposal,
             admission_us = started.elapsed().as_micros(),
             "deploy {} approved by {} for {} digest={}",
             approved.body.operation,
@@ -144,6 +145,7 @@ impl LocalMachine {
         .map_err(refused)?;
         tracing::info!(
             ?step,
+            proposal = ?approved.body.proposal,
             container = observed.container_id.as_str().get(..12).unwrap_or_default(),
             "deploy {} step approved by {} for {}",
             approved.body.operation,

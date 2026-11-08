@@ -142,6 +142,8 @@ macro_rules! rpc_catalog {
                 PROPOSAL_APPROVAL_CAPABILITY: ("ployz.restart.proposal.v1", Always),
                 /// `EnsureContainer` takes a deploy approval and, under Device enforcement, creates an Operator's Container only when its spec matches a digest it approves.
                 DEPLOY_APPROVAL_CAPABILITY: ("ployz.container.deploy-approval.v1", Always),
+                /// A deploy approval may be an unsigned step of a signed proposal bundle that rides in its envelope.
+                DEPLOY_PROPOSAL_CAPABILITY: ("ployz.container.deploy-proposal.v1", Always),
             }
         }
     };
