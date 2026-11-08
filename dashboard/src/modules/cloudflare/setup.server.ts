@@ -61,9 +61,9 @@ const setupProblem = Effect.fn("Cloudflare.setupProblem")(function* (organizatio
  * Set Cloudflare up for the Cluster, once, with a token the user pasted for it. Order matters: every permission is
  * checked, the Servers answer and the zone's wildcard is free before anything is created, the tunnel exists before the
  * Cluster is asked to run it, both Doors are open and answering before the wildcard record points names at it, and the
- * row is the last thing written, under the lock a switch takes, so neither lands over the other. The API token is `Redacted` throughout,
- * used for these calls and then dropped; the tunnel's own token goes `Redacted` to the Cluster, which seals it. Every
- * way out after the tunnel exists undoes what was done, and names what Cloudflare kept.
+ * row is the last thing written, under the lock a switch takes, so neither lands over the other. The API token is
+ * `Redacted` throughout, used for these calls and then dropped; the tunnel's own token goes `Redacted` to the Cluster,
+ * which seals it. Every way out after the tunnel exists undoes what was done, and names what Cloudflare kept.
  */
 export const setUpCloudflare = Effect.fn("Cloudflare.setUp")(function* (
   organizationId: string,
