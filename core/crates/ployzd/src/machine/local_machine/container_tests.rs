@@ -272,6 +272,7 @@ async fn joining_admits_direct_create() {
         public_ip: None,
         advertised_endpoints: vec![AdvertisedEndpoint("192.0.2.1:51820".parse().unwrap())],
         runtime: Default::default(),
+        join_approval: None,
         build_concurrency: None,
     };
     let mut peer = machine.clone();

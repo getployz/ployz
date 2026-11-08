@@ -30,6 +30,7 @@ use crate::machine::{LocalMachineBody, LocalMachineError, LocalMachineRecord, Re
 #[derive(Clone)]
 pub struct ReplicatedStore {
     api: ApiClient,
+    authority: Option<RecordOwner>,
     machine_publication: Arc<tokio::sync::Mutex<()>>,
 }
 
@@ -81,6 +82,7 @@ impl MachinePublicationGuard<'_> {
                 machine.runtime.running_builds = overlay.running_builds;
                 machine.runtime.pool_committable_bytes = overlay.pool_committable_bytes;
                 machine.runtime.sealing = overlay.sealing;
+                machine.runtime.device_enforcement = Some(local.device_enforcement());
                 machine.runtime.management_identity = Some(local.management_secret().public_key());
                 Some(machine)
             }
@@ -441,8 +443,24 @@ impl ReplicatedStore {
     pub(crate) fn new(api: ApiClient) -> Self {
         Self {
             api,
+            authority: None,
             machine_publication: Arc::new(tokio::sync::Mutex::new(())),
         }
+    }
+
+    pub(crate) fn authorize(&mut self, owner: RecordOwner) {
+        self.authority = Some(owner);
+    }
+
+    pub(crate) fn with_authority(mut self, owner: RecordOwner) -> Self {
+        self.authority = Some(owner);
+        self
+    }
+
+    fn accepts_machine(&self, machine: &Machine) -> bool {
+        self.authority
+            .as_ref()
+            .is_none_or(|owner| owner.record().accepts_machine(machine))
     }
 
     #[cfg(test)]
@@ -694,7 +712,8 @@ impl ReplicatedStore {
         let Some([info]) = rows.first() else {
             return Ok(None);
         };
-        decode_machine(id, text(info, "machine info")?)
+        Ok(decode_machine(id, text(info, "machine info")?)?
+            .filter(|machine| self.accepts_machine(machine)))
     }
 
     pub async fn machines(&self) -> Result<ReplicatedObservations<Machine, MachineId>, Error> {
@@ -705,10 +724,30 @@ impl ReplicatedStore {
                 [],
             ))
             .await?;
-        decode_observations(
+        let mut snapshot = decode_observations(
             id_and_json(query.rows(["id", "info"])?, |id| Ok(MachineId::parse(id)?))?,
             |id, encoded| decode_machine(id.as_str(), encoded),
-        )
+        )?;
+        snapshot
+            .observations
+            .retain(|machine| self.accepts_machine(machine));
+        if let Some(owner) = &self.authority {
+            let record = owner.record();
+            if record.device_enforcement()
+                && snapshot
+                    .observations
+                    .iter()
+                    .any(|machine| !record.pins_machine(machine))
+            {
+                let accepted = snapshot.observations.clone();
+                owner
+                    .mutate(move |store| store.pin_machines(&accepted))
+                    .await
+                    .map_err(std::io::Error::other)?
+                    .map_err(std::io::Error::other)?;
+            }
+        }
+        Ok(snapshot)
     }
 
     pub async fn publish_container(&self, observation: &ContainerObservation) -> Result<(), Error> {
@@ -1437,6 +1476,33 @@ impl ReplicatedStore {
             [[held]] if held.as_i64() == Some(1) => Ok(true),
             _ => Err(Error::Protocol("invalid held-another-Machine row".into())),
         }
+    }
+
+    /// Which of `ids` name a Machine whose row this store held and then deleted, as `server
+    /// rm` does: a deleted row keeps its cr-sqlite key.
+    pub(crate) async fn removed_machines(
+        &self,
+        ids: &[MachineId],
+    ) -> Result<BTreeSet<MachineId>, Error> {
+        if ids.is_empty() {
+            return Ok(BTreeSet::new());
+        }
+        let query = self
+            .api
+            .query(Statement::new(
+                format!(
+                    "SELECT id FROM machines__crsql_pks WHERE id IN ({}) \
+                     AND NOT EXISTS (SELECT 1 FROM machines WHERE machines.id = machines__crsql_pks.id)",
+                    vec!["?"; ids.len()].join(", "),
+                ),
+                ids.iter().map(|id| json!(id)),
+            ))
+            .await?;
+        query
+            .rows(["id"])?
+            .into_iter()
+            .map(|[id]| Ok(MachineId::parse(text(&id, "removed Machine ID")?)?))
+            .collect()
     }
 
     /// Each actor's highest version this store holds with no hole below it: a catch-up

@@ -231,6 +231,7 @@ async fn publication_guard_rechecks_the_local_phase() {
     );
     let (mut machine, local) = participating_record();
     machine.runtime.management_identity = Some(local.management_secret().public_key());
+    machine.runtime.device_enforcement = Some(local.device_enforcement());
     let publication = store.machine_publication().await;
     assert_eq!(
         publication.publishable_machine(&local, RuntimeOverlay::default()),
@@ -1066,6 +1067,43 @@ async fn a_store_has_held_another_machine_once_its_key_arrived() {
         .await
         .unwrap();
     assert!(store.held_another_machine(&own).await.unwrap());
+    server.abort();
+}
+
+/// `server rm` deletes the row and leaves its cr-sqlite key, while a row that has not
+/// arrived leaves neither. Only the IDs asked about are answered.
+#[tokio::test]
+async fn a_deleted_machine_row_reads_as_removed() {
+    let present = MachineId::random();
+    let deleted = MachineId::random();
+    let unasked = MachineId::random();
+    let never_held = MachineId::random();
+    let db = rusqlite::Connection::open_in_memory().unwrap();
+    db.execute_batch(
+        "CREATE TABLE machines__crsql_pks (__crsql_key INTEGER PRIMARY KEY, id);
+         CREATE TABLE machines (id PRIMARY KEY, info);",
+    )
+    .unwrap();
+    for id in [present, deleted, unasked] {
+        db.execute(
+            "INSERT INTO machines__crsql_pks (id) VALUES (?)",
+            [id.to_string()],
+        )
+        .unwrap();
+    }
+    db.execute(
+        "INSERT INTO machines (id, info) VALUES (?, '{}')",
+        [present.to_string()],
+    )
+    .unwrap();
+    let (store, server) = identity_store(db).await;
+    assert_eq!(
+        store
+            .removed_machines(&[present, deleted, never_held])
+            .await
+            .unwrap(),
+        std::collections::BTreeSet::from([deleted])
+    );
     server.abort();
 }
 

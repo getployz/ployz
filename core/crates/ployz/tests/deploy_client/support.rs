@@ -76,6 +76,10 @@ pub(super) struct DeployService {
     unread_health: bool,
     effective_healthcheck: Option<HealthcheckSpec>,
     removed: Arc<Mutex<BTreeSet<ContainerId>>>,
+    /// The approval each `EnsureContainer` carried, in arrival order.
+    approvals: Arc<
+        Mutex<Vec<Option<ployz_core::authority::Signed<ployz_core::authority::RestartApproval>>>>,
+    >,
     pub(super) history_requests: Arc<Mutex<Vec<ployz_core::LogHistoryRequest>>>,
     /// Machines whose Log Store answers with an error row, and its message.
     pub(super) history_failures: BTreeMap<MachineId, String>,
@@ -188,6 +192,7 @@ impl DeployService {
             unread_health: false,
             effective_healthcheck: None,
             removed: Arc::new(Mutex::new(BTreeSet::new())),
+            approvals: Arc::default(),
             history_requests: Arc::new(Mutex::new(Vec::new())),
             history_failures: BTreeMap::new(),
             uninspectable: BTreeSet::new(),
@@ -592,6 +597,14 @@ impl DeployService {
 
     pub(super) fn removed_containers(&self) -> Arc<Mutex<BTreeSet<ContainerId>>> {
         Arc::clone(&self.removed)
+    }
+
+    pub(super) fn approvals(
+        &self,
+    ) -> Arc<
+        Mutex<Vec<Option<ployz_core::authority::Signed<ployz_core::authority::RestartApproval>>>>,
+    > {
+        Arc::clone(&self.approvals)
     }
 
     pub(super) fn created_specs(&self) -> Arc<Mutex<Vec<ResolvedServiceSpec>>> {
@@ -1024,6 +1037,7 @@ impl FakeMachine for DeployService {
             advertised_endpoints: Vec::new(),
             store_version: BTreeMap::new(),
             rtts: Vec::new(),
+            passkeys: Vec::new(),
             management_clients: Vec::new(),
             telemetry,
             storage: self.machines.first().and_then(|machine| machine.storage),
@@ -1159,6 +1173,7 @@ impl FakeMachine for DeployService {
         else {
             return Err(Status::invalid_argument("expected ensure_container"));
         };
+        self.approvals.lock().unwrap().push(ensure.approval.clone());
         let want = ensure.want.clone();
         let settled = matches!(
             &want,
@@ -1848,6 +1863,7 @@ pub(super) fn machine(hex: char, name: &str) -> MachineObservation {
             public_ip: None,
             advertised_endpoints: Vec::<AdvertisedEndpoint>::new(),
             runtime: Default::default(),
+            join_approval: None,
             build_concurrency: None,
         },
         MembershipObservation::Up,

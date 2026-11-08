@@ -231,8 +231,10 @@ ployz device approve mmg42klgyq
 For your first device, approve it over SSH on a server. Run `ployz login` there first, then the
 same `ployz device approve`. A request lasts 24 hours.
 
-`approve` checks that the key Ployz Cloud returns matches the code, then adds it to every server
-and lists what each server did. A server that's down when you approve doesn't get the device.
+`approve` refuses a key from Ployz Cloud that doesn't hash to the code you typed. It says the
+device gets Full access to every server you approve it on, and asks first. Pass `--yes` to skip
+the question. Take the code from the person who ran `ployz device request`, not from a web page.
+It then adds the device to every server and lists what each server did. A server that's down when you approve doesn't get the device.
 Run `approve` again once it's back.
 
 ```sh
@@ -241,7 +243,121 @@ ployz device rm mmg42klgyq
 ```
 
 `device ls` shows each device and the servers missing it. `device rm` takes it off every server
-that answers.
+that answers. A server that doesn't answer is listed under failures, and one with no direct
+connection under omissions. Either way the command exits 3.
+
+### Add a passkey
+
+A passkey lets you approve changes from your browser. Each server trusts it to approve workflows
+and nothing else: it can't open a connection, run `exec`, or approve a device. You don't need a
+device to add one.
+
+1. In Ployz Cloud, open **Account** in your Organization and choose **Add passkey**. Your browser
+   asks you to create it. Ployz Cloud then shows a code, such as `q3x7mfk2pa`.
+2. On each server, sign in to Ployz Cloud, then approve the passkey:
+
+   ```sh
+   sudo ployz login
+   sudo ployz device approve --passkey q3x7mfk2pa
+   ```
+
+   Run there, it adds the passkey to that server only. An admin can run the same command once
+   from an approved device instead, which adds it to every server.
+
+`approve --passkey` reads the passkey from Ployz Cloud, refuses one whose key doesn't hash to the
+code you typed, shows its account, and asks before it adds it. Pass `--yes` to skip the question.
+The code itself comes from the Ployz Cloud page, so approving trusts that page to show your own
+passkey's code.
+The passkey is tied to the Ployz Cloud address your CLI signed in to, never to one Ployz Cloud
+names. Account asks each server whether it trusts the passkey and shows the answer, like
+**Trusted on 1 of 2 servers**, with each server's state underneath and the steps until every
+server trusts it. A passkey Ployz Cloud filed but no server approved approves nothing.
+
+The installer reminds you of this step when a server finishes installing.
+
+A server that joins later doesn't have your passkeys. Run `approve --passkey` there too.
+
+`ployz device ls` lists each passkey under your devices as `passkey, approve-only`, with its
+account and who approved it on each server: a device, or `on <server>` for that server's own
+terminal. `ployz device rm <code>` removes the device or passkey under the code from every server
+that answers, and shows which one each server removed, or `not present`. A server refuses a passkey and a device with the same key, so a code names one of
+them. Removing a device leaves the passkeys it approved in place, and `rm` names each one that
+stays trusted.
+
+When someone leaves the Organization, run `ployz device rm` on each of their passkeys as well as
+their devices.
+
+A passkey approves restarts from the dashboard on servers with
+[device enforcement](#require-a-devices-signature-for-restarts-and-joins) on. Approving deploys
+with a passkey arrives in a later release.
+
+### Require a device's signature for restarts and joins
+
+By default a server restarts a service for anyone Ployz Cloud lets through. With device
+enforcement on, it restarts or stops only on an approved device's say-so. `ployz service restart`
+and `ployz service stop` sign their steps with your device key, and each server checks that signature against the devices it
+approved before it stops or starts anything. Ployz Cloud carries the signed approval but can't
+make one. Each approval names one container, so a captured approval cannot stop a second copy.
+The CLI signs a fresh approval just before each copy of a rolling restart. Restart approvals
+permit only holding, stopping and starting that container. Stop approvals permit only holding
+and stopping it. Neither permits removing it. A server refuses an approval that is forged, names another service, server or container, lasts over 15 minutes, or
+was already used, including after the server restarts. It allows two minutes of clock difference
+when checking the issue time and expiry.
+
+```sh
+ployz device enforce
+ployz device enforce --off
+```
+
+`enforce` needs this computer's approved device key. Before it changes anything, it asks each
+server for its own ID, WireGuard key and subnet. It prints that starting set as
+`Trusting N Servers from the start:`, then each server's name, subnet, Machine ID and WireGuard key
+fingerprint, and signs it. Check the list. Each server then trusts only the servers in that signed set, plus servers whose join
+an approved device signed later. A server row that no server answers for is left out, even if
+it was registered just before. A server refuses a set that leaves itself out, is not signed by
+one of its devices, is over 15 minutes old, or was already used. With enforcement already on,
+`enforce` adds the servers in the new set. It sets every server that answers and lists each server's
+state. A server that doesn't answer is listed under failures, and one with no direct connection
+under omissions. Either way the command exits 3, and that server keeps its old setting. Run `enforce` again once it is reachable. A server
+from before this setting is reported with its rows missing, the same as one that's down, and
+restarts as before. Upgrade it first.
+
+The starting set is trust on first use, like the first SSH connection to a host. It is only as
+trustworthy as Ployz Cloud is at the moment you turn enforcement on. To check it, run
+`sudo ployz status` on each server and compare its **wireguard key** line with the fingerprint
+printed next to that server. If they differ, run `ployz device enforce --off` and don't trust that set.
+
+Enforcement also requires an approved Device to authorize a new server's identity, keys,
+allocation, and initial Devices. See [Approve a join](add-a-server.md#approve-a-join-when-device-enforcement-is-on).
+A joining server inherits enforcement. Approvals name one existing server that may admit the
+join, so another Cluster cannot use the approval even if it shares a Sealing public key.
+Each server keeps an approved server as a member once it has seen it. Removing the device that
+signed the join does not disconnect that server. Use `ployz server rm` to remove it.
+
+With enforcement on, mesh connections have Operator access. Full actions such as approving Devices, changing
+enforcement, and `exec` use a direct authenticated connection to each target server. A context
+used for those actions must contain a direct connection to each target. With an explicit
+`--connect`, `device approve`, `device rm`, and `device enforce` affect that server only.
+To approve the first Device through SSH, repeat the command on each server.
+
+**Restart** in the dashboard asks for your passkey the first time you press it. Your browser
+then holds a key that approves restarts in that Environment, on its servers, for 60 minutes.
+Later presses in that window don't ask again. The key never leaves the browser tab, and closing or reloading
+the tab ends the window. Each press still sends one approval per container, lasting at most
+15 minutes, and the server checks it, the passkey's grant of the browser key and the passkey
+itself before it stops anything. Its log names the passkey that approved the restart. A grant
+that was changed after the passkey answered, names another Environment or server, or lasts over
+an hour is refused. Ployz Cloud carries the grant but can't make one, so it can't restart a
+container on its own. A server before 0.4 can't check a passkey's grant, so the dashboard sends
+it none and an enforcing one refuses the restart: use `ployz service restart` there. With
+enforcement on, **Stop** in the dashboard is refused too; use `ployz service stop`.
+
+With enforcement on, `service restart` from a device that isn't approved is refused with
+`ployz.restart.device-approval.v2 needs a Device-signed restart approval`. `service stop` needs
+the same approval. `service start` and `deploy` are refused through Ployz Cloud, since they start
+or stop containers through the same steps and don't carry an approval yet. That includes the first deploy of a new service. Turn
+enforcement off to run them. Over `--connect ssh://` everything works as before. If your device
+key cannot be loaded, restart and stop go unsigned and still work where enforcement is off.
 
 ## Change what a server does
 
@@ -378,6 +494,9 @@ Automatic upgrades are off until you turn them on. Click the **Upgrade settings*
 of the **Servers** page and turn on **Upgrade automatically**. Only an owner or admin, or [Ployz support](../account/organizations.md#let-ployz-support-in), can change it. Ployz
 starts upgrading right away, then checks every hour. Turn the switch off to go back to upgrading by
 hand.
+
+Automatic upgrades wait until a release has been out for 3 days, so a new release reaches your
+servers up to 3 days after it ships. To take a release sooner, upgrade by hand.
 
 Servers that are offline or building are skipped and upgrade at a later check. An offline server
 that's behind reads **Upgrades to `0.3.1` when it's back** on its page.

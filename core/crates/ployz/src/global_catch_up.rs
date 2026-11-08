@@ -319,7 +319,13 @@ async fn ensure_retried(
     };
     crate::sealed_compat::admit(client, target, &want).await?;
     client
-        .call::<op::EnsureContainer>(ployz_core::EnsureContainerRequest { want }, Some(target))
+        .call::<op::EnsureContainer>(
+            ployz_core::EnsureContainerRequest {
+                want,
+                approval: None,
+            },
+            Some(target),
+        )
         .await
         .map_err(RpcError::from)?
         .into_result()

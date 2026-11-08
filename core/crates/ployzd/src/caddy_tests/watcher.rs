@@ -2776,6 +2776,7 @@ async fn watcher_fixture() -> WatcherFixture {
             format!("192.0.2.1:{MACHINE_API_PORT}").parse().unwrap(),
         )],
         runtime: Default::default(),
+        join_approval: None,
         build_concurrency: None,
     };
     let state = WatchState {

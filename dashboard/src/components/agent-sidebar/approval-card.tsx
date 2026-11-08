@@ -10,9 +10,10 @@ import { TraceLine } from "#/components/ui/trace";
 import { Textarea } from "#/components/ui/textarea";
 import { useMinute } from "#/hooks/use-minute";
 import { cn } from "#/lib/utils";
-import { approvalBadge, approvalSubject, type ApprovalDecision, destroyedLine, droppedLine, losesVolumeAccess, prunes, redeployLine, renamedAddresses } from "#/modules/approvals/approvals";
+import { approvalBadge, approvalSubject, type ApprovalDecision, destroyedLine, droppedLine, losesVolumeAccess, prunes, redeployLine, renamedAddresses, shownRestart } from "#/modules/approvals/approvals";
 import { lossMoment } from "#/modules/volume-placement/volume-placement";
-import { approvalOptions, decideApproval, landDecision, refetchApprovals, type ApprovalView } from "./approvals.queries";
+import { toErrorMessage } from "#/lib/error-message";
+import { approvalOptions, approverApprovals, decideApproval, landDecision, refetchApprovals, runsRestart, type ApprovalView } from "./approvals.queries";
 import { type ChangeLine, reviewedChanges } from "./approval-review";
 
 /**
@@ -50,16 +51,25 @@ function PendingCard({ organizationSlug, approval }: { organizationSlug: string;
   const redeploy = redeployLine(approval.command, approval.review);
   const renamed = renamedAddresses(approval.review);
   const destroys = approval.command !== "set_cluster_name";
+  // The name Servers know a restarted Service by, which the approvals this card makes carry.
+  const restart = shownRestart(approval.review);
   const place = subject.project === null ? subject.name : `${subject.project}/${subject.name}`;
   const { asked, others } = reviewedChanges(approval.command, approval.review);
   const waits = approval.protected && approval.yours;
   const now = useMinute() ?? new Date();
 
+  // A restart on Servers that enforce runs with this approver's passkey approvals, made before the answer goes.
   const decide = async (decision: ApprovalDecision) => {
     if (sending) return;
     setSending(true);
     setRefused(null);
-    const answer = await decideApproval(organizationSlug, approval.id, decision);
+    const approving = "approve" in decision && runsRestart(approval);
+    const approvals = approving ? await approverApprovals(organizationSlug, approval).catch((error: Error) => {
+      setRefused(toErrorMessage(error, "Your passkey didn't answer. Try again."));
+      return null;
+    }) : undefined;
+    if (approvals === null) return setSending(false);
+    const answer = await decideApproval(organizationSlug, approval.id, decision, approvals);
     setSending(false);
     if (answer.ok) return landDecision(queryClient, organizationSlug, approval.id, answer.decided);
     setRefused(answer.message);
@@ -83,6 +93,9 @@ function PendingCard({ organizationSlug, approval }: { organizationSlug: string;
         {redeploy !== null && <p className="text-xs">{redeploy}</p>}
         {renamed !== null && (
           <p className="font-mono text-xs break-all">{renamed.from === null ? renamed.to : `${renamed.from} → ${renamed.to}`}</p>
+        )}
+        {restart !== null && (
+          <p className="text-xs text-muted-foreground">On servers <code className="font-mono">{restart.namespace}/{restart.runtime}</code></p>
         )}
         {(effects.length > 0 || prunes(approval.review)) && (
           <ul aria-label={losesVolumeAccess(approval.review) ? "Effects" : "Destroys"} className="flex flex-col gap-1 rounded-lg bg-destructive/10 px-2.5 py-2 text-xs">

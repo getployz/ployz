@@ -27,6 +27,7 @@ import type {
   ObservedDataLoss,
   PublishCertificateMaterialRequest,
   RuntimeWatchView,
+  Signed,
   VolumeSwitchReply,
   VolumeSwitchRequest,
   WatchOptions,
@@ -88,6 +89,7 @@ export interface PloyzSession {
   readonly logHistory: (options: LogHistoryOptions) => Effect.Effect<LogHistoryPage, PloyzSdkError>;
   readonly metricHistory: (input: MetricHistoryInput) => Effect.Effect<MetricHistory, PloyzSdkError>;
   readonly inspect: () => Effect.Effect<MachineDetails, PloyzSdkError>;
+  readonly inspectMachine: (machine: string) => Effect.Effect<MachineDetails, PloyzSdkError>;
   /** What the connect confirmed about the entry's Cluster: null when it expected none. */
   readonly cluster: () => SessionCluster;
   /** Resolves to the secret `ployz1:` Management Capability for `label`. */
@@ -150,9 +152,9 @@ export interface PloyzSession {
    */
   readonly agentAsk: (query: CloudQuery, readable: ReadonlyArray<string> | null, sealed: ReadonlyArray<string> | null) => Effect.Effect<unknown, PloyzSdkError>;
   readonly observeService: (namespace: string, service: string) => Effect.Effect<ServiceCopies, PloyzSdkError>;
-  readonly stopContainer: (machine: string, container: string) => Effect.Effect<void, PloyzSdkError>;
+  readonly stopContainer: (machine: string, container: string, approval: Signed | null) => Effect.Effect<void, PloyzSdkError>;
   /** How a started Container ended up: past its healthcheck and serving, unconfirmed, or failing its healthcheck. */
-  readonly startContainer: (machine: string, container: string) => Effect.Effect<"serving" | "unconfirmed" | "unhealthy", PloyzSdkError>;
+  readonly startContainer: (machine: string, container: string, approval: Signed | null) => Effect.Effect<"serving" | "unconfirmed" | "unhealthy", PloyzSdkError>;
   readonly removeContainer: (machine: string, container: string) => Effect.Effect<void, PloyzSdkError>;
   readonly copyContainerImage: (
     source: MachineTarget,
@@ -263,6 +265,12 @@ export function asSdkFailure(operation: string, cause: unknown): PloyzSdkError {
 }
 
 /** The code of the runtime's RPC error a failure carries, such as "not_found"; undefined for any other failure. */
+/** A Server with device enforcement on refused a stop or start whose approval it can't trust, or that had none. */
+const RefusedApproval = Schema.Struct({ details: Schema.Struct({ capability: Schema.Literal("ployz.restart.device-approval.v2") }) });
+
+export const refusedApproval = (error: PloyzSdkError) =>
+  "cause" in error && Option.isSome(Schema.decodeUnknownOption(RefusedApproval)(error.cause));
+
 export function rpcErrorCode(error: PloyzSdkError) {
   return rpcCode("cause" in error ? error.cause : undefined);
 }
@@ -344,6 +352,7 @@ function wrapClient(client: Client): PloyzSession {
     logHistory: (options) => sdkPromise("log history", (signal) => client.runtime.logHistory({ ...options, signal })),
     metricHistory: (input) => sdkPromise("metric history", () => client.runtime.metricHistory(input)),
     inspect: () => sdkPromise("inspect", () => client.inspect()),
+    inspectMachine: (machine) => sdkPromise("inspect machine", () => client.inspectMachine(machine)),
     cluster: () => client.cluster(),
     setManagementClient: (label) => sdkPromise("set Management Client", () => client.setManagementClient(label)),
     clearManagementClient: (label) => sdkPromise("clear Management Client", () => client.clearManagementClient(label)),
@@ -389,8 +398,8 @@ function wrapClient(client: Client): PloyzSession {
       sdkPromise("inspect container", () => client.inspectContainer(machine, container)),
     agentAsk: (query, readable, sealed) => sdkPromise("agent ask", () => client.agentAsk(query, readable, sealed)),
     observeService: (namespace, service) => sdkPromise("observe service", () => client.observeService(namespace, service)),
-    stopContainer: (machine, container) => sdkPromise("stop container", () => client.stopContainer(machine, container)),
-    startContainer: (machine, container) => sdkPromise("start container", () => client.startContainer(machine, container)),
+    stopContainer: (machine, container, approval) => sdkPromise("stop container", () => client.stopContainer(machine, container, approval)),
+    startContainer: (machine, container, approval) => sdkPromise("start container", () => client.startContainer(machine, container, approval)),
     removeContainer: (machine, container) => sdkPromise("remove container", () => client.removeContainer(machine, container)),
     copyContainerImage: (source, container, dest) =>
       sdkPromise("copy container image", () => client.copyContainerImage(source, container, dest)),

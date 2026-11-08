@@ -870,6 +870,7 @@ mod tests {
                     store_filesystem: filesystem.map(str::to_owned),
                     ..Default::default()
                 },
+                join_approval: None,
                 build_concurrency: None,
             },
             MembershipObservation::Up,
@@ -1009,6 +1010,7 @@ mod tests {
                 public_ip: None,
                 advertised_endpoints: Vec::new(),
                 runtime: Default::default(),
+                join_approval: None,
                 build_concurrency: None,
             },
             ployz_core::MembershipObservation::Up,

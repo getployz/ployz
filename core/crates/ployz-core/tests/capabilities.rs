@@ -12,13 +12,15 @@ use ployz_core::{
     PREPARE_VOLUMES_CAPABILITY, PRUNE_IMAGES_CAPABILITY, PUBLISH_CERTIFICATE_MATERIAL_CAPABILITY,
     PULL_IMAGE_CAPABILITY, PULL_IMAGE_FROM_MACHINE_CAPABILITY, READ_CLUSTER_NAME_CAPABILITY,
     READ_ROUTED_ADDRESSES_CAPABILITY, READ_ROUTES_CAPABILITY, RECOVER_SEALING_KEY_CAPABILITY,
-    REGISTER_MACHINE_CAPABILITY, REMOVE_VOLUME_CAPABILITY, REQUEST_MACHINE_UPGRADE_CAPABILITY,
-    RETAINED_ENV_CAPABILITY, RUNTIME_WATCH_CAPABILITY, Rpc, SEED_VOLUME_CAPABILITY,
-    SELECT_ENDPOINT_CAPABILITY, SET_CLUSTER_NAME_CAPABILITY, SET_DEVICE_CAPABILITY,
-    SET_MANAGEMENT_CLIENT_CAPABILITY, SET_PUSH_TARGET_CAPABILITY, SET_VOLUME_COPY_CAPABILITY,
-    SET_VOLUME_SIZE_CAPABILITY, SHARE_SEALING_KEY_CAPABILITY, TAIL_LOGS_CAPABILITY,
-    UPDATE_CONTAINER_LIMITS_CAPABILITY, UPDATE_MACHINE_CAPABILITY, UPGRADE_EXACT_CAPABILITY,
-    VOLUME_FLOOR_CAPABILITY, VOLUME_SHRINK_CAPABILITY, WRAP_SEALING_KEY_CAPABILITY, op,
+    REGISTER_MACHINE_CAPABILITY, REMOVE_TRUSTED_KEY_CAPABILITY, REMOVE_VOLUME_CAPABILITY,
+    REQUEST_MACHINE_UPGRADE_CAPABILITY, RESTART_APPROVAL_CAPABILITY, RETAINED_ENV_CAPABILITY,
+    RUNTIME_WATCH_CAPABILITY, Rpc, SEED_VOLUME_CAPABILITY, SELECT_ENDPOINT_CAPABILITY,
+    SET_CLUSTER_NAME_CAPABILITY, SET_DEVICE_CAPABILITY, SET_DEVICE_ENFORCEMENT_CAPABILITY,
+    SET_MANAGEMENT_CLIENT_CAPABILITY, SET_PASSKEY_CAPABILITY, SET_PUSH_TARGET_CAPABILITY,
+    SET_VOLUME_COPY_CAPABILITY, SET_VOLUME_SIZE_CAPABILITY, SHARE_SEALING_KEY_CAPABILITY,
+    TAIL_LOGS_CAPABILITY, UPDATE_CONTAINER_LIMITS_CAPABILITY, UPDATE_MACHINE_CAPABILITY,
+    UPGRADE_EXACT_CAPABILITY, VOLUME_FLOOR_CAPABILITY, VOLUME_SHRINK_CAPABILITY,
+    WRAP_SEALING_KEY_CAPABILITY, op,
 };
 
 /// Capability constants are generated from the catalog, so a typo would stay
@@ -66,6 +68,19 @@ fn catalogued_capabilities_keep_stable_spellings() {
         (ENV_SEALED_CAPABILITY, "ployz.env.sealed.v1"),
         (BUILD_SEALED_CAPABILITY, "ployz.build.sealed.v1"),
         (BUILD_GRANT_HOLDER_CAPABILITY, "ployz.build.grant.holder.v1"),
+        (
+            SET_DEVICE_ENFORCEMENT_CAPABILITY,
+            "ployz.machine.set-device-enforcement.v2",
+        ),
+        (SET_PASSKEY_CAPABILITY, "ployz.machine.set-passkey.v1"),
+        (
+            REMOVE_TRUSTED_KEY_CAPABILITY,
+            "ployz.machine.remove-trusted-key.v1",
+        ),
+        (
+            RESTART_APPROVAL_CAPABILITY,
+            "ployz.restart.device-approval.v2",
+        ),
         (LIST_CONTAINERS_CAPABILITY, "ployz.container.list.v1"),
         (INSPECT_CONTAINER_CAPABILITY, "ployz.container.inspect.v1"),
         (ENSURE_CONTAINER_CAPABILITY, "ployz.container.ensure.v1"),
@@ -149,8 +164,13 @@ fn advertised_capability_groups_match_the_frozen_catalog() {
             "ployz.sealing.recover.v1",
             "ployz.machine.register.v1",
             "ployz.machine.set-management-client.v1",
+            "ployz.machine.join.pending.v1",
+            "ployz.machine.join.approve.v1",
             "ployz.machine.set-device.v1",
             "ployz.machine.set-push-target.v1",
+            "ployz.machine.set-device-enforcement.v2",
+            "ployz.machine.set-passkey.v1",
+            "ployz.machine.remove-trusted-key.v1",
             "ployz.network.select-endpoint.v1",
             "ployz.machine.list.v1",
             "ployz.machine.update.v1",
@@ -160,6 +180,7 @@ fn advertised_capability_groups_match_the_frozen_catalog() {
             "ployz.sealing.install.v1",
             "ployz.machine.leave.v1",
             "ployz.machine.forget.v1",
+            "ployz.machine.join.device-approval.v1",
             "ployz.certificates.policy.v1",
             "ployz.machine.storage-observation.v1",
             "ployz.management.scope.v1",
@@ -167,6 +188,8 @@ fn advertised_capability_groups_match_the_frozen_catalog() {
             "ployz.env.sealed.v1",
             "ployz.build.sealed.v1",
             "ployz.build.grant.holder.v1",
+            "ployz.restart.device-approval.v2",
+            "ployz.restart.session-grant.v1",
         ]
     );
     assert_eq!(
@@ -336,6 +359,26 @@ const ABOVE_FLOOR: &[(&str, &str)] = &[
         "gated: the SDK checks the contract before calling",
     ),
     (
+        "ployz.machine.set-device-enforcement.v2",
+        "gated: `ployz device enforce` checks each Machine's contract first, names a Server whose daemon lacks it as missing and exits partial",
+    ),
+    (
+        "ployz.machine.set-passkey.v1",
+        "gated: `ployz device approve --passkey` checks each Machine's contract first, names a Server whose daemon lacks it as missing and exits partial",
+    ),
+    (
+        "ployz.machine.remove-trusted-key.v1",
+        "falls back: `ployz device rm` calls set-device.v1 Remove on an older daemon, which can hold no passkey",
+    ),
+    (
+        "ployz.restart.device-approval.v2",
+        "falls back: an older daemon ignores the approval on EnsureContainer and restarts as before, since it enforces nothing",
+    ),
+    (
+        "ployz.restart.session-grant.v1",
+        "gated: Cloud attaches a browser approval only for a Machine that advertises it; an older enforcing Machine refuses the restart and the dashboard names that Server",
+    ),
+    (
         "ployz.image.pull.v1",
         "falls back: an older daemon pulls when it creates the Container",
     ),
@@ -414,6 +457,18 @@ const ABOVE_FLOOR: &[(&str, &str)] = &[
     (
         "ployz.machine.set-device.v1",
         "gated: `ployz device` checks each Machine's contract first, names a Server whose daemon lacks it as missing and exits partial",
+    ),
+    (
+        "ployz.machine.join.pending.v1",
+        "refused legibly: `ployz device approve --join` stops at a Server whose daemon lacks it, and the refusal names the capability",
+    ),
+    (
+        "ployz.machine.join.approve.v1",
+        "unreached: ApproveJoin goes only to the Machine that listed the pending join, which has it",
+    ),
+    (
+        "ployz.machine.join.device-approval.v1",
+        "falls back: an older daemon never refuses Register with it, so the join proceeds unsigned as before",
     ),
 ];
 

@@ -14,11 +14,21 @@ fn reconcile(
     planned: &[Peer],
     set: PeerSet,
 ) -> BTreeSet<IpNet> {
+    reconcile_keeping(installed, planned, set, |_| set == PeerSet::Bootstrap).0
+}
+
+fn reconcile_keeping(
+    installed: &mut HashMap<Key, Peer>,
+    planned: &[Peer],
+    set: PeerSet,
+    keeps_unlisted: impl Fn(&Key) -> bool,
+) -> (BTreeSet<IpNet>, bool) {
     let PeerChanges {
         updates,
         removals,
         routes,
-    } = peer_changes(installed, planned, set).unwrap();
+        settled,
+    } = peer_changes(installed, planned, set, keeps_unlisted).unwrap();
     let updates = updates.into_iter().cloned().collect::<Vec<_>>();
     let removals = removals.into_iter().cloned().collect::<Vec<_>>();
     for peer in updates {
@@ -27,7 +37,7 @@ fn reconcile(
     for key in removals {
         installed.remove(&key);
     }
-    routes
+    (routes, settled)
 }
 
 #[test]
@@ -121,6 +131,7 @@ fn machine(seed: u8, public_key: WireGuardPublicKey) -> Machine {
             WIREGUARD_PORT,
         )))],
         runtime: Default::default(),
+        join_approval: None,
         build_concurrency: None,
     }
 }
@@ -368,6 +379,233 @@ fn a_store_that_never_held_another_machine_keeps_the_installed_peers() {
     let mut installed = HashMap::from([(live.public_key.clone(), live.clone())]);
     reconcile(&mut installed, &[], set);
     assert!(planned.is_empty());
+    assert!(installed.is_empty());
+}
+
+/// A joined Machine whose saved bootstrap names `founder` and `unsigned`, with
+/// enforcement on and a starting set of itself and `founder` when `enforced`.
+fn joined_record(
+    founder: &Machine,
+    unsigned: &Machine,
+    enforced: bool,
+) -> crate::machine::LocalMachineRecord {
+    use crate::machine::{LocalMachineBody, LocalMachineRecord, ParticipationOrigin};
+
+    let private_key = WireGuardPrivateKey::from_bytes([7; 32]);
+    let own = machine(7, private_key.public_key());
+    let record = LocalMachineRecord::parse(
+        LocalMachineBody::Participating {
+            machine: own.clone(),
+            origin: ParticipationOrigin::Join {
+                bootstrap: vec![founder.clone(), unsigned.clone()],
+            },
+        },
+        private_key,
+    )
+    .unwrap();
+    let serde_json::Value::Object(mut wire) = serde_json::to_value(&record).unwrap() else {
+        panic!("a record serializes as an object");
+    };
+    wire.insert("device_enforcement".into(), enforced.into());
+    wire.insert(
+        "trusted_machines".into(),
+        serde_json::to_value([founder, &own].map(ployz_core::authority::Member::from)).unwrap(),
+    );
+    serde_json::from_value(wire.into()).unwrap()
+}
+
+fn installed_for(machines: &[Machine]) -> HashMap<Key, Peer> {
+    peers_for(&MachineId::random(), machines)
+        .iter()
+        .map(|peer| {
+            let peer = wireguard_peer(peer, None);
+            (peer.public_key.clone(), peer)
+        })
+        .collect()
+}
+
+fn apply_record(
+    installed: &mut HashMap<Key, Peer>,
+    planned: &[MeshPeer],
+    set: PeerSet,
+    record: &crate::machine::LocalMachineRecord,
+    answered: Option<&BTreeSet<MachineId>>,
+) -> (BTreeSet<IpNet>, bool) {
+    reconcile_keeping(
+        installed,
+        &planned
+            .iter()
+            .map(|peer| wireguard_peer(peer, peer.selected()))
+            .collect::<Vec<_>>(),
+        set,
+        |key| record.keeps_unlisted_peer(&WireGuardPublicKey(key.as_array()), answered),
+    )
+}
+
+/// An unsigned join installed `unsigned` before enforcement. A restart keeps the device,
+/// and its first apply must still drop the peer the starting set left out.
+#[test]
+fn startup_removes_an_installed_peer_enforcement_refuses() {
+    let founder = machine(1, WireGuardPublicKey([1; 32]));
+    let unsigned = machine(9, WireGuardPublicKey([9; 32]));
+    let record = joined_record(&founder, &unsigned, true);
+    let own = record.machine().unwrap();
+    let mut installed = installed_for(&[founder.clone(), unsigned]);
+    let (routes, _) = apply_record(
+        &mut installed,
+        &peers_for(&own.id, &record.bootstrap()),
+        PeerSet::Bootstrap,
+        &record,
+        None,
+    );
+    assert_eq!(installed, installed_for(&[founder]));
+    assert_eq!(routes, peer_routes(installed.values()).unwrap());
+}
+
+/// A store recreated without another Machine's row still drops a peer enforcement refuses.
+/// With enforcement off, nothing is removed.
+#[test]
+fn a_rebuild_from_a_fresh_store_removes_only_peers_enforcement_refuses() {
+    let founder = machine(1, WireGuardPublicKey([1; 32]));
+    let unsigned = machine(9, WireGuardPublicKey([9; 32]));
+    for enforced in [true, false] {
+        let record = joined_record(&founder, &unsigned, enforced);
+        let own = record.machine().unwrap();
+        let own_row_only = ReplicatedObservations {
+            observations: vec![own.clone()],
+            incomplete_ids: Vec::new(),
+        };
+        let bootstrap = peers_for(&own.id, &record.bootstrap());
+        let (planned, set) =
+            snapshot_peers(&own.id, &own_row_only, &bootstrap, false, false).unwrap();
+        assert_eq!(set, PeerSet::Bootstrap);
+        let before = installed_for(&[founder.clone(), unsigned.clone()]);
+        let mut installed = before.clone();
+        let (routes, _) = apply_record(&mut installed, &planned, set, &record, None);
+        let kept = if enforced {
+            installed_for(std::slice::from_ref(&founder))
+        } else {
+            before
+        };
+        assert_eq!(installed, kept, "enforced: {enforced}");
+        assert_eq!(routes, peer_routes(installed.values()).unwrap());
+    }
+}
+
+/// A Machine with enforcement on and a store recreated after `store.db` was lost. Rows
+/// reach it one at a time, and the store filters out each one enforcement refuses.
+struct RecreatedStore {
+    record: crate::machine::LocalMachineRecord,
+    rows: Vec<Machine>,
+    removed: BTreeSet<MachineId>,
+    settled: Option<ReplicatedObservations<Machine, MachineId>>,
+}
+
+impl RecreatedStore {
+    fn new(founder: &Machine, unsigned: &Machine) -> Self {
+        let record = joined_record(founder, unsigned, true);
+        let own = record.machine().unwrap().clone();
+        Self {
+            record,
+            rows: vec![own],
+            removed: BTreeSet::new(),
+            settled: None,
+        }
+    }
+
+    /// Applies the snapshot the store reads once another Machine's key has arrived, unless
+    /// it is the last one settled, as `rebuild_when_changed` does on each tick.
+    fn rebuild(&mut self, installed: &mut HashMap<Key, Peer>) {
+        let own = self.record.machine().unwrap();
+        let snapshot = ReplicatedObservations {
+            observations: self
+                .rows
+                .iter()
+                .filter(|machine| self.record.accepts_machine(machine))
+                .cloned()
+                .collect(),
+            incomplete_ids: Vec::new(),
+        };
+        if self.settled.as_ref() == Some(&snapshot) {
+            return;
+        }
+        let (planned, set) = snapshot_peers(&own.id, &snapshot, &[], false, true).unwrap();
+        let mut answered = snapshot
+            .observations
+            .iter()
+            .map(|machine| machine.id)
+            .collect::<BTreeSet<_>>();
+        let unlisted = self
+            .record
+            .unlisted_trusted_machines(|key| installed.contains_key(&Key::new(key.0)), &answered);
+        answered.extend(unlisted.into_iter().filter(|id| self.removed.contains(id)));
+        let (_, settled) = apply_record(installed, &planned, set, &self.record, Some(&answered));
+        self.settled = settled.then_some(snapshot);
+    }
+}
+
+/// An unsigned row reaching a recreated store before the approved rows must not cut the
+/// installed trusted peers, which carry the gossip that brings those rows back.
+#[test]
+fn an_unsigned_row_arriving_first_keeps_the_installed_trusted_peers() {
+    let founder = machine(1, WireGuardPublicKey([1; 32]));
+    let unsigned = machine(9, WireGuardPublicKey([9; 32]));
+    let mut store = RecreatedStore::new(&founder, &unsigned);
+    let mut installed = installed_for(std::slice::from_ref(&founder));
+    store.rows.push(unsigned);
+    store.rebuild(&mut installed);
+    assert_eq!(installed, installed_for(std::slice::from_ref(&founder)));
+    store.rows.push(founder.clone());
+    store.rebuild(&mut installed);
+    assert_eq!(installed, installed_for(&[founder]));
+}
+
+/// A refused row that swaps a trusted Member's key keeps the legitimate key installed.
+#[test]
+fn a_refused_key_swap_keeps_the_trusted_key() {
+    let founder = machine(1, WireGuardPublicKey([1; 32]));
+    let unsigned = machine(9, WireGuardPublicKey([9; 32]));
+    let mut store = RecreatedStore::new(&founder, &unsigned);
+    let mut installed = installed_for(std::slice::from_ref(&founder));
+    let mut swapped = founder.clone();
+    swapped.public_key = WireGuardPublicKey([8; 32]);
+    store.rows.push(swapped);
+    store.rebuild(&mut installed);
+    assert_eq!(installed, installed_for(&[founder]));
+}
+
+/// `server rm` deleting a trusted Machine's row removes its peer, even after a refused row
+/// for it left the filtered snapshot unchanged and the device kept the trusted key.
+#[test]
+fn removing_a_machine_after_a_refused_key_swap_removes_its_peer() {
+    let founder = machine(1, WireGuardPublicKey([1; 32]));
+    let unsigned = machine(9, WireGuardPublicKey([9; 32]));
+    let mut store = RecreatedStore::new(&founder, &unsigned);
+    let mut installed = installed_for(std::slice::from_ref(&founder));
+    let mut swapped = founder.clone();
+    swapped.public_key = WireGuardPublicKey([8; 32]);
+    store.rows.push(swapped);
+    store.rebuild(&mut installed);
+    assert_eq!(installed, installed_for(std::slice::from_ref(&founder)));
+    store.rows.retain(|machine| machine.id != founder.id);
+    store.removed.insert(founder.id);
+    store.rebuild(&mut installed);
+    assert!(installed.is_empty());
+}
+
+/// `server rm` deletes an approved Machine's row, which still removes its peer.
+#[test]
+fn removing_an_approved_machine_removes_its_peer() {
+    let founder = machine(1, WireGuardPublicKey([1; 32]));
+    let unsigned = machine(9, WireGuardPublicKey([9; 32]));
+    let mut store = RecreatedStore::new(&founder, &unsigned);
+    let mut installed = installed_for(std::slice::from_ref(&founder));
+    store.rows.push(founder.clone());
+    store.rebuild(&mut installed);
+    assert_eq!(installed, installed_for(std::slice::from_ref(&founder)));
+    store.rows.retain(|machine| machine.id != founder.id);
+    store.removed.insert(founder.id);
+    store.rebuild(&mut installed);
     assert!(installed.is_empty());
 }
 

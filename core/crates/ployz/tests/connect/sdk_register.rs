@@ -122,6 +122,7 @@ async fn node_smoke_covers_session_register() {
 
 fn joiner_identity() -> RegisterRequest {
     RegisterRequest {
+        join_approval: None,
         machine_id: MachineId::random(),
         assigned_subnet: Some("10.210.1.0/24".parse().unwrap()),
         initial_policy: Default::default(),

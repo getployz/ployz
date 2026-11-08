@@ -76,6 +76,7 @@ async fn registration_publishes_initial_policy_and_join_persists_it() {
 async fn registration_with_a_changed_policy_replaces_the_registered_row() {
     let (local, replicated, data_dir, server) = sqlite_entry("ployzd-register-policy").await;
     let mut wire = serde_json::to_value(RegisterRequest {
+        join_approval: None,
         initial_policy: ployz_core::InitialMachinePolicy {
             accepts_builds: false,
             ..Default::default()
@@ -102,6 +103,7 @@ async fn registration_with_a_changed_policy_replaces_the_registered_row() {
     );
     let changed = local
         .register(RegisterRequest {
+            join_approval: None,
             name: ployz_core::MachineName::parse("renamed").unwrap(),
             initial_policy: ployz_core::InitialMachinePolicy {
                 accepts_services: false,

@@ -732,6 +732,7 @@ impl FakeMachine for DiscoveryService {
                 advertised_endpoints: Vec::new(),
                 store_version: Default::default(),
                 rtts: Vec::new(),
+                passkeys: Vec::new(),
                 management_clients: self.management_clients.lock().unwrap().clone(),
                 telemetry,
                 storage: inspect.include_storage.then_some(self.storage),
@@ -779,6 +780,7 @@ impl FakeMachine for DiscoveryService {
             public_ip: body.public_ip,
             advertised_endpoints: body.advertised_endpoints,
             runtime: body.runtime,
+            join_approval: None,
             build_concurrency: None,
         };
         let visible_peers = self
@@ -1651,6 +1653,7 @@ pub(super) fn machine(hex: char, name: &str) -> MachineObservation {
             public_ip: None,
             advertised_endpoints: Vec::<AdvertisedEndpoint>::new(),
             runtime: Default::default(),
+            join_approval: None,
             build_concurrency: None,
         },
         MembershipObservation::Up,

@@ -598,3 +598,145 @@ fn a_stop_signal_docker_would_refuse_is_refused_before_any_server() {
         }
     }
 }
+
+#[tokio::test]
+async fn a_broken_device_key_still_sends_an_unsigned_restart() {
+    use ployz_core::{
+        ContainerDetails, ContainerNow, ContainerWant, EnsuredContainer, RpcRequestBody,
+        RpcResponse,
+    };
+    use std::sync::{Arc, Mutex};
+
+    let dir = tempfile::tempdir().unwrap();
+    let key = dir.path().join("device.key");
+    std::fs::write(&key, "broken key").unwrap();
+    use std::os::unix::fs::PermissionsExt;
+    std::fs::set_permissions(&key, std::fs::Permissions::from_mode(0o600)).unwrap();
+    let observed = observation(
+        'a',
+        'b',
+        "web",
+        ContainerRuntimeObservation::Running {
+            health: HealthObservation::NotConfigured,
+        },
+    );
+    let live = derive_live_services(PartialResult::<_, RpcError> {
+        successes: vec![ployz_core::MachineSuccess {
+            machine_id: observed.machine_id,
+            value: vec![observed.clone()],
+        }],
+        failures: vec![],
+        omissions: vec![],
+    });
+    let services = live.services();
+    let services: Vec<_> = services.iter().collect();
+    let approvals = restart_approvals(&key, &[], &services, ContainerAction::Restart).unwrap();
+    let wants = Arc::new(Mutex::new(Vec::new()));
+    let received = Arc::clone(&wants);
+    let (client, server) = crate::connect::test_support::rpc_client(move |rpc| {
+        let observed = observed.clone();
+        let received = Arc::clone(&received);
+        async move {
+            #[expect(
+                clippy::wildcard_enum_match_arm,
+                reason = "the fixture refuses every RPC outside the restart contract"
+            )]
+            let reply = match rpc.into_inner().decode_request().unwrap().body {
+                RpcRequestBody::InspectContainer(_) => RpcResponse::from(ContainerDetails {
+                    container: observed,
+                    environment: None,
+                    image_id: None,
+                    last_check: None,
+                    leaving: false,
+                    run: None,
+                }),
+                RpcRequestBody::EnsureContainer(request) => {
+                    assert!(request.approval.is_none());
+                    received.lock().unwrap().push(request.want);
+                    RpcResponse::from(EnsuredContainer::Ensured {
+                        now: ContainerNow::Present(observed),
+                        health: None,
+                    })
+                }
+                other => panic!("unexpected restart RPC {other:?}"),
+            };
+            Ok(tonic::Response::new(reply.encode().unwrap()))
+        }
+    })
+    .await;
+    let _outcome = apply_service_action(
+        &client,
+        &live,
+        &HashMap::new(),
+        &services,
+        (ContainerAction::Restart, None, None),
+        &approvals,
+        &CancellationToken::new(),
+    )
+    .await
+    .unwrap();
+    assert!(matches!(
+        wants.lock().unwrap().as_slice(),
+        [ContainerWant::Stopped { .. }, ContainerWant::Running { .. }]
+    ));
+    server.abort();
+}
+
+#[test]
+fn each_copy_gets_its_own_container_bound_approval() {
+    use std::os::unix::fs::PermissionsExt;
+    let dir = tempfile::tempdir().unwrap();
+    let key = dir.path().join("device.key");
+    std::fs::write(&key, [7; 32]).unwrap();
+    std::fs::set_permissions(&key, std::fs::Permissions::from_mode(0o600)).unwrap();
+    let one = observation('a', 'b', "web", ContainerRuntimeObservation::Created);
+    let two = observation('c', 'b', "web", ContainerRuntimeObservation::Created);
+    let service = ployz_core::derive_services([one.clone(), two.clone()]);
+    let machine = ployz_core::MachineObservation::new(
+        ployz_core::Machine {
+            id: one.machine_id,
+            name: MachineName::parse("one").unwrap(),
+            subnet: "10.210.1.0/24".parse().unwrap(),
+            public_key: ployz_core::WireGuardPublicKey([1; 32]),
+            public_ip: None,
+            advertised_endpoints: vec![],
+            labels: Default::default(),
+            accepts_builds: true,
+            accepts_services: true,
+            accepts_ingress: true,
+            join_approval: None,
+            build_concurrency: None,
+            runtime: ployz_core::MachineRuntime {
+                sealing: Some(Sealing::Held {
+                    public_key: ployz_core::SealingPublicKey::from_bytes([9; 32]),
+                }),
+                ..Default::default()
+            },
+        },
+        ployz_core::MembershipObservation::Up,
+    );
+    for (action, kind) in [
+        (ContainerAction::Restart, WorkflowKind::Restart),
+        (ContainerAction::Stop, WorkflowKind::Stop),
+    ] {
+        let approvals = restart_approvals(
+            &key,
+            std::slice::from_ref(&machine),
+            &service.iter().collect::<Vec<_>>(),
+            action,
+        )
+        .unwrap();
+        assert_eq!(approvals.len(), 2);
+        let first = approvals.get(&one.container_id).unwrap().open().unwrap();
+        let second = approvals.get(&two.container_id).unwrap().open().unwrap();
+        assert_eq!(first.kind, kind);
+        assert_eq!(second.kind, kind);
+        assert_eq!(first.container, one.container_id);
+        assert_eq!(second.container, two.container_id);
+        assert_ne!(first.operation, second.operation);
+        assert_eq!(
+            first.expires_at.as_millis() - first.issued_at.as_millis(),
+            15 * 60 * 1000
+        );
+    }
+}

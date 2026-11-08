@@ -1,7 +1,7 @@
 //! Local Machine record persistence and Live Observation operations.
 
 use std::{
-    collections::BTreeMap,
+    collections::{BTreeMap, BTreeSet},
     fs::{self, OpenOptions},
     io::{self, Read, Seek, SeekFrom},
     os::unix::fs::OpenOptionsExt,
@@ -15,7 +15,7 @@ use ipnet::Ipv4Net;
 use ployz_core::{
     DeviceCode, DeviceKey, LocalMachinePhase, Machine, MachineId, MachineRuntime,
     MachineStorageObservation, ManagementClientLabel, PinnedAddresses, RecoverySeed,
-    SelectedEndpoint,
+    SelectedEndpoint, WireGuardPublicKey,
 };
 use reqwest::Url;
 use serde::{Deserialize, Serialize};
@@ -193,6 +193,19 @@ pub struct LocalMachineRecord {
     /// records from before Devices were Full-only, when any client could name one.
     #[serde(default)]
     device_slots_vetted: bool,
+    /// Whether an Operator caller's Service restart needs a Device-signed approval.
+    /// Off until a Full caller turns it on, so an upgrade changes nothing.
+    #[serde(default)]
+    device_enforcement: bool,
+    #[serde(default)]
+    trusted_machines: Vec<ployz_core::authority::Member>,
+    /// Passkeys a Full caller approved here. They approve workflows only and hold no slot.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    passkeys: Vec<ployz_core::authority::TrustedPasskey>,
+    #[serde(default)]
+    membership_cluster: Option<ployz_core::SealingPublicKey>,
+    #[serde(default)]
+    enrollment: Option<ployz_core::EnrollRequest>,
 }
 
 /// Public keys held by one Management Client slot. No secret is persisted.
@@ -283,12 +296,92 @@ impl LocalMachineRecord {
             .map(|(label, _)| label)
     }
 
+    #[must_use]
+    pub fn passkeys(&self) -> &[ployz_core::authority::TrustedPasskey] {
+        &self.passkeys
+    }
+
+    /// Every key this Machine trusts, from its own record: its Devices and its passkeys.
+    #[must_use]
+    pub fn trusted_keys(&self) -> ployz_core::authority::TrustedKeys {
+        ployz_core::authority::TrustedKeys {
+            devices: self.devices().collect(),
+            passkeys: self.passkeys.clone(),
+        }
+    }
+
     /// Keys of the approved Devices: accepted slots whose `device-` label names their key.
     pub fn devices(&self) -> impl Iterator<Item = DeviceKey> + '_ {
         self.management_clients.iter().filter_map(|(label, slot)| {
             let key = DeviceKey::from_bytes(slot.accepted()?);
             (DeviceCode::named_by(label) == Some(key.code())).then_some(key)
         })
+    }
+
+    /// Whether this Machine accepts the row as a Cluster member using its own authority.
+    pub(crate) fn accepts_machine(&self, machine: &Machine) -> bool {
+        if !self.device_enforcement || self.pins_machine(machine) {
+            return true;
+        }
+        let Some(approval) = &machine.join_approval else {
+            return false;
+        };
+        let Ok(signers) = approval.verified_signers(self.devices().map(Into::into)) else {
+            return false;
+        };
+        let Ok(body) = approval.open() else {
+            return false;
+        };
+
+        ployz_core::authority::Member::from(&body.machine).matches(machine)
+            && body.sealing_recipient == machine.public_key
+            && signers.contains(&body.signer.into())
+            && self.membership_cluster == Some(body.cluster)
+    }
+
+    /// Whether an installed WireGuard peer no accepted row names may stay. `answered` holds
+    /// the IDs a complete snapshot has an accepted row or a removal for, and is `None` while
+    /// the store can't say who left. With enforcement off the peer stays until such a
+    /// snapshot. Under enforcement only a trusted Member stays, until the snapshot answers
+    /// for its ID, so a missing or refused row never cuts the peers carrying gossip.
+    pub(crate) fn keeps_unlisted_peer(
+        &self,
+        key: &WireGuardPublicKey,
+        answered: Option<&BTreeSet<MachineId>>,
+    ) -> bool {
+        if !self.device_enforcement {
+            return answered.is_none();
+        }
+        self.trusted_machines.iter().any(|member| {
+            member.public_key == *key && answered.is_none_or(|ids| !ids.contains(&member.id))
+        })
+    }
+
+    /// Trusted Members whose key is `installed` and whose ID `listed` lacks. Under
+    /// enforcement each stays until the store shows its row deleted, so only these need
+    /// that evidence. Empty with enforcement off.
+    pub(crate) fn unlisted_trusted_machines(
+        &self,
+        installed: impl Fn(&WireGuardPublicKey) -> bool,
+        listed: &BTreeSet<MachineId>,
+    ) -> Vec<MachineId> {
+        if !self.device_enforcement {
+            return Vec::new();
+        }
+        self.trusted_machines
+            .iter()
+            .filter(|member| installed(&member.public_key) && !listed.contains(&member.id))
+            .map(|member| member.id)
+            .collect()
+    }
+
+    pub(crate) fn pins_machine(&self, machine: &Machine) -> bool {
+        self.machine()
+            .is_some_and(|own| ployz_core::authority::Member::from(own).matches(machine))
+            || self
+                .trusted_machines
+                .iter()
+                .any(|member| member.matches(machine))
     }
 
     /// Whether `remote` is a key some Clear left in a tombstone.
@@ -517,6 +610,11 @@ impl LocalMachineRecord {
             pinned_addresses: PinnedAddresses::default(),
             push_target: None,
             device_slots_vetted: true,
+            device_enforcement: false,
+            trusted_machines: Vec::new(),
+            passkeys: Vec::new(),
+            membership_cluster: None,
+            enrollment: None,
         })
     }
 
@@ -529,6 +627,12 @@ impl LocalMachineRecord {
     #[must_use]
     pub fn push_target(&self) -> Option<&Url> {
         self.push_target.as_ref()
+    }
+
+    /// Whether an Operator caller's Service restart needs a Device-signed approval.
+    #[must_use]
+    pub fn device_enforcement(&self) -> bool {
+        self.device_enforcement
     }
 
     /// Secret behind this Machine's Management Identity.
@@ -600,10 +704,15 @@ impl LocalMachineRecord {
         self.body.recovery_seed()
     }
 
-    /// Bootstrap Machines persisted for join and catch-up.
+    /// Bootstrap Machines persisted for join and catch-up that this Machine accepts.
     #[must_use]
-    pub fn bootstrap(&self) -> &[Machine] {
-        self.body.bootstrap()
+    pub fn bootstrap(&self) -> Vec<Machine> {
+        self.body
+            .bootstrap()
+            .iter()
+            .filter(|machine| self.accepts_machine(machine))
+            .cloned()
+            .collect()
     }
 
     /// Minimum store versions this joiner must reach before participating.
@@ -625,6 +734,11 @@ impl LocalMachineRecord {
             pinned_addresses: self.pinned_addresses,
             push_target: self.push_target,
             device_slots_vetted: self.device_slots_vetted,
+            device_enforcement: self.device_enforcement,
+            trusted_machines: self.trusted_machines,
+            passkeys: self.passkeys,
+            membership_cluster: self.membership_cluster,
+            enrollment: self.enrollment,
         }
     }
 }
@@ -661,6 +775,7 @@ pub fn local_runtime(data_dir: &Path) -> MachineRuntime {
         store_syncs_commits: store_filesystem.as_deref().map(|name| name != "tmpfs"),
         store_filesystem,
         capabilities: ployz_core::served_capabilities(),
+        device_enforcement: None,
         management_identity: None,
         leaving: false,
     }

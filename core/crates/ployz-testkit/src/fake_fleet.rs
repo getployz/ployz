@@ -762,6 +762,7 @@ impl Fleet {
                         store_version: BTreeMap::new(),
                         rtts: Vec::new(),
                         management_clients: Vec::new(),
+                        passkeys: Vec::new(),
                         telemetry: None,
                         storage: None,
                         upgrade: machine.upgrades.last().cloned(),
@@ -1105,6 +1106,7 @@ impl MachineState {
                 daemon_version: self.version.to_string(),
                 ..MachineRuntime::default()
             },
+            join_approval: None,
             build_concurrency: None,
         }
     }

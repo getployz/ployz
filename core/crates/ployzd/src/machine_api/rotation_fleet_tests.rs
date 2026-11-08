@@ -666,6 +666,7 @@ fn machine_row(octet: u8) -> Machine {
             format!("192.0.2.{octet}:51820").parse().unwrap(),
         )],
         runtime: MachineRuntime::default(),
+        join_approval: None,
         build_concurrency: None,
     }
 }
@@ -815,7 +816,10 @@ fn gone(container: ContainerId) -> ContainerWant {
 }
 
 async fn ensure(node: &Node, want: ContainerWant) -> EnsuredContainer {
-    let request = op::EnsureContainer::into_request(EnsureContainerRequest { want });
+    let request = op::EnsureContainer::into_request(EnsureContainerRequest {
+        want,
+        approval: None,
+    });
     node.service
         .ensure_container(Request::new(request.encode().unwrap()))
         .await
@@ -2426,7 +2430,10 @@ fn creation_on_wire(
             container: RunTarget::New(new),
             rotation: RunRotation::Pending,
         };
-        let request = op::EnsureContainer::into_request(EnsureContainerRequest { want });
+        let request = op::EnsureContainer::into_request(EnsureContainerRequest {
+            want,
+            approval: None,
+        });
         service
             .ensure_container(Request::new(request.encode().unwrap()))
             .await

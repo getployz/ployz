@@ -236,6 +236,7 @@ async fn deploy_snapshot_waits_out_a_silent_machine_once_not_per_phase() {
                             machine: Some(answering),
                             store_version: Default::default(),
                             rtts: Vec::new(),
+                            passkeys: Vec::new(),
                             management_clients: Vec::new(),
                             telemetry: Some(TelemetryObservation::BridgeCapacity {
                                 bridge: BridgeEndpointCapacity::new(10, 0),
@@ -424,6 +425,7 @@ fn machine(hex: char) -> MachineObservation {
             public_ip: None,
             advertised_endpoints: Vec::<AdvertisedEndpoint>::new(),
             runtime: Default::default(),
+            join_approval: None,
             build_concurrency: None,
         },
         MembershipObservation::Up,
@@ -771,6 +773,7 @@ impl Resealing {
                         machine: Some(answering),
                         store_version: Default::default(),
                         rtts: Vec::new(),
+                        passkeys: Vec::new(),
                         management_clients: Vec::new(),
                         telemetry: None,
                         storage: None,
@@ -983,6 +986,25 @@ async fn a_call_whose_redial_finds_another_cluster_ends_every_clone() {
     );
     let proxied = client.dial_proxy("tcp", "127.0.0.1:1").await.map(drop);
     assert!(in_another_cluster(&proxied), "{proxied:?}");
+    let target = machine_id('b');
+    let full = client
+        .clone()
+        .with_full_connections(vec![
+            Connection::unix("/scripted/full.sock")
+                .unwrap()
+                .with_machine_id(target),
+        ])
+        .invoke_answered::<op::SetDeviceEnforcement>(
+            ployz_core::SetDeviceEnforcementRequest {
+                enforced: false,
+                starting_set: None,
+            },
+            &MachineTarget::from(&target),
+            None,
+        )
+        .await
+        .map(drop);
+    assert!(in_another_cluster(&full), "{full:?}");
     assert_eq!(connector.calls(), ended);
 }
 

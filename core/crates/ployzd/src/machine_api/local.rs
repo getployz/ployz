@@ -80,6 +80,21 @@ impl MachineService {
         self
     }
 
+    /// This Machine, marked when `request` came over its own local socket. A routed call
+    /// reaches its target over the mesh, so only the Server the caller sits at is marked.
+    fn caller<T>(&self, request: &Request<T>) -> LocalMachine {
+        let local = self.local.clone();
+        if request
+            .extensions()
+            .get::<tonic::transport::server::UdsConnectInfo>()
+            .is_some()
+        {
+            local.on_local_socket()
+        } else {
+            local
+        }
+    }
+
     #[must_use]
     pub(super) fn with_cluster_option(
         mut self,
@@ -353,6 +368,25 @@ impl MachineRpc for MachineService {
         )
     }
 
+    async fn pending_joins(
+        &self,
+        request: Request<OpaquePayload>,
+    ) -> Result<Response<OpaquePayload>, Status> {
+        expect::<op::PendingJoins>(request)?;
+        finish(self.local.pending_joins())
+    }
+
+    async fn approve_join(
+        &self,
+        request: Request<OpaquePayload>,
+    ) -> Result<Response<OpaquePayload>, Status> {
+        finish(
+            self.local
+                .approve_join(expect::<op::ApproveJoin>(request)?)
+                .await,
+        )
+    }
+
     async fn register(
         &self,
         request: Request<OpaquePayload>,
@@ -372,9 +406,26 @@ impl MachineRpc for MachineService {
         &self,
         request: Request<OpaquePayload>,
     ) -> Result<Response<OpaquePayload>, Status> {
+        let local = self.caller(&request);
+        finish(local.set_device(expect::<op::SetDevice>(request)?).await)
+    }
+
+    async fn set_passkey(
+        &self,
+        request: Request<OpaquePayload>,
+    ) -> Result<Response<OpaquePayload>, Status> {
+        let local = self.caller(&request);
+        finish(local.set_passkey(expect::<op::SetPasskey>(request)?).await)
+    }
+
+    async fn remove_trusted_key(
+        &self,
+        request: Request<OpaquePayload>,
+    ) -> Result<Response<OpaquePayload>, Status> {
+        let local = self.caller(&request);
         finish(
-            self.local
-                .set_device(expect::<op::SetDevice>(request)?)
+            local
+                .remove_trusted_key(expect::<op::RemoveTrustedKey>(request)?)
                 .await,
         )
     }
@@ -385,6 +436,14 @@ impl MachineRpc for MachineService {
     ) -> Result<Response<OpaquePayload>, Status> {
         let request = expect::<op::SetPushTarget>(request)?;
         finish(self.local.set_push_target(request).await)
+    }
+
+    async fn set_device_enforcement(
+        &self,
+        request: Request<OpaquePayload>,
+    ) -> Result<Response<OpaquePayload>, Status> {
+        let request = expect::<op::SetDeviceEnforcement>(request)?;
+        finish(self.local.set_device_enforcement(request).await)
     }
 
     async fn select_endpoint(
@@ -471,8 +530,21 @@ impl MachineRpc for MachineService {
         &self,
         request: Request<OpaquePayload>,
     ) -> Result<Response<OpaquePayload>, Status> {
+        let operator = from_operator(&request);
         let request = expect::<op::EnsureContainer>(request)?;
-        finish(self.local.ensure_container(request.want).await)
+        let want = if operator {
+            match self
+                .local
+                .admit_operator_restart(request.want, request.approval.as_ref())
+                .await
+            {
+                Ok(want) => want,
+                Err(error) => return local_error(error),
+            }
+        } else {
+            request.want
+        };
+        finish(self.local.ensure_container(want).await)
     }
 
     async fn update_container_limits(
@@ -1047,7 +1119,6 @@ fn local_failure(error: LocalMachineError) -> Result<RpcError, Status> {
         LocalMachineError::Departing { server, source } => {
             Ok(local_failure(*source)?.overlapping_leave(&server))
         }
-        LocalMachineError::Store(error) => Ok(store_error(error)),
         LocalMachineError::ManagementRevoked => Err(ployz_core::rpc::caused_status(
             tonic::Code::Unauthenticated,
             &error,
@@ -1055,6 +1126,42 @@ fn local_failure(error: LocalMachineError) -> Result<RpcError, Status> {
         LocalMachineError::OnlyCloudManagesSlots | LocalMachineError::NeedsFullScope => Err(
             ployz_core::rpc::caused_status(tonic::Code::PermissionDenied, &error),
         ),
+        LocalMachineError::RestartRefused(_) => Err(ployz_core::rpc::hinted_status(
+            tonic::Code::PermissionDenied,
+            &error,
+            serde_json::json!({
+                "capability": ployz_core::RESTART_APPROVAL_CAPABILITY,
+                "next": "ployz service restart from an approved device",
+            }),
+        )),
+        LocalMachineError::EnforcementRefused(_) => Err(ployz_core::rpc::hinted_status(
+            tonic::Code::PermissionDenied,
+            &error,
+            serde_json::json!({
+                "capability": ployz_core::SET_DEVICE_ENFORCEMENT_CAPABILITY,
+                "next": "ployz device enforce from an approved device",
+            }),
+        )),
+        LocalMachineError::JoinConsumed(_) => Err(ployz_core::rpc::hinted_status(
+            tonic::Code::PermissionDenied,
+            &error,
+            serde_json::json!({
+                "capability": ployz_core::JOIN_APPROVAL_CAPABILITY,
+                "reason": "join_already_admitted",
+                "inspect": ["ployz server ls"],
+            }),
+        )),
+        LocalMachineError::JoinRefused(_)
+        | LocalMachineError::Store(StoreError::JoinRefused(_)) => {
+            Err(ployz_core::rpc::hinted_status(
+                tonic::Code::PermissionDenied,
+                &error,
+                serde_json::json!({ "capability": ployz_core::JOIN_APPROVAL_CAPABILITY, "next": "ployz device approve --join CODE from an approved device" }),
+            ))
+        }
+        LocalMachineError::Store(error) => Ok(store_error(error)),
+        LocalMachineError::JoinRecord(_) => Err(internal_response(error)),
+        LocalMachineError::ApprovalRecord(_) => Err(internal_response(error)),
         LocalMachineError::NotParticipating => Ok(unavailable("Machine is not participating")),
         LocalMachineError::ClusterStoreUnavailable => {
             Ok(unavailable("Cluster store is not available"))
@@ -1066,6 +1173,11 @@ fn local_failure(error: LocalMachineError) -> Result<RpcError, Status> {
             Err(Status::unavailable("Cluster is not available"))
         }
         LocalMachineError::DockerUnavailable => Ok(unavailable("Docker is not available")),
+        LocalMachineError::PasskeyIsDevice(_)
+        | LocalMachineError::DeviceIsPasskey(_)
+        | LocalMachineError::CredentialHeld { .. } => {
+            Ok(RpcError::caused(RpcErrorCode::Conflict, &error))
+        }
         LocalMachineError::MissingAssignment
         | LocalMachineError::DeviceSlot
         | LocalMachineError::InvalidPushTarget(_)
@@ -1230,6 +1342,7 @@ fn unavailable(message: &str) -> RpcError {
 
 fn store_error(error: StoreError) -> RpcError {
     let code = match error {
+        StoreError::JoinRefused(_) => RpcErrorCode::from("forbidden"),
         StoreError::AlreadyResetting
         | StoreError::AlreadyInitialized
         | StoreError::NotParticipating

@@ -19,6 +19,9 @@ pub struct GenerateSealingKeyRequest {}
 /// Ask a Machine that holds the Sealing Key to seal it to another Machine.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
 pub struct ShareSealingKeyRequest {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub join_approval: Option<crate::authority::Signed<crate::authority::JoinApproval>>,
     /// The Machine that will install the key.
     pub machine: MachineId,
     /// The recipient's WireGuard key as the caller observed it; the holder refuses

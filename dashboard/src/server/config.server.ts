@@ -113,6 +113,10 @@ const rawFields = {
   inngestBaseUrl: Config.url("INNGEST_BASE_URL").pipe(Config.withDefault(new URL("https://api.inngest.com"))),
   encryptionSecret: Config.schema(EncryptionSecret, "APP_ENCRYPTION_SECRET"),
   supportStaffUserIds: optional(Config.nonEmptyString("PLOYZ_SUPPORT_STAFF_USER_IDS")),
+  automaticUpgradeReleaseAgeHours: Config.schema(
+    Schema.Int.check(Schema.isGreaterThanOrEqualTo(0)),
+    "AUTOMATIC_UPGRADE_RELEASE_AGE_HOURS",
+  ).pipe(Config.withDefault(72)),
 };
 /**
  * Config.all stops at the first bad variable. Read every field once so one
@@ -274,6 +278,8 @@ const makeAppConfig = Effect.gen(function* () {
     encryptionSecret: raw.encryptionSecret,
     // Ployz support exists only on Ployz-hosted Cloud: a Self-hosted Cloud never has staff, whatever the variable says.
     supportStaffUserIds: polar.mode === "self_hosted" ? [] : parseUserIds(raw.supportStaffUserIds),
+    // Automatic Rollouts skip a release younger than this; 0 takes one as soon as it's out. Manual Upgrades never wait.
+    automaticUpgradeReleaseAgeMs: raw.automaticUpgradeReleaseAgeHours * 60 * 60_000,
   } as const;
 });
 

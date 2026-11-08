@@ -201,6 +201,7 @@ where
     report.step(Step::Enroll);
     let (details, machine_token, name, outcome) = enroll_current_identity(
         command,
+        matches,
         &mut client,
         token_request,
         requested_name,
@@ -344,6 +345,7 @@ fn refuse_another_cluster(join: Join) -> Error {
 )]
 async fn enroll_current_identity(
     command: EnrollCommand,
+    matches: &ArgMatches,
     client: &mut Client,
     token_request: InspectRequest,
     requested_name: Option<MachineName>,
@@ -365,7 +367,39 @@ async fn enroll_current_identity(
         recovery_supported,
     );
     progress(EnrollStage::Enrolling);
-    let outcome = cloud_enroll::enroll(command, url, token, &identity, progress).await?;
+    let outcome = match cloud_enroll::enroll(command, url, token, &identity, progress).await {
+        Err(error)
+            if error.capability().as_deref() == Some(ployz_core::JOIN_APPROVAL_CAPABILITY) =>
+        {
+            let config = super::config_path(matches)?;
+            if super::device::key::load(&super::device::key::path(&config))?.is_some() {
+                let mut entry = super::server::connect(matches, None).await?;
+                let expected = ployz_core::RegisterRequest {
+                    join_approval: None,
+                    machine_id: machine_token.id,
+                    assigned_subnet: None,
+                    initial_policy: initial_policy.clone(),
+                    name: name.clone(),
+                    storage: requested_storage,
+                    public_key: machine_token.public_key,
+                    public_ip: machine_token.public_ip,
+                    advertised_endpoints: machine_token.advertised_endpoints.clone(),
+                    runtime: Default::default(),
+                };
+                if super::device::sign_waiting_join(&mut entry, &config, &expected).await? {
+                    cloud_enroll::enroll(command, url, token, &identity, progress).await?
+                } else {
+                    return Err(error.into());
+                }
+            } else {
+                return Err(Error::from(error).hint(Hint::Next(format!(
+                    "ployz device approve --join {}",
+                    ployz_core::authority::join::code(machine_token.id, machine_token.public_key),
+                ))));
+            }
+        }
+        result => result?,
+    };
     Ok((details, machine_token, name, outcome))
 }
 
@@ -1293,6 +1327,7 @@ mod tests {
             machine: Some(fallback.clone()),
             store_version: Default::default(),
             rtts: Vec::new(),
+            passkeys: Vec::new(),
             management_clients: Vec::new(),
             telemetry: None,
             storage: None,
@@ -1367,6 +1402,7 @@ mod tests {
                 machine: Some(machine.clone()),
                 store_version: Default::default(),
                 rtts: Vec::new(),
+                passkeys: Vec::new(),
                 management_clients: Vec::new(),
                 telemetry: None,
                 storage: None,
@@ -1484,6 +1520,7 @@ mod tests {
             machine: Some(machine.clone()),
             store_version: Default::default(),
             rtts: Vec::new(),
+            passkeys: Vec::new(),
             management_clients: Vec::new(),
             telemetry: None,
             storage: None,
@@ -1666,6 +1703,7 @@ mod tests {
                 machine: None,
                 store_version: Default::default(),
                 rtts: Vec::new(),
+                passkeys: Vec::new(),
                 management_clients: Vec::new(),
                 telemetry: None,
                 storage: None,
@@ -1806,6 +1844,7 @@ mod tests {
             machine: Some(listed.clone()),
             store_version: Default::default(),
             rtts: Vec::new(),
+            passkeys: Vec::new(),
             management_clients: Vec::new(),
             telemetry: None,
             storage: None,
@@ -1881,6 +1920,7 @@ mod tests {
                 advertised_endpoints: Vec::new(),
                 store_version: Default::default(),
                 rtts: Vec::new(),
+                passkeys: Vec::new(),
                 management_clients: Vec::new(),
                 founding: Default::default(),
                 telemetry: None,
@@ -1959,6 +1999,7 @@ mod tests {
             machine: machine.cloned(),
             store_version: Default::default(),
             rtts: Vec::new(),
+            passkeys: Vec::new(),
             management_clients: Vec::new(),
             telemetry: None,
             storage: None,
