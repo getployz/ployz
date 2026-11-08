@@ -20,6 +20,7 @@ import {
   startSession,
   subscribe,
 } from "./approval-session";
+import { needsNewerPloyz, strandedByStop } from "#/modules/service-act/service-act";
 
 type Ask = { readonly scope: ApprovalScope; readonly reason: PromptReason; readonly resolve: (approved: boolean) => void };
 
@@ -49,15 +50,18 @@ export type ActTarget = {
   readonly environment: { readonly environmentId: string; readonly environmentName: string; readonly namespace: string };
   readonly runtime: string;
   readonly copies: readonly { readonly id: string; readonly machineId: string; readonly hook: boolean }[];
-  readonly machines: Parameters<typeof actScope>[2];
+  readonly machines: readonly (Parameters<typeof actScope>[2][number] & Parameters<typeof strandedByStop>[1][number])[];
   readonly environmentMachines: readonly string[];
 };
 
 /**
  * One approval of `verb` per copy on Servers that enforce, after one prompt when the session doesn't cover it.
- * Undefined when no Server asks for one; null when the person cancels.
+ * Undefined when no Server asks for one; null when the person cancels. Throws, before any prompt, for a stop that a
+ * Server couldn't later start again.
  */
 export async function actApprovals(verb: ServiceVerb, target: ActTarget) {
+  const stranded = verb === "stop" ? strandedByStop(target.copies, target.machines) : null;
+  if (stranded !== null) throw new Error(needsNewerPloyz(stranded, "stop"));
   const { enforced, scope } = actScope(target.environment, target.copies, target.machines, target.environmentMachines);
   if (!enforced || scope === null) return undefined;
   if (!(await ensureApproval(scope, verb))) return null;

@@ -1,6 +1,15 @@
 import type { MachineId } from "@ployz/sdk";
 import { describe, expect, it } from "vitest";
-import { endOf, type EnforcementFrame, enforcesIn, progressOf, type ServiceActBefore, type ServiceActLeg } from "./service-act";
+import {
+  endOf,
+  type EnforcementFrame,
+  enforcesIn,
+  progressOf,
+  type ServiceActBefore,
+  type ServiceActLeg,
+  START_APPROVAL_CAPABILITY,
+  strandedByStop,
+} from "./service-act";
 
 const before: ServiceActBefore = { copies: [{ server: "a", machine: "m-a", container: "web-1", state: "running", hook: false }], unanswered: [{ machine: "m-b" as MachineId, name: "b" }] };
 const moved: ServiceActLeg[] = [{ server: "a", machine: "m-a", container: "web-1", hook: false, stop: "done", start: "done", reason: null }];
@@ -73,6 +82,23 @@ describe("progressOf", () => {
       { server: "a", machine: "m-a", container: "web-2", hook: false, stop: "failed", start: null, reason: "a couldn't stop it." },
     ];
     expect(endOf("stop", answered, stopped, null)).toEqual({ state: "failed", reason: "a couldn't stop it." });
+  });
+});
+
+describe("strandedByStop", () => {
+  const server = (id: string, deviceEnforcement: boolean, capabilities: string[]) => ({ id, name: `machine-${id}`, deviceEnforcement, capabilities });
+  const copy = (machineId: string, hook = false) => ({ machineId, hook });
+
+  it("names an enforcing Server running a copy that can't take a start approval", () => {
+    const machines = [server("1", true, [START_APPROVAL_CAPABILITY]), server("2", true, [])];
+    expect(strandedByStop([copy("1"), copy("2")], machines)).toBe("machine-2");
+  });
+
+  it("strands nothing when every such Server can start it again, doesn't enforce, runs no copy, or holds only a hook", () => {
+    expect(strandedByStop([copy("1")], [server("1", true, [START_APPROVAL_CAPABILITY])])).toBeNull();
+    expect(strandedByStop([copy("1")], [server("1", false, [])])).toBeNull();
+    expect(strandedByStop([copy("1")], [server("1", true, [START_APPROVAL_CAPABILITY]), server("2", true, [])])).toBeNull();
+    expect(strandedByStop([copy("1"), copy("2", true)], [server("1", true, [START_APPROVAL_CAPABILITY]), server("2", true, [])])).toBeNull();
   });
 });
 

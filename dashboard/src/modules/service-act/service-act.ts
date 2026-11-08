@@ -127,6 +127,29 @@ export function copiesIn(frame: Pick<EnforcementFrame, "services">, identity: st
   ];
 }
 
+export const START_APPROVAL_CAPABILITY = "ployz.restart.start-approval.v1";
+
+const NEEDS_NEWER = "needs a newer Ployz to";
+
+/** Why a Server can't take a run's step: its Ployz is too old. No retry helps until it is upgraded. */
+export const needsNewerPloyz = (server: string, side: ServiceVerb) => `${server} ${NEEDS_NEWER} ${side} it.`;
+
+export const needsUpgrade = (reason: string | null) => reason?.includes(` ${NEEDS_NEWER} `) === true;
+
+/**
+ * The Server a stop would strand: it runs a copy of the Service and enforces, but can't take a start approval, so
+ * nothing in Ployz Cloud could start the copy again. Null when every such Server can. A hook never starts again, so
+ * a Server that holds only hooks strands nothing.
+ */
+export function strandedByStop(
+  copies: readonly { readonly machineId: string; readonly hook: boolean }[],
+  machines: readonly { readonly id: string; readonly name: string; readonly capabilities: readonly string[]; readonly deviceEnforcement?: boolean | null }[],
+) {
+  const hosts = new Set(copies.filter((copy) => !copy.hook).map((copy) => copy.machineId));
+  return machines.find((machine) => hosts.has(machine.id) && machine.deviceEnforcement === true
+    && !machine.capabilities.includes(START_APPROVAL_CAPABILITY))?.name ?? null;
+}
+
 /**
  * Whether a Server running a copy of the Service `identity` reports that it enforces, as the browser decides before it
  * prompts. Servers that run only other Services, and absent reports, claim nothing.

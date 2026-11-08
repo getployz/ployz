@@ -12,7 +12,7 @@ import { bodyDigest } from "#/modules/operations/keyed.server";
 import { OPERATIONS, VOLUME_OPERATIONS } from "#/modules/operations/operations";
 import { actService, runVolume } from "#/modules/operations/operations.server";
 import { type Access, requireAccessById } from "#/modules/organization/access.server";
-import { serviceEnforces } from "#/modules/service-act/service-act.server";
+import { serviceEnforces, strandingStop } from "#/modules/service-act/service-act.server";
 
 /** One approval per container, made in the approver's browser when they approve a restart or stop on Servers that enforce. */
 type Approvals = Readonly<Record<string, Signed>>;
@@ -54,6 +54,8 @@ const applyService = Effect.fn("Approvals.applyService")(function* (
   const access = yield* requireAccessById({ userId: asker.userId }, organizationId, OPERATIONS[`service.${verb}`].requires);
   const found = yield* findService(organizationId, environmentId, service);
   if (found === null) return { message: "The service is gone.", moved: true } satisfies NotRun;
+  const stranding = verb === "stop" ? yield* strandingStop(organizationId, found) : null;
+  if (stranding !== null) return { message: stranding, moved: false } satisfies NotRun;
   // Servers that enforce take a restart or stop only with the approver's passkey approvals, which only a browser can make.
   const unapproved = Object.keys(approvals ?? {}).length === 0;
   if (unapproved && (yield* serviceEnforces(organizationId, found))) {

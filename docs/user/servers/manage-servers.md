@@ -341,24 +341,27 @@ used for those actions must contain a direct connection to each target. With an 
 `--connect`, `device approve`, `device rm`, and `device enforce` affect that server only.
 To approve the first Device through SSH, repeat the command on each server.
 
-**Restart** in the dashboard asks for your passkey the first time you press it. Your browser
-then holds a key that approves restarts in that Environment, on its servers, for 60 minutes.
+**Restart**, **Stop** and **Start** in the dashboard ask for your passkey the first time you
+press one. Your browser then holds a key that approves them in that Environment, on its servers,
+for 60 minutes.
 Later presses in that window don't ask again. The key never leaves the browser tab, and closing or reloading
 the tab ends the window. Each press still sends one approval per container, lasting at most
 15 minutes, and the server checks it, the passkey's grant of the browser key and the passkey
-itself before it stops anything. Its log names the passkey that approved the restart. A grant
+itself before it stops or starts anything. Its log names the passkey that approved it. A grant
 that was changed after the passkey answered, names another Environment or server, or lasts over
-an hour is refused. Ployz Cloud carries the grant but can't make one, so it can't restart a
-container on its own. A server before 0.4 can't check a passkey's grant, so the dashboard sends
-it none and an enforcing one refuses the restart: use `ployz service restart` there. With
-enforcement on, **Stop** in the dashboard is refused too; use `ployz service stop`.
+an hour is refused. Ployz Cloud carries the grant but can't make one, so it can't restart, stop
+or start a container on its own. Upgrade a server to 0.4 before the dashboard stops or starts
+services on it. With enforcement on, the dashboard won't stop a service on an older server, since
+nothing could start it again there, and says which server needs a newer Ployz.
 
-With enforcement on, `service restart` from a device that isn't approved is refused with
-`ployz.restart.device-approval.v2 needs a Device-signed restart approval`. `service stop` needs
-the same approval. `service start` and `deploy` are refused through Ployz Cloud, since they start
-or stop containers through the same steps and don't carry an approval yet. That includes the first deploy of a new service. Turn
-enforcement off to run them. Over `--connect ssh://` everything works as before. If your device
-key cannot be loaded, restart and stop go unsigned and still work where enforcement is off.
+With enforcement on, `service restart`, `service stop` and `service start` from a device that
+isn't approved are refused with
+`ployz.restart.device-approval.v2 needs a Device-signed restart approval`. A server before 0.4
+refuses `service start` even from an approved device, so upgrade it first. `deploy` is refused
+through Ployz Cloud, since it starts and stops containers without an approval yet. That includes
+the first deploy of a new service. Turn enforcement off to run it. Over `--connect ssh://`
+everything works as before. If your device key cannot be loaded, restart, stop and start go
+unsigned and still work where enforcement is off.
 
 ## Change what a server does
 

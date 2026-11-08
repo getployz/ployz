@@ -1,5 +1,5 @@
 import type { ServiceVerb } from "@ployz/sdk";
-import type { ServiceActProgress } from "./service-act";
+import { needsUpgrade, type ServiceActProgress } from "./service-act";
 
 const MOVING = { restart: "Restarting", stop: "Stopping", start: "Starting" } as const satisfies Record<ServiceVerb, string>;
 const HALTED = { restart: "Restart stopped", stop: "Stop failed", start: "Start failed" } as const satisfies Record<ServiceVerb, string>;
@@ -19,9 +19,9 @@ export function actBadge(latest: ServiceActProgress | null | undefined, requeste
 
 /**
  * Why the latest run halted, and the verb to retry it with. None when it targeted one server, since a retry here runs
- * on all, and none for a stop, which only the menu's confirm may send.
+ * on all, none for a stop, which only the menu's confirm may send, and none when a Server needs upgrading first.
  */
 export function actAlert(latest: ServiceActProgress | null | undefined) {
   if (!latest || running(latest) || latest.state === "done") return null;
-  return { title: HALTED[latest.verb], description: latest.reason ?? "A server didn't answer.", retry: latest.scoped || latest.verb === "stop" ? null : latest.verb };
+  return { title: HALTED[latest.verb], description: latest.reason ?? "A server didn't answer.", retry: latest.scoped || latest.verb === "stop" || needsUpgrade(latest.reason) ? null : latest.verb };
 }

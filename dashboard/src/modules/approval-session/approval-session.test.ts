@@ -10,9 +10,11 @@ import {
   hex,
   keyCode,
   promptReason,
+  readSession,
   signingInput,
   startSession,
 } from "./approval-session";
+import { actApprovals } from "./approval-prompt";
 
 const production: ApprovalScope = {
   environmentId: "env-production",
@@ -154,6 +156,25 @@ describe("approveAct", () => {
       expect(JSON.parse(approvals[copy.container]?.body ?? "{}")).toMatchObject({ kind: verb });
       expect(JSON.parse(approvals[hook.container]?.body ?? "{}")).toMatchObject({ kind: "stop", container: hook.container });
     }
+  });
+
+  it("refuses a stop a Server couldn't start again before it prompts, in an Environment that would prompt", async () => {
+    const get = vi.fn();
+    vi.stubGlobal("location", { hostname: "localhost" });
+    vi.stubGlobal("navigator", { credentials: { get } });
+    const environment = { environmentId: "env-fix-api", environmentName: "fix-api", namespace: "fix-api" };
+    const held = { kind: "held", public_key: production.cluster } as const;
+    const target = {
+      environment,
+      runtime: "web",
+      copies: [{ id: copy.container, machineId: copy.machine, hook: false }],
+      machines: [{ id: copy.machine, name: "machine-2", sealing: held, deviceEnforcement: true, capabilities: ["ployz.restart.session-grant.v1"] }],
+      environmentMachines: [copy.machine],
+    };
+    const { scope } = actScope(environment, target.copies, target.machines, target.environmentMachines);
+    expect(promptReason(readSession(), scope ?? expect.fail("no scope"), "stop")).not.toBeNull();
+    await expect(actApprovals("stop", target)).rejects.toThrow("machine-2 needs a newer Ployz to stop it.");
+    expect(get).not.toHaveBeenCalled();
   });
 
   it("signs nothing for a scope the session doesn't cover, so it never approves another Environment, Cluster or Server", async () => {

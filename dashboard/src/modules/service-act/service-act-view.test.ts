@@ -37,6 +37,12 @@ describe("actAlert", () => {
     expect(actAlert({ ...restart, verb: "stop", state: "failed" })).toMatchObject({ title: "Stop failed", retry: null });
   });
 
+  it("offers no Retry when a Server needs a newer Ployz, since no retry can succeed until it's upgraded", () => {
+    const reason = "machine-2 needs a newer Ployz to start it.";
+    expect(actAlert({ ...restart, verb: "start", state: "failed", reason })).toEqual({ title: "Start failed", description: reason, retry: null });
+    expect(actAlert({ ...restart, verb: "start", state: "failed", reason: "machine-2 needs your passkey to start it." })).toMatchObject({ retry: "start" });
+  });
+
   it("shows nothing while a run moves or once it ended done", () => {
     expect(actAlert(restart)).toBeNull();
     expect(actAlert({ ...restart, state: "done" })).toBeNull();

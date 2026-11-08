@@ -17,12 +17,15 @@ import {
   legOf,
   legsOf,
   type LegStep,
+  needsNewerPloyz,
   progressOf,
   SERVICE_ACT_PENDING_LIMIT_MS,
   SERVICE_ACT_RUNNING_LIMIT_MS,
   type ServiceActBefore,
   type ServiceActLeg,
   type ServiceActState,
+  START_APPROVAL_CAPABILITY,
+  strandedByStop,
   takes,
 } from "#/modules/service-act/service-act";
 import { serviceAct } from "#/modules/service-act/tables";
@@ -30,7 +33,6 @@ import { Database } from "#/server/database.server";
 import { NotFound } from "#/server/public-error";
 
 const SESSION_GRANT_CAPABILITY = "ployz.restart.session-grant.v1";
-const START_APPROVAL_CAPABILITY = "ployz.restart.start-approval.v1";
 
 type ActRow = typeof serviceAct.$inferSelect;
 type ActRequest = ServiceActRequestedEventData;
@@ -213,11 +215,27 @@ export const actTarget = Effect.fn("ServiceAct.actTarget")(function* (
     copies: copiesIn(frame, `${service.namespace}/${service.runtime}`).map((copy) => ({ id: copy.container_id, machineId: copy.machine_id, hook: copy.hook })),
     machines: frame.machines.map(({ machine }) => ({
       id: machine.id,
+      name: machine.name,
+      capabilities: machine.runtime.capabilities ?? [],
       sealing: machine.runtime.sealing ?? null,
       deviceEnforcement: machine.runtime.device_enforcement ?? null,
     })),
     environmentMachines: [...new Set(frame.containers.filter((container) => container.namespace === service.namespace).map((container) => container.machine_id))],
   };
+});
+
+/**
+ * Why a stop of the Service is refused before anything stops: a Server running it enforces but can't take a start
+ * approval, so the Service could never be started again from Ployz Cloud. Null when the stop may go, or when Cloud
+ * can't read the Servers; each Server then refuses what it can't take.
+ */
+export const strandingStop = Effect.fn("ServiceAct.strandingStop")(function* (
+  organizationId: string,
+  service: { readonly namespace: string; readonly runtime: string },
+) {
+  const target = yield* actTarget(organizationId, service);
+  const server = target === null ? null : strandedByStop(target.copies, target.machines);
+  return server === null ? null : needsNewerPloyz(server, "stop");
 });
 
 export const actOnContainer = Effect.fn("ServiceAct.leg")(function* (
@@ -251,7 +269,7 @@ export const actOnContainer = Effect.fn("ServiceAct.leg")(function* (
     }
     const supported = support.get(leg.machine);
     if (supported?.ensure === false) {
-      if (!(yield* write(leg, "failed", `${leg.server} needs a newer Ployz to ${side} it.`))) return legs;
+      if (!(yield* write(leg, "failed", needsNewerPloyz(leg.server, side)))) return legs;
       continue;
     }
     if (!(yield* write(leg, "sent"))) return legs;
@@ -269,10 +287,10 @@ export const actOnContainer = Effect.fn("ServiceAct.leg")(function* (
     const [step, reason] = yield* sent.pipe(
       Effect.catch((error) => Effect.succeed(
         error instanceof ServerLacks
-          ? ["failed", `${leg.server} needs a newer Ployz to ${side} it.`] as const
+          ? ["failed", needsNewerPloyz(leg.server, side)] as const
           : refusedApproval(error)
           ? ["failed", unread ? `Cloud couldn't check ${leg.server}. Try again.`
-            : withheld ? `${leg.server} needs a newer Ployz to ${side} it.`
+            : withheld ? needsNewerPloyz(leg.server, side)
             : approval === null ? `${leg.server} needs your passkey to ${row.verb} it.`
             : `${leg.server} didn't accept the approval.`] as const
           : rpcErrorCode(error) === "unavailable"
