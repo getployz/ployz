@@ -21,12 +21,13 @@ CREATE TABLE "ingress_doors_attempt" (
 CREATE TABLE "organization_cloudflare_ingress" (
 	"organization_id" uuid PRIMARY KEY,
 	"zone" text NOT NULL,
-	"tunnel_id" text NOT NULL,
+	"tunnel_id" text,
 	"tunnel_name" text NOT NULL,
 	"state" text NOT NULL,
 	"created_at" timestamp with time zone DEFAULT now() NOT NULL,
 	"updated_at" timestamp with time zone DEFAULT now() NOT NULL,
-	CONSTRAINT "organization_cloudflare_ingress_state_check" CHECK ("state" in ('set_up', 'active', 'left')),
+	CONSTRAINT "organization_cloudflare_ingress_state_check" CHECK ("state" in ('setting_up','set_up','active','left')),
+	CONSTRAINT "organization_cloudflare_ingress_tunnel_check" CHECK (("state" = 'setting_up') = ("tunnel_id" is null)),
 	CONSTRAINT "organization_cloudflare_ingress_zone_check" CHECK ("zone" ~ '^[a-z0-9.-]+\.[a-z0-9-]+$')
 );
 --> statement-breakpoint

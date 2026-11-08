@@ -6303,7 +6303,7 @@
     {
       "type": "text",
       "typeSchema": null,
-      "notNull": true,
+      "notNull": false,
       "dimensions": 0,
       "default": null,
       "generated": null,
@@ -15940,8 +15940,15 @@
       "table": "ingress_doors_attempt"
     },
     {
-      "value": "\"state\" in ('set_up', 'active', 'left')",
+      "value": "\"state\" in ('setting_up','set_up','active','left')",
       "name": "organization_cloudflare_ingress_state_check",
+      "entityType": "checks",
+      "schema": "public",
+      "table": "organization_cloudflare_ingress"
+    },
+    {
+      "value": "(\"state\" = 'setting_up') = (\"tunnel_id\" is null)",
+      "name": "organization_cloudflare_ingress_tunnel_check",
       "entityType": "checks",
       "schema": "public",
       "table": "organization_cloudflare_ingress"

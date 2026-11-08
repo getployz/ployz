@@ -19,6 +19,10 @@ export type DoorsStage = (typeof DOORS_STAGES)[number];
 export const DOORS_PENDING_LIMIT_MS = 15 * 60_000;
 /** The whole switch takes at most this long, Servers answering one at a time. Past it, the change ends failed. */
 export const DOORS_RUNNING_LIMIT_MS = 10 * 60_000;
+/** Cloudflare setup's steps after it reserved the Cluster take at most this long each way: doing, then undoing. */
+export const SETUP_RUNNING_LIMIT_MS = 5 * 60_000;
+/** A setup reservation older than this belongs to a setup that died; the next setup takes it over. */
+export const SETUP_STALE_MS = 2 * SETUP_RUNNING_LIMIT_MS;
 
 export const SwitchDoorsInput = Schema.Struct({
   organizationSlug: Schema.String.check(Schema.isNonEmpty()),
@@ -45,13 +49,17 @@ export type LatestDoorsChange =
   | { readonly attemptId: string; readonly want: DoorsWant; readonly state: "finished"; readonly endedAt: string }
   | { readonly attemptId: string; readonly want: DoorsWant; readonly state: "failed"; readonly endedAt: string; readonly failure: string };
 
-export type CloudflareSetup = {
-  readonly zone: string;
-  readonly tunnelName: string;
-  readonly tunnelId: string;
-  /** `set_up`: the tunnel runs beside the public ports and nothing moved. `left`: switched back, the tunnel is yours to delete. */
-  readonly state: "set_up" | "active" | "left";
-};
+export const CLOUDFLARE_SETUP_STATES = ["setting_up", "set_up", "active", "left"] as const;
+export type CloudflareSetupState = (typeof CLOUDFLARE_SETUP_STATES)[number];
+
+/**
+ * The Cluster's Cloudflare setup. `setting_up`: a setup reserved the Cluster and is creating the tunnel; no switch
+ * runs until it ends. `set_up`: the tunnel runs beside the public ports and nothing moved. `active`: generated names
+ * sit under the zone. `left`: switched back, the tunnel is yours to delete.
+ */
+export type CloudflareSetup =
+  | { readonly zone: string; readonly tunnelName: string; readonly tunnelId: null; readonly state: "setting_up" }
+  | { readonly zone: string; readonly tunnelName: string; readonly tunnelId: string; readonly state: "set_up" | "active" | "left" };
 
 /** What the page reads of the Cluster's ingress without asking a Server: where its names come from and the latest switch. */
 export type ClusterIngressView = {
@@ -72,8 +80,22 @@ export type ClusterIngressObservation = {
   readonly partial: boolean;
 };
 
+/**
+ * Why a switch can't trust what it saw of the Servers: none answered, or some didn't, so a hostname they publish may be
+ * missing from the moves. Null when every Server and container was read.
+ */
+export function observationGap(observed: ClusterIngressObservation | null) {
+  if (observed === null) return "Your servers didn't answer. Try again once they do.";
+  if (observed.partial) return "Some servers didn't answer, so an address may be missing. Try again once they do.";
+  return null;
+}
+
 /** A generated hostname and where it goes when the switch changes the Cluster Domain's source. */
 export type MovedHostname = { readonly from: string; readonly to: string; readonly namespace: string; readonly service: string };
+
+/** The moves whose new hostname no container of its Namespace publishes yet. */
+export const unservedMoves = (published: readonly PublishedHostname[], moving: readonly MovedHostname[]) =>
+  moving.filter((move) => !published.some(({ hostname, namespace }) => hostname === move.to && namespace === move.namespace));
 
 /**
  * Every hostname Services publish under `from` and the one it becomes under `to`. A custom domain isn't under the
@@ -88,7 +110,7 @@ export function movedHostnames(published: readonly PublishedHostname[], from: st
 }
 
 /** An Environment a switch redeploys, with only the Services whose hostnames move, by their names in the Store. */
-export type RedeployScope = { readonly project: string; readonly environment: string; readonly services: readonly string[] };
+export type RedeployScope = { readonly namespace: string; readonly project: string; readonly environment: string; readonly services: readonly string[] };
 
 /**
  * What a switch redeploys: each Environment owning a moved hostname, narrowed to the deployed Services publishing one,
@@ -99,7 +121,7 @@ export type RedeployScope = { readonly project: string; readonly environment: st
 export function redeployScope(
   moving: readonly MovedHostname[], owners: readonly OwnedNamespace[], runtimeNames: ReadonlyMap<string, Readonly<Record<string, string>>>,
 ) {
-  const environments = new Map<string, { project: string; environment: string; services: Set<string> }>();
+  const environments = new Map<string, { namespace: string; project: string; environment: string; services: Set<string> }>();
   const left: MovedHostname[] = [];
   for (const moved of moving) {
     const owner = owners.find(({ namespace }) => namespace === moved.namespace);
@@ -109,7 +131,7 @@ export function redeployScope(
       continue;
     }
     const key = `${owner.project}/${owner.environment}`;
-    const scope = environments.get(key) ?? { project: owner.project, environment: owner.environment, services: new Set<string>() };
+    const scope = environments.get(key) ?? { namespace: owner.namespace, project: owner.project, environment: owner.environment, services: new Set<string>() };
     scope.services.add(named);
     environments.set(key, scope);
   }
@@ -137,11 +159,15 @@ export function switchProgress(change: LatestDoorsChange | null): { readonly lab
 /** How many of `servers` hold `door` open. */
 export const holdingCount = (servers: ClusterIngressObservation["servers"], door: DoorName) => servers.filter((server) => server.doors.includes(door)).length;
 
-/** What the Servers seen say of `door`: open on every one, on some, or on none. Null before any Server was seen. */
+/**
+ * What the Servers seen say of `door`: open on every one, on some, or on none. Null before any Server was seen. A look
+ * that missed some Servers counts only those seen, and says so, since the rest may hold the Door too.
+ */
 export function doorWords(observed: ClusterIngressObservation | null, door: DoorName) {
   if (observed === null) return null;
   const servers = observed.servers.length;
   const open = holdingCount(observed.servers, door);
+  if (observed.partial) return servers === 0 ? "Some servers didn't answer." : `Open on ${open} of ${servers} servers. Some servers didn't answer.`;
   if (servers === 0) return "No server takes web traffic yet.";
   if (open === servers) return "Open on every server.";
   if (open === 0) return "Closed on every server.";
@@ -175,6 +201,7 @@ export function doorsGap(answer: DoorsAnswer, wanted: readonly string[]) {
  */
 export function switchProblem(setup: CloudflareSetup | null, to: DoorsWant, latest: LatestDoorsChange | null = null) {
   if (setup === null) return "Set up Cloudflare first, then switch to it.";
+  if (setup.state === "setting_up") return "Cloudflare is being set up. Wait for it to finish, then switch.";
   const retrying = latest !== null && latest.state === "failed" && latest.want === to;
   if (to === "tunnel") {
     if (setup.state === "set_up" || (setup.state === "active" && retrying)) return null;

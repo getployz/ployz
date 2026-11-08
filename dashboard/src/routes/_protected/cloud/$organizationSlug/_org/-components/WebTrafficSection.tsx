@@ -74,7 +74,7 @@ export function WebTrafficSection({ organizationSlug }: { organizationSlug: stri
           <p role="status" className="flex items-center gap-2 text-sm text-muted-foreground"><Spinner />{progress.label}. Step {progress.step} of 3.</p>
         )}
       </SettingsRow>
-      {settingUp && (setup === null || setup.state === "left") ? (
+      {settingUp && (setup === null || setup.state === "left" || setup.state === "setting_up") ? (
         <CloudflareSetupForm
           organizationSlug={organizationSlug}
           onCancel={() => setSettingUp(false)}
@@ -109,11 +109,14 @@ export function WebTrafficSection({ organizationSlug }: { organizationSlug: stri
 /** Whether a Server seen still holds the tunnel. A failed switch leaves it there, whatever the row's state says. */
 const tunnelHeld = (observed: ClusterIngressObservation | null) => observed !== null && holdingCount(observed.servers, "tunnel") > 0;
 
-/** Whether the Servers were seen and none holds the tunnel, so it is the user's to delete. */
-const tunnelLetGo = (observed: ClusterIngressObservation | null) => observed !== null && holdingCount(observed.servers, "tunnel") === 0;
+/** Whether every Server was seen and none holds the tunnel, so it is the user's to delete. A Server not seen may still hold it. */
+const tunnelLetGo = (observed: ClusterIngressObservation | null) => observed !== null && !observed.partial && holdingCount(observed.servers, "tunnel") === 0;
 
-const connectedWords = (setup: CloudflareSetup, observed: ClusterIngressObservation | null) =>
-  observed === null ? setup.zone : `${setup.zone} · ${holdingCount(observed.servers, "tunnel")} of ${observed.servers.length} servers connected`;
+const connectedWords = (setup: CloudflareSetup, observed: ClusterIngressObservation | null) => {
+  if (observed === null) return setup.zone;
+  const connected = `${setup.zone} · ${holdingCount(observed.servers, "tunnel")} of ${observed.servers.length} servers connected`;
+  return observed.partial ? `${connected} · some servers didn't answer` : connected;
+};
 
 /**
  * What the Servers show of their ports, once seen. A switch under way or one that failed reads as the Doors stand, not
@@ -128,6 +131,7 @@ function publicHint(setup: CloudflareSetup | null, observed: ClusterIngressObser
 /** What the Servers show of the tunnel, once seen, the same way. */
 function cloudflareHint(setup: CloudflareSetup | null, observed: ClusterIngressObservation | null, switching: boolean) {
   if (setup === null) return "Serve through Cloudflare with no open ports.";
+  if (setup.state === "setting_up") return `Setting up on ${setup.zone}…`;
   if (switching || setup.state === "active" || tunnelHeld(observed)) return connectedWords(setup, observed);
   if (setup.state === "left") return "Serve through Cloudflare with no open ports.";
   return `Tunnel ready on ${setup.zone}`;
@@ -145,8 +149,8 @@ function cloudflareControl({ setup, change, switching, editable, settingUp, onSe
   const canSwitch = setup !== null && switchProblem(setup, "tunnel", change) === null;
   if (setup?.state === "active" && !canSwitch) return switching ? null : <Badge variant="info">In use</Badge>;
   if (!editable) return null;
-  if (setup === null || setup.state === "left") {
-    return <Button type="button" variant="outline" size="sm" disabled={settingUp || switching} onClick={onSetUp}>Set up</Button>;
+  if (setup === null || setup.state === "left" || setup.state === "setting_up") {
+    return <Button type="button" variant="outline" size="sm" disabled={settingUp || switching || setup?.state === "setting_up"} onClick={onSetUp}>Set up</Button>;
   }
   return <Button type="button" size="sm" disabled={switching} onClick={onSwitch}>Review and switch</Button>;
 }
@@ -280,7 +284,8 @@ function SwitchDialog({ organizationSlug, to, onOpenChange, onConfirm }: {
               : "Servers open ports 80 and 443 and the tunnel closes. Expect a short interruption."}
           </p>
           {review.isPending ? <p role="status" className="flex items-center gap-2"><Spinner />Checking addresses</p> : null}
-          {review.isError ? <p role="alert">Couldn't check the addresses. You can still switch.</p> : null}
+          {review.isError ? <p role="alert">Couldn't check the addresses. The switch checks them again before anything moves.</p> : null}
+          {review.data?.gap ? <p role="alert">{review.data.gap}</p> : null}
           {moves.length === 0 ? null : (
             <>
               <p>These addresses change. The old ones stop working.</p>

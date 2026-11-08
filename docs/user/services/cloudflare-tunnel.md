@@ -24,7 +24,10 @@ ports** is in use until you switch.
    Cloudflare's free certificate covers.
 
 Ployz uses the token for this one step and doesn't keep it. A token missing a permission names
-it, and nothing changes.
+it, and nothing changes. Setup is refused while a switch runs or while someone else sets
+Cloudflare up, and a switch is refused while setup runs. Wait for the one under way to finish.
+A setup that stops partway puts your servers back on public ports and removes what it created;
+when something is left, the message names it.
 
 Setup adds a tunnel named `ployz-<your organization>` and one proxied `*.example.com` record to
 your zone. It never touches `example.com` itself or a record you already have. Your addresses
@@ -33,7 +36,8 @@ stay where they are until you switch.
 Click **Review and switch**. The review lists every address that moves, like
 `web-prod.acme.ployz.app → web-prod.example.com`. The old ones stop working. Click **Switch**
 and follow **Step 1 of 3** to **Step 3 of 3**. Expect a short interruption. The switch redeploys
-only the services on that list. A service that isn't running stays stopped.
+only the services on that list, and closes the old door only once your servers serve every new
+address. A service that isn't running stays stopped.
 
 While a switch runs, each door's row shows what your servers hold right now. A second switch the
 same way joins the running one. One the other way is refused until it finishes.
@@ -41,6 +45,11 @@ same way joins the running one. One the other way is refused until it finishes.
 If a step fails, both doors stay open on your servers and the section says what stopped it, such
 as an environment that didn't redeploy. Each door's row shows how many servers hold it. Fix the
 cause, then click **Review and switch** again to finish.
+
+The switch needs every server to answer. When a server is down, the switch stops with both doors
+open and says so, since Ployz can't see which addresses that server moves. The review and each
+door's row say when some servers didn't answer. Bring the server back, or remove it, then switch
+again.
 
 Custom domains stay as they are. Add each to your tunnel's DNS in Cloudflare, as the CLI steps
 below show.

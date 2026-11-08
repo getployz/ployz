@@ -3,26 +3,38 @@ import { check, index, pgTable, text, timestamp, uniqueIndex, uuid } from "drizz
 import { createdAt, sqlStringLiterals, updatedAt } from "#/db/tables";
 import { user } from "#/modules/identity/tables";
 import { organization } from "#/modules/organization/tables";
-import { DOORS_STAGES, DOORS_STATES, DOORS_WANTS, type DoorsStage, type DoorsState, type DoorsWant } from "#/modules/ingress/doors";
+import {
+  CLOUDFLARE_SETUP_STATES,
+  type CloudflareSetupState,
+  DOORS_STAGES,
+  DOORS_STATES,
+  DOORS_WANTS,
+  type DoorsStage,
+  type DoorsState,
+  type DoorsWant,
+} from "#/modules/ingress/doors";
 
 const timestamptz = (name: string) => timestamp(name, { mode: "date", withTimezone: true });
 
 /**
  * The Organization's Cloudflare tunnel as setup left it, and whether the Cluster Domain's source is its zone. It holds no
  * Cloudflare credential: the API token setup used is forgotten, and the tunnel's own token is sealed in the Cluster.
- * `set_up`: the tunnel runs beside the public ports and nothing moved. `active`: generated names sit under `zone`.
- * `left`: the Cluster went back to Public, and the tunnel and wildcard record are the user's to delete in Cloudflare.
+ * `setting_up`: a setup reserved the Cluster, under the lock a switch takes, and has no tunnel yet; `updated_at` is its
+ * reservation, and one older than `SETUP_STALE_MS` belongs to a setup that died. `set_up`: the tunnel runs beside the
+ * public ports and nothing moved. `active`: generated names sit under `zone`. `left`: the Cluster went back to Public,
+ * and the tunnel and wildcard record are the user's to delete in Cloudflare.
  */
 export const organizationCloudflareIngress = pgTable("organization_cloudflare_ingress", {
   organizationId: uuid("organization_id").primaryKey().references(() => organization.id, { onDelete: "cascade" }),
   zone: text("zone").notNull(),
-  tunnelId: text("tunnel_id").notNull(),
+  tunnelId: text("tunnel_id"),
   tunnelName: text("tunnel_name").notNull(),
-  state: text("state").notNull().$type<"set_up" | "active" | "left">(),
+  state: text("state").notNull().$type<CloudflareSetupState>(),
   createdAt,
   updatedAt,
 }, (table) => [
-  check("organization_cloudflare_ingress_state_check", sql`${table.state} in ('set_up', 'active', 'left')`),
+  check("organization_cloudflare_ingress_state_check", sql`${table.state} in (${sqlStringLiterals(CLOUDFLARE_SETUP_STATES)})`),
+  check("organization_cloudflare_ingress_tunnel_check", sql`(${table.state} = 'setting_up') = (${table.tunnelId} is null)`),
   check("organization_cloudflare_ingress_zone_check", sql`${table.zone} ~ '^[a-z0-9.-]+\\.[a-z0-9-]+$'`),
 ]);
 
