@@ -1387,6 +1387,11 @@ impl LocalMachine {
                     if !never_started(&adopted) {
                         return Ok(None);
                     }
+                    if local.record().device_enforcement() {
+                        local
+                            .approvals
+                            .mark_hook_made(new.slot.creation_key.as_str())?;
+                    }
                 }
                 if let Some((run, expect)) = fence {
                     return rotation::start_fenced(
@@ -1427,6 +1432,7 @@ impl LocalMachine {
             return Err(Error::NotParticipating);
         }
         let machine = record.machine().ok_or(Error::NotParticipating)?;
+        let enforced = record.device_enforcement();
         containers
             .create_with_admission(
                 machine,
@@ -1444,7 +1450,26 @@ impl LocalMachine {
                         } else {
                             None
                         };
-                        admit_reserved_door(namespace, spec, network)
+                        admit_reserved_door(namespace, spec, network)?;
+                        // A deploy's hook runs once: a slot whose hook was made and
+                        // is now gone is never made again, so it never reruns.
+                        if enforced
+                            && kind == ContainerKind::PreDeployHook
+                            && let Some(key) = creation_key.as_deref()
+                            && self.approvals.hook_made(key)?
+                        {
+                            return Err(Error::DeployRefused(
+                                ployz_core::authority::AuthorityRefusal::Mismatch {
+                                    field: "a hook run",
+                                },
+                            ));
+                        }
+                        if enforced {
+                            // Boxed: its Volume inspections would otherwise grow every
+                            // create's future, enforced or not.
+                            Box::pin(containers.refuse_managed_external(&machine.id, spec)).await?;
+                        }
+                        Ok(())
                     },
                     storage: self.observe_storage(),
                 },

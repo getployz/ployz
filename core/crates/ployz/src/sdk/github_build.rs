@@ -441,20 +441,32 @@ pub enum GithubFinish {
     Ended(BuildStatus),
 }
 
-/// End a GitHub build whose run reported its end, completed, or ran out of time
-/// (`timed_out`, and Cloud cancelled it): read its grant on the Machine that minted
-/// it, and write the receipt from the digest it received. A run that never checked
-/// in, or that GitHub failed for its own reasons, is skipped for the next Builder.
-/// With `expect`, it reads the grant only on an entry of that Cluster: a grant
-/// Machine of another Cluster fails the build with the connection's sentence, since
-/// waiting won't change it. One that doesn't answer reads as unreachable.
+/// Which of Cloud's looks at a GitHub build calls [`github_finish`].
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum GithubLook {
+    /// No run checked in by the time another Builder could take the build. It passes
+    /// on only a run that still hasn't: one that checked in meanwhile started in time.
+    StartLimit,
+    /// The run ran past its budget, and Cloud cancelled it.
+    Budget,
+    /// The run reported its end, or GitHub says it completed.
+    Ended,
+}
+
+/// End a GitHub build at Cloud's `look`: read its grant on the Machine that minted it,
+/// and write the receipt from the digest it received. A run that never checked in, or
+/// that GitHub failed for its own reasons, is skipped for the next Builder. With
+/// `expect`, it reads the grant only on an entry of that Cluster: a grant Machine of
+/// another Cluster fails the build with the connection's sentence, since waiting won't
+/// change it. One that doesn't answer reads as unreachable.
 ///
 /// # Errors
 /// Returns a storage error; the Store's `conflict` means the build already ended.
 pub async fn github_finish(
     store: Arc<ConfigStore>,
     id: GithubBuildId,
-    timed_out: bool,
+    look: GithubLook,
     connections: Vec<Connection>,
     expect: Option<ClusterExpectation>,
 ) -> Result<GithubFinish, RpcError> {
@@ -471,12 +483,15 @@ pub async fn github_finish(
         return Ok(GithubFinish::Ended(build.status));
     }
     let run_id = build.run.run_id;
-    let end = match &build.grant {
-        None => {
-            let message = if timed_out {
-                "no runner started the build in time"
-            } else {
-                "the run ended before it started the build"
+    let end = match (&build.grant, look) {
+        // The start limit ends only a run that never checked in, whatever the re-read
+        // found: the Store's Unstarted refuses a run whose check-in committed.
+        (None, _) | (_, GithubLook::StartLimit) => {
+            let message = match look {
+                GithubLook::StartLimit | GithubLook::Budget => {
+                    "no runner started the build in time"
+                }
+                GithubLook::Ended => "the run ended before it started the build",
             };
             let end = GithubEnd::Unstarted {
                 message: message.to_owned(),
@@ -487,13 +502,15 @@ pub async fn github_finish(
                 finished => finished,
             };
         }
-        Some(grant) => {
+        (Some(grant), GithubLook::Budget | GithubLook::Ended) => {
             let pushed = match inspect_grant(grant, connections, expect).await {
                 GrantRead::Pushed(pushed) => pushed,
                 GrantRead::Refused(message) => {
                     return settle(&store, id, run_id, GithubEnd::Failed { message }).await;
                 }
-                GrantRead::Unreachable if !timed_out => return Ok(GithubFinish::Waiting),
+                GrantRead::Unreachable if look == GithubLook::Ended => {
+                    return Ok(GithubFinish::Waiting);
+                }
                 GrantRead::Unreachable => {
                     let end = GithubEnd::Failed {
                         message: "your Machine couldn't be reached to confirm the push".to_owned(),
@@ -526,7 +543,7 @@ pub async fn github_finish(
                 (_, Some(RunEnd::Failed)) => GithubEnd::Failed {
                     message: "a build step failed".to_owned(),
                 },
-                _ if timed_out => GithubEnd::Skipped {
+                _ if look == GithubLook::Budget => GithubEnd::Skipped {
                     message: "the run ran out of time".to_owned(),
                 },
                 _ => GithubEnd::Skipped {

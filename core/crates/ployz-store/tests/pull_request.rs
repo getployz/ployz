@@ -797,6 +797,7 @@ fn a_closed_pull_request_leaves_the_servers_before_the_store() {
                 message: None,
                 prune: false,
                 no_prune: false,
+                approval: None,
             }),
             &Trusted::default(),
         )
@@ -972,6 +973,7 @@ fn idle_branches_close_after_a_week_unless_kept() {
                     message: None,
                     prune: false,
                     no_prune: false,
+                    approval: None,
                 }),
                 &Trusted::default(),
             )
@@ -1035,6 +1037,7 @@ fn deploy(store: &ConfigStore, who: &Actor, environment: &str, services: &[&str]
                 message: None,
                 prune: false,
                 no_prune: false,
+                approval: None,
             }),
             &Trusted::default(),
         )
@@ -1828,4 +1831,333 @@ fn a_merge_reported_after_its_close_still_lands() {
     };
     pull(&store, &who, merged);
     assert_eq!(production_env(&store, &who).unwrap()["A"], json!("2"));
+}
+
+#[test]
+fn an_older_report_after_its_author_left_asks_for_approval() {
+    let (store, who) = shop();
+    plan(&store, &who, on());
+    pull(&store, &who, facts(true, "2026-09-29T10:00:00Z"));
+    assert_eq!(standings(&store, &who)[0].2, Standing::Trusted);
+
+    // ada left; GitHub delivers an event older than the facts the Store holds.
+    let left = Trusted {
+        members: Some(Vec::new()),
+        ..Trusted::default()
+    };
+    let stale = SystemEvent::PullRequest(facts(true, "2026-09-29T09:00:00Z"));
+    store.system(&who.organization, &stale, &left).unwrap();
+    assert_eq!(standings(&store, &who)[0].2, Standing::NeedsApproval);
+}
+
+#[test]
+fn two_first_reports_of_a_pull_request_take_turns() {
+    // SQLite writers never overlap.
+    if std::env::var_os("PLOYZ_STORE_TEST_POSTGRES").is_none() {
+        return;
+    }
+    let url = backend::fresh_url(&tempfile::tempdir().unwrap());
+    let (store, who) = shop_on(ConfigStore::open(&url, backend::key()).unwrap());
+    plan(&store, &who, on());
+    // Production stays locked, so the first report waits there with pr-5's row
+    // written and not yet committed.
+    let mut other = postgres::Client::connect(&url, postgres::NoTls).unwrap();
+    let mut held = other.transaction().unwrap();
+    held.execute(
+        "UPDATE config_environment SET working_revision = working_revision WHERE name = 'production'",
+        &[],
+    )
+    .unwrap();
+    let renamed = PullRequest {
+        head_branch: backend::git_branch("search-v2"),
+        ..facts(true, "2026-09-29T10:00:01Z")
+    };
+    std::thread::scope(|threads| {
+        let first = threads.spawn(|| pull(&store, &who, facts(true, "2026-09-29T10:00:00Z")));
+        // real-wait: the first report blocks on a Postgres row lock in another connection, which reports nothing
+        std::thread::sleep(std::time::Duration::from_millis(300));
+        let second = threads.spawn(|| pull(&store, &who, renamed));
+        // real-wait: the second report reaches the first's row, which reports nothing
+        std::thread::sleep(std::time::Duration::from_millis(300));
+        held.commit().unwrap();
+        first.join().unwrap();
+        second.join().unwrap();
+    });
+    let id = DeploymentId::parse(uuid::Uuid::new_v4().to_string()).unwrap();
+    store
+        .write_trusted(
+            &who,
+            &Admit::Deploy(Deploy {
+                id: id.clone(),
+                environment: at("pr-5"),
+                services: Vec::new(),
+                version: None,
+                upload: None,
+                approval: None,
+                accept_volume_loss: Vec::new(),
+                message: None,
+                prune: false,
+                no_prune: false,
+            }),
+            &Trusted::default(),
+        )
+        .unwrap();
+    let branches: Vec<_> = store
+        .sources(&id)
+        .unwrap()
+        .into_iter()
+        .map(|source| source.branch)
+        .collect();
+    assert_eq!(
+        branches,
+        [
+            Some(backend::git_branch("search-v2")),
+            Some(backend::git_branch("search-v2"))
+        ]
+    );
+}
+
+#[test]
+fn newer_open_facts_never_reopen_a_merged_pull_request() {
+    let (store, who) = shop();
+    plan(
+        &store,
+        &who,
+        SetPrPlan {
+            remove_on_close: Some(true),
+            ..on()
+        },
+    );
+    let opened = pull(&store, &who, facts(true, "2026-09-29T10:00:00Z"));
+    run(&store, &opened.admitted[0].deployment.id, &["web", "api"]);
+    pull(&store, &who, facts(true, "2026-09-29T10:30:00Z"));
+    // A merge older than the open facts the Store holds: GitHub sends no such order.
+    let merged = PullRequest {
+        merge_commit: Some(backend::sha("3333333333333333333333333333333333333333")),
+        ..facts(false, "2026-09-29T10:20:00Z")
+    };
+    let closing = pull(&store, &who, merged);
+    assert_eq!(closing.closing.len(), 1, "{closing:?}");
+
+    let reopened = pull(&store, &who, facts(true, "2026-09-29T10:40:00Z"));
+    assert!(reopened.admitted.is_empty(), "{reopened:?}");
+}
+
+/// The columns of the one row `sql` selects, as text.
+fn cells(url: &str, sql: &str) -> Vec<Option<String>> {
+    match url.strip_prefix("sqlite:") {
+        Some(path) => {
+            let connection = rusqlite::Connection::open(path).unwrap();
+            let mut statement = connection.prepare(sql).unwrap();
+            let columns = statement.column_count();
+            statement
+                .query_row([], |row| {
+                    (0..columns)
+                        .map(|index| row.get::<_, Option<String>>(index))
+                        .collect()
+                })
+                .unwrap()
+        }
+        None => {
+            let row = postgres::Client::connect(url, postgres::NoTls)
+                .unwrap()
+                .query_one(sql, &[])
+                .unwrap();
+            (0..row.len())
+                .map(|index| row.get::<_, Option<String>>(index))
+                .collect()
+        }
+    }
+}
+
+/// Pull request `number` from a fork by someone outside the org, at `head`.
+fn outsiders(number: u64, head: &str) -> PullRequest {
+    PullRequest {
+        number: backend::pr_number(number),
+        head_branch: backend::git_branch(&format!("change-{number}")),
+        ..outsider(head, "2026-09-29T10:00:00Z")
+    }
+}
+
+fn approve_number(store: &ConfigStore, who: &Actor, number: u64, head: &str) -> Automated {
+    let approval = ApprovePullRequest {
+        repository_id: backend::repo_id(11),
+        number: backend::pr_number(number),
+        head: backend::sha(head),
+    };
+    store.write(who, &approval).unwrap()
+}
+
+#[test]
+fn every_standing_a_store_before_phases_stored_reads_the_same_after_the_migration() {
+    let dir = tempfile::tempdir().unwrap();
+    let url = backend::fresh_url(&dir);
+    let (store, who) = shop_on(ConfigStore::open(&url, backend::key()).unwrap());
+    plan(&store, &who, on());
+    pull(&store, &who, facts(true, "2026-09-29T10:00:00Z"));
+    pull(&store, &who, outsiders(6, HEAD));
+    pull(&store, &who, outsiders(7, HEAD));
+    pull(&store, &who, outsiders(8, NEXT));
+    approve_number(&store, &who, 8, NEXT);
+    pull(
+        &store,
+        &who,
+        PullRequest {
+            open: false,
+            merge_commit: Some(backend::sha("3333333333333333333333333333333333333333")),
+            ..outsiders(9, NEXT)
+        },
+    );
+    drop(store);
+    execute(&url, "ALTER TABLE config_pull_request DROP COLUMN phase");
+    execute(
+        &url,
+        "DELETE FROM config_migration WHERE name = '0040_pull_request_phase'",
+    );
+    // NULL is the older encoding of needs approval.
+    execute(
+        &url,
+        "UPDATE config_pull_request SET standing = NULL WHERE number = 7",
+    );
+
+    let store = ConfigStore::open(&url, backend::key()).unwrap();
+    let pr_8 = Some(NEXT.to_owned());
+    assert_eq!(
+        standings(&store, &who),
+        [
+            (
+                5,
+                Some(HEAD.to_owned()),
+                Standing::Trusted,
+                Some("pr-5".to_owned())
+            ),
+            (
+                8,
+                pr_8.clone(),
+                Standing::Approved(backend::sha(NEXT)),
+                Some("pr-8".to_owned())
+            ),
+            (6, Some(HEAD.to_owned()), Standing::NeedsApproval, None),
+            (7, Some(HEAD.to_owned()), Standing::NeedsApproval, None),
+        ]
+    );
+    let phase = |number: u64| -> serde_json::Value {
+        let sql = format!("SELECT phase FROM config_pull_request WHERE number = {number}");
+        serde_json::from_str(cells(&url, &sql)[0].as_deref().unwrap()).unwrap()
+    };
+    assert_eq!(
+        (phase(5)["phase"].clone(), phase(5)["standing"].clone()),
+        (json!("open"), json!("trusted"))
+    );
+    assert_eq!(phase(7)["standing"], json!("needs_approval"));
+    assert_eq!(phase(8)["standing"], json!("approved_head"));
+    assert_eq!(
+        (phase(9)["phase"].clone(), phase(9)["commit"].clone()),
+        (
+            json!("merged"),
+            json!("3333333333333333333333333333333333333333")
+        )
+    );
+}
+
+#[test]
+fn a_row_an_older_store_wrote_since_reads_from_the_columns_it_wrote() {
+    let dir = tempfile::tempdir().unwrap();
+    let url = backend::fresh_url(&dir);
+    let (store, who) = shop_on(ConfigStore::open(&url, backend::key()).unwrap());
+    plan(&store, &who, on());
+    pull(&store, &who, outsiders(6, HEAD));
+
+    // An older Store approves #6: it writes the standing column alone.
+    execute(
+        &url,
+        &format!(
+            "UPDATE config_pull_request SET standing = '{{\"approved\":\"{HEAD}\"}}' WHERE number = 6"
+        ),
+    );
+    // It inserts #7 with no phase.
+    let seven = serde_json::to_string(&outsiders(7, NEXT)).unwrap();
+    execute(
+        &url,
+        &format!(
+            "INSERT INTO config_pull_request (organization_id, repository_id, number, facts, updated, standing) \
+             VALUES ('org', 11, 7, '{seven}', '2026-09-29T10:00:00Z', '\"needs_approval\"')"
+        ),
+    );
+    assert_eq!(
+        standings(&store, &who),
+        [
+            (
+                6,
+                Some(HEAD.to_owned()),
+                Standing::Approved(backend::sha(HEAD)),
+                None
+            ),
+            (7, Some(NEXT.to_owned()), Standing::NeedsApproval, None),
+        ]
+    );
+    // It records #6's merge.
+    execute(
+        &url,
+        "UPDATE config_pull_request SET merged = '{\"commit\":\"3333333333333333333333333333333333333333\",\"into\":\"main\"}', \
+         unlanded = '[]' WHERE number = 6",
+    );
+    assert_eq!(
+        standings(&store, &who),
+        [(7, Some(NEXT.to_owned()), Standing::NeedsApproval, None)]
+    );
+    assert_eq!(
+        approve(&store, &who, HEAD).unwrap_err().code,
+        RpcErrorCode::NotFound
+    );
+}
+
+#[test]
+fn a_store_before_phases_reads_what_this_one_writes_from_its_columns() {
+    let dir = tempfile::tempdir().unwrap();
+    let url = backend::fresh_url(&dir);
+    let (store, who) = shop_on(ConfigStore::open(&url, backend::key()).unwrap());
+    plan(&store, &who, on());
+    let columns = || {
+        let row = cells(
+            &url,
+            "SELECT facts, standing, merged, unlanded FROM config_pull_request WHERE number = 5",
+        );
+        let facts: PullRequest = serde_json::from_str(row[0].as_deref().unwrap()).unwrap();
+        let standing: Option<Standing> = row[1]
+            .as_deref()
+            .map(|text| serde_json::from_str(text).unwrap());
+        (facts.open, standing, row[2].clone(), row[3].clone())
+    };
+    pull(&store, &who, outsider(HEAD, "2026-09-29T10:00:00Z"));
+    assert_eq!(columns(), (true, Some(Standing::NeedsApproval), None, None));
+    approve(&store, &who, HEAD).unwrap();
+    assert_eq!(
+        columns(),
+        (
+            true,
+            Some(Standing::Approved(backend::sha(HEAD))),
+            None,
+            None
+        )
+    );
+    pull(
+        &store,
+        &who,
+        PullRequest {
+            open: false,
+            merge_commit: Some(backend::sha("3333333333333333333333333333333333333333")),
+            ..outsider(HEAD, "2026-09-29T11:00:00Z")
+        },
+    );
+    let (open, standing, merged, unlanded) = columns();
+    assert_eq!(
+        (open, standing),
+        (false, Some(Standing::Approved(backend::sha(HEAD))))
+    );
+    assert_eq!(
+        serde_json::from_str::<serde_json::Value>(merged.as_deref().unwrap()).unwrap(),
+        json!({"commit": "3333333333333333333333333333333333333333", "into": "main"})
+    );
+    assert!(unlanded.is_some(), "the merge landed");
 }

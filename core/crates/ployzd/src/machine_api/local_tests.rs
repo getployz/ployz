@@ -1235,6 +1235,60 @@ mod ingress_doors {
     }
 
     #[tokio::test]
+    async fn a_reboot_leaves_the_connector_at_rest_and_the_doors_held_place_it_again() {
+        let (data_dir, _store, service, _fake, runtime, cluster) =
+            fake_docker_service_sealing("ployzd-doors-reboot").await;
+        assert!(
+            service.local.restore_doors().await.unwrap().is_none(),
+            "a Machine that held no doors places none"
+        );
+        let sealed = cluster.seal_platform(ployz_core::PlatformPurpose::IngressTunnel, b"cf-token");
+        let tunnel =
+            json!({"doors": ["tunnel"], "proxy_service": proxy_id(), "sealed_token": sealed});
+        let placed = set_doors(&service, tunnel, false).await.unwrap().unwrap();
+        assert_eq!(placed.failure, None, "{placed:?}");
+        let connector = placed.tunnel.unwrap().now.container_id;
+
+        let token = data_dir.join("root/run/ployz/tunnel/token");
+        let running = |runtime: &crate::docker::ContainerRuntime| {
+            let runtime = runtime.clone();
+            let machine_id = service.local.record().id();
+            async move {
+                runtime
+                    .door_inventory(&machine_id)
+                    .await
+                    .unwrap()
+                    .iter()
+                    .filter(|entry| entry.facts.door == crate::docker::Door::Tunnel)
+                    .all(|entry| entry.facts.running())
+            }
+        };
+        let untouched = service.local.restore_doors().await.unwrap().unwrap();
+        assert_eq!(untouched.failure, None, "{untouched:?}");
+        assert_eq!(
+            untouched.tunnel.unwrap().change,
+            DoorChange::Unchanged,
+            "a daemon restart leaves the running doors alone"
+        );
+
+        runtime.stop(&connector, None, None).await.unwrap();
+        runtime.remove_tunnel_token().unwrap();
+        assert!(!running(&runtime).await && !token.exists());
+
+        let restored = service.local.restore_doors().await.unwrap().unwrap();
+        assert_eq!(restored.failure, None, "{restored:?}");
+        assert_eq!(restored.holder.unwrap().change, DoorChange::Unchanged);
+        let started = restored.tunnel.unwrap();
+        assert_eq!(started.change, DoorChange::Started);
+        assert_eq!(started.now.container_id, connector);
+        assert_eq!(std::fs::read(&token).unwrap(), b"cf-token");
+        assert!(running(&runtime).await);
+
+        runtime.remove_tunnel_token().unwrap();
+        std::fs::remove_dir_all(data_dir).unwrap();
+    }
+
+    #[tokio::test]
     async fn an_operator_under_enforcement_is_refused_before_docker() {
         let (data_dir, store, service, fake) = fake_docker_service("ployzd-doors-enforced").await;
         store
@@ -4160,11 +4214,13 @@ mod ensure_container {
         //! daemon restart.
 
         use ployz_core::{
-            DeviceKey, Namespace, OPERATOR_SCOPE_HEADER, OperationId, RESTART_APPROVAL_CAPABILITY,
-            SealingPublicKey, ServiceName, SetDeviceEnforcementRequest,
+            DEPLOY_APPROVAL_CAPABILITY, DeviceKey, Namespace, OPERATOR_SCOPE_HEADER, OperationId,
+            RESTART_APPROVAL_CAPABILITY, SealingPublicKey, ServiceName,
+            SetDeviceEnforcementRequest,
             authority::{
-                ProposalApproval, ProposalRef, ProposalStep, RestartApproval, Signed, Signer,
-                StartingSet, StepDigest, Timestamp, WorkflowKind, canonical,
+                ApprovedService, DeployApproval, PayloadDigest, ProposalApproval, ProposalRef,
+                ProposalStep, RestartApproval, Signed, Signer, StartingSet, StepDigest, Timestamp,
+                WorkflowKind, canonical,
             },
             rpc::status_details,
         };
@@ -4445,7 +4501,7 @@ mod ensure_container {
             .unwrap();
             let admitted = service
                 .local
-                .admit_operator_restart(want, Some(&signed))
+                .admit_operator_restart(want, Some(&signed), None)
                 .await
                 .unwrap();
             ensure(
@@ -4521,14 +4577,14 @@ mod ensure_container {
             let id = present(&ensure(service, new.clone()).await).container_id;
             ensure(service, json!({"want": stopped(&id)})).await;
             let seen = requests(&fixture.fake).len();
-            refused(
+            deploy_refused(
                 operator_ensure(service, new.get("want").unwrap().clone(), None).await,
-                "names a workflow",
+                "runs only deploys an approved device signed",
             );
             let signed = fixture.signed(&fixture.approval(&id));
-            refused(
+            deploy_refused(
                 operator_ensure(service, new.get("want").unwrap().clone(), Some(&signed)).await,
-                "names a workflow",
+                "runs only deploys an approved device signed",
             );
             let observed = fixture
                 .runtime
@@ -4989,6 +5045,361 @@ mod ensure_container {
                 assert_eq!(service.local.record().device_enforcement(), enforced);
             }
             std::fs::remove_dir_all(data_dir).unwrap();
+        }
+
+        const PINNED: &str = "example.test/api@sha256:00000000000000000000000000000000000000000000000000000000000000aa";
+
+        impl Enforced {
+            /// A deploy approval of `spec` for Service `api` in Namespace `app` on this Machine.
+            fn deploy(&self, spec: &Value) -> Signed<DeployApproval> {
+                let namespace = Namespace::parse("app").unwrap();
+                let resolved: ployz_core::ResolvedServiceSpec =
+                    serde_json::from_value(spec.clone()).unwrap();
+                let approval = DeployApproval {
+                    cluster: self.cluster,
+                    operation: OperationId::random(),
+                    namespace: namespace.clone(),
+                    machines: vec![self.service.local.record().id()],
+                    services: vec![ApprovedService {
+                        name: ServiceName::parse("api").unwrap(),
+                        digest: PayloadDigest::of(&resolved.to_requested(), &namespace).unwrap(),
+                    }],
+                    issued_at: Timestamp::now(),
+                    expires_at: Timestamp::now().plus(60_000),
+                    signer: ployz_core::authority::SignerKey::Device(self.signer.public().into()),
+                };
+                Signed::sign(&approval, &self.signer).unwrap()
+            }
+        }
+
+        #[expect(clippy::indexing_slicing, reason = "JSON fixture")]
+        async fn deploy_ensure(
+            service: &MachineService,
+            want: Value,
+            deploy: Option<&Signed<DeployApproval>>,
+        ) -> Result<EnsuredContainer, Status> {
+            let mut body = json!({"want": want});
+            if let Some(deploy) = deploy {
+                body["deploy"] = serde_json::to_value(deploy).unwrap();
+            }
+            let mut request = Request::new(
+                op::EnsureContainer::into_request(serde_json::from_value(body).unwrap())
+                    .encode()
+                    .unwrap(),
+            );
+            request
+                .metadata_mut()
+                .insert(OPERATOR_SCOPE_HEADER, "1".parse().unwrap());
+            let response = service
+                .ensure_container(request)
+                .await?
+                .into_inner()
+                .decode_response()
+                .unwrap();
+            Ok(response.decode::<op::EnsureContainer>().unwrap())
+        }
+
+        #[track_caller]
+        #[expect(clippy::indexing_slicing, reason = "JSON fixture assertions")]
+        fn deploy_refused(result: Result<EnsuredContainer, Status>, reason: &str) {
+            let status = result.expect_err("the creation must be refused");
+            assert_eq!(
+                status.code(),
+                Code::PermissionDenied,
+                "{}",
+                status.message()
+            );
+            assert!(status.message().contains(reason), "{}", status.message());
+            assert_eq!(
+                status_details(status.details()).unwrap()["capability"],
+                json!(DEPLOY_APPROVAL_CAPABILITY)
+            );
+        }
+
+        fn new_want(kind: &str, key: &str, spec: &Value) -> Value {
+            json!({"state":"running", "rotation":"pending", "container":{"new":{
+                "slot":{"namespace":"app", "service":"api", "kind":kind, "creation_key":key},
+                "resolved_spec":spec, "gen":1}}})
+        }
+
+        fn creates(fake: &FakeDocker, since: usize) -> usize {
+            ends_with(
+                &requests_since(fake, since),
+                Method::POST,
+                "/containers/create",
+            )
+            .count()
+        }
+
+        #[tokio::test]
+        async fn an_operator_creation_runs_only_the_approved_spec() {
+            let fixture = enforced("ployzd-deploy-approval").await;
+            let service = &fixture.service;
+            let approved = spec(PINNED);
+            let signed = fixture.deploy(&approved);
+            let seen = requests(&fixture.fake).len();
+
+            deploy_refused(
+                deploy_ensure(
+                    service,
+                    new_want("service_container", "k1", &approved),
+                    None,
+                )
+                .await,
+                "runs only deploys an approved device signed",
+            );
+            let mut privileged = approved.clone();
+            *privileged
+                .pointer_mut("/container/privileged")
+                .expect("the fixture names privileged") = json!(true);
+            deploy_refused(
+                deploy_ensure(
+                    service,
+                    new_want("service_container", "k1", &privileged),
+                    Some(&signed),
+                )
+                .await,
+                "settings differ from what the device approved",
+            );
+            let tagged = spec("example.test/api:1");
+            deploy_refused(
+                deploy_ensure(
+                    service,
+                    new_want("service_container", "k1", &tagged),
+                    Some(&fixture.deploy(&tagged)),
+                )
+                .await,
+                "runs only images pinned by digest",
+            );
+            assert_eq!(creates(&fixture.fake, seen), 0, "nothing reached Docker");
+
+            for key in ["k1", "k2"] {
+                deploy_ensure(
+                    service,
+                    new_want("service_container", key, &approved),
+                    Some(&signed),
+                )
+                .await
+                .unwrap();
+            }
+            assert_eq!(
+                creates(&fixture.fake, seen),
+                2,
+                "replicas repeat a Service Container"
+            );
+            std::fs::remove_dir_all(fixture.data_dir).unwrap();
+        }
+
+        #[tokio::test]
+        async fn a_hook_runs_once_per_approval_even_after_a_daemon_restart() {
+            let fixture = enforced("ployzd-deploy-hook-once").await;
+            let approved = spec(PINNED);
+            let signed = fixture.deploy(&approved);
+            deploy_ensure(
+                &fixture.service,
+                new_want("pre_deploy_hook", "h1", &approved),
+                Some(&signed),
+            )
+            .await
+            .unwrap();
+            let seen = requests(&fixture.fake).len();
+            for service in [&fixture.service, &fixture.restarted()] {
+                deploy_refused(
+                    deploy_ensure(
+                        service,
+                        new_want("pre_deploy_hook", "h2", &approved),
+                        Some(&signed),
+                    )
+                    .await,
+                    "already ran its pre-deploy command",
+                );
+            }
+            assert_eq!(creates(&fixture.fake, seen), 0);
+            let mut hookless = approved.clone();
+            hookless.as_object_mut().unwrap().remove("pre_deploy");
+            deploy_refused(
+                deploy_ensure(
+                    &fixture.service,
+                    new_want("pre_deploy_hook", "h3", &hookless),
+                    Some(&fixture.deploy(&hookless)),
+                )
+                .await,
+                "approved no pre-deploy command",
+            );
+            std::fs::remove_dir_all(fixture.data_dir).unwrap();
+        }
+
+        #[tokio::test]
+        async fn a_deploy_approval_starts_only_a_copy_whose_spec_it_approved() {
+            let fixture = enforced("ployzd-deploy-start").await;
+            let service = &fixture.service;
+            let mut planted = spec(PINNED);
+            *planted
+                .pointer_mut("/container/privileged")
+                .expect("the fixture names privileged") = json!(true);
+            let old = present(&ensure(service, run_new("k0", planted)).await).container_id;
+            let approved =
+                present(&ensure(service, run_new("k1", spec(PINNED))).await).container_id;
+            for id in [&old, &approved] {
+                ensure(service, json!({"want": stopped(id)})).await;
+            }
+            let signed = fixture.deploy(&spec(PINNED));
+            let seen = requests(&fixture.fake).len();
+            deploy_refused(
+                deploy_ensure(service, started(&old), Some(&signed)).await,
+                "settings differ from what the device approved",
+            );
+            assert_eq!(
+                ends_with(&requests_since(&fixture.fake, seen), Method::POST, "/start").count(),
+                0
+            );
+            // The old copy can still be retired under the same approval.
+            deploy_ensure(service, stopped(&old), Some(&signed))
+                .await
+                .unwrap();
+            let reply = deploy_ensure(service, started(&approved), Some(&signed))
+                .await
+                .unwrap();
+            assert!(matches!(
+                present(&reply).runtime,
+                ContainerRuntimeObservation::Running { .. }
+            ));
+            std::fs::remove_dir_all(fixture.data_dir).unwrap();
+        }
+
+        #[tokio::test]
+        async fn a_deploy_approval_never_starts_a_hook_again_but_adopts_a_resent_one() {
+            let fixture = enforced("ployzd-deploy-hook-start").await;
+            let approved = spec(PINNED);
+            let signed = fixture.deploy(&approved);
+            let hook = deploy_ensure(
+                &fixture.service,
+                new_want("pre_deploy_hook", "h1", &approved),
+                Some(&signed),
+            )
+            .await
+            .unwrap();
+            let hook = present(&hook).container_id;
+            let seen = requests(&fixture.fake).len();
+            // A reply lost on the way back: the same slot again adopts the hook that ran.
+            for service in [&fixture.service, &fixture.restarted()] {
+                let again = deploy_ensure(
+                    service,
+                    new_want("pre_deploy_hook", "h1", &approved),
+                    Some(&signed),
+                )
+                .await
+                .unwrap();
+                assert_eq!(present(&again).container_id, hook);
+            }
+            assert_eq!(creates(&fixture.fake, seen), 0);
+            deploy_refused(
+                deploy_ensure(&fixture.service, started(&hook), Some(&signed)).await,
+                "already ran its pre-deploy command",
+            );
+            assert_eq!(
+                ends_with(&requests_since(&fixture.fake, seen), Method::POST, "/start").count(),
+                0
+            );
+            std::fs::remove_dir_all(fixture.data_dir).unwrap();
+        }
+
+        #[tokio::test]
+        async fn a_removed_hook_is_never_made_again_from_its_slot() {
+            let fixture = enforced("ployzd-deploy-hook-gone").await;
+            let approved = spec(PINNED);
+            let signed = fixture.deploy(&approved);
+            let hook = deploy_ensure(
+                &fixture.service,
+                new_want("pre_deploy_hook", "h1", &approved),
+                Some(&signed),
+            )
+            .await
+            .unwrap();
+            let hook = present(&hook).container_id;
+            deploy_ensure(
+                &fixture.service,
+                json!({"state":"gone", "container":{"id":hook}, "drain":0}),
+                Some(&signed),
+            )
+            .await
+            .unwrap();
+            let seen = requests(&fixture.fake).len();
+            for service in [&fixture.service, &fixture.restarted()] {
+                deploy_refused(
+                    deploy_ensure(
+                        service,
+                        new_want("pre_deploy_hook", "h1", &approved),
+                        Some(&signed),
+                    )
+                    .await,
+                    "already ran its pre-deploy command",
+                );
+            }
+            assert_eq!(creates(&fixture.fake, seen), 0);
+            assert_eq!(
+                ends_with(&requests_since(&fixture.fake, seen), Method::POST, "/start").count(),
+                0
+            );
+            std::fs::remove_dir_all(fixture.data_dir).unwrap();
+        }
+
+        #[tokio::test]
+        async fn a_hook_admitted_but_never_made_is_made_on_retry() {
+            let fixture = enforced("ployzd-deploy-hook-retry").await;
+            let approved = spec(PINNED);
+            let signed = fixture.deploy(&approved);
+            // Admission took the hook's place, and the create never happened.
+            fixture
+                .service
+                .local
+                .admit_operator_restart(
+                    serde_json::from_value(new_want("pre_deploy_hook", "h1", &approved)).unwrap(),
+                    None,
+                    Some(&signed),
+                )
+                .await
+                .unwrap();
+            let seen = requests(&fixture.fake).len();
+            deploy_ensure(
+                &fixture.service,
+                new_want("pre_deploy_hook", "h1", &approved),
+                Some(&signed),
+            )
+            .await
+            .unwrap();
+            assert_eq!(creates(&fixture.fake, seen), 1);
+            std::fs::remove_dir_all(fixture.data_dir).unwrap();
+        }
+
+        #[tokio::test]
+        async fn a_deploy_approval_admits_steps_in_its_namespace_only() {
+            let fixture = enforced("ployzd-deploy-steps").await;
+            let service = &fixture.service;
+            let id = present(&ensure(service, run_new("k1", spec(PINNED))).await).container_id;
+            let signed = fixture.deploy(&spec(PINNED));
+            let mut elsewhere = signed.open().unwrap();
+            elsewhere.namespace = Namespace::parse("other").unwrap();
+            let elsewhere = Signed::sign(&elsewhere, &fixture.signer).unwrap();
+            deploy_refused(
+                deploy_ensure(service, stopped(&id), Some(&elsewhere)).await,
+                "a deploy to another environment",
+            );
+            let reply = deploy_ensure(service, stopped(&id), Some(&signed))
+                .await
+                .unwrap();
+            assert!(matches!(
+                present(&reply).runtime,
+                ContainerRuntimeObservation::Exited { .. }
+            ));
+            deploy_ensure(
+                service,
+                json!({"state":"gone", "container":{"id":id}, "drain":0}),
+                Some(&signed),
+            )
+            .await
+            .unwrap();
+            std::fs::remove_dir_all(fixture.data_dir).unwrap();
         }
     }
 }

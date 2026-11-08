@@ -351,6 +351,7 @@ impl Tool for DeployInput {
             message: self.message,
             prune: false,
             no_prune: self.no_prune,
+            approval: None,
         }))?;
         let mut next = place(cx.call());
         next.insert("deployment".into(), deployment.number.into());

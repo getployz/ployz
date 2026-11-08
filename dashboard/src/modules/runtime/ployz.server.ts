@@ -12,6 +12,7 @@ import type {
   ContainerObservation,
   DataLossConfirmation,
   DeployOutcome,
+  DoorsChanged,
   DrainReport,
   DrainScope,
   ExecutionError,
@@ -33,7 +34,7 @@ import type {
   WatchOptions,
 } from "@ployz/sdk";
 import { connect as connectSdk, machineUpgradeAttemptId, observeCopies, ployzVersion, SealedNames, setVolumeCopyRefusal } from "@ployz/sdk";
-import { Context, Data, Effect, Fiber, Layer, Option, Schema, type Scope } from "effect";
+import { Context, Data, Effect, Fiber, Layer, Option, Redacted, Schema, type Scope } from "effect";
 import type { JsonValue } from "#/db/tables";
 import { describeFailureCause } from "#/lib/error-message";
 import { projectJsonValue } from "#/lib/json";
@@ -130,6 +131,8 @@ export interface PloyzSession {
   readonly startIngress: (machine: MachineTarget) => Effect.Effect<IngressCheck, PloyzSdkError>;
   /** Stop and remove the web server on a Server. */
   readonly stopIngress: (machine: MachineTarget) => Effect.Effect<void, PloyzSdkError>;
+  /** Open `doors` (`public`, `tunnel`, or both) on every Server that takes web traffic. A `token` is sealed to the Cluster here and kept by it, not by Cloud. */
+  readonly setIngressDoors: (doors: readonly string[], token?: Redacted.Redacted<string>) => Effect.Effect<DoorsChanged, PloyzSdkError>;
   /** Bring every Machine of the Cluster to hold its Sealing Key, generating one only on `generator`. */
   readonly backfillSealingKey: (request: BackfillSealingKeyRequest) => Effect.Effect<BackfillSealingKeyReport, PloyzSdkError>;
   /** Ask one Server to Upgrade; resending it with the same attempt ID is the poll. */
@@ -392,6 +395,8 @@ function wrapClient(client: Client): PloyzSession {
       sdkPromise("drain machine", () => client.drainMachine(machine, scope)),
     startIngress: (machine) => sdkPromise("start ingress", () => client.startIngress(machine)),
     stopIngress: (machine) => sdkPromise("stop ingress", () => client.stopIngress(machine)),
+    setIngressDoors: (doors, token) =>
+      sdkPromise("set ingress doors", () => client.setIngressDoors([...doors], token === undefined ? undefined : Redacted.value(token))),
     volumeSwitch: (machine, request) =>
       sdkPromise("volume switch", () => client.volumeSwitch(machine, request)),
     inspectContainer: (machine, container) =>

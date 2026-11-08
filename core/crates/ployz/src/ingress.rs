@@ -8,7 +8,7 @@ use futures_util::{StreamExt, stream};
 use ployz_core::{
     Ciphertext, ContainerId, ContainerObservation, ContainerRuntimeObservation, DoorChange,
     DoorOutcome, EnvironmentValues, IngressDoor, IngressDoors, IngressDoorsFailure,
-    IngressDoorsSet, IngressPorts, IngressStage, IngressWiring, MachineFailure, MachineId,
+    IngressDoorsSet, IngressPorts, IngressStage, IngressWiring, Machine, MachineFailure, MachineId,
     MachineName, MachineObservation, PartialResult, PlatformPurpose, QualifiedService, RowStanding,
     RpcError, RpcErrorCode, SET_INGRESS_DOORS_CAPABILITY, SET_INGRESS_TUNNEL_CAPABILITY, Sealing,
     SealingPublicKey, ServiceId, ServiceObservation, SetIngressDoorsRequest, seal_platform,
@@ -50,8 +50,22 @@ pub(crate) struct DoorMachine {
 }
 
 impl DoorMachine {
+    pub(crate) fn of(machine: &Machine) -> Self {
+        let capabilities = &machine.runtime.capabilities;
+        Self {
+            id: machine.id,
+            name: machine.name.clone(),
+            // An empty list is a row that predates it, which claims nothing, so the
+            // daemon is asked and answers for itself.
+            supported: capabilities.is_empty()
+                || capabilities.contains(SET_INGRESS_DOORS_CAPABILITY),
+            tunnels: capabilities.is_empty()
+                || capabilities.contains(SET_INGRESS_TUNNEL_CAPABILITY),
+        }
+    }
+
     /// The refusal for this Server when its daemon can't set `doors`, if any.
-    fn refusal(&self, doors: &IngressDoors) -> Option<RpcError> {
+    pub(crate) fn refusal(&self, doors: &IngressDoors) -> Option<RpcError> {
         if !self.supported {
             return Some(unsupported(&self.name, SET_INGRESS_DOORS_CAPABILITY));
         }
@@ -75,19 +89,7 @@ pub(crate) fn door_machines(observed: &[MachineObservation]) -> Vec<DoorMachine>
                     RowStanding::Leaving { .. } => false,
                 }
         })
-        .map(|machine| {
-            let capabilities = &machine.machine.runtime.capabilities;
-            DoorMachine {
-                id: machine.machine.id,
-                name: machine.machine.name.clone(),
-                // An empty list is a row that predates it, which claims nothing, so the
-                // daemon is asked and answers for itself.
-                supported: capabilities.is_empty()
-                    || capabilities.contains(SET_INGRESS_DOORS_CAPABILITY),
-                tunnels: capabilities.is_empty()
-                    || capabilities.contains(SET_INGRESS_TUNNEL_CAPABILITY),
-            }
-        })
+        .map(|machine| DoorMachine::of(&machine.machine))
         .collect()
 }
 

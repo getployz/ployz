@@ -1945,6 +1945,7 @@ fn removed_but_unswept() -> ConfigStore {
                 message: None,
                 prune: false,
                 no_prune: false,
+                approval: None,
             }),
         )
         .unwrap();

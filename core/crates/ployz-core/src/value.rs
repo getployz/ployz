@@ -375,6 +375,19 @@ impl OperationId {
         uuid::Uuid::new_v4().simple().encode_lower(&mut hex);
         Self(hex)
     }
+
+    /// The operation ID of a UUID written in any of its text forms, such as a
+    /// Deployment's ID.
+    ///
+    /// # Errors
+    /// Returns a [`ValueError`] unless `value` is a UUID.
+    pub fn from_uuid(value: &str) -> Result<Self, ValueError> {
+        let uuid = uuid::Uuid::parse_str(value)
+            .map_err(|_| ValueError::new("operation ID", value, "a UUID"))?;
+        let mut hex = [0_u8; 32];
+        uuid.simple().encode_lower(&mut hex);
+        Ok(Self(hex))
+    }
 }
 
 impl MachineUpgradeAttemptId {

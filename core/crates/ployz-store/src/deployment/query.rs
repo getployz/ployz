@@ -1,8 +1,8 @@
 //! Deployment reads: the authored plan of a Deploy, one page of an Environment's
 //! Deployments, and one Deployment with its Node Outcomes.
 
-use ployz_core::config::canonicalize_environment_intent;
-use ployz_core::{RpcError, ServiceName};
+use ployz_core::config::{SavedEnvironmentIntent, canonicalize_environment_intent};
+use ployz_core::{RequestedServiceSpec, RpcError, ServiceName};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 use ts_rs::TS;
@@ -25,6 +25,11 @@ pub struct PlanQuery {
     /// Plan only these Services; none plans every Service.
     #[serde(default)]
     pub services: Vec<ServiceName>,
+    /// Also lower the plan as a runner would, for a Device to approve the spec each
+    /// Service runs. Needs write access to the Environment.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    #[ts(optional, as = "Option<bool>")]
+    pub target: bool,
 }
 
 /// The authored review of a Deploy. What only the Servers can decide is `unresolved`.
@@ -39,6 +44,12 @@ pub struct PlanView {
     /// What the Deployment decides from the Servers: which containers start, stop or
     /// move, and where.
     pub unresolved: Vec<String>,
+    /// The spec of each Service this Deploy ships, as its runner would ask a Server to
+    /// run it, when the query asked for `target`. A narrowed Deploy lists the Services
+    /// it names and those they reference.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub target: Option<Vec<RequestedServiceSpec>>,
 }
 
 /// Where an Environment runs on the Servers.
@@ -219,6 +230,16 @@ pub(crate) fn plan(
         namespace.clone(),
         None,
     )?;
+    let lowered = match query.target {
+        true => Some(lowered_target(
+            tx,
+            who,
+            trusted,
+            (&environment, &target),
+            query,
+        )?),
+        false => None,
+    };
     let changes = review
         .view
         .changes
@@ -234,6 +255,58 @@ pub(crate) fn plan(
         namespace,
         changes,
         unresolved,
+        target: lowered,
+    })
+}
+
+/// `target` lowered as a claim of a Deploy of it would: the specs of the Services it
+/// ships, for a Device to approve before it admits the Deploy.
+fn lowered_target(
+    tx: &mut dyn Tx,
+    who: &Actor,
+    trusted: &crate::Trusted,
+    (environment, target): (&scope::Environment, &SavedEnvironmentIntent),
+    query: &PlanQuery,
+) -> Result<Vec<RequestedServiceSpec>, RpcError> {
+    trusted.writes(&environment.summary.name)?;
+    let id = &environment.summary.id;
+    let mut saved = target.clone();
+    crate::volume::size::held(tx, id, &mut saved.volumes)?;
+    let branch = crate::branch::lowering(tx, id, &saved)?;
+    let deployed = deployment::deployed_volumes(tx, id, &saved)?;
+    let removals = deployment::ServiceRemovals::default();
+    let ships = match query.services.is_empty() {
+        true => deployment::Ships::All {
+            removals,
+            prune: false,
+        },
+        false => deployment::Ships::Named {
+            services: query.services.clone(),
+            removals,
+        },
+    };
+    let namespace = deployment::namespace(tx, who, &environment.summary, false)?;
+    let cluster_domain = trusted
+        .domains
+        .cluster_domain
+        .as_ref()
+        .map(|cluster| &cluster.name);
+    deployment::lower(
+        id,
+        &saved,
+        &deployed,
+        &ships,
+        (namespace, cluster_domain),
+        &branch,
+        &who.organization,
+    )
+    .map(|lowered| {
+        let mut target = lowered.intent.target;
+        // A narrowed Deploy creates only what it ships; the rest ride along unchanged.
+        if !query.services.is_empty() {
+            target.retain(|spec| lowered.shipped.contains(&spec.name));
+        }
+        target
     })
 }
 

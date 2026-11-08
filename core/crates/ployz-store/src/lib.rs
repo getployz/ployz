@@ -403,7 +403,9 @@ impl ConfigStore {
     /// Pin the commit each Git Service of Deployment `deployment` builds, by runtime
     /// Service name, as Cloud resolved it from its branch. A pinned commit never
     /// changes: a pin for a Service already pinned is ignored. Returns every source
-    /// with its pin. In-process only.
+    /// with its pin. `trusted` carries the Organization's members as Cloud read them:
+    /// a Trusted pull request's commit pins only while its author is one, or when a bot
+    /// opened it from the repository itself. In-process only.
     ///
     /// # Errors
     /// Returns `conflict` once the Deployment was replaced, cancelled or ended,
@@ -413,9 +415,16 @@ impl ConfigStore {
         &self,
         deployment: &DeploymentId,
         commits: &std::collections::BTreeMap<ployz_core::ServiceName, CommitSha>,
+        trusted: &Trusted,
     ) -> Result<Vec<GitSource>, RpcError> {
+        // A transaction of its own, before the pin's: a refused pin undoes its writes.
         self.storage.write(|tx| {
-            build::pin(tx, deployment, commits)?;
+            deployment::load(tx, deployment)?;
+            let who = Actor::system(build::organization(tx, deployment)?);
+            pull_request::withdraw_trust(tx, &who, trusted)
+        })?;
+        self.storage.write(|tx| {
+            build::pin(tx, deployment, commits, trusted)?;
             build::sources(tx, deployment)
         })
     }

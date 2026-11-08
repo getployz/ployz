@@ -12,8 +12,8 @@
 use std::time::Duration;
 
 use ployz_core::{
-    ContainerId, ContainerKind, ContainerRuntimeObservation, DoorChange, DoorOutcome, Gen,
-    IngressDoor, IngressDoorsFailure, IngressDoorsSet, IngressPorts, IngressStage, Namespace,
+    Ciphertext, ContainerId, ContainerKind, ContainerRuntimeObservation, DoorChange, DoorOutcome,
+    Gen, IngressDoor, IngressDoorsFailure, IngressDoorsSet, IngressPorts, IngressStage, Namespace,
     ResolvedServiceSpec, RpcError, RpcErrorCode, ServiceId, SetIngressDoorsRequest,
     global_creation_key, tunnel_sealed_token,
 };
@@ -305,6 +305,54 @@ fn doors_as_found(inventory: &[DoorEntry], proxy: ServiceId) -> DoorSpecs {
     DoorSpecs::new(proxy, ports, token.as_ref())
 }
 
+/// The doors this Machine last held, each as the spec it was created from, and the
+/// sealed token the connector carries. Placing them again pulls and replaces nothing.
+struct DoorsHeld {
+    specs: DoorSpecs,
+    sealed: Option<Ciphertext>,
+}
+
+/// The doors the inventory shows, or `None` when this Machine held no holder with a
+/// Caddy joined to it, or its newest connector carries no readable token. Planning
+/// without the connector would retire it.
+fn doors_held(inventory: &[DoorEntry]) -> Option<DoorsHeld> {
+    let newest_of = |door: Door| {
+        newest(
+            &inventory
+                .iter()
+                .filter(|entry| entry.facts.door == door && usable(entry))
+                .collect::<Vec<_>>(),
+        )
+    };
+    let spec = |entry: &DoorEntry| entry.observation.resolved_spec.clone();
+    let holder = newest_of(Door::Holder)?;
+    let proxy = newest(
+        &inventory
+            .iter()
+            .filter(|entry| {
+                entry.facts.door == Door::Proxy
+                    && usable(entry)
+                    && entry.observation.resolved_spec.container.network.is_some()
+            })
+            .collect::<Vec<_>>(),
+    )?;
+    let tunnel = newest_of(Door::Tunnel);
+    let sealed = match tunnel {
+        Some(tunnel) => Some(tunnel_sealed_token(
+            &tunnel.observation.resolved_spec.container.labels,
+        )?),
+        None => None,
+    };
+    Some(DoorsHeld {
+        specs: DoorSpecs {
+            holder: spec(holder),
+            proxy: spec(proxy),
+            tunnel: tunnel.map(spec),
+        },
+        sealed,
+    })
+}
+
 fn stage_failure(stage: IngressStage, error: &Error) -> IngressDoorsFailure {
     let error = if let Error::Docker(docker) = error {
         RpcError::from(docker)
@@ -375,6 +423,47 @@ impl LocalMachine {
         };
         let specs = DoorSpecs::new(request.proxy_service, ports, sealed);
         self.converge_doors(&specs, Legacy::No, token).await
+    }
+
+    /// Place the doors this Machine last held again, after a reboot or a restart.
+    ///
+    /// A reboot clears the opened token, and Docker starts the connector before the
+    /// daemon is up to write it again, so its start fails and Docker never retries.
+    /// This opens the connector's sealed token, writes it, then starts whichever door
+    /// is at rest. A door that runs stays as it is, so a daemon restart changes nothing,
+    /// and a Machine with no doors places none.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`Error::TunnelToken`] when the connector's token no longer opens, and
+    /// the errors of the Docker reads and the token write. A Docker stage that fails
+    /// is answered in the result's `failure`.
+    pub(crate) async fn restore_doors(&self) -> Result<Option<IngressDoorsSet>, Error> {
+        let containers = self.containers.clone().ok_or(Error::DockerUnavailable)?;
+        self.door_effect()?;
+        let local = self.clone();
+        self.finish_installed(move |_installation| async move {
+            let _doors = containers.door_lifecycle().await;
+            local.door_effect()?;
+            let inventory = containers.door_inventory(&local.record().id()).await?;
+            let Some(held) = doors_held(&inventory) else {
+                return Ok(None);
+            };
+            if let Some(sealed) = &held.sealed {
+                let token = containers
+                    .open_tunnel_token(sealed)
+                    .map_err(Error::TunnelToken)?;
+                containers
+                    .write_tunnel_token(&token)
+                    .map_err(Error::TunnelTokenFile)?;
+            }
+            let _turn = local.owner.admission_lock().write_owned().await;
+            local
+                .converge_doors_admitted(&containers, &inventory, &held.specs, Legacy::No)
+                .await
+                .map(Some)
+        })
+        .await
     }
 
     /// Place the doors `specs` describe, or the doors this Machine has with a fresh

@@ -11,6 +11,7 @@ import { DashboardPage } from "#/components/dashboard-page";
 import { organizationEnrollmentStatus } from "#/modules/machines/enrollment";
 import { resetPendingOrganizationEnrollmentServerFn } from "#/modules/machines/enrollment.functions";
 import { CONNECT_NOTICES } from "#/modules/github/github-connect";
+import { clusterIngressQueryOptions } from "#/modules/ingress/doors.queries";
 import { githubOfferQueryOptions, organizationGithubQueryOptions } from "#/modules/github/github-connect.queries";
 import { GithubSettings } from "#/routes/_protected/cloud/$organizationSlug/_org/-components/github-settings";
 import { BUILD_ORDER_QUERY, BuildsSettings } from "#/routes/_protected/cloud/$organizationSlug/_org/-components/builds-settings";
@@ -44,6 +45,7 @@ export const Route = createFileRoute(
   loaderDeps: ({ search }) => ({ section: search.section, offer: search.offer }),
   loader: ({ params, context, deps }) => prefetchRemoteWithStoreViews(context, params.organizationSlug, [projectsQuery(), BUILD_ORDER_QUERY],
     organizationMembersQueryOptions(params.organizationSlug),
+    ...deps.section === "network" ? [clusterIngressQueryOptions(params.organizationSlug)] : [],
     ...deps.section === "tokens" ? [organizationTokensQueryOptions(params.organizationSlug)] : [],
     ...deps.section === "github" ? [organizationGithubQueryOptions(params.organizationSlug)] : [],
     ...deps.section === "github" && deps.offer ? [githubOfferQueryOptions(params.organizationSlug, deps.offer)] : []),

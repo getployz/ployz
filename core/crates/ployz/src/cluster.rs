@@ -79,9 +79,17 @@ pub struct Client {
     refused: Refusal,
     full_single: bool,
     full_connections: Arc<Vec<Connection>>,
-    /// The Device-signed approval every restart step this client sends carries.
-    restart_approval:
-        Option<Arc<ployz_core::authority::Signed<ployz_core::authority::RestartApproval>>>,
+    /// What every Container change this client sends carries.
+    approvals: Arc<Approvals>,
+}
+
+/// The approvals a client hands each Server with a Container change.
+#[derive(Clone, Debug, Default)]
+struct Approvals {
+    /// The Device-signed approval of a restart step.
+    restart: Option<ployz_core::authority::Signed<ployz_core::authority::RestartApproval>>,
+    /// The approval of the Deploy every Container this client creates or steps belongs to.
+    deploy: Option<ployz_core::authority::Signed<ployz_core::authority::DeployApproval>>,
 }
 
 /// The entry a redial found in another Cluster, shared by every clone of a client and
@@ -137,7 +145,7 @@ impl Client {
             confirmed: None,
             cluster: None,
             refused: Refusal::default(),
-            restart_approval: None,
+            approvals: Arc::default(),
             full_connections: Arc::default(),
             full_single: false,
         }
@@ -203,7 +211,17 @@ impl Client {
         mut self,
         approval: Option<ployz_core::authority::Signed<ployz_core::authority::RestartApproval>>,
     ) -> Self {
-        self.restart_approval = approval.map(Arc::new);
+        Arc::make_mut(&mut self.approvals).restart = approval;
+        self
+    }
+
+    /// Hand every Server the approval of the Deploy this client runs.
+    #[must_use]
+    pub(crate) fn with_deploy_approval(
+        mut self,
+        approval: Option<ployz_core::authority::Signed<ployz_core::authority::DeployApproval>>,
+    ) -> Self {
+        Arc::make_mut(&mut self.approvals).deploy = approval;
         self
     }
 
@@ -1641,7 +1659,8 @@ impl Client {
         crate::sealed_compat::admit(self, &target, &want).await?;
         let payload = op::EnsureContainer::into_request(EnsureContainerRequest {
             want,
-            approval: self.restart_approval.as_deref().cloned(),
+            approval: self.approvals.restart.clone(),
+            deploy: self.approvals.deploy.clone(),
         })
         .encode()
         .map_err(|error| rpc_error(ConnectError::Codec(error)))?;

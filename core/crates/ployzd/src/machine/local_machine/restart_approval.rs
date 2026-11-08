@@ -1,5 +1,6 @@
 //! Device-signed restart approvals: the switch that requires them, the gate an Operator
-//! caller's restart step passes under it, and the record of steps already taken.
+//! caller's restart step passes under it, and the record of steps already taken. A new
+//! creation, or a step carrying only a deploy approval, goes to `deploy_approval`.
 
 use std::{
     collections::BTreeMap,
@@ -10,11 +11,11 @@ use std::{
 
 use ployz_core::{
     ContainerId, ContainerLocator, ContainerNow, ContainerWant, DeviceEnforcementSet, DeviceKey,
-    LocalMachinePhase, ManagementScope, OperationId, RunTarget, Sealing,
+    LocalMachinePhase, ManagementScope, OperationId, RunTarget, Sealing, ServiceName,
     SetDeviceEnforcementRequest,
     authority::{
-        AuthorityRefusal, Purpose, RestartApproval, RestartFacts, RestartStep, Signed, StartingSet,
-        Timestamp, restart, starting_set,
+        AuthorityRefusal, DeployApproval, Purpose, RestartApproval, RestartFacts, RestartStep,
+        Signed, StartingSet, Timestamp, restart, starting_set,
     },
 };
 use serde::{Deserialize, Serialize};
@@ -99,28 +100,33 @@ impl LocalMachine {
     /// Under Device enforcement, let an Operator caller's restart step through only with
     /// an approved Device's approval of exactly this restart, or a browser key's under a
     /// trusted passkey's session grant that covers it, and record the step so the
-    /// same approval never runs it again. New-creation requests need deploy authorization
-    /// and are refused, including adoption. Returns a want pinned to the verified
-    /// Container ID. An absent target is refused. A Machine not enforcing passes untouched.
+    /// same approval never runs it again. A new creation, adoption included, needs a deploy
+    /// approval of its spec, and a step that carries only a deploy approval is checked
+    /// against it. Returns a want pinned to the verified Container ID. An absent target is
+    /// refused. A Machine not enforcing passes untouched.
     ///
     /// # Errors
-    /// Returns [`Error::RestartRefused`] naming what the approval lacks,
-    /// [`Error::ApprovalRecord`] when the record of taken steps cannot be read or written,
-    /// and [`Error::DockerUnavailable`] or [`Error::Docker`] when the Container cannot be
-    /// read.
+    /// Returns [`Error::RestartRefused`] or [`Error::DeployRefused`] naming what the
+    /// approval lacks, [`Error::ApprovalRecord`] when the record of taken steps cannot be
+    /// read or written, and [`Error::DockerUnavailable`] or [`Error::Docker`] when the
+    /// Container cannot be read.
     pub async fn admit_operator_restart(
         &self,
-        mut want: ContainerWant,
+        want: ContainerWant,
         approval: Option<&Signed<RestartApproval>>,
+        deploy: Option<&Signed<DeployApproval>>,
     ) -> Result<ContainerWant, Error> {
         let record = self.record();
         if !record.device_enforcement() {
             return Ok(want);
         }
         let Some((step, locator)) = RestartStep::of(&want) else {
-            self.admit_operator_deploy()?;
+            self.admit_operator_creation(&want, deploy)?;
             return Ok(want);
         };
+        if let (None, Some(deploy)) = (approval, deploy) {
+            return self.admit_deploy_step(want, deploy).await;
+        }
         let approval = approval.ok_or(AuthorityRefusal::Unsigned {
             purpose: Purpose::Workflow,
         })?;
@@ -164,23 +170,28 @@ impl LocalMachine {
             approved.body.kind,
             approved.by
         );
-        let locator = match &mut want {
-            ContainerWant::Held { container, .. }
-            | ContainerWant::Out { container, .. }
-            | ContainerWant::Stopped { container, .. }
-            | ContainerWant::Gone { container, .. }
-            | ContainerWant::Running {
-                container: RunTarget::Existing(container),
-                ..
-            } => container,
-            ContainerWant::Running {
-                container: RunTarget::New(_),
-                ..
-            } => unreachable!("new creations were refused"),
-        };
-        *locator = ContainerLocator::Id(observed.container_id);
-        Ok(want)
+        Ok(pinned(want, observed.container_id))
     }
+}
+
+/// `want` aimed at `container` by its ID, so the step acts on the Container verified.
+pub(super) fn pinned(mut want: ContainerWant, container: ContainerId) -> ContainerWant {
+    let locator = match &mut want {
+        ContainerWant::Held { container, .. }
+        | ContainerWant::Out { container, .. }
+        | ContainerWant::Stopped { container, .. }
+        | ContainerWant::Gone { container, .. }
+        | ContainerWant::Running {
+            container: RunTarget::Existing(container),
+            ..
+        } => container,
+        ContainerWant::Running {
+            container: RunTarget::New(_),
+            ..
+        } => unreachable!("a new creation has no Container to pin"),
+    };
+    *locator = ContainerLocator::Id(container);
+    want
 }
 
 /// Device approval consumption in the existing `restart-approvals.json` record.
@@ -218,6 +229,14 @@ pub(crate) enum JoinReply {
 struct Operation {
     expires_at: Timestamp,
     containers: BTreeMap<ContainerId, RestartStep>,
+    /// The slot a deploy's hook was created in, for a hook entry: a request resent for
+    /// that slot adopts the hook that ran instead of running another.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    hook: Option<ployz_core::CreationKey>,
+    /// The hook's Container was made in that slot, just before it first started. A
+    /// resend then adopts it while it exists and makes no other once it's gone.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    hook_made: bool,
 }
 
 /// Where `approval`'s consumption is kept. A proposal step gets an entry of its own, so a plan
@@ -290,6 +309,8 @@ impl ConsumptionLog {
             .or_insert_with(|| Operation {
                 expires_at: approval.expires_at,
                 containers: BTreeMap::new(),
+                hook: None,
+                hook_made: false,
             });
         operation.expires_at = operation.expires_at.max(approval.expires_at);
         let replayed = operation
@@ -314,6 +335,125 @@ impl ConsumptionLog {
             }
             .into());
         }
+        Ok(())
+    }
+
+    /// Take `service`'s hook place under deploy approval `approval` for the slot named
+    /// `slot`, refusing one taken for another slot. A request resent for the same slot,
+    /// after a lost reply, passes: the Machine adopts the hook that ran, never runs it
+    /// again. The entry's name is 32 hex digits of the hash of the operation and the
+    /// Service, so it shares the operations map and its expiry.
+    pub(super) fn consume_hook(
+        &self,
+        approval: &DeployApproval,
+        (service, slot): (&ServiceName, &ployz_core::CreationKey),
+        now: Timestamp,
+    ) -> Result<(), Error> {
+        let mut hasher = Sha256::new();
+        hasher.update(b"pre-deploy hook\n");
+        hasher.update(approval.operation.as_str().as_bytes());
+        hasher.update(b"\n");
+        hasher.update(service.as_str().as_bytes());
+        let digest = hasher.finalize();
+        let (head, _) = digest.split_at(16);
+        let key = OperationId::parse(hex::encode(head)).expect("the hash is lowercase hex");
+        let mut guard = self
+            .operations
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        if guard.is_none() {
+            *guard = Some(self.load().map_err(Error::ApprovalRecord)?);
+        }
+        let consumption = guard.as_ref().expect("loaded above");
+        let now = consumption
+            .expiry_time_floor
+            .map_or(now, |floor| now.max(floor));
+        ployz_core::authority::validity::verify(approval.issued_at, approval.expires_at, now)
+            .map_err(Error::DeployRefused)?;
+        if let Some(taken) = consumption.operations.get(&key) {
+            if taken.hook.as_ref() == Some(slot) {
+                return Ok(());
+            }
+            return Err(Error::DeployRefused(AuthorityRefusal::Replayed {
+                operation: approval.operation,
+            }));
+        }
+        let mut updated = consumption.clone();
+        updated.expiry_time_floor = Some(now);
+        updated.operations.insert(
+            key,
+            Operation {
+                expires_at: approval.expires_at,
+                containers: BTreeMap::new(),
+                hook: Some(slot.clone()),
+                hook_made: false,
+            },
+        );
+        let written = serde_json::to_vec(&updated)
+            .map_err(io::Error::other)
+            .and_then(|contents| crate::filesystem::atomic_write(&self.path, &contents, 0o600))
+            .map_err(Error::ApprovalRecord);
+        if let Err(error) = written {
+            *guard = None;
+            return Err(error);
+        }
+        *guard = Some(updated);
+        Ok(())
+    }
+
+    /// Whether a deploy's hook was already made in the slot `key` names.
+    ///
+    /// # Errors
+    /// Returns [`Error::ApprovalRecord`] when the record cannot be read.
+    pub(super) fn hook_made(&self, key: &str) -> Result<bool, Error> {
+        let mut guard = self
+            .operations
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        if guard.is_none() {
+            *guard = Some(self.load().map_err(Error::ApprovalRecord)?);
+        }
+        let consumption = guard.as_ref().expect("loaded above");
+        Ok(consumption.operations.values().any(|taken| {
+            taken.hook_made && taken.hook.as_ref().is_some_and(|hook| hook.as_str() == key)
+        }))
+    }
+
+    /// Record that a deploy's hook is about to start in the slot `key` names, so no
+    /// resend of that slot makes another once this one is gone. A slot no deploy approval
+    /// took is left alone.
+    ///
+    /// # Errors
+    /// Returns [`Error::ApprovalRecord`] when the record cannot be read or written.
+    pub(super) fn mark_hook_made(&self, key: &str) -> Result<(), Error> {
+        let mut guard = self
+            .operations
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        if guard.is_none() {
+            *guard = Some(self.load().map_err(Error::ApprovalRecord)?);
+        }
+        let consumption = guard.as_ref().expect("loaded above");
+        let mut updated = consumption.clone();
+        let mut marked = false;
+        for taken in updated.operations.values_mut() {
+            if !taken.hook_made && taken.hook.as_ref().is_some_and(|hook| hook.as_str() == key) {
+                taken.hook_made = true;
+                marked = true;
+            }
+        }
+        if !marked {
+            return Ok(());
+        }
+        let written = serde_json::to_vec(&updated)
+            .map_err(io::Error::other)
+            .and_then(|contents| crate::filesystem::atomic_write(&self.path, &contents, 0o600))
+            .map_err(Error::ApprovalRecord);
+        if let Err(error) = written {
+            *guard = None;
+            return Err(error);
+        }
+        *guard = Some(updated);
         Ok(())
     }
 
@@ -347,6 +487,8 @@ impl ConsumptionLog {
             Operation {
                 expires_at: set.expires_at,
                 containers: BTreeMap::new(),
+                hook: None,
+                hook_made: false,
             },
         );
         let written = serde_json::to_vec(&updated)
@@ -614,6 +756,8 @@ mod tests {
             Operation {
                 expires_at: first.expires_at,
                 containers: BTreeMap::from([(container('a'), RestartStep::Stop)]),
+                hook: None,
+                hook_made: false,
             },
         )]);
         std::fs::write(

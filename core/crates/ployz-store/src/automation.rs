@@ -178,8 +178,14 @@ pub(crate) fn system(
 ) -> Result<Automated, RpcError> {
     let who = Actor::system(organization.clone());
     match event {
-        SystemEvent::BranchHead(head) => branch_head(tx, &who, head, trusted),
-        SystemEvent::CheckSuite(suite) => check_suite(tx, &who, suite, trusted),
+        SystemEvent::BranchHead(head) => {
+            crate::pull_request::withdraw_trust(tx, &who, trusted)?;
+            branch_head(tx, &who, head, trusted)
+        }
+        SystemEvent::CheckSuite(suite) => {
+            crate::pull_request::withdraw_trust(tx, &who, trusted)?;
+            check_suite(tx, &who, suite, trusted)
+        }
         SystemEvent::PullRequest(pull) => {
             crate::pull_request::pull_request(tx, &who, pull, trusted)
         }
@@ -737,7 +743,7 @@ fn admit(
         forget_landed(tx, id, push, &merges)?;
         return Ok(Some(Deploy::Idle));
     }
-    if !crate::pull_request::admits(tx, id, push.repository_id, &push.head)? {
+    if !crate::pull_request::admits(tx, id, (push.repository_id, &push.head), trusted)? {
         return Ok(Some(Deploy::NeedsApproval));
     }
     if trusted.runnable().is_err() {
@@ -783,7 +789,9 @@ fn admit(
         } else if let ServiceSource::Git { repository_id, .. } = &service.config.source {
             let repository = RepositoryId::parse(*repository_id)?;
             match last_built(tx, id, service)? {
-                Some(commit) if crate::pull_request::admits(tx, id, repository, &commit)? => {
+                Some(commit)
+                    if crate::pull_request::admits(tx, id, (repository, &commit), trusted)? =>
+                {
                     Some(commit)
                 }
                 Some(_) => None,
@@ -1066,7 +1074,7 @@ pub(crate) fn auto_admit(
         saved.revision,
         &frozen,
     )?;
-    build::pin(tx, &summary.id, &pins)?;
+    build::pin(tx, &summary.id, &pins, trusted)?;
     Ok(summary)
 }
 

@@ -32,7 +32,7 @@ use crate::{
     ManagementCapability, ManagementClientLabel, Namespace, PinnedAddresses, PullPolicy,
     QualifiedService, ResolvedServiceSpec, SelectedEndpoint, ServiceId, StorageChoice,
     WireGuardPublicKey,
-    authority::{RestartApproval, Signed},
+    authority::{DeployApproval, RestartApproval, Signed},
 };
 
 mod docker;
@@ -609,6 +609,12 @@ pub struct EnsureContainerRequest {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[ts(optional)]
     pub approval: Option<Signed<RestartApproval>>,
+    /// The approval of the Deploy this want is part of. A Machine under Device
+    /// enforcement requires it from an Operator caller for a new creation, and takes
+    /// it for a step on a Container in its Namespace; an older daemon ignores it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub deploy: Option<Signed<DeployApproval>>,
 }
 
 /// The state a driver wants one Container in. The Machine converges to it and

@@ -9,6 +9,7 @@ import {
   orgMemberRm,
   orgMemberRole,
 } from "#/modules/organization/members.commands.server";
+import { webTrafficUse } from "#/modules/ingress/doors.commands.server";
 import { clusterRename } from "#/modules/cluster-name/cluster-name.commands.server";
 import { serverUpgradePolicySet, serverUpgradePolicyShow } from "#/modules/server-upgrade/server-upgrade.commands.server";
 import { uptimeCheck, uptimeShow } from "#/modules/uptime/uptime.commands.server";
@@ -18,6 +19,7 @@ export const COMMANDS = [
   serverUpgradePolicyShow,
   serverUpgradePolicySet,
   clusterRename,
+  webTrafficUse,
   orgApprovalLs,
   orgApprovalShow,
   orgApprovalApprove,

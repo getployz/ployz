@@ -86,6 +86,38 @@ impl ContainerRuntime {
         }
     }
 
+    /// Refuse an External mount of a Volume carrying Ployz's managed label. External means
+    /// made outside Ployz, and under Device enforcement the only named Volumes an Operator
+    /// can make come from `PrepareVolumes`, which labels them, so a labelled one may hold
+    /// options nobody approved.
+    ///
+    /// # Errors
+    /// Returns [`Error::VolumeShapeMismatch`] naming the Volume, or the inspection's error.
+    pub(crate) async fn refuse_managed_external(
+        &self,
+        machine_id: &MachineId,
+        spec: &ResolvedServiceSpec,
+    ) -> Result<(), Error> {
+        for volume in spec.volume_graph().mounted_volumes() {
+            let ployz_core::RawVolumeSource::External { name } = volume.source.kind() else {
+                continue;
+            };
+            // A missing one is the mount check's to name, after this.
+            let observed = match self.inspect_volume(machine_id, name).await {
+                Ok(observed) => observed,
+                Err(error) if volume_not_found(&error) => continue,
+                Err(error) => return Err(error),
+            };
+            if observed.labels.contains_key(ployz_core::MANAGED_LABEL) {
+                return Err(Error::VolumeShapeMismatch {
+                    name: name.clone(),
+                    reason: "an External mount names a Volume Ployz manages".into(),
+                });
+            }
+        }
+        Ok(())
+    }
+
     /// Validate every existing provisioned Volume before allocating any new storage.
     pub(crate) async fn validate_provisioned_volumes(
         &self,

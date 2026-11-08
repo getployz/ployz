@@ -524,12 +524,6 @@ impl Daemon {
                 ) else {
                     return Ok(());
                 };
-                if let Err(error) = runtime.restore_tunnel_token(&local_id).await {
-                    tracing::warn!(
-                        error = %ployz_core::error_chain::inline(&error),
-                        "could not write the tunnel token again; the Tunnel Connector keeps retrying until the next `ployz ingress use`"
-                    );
-                }
                 if let Err(error) = runtime.restore_private_access_key(&local_id).await {
                     tracing::warn!(
                         error = %ployz_core::error_chain::inline(&error),
@@ -541,6 +535,17 @@ impl Daemon {
                     .with_containers(Some(runtime))
                     .with_plugin(plugin.clone())
                     .with_cluster(Some((replicated.clone(), admin.clone())));
+                let unplaced = match machine.restore_doors().await {
+                    Ok(Some(set)) => set.failure.map(|failure| failure.error.message),
+                    Ok(None) => None,
+                    Err(error) => Some(ployz_core::error_chain::inline(&error).to_string()),
+                };
+                if let Some(error) = unplaced {
+                    tracing::warn!(
+                        %error,
+                        "could not place the Ingress doors this Machine held again; they stay as they are until the next `ployz ingress use`"
+                    );
+                }
                 let boot = crate::boot_pass::DaemonHost {
                     machine_id: local_id,
                     machine: machine.clone(),

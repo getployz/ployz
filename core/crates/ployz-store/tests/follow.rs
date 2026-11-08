@@ -2815,6 +2815,7 @@ fn hiding_a_sealed_value_changes_no_plan_version_or_effect() {
             &ployz_store::PlanQuery {
                 environment: at("qa"),
                 services: Vec::new(),
+                target: false,
             },
         )
         .unwrap();
@@ -3716,6 +3717,7 @@ fn every_read(store: &ConfigStore, who: &Actor, environment: &str, parent: &str)
                     &ployz_store::PlanQuery {
                         environment: at(environment),
                         services: Vec::new(),
+                        target: false,
                     },
                 )
                 .unwrap(),

@@ -535,7 +535,11 @@ impl MachineRpc for MachineService {
         let want = if operator {
             match self
                 .local
-                .admit_operator_restart(request.want, request.approval.as_ref())
+                .admit_operator_restart(
+                    request.want,
+                    request.approval.as_ref(),
+                    request.deploy.as_ref(),
+                )
                 .await
             {
                 Ok(want) => want,
@@ -1156,6 +1160,14 @@ fn local_failure(error: LocalMachineError) -> Result<RpcError, Status> {
             serde_json::json!({
                 "capability": ployz_core::RESTART_APPROVAL_CAPABILITY,
                 "next": "ployz service restart from an approved device",
+            }),
+        )),
+        LocalMachineError::DeployRefused(_) => Err(ployz_core::rpc::hinted_status(
+            tonic::Code::PermissionDenied,
+            &error,
+            serde_json::json!({
+                "capability": ployz_core::DEPLOY_APPROVAL_CAPABILITY,
+                "next": "ployz deploy from an approved device",
             }),
         )),
         LocalMachineError::EnforcementRefused(_) => Err(ployz_core::rpc::hinted_status(

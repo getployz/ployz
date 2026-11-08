@@ -80,6 +80,7 @@ fn applied(store: &Path) {
         message: None,
         prune: false,
         no_prune: false,
+        approval: None,
     });
     local
         .write_trusted(&who, &deploy, &Trusted::default())

@@ -3,6 +3,7 @@ import type { DestructiveEffect, QualifiedService, RuntimeWatchView } from "@plo
 import { Effect } from "effect";
 import { getApproval, operationDigest, type OperationDigest, pendingApprovals } from "#/modules/approvals/approvals.server";
 import type { OperationAsked } from "#/modules/approvals/approvals.server";
+import { freshSwitchDigest } from "#/modules/ingress/doors.server";
 import { freshRenameDigest } from "#/modules/cluster-name/cluster-name.server";
 import { readStore } from "#/modules/config-store/config-store.server";
 import { unreadable, unreadableEnvironment } from "#/modules/config-store/store-lookup.server";
@@ -377,6 +378,8 @@ export const freshOperationDigest: OperationDigest<Effect.Services<ReturnType<ty
         return stored;
       case "set_cluster_name":
         return yield* freshRenameDigest(organizationId, stored, preview);
+      case "set_ingress_doors":
+        return yield* freshSwitchDigest(organizationId, stored, preview);
     }
   });
   return fresh.pipe(withClusterBudget(5_000), Effect.orElseSucceed(() => stored));

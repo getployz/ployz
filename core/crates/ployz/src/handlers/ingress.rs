@@ -3,8 +3,10 @@
 
 use std::io::Read;
 
+use base64::{Engine, engine::general_purpose::STANDARD};
 use clap::{ArgMatches, Command};
 use ployz_core::{IngressDoors, PartialResult, RpcErrorCode};
+use serde::Deserialize;
 use tokio_util::sync::CancellationToken;
 
 use super::{Error, leaf_matches, with_client};
@@ -224,7 +226,42 @@ fn read_token(stdin: impl Read) -> Result<String, Error> {
             "stdin holds no tunnel token. Copy it from the tunnel's Cloudflare page.",
         ));
     }
+    check_shape(token)?;
     Ok(token.to_owned())
+}
+
+/// What a Cloudflare tunnel token holds once decoded. `cloudflared` refuses one that
+/// doesn't, and a connector that can't start leaves every Server dark.
+#[derive(Deserialize)]
+struct CloudflareToken {
+    /// The account tag.
+    a: String,
+    /// The tunnel id.
+    t: String,
+    /// The tunnel secret, base64.
+    s: String,
+}
+
+/// Refuse a token `cloudflared` can't use, before any Server is asked to switch.
+fn check_shape(token: &str) -> Result<(), Error> {
+    let usable = STANDARD
+        .decode(token)
+        .ok()
+        .and_then(|bytes| serde_json::from_slice::<CloudflareToken>(&bytes).ok())
+        .is_some_and(|parsed| {
+            !parsed.a.is_empty()
+                && uuid::Uuid::parse_str(&parsed.t).is_ok()
+                && STANDARD
+                    .decode(&parsed.s)
+                    .is_ok_and(|secret| !secret.is_empty())
+        });
+    if usable {
+        Ok(())
+    } else {
+        Err(Error::usage(
+            "Paste the whole token from the tunnel's install command. Tokens start with eyJ.",
+        ))
+    }
 }
 
 fn ask_token() -> Result<String, Error> {
@@ -244,6 +281,7 @@ fn ask_token() -> Result<String, Error> {
             "The tunnel token is empty. Copy it from the tunnel's Cloudflare page.",
         ));
     }
+    check_shape(token)?;
     Ok(token.to_owned())
 }
 
@@ -251,12 +289,24 @@ fn ask_token() -> Result<String, Error> {
 mod tests {
     use super::*;
 
+    const TUNNEL_ID: &str = "11111111-2222-4333-8444-555555555555";
+
+    fn token(fields: serde_json::Value) -> String {
+        STANDARD.encode(serde_json::to_vec(&fields).unwrap())
+    }
+
+    fn real_token() -> String {
+        token(serde_json::json!({
+            "a": "0123456789abcdef0123456789abcdef",
+            "t": TUNNEL_ID,
+            "s": STANDARD.encode([7u8; 32]),
+        }))
+    }
+
     #[test]
     fn a_token_on_stdin_is_trimmed_and_an_empty_or_oversized_one_refused() {
-        assert_eq!(
-            read_token("  eyJhIjoiYiJ9\n".as_bytes()).unwrap(),
-            "eyJhIjoiYiJ9"
-        );
+        let real = real_token();
+        assert_eq!(read_token(format!("  {real}\n").as_bytes()).unwrap(), real);
         let empty = read_token("\n".as_bytes()).unwrap_err().report();
         assert_eq!(empty.code, RpcErrorCode::InvalidArgument);
         assert!(
@@ -271,5 +321,44 @@ mod tests {
             "{}",
             oversized.message
         );
+    }
+
+    #[test]
+    fn a_token_cloudflared_cannot_use_is_refused_before_any_server_is_asked() {
+        let secret = STANDARD.encode([7u8; 32]);
+        let unusable = [
+            ("not-a-real-token".to_owned(), "not base64"),
+            (STANDARD.encode("not json"), "not JSON"),
+            (token(serde_json::json!({ "a": "b" })), "fields missing"),
+            (
+                token(serde_json::json!({ "a": "", "t": TUNNEL_ID, "s": secret })),
+                "empty account tag",
+            ),
+            (
+                token(serde_json::json!({ "a": "b", "t": "tunnel", "s": secret })),
+                "tunnel id not a UUID",
+            ),
+            (
+                token(serde_json::json!({ "a": "b", "t": TUNNEL_ID, "s": "***" })),
+                "secret not base64",
+            ),
+            (
+                token(serde_json::json!({ "a": "b", "t": TUNNEL_ID, "s": "" })),
+                "empty secret",
+            ),
+            (
+                token(serde_json::json!({ "a": 1, "t": TUNNEL_ID, "s": secret })),
+                "account tag not a string",
+            ),
+        ];
+        for (candidate, why) in unusable {
+            let error = read_token(candidate.as_bytes()).unwrap_err().report();
+            assert_eq!(error.code, RpcErrorCode::InvalidArgument, "{why}");
+            assert!(
+                error.message.contains("Tokens start with eyJ"),
+                "{why}: {}",
+                error.message
+            );
+        }
     }
 }

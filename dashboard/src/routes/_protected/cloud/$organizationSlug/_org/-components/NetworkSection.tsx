@@ -11,16 +11,20 @@ import { Input } from "#/components/ui/input";
 import { checkClusterDomainNowServerFn } from "#/modules/cluster-domain/cluster-domain.functions";
 import { type ClusterNameView, clusterNameProblem, defaultClusterName } from "#/modules/cluster-name/cluster-name";
 import { useClusterName } from "#/modules/cluster-name/cluster-name.hooks";
+import { useClusterIngress } from "#/modules/ingress/doors.queries";
 import { useRoleGate } from "#/modules/organization/members.queries";
+import { WebTrafficSection } from "#/routes/_protected/cloud/$organizationSlug/_org/-components/WebTrafficSection";
 import { ClusterDomainSection } from "#/routes/_protected/cloud/$organizationSlug/_org/-components/ClusterDomainSection";
 
 const organizationRoute = getRouteApi("/_protected/cloud/$organizationSlug");
 
 export function NetworkSection({ organizationSlug }: { organizationSlug: string }) {
+  const { setup } = useClusterIngress(organizationSlug);
   return (
     <div className="flex flex-col gap-6">
       <ClusterNameSection organizationSlug={organizationSlug} />
-      <ClusterDomainSettings organizationSlug={organizationSlug} />
+      {setup?.state === "active" ? null : <ClusterDomainSettings organizationSlug={organizationSlug} />}
+      <WebTrafficSection organizationSlug={organizationSlug} />
     </div>
   );
 }

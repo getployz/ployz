@@ -196,6 +196,7 @@ fn advertised_capability_groups_match_the_frozen_catalog() {
             "ployz.restart.session-grant.v1",
             "ployz.restart.start-approval.v1",
             "ployz.restart.proposal.v1",
+            "ployz.container.deploy-approval.v1",
         ]
     );
     assert_eq!(
@@ -394,6 +395,10 @@ const ABOVE_FLOOR: &[(&str, &str)] = &[
     (
         "ployz.restart.start-approval.v1",
         "gated: Cloud attaches a start approval only for a Machine that advertises it, and names an older one as needing a newer Ployz; the CLI signs one regardless, which an older enforcing Machine refuses as it refused an unapproved start",
+    ),
+    (
+        "ployz.container.deploy-approval.v1",
+        "falls back: an older daemon ignores the approval on EnsureContainer; one not enforcing creates as before, and one enforcing refuses every Operator creation as it did, naming the restart capability",
     ),
     (
         "ployz.image.pull.v1",
