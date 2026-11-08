@@ -42,7 +42,7 @@ const identity = (organizationId: string, source: GitSource) => ({
 /**
  * Pin each Git Service of the Deployment to its branch's head, unless it is pinned already (a pin never moves, so a
  * retried run reads the same commit). Resolves to every source with its pin. A trusted pull request's head pins only
- * while its author is still among the members sent with it.
+ * while its author is still among the members sent with it, unless a bot opened it from the repository itself.
  */
 export const pinStoreSources = Effect.fn("StoreDeployment.pinSources")(function* (
   store: ConfigStore, organizationId: string, deploymentId: string,

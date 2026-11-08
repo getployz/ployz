@@ -246,7 +246,8 @@ export const githubMembers = Effect.fn("ConfigStore.githubMembers")(function* (o
 
 /**
  * Which events can admit a Deployment, and so need to know which Servers hold the data a Save accepted losing, and
- * who the members are: a trusted pull request's head deploys only while its author is one.
+ * who the members are: a trusted pull request's head deploys only while its author is one, unless a bot opened it from
+ * the repository itself.
  */
 const deploys = {
   branch_head: true, check_suite: true, pull_request: true, sweep: false, cluster_forgotten: false, volume_resized: false,
@@ -296,7 +297,7 @@ export const gatherTrusted = Effect.fn("ConfigStore.gatherTrusted")(function* (
   const admits = call.operation === "write" && (call.command.command === "admit" || call.command.command === "start"
     || call.command.command === "remove" || call.command.command === "approve_pull_request");
   const servers = admits ? yield* countOrganizationMachines(organizationId) : undefined;
-  // An approval may deploy a trusted pull request's head, which needs its author still a member.
+  // An approval leaves a pull request trusted only while its author is a member or a bot opened it from the repository.
   const approves = call.operation === "write" && call.command.command === "approve_pull_request";
   const members = approves ? yield* githubMembers(organizationId) : undefined;
   const sealing = call.operation === "write" ? yield* readClusterSealing(organizationId) : undefined;

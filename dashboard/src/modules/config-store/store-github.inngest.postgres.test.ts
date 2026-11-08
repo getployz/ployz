@@ -197,7 +197,7 @@ it.live(
         head_repository_id: 42, head_branch: "search", head: H2, target_branch: "main", commits: 1, open: true, merge_commit: null,
         target_head: null, updated: "2026-09-29T10:00:00Z",
       }).pipe(Effect.provide(services));
-      expect(opened.admitted).toHaveLength(1);
+      expect(opened).toMatchObject({ written: "automated", admitted: [{}] });
       const unlinkAda = Effect.gen(function* () {
         const { drizzle } = yield* Database;
         yield* drizzle.delete(account).where(eq(account.accountId, "7"));
