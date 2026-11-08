@@ -1460,9 +1460,9 @@ impl LocalMachine {
                             ));
                         }
                         if enforced {
-                            containers
-                                .refuse_managed_external(&machine.id, spec)
-                                .await?;
+                            // Boxed: its Volume inspections would otherwise grow every
+                            // create's future, enforced or not.
+                            Box::pin(containers.refuse_managed_external(&machine.id, spec)).await?;
                         }
                         Ok(())
                     },
