@@ -10,7 +10,7 @@ import { TraceLine } from "#/components/ui/trace";
 import { Textarea } from "#/components/ui/textarea";
 import { useMinute } from "#/hooks/use-minute";
 import { cn } from "#/lib/utils";
-import { approvalBadge, approvalSubject, type ApprovalDecision, destroyedLine, droppedLine, losesVolumeAccess, prunes, redeployLine, renamedAddresses, shownServiceAct } from "#/modules/approvals/approvals";
+import { approvalBadge, approvalSubject, type ApprovalDecision, destroyedLine, droppedLine, losesVolumeAccess, prunes, redeployLine, renamedAddresses, shownServiceAct, switchedAddresses } from "#/modules/approvals/approvals";
 import { lossMoment } from "#/modules/volume-placement/volume-placement";
 import { toErrorMessage } from "#/lib/error-message";
 import { approvalOptions, approverApprovals, decideApproval, landDecision, refetchApprovals, runsServiceAct, type ApprovalView } from "./approvals.queries";
@@ -50,7 +50,8 @@ function PendingCard({ organizationSlug, approval }: { organizationSlug: string;
   const subject = approvalSubject(approval.command, approval.review);
   const redeploy = redeployLine(approval.command, approval.review);
   const renamed = renamedAddresses(approval.review);
-  const destroys = approval.command !== "set_cluster_name";
+  const switched = switchedAddresses(approval.review);
+  const destroys = approval.command !== "set_cluster_name" && !(approval.command === "set_ingress_doors" && effects.length === 0);
   // The name Servers know a restarted or stopped Service by, which the approvals this card makes carry.
   const serviceAct = shownServiceAct(approval.review);
   const place = subject.project === null ? subject.name : `${subject.project}/${subject.name}`;
@@ -93,6 +94,9 @@ function PendingCard({ organizationSlug, approval }: { organizationSlug: string;
         {redeploy !== null && <p className="text-xs">{redeploy}</p>}
         {renamed !== null && (
           <p className="font-mono text-xs break-all">{renamed.from === null ? renamed.to : `${renamed.from} → ${renamed.to}`}</p>
+        )}
+        {switched !== null && (
+          <p className="font-mono text-xs break-all">{switched.from} → {switched.to}</p>
         )}
         {serviceAct !== null && (
           <p className="text-xs text-muted-foreground">On servers <code className="font-mono">{serviceAct.namespace}/{serviceAct.runtime}</code></p>

@@ -498,14 +498,15 @@ const requestOperationApproval = Effect.fn("Approvals.requestOperation")(functio
   }), stale);
   // The subject rides in the refusal, not the stored review: approvalView adds it from the row.
   const renames = asked.verb === "set_cluster_name";
+  const switches = asked.verb === "set_ingress_doors";
   const details = {
     effects: asked.effects,
     approval: digest,
     approval_id: recorded.id,
-    operation: renames ? { ...operation, preview: asked.preview, subject: asked.subject } : { ...operation, subject: asked.subject },
+    operation: renames || switches ? { ...operation, preview: asked.preview, subject: asked.subject } : { ...operation, subject: asked.subject },
     organization: caller.organization.slug,
   };
-  const what = renames ? `renaming the Cluster to ${asked.name}` : `this ${asked.verb.replaceAll("_", " ")} of ${asked.name}`;
+  const what = renames ? `renaming the Cluster to ${asked.name}` : switches ? `switching web traffic ${asked.name}` : `this ${asked.verb.replaceAll("_", " ")} of ${asked.name}`;
   return {
     code: "approval_required",
     message: `A human must approve ${what} before it runs.`,

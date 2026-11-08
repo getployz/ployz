@@ -1,5 +1,6 @@
 import { Schema } from "effect";
 import { ClusterName, RenameClusterInput } from "#/modules/cluster-name/cluster-name";
+import { DOORS_WANTS, SwitchDoorsInput } from "#/modules/ingress/doors";
 import { EnqueueMachineRemoveInput, ForgetServerInput } from "#/modules/machines/machine-removal";
 import { ForgetServersInput } from "#/modules/machines/forget-servers";
 import { RemoveNamespaceInput } from "#/modules/machines/namespace-cleanup";
@@ -430,6 +431,22 @@ export const OPERATIONS = {
         input: RenameClusterInput,
         ungated: "The human is the one renaming the Cluster.",
         options: { name: { via: "name" } },
+      },
+    },
+  }),
+  "ingress.use": operation({
+    options: Schema.Struct({ to: Schema.Literals(DOORS_WANTS) }),
+    requires: "servers:operate",
+    gate: "approval",
+    idempotency: { none: "A switch to where the Cluster already is is refused and changes nothing." },
+    surfaces: {
+      cli: { absent: "`ployz cluster web-traffic` runs the web_traffic_use command, which asks through its own gate." },
+      agent: { absent: "Agents call the published web_traffic_use command." },
+      ui: {
+        fn: "switchDoorsServerFn",
+        input: SwitchDoorsInput,
+        ungated: "The human read the review of every address that moves and pressed Switch.",
+        options: { to: { via: "to" } },
       },
     },
   }),

@@ -94,6 +94,7 @@ export const serverEnrollmentRequestedEvent = "server/enrollment.requested";
 export const serverEnrollmentReportedEvent = "server/enrollment.reported";
 export const serverEnrollmentCancelEvent = "server/enrollment.cancel";
 export const serverWebTrafficRequestedEvent = "server/web-traffic.requested";
+export const ingressDoorsRequestedEvent = "ingress/doors.requested";
 export const namespaceCleanupRequestedEvent = "namespace/cleanup.requested";
 export const serviceActRequestedEvent = "service/act.requested";
 export const clusterDomainSyncRequestedEvent = "cluster-domain/sync.requested";
@@ -179,6 +180,12 @@ export type ServerWebTrafficRequestedEventData = {
   attemptId: string;
   organizationId: string;
   machineId: MachineId;
+};
+
+/** A switch of the Cluster's web traffic between its public ports and Cloudflare was requested: its row is written. */
+export type IngressDoorsRequestedEventData = {
+  attemptId: string;
+  organizationId: string;
 };
 
 /** A clean of a Namespace no Environment owns was requested: its row is written. */
@@ -364,6 +371,10 @@ export const serverWebTrafficRequestedEventType = eventType(
   serverWebTrafficRequestedEvent,
   { schema: staticSchema<ServerWebTrafficRequestedEventData>() },
 );
+export const ingressDoorsRequestedEventType = eventType(
+  ingressDoorsRequestedEvent,
+  { schema: staticSchema<IngressDoorsRequestedEventData>() },
+);
 export const namespaceCleanupRequestedEventType = eventType(
   namespaceCleanupRequestedEvent,
   { schema: staticSchema<NamespaceCleanupRequestedEventData>() },
@@ -537,6 +548,11 @@ export function createServerEnrollmentCancelEvent(data: ServerEnrollmentCancelEv
 
 export function createServerEnrollmentFoundedEvent(founderAttemptId: string, attemptId: string) {
   return { id: `organization-founded-${founderAttemptId}-${attemptId}`, name: serverEnrollmentReportedEvent, data: { attemptId, founded: true } } as const;
+}
+
+/** Keyed by the switch's row: sending it again for the same request runs nothing new. */
+export function createIngressDoorsRequestedEvent(data: IngressDoorsRequestedEventData) {
+  return { id: `ingress-doors-${data.attemptId}`, name: ingressDoorsRequestedEvent, data } as const;
 }
 
 /** Keyed by the change's row: sending it again for the same request runs nothing new. */
@@ -770,6 +786,7 @@ export type InngestSendableEvent =
   | ReturnType<typeof createServerEnrollmentCancelEvent>
   | ReturnType<typeof createServerEnrollmentFoundedEvent>
   | ReturnType<typeof createServerWebTrafficRequestedEvent>
+  | ReturnType<typeof createIngressDoorsRequestedEvent>
   | ReturnType<typeof createNamespaceCleanupRequestedEvent>
   | ReturnType<typeof createServiceActRequestedEvent>
   | ReturnType<typeof createMailSendRequestedEvent>

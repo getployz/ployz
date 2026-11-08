@@ -121,7 +121,9 @@ same path. Until then, plain http shows **Nothing is deployed here**.
 
 Servers that can't open ports can serve every domain through a
 [Cloudflare Tunnel](cloudflare-tunnel.md) instead. Cloudflare then holds the certificate, and the
-DNS records point at the tunnel rather than at your servers.
+DNS records point at the tunnel rather than at your servers. Switching from **Settings → Network**
+also moves your generated addresses from your organization's domain to your Cloudflare zone, one
+level below it, like `web-prod.example.com`.
 
 ## Check a domain's status
 

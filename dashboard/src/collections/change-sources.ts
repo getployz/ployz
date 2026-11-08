@@ -34,6 +34,7 @@ export const changeNameSources = {
   server_upgrade: ["server_upgrade_attempt"],
   server_drain: ["server_drain_attempt"],
   server_web_traffic: ["server_web_traffic_attempt"],
+  cluster_ingress: ["organization_cloudflare_ingress", "ingress_doors_attempt"],
   volume_run: ["volume_run"],
   service_act: ["service_act"],
   volume_placement: ["volume_placement"],
