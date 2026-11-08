@@ -2,7 +2,10 @@ use ployz_core::authority::PayloadDigest;
 use ployz_core::{Namespace, RequestedServiceSpec};
 use serde_json::json;
 
-use super::{Approved, Enforcing, Probe, enforced, host_sensitive, line, signable, unpinned};
+use super::{
+    Approved, Enforcing, Probe, enforced, host_sensitive, line, pin_tags, signable, unpinnable,
+};
+use crate::image::PinError;
 
 const PINNED: &str =
     "nginx@sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
@@ -32,9 +35,34 @@ fn approved(spec: &RequestedServiceSpec) -> Approved {
     Approved {
         service: spec.name.clone(),
         image: spec.container.image.clone(),
+        tag: None,
         digest: PayloadDigest::of(spec, &Namespace::parse("app").unwrap()).unwrap(),
         host: host_sensitive(spec),
     }
+}
+
+/// `spec`'s tag as this CLI pins it: the Servers run `PINNED`, the Saved State says `tag`.
+fn pinned(tag: &str) -> Approved {
+    let mut spec = spec(PINNED);
+    let digest = PayloadDigest::of(&spec, &Namespace::parse("app").unwrap()).unwrap();
+    spec.container.image = PINNED.to_owned();
+    Approved {
+        tag: Some(tag.to_owned()),
+        digest,
+        ..approved(&spec)
+    }
+}
+
+#[test]
+fn a_pinned_tag_prints_its_tag_and_the_digest_it_resolved_to() {
+    assert_eq!(
+        line(&pinned("nginx:1.29-alpine")),
+        "Approved web: nginx:1.29-alpine → @sha256:0123456789ab… (privileged, device \
+         /dev/fuse:/dev/fuse, adds NET_ADMIN, host port 8080, binds /srv, hook migrate --up)"
+    );
+    let value = serde_json::to_value(pinned("nginx:1.29-alpine")).unwrap();
+    assert_eq!(value.get("tag"), Some(&json!("nginx:1.29-alpine")));
+    assert_eq!(value.get("image"), Some(&json!(PINNED)));
 }
 
 #[test]
@@ -84,18 +112,48 @@ fn next_hints(error: &crate::handlers::Error) -> Vec<String> {
 }
 
 #[test]
-fn a_tag_image_fails_before_admission_naming_the_fix_for_its_repository() {
-    let error = unpinned(&matches(), &spec("ghcr.io/acme/web:1.4"));
+fn a_private_image_fails_before_admission_asking_for_a_digest() {
+    let error = unpinnable(
+        &matches(),
+        &spec("ghcr.io/acme/web:1.4"),
+        PinError::NeedsCredentials {
+            registry: "ghcr.io".to_owned(),
+            reference: "ghcr.io/acme/web:1.4".to_owned(),
+        },
+    );
     let rpc = error.report();
     assert_eq!(rpc.code, ployz_core::RpcErrorCode::InvalidArgument);
     assert_eq!(
         rpc.message,
-        "Pin web's image by digest to deploy to servers that enforce device approval."
+        "ghcr.io wants credentials to read web's image, so ployz can't pin it. Write its digest."
     );
     assert_eq!(
         next_hints(&error),
         ["ployz set 'web.image=ghcr.io/acme/web@sha256:…'"]
     );
+}
+
+#[test]
+fn a_registry_that_cannot_be_asked_is_named_with_the_fix() {
+    // Nothing listens on this port, so the lookup fails at once, as with no route out.
+    let tagged = spec("127.0.0.1:1/acme/web:1.4");
+    let error = pin_tags(&matches(), std::slice::from_ref(&tagged)).unwrap_err();
+    let rpc = error.report();
+    assert_eq!(rpc.code, ployz_core::RpcErrorCode::Unavailable);
+    assert_eq!(
+        rpc.message,
+        "Couldn't ask 127.0.0.1:1 for web's image digest."
+    );
+    assert!(!error.causes().is_empty());
+    assert_eq!(
+        next_hints(&error),
+        ["ployz set 'web.image=127.0.0.1:1/acme/web@sha256:…'"]
+    );
+}
+
+#[test]
+fn an_image_written_by_digest_is_not_looked_up() {
+    assert!(pin_tags(&matches(), &[spec(PINNED)]).unwrap().is_empty());
 }
 
 #[test]
@@ -110,7 +168,7 @@ fn a_registry_port_is_not_a_tag() {
 
 #[test]
 fn a_built_service_is_refused_plainly_with_no_pin_hint() {
-    let error = signable(&matches(), Some(vec![spec("ployz-build/web:pending")])).unwrap_err();
+    let error = signable(Some(vec![spec("ployz-build/web:pending")])).unwrap_err();
     let rpc = error.report();
     assert_eq!(rpc.code, ployz_core::RpcErrorCode::InvalidArgument);
     assert_eq!(
@@ -123,18 +181,13 @@ fn a_built_service_is_refused_plainly_with_no_pin_hint() {
 
 #[test]
 fn a_store_that_lowers_no_target_is_refused() {
-    let error = signable(&matches(), None).unwrap_err();
+    let error = signable(None).unwrap_err();
     assert_eq!(error.report().code, ployz_core::RpcErrorCode::Unsupported);
 }
 
 #[test]
 fn pinned_specs_are_signable() {
-    assert_eq!(
-        signable(&matches(), Some(vec![spec(PINNED)]))
-            .unwrap()
-            .len(),
-        1
-    );
+    assert_eq!(signable(Some(vec![spec(PINNED)])).unwrap().len(), 1);
 }
 
 fn server(seed: u8, enforces: Option<bool>, key: Option<u8>) -> ployz_core::MachineObservation {

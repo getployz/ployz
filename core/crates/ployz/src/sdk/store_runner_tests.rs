@@ -1682,3 +1682,66 @@ fn a_storage_refusal_says_this_deploy_s_deletions_free_space_only_after_it() {
         }
     }
 }
+
+fn service(name: &str, image: &str) -> RequestedServiceSpec {
+    serde_json::from_value(serde_json::json!({
+        "name": name,
+        "mode": {"mode": "replicated", "replicas": 1},
+        "container": {"image": image, "pull_policy": "missing"},
+    }))
+    .unwrap()
+}
+
+#[test]
+fn the_runner_writes_each_approved_image_into_its_spec_before_planning() {
+    use ployz_core::authority::{
+        ApprovedService, DeployApproval, PayloadDigest, Signed, Signer, SignerKey, Timestamp,
+    };
+    const PINNED: &str =
+        "nginx:1.29-alpine@sha256:0000000000000000000000000000000000000000000000000000000000000001";
+    const BY_HAND: &str =
+        "api@sha256:0000000000000000000000000000000000000000000000000000000000000002";
+    let namespace = ployz_core::Namespace::parse("app").unwrap();
+    let signer = Signer::from_seed(&[1; 32]);
+    let digest = PayloadDigest::of(&service("web", PINNED), &namespace).unwrap();
+    let issued_at = Timestamp::now();
+    let body = DeployApproval {
+        cluster: ployz_core::SealingPublicKey::from_bytes([9; 32]),
+        operation: ployz_core::OperationId::random(),
+        namespace,
+        machines: vec![ployz_core::MachineId::parse("1".repeat(32)).unwrap()],
+        services: vec![
+            ApprovedService {
+                name: ServiceName::parse("api").unwrap(),
+                digest,
+                image: None,
+            },
+            ApprovedService {
+                name: ServiceName::parse("web").unwrap(),
+                digest,
+                image: Some(PINNED.to_owned()),
+            },
+        ],
+        issued_at,
+        expires_at: issued_at.plus(60_000),
+        signer: SignerKey::Device(signer.public().into()),
+    };
+    let approval = Signed::sign(&body, &signer).unwrap();
+    let mut target = vec![
+        service("api", BY_HAND),
+        service("web", "nginx:1.29-alpine"),
+        service("worker", "busybox:1"),
+    ];
+    pin_approved(&mut target, Some(&approval));
+    let images: Vec<_> = target
+        .iter()
+        .map(|spec| spec.container.image.as_str())
+        .collect();
+    assert_eq!(images, [BY_HAND, PINNED, "busybox:1"]);
+    let mut unsigned = vec![service("web", "nginx:1.29-alpine")];
+    pin_approved(&mut unsigned, None);
+    assert_eq!(
+        unsigned.first().unwrap().container.image,
+        "nginx:1.29-alpine"
+    );
+}

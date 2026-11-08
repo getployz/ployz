@@ -105,6 +105,7 @@ fn approval(signer: &Signer, spec: &RequestedServiceSpec) -> DeployApproval {
         services: vec![ApprovedService {
             name: web(),
             digest: PayloadDigest::of(spec, &namespace()).unwrap(),
+            image: None,
         }],
         issued_at: Timestamp::from_millis(100_000).unwrap(),
         expires_at: Timestamp::from_millis(1_000_000).unwrap(),
@@ -356,6 +357,78 @@ fn a_tag_image_is_refused_even_when_approved() {
     ] {
         assert_eq!(content_addressed(image), pinned, "{image}");
     }
+}
+
+const TAG: &str = "nginx:1.29-alpine";
+const PINNED: &str =
+    "nginx:1.29-alpine@sha256:0000000000000000000000000000000000000000000000000000000000000003";
+const REPOINTED: &str =
+    "nginx:1.29-alpine@sha256:0000000000000000000000000000000000000000000000000000000000000004";
+
+/// An approval of the fixture whose Saved State names `TAG`, pinned to `PINNED`.
+fn pinned_approval(signer: &Signer) -> Signed<DeployApproval> {
+    let mut approval = approval(
+        signer,
+        &requested(with(&["container", "image"], json!(PINNED))),
+    );
+    approval.services.first_mut().unwrap().image = Some(PINNED.to_owned());
+    Signed::sign(&approval, signer).unwrap()
+}
+
+/// What a Machine says to a creation of the fixture running `image`.
+fn pinned_creation(image: &str) -> Result<DeployApproved, AuthorityRefusal> {
+    let signer = signer(1);
+    let signed = pinned_approval(&signer);
+    let spec = resolved(&requested(with(&["container", "image"], json!(image))));
+    verify(
+        &signed,
+        &Machine::new(&[&signer]).facts(Some(service(&spec))),
+    )
+}
+
+#[test]
+fn a_pinned_tag_runs_only_its_pinned_image() {
+    assert!(pinned_creation(PINNED).is_ok());
+    for refused in [TAG, REPOINTED, IMAGE] {
+        assert_eq!(
+            pinned_creation(refused).unwrap_err(),
+            AuthorityRefusal::Mismatch { field: "an image" },
+            "{refused}"
+        );
+    }
+}
+
+#[test]
+fn the_runner_writes_the_pinned_image_into_the_spec_the_digest_covers() {
+    let signer = signer(1);
+    let body = pinned_approval(&signer).open().unwrap();
+    let mut spec = requested(with(&["container", "image"], json!(TAG)));
+    body.pin(&mut spec);
+    assert_eq!(spec.container.image, PINNED);
+    assert_eq!(
+        PayloadDigest::of(&spec, &namespace()).unwrap(),
+        body.digest(&web()).unwrap()
+    );
+    let mut by_digest = requested(requested_json());
+    let digest_only = DeployApproval {
+        services: vec![ApprovedService {
+            image: None,
+            ..body.services.first().unwrap().clone()
+        }],
+        ..body
+    };
+    digest_only.pin(&mut by_digest);
+    assert_eq!(by_digest.container.image, IMAGE);
+}
+
+#[test]
+fn an_approval_without_an_image_signs_the_same_bytes_as_before() {
+    let signer = signer(1);
+    let base = requested(requested_json());
+    let body = approval(&signer, &base);
+    assert!(!serde_json::to_string(&body).unwrap().contains("\"image\""));
+    let signed = Signed::sign(&body, &signer).unwrap();
+    assert_eq!(signed.open().unwrap(), body);
 }
 
 #[test]
