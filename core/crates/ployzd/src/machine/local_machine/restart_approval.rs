@@ -18,6 +18,7 @@ use ployz_core::{
     },
 };
 use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 
 use super::{Error, LocalMachine};
 
@@ -155,7 +156,10 @@ impl LocalMachine {
             .consume(&approved.body, &observed.container_id, step, now)?;
         tracing::info!(
             operation = %approved.body.operation,
+            proposal = ?approved.body.proposal,
             ?step,
+            service = %identity,
+            container = observed.container_id.as_str().get(..12).unwrap_or_default(),
             "{} approved by {}",
             approved.body.kind,
             approved.by
@@ -216,6 +220,22 @@ struct Operation {
     containers: BTreeMap<ContainerId, RestartStep>,
 }
 
+/// Where `approval`'s consumption is kept. A proposal step gets an entry of its own, so a plan
+/// that restarts one Service at step 0 and again at step 2 takes each once, while a resent
+/// envelope for the same step still replays. The entry's name is 32 hex digits of the hash of
+/// the operation and the step's index, which no real operation ID collides with in practice.
+fn consumption_key(approval: &RestartApproval) -> OperationId {
+    let Some(step) = &approval.proposal else {
+        return approval.operation;
+    };
+    let mut hasher = Sha256::new();
+    hasher.update(step.operation.as_str().as_bytes());
+    hasher.update(step.index.to_be_bytes());
+    let digest = hasher.finalize();
+    let (head, _) = digest.split_at(16);
+    OperationId::parse(hex::encode(head)).expect("the hash is lowercase hex")
+}
+
 impl ConsumptionLog {
     pub(crate) fn new(data_dir: &Path) -> Arc<Self> {
         Arc::new(Self {
@@ -266,7 +286,7 @@ impl ConsumptionLog {
             .retain(|_, operation| operation.expires_at.plus(restart::CLOCK_SKEW_MILLIS) >= now);
         let operation = updated
             .operations
-            .entry(approval.operation)
+            .entry(consumption_key(approval))
             .or_insert_with(|| Operation {
                 expires_at: approval.expires_at,
                 containers: BTreeMap::new(),
@@ -437,6 +457,7 @@ mod tests {
             issued_at: at(0),
             expires_at: Timestamp::from_millis(expires_at).unwrap(),
             signer: ployz_core::authority::SignerKey::Device(DeviceKey::from_bytes([2; 32])),
+            proposal: None,
         }
     }
 
@@ -501,6 +522,58 @@ mod tests {
         reopened
             .consume(&second, &container('a'), RestartStep::Hold, at(5))
             .unwrap();
+    }
+
+    #[test]
+    fn a_proposal_that_restarts_one_container_at_two_steps_takes_each_once() {
+        let dir = tempfile::tempdir().unwrap();
+        let log = ConsumptionLog::new(dir.path());
+        let operation = "1".repeat(32);
+        let step = |index: u32| RestartApproval {
+            proposal: Some(ployz_core::authority::ProposalRef {
+                operation: OperationId::parse(&operation).unwrap(),
+                index,
+            }),
+            ..approval(&operation, 10_000)
+        };
+
+        log.consume(&step(0), &container('a'), RestartStep::Hold, at(1))
+            .unwrap();
+        log.consume(&step(0), &container('a'), RestartStep::Start, at(2))
+            .unwrap();
+        log.consume(&step(1), &container('b'), RestartStep::Stop, at(3))
+            .unwrap();
+        log.consume(&step(2), &container('a'), RestartStep::Hold, at(4))
+            .unwrap();
+        log.consume(&step(3), &container('b'), RestartStep::Start, at(5))
+            .unwrap();
+
+        assert!(replayed(log.consume(
+            &step(0),
+            &container('a'),
+            RestartStep::Hold,
+            at(6)
+        )));
+        assert!(replayed(log.consume(
+            &step(2),
+            &container('a'),
+            RestartStep::Hold,
+            at(6)
+        )));
+        log.consume(
+            &approval(&operation, 10_000),
+            &container('a'),
+            RestartStep::Hold,
+            at(7),
+        )
+        .unwrap();
+        let reopened = ConsumptionLog::new(dir.path());
+        assert!(replayed(reopened.consume(
+            &step(2),
+            &container('a'),
+            RestartStep::Hold,
+            at(8)
+        )));
     }
 
     #[test]

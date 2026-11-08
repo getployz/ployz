@@ -24,7 +24,8 @@ type NotRun = { readonly message: string; readonly moved: boolean };
 const notRun = (refusal: StoreRefusal, conflict: "moved" | "busy"): NotRun =>
   ({ message: refusal.message, moved: refusal.code === "approval_required" || (refusal.code === "conflict" && conflict === "moved") });
 
-const askerCaller = (access: Access, credentialId: string): Caller => ({
+/** The member who asked, acting from the dashboard with what they hold now, through the credential that asked. */
+export const askerCaller = (access: Access, credentialId: string): Caller => ({
   userId: access.userId,
   organization: access.organization,
   credential: { kind: "session", id: credentialId },
