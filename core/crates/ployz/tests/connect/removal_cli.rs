@@ -681,8 +681,8 @@ async fn a_cloud_removal_whose_reset_committed_reads_as_a_reset() {
     );
 }
 
-/// A Leave that never answered, or that the entry could no longer route, leaves the reset
-/// unproven: the removal is partial.
+/// A Leave that failed as unavailable, or that the entry could no longer route, leaves no
+/// confirmed reset: the removal is partial.
 #[tokio::test]
 async fn a_removal_whose_reset_is_unproven_is_partial() {
     let unroutable = RpcError {
