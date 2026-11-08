@@ -5,6 +5,7 @@ import { Data, Effect } from "effect";
 import { createServiceActRequestedEvent, type ServiceActRequestedEventData } from "#/modules/inngest/events";
 import type { Admission } from "#/modules/operations/keyed.server";
 import { enqueueEvent } from "#/modules/operations/outbox.server";
+import { PROPOSAL_CAPABILITY } from "#/modules/proposals/proposal";
 import { requirements, ServerLacks, serverSupports } from "#/modules/runtime/daemon-compat";
 import { firstRuntimeFrame, OrganizationRuntime } from "#/modules/runtime/organization-runtime.server";
 import { type PloyzSdkError, refusedApproval, rpcErrorCode } from "#/modules/runtime/ployz.server";
@@ -14,11 +15,13 @@ import {
   copiesIn,
   endOf,
   enforcesIn,
+  APPROVAL_RAN_OUT,
   legOf,
   legsOf,
   type LegStep,
   needsNewerPloyz,
   progressOf,
+  ranOut,
   SERVICE_ACT_PENDING_LIMIT_MS,
   SERVICE_ACT_RUNNING_LIMIT_MS,
   type ServiceActBefore,
@@ -67,6 +70,7 @@ export const requestServiceAct = Effect.fn("ServiceAct.request")(function* (
     readonly only: ServerRef | null;
     readonly digest: string;
     readonly approvals?: Readonly<Record<string, Signed>>;
+    readonly proposal?: { readonly id: string; readonly step: number };
   },
 ) {
   const { drizzle } = yield* Database;
@@ -81,6 +85,8 @@ export const requestServiceAct = Effect.fn("ServiceAct.request")(function* (
     only: input.only,
     digest: input.digest,
     approvals: input.approvals ?? null,
+    proposalId: input.proposal?.id ?? null,
+    proposalStep: input.proposal?.step ?? null,
     requestedByUserId: caller.userId,
   }).onConflictDoNothing().returning();
   if (inserted !== undefined) {
@@ -167,12 +173,12 @@ const STARTED = {
   unhealthy: (leg: ServiceActLeg) => ["failed", `${leg.server} started it, but it isn't healthy.`] as const,
 } satisfies Record<"serving" | "unconfirmed" | "unhealthy", (leg: ServiceActLeg) => readonly [LegStep, string | null]>;
 
-type LegSupport = { readonly ensure: boolean | "unknown"; readonly sessionGrant: boolean; readonly startApproval: boolean };
+type LegSupport = { readonly ensure: boolean | "unknown"; readonly sessionGrant: boolean; readonly startApproval: boolean; readonly proposal: boolean };
 
 /**
- * Whether each Server's record says it runs EnsureContainer, takes a browser's approval, and takes one for a start. A
- * Server Cloud can't read is attempted, without an approval: one from before session grants would refuse the whole
- * request for carrying it.
+ * Whether each Server's record says it runs EnsureContainer, takes a browser's approval, takes one for a start, and
+ * takes a proposal's step. A Server Cloud can't read is attempted, without an approval: one from before session grants
+ * would refuse the whole request for carrying it.
  */
 const legSupport = (organizationId: string) => firstRuntimeFrame(organizationId).pipe(
   Effect.map((frame) => new Map<string, LegSupport>((frame?.machines ?? []).map(({ machine }) => {
@@ -181,6 +187,7 @@ const legSupport = (organizationId: string) => firstRuntimeFrame(organizationId)
       ensure: serverSupports({ capabilities }, requirements.ensureContainer),
       sessionGrant: capabilities.includes(SESSION_GRANT_CAPABILITY),
       startApproval: capabilities.includes(START_APPROVAL_CAPABILITY),
+      proposal: capabilities.includes(PROPOSAL_CAPABILITY),
     }];
   }))),
   Effect.orElseSucceed(() => new Map<string, LegSupport>()),
@@ -266,6 +273,11 @@ export const actOnContainer = Effect.fn("ServiceAct.leg")(function* (
       if (!(yield* write(leg, "already_there"))) return legs;
       continue;
     }
+    // Checked again at each leg: a restart's start leg can fall past the window its stop leg was inside.
+    if (ranOut(row.approvals?.[leg.container], Date.now())) {
+      if (!(yield* write(leg, "failed", APPROVAL_RAN_OUT))) return legs;
+      continue;
+    }
     if (session.status !== "connected") {
       if (!(yield* write(leg, "failed", `Cloud couldn't reach ${leg.server}.`))) return legs;
       continue;
@@ -276,9 +288,11 @@ export const actOnContainer = Effect.fn("ServiceAct.leg")(function* (
       continue;
     }
     if (!(yield* write(leg, "sent"))) return legs;
-    // A start approval reads as malformed to a Server from before them, so it never goes there.
-    const takesApproval = supported?.sessionGrant === true && (row.verb !== "start" || supported.startApproval);
-    const approval = takesApproval ? row.approvals?.[leg.container] ?? null : null;
+    // A start approval, or a proposal's step, reads as malformed to a Server from before them, so it never goes there.
+    const made = row.approvals?.[leg.container];
+    const takesApproval = supported?.sessionGrant === true && (row.verb !== "start" || supported.startApproval)
+      && (made?.proposal === undefined || supported.proposal);
+    const approval = takesApproval ? made ?? null : null;
     const withheld = approval === null && row.approvals?.[leg.container] !== undefined;
     // With the Servers' records unread, Cloud can't tell whether this one takes an approval, so it sent none.
     const unread = withheld && supported === undefined;

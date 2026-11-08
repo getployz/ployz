@@ -493,7 +493,7 @@ it.live("an owner's approval of a dashboard restart on Servers that enforce runs
     const approve = { approve: { digest: ask.approval } };
     // The card shows, and the owner's browser approves, the name Servers know the Service by.
     const pending = yield* provided(getApproval(ORGANIZATION, ask.approval_id));
-    expect(pending && shownServiceAct(pending.review)).toEqual({ verb: "restart", environment: ENVIRONMENT, service: "web", namespace: found.namespace, runtime: found.runtime });
+    expect(pending && shownServiceAct(pending.review)).toEqual({ verb: "restart", environment: ENVIRONMENT, service: "web", namespace: found.namespace, runtime: found.runtime, only: null });
 
     // Approved without the owner's approvals, as from the CLI, it waits again: the Servers would refuse it.
     expect(yield* cluster(decideAndApply(owner, ask.approval_id, approve)))

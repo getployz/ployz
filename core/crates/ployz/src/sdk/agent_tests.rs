@@ -553,6 +553,7 @@ async fn a_stop_and_a_start_carry_their_approval_on_every_step() {
             issued_at: ployz_core::authority::Timestamp::now(),
             expires_at: ployz_core::authority::Timestamp::now(),
             signer: ployz_core::authority::SignerKey::Device(signer.public().into()),
+            proposal: None,
         },
         &signer,
     )

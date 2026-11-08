@@ -39,6 +39,7 @@ import { createSendUptimeAlerts } from "#/modules/uptime/alert-mail.inngest";
 import { createUptimeMaintenanceFunctions } from "#/modules/uptime/maintenance.inngest";
 import { createVolumeRunFunctions } from "#/modules/volume-run/volume-run.inngest";
 import { createSweepOperationOutbox } from "#/modules/operations/outbox.server";
+import { createSweepProposals } from "#/modules/proposals/proposals.inngest";
 import { createServiceActFunctions } from "#/modules/service-act/service-act.inngest";
 import { createSendMail } from "#/modules/mail/mail.inngest";
 import { createCrashMailFunctions } from "#/modules/observe-ingest/crash-mail.inngest";
@@ -82,6 +83,7 @@ export function createInngestFunctions(inngest: PloyzInngest) {
     createStoreSweepRequested(inngest),
     ...createVolumeRunFunctions(inngest),
     ...createServiceActFunctions(inngest),
+    createSweepProposals(inngest),
     createSweepOperationOutbox(inngest),
     createRefreshVolumeMirrors(inngest),
     ...createUptimeMaintenanceFunctions(inngest),

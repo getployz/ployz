@@ -78,7 +78,7 @@ const readRow = Effect.fn("Approvals.readRow")(function* (organizationId: string
 });
 
 /** The names of the people who asked for `approvals`, keyed by their user id, so a card says whom it waits for. */
-export const askerNames = Effect.fn("Approvals.askerNames")(function* (approvals: readonly ApprovalView[]) {
+export const askerNames = Effect.fn("Approvals.askerNames")(function* (approvals: readonly { readonly requested_by: string | null }[]) {
   const ids = [...new Set(approvals.flatMap((approval) => approval.requested_by ?? []))];
   if (ids.length === 0) return new Map<string, string>();
   const { drizzle } = yield* Database;

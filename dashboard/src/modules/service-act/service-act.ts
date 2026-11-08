@@ -1,4 +1,5 @@
-import type { ContainerState, Leg, Receipt, RunState, ServerRef, ServiceVerb } from "@ployz/sdk";
+import type { ContainerState, Leg, Receipt, RunState, ServerRef, ServiceVerb, Signed } from "@ployz/sdk";
+import { Option, Schema } from "effect";
 
 export const SERVICE_ACT_STATES = ["accepted", "running", "done", "failed", "unknown"] as const satisfies readonly RunState[];
 export type ServiceActState = (typeof SERVICE_ACT_STATES)[number];
@@ -41,6 +42,24 @@ export const alreadyThere = (verb: ServiceVerb, side: "stop" | "start", state: C
 export type ServiceActEnd = { state: Exclude<ServiceActState, ActiveServiceActState>; reason: string | null };
 
 const confirmed = (step: LegStep | null) => step === "done" || step === "already_there";
+
+/** A copy a run stopped, or found stopped, and hasn't confirmed started again: what the person has to start now. */
+export const leftStopped = (leg: ServiceActLeg) => confirmed(leg.stop) && takes(leg, "start") && !confirmed(leg.start);
+
+export const APPROVAL_RAN_OUT = "The approval ran out.";
+
+const ApprovalWindow = Schema.fromJsonString(Schema.Struct({ expires_at: Schema.Number }));
+
+/**
+ * Whether the approval a leg would carry has run out at `now`: a proposal step's by its bundle, a single act's by its
+ * own body, so a Server is never asked to move a copy past what the person was shown. One Cloud can't read goes, and
+ * the Server judges it.
+ */
+export const ranOut = (approval: Signed | undefined, now: number) => {
+  if (approval === undefined) return false;
+  const window = Schema.decodeUnknownOption(ApprovalWindow)(approval.proposal?.body ?? approval.body);
+  return Option.isSome(window) && now > window.value.expires_at;
+};
 
 /** A restart rolls on only once the copy it just restarted is confirmed started again. */
 export const cameBack = (legs: readonly ServiceActLeg[], copy: Pick<ServiceActLeg, "machine" | "container">) =>

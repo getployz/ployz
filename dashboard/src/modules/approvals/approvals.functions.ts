@@ -83,5 +83,5 @@ export const approvalActTargetServerFn = createServerFn({ method: "GET" })
     const found = yield* findService(access.organization.id, apply.environmentId, apply.service);
     if (found === null) return null;
     const target = yield* actTarget(access.organization.id, found);
-    return target === null ? null : { verb: apply.verb, environmentId: apply.environmentId, service: apply.service, environmentName: found.environment, namespace: found.namespace, ...target };
+    return target === null ? null : { verb: apply.verb, environmentId: apply.environmentId, service: apply.service, project: found.project, environmentName: found.environment, namespace: found.namespace, ...target };
   })));

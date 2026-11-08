@@ -89,8 +89,9 @@ export function shownServiceAct(review: ApprovalReview) {
   const service = asString(preview?.["service"]);
   const namespace = asString(preview?.["namespace"]);
   const runtime = asString(preview?.["runtime"]);
+  const only = asString(asRecord(preview?.["only"])?.["machine"]);
   if (environment === null || service === null || namespace === null || runtime === null) return null;
-  return { verb, environment, service, namespace, runtime };
+  return { verb, environment, service, namespace, runtime, only: only === null ? null : { machine: only } };
 }
 
 /** An approval's verb and name for a list, a Store write's Environment under its Project: "Deploy" "shop/production". */

@@ -9,6 +9,7 @@ import AgentPanel, { Turn } from "./agent-panel";
 import { approvalOptions, type ApprovalView } from "./approvals.queries";
 import { FAILURES } from "#/modules/agent/provider-error";
 import { agentThreadsOptions, type ThreadSummary } from "./threads.queries";
+import { pendingProposalsOptions, proposalOptions, type ProposalView } from "./proposals.queries";
 
 afterEach(() => { cleanup(); localStorage.clear(); vi.unstubAllGlobals(); });
 
@@ -337,4 +338,28 @@ it("asks history again when the member stops a reply", async () => {
   fireEvent.keyDown(box, { key: "Enter" });
   fireEvent.click(await screen.findByRole("button", { name: "Stop" }));
   await waitFor(() => expect(client.getQueryState(threads)?.isInvalidated).toBe(true));
+});
+
+it("moves a proposal to Recent once it leaves the waiting list, even before this tab hears the decision", async () => {
+  vi.stubGlobal("ResizeObserver", class { observe() {} unobserve() {} disconnect() {} });
+  vi.stubGlobal("fetch", vi.fn(() => Promise.resolve(Response.json({ messages: [] }))));
+  const client = new QueryClient({ defaultOptions: { queries: { enabled: false, retry: false } } });
+  const stop = { verb: "stop" as const, service: "web", only: null, namespace: "shop-prod", runtime: "web" };
+  const proposal: ProposalView = {
+    id: "p1", status: "presented", project: "shop", environment: "production", environment_id: "e1", steps: [stop],
+    progress: [{ index: 1, verb: "stop", service: "web", state: "not_run", reason: null }], halt: null, reason: null,
+    requested_by: "u1", asker: "Ada", created_at: "2026-11-08T12:00:00.000Z", decided_at: null,
+  };
+  client.setQueryData(pendingProposalsOptions("acme").queryKey, [proposal]);
+  client.setQueryData(proposalOptions("acme", "p1").queryKey, proposal);
+  render(<QueryClientProvider client={client}><AgentPanel organizationSlug="acme" scope={scope} page={page} threadId="thread-acme"
+    onChat={() => {}} /></QueryClientProvider>);
+  expect(screen.getByRole("region", { name: "Waiting on you" })).toBeTruthy();
+  // The poll sees the decision first: the row has left the waiting list while this tab's copy still says presented.
+  act(() => { client.setQueryData(pendingProposalsOptions("acme").queryKey, []); });
+  const approved: ProposalView = { ...proposal, status: "approved", decided_at: "2026-11-08T12:01:00.000Z" };
+  act(() => { client.setQueryData(proposalOptions("acme", "p1").queryKey, approved); });
+  const recent = await screen.findByRole("region", { name: "Recent" });
+  expect(recent.textContent).toContain("Approved");
+  expect(screen.queryByRole("region", { name: "Waiting on you" })).toBeNull();
 });
