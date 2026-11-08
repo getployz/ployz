@@ -87,7 +87,9 @@ Open the service and click **⋮** next to its name. A running service offers **
 - **Stop** asks first: every server stops sending the service requests, then every container
   stops, until you start the service or deploy. The containers stay on your servers. A stopped
   service reads **Stopped**, even when your app exits with an error code on shutdown, as some
-  wrappers like `npm start` do.
+  wrappers like `npm start` do. A server whose Ployz is stopped can't confirm. Stop waits up to
+  five minutes for it, then stops the container anyway, so the service never sits running with
+  no requests.
 - **Start** starts the same containers again and sends them requests once they're healthy. A
   container a deploy replaced can't come back this way; deploy the service instead.
 - Start and restart only send requests to containers a deploy put in service. A container a
