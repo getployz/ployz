@@ -113,7 +113,7 @@ pub(crate) fn on(root: &ArgMatches) -> Result<(), Error> {
             let any_ran = machines.iter().any(|machine| machine.router);
             let gaps = gaps_of(&machines, failures);
             let table = table(&machines);
-            ui::finish_fanout("machines", &machines, &gaps, || {
+            let outcome = ui::finish_fanout("machines", &machines, &gaps, || {
                 if machines.is_empty() && gaps.is_complete() {
                     ui::note("No Server answered.");
                     return;
@@ -125,16 +125,13 @@ pub(crate) fn on(root: &ArgMatches) -> Result<(), Error> {
                          On Linux, run `tailscale up --accept-routes` on each device.",
                     );
                 }
-            })
-            .map_err(|failure| {
-                if refused {
-                    failure.hint(Hint::Retry(
-                        "ployz private-access on --auth-key-stdin".to_owned(),
-                    ))
-                } else {
-                    failure
-                }
-            })
+            });
+            if refused {
+                ui::hint(&Hint::Retry(
+                    "ployz private-access on --auth-key-stdin".to_owned(),
+                ));
+            }
+            outcome
         })
     })
 }

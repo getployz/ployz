@@ -313,6 +313,12 @@ fn not_serving(server: &MachineName, problem: PrivateAccessProblem, detail: Stri
     }
 }
 
+/// Whether `error` is a Machine's answer that its router isn't serving, not a Machine
+/// that failed to answer.
+pub(crate) fn router_not_serving(error: &RpcError) -> bool {
+    error.details.get("problem").is_some()
+}
+
 /// Whether `error` is a router that Tailscale refused the auth key for.
 pub(crate) fn key_refused(error: &RpcError) -> bool {
     error.details.get("problem") == Some(&serde_json::json!(PrivateAccessProblem::KeyRefused))

@@ -135,20 +135,26 @@ fn retirees(routers: &[ContainerObservation], kept: Option<ContainerId>) -> Vec<
 /// Why a router that has stopped or is still starting did not serve, from what it last
 /// said. Tailscale words a refused key as `invalid key`.
 fn classify(output: &str) -> Option<PrivateAccessProblem> {
-    let lowered = output.to_ascii_lowercase();
-    ["invalid key", "key expired", "key revoked"]
-        .iter()
-        .any(|refusal| lowered.contains(refusal))
+    output
+        .lines()
+        .any(refusal)
         .then_some(PrivateAccessProblem::KeyRefused)
 }
 
-/// The last line of `output` that says something, with `key` kept out of it.
+fn refusal(line: &str) -> bool {
+    let lowered = line.to_ascii_lowercase();
+    ["invalid key", "key expired", "key revoked"]
+        .iter()
+        .any(|refusal| lowered.contains(refusal))
+}
+
+/// The last line of `output` that refuses the key, or else the last that says
+/// something, with `key` kept out of it.
 fn detail(output: &str, key: &[u8]) -> String {
-    let line = output
-        .lines()
-        .rev()
-        .map(str::trim)
-        .find(|line| !line.is_empty())
+    let lines = || output.lines().rev().map(str::trim);
+    let line = lines()
+        .find(|line| refusal(line))
+        .or_else(|| lines().find(|line| !line.is_empty()))
         .unwrap_or_default();
     let key = String::from_utf8_lossy(key);
     let mut line = if key.is_empty() {
@@ -397,5 +403,11 @@ mod tests {
         assert_eq!(detail(output, b"tskey-auth-abc"), "failed with [key]");
         assert_eq!(detail(&"x".repeat(900), b"").len(), DETAIL_LIMIT);
         assert_eq!(detail("", b"k"), "");
+        let looping =
+            "backend error: invalid key: unable to validate API key\nboot: Starting tailscaled\n";
+        assert_eq!(
+            detail(looping, b"tskey-auth-abc"),
+            "backend error: invalid key: unable to validate API key"
+        );
     }
 }
