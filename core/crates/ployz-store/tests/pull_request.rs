@@ -1829,3 +1829,112 @@ fn a_merge_reported_after_its_close_still_lands() {
     pull(&store, &who, merged);
     assert_eq!(production_env(&store, &who).unwrap()["A"], json!("2"));
 }
+
+#[test]
+fn an_older_report_after_its_author_left_asks_for_approval() {
+    let (store, who) = shop();
+    plan(&store, &who, on());
+    pull(&store, &who, facts(true, "2026-09-29T10:00:00Z"));
+    assert_eq!(standings(&store, &who)[0].2, Standing::Trusted);
+
+    // ada left; GitHub delivers an event older than the facts the Store holds.
+    let left = Trusted {
+        members: Some(Vec::new()),
+        ..Trusted::default()
+    };
+    let stale = SystemEvent::PullRequest(facts(true, "2026-09-29T09:00:00Z"));
+    store.system(&who.organization, &stale, &left).unwrap();
+    assert_eq!(standings(&store, &who)[0].2, Standing::NeedsApproval);
+}
+
+#[test]
+fn two_first_reports_of_a_pull_request_take_turns() {
+    // SQLite writers never overlap.
+    if std::env::var_os("PLOYZ_STORE_TEST_POSTGRES").is_none() {
+        return;
+    }
+    let url = backend::fresh_url(&tempfile::tempdir().unwrap());
+    let (store, who) = shop_on(ConfigStore::open(&url, backend::key()).unwrap());
+    plan(&store, &who, on());
+    // Production stays locked, so the first report waits there with pr-5's row
+    // written and not yet committed.
+    let mut other = postgres::Client::connect(&url, postgres::NoTls).unwrap();
+    let mut held = other.transaction().unwrap();
+    held.execute(
+        "UPDATE config_environment SET working_revision = working_revision WHERE name = 'production'",
+        &[],
+    )
+    .unwrap();
+    let renamed = PullRequest {
+        head_branch: backend::git_branch("search-v2"),
+        ..facts(true, "2026-09-29T10:00:01Z")
+    };
+    std::thread::scope(|threads| {
+        let first = threads.spawn(|| pull(&store, &who, facts(true, "2026-09-29T10:00:00Z")));
+        // real-wait: the first report blocks on a Postgres row lock in another connection, which reports nothing
+        std::thread::sleep(std::time::Duration::from_millis(300));
+        let second = threads.spawn(|| pull(&store, &who, renamed));
+        // real-wait: the second report reaches the first's row, which reports nothing
+        std::thread::sleep(std::time::Duration::from_millis(300));
+        held.commit().unwrap();
+        first.join().unwrap();
+        second.join().unwrap();
+    });
+    let id = DeploymentId::parse(uuid::Uuid::new_v4().to_string()).unwrap();
+    store
+        .write_trusted(
+            &who,
+            &Admit::Deploy(Deploy {
+                id: id.clone(),
+                environment: at("pr-5"),
+                services: Vec::new(),
+                version: None,
+                upload: None,
+                accept_volume_loss: Vec::new(),
+                message: None,
+                prune: false,
+                no_prune: false,
+            }),
+            &Trusted::default(),
+        )
+        .unwrap();
+    let branches: Vec<_> = store
+        .sources(&id)
+        .unwrap()
+        .into_iter()
+        .map(|source| source.branch)
+        .collect();
+    assert_eq!(
+        branches,
+        [
+            Some(backend::git_branch("search-v2")),
+            Some(backend::git_branch("search-v2"))
+        ]
+    );
+}
+
+#[test]
+fn newer_open_facts_never_reopen_a_merged_pull_request() {
+    let (store, who) = shop();
+    plan(
+        &store,
+        &who,
+        SetPrPlan {
+            remove_on_close: Some(true),
+            ..on()
+        },
+    );
+    let opened = pull(&store, &who, facts(true, "2026-09-29T10:00:00Z"));
+    run(&store, &opened.admitted[0].deployment.id, &["web", "api"]);
+    pull(&store, &who, facts(true, "2026-09-29T10:30:00Z"));
+    // A merge older than the open facts the Store holds: GitHub sends no such order.
+    let merged = PullRequest {
+        merge_commit: Some(backend::sha("3333333333333333333333333333333333333333")),
+        ..facts(false, "2026-09-29T10:20:00Z")
+    };
+    let closing = pull(&store, &who, merged);
+    assert_eq!(closing.closing.len(), 1, "{closing:?}");
+
+    let reopened = pull(&store, &who, facts(true, "2026-09-29T10:40:00Z"));
+    assert!(reopened.admitted.is_empty(), "{reopened:?}");
+}

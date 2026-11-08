@@ -1018,6 +1018,153 @@ fn a_push_refused_before_the_author_proved_a_member_deploys_once_they_do() {
     assert_eq!(pinned(&store, &reported, "web").as_deref(), Some(H3));
 }
 
+/// What Cloud reports once `ada`, who wrote pull request #5, left the Organization.
+fn ada_left() -> Trusted {
+    Trusted {
+        members: Some(Vec::new()),
+        ..Trusted::default()
+    }
+}
+
+fn system_with(store: &ConfigStore, event: &SystemEvent, trusted: &Trusted) -> Automated {
+    let Written::Automated(automated) = store.system(&org(), event, trusted).unwrap() else {
+        panic!("a system event writes Automated")
+    };
+    automated
+}
+
+#[test]
+fn a_push_after_its_author_left_the_organization_waits_for_approval() {
+    let (store, who) = shop();
+    publish(&store, &who);
+    let opened = open_pull_request(&store, &who);
+    backend::run(&store, &opened.admitted[0].deployment.id);
+
+    // The push lands before GitHub's pull_request event tells of it.
+    let pushed = system_with(&store, &push_search(None, H3), &ada_left());
+    assert!(pushed.admitted.is_empty(), "{pushed:?}");
+    assert_eq!(reasons(&pushed), ["Needs approval"]);
+}
+
+#[test]
+fn another_repositorys_push_never_ships_a_build_of_a_pull_request_whose_author_left() {
+    let (store, who) = shop();
+    let worker = Trusted {
+        repositories: vec![ployz_store::AuthorizedRepository {
+            repository: backend::repo_name("acme/worker"),
+            repository_id: backend::repo_id(12),
+            access: ployz_core::config::ServiceGitAccess::GithubInstallation { installation_id: 7 },
+            default_branch: backend::git_branch("main"),
+            branches: Vec::new(),
+        }],
+        ..Trusted::default()
+    };
+    store
+        .write_trusted(
+            &who,
+            &ployz_store::CreateGitService {
+                id: ployz_store::ServiceLineageId::parse("00000000-0000-4000-8000-000000000005")
+                    .unwrap(),
+                environment: EnvironmentRef::default(),
+                name: ServiceName::parse("worker").unwrap(),
+                repository: backend::repo_name("acme/worker"),
+                branch: None,
+            },
+            &worker,
+        )
+        .unwrap();
+    publish(&store, &who);
+    store
+        .write(
+            &who,
+            &ployz_store::SetPrPlan {
+                project: None,
+                repository: backend::repo_name("acme/web"),
+                enabled: Some(true),
+                start_from: Some(ployz_store::EnvironmentName::parse("production").unwrap()),
+                copy: Some(vec![ployz_store::NodeName::parse("worker").unwrap()]),
+                setup: None,
+                remove_on_close: None,
+                include_bots: None,
+            },
+        )
+        .unwrap();
+    let opened = system(&store, &pull_request(true));
+    let preview = opened.admitted[0].environment.clone();
+    let first = &opened.admitted[0].deployment.id;
+    let runner = ployz_store::RunnerId::parse("runner").unwrap();
+    let claimed = store.claim(first, &runner).unwrap();
+    for service in ["web", "api"] {
+        store
+            .record(
+                first,
+                &runner,
+                ployz_store::RunEvidence::Build(ployz_store::BuildReport {
+                    service: ServiceName::parse(service).unwrap(),
+                    status: ployz_store::BuildStatus::Built,
+                    message: None,
+                    log: String::new(),
+                    server: None,
+                }),
+            )
+            .unwrap();
+    }
+    backend::finish(&store, first, claimed);
+    let pr_5 = EnvironmentRef {
+        project: None,
+        environment: Some(ployz_store::EnvironmentName::parse("pr-5").unwrap()),
+    };
+    store
+        .write(
+            &who,
+            &Command::Edit(Edit {
+                environment: pr_5.clone(),
+                expect: None,
+                changes: vec![Change::Set {
+                    path: SettingPath::parse("api.replicas").unwrap(),
+                    value: json!(2),
+                }],
+            }),
+        )
+        .unwrap();
+    store
+        .write(
+            &who,
+            &Command::Publish(Publish {
+                id: None,
+                environment: pr_5,
+                version: None,
+                message: None,
+                accept_volume_loss: Vec::new(),
+            }),
+        )
+        .unwrap();
+
+    let pushed = system_with(
+        &store,
+        &SystemEvent::BranchHead(BranchHead {
+            repository_id: backend::repo_id(12),
+            branch: backend::git_branch("main"),
+            base: None,
+            head: Some(backend::sha(H1)),
+            changed: None,
+        }),
+        &ada_left(),
+    );
+    let deployed = pushed
+        .admitted
+        .iter()
+        .find(|admitted| admitted.environment == preview)
+        .expect("the push deploys pr-5's worker");
+    let api = store
+        .sources(&deployed.deployment.id)
+        .unwrap()
+        .into_iter()
+        .find(|source| source.service.as_str() == "api")
+        .expect("api ships its Saved change");
+    assert_eq!(api.commit, None, "{api:?}");
+}
+
 #[test]
 fn a_manual_deploy_never_pins_a_head_the_pull_request_has_not_approved() {
     let (store, who) = shop();
