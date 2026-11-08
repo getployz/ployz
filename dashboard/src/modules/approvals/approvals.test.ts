@@ -1,6 +1,6 @@
 import type { ConfigCommand, DestructiveEffect, DiffView, JsonValue, ServiceSettingChange } from "@ployz/sdk";
 import { expect, it } from "vitest";
-import { type ApprovalReview, approvalBadge, approvalCommand, approvalSubject, approvalTarget, asksApproval, destroyedLine, destroyedLines, withoutSealedBefore } from "#/modules/approvals/approvals";
+import { type ApprovalReview, approvalBadge, approvalCommand, approvalSubject, approvalTarget, asksApproval, destroyedLine, destroyedLines, renamedAddresses, withoutSealedBefore } from "#/modules/approvals/approvals";
 import { asTestDouble } from "#/lib/test-double";
 
 const here = { project: null, environment: null };
@@ -63,6 +63,16 @@ it("badges a Protected Volume Run by what it does to the Volume, never as a Depl
   expect(approvalBadge("release", run("release"))).toBe("Releases volume");
   expect(approvalBadge("resize", run("resize"))).toBe("Resizes volume");
   expect(approvalSubject("move", run("move"))).toMatchObject({ verb: "Move", name: "pg-data" });
+});
+
+it("names a Cluster rename by the private addresses it moves", () => {
+  const rename = (from: string | null) => asTestDouble<ApprovalReview>()({ effects: [], operation: { verb: "set_cluster_name", name: "beta", preview: { from, to: "beta" } } });
+  expect(approvalSubject("set_cluster_name", rename("acme"))).toMatchObject({ verb: "Rename cluster", name: "beta" });
+  expect(approvalBadge("set_cluster_name", rename("acme"))).toBe("Renames cluster");
+  expect(renamedAddresses(rename("acme"))).toEqual({ from: "*.acme.ployz.internal", to: "*.beta.ployz.internal" });
+  expect(renamedAddresses(rename(null))).toEqual({ from: null, to: "*.beta.ployz.internal" });
+  expect(renamedAddresses(rename("beta"))).toEqual({ from: "*.beta.ployz.internal", to: "*.beta.ployz.internal" });
+  expect(renamedAddresses(asTestDouble<ApprovalReview>()({ effects: [], operation: { verb: "move", name: "pg", preview: {} } }))).toBeNull();
 });
 
 const deletedVolume: DestructiveEffect = { kind: "deletes_volume", name: "pgdata", node: "v1", path: "volumes/v1" };

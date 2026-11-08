@@ -87,6 +87,8 @@ pub(crate) struct EnrollInstruction {
     pub(crate) name: String,
     pub(crate) storage: EnrollStorage,
     pub(crate) policy: EnrollPolicy,
+    #[serde(default, rename = "clusterName")]
+    pub(crate) founding_cluster_name: Option<String>,
 }
 
 #[derive(Clone, Debug, Deserialize, PartialEq, Eq)]

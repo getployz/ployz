@@ -97,6 +97,7 @@ export const serverWebTrafficRequestedEvent = "server/web-traffic.requested";
 export const namespaceCleanupRequestedEvent = "namespace/cleanup.requested";
 export const serviceActRequestedEvent = "service/act.requested";
 export const clusterDomainSyncRequestedEvent = "cluster-domain/sync.requested";
+export const clusterNameRequestedEvent = "cluster/name.requested";
 export const sealingKeyEnsureRequestedEvent = "sealing-key/ensure.requested";
 export const variablesResealRequestedEvent = "variables/reseal.requested";
 export const uptimeBackfillRequestedEvent = "uptime/backfill.requested";
@@ -192,6 +193,10 @@ export type ServiceActRequestedEventData = {
 };
 
 export type ClusterDomainSyncRequestedEventData = {
+  organizationId: string;
+};
+
+export type ClusterNameRequestedEventData = {
   organizationId: string;
 };
 
@@ -399,6 +404,10 @@ export const clusterDomainSyncRequestedEventType = eventType(
   clusterDomainSyncRequestedEvent,
   { schema: staticSchema<ClusterDomainSyncRequestedEventData>() },
 );
+export const clusterNameRequestedEventType = eventType(
+  clusterNameRequestedEvent,
+  { schema: staticSchema<ClusterNameRequestedEventData>() },
+);
 export const sealingKeyEnsureRequestedEventType = eventType(
   sealingKeyEnsureRequestedEvent,
   { schema: staticSchema<SealingKeyEnsureRequestedEventData>() },
@@ -571,6 +580,11 @@ export function createClusterDomainSyncRequestedEvent(
   data: ClusterDomainSyncRequestedEventData,
 ) {
   return { name: clusterDomainSyncRequestedEvent, data } as const;
+}
+
+/** Set the Organization's saved Cluster Name on its Cluster. `id` names one request, so the outbox sends it once. */
+export function createClusterNameRequestedEvent({ id, ...data }: ClusterNameRequestedEventData & { id: string }) {
+  return { id, name: clusterNameRequestedEvent, data } as const;
 }
 
 export function createSealingKeyEnsureRequestedEvent(data: SealingKeyEnsureRequestedEventData) {
@@ -762,6 +776,7 @@ export type InngestSendableEvent =
   | ReturnType<typeof createVolumeRunRequestedEvent>
   | ReturnType<typeof createVolumeRunTakenEvent>
   | ReturnType<typeof createClusterDomainSyncRequestedEvent>
+  | ReturnType<typeof createClusterNameRequestedEvent>
   | ReturnType<typeof createSealingKeyEnsureRequestedEvent>
   | ReturnType<typeof createVariablesResealRequestedEvent>
   | ReturnType<typeof createClusterResealRequestedEvent>

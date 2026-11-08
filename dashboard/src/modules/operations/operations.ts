@@ -1,4 +1,5 @@
 import { Schema } from "effect";
+import { ClusterName, RenameClusterInput } from "#/modules/cluster-name/cluster-name";
 import { EnqueueMachineRemoveInput, ForgetServerInput } from "#/modules/machines/machine-removal";
 import { ForgetServersInput } from "#/modules/machines/forget-servers";
 import { RemoveNamespaceInput } from "#/modules/machines/namespace-cleanup";
@@ -416,6 +417,22 @@ export const OPERATIONS = {
   "service.restart": serviceAct("service_restart", "approval"),
   "service.start": serviceAct("service_start", "none"),
   "service.stop": serviceAct("service_stop", "approval"),
+  "cluster.rename": operation({
+    options: Schema.Struct({ name: ClusterName }),
+    requires: "servers:operate",
+    gate: "approval",
+    idempotency: { none: "Saving a name again sets the same name." },
+    surfaces: {
+      cli: { absent: "`ployz cluster name <name>` runs the cluster_rename command, which asks through its own gate." },
+      agent: { absent: "Agents call the published cluster_rename command." },
+      ui: {
+        fn: "renameClusterServerFn",
+        input: RenameClusterInput,
+        ungated: "The human is the one renaming the Cluster.",
+        options: { name: { via: "name" } },
+      },
+    },
+  }),
   "servers.forget_all": operation({
     options: Schema.Struct({ organization: Name }),
     requires: "servers:remove",

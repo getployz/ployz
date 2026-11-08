@@ -8,7 +8,7 @@ export const changeCursorSchema = Schema.String.check(Schema.isMaxLength(64));
 
 export const collectionNames = [
   "environment_canvas_node_position", "organization_enrollment", "organization_cluster_domain", "organization_server_upgrades",
-  "organization_support_access",
+  "organization_support_access", "organization_cluster_name",
 ] as const;
 
 export const collectionReadInput = Schema.Struct({

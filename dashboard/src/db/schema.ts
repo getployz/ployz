@@ -8,6 +8,7 @@ export * from "#/modules/machines/waiting/tables";
 export * from "#/modules/github/tables";
 export * from "#/modules/billing/tables";
 export * from "#/modules/cluster-domain/tables";
+export * from "#/modules/cluster-name/tables";
 export * from "#/modules/config-store/tables";
 export * from "#/modules/canvas/tables";
 export * from "#/modules/server-upgrade/tables";

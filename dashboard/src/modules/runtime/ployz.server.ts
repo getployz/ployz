@@ -97,6 +97,8 @@ export interface PloyzSession {
   readonly clearManagementClient: (label: string) => Effect.Effect<void, PloyzSdkError>;
   /** Where the Machine pushes its observe streams; null stops its pushes. */
   readonly setPushTarget: (url: string | null) => Effect.Effect<void, PloyzSdkError>;
+  /** Name the Cluster through the entry; resolves to the name the entry now holds. */
+  readonly setClusterName: (name: string) => Effect.Effect<string | null, PloyzSdkError>;
   readonly observeEnrollment: () => Effect.Effect<EnrollmentSnapshot, PloyzProviderError>;
   readonly register: (assignment: EnrollmentAssignment) => Effect.Effect<JsonValue, PloyzProviderError>;
   /** Resolves to why the reset didn't finish, if it didn't: the Server left the Cluster, but may keep its state. */
@@ -355,6 +357,7 @@ function wrapClient(client: Client): PloyzSession {
     setManagementClient: (label) => sdkPromise("set Management Client", () => client.setManagementClient(label)),
     clearManagementClient: (label) => sdkPromise("clear Management Client", () => client.clearManagementClient(label)),
     setPushTarget: (url) => sdkPromise("set push target", () => client.setPushTarget(url)),
+    setClusterName: (name) => sdkPromise("set cluster name", () => client.setClusterName(name)),
     observeEnrollment: () => Effect.tryPromise({
       try: () => client.observeEnrollment(),
       catch: (cause) => new PloyzProviderError({ operation: "observe enrollment", cause }),
