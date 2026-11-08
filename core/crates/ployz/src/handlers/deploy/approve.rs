@@ -3,6 +3,7 @@
 //! each Service's spec with this Device's key, and admits the Deploy with it. Each
 //! Server then creates only the specs this Device approved.
 
+use std::collections::BTreeMap;
 use std::fmt::Write as _;
 use std::time::Duration;
 
@@ -21,13 +22,18 @@ use serde_json::json;
 
 use super::super::store::Store;
 use super::super::{Error, server};
+use crate::image::{PinError, PinnedImage, pin_public};
 use crate::ui::Hint;
 
 /// What this Device approved for one Service, as `ployz deploy` prints it.
 #[derive(Clone, Debug, Serialize)]
 pub(in crate::handlers) struct Approved {
     pub(in crate::handlers) service: ServiceName,
+    /// The image the Servers run, always by digest.
     pub(in crate::handlers) image: String,
+    /// The tag the Saved State names, when this CLI pinned it to `image`'s digest.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(in crate::handlers) tag: Option<String>,
     pub(in crate::handlers) digest: PayloadDigest,
     /// What the spec asks of the host: privileges, host ports, Bind Mounts, the hook.
     #[serde(skip_serializing_if = "Vec::is_empty")]
@@ -58,9 +64,10 @@ const PROBE_TIMEOUT: Duration = Duration::from_secs(15);
 /// asked while the Store plans, so a Cluster that doesn't enforce waits for neither.
 ///
 /// # Errors
-/// Refuses before admission when a Service it ships builds from source or has an image
-/// not pinned by digest, when a Server enforces but none reports the Cluster's key, and
-/// when the Store can't lower the plan; returns the plan's or the key's error.
+/// Refuses before admission when a Service it ships builds from source, when a tag image
+/// can't be pinned (its registry wants credentials, can't be reached, or has no such tag),
+/// when a Server enforces but none reports the Cluster's key, and when the Store can't
+/// lower the plan; returns the plan's or the key's error.
 pub(in crate::handlers) fn sign(
     matches: &ArgMatches,
     store: &Store,
@@ -99,14 +106,20 @@ pub(in crate::handlers) fn sign(
         Probe::Enforcing(enforcing) => enforcing,
     };
     let plan = plan?;
-    let target = signable(matches, plan.target)?;
+    let target = signable(plan.target)?;
+    let pins = pin_tags(matches, &target)?;
     let mut approved = target
         .iter()
         .map(|spec| {
-            let digest = PayloadDigest::of(spec, &plan.namespace).map_err(Error::command)?;
+            let mut pinned = spec.clone();
+            let tag = pins
+                .get(&spec.name)
+                .map(|pin| std::mem::replace(&mut pinned.container.image, pin.as_str().to_owned()));
+            let digest = PayloadDigest::of(&pinned, &plan.namespace).map_err(Error::command)?;
             Ok(Approved {
                 service: spec.name.clone(),
-                image: spec.container.image.clone(),
+                image: pinned.container.image,
+                tag,
                 digest,
                 host: host_sensitive(spec),
             })
@@ -126,6 +139,7 @@ pub(in crate::handlers) fn sign(
             .map(|approved| ApprovedService {
                 name: approved.service.clone(),
                 digest: approved.digest,
+                image: approved.tag.is_some().then(|| approved.image.clone()),
             })
             .collect(),
         issued_at,
@@ -143,11 +157,8 @@ pub(in crate::handlers) fn sign(
     }))
 }
 
-/// The plan's target when a Device can sign every spec it ships.
-fn signable(
-    matches: &ArgMatches,
-    target: Option<Vec<RequestedServiceSpec>>,
-) -> Result<Vec<RequestedServiceSpec>, Error> {
+/// The plan's target when a Device can sign every spec it ships, once its tags are pinned.
+fn signable(target: Option<Vec<RequestedServiceSpec>>) -> Result<Vec<RequestedServiceSpec>, Error> {
     let Some(target) = target else {
         return Err(Error::coded(
             RpcErrorCode::Unsupported,
@@ -166,13 +177,32 @@ fn signable(
             json!({ "service": built.name }),
         ));
     }
-    if let Some(tagged) = target
-        .iter()
-        .find(|spec| !content_addressed(&spec.container.image))
-    {
-        return Err(unpinned(matches, tagged));
-    }
     Ok(target)
+}
+
+/// The digest each tag image of `target` has on its registry, asked of the registry
+/// itself, all at once. An image written by digest needs none.
+fn pin_tags(
+    matches: &ArgMatches,
+    target: &[RequestedServiceSpec],
+) -> Result<BTreeMap<ServiceName, PinnedImage>, Error> {
+    let tagged: Vec<_> = target
+        .iter()
+        .filter(|spec| !content_addressed(&spec.container.image))
+        .collect();
+    if tagged.is_empty() {
+        return Ok(BTreeMap::new());
+    }
+    let lookups = tagged.iter().map(|spec| pin_public(&spec.container.image));
+    let found = super::super::runtime()?.block_on(futures_util::future::join_all(lookups));
+    tagged
+        .into_iter()
+        .zip(found)
+        .map(|(spec, found)| match found {
+            Ok(pin) => Ok((spec.name.clone(), pin)),
+            Err(error) => Err(unpinnable(matches, spec, error)),
+        })
+        .collect()
 }
 
 /// What the Servers say about Device approval.
@@ -240,7 +270,8 @@ fn built(spec: &RequestedServiceSpec) -> bool {
     spec.container.image.starts_with("ployz-build/")
 }
 
-fn unpinned(matches: &ArgMatches, spec: &RequestedServiceSpec) -> Error {
+/// Why `spec`'s tag has no pin, and the command that writes one by hand.
+fn unpinnable(matches: &ArgMatches, spec: &RequestedServiceSpec, error: PinError) -> Error {
     let next = super::super::store::next(
         matches,
         &[
@@ -252,15 +283,35 @@ fn unpinned(matches: &ArgMatches, spec: &RequestedServiceSpec) -> Error {
             ),
         ],
     );
-    Error::detailed(
-        RpcErrorCode::InvalidArgument,
-        format!(
-            "Pin {}'s image by digest to deploy to servers that enforce device approval.",
-            spec.name
+    let details = json!({ "service": spec.name, "image": spec.container.image });
+    let failure = match &error {
+        PinError::NeedsCredentials { registry, .. } => Error::detailed(
+            RpcErrorCode::InvalidArgument,
+            format!(
+                "{registry} wants credentials to read {}'s image, so ployz can't pin it. \
+                 Write its digest.",
+                spec.name
+            ),
+            details,
         ),
-        json!({ "service": spec.name, "image": spec.container.image }),
-    )
-    .hint(Hint::Next(next))
+        PinError::NotATag { .. } => Error::detailed(
+            RpcErrorCode::InvalidArgument,
+            format!(
+                "Pin {}'s image by digest to deploy to servers that enforce device approval.",
+                spec.name
+            ),
+            details,
+        ),
+        PinError::TimedOut { registry } | PinError::Unread { registry, .. } => {
+            Error::detailed_caused(
+                RpcErrorCode::Unavailable,
+                format!("Couldn't ask {registry} for {}'s image digest.", spec.name),
+                details,
+                Some(error),
+            )
+        }
+    };
+    failure.hint(Hint::Next(next))
 }
 
 /// `image` without its tag or digest: `ghcr.io/acme/web` of `ghcr.io/acme/web:1.4`.
@@ -272,11 +323,17 @@ fn repository(image: &str) -> &str {
     }
 }
 
-/// `Approved web: nginx@sha256:0123456789ab…`, then what the spec asks of the host.
+/// `Approved web: nginx@sha256:0123456789ab…`, or `nginx:1.29-alpine → @sha256:0123456789ab…`
+/// for a tag this CLI pinned, then what the spec asks of the host.
 pub(in crate::handlers) fn line(approved: &Approved) -> String {
-    let image = match approved.image.rsplit_once("@sha256:") {
-        Some((name, hex)) => format!("{name}@sha256:{}…", hex.get(..12).unwrap_or(hex)),
-        None => approved.image.clone(),
+    let image = match (&approved.tag, approved.image.rsplit_once("@sha256:")) {
+        (Some(tag), Some((_, hex))) => {
+            format!("{tag} → @sha256:{}…", hex.get(..12).unwrap_or(hex))
+        }
+        (None, Some((name, hex))) => {
+            format!("{name}@sha256:{}…", hex.get(..12).unwrap_or(hex))
+        }
+        (_, None) => approved.image.clone(),
     };
     let mut line = format!("Approved {}: {image}", approved.service);
     if !approved.host.is_empty() {

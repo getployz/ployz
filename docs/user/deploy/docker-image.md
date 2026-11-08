@@ -33,8 +33,11 @@ Write the image the way `docker pull` takes it. Without a tag, Ployz uses `lates
 | A pinned digest | `ghcr.io/acme/web@sha256:…` |
 
 Servers with [device enforcement](../servers/manage-servers.md#require-a-devices-signature-for-restarts-and-joins)
-on run only a pinned digest, such as `nginx@sha256:…`, deployed with `ployz deploy` from an
-approved device. See [Deploy to servers that enforce device approval](deployments.md#deploy-to-servers-that-enforce-device-approval).
+on run only an image pinned by digest, deployed with `ployz deploy` from an approved device.
+For a tag on a public registry, such as `nginx:1.27`, `ployz deploy` asks the registry for the
+tag's digest and pins it for you. An image the registry won't show without credentials needs
+the digest written, such as `ghcr.io/acme/web@sha256:…`. See
+[Deploy to servers that enforce device approval](deployments.md#deploy-to-servers-that-enforce-device-approval).
 
 **Mixed servers.** If your servers mix x86 and ARM, the image needs both a `linux/amd64` and a
 `linux/arm64` variant.

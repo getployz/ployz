@@ -11,7 +11,7 @@ use std::time::Duration;
 use ployz_core::{
     ContainerId, DeployOperation, DeployOutcome, DeployWarning, ExecutionError, FailedOperation,
     HealthFailure, LastRun, MachineId, MachineName, MachineObservation, Operator, QualifiedService,
-    RemoveContainerPurpose, RpcError, RpcErrorCode, ServiceName,
+    RemoveContainerPurpose, RequestedServiceSpec, RpcError, RpcErrorCode, ServiceName,
 };
 use ployz_store::tools::{LogText, SealedValues, Withheld};
 use ployz_store::{
@@ -785,12 +785,13 @@ impl Run {
     async fn execute(
         &self,
         session: &Session,
-        claimed: Claimed,
+        mut claimed: Claimed,
         targets: Vec<Target>,
         built: BTreeMap<ServiceName, BuildReceipt>,
     ) -> Result<DeploymentSummary, RpcError> {
         let deletes = claimed.deletes.clone();
         let approval = claimed.approval.clone();
+        pin_approved(&mut claimed.intent.target, approval.as_ref());
         let scrub = Scrub::new(&claimed);
         let earlier = earlier(&targets);
         let prepared = if targets.is_empty() && built.is_empty() {
@@ -1638,6 +1639,21 @@ fn targets(
         })
     }));
     Ok((targets, built))
+}
+
+/// Write the image each Service's approval pinned into its spec, so the Servers are asked
+/// to create the spec the approval's digest covers. The Saved State keeps the tag. A
+/// Server refuses a spec the approval doesn't match, so a runner can't choose the image.
+fn pin_approved(
+    target: &mut [RequestedServiceSpec],
+    approval: Option<&ployz_core::authority::Signed<ployz_core::authority::DeployApproval>>,
+) {
+    let Some(approved) = approval.and_then(|approval| approval.open().ok()) else {
+        return;
+    };
+    for spec in target {
+        approved.pin(spec);
+    }
 }
 
 /// The uploaded Services among `targets` that build from an earlier upload than

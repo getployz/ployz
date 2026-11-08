@@ -137,6 +137,13 @@ pub fn content_addressed(image: &str) -> bool {
 pub struct ApprovedService {
     pub name: ServiceName,
     pub digest: PayloadDigest,
+    /// The content-addressed reference the approver's client pinned the Service's image
+    /// to, when the Saved State names a tag. The runner writes it into the spec before
+    /// planning, and a Machine creates the Service only from this exact image. None when
+    /// the person wrote the digest.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub image: Option<String>,
 }
 
 /// A Device, or a browser key under a session grant, approves one Deploy: the Services it
@@ -166,14 +173,31 @@ impl Statement for DeployApproval {
 }
 
 impl DeployApproval {
-    /// The digest this approval names for `service`.
+    /// What this approval names for `service`.
     #[must_use]
-    pub fn digest(&self, service: &ServiceName) -> Option<PayloadDigest> {
+    pub fn service(&self, service: &ServiceName) -> Option<&ApprovedService> {
         self.services
             .binary_search_by(|approved| approved.name.cmp(service))
             .ok()
             .and_then(|at| self.services.get(at))
-            .map(|approved| approved.digest)
+    }
+
+    /// The digest this approval names for `service`.
+    #[must_use]
+    pub fn digest(&self, service: &ServiceName) -> Option<PayloadDigest> {
+        self.service(service).map(|approved| approved.digest)
+    }
+
+    /// Write the pinned image this approval names for `spec`'s Service into `spec`, so
+    /// it is the spec the approval's digest was taken over. A Service the approver wrote
+    /// by digest keeps its image.
+    pub fn pin(&self, spec: &mut RequestedServiceSpec) {
+        if let Some(image) = self
+            .service(&spec.name)
+            .and_then(|approved| approved.image.as_ref())
+        {
+            spec.container.image.clone_from(image);
+        }
     }
 }
 
@@ -298,15 +322,22 @@ fn creation_digest(
 ) -> Result<PayloadDigest, AuthorityRefusal> {
     let payload = AuthorityRefusal::Mismatch { field: "a payload" };
     let approved = body
-        .digest(creation.service)
+        .service(creation.service)
         .filter(|_| &creation.spec.name == creation.service)
         .ok_or(AuthorityRefusal::Mismatch { field: "a Service" })?;
     if creation.kind == ContainerKind::PreDeployHook && creation.spec.pre_deploy.is_none() {
         return Err(AuthorityRefusal::Mismatch { field: "a hook" });
     }
+    if approved
+        .image
+        .as_ref()
+        .is_some_and(|image| image != &creation.spec.container.image)
+    {
+        return Err(AuthorityRefusal::Mismatch { field: "an image" });
+    }
     let digest = PayloadDigest::of(&creation.spec.to_requested(), &body.namespace)
         .map_err(|_| payload.clone())?;
-    if digest != approved {
+    if digest != approved.digest {
         return Err(payload);
     }
     if !content_addressed(&creation.spec.container.image) {

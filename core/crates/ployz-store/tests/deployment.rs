@@ -8161,6 +8161,7 @@ fn device_approval(
         .map(|spec| ApprovedService {
             name: spec.name.clone(),
             digest: PayloadDigest::of(spec, &plan.namespace).unwrap(),
+            image: None,
         })
         .collect();
     services.sort_by(|left, right| left.name.cmp(&right.name));

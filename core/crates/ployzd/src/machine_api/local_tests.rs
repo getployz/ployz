@@ -4853,6 +4853,7 @@ mod ensure_container {
                     services: vec![ApprovedService {
                         name: ServiceName::parse("api").unwrap(),
                         digest: PayloadDigest::of(&resolved.to_requested(), &namespace).unwrap(),
+                        image: None,
                     }],
                     issued_at: Timestamp::now(),
                     expires_at: Timestamp::now().plus(60_000),
