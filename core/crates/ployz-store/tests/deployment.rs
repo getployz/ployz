@@ -8244,3 +8244,30 @@ fn a_plan_lowers_its_target_only_when_asked() {
             .contains_key("target")
     );
 }
+
+#[test]
+fn a_narrowed_plan_lowers_only_the_services_it_ships() {
+    let (store, who) = shop();
+    let names = |services: Vec<ServiceName>| {
+        let plan = store
+            .read(
+                &who,
+                &PlanQuery {
+                    environment: EnvironmentRef::default(),
+                    services,
+                    target: true,
+                },
+            )
+            .unwrap();
+        let mut names: Vec<String> = plan
+            .target
+            .unwrap()
+            .into_iter()
+            .map(|spec| spec.name.to_string())
+            .collect();
+        names.sort();
+        names
+    };
+    assert_eq!(names(Vec::new()), ["api", "web"]);
+    assert_eq!(names(vec![ServiceName::parse("web").unwrap()]), ["web"]);
+}

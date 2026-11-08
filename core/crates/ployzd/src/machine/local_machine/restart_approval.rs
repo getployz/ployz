@@ -229,6 +229,10 @@ pub(crate) enum JoinReply {
 struct Operation {
     expires_at: Timestamp,
     containers: BTreeMap<ContainerId, RestartStep>,
+    /// The slot a deploy's hook was created in, for a hook entry: a request resent for
+    /// that slot adopts the hook that ran instead of running another.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    hook: Option<ployz_core::CreationKey>,
 }
 
 /// Where `approval`'s consumption is kept. A proposal step gets an entry of its own, so a plan
@@ -301,6 +305,7 @@ impl ConsumptionLog {
             .or_insert_with(|| Operation {
                 expires_at: approval.expires_at,
                 containers: BTreeMap::new(),
+                hook: None,
             });
         operation.expires_at = operation.expires_at.max(approval.expires_at);
         let replayed = operation
@@ -328,13 +333,15 @@ impl ConsumptionLog {
         Ok(())
     }
 
-    /// Take `service`'s hook place under deploy approval `approval`, refusing one taken
-    /// before. The entry's name is 32 hex digits of the hash of the operation and the
-    /// Service, so it shares the operations map and its expiry without a new record shape.
+    /// Take `service`'s hook place under deploy approval `approval` for the slot named
+    /// `slot`, refusing one taken for another slot. A request resent for the same slot,
+    /// after a lost reply, passes: the Machine adopts the hook that ran, never runs it
+    /// again. The entry's name is 32 hex digits of the hash of the operation and the
+    /// Service, so it shares the operations map and its expiry.
     pub(super) fn consume_hook(
         &self,
         approval: &DeployApproval,
-        service: &ServiceName,
+        (service, slot): (&ServiceName, &ployz_core::CreationKey),
         now: Timestamp,
     ) -> Result<(), Error> {
         let mut hasher = Sha256::new();
@@ -358,7 +365,10 @@ impl ConsumptionLog {
             .map_or(now, |floor| now.max(floor));
         ployz_core::authority::validity::verify(approval.issued_at, approval.expires_at, now)
             .map_err(Error::DeployRefused)?;
-        if consumption.operations.contains_key(&key) {
+        if let Some(taken) = consumption.operations.get(&key) {
+            if taken.hook.as_ref() == Some(slot) {
+                return Ok(());
+            }
             return Err(Error::DeployRefused(AuthorityRefusal::Replayed {
                 operation: approval.operation,
             }));
@@ -370,6 +380,7 @@ impl ConsumptionLog {
             Operation {
                 expires_at: approval.expires_at,
                 containers: BTreeMap::new(),
+                hook: Some(slot.clone()),
             },
         );
         let written = serde_json::to_vec(&updated)
@@ -414,6 +425,7 @@ impl ConsumptionLog {
             Operation {
                 expires_at: set.expires_at,
                 containers: BTreeMap::new(),
+                hook: None,
             },
         );
         let written = serde_json::to_vec(&updated)
@@ -681,6 +693,7 @@ mod tests {
             Operation {
                 expires_at: first.expires_at,
                 containers: BTreeMap::from([(container('a'), RestartStep::Stop)]),
+                hook: None,
             },
         )]);
         std::fs::write(

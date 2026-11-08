@@ -44,8 +44,9 @@ pub struct PlanView {
     /// What the Deployment decides from the Servers: which containers start, stop or
     /// move, and where.
     pub unresolved: Vec<String>,
-    /// Each Service's spec as a runner of this plan would ask a Server to run it,
-    /// when the query asked for `target`.
+    /// The spec of each Service this Deploy ships, as its runner would ask a Server to
+    /// run it, when the query asked for `target`. A narrowed Deploy lists the Services
+    /// it names and those they reference.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[ts(optional)]
     pub target: Option<Vec<RequestedServiceSpec>>,
@@ -258,8 +259,8 @@ pub(crate) fn plan(
     })
 }
 
-/// `target` lowered as a claim of a Deploy of it would: the specs a runner asks the
-/// Servers to run, for a Device to approve before it admits the Deploy.
+/// `target` lowered as a claim of a Deploy of it would: the specs of the Services it
+/// ships, for a Device to approve before it admits the Deploy.
 fn lowered_target(
     tx: &mut dyn Tx,
     who: &Actor,
@@ -299,7 +300,14 @@ fn lowered_target(
         &branch,
         &who.organization,
     )
-    .map(|lowered| lowered.intent.target)
+    .map(|lowered| {
+        let mut target = lowered.intent.target;
+        // A narrowed Deploy creates only what it ships; the rest ride along unchanged.
+        if !query.services.is_empty() {
+            target.retain(|spec| lowered.shipped.contains(&spec.name));
+        }
+        target
+    })
 }
 
 /// Every Namespace `who`'s Environments own.

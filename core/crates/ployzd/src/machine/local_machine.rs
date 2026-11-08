@@ -10,14 +10,13 @@ use std::{
 };
 
 use ployz_core::{
-    ContainerDetails, ContainerId, DEPLOY_APPROVAL_CAPABILITY, DeviceCode, EnrollRequest, Enrolled,
-    ForgetRequest, Forgotten, InspectRequest, LeaveRequest, Left, LeftPhase, LocalMachinePhase,
-    Machine, MachineDetails, MachineId, MachineIdentity, MachineList, MachineName,
-    MachineObservation, MachineToken, MachineUpdated, ManagementAddress, ManagementClientLabel,
-    MembershipEvidence, PublicIpDiscovery, RESTART_APPROVAL_CAPABILITY, RecoverySeed,
-    RegisterRequest, Registered, RpcError, RpcErrorCode, RttObservation, RttStatistics,
-    SET_DEVICE_ENFORCEMENT_CAPABILITY, SelectedEndpoint, StorageDeparture, UpdateMachineRequest,
-    synthesize_membership,
+    ContainerDetails, ContainerId, DeviceCode, EnrollRequest, Enrolled, ForgetRequest, Forgotten,
+    InspectRequest, LeaveRequest, Left, LeftPhase, LocalMachinePhase, Machine, MachineDetails,
+    MachineId, MachineIdentity, MachineList, MachineName, MachineObservation, MachineToken,
+    MachineUpdated, ManagementAddress, ManagementClientLabel, MembershipEvidence,
+    PublicIpDiscovery, RESTART_APPROVAL_CAPABILITY, RecoverySeed, RegisterRequest, Registered,
+    RpcError, RpcErrorCode, RttObservation, RttStatistics, SET_DEVICE_ENFORCEMENT_CAPABILITY,
+    SelectedEndpoint, StorageDeparture, UpdateMachineRequest, synthesize_membership,
 };
 use thiserror::Error;
 use tokio_util::sync::CancellationToken;
@@ -186,8 +185,9 @@ pub enum Error {
     /// Device enforcement refused an Operator's restart step.
     #[error("{RESTART_APPROVAL_CAPABILITY} needs a Device-signed restart approval")]
     RestartRefused(#[from] ployz_core::authority::AuthorityRefusal),
-    /// Device enforcement refused an Operator's creation, or its step under a deploy approval.
-    #[error("{DEPLOY_APPROVAL_CAPABILITY} refused this deploy: {0}")]
+    /// Device enforcement refused an Operator's creation, or its step under a deploy
+    /// approval. The refusal names [`ployz_core::DEPLOY_APPROVAL_CAPABILITY`] in its details.
+    #[error("{}", deploy_approval::refusal_text(.0))]
     DeployRefused(ployz_core::authority::AuthorityRefusal),
     #[error("ployz.machine.join.device-approval.v1 needs a Device-signed join approval: {0}")]
     JoinRefused(ployz_core::authority::AuthorityRefusal),

@@ -102,7 +102,12 @@ impl ContainerRuntime {
             let ployz_core::RawVolumeSource::External { name } = volume.source.kind() else {
                 continue;
             };
-            let observed = self.inspect_volume(machine_id, name).await?;
+            // A missing one is the mount check's to name, after this.
+            let observed = match self.inspect_volume(machine_id, name).await {
+                Ok(observed) => observed,
+                Err(error) if volume_not_found(&error) => continue,
+                Err(error) => return Err(error),
+            };
             if observed.labels.contains_key(ployz_core::MANAGED_LABEL) {
                 return Err(Error::VolumeShapeMismatch {
                     name: name.clone(),

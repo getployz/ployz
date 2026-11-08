@@ -4315,12 +4315,12 @@ mod ensure_container {
             let seen = requests(&fixture.fake).len();
             deploy_refused(
                 operator_ensure(service, new.get("want").unwrap().clone(), None).await,
-                "carries no signature",
+                "runs only deploys an approved device signed",
             );
             let signed = fixture.signed(&fixture.approval(&id));
             deploy_refused(
                 operator_ensure(service, new.get("want").unwrap().clone(), Some(&signed)).await,
-                "carries no signature",
+                "runs only deploys an approved device signed",
             );
             let observed = fixture
                 .runtime
@@ -4882,7 +4882,7 @@ mod ensure_container {
                     None,
                 )
                 .await,
-                "carries no signature",
+                "runs only deploys an approved device signed",
             );
             let mut privileged = approved.clone();
             *privileged
@@ -4895,7 +4895,7 @@ mod ensure_container {
                     Some(&signed),
                 )
                 .await,
-                "names a payload",
+                "settings differ from what the device approved",
             );
             let tagged = spec("example.test/api:1");
             deploy_refused(
@@ -4905,7 +4905,7 @@ mod ensure_container {
                     Some(&fixture.deploy(&tagged)),
                 )
                 .await,
-                "names an image",
+                "runs only images pinned by digest",
             );
             assert_eq!(creates(&fixture.fake, seen), 0, "nothing reached Docker");
 
@@ -4947,7 +4947,7 @@ mod ensure_container {
                         Some(&signed),
                     )
                     .await,
-                    "already ran this step",
+                    "already ran its pre-deploy command",
                 );
             }
             assert_eq!(creates(&fixture.fake, seen), 0);
@@ -4960,7 +4960,82 @@ mod ensure_container {
                     Some(&fixture.deploy(&hookless)),
                 )
                 .await,
-                "names a hook",
+                "approved no pre-deploy command",
+            );
+            std::fs::remove_dir_all(fixture.data_dir).unwrap();
+        }
+
+        #[tokio::test]
+        async fn a_deploy_approval_starts_only_a_copy_whose_spec_it_approved() {
+            let fixture = enforced("ployzd-deploy-start").await;
+            let service = &fixture.service;
+            let mut planted = spec(PINNED);
+            *planted
+                .pointer_mut("/container/privileged")
+                .expect("the fixture names privileged") = json!(true);
+            let old = present(&ensure(service, run_new("k0", planted)).await).container_id;
+            let approved =
+                present(&ensure(service, run_new("k1", spec(PINNED))).await).container_id;
+            for id in [&old, &approved] {
+                ensure(service, json!({"want": stopped(id)})).await;
+            }
+            let signed = fixture.deploy(&spec(PINNED));
+            let seen = requests(&fixture.fake).len();
+            deploy_refused(
+                deploy_ensure(service, started(&old), Some(&signed)).await,
+                "settings differ from what the device approved",
+            );
+            assert_eq!(
+                ends_with(&requests_since(&fixture.fake, seen), Method::POST, "/start").count(),
+                0
+            );
+            // The old copy can still be retired under the same approval.
+            deploy_ensure(service, stopped(&old), Some(&signed))
+                .await
+                .unwrap();
+            let reply = deploy_ensure(service, started(&approved), Some(&signed))
+                .await
+                .unwrap();
+            assert!(matches!(
+                present(&reply).runtime,
+                ContainerRuntimeObservation::Running { .. }
+            ));
+            std::fs::remove_dir_all(fixture.data_dir).unwrap();
+        }
+
+        #[tokio::test]
+        async fn a_deploy_approval_never_starts_a_hook_again_but_adopts_a_resent_one() {
+            let fixture = enforced("ployzd-deploy-hook-start").await;
+            let approved = spec(PINNED);
+            let signed = fixture.deploy(&approved);
+            let hook = deploy_ensure(
+                &fixture.service,
+                new_want("pre_deploy_hook", "h1", &approved),
+                Some(&signed),
+            )
+            .await
+            .unwrap();
+            let hook = present(&hook).container_id;
+            let seen = requests(&fixture.fake).len();
+            // A reply lost on the way back: the same slot again adopts the hook that ran.
+            for service in [&fixture.service, &fixture.restarted()] {
+                let again = deploy_ensure(
+                    service,
+                    new_want("pre_deploy_hook", "h1", &approved),
+                    Some(&signed),
+                )
+                .await
+                .unwrap();
+                assert_eq!(present(&again).container_id, hook);
+            }
+            assert_eq!(creates(&fixture.fake, seen), 0);
+            deploy_refused(
+                deploy_ensure(&fixture.service, started(&hook), Some(&signed)).await,
+                "already ran its pre-deploy command",
+            );
+            assert_eq!(
+                ends_with(&requests_since(&fixture.fake, seen), Method::POST, "/start").count(),
+                0
             );
             std::fs::remove_dir_all(fixture.data_dir).unwrap();
         }
@@ -4976,7 +5051,7 @@ mod ensure_container {
             let elsewhere = Signed::sign(&elsewhere, &fixture.signer).unwrap();
             deploy_refused(
                 deploy_ensure(service, stopped(&id), Some(&elsewhere)).await,
-                "names an Environment",
+                "a deploy to another environment",
             );
             let reply = deploy_ensure(service, stopped(&id), Some(&signed))
                 .await

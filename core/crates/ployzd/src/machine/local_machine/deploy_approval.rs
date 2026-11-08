@@ -70,8 +70,11 @@ impl LocalMachine {
         )
         .map_err(refused)?;
         if new.slot.kind == ContainerKind::PreDeployHook {
-            self.approvals
-                .consume_hook(&approved.body, &new.slot.service, now)?;
+            self.approvals.consume_hook(
+                &approved.body,
+                (&new.slot.service, &new.slot.creation_key),
+                now,
+            )?;
         }
         tracing::info!(
             kind = %new.slot.kind,
@@ -86,8 +89,9 @@ impl LocalMachine {
     }
 
     /// Admit a Deploy's step on an existing Container in the approval's Namespace, on a
-    /// Machine it names, inside its window. Nothing is consumed: the step changes which
-    /// approved copy runs, never what runs. Returns the want pinned to the Container seen.
+    /// Machine it names, inside its window. Hold, Out, Stop and Remove act on any copy, so
+    /// a Deploy can retire old ones; Start needs the copy's own spec approved, and never
+    /// starts a hook. Nothing is consumed. Returns the want pinned to the Container seen.
     ///
     /// # Errors
     /// Returns [`Error::DeployRefused`] naming what the approval lacks, and
@@ -109,6 +113,19 @@ impl LocalMachine {
         let trusted = record.trusted_keys();
         let machine = record.id();
         let identity = observed.identity();
+        let refused = |refusal: AuthorityRefusal| {
+            tracing::warn!(?step, "deploy step refused for {identity}: {refusal}");
+            Error::DeployRefused(refusal)
+        };
+        // Starting a copy runs its spec, so it must be one the approval names; a copy
+        // made before enforcement, or for another Service, is not. A hook runs once,
+        // when it is created, so no deploy starts one again.
+        let starts = step == RestartStep::Start;
+        if starts && observed.kind == ContainerKind::PreDeployHook {
+            return Err(refused(AuthorityRefusal::Mismatch {
+                field: "a hook run",
+            }));
+        }
         let approved = deploy::verify(
             approval,
             &DeployFacts {
@@ -116,14 +133,15 @@ impl LocalMachine {
                 machine: &machine,
                 trusted: &trusted,
                 namespace: &identity.namespace,
-                creation: None,
+                creation: starts.then_some(Creation {
+                    service: &identity.name,
+                    kind: observed.kind,
+                    spec: &observed.resolved_spec,
+                }),
                 now: Timestamp::now(),
             },
         )
-        .map_err(|refusal| {
-            tracing::warn!(?step, "deploy step refused for {identity}: {refusal}");
-            Error::DeployRefused(refusal)
-        })?;
+        .map_err(refused)?;
         tracing::info!(
             ?step,
             container = observed.container_id.as_str().get(..12).unwrap_or_default(),
@@ -144,4 +162,55 @@ impl LocalMachine {
             _ => None,
         }
     }
+}
+
+/// What a refused deploy says to the person who ran it.
+pub(super) fn refusal_text(refusal: &AuthorityRefusal) -> String {
+    let text = match refusal {
+        AuthorityRefusal::Unsigned { .. } => {
+            "This server runs only deploys an approved device signed."
+        }
+        AuthorityRefusal::Mismatch { field: "a payload" } => {
+            "This service's settings differ from what the device approved."
+        }
+        AuthorityRefusal::Mismatch { field: "an image" } => {
+            "This server runs only images pinned by digest."
+        }
+        AuthorityRefusal::Mismatch { field: "a Service" } => {
+            "The device didn't approve this service."
+        }
+        AuthorityRefusal::Mismatch { field: "a hook" } => {
+            "The device approved no pre-deploy command for this service."
+        }
+        AuthorityRefusal::Mismatch {
+            field: "a hook run",
+        }
+        | AuthorityRefusal::Replayed { .. } => {
+            "This deploy already ran its pre-deploy command here."
+        }
+        AuthorityRefusal::Mismatch {
+            field: "an Environment",
+        } => "The device approved a deploy to another environment.",
+        AuthorityRefusal::Mismatch { field: "Machines" } => {
+            "The device approved this deploy for other servers, before this one joined."
+        }
+        AuthorityRefusal::Mismatch { field: "a Cluster" } => {
+            "The device approved a deploy to another cluster."
+        }
+        AuthorityRefusal::Mismatch {
+            field: "a Container",
+        } => "That container isn't on this server.",
+        AuthorityRefusal::Expired => "The device's approval expired. Deploy again.",
+        AuthorityRefusal::UnknownKey { .. } | AuthorityRefusal::UnknownPasskey => {
+            "This server doesn't trust the device that approved this deploy."
+        }
+        AuthorityRefusal::Malformed { .. }
+        | AuthorityRefusal::BadSignature { .. }
+        | AuthorityRefusal::ApproveOnly { .. }
+        | AuthorityRefusal::Mismatch { .. }
+        | AuthorityRefusal::NoClusterIdentity => {
+            return format!("This server can't check the deploy's approval: {refusal}.");
+        }
+    };
+    text.to_owned()
 }

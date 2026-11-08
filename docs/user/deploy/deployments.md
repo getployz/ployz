@@ -160,18 +160,27 @@ approval, even if the same approval is sent again. The approval lasts 15 minutes
 going after that stops partway; run `ployz deploy` again.
 
 Every image must be pinned by digest, since a tag names whatever the registry holds under it
-now. A tag stops the deploy before anything is queued:
+now. If your servers run different CPU architectures, pin the multi-arch digest (the image
+index), not one platform's. A tag stops the deploy before anything is queued:
 
 ```text
-Pin web's image by digest to deploy to Servers that enforce.
-next: ployz set 'web.image=…'
+Pin web's image by digest to deploy to servers that enforce device approval.
+next: ployz set 'web.image=nginx@sha256:…'
 ```
 
+A narrowed deploy, such as `ployz deploy web`, checks only the services it ships. A service
+that builds from source can't deploy to these servers yet; `ployz deploy` says so and stops.
+
+If `ployz deploy` can't reach your servers to ask whether they enforce, it warns and deploys
+without signing, and servers that enforce refuse it.
+
 Servers that enforce refuse a deploy nobody approved: one from the dashboard, a Git push, an
-organization token, `ployz up`, or a service that builds from source. Each server's part of
-that deployment fails with `ployz.container.deploy-approval.v1 refused this deploy`, and nothing
-new starts there. Running `ployz deploy` with a device key in a script approves whatever is
-saved in Ployz Cloud at that moment, without anyone looking.
+organization token, `ployz up`, a rollback or a restore. Each server's part of that deployment
+fails with `This server runs only deploys an approved device signed.`, and nothing new starts
+there. A server added after you signed isn't covered by that approval; run `ployz deploy` again.
+A container already stopped starts again only if its settings are ones you approved. Running
+`ployz deploy` with a device key in a script approves whatever is saved in Ployz Cloud at that
+moment, without anyone looking.
 
 ## When another deployment is running
 

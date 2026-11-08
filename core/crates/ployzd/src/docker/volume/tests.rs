@@ -927,4 +927,16 @@ async fn a_volume_planted_under_an_approved_name_is_refused_at_use() {
         .refuse_managed_external(&MachineId::random(), &external)
         .await
         .unwrap();
+    // A missing External Volume passes here, so the mount check names it as it always did.
+    fake.volumes.lock().unwrap().remove(name.as_str());
+    runtime
+        .refuse_managed_external(&MachineId::random(), &external)
+        .await
+        .unwrap();
+    assert!(matches!(
+        runtime
+            .ensure_mounted_volumes(&MachineId::random(), &external)
+            .await,
+        Err(Error::ExternalVolumeNotFound(missing)) if missing == name
+    ));
 }
