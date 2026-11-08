@@ -83,10 +83,7 @@ Open the service and click **⋮** next to its name. A running service offers **
 - **Restart** goes one container at a time, across every server, so the others keep serving.
   The header counts them, like **Restarting 4/12**. If a container doesn't come back, the restart
   stops there and leaves the rest untouched. The service shows why, like **Container 4 on web-2
-  didn't come back**, with **Retry**. On servers with
-  [device enforcement](../servers/manage-servers.md#require-a-devices-signature-for-restarts-and-joins)
-  on, the first press asks for your [passkey](../servers/manage-servers.md#add-a-passkey), and
-  presses in the next 60 minutes don't ask again.
+  didn't come back**, with **Retry**.
 - **Stop** asks first: every server stops sending the service requests, then every container
   stops, until you start the service or deploy. The containers stay on your servers. A stopped
   service reads **Stopped**, even when your app exits with an error code on shutdown, as some
@@ -95,6 +92,15 @@ Open the service and click **⋮** next to its name. A running service offers **
   container a deploy replaced can't come back this way; deploy the service instead.
 - Start and restart only send requests to containers a deploy put in service. A container a
   failed deploy left behind runs but gets no requests. The command names it, and exits 3.
+
+On servers with
+[device enforcement](../servers/manage-servers.md#require-a-devices-signature-for-restarts-and-joins)
+on, your first **Restart**, **Stop** or **Start** in an environment asks for your
+[passkey](../servers/manage-servers.md#add-a-passkey). Presses in that environment over the next
+60 minutes don't ask again. Another environment, a new tab, or the last 15 minutes of the hour ask
+again. In a Protected environment, the owner or admin who approves a member's restart or stop
+uses their own passkey. Upgrade an older server before you stop or start services on it from the
+dashboard.
 
 The dashboard can't run a command in a service yet. The CLI does all four:
 

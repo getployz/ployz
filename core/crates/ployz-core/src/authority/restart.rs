@@ -12,8 +12,8 @@ use super::{
     trusted_key::TrustedKeys,
 };
 use crate::{
-    ContainerId, ContainerLocator, ContainerWant, DeviceKey, MachineId, Namespace, OperationId,
-    RunTarget, SealingPublicKey, ServiceName,
+    ContainerId, ContainerKind, ContainerLocator, ContainerWant, DeviceKey, MachineId, Namespace,
+    OperationId, RunTarget, SealingPublicKey, ServiceName,
 };
 
 /// The workflow an approval is for. One approval never serves another kind.
@@ -22,6 +22,7 @@ use crate::{
 pub enum WorkflowKind {
     Restart,
     Stop,
+    Start,
 }
 
 impl WorkflowKind {
@@ -34,7 +35,15 @@ impl WorkflowKind {
                 RestartStep::Hold | RestartStep::Stop | RestartStep::Start
             ),
             Self::Stop => matches!(step, RestartStep::Hold | RestartStep::Stop),
+            Self::Start => step == RestartStep::Start,
         }
+    }
+
+    /// Whether this workflow may act on a Container of `kind`. Only a stop reaches a
+    /// pre-deploy hook: a hook that ran once never runs again on an approval.
+    #[must_use]
+    pub fn reaches(self, kind: ContainerKind) -> bool {
+        self == Self::Stop || kind == ContainerKind::ServiceContainer
     }
 
     /// The family a session grant must name to let a browser key approve this workflow.
@@ -43,7 +52,18 @@ impl WorkflowKind {
         match self {
             Self::Restart => ActionFamily::Restart,
             Self::Stop => ActionFamily::Stop,
+            Self::Start => ActionFamily::Start,
         }
+    }
+}
+
+impl std::fmt::Display for WorkflowKind {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str(match self {
+            Self::Restart => "restart",
+            Self::Stop => "stop",
+            Self::Start => "start",
+        })
     }
 }
 
@@ -156,6 +176,8 @@ pub struct RestartFacts<'a> {
     pub namespace: &'a Namespace,
     pub service: &'a ServiceName,
     pub container: &'a ContainerId,
+    /// Whether the requested Container is a Service copy or a pre-deploy hook, by its own labels.
+    pub kind: ContainerKind,
     pub step: RestartStep,
     pub now: Timestamp,
 }
@@ -196,7 +218,10 @@ pub fn verify(
     let checks = [
         ("the signer", by.is_some()),
         ("a Cluster", body.cluster == cluster),
-        ("a workflow", body.kind.permits(facts.step)),
+        (
+            "a workflow",
+            body.kind.permits(facts.step) && body.kind.reaches(facts.kind),
+        ),
         ("an Environment", &body.namespace == facts.namespace),
         ("a Service", &body.service == facts.service),
         ("Machines", body.machines.contains(facts.machine)),
@@ -276,6 +301,7 @@ mod tests {
                 namespace: &self.namespace,
                 service: &self.service,
                 container: &self.container,
+                kind: ContainerKind::ServiceContainer,
                 step: RestartStep::Stop,
                 now: Timestamp::from_millis(999_999).unwrap(),
             }
@@ -353,7 +379,11 @@ mod tests {
     fn a_signed_workflow_permits_only_its_own_steps() {
         let signer = signer(1);
         let machine = machine(&[&signer]);
-        for kind in [WorkflowKind::Restart, WorkflowKind::Stop] {
+        for kind in [
+            WorkflowKind::Restart,
+            WorkflowKind::Stop,
+            WorkflowKind::Start,
+        ] {
             let signed = Signed::sign(
                 &RestartApproval {
                     kind,
@@ -363,9 +393,9 @@ mod tests {
             )
             .unwrap();
             for (step, allowed) in [
-                (RestartStep::Hold, true),
-                (RestartStep::Stop, true),
-                (RestartStep::Start, kind == WorkflowKind::Restart),
+                (RestartStep::Hold, kind != WorkflowKind::Start),
+                (RestartStep::Stop, kind != WorkflowKind::Start),
+                (RestartStep::Start, kind != WorkflowKind::Stop),
                 (RestartStep::Out, false),
                 (RestartStep::Remove, false),
             ] {
@@ -377,6 +407,41 @@ mod tests {
                     "{kind:?} {step:?}"
                 );
             }
+        }
+    }
+
+    #[test]
+    fn only_a_stop_reaches_a_pre_deploy_hook() {
+        let signer = signer(1);
+        let machine = machine(&[&signer]);
+        for (kind, step, allowed) in [
+            (WorkflowKind::Start, RestartStep::Start, false),
+            (WorkflowKind::Restart, RestartStep::Start, false),
+            (WorkflowKind::Restart, RestartStep::Stop, false),
+            (WorkflowKind::Stop, RestartStep::Stop, true),
+        ] {
+            let signed = Signed::sign(
+                &RestartApproval {
+                    kind,
+                    ..approval(&signer)
+                },
+                &signer,
+            )
+            .unwrap();
+            let mut facts = machine.facts();
+            facts.kind = ContainerKind::PreDeployHook;
+            facts.step = step;
+            assert_eq!(
+                verify(&signed, &facts).map(|approved| approved.body.kind),
+                if allowed {
+                    Ok(kind)
+                } else {
+                    Err(AuthorityRefusal::Mismatch {
+                        field: "a workflow",
+                    })
+                },
+                "{kind} {step:?} on a completed hook"
+            );
         }
     }
 

@@ -1,5 +1,7 @@
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import {
+  actScope,
+  approveAct,
   type ApprovalScope,
   type ApprovalSession,
   canonicalJson,
@@ -8,9 +10,11 @@ import {
   hex,
   keyCode,
   promptReason,
-  restartScope,
+  readSession,
   signingInput,
+  startSession,
 } from "./approval-session";
+import { actApprovals } from "./approval-prompt";
 
 const production: ApprovalScope = {
   environmentId: "env-production",
@@ -21,7 +25,7 @@ const production: ApprovalScope = {
 };
 
 const session = (scope: ApprovalScope, expiresAt: number): ApprovalSession =>
-  ({ scope, families: ["restart"], issuedAt: expiresAt - 3_600_000, expiresAt, keyCode: "abcdefghij" });
+  ({ scope, families: ["restart", "start", "stop"], issuedAt: expiresAt - 3_600_000, expiresAt, keyCode: "abcdefghij" });
 
 describe("canonicalJson", () => {
   // The fixtures of `ployz_core::authority::canonical`'s tests.
@@ -50,9 +54,9 @@ describe("grantBody", () => {
     const body = grantBody(production, browserKey, 1_000_000);
     expect(body).toBe(
       `{"browser_key":"${browserKey}","cluster":"${production.cluster}","delegation":"none","environment":"production","expires_at":4600000,`
-        + `"families":["restart"],"issued_at":1000000,"machines":["11111111111111111111111111111111","22222222222222222222222222222222"]}`,
+        + `"families":["restart","start","stop"],"issued_at":1000000,"machines":["11111111111111111111111111111111","22222222222222222222222222222222"]}`,
     );
-    const rustBody = body.replace(`"families":["restart"]`, `"families":["restart","stop"]`);
+    const rustBody = body.replace(`"families":["restart","start","stop"]`, `"families":["restart","stop"]`);
     expect(hex(await grantChallenge(rustBody))).toBe("3f6c4b9b3dc458f09a5b0ec4dd6b15a4e0794a22641b2b0ecc2523002b56888a");
   });
 });
@@ -79,7 +83,9 @@ describe("promptReason", () => {
     expect(promptReason(live, { ...production, machines: ["33333333333333333333333333333333"] }, "restart", now)).toBe("scope");
     // The same Environment ID under another Namespace is another Environment to the Machine, so it prompts.
     expect(promptReason(live, { ...production, namespace: "payments-prod" }, "restart", now)).toBe("scope");
-    expect(promptReason(live, production, "stop", now)).toBe("scope");
+    expect(promptReason({ ...live, families: ["restart"] }, production, "stop", now)).toBe("scope");
+    expect(promptReason(live, production, "stop", now)).toBeNull();
+    expect(promptReason(live, production, "start", now)).toBeNull();
   });
 
   it("prompts again once less than one approval's 15 minutes is left, so no approval is cut short", () => {
@@ -88,12 +94,12 @@ describe("promptReason", () => {
   });
 });
 
-describe("restartScope", () => {
+describe("actScope", () => {
   const held = { kind: "held", public_key: production.cluster };
   const environment = { environmentId: "env-production", environmentName: "production", namespace: "production" };
 
   it("names the copies' Cluster and the Servers in it that run the Environment, once a host enforces", () => {
-    const result = restartScope(environment, [{ machineId: "22222222222222222222222222222222" }], [
+    const result = actScope(environment, [{ machineId: "22222222222222222222222222222222" }], [
       { id: "22222222222222222222222222222222", sealing: held, deviceEnforcement: true },
       { id: "11111111111111111111111111111111", sealing: held },
       { id: "33333333333333333333333333333333", sealing: { kind: "held", public_key: "other" } },
@@ -106,12 +112,81 @@ describe("restartScope", () => {
   });
 
   it("asks nothing of Servers that don't enforce", () => {
-    expect(restartScope(environment, [{ machineId: "m" }], [{ id: "m", sealing: held, deviceEnforcement: false }], ["m"]).enforced).toBe(false);
+    expect(actScope(environment, [{ machineId: "m" }], [{ id: "m", sealing: held, deviceEnforcement: false }], ["m"]).enforced).toBe(false);
   });
 });
 
 describe("signingInput", () => {
   it("prefixes the body as `keys::signing_input` does for a workflow", () => {
     expect(new TextDecoder().decode(signingInput("{}"))).toBe("ployz-authority/v1\nworkflow\n{}");
+  });
+});
+
+describe("approveAct", () => {
+  afterEach(() => void vi.unstubAllGlobals());
+  const copy = { machine: "22222222222222222222222222222222", container: "c".repeat(64), hook: false };
+  const hook = { machine: "22222222222222222222222222222222", container: "d".repeat(64), hook: true };
+  const bytes = (text: string) => new TextEncoder().encode(text).buffer;
+  const passkey = async (now: number) => {
+    vi.stubGlobal("location", { hostname: "localhost" });
+    vi.stubGlobal("navigator", { credentials: { get: async () => ({
+      rawId: bytes("credential"),
+      response: { authenticatorData: bytes("data"), clientDataJSON: bytes("{}"), signature: bytes("signature") },
+    }) } });
+    await startSession(production, now);
+  };
+
+  it("signs a stop and a start of each copy under the one session, naming the press's kind and Server", async () => {
+    const now = Date.now();
+    await passkey(now);
+    for (const verb of ["restart", "stop", "start"] as const) {
+      const approvals = await approveAct(verb, production, "web", [copy], now);
+      const signed = approvals[copy.container] ?? expect.fail("no approval");
+      expect(JSON.parse(signed.body)).toMatchObject({ kind: verb, namespace: "production", machines: [copy.machine], container: copy.container });
+      expect(JSON.parse(signed.grants?.[0]?.body ?? "{}")).toMatchObject({ families: ["restart", "start", "stop"], environment: "production" });
+    }
+  });
+
+  it("never lets a hook's container start: a start skips it, a restart or stop gives it a stop approval", async () => {
+    const now = Date.now();
+    await passkey(now);
+    expect(Object.keys(await approveAct("start", production, "web", [copy, hook], now))).toEqual([copy.container]);
+    for (const verb of ["restart", "stop"] as const) {
+      const approvals = await approveAct(verb, production, "web", [copy, hook], now);
+      expect(JSON.parse(approvals[copy.container]?.body ?? "{}")).toMatchObject({ kind: verb });
+      expect(JSON.parse(approvals[hook.container]?.body ?? "{}")).toMatchObject({ kind: "stop", container: hook.container });
+    }
+  });
+
+  it("refuses a stop a Server couldn't start again before it prompts, in an Environment that would prompt", async () => {
+    const get = vi.fn();
+    vi.stubGlobal("location", { hostname: "localhost" });
+    vi.stubGlobal("navigator", { credentials: { get } });
+    const environment = { environmentId: "env-fix-api", environmentName: "fix-api", namespace: "fix-api" };
+    const held = { kind: "held", public_key: production.cluster } as const;
+    const target = {
+      environment,
+      runtime: "web",
+      copies: [{ id: copy.container, machineId: copy.machine, hook: false }],
+      machines: [{ id: copy.machine, name: "machine-2", sealing: held, deviceEnforcement: true, capabilities: ["ployz.restart.session-grant.v1"] }],
+      environmentMachines: [copy.machine],
+    };
+    const { scope } = actScope(environment, target.copies, target.machines, target.environmentMachines);
+    expect(promptReason(readSession(), scope ?? expect.fail("no scope"), "stop")).not.toBeNull();
+    await expect(actApprovals("stop", target)).rejects.toThrow("machine-2 needs a newer Ployz to stop it.");
+    expect(get).not.toHaveBeenCalled();
+  });
+
+  it("signs nothing for a scope the session doesn't cover, so it never approves another Environment, Cluster or Server", async () => {
+    const now = Date.now();
+    await passkey(now);
+    const others = [
+      { ...production, environmentId: "env-fix-api", namespace: "fix-api" },
+      { ...production, cluster: "other" },
+      { ...production, machines: [...production.machines, "33333333333333333333333333333333"] },
+    ];
+    for (const scope of others) await expect(approveAct("stop", scope, "web", [copy], now)).rejects.toThrow("Confirm it's you again.");
+    await expect(approveAct("stop", production, "web", [{ ...copy, machine: "33333333333333333333333333333333" }], now)).rejects.toThrow("Confirm it's you again.");
+    await expect(approveAct("stop", production, "web", [copy], now + 46 * 60_000)).rejects.toThrow("Confirm it's you again.");
   });
 });

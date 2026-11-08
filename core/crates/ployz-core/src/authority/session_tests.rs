@@ -1,6 +1,6 @@
 use super::*;
 use crate::{
-    ContainerId, OperationId, ServiceName,
+    ContainerId, ContainerKind, OperationId, ServiceName,
     authority::{
         Approver, RestartApproval, RestartFacts, RestartStep, Signed, Signer, SignerKey,
         WorkflowKind,
@@ -96,6 +96,7 @@ fn check(
             namespace,
             service: &service,
             container: &container,
+            kind: ContainerKind::ServiceContainer,
             step: RestartStep::Stop,
             now: at(now),
         },
@@ -421,4 +422,70 @@ fn the_browser_writes_this_grant_body_and_challenge() {
         "3f6c4b9b3dc458f09a5b0ec4dd6b15a4e0794a22641b2b0ecc2523002b56888a"
     );
     assert_eq!(browser().public().code().to_string(), "72asyextvn");
+}
+
+#[test]
+fn a_stop_or_start_runs_only_under_a_grant_whose_families_name_it() {
+    let passkey = Authenticator::es256(4);
+    let own = machine('2');
+    let service = ServiceName::parse("web").unwrap();
+    let container = ContainerId::parse("a".repeat(64)).unwrap();
+    let trusted = trusting(&passkey);
+    let verify = |families: Vec<ActionFamily>, kind: WorkflowKind, step: RestartStep| {
+        let body = GrantBody {
+            families,
+            ..grant_body(60 * MINUTE)
+        };
+        let signed = envelope(
+            &RestartApproval {
+                kind,
+                ..approval(production(), vec![machine('2')])
+            },
+            granted(&passkey, &body, "webauthn.get"),
+        );
+        restart::verify(
+            &signed,
+            &RestartFacts {
+                cluster: Some(cluster()),
+                machine: &own,
+                trusted: &trusted,
+                namespace: &production(),
+                service: &service,
+                container: &container,
+                kind: ContainerKind::ServiceContainer,
+                step,
+                now: at(ISSUED + 2 * MINUTE),
+            },
+        )
+        .map(|approved| approved.body.kind)
+    };
+    let session = vec![
+        ActionFamily::Restart,
+        ActionFamily::Start,
+        ActionFamily::Stop,
+    ];
+    for (kind, step) in [
+        (WorkflowKind::Restart, RestartStep::Start),
+        (WorkflowKind::Stop, RestartStep::Stop),
+        (WorkflowKind::Start, RestartStep::Start),
+    ] {
+        assert_eq!(verify(session.clone(), kind, step), Ok(kind), "{kind}");
+    }
+    for (kind, step) in [
+        (WorkflowKind::Stop, RestartStep::Stop),
+        (WorkflowKind::Start, RestartStep::Start),
+    ] {
+        assert_eq!(
+            verify(vec![ActionFamily::Restart], kind, step),
+            Err(AuthorityRefusal::Mismatch { field: "an action" }),
+            "{kind} under a restart-only grant"
+        );
+    }
+    assert_eq!(
+        verify(session, WorkflowKind::Start, RestartStep::Stop),
+        Err(AuthorityRefusal::Mismatch {
+            field: "a workflow"
+        }),
+        "a start approval never stops"
+    );
 }

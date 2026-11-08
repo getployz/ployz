@@ -191,6 +191,7 @@ fn advertised_capability_groups_match_the_frozen_catalog() {
             "ployz.build.grant.holder.v1",
             "ployz.restart.device-approval.v2",
             "ployz.restart.session-grant.v1",
+            "ployz.restart.start-approval.v1",
         ]
     );
     assert_eq!(
@@ -379,6 +380,10 @@ const ABOVE_FLOOR: &[(&str, &str)] = &[
     (
         "ployz.restart.session-grant.v1",
         "gated: Cloud attaches a browser approval only for a Machine that advertises it; an older enforcing Machine refuses the restart and the dashboard names that Server",
+    ),
+    (
+        "ployz.restart.start-approval.v1",
+        "gated: Cloud attaches a start approval only for a Machine that advertises it, and names an older one as needing a newer Ployz; the CLI signs one regardless, which an older enforcing Machine refuses as it refused an unapproved start",
     ),
     (
         "ployz.image.pull.v1",

@@ -4017,6 +4017,34 @@ mod ensure_container {
         }
 
         #[tokio::test]
+        async fn a_start_or_restart_approval_naming_a_completed_hook_never_starts_it() {
+            let fixture = enforced("ployzd-enforce-hook").await;
+            let service = &fixture.service;
+            let hook = json!({"want":{"state":"running", "rotation":"pending", "container":{"new":{
+                "slot":{"namespace":"app", "service":"api", "kind":"pre_deploy_hook", "creation_key":"h1"},
+                "resolved_spec":spec("example.test/api:1"), "gen":1}}}});
+            let id = present(&ensure(service, hook).await).container_id;
+            set_state(&fixture.fake, &id, json!({"Status":"exited", "ExitCode":0}));
+            let seen = requests(&fixture.fake).len();
+            for kind in [WorkflowKind::Start, WorkflowKind::Restart] {
+                let signed = fixture.signed(&RestartApproval {
+                    kind,
+                    ..fixture.approval(&id)
+                });
+                refused(
+                    operator_ensure(service, started(&id), Some(&signed)).await,
+                    "names a workflow",
+                );
+            }
+            assert_eq!(
+                ends_with(&requests_since(&fixture.fake, seen), Method::POST, "/start").count(),
+                0,
+                "the hook stays exited"
+            );
+            std::fs::remove_dir_all(fixture.data_dir).unwrap();
+        }
+
+        #[tokio::test]
         async fn admission_pins_the_verified_container_when_its_slot_is_replaced() {
             let fixture = enforced("ployzd-enforce-pinned-slot").await;
             let service = &fixture.service;

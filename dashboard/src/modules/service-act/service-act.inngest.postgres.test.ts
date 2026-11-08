@@ -1,4 +1,4 @@
-import type { RuntimeWatchView, ServiceVerb } from "@ployz/sdk";
+import type { RuntimeWatchView, ServiceVerb, Signed } from "@ployz/sdk";
 import { InngestTestEngine, mockCtx } from "@inngest/test";
 import { Effect } from "effect";
 import { Inngest } from "inngest";
@@ -27,6 +27,7 @@ describe("act-service", () => {
   let copies: ServiceCopies;
   let calls: string[];
   let capabilities = ensureEverywhere();
+  let frameReads = true;
   let answer: (call: string) => Effect.Effect<"serving" | "unconfirmed" | "unhealthy", PloyzSdkError>;
 
   const runEffect = makeInngestEffectRunner(<A, E>(operation: Effect.Effect<A, E, Database | OrganizationRuntime | InngestClient>) =>
@@ -36,18 +37,19 @@ describe("act-service", () => {
         cancel: () => Effect.void,
         open: () => Effect.succeed({ status: "connected" as const, connected: asTestDouble<PloyzSession>()({
           observeService: () => Effect.succeed(copies),
-          watchFirstFrame: () => Effect.succeed(asTestDouble<RuntimeWatchView>()({
+          watchFirstFrame: () => frameReads ? Effect.succeed(asTestDouble<RuntimeWatchView>()({
             machines: Object.entries(capabilities).map(([id, list]) => ({ machine: { id, runtime: { capabilities: list } } })),
-          })),
+          })) : Effect.fail(new PloyzProviderError({ operation: "watch", cause: "frame lost" })),
           stopContainer: (_machine: string, container: string) => { calls.push(`stop ${container}`); return answer(`stop ${container}`).pipe(Effect.asVoid); },
           startContainer: (_machine: string, container: string) => { calls.push(`start ${container}`); return answer(`start ${container}`); },
         }) }),
       }),
     ))) as typeof runInngestEffect;
 
-  const request = (verb: ServiceVerb, attemptId: string = crypto.randomUUID()) => runEffect(requestServiceAct(caller, {
-    attemptId, environmentId: "env-1", service: "web", namespace: "acme-prod", runtime: "web", verb, only: null, digest: verb,
-  }));
+  const request = (verb: ServiceVerb, attemptId: string = crypto.randomUUID(), approvals?: Record<string, Signed>) =>
+    runEffect(requestServiceAct(caller, {
+      attemptId, environmentId: "env-1", service: "web", namespace: "acme-prod", runtime: "web", verb, only: null, digest: verb, approvals,
+    }));
   const act = (actId: string, runId = "run-act") => new InngestTestEngine({
     function: createActService(new Inngest({ id: "test" }), runEffect),
     events: [{ name: "service/act.requested", data: { actId, organizationId } }],
@@ -69,6 +71,7 @@ describe("act-service", () => {
     };
     calls = [];
     capabilities = ensureEverywhere();
+    frameReads = true;
     answer = () => Effect.succeed("serving");
     send.mockReset();
     send.mockResolvedValue({ ids: [] });
@@ -274,6 +277,19 @@ describe("act-service", () => {
     expect((await act(admitted.id)).result).toEqual({ actId: admitted.id, state: "done" });
     expect(calls).toEqual(["stop web-a"]);
     expect((await operation(admitted.id))?.servers.map(({ stopped }) => stopped)).toEqual(["yes", "yes"]);
+  });
+
+  it("asks to try again, not to upgrade, when an approval was held back because the Servers couldn't be read", async () => {
+    frameReads = false;
+    // What an enforcing Server answers a stop that carries no approval.
+    answer = () => Effect.fail(new PloyzProviderError({ operation: "stop", cause: { details: { capability: "ployz.restart.device-approval.v2" } } }));
+    const approval: Signed = { body: "{}", signatures: [] };
+    const admitted = await request("stop", undefined, { "web-a": approval, "web-b": approval });
+    if (!admitted.ok) throw new Error("refused");
+
+    await act(admitted.id);
+    const reasons = (await operation(admitted.id))?.servers.map(({ reason }) => reason);
+    expect(reasons).toEqual(["Cloud couldn't check alpha. Try again.", "Cloud couldn't check beta. Try again."]);
   });
 
   it("fails a Server whose Ployz can't ensure Containers without asking it", async () => {

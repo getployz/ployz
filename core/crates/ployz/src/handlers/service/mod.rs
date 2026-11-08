@@ -411,12 +411,11 @@ fn lifecycle(root: &ArgMatches, actions: &'static [ContainerAction]) -> Result<(
                 let (live, names, device_key, machines, cancellation) =
                     (&live, &names, &device_key, &machines, &cancellation);
                 async move {
-                    let approvals =
-                        if matches!(action, ContainerAction::Restart | ContainerAction::Stop) {
-                            restart_approvals(device_key, machines, services, action)?
-                        } else {
-                            HashMap::new()
-                        };
+                    let approvals = if action != ContainerAction::Remove {
+                        restart_approvals(device_key, machines, services, action)?
+                    } else {
+                        HashMap::new()
+                    };
                     apply_service_action(
                         client,
                         live,
@@ -573,9 +572,8 @@ fn restart_approvals(
                 kind: match action {
                     ContainerAction::Stop => WorkflowKind::Stop,
                     ContainerAction::Restart => WorkflowKind::Restart,
-                    ContainerAction::Start | ContainerAction::Remove => {
-                        unreachable!("only restart and stop sign approvals")
-                    }
+                    ContainerAction::Start => WorkflowKind::Start,
+                    ContainerAction::Remove => unreachable!("a removal signs no approval"),
                 },
                 namespace: service.identity.namespace.clone(),
                 service: service.identity.name.clone(),

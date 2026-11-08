@@ -6,7 +6,7 @@ import { decideAndApply } from "#/modules/approvals/apply.server";
 import { askerNames, type ApprovalView, readAsker } from "#/modules/approvals/approvals.server";
 import { ApprovalsInput } from "#/modules/approval-session/approvals-input";
 import { findService } from "#/modules/config-store/store-lookup.server";
-import { restartTarget } from "#/modules/service-act/service-act.server";
+import { actTarget } from "#/modules/service-act/service-act.server";
 import { freshApproval, freshOperationDigest, freshPendingApprovals } from "#/modules/machines/server-operations.server";
 import { type Access, requireAccess } from "#/modules/organization/access.server";
 import { approvalForSupport } from "#/modules/support-access/support-view";
@@ -52,7 +52,7 @@ export const decideApprovalServerFn = createServerFn({ method: "POST" })
     organizationSlug: Schema.String,
     id: Schema.String,
     decision: ApprovalDecision,
-    /** For a restart on Servers that enforce: one approval per container, from the approver's passkey session. */
+    /** For a restart or stop on Servers that enforce: one approval per container, from the approver's passkey session. */
     approvals: Schema.optional(ApprovalsInput),
   })))
   .handler(({ context, data }) => runActor(context, Effect.gen(function* () {
@@ -68,10 +68,10 @@ export const decideApprovalServerFn = createServerFn({ method: "POST" })
   })));
 
 /**
- * The restart a dashboard ask runs once approved, as the approver's browser needs it to make approvals: the Service's
- * copies and the Servers. Null for anything else, or when Cloud can't read the Servers.
+ * The restart or stop a dashboard ask runs once approved, as the approver's browser needs it to make approvals: the
+ * Service's copies and the Servers. Null for anything else, or when Cloud can't read the Servers.
  */
-export const approvalRestartTargetServerFn = createServerFn({ method: "GET" })
+export const approvalActTargetServerFn = createServerFn({ method: "GET" })
   .middleware([publicErrorMiddleware, actorMiddleware])
   .validator(strictValidator(Schema.Struct({ organizationSlug: Schema.String, id: Schema.String })))
   .handler(({ context, data }) => runActor(context, Effect.gen(function* () {
@@ -79,9 +79,9 @@ export const approvalRestartTargetServerFn = createServerFn({ method: "GET" })
     const asker = yield* readAsker(access.organization.id, data.id);
     if (asker === undefined || "diff" in asker.review) return null;
     const apply = asker.review.apply;
-    if (apply === undefined || !("service" in apply) || apply.verb !== "restart") return null;
+    if (apply === undefined || !("service" in apply)) return null;
     const found = yield* findService(access.organization.id, apply.environmentId, apply.service);
     if (found === null) return null;
-    const target = yield* restartTarget(access.organization.id, found);
-    return target === null ? null : { environmentId: apply.environmentId, service: apply.service, environmentName: found.environment, namespace: found.namespace, ...target };
+    const target = yield* actTarget(access.organization.id, found);
+    return target === null ? null : { verb: apply.verb, environmentId: apply.environmentId, service: apply.service, environmentName: found.environment, namespace: found.namespace, ...target };
   })));

@@ -118,10 +118,36 @@ export type EnforcementFrame = {
   readonly machines: readonly { readonly machine: { readonly id: string; readonly runtime: { readonly device_enforcement?: boolean | null } } }[];
 };
 
-/** The copies the Servers report of the Service `identity` (`namespace/runtime`), its hooks included. */
+/** The copies the Servers report of the Service `identity` (`namespace/runtime`), its hooks included and marked. */
 export function copiesIn(frame: Pick<EnforcementFrame, "services">, identity: string) {
   const service = frame.services.find((candidate) => candidate.identity === identity);
-  return service === undefined ? [] : [...service.containers, ...service.hook_containers];
+  return service === undefined ? [] : [
+    ...service.containers.map((copy) => ({ ...copy, hook: false })),
+    ...service.hook_containers.map((copy) => ({ ...copy, hook: true })),
+  ];
+}
+
+export const START_APPROVAL_CAPABILITY = "ployz.restart.start-approval.v1";
+
+const NEEDS_NEWER = "needs a newer Ployz to";
+
+/** Why a Server can't take a run's step: its Ployz is too old. No retry helps until it is upgraded. */
+export const needsNewerPloyz = (server: string, side: ServiceVerb) => `${server} ${NEEDS_NEWER} ${side} it.`;
+
+export const needsUpgrade = (reason: string | null) => reason?.includes(` ${NEEDS_NEWER} `) === true;
+
+/**
+ * The Server a stop would strand: it runs a copy of the Service and enforces, but can't take a start approval, so
+ * nothing in Ployz Cloud could start the copy again. Null when every such Server can. A hook never starts again, so
+ * a Server that holds only hooks strands nothing.
+ */
+export function strandedByStop(
+  copies: readonly { readonly machineId: string; readonly hook: boolean }[],
+  machines: readonly { readonly id: string; readonly name: string; readonly capabilities: readonly string[]; readonly deviceEnforcement?: boolean | null }[],
+) {
+  const hosts = new Set(copies.filter((copy) => !copy.hook).map((copy) => copy.machineId));
+  return machines.find((machine) => hosts.has(machine.id) && machine.deviceEnforcement === true
+    && !machine.capabilities.includes(START_APPROVAL_CAPABILITY))?.name ?? null;
 }
 
 /**
