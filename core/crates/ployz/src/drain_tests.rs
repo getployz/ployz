@@ -67,6 +67,7 @@ fn an_empty_owned_scope_chooses_nothing_and_reserved_namespaces_never() {
     };
     assert!(shop.includes(&service("shop/web")) && !shop.includes(&service("blog/web")));
     assert!(DrainScope::EveryNamespace.includes(&service("blog/web")));
+    assert!(DrainScope::EveryNamespace.includes(&service("ployz/api")));
     let system = QualifiedService::system_ingress();
     assert!(!DrainScope::EveryNamespace.includes(&system));
     let web = DrainScope::Services {

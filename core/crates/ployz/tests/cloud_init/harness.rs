@@ -9,7 +9,7 @@ use std::{
 };
 
 use ployz_core::{
-    AdvertisedEndpoint, ContainerDetails, ContainerId, ContainerKind, ContainerList,
+    AdvertisedEndpoint, ClusterNamed, ContainerDetails, ContainerId, ContainerKind, ContainerList,
     ContainerLocator, ContainerNow, ContainerObservation, ContainerRuntimeObservation,
     ContainerWant, ContractDescription, CopyRotation, CreationKey, DESCRIBE_CONTRACT_CAPABILITY,
     ENROLL_FOR_RECOVERY_CAPABILITY, EnrollAs, EnrollRequest, Enrolled, EnsuredContainer,
@@ -17,8 +17,8 @@ use ployz_core::{
     MachineImages, MachineList, MachineName, MachineNow, MachineObservation, MachineToken,
     MembershipObservation, NewContainer, OpaquePayload, PROTOCOL_MAJOR, RecoverySeed, Registered,
     RoutesRead, RpcError, RpcErrorCode, RpcRequestBody, RpcResponse, RunRotation, RunTarget,
-    SealingKeyBackup, SealingKeyWrapped, SealingPublicKey, SetManagementClientResponse,
-    VolumeInventory, WRAP_SEALING_KEY_CAPABILITY, WireGuardPublicKey,
+    SET_CLUSTER_NAME_CAPABILITY, SealingKeyBackup, SealingKeyWrapped, SealingPublicKey,
+    SetManagementClientResponse, VolumeInventory, WRAP_SEALING_KEY_CAPABILITY, WireGuardPublicKey,
 };
 
 pub fn fake_wrapped() -> SealingKeyWrapped {
@@ -543,7 +543,7 @@ impl FakeMachine for JoinDaemon {
         &self,
         _request: Request<OpaquePayload>,
     ) -> Result<Response<OpaquePayload>, Status> {
-        let mut capabilities = vec![DESCRIBE_CONTRACT_CAPABILITY];
+        let mut capabilities = vec![DESCRIBE_CONTRACT_CAPABILITY, SET_CLUSTER_NAME_CAPABILITY];
         if self.inner.recovery_rpcs.load(Ordering::SeqCst) {
             capabilities.extend([ENROLL_FOR_RECOVERY_CAPABILITY, WRAP_SEALING_KEY_CAPABILITY]);
         }
@@ -986,6 +986,22 @@ impl FakeMachine for JoinDaemon {
     ) -> Result<Response<OpaquePayload>, Status> {
         rpc_ok(ployz_core::ImagePulled::default())
     }
+    async fn set_cluster_name(
+        &self,
+        request: Request<OpaquePayload>,
+    ) -> Result<Response<OpaquePayload>, Status> {
+        let decoded = request
+            .into_inner()
+            .decode_request()
+            .map_err(|error| Status::invalid_argument(error.to_string()))?;
+        let RpcRequestBody::SetClusterName(set) = decoded.body else {
+            return Err(Status::invalid_argument("expected SetClusterName"));
+        };
+        rpc_ok(ClusterNamed {
+            name: Some(set.name),
+        })
+    }
+
     async fn leave(
         &self,
         _request: Request<OpaquePayload>,

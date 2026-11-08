@@ -670,7 +670,7 @@ fn left_short(removed: &MachineId, live: &LiveServices<RpcError>, last: bool) ->
         .all(|machine| machine == removed);
     let services = live.services();
     for service in replicated_services_on(removed, live) {
-        if service.namespace.is_reserved() {
+        if service.namespace.is_system() {
             continue;
         }
         let elsewhere = services

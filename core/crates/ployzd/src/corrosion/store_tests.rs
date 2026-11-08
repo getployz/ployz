@@ -509,6 +509,27 @@ async fn the_first_sealing_key_awaiting_recovery_stays() {
 }
 
 #[tokio::test]
+async fn the_last_cluster_name_written_is_the_one_read() {
+    let (store, task) = identity_store(corrosion_db()).await;
+    assert_eq!(store.cluster_name().await.unwrap(), None);
+    for name in ["acme", "beta"] {
+        let name = ployz_core::ClusterName::parse(name).unwrap();
+        store.publish_cluster_name(&name).await.unwrap();
+        assert_eq!(store.cluster_name().await.unwrap(), Some(name));
+    }
+    store
+        .api()
+        .execute([Statement::new(
+            "UPDATE cluster SET value = 'Not A Label' WHERE key = 'name'",
+            [],
+        )])
+        .await
+        .unwrap();
+    assert!(store.cluster_name().await.is_err());
+    task.abort();
+}
+
+#[tokio::test]
 async fn publishing_a_sealing_public_key_never_replaces_the_clusters() {
     let (store, task) = identity_store(corrosion_db()).await;
     let first = ployz_core::SealingPublicKey::from_bytes([1; 32]);

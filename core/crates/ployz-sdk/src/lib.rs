@@ -393,6 +393,21 @@ impl Client {
         self.inner.set_push_target(url).await.map_err(rpc_to_napi)
     }
 
+    /// Name the Cluster, and answer the name the entry Machine now holds.
+    ///
+    /// # Errors
+    /// Returns `invalid_argument` for a name that is not one DNS label, `unsupported` when the
+    /// Machine predates Cluster Names, and transport errors.
+    #[napi(ts_return_type = "Promise<string | null>")]
+    pub async fn set_cluster_name(&self, name: String) -> Result<Option<String>> {
+        let name = ployz_core::ClusterName::parse(name).map_err(invalid_argument)?;
+        self.inner
+            .set_cluster_name(name)
+            .await
+            .map(|named| named.name.map(String::from))
+            .map_err(rpc_to_napi)
+    }
+
     /// What the dial confirmed about the entry's Cluster: null when the connect expected none.
     #[napi(ts_return_type = "{ verified: boolean; foreign: string[] } | null")]
     pub fn cluster(&self) -> Result<serde_json::Value> {

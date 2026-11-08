@@ -252,6 +252,13 @@ validated_string_newtype!(
 );
 
 validated_string_newtype!(
+    /// A Cluster's name in its Internal DNS alias `<service>.<namespace>.<cluster>.ployz.internal`.
+    /// It is not unique: two Clusters may share one.
+    ClusterName, "Cluster Name", "one DNS label: up to 63 lowercase letters, digits and '-', starting and ending with a letter or digit",
+    |value| is_dns_label(value)
+);
+
+validated_string_newtype!(
     /// A manifest digest as the Machine stored it: `sha256:` and 64 lowercase hex.
     ImageDigest, "image digest", "`sha256:` followed by 64 lowercase hexadecimal characters",
     |value| value.strip_prefix("sha256:").is_some_and(|hex| is_lower_hex(hex, 64))
@@ -662,6 +669,9 @@ pub const NAMESPACE_LABEL: &str = "ployz.namespace";
 impl Namespace {
     /// The reserved Namespace for Ployz infrastructure.
     pub const SYSTEM: &'static str = "ployz-system";
+    /// Reserved so `x.ployz.internal` never names a Service: the Internal DNS alias
+    /// `<service>.<namespace>.<cluster>.ployz.internal` owns that suffix.
+    pub const ALIAS: &'static str = "ployz";
 
     /// The reserved Namespace for Ployz infrastructure Containers.
     #[must_use]
@@ -669,10 +679,17 @@ impl Namespace {
         Self::parse(Self::SYSTEM).expect("the reserved Namespace is a valid DNS label")
     }
 
-    /// Whether this name is reserved for Ployz infrastructure.
+    /// Whether this is the Namespace of Ployz infrastructure, which drains, removals and
+    /// teardown leave to Ployz.
+    #[must_use]
+    pub fn is_system(&self) -> bool {
+        self.as_str() == Self::SYSTEM
+    }
+
+    /// Whether users may not create this Namespace: the system one, or the Internal DNS alias.
     #[must_use]
     pub fn is_reserved(&self) -> bool {
-        self.as_str() == Self::SYSTEM
+        matches!(self.as_str(), Self::SYSTEM | Self::ALIAS)
     }
 
     /// Physical Docker Volume name for a declared volume owned by this Namespace.
@@ -1094,6 +1111,20 @@ mod tests {
         assert!(super::CertificateHost::parse(&longest).is_ok());
         assert!(super::IngressHost::parse(format!("{longest}c")).is_err());
         assert!(super::IngressHost::parse(format!("{}.example.com", "b".repeat(64))).is_err());
+    }
+
+    #[test]
+    fn a_cluster_name_is_one_dns_label_of_at_most_63_characters() {
+        assert_eq!(
+            super::ClusterName::parse("a".repeat(63)).unwrap().as_str(),
+            "a".repeat(63)
+        );
+        let refused = super::ClusterName::parse("a".repeat(64)).unwrap_err();
+        assert!(refused.to_string().contains("63"), "{refused}");
+        for invalid in ["", "Acme", "acme.prod", "-acme", "acme-", "ac_me"] {
+            assert!(super::ClusterName::parse(invalid).is_err(), "{invalid}");
+        }
+        assert!(serde_json::from_value::<super::ClusterName>(serde_json::json!("ACME")).is_err());
     }
 
     #[test]

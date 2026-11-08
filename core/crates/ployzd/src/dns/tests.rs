@@ -477,6 +477,58 @@ fn exact_selectors_do_not_fall_back_when_their_endpoint_is_ineligible() {
 }
 
 #[test]
+fn the_cluster_alias_answers_like_the_short_form_and_other_labels_are_nxdomain() {
+    let machine = MachineId::parse("a".repeat(32)).unwrap();
+    let service = ServiceId::parse("b".repeat(32)).unwrap();
+    let observations = [observation(
+        1,
+        &machine,
+        &service,
+        &ServiceName::parse("postgres").unwrap(),
+        ContainerKind::ServiceContainer,
+        running(HealthObservation::Healthy),
+        Some([10, 210, 1, 2]),
+    )];
+    let mut inputs = ProjectionInputs::new(machine);
+    inputs.observations = observations.to_vec();
+
+    let unnamed = inputs.build();
+    assert_eq!(
+        addresses(plan(&unnamed, "postgres.app.internal.", RecordType::A)),
+        vec![Ipv4Addr::new(10, 210, 1, 2)]
+    );
+    for record_type in [RecordType::A, RecordType::AAAA] {
+        assert_nxdomain(plan(
+            &unnamed,
+            "postgres.app.acme.ployz.internal.",
+            record_type,
+        ));
+    }
+
+    inputs.cluster = Some(ClusterName::parse("acme").unwrap());
+    let named = inputs.build();
+    assert_eq!(
+        addresses(plan(
+            &named,
+            "postgres.app.acme.ployz.internal.",
+            RecordType::A
+        )),
+        vec![Ipv4Addr::new(10, 210, 1, 2)]
+    );
+    assert_eq!(
+        addresses(plan(&named, "postgres.app.internal.", RecordType::A)),
+        vec![Ipv4Addr::new(10, 210, 1, 2)]
+    );
+    for record_type in [RecordType::A, RecordType::AAAA] {
+        assert_nxdomain(plan(
+            &named,
+            "postgres.app.other.ployz.internal.",
+            record_type,
+        ));
+    }
+}
+
+#[test]
 fn malformed_internal_and_non_a_queries_are_authoritative() {
     let projection = unfiltered_projection(&[]);
 

@@ -3796,7 +3796,10 @@ mod read_routes {
         local
     }
 
-    async fn serve(dir: &Path, rows: &[Machine]) -> (MachineService, tokio::task::JoinHandle<()>) {
+    pub(super) async fn serve(
+        dir: &Path,
+        rows: &[Machine],
+    ) -> (MachineService, tokio::task::JoinHandle<()>) {
         let (replicated, task): (ReplicatedStore, _) = identity_store(corrosion_db()).await;
         for row in rows {
             replicated
@@ -4020,5 +4023,87 @@ mod read_routed_addresses {
         }
 
         assert_eq!(read(&service).await.routes, Some(routed(3)));
+    }
+}
+
+mod cluster_name {
+    use ployz_core::{
+        ClusterName, ClusterNamed, OpaquePayload, ReadClusterNameRequest, Rpc, RpcResponse,
+        SetClusterNameRequest,
+    };
+    use tonic::Response;
+
+    use super::*;
+
+    fn named<R: Rpc<Response = ClusterNamed>>(response: Response<OpaquePayload>) -> ClusterNamed {
+        response
+            .into_inner()
+            .decode_response()
+            .unwrap()
+            .decode::<R>()
+            .unwrap()
+    }
+
+    async fn read(service: &MachineService) -> ClusterNamed {
+        let request = op::ReadClusterName::into_request(ReadClusterNameRequest {});
+        named::<op::ReadClusterName>(
+            service
+                .read_cluster_name(Request::new(request.encode().unwrap()))
+                .await
+                .unwrap(),
+        )
+    }
+
+    async fn set(service: &MachineService, name: &str) -> ClusterNamed {
+        let request = op::SetClusterName::into_request(SetClusterNameRequest {
+            name: ClusterName::parse(name).unwrap(),
+        });
+        named::<op::SetClusterName>(
+            service
+                .set_cluster_name(Request::new(request.encode().unwrap()))
+                .await
+                .unwrap(),
+        )
+    }
+
+    #[tokio::test]
+    async fn a_set_name_is_read_back_and_a_rename_replaces_it() {
+        let dir = std::env::temp_dir().join(format!("ployzd-name-{}", MachineId::random()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let (service, task) = super::read_routes::serve(&dir, &[]).await;
+
+        assert_eq!(read(&service).await.name, None);
+        for name in ["acme", "beta"] {
+            let name = Some(ClusterName::parse(name).unwrap());
+            assert_eq!(
+                set(&service, name.as_ref().unwrap().as_str()).await.name,
+                name
+            );
+            assert_eq!(read(&service).await.name, name);
+        }
+        task.abort();
+        std::fs::remove_dir_all(dir).ok();
+    }
+
+    #[tokio::test]
+    async fn a_machine_outside_a_cluster_refuses_the_name() {
+        let dir = std::env::temp_dir().join(format!("ployzd-name-{}", MachineId::random()));
+        let store = RecordOwner::spawn(LocalMachineStore::open(&dir).unwrap()).unwrap();
+        let service = MachineService::with_cluster(store, None);
+        let request = op::SetClusterName::into_request(SetClusterNameRequest {
+            name: ClusterName::parse("acme").unwrap(),
+        });
+        let response: RpcResponse = service
+            .set_cluster_name(Request::new(request.encode().unwrap()))
+            .await
+            .unwrap()
+            .into_inner()
+            .decode_response()
+            .unwrap();
+        let ployz_core::RpcResponseBody::Error(error) = response.body else {
+            panic!("expected a refusal, got {response:?}");
+        };
+        assert_eq!(error.code, RpcErrorCode::Unavailable);
+        std::fs::remove_dir_all(dir).ok();
     }
 }

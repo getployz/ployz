@@ -1561,6 +1561,26 @@ pub struct RoutedAddresses {
     pub routes: Option<BTreeMap<QualifiedService, BTreeMap<ContainerId, ContainerAddress>>>,
 }
 
+/// Read the Cluster Name on the target Machine's replica.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
+pub struct ReadClusterNameRequest {}
+
+/// Name the Cluster. The target Machine writes it to its replica, and the last
+/// write wins across the Cluster.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct SetClusterNameRequest {
+    pub name: crate::ClusterName,
+}
+
+/// The Cluster Name on the target Machine's replica.
+#[derive(Clone, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
+pub struct ClusterNamed {
+    /// `None` when the Cluster has no name, or its row has not replicated to this
+    /// Machine yet.
+    #[serde(default)]
+    pub name: Option<crate::ClusterName>,
+}
+
 /// A listed Machine whose proxy has not acked the copies a reader waits for.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum Unacked {
@@ -1713,6 +1733,7 @@ define_responses! {
     CertificateMaterialPublished(CertificateMaterialPublished) => "certificate_material_published";
     RoutesRead(RoutesRead) => "routes_read";
     RoutedAddresses(RoutedAddresses) => "routed_addresses";
+    ClusterNamed(ClusterNamed) => "cluster_named";
     MachineUpdated(MachineUpdated) => "machine_updated";
     MachineUpgradeAttempt(MachineUpgradeAttempt) => "machine_upgrade_attempt";
     SealingKeyHeld(SealingKeyHeld) => "sealing_key_held";
