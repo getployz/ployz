@@ -561,14 +561,15 @@ fn copies_of<'a>(
         .collect()
 }
 
-/// Stop Container `container` on `machine` once no proxy routes to it. A copy that
-/// serves leaves rotation first and stays startable. `approval` rides every step, for a
-/// Machine under Device enforcement. An answer is the Machine's; a lost one is the
-/// transport's error, and the stop may have happened.
+/// Stop Container `container` on `machine` once no proxy routes to it, or once the
+/// wait for a proxy that never confirms ends. A copy that serves leaves rotation first
+/// and stays startable. `approval` rides every step, for a Machine under Device
+/// enforcement. An answer is the Machine's; a lost one is the transport's error, and
+/// the stop may have happened.
 ///
 /// # Errors
-/// Returns the Machine's refusal, a copy proxies kept routing (left running), or the
-/// transport's error when it did not answer.
+/// Returns the Machine's refusal, a cancelled wait (left running), or the transport's
+/// error when it did not answer.
 pub async fn stop_one(
     session: &Session,
     machine: MachineId,
