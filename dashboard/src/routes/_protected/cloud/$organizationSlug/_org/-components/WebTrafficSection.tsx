@@ -57,7 +57,7 @@ export function WebTrafficSection({ organizationSlug }: { organizationSlug: stri
     <SettingsSection id="web-traffic" title="Web traffic">
       <SettingsRow
         label="Public ports"
-        hint={publicHint(setup, observed)}
+        hint={publicHint(setup, observed, switching)}
         commit="none"
         control={canSwitchBack ? (
           editable ? <Button type="button" variant="outline" size="sm" disabled={switching} onClick={() => setReviewing("public")}>Switch back</Button> : null
@@ -106,19 +106,31 @@ export function WebTrafficSection({ organizationSlug }: { organizationSlug: stri
   );
 }
 
-/** What the Servers show of their ports, once seen; before that, what the source says they should show. */
-function publicHint(setup: CloudflareSetup | null, observed: ClusterIngressObservation | null) {
-  if (setup?.state === "left") return `Delete the tunnel ${setup.tunnelName} and *.${setup.zone} in Cloudflare.`;
+/** Whether a Server seen still holds the tunnel. A failed switch leaves it there, whatever the row's state says. */
+const tunnelHeld = (observed: ClusterIngressObservation | null) => observed !== null && holdingCount(observed.servers, "tunnel") > 0;
+
+/** Whether the Servers were seen and none holds the tunnel, so it is the user's to delete. */
+const tunnelLetGo = (observed: ClusterIngressObservation | null) => observed !== null && holdingCount(observed.servers, "tunnel") === 0;
+
+const connectedWords = (setup: CloudflareSetup, observed: ClusterIngressObservation | null) =>
+  observed === null ? setup.zone : `${setup.zone} · ${holdingCount(observed.servers, "tunnel")} of ${observed.servers.length} servers connected`;
+
+/**
+ * What the Servers show of their ports, once seen. A switch under way or one that failed reads as the Doors stand, not
+ * as it was meant to end, and the tunnel is left for the user to delete only once no Server holds it.
+ */
+function publicHint(setup: CloudflareSetup | null, observed: ClusterIngressObservation | null, switching: boolean) {
   if (setup === null) return "Ports 80 and 443 open on every server.";
-  return doorWords(observed, "public") ?? (setup.state === "active" ? "Ports 80 and 443 closed." : "Ports 80 and 443 open on every server.");
+  if (setup.state === "left" && !switching && tunnelLetGo(observed)) return `Delete the tunnel ${setup.tunnelName} and *.${setup.zone} in Cloudflare.`;
+  return doorWords(observed, "public") ?? "Checking your servers…";
 }
 
-/** What the Servers show of the tunnel, once seen, so a switch under way reads as the Doors stand, not as it will end. */
+/** What the Servers show of the tunnel, once seen, the same way. */
 function cloudflareHint(setup: CloudflareSetup | null, observed: ClusterIngressObservation | null, switching: boolean) {
-  if (setup === null || setup.state === "left") return "Serve through Cloudflare with no open ports.";
-  if (setup.state === "set_up" && !switching) return `Tunnel ready on ${setup.zone}`;
-  if (observed === null) return setup.zone;
-  return `${setup.zone} · ${holdingCount(observed.servers, "tunnel")} of ${observed.servers.length} servers connected`;
+  if (setup === null) return "Serve through Cloudflare with no open ports.";
+  if (switching || setup.state === "active" || tunnelHeld(observed)) return connectedWords(setup, observed);
+  if (setup.state === "left") return "Serve through Cloudflare with no open ports.";
+  return `Tunnel ready on ${setup.zone}`;
 }
 
 function cloudflareControl({ setup, change, switching, editable, settingUp, onSetUp, onSwitch }: {
@@ -134,7 +146,7 @@ function cloudflareControl({ setup, change, switching, editable, settingUp, onSe
   if (setup?.state === "active" && !canSwitch) return switching ? null : <Badge variant="info">In use</Badge>;
   if (!editable) return null;
   if (setup === null || setup.state === "left") {
-    return <Button type="button" variant="outline" size="sm" disabled={settingUp} onClick={onSetUp}>Set up</Button>;
+    return <Button type="button" variant="outline" size="sm" disabled={settingUp || switching} onClick={onSetUp}>Set up</Button>;
   }
   return <Button type="button" size="sm" disabled={switching} onClick={onSwitch}>Review and switch</Button>;
 }
