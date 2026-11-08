@@ -5041,6 +5041,74 @@ mod ensure_container {
         }
 
         #[tokio::test]
+        async fn a_removed_hook_is_never_made_again_from_its_slot() {
+            let fixture = enforced("ployzd-deploy-hook-gone").await;
+            let approved = spec(PINNED);
+            let signed = fixture.deploy(&approved);
+            let hook = deploy_ensure(
+                &fixture.service,
+                new_want("pre_deploy_hook", "h1", &approved),
+                Some(&signed),
+            )
+            .await
+            .unwrap();
+            let hook = present(&hook).container_id;
+            deploy_ensure(
+                &fixture.service,
+                json!({"state":"gone", "container":{"id":hook}, "drain":0}),
+                Some(&signed),
+            )
+            .await
+            .unwrap();
+            let seen = requests(&fixture.fake).len();
+            for service in [&fixture.service, &fixture.restarted()] {
+                deploy_refused(
+                    deploy_ensure(
+                        service,
+                        new_want("pre_deploy_hook", "h1", &approved),
+                        Some(&signed),
+                    )
+                    .await,
+                    "already ran its pre-deploy command",
+                );
+            }
+            assert_eq!(creates(&fixture.fake, seen), 0);
+            assert_eq!(
+                ends_with(&requests_since(&fixture.fake, seen), Method::POST, "/start").count(),
+                0
+            );
+            std::fs::remove_dir_all(fixture.data_dir).unwrap();
+        }
+
+        #[tokio::test]
+        async fn a_hook_admitted_but_never_made_is_made_on_retry() {
+            let fixture = enforced("ployzd-deploy-hook-retry").await;
+            let approved = spec(PINNED);
+            let signed = fixture.deploy(&approved);
+            // Admission took the hook's place, and the create never happened.
+            fixture
+                .service
+                .local
+                .admit_operator_restart(
+                    serde_json::from_value(new_want("pre_deploy_hook", "h1", &approved)).unwrap(),
+                    None,
+                    Some(&signed),
+                )
+                .await
+                .unwrap();
+            let seen = requests(&fixture.fake).len();
+            deploy_ensure(
+                &fixture.service,
+                new_want("pre_deploy_hook", "h1", &approved),
+                Some(&signed),
+            )
+            .await
+            .unwrap();
+            assert_eq!(creates(&fixture.fake, seen), 1);
+            std::fs::remove_dir_all(fixture.data_dir).unwrap();
+        }
+
+        #[tokio::test]
         async fn a_deploy_approval_admits_steps_in_its_namespace_only() {
             let fixture = enforced("ployzd-deploy-steps").await;
             let service = &fixture.service;

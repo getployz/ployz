@@ -233,6 +233,10 @@ struct Operation {
     /// that slot adopts the hook that ran instead of running another.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     hook: Option<ployz_core::CreationKey>,
+    /// The hook's Container was made in that slot, just before it first started. A
+    /// resend then adopts it while it exists and makes no other once it's gone.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    hook_made: bool,
 }
 
 /// Where `approval`'s consumption is kept. A proposal step gets an entry of its own, so a plan
@@ -306,6 +310,7 @@ impl ConsumptionLog {
                 expires_at: approval.expires_at,
                 containers: BTreeMap::new(),
                 hook: None,
+                hook_made: false,
             });
         operation.expires_at = operation.expires_at.max(approval.expires_at);
         let replayed = operation
@@ -381,8 +386,65 @@ impl ConsumptionLog {
                 expires_at: approval.expires_at,
                 containers: BTreeMap::new(),
                 hook: Some(slot.clone()),
+                hook_made: false,
             },
         );
+        let written = serde_json::to_vec(&updated)
+            .map_err(io::Error::other)
+            .and_then(|contents| crate::filesystem::atomic_write(&self.path, &contents, 0o600))
+            .map_err(Error::ApprovalRecord);
+        if let Err(error) = written {
+            *guard = None;
+            return Err(error);
+        }
+        *guard = Some(updated);
+        Ok(())
+    }
+
+    /// Whether a deploy's hook was already made in the slot `key` names.
+    ///
+    /// # Errors
+    /// Returns [`Error::ApprovalRecord`] when the record cannot be read.
+    pub(super) fn hook_made(&self, key: &str) -> Result<bool, Error> {
+        let mut guard = self
+            .operations
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        if guard.is_none() {
+            *guard = Some(self.load().map_err(Error::ApprovalRecord)?);
+        }
+        let consumption = guard.as_ref().expect("loaded above");
+        Ok(consumption.operations.values().any(|taken| {
+            taken.hook_made && taken.hook.as_ref().is_some_and(|hook| hook.as_str() == key)
+        }))
+    }
+
+    /// Record that a deploy's hook is about to start in the slot `key` names, so no
+    /// resend of that slot makes another once this one is gone. A slot no deploy approval
+    /// took is left alone.
+    ///
+    /// # Errors
+    /// Returns [`Error::ApprovalRecord`] when the record cannot be read or written.
+    pub(super) fn mark_hook_made(&self, key: &str) -> Result<(), Error> {
+        let mut guard = self
+            .operations
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        if guard.is_none() {
+            *guard = Some(self.load().map_err(Error::ApprovalRecord)?);
+        }
+        let consumption = guard.as_ref().expect("loaded above");
+        let mut updated = consumption.clone();
+        let mut marked = false;
+        for taken in updated.operations.values_mut() {
+            if !taken.hook_made && taken.hook.as_ref().is_some_and(|hook| hook.as_str() == key) {
+                taken.hook_made = true;
+                marked = true;
+            }
+        }
+        if !marked {
+            return Ok(());
+        }
         let written = serde_json::to_vec(&updated)
             .map_err(io::Error::other)
             .and_then(|contents| crate::filesystem::atomic_write(&self.path, &contents, 0o600))
@@ -426,6 +488,7 @@ impl ConsumptionLog {
                 expires_at: set.expires_at,
                 containers: BTreeMap::new(),
                 hook: None,
+                hook_made: false,
             },
         );
         let written = serde_json::to_vec(&updated)
@@ -694,6 +757,7 @@ mod tests {
                 expires_at: first.expires_at,
                 containers: BTreeMap::from([(container('a'), RestartStep::Stop)]),
                 hook: None,
+                hook_made: false,
             },
         )]);
         std::fs::write(

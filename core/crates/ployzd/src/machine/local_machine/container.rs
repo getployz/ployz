@@ -1387,6 +1387,11 @@ impl LocalMachine {
                     if !never_started(&adopted) {
                         return Ok(None);
                     }
+                    if local.record().device_enforcement() {
+                        local
+                            .approvals
+                            .mark_hook_made(new.slot.creation_key.as_str())?;
+                    }
                 }
                 if let Some((run, expect)) = fence {
                     return rotation::start_fenced(
@@ -1441,6 +1446,19 @@ impl LocalMachine {
                     spec,
                     admission: async {
                         admit_reserved_door(namespace, spec)?;
+                        // A deploy's hook runs once: a slot whose hook was made and
+                        // is now gone is never made again, so it never reruns.
+                        if enforced
+                            && kind == ContainerKind::PreDeployHook
+                            && let Some(key) = creation_key.as_deref()
+                            && self.approvals.hook_made(key)?
+                        {
+                            return Err(Error::DeployRefused(
+                                ployz_core::authority::AuthorityRefusal::Mismatch {
+                                    field: "a hook run",
+                                },
+                            ));
+                        }
                         if enforced {
                             containers
                                 .refuse_managed_external(&machine.id, spec)
