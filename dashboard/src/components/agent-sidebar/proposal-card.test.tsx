@@ -25,6 +25,7 @@ const proposal: ProposalView = {
   environment: "production",
   environment_id: "e1",
   steps: [stop, restart, start],
+  progress: [stop, restart, start].map((step, index) => ({ index: index + 1, verb: step.verb, service: step.service, state: "not_run" as const, reason: null })),
   halt: null,
   reason: null,
   requested_by: "u1",
@@ -56,18 +57,54 @@ it("lists every step in order, each on the servers' name for it, and what the pl
     "3.Start webOn servers shop-prod-a1b2/web",
   ]);
   expect(within(card).getByRole("list", { name: "Destroys" }).textContent).toBe("Stops service web until started againRestarts service db");
-  expect(within(card).getByText("Steps run in this order and stop at the first that fails.")).toBeTruthy();
   expect(within(card).getByText(/Asked by Ada/)).toBeTruthy();
 });
 
 it("approves with the bundle this browser signed over the card's steps", async () => {
   target.mockResolvedValueOnce(fetched(proposal.steps));
   sign.mockResolvedValueOnce(signed);
-  decide.mockResolvedValueOnce({ ok: true, proposal: { ...proposal, status: "approved", decided_at: "2026-11-08T12:01:00.000Z" } } as never);
+  const progress = proposal.progress.map((step, index) => ({ ...step, state: index === 0 ? "accepted" as const : "waiting" as const }));
+  decide.mockResolvedValueOnce({ ok: true, proposal: { ...proposal, status: "approved", progress, decided_at: "2026-11-08T12:01:00.000Z" } } as never);
   fireEvent.click(within(show(proposal)).getByRole("button", { name: "Approve all" }));
   await waitFor(() => expect(decide).toHaveBeenCalledWith({ data: { organizationSlug: "acme", id: "p1", decision: { approve: signed } } }));
   expect(sign.mock.calls[0]?.[0].steps.map((step) => step.verb)).toEqual(["stop", "restart", "start"]);
-  await screen.findByText("Approved. 3 steps go ahead in shop/production, in order.");
+  // Every signed value is the card's: its namespace and Environment, never what Cloud's target says.
+  expect(sign.mock.calls[0]?.[0].environment).toEqual({ environmentId: "e1", environmentName: "production", namespace: "shop-prod-a1b2" });
+  const approved = await screen.findByLabelText("3 steps in shop/production approved");
+  expect(within(approved).getAllByRole("listitem").map((item) => item.textContent)).toEqual(["1.Stop webStarting", "2.Restart db on fra-1Waiting", "3.Start webWaiting"]);
+});
+
+it("signs nothing when Cloud names another namespace, or a Container off the Server a step names", async () => {
+  target.mockResolvedValueOnce({ ...fetched(proposal.steps), namespace: "shop-prod-ffff" });
+  const card = show(proposal);
+  fireEvent.click(within(card).getByRole("button", { name: "Approve all" }));
+  expect((await within(card).findByRole("alert")).textContent).toBe("This doesn't match the proposal. Nothing was approved.");
+  const elsewhere = fetched(proposal.steps);
+  elsewhere.steps[1] = { ...restart, copies: [{ id: "d".repeat(64), machineId: "m2" as MachineId, hook: false }] };
+  target.mockResolvedValueOnce(elsewhere);
+  fireEvent.click(within(card).getByRole("button", { name: "Approve all" }));
+  await waitFor(() => expect(target).toHaveBeenCalledTimes(2));
+  expect((await within(card).findByRole("alert")).textContent).toBe("This doesn't match the proposal. Nothing was approved.");
+  expect(sign).not.toHaveBeenCalled();
+  expect(decide).not.toHaveBeenCalled();
+});
+
+it("shows how far a decided plan got, and lets the card go", () => {
+  const onDismiss = vi.fn();
+  const progress = proposal.progress.map((step) => step.index === 1 ? { ...step, state: "done" as const }
+    : step.index === 2 ? { ...step, state: "failed" as const, reason: "fra-1 didn't accept the approval." }
+    : step);
+  const client = new QueryClient({ defaultOptions: { queries: { enabled: false, retry: false } } });
+  const seed = { ...proposal, status: "approved" as const, progress, decided_at: "2026-11-08T12:01:00.000Z" };
+  render(<QueryClientProvider client={client}><ProposalCard organizationSlug="acme" id={seed.id} seed={seed} onDismiss={onDismiss} /></QueryClientProvider>);
+  const card = screen.getByLabelText("3 steps in shop/production approved");
+  expect(within(card).getAllByRole("listitem").map((item) => item.textContent)).toEqual([
+    "1.Stop webDone",
+    "2.Restart db on fra-1Failed: fra-1 didn't accept the approval.",
+    "3.Start webNot run",
+  ]);
+  fireEvent.click(within(card).getByRole("button", { name: "Dismiss" }));
+  expect(onDismiss).toHaveBeenCalledTimes(1);
 });
 
 it("signs nothing when Cloud's steps aren't the card's", async () => {
@@ -86,7 +123,10 @@ it("denies with the reason typed, and shows it once Cloud takes it", async () =>
   fireEvent.change(within(card).getByLabelText("Reason"), { target: { value: "not during the sale" } });
   fireEvent.click(within(card).getByRole("button", { name: "Deny" }));
   await waitFor(() => expect(decide).toHaveBeenCalledWith({ data: { organizationSlug: "acme", id: "p1", decision: { reject: { reason: "not during the sale" } } } }));
-  await screen.findByText("Denied: not during the sale");
+  const denied = await screen.findByLabelText("3 steps in shop/production denied");
+  expect(within(denied).getByText("Denied")).toBeTruthy();
+  expect(within(denied).getByText("not during the sale")).toBeTruthy();
+  expect(within(denied).getAllByRole("listitem").map((item) => item.textContent)).toEqual(["1.Stop web", "2.Restart db on fra-1", "3.Start web"]);
   expect(target).not.toHaveBeenCalled();
 });
 

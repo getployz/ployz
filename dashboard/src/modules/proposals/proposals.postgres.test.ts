@@ -19,6 +19,7 @@ import {
   presentProposal,
   proposalStatus,
   stageStep,
+  sweepProposals,
 } from "#/modules/proposals/proposals.server";
 import { operationProposals } from "#/modules/proposals/tables";
 import { OrganizationRuntime, type OrganizationRuntimeService } from "#/modules/runtime/organization-runtime.server";
@@ -95,7 +96,8 @@ const shop = Effect.fn(function* () {
     expect(yield* call("service_start", { service: "web", proposal: id })).toMatchObject({ ok: true, value: { step: 2 } });
     return id;
   });
-  const envelope = (step: number) => ({ body: `{"step":${step}}`, signatures: [], proposal: { body: "{}", signatures: [{ key: "d".repeat(64), signature: "e".repeat(128) }] } });
+  const bundle = { body: JSON.stringify({ expires_at: Date.now() + 15 * 60_000 }), signatures: [{ key: "d".repeat(64), signature: "e".repeat(128) }] };
+  const envelope = (step: number) => ({ body: `{"step":${step}}`, signatures: [], proposal: bundle });
   const approvals: ProposalApprovals = { "0": { [CONTAINER]: envelope(0) }, "1": { [CONTAINER]: envelope(1) } };
   const approve = { approve: { approvals, bundle: envelope(0).proposal } };
   return { provided, cluster, agent, owner, found, acts, ended, call, staged, approvals, approve, protect, setCapabilities: (next: string[]) => { capabilities = next; }, setReadable: (next: boolean) => { readable = next; } };
@@ -221,4 +223,84 @@ it.live("a proposal in a Protected Environment is presented only by someone who 
     expect(yield* provided(presentProposal(ada, adaId))).toMatchObject({ ok: false, refusal: { code: "forbidden" } });
     expect(yield* provided(stageStep(agent, id, { environment: ENVIRONMENT, service: "web", verb: "stop", only: null }))).toMatchObject({ ok: true });
     expect(yield* provided(presentProposal(agent, id))).toMatchObject({ ok: true });
+  }));
+
+it.live("steps staged at once all land, each at its own index, and the plan holds ten at most", () =>
+  Effect.gen(function* () {
+    const { provided, call, agent } = yield* shop();
+    const id = idOf(yield* call("proposal_create", {}));
+    const stage = (verb: "stop" | "start" | "restart") => provided(stageStep(agent, id, { environment: ENVIRONMENT, service: "web", verb, only: null }));
+    const landed = yield* Effect.all([stage("stop"), stage("start"), stage("restart")], { concurrency: "unbounded" });
+    expect(landed.map((result) => result.ok && "value" in result ? result.value.step : expect.fail("not staged")).sort((left, right) => left - right)).toEqual([1, 2, 3]);
+    expect(yield* call("proposal_status", { proposal: id })).toMatchObject({ ok: true, value: { steps: [{ index: 1 }, { index: 2 }, { index: 3 }] } });
+    yield* Effect.all(Array.from({ length: 7 }, () => stage("restart")), { concurrency: "unbounded" });
+    expect(yield* stage("restart")).toMatchObject({ ok: false, refusal: { code: "invalid_argument", message: "A proposal holds at most 10 steps." } });
+    expect(yield* call("proposal_status", { proposal: id })).toMatchObject({ ok: true, value: { steps: expect.arrayContaining([{ index: 10, verb: "restart", service: "web", state: "not_run", reason: null }]) } });
+  }));
+
+it.live("a token limited to other Environments can't open or add to a proposal here, and a step rechecks that before it runs", () =>
+  Effect.gen(function* () {
+    const { provided, cluster, call, agent, owner, acts, approve, staged } = yield* shop();
+    const elsewhere: AgentCaller = { ...agent, credential: { kind: "token", id: "token-staging", grant: { permissions: null, environments: ["staging"] } } };
+    expect(yield* provided(createProposal(elsewhere, production))).toMatchObject({ ok: false, refusal: { code: "forbidden", details: { environments: ["staging"] } } });
+    const here: AgentCaller = { ...agent, credential: { kind: "token", id: "token-production", grant: { permissions: null, environments: ["production"] } } };
+    const opened = yield* provided(createProposal(here, production));
+    const hereId = opened.ok && "value" in opened ? opened.value.proposal_id : expect.fail("no proposal");
+    expect(yield* provided(stageStep(here, hereId, { environment: ENVIRONMENT, service: "web", verb: "stop", only: null }))).toMatchObject({ ok: true });
+    // The token's Environments were narrowed after the plan was presented: the step stops rather than run as the member.
+    const id = yield* staged;
+    yield* call("proposal_present", { proposal: id });
+    yield* provided(Effect.flatMap(Database, ({ drizzle }) => drizzle.update(operationProposals).set({ callerEnvironments: ["staging"] }).where(eq(operationProposals.id, id))));
+    expect(yield* cluster(decideProposal(owner, id, approve))).toMatchObject({ ok: false, message: expect.stringMatching(/^It didn't run: .*staging.* It's still waiting for approval\.$/) });
+    expect(yield* acts).toEqual([]);
+  }));
+
+it.live("a step due after the approval's 15 minutes doesn't run, and the card says which", () =>
+  Effect.gen(function* () {
+    const { call, staged, acts, cluster, provided, owner, ended, approve } = yield* shop();
+    const id = yield* staged;
+    yield* call("proposal_present", { proposal: id });
+    expect(yield* cluster(decideProposal(owner, id, approve))).toMatchObject({ ok: true });
+    const [first] = yield* acts;
+    yield* ended(first?.id ?? expect.fail("no act"), "done");
+    yield* provided(Effect.flatMap(Database, ({ drizzle }) => drizzle.update(operationProposals)
+      .set({ bundle: { ...approve.approve.bundle, body: JSON.stringify({ expires_at: Date.now() - 1 }) } }).where(eq(operationProposals.id, id))));
+    yield* cluster(advanceProposal({ actId: first?.id ?? "", organizationId: ORGANIZATION }));
+    expect(yield* acts).toHaveLength(1);
+    expect(yield* provided(proposalStatus(owner, id))).toMatchObject({ ok: true, value: { steps: [
+      { state: "done" },
+      { state: "failed", reason: "The approval ran out before step 2. Start web yourself." },
+    ] } });
+  }));
+
+it.live("the sweep starts a step whose kickoff was lost, once, and never a step whose turn hasn't come", () =>
+  Effect.gen(function* () {
+    const { call, staged, acts, cluster, provided, owner, ended, approve, approvals } = yield* shop();
+    const id = yield* staged;
+    yield* call("proposal_present", { proposal: id });
+    // Approved in the database but never kicked off: Cloud fell over between the two.
+    yield* provided(Effect.flatMap(Database, ({ drizzle }) => drizzle.update(operationProposals)
+      .set({ status: "approved", bundle: approve.approve.bundle, approvals, decidedByUserId: owner.userId, decidedAt: new Date() }).where(eq(operationProposals.id, id))));
+    expect(yield* cluster(sweepProposals(new Date()))).toEqual([id]);
+    let rows = yield* acts;
+    expect(rows).toMatchObject([{ verb: "stop", step: 0 }]);
+    // Step 0 still running: another sweep starts nothing. Done and its advance lost: the sweep starts step 1, once.
+    yield* cluster(sweepProposals(new Date()));
+    expect(yield* acts).toHaveLength(1);
+    yield* ended(rows[0]?.id ?? expect.fail("no act"), "done");
+    yield* cluster(sweepProposals(new Date()));
+    yield* cluster(sweepProposals(new Date()));
+    rows = yield* acts;
+    expect(rows).toMatchObject([{ verb: "stop", step: 0 }, { verb: "start", step: 1, approvals: approvals["1"] }]);
+    // A plan approved over an hour ago is past every step's window and is left alone.
+    yield* provided(Effect.flatMap(Database, ({ drizzle }) => drizzle.update(operationProposals).set({ decidedAt: new Date(Date.now() - 2 * 60 * 60_000) }).where(eq(operationProposals.id, id))));
+    expect(yield* cluster(sweepProposals(new Date()))).toEqual([]);
+  }));
+
+it.live("a denial with a blank reason is a denial with none", () =>
+  Effect.gen(function* () {
+    const { call, staged, cluster, owner } = yield* shop();
+    const id = yield* staged;
+    yield* call("proposal_present", { proposal: id });
+    expect(yield* cluster(decideProposal(owner, id, { reject: { reason: "  " } }))).toMatchObject({ ok: true, proposal: { status: "denied", reason: null } });
   }));

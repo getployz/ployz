@@ -5,23 +5,24 @@ import { RelativeTime } from "#/components/relative-time";
 import { Badge } from "#/components/ui/badge";
 import { Button } from "#/components/ui/button";
 import { Card, CardContent, CardDescription, CardFooter, CardHeader, CardTitle } from "#/components/ui/card";
-import { TraceLine } from "#/components/ui/trace";
 import { Textarea } from "#/components/ui/textarea";
 import { toErrorMessage } from "#/lib/error-message";
-import { stepLoss, stepTitle } from "#/modules/proposals/proposal";
+import { type StepProgress, stepLoss, stepTitle } from "#/modules/proposals/proposal";
 import { approverBundle, decideProposal, landProposal, type ProposalView, proposalOptions, refetchProposals } from "./proposals.queries";
 
 const stepsWord = (count: number) => `${count} ${count === 1 ? "step" : "steps"}`;
 
 /**
- * One proposal waiting on a person: every step an agent staged, in the order they run, approved with one passkey
- * prompt. Drawn from its Cloud row and reread while it waits. `onSettled` runs once the row stops waiting.
+ * One proposal: waiting on a person, with every step an agent staged in the order they run, approved with one passkey
+ * prompt; or decided, with where each step got. Drawn from its Cloud row and reread while it waits or runs.
+ * `onSettled` runs once the row stops waiting; `onDismiss` lets a decided card go.
  */
-export function ProposalCard({ organizationSlug, id, seed, onSettled }: {
+export function ProposalCard({ organizationSlug, id, seed, onSettled, onDismiss }: {
   organizationSlug: string;
   id: string;
   seed?: ProposalView;
   onSettled?: () => void;
+  onDismiss?: () => void;
 }) {
   const { data: proposal } = useQuery({ ...proposalOptions(organizationSlug, id), initialData: seed });
   const settled = proposal !== undefined && proposal !== null && proposal.status !== "presented";
@@ -30,13 +31,60 @@ export function ProposalCard({ organizationSlug, id, seed, onSettled }: {
   }, [settled, onSettled]);
 
   if (proposal === undefined || proposal === null) return null;
-  const place = `${proposal.project}/${proposal.environment}`;
   switch (proposal.status) {
     case "draft": return null;
     case "presented": return <PendingProposal organizationSlug={organizationSlug} proposal={proposal} />;
-    case "approved": return <TraceLine>Approved. {stepsWord(proposal.steps.length)} go ahead in {place}, in order.</TraceLine>;
-    case "denied": return <TraceLine>Denied{proposal.reason ? `: ${proposal.reason}` : "."}</TraceLine>;
+    case "approved":
+    case "denied": return <DecidedProposal proposal={proposal} onDismiss={onDismiss} />;
   }
+}
+
+const PROGRESS = {
+  accepted: "Starting", running: "Running", done: "Done", failed: "Failed", unknown: "Unclear", waiting: "Waiting", not_run: "Not run",
+} as const satisfies Record<StepProgress, string>;
+
+/** A decided plan and how far it got: each step's state, with why where one failed. */
+function DecidedProposal({ proposal, onDismiss }: { proposal: ProposalView; onDismiss?: () => void }) {
+  const place = `${proposal.project}/${proposal.environment}`;
+  const approved = proposal.status === "approved";
+  return (
+    <Card size="sm" aria-label={`${stepsWord(proposal.steps.length)} in ${place} ${approved ? "approved" : "denied"}`}>
+      <CardHeader className="flex items-center justify-between gap-2">
+        <div className="flex min-w-0 flex-col gap-0.5">
+          <CardTitle>{stepsWord(proposal.steps.length)} in {place}</CardTitle>
+          <CardDescription>
+            {proposal.asker && <>Asked by {proposal.asker} · </>}{proposal.decided_at && <RelativeTime date={new Date(proposal.decided_at)} />}
+          </CardDescription>
+        </div>
+        <div className="flex items-center gap-1">
+          <Badge variant={approved ? "secondary" : "outline"}>{approved ? "Approved" : "Denied"}</Badge>
+          {onDismiss && <Button size="icon-sm" variant="ghost" aria-label="Dismiss" onClick={onDismiss}><XIcon /></Button>}
+        </div>
+      </CardHeader>
+      <CardContent className="flex flex-col gap-2">
+        <ol aria-label="Steps" className="flex flex-col gap-1.5 text-xs">
+          {proposal.steps.map((step, index) => {
+            const run = proposal.progress[index];
+            const state = approved && run !== undefined ? run.state : null;
+            return (
+              <li key={index} className="flex gap-2">
+                <span className="w-4 shrink-0 text-right tabular-nums text-muted-foreground">{index + 1}.</span>
+                <span className="flex min-w-0 flex-col">
+                  <span>{stepTitle(step)}</span>
+                  {state !== null && (
+                    <span className={state === "failed" || state === "unknown" ? "text-destructive" : "text-muted-foreground"}>
+                      {PROGRESS[state]}{run?.reason && (state === "failed" || state === "unknown") ? `: ${run.reason}` : ""}
+                    </span>
+                  )}
+                </span>
+              </li>
+            );
+          })}
+        </ol>
+        {!approved && proposal.reason && <p className="text-xs text-muted-foreground">{proposal.reason}</p>}
+      </CardContent>
+    </Card>
+  );
 }
 
 function PendingProposal({ organizationSlug, proposal }: { organizationSlug: string; proposal: ProposalView }) {
@@ -108,7 +156,6 @@ function PendingProposal({ organizationSlug, proposal }: { organizationSlug: str
             ))}
           </ul>
         )}
-        <p className="text-xs text-muted-foreground">Steps run in this order and stop at the first that fails.</p>
         {reason !== null && (
           <Textarea autoFocus aria-label="Reason" placeholder="Why not? The agent reads this." value={reason}
             onChange={(event) => setReason(event.target.value)} className="min-h-14 text-xs" />

@@ -18,6 +18,9 @@ export type ProposalStep = {
 /** Why a proposal's steps stopped before they all ran: the step that didn't start, and why. */
 export type ProposalHalt = { readonly index: number; readonly reason: string };
 
+/** Where one step stands: its run's state, waiting for an earlier step, or never run because an earlier one failed. */
+export type StepProgress = "accepted" | "running" | "done" | "failed" | "unknown" | "waiting" | "not_run";
+
 /** The browser's approval of every Container of each step, by the step's index then the Container. */
 export type ProposalApprovals = Readonly<Record<string, Readonly<Record<string, Signed>>>>;
 
@@ -51,19 +54,24 @@ export const stepLoss = (step: Pick<ProposalStep, "verb" | "service">) =>
 /** Why the approver's browser signs nothing: what Cloud names for a step isn't what the card shows. */
 export const MISMATCHED_PROPOSAL = "This doesn't match the proposal. Nothing was approved.";
 
-type ShownStep = Pick<ProposalStep, "verb" | "service" | "namespace" | "runtime">;
-type FetchedStep = ShownStep & { readonly copies: readonly { readonly id: string; readonly machineId: string; readonly hook: boolean }[] };
+type ShownStep = Pick<ProposalStep, "verb" | "service" | "only" | "namespace" | "runtime">;
+type FetchedStep = Pick<ProposalStep, "verb" | "service" | "namespace" | "runtime"> & {
+  readonly copies: readonly { readonly id: string; readonly machineId: string; readonly hook: boolean }[];
+};
 
 /**
- * What the browser signs for each step: the card's verb and Service as the Servers know it, which Cloud's target must
- * repeat step for step, with the Containers Cloud names for it. Cloud can't add, drop, reorder or swap a step.
+ * What the browser signs: the card's namespace, and for each step the card's verb and Service as the Servers know it,
+ * which Cloud's target must repeat step for step, with the Containers Cloud names for it, each on the Server the card
+ * names when it names one. Cloud can't add, drop or swap a step, nor move one to another namespace or Server.
  */
 export function shownSteps<F extends FetchedStep>(shown: readonly ShownStep[], fetched: readonly F[]) {
-  const matches = shown.length === fetched.length && shown.every((step, index) => {
+  const namespace = shown[0]?.namespace;
+  const matches = namespace !== undefined && shown.length === fetched.length && shown.every((step, index) => {
     const target = fetched[index];
     return target !== undefined && step.verb === target.verb && step.service === target.service
-      && step.namespace === target.namespace && step.runtime === target.runtime;
+      && step.namespace === namespace && target.namespace === namespace && step.runtime === target.runtime
+      && (step.only === null || target.copies.every((copy) => copy.machineId === step.only?.machine));
   });
   if (!matches) throw new Error(MISMATCHED_PROPOSAL);
-  return shown.map((step, index) => ({ verb: step.verb, runtime: step.runtime, copies: fetched[index]?.copies ?? [] }));
+  return { namespace, steps: shown.map((step, index) => ({ verb: step.verb, runtime: step.runtime, copies: fetched[index]?.copies ?? [] })) };
 }

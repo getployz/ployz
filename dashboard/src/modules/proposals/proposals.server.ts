@@ -1,8 +1,7 @@
 import "@tanstack/react-start/server-only";
 import type { EnvironmentRef, ServerRef, ServiceVerb, Signed } from "@ployz/sdk";
-import { and, desc, eq } from "drizzle-orm";
-import { Cause, Effect, Schema } from "effect";
-import { toErrorMessage } from "#/lib/error-message";
+import { and, desc, eq, gt, isNull, sql } from "drizzle-orm";
+import { Effect, Option, Schema } from "effect";
 import { Uuid } from "#/lib/schema";
 import type { AgentCaller } from "#/modules/agent/agent-runner.server";
 import { askerCaller } from "#/modules/approvals/apply.server";
@@ -10,16 +9,18 @@ import { readStore } from "#/modules/config-store/config-store.server";
 import { protectorOnly } from "#/modules/config-store/protected.server";
 import { environmentProtected, findService } from "#/modules/config-store/store-lookup.server";
 import type { StoreRefusal } from "#/modules/config-store/store.contract";
-import type { Actor } from "#/modules/identity/actor";
+import { type Actor, callerEnvironments } from "#/modules/identity/actor";
 import { bodyDigest } from "#/modules/operations/keyed.server";
 import { OPERATIONS } from "#/modules/operations/operations";
-import { actService, unpermitted } from "#/modules/operations/operations.server";
-import { requireAccessById } from "#/modules/organization/access.server";
+import { actService, unheld } from "#/modules/operations/operations.server";
+import { beyondEnvironments, requireAccessById } from "#/modules/organization/access.server";
 import {
   PROPOSAL_STEP_LIMIT,
   type ProposalApprovals,
   type ProposalHalt,
   type ProposalStep,
+  type StepProgress,
+  stepTitle,
   strandedByProposal,
 } from "#/modules/proposals/proposal";
 import { operationProposals } from "#/modules/proposals/tables";
@@ -27,15 +28,17 @@ import { needsNewerPloyz, type ServiceActState, strandedByStop } from "#/modules
 import { actTarget, strandingStop } from "#/modules/service-act/service-act.server";
 import { serviceAct } from "#/modules/service-act/tables";
 import { Database } from "#/server/database.server";
-import { NotFound } from "#/server/public-error";
+import { Forbidden, NotFound } from "#/server/public-error";
 
 type ProposalRow = typeof operationProposals.$inferSelect;
 
 type Refused = { readonly ok: false; readonly refusal: StoreRefusal };
 const refused = (code: string, message: string): Refused => ({ ok: false, refusal: { code, message, details: null } });
 
-/** A proposal as the agent and the card read it. */
-function proposalView(row: ProposalRow) {
+type StepAct = { readonly proposalStep: number | null; readonly state: ServiceActState; readonly reason: string | null };
+
+/** A proposal as the agent and the card read it, with where each step stands given its runs so far. */
+function proposalView(row: ProposalRow, acts: readonly StepAct[] = []) {
   return {
     id: row.id,
     status: row.status,
@@ -43,6 +46,7 @@ function proposalView(row: ProposalRow) {
     environment: row.environment,
     environment_id: row.environmentId,
     steps: row.steps,
+    progress: stepStates(row, acts),
     halt: row.halt,
     reason: row.reason,
     requested_by: row.requestedByUserId,
@@ -78,6 +82,8 @@ export const createProposal = Effect.fn("Proposals.create")(function* (caller: A
     Effect.catchTag("StoreRefused", (error) => Effect.succeed(error.refusal)),
   );
   if ("code" in view) return { ok: false, refusal: view } satisfies Refused;
+  const held = unheld(caller, OPERATIONS["service.restart"].requires, view.environment.name);
+  if (held !== null) return held;
   const { drizzle } = yield* Database;
   const [row] = yield* drizzle.insert(operationProposals).values({
     organizationId: caller.organization.id,
@@ -88,6 +94,7 @@ export const createProposal = Effect.fn("Proposals.create")(function* (caller: A
     requestedByUserId: caller.userId,
     credentialKind: caller.credential.kind,
     credentialId: caller.credential.id,
+    callerEnvironments: callerEnvironments(caller) ?? null,
   }).returning();
   if (row === undefined) return yield* Effect.die("an insert returned no row");
   return {
@@ -106,11 +113,11 @@ export const stageStep = Effect.fn("Proposals.stage")(function* (
   id: string,
   action: { readonly environment: string; readonly service: string; readonly verb: ServiceVerb; readonly only: ServerRef | null },
 ) {
-  const lacking = unpermitted(caller, OPERATIONS[`service.${action.verb}`].requires);
-  if (lacking !== null) return lacking;
   const draft = yield* ownDraft(caller, id);
   if (!draft.ok) return draft;
   const { row } = draft;
+  const held = unheld(caller, OPERATIONS[`service.${action.verb}`].requires, row.environment);
+  if (held !== null) return held;
   if (row.environmentId !== action.environment) return refused("invalid_argument", `This proposal runs in ${placeOf(row)}. Stage steps for that environment, or create a proposal for this one.`);
   if (row.steps.length >= PROPOSAL_STEP_LIMIT) return refused("invalid_argument", `A proposal holds at most ${PROPOSAL_STEP_LIMIT} steps.`);
   const found = yield* findService(caller.organization.id, action.environment, action.service).pipe(
@@ -119,17 +126,24 @@ export const stageStep = Effect.fn("Proposals.stage")(function* (
   if (found === null) return refused("not_found", `No service is named ${action.service} in ${placeOf(row)}.`);
   if ("code" in found) return { ok: false, refusal: found } satisfies Refused;
   const step: ProposalStep = { verb: action.verb, service: action.service, only: action.only, namespace: found.namespace, runtime: found.runtime };
-  const steps = [...row.steps, step];
   const { drizzle } = yield* Database;
-  const [staged] = yield* drizzle.update(operationProposals).set({ steps, updatedAt: new Date() })
-    .where(and(eq(operationProposals.id, row.id), eq(operationProposals.status, "draft"))).returning({ id: operationProposals.id });
-  if (staged === undefined) return refused("conflict", "This proposal was already presented. Create a new one to stage more steps.");
+  // Appended in the database, so steps staged at once all land, each at its own index.
+  const [staged] = yield* drizzle.update(operationProposals)
+    .set({ steps: sql`${operationProposals.steps} || ${JSON.stringify(step)}::jsonb`, updatedAt: new Date() })
+    .where(and(eq(operationProposals.id, row.id), eq(operationProposals.status, "draft"), sql`jsonb_array_length(${operationProposals.steps}) < ${PROPOSAL_STEP_LIMIT}`))
+    .returning({ count: sql<number>`jsonb_array_length(${operationProposals.steps})` });
+  if (staged === undefined) {
+    const now = yield* readRow(caller.organization.id, id);
+    return now?.status === "draft"
+      ? refused("invalid_argument", `A proposal holds at most ${PROPOSAL_STEP_LIMIT} steps.`)
+      : refused("conflict", "This proposal was already presented. Create a new one to stage more steps.");
+  }
   return {
     ok: true as const,
     value: {
       proposal_id: row.id,
-      step: steps.length,
-      message: `Staged as step ${steps.length}. Nothing ran. Call proposal_present when the plan is complete.`,
+      step: staged.count,
+      message: `Staged as step ${staged.count}. Nothing ran. Call proposal_present when the plan is complete.`,
     },
   };
 });
@@ -162,16 +176,14 @@ export const presentProposal = Effect.fn("Proposals.present")(function* (caller:
   };
 });
 
-type StepState = ServiceActState | "waiting" | "not_run";
-
 /** Where each step stands: its run's state, waiting for an earlier step, or never run because an earlier one failed. */
-const stepStates = (row: ProposalRow, acts: readonly { proposalStep: number | null; state: ServiceActState; reason: string | null }[]) => {
+const stepStates = (row: ProposalRow, acts: readonly StepAct[]) => {
   const runs = new Map(acts.map((act) => [act.proposalStep, act]));
   let halted = false;
   return row.steps.map((step, index) => {
     const run = runs.get(index);
     const halt = row.halt?.index === index ? row.halt : null;
-    const state: StepState = run !== undefined ? run.state : halt !== null ? "failed" : halted || row.status !== "approved" ? "not_run" : "waiting";
+    const state: StepProgress = run !== undefined ? run.state : halt !== null ? "failed" : halted || row.status !== "approved" ? "not_run" : "waiting";
     const reason = run?.reason ?? halt?.reason ?? null;
     if (state === "failed" || state === "unknown") halted = true;
     return { index: index + 1, verb: step.verb, service: step.service, state, reason };
@@ -188,9 +200,8 @@ const actsOf = Effect.fn("Proposals.acts")(function* (row: ProposalRow) {
 export const proposalStatus = Effect.fn("Proposals.status")(function* (caller: Pick<AgentCaller, "organization">, id: string) {
   const row = yield* readRow(caller.organization.id, id);
   if (row === undefined) return refused("not_found", `No proposal is named ${id}.`);
-  const acts = yield* actsOf(row);
-  const { steps: _steps, halt: _halt, ...view } = proposalView(row);
-  return { ok: true as const, value: { ...view, steps: stepStates(row, acts) } };
+  const { steps: _steps, halt: _halt, progress, ...view } = proposalView(row, yield* actsOf(row));
+  return { ok: true as const, value: { ...view, steps: progress } };
 });
 
 /** Every proposal waiting on a person in the Organization, newest first. */
@@ -199,13 +210,13 @@ export const pendingProposals = Effect.fn("Proposals.pending")(function* (organi
   const rows = yield* drizzle.select().from(operationProposals)
     .where(and(eq(operationProposals.organizationId, organizationId), eq(operationProposals.status, "presented")))
     .orderBy(desc(operationProposals.createdAt), desc(operationProposals.id));
-  return rows.map(proposalView);
+  return rows.map((row) => proposalView(row));
 });
 
 export const getProposal = Effect.fn("Proposals.get")(function* (organizationId: string, id: string) {
   const row = yield* readRow(organizationId, id);
   if (row === undefined) return yield* new NotFound({ message: "No such proposal." });
-  return proposalView(row);
+  return proposalView(row, yield* actsOf(row));
 });
 
 /**
@@ -253,42 +264,93 @@ const halted = Effect.fn("Proposals.halted")(function* (row: ProposalRow, index:
 /** The request key that admits step `index` once: a second run of the same step replays the first. */
 const stepKey = (row: Pick<ProposalRow, "id">, index: number) => `proposal-${row.id}-${index}`;
 
+const BundleWindow = Schema.fromJsonString(Schema.Struct({ expires_at: Schema.Number }));
+
+/** Why step `index` can't go to the Servers now, checked before anything is sent; null when it can. */
+const stepRefusal = Effect.fn("Proposals.stepRefusal")(function* (row: ProposalRow, index: number, step: ProposalStep) {
+  const window = Schema.decodeUnknownOption(BundleWindow)(row.bundle?.body);
+  if (Option.isNone(window)) return "The approval can't be read.";
+  if (Date.now() > window.value.expires_at) return `The approval ran out before step ${index + 1}. ${stepTitle(step)} yourself.`;
+  const beyond = beyondEnvironments(row.callerEnvironments ?? undefined, { environment: row.environment });
+  if (beyond !== null) return beyond;
+  const found = yield* findService(row.organizationId, row.environmentId, step.service);
+  if (found === null) return "The service is gone.";
+  if (found.namespace !== step.namespace || found.runtime !== step.runtime) return `${step.service} changed since it was approved.`;
+  return step.verb === "stop" ? yield* strandingStop(row.organizationId, found, true) : null;
+});
+
+type StepStart = { readonly started: true } | { readonly later: true } | { readonly halt: ProposalHalt };
+const started: StepStart = { started: true };
+const later: StepStart = { later: true };
+
 /**
- * Start step `index` as the asker, with the envelopes the approver's browser made for it. Null once it is admitted;
- * otherwise why it wasn't, recorded on the proposal, which stops the steps after it.
+ * Start step `index` as the asker, with the envelopes the approver's browser made for it. Started once it is admitted,
+ * which a rerun replays; halted, recorded on the proposal, when it can't go, which stops the steps after it; later
+ * when something failed on Cloud's side, so the sweep tries again rather than give the plan up.
  */
 const runStep = Effect.fn("Proposals.runStep")(function* (row: ProposalRow, index: number) {
   const step = row.steps[index];
-  if (step === undefined) return null;
+  if (step === undefined) return started;
   const asker = row.requestedByUserId;
-  if (asker === null) return yield* halted(row, index, "Whoever asked is no longer in the Organization.");
-  const outcome: ProposalHalt | null = yield* Effect.gen(function* () {
+  if (asker === null) return { halt: yield* halted(row, index, "Whoever asked is no longer in the Organization.") } satisfies StepStart;
+  const halt = (reason: string) => Effect.map(halted(row, index, reason), (halt): StepStart => ({ halt }));
+  return yield* Effect.gen(function* () {
+    const refusal = yield* stepRefusal(row, index, step);
+    if (refusal !== null) return yield* halt(refusal);
     const access = yield* requireAccessById({ userId: asker }, row.organizationId, OPERATIONS[`service.${step.verb}`].requires);
     const found = yield* findService(row.organizationId, row.environmentId, step.service);
-    if (found === null) return { index, reason: "The service is gone." };
-    if (found.namespace !== step.namespace || found.runtime !== step.runtime) return { index, reason: `${step.service} changed since it was approved.` };
-    const stranded = step.verb === "stop" ? yield* strandingStop(row.organizationId, found, true) : null;
-    if (stranded !== null) return { index, reason: stranded };
+    if (found === null) return yield* halt("The service is gone.");
     const body = { environmentId: row.environmentId, service: step.service, only: step.only };
     const admission = yield* actService(
       askerCaller(access, row.credentialId),
       { ...body, ...found, verb: step.verb, digest: bodyDigest(`service_${step.verb}`, body), approvals: row.approvals?.[index] ?? {}, proposal: { id: row.id, step: index } },
       { key: stepKey(row, index), approvalId: null },
     );
-    return admission.ok ? null : { index, reason: admission.refusal.message };
-  }).pipe(Effect.catchCause((cause) => Effect.succeed({ index, reason: toErrorMessage(Cause.squash(cause), "Something went wrong.") })));
-  return outcome === null ? null : yield* halted(row, index, outcome.reason);
+    return admission.ok ? started : yield* halt(admission.refusal.message);
+  }).pipe(
+    // The asker lost the Organization or the permission: the plan stops. Anything else is Cloud's to retry.
+    Effect.catchIf((error) => error instanceof NotFound || error instanceof Forbidden, (error) => halt(error.message)),
+    Effect.catchCause(() => Effect.succeed(later)),
+  );
+});
+
+/**
+ * Run the next step of an approved plan that is due: the first step with no run, once every one before it ended done.
+ * A step whose run failed or vanished leaves the rest unrun. Safe to call again at any time, from a step's end or the
+ * sweep: the step key admits each step once.
+ */
+const continueProposal = Effect.fn("Proposals.continue")(function* (row: ProposalRow) {
+  if (row.status !== "approved" || row.halt !== null) return;
+  const runs = new Map((yield* actsOf(row)).map((act) => [act.proposalStep, act]));
+  const next = row.steps.findIndex((_, index) => !runs.has(index));
+  if (next === -1) return;
+  const before = next === 0 ? "done" : runs.get(next - 1)?.state;
+  if (before === "done") yield* runStep(row, next);
 });
 
 /** Once a step's run ends done, start the next; a step that ended any other way leaves the rest unrun. */
 export const advanceProposal = Effect.fn("Proposals.advance")(function* (request: { readonly actId: string; readonly organizationId: string }) {
   const { drizzle } = yield* Database;
-  const [act] = yield* drizzle.select({ proposalId: serviceAct.proposalId, step: serviceAct.proposalStep, state: serviceAct.state }).from(serviceAct)
+  const [act] = yield* drizzle.select({ proposalId: serviceAct.proposalId, state: serviceAct.state }).from(serviceAct)
     .where(and(eq(serviceAct.id, request.actId), eq(serviceAct.organizationId, request.organizationId)));
-  if (act === undefined || act.proposalId === null || act.step === null || act.state !== "done") return;
+  if (act === undefined || act.proposalId === null || act.state !== "done") return;
   const row = yield* readRow(request.organizationId, act.proposalId);
-  if (row === undefined || row.status !== "approved" || row.halt !== null) return;
-  yield* runStep(row, act.step + 1);
+  if (row !== undefined) yield* continueProposal(row);
+});
+
+/** How long after its approval a plan can still have a step to start: the bundle's 15 minutes, with room. */
+const SWEEP_WINDOW_MS = 60 * 60_000;
+
+/**
+ * Every minute: each approved plan whose next step is due gets it started, so a step lost between its approval and
+ * its start, or between one step's end and the next's, still runs.
+ */
+export const sweepProposals = Effect.fn("Proposals.sweep")(function* (now: Date) {
+  const { drizzle } = yield* Database;
+  const rows = yield* drizzle.select().from(operationProposals)
+    .where(and(eq(operationProposals.status, "approved"), isNull(operationProposals.halt), gt(operationProposals.decidedAt, new Date(now.getTime() - SWEEP_WINDOW_MS))));
+  yield* Effect.forEach(rows, continueProposal, { discard: true });
+  return rows.map((row) => row.id);
 });
 
 export type ProposalDecision = { readonly approve: { readonly approvals: ProposalApprovals; readonly bundle: Signed } } | { readonly reject: { readonly reason?: string } };
@@ -311,7 +373,7 @@ export const decideProposal = Effect.fn("Proposals.decide")(function* (decider: 
   const now = new Date();
   const decided = { decidedByUserId: decider.userId, decidedAt: now, updatedAt: now };
   if ("reject" in decision) {
-    const [denied] = yield* drizzle.update(operationProposals).set({ status: "denied", reason: decision.reject.reason ?? null, ...decided })
+    const [denied] = yield* drizzle.update(operationProposals).set({ status: "denied", reason: decision.reject.reason?.trim() || null, ...decided })
       .where(and(eq(operationProposals.id, row.id), eq(operationProposals.status, "presented"))).returning();
     return denied === undefined ? settled((yield* readRow(decider.organization.id, id)) ?? row) : { ok: true, proposal: proposalView(denied) } satisfies Decided;
   }
@@ -322,10 +384,10 @@ export const decideProposal = Effect.fn("Proposals.decide")(function* (decider: 
   const [approved] = yield* drizzle.update(operationProposals).set({ status: "approved", bundle, approvals, ...decided })
     .where(and(eq(operationProposals.id, row.id), eq(operationProposals.status, "presented"))).returning();
   if (approved === undefined) return settled((yield* readRow(decider.organization.id, id)) ?? row);
-  const halt = yield* runStep(approved, 0);
-  if (halt === null) return { ok: true, proposal: proposalView(approved) } satisfies Decided;
+  const start = yield* runStep(approved, 0);
+  if (!("halt" in start)) return { ok: true, proposal: proposalView(approved, yield* actsOf(approved)) } satisfies Decided;
   yield* drizzle.update(operationProposals)
     .set({ status: "presented", bundle: null, approvals: null, halt: null, decidedByUserId: null, decidedAt: null, updatedAt: new Date() })
     .where(and(eq(operationProposals.id, row.id), eq(operationProposals.status, "approved")));
-  return { ok: false, message: `It didn't run: ${halt.reason} It's still waiting for approval.` } satisfies Decided;
+  return { ok: false, message: `It didn't run: ${start.halt.reason} It's still waiting for approval.` } satisfies Decided;
 });

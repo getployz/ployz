@@ -4,9 +4,10 @@
 //! Each step is a [`RestartApproval`] body that nobody signed. What vouches for it is the
 //! bundle in its envelope: a signed list of step digests in order. A Machine checks that
 //! its step sits in the bundle at the index the step names, with the same kind, and that
-//! the body it was handed hashes to that digest. Cloud can carry a step but cannot add,
-//! reorder or alter one, and a step runs only once, since each step consumes its own
-//! operation id in the Machine's record.
+//! the body it was handed hashes to that digest. Cloud can carry a step but cannot add
+//! or alter one, and a step runs only once, since each step consumes its own place in
+//! the Machine's record. A Machine sees only its own step, so the order Cloud runs the
+//! steps in, and whether it runs them all, stays Cloud's.
 
 use std::fmt;
 

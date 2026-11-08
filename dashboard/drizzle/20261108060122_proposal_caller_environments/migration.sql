@@ -1,0 +1,1 @@
+ALTER TABLE "operation_proposals" ADD COLUMN "caller_environments" jsonb;

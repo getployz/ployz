@@ -22,17 +22,29 @@ describe("stepLoss", () => {
 });
 
 describe("shownSteps", () => {
-  it("signs only the card's steps, in the card's order, with the Containers Cloud names for each", () => {
+  it("signs only the card's namespace and steps, in the card's order, with the Containers Cloud names for each", () => {
     const fetched = [{ ...stop, copies }, { ...start, copies: [] }];
-    expect(shownSteps([stop, start], fetched)).toEqual([{ verb: "stop", runtime: "web", copies }, { verb: "start", runtime: "web", copies: [] }]);
+    expect(shownSteps([stop, start], fetched)).toEqual({
+      namespace: "shop-prod-a1b2",
+      steps: [{ verb: "stop", runtime: "web", copies }, { verb: "start", runtime: "web", copies: [] }],
+    });
   });
 
-  it("signs nothing when Cloud adds, drops, reorders or swaps a step", () => {
+  it("signs nothing when Cloud adds, drops or swaps a step, or names another namespace", () => {
     expect(() => shownSteps([stop, start], [{ ...stop, copies }])).toThrow(MISMATCHED_PROPOSAL);
     expect(() => shownSteps([stop], [{ ...stop, copies }, { ...start, copies }])).toThrow(MISMATCHED_PROPOSAL);
     expect(() => shownSteps([stop, start], [{ ...start, copies }, { ...stop, copies }])).toThrow(MISMATCHED_PROPOSAL);
     expect(() => shownSteps([stop], [{ ...stop, service: "db", copies }])).toThrow(MISMATCHED_PROPOSAL);
     expect(() => shownSteps([stop], [{ ...stop, runtime: "db", copies }])).toThrow(MISMATCHED_PROPOSAL);
+    expect(() => shownSteps([stop], [{ ...stop, namespace: "shop-prod-ffff", copies }])).toThrow(MISMATCHED_PROPOSAL);
+    expect(() => shownSteps([stop, { ...start, namespace: "shop-prod-ffff" }], [{ ...stop, copies }, { ...start, copies }])).toThrow(MISMATCHED_PROPOSAL);
+    expect(() => shownSteps([], [])).toThrow(MISMATCHED_PROPOSAL);
+  });
+
+  it("signs a step on one Server only for Containers on that Server", () => {
+    const only = { ...stop, only: { machine: "m1" as MachineId, name: "fra-1" } };
+    expect(shownSteps([only], [{ ...stop, copies }]).steps[0]?.copies).toEqual(copies);
+    expect(() => shownSteps([only], [{ ...stop, copies: [...copies, { id: "d".repeat(64), machineId: "m2" as MachineId, hook: false }] }])).toThrow(MISMATCHED_PROPOSAL);
   });
 });
 

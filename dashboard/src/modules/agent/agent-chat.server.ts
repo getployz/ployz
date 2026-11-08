@@ -116,7 +116,11 @@ const approvalGate = (caller: AgentCaller, run: Run, here: Here) => {
       here.page = await run(placeIn(caller, ctx.messages));
       const calls = pendingCalls(ctx.messages);
       // A call staged into a proposal runs nothing, so no one reviews it now: it runs like an ungated tool.
-      const gated = calls.filter((call) => GATED.has(call.function.name) && stagesInto(toolInput(call.function.arguments)) === null);
+      const staged = calls.filter((call) => stagesInto(toolInput(call.function.arguments)) !== null);
+      const gated = calls.filter((call) => GATED.has(call.function.name) && !staged.includes(call));
+      if (staged.length > 1) {
+        for (const call of staged) outcomes.set(call.id, invalid("Stage one step at a time."));
+      }
       if (calls.length > 1) {
         for (const call of gated) {
           outcomes.set(call.id, invalid(`Call ${call.function.name} alone, in its own turn, so a human can review exactly that plan.`));

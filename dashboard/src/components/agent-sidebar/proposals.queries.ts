@@ -1,6 +1,6 @@
 import { queryOptions, type QueryClient } from "@tanstack/react-query";
 import { proposalApprovals } from "#/modules/approval-session/approval-prompt";
-import { shownSteps } from "#/modules/proposals/proposal";
+import { MISMATCHED_PROPOSAL, shownSteps } from "#/modules/proposals/proposal";
 import {
   decideProposalServerFn,
   getProposalServerFn,
@@ -25,13 +25,18 @@ export function pendingProposalsOptions(organizationSlug: string) {
   });
 }
 
-/** One proposal as Cloud holds it now; polled while it waits, since the answer may come from anywhere. */
+/** A proposal that can still change: waiting on a person, or approved with a step yet to end. */
+const moving = (proposal: ProposalView | null | undefined) =>
+  proposal?.status === "presented"
+  || (proposal?.status === "approved" && proposal.progress.some((step) => step.state === "waiting" || step.state === "accepted" || step.state === "running"));
+
+/** One proposal as Cloud holds it now; polled while it waits or runs, since the answer and each step's end come from anywhere. */
 export function proposalOptions(organizationSlug: string, id: string) {
   return queryOptions({
     queryKey: [...proposalKeys(organizationSlug), id] as const,
     queryFn: () => getProposalServerFn({ data: { organizationSlug, id } }),
     staleTime: 0,
-    refetchInterval: (query) => query.state.data?.status === "presented" ? PROPOSAL_POLL_MS : false,
+    refetchInterval: (query) => moving(query.state.data) ? PROPOSAL_POLL_MS : false,
   });
 }
 
@@ -39,13 +44,14 @@ export function proposalOptions(organizationSlug: string, id: string) {
  * The bundle over every step the card shows, made in this browser after one passkey prompt. Null when the person
  * cancels. Throws, signing nothing, when Cloud's steps aren't the card's or Cloud couldn't read the Servers.
  */
-export async function approverBundle(organizationSlug: string, proposal: Pick<ProposalView, "id" | "steps" | "environment_id">) {
+export async function approverBundle(organizationSlug: string, proposal: Pick<ProposalView, "id" | "steps" | "environment" | "environment_id">) {
   const fetched = await proposalTargetServerFn({ data: { organizationSlug, id: proposal.id } });
   if (fetched === null || fetched.environmentId !== proposal.environment_id) throw new Error("Cloud couldn't check the servers. Try again.");
-  const steps = shownSteps(proposal.steps, fetched.steps);
-  // What gets signed comes from the card. Containers and Servers come from Cloud; each Server checks them against its own.
-  const { environmentId, environmentName, namespace, machines, environmentMachines } = fetched;
-  return proposalApprovals({ environment: { environmentId, environmentName, namespace }, steps, machines, environmentMachines });
+  const { namespace, steps } = shownSteps(proposal.steps, fetched.steps);
+  if (fetched.namespace !== namespace) throw new Error(MISMATCHED_PROPOSAL);
+  // Every signed value is the card's; the Containers and Servers come from Cloud and each Server checks them against its own.
+  const environment = { environmentId: proposal.environment_id, environmentName: proposal.environment, namespace };
+  return proposalApprovals({ environment, steps, machines: fetched.machines, environmentMachines: fetched.environmentMachines });
 }
 
 /** Approve every step with the bundle this browser made, or deny with a reason. Answers Cloud's refusal as its message. */

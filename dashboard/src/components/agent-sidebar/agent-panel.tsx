@@ -39,6 +39,18 @@ const askedKey = (threadId: string) => `ployz.agent.asked.${threadId}`;
 const Asked = Schema.fromJsonString(Schema.Record(Schema.String, Schema.String));
 type Asked = typeof Asked.Type;
 
+/** The proposals this browser decided, newest first, so their cards stay to show how each step went. */
+const decidedKey = (organizationSlug: string) => `ployz.agent.decided.${organizationSlug}`;
+const Decided = Schema.fromJsonString(Schema.Array(Schema.String));
+const DECIDED_KEPT = 5;
+const stored = <A,>(schema: Schema.Codec<A, string>, key: string, empty: A): A => {
+  try {
+    return Option.getOrElse(Schema.decodeUnknownOption(schema)(localStorage.getItem(key)), () => empty);
+  } catch {
+    return empty;
+  }
+};
+
 type PanelProps = {
   organizationSlug: string;
   scope: CollectionScope;
@@ -146,8 +158,7 @@ function Conversation({ organizationSlug, scope, page, threadId, onChat, dock }:
       ? [{ key: interrupt.key, approvalId: interrupt.payload.approvalId, interrupt }]
       : []);
 
-  const [asked, setAsked] = useState<Asked>(() =>
-    Option.getOrElse(Schema.decodeUnknownOption(Asked)(localStorage.getItem(askedKey(threadId))), () => ({})));
+  const [asked, setAsked] = useState<Asked>(() => stored(Asked, askedKey(threadId), {}));
   const unseen = bound.filter(({ key, approvalId }) => asked[key] !== approvalId);
   if (unseen.length > 0) setAsked({ ...asked, ...Object.fromEntries(unseen.map(({ key, approvalId }) => [key, approvalId])) });
   useEffect(() => { localStorage.setItem(askedKey(threadId), JSON.stringify(asked)); }, [threadId, asked]);
@@ -157,6 +168,12 @@ function Conversation({ organizationSlug, scope, page, threadId, onChat, dock }:
   const ours = new Set(Object.values(asked));
   const waiting = (pending ?? []).filter((approval) => !ours.has(approval.id));
   const proposed = proposals ?? [];
+  const [decided, setDecided] = useState<readonly string[]>(() => stored(Decided, decidedKey(organizationSlug), []));
+  useEffect(() => { localStorage.setItem(decidedKey(organizationSlug), JSON.stringify(decided)); }, [organizationSlug, decided]);
+  const pendingIds = new Set(proposed.map((proposal) => proposal.id));
+  const recent = decided.filter((id) => !pendingIds.has(id));
+  const keep = (id: string) => setDecided((ids) => [id, ...ids.filter((kept) => kept !== id)].slice(0, DECIDED_KEPT));
+  const drop = (id: string) => setDecided((ids) => ids.filter((kept) => kept !== id));
 
   return (
     <MessageScrollerProvider autoScroll>
@@ -176,11 +193,19 @@ function Conversation({ organizationSlug, scope, page, threadId, onChat, dock }:
                 <MessageScrollerItem key={heading}>
                   <section aria-label={heading} className="flex flex-col gap-2">
                     <h3 className="text-xs font-medium text-muted-foreground">{heading}</h3>
-                    {proposals.map((proposal) => <ProposalCard key={proposal.id} organizationSlug={organizationSlug} id={proposal.id} seed={proposal} />)}
+                    {proposals.map((proposal) => <ProposalCard key={proposal.id} organizationSlug={organizationSlug} id={proposal.id} seed={proposal} onSettled={() => keep(proposal.id)} />)}
                     {approvals.map((approval) => <ApprovalCard key={approval.id} organizationSlug={organizationSlug} id={approval.id} seed={approval} />)}
                   </section>
                 </MessageScrollerItem>
               ))}
+            {recent.length > 0 && (
+              <MessageScrollerItem>
+                <section aria-label="Recent" className="flex flex-col gap-2">
+                  <h3 className="text-xs font-medium text-muted-foreground">Recent</h3>
+                  {recent.map((id) => <ProposalCard key={id} organizationSlug={organizationSlug} id={id} onDismiss={() => drop(id)} />)}
+                </section>
+              </MessageScrollerItem>
+            )}
             {chat.messages.length === 0 && waiting.length === 0 && proposed.length === 0 && !chat.isHydrating && !chat.error && (
               <MessageScrollerItem>
                 <Empty>

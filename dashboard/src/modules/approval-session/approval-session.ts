@@ -250,8 +250,8 @@ export const stepDigest = async (body: string) => hex(await crypto.subtle.digest
 /**
  * One signature over a whole plan. Each step's copy gets an unsigned approval body naming the bundle and its place in
  * it; the bundle lists every body's digest in order, under the plan's one window, and the browser key signs only the
- * bundle. A Server runs a step only when its body hashes to the digest at its place, so nothing can be added, reordered
- * or swapped afterwards; the shared `operation` lets a Server's consumption log stop a replay.
+ * bundle. A Server runs a step only when its body hashes to the digest at its place, so nothing can be added or swapped
+ * afterwards; the shared `operation` and the step's place let a Server's consumption log stop a replay.
  */
 export async function approveProposal(steps: readonly ProposalStepTarget[], scope: ApprovalScope, now = Date.now()): Promise<{ bundle: Signed; approvals: ProposalApprovals }> {
   const { session, grant, publicKey, key } = signer(scope, steps.map((step) => step.verb), steps.flatMap((step) => step.copies), now);

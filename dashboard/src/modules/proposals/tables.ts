@@ -25,6 +25,8 @@ export const operationProposals = pgTable(
     requestedByUserId: uuid("requested_by_user_id").references(() => user.id, { onDelete: "set null" }),
     credentialKind: text("credential_kind").notNull().$type<CredentialKind>(),
     credentialId: text("credential_id").notNull(),
+    /** The Environments the staging credential may write, as its grant named them; null for every one. Rechecked before each step. */
+    callerEnvironments: jsonb("caller_environments").$type<string[] | null>(),
     steps: jsonb("steps").default([]).notNull().$type<ProposalStep[]>(),
     status: text("status").default("draft").notNull().$type<ProposalStatus>(),
     /** The approver's signed bundle of every step's digest, in order. Public material only. */
