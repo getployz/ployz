@@ -451,7 +451,15 @@ pub(crate) async fn user_stop<C: MachineOperations>(
                 return Err(not_stopped(client, &copy, &observed.resolved_spec, run, error).await);
             }
         }
-        left_running(&copy, "Held", step?)?;
+        // A proxy that never confirmed after the wait, such as one on a Server whose
+        // daemon is stopped, does not veto a stop the user asked for: stopping on is
+        // the owner's own decision, and holding the copy there would leave it running
+        // and unrouted everywhere, for good (#3995).
+        let step = match step? {
+            Step::NotConfirmed(_) => Step::Done,
+            step @ (Step::Done | Step::Refused(_) | Step::Cancelled) => step,
+        };
+        left_running(&copy, "Held", step)?;
     }
     stopped(client, &copy, &observed.resolved_spec, stop, queued).await
 }
