@@ -138,6 +138,7 @@ A live domain shows no status.
 | **Ingress isn't running on …** (shown only when no server takes the traffic) | [Deploy](../troubleshooting/app-not-reachable.md#ingress-isnt-running) to bring it back. |
 | **No Server receives traffic** | [Add a server](../servers/add-a-server.md). |
 | **via proxy** | Nothing. It works behind a proxy like Cloudflare. |
+| **via tunnel** | Nothing. It's served through your [Cloudflare Tunnel](cloudflare-tunnel.md). |
 
 For any other status, see [My app isn't reachable](../troubleshooting/app-not-reachable.md).
 

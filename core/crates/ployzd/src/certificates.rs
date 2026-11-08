@@ -21,8 +21,8 @@ use ployz_core::{
     CertificateHost, CertificateKeyType, CertificatePolicy, ClusterRoute, ContainerKind,
     ContainerObservation, HOSTNAME_VERIFY_PATH, HttpProtocol, IngressHost, IngressPorts,
     IngressWiring, IssuanceFailure, IssuanceGate, Machine, MachineId, PortPublication,
-    VerifyAnswer, hostname_verdict, issuance_failure_clock, issuance_gate, refusal_reason,
-    resolve_certificate_policy, validate_ingress_service_spec,
+    TUNNEL_SERVES_CERTIFICATE, VerifyAnswer, hostname_verdict, issuance_failure_clock,
+    issuance_gate, refusal_reason, resolve_certificate_policy, validate_ingress_service_spec,
 };
 use reqwest::{Client, redirect::Policy};
 use thiserror::Error;
@@ -224,10 +224,6 @@ pub(crate) fn challenge_probe_addresses(
         .map(|address| SocketAddr::new(address, 80))
         .collect()
 }
-
-/// Why no certificate is ordered while every Server uses the Tunnel Door.
-const TUNNEL_SERVES: &str =
-    "Cloudflare serves the certificate while every Server uses the Tunnel Door";
 
 /// Which Servers hold the Public Door open, from their running door Containers, and
 /// which hold it closed for the Tunnel Door. A Server with both, mid-switch, is open.
@@ -515,7 +511,7 @@ async fn issue_wanted(
     if standing.public.is_empty() && !standing.closed.is_empty() {
         for hostname in &wanted {
             match store
-                .record_certificate_error(hostname, TUNNEL_SERVES)
+                .record_certificate_error(hostname, TUNNEL_SERVES_CERTIFICATE)
                 .await?
             {
                 AcmeWrite::Changed | AcmeWrite::Kept => {}

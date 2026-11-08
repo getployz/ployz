@@ -23,6 +23,10 @@ const TUNNEL_TOKEN_MOUNT: &str = "/run/tunnel";
 pub const TUNNEL_USER_ID: u32 = 65532;
 /// Caddy's loopback listener the connector proxies every request to.
 pub const TUNNEL_ORIGIN: &str = "http://127.0.0.1:8480";
+/// Why a Machine orders no certificate while every Server uses the Tunnel Door. The
+/// daemon records it on each wanted hostname, and a domain's status reads it back.
+pub const TUNNEL_SERVES_CERTIFICATE: &str =
+    "Cloudflare serves the certificate while every Server uses the Tunnel Door";
 
 /// Build the reserved Tunnel Connector that joins the Ingress holder's network and
 /// runs the tunnel `sealed_token` names.

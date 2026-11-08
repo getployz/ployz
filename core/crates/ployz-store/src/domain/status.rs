@@ -156,6 +156,13 @@ fn status(domain: &Domain, deployed: Deployed, evidence: &DomainEvidence) -> Sta
     };
     let observed = observed_certificate(hostname, evidence);
     let certificate = observed.flatten();
+    // DNS points at Cloudflare and port 80 is closed on purpose, so neither applies.
+    if certificate.is_some_and(|certificate| {
+        certificate.status == CertificateAvailability::Failure
+            && certificate.last_error.as_deref() == Some(ployz_core::TUNNEL_SERVES_CERTIFICATE)
+    }) {
+        return (DomainStatus::Ready, Some("via tunnel".to_owned()), None);
+    }
     let ready = certificate
         .is_some_and(|certificate| certificate.status == CertificateAvailability::Available);
     let lookup = evidence
@@ -515,6 +522,53 @@ mod tests {
         assert_eq!(
             records.first().map(|record| record.name.as_str()),
             Some("@")
+        );
+    }
+
+    #[test]
+    fn a_domain_the_tunnel_serves_is_ready_via_tunnel_whatever_dns_and_port_80_say() {
+        let domain = custom("app.example.com");
+        let mut evidence = evidence(None);
+        evidence.certificates = Some(vec![
+            serde_json::from_value(serde_json::json!({
+                "hostname": "app.example.com",
+                "status": "failure",
+                "last_error": ployz_core::TUNNEL_SERVES_CERTIFICATE,
+                "backoff": null,
+            }))
+            .unwrap(),
+        ]);
+        evidence.cluster_domain = Some(ClusterDomain {
+            name: host("acme.ployz.app"),
+            status: ClusterDomainStatus::Port80 {
+                addresses: vec!["203.0.113.7".into()],
+            },
+        });
+        evidence.lookups.push(DnsLookup {
+            hostname: host("app.example.com"),
+            cname: None,
+            addresses: vec!["104.16.0.1".into()],
+        });
+        let ready_via_tunnel = (DomainStatus::Ready, Some("via tunnel".into()), None);
+        assert_eq!(status(&domain, Deployed::Yes, &evidence), ready_via_tunnel);
+        // Back on the Public Door, a certificate it still holds serves it, whatever reason lingers.
+        let mut public = evidence.clone();
+        public.cluster_domain = None;
+        public.lookups.clear();
+        if let Some(certificate) = public.certificates.as_mut().and_then(|all| all.first_mut()) {
+            certificate.status = CertificateAvailability::Available;
+        }
+        assert_eq!(
+            status(&domain, Deployed::Yes, &public),
+            (DomainStatus::Ready, None, None)
+        );
+        assert_eq!(
+            status(&domain, Deployed::No, &evidence),
+            (
+                DomainStatus::SettingUp,
+                Some("Live after your next deploy".into()),
+                Some(DomainAction::Deploy)
+            )
         );
     }
 
