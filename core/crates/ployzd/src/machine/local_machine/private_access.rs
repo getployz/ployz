@@ -12,7 +12,7 @@ use std::time::Duration;
 use ployz_core::{
     ContainerId, ContainerKind, ContainerObservation, ContainerRuntimeObservation, DoorChange,
     DoorOutcome, Namespace, PrivateAccessFailure, PrivateAccessProblem, PrivateAccessSet,
-    ResolvedServiceSpec, SetPrivateAccessRequest,
+    ResolvedServiceSpec, SetPrivateAccessRequest, private_access_sealed_key,
 };
 use zeroize::Zeroizing;
 
@@ -172,6 +172,15 @@ fn detail(output: &str, key: &[u8]) -> String {
     line
 }
 
+/// Whether a placement waits to see the router join the tailnet.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum Watch {
+    /// A request is waiting for the answer.
+    Settle,
+    /// Nobody is waiting, so the admission turn is not held for it.
+    Skip,
+}
+
 /// The router to place and the key it reads.
 pub(super) struct Wanted {
     pub(super) spec: ResolvedServiceSpec,
@@ -239,7 +248,7 @@ impl LocalMachine {
             let _turn = local.owner.admission_lock().write_owned().await;
             let plan = plan_router(&routers, wanted.as_ref().map(|wanted| &wanted.spec));
             let set = local
-                .converge_router(&containers, &plan, wanted.as_ref())
+                .converge_router(&containers, &plan, wanted.as_ref(), Watch::Settle)
                 .await?;
             if wanted.is_none() {
                 containers
@@ -247,6 +256,56 @@ impl LocalMachine {
                     .map_err(Error::PrivateAccessKeyFile)?;
             }
             Ok(set)
+        })
+        .await
+    }
+
+    /// Place the router this Machine last held again, after a reboot or a restart.
+    ///
+    /// A reboot clears the opened auth key, and Docker starts the router before the
+    /// daemon is up to write it again, so its start fails and Docker never retries.
+    /// This opens the key sealed on the newest router, writes it, then starts that
+    /// router if it is at rest. A router that runs stays as it is, so a daemon restart
+    /// changes nothing, and a Machine with no router places none. The router keeps the
+    /// spec it was created from, so a new image pin replaces nothing here, and nobody
+    /// waits for it to join the tailnet.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`Error::PrivateAccessKey`] when the router's key no longer opens, and
+    /// the errors of the Docker reads and the key write.
+    pub(crate) async fn restore_private_access(&self) -> Result<Option<PrivateAccessSet>, Error> {
+        let containers = self.containers.clone().ok_or(Error::DockerUnavailable)?;
+        self.reserved_effect(Gate::Router)?;
+        let local = self.clone();
+        self.finish_installed(move |_installation| async move {
+            let _doors = containers.door_lifecycle().await;
+            local.reserved_effect(Gate::Router)?;
+            let routers = containers.routers(&local.record().id()).await?;
+            let Some((spec, sealed)) = routers
+                .iter()
+                .rev()
+                .filter(|router| usable(router))
+                .find_map(|router| {
+                    let sealed = private_access_sealed_key(&router.resolved_spec.container.labels)?;
+                    Some((router.resolved_spec.clone(), sealed))
+                })
+            else {
+                return Ok(None);
+            };
+            let key = containers
+                .open_private_access_key(&sealed)
+                .map_err(Error::PrivateAccessKey)?;
+            containers
+                .write_private_access_key(&key)
+                .map_err(Error::PrivateAccessKeyFile)?;
+            let wanted = Wanted { spec, key };
+            let _turn = local.owner.admission_lock().write_owned().await;
+            let plan = plan_router(&routers, Some(&wanted.spec));
+            local
+                .converge_router(&containers, &plan, Some(&wanted), Watch::Skip)
+                .await
+                .map(Some)
         })
         .await
     }
@@ -259,6 +318,7 @@ impl LocalMachine {
         containers: &ContainerRuntime,
         plan: &RouterPlan,
         wanted: Option<&Wanted>,
+        watch: Watch,
     ) -> Result<PrivateAccessSet, Error> {
         let mut set = PrivateAccessSet::default();
         let mut effects = Effects::default();
@@ -269,7 +329,7 @@ impl LocalMachine {
             Ok(router) => router,
             Err(error) => return Err(self.undo(containers, &effects, error).await),
         };
-        if let (Some(router), Some(wanted)) = (&router, wanted) {
+        if let (Some(router), Some(wanted), Watch::Settle) = (&router, wanted, watch) {
             set.failure = self.watch_router(containers, router, &wanted.key).await;
         }
         set.router = router;

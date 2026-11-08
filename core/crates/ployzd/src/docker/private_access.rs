@@ -1,6 +1,8 @@
 //! The Private Access router as Docker shows it, and the opened auth key on the
 //! Machine: one file root writes and the router reads once at start. `/run` is memory,
-//! so a reboot clears it and the daemon writes it again before the router can restart.
+//! so a reboot clears it. Docker starts the router before the daemon can write it
+//! again, so the daemon starts the router itself once the key is back
+//! (`LocalMachine::restore_private_access`).
 
 use std::{
     fs, io,
@@ -13,7 +15,6 @@ use futures_util::StreamExt;
 use ployz_core::{
     Ciphertext, ContainerId, ContainerKind, ContainerObservation, MachineId,
     PRIVATE_ACCESS_KEY_FILE, PRIVATE_ACCESS_KEY_MACHINE_DIR, QualifiedService,
-    private_access_sealed_key,
 };
 use zeroize::Zeroizing;
 
@@ -112,26 +113,6 @@ impl ContainerRuntime {
         }
         routers.sort_by_key(|router| (router.created_at_unix_nanos, router.container_id));
         Ok(routers)
-    }
-
-    /// Write the auth key of the newest router here again, after a reboot cleared
-    /// `/run`. A router Docker restarted meanwhile reads it on its next try. Nothing
-    /// to do when no router is here.
-    pub(crate) async fn restore_private_access_key(
-        &self,
-        machine_id: &MachineId,
-    ) -> Result<(), Error> {
-        let sealed = self
-            .routers(machine_id)
-            .await?
-            .iter()
-            .rev()
-            .find_map(|router| private_access_sealed_key(&router.resolved_spec.container.labels));
-        let Some(sealed) = sealed else {
-            return Ok(());
-        };
-        let key = self.open_private_access_key(&sealed)?;
-        self.write_private_access_key(&key).map_err(Error::Io)
     }
 
     /// What a router wrote since `since`, in Unix seconds, for saying why it stopped.

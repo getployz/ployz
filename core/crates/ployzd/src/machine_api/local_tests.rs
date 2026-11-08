@@ -1949,6 +1949,88 @@ mod private_access {
     }
 
     #[tokio::test]
+    async fn a_reboot_leaves_the_router_at_rest_and_the_router_held_starts_again() {
+        let (data_dir, _store, service, _fake, runtime, cluster) =
+            fake_docker_service_sealing("ployzd-access-reboot").await;
+        let machine = service.local.record().id();
+        let running = || async {
+            runtime
+                .routers(&machine)
+                .await
+                .unwrap()
+                .iter()
+                .all(|router| matches!(router.runtime, ContainerRuntimeObservation::Running { .. }))
+        };
+        assert!(
+            service
+                .local
+                .restore_private_access()
+                .await
+                .unwrap()
+                .is_none(),
+            "a Machine with Private Access off places no router"
+        );
+        assert!(runtime.routers(&machine).await.unwrap().is_empty());
+        assert!(!key_file(&data_dir).exists());
+
+        let sealed = cluster.seal_platform(PlatformPurpose::PrivateAccess, b"tskey-auth-test");
+        let on = json!({"enabled": true, "sealed_auth_key": sealed});
+        let placed = set_access(&service, on).await.unwrap().unwrap();
+        let router = placed.router.unwrap().now.container_id;
+
+        let untouched = service
+            .local
+            .restore_private_access()
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(untouched.failure, None, "{untouched:?}");
+        assert_eq!(
+            untouched.router.unwrap().change,
+            DoorChange::Unchanged,
+            "a daemon restart leaves the running router alone"
+        );
+
+        runtime.stop(&router, None, None).await.unwrap();
+        runtime.remove_private_access_key().unwrap();
+        assert!(!running().await && !key_file(&data_dir).exists());
+
+        let restored = service
+            .local
+            .restore_private_access()
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(restored.failure, None, "{restored:?}");
+        let started = restored.router.unwrap();
+        assert_eq!(started.change, DoorChange::Started);
+        assert_eq!(started.now.container_id, router);
+        assert!(restored.retired.is_empty());
+        assert_eq!(
+            std::fs::read(key_file(&data_dir)).unwrap(),
+            b"tskey-auth-test"
+        );
+        assert!(running().await);
+
+        set_access(&service, json!({"enabled": false}))
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(
+            service
+                .local
+                .restore_private_access()
+                .await
+                .unwrap()
+                .is_none(),
+            "a Machine turned off stays off after a reboot"
+        );
+        assert!(runtime.routers(&machine).await.unwrap().is_empty());
+        assert!(!key_file(&data_dir).exists());
+        std::fs::remove_dir_all(data_dir).unwrap();
+    }
+
+    #[tokio::test]
     async fn a_new_key_replaces_the_router() {
         let (data_dir, _store, service, _fake, runtime, cluster) =
             fake_docker_service_sealing("ployzd-access-rekey").await;

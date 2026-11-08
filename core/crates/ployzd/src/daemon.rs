@@ -524,17 +524,17 @@ impl Daemon {
                 ) else {
                     return Ok(());
                 };
-                if let Err(error) = runtime.restore_private_access_key(&local_id).await {
-                    tracing::warn!(
-                        error = %ployz_core::error_chain::inline(&error),
-                        "could not write the Tailscale auth key again; the Private Access router keeps retrying until the next `ployz private-access on`"
-                    );
-                }
                 let first_synced = runtime.first_synced();
                 let machine = crate::machine::LocalMachine::new(local.clone())
                     .with_containers(Some(runtime))
                     .with_plugin(plugin.clone())
                     .with_cluster(Some((replicated.clone(), admin.clone())));
+                if let Err(error) = machine.restore_private_access().await {
+                    tracing::warn!(
+                        error = %ployz_core::error_chain::inline(&error),
+                        "could not place the Private Access router this Machine held again; it stays as it is until the next `ployz private-access on`"
+                    );
+                }
                 let unplaced = match machine.restore_doors().await {
                     Ok(Some(set)) => set.failure.map(|failure| failure.error.message),
                     Ok(None) => None,
