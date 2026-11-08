@@ -1235,6 +1235,60 @@ mod ingress_doors {
     }
 
     #[tokio::test]
+    async fn a_reboot_leaves_the_connector_at_rest_and_the_doors_held_place_it_again() {
+        let (data_dir, _store, service, _fake, runtime, cluster) =
+            fake_docker_service_sealing("ployzd-doors-reboot").await;
+        assert!(
+            service.local.restore_doors().await.unwrap().is_none(),
+            "a Machine that held no doors places none"
+        );
+        let sealed = cluster.seal_platform(ployz_core::PlatformPurpose::IngressTunnel, b"cf-token");
+        let tunnel =
+            json!({"doors": ["tunnel"], "proxy_service": proxy_id(), "sealed_token": sealed});
+        let placed = set_doors(&service, tunnel, false).await.unwrap().unwrap();
+        assert_eq!(placed.failure, None, "{placed:?}");
+        let connector = placed.tunnel.unwrap().now.container_id;
+
+        let token = data_dir.join("root/run/ployz/tunnel/token");
+        let running = |runtime: &crate::docker::ContainerRuntime| {
+            let runtime = runtime.clone();
+            let machine_id = service.local.record().id();
+            async move {
+                runtime
+                    .door_inventory(&machine_id)
+                    .await
+                    .unwrap()
+                    .iter()
+                    .filter(|entry| entry.facts.door == crate::docker::Door::Tunnel)
+                    .all(|entry| entry.facts.running())
+            }
+        };
+        let untouched = service.local.restore_doors().await.unwrap().unwrap();
+        assert_eq!(untouched.failure, None, "{untouched:?}");
+        assert_eq!(
+            untouched.tunnel.unwrap().change,
+            DoorChange::Unchanged,
+            "a daemon restart leaves the running doors alone"
+        );
+
+        runtime.stop(&connector, None, None).await.unwrap();
+        runtime.remove_tunnel_token().unwrap();
+        assert!(!running(&runtime).await && !token.exists());
+
+        let restored = service.local.restore_doors().await.unwrap().unwrap();
+        assert_eq!(restored.failure, None, "{restored:?}");
+        assert_eq!(restored.holder.unwrap().change, DoorChange::Unchanged);
+        let started = restored.tunnel.unwrap();
+        assert_eq!(started.change, DoorChange::Started);
+        assert_eq!(started.now.container_id, connector);
+        assert_eq!(std::fs::read(&token).unwrap(), b"cf-token");
+        assert!(running(&runtime).await);
+
+        runtime.remove_tunnel_token().unwrap();
+        std::fs::remove_dir_all(data_dir).unwrap();
+    }
+
+    #[tokio::test]
     async fn an_operator_under_enforcement_is_refused_before_docker() {
         let (data_dir, store, service, fake) = fake_docker_service("ployzd-doors-enforced").await;
         store

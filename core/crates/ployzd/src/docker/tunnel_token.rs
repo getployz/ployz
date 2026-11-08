@@ -1,7 +1,8 @@
 //! The opened tunnel token on the Machine: one file root writes and only the Tunnel
 //! Connector's user reads, bind-mounted read-only into the connector, which reads
-//! it once at start. `/run` is memory, so a reboot clears it and the daemon writes
-//! it again before the connector can start.
+//! it once at start. `/run` is memory, so a reboot clears it. Docker starts the
+//! connector before the daemon can write it again, so the daemon starts the connector
+//! itself once the token is back (`LocalMachine::restore_doors`).
 
 use std::{
     fs, io,
@@ -9,15 +10,14 @@ use std::{
     path::{Path, PathBuf},
 };
 
-use ployz_core::{
-    Ciphertext, ContainerKind, MachineId, TUNNEL_TOKEN_FILE, TUNNEL_TOKEN_MACHINE_DIR,
-    TUNNEL_USER_ID, tunnel_sealed_token,
-};
+use ployz_core::{Ciphertext, TUNNEL_TOKEN_FILE, TUNNEL_TOKEN_MACHINE_DIR, TUNNEL_USER_ID};
 use zeroize::Zeroizing;
 
-use super::{ContainerRuntime, Door, Error};
+use super::ContainerRuntime;
 use crate::filesystem::atomic_write;
 use crate::sealed_env::{self, OpenError};
+#[cfg(test)]
+use ployz_core::MachineId;
 
 fn token_dir(root: &Path) -> PathBuf {
     root.join(TUNNEL_TOKEN_MACHINE_DIR.trim_start_matches('/'))
@@ -74,38 +74,6 @@ impl ContainerRuntime {
         sealed: &Ciphertext,
     ) -> Result<Zeroizing<Vec<u8>>, OpenError> {
         sealed_env::open_tunnel_token(sealed, self.sealing_key_dir())
-    }
-
-    /// Write the token of the newest Tunnel Connector here again, after a reboot
-    /// cleared `/run`. A connector Docker restarted meanwhile reads it on its next
-    /// try. Nothing to do when no connector is here.
-    pub(crate) async fn restore_tunnel_token(&self, machine_id: &MachineId) -> Result<(), Error> {
-        let mut newest = None;
-        for (id, _) in self.docker.door_containers(Door::Tunnel).await? {
-            let observation = match self.inspect_managed(&id, machine_id).await {
-                Ok(observation) => observation,
-                Err(Error::ContainerNotFound(_) | Error::SpecNotFound(_)) => continue,
-                Err(error) => return Err(error),
-            };
-            if observation.kind != ContainerKind::ServiceContainer {
-                continue;
-            }
-            let Some(sealed) = tunnel_sealed_token(&observation.resolved_spec.container.labels)
-            else {
-                continue;
-            };
-            if newest
-                .as_ref()
-                .is_none_or(|(created_at, _)| *created_at < observation.created_at_unix_nanos)
-            {
-                newest = Some((observation.created_at_unix_nanos, sealed));
-            }
-        }
-        let Some((_, sealed)) = newest else {
-            return Ok(());
-        };
-        let token = self.open_tunnel_token(&sealed)?;
-        self.write_tunnel_token(&token).map_err(Error::Io)
     }
 }
 
