@@ -27,7 +27,7 @@ use crate::deploy::cleanup::{self, BroughtIn, Copy, Step};
 use crate::drain::retirement::{Names, server_name};
 use crate::failure::partial_failure_details;
 use crate::global_slot::{slot_eligibility, unknown_eligibility};
-use crate::ingress::ClusterDoors;
+use crate::ingress::{ClusterDoors, DoorMachine};
 use crate::{
     connect::{Client, unreadable_answer},
     deploy::endpoint_capacity_error,
@@ -801,10 +801,19 @@ pub(crate) async fn catch_up_globals<C: CatchUpClient>(
             CatchUpWork::Service(origin) => origin,
             CatchUpWork::Ingress(proxy_service, doors) => {
                 observe(CatchUpFact::Creating(identity.clone()));
-                let failure = match client
-                    .run_doors(&this_machine.id, proxy_service, doors, cancel)
-                    .await
-                {
+                let refusal = this_machine
+                    .accepts_ingress
+                    .then(|| DoorMachine::of(this_machine).refusal(&doors.doors))
+                    .flatten();
+                let answer = match refusal {
+                    Some(refusal) => Err(refusal),
+                    None => {
+                        client
+                            .run_doors(&this_machine.id, proxy_service, doors, cancel)
+                            .await
+                    }
+                };
+                let failure = match answer {
                     Ok(None) => {
                         unresolved.retain(|service| service != &identity);
                         observe(CatchUpFact::Excluded(identity));

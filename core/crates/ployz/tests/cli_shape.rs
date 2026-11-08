@@ -2854,6 +2854,19 @@ fn ingress_use_needs_a_known_door_and_a_token_on_stdin_when_asked() {
     assert!(stderr.contains("stdin holds no tunnel token"), "{stderr}");
 
     let output = ingress_use_with_stdin(
+        &["ingress", "use", "tunnel", "--token-stdin"],
+        b"not-a-real-token\n",
+    );
+    let stderr = String::from_utf8(output.stderr).unwrap();
+    assert_eq!(output.status.code(), Some(2), "{stderr}");
+    assert!(
+        stderr.contains(
+            "Paste the whole token from the tunnel's install command. Tokens start with eyJ."
+        ),
+        "{stderr}"
+    );
+
+    let output = ingress_use_with_stdin(
         &["--json", "ingress", "use", "tunnel", "--token-stdin"],
         &vec![b'x'; 9000],
     );

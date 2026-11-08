@@ -600,6 +600,69 @@ async fn a_joiner_with_the_role_gets_doors_when_no_server_runs_them() {
     assert!(client.door_calls.is_empty());
 }
 
+fn cluster_on_the_tunnel(founder: &Machine) -> Vec<ServiceObservation> {
+    let sealed = ployz_core::Ciphertext::from_bytes(vec![9; 48]);
+    let spec = ployz_core::tunnel_service_spec("cloudflared:1", &sealed)
+        .to_resolved(service_id('b'), ResolvedUpdateConfig::default())
+        .expect("volume graph is scoped");
+    vec![
+        global_service(
+            QualifiedService::system_ingress(),
+            'a',
+            Placement::default(),
+            running_on(founder, 'a'),
+        ),
+        grouped(
+            QualifiedService::system_tunnel(),
+            spec,
+            running_on(founder, 'c'),
+        ),
+    ]
+}
+
+// Catches catch-up sending the Tunnel Door to a joiner whose daemon predates it, which would
+// answer UnsupportedDoors instead of the client naming the capability first.
+#[tokio::test(start_paused = true)]
+async fn a_joiner_whose_daemon_predates_the_tunnel_door_is_named_and_not_asked() {
+    let founder = machine('f', "founder");
+    let mut joiner = machine('1', "joiner");
+    joiner.runtime.capabilities = [ployz_core::SET_INGRESS_DOORS_CAPABILITY.to_owned()].into();
+    let mut client = fake(&joiner, cluster_on_the_tunnel(&founder));
+
+    let error = catch_up(&mut client, &joiner).await.unwrap_err();
+
+    assert!(client.door_calls.is_empty());
+    assert!(
+        message(error, &joiner).contains(ployz_core::SET_INGRESS_TUNNEL_CAPABILITY),
+        "the refusal names the capability the joiner lacks"
+    );
+}
+
+// Catches the capability check refusing a joiner that can open the Tunnel Door, or one whose
+// row predates capabilities and so claims nothing.
+#[tokio::test(start_paused = true)]
+async fn a_joiner_that_can_open_the_tunnel_door_is_asked() {
+    let founder = machine('f', "founder");
+    for capabilities in [
+        vec![
+            ployz_core::SET_INGRESS_DOORS_CAPABILITY.to_owned(),
+            ployz_core::SET_INGRESS_TUNNEL_CAPABILITY.to_owned(),
+        ],
+        Vec::new(),
+    ] {
+        let mut joiner = machine('1', "joiner");
+        joiner.runtime.capabilities = capabilities.into_iter().collect();
+        let mut client = fake(&joiner, cluster_on_the_tunnel(&founder));
+
+        catch_up(&mut client, &joiner).await.unwrap();
+
+        let [(_, asked)] = client.door_calls.as_slice() else {
+            panic!("one call sets the doors: {:?}", client.door_calls);
+        };
+        assert!(asked.doors.has(ployz_core::IngressDoor::Tunnel));
+    }
+}
+
 // Catches catch-up calling a Caddy that crashes after the daemon set it caught up.
 #[tokio::test(start_paused = true)]
 async fn a_caddy_that_is_not_running_after_its_doors_fails_catch_up() {
