@@ -205,29 +205,210 @@ pub enum Standing {
     Approved(CommitSha),
 }
 
-impl Standing {
-    pub(crate) fn admits(&self, head: &CommitSha) -> bool {
-        match self {
-            Self::Trusted => true,
-            Self::NeedsApproval => false,
-            Self::Approved(approved) => approved == head,
+/// Whether `facts` deploy without approval by Cloud's latest look at the members: a
+/// pull request from the repository itself, by a bot or a member. None trusts no
+/// member.
+fn trusts(facts: &PullRequest, members: Option<&[GithubUserId]>) -> bool {
+    let own = facts.head_repository_id == Some(facts.repository_id);
+    let member = facts
+        .author_id
+        .zip(members)
+        .is_some_and(|(author, members)| members.contains(&author));
+    own && (facts.bot || member)
+}
+
+/// Where a pull request is, stored as one tagged column beside its facts: open,
+/// closed or merged, each with the head its standing is of.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "phase", rename_all = "snake_case")]
+enum Phase {
+    Open {
+        head: CommitSha,
+        standing: OpenStanding,
+    },
+    Closed {
+        head: CommitSha,
+        standing: OpenStanding,
+    },
+    /// For good: no later facts reopen it.
+    Merged {
+        commit: CommitSha,
+        into: BranchName,
+        head: CommitSha,
+        standing: OpenStanding,
+        /// What each Destination didn't take. None until it landed, and for good for
+        /// a merge a Store from before `0012_on_merge` landed.
+        landed: Option<Vec<on_merge::Unlanded>>,
+    },
+}
+
+/// How the phase column of a merged pull request begins.
+const MERGED: &str = "{\"phase\":\"merged\"";
+
+/// A [`Standing`] whose approval is of the head stored beside it, so it can name no
+/// other.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+enum OpenStanding {
+    Trusted,
+    NeedsApproval,
+    ApprovedHead,
+}
+
+impl Phase {
+    /// The phase the columns of a Store from before `0040_pull_request_phase` mean.
+    /// An approval of any head but the latest never admits that head, so it needs one.
+    fn of_columns(
+        facts: &PullRequest,
+        merged: Option<Merged>,
+        landed: Option<Vec<on_merge::Unlanded>>,
+        standing: Option<Standing>,
+    ) -> Self {
+        let head = facts.head.clone();
+        let standing = match standing {
+            Some(Standing::Trusted) => OpenStanding::Trusted,
+            Some(Standing::Approved(approved)) if approved == head => OpenStanding::ApprovedHead,
+            Some(Standing::NeedsApproval | Standing::Approved(_)) | None => {
+                OpenStanding::NeedsApproval
+            }
+        };
+        let merged = merged.or_else(|| {
+            facts.merge_commit.clone().map(|commit| Merged {
+                commit,
+                into: facts.target_branch.clone(),
+            })
+        });
+        match merged {
+            Some(Merged { commit, into }) => Self::Merged {
+                commit,
+                into,
+                head,
+                standing,
+                landed,
+            },
+            None if facts.open => Self::Open { head, standing },
+            None => Self::Closed { head, standing },
         }
     }
 
-    /// What `event` earns: an approval holds only while its head does.
-    fn of(event: &PullRequest, trusted: &Trusted, before: Self) -> Self {
-        let own = event.head_repository_id == Some(event.repository_id);
-        let member = event
-            .author_id
-            .zip(trusted.members.as_ref())
-            .is_some_and(|(author, members)| members.contains(&author));
-        if own && (event.bot || member) {
-            return Self::Trusted;
+    fn head(&self) -> &CommitSha {
+        match self {
+            Self::Open { head, .. } | Self::Closed { head, .. } | Self::Merged { head, .. } => head,
         }
-        match before {
-            Self::Approved(head) if head == event.head => Self::Approved(head),
-            Self::Trusted | Self::NeedsApproval | Self::Approved(_) => Self::NeedsApproval,
+    }
+
+    fn open_standing(&self) -> OpenStanding {
+        match self {
+            Self::Open { standing, .. }
+            | Self::Closed { standing, .. }
+            | Self::Merged { standing, .. } => *standing,
         }
+    }
+
+    /// It, standing as `standing`.
+    fn standing_as(mut self, to: OpenStanding) -> Self {
+        match &mut self {
+            Self::Open { standing, .. }
+            | Self::Closed { standing, .. }
+            | Self::Merged { standing, .. } => *standing = to,
+        }
+        self
+    }
+
+    /// Its standing as listings show it and the `standing` column holds it.
+    fn standing(&self) -> Standing {
+        match self.open_standing() {
+            OpenStanding::Trusted => Standing::Trusted,
+            OpenStanding::NeedsApproval => Standing::NeedsApproval,
+            OpenStanding::ApprovedHead => Standing::Approved(self.head().clone()),
+        }
+    }
+
+    fn merge(&self) -> Option<Merged> {
+        match self {
+            Self::Merged { commit, into, .. } => Some(Merged {
+                commit: commit.clone(),
+                into: into.clone(),
+            }),
+            Self::Open { .. } | Self::Closed { .. } => None,
+        }
+    }
+
+    /// Whether `head` deploys: Trusted only while `facts` still earn it from
+    /// `members`, an approval only of its own head.
+    fn admits(
+        &self,
+        head: &CommitSha,
+        facts: &PullRequest,
+        members: Option<&[GithubUserId]>,
+    ) -> bool {
+        match self.open_standing() {
+            OpenStanding::Trusted => trusts(facts, members),
+            OpenStanding::NeedsApproval => false,
+            OpenStanding::ApprovedHead => self.head() == head,
+        }
+    }
+}
+
+/// The JSON in column `index` of `row`, if any.
+fn optional<T: serde::de::DeserializeOwned>(
+    row: &crate::storage::Row,
+    index: usize,
+    what: &str,
+) -> Result<Option<T>, RpcError> {
+    row.optional_text(index)?
+        .map(|text| serde_json::from_str(text).map_err(|_| error::corrupt(what)))
+        .transpose()
+}
+
+/// A pull request's row: the facts Cloud last reported, and where it is.
+struct Record {
+    facts: PullRequest,
+    phase: Phase,
+}
+
+/// The columns [`Record::read`] reads, in its order.
+const RECORD: &str = "facts, merged, unlanded, standing, phase";
+
+impl Record {
+    /// [`RECORD`]'s columns, from `at` in `row`. A row a Store from before
+    /// `0040_pull_request_phase` inserted has no phase, and one it wrote since may
+    /// hold facts, a merge or a standing its phase doesn't: either reads from those
+    /// columns, which this Store writes beside every phase.
+    fn read(row: &crate::storage::Row, at: usize) -> Result<Self, RpcError> {
+        let facts: PullRequest = row.json(at, "pull request")?;
+        let derived = Phase::of_columns(
+            &facts,
+            optional(row, at + 1, "pull request merge")?,
+            optional(row, at + 2, "unlanded")?,
+            optional(row, at + 3, "pull request standing")?,
+        );
+        let stored: Option<Phase> = optional(row, at + 4, "pull request phase")?;
+        let agrees = |stored: &Phase| {
+            std::mem::discriminant(stored) == std::mem::discriminant(&derived)
+                && stored.head() == derived.head()
+                && stored.merge() == derived.merge()
+                && stored.open_standing() == derived.open_standing()
+        };
+        let phase = match stored {
+            Some(stored) if agrees(&stored) => stored,
+            Some(_) | None => derived,
+        };
+        Ok(Self { facts, phase })
+    }
+
+    /// Its facts, merged once its phase is: a merge reported before newer facts still
+    /// counts.
+    fn facts(&self) -> PullRequest {
+        let mut facts = self.facts.clone();
+        if facts.merge_commit.is_none()
+            && let Some(merged) = self.phase.merge()
+        {
+            facts.merge_commit = Some(merged.commit);
+            facts.target_branch = merged.into;
+            facts.open = false;
+        }
+        facts
     }
 }
 
@@ -332,14 +513,19 @@ fn open_in(
     for row in rows {
         let number: PullRequestNumber = row.number(0, "pull request")?;
         let environment = row.parse::<EnvironmentName>(1, "Environment name")?;
-        let facts = facts(tx, who, repository_id, number)?;
-        let standing = standing(tx, who, repository_id, number)?;
+        let record = record(tx, who, repository_id, number)?;
         open.push(OpenPullRequest {
             number,
-            title: facts.as_ref().map(|f| f.title.clone()).unwrap_or_default(),
-            author: facts.as_ref().map(|f| f.author.clone()).unwrap_or_default(),
-            head: facts.map(|f| f.head),
-            standing,
+            title: record
+                .as_ref()
+                .map(|r| r.facts.title.clone())
+                .unwrap_or_default(),
+            author: record
+                .as_ref()
+                .map(|r| r.facts.author.clone())
+                .unwrap_or_default(),
+            head: record.as_ref().map(|r| r.facts.head.clone()),
+            standing: record.map_or(Standing::NeedsApproval, |r| r.phase.standing()),
             environment: Some(environment),
         });
     }
@@ -347,15 +533,17 @@ fn open_in(
         return Ok(open);
     }
     let rows = tx.query(
-        "SELECT number, facts, standing FROM config_pull_request \
-         WHERE organization_id = ?1 AND repository_id = ?2 AND merged IS NULL ORDER BY number",
+        &format!(
+            "SELECT number, {RECORD} FROM config_pull_request \
+             WHERE organization_id = ?1 AND repository_id = ?2 AND updated <> '' ORDER BY number"
+        ),
         &[who.organization.as_str().into(), repository_id.into()],
     )?;
     for row in rows {
         let number: PullRequestNumber = row.number(0, "pull request")?;
-        let facts: PullRequest = row.json(1, "pull request")?;
-        let standing = stored_standing(&row)?;
-        let waiting = facts.open
+        let Record { facts, phase } = Record::read(&row, 1)?;
+        let standing = phase.standing();
+        let waiting = matches!(phase, Phase::Open { .. })
             && !(facts.bot && !plan.include_bots)
             && standing != Standing::Trusted
             && !open.iter().any(|listed| listed.number == number);
@@ -373,67 +561,105 @@ fn open_in(
     Ok(open)
 }
 
-/// What the Store decided of a pull request; one it never saw needs approval.
-pub(crate) fn standing(
+/// The pull request's row; none before Cloud first reported it.
+fn record(
     tx: &mut dyn Tx,
     who: &Actor,
     repository_id: RepositoryId,
     pr: PullRequestNumber,
-) -> Result<Standing, RpcError> {
+) -> Result<Option<Record>, RpcError> {
     let rows = tx.query(
-        "SELECT number, facts, standing FROM config_pull_request \
-         WHERE organization_id = ?1 AND repository_id = ?2 AND number = ?3",
+        &format!(
+            "SELECT {RECORD} FROM config_pull_request \
+             WHERE organization_id = ?1 AND repository_id = ?2 AND number = ?3 AND updated <> ''"
+        ),
         &[
             who.organization.as_str().into(),
             repository_id.into(),
             pr.into(),
         ],
     )?;
-    rows.first()
-        .map_or(Ok(Standing::NeedsApproval), stored_standing)
+    rows.first().map(|row| Record::read(row, 0)).transpose()
 }
 
 /// Whether `head` of `repository_id` may deploy into `environment`: anywhere but a
-/// PR Environment of that repository, whose pull request must admit it.
+/// PR Environment of that repository, whose pull request must admit it. A Trusted
+/// one admits only while its stored author is among `trusted`'s members, as Cloud
+/// read them for this write.
 pub(crate) fn admits(
     tx: &mut dyn Tx,
     environment: &EnvironmentId,
-    repository_id: RepositoryId,
-    head: &CommitSha,
+    (repository_id, head): (RepositoryId, &CommitSha),
+    trusted: &Trusted,
 ) -> Result<bool, RpcError> {
     let rows = tx.query(
-        "SELECT e.repository_id, e.number, p.standing FROM config_pr_environment e \
+        "SELECT p.facts, p.merged, p.unlanded, p.standing, p.phase \
+         FROM config_pr_environment e \
          LEFT JOIN config_pull_request p ON p.organization_id = e.organization_id \
          AND p.repository_id = e.repository_id AND p.number = e.number \
          WHERE e.environment_id = ?1 AND e.repository_id = ?2",
         &[environment.as_str().into(), repository_id.into()],
     )?;
-    rows.first()
-        .map_or(Ok(true), |row| Ok(stored_standing(row)?.admits(head)))
+    let Some(row) = rows.first() else {
+        return Ok(true);
+    };
+    if row.optional_text(0)?.is_none() {
+        return Ok(false);
+    }
+    let record = Record::read(row, 0)?;
+    Ok(record
+        .phase
+        .admits(head, &record.facts, trusted.members.as_deref()))
 }
 
-/// The standing in column 2 of `row`.
-fn stored_standing(row: &crate::storage::Row) -> Result<Standing, RpcError> {
-    row.optional_text(2)?
-        .map_or(Ok(Standing::NeedsApproval), |text| {
-            serde_json::from_str(text).map_err(|_| error::corrupt("pull request standing"))
-        })
+/// Record each pull request's phase from the columns that held it before
+/// `0040_pull_request_phase`.
+pub(crate) fn record_phases(tx: &mut dyn Tx) -> Result<(), RpcError> {
+    let rows = tx.query(
+        &format!(
+            "SELECT organization_id, repository_id, number, {RECORD} FROM config_pull_request"
+        ),
+        &[],
+    )?;
+    for row in rows {
+        let phase = Record::read(&row, 3)?.phase;
+        tx.execute(
+            "UPDATE config_pull_request SET phase = ?4 \
+             WHERE organization_id = ?1 AND repository_id = ?2 AND number = ?3",
+            &[
+                row.text(0)?.into(),
+                row.int(1)?.into(),
+                row.int(2)?.into(),
+                serde_json::to_string(&phase)
+                    .expect("a phase is JSON")
+                    .as_str()
+                    .into(),
+            ],
+        )?;
+    }
+    Ok(())
 }
 
-fn set_standing(
+/// Store `phase` as the pull request's, and its standing in the column a Store from
+/// before `0040_pull_request_phase` reads.
+fn write_phase(
     tx: &mut dyn Tx,
     who: &Actor,
     pr: &PullRequestRef,
-    standing: &Standing,
+    phase: &Phase,
 ) -> Result<(), RpcError> {
     tx.execute(
-        "UPDATE config_pull_request SET standing = ?4 \
+        "UPDATE config_pull_request SET phase = ?4, standing = ?5 \
          WHERE organization_id = ?1 AND repository_id = ?2 AND number = ?3",
         &[
             who.organization.as_str().into(),
             pr.repository_id.into(),
             pr.number.into(),
-            serde_json::to_string(standing)
+            serde_json::to_string(phase)
+                .expect("a phase is JSON")
+                .as_str()
+                .into(),
+            serde_json::to_string(&phase.standing())
                 .expect("a standing is JSON")
                 .as_str()
                 .into(),
@@ -486,7 +712,8 @@ pub(crate) fn destined(
     into: &EnvironmentId,
 ) -> Result<Option<PullRequestRef>, RpcError> {
     let rows = tx.query(
-        "SELECT e.repository_id, e.number, p.facts FROM config_pr_environment e \
+        "SELECT e.repository_id, e.number, p.facts, p.merged, p.unlanded, p.standing, p.phase \
+         FROM config_pr_environment e \
          JOIN config_pull_request p ON p.organization_id = e.organization_id \
          AND p.repository_id = e.repository_id AND p.number = e.number \
          WHERE e.environment_id = ?1",
@@ -496,7 +723,7 @@ pub(crate) fn destined(
         return Ok(None);
     };
     let pr = pull_request_ref(row)?;
-    let facts: PullRequest = row.json(2, "pull request")?;
+    let facts = Record::read(row, 2)?.facts();
     let project = scope::project_of(tx, from)?.id;
     let destinations = destinations_of(tx, &project, pr.repository_id, &facts.target_branch)?;
     Ok(destinations.contains(into).then_some(pr))
@@ -518,29 +745,7 @@ pub(crate) fn facts(
     repository_id: RepositoryId,
     pr: PullRequestNumber,
 ) -> Result<Option<PullRequest>, RpcError> {
-    let rows = tx.query(
-        "SELECT facts, merged FROM config_pull_request \
-         WHERE organization_id = ?1 AND repository_id = ?2 AND number = ?3",
-        &[
-            who.organization.as_str().into(),
-            repository_id.into(),
-            pr.into(),
-        ],
-    )?;
-    let Some(row) = rows.first() else {
-        return Ok(None);
-    };
-    let mut facts: PullRequest = row.json(0, "pull request")?;
-    if facts.merge_commit.is_none()
-        && let Some(merged) = row.optional_text(1)?
-    {
-        let merged: Merged =
-            serde_json::from_str(merged).map_err(|_| error::corrupt("pull request merge"))?;
-        facts.merge_commit = Some(merged.commit);
-        facts.target_branch = merged.into;
-        facts.open = false;
-    }
-    Ok(Some(facts))
+    Ok(record(tx, who, repository_id, pr)?.map(|record| record.facts()))
 }
 
 /// The pull request of every PR Environment in `environment`'s Project not being
@@ -560,6 +765,147 @@ pub(crate) fn project_checks(
     rows.iter().map(pull_request_ref).collect()
 }
 
+/// What Cloud's report of a pull request did to its row.
+struct Reported {
+    /// The row before; none at its first report.
+    before: Option<Record>,
+    /// Whether the report's facts were newer than those the row held, and replaced
+    /// them.
+    fresh: bool,
+    /// Whether it was the first to tell of the merge.
+    first_merge: bool,
+    phase: Phase,
+}
+
+/// Record Cloud's report `event` of a pull request. With [`approve`], the only
+/// writer of a phase. Newer facts replace older ones, but never reopen a merge. The
+/// first merge reported, whatever the order, stays. The standing follows the facts
+/// the row holds and Cloud's latest look at the members: an older report still
+/// takes a Trusted standing from an author who left.
+fn record_facts(
+    tx: &mut dyn Tx,
+    who: &Actor,
+    event: &PullRequest,
+    trusted: &Trusted,
+) -> Result<Reported, RpcError> {
+    let organization = who.organization.as_str();
+    let pr = PullRequestRef {
+        repository_id: event.repository_id,
+        number: event.number,
+    };
+    let (repository_id, number) = (pr.repository_id.into(), pr.number.into());
+    let facts = serde_json::to_string(event).expect("facts are JSON");
+    // The lock: a placeholder no facts are older than, or the row. A second first
+    // report waits here on the first, then reads what it left.
+    tx.execute(
+        "INSERT INTO config_pull_request (organization_id, repository_id, number, facts, updated) \
+         VALUES (?1, ?2, ?3, ?4, '') \
+         ON CONFLICT (organization_id, repository_id, number) \
+         DO UPDATE SET updated = config_pull_request.updated",
+        &[
+            organization.into(),
+            repository_id,
+            number,
+            facts.as_str().into(),
+        ],
+    )?;
+    let before = record(tx, who, pr.repository_id, pr.number)?;
+    let not_merged = format!("merged IS NULL AND COALESCE(phase, '') NOT LIKE '{MERGED}%'");
+    let reopens = match event.open {
+        true => format!(" AND {not_merged}"),
+        false => String::new(),
+    };
+    let fresh = tx.execute(
+        &format!(
+            "UPDATE config_pull_request SET facts = ?4, updated = ?5 \
+             WHERE organization_id = ?1 AND repository_id = ?2 AND number = ?3 \
+             AND updated <= ?5{reopens}"
+        ),
+        &[
+            organization.into(),
+            repository_id,
+            number,
+            facts.as_str().into(),
+            event.updated.as_str().into(),
+        ],
+    )? != 0;
+    let mut first_merge = false;
+    if let Some(commit) = &event.merge_commit {
+        let merged = serde_json::to_string(&Merged {
+            commit: commit.clone(),
+            into: event.target_branch.clone(),
+        })
+        .expect("a merge is JSON");
+        first_merge = tx.execute(
+            &format!(
+                "UPDATE config_pull_request SET merged = ?4 \
+                 WHERE organization_id = ?1 AND repository_id = ?2 AND number = ?3 \
+                 AND {not_merged}"
+            ),
+            &[
+                organization.into(),
+                repository_id,
+                number,
+                merged.as_str().into(),
+            ],
+        )? == 1;
+    }
+    let held = match (fresh, &before) {
+        (true, _) => None,
+        (false, Some(before)) => Some(before),
+        (false, None) => return Err(error::corrupt("pull request")),
+    };
+    let (facts, head) = match held {
+        Some(held) => (&held.facts, held.phase.head().clone()),
+        None => (event, event.head.clone()),
+    };
+    let was = before.as_ref().map(|before| &before.phase);
+    let standing = if trusts(facts, trusted.members.as_deref()) {
+        OpenStanding::Trusted
+    } else if was
+        .is_some_and(|was| was.open_standing() == OpenStanding::ApprovedHead && *was.head() == head)
+    {
+        OpenStanding::ApprovedHead
+    } else {
+        OpenStanding::NeedsApproval
+    };
+    let phase = match (was, first_merge, held) {
+        (_, true, _) => Phase::Merged {
+            commit: event.merge_commit.clone().expect("a merge has its commit"),
+            into: event.target_branch.clone(),
+            head,
+            standing,
+            landed: None,
+        },
+        (
+            Some(Phase::Merged {
+                commit,
+                into,
+                landed,
+                ..
+            }),
+            false,
+            _,
+        ) => Phase::Merged {
+            commit: commit.clone(),
+            into: into.clone(),
+            head,
+            standing,
+            landed: landed.clone(),
+        },
+        (_, false, Some(held)) => held.phase.clone().standing_as(standing),
+        (_, false, None) if event.open => Phase::Open { head, standing },
+        (_, false, None) => Phase::Closed { head, standing },
+    };
+    write_phase(tx, who, &pr, &phase)?;
+    Ok(Reported {
+        before,
+        fresh,
+        first_merge,
+        phase,
+    })
+}
+
 pub(crate) fn pull_request(
     tx: &mut dyn Tx,
     who: &Actor,
@@ -567,67 +913,24 @@ pub(crate) fn pull_request(
     trusted: &Trusted,
 ) -> Result<Automated, RpcError> {
     validate(event)?;
-    let organization = who.organization.as_str();
     let (repository_id, number) = (event.repository_id, event.number);
-    lock(tx, who, repository_id, number)?;
-    let before = facts(tx, who, repository_id, number)?;
-    let stood = standing(tx, who, repository_id, number)?;
-    let written = tx.execute(
-        "INSERT INTO config_pull_request (organization_id, repository_id, number, facts, updated) \
-         VALUES (?1, ?2, ?3, ?4, ?5) \
-         ON CONFLICT (organization_id, repository_id, number) DO UPDATE SET \
-         facts = excluded.facts, updated = excluded.updated \
-         WHERE excluded.updated >= config_pull_request.updated",
-        &[
-            organization.into(),
-            repository_id.into(),
-            number.into(),
-            serde_json::to_string(event)
-                .expect("facts are JSON")
-                .as_str()
-                .into(),
-            event.updated.as_str().into(),
-        ],
-    )?;
-    // Merged is for good: whatever order the events come in, the first merge stays,
-    // and lands once.
-    let mut first_merge = None;
-    if let Some(commit) = &event.merge_commit {
-        let merged = tx.execute(
-            "UPDATE config_pull_request SET merged = ?1 \
-             WHERE organization_id = ?2 AND repository_id = ?3 AND number = ?4 \
-             AND merged IS NULL",
-            &[
-                serde_json::to_string(&Merged {
-                    commit: commit.clone(),
-                    into: event.target_branch.clone(),
-                })
-                .expect("a merge is JSON")
-                .as_str()
-                .into(),
-                organization.into(),
-                repository_id.into(),
-                number.into(),
-            ],
-        )?;
-        if merged == 1 {
-            first_merge = Some(commit);
-        }
-    }
+    let Reported {
+        before,
+        fresh,
+        first_merge,
+        mut phase,
+    } = record_facts(tx, who, event, trusted)?;
+    let first_merge = event.merge_commit.as_ref().filter(|_| first_merge);
     let mut automated = Automated::default();
-    let fresh = written != 0;
     let reported = PullRequestRef {
         repository_id,
         number,
     };
-    let refused = !stood.admits(&event.head);
-    let standing = match fresh {
-        true => Standing::of(event, trusted, stood),
-        false => stood,
-    };
-    if fresh {
-        set_standing(tx, who, &reported, &standing)?;
-    }
+    let members = trusted.members.as_deref();
+    let refused = !before
+        .as_ref()
+        .is_some_and(|before| before.phase.admits(&event.head, &before.facts, members));
+    let before = before.as_ref().map(Record::facts);
     if !fresh && first_merge.is_none() {
         // Older than what the Store holds: never undo a newer fact.
         return Ok(automated);
@@ -674,15 +977,11 @@ pub(crate) fn pull_request(
                 )?;
             }
         }
-        on_merge::record_unlanded(
-            tx,
-            who,
-            &PullRequestRef {
-                repository_id,
-                number,
-            },
-            &unlanded,
-        )?;
+        on_merge::record_unlanded(tx, who, &reported, &unlanded)?;
+        if let Phase::Merged { landed, .. } = &mut phase {
+            *landed = Some(unlanded);
+        }
+        write_phase(tx, who, &reported, &phase)?;
     }
     if fresh {
         let renamed = before
@@ -706,10 +1005,10 @@ pub(crate) fn pull_request(
             });
         }
     }
-    // A closed event closes it, whichever told of the merge first, unless this
-    // event's merge kept it or what the merge recorded holds it (`holds_open`);
-    // older facts never reopen.
-    if !event.open {
+    // Closed or merged, it closes, whichever event told of the merge first, unless
+    // this event's merge kept it or what the merge recorded holds it (`holds_open`).
+    // Only newer facts reopen it, and never once merged.
+    if !matches!(phase, Phase::Open { .. }) {
         for (environment, project) in &current {
             let plan = load(tx, project, event.repository_id)?.unwrap_or_else(off);
             if plan.remove_on_close
@@ -720,19 +1019,20 @@ pub(crate) fn pull_request(
                 crate::removal::close(tx, who, environment, because, &mut automated)?;
             }
         }
-    } else if fresh {
+    } else {
         for (environment, _) in &current {
             let target = crate::removal::Target::Environment(environment.clone());
             crate::removal::mark::clear_tombstone(tx, &target)?;
         }
+        let admits = phase.admits(&event.head, event, members);
         let at = Opening {
             event,
-            standing: &standing,
+            admits,
             trusted,
         };
         open(tx, who, &at, &current, &mut automated)?;
         // A push it refused before the author proved a member never comes again.
-        if refused && standing.admits(&event.head) {
+        if refused && admits {
             for (environment, _) in &current {
                 crate::automation::deploy_head(
                     tx,
@@ -763,21 +1063,22 @@ pub(crate) fn approve(
 ) -> Result<Automated, RpcError> {
     let (repository_id, number) = (approval.repository_id, approval.number);
     lock(tx, who, repository_id, number)?;
-    let Some(event) = facts(tx, who, repository_id, number)? else {
+    let Some(record) = record(tx, who, repository_id, number)? else {
         return Err(error::not_found(
             format!("No pull request #{number} in this repository"),
             json!({}),
         ));
     };
-    if !event.open {
+    if !matches!(record.phase, Phase::Open { .. }) {
         return Err(error::conflict("This pull request is closed", json!({})));
     }
-    if event.head != approval.head {
+    if *record.phase.head() != approval.head {
         return Err(error::conflict(
             "This pull request has a newer commit. Approve that one.",
-            json!({ "head": event.head }),
+            json!({ "head": record.phase.head() }),
         ));
     }
+    let event = record.facts();
     let current = current(tx, who, repository_id, number, false)?;
     let mut touched: Vec<EnvironmentId> = current.iter().map(|(id, _)| id.clone()).collect();
     touched.extend(start_froms(tx, who, repository_id)?);
@@ -786,17 +1087,18 @@ pub(crate) fn approve(
         repository_id,
         number,
     };
-    let before = standing(tx, who, repository_id, number)?;
-    let first = !before.admits(&event.head);
-    let standing = match first {
-        true => Standing::Approved(event.head.clone()),
-        false => before,
+    let first = !record
+        .phase
+        .admits(&approval.head, &record.facts, trusted.members.as_deref());
+    let phase = match first {
+        true => record.phase.standing_as(OpenStanding::ApprovedHead),
+        false => record.phase,
     };
-    set_standing(tx, who, &pr, &standing)?;
+    write_phase(tx, who, &pr, &phase)?;
     let mut automated = Automated::default();
     let at = Opening {
         event: &event,
-        standing: &standing,
+        admits: true,
         trusted,
     };
     open(tx, who, &at, &current, &mut automated)?;
@@ -809,8 +1111,9 @@ pub(crate) fn approve(
     Ok(automated)
 }
 
-/// Lock the pull request's row, so news of it and approvals of it take turns: each
-/// reads the facts and standing the one before it left. Taken before any Environment.
+/// Lock the pull request's row, so approvals and news of it take turns: each reads
+/// the facts and phase the one before it left. Taken before any Environment. News of
+/// it locks in [`record_facts`], which makes the row first.
 fn lock(
     tx: &mut dyn Tx,
     who: &Actor,
@@ -889,7 +1192,8 @@ fn current(
 /// A pull request's PR Environments open from its facts, as it stands.
 struct Opening<'a> {
     event: &'a PullRequest,
-    standing: &'a Standing,
+    /// Whether its head deploys.
+    admits: bool,
     trusted: &'a Trusted,
 }
 
@@ -903,7 +1207,7 @@ fn open(
 ) -> Result<(), RpcError> {
     let Opening {
         event,
-        standing,
+        admits,
         trusted,
     } = *at;
     let rows = tx.query(
@@ -929,7 +1233,7 @@ fn open(
         else {
             continue;
         };
-        if !standing.admits(&event.head) {
+        if !admits {
             automated.skipped.push(Skipped {
                 environment: start.summary.id.clone(),
                 reason: NEEDS_APPROVAL.to_owned(),
@@ -1281,21 +1585,23 @@ pub(crate) fn awaiting_merge(
     branch: &BranchName,
 ) -> Result<Vec<PullRequestNumber>, RpcError> {
     let rows = tx.query(
-        "SELECT DISTINCT p.number, r.facts FROM config_pr_environment p \
+        "SELECT DISTINCT p.number, r.facts, r.merged, r.unlanded, r.standing, r.phase \
+         FROM config_pr_environment p \
          JOIN config_environment_branch b ON b.environment_id = p.environment_id \
          JOIN config_pull_request r ON r.organization_id = p.organization_id \
          AND r.repository_id = p.repository_id AND r.number = p.number \
          WHERE p.organization_id = ?1 AND p.repository_id = ?2 \
          AND NOT EXISTS (SELECT 1 FROM config_removal_mark m \
          WHERE m.environment_id = b.environment_id AND m.state = 'removing') \
-         AND r.merged IS NULL ORDER BY p.number",
+         ORDER BY p.number",
         &[who.organization.as_str().into(), repository_id.into()],
     )?;
     let mut awaiting = Vec::new();
     for row in rows {
-        let facts: PullRequest = row.json(1, "pull request")?;
+        let Record { facts, phase } = Record::read(&row, 1)?;
         let number = row.number(0, "pull request")?;
-        if facts.open && facts.target_branch == *branch && !awaiting.contains(&number) {
+        let open = matches!(phase, Phase::Open { .. });
+        if open && facts.target_branch == *branch && !awaiting.contains(&number) {
             awaiting.push(number);
         }
     }

@@ -829,6 +829,7 @@ fn a_merge_that_renames_a_git_service_keeps_it_on_the_commit_it_last_built() {
         .pin(
             &built,
             &std::collections::BTreeMap::from([(web.clone(), backend::sha(HEAD))]),
+            &backend::members(),
         )
         .unwrap();
     let runner = ployz_store::RunnerId::parse("runner").unwrap();
@@ -898,6 +899,7 @@ fn a_merge_that_moves_a_git_service_to_another_repository_never_pins_the_old_bui
         .pin(
             &built,
             &std::collections::BTreeMap::from([(web.clone(), backend::sha(HEAD))]),
+            &backend::members(),
         )
         .unwrap();
     let runner = ployz_store::RunnerId::parse("runner").unwrap();
