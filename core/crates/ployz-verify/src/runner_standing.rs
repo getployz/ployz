@@ -7,7 +7,7 @@
 //! every `CANCEL_POLL`, 2 s (:40, :1259-1275, :1279-1292), and the work can end before
 //! the next call (:1272, :1284). `execute` also calls it once after executing (:837) and
 //! once before `fill_ingress` (:855). `standing()` is `record(RunEvidence::Alive)` read
-//! through one `standing` (:733-749, :1467-1476), and every site matches the one
+//! through one `standing` (:733-749, :1469-1478), and every site matches the one
 //! `Standing` it returns. Meanwhile a user cancels the Deployment (ployz-store
 //! deployment/lifecycle.rs:1494), a newer Deployment of the Environment is claimed and
 //! sets it Unknown (lifecycle.rs:1320-1332), or forgetting the Cluster cancels it without
@@ -20,7 +20,7 @@
 //! The first finding: a takeover that lands after the run's last read leaves the
 //! Deployment Unknown, and `record` then refuses an `Executed` that is not Interrupted
 //! (lifecycle.rs:1641-1644), so the store keeps no outcome. `Run::executed` now sends a
-//! refused outcome again as Interrupted (store_runner.rs:1341-1363), which the store
+//! refused outcome again as Interrupted (store_runner.rs:1343-1365), which the store
 //! keeps. Not when the run tried to delete Volumes: the store reads an Interrupted
 //! outcome's removed Volumes NotAttempted (lifecycle.rs:2186-2190). On that path the
 //! store still keeps neither the outcome nor the deletions, and `TAKEOVER_KEEPS_OUTCOME`
@@ -31,7 +31,7 @@
 //! already ended", deployment/mod.rs:1813-1815, :1888-1890), and `renewing` kept the work
 //! in hand going. And `connecting` and the gate before `fill_ingress` read `Ok(Unknown)`
 //! as keep. Now `standing` reads the conflict as Ended, the first Lost or Ended read
-//! latches (`Run::over`, :699-706), and every site stops on either.
+//! latches (`Run::over`, store_runner.rs:699-706), and every site stops on either.
 //!
 //! The store fix variant (`store_fix`) is the store change that would close the rest of
 //! the first finding: `record` keeps a non-Interrupted `Executed` for an Unknown
@@ -44,8 +44,8 @@
 //! each take one transaction (lifecycle.rs:1534-1539, :1232-1237, :1485-1489,
 //! :1509-1512). A record that follows a read, or the end of a piece of work, is one step
 //! with it, except the `Executed` record. `Run::executed`'s two records are one step:
-//! the store refuses the first only for a Deployment that is Unknown or ended, and no
-//! store step leaves either.
+//! within these bounds the store refuses the first only for a Deployment that is Unknown
+//! or ended, and no store step leaves either.
 //!
 //! Out of scope: a takeover or `cancel_in_flight` between a read and the record merged
 //! with it, build's records, warnings, the lease lapsing, a second claim by the same
@@ -74,7 +74,7 @@ enum Status {
 enum Outcome {
     NotExecuted,
     /// `RunEvidence::Executed`: whether its outcome is Interrupted, and whether `removed`
-    /// names the Volumes the run deleted (store_runner.rs:1350-1356). One that is not
+    /// names the Volumes the run deleted (store_runner.rs:1352-1358). One that is not
     /// Interrupted and names deletions is a Success, since only a Success deletes
     /// (store_runner.rs:849-854).
     Executed {
@@ -200,7 +200,7 @@ impl Phase {
 
 /// `Run::over` (store_runner.rs:699-706): the first read that said Lost or Ended sets
 /// it, and no later read changes it, since `Run::standing` reads nothing more once it is
-/// set (:1467-1476). `the_code_needs_its_latch_to_stick` shows what a latch that does
+/// set (:1469-1478). `the_code_needs_its_latch_to_stick` shows what a latch that does
 /// not stick lets through.
 #[derive(Clone, Copy, Debug, Hash, PartialEq, Eq)]
 enum Standing {
@@ -340,7 +340,7 @@ struct State {
 }
 
 /// A guard taken out, to show the check catches what it prevents. The first six are
-/// guards the code had before `Standing`, the next five the ones `Standing` added, and the
+/// guards the code had before `Standing`, the next six the ones `Standing` added, and the
 /// last two parts of the store fix.
 #[derive(Clone, Copy, Debug, Default)]
 #[expect(
@@ -375,6 +375,8 @@ struct Broken {
     no_resend: bool,
     /// The read after executing (store_runner.rs `execute`) goes on when it says Ended.
     check_ignores_ended: bool,
+    /// The gate before `fill_ingress` (store_runner.rs `execute`) fills when it says Ended.
+    gate_ignores_ended: bool,
     /// The store fix's `record` refuses a non-Interrupted `Executed` for an Unknown
     /// Deployment, as the code does (lifecycle.rs:1641-1644).
     store_refuses_late_executed: bool,
@@ -630,7 +632,7 @@ fn finish(store: &mut Store, outcome: Outcome) -> Answer {
 }
 
 impl RunnerStanding {
-    /// `Run::standing` (store_runner.rs:1467-1476): the latch with no call once it is
+    /// `Run::standing` (store_runner.rs:1469-1478): the latch with no call once it is
     /// set, else `record(RunEvidence::Alive)` read through `standing` (:733-749), latching
     /// Lost and Ended. The Alive arm of `record` (lifecycle.rs) answers an Unknown
     /// Deployment, and otherwise calls `running`, which refuses an ended one as a
@@ -727,7 +729,7 @@ impl RunnerStanding {
     /// Deployment takes only an Interrupted outcome, keeps it and stays Unknown
     /// (:1641-1644, :1789-1799); any other goes through `finish` (:1800). The store fix
     /// keeps a non-Interrupted one for an Unknown Deployment as Interrupted. The
-    /// projection shows the deletions for a Success (:2164-2173), and in the store fix
+    /// projection shows the deletions for a Success (:2186-2190), and in the store fix
     /// for an Interrupted outcome too.
     fn executed(&self, state: &mut State, interrupted: bool) -> Answer {
         let broken = self.broken;
@@ -765,7 +767,7 @@ impl RunnerStanding {
         answer
     }
 
-    /// `Run::executed` (store_runner.rs:1341-1363): `record(Executed)` with the outcome,
+    /// `Run::executed` (store_runner.rs:1343-1365): `record(Executed)` with the outcome,
     /// and one the store refused sent again as Interrupted, unless the run deleted
     /// Volumes. Returns the last answer and whether the run sent it again.
     fn record(&self, state: &mut State) -> (Answer, bool) {
@@ -893,7 +895,7 @@ impl RunnerStanding {
                 let skips = match self.read(state, call, true).0 {
                     Said::Cancel => !broken.gate_ignores_cancel,
                     Said::Lost => !broken.unknown_reads_as_keep,
-                    Said::Ended => true,
+                    Said::Ended => !broken.gate_ignores_ended,
                     Said::Keep | Said::Unread => false,
                 };
                 if skips {
@@ -1249,6 +1251,9 @@ fn reads_as(model: &RunnerStanding, before: &State, action: Action, after: &Stat
                 }
                 _ if after.standing == Standing::Lost => {
                     "Lost read as keep (under Broken): fill_ingress starts under renewing"
+                }
+                _ if after.standing == Standing::Ended => {
+                    "Ended read as keep (under Broken): fill_ingress starts under renewing"
                 }
                 _ => "fill_ingress starts under renewing",
             };
@@ -1757,6 +1762,24 @@ mod tests {
         assert!(took_action(&path, Action::CancelInFlight));
         assert_eq!(broken.standing, Standing::Ended);
         assert_eq!(broken.after_over, Some(Work::RemoveVolumes));
+    }
+
+    /// Without the gate stopping on Ended, a run `cancel_in_flight` ended after the read
+    /// after executing fills ingress though the gate said it ended.
+    #[test]
+    fn fill_ingress_needs_the_gate_to_stop_on_ended() {
+        let path = breaks_where(
+            as_is_without(Broken {
+                gate_ignores_ended: true,
+                ..Broken::default()
+            }),
+            NO_WORK_AFTER_END,
+            |path| matches!(last(path).last, Some(Action::Gate(_))),
+        );
+        let broken = last(&path);
+        assert!(took_action(&path, Action::CancelInFlight));
+        assert_eq!(broken.standing, Standing::Ended);
+        assert_eq!(broken.after_over, Some(Work::FillIngress));
     }
 
     /// Without the gate's Cancelling check, a cancelled run fills ingress.

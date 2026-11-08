@@ -1334,10 +1334,12 @@ impl Run {
     }
 
     /// Record what executing did. The store refuses any outcome but Interrupted from a
-    /// run it set Unknown, so a refused one is sent again as Interrupted; the store
-    /// keeps that only from such a run, and refuses it again otherwise. Not when the run
-    /// tried to delete a Volume: the store reads an Interrupted outcome's removed Volumes
-    /// as never attempted, and the refusal claims nothing.
+    /// run it set Unknown, so a refused one is sent again as Interrupted. Its other
+    /// refusals turn on what it holds, not on the outcome sent, so the resend meets them
+    /// again. The one exception changes nothing: a store that already holds this same
+    /// Interrupted outcome accepts the resend as a replay. Not when the run tried to
+    /// delete a Volume: the store reads an Interrupted outcome's removed Volumes as never
+    /// attempted, and the refusal claims nothing.
     async fn executed(
         &self,
         outcome: DeployOutcome<ExecutionError>,

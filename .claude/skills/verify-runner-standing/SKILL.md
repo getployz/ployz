@@ -5,9 +5,9 @@ description: Model-check how a Deployment's runner reads its standing in the Con
 
 # Verify the runner's standing
 
-The model in `core/crates/ployz-verify/src/runner_standing.rs` explores every interleaving of one Deployment's run with the Config Store that holds its status. The runner claims the Deployment (`core/crates/ployz/src/sdk/store_runner.rs:178`), dials under `connecting` (`:191-215`), then plans, or builds and prepares, under `renewing` (`:795-808`, `:953`, `:1115`). It records the Deploy Preview (`:813-824`), executes under `renewing` (`:830-834`), deletes the Volumes the Deploy removes (`:849-854`), fills ingress (`:855-861`, `:869-881`) and records what executing did through `executed` (`:862`, `:1336-1363`).
+The model in `core/crates/ployz-verify/src/runner_standing.rs` explores every interleaving of one Deployment's run with the Config Store that holds its status. The runner claims the Deployment (`core/crates/ployz/src/sdk/store_runner.rs:178`), dials under `connecting` (`:191-215`), then plans, or builds and prepares, under `renewing` (`:795-808`, `:953`, `:1115`). It records the Deploy Preview (`:813-824`), executes under `renewing` (`:830-834`), deletes the Volumes the Deploy removes (`:849-854`), fills ingress (`:855-861`, `:869-881`) and records what executing did through `executed` (`:862`, `:1336-1365`).
 
-While it awaits a piece of work, `connecting` and `renewing` call `standing()` every `CANCEL_POLL`, 2 s (`:40`, `:1259-1275`, `:1277-1292`), and the work can end before the next call (`:1272`, `:1284`). `execute` also calls it once after executing (`:837-846`) and once at the gate before `fill_ingress` (`:855`). `Run::standing` (`:1464-1476`) returns the latch `Run::over` (`:699-706`) once it is set, and otherwise sends `record(RunEvidence::Alive)` and reads the answer through the free fn `standing` (`:733-749`):
+While it awaits a piece of work, `connecting` and `renewing` call `standing()` every `CANCEL_POLL`, 2 s (`:40`, `:1259-1275`, `:1277-1292`), and the work can end before the next call (`:1272`, `:1284`). `execute` also calls it once after executing (`:837-846`) and once at the gate before `fill_ingress` (`:855`). `Run::standing` (`:1466-1478`) returns the latch `Run::over` (`:699-706`) once it is set, and otherwise sends `record(RunEvidence::Alive)` and reads the answer through the free fn `standing` (`:733-749`):
 
 | The read | `Standing` | Latches |
 |---|---|---|
@@ -20,7 +20,13 @@ While it awaits a piece of work, `connecting` and `renewing` call `standing()` e
 
 Every site stops on `Cancel` and `Over`, and goes on on `Keep` and `Unread`. The read after executing is the exception: on `Cancel` it goes on, since deleting is never interrupted, and on `Over(Lost)` it records Interrupted (`:838-840`, `:1321-1334`). `execute` reads `record(Prepared)`'s answer through the same `standing` (`:813-824`), with no latch. The model gives each read its own step.
 
-`executed` sends `record(Executed)`. When the store refuses it as a Conflict and no Volume was deleted (every removal `Omitted`), it sends the outcome again as Interrupted and returns that answer, or the first refusal if the store refuses again (`:1347-1362`). The store keeps an Interrupted outcome only from a Deployment it set Unknown (`core/crates/ployz-store/src/deployment/lifecycle.rs:1641-1644`). Every other Conflict on `Executed` depends only on what the store holds, not the outcome sent, so the resend meets it again: another runner (`lifecycle.rs:1544-1546`), an outcome already recorded (`:1626-1634`), no preview (`:1635-1640`), or an ended Deployment through `finish` (`:2344-2353`).
+`executed` sends `record(Executed)`. When the store refuses it as a Conflict and no Volume was deleted (every removal `Omitted`), it sends the outcome again as Interrupted and returns that answer, or the first refusal if the store refuses again (`:1349-1364`). The store answers that resend in one of three ways:
+
+- **New evidence on an Unknown Deployment: kept.** An Unknown Deployment refuses any outcome but Interrupted (`core/crates/ployz-store/src/deployment/lifecycle.rs:1641-1644`), keeps the Interrupted one, and stays Unknown (`:1789-1799`). This is the case the resend is for.
+- **A Conflict that turns on what the store holds: refused again.** Another runner (`lifecycle.rs:1544-1546`), no preview (`:1635-1640`), and an ended Deployment through `finish` (`:2344-2353`) don't depend on the outcome sent, so the resend meets them again. `executed` then returns the first refusal.
+- **An identical replay: accepted, and nothing changes.** "Outcome already recorded" compares a digest of the outcome and removals sent (`:1622-1634`), and returns `Ok` for an exact replay before it checks the status. A Deployment that already holds this same Interrupted outcome, ended or Unknown, so takes the resend as a replay. That changes nothing: it returns the stored summary and writes nothing.
+
+The store does not refuse Interrupted from a Running or Cancelling Deployment: `finish` keeps it and ends the Deployment Failed (`:1800`, `:2344-2354`). The resend never gets there, though. It follows only a Conflict, and the only Conflicts on `Executed` for a Running or Cancelling Deployment are another runner and no preview, since every write of an outcome also ends the Deployment or leaves it Unknown (`:576-577`, `:1795-1796`, `:2370-2371`). Both of those refuse the resend too. A future Conflict on `Executed` that depends on the outcome sent would break this: the resend would then end a running Deployment Failed as Interrupted. Check for that before adding one.
 
 Meanwhile the store takes three steps. A user's `cancel` moves Running to Cancelling (`lifecycle.rs:1494`). Another Deployment's `claim` sets this one Unknown and leaves its runner column (`lifecycle.rs:1320-1332`). `forget_cluster` (`core/crates/ployz-store/src/teardown.rs:458`) runs `cancel_in_flight`, which sets it Cancelled (`lifecycle.rs:1525`).
 
@@ -28,7 +34,7 @@ The model also copies what the store shows of the deleted Volumes. `removed_volu
 
 Nothing calls the real runner or store. The model is a hand copy, and it drifts unless you keep it in step. `ployz-verify` dev-depends only on `ployz-core` and `stateright` (`core/crates/ployz-verify/Cargo.toml`). So a product change leaves the model green, without even recompiling it, until you copy the change in.
 
-Each store call is one step, because `record` (`lifecycle.rs:1534`), `claim` (`:1232`), `cancel` (`:1485`) and `cancel_in_flight` (`:1509`) each take one transaction. A record that follows a read, or the end of a piece of work, is one step with it, except the `Executed` record. `executed`'s record and its resend are one step: the store refuses the first only for a Deployment that is Unknown or ended, and no store step leaves either.
+Each store call is one step, because `record` (`lifecycle.rs:1534`), `claim` (`:1232`), `cancel` (`:1485`) and `cancel_in_flight` (`:1509`) each take one transaction. A record that follows a read, or the end of a piece of work, is one step with it, except the `Executed` record. `executed`'s record and its resend are one step: within the model's bounds, which have no other runner and always a preview, the store refuses the first only for a Deployment that is Unknown or ended, and no store step leaves either.
 
 What `record(RunEvidence::Alive)` returns, as the model reads it:
 
@@ -51,7 +57,7 @@ The properties, each one sentence:
 cd core && cargo nextest run -p ployz-verify runner_standing --no-capture
 ```
 
-A warm run of the eighteen tests takes about a second. The model has four shapes, built in the tests module:
+A warm run of the nineteen tests takes about a second. The model has four shapes, built in the tests module:
 
 - `as_is()`: the code as it is.
 - `as_was()`: the code before `Standing`, which is `as_is` with four `Broken` flags set: `latch_does_not_stick`, `ended_reads_as_keep`, `unknown_reads_as_keep` and `no_resend`.
@@ -60,7 +66,7 @@ A warm run of the eighteen tests takes about a second. The model has four shapes
 
 With one failed read, the code as it is has 526 states, the code as it was 669, and the store fix 526. `the_code_loses_an_outcome_only_after_deleting_volumes`, `the_code_as_it_was_breaks_only_the_findings` and `a_converting_store_would_keep_the_outcome_and_the_deletions` print the counts. Each story prints under its test's name, in brackets above it (`first_break`). CI runs `ployz-verify` in its workspace nextest (`.github/workflows/ci.yml:151`, `:216`), so a red model blocks the PR.
 
-The run is green when all eighteen tests pass. Read them as five groups.
+The run is green when all nineteen tests pass. Read them as five groups.
 
 - **What is left of finding 1.** `the_code_still_loses_the_volumes_a_run_deleted_once_taken_over` passes by finding a counterexample on the code as it is, and prints it: a takeover after the read that let `remove_volumes` start. Read it under What is still open.
 - **The whole model.**
@@ -68,15 +74,16 @@ The run is green when all eighteen tests pass. Read them as five groups.
   - `the_code_as_it_was_breaks_only_the_findings` runs `failing(as_was())`. The three properties the findings name break, the other two hold, and every `Always` row is reached.
   - `a_converting_store_would_keep_the_outcome_and_the_deletions` runs `failing(store_fixed())`. Every property holds and every `sometimes` is reached.
   - `every_sometimes_needs_what_it_names` takes each `COVERAGE` row's `omit` out of the model that reaches it, and expects the row unreached. Each `sometimes` is one row naming a branch the code handles, and its `reach` says which models have it: `Always` (every shape), `Standing` (the code as it is, with or without the store fix), `Resend` (the code as it is without the store fix, since the store fix never refuses a lost run's `Executed`), or `StoreFix`.
-- **What `Standing` added.** Five tests each drop one part `Standing` added from `as_is()` and expect the property it keeps to break. The first four flags together make `as_was()`, so each of those stories is the finding its part closes.
+- **What `Standing` added.** Six tests each drop one part `Standing` added from `as_is()` and expect the property it keeps to break. The first four flags together make `as_was()`, so each of those stories is the finding its part closes.
 
   | Part of the code | `Broken` flag | Test | Property it keeps |
   |---|---|---|---|
-  | `executed` sends a refused outcome again as Interrupted (`store_runner.rs:1357-1359`) | `no_resend` | `the_code_needs_to_send_a_refused_outcome_again` | `TAKEOVER_KEEPS_OUTCOME` |
+  | `executed` sends a refused outcome again as Interrupted (`store_runner.rs:1359-1361`) | `no_resend` | `the_code_needs_to_send_a_refused_outcome_again` | `TAKEOVER_KEEPS_OUTCOME` |
   | `standing` reads a Conflict as `Over(Ended)` (`:747`) | `ended_reads_as_keep` | `the_code_needs_an_ended_read_to_stop_it` | `NO_WORK_AFTER_END` |
   | `connecting` and the gate stop on `Over(Lost)` (`:1270`, `:860`) | `unknown_reads_as_keep` | `the_code_needs_connecting_and_the_gate_to_stop_on_lost` | `NO_WORK_AFTER_END` |
-  | `Run::over` latches the first `Over` read (`:1467-1475`) | `latch_does_not_stick` | `the_code_needs_its_latch_to_stick` | `NO_WORK_AFTER_END` |
+  | `Run::over` latches the first `Over` read (`:1469-1477`) | `latch_does_not_stick` | `the_code_needs_its_latch_to_stick` | `NO_WORK_AFTER_END` |
 | The read after executing stops on `Over(Ended)` (`:841-844`) | `check_ignores_ended` | `deleting_needs_the_read_after_executing_to_stop_on_ended` | `NO_WORK_AFTER_END` |
+| The gate skips `fill_ingress` on `Over(Ended)` (`:860`) | `gate_ignores_ended` | `fill_ingress_needs_the_gate_to_stop_on_ended` | `NO_WORK_AFTER_END` |
 
   `the_code_needs_its_latch_to_stick` runs `failing(...)`, since only a failed read can follow Lost or Ended with another answer: `actions` offers no store step once the Deployment is Unknown or ended. `every_sometimes_needs_what_it_names` cannot show the latch, because with `latch_does_not_stick` set every `COVERAGE` row is still reached.
 - **The code's older guards.** Six tests each drop one guard from `as_is()` and expect the property it keeps to break.
@@ -100,7 +107,7 @@ Finding 1 is closed except when the run deleted Volumes. `the_code_still_loses_t
 2. Executing returns a Success. The read after executing says `Keep` (`:837-846`), and `remove_volumes` starts under `renewing` with the no-op abort `|| ()` (`:849-851`).
 3. Another Deployment of the Environment is claimed. Its takeover saves this one Unknown and leaves its runner column (`lifecycle.rs:1320-1332`).
 4. `remove_volumes` returns the Volumes it deleted. The gate reads `Ok(Unknown)`, latches `Over(Lost)`, and skips `fill_ingress` (`store_runner.rs:855-861`).
-5. `executed` sends the Success, naming the deleted Volumes (`:862`, `:1350-1356`). The Deployment is Unknown and the outcome not Interrupted, so `running` refuses it (`lifecycle.rs:1641-1644`, `mod.rs:1808-1812`). The run deleted Volumes, so it sends nothing again, and `execute` returns the refusal (`store_runner.rs:1347-1349`, `1357-1361`).
+5. `executed` sends the Success, naming the deleted Volumes (`:862`, `:1352-1358`). The Deployment is Unknown and the outcome not Interrupted, so `running` refuses it (`lifecycle.rs:1641-1644`, `mod.rs:1808-1812`). The run deleted Volumes, so it sends nothing again, and `execute` returns the refusal (`store_runner.rs:1349-1351`, `1359-1363`).
 
 No `standing()` read fails on this path. The runner cannot keep this outcome alone. A resend as Interrupted would be kept, but the store reads an Interrupted outcome's deleted Volumes NotAttempted (`lifecycle.rs:2186-2190`), so it would say the Volumes still exist. The refusal at least claims nothing.
 
@@ -191,7 +198,7 @@ These are out of scope:
 - a second claim by the same runner after a preview, which also sets the Deployment Unknown and keeps its runner (`lifecycle.rs:1241-1252`)
 - Cloud's `abandonDeployment` while the run is still going, and the Abandoned arm's `NotExecuted` for a run with no preview (`lifecycle.rs:1909-1922`)
 - a dial that fails, a refused prepare, or a build that needs an upload
-- a store call other than `standing()` failing, such as `record(Prepared)`, which the run returns as it is (`store_runner.rs:823`), or the resend, which returns the first refusal (`:1359`)
+- a store call other than `standing()` failing, such as `record(Prepared)`, which the run returns as it is (`store_runner.rs:823`), or the resend, which returns the first refusal (`:1361`)
 - an abort that comes too late to stop its work
 - the select order in `connecting` (`biased`, `:1267`) and `renewing`
 - Applied State: it still lists a deleted Volume under the store fix, since a run that was taken over moves no Applied State (`lifecycle.rs:1789-1799`), and `DELETIONS_KEPT` checks only the node projection
