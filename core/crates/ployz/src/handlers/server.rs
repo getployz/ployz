@@ -1002,16 +1002,21 @@ fn confirm_ingress_off(
         return Ok(());
     }
     let name = &target.machine.name;
+    let last_one = doors.get(&target.machine.id).map_or(
+        "the last Server taking web traffic".to_owned(),
+        |open| {
+            let names = open.0.iter().map(|door| door.as_str()).collect::<Vec<_>>();
+            format!("the last Server with a door open ({})", names.join(", "))
+        },
+    );
     crate::ui::confirm(
-        &format!(
-            "Turn off web traffic on {name}, the last Server taking it? Every domain goes dark"
-        ),
+        &format!("Turn off web traffic on {name}, {last_one}? Every domain goes dark"),
         || {
             Error::coded(
                 RpcErrorCode::ConfirmationRequired,
                 format!(
-                    "{name} is the last online Server taking web traffic; turning it off takes \
-                     every domain dark. No changes made."
+                    "{name} is {last_one}; turning it off takes every domain dark. No changes \
+                     made."
                 ),
             )
             .hint(Hint::Retry(super::typed_with(&["--yes"])))
@@ -1568,7 +1573,7 @@ pub(super) fn remove_command(command: Command) -> Command {
 
 pub(super) fn set_command(command: Command) -> Command {
     machine_policy_flags(base(command, "Change a Server's name, labels, roles, public IP or build concurrency")
-                .long_about("Change a Server's name, labels, roles, public IP or build concurrency. --accepts-ingress=true also starts the Ingress Proxy on that Server; rerun the same command to finish a start that failed. --accepts-ingress=false stops advertising the Server in Hosted DNS from the next sync, but its Ingress Proxy keeps serving until `ployz server rm`. When no other online Server with a public IP takes web traffic, --accepts-ingress=false asks first; pass --yes to skip the question, which non-interactive runs need."))
+                .long_about("Change a Server's name, labels, roles, public IP or build concurrency. --accepts-ingress=true also starts the Ingress Proxy on that Server; rerun the same command to finish a start that failed. --accepts-ingress=false stops advertising the Server in Hosted DNS from the next sync, but its Ingress Proxy keeps serving until `ployz server rm`. When no other online Server takes web traffic, through public ports or a tunnel, --accepts-ingress=false asks first; pass --yes to skip the question, which non-interactive runs need."))
                 .arg(many("label-rm", None).value_name("KEY").help("Remove the label KEY; repeat for more"))
                 .arg(value("name", None).help("Its new name"))
                 .arg(value("public-ip", None).value_name("IP|none").help("The public IP it advertises; none advertises none"))
@@ -2454,6 +2459,18 @@ mod tests {
             refused.code,
             RpcErrorCode::ConfirmationRequired,
             "a public IP with no open Door serves no web"
+        );
+
+        let last = web("fra-1", true, None, Up);
+        let machines = [last.clone(), web("fra-2", false, None, Up)];
+        let tunnel = BTreeMap::from([(last.machine.id, IngressDoors::tunnel())]);
+        let refused = confirm_ingress_off(&machines, &tunnel, &fra1)
+            .map_err(|error| error.report())
+            .unwrap_err();
+        assert_eq!(
+            refused.message,
+            "fra-1 is the last Server with a door open (tunnel); turning it off takes every \
+             domain dark. No changes made."
         );
     }
 

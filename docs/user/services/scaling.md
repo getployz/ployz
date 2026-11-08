@@ -65,8 +65,9 @@ server. `ployz server set --accepts-ingress=false` only drops it from your addre
 serving anyone who reaches the server directly until you remove the server. To keep the internet
 out, also close ports 80 and 443 in its firewall.
 
-When no other online server with a public IP takes web traffic, turning it off takes your domains
-dark, so the CLI asks first. Add `--yes` to skip the question. Without a terminal, or with `--json`,
+When no other online server takes web traffic, through public ports or a
+[Cloudflare Tunnel](cloudflare-tunnel.md), turning it off takes your domains dark, so the CLI asks
+first and names the door that would close. Add `--yes` to skip the question. Without a terminal, or with `--json`,
 it refuses and names the command with `--yes`. Turning web traffic on never asks.
 
 ## When a server goes down
