@@ -443,7 +443,9 @@ pub struct DoorsChanged {
 
 /// Open `doors` on every Server with the ingress role, one at a time. A switch to the
 /// Tunnel Door opens the tunnel beside the Public Door on every Server first, so the
-/// host ports close only once every Server's connector can take the traffic.
+/// host ports close only once every Server's connector can take the traffic. With no
+/// Public Door open anywhere, there is nothing to hand over, so a rerun leaves the
+/// doors that already run.
 ///
 /// # Errors
 ///
@@ -467,17 +469,7 @@ pub(crate) async fn use_doors(
         }
         None => true,
     });
-    let steps = if doors.doors == IngressDoors::tunnel() {
-        vec![
-            ClusterDoors {
-                doors: IngressDoors::both(),
-                sealed_token: doors.sealed_token.clone(),
-            },
-            doors,
-        ]
-    } else {
-        vec![doors]
-    };
+    let steps = switch_steps(doors, &observed.open);
     let mut changed = DoorsChanged::default();
     for step in &steps {
         let answers = set_doors(
@@ -541,6 +533,26 @@ pub(crate) async fn use_doors(
     }
     changed.failures = failures;
     Ok(changed)
+}
+
+/// The Doors each Server is asked for in turn: through both Doors first when a switch to
+/// the Tunnel Door closes a Public Door some Server holds open now.
+fn switch_steps(
+    doors: ClusterDoors,
+    open: &BTreeMap<MachineId, IngressDoors>,
+) -> Vec<ClusterDoors> {
+    let public_open = open.values().any(|open| open.has(IngressDoor::Public));
+    if doors.doors == IngressDoors::tunnel() && public_open {
+        vec![
+            ClusterDoors {
+                doors: IngressDoors::both(),
+                sealed_token: doors.sealed_token.clone(),
+            },
+            doors,
+        ]
+    } else {
+        vec![doors]
+    }
 }
 
 /// The Doors `set` left open, by name: the Public Door when the holder publishes the
