@@ -1,6 +1,6 @@
 import crypto from "node:crypto";
 import { it } from "@effect/vitest";
-import { type ConfigCommand, type JsonValue, RpcError } from "@ployz/sdk";
+import type { ConfigCommand, JsonValue } from "@ployz/sdk";
 import { sql } from "drizzle-orm";
 import { Effect } from "effect";
 import type { StoreCall } from "./store.contract";
@@ -16,6 +16,7 @@ import { cloudStore } from "#/modules/config-store/store-sdk.server";
 import { GithubOidcKeys } from "#/modules/github/github-oidc.server";
 import { unlinkGithubInstallation } from "#/modules/github/github.repository";
 import { type ConnectedRuntimeClient, OrganizationRuntime, type OrganizationRuntimeService } from "#/modules/runtime/organization-runtime.server";
+import { RpcError } from "#/modules/runtime/ployz.server";
 import { Database } from "#/server/database.server";
 import { fakeGithubApiBy } from "#/test/fake-github";
 import { machineId } from "#/test/ids";
