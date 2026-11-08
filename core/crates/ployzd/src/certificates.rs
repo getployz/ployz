@@ -330,8 +330,8 @@ fn wake(
             .duration_since(wall)
             .unwrap_or(Duration::ZERO)
             .min(RETRY_INTERVAL),
-        // No later than one step, so a hold of a step or more meets a pass of this Machine and
-        // starts its rank delay again.
+        // Asks to sleep at most one step, so it meets a hold of a step or more while the loop keeps
+        // that sleep. A read Err's 60 s wait, or another hostname's obtain, can miss the hold.
         HostIssuance::Waiting { orderable_since } => poll_wait(
             None,
             rank,

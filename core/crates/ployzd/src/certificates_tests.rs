@@ -1323,10 +1323,11 @@ fn a_rank_that_rises_after_an_order_waits_its_new_delay() {
     );
 }
 
-/// A Waiting hostname wakes no later than one step, so a hold of a step or more meets a pass
-/// and starts the delay again. Rank 2 first passes at 1 s. Rank 0's order fails at 2 s, and
-/// its clock holds until 60 s. Rank 2 wakes at 31 s, inside the hold, and then waits its two
-/// steps from 60 s, rather than ordering at 61 s beside rank 0.
+/// A Waiting hostname asks to sleep no longer than one step, so it meets a hold of a step or more
+/// and starts the delay again while the loop keeps that sleep. A 60 s wait after a read Err, or a
+/// loop busy with another hostname's obtain, can miss the hold. Rank 2 first passes at 1 s. Rank
+/// 0's order fails at 2 s, and its clock holds until 60 s. Rank 2 wakes at 31 s, inside the hold,
+/// and then waits its two steps from 60 s, rather than ordering at 61 s beside rank 0.
 #[test]
 fn a_waiting_rank_meets_a_hold_of_one_step() {
     let start = tokio::time::Instant::now();
