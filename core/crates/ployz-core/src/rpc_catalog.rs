@@ -95,6 +95,7 @@ macro_rules! rpc_catalog {
                 PublishCertificateMaterial: (publish_certificate_material, "PublishCertificateMaterial", PublishCertificateMaterialRequest, "publish_certificate_material", CertificateMaterialPublished, PUBLISH_CERTIFICATE_MATERIAL_CAPABILITY, "ployz.certificates.publish.v1", Cluster, Operator),
                 ReadRoutes: (read_routes, "ReadRoutes", ReadRoutesRequest, "read_routes", RoutesRead, READ_ROUTES_CAPABILITY, "ployz.serving.routes.v1", Cluster, Operator),
                 ReadRoutedAddresses: (read_routed_addresses, "ReadRoutedAddresses", ReadRoutedAddressesRequest, "read_routed_addresses", RoutedAddresses, READ_ROUTED_ADDRESSES_CAPABILITY, "ployz.serving.routed-addresses.v1", Cluster, Operator),
+                SetIngressDoors: (set_ingress_doors, "SetIngressDoors", SetIngressDoorsRequest, "set_ingress_doors", IngressDoorsSet, SET_INGRESS_DOORS_CAPABILITY, "ployz.ingress.doors.v1", Cluster, Operator),
                 ReadClusterName: (read_cluster_name, "ReadClusterName", ReadClusterNameRequest, "read_cluster_name", ClusterNamed, READ_CLUSTER_NAME_CAPABILITY, "ployz.cluster.name.read.v1", Cluster, Operator),
                 SetClusterName: (set_cluster_name, "SetClusterName", SetClusterNameRequest, "set_cluster_name", ClusterNamed, SET_CLUSTER_NAME_CAPABILITY, "ployz.cluster.name.v1", Cluster, Operator),
                 MetricHistory: (metric_history, "MetricHistory", MetricHistoryRequest, "metric_history", MetricHistoryReply, METRIC_HISTORY_CAPABILITY, "ployz.metrics.history.v1", Container, Operator),

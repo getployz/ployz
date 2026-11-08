@@ -1,6 +1,10 @@
 pub(crate) mod bridge_address;
 mod checks;
 mod create;
+mod doors;
+pub(crate) use doors::{Door, DoorEntry};
+#[cfg(test)]
+pub(crate) use doors::{DoorFacts, NetnsId};
 mod http_health;
 mod images;
 mod lifecycle;
@@ -57,6 +61,7 @@ pub(crate) use create::container_log_config;
 pub(crate) use lifecycle::{ContainerCreated, ContainerRequest, require_eligible, same_creation};
 pub use limits::UnappliedLimits;
 pub(crate) use managed_service::{DesiredContainer, Ensure, ManagedService};
+pub(crate) use observe::IngressRecovery;
 pub(crate) use peer_pull::pull_from_ingest;
 use ployz_core::LimitsRefusal;
 pub use spec_store::{Error as SpecStoreError, FloorTurn, MachineSpecStore};
@@ -81,12 +86,19 @@ pub const LABEL_BRIDGE_IPV6: &str = "ployz.network.ipv6";
 /// listens on IPv4 alone through docker-proxy. One created before the label stays
 /// IPv4-only until it is replaced. A labelled one follows the bridge, so it gains or
 /// loses IPv6 when the bridge does.
+///
+/// The holder owns the Ingress Proxy's netns, so it takes IPv6 though it publishes
+/// host ports, as the Caddy did before it (#2837). A Caddy from before the holder
+/// still publishes the ports itself and keeps that endpoint.
 #[must_use]
 pub(crate) fn takes_bridge_ipv6(labels: &HashMap<String, String>) -> bool {
-    let ingress = QualifiedService::system_ingress();
+    let door = |door: QualifiedService| {
+        labels.get(LABEL_NAMESPACE) == Some(&door.namespace.to_string())
+            && labels.get(LABEL_SERVICE_NAME) == Some(&door.name.to_string())
+    };
     labels.get(LABEL_BRIDGE_IPV6).map(String::as_str) == Some("true")
-        || labels.get(LABEL_NAMESPACE) == Some(&ingress.namespace.to_string())
-            && labels.get(LABEL_SERVICE_NAME) == Some(&ingress.name.to_string())
+        || (door(QualifiedService::system_ingress())
+            || door(QualifiedService::system_ingress_holder()))
             && !labels.contains_key(LABEL_HOOK)
 }
 
@@ -203,7 +215,7 @@ impl LocalDocker {
             .collect())
     }
 
-    async fn managed_containers(
+    pub(super) async fn managed_containers(
         &self,
     ) -> Result<Vec<(ContainerId, HashMap<String, String>)>, Error> {
         self.labelled(vec![
@@ -227,7 +239,7 @@ impl LocalDocker {
         .await
     }
 
-    async fn labelled(
+    pub(super) async fn labelled(
         &self,
         labels: Vec<String>,
     ) -> Result<Vec<(ContainerId, HashMap<String, String>)>, Error> {
@@ -316,6 +328,10 @@ pub struct ContainerRuntime {
     first_synced: watch::Sender<bool>,
     checks: Arc<std::sync::Mutex<CheckRecords>>,
     stranded: Arc<tokio::sync::Mutex<observe::StrandedIngress>>,
+    /// Serializes every holder and Caddy lifecycle (a route, a legacy translation and
+    /// recovery), so no two of them place or retire the Ingress doors at once. Taken
+    /// before the admission turn and before any per-id gate.
+    doors: Arc<tokio::sync::Mutex<()>>,
     sealing_key_dir: Option<PathBuf>,
     log_store: LogStore,
     /// Set when a Leave begins removing every managed Container, and cleared only when
@@ -335,10 +351,17 @@ impl ContainerRuntime {
             first_synced: watch::Sender::new(false),
             checks: Arc::new(std::sync::Mutex::new(CheckRecords::new(chrono::Utc::now()))),
             stranded: Arc::default(),
+            doors: Arc::default(),
             sealing_key_dir: None,
             log_store: LogStore::default(),
             departing: Arc::default(),
         }
+    }
+
+    /// Holds the Ingress door lifecycle until the guard drops. The guard is owned so
+    /// work detached from its caller holds it until that work ends.
+    pub(crate) async fn door_lifecycle(&self) -> tokio::sync::OwnedMutexGuard<()> {
+        Arc::clone(&self.doors).lock_owned().await
     }
 
     /// Opens Sealed env values with the Sealing Key kept in `data_dir`.
@@ -651,7 +674,7 @@ impl ContainerRuntime {
                 !labels.contains_key(LABEL_GEN)
                     && ManagedLabels::parse(labels).is_ok_and(|managed| {
                         managed.kind == ContainerKind::ServiceContainer
-                            && managed.identity != QualifiedService::system_ingress()
+                            && !managed.identity.is_ingress_door()
                     })
             })
             .map(|(id, _)| *id)
@@ -1631,6 +1654,10 @@ pub enum Error {
     ContainerNotFound(ContainerId),
     #[error("Docker name '{0}' is occupied by incompatible creation inputs")]
     SlotNameOccupied(String),
+    #[error("no Ingress Proxy holder is running on this Server")]
+    IngressHolderNotRunning,
+    #[error("the spec names a network this Server's Ployz doesn't know")]
+    UnrecognizedNetwork,
     #[error("image pull failed")]
     ImagePull(#[source] bollard::errors::Error),
     /// A registry or peer pull failed while the Docker root had almost no free space.
@@ -1712,6 +1739,8 @@ impl Error {
             | Self::MissingLabel(_)
             | Self::InvalidValue { .. }
             | Self::NotAServiceContainer(_)
+            | Self::IngressHolderNotRunning
+            | Self::UnrecognizedNetwork
             | Self::NotManaged => RpcErrorCode::InvalidArgument,
             Self::Docker(_)
             | Self::ImagePull(_)
@@ -1904,6 +1933,7 @@ mod tests {
             ContainerKind::ServiceContainer,
             &namespace,
             &spec,
+            &create::CreationNetwork::Bridge,
             None,
         )
         .unwrap();
@@ -1960,6 +1990,7 @@ mod tests {
             ContainerKind::PreDeployHook,
             &namespace,
             &spec,
+            &create::CreationNetwork::Bridge,
             None,
         )
         .unwrap();
@@ -2031,6 +2062,7 @@ mod tests {
             ContainerKind::ServiceContainer,
             &ployz_core::Namespace::parse("app").unwrap(),
             &spec,
+            &create::CreationNetwork::Bridge,
             None,
         )
         .unwrap();
@@ -2046,10 +2078,10 @@ mod tests {
     }
 
     #[test]
-    fn only_the_system_ingress_gets_its_sysctls_at_create() {
+    fn only_the_ingress_holder_gets_its_sysctls_at_create() {
         let machine_id = MachineId::parse("1".repeat(32)).unwrap();
         let gateway = MachineGateway(Ipv4Addr::new(10, 210, 0, 1));
-        let ingress = ployz_core::QualifiedService::system_ingress();
+        let ingress = ployz_core::QualifiedService::system_ingress_holder();
         let sysctls = |namespace: &ployz_core::Namespace, name: &str, kernel_supports| {
             let spec: ResolvedServiceSpec = serde_json::from_value(serde_json::json!({
                 "service_id": "a".repeat(32),
@@ -2064,6 +2096,7 @@ mod tests {
                 ContainerKind::ServiceContainer,
                 namespace,
                 &spec,
+                &create::CreationNetwork::Bridge,
                 None,
             )
             .unwrap();
@@ -2095,6 +2128,66 @@ mod tests {
             ),
             None
         );
+        assert_eq!(
+            sysctls(
+                &ingress.namespace,
+                &ployz_core::QualifiedService::system_ingress()
+                    .name
+                    .to_string(),
+                true
+            ),
+            None,
+            "the Caddy inherits the holder's namespace and its sysctls"
+        );
+    }
+
+    #[test]
+    fn a_container_in_the_holders_network_carries_nothing_of_its_own() {
+        let machine_id = MachineId::parse("1".repeat(32)).unwrap();
+        let gateway = MachineGateway(Ipv4Addr::new(10, 210, 0, 1));
+        let holder = ContainerId::parse("b".repeat(64)).unwrap();
+        let specs = crate::images::DoorSpecs::public(ServiceId::parse("c".repeat(32)).unwrap());
+        let mut spec = specs.proxy;
+        spec.container.hostname = Some("ingress".parse().unwrap());
+        spec.container.extra_hosts = vec!["peer:10.0.0.9".parse().unwrap()];
+        let body = create::container_create_body(
+            &machine_id,
+            gateway,
+            ContainerKind::ServiceContainer,
+            &Namespace::system(),
+            &spec,
+            &create::CreationNetwork::Holder(holder),
+            None,
+        )
+        .unwrap();
+        let host = body.host_config.unwrap();
+        assert_eq!(host.network_mode, Some(format!("container:{holder}")));
+        assert_eq!(host.dns, None);
+        assert_eq!(host.dns_search, None);
+        assert_eq!(host.dns_options, None);
+        assert_eq!(host.port_bindings, None);
+        assert_eq!(host.extra_hosts, None);
+        assert_eq!(body.hostname, None);
+        assert_eq!(body.exposed_ports, None);
+        assert!(body.networking_config.is_none());
+
+        let holder_body = create::container_create_body(
+            &machine_id,
+            gateway,
+            ContainerKind::ServiceContainer,
+            &Namespace::system(),
+            &specs.holder,
+            &create::CreationNetwork::Bridge,
+            None,
+        )
+        .unwrap();
+        let host = holder_body.host_config.unwrap();
+        assert_eq!(host.network_mode.as_deref(), Some("ployz"));
+        assert!(
+            host.port_bindings.is_some(),
+            "the holder publishes the ports"
+        );
+        assert!(host.dns.is_some());
     }
 
     #[test]
@@ -2102,7 +2195,7 @@ mod tests {
         let machine_id = MachineId::parse("1".repeat(32)).unwrap();
         let gateway = MachineGateway(Ipv4Addr::new(10, 210, 0, 1));
         let ingress = ployz_core::QualifiedService::system_ingress();
-        let caddy = ployz_core::caddy_service_spec("caddy:test".into(), Default::default())
+        let caddy = crate::images::legacy_caddy_for_tests("caddy:test")
             .to_resolved(
                 ployz_core::ServiceId::parse("c".repeat(32)).unwrap(),
                 ployz_core::ResolvedUpdateConfig::default(),
@@ -2115,6 +2208,7 @@ mod tests {
                 ContainerKind::ServiceContainer,
                 namespace,
                 &caddy,
+                &create::CreationNetwork::Bridge,
                 None,
             )
             .unwrap();
@@ -2135,6 +2229,24 @@ mod tests {
                 "com.docker.network.endpoint.sysctls".into(),
                 "net.ipv6.conf.IFNAME.disable_ipv6=1".into(),
             )]))
+        );
+
+        let holder =
+            crate::images::DoorSpecs::public(ServiceId::parse("c".repeat(32)).unwrap()).holder;
+        let body = create::container_create_body(
+            &machine_id,
+            gateway,
+            ContainerKind::ServiceContainer,
+            &ingress.namespace,
+            &holder,
+            &create::CreationNetwork::Bridge,
+            None,
+        )
+        .unwrap();
+        assert!(takes_bridge_ipv6(body.labels.as_ref().unwrap()));
+        assert!(
+            body.networking_config.is_none(),
+            "the holder takes IPv6 though it publishes the ports"
         );
     }
 
@@ -2184,6 +2296,7 @@ mod tests {
                     kind,
                     &namespace,
                     &spec(ports.clone()),
+                    &create::CreationNetwork::Bridge,
                     None,
                 )
                 .unwrap();
@@ -2248,6 +2361,7 @@ mod tests {
             ContainerKind::ServiceContainer,
             &ployz_core::Namespace::parse("app").unwrap(),
             &spec,
+            &create::CreationNetwork::Bridge,
             None,
         )
         .unwrap();

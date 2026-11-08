@@ -19,9 +19,7 @@ pub struct ServingContainer {
 impl ServingContainer {
     fn prove(container: &ServiceContainer) -> Option<Self> {
         let observation = container.as_observation();
-        if *observation.rotation() != CopyRotation::In
-            || observation.identity() == QualifiedService::system_ingress()
-        {
+        if *observation.rotation() != CopyRotation::In || observation.identity().is_ingress_door() {
             return None;
         }
         let address = container.traffic_address()?;
@@ -51,7 +49,7 @@ impl ServingContainer {
 }
 
 /// Serving Containers: copies that are In, may serve, and are addressed. A copy
-/// of the Ingress Proxy Service never is one.
+/// of the Ingress Proxy Service or its holder never is one.
 #[must_use]
 pub fn serving_containers<'serving>(
     containers: impl IntoIterator<Item = &'serving ServiceContainer>,
@@ -75,7 +73,8 @@ pub type ProxyRoutes = BTreeMap<QualifiedService, Vec<ServingContainer>>;
 /// empties once every copy in view is Held or Out. A Service
 /// missing from `current` has never been routed by this proxy, as after a
 /// restart, and routes its Serving Containers on any Machine instead. A Service
-/// with no observed copy has no route, and the Ingress Proxy Service never has one.
+/// with no observed copy has no route, and neither the Ingress Proxy Service nor
+/// its holder ever has one.
 #[must_use]
 pub fn proxy_routes(
     containers: &[ServiceContainer],
@@ -85,7 +84,7 @@ pub fn proxy_routes(
     let mut by_service = BTreeMap::<QualifiedService, Vec<&ServiceContainer>>::new();
     for container in containers {
         let identity = container.as_observation().identity();
-        if identity != QualifiedService::system_ingress() {
+        if !identity.is_ingress_door() {
             by_service.entry(identity).or_default().push(container);
         }
     }
@@ -443,26 +442,36 @@ mod tests {
     }
 
     #[test]
-    fn proxy_copies_never_routed_always_removable() {
+    fn ingress_door_copies_are_never_routed() {
         let service_id = ServiceId::parse("a".repeat(32)).unwrap();
-        let mut proxy = serving_observation(
-            '1',
-            &service_id,
-            ContainerKind::ServiceContainer,
-            HEALTHY,
-            Some([10, 210, 1, 2]),
-        );
-        proxy
-            .try_update(|parts| {
+        let door = |id, name: &str| {
+            let mut copy = serving_observation(
+                id,
+                &service_id,
+                ContainerKind::ServiceContainer,
+                HEALTHY,
+                Some([10, 210, 1, 2]),
+            );
+            copy.try_update(|parts| {
                 parts.namespace = Namespace::system();
-                parts.resolved_spec.name = ServiceName::parse("ingress").unwrap();
+                parts.resolved_spec.name = ServiceName::parse(name).unwrap();
             })
             .unwrap();
+            copy
+        };
+        let proxy = door('1', "ingress");
+        let holder = door('2', "ingress-holder");
         assert_eq!(proxy.identity(), crate::QualifiedService::system_ingress());
-        let containers = service_containers([proxy]);
+        assert_eq!(
+            holder.identity(),
+            crate::QualifiedService::system_ingress_holder()
+        );
 
-        assert!(serving_containers(&containers).is_empty());
-        assert!(proxy_routes(&containers, |_| false, &ProxyRoutes::new()).is_empty());
+        for copy in [proxy, holder] {
+            let containers = service_containers([copy]);
+            assert!(serving_containers(&containers).is_empty());
+            assert!(proxy_routes(&containers, |_| false, &ProxyRoutes::new()).is_empty());
+        }
     }
 
     const HEALTHY: ContainerRuntimeObservation = ContainerRuntimeObservation::Running {

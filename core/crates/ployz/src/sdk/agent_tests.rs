@@ -14,9 +14,7 @@ use ployz_core::{
 };
 use ployz_store::DeploymentId;
 use ployz_store::tools::cloud::{ContainerState, LogsAnswer, MetricRow};
-use ployz_store::tools::{
-    LineCap, LogText, LogsQuery, SealedValues, ServerName, ServerRef, Timestamp, Withheld,
-};
+use ployz_store::tools::{LineCap, LogText, LogsQuery, ServerName, ServerRef, Timestamp, Withheld};
 
 use super::{
     NANOS_PER_SECOND, Readable, ServiceCopy, Started, copies_of, logs, remove_one, report,
@@ -800,42 +798,6 @@ async fn a_logs_ask_scrubs_every_name_the_store_holds_sealed_whatever_the_ask_sa
                 "token=[secret TOKEN]".to_owned(),
             ]
         )]
-    );
-}
-
-// Catches a direct apply's failed tail scrubbing env values it has no Sealed reason to,
-// or showing secret-shaped text.
-#[tokio::test]
-async fn a_failed_tail_without_sealed_values_shows_env_values_and_redacts_secret_shaped_text() {
-    let one = support::machine('a', "one");
-    let (address, server) = support::listening(support::DeployService::new(one.clone())).await;
-    let session = crate::sdk::connect_connections(
-        vec![crate::context::Connection::tcp(address)],
-        Arc::new(crate::connect::SystemConnector::default()),
-    )
-    .await
-    .unwrap();
-
-    let (log, _) = crate::sdk::failed_tail(
-        &session.client().unwrap(),
-        one.machine.id,
-        container_id('c'),
-        &SealedValues::none(),
-    )
-    .await;
-    session.close().await;
-    server.abort();
-
-    let LogText::Shown(excerpt) = log else {
-        panic!("a read tail is shown: {log:?}");
-    };
-    assert!(
-        excerpt.lines().ends_with(&[
-            "plain from-docker".to_owned(),
-            "token=[redacted]".to_owned()
-        ]),
-        "{:?}",
-        excerpt.lines()
     );
 }
 

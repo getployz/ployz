@@ -12,27 +12,23 @@ use ployz_core::{
 };
 use thiserror::Error;
 
-mod apply;
 pub(crate) mod cleanup;
 mod convergence;
 mod exec;
-pub(crate) use exec::MachineOperations;
 #[cfg(test)]
 pub(crate) use exec::RedialFailure;
+pub(crate) use exec::{MachineOperations, RestartTolerant};
 pub(crate) mod pipeline;
 mod planning;
 mod progress;
-mod render;
 mod report;
 mod schedule;
 
-pub(crate) use apply::{ApplyError, Outcome, apply_requested};
 pub(crate) use convergence::{Converged, LastIn, Moving, can_move, converge, named};
 pub use convergence::{
     DrainStop, MachineRef, Move, MoveFailure, OldCopyEnd, StayReason, Unconfirmed,
 };
 pub use pipeline::DeployError;
-pub(crate) use pipeline::plan_options;
 pub(crate) use planning::capacity::endpoint_capacity_error;
 pub use planning::{
     DeployPlan, SlotAction, SlotRepair, VolumeFate, data_loss_from_plan, plan_deploy,
@@ -327,8 +323,8 @@ pub enum HeldIngress<'snapshot> {
     None,
     /// The newest one Docker can start again, which starts with its own spec.
     Stopped(&'snapshot ContainerObservation),
-    /// Only dead ones, the newest given: Docker starts none of them, and one may still
-    /// hold the name a created one needs.
+    /// Only dead ones, the newest given: Docker starts none of them, so the daemon
+    /// retires them and creates its own.
     Dead(&'snapshot ContainerObservation),
     /// The newest one crash-looping under Docker's restart policy, which keeps retrying
     /// it, with none running beside it.
@@ -515,33 +511,9 @@ impl DeploySnapshot {
     pub fn ingress_returning(&self) -> Vec<Option<std::net::IpAddr>> {
         self.empty_ingress()
             .into_iter()
-            .filter(|empty| {
-                !matches!(
-                    empty.held,
-                    HeldIngress::Dead(_) | HeldIngress::Restarting(_)
-                )
-            })
+            .filter(|empty| !matches!(empty.held, HeldIngress::Restarting(_)))
             .map(|empty| empty.machine.machine.public_ip)
             .collect()
-    }
-
-    /// This snapshot as seen from `machine` alone, so planning there cannot fail on
-    /// another Machine.
-    fn only(&self, machine: &MachineObservation) -> Self {
-        Self {
-            machines: vec![machine.clone()],
-            storage_capacity: self.storage_capacity.clone(),
-            containers: self
-                .containers
-                .iter()
-                .filter(|container| container.machine_id == machine.machine.id)
-                .cloned()
-                .collect(),
-            volume_snapshot: self.volume_snapshot.clone(),
-            container_failures: Vec::new(),
-            container_omissions: Vec::new(),
-            capacity: self.capacity.clone(),
-        }
     }
 
     /// Observer-derived Services owned by `namespace`. Other Namespaces are excluded.

@@ -34,14 +34,7 @@ async fn drain_moves_containers_off_without_a_gap_or_a_deploy() {
     let mut client = connect(&direct).await;
     cli(
         &direct,
-        &[
-            "server",
-            "set",
-            web1.id.as_str(),
-            "--accepts-ingress=true",
-            "--ingress-image",
-            "caddy:2.10.2",
-        ],
+        &["server", "set", web1.id.as_str(), "--accepts-ingress=true"],
     );
 
     let web = serde_json::from_value::<RequestedServiceSpec>(serde_json::json!({

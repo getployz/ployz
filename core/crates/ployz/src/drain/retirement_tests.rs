@@ -10,9 +10,9 @@ use ployz_core::{
     ContainerAddress, ContainerDetails, ContainerId, ContainerLimitsUpdated, ContainerLocator,
     ContainerNow, ContainerObservation, ContainerRefusal, ContainerRefusalReason, ContainerWant,
     CopyRotation, DockerVolumeId, EnsuredContainer, HealthVerdict, ImagePulled, Machine, MachineId,
-    MachineName, Namespace, ObservedGlobalSlotSpec, Placement, ProxyRoutes, QualifiedService,
+    MachineName, ObservedGlobalSlotSpec, Placement, ProxyRoutes, QualifiedService,
     ResolvedServiceSpec, ResolvedUpdateConfig, RoutesRead, RpcError, RpcErrorCode,
-    ServiceContainer, ServiceMode, ServiceName, ServiceObservation, SlotKey,
+    ServiceContainer, ServiceMode, ServiceObservation, SlotKey,
 };
 
 use super::*;
@@ -28,6 +28,8 @@ struct Cluster {
     routes: Mutex<BTreeMap<MachineId, ProxyRoutes>>,
     wants: Mutex<Vec<(MachineId, ContainerWant)>>,
     cancel_on_read: Option<CancellationToken>,
+    /// Copies whose removal Docker refuses.
+    stuck: BTreeSet<ContainerId>,
 }
 
 impl Cluster {
@@ -40,6 +42,7 @@ impl Cluster {
             routes: Mutex::new(BTreeMap::new()),
             wants: Mutex::new(Vec::new()),
             cancel_on_read: None,
+            stuck: BTreeSet::new(),
         };
         for proxy in &cluster.proxies {
             cluster.route(proxy);
@@ -216,6 +219,7 @@ impl MachineOperations for Cluster {
                         refusal: ContainerRefusal {
                             reason: ContainerRefusalReason::LastIn,
                             message: "it is the last copy in rotation".into(),
+                            capability: None,
                         },
                     });
                 }
@@ -228,6 +232,14 @@ impl MachineOperations for Cluster {
             }
             ContainerWant::Gone { container, .. } => {
                 let id = id_of(&container);
+                if self.stuck.contains(&id) {
+                    return Err(RpcError {
+                        code: RpcErrorCode::Internal,
+                        message: "Docker refused the removal".into(),
+                        details: serde_json::Value::Null,
+                        cause: Vec::new(),
+                    });
+                }
                 containers.retain(|observation| observation.container_id != id);
                 Ok(EnsuredContainer::Ensured {
                     now: ContainerNow::Absent { of: container },
@@ -277,6 +289,14 @@ impl MachineOperations for Cluster {
     async fn read_entry_routes(&self, _service: &QualifiedService) -> Result<RoutesRead, RpcError> {
         unreachable!("retirement reads routes through the copy's own Machine")
     }
+
+    async fn set_ingress_doors(
+        &self,
+        _machine_id: &MachineId,
+        _request: ployz_core::SetIngressDoorsRequest,
+    ) -> Result<ployz_core::IngressDoorsSet, RpcError> {
+        unreachable!("retirement never places the Ingress Proxy")
+    }
 }
 
 fn copy_on(machine: &Machine, hex: char, rotation: CopyRotation) -> ContainerObservation {
@@ -295,11 +315,19 @@ fn copy_on(machine: &Machine, hex: char, rotation: CopyRotation) -> ContainerObs
 }
 
 fn ingress_on(machine: &Machine, hex: char) -> ContainerObservation {
+    door_on(machine, hex, QualifiedService::system_ingress())
+}
+
+fn holder_on(machine: &Machine, hex: char) -> ContainerObservation {
+    door_on(machine, hex, QualifiedService::system_ingress_holder())
+}
+
+fn door_on(machine: &Machine, hex: char, door: QualifiedService) -> ContainerObservation {
     let mut observation = running_on(machine, hex);
     observation
         .try_update(|parts| {
-            parts.namespace = Namespace::system();
-            parts.resolved_spec.name = ServiceName::parse("ingress").unwrap();
+            parts.namespace = door.namespace;
+            parts.resolved_spec.name = door.name;
         })
         .unwrap();
     observation
@@ -452,20 +480,44 @@ async fn retire_copies_names_the_proxy_that_did_not_confirm_and_keeps_the_copy()
 }
 
 #[tokio::test]
-async fn the_ingress_proxy_goes_with_a_plain_gone() {
+async fn the_ingress_proxy_goes_caddy_first_then_its_holder() {
     let (drained, other) = (machine('1', "drained"), machine('2', "other"));
     let cluster = Cluster::of(
         &[&drained, &other],
-        vec![ingress_on(&drained, 'a'), ingress_on(&other, 'b')],
+        vec![
+            holder_on(&drained, 'c'),
+            ingress_on(&drained, 'a'),
+            ingress_on(&other, 'b'),
+        ],
     );
     retire_ingress_proxy(&cluster, &drained.id, &CancellationToken::new())
         .await
         .expect("a Pending-for-life copy needs no rotation step");
-    assert_eq!(cluster.wants(), [gone('a')]);
+    assert_eq!(
+        cluster.wants(),
+        [gone('a'), gone('c')],
+        "Docker removes no holder while a Caddy joined to it exists"
+    );
     assert_eq!(
         cluster.rotations(),
         [(container('b'), CopyRotation::Pending)]
     );
+}
+
+#[tokio::test]
+async fn a_caddy_that_stays_keeps_its_holder() {
+    let drained = machine('1', "drained");
+    let mut cluster = Cluster::of(
+        &[&drained],
+        vec![holder_on(&drained, 'c'), ingress_on(&drained, 'a')],
+    );
+    cluster.stuck.insert(container('a'));
+    let error = retire_ingress_proxy(&cluster, &drained.id, &CancellationToken::new())
+        .await
+        .unwrap_err();
+    assert!(error.message.contains("refused"), "{error:?}");
+    assert_eq!(cluster.wants(), [gone('a')], "the holder is never asked");
+    assert_eq!(cluster.rotations().len(), 2);
 }
 
 #[tokio::test]

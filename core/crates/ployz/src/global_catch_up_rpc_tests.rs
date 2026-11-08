@@ -390,6 +390,8 @@ async fn top_level_catch_up_uses_fresh_target_eligibility_and_reuses_hidden_full
     for eligible in [false, true] {
         let mut stale = machine('1', "joiner");
         stale.accepts_services = false;
+        // No Ingress Proxy work, so the Global under test is the only one.
+        stale.accepts_ingress = false;
         let mut fresh = stale.clone();
         fresh.accepts_services = eligible;
         let founder = machine('f', "founder");
@@ -536,6 +538,8 @@ async fn an_ineligible_target_retires_its_own_in_copy() {
     for (eligible, replaced) in [(false, true), (false, false), (true, true)] {
         let mut stale = machine('1', "joiner");
         stale.accepts_services = true;
+        // No Ingress Proxy work, so the Global under test is the only one.
+        stale.accepts_ingress = false;
         let mut fresh = stale.clone();
         fresh.accepts_services = eligible;
         let founder = machine('f', "founder");
@@ -727,7 +731,13 @@ fn owner_decides(
 ) -> Option<ContainerRefusal> {
     use ployz_core::{RotationEdge, RotationRefusal, RotationTarget};
     let rotation = copy.rotation().clone();
-    let refused = |reason, message: String| Some(ContainerRefusal { reason, message });
+    let refused = |reason, message: String| {
+        Some(ContainerRefusal {
+            reason,
+            message,
+            capability: None,
+        })
+    };
     if matches!(
         (&rotation, target),
         (CopyRotation::In, RotationTarget::In { .. }) | (CopyRotation::Out, RotationTarget::Out)
@@ -793,7 +803,9 @@ async fn catch_up_over_matching_copy(rotation: CopyRotation) -> OverMatching {
     use std::collections::{BTreeMap, BTreeSet};
     use std::sync::{Arc, Mutex};
     use tonic::{Request, Response};
-    let joiner = machine('1', "joiner");
+    let mut joiner = machine('1', "joiner");
+    // No Ingress Proxy work, so the Global under test is the only one.
+    joiner.accepts_ingress = false;
     let founder = machine('f', "founder");
     let spec = requested(ServiceMode::Global)
         .to_resolved(service_id('a'), ResolvedUpdateConfig::default())
@@ -1170,4 +1182,174 @@ async fn catch_up_keeps_a_sealed_value_off_a_machine_that_cannot_open_it() {
     assert_eq!(error.code, ployz_core::RpcErrorCode::Unsupported);
     assert_eq!(ensure_calls.load(Ordering::SeqCst), 0);
     server.abort();
+}
+
+/// What a joiner asked for while a founder runs the Ingress Proxy's Caddy and holder.
+struct BesideDoors {
+    result: Result<(), CatchUpError>,
+    doors: Vec<SetIngressDoorsRequest>,
+    /// The Service of each EnsureContainer, by the spec's name.
+    ensured: Vec<String>,
+}
+
+/// Catch up a joiner holding the ingress role when `role`, beside a founder running
+/// both door Containers, against a daemon that sets the doors as asked.
+async fn catch_up_beside_doors(role: bool) -> BesideDoors {
+    use ployz_core::{
+        ContainerList, DoorChange, DoorOutcome, IngressPorts, LocalMachinePhase, MachineDetails,
+        MachineList, MachineObservation, MembershipObservation, OpaquePayload, RpcRequestBody,
+        caddy_service_spec, holder_service_spec,
+    };
+    use std::sync::{Arc, Mutex};
+    use tonic::{Request, Response};
+
+    let mut joiner = machine('1', "joiner");
+    joiner.accepts_ingress = role;
+    let founder = machine('f', "founder");
+    let door = |identity: QualifiedService, spec: RequestedServiceSpec, id, hex| {
+        let spec = spec
+            .to_resolved(service_id(id), ResolvedUpdateConfig::default())
+            .unwrap();
+        grouped(identity, spec, running_on(&founder, hex))
+            .containers
+            .remove(0)
+            .into_observation()
+    };
+    let peers = vec![
+        door(
+            QualifiedService::system_ingress(),
+            caddy_service_spec("caddy:test"),
+            'a',
+            'a',
+        ),
+        door(
+            QualifiedService::system_ingress_holder(),
+            holder_service_spec("pause:test", IngressPorts::Public),
+            'b',
+            'b',
+        ),
+    ];
+    let doors = Arc::new(Mutex::new(Vec::new()));
+    let ensured = Arc::new(Mutex::new(Vec::new()));
+    let (asked, created, target, peer_machine) = (
+        doors.clone(),
+        ensured.clone(),
+        joiner.clone(),
+        founder.clone(),
+    );
+    let (mut client, server) =
+        crate::connect::test_support::rpc_client(move |rpc: Request<OpaquePayload>| {
+            let (target, founder, peers) = (target.clone(), peer_machine.clone(), peers.clone());
+            let (asked, created) = (asked.clone(), created.clone());
+            let selected = rpc
+                .metadata()
+                .get(ployz_core::ONE_TARGET_HEADER)
+                .and_then(|v| v.to_str().ok())
+                .map(str::to_owned);
+            async move {
+                #[expect(
+                    clippy::wildcard_enum_match_arm,
+                    reason = "fixture rejects unrelated operations"
+                )]
+                let response = match rpc.into_inner().decode_request().unwrap().body {
+                    RpcRequestBody::ListMachines(_) => RpcResponse::from(MachineList {
+                        enrollment: None,
+                        machines: vec![
+                            MachineObservation::new(target.clone(), MembershipObservation::Up),
+                            MachineObservation::new(founder.clone(), MembershipObservation::Up),
+                        ],
+                    }),
+                    RpcRequestBody::ListContainers(_) => RpcResponse::from(ContainerList {
+                        containers: if selected.as_deref() == Some(founder.id.as_str()) {
+                            peers
+                        } else {
+                            Vec::new()
+                        },
+                    }),
+                    RpcRequestBody::Inspect(_) => RpcResponse::from(MachineDetails {
+                        id: target.id,
+                        public_key: target.public_key,
+                        machine: Some(target.clone()),
+                        phase: LocalMachinePhase::Participating,
+                        advertised_endpoints: Vec::new(),
+                        store_version: Default::default(),
+                        rtts: Vec::new(),
+                        management_clients: Vec::new(),
+                        passkeys: Vec::new(),
+                        storage: None,
+                        upgrade: None,
+                        telemetry: None,
+                        token: None,
+                        sealing: None,
+                        founding: Default::default(),
+                    }),
+                    RpcRequestBody::SetIngressDoors(request) => {
+                        asked.lock().unwrap().push(request);
+                        let created = |hex| DoorOutcome {
+                            now: running_on(&target, hex),
+                            change: DoorChange::Created,
+                        };
+                        RpcResponse::from(IngressDoorsSet {
+                            holder: Some(created('c')),
+                            proxy: Some(created('d')),
+                            ..IngressDoorsSet::default()
+                        })
+                    }
+                    RpcRequestBody::EnsureContainer(ensure) => {
+                        created.lock().unwrap().push(format!("{:?}", ensure.want));
+                        panic!("no door Container is ensured: {:?}", ensure.want)
+                    }
+                    other => panic!("unexpected RPC: {other:?}"),
+                };
+                Ok(Response::new(response.encode().unwrap()))
+            }
+        })
+        .await;
+    let result = catch_up_globals(
+        &mut client,
+        &joiner,
+        &tokio_util::sync::CancellationToken::new(),
+        |_| {},
+    )
+    .await;
+    server.abort();
+    let doors = doors.lock().unwrap().clone();
+    let ensured = ensured.lock().unwrap().clone();
+    BesideDoors {
+        result,
+        doors,
+        ensured,
+    }
+}
+
+// Catches an older-style catch-up placing Caddy on a Server without the ingress role
+// because a peer runs one.
+#[tokio::test]
+async fn a_joiner_without_the_role_gets_no_ingress_proxy() {
+    let caught_up = catch_up_beside_doors(false).await;
+
+    caught_up.result.unwrap();
+    assert!(caught_up.doors.is_empty(), "{:?}", caught_up.doors);
+    assert!(caught_up.ensured.is_empty(), "{:?}", caught_up.ensured);
+}
+
+// Catches a joiner with the role asking twice, once per door identity, or deriving its
+// holder from a proxy other than the one the Cluster runs.
+#[tokio::test]
+async fn a_joiner_with_the_role_sets_its_public_door_once() {
+    let caught_up = catch_up_beside_doors(true).await;
+
+    caught_up.result.unwrap();
+    assert_eq!(
+        caught_up.doors,
+        [SetIngressDoorsRequest {
+            doors: IngressDoors::public(),
+            proxy_service: service_id('a'),
+        }]
+    );
+    assert!(
+        caught_up.ensured.is_empty(),
+        "an observed holder never becomes an EnsureContainer: {:?}",
+        caught_up.ensured
+    );
 }

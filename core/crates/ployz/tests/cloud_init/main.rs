@@ -486,89 +486,6 @@ async fn cloud_init_initialize_participates() {
 }
 
 #[tokio::test]
-async fn caddy_lookup_failure_happens_before_initialize() {
-    let founder = founder_machine();
-    let pairing = json!({ "secret": PAIRING });
-    let enroll = EnrollListen::start(json!({
-        "kind": "initialize",
-        "resumed": false,
-        "storage": "none",
-        "pairing": pairing,
-    }))
-    .await;
-    let daemon = JoinDaemon::new(Registered {
-        assigned_machine: founder,
-        visible_peers: Vec::new(),
-        target_versions: Default::default(),
-        sealing_key: None,
-        devices: Vec::new(),
-    });
-    let machine_addr = serve_machine(daemon.clone()).await;
-    // Reject the proxy tunnel immediately. Retry exhaustion is covered with a
-    // paused clock in setup_retry; this test checks failure before Initialize.
-    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let proxy = format!("http://{}", listener.local_addr().unwrap());
-    let rejected = tokio::spawn(async move {
-        use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
-        loop {
-            let (stream, _) = listener.accept().await.unwrap();
-            let mut stream = BufReader::new(stream);
-            let mut request = String::new();
-            stream.read_line(&mut request).await.unwrap();
-            assert!(request.starts_with("CONNECT "), "{request}");
-            loop {
-                request.clear();
-                assert!(stream.read_line(&mut request).await.unwrap() > 0);
-                if request == "\r\n" {
-                    break;
-                }
-            }
-            stream
-                .get_mut()
-                .write_all(
-                    b"HTTP/1.1 403 Forbidden\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
-                )
-                .await
-                .unwrap();
-        }
-    });
-
-    let output = harness::cli()
-        .args([
-            "--connect",
-            &format!("ssh://root@{machine_addr}"),
-            "server",
-            "add",
-            "--token-file",
-            harness::token_file(),
-            "--cloud-url",
-            &enroll.url,
-            "--name",
-            "founder",
-            "--yes",
-        ])
-        .env("HTTPS_PROXY", &proxy)
-        .env("https_proxy", &proxy)
-        .env("NO_PROXY", "127.0.0.1,localhost")
-        .env("no_proxy", "127.0.0.1,localhost")
-        .output()
-        .await
-        .unwrap();
-
-    rejected.abort();
-    assert!(rejected.await.unwrap_err().is_cancelled());
-    assert!(!output.status.success());
-    assert!(
-        String::from_utf8_lossy(&output.stderr)
-            .contains("error: Could not list Caddy tags on Docker Hub."),
-        "{}",
-        String::from_utf8_lossy(&output.stderr)
-    );
-    assert!(daemon.initialize_requests().is_empty());
-    assert!(enroll.callbacks().is_empty());
-}
-
-#[tokio::test]
 async fn an_unnamed_server_on_an_empty_hostname_asks_cloud_with_a_generated_name() {
     let enroll = EnrollListen::script([]).await;
     let daemon = JoinDaemon::new(registration());
@@ -1161,8 +1078,14 @@ async fn join_places_observed_ingress_on_this_machine() {
     );
     let stdout = String::from_utf8_lossy(&output.stdout);
     assert!(stdout.contains("Joined Server joiner"), "{stdout}");
-    let ensured = daemon.ensure_requests();
-    assert_eq!(ensure_names(&ensured), [("ployz-system", "ingress")]);
+    assert!(daemon.ensure_requests().is_empty());
+    assert_eq!(
+        daemon.door_requests(),
+        [ployz_core::SetIngressDoorsRequest {
+            doors: ployz_core::IngressDoors::public(),
+            proxy_service: ployz_core::ServiceId::parse("c".repeat(32)).unwrap(),
+        }]
+    );
 }
 
 #[tokio::test]
@@ -1370,10 +1293,8 @@ async fn join_starts_created_ingress_before_success() {
         String::from_utf8_lossy(&output.stderr),
         String::from_utf8_lossy(&output.stdout)
     );
-    assert!(
-        daemon.ensure_requests().is_empty(),
-        "an exact existing creation only needs Start"
-    );
+    assert!(daemon.ensure_requests().is_empty());
+    assert_eq!(daemon.door_requests().len(), 1, "the daemon starts it");
     assert!(daemon.containers().iter().any(|container| {
         container.container_id.as_str() == "b".repeat(64)
             && matches!(
@@ -1384,25 +1305,19 @@ async fn join_starts_created_ingress_before_success() {
 }
 
 #[tokio::test]
-async fn two_concurrent_joins_each_ensure_ingress_locally() {
+async fn two_concurrent_joins_each_set_ingress_locally() {
     let founder = founder_machine();
     let (first, second) = tokio::join!(
         join_against_founder(&founder),
         join_against_founder(&founder),
     );
-    assert_eq!(
-        ensure_names(&first),
-        [("ployz-system", "ingress")],
-        "first Joiner must place Ingress Proxy here"
-    );
-    assert_eq!(
-        ensure_names(&second),
-        [("ployz-system", "ingress")],
-        "second Joiner must place Ingress Proxy here"
-    );
+    assert_eq!(first.len(), 1, "first Joiner must set its Ingress Proxy");
+    assert_eq!(second.len(), 1, "second Joiner must set its Ingress Proxy");
 }
 
-async fn join_against_founder(founder: &ployz_core::Machine) -> Vec<ployz_core::NewContainer> {
+async fn join_against_founder(
+    founder: &ployz_core::Machine,
+) -> Vec<ployz_core::SetIngressDoorsRequest> {
     let mut registration = registration();
     registration.assigned_machine.id = ployz_core::MachineId::random();
     registration.visible_peers = vec![founder.clone()];
@@ -1439,7 +1354,8 @@ async fn join_against_founder(founder: &ployz_core::Machine) -> Vec<ployz_core::
         String::from_utf8_lossy(&output.stderr),
         String::from_utf8_lossy(&output.stdout)
     );
-    daemon.ensure_requests()
+    assert!(daemon.ensure_requests().is_empty());
+    daemon.door_requests()
 }
 
 fn ensure_names(requests: &[ployz_core::NewContainer]) -> Vec<(&str, &str)> {

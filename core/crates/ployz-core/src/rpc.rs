@@ -30,7 +30,8 @@ use crate::{
     ContainerKind, ContainerObservation, DeviceCode, DeviceKey, Machine, MachineId,
     MachineLogService, MachineName, MachineObservation, MachineRuntime, MachineUpdate,
     ManagementCapability, ManagementClientLabel, Namespace, PinnedAddresses, PullPolicy,
-    QualifiedService, ResolvedServiceSpec, SelectedEndpoint, StorageChoice, WireGuardPublicKey,
+    QualifiedService, ResolvedServiceSpec, SelectedEndpoint, ServiceId, StorageChoice,
+    WireGuardPublicKey,
     authority::{RestartApproval, Signed},
 };
 
@@ -1431,6 +1432,11 @@ impl ContainerNow {
 pub struct ContainerRefusal {
     pub reason: ContainerRefusalReason,
     pub message: String,
+    /// The capability a caller needs to make this request another way, such as
+    /// the Ingress Doors route an older CLI's Caddy spec is refused for.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub capability: Option<String>,
 }
 
 impl ContainerRefusal {
@@ -1458,7 +1464,10 @@ impl ContainerRefusal {
         RpcError {
             code,
             message: self.message,
-            details: Value::Null,
+            details: self.capability.map_or(
+                Value::Null,
+                |capability| serde_json::json!({ "capability": capability }),
+            ),
             cause: Vec::new(),
         }
     }
@@ -1559,6 +1568,105 @@ pub struct ReadRoutedAddressesRequest {}
 pub struct RoutedAddresses {
     #[serde(default)]
     pub routes: Option<BTreeMap<QualifiedService, BTreeMap<ContainerId, ContainerAddress>>>,
+}
+
+/// One way into a Machine's Ingress Proxy. An unknown Door from a newer client
+/// reads as `Unrecognized`.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Ord, PartialOrd, Serialize, Deserialize, TS)]
+#[serde(rename_all = "snake_case")]
+pub enum IngressDoor {
+    /// The holder's host ports 80 and 443.
+    Public,
+    #[serde(other)]
+    Unrecognized,
+}
+
+/// The Doors a Machine's Ingress Proxy should answer on.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
+#[serde(transparent)]
+pub struct IngressDoors(pub BTreeSet<IngressDoor>);
+
+impl IngressDoors {
+    #[must_use]
+    pub fn public() -> Self {
+        Self(BTreeSet::from([IngressDoor::Public]))
+    }
+
+    #[must_use]
+    pub fn is_public_only(&self) -> bool {
+        *self == Self::public()
+    }
+}
+
+/// Bring this Machine's Ingress Proxy, the holder and the Caddy in its network,
+/// to the daemon's pinned wiring for these Doors.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
+pub struct SetIngressDoorsRequest {
+    pub doors: IngressDoors,
+    /// The Ingress Proxy Service's id. The operator allocates it, and every
+    /// Machine derives the holder's id from it, so all Machines agree.
+    pub proxy_service: ServiceId,
+}
+
+/// What the daemon did to one Ingress component.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "snake_case")]
+pub enum DoorChange {
+    /// It already ran canonical and needed no Docker action.
+    Unchanged,
+    /// An existing canonical Container was started.
+    Started,
+    /// Caddy was restarted to join the running holder's network again.
+    Rejoined,
+    /// A new Container was created and started.
+    Created,
+    #[serde(other)]
+    Unrecognized,
+}
+
+/// One Ingress component as the route left it.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, TS)]
+pub struct DoorOutcome {
+    pub now: ContainerObservation,
+    pub change: DoorChange,
+}
+
+/// The Docker stage of [`SetIngressDoorsRequest`] that failed.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "snake_case")]
+pub enum IngressStage {
+    Holder,
+    Proxy,
+    #[serde(other)]
+    Unrecognized,
+}
+
+/// A Docker stage that failed after an earlier stage completed. Admission and
+/// enforcement failures are ordinary RPC errors instead.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, TS)]
+pub struct IngressDoorsFailure {
+    pub stage: IngressStage,
+    pub error: RpcError,
+}
+
+/// What [`SetIngressDoorsRequest`] completed, in order. A `failure` names the
+/// stage that stopped the route, and the fields before it are the completed prefix.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize, TS)]
+pub struct IngressDoorsSet {
+    /// The holder, once its stage completed.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub holder: Option<DoorOutcome>,
+    /// The Caddy in the holder's network, once its stage completed.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub proxy: Option<DoorOutcome>,
+    /// Reserved Containers the route removed.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub retired: Vec<ContainerId>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub failure: Option<IngressDoorsFailure>,
 }
 
 /// Read the Cluster Name on the target Machine's replica.
@@ -1733,6 +1841,7 @@ define_responses! {
     CertificateMaterialPublished(CertificateMaterialPublished) => "certificate_material_published";
     RoutesRead(RoutesRead) => "routes_read";
     RoutedAddresses(RoutedAddresses) => "routed_addresses";
+    IngressDoorsSet(IngressDoorsSet) => "ingress_doors_set";
     ClusterNamed(ClusterNamed) => "cluster_named";
     MachineUpdated(MachineUpdated) => "machine_updated";
     MachineUpgradeAttempt(MachineUpgradeAttempt) => "machine_upgrade_attempt";

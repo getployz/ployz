@@ -773,6 +773,22 @@ impl QualifiedService {
             ServiceName::parse("ingress").expect("ingress is a DNS-label Service Name"),
         )
     }
+
+    /// Reserved holder that owns the Ingress Proxy's network namespace and host ports.
+    #[must_use]
+    pub fn system_ingress_holder() -> Self {
+        Self::new(
+            Namespace::system(),
+            ServiceName::parse("ingress-holder")
+                .expect("ingress-holder is a DNS-label Service Name"),
+        )
+    }
+
+    /// Whether this is one of the two reserved Ingress Proxy identities.
+    #[must_use]
+    pub fn is_ingress_door(&self) -> bool {
+        *self == Self::system_ingress() || *self == Self::system_ingress_holder()
+    }
 }
 
 fn qualified_service_error(value: &str) -> ValueError {

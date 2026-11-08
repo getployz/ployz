@@ -9,15 +9,17 @@
 //!
 //! A new copy carries its source's deploy label and gen, starts Pending and
 //! is brought In through the owner, which refuses a copy older than an In
-//! one. System ingress copies stay Pending for life and skip rotation.
+//! one. The Ingress Proxy is never copied: the joiner's own daemon builds its
+//! holder and Caddy through SetIngressDoors, once, for the observed proxy id.
 
 use ployz_core::{
     AnonymousVolumes, BridgeEndpointCapacity, ContainerKind, ContainerObservation,
     ContainerRefusalReason, ContainerRuntimeObservation, ContainerWant, CopyRotation, CreationKey,
-    EnvironmentValues, HealthFailure, HealthVerdict, InspectRequest, ListContainersRequest,
-    LiveServices, Machine, MachineId, MachineTarget, NewContainer, PartialResult, QualifiedService,
-    ResolvedServiceSpec, RpcError, RunRotation, RunTarget, ServiceMode, ServiceObservation,
-    ServicePlacementEligibility, SlotKey, op,
+    EnvironmentValues, HealthFailure, HealthVerdict, IngressDoors, IngressDoorsSet, InspectRequest,
+    ListContainersRequest, LiveServices, Machine, MachineId, MachineTarget, NewContainer,
+    PartialResult, QualifiedService, ResolvedServiceSpec, RpcError, RunRotation, RunTarget,
+    ServiceId, ServiceMode, ServiceObservation, ServicePlacementEligibility,
+    SetIngressDoorsRequest, SlotKey, op,
 };
 use tokio_util::sync::CancellationToken;
 
@@ -77,6 +79,14 @@ pub(crate) trait CatchUpClient {
         new: NewContainer,
         cancel: &CancellationToken,
     ) -> Result<Option<Copy>, RpcError>;
+    /// Set `machine_id`'s Public Door for the Ingress Proxy `proxy_service`, or remove
+    /// its Ingress Proxy when it doesn't hold the ingress role, answering `None`.
+    async fn run_doors(
+        &mut self,
+        machine_id: &MachineId,
+        proxy_service: ServiceId,
+        cancel: &CancellationToken,
+    ) -> Result<Option<IngressDoorsSet>, RpcError>;
     async fn bring_in(
         &mut self,
         copy: &Copy,
@@ -161,13 +171,10 @@ impl CatchUpClient for Client {
                 });
                 for observed in own {
                     let copy = Copy::observed(observed);
-                    let step = if is_proxy(&service) {
-                        cleanup::remove(&*self, &copy, AnonymousVolumes::Remove).await?
-                    } else {
+                    step_error(
                         cleanup::retire(&*self, &copy, false, AnonymousVolumes::Remove, cancel)
-                            .await?
-                    };
-                    step_error(step)?;
+                            .await?,
+                    )?;
                 }
                 Ok(true)
             }
@@ -247,6 +254,27 @@ impl CatchUpClient for Client {
         Ok(now.present().map(Copy::observed))
     }
 
+    async fn run_doors(
+        &mut self,
+        machine_id: &MachineId,
+        proxy_service: ServiceId,
+        cancel: &CancellationToken,
+    ) -> Result<Option<IngressDoorsSet>, RpcError> {
+        if !takes_ingress(self, machine_id).await? {
+            crate::drain::retirement::retire_ingress_proxy(&*self, machine_id, cancel).await?;
+            return Ok(None);
+        }
+        self.set_ingress_doors(
+            machine_id,
+            SetIngressDoorsRequest {
+                doors: IngressDoors::public(),
+                proxy_service,
+            },
+        )
+        .await
+        .map(Some)
+    }
+
     async fn bring_in(
         &mut self,
         copy: &Copy,
@@ -281,6 +309,26 @@ impl CatchUpClient for Client {
         .map(|list| list.containers)
         .map_err(Failure::from)
     }
+}
+
+/// Whether `machine_id` holds the ingress role, by its own record.
+async fn takes_ingress(client: &mut Client, machine_id: &MachineId) -> Result<bool, RpcError> {
+    let details = client
+        .read::<op::Inspect>(InspectRequest::default(), &MachineTarget::from(machine_id))
+        .await?;
+    details
+        .machine
+        .filter(|machine| {
+            machine.id == *machine_id
+                && details.phase == ployz_core::LocalMachinePhase::Participating
+        })
+        .map(|machine| machine.accepts_ingress)
+        .ok_or_else(|| RpcError {
+            code: ployz_core::RpcErrorCode::Conflict,
+            message: "the Server does not observe itself participating".into(),
+            details: serde_json::Value::Null,
+            cause: Vec::new(),
+        })
 }
 
 fn step_error(step: Step) -> Result<(), RpcError> {
@@ -505,17 +553,22 @@ const OUTDATED: &str = "a newer deploy replaced it while catching up; redeploy";
 
 struct Source {
     identity: QualifiedService,
-    copy: Option<ContainerObservation>,
+    work: CatchUpWork,
+}
+
+/// What catch-up places for one observed Global.
+enum CatchUpWork {
+    /// A copy of the newest In or Pending copy; none when no copy is either.
+    Service(Option<Box<ContainerObservation>>),
+    /// The holder and Caddy, which the joiner's daemon builds for this Ingress Proxy
+    /// Service. Neither door identity is ever copied.
+    Ingress(ServiceId),
 }
 
 struct Started {
     identity: QualifiedService,
     copy: Copy,
     spec: ResolvedServiceSpec,
-}
-
-fn is_proxy(service: &QualifiedService) -> bool {
-    *service == QualifiedService::system_ingress()
 }
 
 fn is_running(observed: &ContainerObservation) -> bool {
@@ -545,7 +598,7 @@ fn runs_here(target: &[ContainerObservation], started: &Started, machine: &Machi
 }
 
 /// Whether `started` may yet run: its Container is still there and isn't on its way
-/// out. An exited one may: the daemon starts a stranded ingress again.
+/// out. An exited one may, under Docker's restart policy.
 fn may_still_run(target: &[ContainerObservation], started: &Started) -> bool {
     target.iter().any(|observed| {
         observed.container_id == started.copy.container_id
@@ -556,9 +609,12 @@ fn may_still_run(target: &[ContainerObservation], started: &Started) -> bool {
     })
 }
 
-fn sources(services: &[ServiceObservation]) -> Vec<Source> {
-    services
+/// One source per observed Global, the Ingress Proxy's two door identities as one. A
+/// joiner with the ingress role gets the Ingress Proxy even when none runs anywhere.
+fn sources(services: &[ServiceObservation], takes_ingress: bool) -> Vec<Source> {
+    let mut sources: Vec<Source> = services
         .iter()
+        .filter(|service| !service.identity.is_ingress_door())
         .filter_map(|service| {
             let copies = || service.containers.iter().map(|c| c.as_observation());
             let newest = copies().max_by(|a, b| {
@@ -568,36 +624,41 @@ fn sources(services: &[ServiceObservation]) -> Vec<Source> {
             if newest.resolved_spec.mode != ServiceMode::Global {
                 return None;
             }
-            let identity = service.identity.clone();
-            let copy = if is_proxy(&identity) {
-                Some(newest)
-            } else {
-                copies()
-                    .filter(|observed| {
-                        matches!(
-                            observed.rotation(),
-                            CopyRotation::In | CopyRotation::Pending
-                        )
-                    })
-                    .max_by(|a, b| {
-                        (
-                            a.copy_gen(),
-                            a.created_at_unix_nanos,
-                            a.container_id.as_str(),
-                        )
-                            .cmp(&(
-                                b.copy_gen(),
-                                b.created_at_unix_nanos,
-                                b.container_id.as_str(),
-                            ))
-                    })
-            };
+            let copy = copies()
+                .filter(|observed| {
+                    matches!(
+                        observed.rotation(),
+                        CopyRotation::In | CopyRotation::Pending
+                    )
+                })
+                .max_by(|a, b| {
+                    (
+                        a.copy_gen(),
+                        a.created_at_unix_nanos,
+                        a.container_id.as_str(),
+                    )
+                        .cmp(&(
+                            b.copy_gen(),
+                            b.created_at_unix_nanos,
+                            b.container_id.as_str(),
+                        ))
+                });
             Some(Source {
-                identity,
-                copy: copy.cloned(),
+                identity: service.identity.clone(),
+                work: CatchUpWork::Service(copy.cloned().map(Box::new)),
             })
         })
-        .collect()
+        .collect();
+    let doors_run = services
+        .iter()
+        .any(|service| service.identity.is_ingress_door() && !service.containers.is_empty());
+    if doors_run || takes_ingress {
+        sources.push(Source {
+            identity: QualifiedService::system_ingress(),
+            work: CatchUpWork::Ingress(crate::ingress::proxy_service(services)),
+        });
+    }
+    sources
 }
 
 fn new_copy(source: &ContainerObservation) -> NewContainer {
@@ -716,7 +777,7 @@ pub(crate) async fn catch_up_globals<C: CatchUpClient>(
 ) -> Result<(), CatchUpError> {
     let live = observe_complete(client, &this_machine.id, cancel, &mut observe).await?;
     let services = live.services();
-    let sources = sources(&services);
+    let sources = sources(&services, this_machine.accepts_ingress);
     let mut unresolved: Vec<QualifiedService> = sources
         .iter()
         .map(|source| source.identity.clone())
@@ -729,7 +790,39 @@ pub(crate) async fn catch_up_globals<C: CatchUpClient>(
             break;
         }
         let identity = source.identity;
-        let Some(origin) = source.copy else {
+        let origin = match source.work {
+            CatchUpWork::Service(origin) => origin,
+            CatchUpWork::Ingress(proxy_service) => {
+                observe(CatchUpFact::Creating(identity.clone()));
+                let failure = match client
+                    .run_doors(&this_machine.id, proxy_service, cancel)
+                    .await
+                {
+                    Ok(None) => {
+                        unresolved.retain(|service| service != &identity);
+                        observe(CatchUpFact::Excluded(identity));
+                        continue;
+                    }
+                    // The daemon answers once both run, so nothing is left to wait on.
+                    Ok(Some(set)) => {
+                        crate::ingress::failure_of(&set).map(|failure| failure.cause().to_owned())
+                    }
+                    Err(error) => Some(crate::ui::row(&error)),
+                };
+                match failure {
+                    None => {
+                        unresolved.retain(|service| service != &identity);
+                        observe(CatchUpFact::Running(identity));
+                    }
+                    Some(failure) => {
+                        failures.push((identity.clone(), failure));
+                        observe(CatchUpFact::Failed(identity));
+                    }
+                }
+                continue;
+            }
+        };
+        let Some(origin) = origin else {
             failures.push((
                 identity.clone(),
                 format!("no copy of it is In or Pending; {OUTDATED}"),
@@ -755,7 +848,7 @@ pub(crate) async fn catch_up_globals<C: CatchUpClient>(
                 continue;
             }
         };
-        if !is_proxy(&identity) && copy.rotation != CopyRotation::In {
+        if copy.rotation != CopyRotation::In {
             let outcome = match client.bring_in(&copy, &spec).await {
                 Ok(BroughtIn::In) => None,
                 Ok(BroughtIn::NotIn { health }) => Some(not_in_message(health)),
@@ -785,9 +878,8 @@ pub(crate) async fn catch_up_globals<C: CatchUpClient>(
             spec,
         });
     }
-    // A copy that started may have stopped again, as an ingress whose port or network
-    // wasn't ready right after the join does until the daemon starts it again: give
-    // each a moment to run before calling it not running.
+    // A copy that started may have stopped again until Docker's restart policy starts it:
+    // give each a moment to run before calling it not running.
     let deadline = tokio::time::Instant::now() + STARTING_WAIT;
     let target = loop {
         let target = client
@@ -834,41 +926,39 @@ pub(crate) async fn catch_up_globals<C: CatchUpClient>(
             observe(CatchUpFact::Failed(identity));
             continue;
         }
-        if !is_proxy(&identity) {
-            let superseded = target.iter().filter(|observed| {
-                observed.machine_id == this_machine.id
-                    && observed.kind == ContainerKind::ServiceContainer
-                    && observed.identity() == identity
-                    && observed.container_id != copy.container_id
-            });
-            for old in superseded {
-                if cancel.is_cancelled() {
-                    break;
-                }
-                let left = match client.retire_copy(&Copy::observed(old), cancel).await {
-                    Ok(Step::Done) => None,
-                    Ok(Step::Cancelled) => break,
-                    Ok(Step::Refused(refusal)) => Some(refusal.message),
-                    Ok(Step::NotConfirmed(machines)) => Some(format!(
-                        "{} did not confirm it left the routes",
-                        machines
-                            .machines
-                            .iter()
-                            .map(MachineId::to_string)
-                            .collect::<Vec<_>>()
-                            .join(", ")
-                    )),
-                    Err(error) => Some(crate::ui::row(&error)),
-                };
-                if let Some(message) = left {
-                    failures.push((
-                        identity.clone(),
-                        format!(
-                            "superseded copy {} stays: {message}",
-                            old.container_id.as_str()
-                        ),
-                    ));
-                }
+        let superseded = target.iter().filter(|observed| {
+            observed.machine_id == this_machine.id
+                && observed.kind == ContainerKind::ServiceContainer
+                && observed.identity() == identity
+                && observed.container_id != copy.container_id
+        });
+        for old in superseded {
+            if cancel.is_cancelled() {
+                break;
+            }
+            let left = match client.retire_copy(&Copy::observed(old), cancel).await {
+                Ok(Step::Done) => None,
+                Ok(Step::Cancelled) => break,
+                Ok(Step::Refused(refusal)) => Some(refusal.message),
+                Ok(Step::NotConfirmed(machines)) => Some(format!(
+                    "{} did not confirm it left the routes",
+                    machines
+                        .machines
+                        .iter()
+                        .map(MachineId::to_string)
+                        .collect::<Vec<_>>()
+                        .join(", ")
+                )),
+                Err(error) => Some(crate::ui::row(&error)),
+            };
+            if let Some(message) = left {
+                failures.push((
+                    identity.clone(),
+                    format!(
+                        "superseded copy {} stays: {message}",
+                        old.container_id.as_str()
+                    ),
+                ));
             }
         }
         if failures.iter().any(|(failed, _)| failed == &identity) {

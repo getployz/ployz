@@ -68,5 +68,9 @@ pub fn decide(
 }
 
 fn refuse(reason: ContainerRefusalReason, message: String) -> ContainerRefusal {
-    ContainerRefusal { reason, message }
+    ContainerRefusal {
+        reason,
+        message,
+        capability: None,
+    }
 }

@@ -25,7 +25,6 @@ use crate::{
     cluster::RoleWaitError,
     connect::{Client, ConnectError, SystemConnector, TARGET_RPC_TIMEOUT},
     context::{Config, Connection, ConnectionSource, ContextError, SelectedConnections},
-    ingress::IngressImage,
     ui::progress::StartFailure,
 };
 
@@ -901,9 +900,7 @@ pub(super) fn set(root: &ArgMatches) -> Result<(), Error> {
     let matches = leaf_matches(root);
     let selector = target(matches, "server")?;
     let update = parse_update(matches)?;
-    let image = matches.get_one::<String>("ingress-image");
     let rerun = ingress_rerun(matches, selector);
-    let ingress = IngressImage::given_or(image.cloned(), IngressImage::Keep);
     let selector = MachineTarget::parse(selector)?;
     let seed = update
         .advertised_endpoints
@@ -919,7 +916,7 @@ pub(super) fn set(root: &ArgMatches) -> Result<(), Error> {
                 if ask {
                     confirm_ingress_off(&client.machines().await?, &selector)?;
                 }
-                apply_update(client, selector, update, None, ingress, rerun, recovery).await
+                apply_update(client, selector, update, None, rerun, recovery).await
             })
         });
     };
@@ -948,7 +945,6 @@ pub(super) fn set(root: &ArgMatches) -> Result<(), Error> {
             selector,
             update,
             Some(seeding),
-            ingress,
             rerun,
             recovery,
         )
@@ -958,14 +954,10 @@ pub(super) fn set(root: &ArgMatches) -> Result<(), Error> {
 
 /// The `server set` that finishes turning web traffic on for the Server `selector` names.
 fn ingress_rerun(matches: &ArgMatches, selector: &str) -> String {
-    let mut args = vec!["server", "set", selector, "--accepts-ingress=true"];
-    args.extend(
-        matches
-            .get_one::<String>("ingress-image")
-            .iter()
-            .flat_map(|image| ["--ingress-image", image.as_str()]),
-    );
-    super::rerun(matches, &args)
+    super::rerun(
+        matches,
+        &["server", "set", selector, "--accepts-ingress=true"],
+    )
 }
 
 /// Ask before turning web traffic off on the Server `selector` names when no other online
@@ -1028,7 +1020,6 @@ pub(crate) async fn apply_update(
     selector: MachineTarget,
     update: MachineUpdate,
     seeding: Option<endpoint::Seeding>,
-    ingress: IngressImage,
     rerun: String,
     recovery: ArgMatches,
 ) -> Result<(), Error> {
@@ -1150,11 +1141,11 @@ pub(crate) async fn apply_update(
             }
             Err(error) => return Err(unobserved(error)),
         }
-        crate::ingress::follow_roles(client, ingress).await
+        Ok(crate::ingress::follow_roles(client).await?)
     }
     .await;
     let (ingress, follow_up) = match followed {
-        Ok(ingress) => (ingress, Ok(())),
+        Ok(ingress) => (Some(ingress), Ok(())),
         Err(error) => {
             // A rename in this same command leaves the typed selector naming nothing (#3449).
             let (selector, rerun) = if renamed {
@@ -1219,8 +1210,8 @@ async fn ingress_off(client: &Client, selector: &MachineTarget) -> Option<Machin
 }
 
 /// How the new Ingress Proxy failed to start on `machine`, when `machine`'s own record held no
-/// ingress role before this command and the Deploy ended on its own there: not interrupted,
-/// and not on another Server.
+/// ingress role before this command and the follow-up ended on its own there: not
+/// interrupted, and not on another Server.
 fn own_start_failure(
     error: &Error,
     machine: MachineId,
@@ -1236,10 +1227,11 @@ fn own_start_failure(
         .and_then(|diagnostic| diagnostic.start_failure)
 }
 
-/// Whether `machine` holds no Ingress Proxy Container, in any state, in its own listing. A
-/// created or exited one may still start, under Docker's restart policy or the daemon's retry
-/// of a stranded proxy, and one another operator started serves. An empty listing doesn't say
-/// whose it is, so `machine` is asked who it is after it.
+/// Whether `machine` holds no Ingress Proxy Container, neither a Caddy nor a holder, in any
+/// state, in its own listing. A created or exited one may still start, under Docker's
+/// restart policy or the daemon's retry of a stranded proxy, and one another operator
+/// started serves. An empty listing doesn't say whose it is, so `machine` is asked who it
+/// is after it.
 async fn nothing_serves(client: &Client, machine: MachineId) -> bool {
     let target = MachineTarget::from(&machine);
     let Ok(listed) = client
@@ -1252,9 +1244,11 @@ async fn nothing_serves(client: &Client, machine: MachineId) -> bool {
     else {
         return false;
     };
-    if listed.containers.iter().any(|container| {
-        container.machine_id != machine || crate::ingress::is_system_ingress(container)
-    }) {
+    if listed
+        .containers
+        .iter()
+        .any(|container| container.machine_id != machine || container.identity().is_ingress_door())
+    {
         return false;
     }
     client
@@ -1564,14 +1558,13 @@ pub(super) fn set_command(command: Command) -> Command {
                 .arg(many("wg-endpoint", None).value_name("IP[:PORT]").help(
                     "Where peers reach this Server over WireGuard; every other Server the command reaches dials the first one now, even if this Server is unreachable",
                 ))
-                .arg(ingress_image())
                 .arg(crate::cli::yes("Turn off web traffic on the last Server taking it without asking"))
                 .arg(positional("server", true).help("Server name or ID"))
 }
 
 pub(super) fn upgrade_command(command: Command) -> Command {
     base(command, "Upgrade the daemon on explicitly selected Servers, one at a time")
-                .long_about("Upgrade the daemon on explicitly selected Servers, one at a time, stopping at the first failure. When every daemon upgraded and any selected Server holds the ingress role, the Ingress Proxy then moves to the latest Caddy image on every Server with that role. Signed in to Cloud without --context or --connect, Cloud runs each upgrade along the Organization's Release Channel; an exact version needs --context.")
+                .long_about("Upgrade the daemon on explicitly selected Servers, one at a time, stopping at the first failure. When every daemon upgraded and any selected Server holds the ingress role, every Server with that role then moves its Ingress Proxy to the Caddy that release ships. Signed in to Cloud without --context or --connect, Cloud runs each upgrade along the Organization's Release Channel; an exact version needs --context.")
                 .arg_required_else_help(true)
                 .arg(
                     positional("version", true)
@@ -1588,15 +1581,6 @@ pub(super) fn upgrade_command(command: Command) -> Command {
                 .arg(switch("allow-downgrade", None).help(
                     "Move a Server to an older version than it runs without asking",
                 ))
-                .arg(ingress_image())
-}
-
-/// Pin the Caddy image the Ingress Proxy is deployed with (offline test clusters).
-fn ingress_image() -> Arg {
-    value("ingress-image", None)
-        .value_name("IMAGE")
-        .value_parser(crate::ingress::pinned_image)
-        .hide(true)
 }
 
 pub(super) fn provisioning_flags(command: Command) -> Command {
@@ -1734,7 +1718,6 @@ mod tests {
                     ..Default::default()
                 },
                 None,
-                IngressImage::Given("caddy:2".into()),
                 String::new(),
                 recovery,
             );
@@ -1888,7 +1871,6 @@ mod tests {
                 MachineTarget::from(&id),
                 update,
                 None,
-                IngressImage::Given("caddy:2".into()),
                 String::new(),
                 recovery,
             );
@@ -1984,7 +1966,6 @@ mod tests {
                             ..Default::default()
                         },
                         None,
-                        IngressImage::Given("caddy:2".into()),
                         String::new(),
                         recovery,
                     ),

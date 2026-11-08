@@ -117,19 +117,27 @@ pub(crate) async fn retire_copies<C: MachineOperations>(
     Ok(())
 }
 
+/// Remove `machine_id`'s Ingress Proxy: every Caddy, then every holder. Docker refuses to
+/// remove a holder while a Caddy joined to its network exists, so a Caddy that stays
+/// stops the removal before any holder.
 pub(crate) async fn retire_ingress_proxy<C: MachineOperations>(
     client: &C,
     machine_id: &MachineId,
     cancellation: &CancellationToken,
 ) -> Result<(), RpcError> {
-    for copy in copies_on(client, machine_id, &QualifiedService::system_ingress()).await? {
-        if cancellation.is_cancelled() {
-            return Err(cancelled());
+    for door in [
+        QualifiedService::system_ingress(),
+        QualifiedService::system_ingress_holder(),
+    ] {
+        for copy in copies_on(client, machine_id, &door).await? {
+            if cancellation.is_cancelled() {
+                return Err(cancelled());
+            }
+            ended(
+                cleanup::remove(client, &copy, AnonymousVolumes::Remove).await?,
+                &Names::new(),
+            )?;
         }
-        ended(
-            cleanup::remove(client, &copy, AnonymousVolumes::Remove).await?,
-            &Names::new(),
-        )?;
     }
     Ok(())
 }

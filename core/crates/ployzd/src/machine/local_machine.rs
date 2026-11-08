@@ -73,6 +73,7 @@ pub(crate) type PeerInspect = std::sync::Arc<
 >;
 
 mod container;
+mod ingress_doors;
 pub(crate) use container::CutRefusal;
 #[cfg(test)]
 pub(crate) use container::{EnsurePause, EnsurePausePoint};
@@ -199,6 +200,13 @@ pub enum Error {
     Cluster(#[from] crate::corrosion::Error),
     #[error(transparent)]
     IngressProxyServiceSpec(#[from] ployz_core::IngressProxyServiceSpecError),
+    #[error("this Server opens only the Public Door")]
+    UnsupportedDoors,
+    #[error("Ingress Proxy container {container_id} is {runtime} right after starting")]
+    DoorNotRunning {
+        container_id: ContainerId,
+        runtime: ployz_core::ContainerRuntimeObservation,
+    },
     #[error(transparent)]
     Network(#[from] NetworkError),
     #[error(transparent)]

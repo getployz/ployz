@@ -734,15 +734,13 @@ async fn connect(direct: &str) -> ployz::connect::Client {
     .unwrap()
 }
 
-/// Give `server` the ingress role; the Ingress Proxy follows it with the preloaded Caddy image.
-fn ingress_role(server: &Machine) -> [&str; 6] {
+/// Give `server` the ingress role; the Ingress Proxy follows it with the images its daemon pins.
+fn ingress_role(server: &Machine) -> [&str; 4] {
     [
         "server",
         "set",
         server.id.as_str(),
         "--accepts-ingress=true",
-        "--ingress-image",
-        "caddy:2.10.2",
     ]
 }
 

@@ -15,7 +15,6 @@ use crate::{
     deploy::{DeployError, PlanError},
     enrollment::local::Error as EnrollmentHistoryError,
     image::PushError,
-    ingress::IngressImageError,
     namespace::NamespaceError,
     operator::OperatorError,
     provisioning::ProvisionError,
@@ -520,9 +519,6 @@ fn code(error: &(dyn Error + 'static)) -> RpcErrorCode {
     if let Some(error) = error.downcast_ref::<TransportError>() {
         return error.to_rpc_error().code;
     }
-    if error.is::<IngressImageError>() {
-        return RpcErrorCode::Unavailable;
-    }
     if let Some(error) = error.downcast_ref::<ConfigError>() {
         return config_code(error);
     }
@@ -951,7 +947,6 @@ from_error!(
     TransportError,
     CodecError,
     ProvisionError,
-    IngressImageError,
     RpcError,
     NamespaceError,
     cloud_enroll::Error,

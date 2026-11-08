@@ -1060,6 +1060,18 @@ impl MachineRpc for MachineService {
         })
     }
 
+    async fn set_ingress_doors(
+        &self,
+        request: Request<OpaquePayload>,
+    ) -> Result<Response<OpaquePayload>, Status> {
+        let operator = from_operator(&request);
+        let request = expect::<op::SetIngressDoors>(request)?;
+        if operator && let Err(error) = self.local.admit_operator_deploy() {
+            return local_error(error);
+        }
+        finish(self.local.set_ingress_doors(request).await)
+    }
+
     async fn read_cluster_name(
         &self,
         request: Request<OpaquePayload>,
@@ -1210,6 +1222,19 @@ fn local_failure(error: LocalMachineError) -> Result<RpcError, Status> {
             tonic::Code::Internal,
             &error,
         )),
+        // Both ask the caller for the doors route, so its capability is named.
+        LocalMachineError::UnsupportedDoors
+        | LocalMachineError::Docker(crate::docker::Error::IngressHolderNotRunning) => {
+            Ok(RpcError {
+                code: RpcErrorCode::InvalidArgument,
+                message: error.to_string(),
+                details: serde_json::json!({ "capability": ployz_core::SET_INGRESS_DOORS_CAPABILITY }),
+                cause: Vec::new(),
+            })
+        }
+        LocalMachineError::DoorNotRunning { .. } => {
+            Ok(RpcError::caused(RpcErrorCode::Internal, &error))
+        }
         LocalMachineError::Docker(error) => Ok(RpcError::from(&error)),
         LocalMachineError::StoragePreparation(error) | LocalMachineError::FenceRefused(error) => {
             Ok(error)

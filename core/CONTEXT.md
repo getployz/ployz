@@ -542,8 +542,12 @@ The public HTTP request path from DNS resolution through a Machine's Ingress Pro
 _Avoid_: Edge
 
 **Ingress Proxy**:
-The Machine-local process that receives published HTTP traffic and routes it toward Serving Containers. It is one component of Public Ingress, not the whole public request path.
+The Machine-local process that receives published HTTP traffic and routes it toward Serving Containers. It is two Containers: a holder (`ployz-system/ingress-holder`) that owns the Machine's Doors, and Caddy (`ployz-system/ingress`) joined to the holder's network namespace. Caddy keeps the routing authority; the holder only keeps the ports bound while Caddy is replaced. The daemon pins both images and sets them through SetIngressDoors; no client builds their specs. It is one component of Public Ingress, not the whole public request path.
 _Avoid_: Edge, public ingress as a process
+
+**Door**:
+A published listener the Ingress Proxy's holder owns. The Public Door is host ports 80 and 443. Caddy's 8480 loopback listener is not a Door.
+_Avoid_: Port mapping, ingress port
 
 **Published Ingress Configuration**:
 A validated routing configuration made available to a Machine's Ingress Proxy. Publication records the daemon's completed handoff; it does not claim that the Ingress Proxy has adopted the configuration or successfully served traffic from it.

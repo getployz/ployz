@@ -659,16 +659,6 @@ where
             "initial policy differs from the currently observed Server; enrollment does not edit an existing Server",
         ));
     }
-    let accepts_ingress = match &state {
-        FounderLocalState::Resume { machine } => machine.accepts_ingress,
-        FounderLocalState::Initialize => initial_policy.accepts_ingress,
-    };
-    let ingress_image = matches.get_one::<String>("ingress-image").cloned();
-    let ingress = if !accepts_ingress {
-        None
-    } else {
-        Some(crate::ingress::service_spec(ingress_image, Default::default()).await?)
-    };
     // A rerun on the founded Server finishes or repeats the enrollment; it founds nothing.
     let founding = matches!(state, FounderLocalState::Initialize);
     let machine = match state {
@@ -736,25 +726,19 @@ where
     };
     let mut partial = None;
     if machine.accepts_ingress
-        && let Some(requested) = ingress
+        && let Err(error) = crate::ingress::follow_roles(&mut ready).await
     {
-        let incomplete = |error: crate::deploy::ApplyError| {
-            ingress_incomplete(
-                command,
-                super::ingress_hints(Error::from(error), |args| super::rerun(matches, args)),
-            )
-        };
-        // An interrupted Apply may have completed mutations. Do not replay it.
-        match crate::deploy::apply_requested(&mut ready, &requested, false, false, "default").await
-        {
-            Ok(_) => {}
-            // The Ingress Proxy is deployed; a Server it could not observe does not hold
-            // back publication, as a joiner's catch-up failure does not.
-            Err(error @ crate::deploy::ApplyError::Partial(_)) => {
-                partial = Some(incomplete(error));
-            }
-            Err(error) => return Err(incomplete(error)),
+        // An Ingress Proxy that failed only on other Servers, as a resumed founding finds,
+        // does not hold back publication, as a joiner's catch-up failure does not.
+        let elsewhere = error.only_elsewhere(&machine.id);
+        let error = ingress_incomplete(
+            command,
+            super::ingress_hints(error.into(), |args| super::rerun(matches, args)),
+        );
+        if !elsewhere {
+            return Err(error);
         }
+        partial = Some(error);
     }
     if let Some(error) = unnamed {
         match &partial {
@@ -1582,16 +1566,7 @@ mod tests {
         assert!(client.machines().await.unwrap().is_empty());
         let connection = format!("unix://{}", path.display());
         let root = crate::cli::command()
-            .try_get_matches_from([
-                "ployz",
-                "--connect",
-                &connection,
-                "server",
-                "add",
-                "--yes",
-                "--ingress-image",
-                "caddy:2.11.2",
-            ])
+            .try_get_matches_from(["ployz", "--connect", &connection, "server", "add", "--yes"])
             .unwrap();
         let matches = leaf_matches(&root);
         let token = CloudEnrollToken::parse("pmet_resumed_enroll").unwrap();

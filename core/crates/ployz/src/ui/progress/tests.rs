@@ -35,7 +35,7 @@ impl Inbox for Script {
 
 fn frame(state: State) -> Frame {
     Frame {
-        run: Run::Direct(Namespace::parse("shop").unwrap()),
+        run: Run::CatchUp(MachineId::parse("1".repeat(32)).unwrap()),
         title: "Deploying shop".into(),
         rows: vec![Row {
             subject: Subject::ServiceOnServer {
@@ -118,7 +118,7 @@ fn a_removed_service_counts_as_removed_in_the_summary() {
         )
     };
     let frame = |row| Frame {
-        run: Run::Direct(Namespace::parse("shop").unwrap()),
+        run: Run::CatchUp(MachineId::parse("1".repeat(32)).unwrap()),
         title: "Deploying shop".into(),
         rows: vec![row],
         notices: Vec::new(),
@@ -160,7 +160,7 @@ fn a_removal_that_has_begun_reads_as_removing_not_starting() {
                 }),
         );
         Frame {
-            run: Run::Direct(Namespace::parse("shop").unwrap()),
+            run: Run::CatchUp(MachineId::parse("1".repeat(32)).unwrap()),
             title: "Deploying shop".into(),
             rows: vec![row],
             notices: Vec::new(),
@@ -988,7 +988,7 @@ fn live_rows_each_keep_their_own_line_on_an_80_column_terminal() {
         || (80, 20),
     );
     let frame = Frame {
-        run: Run::Direct(Namespace::parse("shop").unwrap()),
+        run: Run::CatchUp(MachineId::parse("1".repeat(32)).unwrap()),
         title: "Deploying shop".into(),
         rows: vec![
             service("api", 0, 1, &ployz_store::RowState::Completed),
@@ -1044,7 +1044,7 @@ fn an_overflowing_view_drops_switched_rows_before_a_deeper_failure() {
     rows.push(service("api", 1, 1, &ployz_store::RowState::Pending));
     rows.push(service("web", 2, 1, &failed));
     let frame = Frame {
-        run: Run::Direct(Namespace::parse("shop").unwrap()),
+        run: Run::CatchUp(MachineId::parse("1".repeat(32)).unwrap()),
         title: "Deploying shop".into(),
         rows,
         notices: Vec::new(),
@@ -1088,7 +1088,7 @@ fn an_overflowing_view_puts_finished_ingress_repairs_after_a_failure() {
         .collect();
     rows.push(service("web", 2, 1, &failed));
     let frame = Frame {
-        run: Run::Direct(Namespace::parse("shop").unwrap()),
+        run: Run::CatchUp(MachineId::parse("1".repeat(32)).unwrap()),
         title: "Deploying shop".into(),
         rows,
         notices: Vec::new(),
@@ -1113,7 +1113,7 @@ fn a_retained_row_fits_the_terminal_with_its_count_whole() {
     let name = format!("a{}", "b".repeat(60));
     let terminal = InMemoryTerm::new(20, 80);
     let initial = Frame {
-        run: Run::Direct(Namespace::parse("shop").unwrap()),
+        run: Run::CatchUp(MachineId::parse("1".repeat(32)).unwrap()),
         title: "Deploying shop".into(),
         rows: vec![service(&name, 0, 10, &ployz_store::RowState::Completed)],
         notices: Vec::new(),
@@ -1221,7 +1221,7 @@ fn copies_left_running_take_the_check_mark_off_the_switched_row_and_count_in_the
         reason: reason.into(),
     };
     let frame = Frame {
-        run: Run::Direct(Namespace::parse("shop").unwrap()),
+        run: Run::CatchUp(MachineId::parse("1".repeat(32)).unwrap()),
         title: "Deploying shop".into(),
         rows: vec![service("web", 0, 3, &ployz_store::RowState::Completed)],
         notices: vec![left('a', "interrupted"), left('b', "interrupted")],

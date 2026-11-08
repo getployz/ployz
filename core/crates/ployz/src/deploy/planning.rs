@@ -523,16 +523,12 @@ fn admit(intent: &DeployIntent, snapshot: &DeploySnapshot, mut planned: Planned)
 }
 
 /// What brings back one ingress Server's Ingress Proxy.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq)]
 pub enum SlotAction {
-    /// No Ingress Proxy is observed there, so one is created. Admission trouble here
-    /// fails only this Server's repair.
-    Create(Result<Box<DeployPlan>, PlanError>),
+    /// No Ingress Proxy Docker can start is observed there, so its daemon creates one.
+    Create,
     /// The newest Ingress Proxy at rest there starts again as it is.
     Start(ContainerId),
-    /// Only dead Ingress Proxy containers are there, the newest given. Docker starts
-    /// none, so the Server's repair fails until they are removed.
-    Dead(ContainerId),
     /// Its Ingress Proxy keeps restarting, the newest given. Starting or recreating it
     /// would crash the same way, so the Server's repair fails with no work.
     Restarting(ContainerId),
@@ -548,13 +544,10 @@ pub struct SlotRepair {
 }
 
 /// Plan each ingress Server of `snapshot` on its own: start the newest Ingress Proxy at
-/// rest there, create one from `intent` where none is observed, and list the Servers
-/// that went unobserved.
+/// rest there, create one where none Docker can start is observed, and list the Servers
+/// that went unobserved. Each Server's daemon chooses what it creates.
 #[must_use]
-pub fn plan_ingress_repairs(intent: &DeployIntent, snapshot: &DeploySnapshot) -> Vec<SlotRepair> {
-    let service_id = snapshot
-        .system_ingress()
-        .map_or_else(ServiceId::random, |service| service.service_id);
+pub fn plan_ingress_repairs(snapshot: &DeploySnapshot) -> Vec<SlotRepair> {
     let unchecked = snapshot
         .unobserved_ingress()
         .into_iter()
@@ -569,13 +562,10 @@ pub fn plan_ingress_repairs(intent: &DeployIntent, snapshot: &DeploySnapshot) ->
             machine_id: empty.machine.machine.id,
             action: match empty.held {
                 HeldIngress::Stopped(stopped) => SlotAction::Start(stopped.container_id),
-                HeldIngress::Dead(dead) => SlotAction::Dead(dead.container_id),
                 HeldIngress::Restarting(restarting) => {
                     SlotAction::Restarting(restarting.container_id)
                 }
-                HeldIngress::None => SlotAction::Create(
-                    plan_create(intent, &snapshot.only(empty.machine), service_id).map(Box::new),
-                ),
+                HeldIngress::Dead(_) | HeldIngress::None => SlotAction::Create,
             },
         });
     let mut all: Vec<_> = repairs.chain(unchecked).collect();
@@ -609,23 +599,6 @@ pub fn without_departed(
                 })
         })
         .collect()
-}
-
-/// Plan the Ingress Proxy on the one Machine of `only` as the Service `service_id`, which
-/// its siblings run or are created as in the same check and `only` cannot see: they share
-/// its creation key.
-fn plan_create(
-    intent: &DeployIntent,
-    only: &DeploySnapshot,
-    service_id: ServiceId,
-) -> Result<DeployPlan, PlanError> {
-    let mut planned = plan_operations(intent, only)?;
-    for operation in &mut planned.operations {
-        if let DeployOperation::RunContainer { spec, .. } = operation {
-            spec.service_id = service_id;
-        }
-    }
-    Ok(admit(intent, only, planned))
 }
 
 /// The Servers each deployed Service has a copy on once every operation completes.

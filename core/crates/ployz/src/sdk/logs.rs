@@ -384,25 +384,6 @@ const TAIL_FETCH: u16 = 200;
 /// The lines a failed row keeps.
 const TAIL_KEEP: u16 = 10;
 
-/// The last lines of failed Container `container` on `machine`, scrubbed of
-/// `sealed`, and the last run they show. Unread, they are unanswered.
-pub(crate) async fn failed_tail(
-    client: &Client,
-    machine: MachineId,
-    container: ContainerId,
-    sealed: &SealedValues,
-) -> (LogText, LastRun) {
-    match tail_frames(client, machine, container).await {
-        Some(tail) => tail.scrubbed(sealed),
-        None => (
-            LogText::Withheld {
-                why: Withheld::Unanswered,
-            },
-            LastRun::default(),
-        ),
-    }
-}
-
 /// A failed Container's raw last lines, oldest first, and its newest stored exit.
 pub(crate) struct Tail {
     frames: Vec<String>,
