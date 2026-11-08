@@ -259,7 +259,7 @@ fn check_shape(token: &str) -> Result<(), Error> {
         Ok(())
     } else {
         Err(Error::usage(
-            "That isn't a Cloudflare tunnel token. Tokens start with eyJ.",
+            "Paste the whole token from the tunnel's install command. Tokens start with eyJ.",
         ))
     }
 }
@@ -355,7 +355,7 @@ mod tests {
             let error = read_token(candidate.as_bytes()).unwrap_err().report();
             assert_eq!(error.code, RpcErrorCode::InvalidArgument, "{why}");
             assert!(
-                error.message.contains("isn't a Cloudflare tunnel token"),
+                error.message.contains("Tokens start with eyJ"),
                 "{why}: {}",
                 error.message
             );

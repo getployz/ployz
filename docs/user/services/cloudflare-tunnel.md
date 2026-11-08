@@ -34,7 +34,7 @@ web-2    tunnel
 
 Run `ployz ingress use tunnel` without the switch to type the token at a prompt. Ployz keeps the
 token sealed for your servers; nobody reads it back, and a server that joins later gets it on
-its own. A token that isn't a Cloudflare tunnel token is refused before any server changes.
+its own.
 
 A domain behind the tunnel gets its certificate from Cloudflare, so Ployz stops ordering
 certificates while every server uses the tunnel. Its status says **via tunnel**. Set

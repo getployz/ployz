@@ -2860,7 +2860,9 @@ fn ingress_use_needs_a_known_door_and_a_token_on_stdin_when_asked() {
     let stderr = String::from_utf8(output.stderr).unwrap();
     assert_eq!(output.status.code(), Some(2), "{stderr}");
     assert!(
-        stderr.contains("That isn't a Cloudflare tunnel token. Tokens start with eyJ."),
+        stderr.contains(
+            "Paste the whole token from the tunnel's install command. Tokens start with eyJ."
+        ),
         "{stderr}"
     );
 
