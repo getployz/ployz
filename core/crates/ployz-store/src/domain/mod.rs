@@ -66,6 +66,33 @@ pub struct DomainEvidence {
     #[serde(default)]
     #[ts(as = "Option<Vec<PublishedHostname>>", optional)]
     pub published: Vec<PublishedHostname>,
+    /// Set while the Cluster is served through a Cloudflare Tunnel: a custom hostname
+    /// then reaches the Servers through the tunnel, not their public addresses.
+    #[serde(default)]
+    #[ts(optional)]
+    pub tunnel: Option<TunnelEvidence>,
+}
+
+/// What Cloud observed of a custom hostname's way to the Cluster's Cloudflare Tunnel.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
+#[serde(deny_unknown_fields)]
+pub struct TunnelEvidence {
+    /// What a hostname outside the Cluster Domain's zone points its CNAME at to reach the
+    /// tunnel: `<tunnel id>.cfargotunnel.com`.
+    pub target: Hostname,
+    /// The hostnames Cloud fetched through DNS and Cloudflare just now, and whether a
+    /// Server of this Cluster answered. A hostname missing here was not looked at.
+    #[serde(default)]
+    #[ts(as = "Option<Vec<TunnelReach>>", optional)]
+    pub reached: Vec<TunnelReach>,
+}
+
+/// Whether a fetch through one hostname reached a Server of the Cluster.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
+#[serde(deny_unknown_fields)]
+pub struct TunnelReach {
+    pub hostname: Hostname,
+    pub reached: bool,
 }
 
 /// A hostname a Service on the Servers publishes.

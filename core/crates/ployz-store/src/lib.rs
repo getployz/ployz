@@ -81,7 +81,7 @@ pub use domain::{
     AddDomain, ClusterDomain, ClusterDomainStatus, DnsLookup, DnsRecord, DnsRecordKind, Domain,
     DomainAction, DomainAdded, DomainChange, DomainEdit, DomainEvidence, DomainName, DomainQuery,
     DomainRow, DomainStaged, DomainStatus, DomainView, DomainsQuery, DomainsView,
-    PublishedHostname, RemoveDomain, SetGeneratedDomain,
+    PublishedHostname, RemoveDomain, SetGeneratedDomain, TunnelEvidence, TunnelReach,
 };
 pub use git::{AuthorizedRepository, CreateGitService};
 pub use github::{
