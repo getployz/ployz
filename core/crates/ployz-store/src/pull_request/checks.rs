@@ -11,7 +11,8 @@ pub(crate) fn view(
     who: &Actor,
     query: &PullRequestQuery,
 ) -> Result<PullRequestView, RpcError> {
-    let pull_request = facts(tx, who, query.repository_id, query.number)?;
+    let record = record(tx, who, query.repository_id, query.number)?;
+    let pull_request = record.as_ref().map(Record::facts);
     let mut environments = Vec::new();
     for (id, _) in current(tx, who, query.repository_id, query.number, false)? {
         let environment = scope::load_by_id(tx, &id)?;
@@ -29,11 +30,14 @@ pub(crate) fn view(
             not_set: crate::branch::not_set(&environment.working)?,
         });
     }
-    let reference = PullRequestRef {
-        repository_id: query.repository_id,
-        number: query.number,
+    let unlanded = match record.map(|record| record.phase) {
+        Some(Phase::Merged {
+            landed: Some(landed),
+            ..
+        }) => landed,
+        Some(Phase::Open { .. } | Phase::Closed { .. } | Phase::Merged { landed: None, .. })
+        | None => Vec::new(),
     };
-    let unlanded = on_merge::unlanded(tx, who, &reference)?.unwrap_or_default();
     let check = pull_request
         .as_ref()
         .and_then(|pull_request| check(pull_request, &environments, &unlanded));

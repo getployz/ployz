@@ -215,11 +215,12 @@ pub(crate) fn sources(tx: &mut dyn Tx, id: &DeploymentId) -> Result<Vec<GitSourc
 
 /// Pin the commits of `commits` (by runtime Service name) that aren't pinned yet. A
 /// pinned commit never changes, and one its PR Environment's pull request doesn't
-/// admit never pins.
+/// admit by `trusted`'s members never pins.
 pub(crate) fn pin(
     tx: &mut dyn Tx,
     id: &DeploymentId,
     commits: &BTreeMap<ServiceName, CommitSha>,
+    trusted: &crate::Trusted,
 ) -> Result<(), RpcError> {
     let stored = deployment::locked(tx, id)?;
     if !stored.summary.status.in_flight() {
@@ -237,7 +238,7 @@ pub(crate) fn pin(
             ));
         };
         let environment = &stored.summary.environment_id;
-        if !crate::pull_request::admits(tx, environment, source.repository_id, commit)? {
+        if !crate::pull_request::admits(tx, environment, (source.repository_id, commit), trusted)? {
             return Err(error::invalid(
                 format!("{commit} needs approval before it deploys"),
                 json!({ "service": service, "commit": commit }),

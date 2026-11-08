@@ -2035,6 +2035,7 @@ async fn cloud_runner_builds_nothing_on_servers_the_build_order_leaves_out() {
                     ployz_store::CommitSha::parse("a".repeat(40)).unwrap(),
                 )]
                 .into(),
+                &ployz_store::Trusted::default(),
             )
             .unwrap();
         let build = GithubBuildId {

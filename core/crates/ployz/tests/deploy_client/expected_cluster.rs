@@ -172,7 +172,11 @@ fn pinned() -> (Arc<ConfigStore>, Actor, GithubBuildId) {
         .unwrap();
     let commit = CommitSha::parse("a".repeat(40)).unwrap();
     store
-        .pin(&deployment, &BTreeMap::from([(web, commit)]))
+        .pin(
+            &deployment,
+            &BTreeMap::from([(web, commit)]),
+            &Trusted::default(),
+        )
         .unwrap();
     let id = GithubBuildId::parse(&format!("{deployment}.web")).unwrap();
     (store, who, id)

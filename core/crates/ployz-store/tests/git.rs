@@ -487,15 +487,15 @@ fn a_git_build_pins_its_commit_once_and_records_progress_log_and_receipt() {
     let a = backend::sha(&"a".repeat(40));
     let b = backend::sha(&"b".repeat(40));
     assert_eq!(
-        store.pin(&first, &pins(&a)).unwrap()[0].commit,
+        store.pin(&first, &pins(&a), &backend::members()).unwrap()[0].commit,
         Some(a.clone())
     );
     assert_eq!(
-        store.pin(&first, &pins(&b)).unwrap()[0].commit,
+        store.pin(&first, &pins(&b), &backend::members()).unwrap()[0].commit,
         Some(a.clone())
     );
     let other = BTreeMap::from([(ServiceName::parse("api").unwrap(), a.clone())]);
-    let error = store.pin(&first, &other).unwrap_err();
+    let error = store.pin(&first, &other, &backend::members()).unwrap_err();
     assert_eq!(error.code, RpcErrorCode::InvalidArgument);
 
     // Its runner gets the pin, and reports the build as it goes.
@@ -579,7 +579,10 @@ fn a_git_build_pins_its_commit_once_and_records_progress_log_and_receipt() {
         )
         .unwrap();
     assert_eq!(
-        store.pin(&first, &pins(&b)).unwrap_err().code,
+        store
+            .pin(&first, &pins(&b), &backend::members())
+            .unwrap_err()
+            .code,
         RpcErrorCode::Conflict
     );
 
@@ -603,7 +606,7 @@ fn a_git_build_pins_its_commit_once_and_records_progress_log_and_receipt() {
     // A new Deployment pins afresh and gets the receipt as a hint.
     let retry = admit(&store, &who, 2, &[]);
     assert_eq!(store.sources(&retry).unwrap()[0].commit, None);
-    store.pin(&retry, &pins(&b)).unwrap();
+    store.pin(&retry, &pins(&b), &backend::members()).unwrap();
     let claimed = store.claim(&retry, &runner).unwrap();
     assert_eq!(
         claimed.receipts[&ServiceName::parse("web").unwrap()],
@@ -653,10 +656,10 @@ fn redeploying_an_older_applied_deployment_builds_the_commit_it_pinned() {
     let a = backend::sha(&"a".repeat(40));
     let b = backend::sha(&"b".repeat(40));
     let first = admit(&store, &who, 1, &[]);
-    store.pin(&first, &pins(&a)).unwrap();
+    store.pin(&first, &pins(&a), &backend::members()).unwrap();
     applied(&store, &first, &runner);
     let second = admit(&store, &who, 2, &[]);
-    store.pin(&second, &pins(&b)).unwrap();
+    store.pin(&second, &pins(&b), &backend::members()).unwrap();
     applied(&store, &second, &runner);
 
     // The branch is at b now; redeploying #1 builds a, which #1 pinned.
@@ -834,7 +837,11 @@ fn dispatched(store: &ConfigStore, who: &Actor) -> GithubBuildId {
         .unwrap();
     let deployment = admit(store, who, 1, &[]);
     store
-        .pin(&deployment, &pins(&backend::sha(&"a".repeat(40))))
+        .pin(
+            &deployment,
+            &pins(&backend::sha(&"a".repeat(40))),
+            &backend::members(),
+        )
         .unwrap();
     let id = GithubBuildId::parse(&format!("{deployment}.web")).unwrap();
     store.github_dispatched(&id, &github_run(RUN)).unwrap();
@@ -1434,7 +1441,11 @@ fn a_build_names_the_server_that_built_it_and_why_github_passed_it_on() {
         .unwrap();
     let deployment = admit(&store, &who, 1, &[]);
     store
-        .pin(&deployment, &pins(&backend::sha(&"a".repeat(40))))
+        .pin(
+            &deployment,
+            &pins(&backend::sha(&"a".repeat(40))),
+            &backend::members(),
+        )
         .unwrap();
     let id = GithubBuildId::parse(&format!("{deployment}.web")).unwrap();
     let why = "acme/web has no .github/workflows/ployz-build.yml on its default branch";
@@ -2084,7 +2095,11 @@ fn github_gets_only_its_own_sealed_values() {
     let id = {
         let deployment = admit(&store, &who, 1, &[]);
         store
-            .pin(&deployment, &pins(&backend::sha(&"a".repeat(40))))
+            .pin(
+                &deployment,
+                &pins(&backend::sha(&"a".repeat(40))),
+                &backend::members(),
+            )
             .unwrap();
         GithubBuildId::parse(&format!("{deployment}.web")).unwrap()
     };
@@ -2131,7 +2146,11 @@ fn github_gets_only_its_own_sealed_values() {
         .unwrap();
     let deployment = admit(&store, &who, 2, &[]);
     let sources = store
-        .pin(&deployment, &pins(&backend::sha(&"b".repeat(40))))
+        .pin(
+            &deployment,
+            &pins(&backend::sha(&"b".repeat(40))),
+            &backend::members(),
+        )
         .unwrap();
     assert_eq!(sources[0].builders, [Builder::Github, Builder::Servers]);
     let id = GithubBuildId::parse(&format!("{deployment}.web")).unwrap();
@@ -2166,7 +2185,11 @@ fn a_build_s_input_and_routing_need_no_key_to_open_a_secret() {
     let source = &store.sources(&deployment).unwrap()[0];
     assert_eq!(source.builders, [Builder::Github, Builder::Servers]);
     let pinned = store
-        .pin(&deployment, &pins(&backend::sha(&"a".repeat(40))))
+        .pin(
+            &deployment,
+            &pins(&backend::sha(&"a".repeat(40))),
+            &backend::members(),
+        )
         .unwrap();
     assert_eq!(pinned[0].commit, Some(backend::sha(&"a".repeat(40))));
     let id = GithubBuildId::parse(&format!("{deployment}.web")).unwrap();
@@ -2196,7 +2219,11 @@ fn own_git_shop() -> (ConfigStore, Actor, String, tempfile::TempDir) {
 fn building(store: &ConfigStore, who: &Actor) -> (DeploymentId, RunnerId) {
     let first = admit(store, who, 1, &[]);
     store
-        .pin(&first, &pins(&backend::sha(&"a".repeat(40))))
+        .pin(
+            &first,
+            &pins(&backend::sha(&"a".repeat(40))),
+            &backend::members(),
+        )
         .unwrap();
     let runner = RunnerId::parse("cloud-1").unwrap();
     store.claim(&first, &runner).unwrap();
@@ -2390,7 +2417,11 @@ fn a_build_its_deployment_ended_under_does_not_read_building() {
     case("C3 never started", &|store, who, _| {
         let first = admit(store, who, 1, &[]);
         store
-            .pin(&first, &pins(&backend::sha(&"a".repeat(40))))
+            .pin(
+                &first,
+                &pins(&backend::sha(&"a".repeat(40))),
+                &backend::members(),
+            )
             .unwrap();
         let runner = RunnerId::parse("cloud-1").unwrap();
         store.claim(&first, &runner).unwrap();

@@ -487,7 +487,7 @@ async fn cloud_s_runner_builds_git_services_and_a_retry_rebuilds_only_what_faile
                     )
                 })
                 .collect();
-            store.pin(&id, &pins).unwrap();
+            store.pin(&id, &pins, &Trusted::default()).unwrap();
             ployz::sdk::run_deployment(
                 ployz_core::Operator::Cloud,
                 Arc::clone(&store),

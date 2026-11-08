@@ -284,6 +284,16 @@ const MIGRATIONS: &[(&str, Step)] = &[
         "0038_record_late_saved_seals",
         Step::Rust(|tx, _| crate::review::sealed::SealLedger::record_saved(tx).map(|()| None)),
     ),
+    (
+        // Each pull request's phase, from the facts, merge, landing and standing a
+        // Store before it read the phase from (`pull_request::record_phases`). One
+        // statement per pull request.
+        "0040_pull_request_phase",
+        Step::Rust(|tx, _| {
+            tx.batch(include_str!("migrations/0040_pull_request_phase.sql"))?;
+            crate::pull_request::record_phases(tx).map(|()| None)
+        }),
+    ),
 ];
 
 enum Step {
