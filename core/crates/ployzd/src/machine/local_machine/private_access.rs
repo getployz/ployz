@@ -22,11 +22,15 @@ use crate::docker::{ContainerRuntime, same_creation};
 use crate::images::private_access_router;
 
 /// How long a placed router has to join the tailnet before the route stops watching
-/// it. A router that dies or is refused in this time is reported.
+/// it. Tailscale takes about 30 seconds to refuse a key, so a router that dies or is
+/// refused in this time is reported, and a joined router ends the wait at once.
 #[cfg(not(test))]
-const ROUTER_SETTLE: Duration = Duration::from_secs(12);
+const ROUTER_SETTLE: Duration = Duration::from_secs(45);
 #[cfg(test)]
 const ROUTER_SETTLE: Duration = Duration::from_millis(300);
+#[cfg(not(test))]
+const ROUTER_POLL: Duration = Duration::from_secs(1);
+#[cfg(test)]
 const ROUTER_POLL: Duration = Duration::from_millis(200);
 /// What containerboot prints once the node is up.
 const ROUTER_UP: &str = "Startup complete";
@@ -130,7 +134,7 @@ fn retirees(routers: &[ContainerObservation], kept: Option<ContainerId>) -> Vec<
 /// said. Tailscale words a refused key as `invalid key`.
 fn classify(output: &str) -> Option<PrivateAccessProblem> {
     let lowered = output.to_ascii_lowercase();
-    ["invalid key", "key expired", "key revoked", "auth key"]
+    ["invalid key", "key expired", "key revoked"]
         .iter()
         .any(|refusal| lowered.contains(refusal))
         .then_some(PrivateAccessProblem::KeyRefused)
@@ -366,6 +370,10 @@ mod tests {
             Some(PrivateAccessProblem::KeyRefused)
         );
         assert_eq!(classify("tailscaled: shutting down"), None);
+        assert_eq!(
+            classify("boot: Running 'tailscale up' --auth-key=file:/run/ployz-auth/auth-key"),
+            None
+        );
         assert_eq!(classify(""), None);
     }
 
