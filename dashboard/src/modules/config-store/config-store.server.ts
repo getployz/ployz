@@ -232,8 +232,11 @@ export const deployDialOf = Effect.fn("ConfigStore.deployDialOf")(function* (org
     : { connections: [], expect: null };
 });
 
-/** The GitHub user ids of the Organization's members who signed in with GitHub: whose pull requests deploy on their own. */
-const githubMembers = Effect.fn("ConfigStore.githubMembers")(function* (organizationId: string) {
+/**
+ * The GitHub user ids of the Organization's members who signed in with GitHub: whose pull requests deploy on their own.
+ * The Store re-checks a trusted pull request's author against them each time it would deploy its head.
+ */
+export const githubMembers = Effect.fn("ConfigStore.githubMembers")(function* (organizationId: string) {
   const { drizzle } = yield* Database;
   const rows = yield* drizzle.select({ accountId: account.accountId }).from(member)
     .innerJoin(account, and(eq(account.userId, member.userId), eq(account.providerId, "github")))
@@ -241,14 +244,18 @@ const githubMembers = Effect.fn("ConfigStore.githubMembers")(function* (organiza
   return rows.map((row) => Number(row.accountId)).filter((id) => Number.isSafeInteger(id) && id > 0);
 });
 
-/** Which events can admit a Deployment, and so need to know which Servers hold the data a Save accepted losing. */
+/**
+ * Which events can admit a Deployment, and so need to know which Servers hold the data a Save accepted losing, and
+ * who the members are: a trusted pull request's head deploys only while its author is one.
+ */
 const deploys = {
   branch_head: true, check_suite: true, pull_request: true, sweep: false, cluster_forgotten: false, volume_resized: false,
 } satisfies Record<SystemEvent["event"], boolean>;
 
 /**
  * Something Cloud observed, told to the Organization's Store with how many Servers could run what it admits, the
- * hostnames other Namespaces publish, and, for an event that can deploy, which Servers hold the data a Save accepted losing.
+ * hostnames other Namespaces publish, and, for an event that can deploy, which Servers hold the data a Save accepted
+ * losing and who the members are.
  */
 export const storeSystem = Effect.fn("ConfigStore.system")(function* (organizationId: string, event: SystemEvent) {
   const store = yield* cloudStore;
@@ -259,7 +266,7 @@ export const storeSystem = Effect.fn("ConfigStore.system")(function* (organizati
     : undefined;
   const trusted: Pick<ConfigTrusted, "servers" | "domains" | "volumes" | "members"> = { servers, domains };
   if (volumes !== undefined) trusted.volumes = volumes;
-  if (event.event === "pull_request") trusted.members = yield* githubMembers(organizationId);
+  if (deploys[event.event]) trusted.members = yield* githubMembers(organizationId);
   return yield* storeTry(() => store.system(organizationId, event, trusted));
 });
 
@@ -289,6 +296,9 @@ export const gatherTrusted = Effect.fn("ConfigStore.gatherTrusted")(function* (
   const admits = call.operation === "write" && (call.command.command === "admit" || call.command.command === "start"
     || call.command.command === "remove" || call.command.command === "approve_pull_request");
   const servers = admits ? yield* countOrganizationMachines(organizationId) : undefined;
+  // An approval may deploy a trusted pull request's head, which needs its author still a member.
+  const approves = call.operation === "write" && call.command.command === "approve_pull_request";
+  const members = approves ? yield* githubMembers(organizationId) : undefined;
   const sealing = call.operation === "write" ? yield* readClusterSealing(organizationId) : undefined;
   const trusted: ConfigTrusted = { ...git, domains };
   if (sealing?.state === "ready") trusted.sealing = { publicKey: sealing.publicKey };
@@ -296,6 +306,7 @@ export const gatherTrusted = Effect.fn("ConfigStore.gatherTrusted")(function* (
   if (unanswered !== undefined) trusted.unanswered = unanswered;
   if (running !== undefined) trusted.running = running;
   if (servers !== undefined) trusted.servers = servers;
+  if (members !== undefined) trusted.members = members;
   return trusted;
 });
 

@@ -5,7 +5,7 @@ import type { InngestClient } from "#/modules/inngest/client";
 import type { Polar } from "#/modules/billing/polar-provider.server";
 import type { OrganizationRuntime } from "#/modules/runtime/organization-runtime.server";
 import { cloudStore, refusedWith, type CloudStore, storeTry } from "#/modules/config-store/store-sdk.server";
-import { callStore, cancelStoreGithubBuilds, deployDialOf, readStore, requestChecks } from "#/modules/config-store/config-store.server";
+import { callStore, cancelStoreGithubBuilds, deployDialOf, githubMembers, readStore, requestChecks } from "#/modules/config-store/config-store.server";
 import { deploymentRun } from "#/modules/config-store/tables";
 import { discardFailedRestore, type FailedRestore, releasePlacementClaims } from "#/modules/volume-placement/volume-placement.deploy.server";
 import { extractUpload, releaseUploads, uploadOwner } from "#/modules/config-store/upload.server";
@@ -41,7 +41,8 @@ const identity = (organizationId: string, source: GitSource) => ({
 
 /**
  * Pin each Git Service of the Deployment to its branch's head, unless it is pinned already (a pin never moves, so a
- * retried run reads the same commit). Resolves to every source with its pin.
+ * retried run reads the same commit). Resolves to every source with its pin. A trusted pull request's head pins only
+ * while its author is still among the members sent with it.
  */
 export const pinStoreSources = Effect.fn("StoreDeployment.pinSources")(function* (
   store: ConfigStore, organizationId: string, deploymentId: string,
@@ -56,8 +57,9 @@ export const pinStoreSources = Effect.fn("StoreDeployment.pinSources")(function*
     heads[source.service] = yield* fromGithub(resolveGithubSourceSha({ ...identity(organizationId, source), branch: source.branch }));
   }
   if (Object.keys(heads).length === 0) return sources;
+  const members = yield* githubMembers(organizationId);
   // A head it can never build, such as one its pull request hasn't approved, is why it failed.
-  return yield* storeTry(() => store.pinSources(deploymentId, heads)).pipe(
+  return yield* storeTry(() => store.pinSources(deploymentId, heads, { members })).pipe(
     Effect.catchIf(refusedWith("invalid_argument"), (refused) => new SourceUnreadable({ message: refused.message })),
   );
 });

@@ -1,13 +1,18 @@
 import { it } from "@effect/vitest";
 import { InngestTestEngine } from "@inngest/test";
 import type { ConfigCommand, JsonValue, ConfigTrusted } from "@ployz/sdk";
+import { eq } from "drizzle-orm";
 import { Effect } from "effect";
 import { Inngest } from "inngest";
 import { expect } from "vitest";
 import { storeSystem } from "#/modules/config-store/config-store.server";
 import { cloudStore } from "#/modules/config-store/store-sdk.server";
+import { pinStoreSources } from "#/modules/config-store/store-deployment.server";
 import { createStoreGithubCheckSuite, createStoreGithubPush } from "#/modules/config-store/store-github.inngest";
+import { githubRepositoryCache } from "#/modules/github/tables";
+import { account } from "#/modules/identity/tables";
 import { githubCheckSuiteReceivedEvent, githubPushReceivedEvent } from "#/modules/inngest/events";
+import { Database } from "#/server/database.server";
 import { makeInngestEffectRunner } from "#/server/run.server";
 import { fakeGithubApiBy } from "#/test/fake-github";
 import { enrollStoreServer, seedStoreOrganization, seedStoreGitService, storeTestCloud } from "#/test/store-cloud";
@@ -162,6 +167,82 @@ it.live(
       expect(landed.admitted).toHaveLength(1);
       expect(yield* Effect.promise(() => store.read(ORGANIZATION, { query: "deployment", id: landed.admitted[0] ?? "" })))
         .toMatchObject({ builds: [{ commit: PAST }] });
+    }),
+  60_000,
+);
+
+it.live(
+  "a push to a member's pull request deploys, and its builds pin, only while its author is a member",
+  () =>
+    Effect.gen(function* () {
+      const state = { head: H2 };
+      const services = yield* storeTestCloud({ github: fakeGithubApiBy(({ path }): JsonValue =>
+        path.includes("/git/ref/")
+          ? { ref: "refs/heads/search", object: { type: "commit", sha: state.head } }
+          : path.includes("/compare/")
+            ? { status: "ahead", files: [{ filename: "src/app.ts" }] }
+            : { id: 42, full_name: "acme/web", private: true }).service });
+      yield* Effect.all([seedStoreOrganization(ORGANIZATION), enrollStoreServer(ORGANIZATION)]).pipe(Effect.provide(services));
+      const store = yield* cloudStore.pipe(Effect.provide(services));
+      const write = (command: ConfigCommand) => Effect.promise(() => store.write(ORGANIZATION, command));
+      yield* seedStoreGitService(ORGANIZATION, { project: PROJECT, environment: ENVIRONMENT, service: SERVICE }).pipe(Effect.provide(services));
+      yield* write({ command: "publish", environment: here, version: null, accept_volume_loss: [] });
+      yield* write({
+        command: "set_pr_plan", project: null, repository: "acme/web", enabled: true, start_from: "production",
+        copy: null, setup: null, remove_on_close: null, include_bots: null,
+      });
+      // ada, the member seeded with GitHub account 7, opens pull request 5 from acme/web itself.
+      const opened = yield* storeSystem(ORGANIZATION, {
+        event: "pull_request", repository_id: 42, number: 5, title: "Add search", author: "ada", author_id: 7, bot: false,
+        head_repository_id: 42, head_branch: "search", head: H2, target_branch: "main", commits: 1, open: true, merge_commit: null,
+        target_head: null, updated: "2026-09-29T10:00:00Z",
+      }).pipe(Effect.provide(services));
+      expect(opened.admitted).toHaveLength(1);
+      const unlinkAda = Effect.gen(function* () {
+        const { drizzle } = yield* Database;
+        yield* drizzle.delete(account).where(eq(account.accountId, "7"));
+      }).pipe(Effect.provide(services));
+      yield* Effect.gen(function* () {
+        const { drizzle } = yield* Database;
+        yield* drizzle.insert(githubRepositoryCache).values({
+          installationId: 7, repositoryId: 42, name: "web", fullName: "acme/web", defaultBranch: "main",
+          private: true, htmlUrl: "https://github.com/acme/web", repoUpdatedAt: new Date(),
+        });
+      }).pipe(Effect.provide(services));
+
+      const runner: Parameters<typeof createStoreGithubPush>[1] = makeInngestEffectRunner((program) => Effect.runPromise(program.pipe(
+        Effect.provide(services))));
+      const inngest = new Inngest({ id: "store-github-member-test" });
+      const run = (before: string, after: string) => Effect.promise(async () =>
+        (await new InngestTestEngine({
+          function: createStoreGithubPush(inngest, runner),
+          events: [{
+            name: githubPushReceivedEvent,
+            data: {
+              kind: "push", installationId: 7, repositoryId: 42, ref: "refs/heads/search", branch: "search", beforeSha: before,
+              afterSha: after, created: false, deleted: false, forced: false, deliveryId: `push-search-${after}`,
+              branchKey: "7:42:refs/heads/search",
+            },
+          }],
+          steps: [{ id: "dispatch", handler: () => undefined }],
+        }).execute()).result as { admitted: string[] });
+
+      state.head = H1;
+      expect((yield* run(H2, H1)).admitted).toHaveLength(1);
+      // A Deploy of pr-5 someone asks for pins its branch's head as ada's.
+      const deploy = (id: string) => Effect.gen(function* () {
+        yield* write({ command: "admit", admit: "deploy", id, environment: { project: null, environment: "pr-5" }, services: [], version: null, accept_volume_loss: [] });
+        return yield* pinStoreSources(store, ORGANIZATION, id).pipe(Effect.provide(services), Effect.result);
+      });
+      const pinned = yield* deploy("00000000-0000-4000-8000-00000000b201");
+      expect(pinned).toMatchObject({ _tag: "Success", success: [{ commit: H1 }] });
+
+      // ada unlinks GitHub: Cloud no longer counts account 7 a member.
+      yield* unlinkAda;
+      state.head = MERGE;
+      expect((yield* run(H1, MERGE)).admitted).toEqual([]);
+      const refused = yield* deploy("00000000-0000-4000-8000-00000000b202");
+      expect(refused).toMatchObject({ _tag: "Failure", failure: { _tag: "SourceUnreadable" } });
     }),
   60_000,
 );
