@@ -812,3 +812,75 @@ fn volume(machine_id: MachineId, name: &str) -> DataLoss {
         },
     }
 }
+
+/// Each way a removal departs reads as its own tag. The daemon's own `reset_warning` comes
+/// only after its reset committed (its row removal failed), so it reads as a reset.
+#[tokio::test]
+async fn a_removal_says_how_its_machine_departed() {
+    async fn departed(service: DiscoveryService, target: &MachineId) -> Value {
+        let (mut client, server, _) = connected_client(service).await;
+        let confirmed = confirmation([volume(*target, "data"), volume(*target, "logs")]);
+        let target = ployz_core::MachineTarget::from(target);
+        let removed = client
+            .remove_machine(&target, &confirmed, Remover::Cloud)
+            .await
+            .unwrap();
+        server.abort();
+        serde_json::to_value(&removed)
+            .unwrap()
+            .get("departed")
+            .cloned()
+            .unwrap_or_default()
+    }
+    let (_description, worker, _empty, service) = removal_cluster();
+    let target = worker.machine.id;
+
+    assert_eq!(
+        departed(service.clone(), &target).await,
+        json!({ "kind": "reset", "row_warning": null })
+    );
+
+    let (_description, _worker, _empty, rowless) = removal_cluster();
+    *rowless.reset_warning.lock().unwrap() = Some("replicated delete failed".into());
+    assert_eq!(
+        departed(rowless, &target).await,
+        json!({ "kind": "reset", "row_warning": "replicated delete failed" })
+    );
+
+    let (_description, _worker, _empty, mut unreachable) = removal_cluster();
+    unreachable.leave_unavailable = true;
+    let unreachable = departed(unreachable, &target).await;
+    assert_eq!(
+        unreachable.get("kind"),
+        Some(&json!("unreachable")),
+        "{unreachable}"
+    );
+    assert!(
+        unreachable
+            .get("cause")
+            .and_then(Value::as_str)
+            .is_some_and(|cause| !cause.is_empty()),
+        "{unreachable}"
+    );
+
+    let (_description, _worker, _empty, mut unroutable) = removal_cluster();
+    unroutable.leave_error = Some(RpcError {
+        code: RpcErrorCode::NotFound,
+        message: "unknown Machine".into(),
+        details: Value::Null,
+        cause: Vec::new(),
+    });
+    assert_eq!(
+        departed(unroutable, &target).await,
+        json!({ "kind": "already_forgotten" })
+    );
+
+    let (_description, _worker, _empty, mut forgotten) = removal_cluster();
+    forgotten
+        .machines
+        .retain(|observed| observed.machine.id != target);
+    assert_eq!(
+        departed(forgotten, &target).await,
+        json!({ "kind": "already_forgotten" })
+    );
+}

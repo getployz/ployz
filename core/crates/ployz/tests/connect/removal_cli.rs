@@ -615,6 +615,68 @@ async fn a_server_already_gone_from_the_cluster_says_cloud_let_go_and_its_reset_
     assert_eq!(result.get("cloud_kept"), Some(&json!(false)), "{result}");
 }
 
+/// The daemon's own reset warning comes only after its reset committed: its row removal
+/// failed. The removal is a reset, not a partial one.
+#[tokio::test]
+async fn a_reset_whose_own_row_removal_failed_reads_as_a_reset() {
+    let service = DiscoveryService::new(test_description());
+    *service.reset_warning.lock().unwrap() = Some("replicated delete failed".to_owned());
+    let output = remove_server(
+        &service,
+        Dial::Connect,
+        "one",
+        &[],
+        &["--confirm", "one", "--accept-volume-loss", "data"],
+    )
+    .await;
+    assert!(output.status.success(), "{output:?}");
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        !stderr.contains("not fully cleaned up or reset"),
+        "{stderr}"
+    );
+    let result: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(
+        result.get("departed"),
+        Some(&json!({ "kind": "reset", "row_warning": "replicated delete failed" })),
+        "{result}"
+    );
+    assert_eq!(
+        result.get("reset_warning"),
+        Some(&json!("replicated delete failed")),
+        "{result}"
+    );
+}
+
+/// Cloud's removal of a Server that reset, but whose own row removal failed, is no partial one.
+#[tokio::test]
+async fn a_cloud_removal_whose_reset_committed_reads_as_a_reset() {
+    let (cloud, _, _) = fake_cloud(
+        r#"{"state":"succeeded","reset_warning":"replicated delete failed","departed":{"kind":"reset","row_warning":"replicated delete failed"},"release":{"kind":"others_remain"}}"#,
+        false,
+    );
+    let mut service = DiscoveryService::new(test_description());
+    service.machines.push(machine('c', "two"));
+    let (output, _) = remove_cloud_server(
+        service,
+        "two",
+        &[("PLOYZ_TOKEN", "ployz_acme"), ("PLOYZ_CLOUD_URL", &cloud)],
+        &["--confirm", "two", "--accept-volume-loss", "data"],
+    )
+    .await;
+    assert!(output.status.success(), "{output:?}");
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("Removed Server two."), "{stderr}");
+    assert!(
+        !stderr.contains("Cloud let go of Server two, but"),
+        "{stderr}"
+    );
+    assert!(
+        !stderr.contains("not fully cleaned up or reset"),
+        "{stderr}"
+    );
+}
+
 #[tokio::test]
 async fn the_last_server_already_gone_from_the_cluster_says_cloud_keeps_its_hold() {
     let (cloud, _, _) = fake_cloud(

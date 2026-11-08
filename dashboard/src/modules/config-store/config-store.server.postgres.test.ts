@@ -1307,8 +1307,9 @@ it.live(
         assert.deepStrictEqual(sent, ["remove", "forget", "forget"]);
         if (removed.kind !== "removed") return assert.fail(`not removed: ${removed.kind}`);
         assert.strictEqual(removed.resetWarning, resetWarning);
+        // The Leave's reply proves the reset: Cloud lets go of the last Server's Cluster.
         const release = yield* releaseServerActivity({ ...removal, ...removed });
-        assert.strictEqual(release.kind, "kept");
+        assert.deepStrictEqual(release, { kind: "released" });
       }).pipe(Effect.provide(cloud));
     }),
   60_000,
@@ -1422,10 +1423,10 @@ it.live(
 );
 
 /**
- * A retried removal whose Server the Cluster already forgot: the SDK answers removed with this warning (ployz
- * `RESET_UNCONFIRMED`), and the Server keeps one device key. `others` Servers of the same pairing stay enrolled.
+ * A removal the SDK answers with `reply`, of a Server that keeps one device key. `others` Servers of the same pairing
+ * stay enrolled.
  */
-const removeForgottenServer = Effect.fn(function* (others: readonly MachineId[]) {
+const removeServerReplying = Effect.fn(function* (others: readonly MachineId[], reply: { readonly reset_warning: string | null }) {
   const alice = yield* signUp("alice");
   const caller = yield* resolveCaller(signedIn(alice));
   const organizationId = caller.organization.id;
@@ -1446,12 +1447,12 @@ const removeForgottenServer = Effect.fn(function* (others: readonly MachineId[])
   });
   const connected = asTestDouble<PloyzSession>()({
     watchFirstFrame: () => Effect.fail(new RuntimeConnectionFailure({ cause: "timed out" })),
-    removeMachine: () => Effect.succeed({ reset_warning: "its reset couldn't be confirmed: it was already gone from the Cluster" }),
+    removeMachine: () => Effect.succeed(reply),
   });
   const runtime = { cancel: () => Effect.void, open: () => Effect.succeed({ status: "connected" as const, connected }) };
   const removal = { organizationId, machineId, serverName: null, confirmDataLoss: [], noReset: false };
   const attempt = yield* requestMachineRemoveAttempt({ ...removal, requestedByUserId: caller.userId });
-  const inngestRunId = "run-forgotten";
+  const inngestRunId = "run-replying";
   yield* prepareMachineRemoveAttemptActivity({ attemptId: attempt.id, inngestRunId, now: new Date() });
   const removed = yield* Effect.scoped(removeMachineActivity({ ...removal, id: attempt.id, inngestRunId }))
     .pipe(Effect.provideService(OrganizationRuntime, runtime));
@@ -1469,6 +1470,47 @@ const removeForgottenServer = Effect.fn(function* (others: readonly MachineId[])
     pairings: (yield* drizzle.select().from(organizationPairing)).length,
   };
 });
+
+/** A retried removal whose Server the Cluster already forgot: the SDK answers removed with ployz `RESET_UNCONFIRMED`. */
+const removeForgottenServer = (others: readonly MachineId[]) =>
+  removeServerReplying(others, { reset_warning: "its reset couldn't be confirmed: it was already gone from the Cluster" });
+
+/** The Server reset, and then its own row removal failed: the daemon's only reset warning. */
+const resetCommitted = {
+  reset_warning: "replicated delete failed",
+  departed: { kind: "reset", row_warning: "replicated delete failed" },
+} as const;
+
+it.live(
+  "a Server whose reset committed, though its own row removal failed, loses Cloud's row while other Servers keep the Cluster",
+  () =>
+    Effect.gen(function* () {
+      const cloud = yield* cloudServices();
+      const other = ids.machineId("1");
+      const after = yield* removeServerReplying([other], resetCommitted).pipe(Effect.provide(cloud));
+      assert.strictEqual(after.settled?.state, "succeeded");
+      assert.deepStrictEqual(after.settled?.result?.release, { kind: "others_remain" });
+      assert.deepStrictEqual(after.servers, [other]);
+      assert.deepStrictEqual(after.keys, []);
+      assert.strictEqual(after.pairings, 1);
+    }),
+  60_000,
+);
+
+it.live(
+  "the last Server whose reset committed, though its own row removal failed, lets Cloud go of its Cluster",
+  () =>
+    Effect.gen(function* () {
+      const cloud = yield* cloudServices();
+      const after = yield* removeServerReplying([], resetCommitted).pipe(Effect.provide(cloud));
+      assert.strictEqual(after.settled?.state, "succeeded");
+      assert.deepStrictEqual(after.settled?.result?.release, { kind: "released" });
+      assert.deepStrictEqual(after.servers, []);
+      assert.deepStrictEqual(after.keys, []);
+      assert.strictEqual(after.pairings, 0);
+    }),
+  60_000,
+);
 
 it.live(
   "a Server already gone from the Cluster loses Cloud's row and its device keys while other Servers keep the Cluster",
