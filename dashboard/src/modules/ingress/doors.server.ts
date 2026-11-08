@@ -32,6 +32,7 @@ import { activeDoorsAttempt, lockIngressRows } from "#/modules/ingress/doors.loc
 import { type RedeployPorts, redeployMoved, runSwitch } from "#/modules/ingress/doors.run";
 import { ingressDoorsAttempt, organizationCloudflareIngress } from "#/modules/ingress/tables";
 import { createIngressDoorsRequestedEvent, type IngressDoorsRequestedEventData } from "#/modules/inngest/events";
+import { offlineServers } from "#/modules/machines/server-status";
 import { refusalWords } from "#/modules/machines/server-web-traffic.server";
 import { enqueueEvent } from "#/modules/operations/outbox.server";
 import { firstRuntimeFrame, OrganizationRuntime } from "#/modules/runtime/organization-runtime.server";
@@ -87,16 +88,22 @@ export const readClusterIngress = Effect.fn("IngressDoors.read")(function* (orga
   return { setup, change, hostedName: hosted?.name ?? null } satisfies ClusterIngressView;
 });
 
-/** What one look at the Servers finds: who takes web traffic, which Doors each holds open, and the hostnames published. Null when none answers. */
+/**
+ * What one look at the Servers finds: who takes web traffic, which Doors each holds open, and the hostnames published.
+ * Null when none answers. Partial when a row wasn't read, or when a Server reads Offline: its rows are as it last
+ * reported them, so what it serves now is unknown.
+ */
 export const observeClusterIngress = Effect.fn("IngressDoors.observe")(function* (organizationId: string) {
   const frame = yield* firstRuntimeFrame(organizationId).pipe(Effect.catch(() => Effect.succeed(null)));
   if (frame === null) return null;
   const open = doorsOpenOn(frame);
+  const offline = offlineServers(frame.machines.map(({ machine, membership }) =>
+    ({ id: machine.id, membership, runningBuilds: machine.runtime.running_builds, unanswered: frame.unanswered.includes(machine.id) })));
   return {
     servers: frame.machines.filter(({ machine }) => machine.accepts_ingress)
       .map(({ machine }) => ({ id: machine.id, name: machine.name, doors: [...(open.get(machine.id) ?? [])].sort() })),
     hostnames: publishedOf(frame),
-    partial: frame.incomplete_ids.machines.length > 0 || frame.incomplete_ids.containers.length > 0,
+    partial: frame.incomplete_ids.machines.length > 0 || frame.incomplete_ids.containers.length > 0 || offline.size > 0,
   } satisfies ClusterIngressObservation;
 });
 
