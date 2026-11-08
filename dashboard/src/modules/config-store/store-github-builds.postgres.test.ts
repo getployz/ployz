@@ -1,6 +1,7 @@
 import crypto from "node:crypto";
 import { it } from "@effect/vitest";
 import type { ConfigCommand, JsonValue } from "@ployz/sdk";
+import { sql } from "drizzle-orm";
 import { Effect } from "effect";
 import type { StoreCall } from "./store.contract";
 import { expect, vi } from "vitest";
@@ -15,6 +16,7 @@ import { cloudStore } from "#/modules/config-store/store-sdk.server";
 import { GithubOidcKeys } from "#/modules/github/github-oidc.server";
 import { unlinkGithubInstallation } from "#/modules/github/github.repository";
 import { type ConnectedRuntimeClient, OrganizationRuntime, type OrganizationRuntimeService } from "#/modules/runtime/organization-runtime.server";
+import { Database } from "#/server/database.server";
 import { fakeGithubApiBy } from "#/test/fake-github";
 import { machineId } from "#/test/ids";
 import { logged } from "#/test/logged";
@@ -322,4 +324,43 @@ it.live("a build GitHub passed on before its run checked in is no longer GitHub'
       builds: [{ service: "web", status: "pending", message: "no runner started the build in time" }],
     });
     yield* late;
+  }), 60_000);
+
+it.live("the start limit keeps a run whose check-in commits while it looks, and does not cancel it", () =>
+  Effect.gen(function* () {
+    const services = yield* storeTestCloud({ github: github.service });
+    const provided = <A, E, R>(program: Effect.Effect<A, E, R>) => program.pipe(
+      Effect.provide(services),
+      Effect.provideService(GithubOidcKeys, { keys: Effect.succeed([jwk]) }),
+    );
+    yield* provided(seedStoreOrganization(ORGANIZATION));
+    const store = yield* provided(seedStoreGitService(ORGANIZATION, { project: PROJECT, environment: ENVIRONMENT, service: SERVICE }));
+    yield* Effect.promise(() => store.write(ORGANIZATION, {
+      command: "admit", admit: "deploy", id: DEPLOYMENT, environment: here, services: [], version: null, accept_volume_loss: [],
+    }, acmeWeb()));
+    yield* Effect.promise(() => store.pinSources(DEPLOYMENT, { web: HEAD }));
+    yield* Effect.promise(() => store.githubDispatched(BUILD, {
+      run_id: RUN, run_url: `https://github.com/acme/web/actions/runs/${RUN}`, workflow_ref: WORKFLOW, repository: "acme/web", installation_id: 7,
+    }));
+    const { drizzle } = yield* provided(Database);
+    const grant = { id: "d".repeat(64), machine: machineId("0"), fingerprint: "f".repeat(64) };
+    // The run's check-in as the Store's github_check_in commits it: a grant needs a Machine to mint it, which no test
+    // here runs.
+    const checkIn = drizzle.execute(sql`
+      update config_build set github = jsonb_set(
+        jsonb_set(github::jsonb, '{grant}', ${JSON.stringify(grant)}::jsonb), '{checked_in_at}', to_jsonb(${Math.floor(Date.now() / 1000)}::bigint)
+      )::text where deployment_id = ${DEPLOYMENT} and service = 'web'`);
+    const cloud = yield* provided(cloudStore);
+    const finish = cloud.githubFinish.bind(cloud);
+    // It commits after the start limit's look read the build with no grant, before githubFinish re-reads it.
+    vi.spyOn(cloud, "githubFinish").mockImplementationOnce(async (...args) => {
+      await Effect.runPromise(provided(checkIn));
+      return finish(...args);
+    });
+    const target = { build: BUILD, service: "web", repository: "acme/web", repositoryId: 42, installationId: 7, hasNext: true };
+    const calledBefore = github.calls.length;
+
+    expect(yield* provided(checkStoreGithubBuild(ORGANIZATION, target, { ended: false, startLimit: true }))).toBe("waiting");
+    expect(github.calls.slice(calledBefore).map((call) => call.path)).not.toContain(`/repos/acme/web/actions/runs/${RUN}/cancel`);
+    expect(yield* Effect.promise(() => store.githubBuild(BUILD))).toMatchObject({ held: { status: "building", grant } });
   }), 60_000);

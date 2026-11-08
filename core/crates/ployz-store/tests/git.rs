@@ -1216,6 +1216,57 @@ fn a_late_old_mint_skip_leaves_a_run_that_checked_in_building() {
 }
 
 #[test]
+fn a_server_cannot_report_on_a_build_a_github_run_still_holds() {
+    for checked_in in [false, true] {
+        let (store, who) = shop();
+        let id = dispatched(&store, &who);
+        if checked_in {
+            store.github_check_in(&id, RUN, &grant()).unwrap();
+        }
+        let runner = RunnerId::parse("cloud-1").unwrap();
+        store.claim(&id.deployment, &runner).unwrap();
+        for status in [BuildStatus::Building, BuildStatus::Built, BuildStatus::Failed] {
+            let report = RunEvidence::Build(BuildReport {
+                service: ServiceName::parse("web").unwrap(),
+                status,
+                message: None,
+                log: "built on fsn-1\n".into(),
+                server: Some("fsn-1".into()),
+            });
+            let error = store
+                .record(&id.deployment, &runner, report)
+                .expect_err("GitHub's run still holds the build");
+            assert_eq!(
+                error.code,
+                RpcErrorCode::Conflict,
+                "{status:?} (checked in: {checked_in})"
+            );
+        }
+
+        let build = held(&store, &id);
+        assert_eq!(build.status, BuildStatus::Building);
+        assert_eq!(build.grant, checked_in.then(grant));
+        assert_eq!(store.github_outstanding(&id.deployment).unwrap().len(), 1);
+        let query = BuildLogQuery {
+            deployment: id.deployment.clone(),
+            service: id.service.clone(),
+        };
+        let shown = store.read(&who, &query).unwrap();
+        assert_eq!(shown.build.server, None, "no Server holds it");
+        assert!(!shown.log.contains("fsn-1"), "{}", shown.log);
+        // The run's own report still lands once it checked in.
+        if checked_in {
+            assert_eq!(
+                store
+                    .github_report(&id, RUN, &lines(0, &["step\n"], None))
+                    .unwrap(),
+                1
+            );
+        }
+    }
+}
+
+#[test]
 fn a_build_clock_starts_at_building_clears_when_skipped_and_reopens_for_a_later_builder() {
     let (store, who) = shop();
     let id = dispatched(&store, &who);
