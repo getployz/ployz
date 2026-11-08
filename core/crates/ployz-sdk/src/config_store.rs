@@ -189,8 +189,8 @@ impl ConfigStore {
     /// Pin the commits Cloud resolved (`{runtime Service name: commit}`) for
     /// Deployment `deployment`'s Git Services; a pinned commit never changes. Resolves
     /// to every source with its pin. `trusted` carries the Organization's members as
-    /// Cloud read them: without them, a Trusted pull request's commit never pins. Only
-    /// Cloud's worker calls this.
+    /// Cloud read them: without them, only a bot's Trusted pull request from the
+    /// repository itself pins its commit. Only Cloud's worker calls this.
     ///
     /// # Errors
     /// Returns `conflict` once the Deployment was replaced, cancelled or ended,
@@ -366,8 +366,9 @@ impl ConfigStore {
     /// Apply a `SystemEvent` Cloud observed of GitHub for the given Organization;
     /// resolves to what it did (`ConfigWritten`, `automated`). `trusted` carries how
     /// many Servers the Organization has (`ConfigTrusted.servers`) and, for an event
-    /// that can deploy, its members (`ConfigTrusted.members`): without them, a Trusted
-    /// pull request's head never deploys. Only Cloud's GitHub workers call this.
+    /// that can deploy, its members (`ConfigTrusted.members`): without them, only a
+    /// bot's Trusted pull request from the repository itself deploys its head. Only
+    /// Cloud's GitHub workers call this.
     ///
     /// # Errors
     /// Returns `conflict` when a branch head's base is stale, or a storage error.

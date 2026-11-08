@@ -535,7 +535,8 @@ fn open_in(
     let rows = tx.query(
         &format!(
             "SELECT number, {RECORD} FROM config_pull_request \
-             WHERE organization_id = ?1 AND repository_id = ?2 AND updated <> '' ORDER BY number"
+             WHERE organization_id = ?1 AND repository_id = ?2 AND updated <> '' \
+             AND merged IS NULL ORDER BY number"
         ),
         &[who.organization.as_str().into(), repository_id.into()],
     )?;
@@ -585,7 +586,7 @@ fn record(
 /// Whether `head` of `repository_id` may deploy into `environment`: anywhere but a
 /// PR Environment of that repository, whose pull request must admit it. A Trusted
 /// one admits only while its stored author is among `trusted`'s members, as Cloud
-/// read them for this write.
+/// read them for this write, or is a bot's from the repository itself.
 pub(crate) fn admits(
     tx: &mut dyn Tx,
     environment: &EnvironmentId,
@@ -610,6 +611,54 @@ pub(crate) fn admits(
     Ok(record
         .phase
         .admits(head, &record.facts, trusted.members.as_deref()))
+}
+
+/// Take Trusted from each pull request of `who`'s Organization whose author
+/// `trusted`'s members leave out, so it lists as needing approval, and a member can
+/// approve it, rather than showing Trusted while each deploy of it is refused. A
+/// bot's pull request from the repository itself keeps it, and a later report that
+/// finds the author a member gives it back. Without members Cloud looked at no one,
+/// so nothing changes. Each row it changes locks before any Environment, as news of a
+/// pull request takes them.
+pub(crate) fn withdraw_trust(
+    tx: &mut dyn Tx,
+    who: &Actor,
+    trusted: &Trusted,
+) -> Result<(), RpcError> {
+    let Some(members) = trusted.members.as_deref() else {
+        return Ok(());
+    };
+    let rows = tx.query(
+        &format!(
+            "SELECT repository_id, number, {RECORD} FROM config_pull_request \
+             WHERE organization_id = ?1 AND updated <> '' AND standing = ?2 \
+             AND merged IS NULL ORDER BY repository_id, number"
+        ),
+        &[
+            who.organization.as_str().into(),
+            serde_json::to_string(&Standing::Trusted)
+                .expect("a standing is JSON")
+                .as_str()
+                .into(),
+        ],
+    )?;
+    for row in rows {
+        let pr = pull_request_ref(&row)?;
+        if trusts(&Record::read(&row, 2)?.facts, Some(members)) {
+            continue;
+        }
+        lock(tx, who, pr.repository_id, pr.number)?;
+        let Some(record) = record(tx, who, pr.repository_id, pr.number)? else {
+            continue;
+        };
+        if record.phase.open_standing() == OpenStanding::Trusted
+            && !trusts(&record.facts, Some(members))
+        {
+            let phase = record.phase.standing_as(OpenStanding::NeedsApproval);
+            write_phase(tx, who, &pr, &phase)?;
+        }
+    }
+    Ok(())
 }
 
 /// Record each pull request's phase from the columns that held it before
@@ -777,11 +826,12 @@ struct Reported {
     phase: Phase,
 }
 
-/// Record Cloud's report `event` of a pull request. With [`approve`], the only
-/// writer of a phase. Newer facts replace older ones, but never reopen a merge. The
-/// first merge reported, whatever the order, stays. The standing follows the facts
-/// the row holds and Cloud's latest look at the members: an older report still
-/// takes a Trusted standing from an author who left.
+/// Record Cloud's report `event` of a pull request. Its phase is written here, by
+/// [`approve`], by [`pull_request`] once the merge landed, by [`withdraw_trust`],
+/// and by the migration ([`record_phases`]). Newer facts replace older ones, but
+/// never reopen a merge. The first merge reported, whatever the order, stays. The
+/// standing follows the facts the row holds and Cloud's latest look at the members:
+/// an older report still takes a Trusted standing from an author who left.
 fn record_facts(
     tx: &mut dyn Tx,
     who: &Actor,
@@ -1593,7 +1643,7 @@ pub(crate) fn awaiting_merge(
          WHERE p.organization_id = ?1 AND p.repository_id = ?2 \
          AND NOT EXISTS (SELECT 1 FROM config_removal_mark m \
          WHERE m.environment_id = b.environment_id AND m.state = 'removing') \
-         ORDER BY p.number",
+         AND r.merged IS NULL ORDER BY p.number",
         &[who.organization.as_str().into(), repository_id.into()],
     )?;
     let mut awaiting = Vec::new();

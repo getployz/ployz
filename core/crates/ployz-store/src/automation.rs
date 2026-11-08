@@ -178,8 +178,14 @@ pub(crate) fn system(
 ) -> Result<Automated, RpcError> {
     let who = Actor::system(organization.clone());
     match event {
-        SystemEvent::BranchHead(head) => branch_head(tx, &who, head, trusted),
-        SystemEvent::CheckSuite(suite) => check_suite(tx, &who, suite, trusted),
+        SystemEvent::BranchHead(head) => {
+            crate::pull_request::withdraw_trust(tx, &who, trusted)?;
+            branch_head(tx, &who, head, trusted)
+        }
+        SystemEvent::CheckSuite(suite) => {
+            crate::pull_request::withdraw_trust(tx, &who, trusted)?;
+            check_suite(tx, &who, suite, trusted)
+        }
         SystemEvent::PullRequest(pull) => {
             crate::pull_request::pull_request(tx, &who, pull, trusted)
         }

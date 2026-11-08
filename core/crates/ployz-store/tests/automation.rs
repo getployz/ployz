@@ -1026,6 +1026,18 @@ fn ada_left() -> Trusted {
     }
 }
 
+/// Each pull request the PR plans list, with its standing.
+fn standings(store: &ConfigStore, who: &Actor) -> Vec<(u64, ployz_store::Standing)> {
+    store
+        .read(who, &ployz_store::PrPlansQuery::default())
+        .unwrap()
+        .plans
+        .into_iter()
+        .flat_map(|plan| plan.open)
+        .map(|open| (open.number.get(), open.standing))
+        .collect()
+}
+
 fn system_with(store: &ConfigStore, event: &SystemEvent, trusted: &Trusted) -> Automated {
     let Written::Automated(automated) = store.system(&org(), event, trusted).unwrap() else {
         panic!("a system event writes Automated")
@@ -1044,6 +1056,65 @@ fn a_push_after_its_author_left_the_organization_waits_for_approval() {
     let pushed = system_with(&store, &push_search(None, H3), &ada_left());
     assert!(pushed.admitted.is_empty(), "{pushed:?}");
     assert_eq!(reasons(&pushed), ["Needs approval"]);
+    assert_eq!(
+        standings(&store, &who),
+        [(5, ployz_store::Standing::NeedsApproval)]
+    );
+}
+
+#[test]
+fn a_push_refused_after_its_author_left_deploys_once_a_report_finds_them_a_member_again() {
+    let (store, who) = shop();
+    publish(&store, &who);
+    let opened = open_pull_request(&store, &who);
+    backend::run(&store, &opened.admitted[0].deployment.id);
+    let pushed = system_with(&store, &push_search(None, H3), &ada_left());
+    assert_eq!(reasons(&pushed), ["Needs approval"]);
+
+    let SystemEvent::PullRequest(open) = pull_request(true) else {
+        unreachable!("pull_request is a pull request")
+    };
+    let rejoined = system(
+        &store,
+        &SystemEvent::PullRequest(ployz_store::PullRequest {
+            head: backend::sha(H3),
+            updated: ployz_store::GithubTimestamp::parse("2026-09-29T10:05:00Z").unwrap(),
+            ..open
+        }),
+    );
+    assert_eq!(rejoined.admitted.len(), 1, "{rejoined:?}");
+    assert_eq!(pinned(&store, &rejoined, "web").as_deref(), Some(H3));
+    assert_eq!(
+        standings(&store, &who),
+        [(5, ployz_store::Standing::Trusted)]
+    );
+}
+
+#[test]
+fn a_push_held_for_ci_whose_author_left_before_it_passed_waits_for_approval() {
+    let (store, who) = shop();
+    set(&store, &who, "web.waitForCi", json!(true));
+    publish(&store, &who);
+    let opened = open_pull_request(&store, &who);
+    backend::run(&store, &opened.admitted[0].deployment.id);
+    let pushed = system(&store, &push_search(None, H3));
+    assert!(pushed.admitted.is_empty(), "{pushed:?}");
+    assert_eq!(
+        standings(&store, &who),
+        [(5, ployz_store::Standing::Trusted)]
+    );
+
+    let passed = system_with(
+        &store,
+        &suite(1, H3, "completed", Some("success"), 30),
+        &ada_left(),
+    );
+    assert!(passed.admitted.is_empty(), "{passed:?}");
+    assert_eq!(reasons(&passed), ["Needs approval"]);
+    assert_eq!(
+        standings(&store, &who),
+        [(5, ployz_store::Standing::NeedsApproval)]
+    );
 }
 
 #[test]
@@ -1163,6 +1234,10 @@ fn another_repositorys_push_never_ships_a_build_of_a_pull_request_whose_author_l
         .find(|source| source.service.as_str() == "api")
         .expect("api ships its Saved change");
     assert_eq!(api.commit, None, "{api:?}");
+    assert_eq!(
+        standings(&store, &who),
+        [(5, ployz_store::Standing::NeedsApproval)]
+    );
 }
 
 /// Admit a Deploy of `pr-5` as Deployment `n`, which pins nothing yet.
@@ -1215,14 +1290,25 @@ fn a_build_of_a_trusted_pull_request_pins_only_while_its_author_is_a_member() {
     let opened = open_pull_request(&store, &who);
     backend::run(&store, &opened.admitted[0].deployment.id);
 
-    let left = deploy_pr_5(&store, &who, 1);
+    // Without the members Cloud read, no member is trusted, and none is distrusted.
+    let unknown = deploy_pr_5(&store, &who, 1);
+    let refused = pin_web(&store, &unknown, H3, &Trusted::default()).unwrap_err();
+    assert_eq!(refused.code, RpcErrorCode::InvalidArgument);
+    assert_eq!(
+        standings(&store, &who),
+        [(5, ployz_store::Standing::Trusted)]
+    );
+    let pinned = pin_web(&store, &unknown, H3, &backend::members()).unwrap();
+    assert_eq!(pinned[0].commit, Some(backend::sha(H3)));
+
+    backend::run(&store, &unknown);
+    let left = deploy_pr_5(&store, &who, 2);
     let refused = pin_web(&store, &left, H3, &ada_left()).unwrap_err();
     assert_eq!(refused.code, RpcErrorCode::InvalidArgument);
-    // Without the members Cloud read, no member is trusted.
-    let unknown = pin_web(&store, &left, H3, &Trusted::default()).unwrap_err();
-    assert_eq!(unknown.code, RpcErrorCode::InvalidArgument);
-    let pinned = pin_web(&store, &left, H3, &backend::members()).unwrap();
-    assert_eq!(pinned[0].commit, Some(backend::sha(H3)));
+    assert_eq!(
+        standings(&store, &who),
+        [(5, ployz_store::Standing::NeedsApproval)]
+    );
 }
 
 #[test]
