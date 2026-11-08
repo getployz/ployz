@@ -21,9 +21,6 @@ use super::{ContainerRuntime, Error, LABEL_MANAGED, LABEL_NAMESPACE, LABEL_SERVI
 use crate::filesystem::atomic_write;
 use crate::sealed_env::{self, OpenError};
 
-/// How much of the router's output the daemon reads to say why it stopped.
-const OUTPUT_TAIL_LINES: &str = "40";
-
 fn key_dir(root: &Path) -> PathBuf {
     root.join(PRIVATE_ACCESS_KEY_MACHINE_DIR.trim_start_matches('/'))
 }
@@ -137,13 +134,14 @@ impl ContainerRuntime {
         self.write_private_access_key(&key).map_err(Error::Io)
     }
 
-    /// The last lines a router wrote, for saying why it stopped. Empty when Docker
-    /// cannot say.
-    pub(crate) async fn router_output(&self, id: &ContainerId) -> String {
+    /// What a router wrote since `since`, in Unix seconds, for saying why it stopped.
+    /// A router refused its key restarts and repeats its start, so a fixed tail would
+    /// lose the refusal. Empty when Docker cannot say.
+    pub(crate) async fn router_output(&self, id: &ContainerId, since: i32) -> String {
         let options = LogsOptionsBuilder::default()
             .stdout(true)
             .stderr(true)
-            .tail(OUTPUT_TAIL_LINES)
+            .since(since)
             .build();
         let mut lines = self.docker.client.logs(id.as_str(), Some(options));
         let mut output = String::new();

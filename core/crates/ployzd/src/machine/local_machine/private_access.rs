@@ -32,6 +32,8 @@ const ROUTER_SETTLE: Duration = Duration::from_millis(300);
 const ROUTER_POLL: Duration = Duration::from_secs(1);
 #[cfg(test)]
 const ROUTER_POLL: Duration = Duration::from_millis(200);
+/// How far back the log of a router that already runs is read.
+const RUNNING_LOOKBACK_SECONDS: i32 = 120;
 /// What containerboot prints once the node is up.
 const ROUTER_UP: &str = "Startup complete";
 /// The longest detail an answer carries.
@@ -321,7 +323,8 @@ impl LocalMachine {
     }
 
     /// Watch a placed router until it has joined the tailnet, has died, or the settle
-    /// time ends with it running and saying nothing wrong.
+    /// time ends with it running and saying nothing wrong. A router that already ran is
+    /// read once, from the last two minutes, and not waited on.
     async fn watch_router(
         &self,
         containers: &ContainerRuntime,
@@ -330,6 +333,9 @@ impl LocalMachine {
     ) -> Option<PrivateAccessFailure> {
         let id = router.now.container_id;
         let machine_id = self.record().id();
+        let settles = router.change != DoorChange::Unchanged;
+        let lookback = if settles { 1 } else { RUNNING_LOOKBACK_SECONDS };
+        let since = unix_seconds().saturating_sub(lookback);
         let deadline = tokio::time::Instant::now() + ROUTER_SETTLE;
         loop {
             let runtime = containers
@@ -337,7 +343,7 @@ impl LocalMachine {
                 .await
                 .map(|observed| observed.runtime.clone())
                 .ok()?;
-            let output = containers.router_output(&id).await;
+            let output = containers.router_output(&id, since).await;
             let alive = matches!(runtime, ContainerRuntimeObservation::Running { .. });
             if let Some(problem) = classify(&output) {
                 return Some(PrivateAccessFailure {
@@ -351,12 +357,20 @@ impl LocalMachine {
                     detail: format!("the router is {runtime}: {}", detail(&output, key)),
                 });
             }
-            if output.contains(ROUTER_UP) || tokio::time::Instant::now() >= deadline {
+            if !settles || output.contains(ROUTER_UP) || tokio::time::Instant::now() >= deadline {
                 return None;
             }
             tokio::time::sleep(ROUTER_POLL).await;
         }
     }
+}
+
+fn unix_seconds() -> i32 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .ok()
+        .and_then(|elapsed| i32::try_from(elapsed.as_secs()).ok())
+        .unwrap_or(0)
 }
 
 #[cfg(test)]
