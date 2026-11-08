@@ -760,7 +760,7 @@ fn left_pending(
     requested: &[RequestedServiceSpec],
     snapshot: &DeploySnapshot,
 ) -> BTreeSet<ContainerId> {
-    if intent.options.ended_runs.is_empty() || intent.namespace.is_reserved() {
+    if intent.options.ended_runs.is_empty() || intent.namespace.is_system() {
         return BTreeSet::new();
     }
     snapshot
@@ -1379,7 +1379,7 @@ fn obsolete_services(
     intent: &DeployIntent,
     services: &[ServiceObservation],
 ) -> Vec<QualifiedService> {
-    if intent.namespace.is_reserved() {
+    if intent.namespace.is_system() {
         return Vec::new();
     }
     let declared = intent
@@ -1400,7 +1400,7 @@ fn check_removals(intent: &DeployIntent) -> Result<(), PlanError> {
     if intent.options.removals.is_empty() {
         return Ok(());
     }
-    if intent.namespace.is_reserved() {
+    if intent.namespace.is_system() {
         return Err(PlanError::RemovalInReservedNamespace {
             namespace: intent.namespace.clone(),
         });

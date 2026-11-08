@@ -3834,7 +3834,7 @@ mod ensure_container {
                     container: *container,
                     issued_at: Timestamp::now(),
                     expires_at: Timestamp::now().plus(60_000),
-                    signer: self.signer.public().into(),
+                    signer: ployz_core::authority::SignerKey::Device(self.signer.public().into()),
                 }
             }
 
@@ -4146,7 +4146,7 @@ mod ensure_container {
             let stranger = Signer::from_seed(&[9; 32]);
             let forged = Signed::sign(
                 &RestartApproval {
-                    signer: stranger.public().into(),
+                    signer: ployz_core::authority::SignerKey::Device(stranger.public().into()),
                     ..good.clone()
                 },
                 &stranger,
@@ -4252,6 +4252,121 @@ mod ensure_container {
                 present(&reply).runtime,
                 ContainerRuntimeObservation::Exited { .. }
             ));
+            std::fs::remove_dir_all(fixture.data_dir).unwrap();
+        }
+
+        /// A browser key's restart approval under a session grant from a passkey this
+        /// Machine trusts, as the dashboard sends it.
+        fn browser_approval(fixture: &Enforced, id: &ContainerId) -> Signed<RestartApproval> {
+            use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
+            use ed25519_dalek::Signer as _;
+            use ployz_core::authority::{
+                ActionFamily, GrantBody, PasskeyAssertion, SessionGrant, SignerKey,
+                session::Delegation, trusted_key::Base64Url,
+            };
+            use sha2::{Digest, Sha256};
+
+            let authenticator = ed25519_dalek::SigningKey::from_bytes(&[5; 32]);
+            let credential = Base64Url::new(vec![5, 1, 2, 3]);
+            let browser = Signer::from_seed(&[8; 32]);
+            let approval = RestartApproval {
+                signer: SignerKey::Browser {
+                    browser: browser.public(),
+                },
+                ..fixture.approval(id)
+            };
+            let body = ployz_core::authority::canonical::to_canonical(&GrantBody {
+                browser_key: browser.public(),
+                cluster: fixture.cluster,
+                environment: approval.namespace.clone(),
+                machines: approval.machines.clone(),
+                families: vec![ActionFamily::Restart],
+                issued_at: approval.issued_at,
+                expires_at: approval.issued_at.plus(60 * 60_000),
+                delegation: Delegation::None,
+            })
+            .unwrap();
+            let client_data = json!({
+                "type": "webauthn.get",
+                "challenge": URL_SAFE_NO_PAD.encode(GrantBody::challenge(&body)),
+                "origin": "https://ployz.cloud",
+            })
+            .to_string()
+            .into_bytes();
+            let mut authenticator_data = Sha256::digest(b"ployz.cloud").to_vec();
+            authenticator_data.extend_from_slice(&[0x05, 0, 0, 0, 1]);
+            let mut answered = authenticator_data.clone();
+            answered.extend_from_slice(&Sha256::digest(&client_data));
+            let grant = SessionGrant {
+                body,
+                assertion: PasskeyAssertion {
+                    credential_id: credential.try_into().unwrap(),
+                    authenticator_data: Base64Url::new(authenticator_data),
+                    client_data_json: Base64Url::new(client_data),
+                    signature: Base64Url::new(authenticator.sign(&answered).to_bytes().to_vec()),
+                },
+            };
+            Signed::sign_under(&approval, &browser, grant).unwrap()
+        }
+
+        async fn trust_passkey(fixture: &Enforced) {
+            use ployz_core::authority::{
+                Passkey, PasskeyAccount, PasskeyApprover, PasskeyPublicKey, TrustedPasskey,
+                trusted_key::{Base64Url, PasskeyAlgorithm, RelyingParty},
+            };
+            let key = ed25519_dalek::SigningKey::from_bytes(&[5; 32]).verifying_key();
+            let trusted = TrustedPasskey {
+                passkey: Passkey {
+                    credential_id: Base64Url::new(vec![5, 1, 2, 3]).try_into().unwrap(),
+                    public_key: PasskeyPublicKey::parse(PasskeyAlgorithm::Eddsa, key.as_bytes())
+                        .unwrap(),
+                    account: PasskeyAccount::parse("ada@example.com").unwrap(),
+                    relying_party: RelyingParty::of(&"https://ployz.cloud".parse().unwrap())
+                        .unwrap(),
+                },
+                approved_by: PasskeyApprover::Server,
+            };
+            fixture
+                .store
+                .mutate(move |store| {
+                    store.approve_passkey(trusted).unwrap();
+                })
+                .await
+                .unwrap();
+        }
+
+        #[tokio::test]
+        async fn a_browser_approval_under_a_passkey_grant_restarts_once_and_its_replay_is_refused()
+        {
+            let fixture = enforced("ployzd-enforce-browser-replay").await;
+            let service = &fixture.service;
+            let id = present(&ensure(service, run_new("k1", spec("example.test/api:1"))).await)
+                .container_id;
+            let approval = browser_approval(&fixture, &id);
+            refused(
+                operator_ensure(service, stopped(&id), Some(&approval)).await,
+                "passkey is not approved",
+            );
+
+            trust_passkey(&fixture).await;
+            operator_ensure(service, stopped(&id), Some(&approval))
+                .await
+                .unwrap();
+            refused(
+                operator_ensure(service, stopped(&id), Some(&approval)).await,
+                "already ran this step",
+            );
+            let reply = operator_ensure(service, started(&id), Some(&approval))
+                .await
+                .unwrap();
+            assert!(matches!(
+                present(&reply).runtime,
+                ContainerRuntimeObservation::Running { .. }
+            ));
+            refused(
+                operator_ensure(&fixture.restarted(), started(&id), Some(&approval)).await,
+                "already ran this step",
+            );
             std::fs::remove_dir_all(fixture.data_dir).unwrap();
         }
 
@@ -4451,7 +4566,10 @@ mod read_routes {
         local
     }
 
-    async fn serve(dir: &Path, rows: &[Machine]) -> (MachineService, tokio::task::JoinHandle<()>) {
+    pub(super) async fn serve(
+        dir: &Path,
+        rows: &[Machine],
+    ) -> (MachineService, tokio::task::JoinHandle<()>) {
         let (replicated, task): (ReplicatedStore, _) = identity_store(corrosion_db()).await;
         for row in rows {
             replicated
@@ -4675,5 +4793,87 @@ mod read_routed_addresses {
         }
 
         assert_eq!(read(&service).await.routes, Some(routed(3)));
+    }
+}
+
+mod cluster_name {
+    use ployz_core::{
+        ClusterName, ClusterNamed, OpaquePayload, ReadClusterNameRequest, Rpc, RpcResponse,
+        SetClusterNameRequest,
+    };
+    use tonic::Response;
+
+    use super::*;
+
+    fn named<R: Rpc<Response = ClusterNamed>>(response: Response<OpaquePayload>) -> ClusterNamed {
+        response
+            .into_inner()
+            .decode_response()
+            .unwrap()
+            .decode::<R>()
+            .unwrap()
+    }
+
+    async fn read(service: &MachineService) -> ClusterNamed {
+        let request = op::ReadClusterName::into_request(ReadClusterNameRequest {});
+        named::<op::ReadClusterName>(
+            service
+                .read_cluster_name(Request::new(request.encode().unwrap()))
+                .await
+                .unwrap(),
+        )
+    }
+
+    async fn set(service: &MachineService, name: &str) -> ClusterNamed {
+        let request = op::SetClusterName::into_request(SetClusterNameRequest {
+            name: ClusterName::parse(name).unwrap(),
+        });
+        named::<op::SetClusterName>(
+            service
+                .set_cluster_name(Request::new(request.encode().unwrap()))
+                .await
+                .unwrap(),
+        )
+    }
+
+    #[tokio::test]
+    async fn a_set_name_is_read_back_and_a_rename_replaces_it() {
+        let dir = std::env::temp_dir().join(format!("ployzd-name-{}", MachineId::random()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let (service, task) = super::read_routes::serve(&dir, &[]).await;
+
+        assert_eq!(read(&service).await.name, None);
+        for name in ["acme", "beta"] {
+            let name = Some(ClusterName::parse(name).unwrap());
+            assert_eq!(
+                set(&service, name.as_ref().unwrap().as_str()).await.name,
+                name
+            );
+            assert_eq!(read(&service).await.name, name);
+        }
+        task.abort();
+        std::fs::remove_dir_all(dir).ok();
+    }
+
+    #[tokio::test]
+    async fn a_machine_outside_a_cluster_refuses_the_name() {
+        let dir = std::env::temp_dir().join(format!("ployzd-name-{}", MachineId::random()));
+        let store = RecordOwner::spawn(LocalMachineStore::open(&dir).unwrap()).unwrap();
+        let service = MachineService::with_cluster(store, None);
+        let request = op::SetClusterName::into_request(SetClusterNameRequest {
+            name: ClusterName::parse("acme").unwrap(),
+        });
+        let response: RpcResponse = service
+            .set_cluster_name(Request::new(request.encode().unwrap()))
+            .await
+            .unwrap()
+            .into_inner()
+            .decode_response()
+            .unwrap();
+        let ployz_core::RpcResponseBody::Error(error) = response.body else {
+            panic!("expected a refusal, got {response:?}");
+        };
+        assert_eq!(error.code, RpcErrorCode::Unavailable);
+        std::fs::remove_dir_all(dir).ok();
     }
 }

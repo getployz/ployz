@@ -96,7 +96,8 @@ impl LocalMachine {
     }
 
     /// Under Device enforcement, let an Operator caller's restart step through only with
-    /// an approved Device's approval of exactly this restart, and record the step so the
+    /// an approved Device's approval of exactly this restart, or a browser key's under a
+    /// trusted passkey's session grant that covers it, and record the step so the
     /// same approval never runs it again. New-creation requests need deploy authorization
     /// and are refused, including adoption. Returns a want pinned to the verified
     /// Container ID. An absent target is refused. A Machine not enforcing passes untouched.
@@ -136,7 +137,7 @@ impl LocalMachine {
             Some(Sealing::Held { public_key }) => Some(public_key),
             _ => None,
         };
-        let body = restart::verify(
+        let approved = restart::verify(
             approval,
             &RestartFacts {
                 cluster,
@@ -150,7 +151,13 @@ impl LocalMachine {
             },
         )?;
         self.approvals
-            .consume(&body, &observed.container_id, step, now)?;
+            .consume(&approved.body, &observed.container_id, step, now)?;
+        tracing::info!(
+            operation = %approved.body.operation,
+            ?step,
+            "restart approved by {}",
+            approved.by
+        );
         let locator = match &mut want {
             ContainerWant::Held { container, .. }
             | ContainerWant::Out { container, .. }
@@ -427,7 +434,7 @@ mod tests {
             container: container('a'),
             issued_at: at(0),
             expires_at: Timestamp::from_millis(expires_at).unwrap(),
-            signer: DeviceKey::from_bytes([2; 32]),
+            signer: ployz_core::authority::SignerKey::Device(DeviceKey::from_bytes([2; 32])),
         }
     }
 

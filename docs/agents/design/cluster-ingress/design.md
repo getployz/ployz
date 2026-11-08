@@ -40,7 +40,7 @@ flowchart LR
    starts a stranded Caddy today (existing containers only, never create). Planned stops go connector then Caddy.
    Rejected: a systemd supervisor with an HTTP probe [codex]. It covers a hung Caddy, but public mode has no
    such guard either, and it adds a process Ployz owns.
-7. **Verb**: `ployz ingress use public|tunnel --token T` (idempotent, per-Server `DoorStep` outcomes, re-run
+7. **Verb**: `ployz ingress use public|tunnel --token-stdin` (idempotent, per-Server `DoorStep` outcomes, re-run
    converges) and `ployz ingress` (read doors). Cloud calls the same verb through `PloyzSession`.
 8. **Cloudflare side**: the Engine makes zero Cloudflare API calls. Cloudless users run
    `cloudflared tunnel create / route dns / token`. Cloud may offer a one-shot provisioning step with the user's

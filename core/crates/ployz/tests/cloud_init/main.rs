@@ -1545,6 +1545,8 @@ async fn context_config_standalone_refills_the_selected_empty_context_signed_out
                 "add",
                 "--standalone",
                 &format!("tcp://{address}"),
+                "--cluster-name",
+                "acme",
                 "--name",
                 "verify-server",
                 "--no-install",
@@ -1570,6 +1572,11 @@ async fn context_config_standalone_refills_the_selected_empty_context_signed_out
             .await
             .unwrap();
         assert!(output.status.success(), "{output:?}");
+        let result: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+        assert_eq!(
+            result.pointer("/cluster/name"),
+            Some(&serde_json::json!("acme"))
+        );
         let config = ployz::context::Config::load(&path).unwrap();
         assert_eq!(config.current_context(), Some("verify"));
         let selected = config.contexts.get("verify").unwrap();

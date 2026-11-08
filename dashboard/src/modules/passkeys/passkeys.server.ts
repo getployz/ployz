@@ -1,19 +1,19 @@
 import "@tanstack/react-start/server-only";
-import type { TrustedPasskey } from "@ployz/sdk";
+import type { MachineDetails, TrustedPasskey } from "@ployz/sdk";
 import {
   generateRegistrationOptions,
   type RegistrationResponseJSON,
   verifyRegistrationResponse,
 } from "@simplewebauthn/server";
 import { and, desc, eq, gt, sql } from "drizzle-orm";
-import { Data, Effect, Option } from "effect";
+import { Data, Effect } from "effect";
 import type { Actor } from "#/modules/identity/actor";
 import { user, verification } from "#/modules/identity/tables";
 import { loadOrganizationConnections, SERVER_REACH_TIMEOUT_MS } from "#/modules/machines/connections.server";
 import { requireAccess } from "#/modules/organization/access.server";
 import { codeOfPasskeyKey, passkeyKeyOf, type PasskeyKey } from "#/modules/passkeys/passkey-key";
 import { passkeyRequest } from "#/modules/passkeys/tables";
-import { clusterRead } from "#/modules/runtime/organization-runtime.server";
+import { clusterRead, firstRuntimeFrame } from "#/modules/runtime/organization-runtime.server";
 import { Ployz } from "#/modules/runtime/ployz.server";
 import { AppConfig } from "#/server/config.server";
 import { Database } from "#/server/database.server";
@@ -122,17 +122,20 @@ export const readPasskeyRequest = Effect.fn("Passkeys.readRequest")(function* (o
 });
 
 /**
- * Who approved a passkey, as one Server reports it, or null while no Server that answered trusts it. `server` means on
- * that Server's own terminal; `trusted` covers a call routed to it, and an approver a newer daemon names.
+ * Who approved a passkey, as one Server reports it, or null while that Server doesn't trust it. `server` means on that
+ * Server's own terminal; `trusted` covers a call routed to it, and an approver a newer daemon names.
  */
 export type PasskeyApproval =
-  | { readonly by: "device"; readonly code: string; readonly server: string }
-  | { readonly by: "server" | "trusted"; readonly server: string }
+  | { readonly by: "device"; readonly code: string }
+  | { readonly by: "server" | "trusted" }
   | null;
 
+/** What one Server says of a passkey; `unanswered` when Cloud couldn't read it. */
+export type ServerTrust = { readonly server: string; readonly approval: PasskeyApproval | "unanswered" };
+
 /**
- * The passkeys this person added in the Organization, newest first, each with what the first Server to answer says
- * about it. Cloud's own rows never mark a passkey approved, so `observed` is false when no Server answered.
+ * The passkeys this person added in the Organization, newest first, each with what every Server says about it. Cloud's
+ * own rows never mark a passkey approved, so a passkey is trusted only on the Servers that list it.
  */
 export const listPasskeys = Effect.fn("Passkeys.list")(function* (actor: Actor, organizationSlug: string) {
   const { organizationId } = yield* member(actor, organizationSlug);
@@ -141,37 +144,51 @@ export const listPasskeys = Effect.fn("Passkeys.list")(function* (actor: Actor, 
     .from(passkeyRequest)
     .where(and(eq(passkeyRequest.organizationId, organizationId), eq(passkeyRequest.userId, actor.userId)))
     .orderBy(desc(passkeyRequest.createdAt));
-  const trusted = rows.length === 0 ? Option.none() : yield* trustedPasskeys(organizationId);
+  const servers = rows.length === 0 ? [] : yield* trustedPasskeys(organizationId);
   return {
-    observed: Option.isSome(trusted),
+    observed: servers.some((server) => server.passkeys !== null),
     passkeys: rows.map((row) => ({
       code: row.code,
       account: row.account,
       createdAt: row.createdAt.toISOString(),
-      approval: Option.match(trusted, { onNone: () => null, onSome: ({ server, passkeys }) => approvalOf(passkeys, row.code, server) }),
+      servers: servers.map(({ server, passkeys }): ServerTrust =>
+        ({ server, approval: passkeys === null ? "unanswered" : approvalOf(passkeys, row.code) })),
     })),
   };
 });
 
-export const approvalOf = (passkeys: readonly { code: string; trusted: TrustedPasskey }[], code: string, server: string): PasskeyApproval => {
+export const approvalOf = (passkeys: readonly { code: string; trusted: TrustedPasskey }[], code: string): PasskeyApproval => {
   const held = passkeys.find((passkey) => passkey.code === code);
   if (held === undefined) return null;
   const by = held.trusted.approved_by;
-  if (by.by === "device") return { by: "device", code: by.code, server };
-  return { by: by.by === "server" ? "server" : "trusted", server };
+  if (by.by === "device") return { by: "device", code: by.code };
+  return { by: by.by === "server" ? "server" : "trusted" };
 };
 
-/** One Server's own list of trusted passkeys, read from it directly, or none when no Server answers. */
+type ServerPasskeys = { readonly server: string; readonly passkeys: readonly { code: string; trusted: TrustedPasskey }[] | null };
+
+/**
+ * Each Server's own list of trusted passkeys, read from it directly through one entry. A Server that doesn't answer reads
+ * `null`; with no entry at all, there is no Server to list.
+ */
 const trustedPasskeys = Effect.fn("Passkeys.trusted")(function* (organizationId: string) {
   const loaded = yield* loadOrganizationConnections(organizationId);
-  if (loaded.kind !== "ready" || loaded.connections.length === 0) return Option.none();
+  if (loaded.kind !== "ready" || loaded.connections.length === 0) return [];
   const ployz = yield* Ployz;
+  const frame = yield* firstRuntimeFrame(organizationId).pipe(Effect.orElseSucceed(() => null));
   const expect = loaded.sealingPublicKey === null ? null : { sealingPublicKey: loaded.sealingPublicKey, allowUnverified: true };
+  const listed = (details: MachineDetails) =>
+    (details.passkeys ?? []).map((trusted) => ({ code: codeOfPasskeyKey(trusted.passkey.public_key), trusted }));
   return yield* Effect.scoped(Effect.gen(function* () {
     const session = yield* ployz.connect({ connections: loaded.connections, timeoutMs: SERVER_REACH_TIMEOUT_MS, expect }, { closeWithin: clusterRead });
-    const details = yield* session.inspect();
-    const server = details.machine?.name ?? details.id;
-    const passkeys = (details.passkeys ?? []).map((trusted) => ({ code: codeOfPasskeyKey(trusted.passkey.public_key), trusted }));
-    return Option.some({ server, passkeys });
-  })).pipe(clusterRead, Effect.orElseSucceed(() => Option.none()));
+    const machines = frame?.machines.map(({ machine }) => ({ id: machine.id, name: machine.name })) ?? [];
+    if (machines.length === 0) {
+      const details = yield* session.inspect();
+      return [{ server: details.machine?.name ?? details.id, passkeys: listed(details) }] satisfies ServerPasskeys[];
+    }
+    return yield* Effect.forEach(machines, ({ id, name }) => session.inspectMachine(id).pipe(
+      Effect.map((details): ServerPasskeys => ({ server: name, passkeys: listed(details) })),
+      Effect.orElseSucceed((): ServerPasskeys => ({ server: name, passkeys: null })),
+    ), { concurrency: "unbounded" });
+  })).pipe(clusterRead, Effect.orElseSucceed((): ServerPasskeys[] => []));
 });

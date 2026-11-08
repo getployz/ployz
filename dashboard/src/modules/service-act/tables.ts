@@ -1,4 +1,4 @@
-import type { ServerRef, ServiceVerb } from "@ployz/sdk";
+import type { ServerRef, ServiceVerb, Signed } from "@ployz/sdk";
 import { sql } from "drizzle-orm";
 import { check, index, jsonb, pgTable, text, timestamp, uniqueIndex, uuid } from "drizzle-orm/pg-core";
 import { sqlStringLiterals } from "#/db/tables";
@@ -29,6 +29,8 @@ export const serviceAct = pgTable(
     state: text("state").default("accepted").notNull().$type<ServiceActState>(),
     before: jsonb("before").$type<ServiceActBefore | null>(),
     legs: jsonb("legs").default([]).notNull().$type<ServiceActLeg[]>(),
+    /** The browser's approval for each Container it named, forwarded unchanged to a Server that enforces. Public material only. */
+    approvals: jsonb("approvals").$type<Readonly<Record<string, Signed>> | null>(),
     reason: text("reason"),
     inngestRunId: text("inngest_run_id"),
     requestedByUserId: uuid("requested_by_user_id").references(() => user.id, { onDelete: "set null" }),
@@ -45,6 +47,7 @@ export const serviceAct = pgTable(
     check("service_act_state_check", sql`${table.state} in (${sqlStringLiterals(SERVICE_ACT_STATES)})`),
     check("service_act_verb_check", sql`${table.verb} in (${sqlStringLiterals(SERVICE_ACT_VERBS)})`),
     check("service_act_legs_check", sql`jsonb_typeof(${table.legs}) = 'array'`),
+    check("service_act_approvals_check", sql`${table.approvals} is null or jsonb_typeof(${table.approvals}) = 'object'`),
     check("service_act_reason_check", sql`${table.reason} is null or length(${table.reason}) between 1 and 1024`),
     check(
       "service_act_state_shape_check",

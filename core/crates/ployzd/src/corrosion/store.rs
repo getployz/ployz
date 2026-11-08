@@ -14,7 +14,7 @@ use std::{
 use futures_util::Stream;
 use ipnet::Ipv4Net;
 use ployz_core::{
-    CERTIFICATE_POLICY_CLUSTER_KEY, CertificateHost, ClusterRoute, ContainerId,
+    CERTIFICATE_POLICY_CLUSTER_KEY, CertificateHost, ClusterName, ClusterRoute, ContainerId,
     ContainerObservation, DockerVolume, DockerVolumeId, DockerVolumeName, ForgottenAnswer,
     IngressHost, IssuanceClock, Machine, MachineId, ManagementIdentity, QualifiedService,
     RecoverySeed, SealingPublicKey, forgotten_key,
@@ -82,6 +82,7 @@ impl MachinePublicationGuard<'_> {
                 machine.runtime.running_builds = overlay.running_builds;
                 machine.runtime.pool_committable_bytes = overlay.pool_committable_bytes;
                 machine.runtime.sealing = overlay.sealing;
+                machine.runtime.device_enforcement = Some(local.device_enforcement());
                 machine.runtime.management_identity = Some(local.management_secret().public_key());
                 Some(machine)
             }
@@ -534,6 +535,17 @@ impl ReplicatedStore {
         Ok(())
     }
 
+    /// Name the Cluster. The last write wins, here and across replicas.
+    pub async fn publish_cluster_name(&self, name: &ClusterName) -> Result<(), Error> {
+        self.api
+            .execute([Statement::new(
+                "INSERT INTO cluster (key, value) VALUES ('name', ?) ON CONFLICT (key) DO UPDATE SET value = excluded.value",
+                [json!(name.as_str())],
+            )])
+            .await?;
+        Ok(())
+    }
+
     pub async fn publish_sealing_public_key(&self, key: SealingPublicKey) -> Result<(), Error> {
         self.api
             .execute([Statement::new(
@@ -655,6 +667,34 @@ impl ReplicatedStore {
             .map_err(|error| {
                 Error::Protocol(format!(
                     "invalid Cluster network: {error}",
+                    error = ployz_core::error_chain::inline(&error),
+                ))
+            })
+    }
+
+    /// The Cluster Name on this replica, or `None` when the Cluster has none or
+    /// its row has not replicated here yet.
+    ///
+    /// # Errors
+    /// Returns an error when the Corrosion query fails, or the stored value is
+    /// not a Cluster Name.
+    pub async fn cluster_name(&self) -> Result<Option<ClusterName>, Error> {
+        let query = self
+            .api
+            .query(Statement::new(
+                "SELECT value FROM cluster WHERE key = 'name'",
+                [],
+            ))
+            .await?;
+        let rows = query.rows(["value"])?;
+        let Some([value]) = rows.first() else {
+            return Ok(None);
+        };
+        ClusterName::parse(text(value, "Cluster Name")?)
+            .map(Some)
+            .map_err(|error| {
+                Error::Protocol(format!(
+                    "invalid Cluster Name: {error}",
                     error = ployz_core::error_chain::inline(&error),
                 ))
             })

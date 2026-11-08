@@ -1,6 +1,6 @@
 # Grounding: cluster ingress modes (Caddy public vs BYO Cloudflare Tunnel)
 
-Repo: /home/codex/.t3/worktrees/ployz-rust/t3-2336df24. Terms per core/CONTEXT.md and dashboard/CONTEXT.md. Bets in core/DESIGN.md.
+Terms per core/CONTEXT.md and dashboard/CONTEXT.md. Bets in core/DESIGN.md.
 
 ## Goal
 

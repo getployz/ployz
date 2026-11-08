@@ -547,6 +547,36 @@ impl Session {
             .map(drop)
     }
 
+    /// Name the Cluster through the entry Machine. The last name written wins across the
+    /// Cluster, and each Machine's Internal DNS answers the alias once the name reaches it.
+    ///
+    /// # Errors
+    /// Returns `unsupported` when the Machine predates Cluster Names, `unavailable` off a
+    /// participating Machine, and transport errors.
+    pub async fn set_cluster_name(
+        &self,
+        name: ployz_core::ClusterName,
+    ) -> Result<ployz_core::ClusterNamed, RpcError> {
+        let description = self.about().await?;
+        if !description.supports(ployz_core::SET_CLUSTER_NAME_CAPABILITY) {
+            return Err(name_refusal(
+                RpcError {
+                    code: RpcErrorCode::Unsupported,
+                    message: format!(
+                        "{} is not advertised",
+                        ployz_core::SET_CLUSTER_NAME_CAPABILITY
+                    ),
+                    details: Value::Null,
+                    cause: Vec::new(),
+                },
+                op::SetClusterName::PATH,
+                &MachineTarget::from(&description.machine_id),
+            ));
+        }
+        self.unary::<op::SetClusterName>(ployz_core::SetClusterNameRequest { name })
+            .await
+    }
+
     /// Set `label`'s Management Client slot to a fresh client key and return its Management
     /// Capability. A repeated Set rotates the key; the previous one works until the new one is used.
     ///
@@ -579,6 +609,26 @@ impl Session {
     pub async fn inspect(&self) -> Result<ployz_core::MachineDetails, RpcError> {
         self.unary::<op::Inspect>(ployz_core::InspectRequest::default())
             .await
+    }
+
+    /// Inspect `machine` through the entry, as [`Self::inspect`] does the entry itself.
+    ///
+    /// # Errors
+    /// Returns `invalid_argument` for a malformed Machine Target, cancellation, or the
+    /// Machine's Inspect error, or the transport's when it did not answer.
+    pub async fn inspect_machine(
+        &self,
+        machine: &str,
+    ) -> Result<ployz_core::MachineDetails, RpcError> {
+        let target =
+            MachineTarget::parse(machine).map_err(|error| invalid_argument(error.to_string()))?;
+        let client = self.client()?;
+        self.until_closed(client.invoke::<op::Inspect>(
+            ployz_core::InspectRequest::default(),
+            &target,
+            Some(crate::connect::TARGET_RPC_TIMEOUT),
+        ))
+        .await
     }
 
     /// Publish or clear Certificate Material for one hostname or single-level wildcard.

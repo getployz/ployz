@@ -231,6 +231,7 @@ async fn publication_guard_rechecks_the_local_phase() {
     );
     let (mut machine, local) = participating_record();
     machine.runtime.management_identity = Some(local.management_secret().public_key());
+    machine.runtime.device_enforcement = Some(local.device_enforcement());
     let publication = store.machine_publication().await;
     assert_eq!(
         publication.publishable_machine(&local, RuntimeOverlay::default()),
@@ -504,6 +505,27 @@ async fn the_first_sealing_key_awaiting_recovery_stays() {
         .unwrap();
 
     assert_eq!(store.sealing_awaits_recovery().await.unwrap(), Some(first));
+    task.abort();
+}
+
+#[tokio::test]
+async fn the_last_cluster_name_written_is_the_one_read() {
+    let (store, task) = identity_store(corrosion_db()).await;
+    assert_eq!(store.cluster_name().await.unwrap(), None);
+    for name in ["acme", "beta"] {
+        let name = ployz_core::ClusterName::parse(name).unwrap();
+        store.publish_cluster_name(&name).await.unwrap();
+        assert_eq!(store.cluster_name().await.unwrap(), Some(name));
+    }
+    store
+        .api()
+        .execute([Statement::new(
+            "UPDATE cluster SET value = 'Not A Label' WHERE key = 'name'",
+            [],
+        )])
+        .await
+        .unwrap();
+    assert!(store.cluster_name().await.is_err());
     task.abort();
 }
 

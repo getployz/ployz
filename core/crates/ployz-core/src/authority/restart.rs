@@ -1,13 +1,14 @@
-//! The approval a Device signs for one Service restart, and the checks a Machine runs
-//! before it acts on one.
+//! The approval a Device, or a browser key under a passkey's session grant, signs for one
+//! Service restart, and the checks a Machine runs before it acts on one.
 
 use serde::{Deserialize, Serialize};
 use ts_rs::TS;
 
 use super::{
     canonical::Timestamp,
-    keys::{Purpose, Signed, Statement},
+    keys::{Approver, Purpose, Signed, SigningPublicKey, Statement},
     refusal::AuthorityRefusal,
+    session::{ActionFamily, GrantScope},
     trusted_key::TrustedKeys,
 };
 use crate::{
@@ -35,10 +36,39 @@ impl WorkflowKind {
             Self::Stop => matches!(step, RestartStep::Hold | RestartStep::Stop),
         }
     }
+
+    /// The family a session grant must name to let a browser key approve this workflow.
+    #[must_use]
+    pub const fn family(self) -> ActionFamily {
+        match self {
+            Self::Restart => ActionFamily::Restart,
+            Self::Stop => ActionFamily::Stop,
+        }
+    }
 }
 
-/// A Device approves one Container's lifecycle steps in one Cluster and Service,
-/// under one operation with a bounded lifetime.
+/// The key a statement says signed it. A Device's key is written bare, as before browser
+/// keys existed, so a Device's approval keeps the bytes an older daemon reads. A browser
+/// key is written as `{"browser": key}`, which an older daemon refuses to parse.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
+#[serde(untagged)]
+pub enum SignerKey {
+    Device(DeviceKey),
+    Browser { browser: SigningPublicKey },
+}
+
+impl SignerKey {
+    #[must_use]
+    pub fn key(self) -> SigningPublicKey {
+        match self {
+            Self::Device(key) => key.into(),
+            Self::Browser { browser } => browser,
+        }
+    }
+}
+
+/// A Device, or a browser key under a session grant, approves one Container's lifecycle
+/// steps in one Cluster and Service, under one operation with a bounded lifetime.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
 #[serde(deny_unknown_fields)]
 pub struct RestartApproval {
@@ -54,8 +84,8 @@ pub struct RestartApproval {
     pub container: ContainerId,
     pub issued_at: Timestamp,
     pub expires_at: Timestamp,
-    /// The Device that signed, which the signature must come from.
-    pub signer: DeviceKey,
+    /// The key that signed, which the signature must come from.
+    pub signer: SignerKey,
 }
 
 pub use super::validity::{CLOCK_SKEW_MILLIS, MAX_LIFETIME_MILLIS};
@@ -130,24 +160,41 @@ pub struct RestartFacts<'a> {
     pub now: Timestamp,
 }
 
-/// Check `approval` is one of this Machine's Devices approving exactly this request. Its
-/// passkeys sign no envelope, so they are never among the signers.
+/// A restart approval a Machine checked, and who approved it.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct Approved {
+    pub body: RestartApproval,
+    pub by: Approver,
+}
+
+/// Check `approval` approves exactly this request, signed by one of this Machine's Devices
+/// or by a browser key a trusted passkey lent a grant covering it. A passkey itself signs
+/// no envelope, so it is never among the signers.
 ///
 /// # Errors
-/// Returns the first [`AuthorityRefusal`] found: a signature problem, a malformed body,
-/// a body naming a different Cluster, workflow, Service, Machine or signer, or an
-/// expired approval. Replay is the Machine's consumption record to refuse.
+/// Returns the first [`AuthorityRefusal`] found: a signature or grant problem, a
+/// malformed body, a body naming a different Cluster, workflow, Service, Machine or
+/// signer, a grant that does not cover the approval, or an expired approval. Replay is
+/// the Machine's consumption record to refuse.
 pub fn verify(
     approval: &Signed<RestartApproval>,
     facts: &RestartFacts<'_>,
-) -> Result<RestartApproval, AuthorityRefusal> {
-    let signers = approval.verified_signers(facts.trusted.signing_keys())?;
+) -> Result<Approved, AuthorityRefusal> {
+    let approvers = approval.approvers(facts.trusted, facts.now)?;
     let body = approval.open()?;
     let Some(cluster) = facts.cluster else {
         return Err(AuthorityRefusal::NoClusterIdentity);
     };
+    let by = approvers.into_iter().find(|approver| {
+        approver.key() == body.signer.key()
+            && matches!(
+                (approver, body.signer),
+                (Approver::Device(_), SignerKey::Device(_))
+                    | (Approver::Browser { .. }, SignerKey::Browser { .. })
+            )
+    });
     let checks = [
-        ("the signer", signers.contains(&body.signer.into())),
+        ("the signer", by.is_some()),
         ("a Cluster", body.cluster == cluster),
         ("a workflow", body.kind.permits(facts.step)),
         ("an Environment", &body.namespace == facts.namespace),
@@ -158,8 +205,19 @@ pub fn verify(
     if let Some((field, _)) = checks.iter().find(|(_, holds)| !holds) {
         return Err(AuthorityRefusal::Mismatch { field });
     }
+    let by = by.expect("the signer check passed");
+    if let Approver::Browser { grant, .. } = &by {
+        grant.body.covers(&GrantScope {
+            cluster,
+            environment: &body.namespace,
+            machines: &body.machines,
+            family: body.kind.family(),
+            issued_at: body.issued_at,
+            expires_at: body.expires_at,
+        })?;
+    }
     verify_time(&body, facts.now)?;
-    Ok(body)
+    Ok(Approved { body, by })
 }
 
 /// Check the signed lifetime and the Machine's clock, including its persisted time floor.
@@ -197,7 +255,7 @@ mod tests {
             container: ContainerId::parse("a".repeat(64)).unwrap(),
             issued_at: Timestamp::from_millis(100_000).unwrap(),
             expires_at: Timestamp::from_millis(1_000_000).unwrap(),
-            signer: device(signer),
+            signer: SignerKey::Device(device(signer)),
         }
     }
 
@@ -244,7 +302,10 @@ mod tests {
         let machine = machine(&[&signer]);
         assert_eq!(
             verify(&signed, &machine.facts()).unwrap(),
-            approval(&signer)
+            Approved {
+                body: approval(&signer),
+                by: Approver::Device(signer.public()),
+            }
         );
     }
 

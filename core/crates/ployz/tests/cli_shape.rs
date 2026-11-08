@@ -427,6 +427,57 @@ fn usage_errors_exit_2() {
 }
 
 #[test]
+fn a_cluster_name_past_63_characters_or_not_one_label_is_refused_before_any_server_is_reached() {
+    let long = "a".repeat(64);
+    for args in [
+        &["cluster", "name", long.as_str(), "--json"][..],
+        &["cluster", "name", "Acme", "--json"],
+        &[
+            "server",
+            "add",
+            "--standalone",
+            "--no-install",
+            "--storage",
+            "none",
+            "root@192.0.2.1",
+            "--cluster-name",
+            "acme.prod",
+            "--json",
+        ],
+    ] {
+        let (code, json, stderr) = run_json(args);
+        assert_eq!(code, Some(2), "{args:?}: {stderr}");
+        assert_eq!(
+            json.pointer("/error/code").unwrap(),
+            "invalid_argument",
+            "{json}"
+        );
+        assert!(message(&json).contains("up to 63"), "{json}");
+    }
+}
+
+#[test]
+fn founding_a_standalone_cluster_with_json_needs_its_name() {
+    let (code, json, stderr) = run_json(&[
+        "server",
+        "add",
+        "--standalone",
+        "--no-install",
+        "--storage",
+        "none",
+        "root@192.0.2.1",
+        "--json",
+    ]);
+    assert_eq!(code, Some(2), "{stderr}");
+    assert_eq!(
+        json.pointer("/error/code").unwrap(),
+        "invalid_argument",
+        "{json}"
+    );
+    assert!(message(&json).contains("--cluster-name"), "{json}");
+}
+
+#[test]
 fn a_cut_valid_list_still_names_the_closest_setting() {
     let (code, stderr) = run_human(&["explain", "web.restart_policy"]);
     assert_eq!(code, Some(2), "{stderr}");

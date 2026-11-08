@@ -158,3 +158,17 @@ export function useRuntimeService(identity: string) {
     runtime: rows[0] ? projectRuntimeServiceRecord(rows[0]) : null,
   };
 }
+
+/** The Servers that run any copy in the Environment `namespace`: what a passkey grant for it names. */
+export function useEnvironmentMachines(namespace: string | null) {
+  const { collections } = useRuntimeContext();
+  const { data: rows = [] } = useLiveQuery({
+    queryKey: ['runtime-services', collections.services.id],
+    query: (q) => q.from({ service: collections.services }).select(({ service }) => service),
+  });
+  if (namespace === null) return [];
+  const prefix = `${namespace}/`;
+  const copies = rows.filter((row) => row.identity.startsWith(prefix)).map(projectRuntimeServiceRecord)
+    .flatMap((service) => [...service.containers, ...service.hookContainers]);
+  return [...new Set(copies.map((copy) => copy.machineId))];
+}

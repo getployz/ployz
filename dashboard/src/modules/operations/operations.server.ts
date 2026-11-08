@@ -1,6 +1,6 @@
 import "@tanstack/react-start/server-only";
 import { createHash } from "node:crypto";
-import type { AcceptedLoss, DestructiveEffect, EnvironmentRef, MachineId, MachineName, ServerRef, ServiceVerb } from "@ployz/sdk";
+import type { AcceptedLoss, DestructiveEffect, EnvironmentRef, MachineId, MachineName, ServerRef, ServiceVerb, Signed } from "@ployz/sdk";
 import { Effect, Schema } from "effect";
 import { Uuid } from "#/lib/schema";
 import { askAgain, carriedInto, gateOperation, operationDigest, type OperationAsked, redeemApproval, type Redeeming, unheldApproval } from "#/modules/approvals/approvals.server";
@@ -235,11 +235,16 @@ export const runVolume = (
         : { ok: false, refusal: inserted.refusal, busy: inserted.busy } as const));
   })));
 
-/** What a stop or restart interrupts, as a human approves it; a start interrupts nothing. */
+/**
+ * What a stop or restart interrupts, as a human approves it; a start interrupts nothing. Its preview names the Namespace
+ * and runtime name Servers know the Service by, which an approver's browser puts in the approvals it makes.
+ */
 const interrupts = (input: {
   readonly environmentId: string;
   readonly place: string;
   readonly service: string;
+  readonly namespace: string;
+  readonly runtime: string;
   readonly verb: ServiceVerb;
   readonly only: ServerRef | null;
 }): OperationAsked | null => {
@@ -248,7 +253,12 @@ const interrupts = (input: {
     subject: `service:${input.environmentId}/${input.service}`,
     verb: input.verb,
     name: `${input.service} in ${input.place}${input.only === null ? "" : ` on ${input.only.name}`}`,
-    preview: { environment: input.environmentId, service: input.service, only: input.only === null ? null : { machine: input.only.machine } },
+    preview: {
+      environment: input.environmentId,
+      service: input.service,
+      namespace: input.namespace,
+      runtime: input.runtime,
+      only: input.only === null ? null : { machine: input.only.machine } },
     effects: [{
       kind: input.verb === "stop" ? "stops_service" : "restarts_service",
       name: input.service,
@@ -257,6 +267,15 @@ const interrupts = (input: {
     }],
   };
 };
+
+/** Whether this stop or restart waits for someone who can protect its Protected Environment, rather than running. */
+export const asksProtector = Effect.fn("Operations.asksProtector")(function* (
+  caller: Caller,
+  input: { readonly environmentId: string; readonly project: string; readonly environment: string; readonly verb: ServiceVerb },
+) {
+  if (input.verb === "start" || protectorOnly(caller, input.environment) === null) return false;
+  return yield* environmentProtected(caller.organization.id, input.project, input.environmentId);
+});
 
 /**
  * A stop or restart in a Protected Environment by someone who can't protect it waits for someone who can, even from
@@ -267,8 +286,7 @@ const guarded = Effect.fn("Operations.guarded")(function* (
   input: { readonly environmentId: string; readonly project: string; readonly environment: string; readonly service: string; readonly verb: ServiceVerb },
   asked: OperationAsked,
 ) {
-  if (input.verb === "start" || protectorOnly(caller, input.environment) === null) return asked;
-  if (!(yield* environmentProtected(caller.organization.id, input.project, input.environmentId))) return asked;
+  if (input.verb === "start" || !(yield* asksProtector(caller, input))) return asked;
   const apply = caller.via === "dashboard" ? { apply: { environmentId: input.environmentId, service: input.service, verb: input.verb } } : {};
   return { ...asked, protected: input.environment, ...apply } satisfies OperationAsked;
 });
@@ -286,6 +304,8 @@ export const actService = (
     readonly verb: ServiceVerb;
     readonly only: ServerRef | null;
     readonly digest: string;
+    /** The browser's approval for each Container, forwarded to Servers that enforce. */
+    readonly approvals?: Readonly<Record<string, Signed>>;
   },
   call: OperationCall,
 ) =>

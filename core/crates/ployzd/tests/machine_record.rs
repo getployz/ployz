@@ -388,6 +388,7 @@ fn reopening_a_participating_machine_refreshes_runtime_metadata() {
         store_filesystem: None,
         store_syncs_commits: None,
         capabilities: Default::default(),
+        device_enforcement: None,
         management_identity: None,
         leaving: false,
     })

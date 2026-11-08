@@ -52,7 +52,7 @@ impl Client {
                 .map(|volume| (&volume.id, &volume.labels)),
         )
         .into_iter()
-        .filter(|namespace| !namespace.name.is_reserved())
+        .filter(|namespace| !namespace.name.is_system())
         .collect();
         Ok((namespaces, gaps))
     }
@@ -115,7 +115,7 @@ impl Client {
         );
         let mut destroyed_namespaces = Vec::new();
         for namespace in namespaces {
-            if namespace.name.is_reserved() {
+            if namespace.name.is_system() {
                 continue;
             }
             match self

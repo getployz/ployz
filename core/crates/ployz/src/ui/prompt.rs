@@ -63,6 +63,28 @@ pub(crate) fn confirm(
     }
 }
 
+pub(crate) fn input<T, E: std::fmt::Display>(
+    question: &str,
+    parse: impl Fn(&str) -> Result<T, E>,
+    refusal: impl FnOnce() -> Failure,
+    declined: &str,
+) -> Result<T, Failure> {
+    if !can_prompt() {
+        return Err(refusal());
+    }
+    let typed = ask(|| {
+        Input::<String>::new()
+            .with_prompt(question)
+            .validate_with(|typed: &String| parse(typed.trim()).map(drop))
+            .interact_text_on(&Term::stderr())
+            .map(Some)
+    })?
+    .ok_or_else(|| decline(declined))?;
+    Ok(parse(typed.trim())
+        .ok()
+        .expect("the prompt accepts only what parse takes"))
+}
+
 /// Pick one of `items`, starting on `default`. Esc or Ctrl-C declines.
 pub(crate) fn select<T: ToString>(
     title: &str,
