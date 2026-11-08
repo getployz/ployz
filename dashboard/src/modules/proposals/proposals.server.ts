@@ -19,12 +19,12 @@ import {
   type ProposalApprovals,
   type ProposalHalt,
   type ProposalStep,
+  ranOutReason,
   type StepProgress,
-  stepTitle,
   strandedByProposal,
 } from "#/modules/proposals/proposal";
 import { operationProposals } from "#/modules/proposals/tables";
-import { needsNewerPloyz, type ServiceActState, strandedByStop } from "#/modules/service-act/service-act";
+import { APPROVAL_RAN_OUT, needsNewerPloyz, type ServiceActLeg, type ServiceActState, strandedByStop } from "#/modules/service-act/service-act";
 import { actTarget, strandingStop } from "#/modules/service-act/service-act.server";
 import { serviceAct } from "#/modules/service-act/tables";
 import { Database } from "#/server/database.server";
@@ -35,7 +35,13 @@ type ProposalRow = typeof operationProposals.$inferSelect;
 type Refused = { readonly ok: false; readonly refusal: StoreRefusal };
 const refused = (code: string, message: string): Refused => ({ ok: false, refusal: { code, message, details: null } });
 
-type StepAct = { readonly proposalStep: number | null; readonly state: ServiceActState; readonly reason: string | null; readonly requestedAt: Date };
+type StepAct = {
+  readonly proposalStep: number | null;
+  readonly state: ServiceActState;
+  readonly reason: string | null;
+  readonly legs: readonly ServiceActLeg[];
+  readonly requestedAt: Date;
+};
 
 /** A proposal as the agent and the card read it, with where each step stands given its runs so far. */
 function proposalView(row: ProposalRow, acts: readonly StepAct[] = []) {
@@ -184,11 +190,15 @@ const stepStates = (row: ProposalRow, acts: readonly StepAct[]) => {
     const run = runs.get(index);
     const halt = row.halt?.index === index ? row.halt : null;
     const state: StepProgress = run !== undefined ? run.state : halt !== null ? "failed" : halted || row.status !== "approved" ? "not_run" : "waiting";
-    const reason = run?.reason ?? halt?.reason ?? null;
+    const reason = run === undefined ? halt?.reason ?? null : runReason(row.steps, index, run);
     if (state === "failed" || state === "unknown") halted = true;
     return { index: index + 1, verb: step.verb, service: step.service, state, reason };
   });
 };
+
+/** A run's reason as the card shows it: one a leg refused for the window names what the person has to start now. */
+const runReason = (steps: ProposalRow["steps"], index: number, run: StepAct) =>
+  run.legs.some((leg) => leg.reason === APPROVAL_RAN_OUT) ? ranOutReason(steps, index, run.legs) : run.reason;
 
 /** Each step's newest run: a step admitted twice, which its request key stops, would still read as its last run. */
 const latestRuns = (acts: readonly StepAct[]) =>
@@ -196,7 +206,7 @@ const latestRuns = (acts: readonly StepAct[]) =>
 
 const actsOf = Effect.fn("Proposals.acts")(function* (row: ProposalRow) {
   const { drizzle } = yield* Database;
-  return yield* drizzle.select({ proposalStep: serviceAct.proposalStep, state: serviceAct.state, reason: serviceAct.reason, requestedAt: serviceAct.requestedAt })
+  return yield* drizzle.select({ proposalStep: serviceAct.proposalStep, state: serviceAct.state, reason: serviceAct.reason, legs: serviceAct.legs, requestedAt: serviceAct.requestedAt })
     .from(serviceAct).where(and(eq(serviceAct.organizationId, row.organizationId), eq(serviceAct.proposalId, row.id)));
 });
 
@@ -286,7 +296,7 @@ const BundleWindow = Schema.fromJsonString(Schema.Struct({ expires_at: Schema.Nu
 const stepRefusal = Effect.fn("Proposals.stepRefusal")(function* (row: ProposalRow, index: number, step: ProposalStep) {
   const window = Schema.decodeUnknownOption(BundleWindow)(row.bundle?.body);
   if (Option.isNone(window)) return "The approval can't be read.";
-  if (Date.now() > window.value.expires_at) return `The approval ran out before step ${index + 1}. ${stepTitle(step)} yourself.`;
+  if (Date.now() > window.value.expires_at) return ranOutReason(row.steps, index, []);
   const beyond = beyondEnvironments(row.callerEnvironments ?? undefined, { environment: row.environment });
   if (beyond !== null) return beyond;
   const found = yield* findService(row.organizationId, row.environmentId, step.service);

@@ -1,6 +1,6 @@
 import type { MachineId } from "@ployz/sdk";
 import { describe, expect, it } from "vitest";
-import { MISMATCHED_PROPOSAL, PROPOSAL_CAPABILITY, type ProposalStep, shownSteps, stepLoss, stepTitle, strandedByProposal } from "./proposal";
+import { MISMATCHED_PROPOSAL, PROPOSAL_CAPABILITY, type ProposalStep, ranOutReason, shownSteps, stepLoss, stepTitle, strandedByProposal } from "./proposal";
 
 const stop = { verb: "stop" as const, service: "web", only: null, namespace: "shop-prod-a1b2", runtime: "web" };
 const start = { ...stop, verb: "start" as const };
@@ -77,5 +77,25 @@ describe("strandedByProposal", () => {
     expect(strandedByProposal(copies, [{ ...host, capabilities: [...host.capabilities, PROPOSAL_CAPABILITY] }])).toBeNull();
     expect(strandedByProposal(copies, [{ ...host, deviceEnforcement: false }])).toBeNull();
     expect(strandedByProposal(copies, [{ ...host, id: "m2" }])).toBeNull();
+  });
+});
+
+describe("ranOutReason", () => {
+  const worker = { ...stop, verb: "restart" as const, service: "worker", runtime: "worker" };
+  const api = { ...stop, service: "api", runtime: "api" };
+  const db = { ...stop, service: "db", runtime: "db" };
+  const leg = { server: "fra-1", machine: "m1", container: "c1", hook: false, stop: null, start: null, reason: null };
+  it("names what earlier steps left stopped, not the step it halted on", () => {
+    expect(ranOutReason([stop, worker, start], 1, [])).toBe("The approval ran out. Start web yourself.");
+    expect(ranOutReason([stop, api, db, worker], 3, [])).toBe("The approval ran out. Start web, api and db yourself.");
+  });
+  it("adds the halted step's own Service when it is a start, or a copy of it was stopped and never started again", () => {
+    expect(ranOutReason([stop, start], 1, [])).toBe("The approval ran out. Start web yourself.");
+    expect(ranOutReason([stop, worker, start], 1, [{ ...leg, stop: "done", start: "failed" }])).toBe("The approval ran out. Start web and worker yourself.");
+    expect(ranOutReason([worker], 0, [{ ...leg, stop: "failed" }])).toBe("The approval ran out. Restart worker yourself.");
+  });
+  it("drops a Service a later step started again", () => {
+    expect(ranOutReason([stop, start, api, { ...api, verb: "start" as const }], 3, [])).toBe("The approval ran out. Start api yourself.");
+    expect(ranOutReason([stop, { ...stop, verb: "restart" as const }, api], 2, [])).toBe("The approval ran out. Stop api yourself.");
   });
 });

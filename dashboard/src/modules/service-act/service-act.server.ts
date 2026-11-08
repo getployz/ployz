@@ -15,11 +15,13 @@ import {
   copiesIn,
   endOf,
   enforcesIn,
+  APPROVAL_RAN_OUT,
   legOf,
   legsOf,
   type LegStep,
   needsNewerPloyz,
   progressOf,
+  ranOut,
   SERVICE_ACT_PENDING_LIMIT_MS,
   SERVICE_ACT_RUNNING_LIMIT_MS,
   type ServiceActBefore,
@@ -269,6 +271,11 @@ export const actOnContainer = Effect.fn("ServiceAct.leg")(function* (
     if (leg.container !== container || !takes(leg, side) || leg[side] !== null && leg[side] !== "sent") continue;
     if (alreadyThere(row.verb, side, states.get(leg.container))) {
       if (!(yield* write(leg, "already_there"))) return legs;
+      continue;
+    }
+    // Checked again at each leg: a restart's start leg can fall past the window its stop leg was inside.
+    if (ranOut(row.approvals?.[leg.container], Date.now())) {
+      if (!(yield* write(leg, "failed", APPROVAL_RAN_OUT))) return legs;
       continue;
     }
     if (session.status !== "connected") {

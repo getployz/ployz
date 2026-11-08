@@ -167,9 +167,9 @@ The steps run one after another, and if one fails, the ones after it don't run. 
 those steps still stands until it runs out, 15 minutes after you gave it. The card moves under
 **Recent** and shows each step as **Done**, **Failed** with why, or **Not run**. You can ask the
 agent how far the plan got. Each server runs only a step you saw, and each step only once.
-If a step hasn't started within 15 minutes of your approval, it doesn't run; the card says
-which step, so you can do it yourself. A proposal holds only restarts, stops and starts; a
-deploy or a settings change still asks on its own card.
+When the 15 minutes run out with steps left, they don't run, and the card says what to start
+yourself. A proposal holds only restarts, stops and starts; a deploy or a settings change still
+asks on its own card.
 
 A proposal in a [Protected environment](../environments/environments.md#protect-an-environment)
 can only be presented by an owner or admin. If a server needs a newer Ployz to take a proposal,

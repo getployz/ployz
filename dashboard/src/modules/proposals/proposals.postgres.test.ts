@@ -25,7 +25,7 @@ import {
 import { operationProposals } from "#/modules/proposals/tables";
 import { OrganizationRuntime, type OrganizationRuntimeService } from "#/modules/runtime/organization-runtime.server";
 import type { PloyzSession } from "#/modules/runtime/ployz.server";
-import { START_APPROVAL_CAPABILITY } from "#/modules/service-act/service-act";
+import { APPROVAL_RAN_OUT, type ServiceActLeg, START_APPROVAL_CAPABILITY } from "#/modules/service-act/service-act";
 import { serviceAct } from "#/modules/service-act/tables";
 import { AuthLive } from "#/server/auth.server";
 import { Database } from "#/server/database.server";
@@ -308,7 +308,29 @@ it.live("a step due after the approval's 15 minutes doesn't run, and the card sa
     expect(yield* acts).toHaveLength(1);
     expect(yield* provided(proposalStatus(owner, id))).toMatchObject({ ok: true, value: { steps: [
       { state: "done" },
-      { state: "failed", reason: "The approval ran out before step 2. Start web yourself." },
+      { state: "failed", reason: "The approval ran out. Start web yourself." },
+    ] } });
+  }));
+
+it.live("a step a Server refused for the window reads as the approval running out, naming what to start", () =>
+  Effect.gen(function* () {
+    const { call, acts, cluster, provided, owner, ended, approve } = yield* shop();
+    const id = idOf(yield* call("proposal_create", {}));
+    yield* call("service_stop", { service: "web", proposal: id });
+    yield* call("service_restart", { service: "web", proposal: id });
+    yield* call("proposal_present", { proposal: id });
+    expect(yield* cluster(decideProposal(owner, id, approve))).toMatchObject({ ok: true });
+    const [first] = yield* acts;
+    yield* ended(first?.id ?? expect.fail("no act"), "done");
+    yield* cluster(advanceProposal({ actId: first?.id ?? "", organizationId: ORGANIZATION }));
+    const [, second] = yield* acts;
+    // The restart's stop leg went inside the window and its start leg fell past it.
+    const leg: ServiceActLeg = { server: "machine-2", machine: MACHINE, container: CONTAINER, hook: false, stop: "done", start: "failed", reason: APPROVAL_RAN_OUT };
+    yield* provided(Effect.flatMap(Database, ({ drizzle }) => drizzle.update(serviceAct)
+      .set({ state: "failed", reason: `Container 1 on machine-2 didn't come back. ${APPROVAL_RAN_OUT}`, legs: [leg], endedAt: new Date() }).where(eq(serviceAct.id, second?.id ?? ""))));
+    expect(yield* provided(proposalStatus(owner, id))).toMatchObject({ ok: true, value: { steps: [
+      { state: "done" },
+      { state: "failed", reason: "The approval ran out. Start web yourself." },
     ] } });
   }));
 

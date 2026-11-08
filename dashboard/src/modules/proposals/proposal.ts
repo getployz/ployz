@@ -1,4 +1,5 @@
 import type { ServerRef, ServiceVerb, Signed } from "@ployz/sdk";
+import { APPROVAL_RAN_OUT, leftStopped, type ServiceActLeg } from "#/modules/service-act/service-act";
 
 export const PROPOSAL_STATUSES = ["draft", "presented", "approved", "denied"] as const;
 export type ProposalStatus = (typeof PROPOSAL_STATUSES)[number];
@@ -51,6 +52,27 @@ export const stepName = (step: Pick<ProposalStep, "service" | "runtime">) =>
 /** A step as its card line reads: `Stop web`, or `Stop web on fra-1`. */
 export const stepTitle = (step: Pick<ProposalStep, "verb" | "service" | "runtime" | "only">) =>
   `${VERBS[step.verb]} ${stepName(step)}${step.only === null ? "" : ` on ${step.only.name}`}`;
+
+/** Names as a sentence lists them: `web`, `web and api`, `web, api and db`. */
+const listed = (names: readonly string[]) =>
+  names.length < 2 ? names.join("") : `${names.slice(0, -1).join(", ")} and ${names[names.length - 1] ?? ""}`;
+
+/**
+ * Why step `index` halted when the approval ran out: what the person has to start now, which is every Service an
+ * earlier step stopped and none started again, with this step's own when it is a start or its legs left a copy
+ * stopped; or, with nothing stopped, the step left to them.
+ */
+export function ranOutReason(steps: readonly ProposalStep[], index: number, legs: readonly ServiceActLeg[]) {
+  const stopped = new Set<string>();
+  for (const step of steps.slice(0, index)) {
+    if (step.verb === "stop") stopped.add(stepName(step));
+    else stopped.delete(stepName(step));
+  }
+  const step = steps[index];
+  if (step === undefined) return APPROVAL_RAN_OUT;
+  if (step.verb === "start" || legs.some(leftStopped)) stopped.add(stepName(step));
+  return stopped.size === 0 ? `${APPROVAL_RAN_OUT} ${stepTitle(step)} yourself.` : `${APPROVAL_RAN_OUT} Start ${listed([...stopped])} yourself.`;
+}
 
 /** What a step takes away while it runs, as the card's Destroys list words it; null for a start. */
 export const stepLoss = (step: Pick<ProposalStep, "verb" | "service" | "runtime">) =>
