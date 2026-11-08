@@ -6,7 +6,9 @@ import { normalizeZone, wildcardRecord, zoneProblem } from "#/modules/cloudflare
 
 /** A token shaped as Cloudflare mints them: base64 JSON naming the account, the tunnel and the connector's secret. */
 const tunnelTokenOf = (claims: { readonly a?: string; readonly t?: string; readonly s?: string }) => Buffer.from(JSON.stringify(claims)).toString("base64");
-const TUNNEL_TOKEN = tunnelTokenOf({ a: "793e01282306ab4668c9f0dba7d4cea4", t: "bd0e0af1-d7e0-4d84-8bc3-d1ca9338a9ad", s: Buffer.alloc(64, 7).toString("base64") });
+/** Base64 JSON, but not a tunnel token: a connector can't start on it. */
+const NOT_A_TOKEN = Buffer.from(JSON.stringify({ not: "a token" })).toString("base64");
+const TUNNEL_TOKEN = tunnelTokenOf({ a: "0123456789abcdef0123456789abcdef", t: "bd0e0af1-d7e0-4d84-8bc3-d1ca9338a9ad", s: Buffer.alloc(64, 7).toString("base64") });
 
 describe("the tunnel token's shape", () => {
   it("takes what Cloudflare mints and refuses anything a connector can't start on", () => {
@@ -111,7 +113,7 @@ describe("the Cloudflare API calls", () => {
 
   it("treats a token a connector can't start on as none, since the tunnel exists either way, and refuses it on request", async () => {
     const { http } = cloudflare({
-      "POST /accounts/a1/cfd_tunnel": { status: 200, result: { id: "t1", token: "eyJub3QiOiJhIHRva2VuIn0=" } },
+      "POST /accounts/a1/cfd_tunnel": { status: 200, result: { id: "t1", token: NOT_A_TOKEN } },
       "GET /accounts/a1/cfd_tunnel/t1/token": { status: 200, result: "plain" },
     });
     expect(await Effect.runPromise(createTunnel(http, token, "a1", "ployz-acme"))).toEqual({ id: "t1", token: null });

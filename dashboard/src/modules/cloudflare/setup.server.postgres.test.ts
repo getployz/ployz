@@ -187,7 +187,7 @@ it("reads the tunnel's token on request when Cloudflare sends none with the tunn
 });
 
 it("deletes the tunnel and asks no Server to run it when its token isn't one a connector can start on", async () => {
-  const { http, alive, records } = cloudflare({ tokenOnCreate: "eyJub3QiOiJhIHRva2VuIn0=" });
+  const { http, alive, records } = cloudflare({ tokenOnCreate: Buffer.from(JSON.stringify({ not: "a token" })).toString("base64") });
   const { runtime, sets } = cluster();
   await expect(setUp("example.com", http, runtime)).rejects.toMatchObject({ message: expect.stringContaining("Nothing was changed.") });
   expect(sets).toEqual([]);
