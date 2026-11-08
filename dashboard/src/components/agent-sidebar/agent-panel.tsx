@@ -172,7 +172,16 @@ function Conversation({ organizationSlug, scope, page, threadId, onChat, dock }:
   useEffect(() => { localStorage.setItem(decidedKey(organizationSlug), JSON.stringify(decided)); }, [organizationSlug, decided]);
   const pendingIds = new Set(proposed.map((proposal) => proposal.id));
   const recent = decided.filter((id) => !pendingIds.has(id));
-  const keep = (id: string) => setDecided((ids) => [id, ...ids.filter((kept) => kept !== id)].slice(0, DECIDED_KEPT));
+  // A proposal that leaves the waiting list was decided, here or anywhere, so it moves to Recent. Watching the list
+  // rather than the card keeps one the poll drops before this tab hears its own decision.
+  const [watched, setWatched] = useState<readonly string[]>([]);
+  if (proposals !== undefined) {
+    const left = watched.filter((id) => !pendingIds.has(id));
+    if (left.length > 0 || proposed.some((proposal) => !watched.includes(proposal.id))) {
+      setWatched(proposed.map((proposal) => proposal.id));
+      if (left.length > 0) setDecided((ids) => [...left, ...ids.filter((id) => !left.includes(id))].slice(0, DECIDED_KEPT));
+    }
+  }
   const drop = (id: string) => setDecided((ids) => ids.filter((kept) => kept !== id));
 
   return (
@@ -193,7 +202,7 @@ function Conversation({ organizationSlug, scope, page, threadId, onChat, dock }:
                 <MessageScrollerItem key={heading}>
                   <section aria-label={heading} className="flex flex-col gap-2">
                     <h3 className="text-xs font-medium text-muted-foreground">{heading}</h3>
-                    {proposals.map((proposal) => <ProposalCard key={proposal.id} organizationSlug={organizationSlug} id={proposal.id} seed={proposal} onSettled={() => keep(proposal.id)} />)}
+                    {proposals.map((proposal) => <ProposalCard key={proposal.id} organizationSlug={organizationSlug} id={proposal.id} seed={proposal} />)}
                     {approvals.map((approval) => <ApprovalCard key={approval.id} organizationSlug={organizationSlug} id={approval.id} seed={approval} />)}
                   </section>
                 </MessageScrollerItem>

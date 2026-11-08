@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useState } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { XIcon } from "lucide-react";
 import { RelativeTime } from "#/components/relative-time";
@@ -15,20 +15,15 @@ const stepsWord = (count: number) => `${count} ${count === 1 ? "step" : "steps"}
 /**
  * One proposal: waiting on a person, with every step an agent staged in the order they run, approved with one passkey
  * prompt; or decided, with where each step got. Drawn from its Cloud row and reread while it waits or runs.
- * `onSettled` runs once the row stops waiting; `onDismiss` lets a decided card go.
+ * `onDismiss` lets a decided card go.
  */
-export function ProposalCard({ organizationSlug, id, seed, onSettled, onDismiss }: {
+export function ProposalCard({ organizationSlug, id, seed, onDismiss }: {
   organizationSlug: string;
   id: string;
   seed?: ProposalView;
-  onSettled?: () => void;
   onDismiss?: () => void;
 }) {
   const { data: proposal } = useQuery({ ...proposalOptions(organizationSlug, id), initialData: seed });
-  const settled = proposal !== undefined && proposal !== null && proposal.status !== "presented";
-  useEffect(() => {
-    if (settled) onSettled?.();
-  }, [settled, onSettled]);
 
   if (proposal === undefined || proposal === null) return null;
   switch (proposal.status) {
