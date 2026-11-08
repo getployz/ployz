@@ -7,19 +7,22 @@ use std::{
 use ployz_core::{
     CertificateKeyType, CertificatePolicy, ContainerAddress, ContainerId, ContainerKind,
     ContainerObservation, ContainerRuntimeObservation, DEFAULT_RENEW_AT_LIFETIME_FRACTION,
-    HealthObservation, HttpProtocol, IngressHost, MACHINE_API_PORT, Machine, MachineId, Namespace,
-    PortPublication, ResolvedServiceSpec, ServiceId, ServiceName, resolve_certificate_policy,
+    HealthObservation, HttpProtocol, IngressHost, IssuanceClock, IssuanceFailure, MACHINE_API_PORT,
+    Machine, MachineId, Namespace, PortPublication, ResolvedServiceSpec, ServiceId, ServiceName,
+    resolve_certificate_policy,
 };
 use serde_json::json;
 
 use super::{
-    CHALLENGE_WAIT, IssuanceAction, RANK_STEP, challenge_probe_addresses, directory_from_env,
-    ingress_challenge_ips, issuance_action, machine_jitter, machine_rank, material_validity,
-    order_certificate, poll_wait, probe_client, renewal_window, run, verify_answers,
-    wait_for_http01, wanted_certificate_hosts,
+    CHALLENGE_WAIT, IssuanceAction, RANK_STEP, RETRY_INTERVAL, challenge_probe_addresses,
+    directory_from_env, ingress_challenge_ips, issuance_action, issue_wanted, machine_jitter,
+    machine_rank, material_validity, order_certificate, poll_wait, probe_client, renewal_window,
+    run, verify_answers, wait_for_http01, wanted_certificate_hosts,
 };
 use crate::corrosion::{
-    CertificateChallenge, CertificateMaterial, CertificateRow, fake_cluster::FakeCluster,
+    CertificateChallenge, CertificateMaterial, CertificateRow, ReplicatedStore,
+    fake_cluster::FakeCluster,
+    store_tests::{corrosion_db, identity_store},
 };
 
 fn policy_for(directory: &str) -> CertificatePolicy {
@@ -916,6 +919,159 @@ fn observation(
         run: None,
     })
     .unwrap()
+}
+
+/// A hostname whose probe reaches no Machine of the replica: an IP literal, so `resolve_host`
+/// asks no DNS server, and the verify probe gets no Machine id from `127.0.0.1:80`.
+const UNREACHED: &str = "127.0.0.1";
+
+/// A directory nothing serves, so a pass that pushes a hostname fails at `account` without
+/// leaving the host.
+const NO_DIRECTORY_SERVER: &str = "http://127.0.0.1:1/directory";
+
+/// A replica whose `machines` rows are one per seed, and whose one Service Container serves
+/// `hostname` over https.
+async fn replica(seeds: &[&str], hostname: &str) -> (ReplicatedStore, tokio::task::JoinHandle<()>) {
+    let db = corrosion_db();
+    for (n, seed) in seeds.iter().enumerate() {
+        let machine = machine_with_endpoint(seed, &format!("192.0.2.{}", n + 1));
+        db.execute(
+            "INSERT INTO machines (id, info) VALUES (?, ?)",
+            rusqlite::params![
+                machine.id.as_str(),
+                serde_json::to_string(&machine).unwrap()
+            ],
+        )
+        .unwrap();
+    }
+    let container = observation(1, "api", vec![ingress(hostname, HttpProtocol::Https)]);
+    db.execute(
+        "INSERT INTO containers (id, machine_id, container) VALUES (?, ?, ?)",
+        rusqlite::params![
+            container.container_id.to_string(),
+            container.machine_id.to_string(),
+            serde_json::to_string(&container).unwrap()
+        ],
+    )
+    .unwrap();
+    identity_store(db).await
+}
+
+/// The row holds a failed order's Authority clock, which passes `left` from now.
+async fn authority_clock(store: &ReplicatedStore, hostname: &IngressHost, left: Duration) {
+    store
+        .record_certificate_failure(
+            hostname,
+            None,
+            "order for the hostname is invalid",
+            IssuanceClock::new(1, SystemTime::now() + left, IssuanceFailure::Authority),
+        )
+        .await
+        .unwrap();
+}
+
+/// A shared hold is not this Machine's rank delay. Rank 2's delay is 60 s. Its first pass the
+/// clock holds asks for a 60 s sleep. Sixty seconds on, the clock still holds, so the pass has
+/// nothing to order and the hostname still owes the delay from the pass after the hold.
+#[tokio::test]
+async fn a_pass_the_shared_clock_holds_does_not_count_toward_the_rank_delay() {
+    let hostname = host(UNREACHED);
+    let (store, task) = replica(&["a", "b", "c"], UNREACHED).await;
+    authority_clock(&store, &hostname, Duration::from_secs(3600)).await;
+    let account_dir =
+        std::env::temp_dir().join(format!("ployzd-acme-held-{}", MachineId::random()));
+    let directory = Some(NO_DIRECTORY_SERVER.to_owned());
+    let mut kept = BTreeMap::new();
+
+    let first = issue_wanted(
+        &store,
+        &directory,
+        &account_dir,
+        &machine_id("c"),
+        &mut kept,
+    )
+    .await
+    .unwrap();
+    assert!(
+        first > Duration::from_secs(50) && first <= Duration::from_secs(60),
+        "{first:?}"
+    );
+    tokio::time::pause();
+    tokio::time::advance(Duration::from_secs(60)).await;
+    tokio::time::resume();
+    let second = issue_wanted(
+        &store,
+        &directory,
+        &account_dir,
+        &machine_id("c"),
+        &mut kept,
+    )
+    .await
+    .unwrap();
+    assert_eq!(
+        second, RETRY_INTERVAL,
+        "rank 2 counted 60 s of the hold toward its rank delay: poll_wait answered RANK_STEP, its answer for an Order-due hostname"
+    );
+    task.abort();
+}
+
+/// A pass the shared clock holds wakes when the clock passes, not one rank step later.
+#[tokio::test]
+async fn a_held_pass_wakes_when_the_shared_clock_passes() {
+    let hostname = host(UNREACHED);
+    let (store, task) = replica(&["a", "b"], UNREACHED).await;
+    authority_clock(&store, &hostname, Duration::from_secs(10)).await;
+    let account_dir =
+        std::env::temp_dir().join(format!("ployzd-acme-wake-{}", MachineId::random()));
+    let mut kept = BTreeMap::new();
+
+    let wait = issue_wanted(
+        &store,
+        &Some(NO_DIRECTORY_SERVER.to_owned()),
+        &account_dir,
+        &machine_id("a"),
+        &mut kept,
+    )
+    .await
+    .unwrap();
+    assert!(
+        wait <= Duration::from_secs(10) && wait > Duration::from_secs(5),
+        "rank 0 is held 10 s, and asked to sleep {wait:?}"
+    );
+    task.abort();
+}
+
+/// Whichever rank's probe refuses a hostname records the refusal, so the row says why and
+/// when the Cluster tries again, even when the lowest Machine id runs no certificate loop.
+#[tokio::test]
+async fn a_refusal_is_recorded_by_whichever_rank_sees_it() {
+    let hostname = host(UNREACHED);
+    // Machine "a" is rank 0 and runs no loop here, as a Down or leaving Machine does.
+    let (store, task) = replica(&["a", "b"], UNREACHED).await;
+    let account_dir =
+        std::env::temp_dir().join(format!("ployzd-acme-refused-{}", MachineId::random()));
+
+    issue_wanted(
+        &store,
+        &Some(NO_DIRECTORY_SERVER.to_owned()),
+        &account_dir,
+        &machine_id("b"),
+        &mut BTreeMap::new(),
+    )
+    .await
+    .unwrap();
+    let row = store.certificate_row(&hostname).await.unwrap();
+    assert!(
+        row.last_error()
+            .is_some_and(|reason| reason.contains(UNREACHED)),
+        "rank 1 recorded no refusal: {row:?}"
+    );
+    assert!(
+        row.clock()
+            .is_some_and(|clock| matches!(clock.last_failure(), IssuanceFailure::Refused(_))),
+        "rank 1 recorded no clock: {row:?}"
+    );
+    task.abort();
 }
 
 #[test]
