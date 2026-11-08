@@ -77,7 +77,7 @@ function DnsRecords({ records }: { records: DnsRecord[] }) {
               {record.name}
               <CopyButton value={record.name} label={`Copy ${record.type} name`} size="icon-xs" />
             </TableCell>
-            <TableCell>
+            <TableCell className="whitespace-normal break-all">
               {record.value}
               <CopyButton value={record.value} label={`Copy ${record.type} value`} size="icon-xs" />
             </TableCell>
