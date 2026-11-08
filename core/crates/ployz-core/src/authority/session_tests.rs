@@ -71,6 +71,7 @@ fn approval(namespace: Namespace, machines: Vec<MachineId>) -> RestartApproval {
         signer: SignerKey::Browser {
             browser: browser().public(),
         },
+        proposal: None,
     }
 }
 

@@ -30,12 +30,26 @@ import { chatTitle } from "#/modules/agent/thread-title";
 import type { Failure } from "#/modules/agent/provider-error";
 import { ApprovalCard } from "./approval-card";
 import { pendingApprovalsOptions, waitsOnYou } from "./approvals.queries";
+import { ProposalCard } from "./proposal-card";
+import { pendingProposalsOptions } from "./proposals.queries";
 import { agentThreadsOptions, refetchAgentThreads, type ThreadSummary } from "./threads.queries";
 import { ToolCard, toolOutcome, ToolStep } from "./tool-row";
 
 const askedKey = (threadId: string) => `ployz.agent.asked.${threadId}`;
 const Asked = Schema.fromJsonString(Schema.Record(Schema.String, Schema.String));
 type Asked = typeof Asked.Type;
+
+/** The proposals this browser decided, newest first, so their cards stay to show how each step went. */
+const decidedKey = (organizationSlug: string) => `ployz.agent.decided.${organizationSlug}`;
+const Decided = Schema.fromJsonString(Schema.Array(Schema.String));
+const DECIDED_KEPT = 3;
+const stored = <A,>(schema: Schema.Codec<A, string>, key: string, empty: A): A => {
+  try {
+    return Option.getOrElse(Schema.decodeUnknownOption(schema)(localStorage.getItem(key)), () => empty);
+  } catch {
+    return empty;
+  }
+};
 
 type PanelProps = {
   organizationSlug: string;
@@ -144,15 +158,31 @@ function Conversation({ organizationSlug, scope, page, threadId, onChat, dock }:
       ? [{ key: interrupt.key, approvalId: interrupt.payload.approvalId, interrupt }]
       : []);
 
-  const [asked, setAsked] = useState<Asked>(() =>
-    Option.getOrElse(Schema.decodeUnknownOption(Asked)(localStorage.getItem(askedKey(threadId))), () => ({})));
+  const [asked, setAsked] = useState<Asked>(() => stored(Asked, askedKey(threadId), {}));
   const unseen = bound.filter(({ key, approvalId }) => asked[key] !== approvalId);
   if (unseen.length > 0) setAsked({ ...asked, ...Object.fromEntries(unseen.map(({ key, approvalId }) => [key, approvalId])) });
   useEffect(() => { localStorage.setItem(askedKey(threadId), JSON.stringify(asked)); }, [threadId, asked]);
 
   const { data: pending } = useQuery(pendingApprovalsOptions(organizationSlug));
+  const { data: proposals } = useQuery(pendingProposalsOptions(organizationSlug));
   const ours = new Set(Object.values(asked));
   const waiting = (pending ?? []).filter((approval) => !ours.has(approval.id));
+  const proposed = proposals ?? [];
+  const [decided, setDecided] = useState<readonly string[]>(() => stored(Decided, decidedKey(organizationSlug), []));
+  useEffect(() => { localStorage.setItem(decidedKey(organizationSlug), JSON.stringify(decided)); }, [organizationSlug, decided]);
+  const pendingIds = new Set(proposed.map((proposal) => proposal.id));
+  const recent = decided.filter((id) => !pendingIds.has(id));
+  // A proposal that leaves the waiting list was decided, here or anywhere, so it moves to Recent. Watching the list
+  // rather than the card keeps one the poll drops before this tab hears its own decision.
+  const [watched, setWatched] = useState<readonly string[]>([]);
+  if (proposals !== undefined) {
+    const left = watched.filter((id) => !pendingIds.has(id));
+    if (left.length > 0 || proposed.some((proposal) => !watched.includes(proposal.id))) {
+      setWatched(proposed.map((proposal) => proposal.id));
+      if (left.length > 0) setDecided((ids) => [...left, ...ids.filter((id) => !left.includes(id))].slice(0, DECIDED_KEPT));
+    }
+  }
+  const drop = (id: string) => setDecided((ids) => ids.filter((kept) => kept !== id));
 
   return (
     <MessageScrollerProvider autoScroll>
@@ -164,16 +194,28 @@ function Conversation({ organizationSlug, scope, page, threadId, onChat, dock }:
       <MessageScroller className="flex-1">
         <MessageScrollerViewport>
           <MessageScrollerContent aria-busy={chat.isLoading} className="gap-3 p-3">
-            {[{ heading: "Waiting on you", approvals: waiting.filter(waitsOnYou) }, { heading: "Requested", approvals: waiting.filter((approval) => !waitsOnYou(approval)) }]
-              .filter(({ approvals }) => approvals.length > 0).map(({ heading, approvals }) => (
+            {[
+              { heading: "Waiting on you", approvals: waiting.filter(waitsOnYou), proposals: proposed },
+              { heading: "Requested", approvals: waiting.filter((approval) => !waitsOnYou(approval)), proposals: [] },
+            ]
+              .filter(({ approvals, proposals }) => approvals.length + proposals.length > 0).map(({ heading, approvals, proposals }) => (
                 <MessageScrollerItem key={heading}>
                   <section aria-label={heading} className="flex flex-col gap-2">
                     <h3 className="text-xs font-medium text-muted-foreground">{heading}</h3>
+                    {proposals.map((proposal) => <ProposalCard key={proposal.id} organizationSlug={organizationSlug} id={proposal.id} seed={proposal} />)}
                     {approvals.map((approval) => <ApprovalCard key={approval.id} organizationSlug={organizationSlug} id={approval.id} seed={approval} />)}
                   </section>
                 </MessageScrollerItem>
               ))}
-            {chat.messages.length === 0 && waiting.length === 0 && !chat.isHydrating && !chat.error && (
+            {recent.length > 0 && (
+              <MessageScrollerItem>
+                <section aria-label="Recent" className="flex flex-col gap-2">
+                  <h3 className="text-xs font-medium text-muted-foreground">Recent</h3>
+                  {recent.map((id) => <ProposalCard key={id} organizationSlug={organizationSlug} id={id} onDismiss={() => drop(id)} />)}
+                </section>
+              </MessageScrollerItem>
+            )}
+            {chat.messages.length === 0 && waiting.length === 0 && proposed.length === 0 && !chat.isHydrating && !chat.error && (
               <MessageScrollerItem>
                 <Empty>
                   <EmptyHeader>

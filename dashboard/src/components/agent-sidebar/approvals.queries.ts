@@ -1,7 +1,7 @@
 import { queryOptions, type QueryClient } from "@tanstack/react-query";
 import type { Signed } from "@ployz/sdk";
 import { actApprovals, type ActTarget } from "#/modules/approval-session/approval-prompt";
-import { type ApprovalDecision, shownServiceAct } from "#/modules/approvals/approvals";
+import { type ApprovalDecision, approvalSubject, shownServiceAct } from "#/modules/approvals/approvals";
 import {
   approvalActTargetServerFn,
   decideApprovalServerFn,
@@ -67,13 +67,16 @@ type FetchedTarget = NonNullable<Awaited<ReturnType<typeof approvalActTargetServ
 
 /**
  * What the browser approves for the restart or stop `approval` shows. Cloud's target must name the card's verb,
- * Environment, Service, Namespace and runtime name, so Cloud can't swap in another act or Service; the approvals carry
- * the card's values.
+ * Environment, Service, Namespace and runtime name, so Cloud can't swap in another act or Service, and the card's
+ * title and Destroys line must name that same Service in the Store's place for that Environment, so no name the person
+ * reads differs from what gets signed. The approvals carry the card's values.
  */
-export function shownTarget(approval: Pick<ApprovalView, "review">, target: FetchedTarget) {
+export function shownTarget(approval: Pick<ApprovalView, "command" | "review">, target: FetchedTarget) {
   const shown = shownServiceAct(approval.review);
   const matches = shown !== null && shown.verb === target.verb && shown.environment === target.environmentId && shown.service === target.service
-    && shown.namespace === target.namespace && shown.runtime === target.runtime;
+    && shown.namespace === target.namespace && shown.runtime === target.runtime
+    && approvalSubject(approval.command, approval.review).name === shownName(shown, target)
+    && approval.review.effects.every((effect) => effect.name === shown.service);
   if (!matches) throw new Error(MISMATCHED_ACT);
   // What gets signed comes from the card. Containers and Servers come from Cloud; each Server checks them against its own.
   const { environmentName, copies, machines, environmentMachines } = target;
@@ -89,11 +92,15 @@ export function shownTarget(approval: Pick<ApprovalView, "review">, target: Fetc
   };
 }
 
-/**
- * The approvals a restart or stop ask needs once approved, made in this browser after one passkey prompt. Undefined
- * when it needs none; null when the person cancels. Throws, approving nothing, when Cloud's target isn't the card's.
- */
-export async function approverApprovals(organizationSlug: string, approval: Pick<ApprovalView, "id" | "review">) {
+/** The card's title for the act, as Cloud words it when it asks: `web in shop/production`, or `… on fra-1`. Null for a Server Cloud doesn't list. */
+const shownName = (shown: NonNullable<ReturnType<typeof shownServiceAct>>, target: FetchedTarget) => {
+  const place = `${shown.service} in ${target.project}/${target.environmentName}`;
+  if (shown.only === null) return place;
+  const server = target.machines.find((machine) => machine.id === shown.only?.machine);
+  return server === undefined ? null : `${place} on ${server.name}`;
+};
+
+export async function approverApprovals(organizationSlug: string, approval: Pick<ApprovalView, "id" | "command" | "review">) {
   const fetched = await approvalActTargetServerFn({ data: { organizationSlug, id: approval.id } });
   if (fetched === null) return undefined;
   const { verb, target } = shownTarget(approval, fetched);

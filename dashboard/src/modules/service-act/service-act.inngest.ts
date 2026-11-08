@@ -1,6 +1,7 @@
 import { Option, Schema } from "effect";
 import { attemptLifecycle } from "#/modules/inngest/attempt-lifecycle";
 import type { PloyzStepTools } from "#/modules/inngest/client";
+import { advanceProposal } from "#/modules/proposals/proposals.server";
 import { serviceActRequestedEventType } from "#/modules/inngest/events";
 import { cameBack, rollOrder, stepsOf, takes } from "#/modules/service-act/service-act";
 import {
@@ -39,7 +40,9 @@ export async function executeServiceAct(
     const legs = await step.run(`start:${machine}:${container}`, () => runEffect(actOnContainer(request, runId, container, "start")));
     if (stop && !cameBack(legs, leg)) break;
   }
-  return step.run("record", () => runEffect(recordServiceAct(request, runId)));
+  const recorded = await step.run("record", () => runEffect(recordServiceAct(request, runId)));
+  await step.run("advance-proposal", () => runEffect(advanceProposal(request)));
+  return recorded;
 }
 
 const lifecycle = attemptLifecycle({
