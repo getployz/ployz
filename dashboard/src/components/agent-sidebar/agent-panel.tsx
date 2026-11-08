@@ -30,6 +30,8 @@ import { chatTitle } from "#/modules/agent/thread-title";
 import type { Failure } from "#/modules/agent/provider-error";
 import { ApprovalCard } from "./approval-card";
 import { pendingApprovalsOptions, waitsOnYou } from "./approvals.queries";
+import { ProposalCard } from "./proposal-card";
+import { pendingProposalsOptions } from "./proposals.queries";
 import { agentThreadsOptions, refetchAgentThreads, type ThreadSummary } from "./threads.queries";
 import { ToolCard, toolOutcome, ToolStep } from "./tool-row";
 
@@ -151,8 +153,10 @@ function Conversation({ organizationSlug, scope, page, threadId, onChat, dock }:
   useEffect(() => { localStorage.setItem(askedKey(threadId), JSON.stringify(asked)); }, [threadId, asked]);
 
   const { data: pending } = useQuery(pendingApprovalsOptions(organizationSlug));
+  const { data: proposals } = useQuery(pendingProposalsOptions(organizationSlug));
   const ours = new Set(Object.values(asked));
   const waiting = (pending ?? []).filter((approval) => !ours.has(approval.id));
+  const proposed = proposals ?? [];
 
   return (
     <MessageScrollerProvider autoScroll>
@@ -164,16 +168,20 @@ function Conversation({ organizationSlug, scope, page, threadId, onChat, dock }:
       <MessageScroller className="flex-1">
         <MessageScrollerViewport>
           <MessageScrollerContent aria-busy={chat.isLoading} className="gap-3 p-3">
-            {[{ heading: "Waiting on you", approvals: waiting.filter(waitsOnYou) }, { heading: "Requested", approvals: waiting.filter((approval) => !waitsOnYou(approval)) }]
-              .filter(({ approvals }) => approvals.length > 0).map(({ heading, approvals }) => (
+            {[
+              { heading: "Waiting on you", approvals: waiting.filter(waitsOnYou), proposals: proposed },
+              { heading: "Requested", approvals: waiting.filter((approval) => !waitsOnYou(approval)), proposals: [] },
+            ]
+              .filter(({ approvals, proposals }) => approvals.length + proposals.length > 0).map(({ heading, approvals, proposals }) => (
                 <MessageScrollerItem key={heading}>
                   <section aria-label={heading} className="flex flex-col gap-2">
                     <h3 className="text-xs font-medium text-muted-foreground">{heading}</h3>
+                    {proposals.map((proposal) => <ProposalCard key={proposal.id} organizationSlug={organizationSlug} id={proposal.id} seed={proposal} />)}
                     {approvals.map((approval) => <ApprovalCard key={approval.id} organizationSlug={organizationSlug} id={approval.id} seed={approval} />)}
                   </section>
                 </MessageScrollerItem>
               ))}
-            {chat.messages.length === 0 && waiting.length === 0 && !chat.isHydrating && !chat.error && (
+            {chat.messages.length === 0 && waiting.length === 0 && proposed.length === 0 && !chat.isHydrating && !chat.error && (
               <MessageScrollerItem>
                 <Empty>
                   <EmptyHeader>

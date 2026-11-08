@@ -2,6 +2,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   actScope,
   approveAct,
+  approveProposal,
   type ApprovalScope,
   type ApprovalSession,
   canonicalJson,
@@ -13,8 +14,9 @@ import {
   readSession,
   signingInput,
   startSession,
+  stepDigest,
 } from "./approval-session";
-import { actApprovals } from "./approval-prompt";
+import { actApprovals, ensureApproval, proposalApprovals } from "./approval-prompt";
 
 const production: ApprovalScope = {
   environmentId: "env-production",
@@ -188,5 +190,87 @@ describe("approveAct", () => {
     for (const scope of others) await expect(approveAct("stop", scope, "web", [copy], now)).rejects.toThrow("Confirm it's you again.");
     await expect(approveAct("stop", production, "web", [{ ...copy, machine: "33333333333333333333333333333333" }], now)).rejects.toThrow("Confirm it's you again.");
     await expect(approveAct("stop", production, "web", [copy], now + 46 * 60_000)).rejects.toThrow("Confirm it's you again.");
+  });
+});
+
+describe("approveProposal", () => {
+  afterEach(() => void vi.unstubAllGlobals());
+  const web = { machine: "22222222222222222222222222222222", container: "c".repeat(64), hook: false };
+  const hook = { machine: "22222222222222222222222222222222", container: "d".repeat(64), hook: true };
+  const db = { machine: "11111111111111111111111111111111", container: "e".repeat(64), hook: false };
+  const bytes = (text: string) => new TextEncoder().encode(text).buffer;
+  const passkey = async (now: number) => {
+    vi.stubGlobal("location", { hostname: "localhost" });
+    vi.stubGlobal("navigator", { credentials: { get: async () => ({
+      rawId: bytes("credential"),
+      response: { authenticatorData: bytes("data"), clientDataJSON: bytes("{}"), signature: bytes("signature") },
+    }) } });
+    await startSession(production, now);
+  };
+  const steps = [
+    { verb: "stop" as const, runtime: "web", copies: [web, hook] },
+    { verb: "restart" as const, runtime: "db", copies: [db] },
+    { verb: "start" as const, runtime: "web", copies: [web, hook] },
+  ];
+
+  it("signs one bundle listing every step's digest in order, and leaves each step unsigned inside it", async () => {
+    const now = Date.now();
+    await passkey(now);
+    const { bundle, approvals } = await approveProposal(steps, production, now);
+    expect(bundle.signatures).toHaveLength(1);
+    expect(bundle.grants).toHaveLength(1);
+    const plan = JSON.parse(bundle.body) as { operation: string; environment: string; cluster: string; steps: { index: number; kind: string; digest: string }[]; issued_at: number; expires_at: number };
+    expect(plan).toMatchObject({ environment: "production", cluster: production.cluster, issued_at: now, expires_at: now + 15 * 60_000 });
+    // Step 0 stops web and its hook, step 1 restarts db, step 2 starts web alone: a hook never starts.
+    expect(plan.steps.map((step) => [step.index, step.kind])).toEqual([[0, "stop"], [1, "stop"], [2, "restart"], [3, "start"]]);
+    expect(Object.keys(approvals)).toEqual(["0", "1", "2"]);
+    expect(Object.keys(approvals["2"] ?? {})).toEqual([web.container]);
+    const envelopes = [approvals["0"]?.[web.container], approvals["0"]?.[hook.container], approvals["1"]?.[db.container], approvals["2"]?.[web.container]];
+    for (const [index, envelope] of envelopes.entries()) {
+      if (envelope === undefined) expect.fail(`no envelope at ${index}`);
+      expect(envelope.signatures).toEqual([]);
+      expect(envelope.proposal).toEqual(bundle);
+      expect(await stepDigest(envelope.body)).toBe(plan.steps[index]?.digest);
+      expect(JSON.parse(envelope.body)).toMatchObject({ proposal: { operation: plan.operation, index }, operation: plan.operation, issued_at: now, expires_at: now + 15 * 60_000 });
+    }
+    expect(JSON.parse(envelopes[1]?.body ?? "{}")).toMatchObject({ kind: "stop", container: hook.container });
+    expect(JSON.parse(envelopes[2]?.body ?? "{}")).toMatchObject({ kind: "restart", service: "db", machines: [db.machine] });
+  });
+
+  it("signs nothing for a scope the session doesn't cover, or a plan with nothing to run", async () => {
+    const now = Date.now();
+    await passkey(now);
+    await expect(approveProposal(steps, { ...production, namespace: "fix-api" }, now)).rejects.toThrow("Confirm it's you again.");
+    await expect(approveProposal([{ verb: "stop", runtime: "web", copies: [{ ...web, machine: "33333333333333333333333333333333" }] }], production, now)).rejects.toThrow("Confirm it's you again.");
+    await expect(approveProposal([{ verb: "start", runtime: "web", copies: [hook] }], production, now)).rejects.toThrow("This proposal has nothing to run.");
+  });
+
+  it("refuses a step a Server couldn't take before it prompts, even with a live session", async () => {
+    const now = Date.now();
+    await passkey(now);
+    const get = vi.fn();
+    vi.stubGlobal("navigator", { credentials: { get } });
+    const environment = { environmentId: "env-production", environmentName: "production", namespace: "production" };
+    const held = { kind: "held", public_key: production.cluster } as const;
+    const server = (capabilities: string[]) => ({ id: web.machine, name: "machine-2", sealing: held, deviceEnforcement: true, capabilities });
+    const target = (capabilities: string[]) => ({
+      environment,
+      steps: [{ verb: "stop" as const, runtime: "web", copies: [{ id: web.container, machineId: web.machine, hook: false }] }],
+      machines: [server(capabilities)],
+      environmentMachines: [web.machine],
+    });
+    await expect(proposalApprovals(target(["ployz.restart.session-grant.v1", "ployz.restart.start-approval.v1"]))).rejects.toThrow("machine-2 needs a newer Ployz to stop it.");
+    await expect(proposalApprovals(target(["ployz.restart.session-grant.v1", "ployz.restart.proposal.v1"]))).rejects.toThrow("machine-2 needs a newer Ployz to stop it.");
+    expect(get).not.toHaveBeenCalled();
+  });
+
+  it("always prompts for a proposal, even while a session covers a single press", async () => {
+    const now = Date.now();
+    await passkey(now);
+    expect(await ensureApproval(production, "restart")).toBe(true);
+    // An ask that prompts waits on the dialog, and the next prompting ask cancels it: the one way it settles with nobody pressing.
+    const prompted = ensureApproval(production, "proposal");
+    void ensureApproval(production, "proposal");
+    expect(await prompted).toBe(false);
   });
 });

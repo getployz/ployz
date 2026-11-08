@@ -42,7 +42,8 @@ export type ApprovalSession = {
   readonly keyCode: string;
 };
 
-export type PromptReason = "first" | "expired" | "scope";
+/** `proposal`: a proposal always prompts, so the one press that signs the whole plan is the person's own. */
+export type PromptReason = "first" | "expired" | "scope" | "proposal";
 
 let current: { readonly session: ApprovalSession; readonly grant: SessionGrant; readonly publicKey: string; readonly key: CryptoKeyPair } | null = null;
 const listeners = new Set<() => void>();
@@ -189,6 +190,36 @@ export type ActCopy = { readonly machine: string; readonly container: string; re
 
 const operationId = () => hex(crypto.getRandomValues(new Uint8Array(16)));
 
+/** A session's live key and grant, once it covers `scope`, every `verb` and every copy's Server; else the prompt asks again. */
+function signer(scope: ApprovalScope, verbs: readonly ServiceVerb[], copies: readonly ActCopy[], now: number) {
+  const refused = current === null || verbs.some((verb) => promptReason(current?.session ?? null, scope, verb, now) !== null)
+    || copies.some(({ machine }) => !scope.machines.includes(machine));
+  if (refused || current === null) throw new SessionRefused("Confirm it's you again.");
+  return current;
+}
+
+type Window = { readonly operation: string; readonly issuedAt: number; readonly expiresAt: number };
+
+/** A copy's approval body for `verb`, exactly as Servers parse it: a hook's container only ever gets a stop. */
+function approvalBody(session: ApprovalSession, publicKey: string, verb: ServiceVerb, scope: ApprovalScope, service: string, copy: ActCopy, window: Window, proposal?: { operation: string; index: number }) {
+  const body = {
+    cluster: session.scope.cluster,
+    container: copy.container,
+    expires_at: window.expiresAt,
+    issued_at: window.issuedAt,
+    kind: copy.hook ? "stop" : verb,
+    machines: [copy.machine],
+    namespace: scope.namespace,
+    operation: window.operation,
+    service,
+    signer: { browser: publicKey },
+  };
+  return canonicalJson(proposal === undefined ? body : { ...body, proposal: { index: proposal.index, operation: proposal.operation } });
+}
+
+/** A start skips a hook's container: a hook's approval can never start it. */
+const signable = (verb: ServiceVerb, copies: readonly ActCopy[]) => copies.filter((copy) => !copy.hook || verb !== "start");
+
 /**
  * One approval per container of `service`, each signed by the session's browser key and lasting its full 15 minutes,
  * which the session still covers. Keyed by container ID, as Cloud forwards them. Signs only when the session covers
@@ -196,28 +227,60 @@ const operationId = () => hex(crypto.getRandomValues(new Uint8Array(16)));
  * a stop approval at most, which can never start it: a start skips it, and a restart or stop only stops it.
  */
 export async function approveAct(verb: ServiceVerb, scope: ApprovalScope, service: string, copies: readonly ActCopy[], now = Date.now()): Promise<Record<string, Signed>> {
-  if (current === null || promptReason(current.session, scope, verb, now) !== null || copies.some(({ machine }) => !scope.machines.includes(machine))) {
-    throw new SessionRefused("Confirm it's you again.");
-  }
-  const { session, grant, publicKey, key } = current;
-  const signs = copies.filter((copy) => !copy.hook || verb !== "start");
-  const entries = await Promise.all(signs.map(async ({ machine, container, hook }) => {
-    const body = canonicalJson({
-      cluster: session.scope.cluster,
-      container,
-      expires_at: now + APPROVAL_MS,
-      issued_at: now,
-      kind: hook ? "stop" : verb,
-      machines: [machine],
-      namespace: scope.namespace,
-      operation: operationId(),
-      service,
-      signer: { browser: publicKey },
-    });
+  const { session, grant, publicKey, key } = signer(scope, [verb], copies, now);
+  const entries = await Promise.all(signable(verb, copies).map(async (copy) => {
+    const body = approvalBody(session, publicKey, verb, scope, service, copy, { operation: operationId(), issuedAt: now, expiresAt: now + APPROVAL_MS });
     const signature = hex(await crypto.subtle.sign({ name: "Ed25519" }, key.privateKey, signingInput(body)));
-    return [container, { body, signatures: [{ key: publicKey, signature }], grants: [grant] } satisfies Signed] as const;
+    return [copy.container, { body, signatures: [{ key: publicKey, signature }], grants: [grant] } satisfies Signed] as const;
   }));
   return Object.fromEntries(entries);
+}
+
+/** One step of a proposal as the browser signs it: the verb, the Service as Servers name it, and its copies. */
+export type ProposalStepTarget = { readonly verb: ServiceVerb; readonly runtime: string; readonly copies: readonly ActCopy[] };
+
+/** A step's approval for one container: unsigned itself, it rides inside the bundle that lists its digest. */
+export type StepEnvelope = Signed & { readonly proposal: Signed };
+
+/** Per step index, one approval per container, each riding inside the one bundle the browser key signed. */
+export type ProposalApprovals = Record<string, Record<string, StepEnvelope>>;
+
+export const stepDigest = async (body: string) => hex(await crypto.subtle.digest("SHA-256", encoder.encode(body)));
+
+/**
+ * One signature over a whole plan. Each step's copy gets an unsigned approval body naming the bundle and its place in
+ * it; the bundle lists every body's digest in order, under the plan's one window, and the browser key signs only the
+ * bundle. A Server runs a step only when its body hashes to the digest at its place, so nothing can be added, reordered
+ * or swapped afterwards; the shared `operation` lets a Server's consumption log stop a replay.
+ */
+export async function approveProposal(steps: readonly ProposalStepTarget[], scope: ApprovalScope, now = Date.now()): Promise<{ bundle: Signed; approvals: ProposalApprovals }> {
+  const { session, grant, publicKey, key } = signer(scope, steps.map((step) => step.verb), steps.flatMap((step) => step.copies), now);
+  const window = { operation: operationId(), issuedAt: now, expiresAt: now + APPROVAL_MS };
+  const bodies: { at: number; container: string; body: string; kind: ServiceVerb }[] = [];
+  for (const [at, step] of steps.entries()) {
+    for (const copy of signable(step.verb, step.copies)) {
+      const body = approvalBody(session, publicKey, step.verb, scope, step.runtime, copy, window, { operation: window.operation, index: bodies.length });
+      bodies.push({ at, container: copy.container, body, kind: copy.hook ? "stop" : step.verb });
+    }
+  }
+  if (bodies.length === 0) throw new SessionRefused("This proposal has nothing to run.");
+  const listed = await Promise.all(bodies.map(async ({ body, kind }, index) => ({ digest: await stepDigest(body), index, kind })));
+  const body = canonicalJson({
+    cluster: session.scope.cluster,
+    environment: scope.namespace,
+    expires_at: window.expiresAt,
+    issued_at: window.issuedAt,
+    operation: window.operation,
+    signer: { browser: publicKey },
+    steps: listed,
+  });
+  const signature = hex(await crypto.subtle.sign({ name: "Ed25519" }, key.privateKey, signingInput(body)));
+  const bundle: Signed = { body, signatures: [{ key: publicKey, signature }], grants: [grant] };
+  const approvals: ProposalApprovals = Object.fromEntries(steps.map((_, at) => [String(at), {}]));
+  for (const { at, container, body } of bodies) {
+    approvals[String(at)] = { ...approvals[String(at)], [container]: { body, signatures: [], proposal: bundle } };
+  }
+  return { bundle, approvals };
 }
 
 type ScopeMachine = {

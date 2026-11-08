@@ -207,6 +207,7 @@ describe("act-service", () => {
       "stop:m-alpha:web-a",
       "start:m-alpha:web-a",
       "record",
+      "advance-proposal",
     ]);
     expect(calls).toEqual(["stop web-a", "start web-a"]);
     expect(await operation(admitted.id)).toMatchObject({

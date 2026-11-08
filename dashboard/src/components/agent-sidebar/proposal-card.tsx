@@ -1,0 +1,133 @@
+import { useEffect, useState } from "react";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
+import { XIcon } from "lucide-react";
+import { RelativeTime } from "#/components/relative-time";
+import { Badge } from "#/components/ui/badge";
+import { Button } from "#/components/ui/button";
+import { Card, CardContent, CardDescription, CardFooter, CardHeader, CardTitle } from "#/components/ui/card";
+import { TraceLine } from "#/components/ui/trace";
+import { Textarea } from "#/components/ui/textarea";
+import { toErrorMessage } from "#/lib/error-message";
+import { stepLoss, stepTitle } from "#/modules/proposals/proposal";
+import { approverBundle, decideProposal, landProposal, type ProposalView, proposalOptions, refetchProposals } from "./proposals.queries";
+
+const stepsWord = (count: number) => `${count} ${count === 1 ? "step" : "steps"}`;
+
+/**
+ * One proposal waiting on a person: every step an agent staged, in the order they run, approved with one passkey
+ * prompt. Drawn from its Cloud row and reread while it waits. `onSettled` runs once the row stops waiting.
+ */
+export function ProposalCard({ organizationSlug, id, seed, onSettled }: {
+  organizationSlug: string;
+  id: string;
+  seed?: ProposalView;
+  onSettled?: () => void;
+}) {
+  const { data: proposal } = useQuery({ ...proposalOptions(organizationSlug, id), initialData: seed });
+  const settled = proposal !== undefined && proposal !== null && proposal.status !== "presented";
+  useEffect(() => {
+    if (settled) onSettled?.();
+  }, [settled, onSettled]);
+
+  if (proposal === undefined || proposal === null) return null;
+  const place = `${proposal.project}/${proposal.environment}`;
+  switch (proposal.status) {
+    case "draft": return null;
+    case "presented": return <PendingProposal organizationSlug={organizationSlug} proposal={proposal} />;
+    case "approved": return <TraceLine>Approved. {stepsWord(proposal.steps.length)} go ahead in {place}, in order.</TraceLine>;
+    case "denied": return <TraceLine>Denied{proposal.reason ? `: ${proposal.reason}` : "."}</TraceLine>;
+  }
+}
+
+function PendingProposal({ organizationSlug, proposal }: { organizationSlug: string; proposal: ProposalView }) {
+  const queryClient = useQueryClient();
+  const [reason, setReason] = useState<string | null>(null);
+  const [sending, setSending] = useState(false);
+  const [refused, setRefused] = useState<string | null>(null);
+  const place = `${proposal.project}/${proposal.environment}`;
+  const losses = proposal.steps.flatMap((step, index) => {
+    const loss = stepLoss(step);
+    return loss === null ? [] : [{ key: index, ...loss }];
+  });
+  const destroys = losses.length > 0;
+
+  const decide = async (decision: Parameters<typeof decideProposal>[2] | null) => {
+    if (decision === null) return setSending(false);
+    const answer = await decideProposal(organizationSlug, proposal.id, decision);
+    setSending(false);
+    if (answer.ok) return landProposal(queryClient, organizationSlug, proposal.id, answer.decided);
+    setRefused(answer.message);
+    return refetchProposals(queryClient, organizationSlug);
+  };
+  const begin = () => {
+    if (sending) return false;
+    setSending(true);
+    setRefused(null);
+    return true;
+  };
+  const approve = async () => {
+    if (!begin()) return;
+    const signed = await approverBundle(organizationSlug, proposal).catch((error: Error) => {
+      setRefused(toErrorMessage(error, "Your passkey didn't answer. Try again."));
+      return null;
+    });
+    return decide(signed === null ? null : { approve: signed });
+  };
+  const deny = () => begin() && decide({ reject: reason?.trim() ? { reason: reason.trim() } : {} });
+
+  return (
+    <Card state={destroys ? "destructive" : undefined} size="sm" aria-label={`${stepsWord(proposal.steps.length)} in ${place} need approval`}>
+      <CardHeader className="flex items-center justify-between gap-2">
+        <div className="flex min-w-0 flex-col gap-0.5">
+          <CardTitle>{stepsWord(proposal.steps.length)} in {place}</CardTitle>
+          <CardDescription>
+            {proposal.asker && <>Asked by {proposal.asker} · </>}<RelativeTime date={new Date(proposal.created_at)} />
+          </CardDescription>
+        </div>
+        <Badge variant={destroys ? "destructive" : "secondary"}>Proposal</Badge>
+      </CardHeader>
+      <CardContent className="flex flex-col gap-2">
+        <ol aria-label="Steps" className="flex flex-col gap-1.5 text-xs">
+          {proposal.steps.map((step, index) => (
+            <li key={index} className="flex gap-2">
+              <span className="w-4 shrink-0 text-right tabular-nums text-muted-foreground">{index + 1}.</span>
+              <span className="flex min-w-0 flex-col">
+                <span>{stepTitle(step)}</span>
+                <span className="text-muted-foreground">On servers <code className="font-mono">{step.namespace}/{step.runtime}</code></span>
+              </span>
+            </li>
+          ))}
+        </ol>
+        {destroys && (
+          <ul aria-label="Destroys" className="flex flex-col gap-1 rounded-lg bg-destructive/10 px-2.5 py-2 text-xs">
+            {losses.map((loss) => (
+              <li key={loss.key} className="flex gap-2">
+                <XIcon aria-hidden className="mt-0.5 size-3 shrink-0 text-destructive" />
+                <span>{loss.verb} <b>{loss.name}</b>{loss.after}</span>
+              </li>
+            ))}
+          </ul>
+        )}
+        <p className="text-xs text-muted-foreground">Steps run in this order and stop at the first that fails.</p>
+        {reason !== null && (
+          <Textarea autoFocus aria-label="Reason" placeholder="Why not? The agent reads this." value={reason}
+            onChange={(event) => setReason(event.target.value)} className="min-h-14 text-xs" />
+        )}
+        {refused && <p role="alert" className="text-xs text-destructive">{refused}</p>}
+      </CardContent>
+      <CardFooter className="gap-1.5">
+        <Button size="sm" variant={destroys ? "destructive" : "default"} disabled={sending} onClick={() => void approve()}>
+          Approve all
+        </Button>
+        <Button size="sm" variant="outline" disabled={sending} onClick={() => void deny()}>
+          Deny
+        </Button>
+        {reason === null && (
+          <Button size="sm" variant="ghost" className="ml-auto text-muted-foreground" onClick={() => setReason("")}>
+            Deny with a reason…
+          </Button>
+        )}
+      </CardFooter>
+    </Card>
+  );
+}
