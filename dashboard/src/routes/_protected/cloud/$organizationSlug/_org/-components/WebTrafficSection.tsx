@@ -11,7 +11,16 @@ import { Item, ItemContent, ItemGroup, ItemTitle } from "#/components/ui/item";
 import { Spinner } from "#/components/ui/spinner";
 import { toErrorMessage } from "#/lib/error-message";
 import { normalizeZone, zoneProblem } from "#/modules/cloudflare/zone";
-import { type CloudflareSetup, type ClusterIngressObservation, connectedCount, type DoorsWant, switchProgress } from "#/modules/ingress/doors";
+import {
+  type CloudflareSetup,
+  type ClusterIngressObservation,
+  type DoorsWant,
+  doorWords,
+  holdingCount,
+  type LatestDoorsChange,
+  switchProblem,
+  switchProgress,
+} from "#/modules/ingress/doors";
 import {
   listCloudflareZonesServerFn,
   reviewDoorsSwitchServerFn,
@@ -32,31 +41,33 @@ export function WebTrafficSection({ organizationSlug }: { organizationSlug: stri
   const editable = access !== "support" && gate.allowed;
   const { setup, change } = view;
   const switching = change !== null && (change.state === "pending" || change.state === "running");
-  const observed = useQuery({ ...clusterIngressObservationQueryOptions(organizationSlug, switching || setup?.state === "active"), enabled: setup !== null }).data ?? null;
+  const failure = change !== null && change.state === "failed" ? change.failure : null;
+  const observed = useQuery({
+    ...clusterIngressObservationQueryOptions(organizationSlug, switching || failure !== null || setup?.state === "active"),
+    enabled: setup !== null,
+  }).data ?? null;
   const [settingUp, setSettingUp] = useState(false);
   const [reviewing, setReviewing] = useState<DoorsWant | null>(null);
   const progress = switchProgress(change);
   const refresh = () => queryClient.invalidateQueries({ queryKey: clusterIngressKeys.all });
   const onCloudflare = setup?.state === "active";
-  const failure = change !== null && change.state === "failed" ? change.failure : null;
+  const canSwitchBack = setup !== null && switchProblem(setup, "public", change) === null && (onCloudflare || change?.state === "failed");
 
   return (
     <SettingsSection id="web-traffic" title="Web traffic">
       <SettingsRow
         label="Public ports"
-        hint={onCloudflare ? "Closed while the tunnel is in use." : setup?.state === "left"
-          ? `Delete the tunnel ${setup.tunnelName} and *.${setup.zone} in Cloudflare.`
-          : "Ports 80 and 443 open on every server."}
+        hint={publicHint(setup, observed)}
         commit="none"
-        control={onCloudflare ? (
+        control={canSwitchBack ? (
           editable ? <Button type="button" variant="outline" size="sm" disabled={switching} onClick={() => setReviewing("public")}>Switch back</Button> : null
-        ) : <Badge variant="info">In use</Badge>}
+        ) : onCloudflare ? null : <Badge variant="info">In use</Badge>}
       />
       <SettingsRow
         label="Cloudflare Tunnel"
         hint={cloudflareHint(setup, observed, progress?.label ?? null)}
         commit="none"
-        control={cloudflareControl({ setup, onCloudflare, switching, editable, settingUp, onSetUp: () => setSettingUp(true), onSwitch: () => setReviewing("tunnel") })}
+        control={cloudflareControl({ setup, change, switching, editable, settingUp, onSetUp: () => setSettingUp(true), onSwitch: () => setReviewing("tunnel") })}
       >
         {failure === null ? null : <p role="alert" className="text-sm text-destructive">{failure}</p>}
         {progress === null ? null : (
@@ -95,24 +106,32 @@ export function WebTrafficSection({ organizationSlug }: { organizationSlug: stri
   );
 }
 
+/** What the Servers show of their ports, once seen; before that, what the source says they should show. */
+function publicHint(setup: CloudflareSetup | null, observed: ClusterIngressObservation | null) {
+  if (setup?.state === "left") return `Delete the tunnel ${setup.tunnelName} and *.${setup.zone} in Cloudflare.`;
+  if (setup === null) return "Ports 80 and 443 open on every server.";
+  return doorWords(observed, "public") ?? (setup.state === "active" ? "Ports 80 and 443 close once the tunnel is in use." : "Ports 80 and 443 open on every server.");
+}
+
 function cloudflareHint(setup: CloudflareSetup | null, observed: ClusterIngressObservation | null, progress: string | null) {
   if (setup === null || setup.state === "left") return "Serve through Cloudflare with no open ports.";
   if (progress !== null) return `Moving to ${setup.zone}`;
   if (setup.state === "set_up") return `Tunnel ready on ${setup.zone}`;
   if (observed === null) return setup.zone;
-  return `${setup.zone} · ${connectedCount(observed.servers)} of ${observed.servers.length} servers connected`;
+  return `${setup.zone} · ${holdingCount(observed.servers, "tunnel")} of ${observed.servers.length} servers connected`;
 }
 
-function cloudflareControl({ setup, onCloudflare, switching, editable, settingUp, onSetUp, onSwitch }: {
+function cloudflareControl({ setup, change, switching, editable, settingUp, onSetUp, onSwitch }: {
   setup: CloudflareSetup | null;
-  onCloudflare: boolean;
+  change: LatestDoorsChange | null;
   switching: boolean;
   editable: boolean;
   settingUp: boolean;
   onSetUp: () => void;
   onSwitch: () => void;
 }) {
-  if (onCloudflare) return <Badge variant="info">In use</Badge>;
+  const canSwitch = setup !== null && switchProblem(setup, "tunnel", change) === null;
+  if (setup?.state === "active" && !canSwitch) return <Badge variant="info">In use</Badge>;
   if (!editable) return null;
   if (setup === null || setup.state === "left") {
     return <Button type="button" variant="outline" size="sm" disabled={settingUp} onClick={onSetUp}>Set up</Button>;
@@ -153,7 +172,7 @@ function CloudflareSetupForm({ organizationSlug, onCancel, onDone }: {
       setToken("");
       onDone();
     } catch (error) {
-      setRefusal(toErrorMessage(error, "Cloudflare setup didn't finish. Nothing was changed."));
+      setRefusal(toErrorMessage(error, `Cloudflare setup didn't finish. Check Cloudflare for a tunnel named ployz-${organizationSlug}.`));
     } finally {
       setBusy(null);
     }

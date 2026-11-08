@@ -1,12 +1,13 @@
 import "@tanstack/react-start/server-only";
 import { randomUUID } from "node:crypto";
 import { and, desc, eq, inArray, isNull, lt, or, sql } from "drizzle-orm";
-import type { JsonValue } from "@ployz/sdk";
+import type { DeploymentStatus, JsonValue } from "@ployz/sdk";
 import { Effect, Schedule, Schema } from "effect";
 import { operationDigest, type OperationAsked } from "#/modules/approvals/approvals.server";
 import { loadClusterDomain } from "#/modules/cluster-domain/cluster-domain.server";
-import { tunnelRunningOn } from "#/modules/cluster-domain/ingress-running";
+import { doorsOpenOn } from "#/modules/cluster-domain/ingress-running";
 import { loadCloudflareSetup } from "#/modules/cloudflare/source.server";
+import { readStore } from "#/modules/config-store/config-store.server";
 import { publishedEnvironments, deployToFirstServer } from "#/modules/config-store/store-deployment.server";
 import { publishedOf } from "#/modules/config-store/domain-evidence.server";
 import {
@@ -20,6 +21,7 @@ import {
   movedHostnames,
   switchProblem,
 } from "#/modules/ingress/doors";
+import { activeDoorsAttempt, lockIngressRows } from "#/modules/ingress/doors.lock.server";
 import { runSwitch } from "#/modules/ingress/doors.run";
 import { ingressDoorsAttempt, organizationCloudflareIngress } from "#/modules/ingress/tables";
 import { createIngressDoorsRequestedEvent, type IngressDoorsRequestedEventData } from "#/modules/inngest/events";
@@ -62,28 +64,30 @@ export function latestChangeOf(row: AttemptRow): Effect.Effect<LatestDoorsChange
   }
 }
 
-/** The Cluster's ingress as the database holds it: its Cloudflare setup, the latest switch and the Hosted name. */
-export const readClusterIngress = Effect.fn("IngressDoors.read")(function* (organizationId: string) {
+/** The Organization's latest switch, whatever its state, as the page reads it. Null before the first. */
+const latestChange = Effect.fn("IngressDoors.latest")(function* (organizationId: string) {
   const { drizzle } = yield* Database;
-  const setup = yield* loadCloudflareSetup(organizationId);
   const [latest] = yield* drizzle.select().from(ingressDoorsAttempt).where(eq(ingressDoorsAttempt.organizationId, organizationId))
     .orderBy(desc(ingressDoorsAttempt.requestedAt), desc(ingressDoorsAttempt.id)).limit(1);
-  const hosted = yield* loadClusterDomain(organizationId);
-  return {
-    setup,
-    change: latest === undefined ? null : yield* latestChangeOf(latest),
-    hostedName: hosted?.name ?? null,
-  } satisfies ClusterIngressView;
+  return latest === undefined ? null : yield* latestChangeOf(latest);
 });
 
-/** What one look at the Servers finds: who takes web traffic, whose connector runs, and the hostnames published. Null when none answers. */
+/** The Cluster's ingress as the database holds it: its Cloudflare setup, the latest switch and the Hosted name. */
+export const readClusterIngress = Effect.fn("IngressDoors.read")(function* (organizationId: string) {
+  const setup = yield* loadCloudflareSetup(organizationId);
+  const change = yield* latestChange(organizationId);
+  const hosted = yield* loadClusterDomain(organizationId);
+  return { setup, change, hostedName: hosted?.name ?? null } satisfies ClusterIngressView;
+});
+
+/** What one look at the Servers finds: who takes web traffic, which Doors each holds open, and the hostnames published. Null when none answers. */
 export const observeClusterIngress = Effect.fn("IngressDoors.observe")(function* (organizationId: string) {
   const frame = yield* firstRuntimeFrame(organizationId).pipe(Effect.catch(() => Effect.succeed(null)));
   if (frame === null) return null;
-  const connected = tunnelRunningOn(frame);
+  const open = doorsOpenOn(frame);
   return {
     servers: frame.machines.filter(({ machine }) => machine.accepts_ingress)
-      .map(({ machine }) => ({ id: machine.id, name: machine.name, connected: connected.has(machine.id) })),
+      .map(({ machine }) => ({ id: machine.id, name: machine.name, doors: [...(open.get(machine.id) ?? [])].sort() })),
     hostnames: publishedOf(frame),
     partial: frame.incomplete_ids.machines.length > 0 || frame.incomplete_ids.containers.length > 0,
   } satisfies ClusterIngressObservation;
@@ -119,44 +123,36 @@ export const freshSwitchDigest = Effect.fn("IngressDoors.freshDigest")(function*
   const switched = Schema.decodeUnknownOption(Switched)(preview);
   if (switched._tag === "None") return stored;
   const setup = yield* loadCloudflareSetup(organizationId);
-  if (switchProblem(setup, switched.value.to) !== null) return null;
+  if (switchProblem(setup, switched.value.to, yield* latestChange(organizationId)) !== null) return null;
   return operationDigest(yield* switchAsked(organizationId, switched.value.to));
 });
 
 const enqueueSwitch = (row: AttemptRow) => enqueueEvent(createIngressDoorsRequestedEvent({ attemptId: row.id, organizationId: row.organizationId }));
 
 /**
- * Ask for a switch of the Cluster's web traffic. Its row is written with its run's event; a request while another switch
- * is active returns that one, whichever way it goes.
+ * Ask for a switch of the Cluster's web traffic. Its row is written with its run's event, under the lock Cloudflare
+ * setup's write takes, so the switch reads the setup it will move; a request while another switch is active returns
+ * that one, whichever way it goes.
  */
 export const requestDoorsSwitch = Effect.fn("IngressDoors.request")(function* (
   input: { readonly organizationId: string; readonly userId: string | null; readonly to: DoorsWant },
 ) {
   const { organizationId } = input;
   const database = yield* Database;
-  const setup = yield* loadCloudflareSetup(organizationId);
-  const problem = switchProblem(setup, input.to);
-  const active = Effect.fn(function* () {
-    const { drizzle } = yield* Database;
-    const [row] = yield* drizzle.select().from(ingressDoorsAttempt).where(and(
-      eq(ingressDoorsAttempt.organizationId, organizationId), inArray(ingressDoorsAttempt.state, ACTIVE_STATES),
-    )).orderBy(desc(ingressDoorsAttempt.requestedAt)).limit(1);
-    return row === undefined ? null : yield* latestChangeOf(row);
-  });
-  const already = yield* active();
-  if (already !== null) return { change: already };
-  if (problem !== null) return yield* new Conflict({ userFacing: true, message: problem });
   return yield* database.transaction(Effect.gen(function* () {
+    yield* lockIngressRows(organizationId);
+    const active = yield* activeDoorsAttempt(organizationId);
+    if (active !== null) return { change: yield* latestChangeOf(active) };
+    const setup = yield* loadCloudflareSetup(organizationId);
+    const problem = switchProblem(setup, input.to, yield* latestChange(organizationId));
+    if (problem !== null) return yield* new Conflict({ userFacing: true, message: problem });
     const { drizzle } = yield* Database;
     const [inserted] = yield* drizzle.insert(ingressDoorsAttempt).values({
       id: randomUUID(), organizationId, requestedByUserId: input.userId, want: input.to,
-    }).onConflictDoNothing().returning();
-    if (inserted !== undefined) {
-      yield* enqueueSwitch(inserted);
-      return { change: yield* latestChangeOf(inserted) };
-    }
-    const raced = yield* active();
-    return raced === null ? yield* new Conflict({ userFacing: true, message: "A switch just ended. Try again." }) : { change: raced };
+    }).returning();
+    if (inserted === undefined) return yield* Effect.die(new Error("The switch row was not written."));
+    yield* enqueueSwitch(inserted);
+    return { change: yield* latestChangeOf(inserted) };
   }));
 });
 
@@ -192,10 +188,36 @@ const openSession = Effect.fn("IngressDoors.openSession")(function* (organizatio
   return session.status === "connected" ? session.connected : null;
 });
 
-/** Redeploy every Environment with saved state, so its generated names expand under the Cluster Domain's new source. */
+const REDEPLOY_POLL = "2 seconds";
+/** A Deployment that ended with its names served: applied, or replaced by a later one that ships them too. */
+const SERVING = new Set<DeploymentStatus>(["applied", "superseded"]);
+
+/** The Deployment once it is no longer in flight. The switch's own time limit bounds the wait. */
+const deploymentEnd = (organizationId: string, id: string) =>
+  readStore(organizationId, { query: "deployment", id }).pipe(
+    Effect.repeat({ schedule: Schedule.spaced(REDEPLOY_POLL), while: (view) => view.in_flight }),
+  );
+
+/**
+ * Redeploy every Environment with saved state, so its generated names expand under the Cluster Domain's new source,
+ * and wait for each to end. Why the names aren't all served under it, or null once they are: the Door the switch
+ * leaves stays open until then.
+ */
 const redeployAll = Effect.fn("IngressDoors.redeploy")(function* (organizationId: string) {
   const environments = yield* publishedEnvironments(organizationId);
-  yield* Effect.forEach(environments, (environment) => deployToFirstServer(organizationId, environment, randomUUID()), { discard: true });
+  const asked = yield* Effect.forEach(environments, (environment) => Effect.gen(function* () {
+    const id = randomUUID();
+    const admission = yield* deployToFirstServer(organizationId, environment, id);
+    return { name: `${environment.project}/${environment.environment}`, id, admission };
+  }));
+  for (const { name, admission } of asked) {
+    if ("refused" in admission) return `${name} didn't redeploy: ${admission.message}`;
+  }
+  for (const { name, id } of asked) {
+    const ended = yield* deploymentEnd(organizationId, id);
+    if (!SERVING.has(ended.status)) return `${name} didn't redeploy. Check its deployments, then switch again.`;
+  }
+  return null;
 });
 
 const applySwitch = Effect.fn("IngressDoors.apply")(function* (session: PloyzSession, request: DoorsRequest, runId: string, want: DoorsWant) {
@@ -208,7 +230,7 @@ const applySwitch = Effect.fn("IngressDoors.apply")(function* (session: PloyzSes
     at: (stage) => drizzle.update(ingressDoorsAttempt).set({ stage }).where(owned).pipe(Effect.asVoid),
     flip: () => drizzle.update(organizationCloudflareIngress).set({ state: want === "tunnel" ? "active" : "left", updatedAt: new Date() })
       .where(eq(organizationCloudflareIngress.organizationId, request.organizationId)).pipe(Effect.asVoid),
-    redeploy: () => want === "tunnel" || wasActive ? redeployAll(request.organizationId) : Effect.void,
+    redeploy: () => want === "tunnel" || wasActive ? redeployAll(request.organizationId) : Effect.succeed(null),
   });
 });
 

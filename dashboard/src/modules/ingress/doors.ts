@@ -61,9 +61,12 @@ export type ClusterIngressView = {
   readonly hostedName: string | null;
 };
 
-/** What one look at the Servers found: who takes web traffic, who runs a tunnel connector, and the hostnames published. */
+/** A Door by name, as the Engine reports the ones a Server holds open. */
+export type DoorName = "public" | "tunnel";
+
+/** What one look at the Servers found: who takes web traffic, which Doors each holds open, and the hostnames published. */
 export type ClusterIngressObservation = {
-  readonly servers: ReadonlyArray<{ readonly id: string; readonly name: string; readonly connected: boolean }>;
+  readonly servers: ReadonlyArray<{ readonly id: string; readonly name: string; readonly doors: readonly DoorName[] }>;
   readonly hostnames: readonly PublishedHostname[];
   /** Some Servers or containers weren't read, so the rest may be incomplete. */
   readonly partial: boolean;
@@ -96,8 +99,19 @@ export function switchProgress(change: LatestDoorsChange | null): { readonly lab
   }
 }
 
-/** Whether `servers` all run a connector, or the count that does. */
-export const connectedCount = (servers: ClusterIngressObservation["servers"]) => servers.filter((server) => server.connected).length;
+/** How many of `servers` hold `door` open. */
+export const holdingCount = (servers: ClusterIngressObservation["servers"], door: DoorName) => servers.filter((server) => server.doors.includes(door)).length;
+
+/** What the Servers seen say of `door`: open on every one, on some, or on none. Null before any Server was seen. */
+export function doorWords(observed: ClusterIngressObservation | null, door: DoorName) {
+  if (observed === null) return null;
+  const servers = observed.servers.length;
+  const open = holdingCount(observed.servers, door);
+  if (servers === 0) return "No server takes web traffic yet.";
+  if (open === servers) return "Open on every server.";
+  if (open === 0) return "Closed on every server.";
+  return `Open on ${open} of ${servers} servers.`;
+}
 
 /** One Server's Doors after a set, by name, as the Engine answers. */
 export type DoorsAnswer = {
@@ -120,12 +134,16 @@ export function doorsGap(answer: DoorsAnswer, wanted: readonly string[]) {
   return `${off.map(({ server }) => server).join(", ")} still ${off.length === 1 ? "has" : "have"} other doors open.`;
 }
 
-/** Why the Cluster can't switch to `to` now, or null when it can. */
-export function switchProblem(setup: CloudflareSetup | null, to: DoorsWant) {
+/**
+ * Why the Cluster can't switch to `to` now, or null when it can. The source already at `to` refuses, unless the
+ * latest switch there failed: its source moved but a step after didn't land, so asking again finishes it.
+ */
+export function switchProblem(setup: CloudflareSetup | null, to: DoorsWant, latest: LatestDoorsChange | null = null) {
   if (setup === null) return "Set up Cloudflare first, then switch to it.";
+  const retrying = latest !== null && latest.state === "failed" && latest.want === to;
   if (to === "tunnel") {
-    if (setup.state === "set_up") return null;
+    if (setup.state === "set_up" || (setup.state === "active" && retrying)) return null;
     return setup.state === "active" ? "This Cluster already uses Cloudflare." : "Set up Cloudflare again, then switch to it.";
   }
-  return setup.state === "left" ? "This Cluster already uses public ports." : null;
+  return setup.state === "left" && !retrying ? "This Cluster already uses public ports." : null;
 }

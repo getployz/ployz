@@ -1,20 +1,23 @@
 import { Effect } from "effect";
 import { describe, expect, it } from "vitest";
-import { doorsGap, movedHostnames, switchProblem, switchProgress, type CloudflareSetup } from "#/modules/ingress/doors";
+import type { RuntimeWatchView } from "@ployz/sdk";
+import { doorsOpenOn } from "#/modules/cluster-domain/ingress-running";
+import { type CloudflareSetup, doorsGap, doorWords, type LatestDoorsChange, movedHostnames, switchProblem, switchProgress } from "#/modules/ingress/doors";
 import { runSwitch, switchSteps, type SwitchPorts } from "#/modules/ingress/doors.run";
+import { asTestDouble } from "#/lib/test-double";
 
 const answer = (...perServer: ReadonlyArray<readonly string[]>) => ({
   machines: perServer.map((doors, index) => ({ server: `s${index + 1}`, doors })),
   failures: [],
 });
 
-/** Ports that record what the switch did, with the Doors each Server holds after every set. */
-function ports(held: (doors: readonly string[]) => ReturnType<typeof answer>, log: string[]): SwitchPorts<never, never, never> {
+/** Ports that record what the switch did, with the Doors each Server holds after every set, and why a redeploy stuck. */
+function ports(held: (doors: readonly string[]) => ReturnType<typeof answer>, log: string[], stuck: string | null = null): SwitchPorts<never, never, never> {
   return {
     open: (doors) => Effect.sync(() => { log.push(`open ${doors.join("+")}`); return held(doors); }),
     at: (stage) => Effect.sync(() => { log.push(`at ${stage}`); }),
     flip: () => Effect.sync(() => { log.push("flip"); }),
-    redeploy: () => Effect.sync(() => { log.push("redeploy"); }),
+    redeploy: () => Effect.sync(() => { log.push("redeploy"); return stuck; }),
   };
 }
 
@@ -38,6 +41,13 @@ describe("the two-step door switch", () => {
     const end = await Effect.runPromise(runSwitch("tunnel", ports(() => answer(["public", "tunnel"], ["public"]), log)));
     expect(end).toEqual({ ok: false, failure: "s2 still has other doors open." });
     expect(log).toEqual(["at opening", "open public+tunnel"]);
+  });
+
+  it("keeps both Doors open and says why when an Environment doesn't redeploy under the new source", async () => {
+    const log: string[] = [];
+    const end = await Effect.runPromise(runSwitch("tunnel", ports((doors) => answer(doors), log, "shop/production didn't redeploy: it would delete pg-data.")));
+    expect(end).toEqual({ ok: false, failure: "shop/production didn't redeploy: it would delete pg-data." });
+    expect(log).toEqual(["at opening", "open public+tunnel", "at moving", "flip", "redeploy"]);
   });
 
   it("leaves both Doors open when closing the old one fails", async () => {
@@ -81,6 +91,50 @@ describe("when the Cluster can switch", () => {
   it("goes back to public ports from anywhere but public ports", () => {
     expect(switchProblem(setup("active"), "public")).toBeNull();
     expect(switchProblem(setup("left"), "public")).toBe("This Cluster already uses public ports.");
+  });
+
+  const ended = (want: "tunnel" | "public", state: "failed" | "finished"): LatestDoorsChange => state === "failed"
+    ? { attemptId: "a", want, state, endedAt: "2026-11-08T00:00:00Z", failure: "s1 still has other doors open." }
+    : { attemptId: "a", want, state, endedAt: "2026-11-08T00:00:00Z" };
+
+  it("lets a switch whose source moved but whose last step failed be asked again, and only that one", () => {
+    expect(switchProblem(setup("active"), "tunnel", ended("tunnel", "failed"))).toBeNull();
+    expect(switchProblem(setup("active"), "tunnel", ended("tunnel", "finished"))).toBe("This Cluster already uses Cloudflare.");
+    expect(switchProblem(setup("active"), "tunnel", ended("public", "failed"))).toBe("This Cluster already uses Cloudflare.");
+    expect(switchProblem(setup("left"), "public", ended("public", "failed"))).toBeNull();
+    expect(switchProblem(setup("left"), "public", ended("tunnel", "failed"))).toBe("This Cluster already uses public ports.");
+  });
+});
+
+describe("the Doors the Servers hold", () => {
+  type Service = RuntimeWatchView["services"][number];
+  type Container = Service["containers"][number];
+  const container = (machine_id: string, state: Container["runtime"]["state"], ports: number[]) => asTestDouble<Container>()({
+    machine_id, runtime: { state }, resolved_spec: { ports: ports.map((published_port) => ({ mode: "host", published_port })) },
+  });
+  const service = (identity: string, containers: Container[]) => asTestDouble<Service>()({ identity, containers });
+  const frame: Pick<RuntimeWatchView, "services"> = {
+    services: [
+      service("ployz-system/ingress-holder", [container("m1", "running", [80, 443]), container("m2", "running", []), container("m3", "exited", [80, 443])]),
+      service("ployz-system/tunnel", [container("m2", "running", []), container("m3", "running", [])]),
+      service("shop-prod/web", [container("m1", "running", [80])]),
+    ],
+  };
+
+  it("reads each Server's Doors from its running door containers: host ports open Public, a connector opens Tunnel", () => {
+    const open = doorsOpenOn(frame);
+    expect([...open.entries()].map(([machine, doors]) => [machine, [...doors].sort()])).toEqual([["m1", ["public"]], ["m2", ["tunnel"]], ["m3", ["tunnel"]]]);
+  });
+
+  it("says of a Door what the Servers show, and nothing before any was seen", () => {
+    const seen = (...doors: ReadonlyArray<readonly ("public" | "tunnel")[]>) => ({
+      servers: doors.map((held, index) => ({ id: `m${index + 1}`, name: `s${index + 1}`, doors: held })), hostnames: [], partial: false,
+    });
+    expect(doorWords(null, "public")).toBeNull();
+    expect(doorWords(seen(), "public")).toBe("No server takes web traffic yet.");
+    expect(doorWords(seen(["public", "tunnel"], ["tunnel"]), "public")).toBe("Open on 1 of 2 servers.");
+    expect(doorWords(seen(["public", "tunnel"], ["tunnel"]), "tunnel")).toBe("Open on every server.");
+    expect(doorWords(seen(["tunnel"]), "public")).toBe("Closed on every server.");
   });
 });
 

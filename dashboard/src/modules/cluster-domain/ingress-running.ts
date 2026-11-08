@@ -6,6 +6,11 @@ export const INGRESS = "ployz-system/ingress";
 /** The Tunnel Connector's Service identity: the Cloudflare tunnel's connector on a Server. */
 export const TUNNEL = "ployz-system/tunnel";
 
+/** The Public Door's holder: the Service that owns host ports 80 and 443 on a Server. */
+export const INGRESS_HOLDER = "ployz-system/ingress-holder";
+
+const PUBLIC_PORTS = new Set([80, 443]);
+
 const AT_REST = new Set(["created", "exited", "dead"]);
 
 function ingressOn(frame: Pick<RuntimeWatchView, "services">, counts: (state: string) => boolean, identity = INGRESS): Set<string> {
@@ -21,6 +26,28 @@ export function ingressRunningOn(frame: Pick<RuntimeWatchView, "services">): Set
 /** The Machines, by id, where the Tunnel Connector's container is running. */
 export function tunnelRunningOn(frame: Pick<RuntimeWatchView, "services">): Set<string> {
   return ingressOn(frame, (state) => state === "running", TUNNEL);
+}
+
+/**
+ * The Doors each Machine holds open, by id, read as the CLI reads them from the running door containers: a holder or
+ * proxy publishing host port 80 or 443 opens the Public Door, a running connector the Tunnel Door. A Machine with
+ * neither running is absent.
+ */
+export function doorsOpenOn(frame: Pick<RuntimeWatchView, "services">): Map<string, Set<"public" | "tunnel">> {
+  const doors = new Map<string, Set<"public" | "tunnel">>();
+  for (const service of frame.services) {
+    if (service.identity !== INGRESS && service.identity !== INGRESS_HOLDER && service.identity !== TUNNEL) continue;
+    for (const container of service.containers) {
+      if (container.runtime.state !== "running") continue;
+      const publishes = container.resolved_spec.ports.some((port) => port.mode === "host" && PUBLIC_PORTS.has(port.published_port));
+      const door = service.identity === TUNNEL ? "tunnel" : publishes ? "public" : null;
+      if (door === null) continue;
+      const held = doors.get(container.machine_id) ?? new Set();
+      held.add(door);
+      doors.set(container.machine_id, held);
+    }
+  }
+  return doors;
 }
 
 /** The Machines, by id, with an Ingress Proxy container a Deploy would leave alone: any not created, exited or dead. */

@@ -252,5 +252,5 @@ export const deployToFirstServer = Effect.fn("StoreDeployment.deployToFirstServe
   } });
   if (result.ok) return { admitted: true };
   yield* Effect.logInfo(`Not deploying ${environment.project}/${environment.environment} to the first Server: ${result.refusal.message}`);
-  return { refused: result.refusal.code };
+  return { refused: result.refusal.code, message: result.refusal.message };
 });

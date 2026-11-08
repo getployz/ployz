@@ -34,6 +34,10 @@ Click **Review and switch**. The review lists every address that moves, like
 `web-prod.acme.ployz.app → web-prod.example.com`. The old ones stop working. Click **Switch**
 and follow **Step 1 of 3** to **Step 3 of 3**. Expect a short interruption.
 
+If a step fails, both doors stay open on your servers and the section says what stopped it, such
+as an environment that didn't redeploy. Each door's row shows how many servers hold it. Fix the
+cause, then click **Review and switch** again to finish.
+
 Custom domains stay as they are. Add each to your tunnel's DNS in Cloudflare, as the CLI steps
 below show.
 

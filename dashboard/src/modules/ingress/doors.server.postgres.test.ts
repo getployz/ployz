@@ -112,6 +112,19 @@ it("opens both doors, flips to Cloudflare, closes the public door, and ends fini
   expect(await attempts()).toMatchObject([{ state: "finished", want: "tunnel", stage: "closing", failure: null }]);
 });
 
+it("finishes a switch whose last step failed when asked again, and refuses one already made", async () => {
+  await setup("active");
+  await harness.pool.query(
+    "insert into ingress_doors_attempt (id, organization_id, want, state, stage, failure, requested_at, ended_at) values (gen_random_uuid(), $1, 'tunnel', 'failed', 'closing', 's1 still has other doors open.', now() - interval '1 minute', now())",
+    [ORG],
+  );
+  const request = await asked("tunnel");
+  expect(await run(executeDoorsOnce(request, RUN))).toMatchObject({ state: "finished" });
+  expect(sets).toEqual([["public", "tunnel"], ["tunnel"]]);
+  expect(await stateNow()).toBe("active");
+  await expect(run(requestDoorsSwitch({ organizationId: ORG, userId: ADA, to: "tunnel" }))).rejects.toMatchObject({ message: "This Cluster already uses Cloudflare." });
+});
+
 it("goes back to public ports the same way and leaves the tunnel as the user's to delete", async () => {
   await setup("active");
   const request = await asked("public");
