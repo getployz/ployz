@@ -23,9 +23,15 @@ let session: ScopedRuntimeClientSession = { status: "no_connection" };
 const sets: string[][] = [];
 
 /** A Cluster publishing no hostname, so a switch finds nothing to move and starts nothing. */
-const EMPTY_FRAME = { machines: [], services: [], containers: [], incomplete_ids: { machines: [], containers: [], certificates: [] } };
+const EMPTY_FRAME = { machines: [], services: [], containers: [], incomplete_ids: { machines: [], containers: [], certificates: [] }, unanswered: [] };
 /** A look that missed a Server: what it publishes is unknown. */
 const PARTIAL_FRAME = { ...EMPTY_FRAME, incomplete_ids: { machines: ["m2"], containers: [], certificates: [] } };
+/** A Server taking web traffic, as the frame lists it. */
+const server = (id: string, membership: string) => ({ machine: { id, name: id, accepts_ingress: true, runtime: { running_builds: 0 } }, membership });
+/** A look where a Server stopped answering the probes: its rows are as it last reported them, so what it serves now is unknown. */
+const SILENT_FRAME = { ...EMPTY_FRAME, machines: [server("m1", "up"), server("m2", "up")], unanswered: ["m2"] };
+/** A look where gossip reads a Server down. */
+const DOWN_FRAME = { ...EMPTY_FRAME, machines: [server("m1", "up"), server("m2", "down")] };
 
 /** Servers that hold the doors they are told, unless `held` says what they hold instead, showing `frame` when watched. */
 const answering = (held: (doors: readonly string[]) => readonly string[] = (doors) => doors, frame: Effect.Effect<unknown, Error> = Effect.succeed(EMPTY_FRAME)): ScopedRuntimeClientSession => ({
@@ -165,6 +171,16 @@ it("stops with both doors open, before the source moves, when the Servers show n
 it("stops the same way when the frame missed a Server, since it may publish an address that would be left behind", async () => {
   await setup("active");
   session = answering((doors) => doors, Effect.succeed(PARTIAL_FRAME));
+  const request = await asked("public");
+  expect(await run(executeDoorsOnce(request, RUN))).toMatchObject({ state: "failed" });
+  expect(sets).toEqual([["public", "tunnel"]]);
+  expect(await stateNow()).toBe("active");
+  expect(await attempts()).toMatchObject([{ state: "failed", failure: "Some servers didn't answer, so an address may be missing. Try again once they do." }]);
+});
+
+it.each([["stopped answering", SILENT_FRAME], ["reads down", DOWN_FRAME]])("stops the same way when a Server %s, since its rows are as it last reported them", async (_, frame) => {
+  await setup("active");
+  session = answering((doors) => doors, Effect.succeed(frame));
   const request = await asked("public");
   expect(await run(executeDoorsOnce(request, RUN))).toMatchObject({ state: "failed" });
   expect(sets).toEqual([["public", "tunnel"]]);
