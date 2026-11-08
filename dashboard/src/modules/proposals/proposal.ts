@@ -41,37 +41,58 @@ export function strandedByProposal(
 
 const VERBS = { restart: "Restart", stop: "Stop", start: "Start" } as const satisfies Record<ServiceVerb, string>;
 
+/**
+ * The name the card shows for a step's Service: the runtime name the approval signs and the Servers act on, with the
+ * name the Service has now beside it when a rename left them apart: `web`, or `web-old (web)`.
+ */
+export const stepName = (step: Pick<ProposalStep, "service" | "runtime">) =>
+  step.runtime === step.service ? step.runtime : `${step.runtime} (${step.service})`;
+
 /** A step as its card line reads: `Stop web`, or `Stop web on fra-1`. */
-export const stepTitle = (step: Pick<ProposalStep, "verb" | "service" | "only">) =>
-  `${VERBS[step.verb]} ${step.service}${step.only === null ? "" : ` on ${step.only.name}`}`;
+export const stepTitle = (step: Pick<ProposalStep, "verb" | "service" | "runtime" | "only">) =>
+  `${VERBS[step.verb]} ${stepName(step)}${step.only === null ? "" : ` on ${step.only.name}`}`;
 
 /** What a step takes away while it runs, as the card's Destroys list words it; null for a start. */
-export const stepLoss = (step: Pick<ProposalStep, "verb" | "service">) =>
-  step.verb === "stop" ? { verb: "Stops service", name: step.service, after: " until started again" }
-  : step.verb === "restart" ? { verb: "Restarts service", name: step.service, after: "" }
+export const stepLoss = (step: Pick<ProposalStep, "verb" | "service" | "runtime">) =>
+  step.verb === "stop" ? { verb: "Stops service", name: stepName(step), after: " until started again" }
+  : step.verb === "restart" ? { verb: "Restarts service", name: stepName(step), after: "" }
   : null;
 
 /** Why the approver's browser signs nothing: what Cloud names for a step isn't what the card shows. */
 export const MISMATCHED_PROPOSAL = "This doesn't match the proposal. Nothing was approved.";
 
-type ShownStep = Pick<ProposalStep, "verb" | "service" | "only" | "namespace" | "runtime">;
-type FetchedStep = Pick<ProposalStep, "verb" | "service" | "namespace" | "runtime"> & {
-  readonly copies: readonly { readonly id: string; readonly machineId: string; readonly hook: boolean }[];
+type ShownProposal = {
+  readonly project: string;
+  readonly environment: string;
+  readonly steps: readonly Pick<ProposalStep, "verb" | "service" | "only" | "namespace" | "runtime">[];
+};
+type FetchedProposal = {
+  readonly project: string;
+  readonly environmentName: string;
+  readonly namespace: string;
+  readonly steps: readonly {
+    readonly verb: ServiceVerb;
+    readonly service: string;
+    readonly runtime: string | null;
+    readonly copies: readonly { readonly id: string; readonly machineId: string; readonly hook: boolean }[];
+  }[];
 };
 
 /**
- * What the browser signs: the card's namespace, and for each step the card's verb and Service as the Servers know it,
- * which Cloud's target must repeat step for step, with the Containers Cloud names for it, each on the Server the card
- * names when it names one. Cloud can't add, drop or swap a step, nor move one to another namespace or Server.
+ * What the browser signs: the card's namespace, and for each step the card's verb and the runtime name it shows. The
+ * Store, read fresh, must own that namespace under the card's Project and Environment and name that runtime for the
+ * step's Service, and Cloud's target must repeat the steps in the card's order, with each step's Containers on the
+ * Server the card names when it names one. A row changed under the card, in its names or its place, signs nothing.
  */
-export function shownSteps<F extends FetchedStep>(shown: readonly ShownStep[], fetched: readonly F[]) {
-  const namespace = shown[0]?.namespace;
-  const matches = namespace !== undefined && shown.length === fetched.length && shown.every((step, index) => {
-    const target = fetched[index];
-    return target !== undefined && step.verb === target.verb && step.service === target.service
-      && step.namespace === namespace && target.namespace === namespace && step.runtime === target.runtime
-      && (step.only === null || target.copies.every((copy) => copy.machineId === step.only?.machine));
-  });
+export function shownSteps(shown: ShownProposal, fetched: FetchedProposal) {
+  const { namespace } = fetched;
+  const matches = shown.project === fetched.project && shown.environment === fetched.environmentName
+    && shown.steps.length > 0 && shown.steps.length === fetched.steps.length && shown.steps.every((step, index) => {
+      const target = fetched.steps[index];
+      return target !== undefined && step.verb === target.verb && step.service === target.service
+        && step.namespace === namespace && step.runtime === target.runtime
+        && (step.only === null || target.copies.every((copy) => copy.machineId === step.only?.machine));
+    });
   if (!matches) throw new Error(MISMATCHED_PROPOSAL);
-  return { namespace, steps: shown.map((step, index) => ({ verb: step.verb, runtime: step.runtime, copies: fetched[index]?.copies ?? [] })) };
+  return { namespace, steps: shown.steps.map((step, index) => ({ verb: step.verb, runtime: step.runtime, copies: fetched.steps[index]?.copies ?? [] })) };
 }

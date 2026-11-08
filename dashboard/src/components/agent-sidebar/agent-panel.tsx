@@ -42,7 +42,7 @@ type Asked = typeof Asked.Type;
 /** The proposals this browser decided, newest first, so their cards stay to show how each step went. */
 const decidedKey = (organizationSlug: string) => `ployz.agent.decided.${organizationSlug}`;
 const Decided = Schema.fromJsonString(Schema.Array(Schema.String));
-const DECIDED_KEPT = 5;
+const DECIDED_KEPT = 3;
 const stored = <A,>(schema: Schema.Codec<A, string>, key: string, empty: A): A => {
   try {
     return Option.getOrElse(Schema.decodeUnknownOption(schema)(localStorage.getItem(key)), () => empty);

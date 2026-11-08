@@ -1,6 +1,6 @@
 import { queryOptions, type QueryClient } from "@tanstack/react-query";
 import { proposalApprovals } from "#/modules/approval-session/approval-prompt";
-import { MISMATCHED_PROPOSAL, shownSteps } from "#/modules/proposals/proposal";
+import { shownSteps } from "#/modules/proposals/proposal";
 import {
   decideProposalServerFn,
   getProposalServerFn,
@@ -44,11 +44,10 @@ export function proposalOptions(organizationSlug: string, id: string) {
  * The bundle over every step the card shows, made in this browser after one passkey prompt. Null when the person
  * cancels. Throws, signing nothing, when Cloud's steps aren't the card's or Cloud couldn't read the Servers.
  */
-export async function approverBundle(organizationSlug: string, proposal: Pick<ProposalView, "id" | "steps" | "environment" | "environment_id">) {
+export async function approverBundle(organizationSlug: string, proposal: Pick<ProposalView, "id" | "project" | "environment" | "environment_id" | "steps">) {
   const fetched = await proposalTargetServerFn({ data: { organizationSlug, id: proposal.id } });
   if (fetched === null || fetched.environmentId !== proposal.environment_id) throw new Error("Cloud couldn't check the servers. Try again.");
-  const { namespace, steps } = shownSteps(proposal.steps, fetched.steps);
-  if (fetched.namespace !== namespace) throw new Error(MISMATCHED_PROPOSAL);
+  const { namespace, steps } = shownSteps(proposal, fetched);
   // Every signed value is the card's; the Containers and Servers come from Cloud and each Server checks them against its own.
   const environment = { environmentId: proposal.environment_id, environmentName: proposal.environment, namespace };
   return proposalApprovals({ environment, steps, machines: fetched.machines, environmentMachines: fetched.environmentMachines });

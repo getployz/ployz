@@ -47,8 +47,8 @@ function DecidedProposal({ proposal, onDismiss }: { proposal: ProposalView; onDi
       <CardHeader className="flex items-center justify-between gap-2">
         <div className="flex min-w-0 flex-col gap-0.5">
           <CardTitle>{stepsWord(proposal.steps.length)} in {place}</CardTitle>
-          <CardDescription>
-            {proposal.asker && <>Asked by {proposal.asker} · </>}{proposal.decided_at && <RelativeTime date={new Date(proposal.decided_at)} />}
+          <CardDescription className="truncate">
+            {proposal.asker && <>Asked by {proposal.asker} · </>}<RelativeTime date={new Date(proposal.created_at)} />
           </CardDescription>
         </div>
         <div className="flex items-center gap-1">
@@ -123,7 +123,7 @@ function PendingProposal({ organizationSlug, proposal }: { organizationSlug: str
       <CardHeader className="flex items-center justify-between gap-2">
         <div className="flex min-w-0 flex-col gap-0.5">
           <CardTitle>{stepsWord(proposal.steps.length)} in {place}</CardTitle>
-          <CardDescription>
+          <CardDescription className="truncate">
             {proposal.asker && <>Asked by {proposal.asker} · </>}<RelativeTime date={new Date(proposal.created_at)} />
           </CardDescription>
         </div>

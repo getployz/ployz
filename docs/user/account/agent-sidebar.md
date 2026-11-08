@@ -152,7 +152,8 @@ marked **Proposal**. Nothing runs until you approve.
 
 The card lists every step in the order it runs, like **1. Stop web** and **2. Restart db on
 fra-1**, each with the name your servers know the service by, like **On servers
-shop-prod-a1b2/web**. Under the steps, it lists what the plan takes away, like **Stops service
+shop-prod-a1b2/web**. A step names the service as your servers run it; after a rename, the name
+it has now follows in brackets, like **Stop web-old (web)**. Under the steps, it lists what the plan takes away, like **Stops service
 web until started again**, as a stop or restart card does.
 
 1. Read the steps in order, and what they take away.
@@ -162,9 +163,10 @@ web until started again**, as a stop or restart card does.
 
 <!-- screenshot: a proposal card for 3 steps in shop/production -->
 
-The steps run one after another, and if one fails, the ones after it don't run. The card moves
-under **Recent** and shows each step as **Done**, **Failed** with why, or **Not run**. You can ask
-the agent how far the plan got. Each server runs only a step you saw, and each step only once.
+The steps run one after another, and if one fails, the ones after it don't run. Your approval of
+those steps still stands until it runs out, 15 minutes after you gave it. The card moves under
+**Recent** and shows each step as **Done**, **Failed** with why, or **Not run**. You can ask the
+agent how far the plan got. Each server runs only a step you saw, and each step only once.
 If a step hasn't started within 15 minutes of your approval, it doesn't run; the card says
 which step, so you can do it yourself. A proposal holds only restarts, stops and starts; a
 deploy or a settings change still asks on its own card.

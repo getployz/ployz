@@ -18,6 +18,7 @@ import {
   pendingProposals,
   presentProposal,
   proposalStatus,
+  readProposalTarget,
   stageStep,
   sweepProposals,
 } from "#/modules/proposals/proposals.server";
@@ -109,7 +110,9 @@ it.live("an agent stages steps without running any, presents them, and the perso
     const id = yield* staged;
     expect(yield* acts).toEqual([]);
     // Only the three Service tools stage, and a staged step takes no approval.
-    expect(yield* call("deploy", { proposal: id })).toMatchObject({ ok: false, refusal: { message: expect.stringContaining("Only service_restart, service_stop and service_start can be staged") } });
+    expect(yield* call("deploy", { proposal: id })).toMatchObject({ ok: false, refusal: { code: "invalid_argument", message: "Only service_restart, service_stop and service_start can be staged into a proposal. Call deploy without proposal." } });
+    expect(yield* provided(stageStep(agent, id, { environment: "00000000-0000-4000-8000-00000000b3ee", service: "web", verb: "stop", only: null })))
+      .toMatchObject({ ok: false, refusal: { code: "invalid_argument", message: "This proposal runs in shop/production. Stage steps for that environment, or create a proposal for this one." } });
     expect(yield* call("service_stop", { service: "api", proposal: id })).toMatchObject({ ok: false, refusal: { code: "not_found" } });
     expect(yield* call("service_stop", { service: "web", proposal: "00000000-0000-4000-8000-00000000b3ff" })).toMatchObject({ ok: false, refusal: { code: "not_found" } });
     expect(yield* provided(pendingProposals(ORGANIZATION))).toEqual([]);
@@ -154,6 +157,42 @@ it.live("an approval runs the first step with its envelopes, each done step star
     yield* cluster(advanceProposal({ actId: second, organizationId: ORGANIZATION }));
     expect(yield* acts).toHaveLength(2);
     expect(yield* provided(proposalStatus(owner, id))).toMatchObject({ ok: true, value: { steps: [{ state: "done" }, { state: "done" }] } });
+  }));
+
+it.live("the approver's browser gets each step's runtime name from the Store, never from the row", () =>
+  Effect.gen(function* () {
+    const { call, staged, cluster, provided, found } = yield* shop();
+    const id = yield* staged;
+    yield* call("proposal_present", { proposal: id });
+    // A row edited to send the stop to another Service's Containers: the browser reads what the Store names for `web`.
+    yield* provided(Effect.flatMap(Database, ({ drizzle }) => drizzle.execute(sql`update operation_proposals set steps = jsonb_set(steps, '{0,runtime}', '"api"') where id = ${id}`)));
+    expect(yield* cluster(readProposalTarget(ORGANIZATION, id))).toMatchObject({
+      project: "shop", environmentName: "production", namespace: found.namespace,
+      steps: [{ verb: "stop", service: "web", runtime: "web", copies: [{ id: CONTAINER, machineId: MACHINE }] }, { verb: "start", service: "web", runtime: "web" }],
+    });
+    // A step naming a Service the Store doesn't have gets no runtime name and no Containers.
+    yield* provided(Effect.flatMap(Database, ({ drizzle }) => drizzle.execute(sql`update operation_proposals set steps = jsonb_set(steps, '{0,service}', '"api"') where id = ${id}`)));
+    expect(yield* cluster(readProposalTarget(ORGANIZATION, id))).toMatchObject({ steps: [{ service: "api", runtime: null, copies: [] }, { service: "web", runtime: "web" }] });
+  }));
+
+it.live("a step with more than one run reads as its newest", () =>
+  Effect.gen(function* () {
+    const { call, staged, acts, cluster, provided, owner, ended, approve } = yield* shop();
+    const id = yield* staged;
+    yield* call("proposal_present", { proposal: id });
+    expect(yield* cluster(decideProposal(owner, id, approve))).toMatchObject({ ok: true });
+    const [first] = yield* acts;
+    yield* ended(first?.id ?? expect.fail("no act"), "failed");
+    const again = (id: string, state: "done" | "failed", later: number) => provided(Effect.gen(function* () {
+      const { drizzle } = yield* Database;
+      const [run] = yield* drizzle.select().from(serviceAct).where(eq(serviceAct.id, first?.id ?? ""));
+      if (run === undefined) return expect.fail("no run");
+      yield* drizzle.insert(serviceAct).values({ ...run, id, state, reason: null, inngestRunId: null, endedAt: new Date(), requestedAt: new Date(run.requestedAt.getTime() + later) });
+    }));
+    yield* again("00000000-0000-4000-8000-00000000b3a1", "done", 1_000);
+    expect(yield* provided(proposalStatus(owner, id))).toMatchObject({ ok: true, value: { steps: [{ state: "done" }, { state: "waiting" }] } });
+    yield* again("00000000-0000-4000-8000-00000000b3a2", "failed", 2_000);
+    expect(yield* provided(proposalStatus(owner, id))).toMatchObject({ ok: true, value: { steps: [{ state: "failed" }, { state: "not_run" }] } });
   }));
 
 it.live("a step that fails leaves the ones after it unrun", () =>

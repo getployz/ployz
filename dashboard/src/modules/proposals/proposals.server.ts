@@ -7,7 +7,7 @@ import type { AgentCaller } from "#/modules/agent/agent-runner.server";
 import { askerCaller } from "#/modules/approvals/apply.server";
 import { readStore } from "#/modules/config-store/config-store.server";
 import { protectorOnly } from "#/modules/config-store/protected.server";
-import { environmentProtected, findService } from "#/modules/config-store/store-lookup.server";
+import { environmentProtected, environmentServices, findService } from "#/modules/config-store/store-lookup.server";
 import type { StoreRefusal } from "#/modules/config-store/store.contract";
 import { type Actor, callerEnvironments } from "#/modules/identity/actor";
 import { bodyDigest } from "#/modules/operations/keyed.server";
@@ -35,7 +35,7 @@ type ProposalRow = typeof operationProposals.$inferSelect;
 type Refused = { readonly ok: false; readonly refusal: StoreRefusal };
 const refused = (code: string, message: string): Refused => ({ ok: false, refusal: { code, message, details: null } });
 
-type StepAct = { readonly proposalStep: number | null; readonly state: ServiceActState; readonly reason: string | null };
+type StepAct = { readonly proposalStep: number | null; readonly state: ServiceActState; readonly reason: string | null; readonly requestedAt: Date };
 
 /** A proposal as the agent and the card read it, with where each step stands given its runs so far. */
 function proposalView(row: ProposalRow, acts: readonly StepAct[] = []) {
@@ -178,7 +178,7 @@ export const presentProposal = Effect.fn("Proposals.present")(function* (caller:
 
 /** Where each step stands: its run's state, waiting for an earlier step, or never run because an earlier one failed. */
 const stepStates = (row: ProposalRow, acts: readonly StepAct[]) => {
-  const runs = new Map(acts.map((act) => [act.proposalStep, act]));
+  const runs = latestRuns(acts);
   let halted = false;
   return row.steps.map((step, index) => {
     const run = runs.get(index);
@@ -190,9 +190,13 @@ const stepStates = (row: ProposalRow, acts: readonly StepAct[]) => {
   });
 };
 
+/** Each step's newest run: a step admitted twice, which its request key stops, would still read as its last run. */
+const latestRuns = (acts: readonly StepAct[]) =>
+  new Map([...acts].sort((left, right) => left.requestedAt.getTime() - right.requestedAt.getTime()).map((act) => [act.proposalStep, act]));
+
 const actsOf = Effect.fn("Proposals.acts")(function* (row: ProposalRow) {
   const { drizzle } = yield* Database;
-  return yield* drizzle.select({ proposalStep: serviceAct.proposalStep, state: serviceAct.state, reason: serviceAct.reason })
+  return yield* drizzle.select({ proposalStep: serviceAct.proposalStep, state: serviceAct.state, reason: serviceAct.reason, requestedAt: serviceAct.requestedAt })
     .from(serviceAct).where(and(eq(serviceAct.organizationId, row.organizationId), eq(serviceAct.proposalId, row.id)));
 });
 
@@ -224,17 +228,29 @@ export const getProposal = Effect.fn("Proposals.get")(function* (organizationId:
  * Servers and which of them run the Environment. Null when Cloud can't read the Servers.
  */
 export const proposalTarget = Effect.fn("Proposals.target")(function* (organizationId: string, row: ProposalRow) {
+  // Every name comes from the Store as it stands, never from the row, so the browser can check the row against it.
+  const known = yield* environmentServices(organizationId, row.environmentId);
+  if (known === null) return null;
   const steps = [];
   let servers = null;
   for (const step of row.steps) {
-    const target = yield* actTarget(organizationId, step);
-    if (target === null) return null;
-    servers = target;
-    const copies = target.copies.filter((copy) => step.only === null || copy.machineId === step.only.machine);
-    steps.push({ verb: step.verb, service: step.service, namespace: step.namespace, runtime: step.runtime, copies });
+    const runtime = known.services[step.service] ?? null;
+    const target = runtime === null ? null : yield* actTarget(organizationId, { namespace: known.namespace, runtime });
+    if (runtime !== null && target === null) return null;
+    servers = target ?? servers;
+    const copies = (target?.copies ?? []).filter((copy) => step.only === null || copy.machineId === step.only.machine);
+    steps.push({ verb: step.verb, service: step.service, runtime, copies });
   }
   if (servers === null) return null;
-  return { environmentId: row.environmentId, environmentName: row.environment, namespace: row.namespace, steps, machines: servers.machines, environmentMachines: servers.environmentMachines };
+  return {
+    environmentId: row.environmentId,
+    project: known.project,
+    environmentName: known.environment,
+    namespace: known.namespace,
+    steps,
+    machines: servers.machines,
+    environmentMachines: servers.environmentMachines,
+  };
 });
 
 export const readProposalTarget = Effect.fn("Proposals.readTarget")(function* (organizationId: string, id: string) {
@@ -321,7 +337,7 @@ const runStep = Effect.fn("Proposals.runStep")(function* (row: ProposalRow, inde
  */
 const continueProposal = Effect.fn("Proposals.continue")(function* (row: ProposalRow) {
   if (row.status !== "approved" || row.halt !== null) return;
-  const runs = new Map((yield* actsOf(row)).map((act) => [act.proposalStep, act]));
+  const runs = latestRuns(yield* actsOf(row));
   const next = row.steps.findIndex((_, index) => !runs.has(index));
   if (next === -1) return;
   const before = next === 0 ? "done" : runs.get(next - 1)?.state;

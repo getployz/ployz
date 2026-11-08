@@ -158,6 +158,8 @@ impl LocalMachine {
             operation = %approved.body.operation,
             proposal = ?approved.body.proposal,
             ?step,
+            service = %identity,
+            container = observed.container_id.as_str().get(..12).unwrap_or_default(),
             "{} approved by {}",
             approved.body.kind,
             approved.by

@@ -37,8 +37,8 @@ const proposal: ProposalView = {
 const copies = [{ id: "c".repeat(64), machineId: m1, hook: false }];
 const machines = [{ id: m1, name: "fra-1", capabilities: [], sealing: null, deviceEnforcement: false }];
 const fetched = (steps: typeof proposal.steps) => ({
-  environmentId: "e1", environmentName: "production", namespace: "shop-prod-a1b2",
-  steps: steps.map((step) => ({ ...step, copies })), machines, environmentMachines: [m1],
+  environmentId: "e1", project: "shop", environmentName: "production", namespace: "shop-prod-a1b2",
+  steps: steps.map(({ verb, service, runtime }) => ({ verb, service, runtime, copies })), machines, environmentMachines: [m1],
 });
 const signed = { bundle: { body: "{}", signatures: [] }, approvals: {} };
 
@@ -80,7 +80,7 @@ it("signs nothing when Cloud names another namespace, or a Container off the Ser
   fireEvent.click(within(card).getByRole("button", { name: "Approve all" }));
   expect((await within(card).findByRole("alert")).textContent).toBe("This doesn't match the proposal. Nothing was approved.");
   const elsewhere = fetched(proposal.steps);
-  elsewhere.steps[1] = { ...restart, copies: [{ id: "d".repeat(64), machineId: "m2" as MachineId, hook: false }] };
+  elsewhere.steps[1] = { verb: "restart", service: "db", runtime: "db", copies: [{ id: "d".repeat(64), machineId: "m2" as MachineId, hook: false }] };
   target.mockResolvedValueOnce(elsewhere);
   fireEvent.click(within(card).getByRole("button", { name: "Approve all" }));
   await waitFor(() => expect(target).toHaveBeenCalledTimes(2));
@@ -114,6 +114,46 @@ it("signs nothing when Cloud's steps aren't the card's", async () => {
   expect((await within(card).findByRole("alert")).textContent).toBe("This doesn't match the proposal. Nothing was approved.");
   expect(sign).not.toHaveBeenCalled();
   expect(decide).not.toHaveBeenCalled();
+});
+
+it("signs nothing when the row's runtime name isn't the one the Store gives the Service the card names", async () => {
+  // The row says the servers call `web` `api`; the Store, read fresh, says `web`. The card would have read "Stop web".
+  const tampered = { ...proposal, steps: [{ ...stop, runtime: "api" }, restart, start] };
+  target.mockResolvedValueOnce(fetched(proposal.steps));
+  const card = show(tampered);
+  expect(within(card).getAllByRole("listitem").filter((item) => item.closest("ol") !== null)[0]?.textContent).toBe("1.Stop api (web)On servers shop-prod-a1b2/api");
+  fireEvent.click(within(card).getByRole("button", { name: "Approve all" }));
+  expect((await within(card).findByRole("alert")).textContent).toBe("This doesn't match the proposal. Nothing was approved.");
+  expect(sign).not.toHaveBeenCalled();
+  expect(decide).not.toHaveBeenCalled();
+});
+
+it("signs nothing when the card's place isn't the Environment the proposal belongs to", async () => {
+  target.mockResolvedValueOnce({ ...fetched(proposal.steps), project: "blog" });
+  const card = show(proposal);
+  fireEvent.click(within(card).getByRole("button", { name: "Approve all" }));
+  expect((await within(card).findByRole("alert")).textContent).toBe("This doesn't match the proposal. Nothing was approved.");
+  expect(sign).not.toHaveBeenCalled();
+});
+
+it("shows a renamed Service by the name the servers run, in the step and in what the plan takes away", () => {
+  const renamed = { ...proposal, steps: [{ ...stop, runtime: "web-old" }, restart, start] };
+  const card = show(renamed);
+  expect(within(card).getAllByRole("listitem").filter((item) => item.closest("ol") !== null)[0]?.textContent).toBe("1.Stop web-old (web)On servers shop-prod-a1b2/web-old");
+  expect(within(card).getByRole("list", { name: "Destroys" }).textContent).toBe("Stops service web-old (web) until started againRestarts service db");
+});
+
+it("dates a decided card by when it was asked, not when it was decided", () => {
+  vi.useFakeTimers({ now: new Date("2026-11-08T12:10:00.000Z") });
+  try {
+    const client = new QueryClient({ defaultOptions: { queries: { enabled: false, retry: false } } });
+    const seed = { ...proposal, status: "approved" as const, decided_at: "2026-11-08T12:09:50.000Z" };
+    render(<QueryClientProvider client={client}><ProposalCard organizationSlug="acme" id={seed.id} seed={seed} /></QueryClientProvider>);
+    const card = screen.getByLabelText("3 steps in shop/production approved");
+    expect(within(card).getByText(/Asked by Ada/).textContent).toBe("Asked by Ada · 10 minutes ago");
+  } finally {
+    vi.useRealTimers();
+  }
 });
 
 it("denies with the reason typed, and shows it once Cloud takes it", async () => {
