@@ -41,7 +41,7 @@ export const actServiceServerFn = createServerFn({ method: "POST" })
     const caller = yield* dashboardCaller(getRequest().headers, data.organizationSlug);
     const found = yield* findService(caller.organization.id, data.environmentId, data.service);
     if (found === null) return yield* new NotFound({ message: "The service was not found." });
-    const stranding = data.verb === "stop" ? yield* strandingStop(caller.organization.id, found) : null;
+    const stranding = data.verb === "stop" ? yield* strandingStop(caller.organization.id, found, Object.keys(data.approvals ?? {}).length > 0) : null;
     if (stranding !== null) return yield* new Conflict({ message: stranding, userFacing: true });
     // A press an owner must approve carries no approvals: the owner's browser makes them when it approves.
     const unapproved = Object.keys(data.approvals ?? {}).length === 0;

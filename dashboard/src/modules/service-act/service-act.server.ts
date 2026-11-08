@@ -226,15 +226,18 @@ export const actTarget = Effect.fn("ServiceAct.actTarget")(function* (
 
 /**
  * Why a stop of the Service is refused before anything stops: a Server running it enforces but can't take a start
- * approval, so the Service could never be started again from Ployz Cloud. Null when the stop may go, or when Cloud
- * can't read the Servers; each Server then refuses what it can't take.
+ * approval, so the Service could never be started again from Ployz Cloud. Null when the stop may go. A stop that
+ * carries approvals is for Servers that enforce, so when Cloud can't read the Servers it refuses rather than guess;
+ * one without approvals goes, and each Server refuses what it can't take.
  */
 export const strandingStop = Effect.fn("ServiceAct.strandingStop")(function* (
   organizationId: string,
   service: { readonly namespace: string; readonly runtime: string },
+  approved: boolean,
 ) {
   const target = yield* actTarget(organizationId, service);
-  const server = target === null ? null : strandedByStop(target.copies, target.machines);
+  if (target === null) return approved ? "Cloud couldn't check the servers. Try again." : null;
+  const server = strandedByStop(target.copies, target.machines);
   return server === null ? null : needsNewerPloyz(server, "stop");
 });
 

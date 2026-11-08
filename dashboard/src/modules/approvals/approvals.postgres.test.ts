@@ -518,14 +518,17 @@ it.live("an owner's approval of a stop is refused, with nothing stopped, when a 
     const container = "c".repeat(64);
     const machine = "b".repeat(32);
     let capabilities: string[] = ["ployz.restart.session-grant.v1"];
+    let readable = false;
     const cluster = <A, E, R>(effect: Effect.Effect<A, E, R>) => provided(effect.pipe(Effect.provideService(
       OrganizationRuntime,
       asTestDouble<OrganizationRuntimeService>()({
-        open: () => Effect.succeed({ status: "connected" as const, connected: asTestDouble<PloyzSession>()({ watchFirstFrame: () => Effect.succeed(asTestDouble<RuntimeWatchView>()({
-          services: [{ identity: `${found.namespace}/${found.runtime}`, containers: [{ container_id: container, machine_id: machine }], hook_containers: [] }],
-          machines: [{ machine: { id: machine, name: "machine-2", runtime: { device_enforcement: true, capabilities } } }],
-          containers: [],
-        })) }) }),
+        open: () => readable
+          ? Effect.succeed({ status: "connected" as const, connected: asTestDouble<PloyzSession>()({ watchFirstFrame: () => Effect.succeed(asTestDouble<RuntimeWatchView>()({
+            services: [{ identity: `${found.namespace}/${found.runtime}`, containers: [{ container_id: container, machine_id: machine }], hook_containers: [] }],
+            machines: [{ machine: { id: machine, name: "machine-2", runtime: { device_enforcement: true, capabilities } } }],
+            containers: [],
+          })) }) })
+          : Effect.succeed({ status: "unreachable" as const }),
       }),
     )));
     const body = { environmentId: ENVIRONMENT, service: "web", only: null };
@@ -539,6 +542,12 @@ it.live("an owner's approval of a stop is refused, with nothing stopped, when a 
       return yield* drizzle.select({ verb: serviceAct.verb }).from(serviceAct);
     }));
 
+    // With approvals and no readable Servers, Cloud refuses rather than guess whether one could start it again.
+    expect(yield* cluster(decideAndApply(owner, ask.approval_id, approve, undefined, approvals)))
+      .toMatchObject({ ok: false, refusal: { message: expect.stringContaining("Cloud couldn't check the servers. Try again.") } });
+    expect(yield* acts).toEqual([]);
+
+    readable = true;
     expect(yield* cluster(decideAndApply(owner, ask.approval_id, approve, undefined, approvals)))
       .toMatchObject({ ok: false, refusal: { message: expect.stringContaining("machine-2 needs a newer Ployz to stop it.") } });
     expect(yield* acts).toEqual([]);

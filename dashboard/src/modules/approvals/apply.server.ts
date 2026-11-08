@@ -54,7 +54,7 @@ const applyService = Effect.fn("Approvals.applyService")(function* (
   const access = yield* requireAccessById({ userId: asker.userId }, organizationId, OPERATIONS[`service.${verb}`].requires);
   const found = yield* findService(organizationId, environmentId, service);
   if (found === null) return { message: "The service is gone.", moved: true } satisfies NotRun;
-  const stranding = verb === "stop" ? yield* strandingStop(organizationId, found) : null;
+  const stranding = verb === "stop" ? yield* strandingStop(organizationId, found, Object.keys(approvals ?? {}).length > 0) : null;
   if (stranding !== null) return { message: stranding, moved: false } satisfies NotRun;
   // Servers that enforce take a restart or stop only with the approver's passkey approvals, which only a browser can make.
   const unapproved = Object.keys(approvals ?? {}).length === 0;
