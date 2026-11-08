@@ -105,9 +105,14 @@ const done = { kind: "done" } as const;
  * Start a build on GitHub: reuse the Service's latest image when a Machine still holds it for this commit, skip GitHub
  * when it can't take it (no GitHub App access, no build workflow, several platforms, GitHub or the Cluster
  * unreachable), else dispatch the workflow on the runner native to its platform. Workflow inputs are visible on GitHub,
- * so they never carry secrets: the runner fetches those at check-in.
+ * so they never carry secrets: the runner fetches those at check-in. A build a run already holds, as when a retried
+ * step's first try handed it off and lost the answer, is followed, not started again: no other Builder may take it
+ * until that run lets it go.
  */
 export const startStoreGithubBuild = Effect.fn("StoreGithub.start")(function* (organizationId: string, target: StoreGithubTarget) {
+  // A build no run has held yet is not found.
+  const held = yield* heldGithubBuild(target.build).pipe(Effect.catchIf(refusedWith("not_found"), () => Effect.succeed(null)));
+  if (held !== null && held.status === "building") return { kind: "dispatched", runId: held.run.run_id } satisfies StoreGithubStart;
   const store = yield* cloudStore;
   const skip = (message: string) => storeTry(() => store.githubSkip(target.build, message)).pipe(
     // It started or ended meanwhile (a retried step): nothing to do.

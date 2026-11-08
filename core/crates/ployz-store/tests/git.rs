@@ -1266,8 +1266,70 @@ fn a_server_cannot_report_on_a_build_a_github_run_still_holds() {
                     .unwrap(),
                 1
             );
+            continue;
         }
+        // Once the start limit passes it on, the Server's report lands.
+        let unstarted = GithubEnd::Unstarted {
+            message: "no runner started the build in time".into(),
+        };
+        assert_eq!(
+            store.github_end(&id, Some(RUN), &unstarted).unwrap(),
+            BuildStatus::Pending
+        );
+        let building = RunEvidence::Build(BuildReport {
+            service: ServiceName::parse("web").unwrap(),
+            status: BuildStatus::Building,
+            message: None,
+            log: String::new(),
+            server: Some("fsn-1".into()),
+        });
+        store.record(&id.deployment, &runner, building).unwrap();
+        let shown = store.read(&who, &query).unwrap();
+        assert_eq!(shown.build.status, BuildStatus::Building);
+        assert_eq!(shown.build.server.as_deref(), Some("fsn-1"));
     }
+}
+
+/// A Pending report from before `record` refused a GitHub-held build left the run's
+/// `github` on a pending row. It reads as waiting, and the Servers build it to the end.
+#[test]
+fn a_pending_row_an_old_record_left_with_a_run_reads_as_waiting() {
+    let dir = tempfile::tempdir().unwrap();
+    let url = backend::fresh_url(&dir);
+    let (store, who) = project(ConfigStore::open(&url, backend::key()).unwrap());
+    let id = dispatched(&store, &who);
+    let runner = RunnerId::parse("cloud-1").unwrap();
+    store.claim(&id.deployment, &runner).unwrap();
+    // The UPDATE `record` ran before its GitHub guard, for a Pending report.
+    backend::execute(
+        &url,
+        &format!(
+            "UPDATE config_build SET status = 'pending', message = NULL, log = log, \
+             server = COALESCE('fsn-1', server) \
+             WHERE deployment_id = '{}' AND service = 'web'",
+            id.deployment
+        ),
+    );
+
+    let query = BuildLogQuery {
+        deployment: id.deployment.clone(),
+        service: id.service.clone(),
+    };
+    assert_eq!(
+        store.read(&who, &query).unwrap().build.status,
+        BuildStatus::Pending
+    );
+    // The run held only a building build, so it holds this one no more.
+    let error = store.github_check_in(&id, RUN, &grant()).unwrap_err();
+    assert_eq!(error.code, RpcErrorCode::Conflict);
+    for status in [BuildStatus::Building, BuildStatus::Built] {
+        store
+            .record(&id.deployment, &runner, report(status, None, ""))
+            .unwrap();
+        assert_eq!(store.read(&who, &query).unwrap().build.status, status);
+    }
+    let error = store.github_build(&id).unwrap_err();
+    assert_eq!(error.code, RpcErrorCode::NotFound);
 }
 
 #[test]

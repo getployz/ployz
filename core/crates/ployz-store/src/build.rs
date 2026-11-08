@@ -298,7 +298,7 @@ pub(crate) fn record(
     append(&mut log, &report.log);
     let message = report.message.as_deref().map(trimmed);
     tx.execute(
-        "UPDATE config_build SET status = ?3, message = ?4, log = ?5, \
+        "UPDATE config_build SET status = ?3, message = ?4, log = ?5, github = NULL, \
          server = COALESCE(?6, server) \
          WHERE deployment_id = ?1 AND service = ?2",
         &[
@@ -415,21 +415,14 @@ enum By {
 }
 
 impl Stage {
-    /// The row's `status`, `interrupted`, `github` and `server` columns. A Server's
-    /// report over a GitHub run's hold, which [`record`] refuses, could leave a
-    /// Building row with both: the run's hold is what GitHub's steps read, so it stays
-    /// and the Server goes. A Pending row with a run is `corrupt`: passing a build on
-    /// clears its run.
-    fn decode(
-        status: RowStatus,
-        github: Option<GithubHold>,
-        server: Option<String>,
-    ) -> Result<Self, RpcError> {
-        Ok(match (status, github) {
-            (RowStatus::Reported(BuildStatus::Pending), None) => Self::Waiting,
-            (RowStatus::Reported(BuildStatus::Pending), Some(_)) => {
-                return Err(error::corrupt("build"));
-            }
+    /// The row's `status`, `interrupted`, `github` and `server` columns. Some rows come
+    /// from `main`'s [`record`], which allowed a Server's report on a build a GitHub run
+    /// held and left the run's `github` on a row of any status. A Building row with both
+    /// reads as the run's, since its hold is what GitHub's steps read, and the Server goes.
+    /// A Pending row with a run reads as waiting, and `record` clears the run.
+    fn decode(status: RowStatus, github: Option<GithubHold>, server: Option<String>) -> Self {
+        match (status, github) {
+            (RowStatus::Reported(BuildStatus::Pending), _) => Self::Waiting,
             (RowStatus::Reported(BuildStatus::Building), Some(github)) => {
                 Self::Building(By::Github(github))
             }
@@ -441,7 +434,7 @@ impl Stage {
                 github,
                 server,
             },
-        })
+        }
     }
 
     const fn status(&self) -> RowStatus {
@@ -541,7 +534,7 @@ fn rows(tx: &mut dyn Tx, id: &DeploymentId) -> Result<Vec<BuildRow>, RpcError> {
                 RowStatus::decode(row.variant(2, "build status")?, row.int(11)?)?,
                 github,
                 row.optional_text(9)?.map(str::to_owned),
-            )?,
+            ),
             message: row.optional_text(3)?.map(str::to_owned),
             log: row.text(4)?.to_owned(),
             organization: row.parse(6, "build")?,
