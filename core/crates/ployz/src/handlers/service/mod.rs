@@ -582,6 +582,7 @@ fn restart_approvals(
                 issued_at,
                 expires_at: issued_at.plus(ployz_core::authority::restart::MAX_LIFETIME_MILLIS),
                 signer: SignerKey::Device(signer.public().into()),
+                proposal: None,
             };
             Signed::sign(&approval, &signer)
                 .map(|signed| (container.container_id, signed))

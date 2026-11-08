@@ -1178,6 +1178,24 @@ it.live("a Deploy called alongside another tool is refused without reaching the 
     expect(yield* pending).toEqual([]);
   }));
 
+it.live("two steps staged in one turn are both refused, so each lands at its own index", () =>
+  Effect.gen(function* () {
+    const { say, watchWrites } = yield* sidebar({ removeWeb: false });
+    const writes = watchWrites();
+    const model = fakeText();
+    model.setResponses([{ toolCalls: [
+      { name: "service_stop", input: { service: "web", proposal: "00000000-0000-4000-8000-0000000a6201" } },
+      { name: "service_start", input: { service: "web", proposal: "00000000-0000-4000-8000-0000000a6201" } },
+    ] }, { text: "One at a time, then." }]);
+    const answered = yield* say("stop and start web in one plan", { page: architecture }, model);
+    expect(answered.interrupts).toEqual([]);
+    expect(answered.results).toMatchObject([
+      { ok: false, refusal: { code: "invalid_argument", message: "Stage one step at a time." } },
+      { ok: false, refusal: { code: "invalid_argument", message: "Stage one step at a time." } },
+    ]);
+    expect(admits(writes)).toEqual([]);
+  }));
+
 it.live("a denied Deploy never reaches the Store, and the agent quotes the reason instead of retrying", () =>
   Effect.gen(function* () {
     const { provided, caller, say, resume, watchWrites, pending } = yield* sidebar({ removeWeb: true });

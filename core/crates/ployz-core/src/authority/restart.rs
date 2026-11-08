@@ -7,6 +7,7 @@ use ts_rs::TS;
 use super::{
     canonical::Timestamp,
     keys::{Approver, Purpose, Signed, SigningPublicKey, Statement},
+    proposal::ProposalRef,
     refusal::AuthorityRefusal,
     session::{ActionFamily, GrantScope},
     trusted_key::TrustedKeys,
@@ -106,6 +107,39 @@ pub struct RestartApproval {
     pub expires_at: Timestamp,
     /// The key that signed, which the signature must come from.
     pub signer: SignerKey,
+    /// Which step of a signed proposal this is, when it is one. Absent from a single
+    /// approval, which keeps the bytes a daemon from before proposals reads.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub proposal: Option<ProposalRef>,
+}
+
+impl RestartApproval {
+    /// Check the request this Machine holds is the one this body approves.
+    ///
+    /// # Errors
+    /// Returns [`AuthorityRefusal::Mismatch`] naming the first field that differs.
+    pub(super) fn matches(
+        &self,
+        cluster: SealingPublicKey,
+        facts: &RestartFacts<'_>,
+    ) -> Result<(), AuthorityRefusal> {
+        let checks = [
+            ("a Cluster", self.cluster == cluster),
+            (
+                "a workflow",
+                self.kind.permits(facts.step) && self.kind.reaches(facts.kind),
+            ),
+            ("an Environment", &self.namespace == facts.namespace),
+            ("a Service", &self.service == facts.service),
+            ("Machines", self.machines.contains(facts.machine)),
+            ("a Container", &self.container == facts.container),
+        ];
+        match checks.iter().find(|(_, holds)| !holds) {
+            Some((field, _)) => Err(AuthorityRefusal::Mismatch { field }),
+            None => Ok(()),
+        }
+    }
 }
 
 pub use super::validity::{CLOCK_SKEW_MILLIS, MAX_LIFETIME_MILLIS};
@@ -191,7 +225,8 @@ pub struct Approved {
 
 /// Check `approval` approves exactly this request, signed by one of this Machine's Devices
 /// or by a browser key a trusted passkey lent a grant covering it. A passkey itself signs
-/// no envelope, so it is never among the signers.
+/// no envelope, so it is never among the signers. A step of a proposal carries the signed
+/// bundle instead of a signature and is checked by [`super::proposal::verify_step`].
 ///
 /// # Errors
 /// Returns the first [`AuthorityRefusal`] found: a signature or grant problem, a
@@ -202,35 +237,26 @@ pub fn verify(
     approval: &Signed<RestartApproval>,
     facts: &RestartFacts<'_>,
 ) -> Result<Approved, AuthorityRefusal> {
+    if let Some(bundle) = &approval.proposal {
+        return super::proposal::verify_step(bundle, approval, facts);
+    }
     let approvers = approval.approvers(facts.trusted, facts.now)?;
     let body = approval.open()?;
     let Some(cluster) = facts.cluster else {
         return Err(AuthorityRefusal::NoClusterIdentity);
     };
-    let by = approvers.into_iter().find(|approver| {
-        approver.key() == body.signer.key()
-            && matches!(
-                (approver, body.signer),
-                (Approver::Device(_), SignerKey::Device(_))
-                    | (Approver::Browser { .. }, SignerKey::Browser { .. })
-            )
-    });
-    let checks = [
-        ("the signer", by.is_some()),
-        ("a Cluster", body.cluster == cluster),
-        (
-            "a workflow",
-            body.kind.permits(facts.step) && body.kind.reaches(facts.kind),
-        ),
-        ("an Environment", &body.namespace == facts.namespace),
-        ("a Service", &body.service == facts.service),
-        ("Machines", body.machines.contains(facts.machine)),
-        ("a Container", &body.container == facts.container),
-    ];
-    if let Some((field, _)) = checks.iter().find(|(_, holds)| !holds) {
-        return Err(AuthorityRefusal::Mismatch { field });
+    if body.proposal.is_some() {
+        return Err(AuthorityRefusal::Mismatch {
+            field: "a proposal",
+        });
     }
-    let by = by.expect("the signer check passed");
+    let by = approvers
+        .into_iter()
+        .find(|approver| approver.signs_as(body.signer))
+        .ok_or(AuthorityRefusal::Mismatch {
+            field: "the signer",
+        })?;
+    body.matches(cluster, facts)?;
     if let Approver::Browser { grant, .. } = &by {
         grant.body.covers(&GrantScope {
             cluster,
@@ -281,6 +307,7 @@ mod tests {
             issued_at: Timestamp::from_millis(100_000).unwrap(),
             expires_at: Timestamp::from_millis(1_000_000).unwrap(),
             signer: SignerKey::Device(device(signer)),
+            proposal: None,
         }
     }
 

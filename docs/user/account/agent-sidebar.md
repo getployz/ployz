@@ -143,6 +143,38 @@ approve or deny it. The member who asked finds their card under **Requested**, m
 an owner or admin.**, with no **Approve** or **Deny**, and it doesn't count on the **Agent** button. An agent that asks for the same sync or take
 again while it waits doesn't add a second card.
 
+## Approve several steps at once
+
+An agent can plan several service restarts, stops and starts as one proposal, like stopping
+`web`, restarting `db`, then starting `web` again. It stages the steps, then presents the plan,
+and one card appears under **Waiting on you**, titled like **3 steps in shop/production** and
+marked **Proposal**. Nothing runs until you approve.
+
+The card lists every step in the order it runs, like **1. Stop web** and **2. Restart db on
+fra-1**, each with the name your servers know the service by, like **On servers
+shop-prod-a1b2/web**. A step names the service as your servers run it; after a rename, the name
+it has now follows in brackets, like **Stop web-old (web)**. Under the steps, it lists what the plan takes away, like **Stops service
+web until started again**, as a stop or restart card does.
+
+1. Read the steps in order, and what they take away.
+2. Click **Approve all**, then use your passkey when the browser asks. Your passkey approves this
+   proposal only, once, even if you used it a moment ago.
+3. Or click **Deny**, with a reason if you like. The agent gets it.
+
+<!-- screenshot: a proposal card for 3 steps in shop/production -->
+
+The steps run one after another, and if one fails, the ones after it don't run. Your approval of
+those steps still stands until it runs out, 15 minutes after you gave it. The card moves under
+**Recent** and shows each step as **Done**, **Failed** with why, or **Not run**. You can ask the
+agent how far the plan got. Each server runs only a step you saw, and each step only once.
+When the 15 minutes run out with steps left, they don't run, and the card says what to start
+yourself. A proposal holds only restarts, stops and starts; a deploy or a settings change still
+asks on its own card.
+
+A proposal in a [Protected environment](../environments/environments.md#protect-an-environment)
+can only be presented by an owner or admin. If a server needs a newer Ployz to take a proposal,
+the card says which one, and nothing runs until it's upgraded.
+
 ## Good to know
 
 - **Needs an Anthropic API key.** On a [Self-hosted Cloud](../self-hosting.md) without

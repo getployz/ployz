@@ -44,13 +44,24 @@ export const ownerOf = Effect.fn("ConfigStore.ownerOf")(function* (organizationI
  * when the Environment has no such Service.
  */
 export const findService = Effect.fn("ConfigStore.findService")(function* (organizationId: string, environmentId: string, service: string) {
+  const known = yield* environmentServices(organizationId, environmentId);
+  if (known === null) return null;
+  const runtime = known.services[service];
+  if (runtime === undefined) return null;
+  return { namespace: known.namespace, project: known.project, environment: known.environment, runtime, place: `${known.project}/${known.environment}` };
+});
+
+/**
+ * The Namespace Environment `environmentId` owns and each deployed Service's runtime name by its name now, read fresh
+ * from the Store, so a stored copy of either can be checked against it. Null before the Environment's first Deploy.
+ */
+export const environmentServices = Effect.fn("ConfigStore.environmentServices")(function* (organizationId: string, environmentId: string) {
   const owned = yield* ownerOf(organizationId, environmentId);
   if (owned === null) return null;
   const view = yield* readStore(organizationId, { query: "namespace", environment: { project: owned.project, environment: owned.environment } });
   // A rename between the two reads can put another Environment under these names.
   if (view.environment.id !== environmentId) return null;
-  const runtime = view.services[service];
-  return runtime === undefined ? null : { namespace: owned.namespace, runtime, project: owned.project, environment: owned.environment, place: `${owned.project}/${owned.environment}` };
+  return { namespace: owned.namespace, project: owned.project, environment: owned.environment, services: view.services };
 });
 
 /**

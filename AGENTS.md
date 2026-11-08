@@ -11,6 +11,11 @@
 
 - GitHub CI is the PR gate. Locally, run only focused checks: typecheck, lint, fmt, and the tests for the code you changed. Don't run a full suite (`pnpm pr:check`, `pnpm test`, `cargo nextest run`, workspace clippy) locally, except to reproduce a CI failure.
 - Opening, reviewing, verifying and landing PRs: follow [docs/agents/landing.md](docs/agents/landing.md).
-- A bug you find outside your task: score how often users would hit it (F) and how bad it is when they do (S), each 1 to 10. S is 10 for data loss, a secret exposed or a security hole, 9 for an outage that doesn't heal, 5 for a broken flow with a workaround, 2 for cosmetic. Fix it only when F×S is 15 or more, or S is 9 or more. Otherwise file an issue with both scores and leave the code alone.
+- A bug you find outside your task: score how often users would hit it (F) and how bad it is when they do (S), each 1 to 10. S is 10 for data loss, a secret exposed or a security hole (see the Cloud security bar), 9 for an outage that doesn't heal, 5 for a broken flow with a workaround, 2 for cosmetic. Fix it only when F×S is 15 or more, or S is 9 or more. Otherwise file an issue with both scores and leave the code alone.
+
+# Cloud security bar
+
+- Ployz Cloud is designed to be a poor target: it holds no customer secrets, and a Server acts only on what it can check itself. Whoever takes over Cloud must still be unable to read secrets, run code of their choosing on a Server, take data off a Server, or add a Server or Device. That is the bar.
+- A security hole is a way across that bar. A compromised Cloud that mislabels, reorders, delays or drops an action a person approved stays under it: name it once as a residual in the PR body and move on, without review rounds or fixes. Point reviewers and swarm testers at the bar, and judge their findings by it.
 
 Draw a diagram where one picture compresses many words: how systems relate, flows, forks. Show UI with screenshots or prototypes, never ASCII.

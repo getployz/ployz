@@ -241,6 +241,10 @@ _Avoid_: Assistant, copilot, AI panel
 The Agent sidebar's view of one pending Approval: what the plan destroys, with Approve and Deny. It is drawn from Cloud's Approval each time it shows, never from the chat's memory, so every device shows the same card and a superseded one says so.
 _Avoid_: Confirmation dialog, prompt
 
+**Proposal**:
+An ordered plan of Service restarts, stops and starts in one Environment, which an agent stages step by step, presents, and a person approves at once with one passkey prompt. The approver's browser signs one bundle naming every step's digest in order; each step's own approval is unsigned and rides inside it. Cloud runs the steps in order, each after the one before it ends done, and a step that fails leaves the rest unrun. A Machine runs a step only when it is listed at its place in a bundle a trusted passkey signed and its bytes hash to that digest, so a step can't be added or swapped after approval, and the bundle's one operation ID with the step's place lets the Machine refuse a replay. A Machine sees only its own step, so running the steps in order, and running every one, is Cloud's doing. A Proposal holds only the steps a Machine verifies; a Deploy or a settings change still takes its own Approval. In a Protected Environment, only someone who can protect it presents one.
+_Avoid_: Batch, plan (as a noun for this), multi-approval, workflow
+
 **Run card**:
 The Agent sidebar's view of the Deployment a command started, in the Deployments place's words and statuses.
 _Avoid_: Job card, task card

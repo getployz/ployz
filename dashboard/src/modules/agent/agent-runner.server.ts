@@ -16,8 +16,9 @@ import { protectorOnly, unprotectAsked } from "#/modules/config-store/protected.
 import type { StoreAnswer, StoreCall, StoreRefusal, StoreResult } from "#/modules/config-store/store.contract";
 import type { JsonObject } from "#/db/tables";
 import { type Caller, callerEnvironments, callerPermissions } from "#/modules/identity/actor";
+import { createProposal, presentProposal, proposalStatus, stageStep } from "#/modules/proposals/proposals.server";
 import { answerForSupport, refusalForSupport } from "#/modules/support-access/support-view";
-import { asRecord, projectJsonValue } from "#/lib/json";
+import { asRecord, asString, projectJsonValue } from "#/lib/json";
 
 /** A Caller acting through an agent: the sidebar, or a remote MCP client. */
 export type AgentCaller = Omit<Caller, "via"> & { readonly via: "agent" };
@@ -50,12 +51,56 @@ export type AgentTool = {
 
 const keyed = (schema: JsonObject) => Schema.is(Schema.Struct({ properties: Schema.Struct({ request_key: Schema.Unknown }) }))(schema);
 
-/** Every tool an agent may call: the compiled catalog, then each published command offered to agents. */
+const NAME = { type: "string", pattern: "^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$" };
+const PROPOSAL_ID = { type: "string", pattern: "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$" };
+const PROPOSAL = {
+  ...PROPOSAL_ID,
+  description: "Stage this call as the next step of a proposal instead of running it: nothing runs until a person approves the whole proposal.",
+};
+
+/** The Service tools a proposal may hold a step of: the ones a Server checks against the approval a person signed. */
+export const PROPOSAL_TOOLS = new Set(["service_restart", "service_stop", "service_start"]);
+const WITH_PROPOSAL = new Set(PROPOSAL_TOOLS);
+
+/** Tools that build a proposal: several Service restarts, stops and starts a person approves together, in order. */
+const PROPOSAL_STEPS: ReadonlyArray<AgentTool> = [
+  {
+    name: "proposal_create",
+    description: "Open an empty proposal in an environment: a plan of several service restarts, stops and starts a person approves at once. Stage each step by calling its service tool with proposal set to this id, in the order to run, then present the proposal. Steps run in order, and a step that fails stops the ones after it.",
+    inputSchema: { type: "object", additionalProperties: false, properties: { project: NAME, environment: NAME } },
+    gated: false,
+    readOnly: false,
+    destructive: false,
+    keyed: false,
+  },
+  {
+    name: "proposal_present",
+    description: "Hand a proposal to the people who can approve it. Nothing more can be staged into it afterwards.",
+    inputSchema: { type: "object", additionalProperties: false, properties: { proposal: PROPOSAL_ID }, required: ["proposal"] },
+    gated: false,
+    readOnly: false,
+    destructive: false,
+    keyed: false,
+  },
+  {
+    name: "proposal_status",
+    description: "Where a proposal stands: waiting on a person, denied with their reason, or how far its steps got.",
+    inputSchema: { type: "object", additionalProperties: false, properties: { proposal: PROPOSAL_ID }, required: ["proposal"] },
+    gated: false,
+    readOnly: true,
+    destructive: false,
+    keyed: false,
+  },
+];
+
+/** Every tool an agent may call: the compiled catalog, then each published command offered to agents, then proposals. */
 export const AGENT_TOOLS: ReadonlyArray<AgentTool> = [
   ...CATALOG.tools.map((tool) => {
     // SAFETY: the catalog writes each input schema as a JSON Schema object.
     const schema = tool.input_schema as JsonObject;
-    return { name: tool.name, description: tool.description, inputSchema: schema, gated: tool.gate !== "never", readOnly: tool.read_only, destructive: tool.destructive, keyed: keyed(schema) };
+    const properties = asRecord(schema["properties"]) ?? {};
+    const inputSchema = WITH_PROPOSAL.has(tool.name) ? { ...schema, properties: { ...properties, proposal: PROPOSAL } } : schema;
+    return { name: tool.name, description: tool.description, inputSchema, gated: tool.gate !== "never", readOnly: tool.read_only, destructive: tool.destructive, keyed: keyed(schema) };
   }),
   ...COMMANDS.filter((command) => command.agents && command.typed === null).map((command) => ({
     name: command.name,
@@ -66,7 +111,11 @@ export const AGENT_TOOLS: ReadonlyArray<AgentTool> = [
     destructive: command.removes,
     keyed: false,
   })),
+  ...PROPOSAL_STEPS,
 ];
+
+/** The proposal a call stages into, when its input names one. */
+export const stagesInto = (input: JsonValue): string | null => asString(asRecord(input)?.["proposal"]);
 
 const refused = (code: string, message: string): ToolOutcome => ({ ok: false, refusal: { code, message, details: null } });
 
@@ -233,12 +282,47 @@ const agentWrite = (caller: AgentCaller) => (write: Write) =>
 
 const done = (outcome: ToolOutcome): AgentResult => ({ outcome });
 
+const PROPOSAL_NAMES = new Set(PROPOSAL_STEPS.map((tool) => tool.name));
+
+const runProposalTool = Effect.fn("Agent.runProposalTool")(function* (caller: AgentCaller, call: AgentCall, proposal: string | null) {
+  if (call.tool === "proposal_create") {
+    const at = placeForCall(call.page, { scoped: true, namesProject: namesProject(call.input) });
+    if (!at.ok) return refused(at.code, at.message);
+    const input = asRecord(call.input) ?? {};
+    const project = asString(input["project"]) ?? at.project;
+    const environment = asString(input["environment"]) ?? at.environment;
+    return yield* createProposal(caller, { project, environment });
+  }
+  if (proposal === null) return refused("invalid_argument", `This input does not fit: proposal is a proposal's id, a string.`);
+  return call.tool === "proposal_present" ? yield* presentProposal(caller, proposal) : yield* proposalStatus(caller, proposal);
+});
+
+/** Runs a Service tool as far as the Cloud act it would send, then stages that act into `proposal` instead of sending it. */
+const stageCall = Effect.fn("Agent.stageCall")(function* (caller: AgentCaller, call: AgentCall, proposal: string) {
+  const { proposal: _proposal, ...input } = asRecord(call.input) ?? {};
+  const at = placeOf(caller, call.page, call.tool, input);
+  if ("refusal" in at) return at.refusal;
+  const { step } = yield* untilWrite(agentStart(call.tool, input, at.place, call.key), agentRead(caller));
+  // The tool's own answer, such as a Service it can't find, before it would act.
+  if (step.step === "done") return step.result;
+  if (step.write.at !== "act" || step.write.write.action.action !== "service") return refused("invalid_argument", `${call.tool} found nothing to stage.`);
+  const { environment, service, verb, only } = step.write.write.action;
+  return yield* stageStep(caller, proposal, { environment, service, verb, only });
+});
+
 /**
  * Runs one agent tool call as `caller`. An ungated tool runs to its own answer. A gated write that waits on a human
  * answers `asking`; the retry carrying that approval runs it. A gated save and a Cloud act let the compiled tool finish;
  * any other gated Store write's answer is the call's outcome.
  */
 export const runAgentCall = Effect.fn("Agent.runCall")(function* (caller: AgentCaller, call: AgentCall) {
+  const proposal = stagesInto(call.input);
+  if (PROPOSAL_NAMES.has(call.tool)) return done(yield* runProposalTool(caller, call, proposal));
+  if (proposal !== null) {
+    if (call.approvalId !== null) return done(refused("invalid_argument", "A staged step takes no approval. Leave approval out."));
+    if (!PROPOSAL_TOOLS.has(call.tool)) return done(refused("invalid_argument", `Only service_restart, service_stop and service_start can be staged into a proposal. Call ${call.tool} without proposal.`));
+    return done(yield* stageCall(caller, call, proposal));
+  }
   const published = findCommand(call.tool);
   if (published !== undefined) {
     if (!published.agents || published.typed !== null) return done(refused("unknown_tool", `No tool is named ${call.tool}.`));

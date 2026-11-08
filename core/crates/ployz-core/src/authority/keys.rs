@@ -8,7 +8,9 @@ use ts_rs::TS;
 
 use super::{
     canonical::{self, CanonicalError, Timestamp, hex_bytes, write_hex},
+    proposal::ProposalApproval,
     refusal::AuthorityRefusal,
+    restart::SignerKey,
     session::{Grant, SessionGrant},
     trusted_key::TrustedKeys,
 };
@@ -218,6 +220,12 @@ pub struct Signed<T> {
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     #[ts(optional, as = "Option<Vec<SessionGrant>>")]
     pub grants: Vec<SessionGrant>,
+    /// The signed proposal this unsigned step belongs to. Present only on a step of a
+    /// proposal, which carries no signature of its own. A daemon from before proposals
+    /// refuses an envelope that carries one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub proposal: Option<Box<Signed<ProposalApproval>>>,
     #[serde(skip)]
     #[ts(skip)]
     statement: PhantomData<T>,
@@ -235,6 +243,24 @@ impl<T: Statement> Signed<T> {
             body,
             signatures,
             grants: Vec::new(),
+            proposal: None,
+            statement: PhantomData,
+        })
+    }
+
+    /// Encode `statement` as one unsigned step of `bundle`, which vouches for it.
+    ///
+    /// # Errors
+    /// Returns a [`CanonicalError`] when the statement has no canonical form.
+    pub fn proposed(
+        statement: &T,
+        bundle: Signed<ProposalApproval>,
+    ) -> Result<Self, CanonicalError> {
+        Ok(Self {
+            body: canonical::to_canonical(statement)?,
+            signatures: Vec::new(),
+            grants: Vec::new(),
+            proposal: Some(Box::new(bundle)),
             statement: PhantomData,
         })
     }
@@ -367,6 +393,18 @@ impl Approver {
         match self {
             Self::Device(key) | Self::Browser { key, .. } => *key,
         }
+    }
+
+    /// Whether this approver is the key a statement says signed it, vouched for the way
+    /// the statement says: a Device as a Device, a browser key under a grant.
+    #[must_use]
+    pub fn signs_as(&self, signer: SignerKey) -> bool {
+        self.key() == signer.key()
+            && matches!(
+                (self, signer),
+                (Self::Device(_), SignerKey::Device(_))
+                    | (Self::Browser { .. }, SignerKey::Browser { .. })
+            )
     }
 }
 

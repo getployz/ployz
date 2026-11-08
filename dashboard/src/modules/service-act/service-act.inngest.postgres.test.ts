@@ -207,6 +207,7 @@ describe("act-service", () => {
       "stop:m-alpha:web-a",
       "start:m-alpha:web-a",
       "record",
+      "advance-proposal",
     ]);
     expect(calls).toEqual(["stop web-a", "start web-a"]);
     expect(await operation(admitted.id)).toMatchObject({
@@ -305,6 +306,35 @@ describe("act-service", () => {
         { server: "beta", stopped: "no", reason: "beta needs a newer Ployz to stop it." },
       ],
     });
+  });
+
+  it("refuses a leg whose approval ran out without asking the Server", async () => {
+    const spent: Signed = { body: JSON.stringify({ expires_at: Date.now() - 1 }), signatures: [] };
+    const admitted = await request("stop", undefined, { "web-a": spent, "web-b": spent });
+    if (!admitted.ok) throw new Error("refused");
+
+    expect((await act(admitted.id)).result).toEqual({ actId: admitted.id, state: "failed" });
+    expect(calls).toEqual([]);
+    expect((await operation(admitted.id))?.servers.map(({ stopped, reason }) => [stopped, reason]))
+      .toEqual([["no", "The approval ran out."], ["no", "The approval ran out."]]);
+  });
+
+  it("leaves a restart's copy stopped, saying the approval ran out, when the proposal's window closes between its stop and its start", async () => {
+    const bundle = (expiresAt: number): Signed => ({ body: JSON.stringify({ expires_at: expiresAt }), signatures: [] });
+    const envelope = (expiresAt: number): Signed => ({ body: "{\"step\":1}", signatures: [], proposal: bundle(expiresAt) });
+    const admitted = await request("restart", undefined, { "web-a": envelope(Date.now() + 60_000) });
+    if (!admitted.ok) throw new Error("refused");
+    const legs: ServiceActLeg[] = [{ server: "alpha", machine: "m-alpha", container: "web-a", hook: false, stop: null, start: null, reason: null }];
+    await harness.pool.query(
+      `update service_act set state = 'running', inngest_run_id = 'run-1', started_at = now(), before = $2, legs = $3 where id = $1`,
+      [admitted.id, JSON.stringify(copies), JSON.stringify(legs)],
+    );
+    const leg = (side: "stop" | "start") => runEffect(actOnContainer({ actId: admitted.id, organizationId }, "run-1", "web-a", side));
+
+    expect(await leg("stop")).toEqual([{ ...legs[0], stop: "done" }]);
+    await harness.pool.query(`update service_act set approvals = $2 where id = $1`, [admitted.id, JSON.stringify({ "web-a": envelope(Date.now() - 1) })]);
+    expect(await leg("start")).toEqual([{ ...legs[0], stop: "done", start: "failed", reason: "The approval ran out." }]);
+    expect(calls).toEqual(["stop web-a"]);
   });
 });
 
