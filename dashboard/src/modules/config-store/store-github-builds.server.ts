@@ -110,14 +110,20 @@ const done = { kind: "done" } as const;
  * until that run lets it go.
  */
 export const startStoreGithubBuild = Effect.fn("StoreGithub.start")(function* (organizationId: string, target: StoreGithubTarget) {
-  // A build no run has held yet is not found.
-  const held = yield* heldGithubBuild(target.build).pipe(Effect.catchIf(refusedWith("not_found"), () => Effect.succeed(null)));
-  if (held !== null && held.status === "building") return { kind: "dispatched", runId: held.run.run_id } satisfies StoreGithubStart;
+  // The run that holds the build, to follow. A build no run has held yet is not found.
+  const holder = heldGithubBuild(target.build).pipe(
+    Effect.catchIf(refusedWith("not_found"), () => Effect.succeed(null)),
+    Effect.map((held) => held?.status === "building" ? { kind: "dispatched", runId: held.run.run_id } satisfies StoreGithubStart : null),
+  );
+  const following = yield* holder;
+  if (following !== null) return following;
+  // A write refused since the read above: the build started or ended meanwhile, maybe by the first try's hand-off
+  // committing late. Follow whichever run holds it now.
+  const refused = holder.pipe(Effect.map((held) => held ?? done));
   const store = yield* cloudStore;
   const skip = (message: string) => storeTry(() => store.githubSkip(target.build, message)).pipe(
-    // It started or ended meanwhile (a retried step): nothing to do.
-    Effect.catchIf(refusedWith("conflict"), () => Effect.void),
     Effect.as<StoreGithubStart>(done),
+    Effect.catchIf(refusedWith("conflict"), () => refused),
   );
   if (target.installationId === null) {
     // A Service whose image a Server still holds reads as reused, not as waiting on an App it doesn't need.
@@ -126,7 +132,8 @@ export const startStoreGithubBuild = Effect.fn("StoreGithub.start")(function* (o
       Effect.tap(({ foreign }) => logForeignServers(organizationId, foreign)),
       Effect.catchIf(refusedWith("conflict"), () => Effect.succeed(null)),
     );
-    if (start === null || start.kind === "reused") return done;
+    if (start === null) return yield* refused;
+    if (start.kind === "reused") return done;
     return yield* skip(`GitHub builds need the Ployz GitHub App on ${target.repository}`);
   }
   const installationId = target.installationId;
@@ -154,21 +161,15 @@ export const startStoreGithubBuild = Effect.fn("StoreGithub.start")(function* (o
     // The run must not build untracked: whatever stops Cloud recording it (cancelled or replaced meanwhile, a
     // failure it retries) cancels it first.
     const cancel = cancelGithubRun({ access, fullName, runId: run.runId }).pipe(Effect.ignore);
-    const handed = yield* storeTry(() => store.githubDispatched(target.build, {
+    yield* storeTry(() => store.githubDispatched(target.build, {
       run_id: run.runId, run_url: run.runUrl, workflow_ref: run.workflowRef, repository: fullName, installation_id: installationId,
-    })).pipe(
-      Effect.as(true),
-      Effect.catchIf(refusedWith("conflict"), () => cancel.pipe(Effect.as(false))),
-      Effect.onError(() => cancel),
-    );
-    if (!handed) return done;
+    })).pipe(Effect.onError(() => cancel));
     return { kind: "dispatched", runId: run.runId } satisfies StoreGithubStart;
   }).pipe(
     // GitHub failing before dispatch is GitHub being unusable, not the build failing.
     Effect.catchTag("GithubObservationError", (error) => skip(`GitHub couldn't take the build: ${error.message}`)),
     Effect.catchTag("GithubDisconnected", (error) => skip(error.message)),
-    // Started or ended by a retried step already.
-    Effect.catchIf(refusedWith("conflict"), () => Effect.succeed(done)),
+    Effect.catchIf(refusedWith("conflict"), () => refused),
   );
 });
 
