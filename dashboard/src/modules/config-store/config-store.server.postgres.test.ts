@@ -1,6 +1,6 @@
 import { assert, it } from "@effect/vitest";
 import { expect, vi } from "vitest";
-import { type ConfigCommand, type ConfigQuery, type MachineId, RpcError } from "@ployz/sdk";
+import { type ConfigCommand, type ConfigQuery, type Departed, type LocalMachineRemoved, type MachineId, RpcError } from "@ployz/sdk";
 import { createHash } from "node:crypto";
 import { mkdir, mkdtemp, readFile, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -1426,7 +1426,10 @@ it.live(
  * A removal the SDK answers with `reply`, of a Server that keeps one device key. `others` Servers of the same pairing
  * stay enrolled.
  */
-const removeServerReplying = Effect.fn(function* (others: readonly MachineId[], reply: { readonly reset_warning: string | null }) {
+const removeServerReplying = Effect.fn(function* (
+  others: readonly MachineId[],
+  reply: Pick<LocalMachineRemoved, "reset_warning"> & { readonly departed?: Departed },
+) {
   const alice = yield* signUp("alice");
   const caller = yield* resolveCaller(signedIn(alice));
   const organizationId = caller.organization.id;
@@ -1508,6 +1511,39 @@ it.live(
       assert.deepStrictEqual(after.servers, []);
       assert.deepStrictEqual(after.keys, []);
       assert.strictEqual(after.pairings, 0);
+    }),
+  60_000,
+);
+
+it.live(
+  "Cloud keeps its hold on a Server whose Leave was unreachable",
+  () =>
+    Effect.gen(function* () {
+      const cloud = yield* cloudServices();
+      const other = ids.machineId("1");
+      const after = yield* removeServerReplying([other], {
+        reset_warning: "target is unreachable; removing shared rows: connection refused",
+        departed: { kind: "unreachable", cause: "connection refused" },
+      }).pipe(Effect.provide(cloud));
+      assert.strictEqual(after.settled?.result?.release.kind, "kept");
+      assert.deepStrictEqual(after.servers, [ids.machineId("0"), other].sort());
+      assert.deepStrictEqual(after.keys, [ids.machineId("0")]);
+    }),
+  60_000,
+);
+
+it.live(
+  "the last Server the tag says was already forgotten keeps Cloud's hold, as its reset couldn't be confirmed",
+  () =>
+    Effect.gen(function* () {
+      const cloud = yield* cloudServices();
+      const after = yield* removeServerReplying([], {
+        reset_warning: "its reset couldn't be confirmed: it was already gone from the Cluster",
+        departed: { kind: "already_forgotten" },
+      }).pipe(Effect.provide(cloud));
+      assert.strictEqual(after.settled?.result?.release.kind, "kept");
+      assert.deepStrictEqual(after.servers, [ids.machineId("0")]);
+      assert.strictEqual(after.pairings, 1);
     }),
   60_000,
 );
