@@ -58,9 +58,9 @@ const setupProblem = Effect.fn("Cloudflare.setupProblem")(function* (organizatio
 
 /**
  * Set Cloudflare up for the Cluster, once, with a token the user pasted for it. Order matters: every permission is
- * checked and the Servers answer before anything is created, the tunnel exists before the Cluster is asked to run it,
- * both Doors are open and answering before the wildcard record points names at it, and the row is the last thing
- * written, under the lock a switch takes, so neither lands over the other. The API token is `Redacted` throughout,
+ * checked, the Servers answer and the zone's wildcard is free before anything is created, the tunnel exists before the
+ * Cluster is asked to run it, both Doors are open and answering before the wildcard record points names at it, and the
+ * row is the last thing written, under the lock a switch takes, so neither lands over the other. The API token is `Redacted` throughout,
  * used for these calls and then dropped; the tunnel's own token goes `Redacted` to the Cluster, which seals it. Every
  * way out after the tunnel exists undoes what was done, and says so when Cloudflare kept the tunnel.
  */
@@ -85,12 +85,17 @@ export const setUpCloudflare = Effect.fn("Cloudflare.setUp")(function* (
   const [org] = yield* drizzle.select({ slug: organization.slug }).from(organization).where(eq(organization.id, organizationId));
   const tunnelName = `ployz-${org?.slug ?? organizationId.slice(0, 8)}`;
   const found = yield* findTunnel(http, input.token, zone.accountId, tunnelName).pipe(untouched);
+  const name = `*.${zone.name}`;
+  const there = yield* findRecords(http, input.token, zone.id, name).pipe(untouched);
+  if (there.some((row) => found === null || row.content !== wildcardRecord(zone.name, found).content)) {
+    return yield* refuse(`${name} already points somewhere else in Cloudflare. Remove that record or pick another zone. Nothing was changed.`);
+  }
   const tunnel = found === null
     ? { ...yield* createTunnel(http, input.token, zone.accountId, tunnelName).pipe(untouched), made: true }
     : { id: found, token: null, made: false };
 
   let doorsAsked = false;
-  /** Put back what the steps below changed: the Doors, then the tunnel this setup made. What is left for the user, in words. */
+  /** Put back what the steps below changed: the Doors first, so no connector holds the tunnel, then the tunnel this setup made. What is left for the user, in words. */
   const undo = Effect.gen(function* () {
     if (doorsAsked) yield* session.connected.setIngressDoors(["public"]).pipe(Effect.ignoreCause({ log: true, message: "Public door not restored after a failed setup" }));
     const gone = tunnel.made ? yield* deleteTunnel(http, input.token, zone.accountId, tunnel.id) : true;
@@ -106,14 +111,7 @@ export const setUpCloudflare = Effect.fn("Cloudflare.setUp")(function* (
     const gap = doorsGap(answered.success, BOTH);
     if (gap !== null) return yield* refuse(gap);
 
-    const name = `*.${zone.name}`;
-    const wanted = wildcardRecord(zone.name, tunnel.id);
-    const there = yield* findRecords(http, input.token, zone.id, name);
-    if (there.length === 0) {
-      yield* createRecord(http, input.token, zone.id, wanted);
-    } else if (!there.every((row) => row.content === wanted.content)) {
-      return yield* refuse(`${name} already points somewhere else in Cloudflare. Remove that record or pick another zone.`);
-    }
+    if (there.length === 0) yield* createRecord(http, input.token, zone.id, wildcardRecord(zone.name, tunnel.id));
 
     return yield* database.transaction(Effect.gen(function* () {
       yield* lockIngressRows(organizationId);

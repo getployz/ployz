@@ -242,13 +242,14 @@ export const publishedEnvironments = Effect.fn("StoreDeployment.published")(func
 
 /**
  * Deploy `environment` to the Organization's first Server as Deployment `id`, as its Deploy button would; no member
- * admits it and nothing uploads. A refusal (a Deploy that would delete data asks first) leaves it for the user.
+ * admits it and nothing uploads. `services` narrows it to those Services, as the Deploy button's "only these" does;
+ * empty deploys the whole Environment. A refusal (a Deploy that would delete data asks first) leaves it for the user.
  */
 export const deployToFirstServer = Effect.fn("StoreDeployment.deployToFirstServer")(function* (
-  organizationId: string, environment: { project: string; environment: string }, id: string,
+  organizationId: string, environment: { project: string; environment: string }, id: string, services: readonly string[] = [],
 ) {
   const result = yield* callStore(organizationId, null, { operation: "write", command: {
-    command: "admit", admit: "deploy", id, environment, services: [], version: null, accept_volume_loss: [],
+    command: "admit", admit: "deploy", id, environment, services: [...services], version: null, accept_volume_loss: [],
   } });
   if (result.ok) return { admitted: true };
   yield* Effect.logInfo(`Not deploying ${environment.project}/${environment.environment} to the first Server: ${result.refusal.message}`);

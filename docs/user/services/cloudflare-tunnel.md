@@ -32,7 +32,11 @@ stay where they are until you switch.
 
 Click **Review and switch**. The review lists every address that moves, like
 `web-prod.acme.ployz.app → web-prod.example.com`. The old ones stop working. Click **Switch**
-and follow **Step 1 of 3** to **Step 3 of 3**. Expect a short interruption.
+and follow **Step 1 of 3** to **Step 3 of 3**. Expect a short interruption. The switch redeploys
+only the services on that list. A service that isn't running stays stopped.
+
+While a switch runs, each door's row shows what your servers hold right now. A second switch the
+same way joins the running one. One the other way is refused until it finishes.
 
 If a step fails, both doors stay open on your servers and the section says what stopped it, such
 as an environment that didn't redeploy. Each door's row shows how many servers hold it. Fix the
@@ -50,7 +54,7 @@ with them.
 
 `ployz cluster web-traffic cloudflare` and `ployz cluster web-traffic public` ask for the same
 switch from the CLI. They wait for an owner or admin to approve it in the dashboard, as do
-agents.
+agents. Approved while a switch the same way already runs, they say so and start no second one.
 
 ## Open the tunnel from the CLI
 

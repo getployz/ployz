@@ -61,11 +61,11 @@ export function WebTrafficSection({ organizationSlug }: { organizationSlug: stri
         commit="none"
         control={canSwitchBack ? (
           editable ? <Button type="button" variant="outline" size="sm" disabled={switching} onClick={() => setReviewing("public")}>Switch back</Button> : null
-        ) : onCloudflare ? null : <Badge variant="info">In use</Badge>}
+        ) : onCloudflare || switching ? null : <Badge variant="info">In use</Badge>}
       />
       <SettingsRow
         label="Cloudflare Tunnel"
-        hint={cloudflareHint(setup, observed, progress?.label ?? null)}
+        hint={cloudflareHint(setup, observed, switching)}
         commit="none"
         control={cloudflareControl({ setup, change, switching, editable, settingUp, onSetUp: () => setSettingUp(true), onSwitch: () => setReviewing("tunnel") })}
       >
@@ -110,13 +110,13 @@ export function WebTrafficSection({ organizationSlug }: { organizationSlug: stri
 function publicHint(setup: CloudflareSetup | null, observed: ClusterIngressObservation | null) {
   if (setup?.state === "left") return `Delete the tunnel ${setup.tunnelName} and *.${setup.zone} in Cloudflare.`;
   if (setup === null) return "Ports 80 and 443 open on every server.";
-  return doorWords(observed, "public") ?? (setup.state === "active" ? "Ports 80 and 443 close once the tunnel is in use." : "Ports 80 and 443 open on every server.");
+  return doorWords(observed, "public") ?? (setup.state === "active" ? "Ports 80 and 443 closed." : "Ports 80 and 443 open on every server.");
 }
 
-function cloudflareHint(setup: CloudflareSetup | null, observed: ClusterIngressObservation | null, progress: string | null) {
+/** What the Servers show of the tunnel, once seen, so a switch under way reads as the Doors stand, not as it will end. */
+function cloudflareHint(setup: CloudflareSetup | null, observed: ClusterIngressObservation | null, switching: boolean) {
   if (setup === null || setup.state === "left") return "Serve through Cloudflare with no open ports.";
-  if (progress !== null) return `Moving to ${setup.zone}`;
-  if (setup.state === "set_up") return `Tunnel ready on ${setup.zone}`;
+  if (setup.state === "set_up" && !switching) return `Tunnel ready on ${setup.zone}`;
   if (observed === null) return setup.zone;
   return `${setup.zone} · ${holdingCount(observed.servers, "tunnel")} of ${observed.servers.length} servers connected`;
 }
@@ -131,7 +131,7 @@ function cloudflareControl({ setup, change, switching, editable, settingUp, onSe
   onSwitch: () => void;
 }) {
   const canSwitch = setup !== null && switchProblem(setup, "tunnel", change) === null;
-  if (setup?.state === "active" && !canSwitch) return <Badge variant="info">In use</Badge>;
+  if (setup?.state === "active" && !canSwitch) return switching ? null : <Badge variant="info">In use</Badge>;
   if (!editable) return null;
   if (setup === null || setup.state === "left") {
     return <Button type="button" variant="outline" size="sm" disabled={settingUp} onClick={onSetUp}>Set up</Button>;

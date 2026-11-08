@@ -1,4 +1,4 @@
-import type { PublishedHostname } from "@ployz/sdk";
+import type { OwnedNamespace, PublishedHostname } from "@ployz/sdk";
 import { Schema } from "effect";
 
 /** Which Door the Cluster ends up behind: its public ports, or the Cloudflare tunnel. */
@@ -87,10 +87,45 @@ export function movedHostnames(published: readonly PublishedHostname[], from: st
     .sort((a, b) => a.from.localeCompare(b.from));
 }
 
+/** An Environment a switch redeploys, with only the Services whose hostnames move, by their names in the Store. */
+export type RedeployScope = { readonly project: string; readonly environment: string; readonly services: readonly string[] };
+
+/**
+ * What a switch redeploys: each Environment owning a moved hostname, narrowed to the deployed Services publishing one,
+ * so nothing that wasn't running starts. `runtimeNames` gives each Namespace's deployed Services by name, as the Store
+ * does, since a container carries its Service's runtime name. A hostname whose Service the Store can't name is left
+ * over, for the switch to stop on rather than move half the Cluster.
+ */
+export function redeployScope(
+  moving: readonly MovedHostname[], owners: readonly OwnedNamespace[], runtimeNames: ReadonlyMap<string, Readonly<Record<string, string>>>,
+) {
+  const environments = new Map<string, { project: string; environment: string; services: Set<string> }>();
+  const left: MovedHostname[] = [];
+  for (const moved of moving) {
+    const owner = owners.find(({ namespace }) => namespace === moved.namespace);
+    const named = Object.entries(runtimeNames.get(moved.namespace) ?? {}).find(([, runtime]) => runtime === moved.service)?.[0];
+    if (owner === undefined || named === undefined) {
+      left.push(moved);
+      continue;
+    }
+    const key = `${owner.project}/${owner.environment}`;
+    const scope = environments.get(key) ?? { project: owner.project, environment: owner.environment, services: new Set<string>() };
+    scope.services.add(named);
+    environments.set(key, scope);
+  }
+  return {
+    environments: [...environments.values()].map(({ services, ...environment }) => ({ ...environment, services: [...services].sort() }) satisfies RedeployScope),
+    left,
+  };
+}
+
+/** The words for a switch's direction, as the page and the CLI name it. */
+export const wantWords = (want: DoorsWant) => (want === "tunnel" ? "Cloudflare" : "public ports");
+
 /** How the page words a switch under way, from what its row says. */
 export function switchProgress(change: LatestDoorsChange | null): { readonly label: string; readonly step: number } | null {
   if (change === null || (change.state !== "pending" && change.state !== "running")) return null;
-  const to = change.want === "tunnel" ? "Cloudflare" : "public ports";
+  const to = wantWords(change.want);
   if (change.state === "pending") return { label: `Starting the switch to ${to}`, step: 0 };
   switch (change.stage) {
     case "moving": return { label: change.want === "tunnel" ? "Moving addresses to your zone" : "Moving addresses back", step: 2 };

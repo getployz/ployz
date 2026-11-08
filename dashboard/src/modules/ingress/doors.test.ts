@@ -2,7 +2,7 @@ import { Effect } from "effect";
 import { describe, expect, it } from "vitest";
 import type { RuntimeWatchView } from "@ployz/sdk";
 import { doorsOpenOn } from "#/modules/cluster-domain/ingress-running";
-import { type CloudflareSetup, doorsGap, doorWords, type LatestDoorsChange, movedHostnames, switchProblem, switchProgress } from "#/modules/ingress/doors";
+import { type CloudflareSetup, doorsGap, doorWords, type LatestDoorsChange, movedHostnames, redeployScope, switchProblem, switchProgress } from "#/modules/ingress/doors";
 import { runSwitch, switchSteps, type SwitchPorts } from "#/modules/ingress/doors.run";
 import { asTestDouble } from "#/lib/test-double";
 
@@ -75,6 +75,36 @@ describe("what a switch moves", () => {
     expect(movedHostnames(published, "acme.ployz.app", "example.com")).toEqual([
       { from: "web-prod.acme.ployz.app", to: "web-prod.example.com", namespace: "shop-prod", service: "web" },
     ]);
+  });
+
+  it("redeploys only the deployed Services publishing a moved hostname, by their Store names, and never a whole Environment", () => {
+    const moving = [
+      { from: "web-prod.acme.ployz.app", to: "web-prod.example.com", namespace: "shop-prod", service: "web-1" },
+      { from: "api-prod.acme.ployz.app", to: "api-prod.example.com", namespace: "shop-prod", service: "api" },
+      { from: "docs.acme.ployz.app", to: "docs.example.com", namespace: "docs-main", service: "site" },
+    ];
+    const owners = [
+      { namespace: "shop-prod", project: "shop", environment: "production" },
+      { namespace: "docs-main", project: "docs", environment: "main" },
+    ];
+    const runtimeNames = new Map<string, Record<string, string>>([
+      ["shop-prod", { web: "web-1", api: "api", worker: "worker", postgres: "postgres" }],
+      ["docs-main", { site: "site" }],
+    ]);
+    expect(redeployScope(moving, owners, runtimeNames)).toEqual({
+      environments: [
+        { project: "shop", environment: "production", services: ["api", "web"] },
+        { project: "docs", environment: "main", services: ["site"] },
+      ],
+      left: [],
+    });
+  });
+
+  it("leaves over a moved hostname whose Service the Store can't name, instead of deploying around it", () => {
+    const moved = { from: "old.acme.ployz.app", to: "old.example.com", namespace: "gone", service: "web" };
+    expect(redeployScope([moved], [], new Map())).toEqual({ environments: [], left: [moved] });
+    const owner = { namespace: "gone", project: "shop", environment: "old" };
+    expect(redeployScope([moved], [owner], new Map([["gone", { api: "api" }]]))).toEqual({ environments: [], left: [moved] });
   });
 });
 

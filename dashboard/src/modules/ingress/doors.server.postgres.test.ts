@@ -22,10 +22,14 @@ let harness: PostgresTestHarness;
 let session: ScopedRuntimeClientSession = { status: "no_connection" };
 const sets: string[][] = [];
 
+/** A Cluster publishing no hostname, so a switch finds nothing to move and starts nothing. */
+const EMPTY_FRAME = { machines: [], services: [], containers: [], incomplete_ids: { machines: [], containers: [], certificates: [] } };
+
 /** Servers that hold the doors they are told, unless `held` says what they hold instead. */
 const answering = (held: (doors: readonly string[]) => readonly string[] = (doors) => doors): ScopedRuntimeClientSession => ({
   status: "connected",
   connected: asTestDouble<PloyzSession>()({
+    watchFirstFrame: () => Effect.succeed(EMPTY_FRAME),
     setIngressDoors: (doors: readonly string[]) => {
       sets.push([...doors]);
       return Effect.succeed({ machines: [{ server: "s1", doors: held(doors) }], failures: [] });
@@ -34,7 +38,7 @@ const answering = (held: (doors: readonly string[]) => readonly string[] = (door
 });
 const runtime = asTestDouble<OrganizationRuntime["Service"]>()({ cancel: () => Effect.void, open: () => Effect.sync(() => session) });
 
-/** A config store with no Environments, so a switch's redeploy has nothing to move. */
+/** A config store a switch never writes to: with no hostname moving, no Service is redeployed. */
 const store = { open: Effect.succeed(asTestDouble<ConfigStore>()({ read: async () => ({ projects: [] }) })) };
 
 const inngest = new Inngest({ id: "doors-test" });
@@ -94,11 +98,14 @@ it("won't switch to Cloudflare before it is set up", async () => {
   expect(await outbox()).toBe(0);
 });
 
-it("writes one pending switch with one run, and answers a second request with the first", async () => {
+it("writes one pending switch with one run, joins a second request the same way, and refuses one the other way", async () => {
   await setup("set_up");
   const first = await run(requestDoorsSwitch({ organizationId: ORG, userId: ADA, to: "tunnel" }));
+  expect(first.joined).toBe(false);
   const second = await run(requestDoorsSwitch({ organizationId: ORG, userId: ADA, to: "tunnel" }));
-  expect(second.change.attemptId).toBe(first.change.attemptId);
+  expect(second).toEqual({ change: first.change, joined: true });
+  await expect(run(requestDoorsSwitch({ organizationId: ORG, userId: ADA, to: "public" })))
+    .rejects.toMatchObject({ message: "A switch to Cloudflare is under way. Wait for it to finish, then switch again." });
   expect(await attempts()).toHaveLength(1);
   expect(await outbox()).toBe(1);
 });

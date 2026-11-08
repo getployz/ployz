@@ -8,8 +8,10 @@ import { loadClusterDomain } from "#/modules/cluster-domain/cluster-domain.serve
 import { doorsOpenOn } from "#/modules/cluster-domain/ingress-running";
 import { loadCloudflareSetup } from "#/modules/cloudflare/source.server";
 import { readStore } from "#/modules/config-store/config-store.server";
-import { publishedEnvironments, deployToFirstServer } from "#/modules/config-store/store-deployment.server";
+import { deployToFirstServer } from "#/modules/config-store/store-deployment.server";
 import { publishedOf } from "#/modules/config-store/domain-evidence.server";
+import { owners } from "#/modules/config-store/store-lookup.server";
+import { StoreRefused } from "#/modules/config-store/store.contract";
 import {
   type ClusterIngressObservation,
   type ClusterIngressView,
@@ -19,7 +21,9 @@ import {
   type DoorsWant,
   type LatestDoorsChange,
   movedHostnames,
+  redeployScope,
   switchProblem,
+  wantWords,
 } from "#/modules/ingress/doors";
 import { activeDoorsAttempt, lockIngressRows } from "#/modules/ingress/doors.lock.server";
 import { runSwitch } from "#/modules/ingress/doors.run";
@@ -94,6 +98,20 @@ export const observeClusterIngress = Effect.fn("IngressDoors.observe")(function*
 });
 
 /**
+ * What a switch to `to` moves, as the Servers stand now: every generated hostname they publish under the source the
+ * switch leaves, with the Service publishing it. The review lists these, and the switch redeploys exactly their
+ * Services, so a Service that wasn't running never starts.
+ */
+const movingNow = Effect.fn("IngressDoors.moving")(function* (organizationId: string, to: DoorsWant) {
+  const setup = yield* loadCloudflareSetup(organizationId);
+  const hosted = (yield* loadClusterDomain(organizationId))?.name ?? null;
+  const seen = yield* observeClusterIngress(organizationId);
+  const zone = setup?.zone ?? null;
+  if (zone === null || hosted === null || seen === null) return [];
+  return to === "tunnel" ? movedHostnames(seen.hostnames, hosted, zone) : movedHostnames(seen.hostnames, zone, hosted);
+});
+
+/**
  * What switching the Cluster to `to` asks a human: every generated hostname moves between the Hosted domain and the
  * zone, so each one an Environment publishes now is a domain it stops serving. Asked of a CLI or an agent whenever
  * Cloud can name the move, and always, since a switch changes where every address points.
@@ -101,11 +119,8 @@ export const observeClusterIngress = Effect.fn("IngressDoors.observe")(function*
 export const switchAsked = Effect.fn("IngressDoors.asked")(function* (organizationId: string, to: DoorsWant) {
   const setup = yield* loadCloudflareSetup(organizationId);
   const hosted = (yield* loadClusterDomain(organizationId))?.name ?? null;
-  const seen = yield* observeClusterIngress(organizationId);
   const zone = setup?.zone ?? null;
-  const moving = zone === null || hosted === null || seen === null ? [] : to === "tunnel"
-    ? movedHostnames(seen.hostnames, hosted, zone)
-    : movedHostnames(seen.hostnames, zone, hosted);
+  const moving = yield* movingNow(organizationId, to);
   return {
     subject: `cluster:${organizationId}`,
     verb: "set_ingress_doors",
@@ -131,8 +146,8 @@ const enqueueSwitch = (row: AttemptRow) => enqueueEvent(createIngressDoorsReques
 
 /**
  * Ask for a switch of the Cluster's web traffic. Its row is written with its run's event, under the lock Cloudflare
- * setup's write takes, so the switch reads the setup it will move; a request while another switch is active returns
- * that one, whichever way it goes.
+ * setup's write takes, so the switch reads the setup it will move. A request while a switch the same way is active
+ * joins it (`joined`); one the other way is refused, since the running switch is still moving every address.
  */
 export const requestDoorsSwitch = Effect.fn("IngressDoors.request")(function* (
   input: { readonly organizationId: string; readonly userId: string | null; readonly to: DoorsWant },
@@ -142,7 +157,10 @@ export const requestDoorsSwitch = Effect.fn("IngressDoors.request")(function* (
   return yield* database.transaction(Effect.gen(function* () {
     yield* lockIngressRows(organizationId);
     const active = yield* activeDoorsAttempt(organizationId);
-    if (active !== null) return { change: yield* latestChangeOf(active) };
+    if (active !== null && active.want !== input.to) {
+      return yield* new Conflict({ userFacing: true, message: `A switch to ${wantWords(active.want)} is under way. Wait for it to finish, then switch again.` });
+    }
+    if (active !== null) return { change: yield* latestChangeOf(active), joined: true };
     const setup = yield* loadCloudflareSetup(organizationId);
     const problem = switchProblem(setup, input.to, yield* latestChange(organizationId));
     if (problem !== null) return yield* new Conflict({ userFacing: true, message: problem });
@@ -152,7 +170,7 @@ export const requestDoorsSwitch = Effect.fn("IngressDoors.request")(function* (
     }).returning();
     if (inserted === undefined) return yield* Effect.die(new Error("The switch row was not written."));
     yield* enqueueSwitch(inserted);
-    return { change: yield* latestChangeOf(inserted) };
+    return { change: yield* latestChangeOf(inserted), joined: false };
   }));
 });
 
@@ -179,9 +197,12 @@ const stateOf = Effect.fn("IngressDoors.stateOf")(function* (attemptId: string) 
   return { attemptId, state: row.state } satisfies DoorsRunReply;
 });
 
-/** What a switch that stopped says: the Engine's own refusal when a Server gave one. */
-const failureWords = (error: { readonly _tag: string }) =>
-  error instanceof PloyzProviderError || error instanceof ServerLacks ? refusalWords(error) : "Your servers didn't answer.";
+/** What a switch that stopped says: the Engine's own refusal when a Server gave one, the Store's when its redeploy was refused. */
+const failureWords = (error: { readonly _tag: string }) => {
+  if (error instanceof PloyzProviderError || error instanceof ServerLacks) return refusalWords(error);
+  if (error instanceof StoreRefused) return error.message;
+  return "Your servers didn't answer.";
+};
 
 const openSession = Effect.fn("IngressDoors.openSession")(function* (organizationId: string) {
   const session = yield* (yield* OrganizationRuntime).open(organizationId);
@@ -199,15 +220,26 @@ const deploymentEnd = (organizationId: string, id: string) =>
   );
 
 /**
- * Redeploy every Environment with saved state, so its generated names expand under the Cluster Domain's new source,
- * and wait for each to end. Why the names aren't all served under it, or null once they are: the Door the switch
- * leaves stays open until then.
+ * Redeploy the Services whose generated names the switch moves, and only those, so each expands under the Cluster
+ * Domain's new source, and wait for each Environment's Deployment to end. Why the names aren't all served under it, or
+ * null once they are: the Door the switch leaves stays open until then.
  */
-const redeployAll = Effect.fn("IngressDoors.redeploy")(function* (organizationId: string) {
-  const environments = yield* publishedEnvironments(organizationId);
-  const asked = yield* Effect.forEach(environments, (environment) => Effect.gen(function* () {
+const redeployMoving = Effect.fn("IngressDoors.redeploy")(function* (organizationId: string, want: DoorsWant) {
+  const moving = yield* movingNow(organizationId, want);
+  if (moving.length === 0) return null;
+  const owned = yield* owners(organizationId);
+  const named = yield* Effect.forEach([...new Set(moving.map(({ namespace }) => namespace))], (namespace) => {
+    const owner = owned.find((candidate) => candidate.namespace === namespace);
+    if (owner === undefined) return Effect.succeed(null);
+    return readStore(organizationId, { query: "namespace", environment: { project: owner.project, environment: owner.environment } })
+      .pipe(Effect.map((view) => [namespace, view.services] as const));
+  });
+  const { environments, left } = redeployScope(moving, owned, new Map(named.filter((entry) => entry !== null)));
+  const [orphan] = left;
+  if (orphan !== undefined) return `${orphan.from} is served by ${orphan.namespace}/${orphan.service}, which isn't a Service Cloud can redeploy. Remove it, then switch again.`;
+  const asked = yield* Effect.forEach(environments, ({ services, ...environment }) => Effect.gen(function* () {
     const id = randomUUID();
-    const admission = yield* deployToFirstServer(organizationId, environment, id);
+    const admission = yield* deployToFirstServer(organizationId, environment, id, services);
     return { name: `${environment.project}/${environment.environment}`, id, admission };
   }));
   for (const { name, admission } of asked) {
@@ -223,14 +255,12 @@ const redeployAll = Effect.fn("IngressDoors.redeploy")(function* (organizationId
 const applySwitch = Effect.fn("IngressDoors.apply")(function* (session: PloyzSession, request: DoorsRequest, runId: string, want: DoorsWant) {
   const { drizzle } = yield* Database;
   const owned = and(eq(ingressDoorsAttempt.id, request.attemptId), eq(ingressDoorsAttempt.inngestRunId, runId));
-  const setup = yield* loadCloudflareSetup(request.organizationId);
-  const wasActive = setup?.state === "active";
   return yield* runSwitch(want, {
     open: (doors) => session.setIngressDoors(doors),
     at: (stage) => drizzle.update(ingressDoorsAttempt).set({ stage }).where(owned).pipe(Effect.asVoid),
     flip: () => drizzle.update(organizationCloudflareIngress).set({ state: want === "tunnel" ? "active" : "left", updatedAt: new Date() })
       .where(eq(organizationCloudflareIngress.organizationId, request.organizationId)).pipe(Effect.asVoid),
-    redeploy: () => want === "tunnel" || wasActive ? redeployAll(request.organizationId) : Effect.succeed(null),
+    redeploy: () => redeployMoving(request.organizationId, want),
   });
 });
 

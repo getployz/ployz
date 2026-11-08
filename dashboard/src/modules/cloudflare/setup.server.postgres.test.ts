@@ -26,6 +26,8 @@ type Options = {
   readonly tokenOnCreate?: string | null;
   readonly recordsStatus?: number;
   readonly deleteStatus?: number;
+  /** The account already holds the tunnel setup would name. */
+  readonly existingTunnel?: boolean;
   /** Runs as the record is created: the moment something else can move while setup is between its Cloudflare calls. */
   readonly onRecord?: () => Promise<void>;
 };
@@ -34,7 +36,7 @@ type Options = {
 function cloudflare(options: Options = {}) {
   const calls: Call[] = [];
   const made: Schema.Json[] = [];
-  const alive = new Set<string>();
+  const alive = new Set<string>(options.existingTunnel ? ["t1"] : []);
   const records: Schema.Json[] = [];
   const fetch = async (input: string | URL | Request, init?: RequestInit) => {
     const url = new URL(String(input));
@@ -63,7 +65,8 @@ function cloudflare(options: Options = {}) {
       return reply(200, token === null ? { id: "t1" } : { id: "t1", token });
     }
     if (method === "GET" && path === "/accounts/a1/cfd_tunnel/t1/token") return reply(200, options.tokenOnCreate ?? TUNNEL_TOKEN);
-    if (method === "GET" && path.startsWith("/accounts/a1/cfd_tunnel?")) return reply(200, []);
+    if (method === "GET" && path.startsWith("/accounts/a1/cfd_tunnel?")) return reply(200, alive.has("t1") ? [{ id: "t1" }] : []);
+    if (method === "DELETE" && path === "/accounts/a1/cfd_tunnel/t1/connections") return reply(200, {});
     if (method === "DELETE" && path === "/accounts/a1/cfd_tunnel/t1") {
       if (options.deleteStatus !== undefined) return reply(options.deleteStatus);
       alive.delete("t1");
@@ -196,11 +199,12 @@ it("deletes the tunnel and asks no Server to run it when its token isn't one a c
   expect(await setupRows()).toEqual([]);
 });
 
-it("deletes the tunnel and closes the tunnel door again when the record lookup fails", async () => {
-  const { http, alive } = cloudflare({ recordsStatus: 500 });
+it("creates nothing and asks no Server when the record lookup fails", async () => {
+  const { http, calls, alive } = cloudflare({ recordsStatus: 500 });
   const { runtime, sets } = cluster();
   await expect(setUp("example.com", http, runtime)).rejects.toMatchObject({ message: expect.stringContaining("Nothing was changed.") });
-  expect(sets.map(({ doors }) => doors)).toEqual([["public", "tunnel"], ["public"]]);
+  expect(sets).toEqual([]);
+  expect(writesOf(calls)).toEqual([]);
   expect(alive.size).toBe(0);
   expect(await setupRows()).toEqual([]);
 });
@@ -226,30 +230,44 @@ it("refuses while a switch is under way, before anything is created", async () =
   expect(await setupRows()).toMatchObject([{ tunnel_id: "t0", state: "set_up" }]);
 });
 
-it("never lands its row over a switch that started meanwhile: it undoes the tunnel and the doors instead", async () => {
-  const { http, alive, records } = cloudflare({ onRecord: () => switching().then(() => undefined) });
+it("never lands its row over a switch that started meanwhile: it closes the tunnel door, drops the tunnel's connections and deletes it", async () => {
+  const { http, alive, calls, records } = cloudflare({ onRecord: () => switching().then(() => undefined) });
   const { runtime, sets } = cluster();
   await expect(setUp("example.com", http, runtime)).rejects.toMatchObject({ message: "A switch is under way. Wait for it to finish, then set up. Nothing was changed." });
   expect(records).toHaveLength(1);
   expect(alive.size).toBe(0);
   expect(sets.map(({ doors }) => doors)).toEqual([["public", "tunnel"], ["public"]]);
+  const deletes = calls.filter(({ method }) => method === "DELETE").map(({ path }) => path);
+  expect(deletes).toEqual(["/accounts/a1/cfd_tunnel/t1/connections", "/accounts/a1/cfd_tunnel/t1"]);
   expect(await setupRows()).toEqual([]);
 });
 
-it("leaves an existing record at the zone's wildcard alone, and stops when it points elsewhere", async () => {
-  const { http, records, alive } = cloudflare({ existingRecord: "other.example.net" });
-  const { runtime } = cluster();
-  await expect(setUp("example.com", http, runtime)).rejects.toMatchObject({ message: expect.stringContaining("already points somewhere else") });
+it("stops before creating anything when the zone's wildcard points elsewhere", async () => {
+  const { http, calls, records, alive } = cloudflare({ existingRecord: "other.example.net" });
+  const { runtime, sets } = cluster();
+  await expect(setUp("example.com", http, runtime)).rejects.toMatchObject({ message: "*.example.com already points somewhere else in Cloudflare. Remove that record or pick another zone. Nothing was changed." });
+  expect(writesOf(calls)).toEqual([]);
+  expect(sets).toEqual([]);
   expect(records).toEqual([]);
   expect(alive.size).toBe(0);
   expect(await setupRows()).toEqual([]);
 });
 
-it("accepts a wildcard that already points at the tunnel, writing nothing more", async () => {
-  const { http, records } = cloudflare({ existingRecord: "t1.cfargotunnel.com" });
+it("treats a wildcard pointing at a tunnel of the same name that no longer exists as pointing elsewhere", async () => {
+  const { http, calls, alive } = cloudflare({ existingRecord: "t1.cfargotunnel.com" });
+  const { runtime, sets } = cluster();
+  await expect(setUp("example.com", http, runtime)).rejects.toMatchObject({ message: expect.stringContaining("already points somewhere else") });
+  expect(writesOf(calls)).toEqual([]);
+  expect(sets).toEqual([]);
+  expect(alive.size).toBe(0);
+});
+
+it("accepts a wildcard that already points at the account's tunnel of that name, writing nothing more", async () => {
+  const { http, records, calls } = cloudflare({ existingRecord: "t1.cfargotunnel.com", existingTunnel: true });
   const { runtime } = cluster();
-  expect(await setUp("example.com", http, runtime)).toMatchObject({ state: "set_up" });
+  expect(await setUp("example.com", http, runtime)).toMatchObject({ state: "set_up", tunnelId: "t1" });
   expect(records).toEqual([]);
+  expect(writesOf(calls)).toEqual([]);
 });
 
 it("lists the zone names a token can see without changing anything", async () => {

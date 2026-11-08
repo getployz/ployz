@@ -1,6 +1,7 @@
 import "@tanstack/react-start/server-only";
 import { Effect, Schema } from "effect";
 import { defineCommand, refused } from "#/modules/commands/command.server";
+import { wantWords } from "#/modules/ingress/doors";
 import { requestDoorsSwitch, switchAsked } from "#/modules/ingress/doors.server";
 import { OPERATIONS } from "#/modules/operations/operations";
 import type { OrganizationRuntime } from "#/modules/runtime/organization-runtime.server";
@@ -35,10 +36,10 @@ export const webTrafficUse = defineCommand({
   run: (caller, input) => caller.support !== null
     ? Effect.succeed(refused("forbidden", "Only an owner or admin of this Organization can do this."))
     : withRuntime(requestDoorsSwitch({ organizationId: caller.organization.id, userId: caller.userId, to: input.to === "cloudflare" ? "tunnel" : "public" })).pipe(
-      Effect.map(({ change }) => ({
+      Effect.map(({ change, joined }) => ({
         ok: true,
         output: { to: input.to, state: change.state },
-        message: `Switching to ${input.to === "cloudflare" ? "Cloudflare" : "public ports"}. Progress is in Settings.`,
+        message: `${joined ? "Already switching" : "Switching"} to ${wantWords(change.want)}. Progress is in Settings.`,
       }) as const),
       Effect.catchTag("Conflict", (conflict) => Effect.succeed(refused("conflict", conflict.message))),
     ),

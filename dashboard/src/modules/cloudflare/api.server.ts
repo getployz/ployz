@@ -151,9 +151,15 @@ export const tunnelToken = Effect.fn("Cloudflare.tunnelToken")(function* (
   return yield* usableToken("read tunnel token", yield* decoded(Schema.String, "read tunnel token", answer.result));
 });
 
-/** Whether the tunnel is gone afterwards. Deleting one already deleted succeeds, so this converges. */
+/**
+ * Whether the tunnel is gone afterwards. Cloudflare refuses to delete a tunnel whose connectors still hold connections
+ * (its error 1022), and a connector just stopped keeps its connections registered for minutes, so they are cleaned up
+ * first. Deleting one already deleted succeeds, so this converges.
+ */
 export const deleteTunnel = (http: CloudflareHttp, token: Redacted.Redacted<string>, accountId: string, tunnelId: string) =>
-  call(http, token, "delete tunnel", "DELETE", `/accounts/${accountId}/cfd_tunnel/${tunnelId}`).pipe(
+  call(http, token, "clean up tunnel connections", "DELETE", `/accounts/${accountId}/cfd_tunnel/${tunnelId}/connections`).pipe(
+    Effect.ignore,
+    Effect.andThen(call(http, token, "delete tunnel", "DELETE", `/accounts/${accountId}/cfd_tunnel/${tunnelId}`)),
     Effect.map((answer) => answer.success),
     Effect.catch(() => Effect.succeed(false)),
   );
