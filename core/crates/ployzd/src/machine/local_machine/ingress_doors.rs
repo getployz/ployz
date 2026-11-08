@@ -1,10 +1,11 @@
 //! Placing this Machine's Ingress doors: the holder that owns the Ingress Proxy's
-//! network namespace and host ports, and the Caddy that joins it.
+//! network namespace and host ports, the Caddy that joins it, and the Tunnel
+//! Connector that joins it when the Tunnel Door is open.
 //!
 //! The route reads what Docker has, plans the whole change, then carries it out one
 //! stage at a time. Every Container it replaces is stopped first and removed only once
-//! the new holder and Caddy run, so a replacement that fails leaves the old ones to
-//! start again. The holder goes before the Caddy, since the Caddy is created in its
+//! the new doors run, so a replacement that fails leaves the old ones to start again.
+//! The holder goes before the Caddy and the connector, since both are created in its
 //! network. A Caddy from before the holder published the ports itself, so it is stopped
 //! before the holder starts.
 
@@ -12,14 +13,19 @@ use std::time::Duration;
 
 use ployz_core::{
     ContainerId, ContainerKind, ContainerRuntimeObservation, DoorChange, DoorOutcome, Gen,
-    IngressDoorsFailure, IngressDoorsSet, IngressStage, Namespace, ResolvedServiceSpec, RpcError,
-    RpcErrorCode, SetIngressDoorsRequest, global_creation_key,
+    IngressDoor, IngressDoorsFailure, IngressDoorsSet, IngressPorts, IngressStage, Namespace,
+    ResolvedServiceSpec, RpcError, RpcErrorCode, ServiceId, SetIngressDoorsRequest,
+    global_creation_key, tunnel_sealed_token,
 };
+use zeroize::Zeroizing;
 
 use super::{Error, LocalMachine};
 use crate::docker::{ContainerRuntime, Door, DoorEntry, same_creation};
 use crate::docker_image::ImagePull;
 use crate::images::DoorSpecs;
+
+/// An opened tunnel token, written for the connector before it is placed.
+pub(super) type TunnelToken = Zeroizing<Vec<u8>>;
 
 /// How long a started door may take to be observed running. The holder is a pause
 /// process and Caddy binds its listeners at once, so this is a bound, not a budget.
@@ -36,14 +42,15 @@ pub(super) enum HolderStep {
     Create(Replacing),
 }
 
-/// What the route does with the Caddy.
+/// What the route does with a door in the holder's network: the Caddy, or the
+/// Tunnel Connector.
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub(super) enum ProxyStep {
-    /// A canonical Caddy runs in the holder's network.
+pub(super) enum JoinedStep {
+    /// A canonical one runs in the holder's network.
     Keep(ContainerId),
-    /// A canonical Caddy exists at rest.
+    /// A canonical one exists at rest.
     Start(ContainerId),
-    /// A canonical Caddy runs in a network the holder no longer has.
+    /// A canonical one runs in a network the holder no longer has.
     Rejoin(ContainerId),
     Create(Replacing),
 }
@@ -63,23 +70,39 @@ pub(super) struct Retiree {
 /// The whole change, decided before any effect.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(super) struct DoorPlan {
+    /// Connectors that are not the canonical one, or every one when the Tunnel Door
+    /// closes.
+    pub(super) retire_tunnels: Vec<Retiree>,
     /// Joined Caddys that are not the canonical one.
     pub(super) retire_caddys: Vec<Retiree>,
     /// Caddys from before the holder, which publish the ports themselves.
     pub(super) legacy: Vec<Retiree>,
     pub(super) retire_holders: Vec<Retiree>,
     pub(super) holder: HolderStep,
-    pub(super) proxy: ProxyStep,
+    pub(super) proxy: JoinedStep,
+    /// `None` while the Tunnel Door is closed.
+    pub(super) tunnel: Option<JoinedStep>,
 }
 
 impl DoorPlan {
-    /// Every Container the plan replaces, in the order they stop: each Caddy before
-    /// any holder, so none is left in a network that goes.
+    /// Every Container the plan replaces, in the order they stop: each connector and
+    /// Caddy before any holder, so none is left in a network that goes.
     fn retirees(&self) -> impl Iterator<Item = &Retiree> {
-        self.retire_caddys
+        self.retire_tunnels
             .iter()
+            .chain(&self.retire_caddys)
             .chain(&self.legacy)
             .chain(&self.retire_holders)
+    }
+
+    /// Whether the stage that failed was creating a door.
+    fn creates_at(&self, stage: IngressStage) -> bool {
+        match stage {
+            IngressStage::Holder => true,
+            IngressStage::Proxy => matches!(self.proxy, JoinedStep::Create(_)),
+            IngressStage::Tunnel => matches!(self.tunnel, Some(JoinedStep::Create(_))),
+            IngressStage::Unrecognized => false,
+        }
     }
 }
 
@@ -157,6 +180,10 @@ pub(super) fn plan_doors(
         Some(entry) => HolderStep::Start(entry.facts.id),
         None => HolderStep::Create(replacing(&holders, None)),
     };
+    let in_holder = Joined {
+        holder,
+        holder_step: &holder_step,
+    };
 
     let caddys = inventory
         .iter()
@@ -166,44 +193,107 @@ pub(super) fn plan_doors(
         .iter()
         .copied()
         .partition(|entry| entry.observation.resolved_spec.container.network.is_some());
-    let canonical_caddys = joined
+    let (proxy_step, retire_caddys) = in_holder.plan(&joined, &specs.proxy, fresh_caddy);
+
+    let tunnels = inventory
         .iter()
-        .copied()
-        .filter(|entry| {
-            usable(entry)
-                && holder_id.is_some()
-                && entry.facts.joined_to == holder_id
-                && same_creation(&entry.observation, &system, kind, &specs.proxy)
-        })
+        .filter(|entry| entry.facts.door == Door::Tunnel)
         .collect::<Vec<_>>();
-    let caddy = newest(&canonical_caddys).filter(|_| !fresh_caddy);
-    let caddy_id = caddy.map(|entry| entry.facts.id);
-    let proxy_step = match caddy {
-        Some(entry) if entry.facts.running() => {
-            let stale = match (&holder_step, holder.and_then(|holder| holder.facts.netns)) {
-                (HolderStep::Start(_), _) => true,
-                (_, Some(holder_ns)) => entry.facts.netns.is_some_and(|ns| ns != holder_ns),
-                (_, None) => false,
-            };
-            if stale {
-                ProxyStep::Rejoin(entry.facts.id)
-            } else {
-                ProxyStep::Keep(entry.facts.id)
-            }
+    let (tunnel_step, retire_tunnels) = match &specs.tunnel {
+        Some(spec) => {
+            let (step, retire) = in_holder.plan(&tunnels, spec, false);
+            (Some(step), retire)
         }
-        Some(entry) if entry.facts.runtime == ContainerRuntimeObservation::Restarting => {
-            ProxyStep::Keep(entry.facts.id)
-        }
-        Some(entry) => ProxyStep::Start(entry.facts.id),
-        None => ProxyStep::Create(replacing(&joined, None)),
+        None => (None, retirees(&tunnels, None)),
     };
     DoorPlan {
-        retire_caddys: retirees(&joined, caddy_id),
+        retire_tunnels,
+        retire_caddys,
         legacy: retirees(&legacy, None),
         retire_holders: retirees(&holders, holder_id),
         holder: holder_step,
         proxy: proxy_step,
+        tunnel: tunnel_step,
     }
+}
+
+/// The holder a joined door is planned against.
+struct Joined<'plan> {
+    holder: Option<&'plan DoorEntry>,
+    holder_step: &'plan HolderStep,
+}
+
+impl Joined<'_> {
+    /// The step for the door `spec` describes among `entries`, and the entries it
+    /// retires. `fresh` replaces the canonical one even when it runs.
+    fn plan(
+        &self,
+        entries: &[&DoorEntry],
+        spec: &ResolvedServiceSpec,
+        fresh: bool,
+    ) -> (JoinedStep, Vec<Retiree>) {
+        let holder_id = self.holder.map(|entry| entry.facts.id);
+        let canonical = entries
+            .iter()
+            .copied()
+            .filter(|entry| {
+                usable(entry)
+                    && holder_id.is_some()
+                    && entry.facts.joined_to == holder_id
+                    && same_creation(
+                        &entry.observation,
+                        &Namespace::system(),
+                        ContainerKind::ServiceContainer,
+                        spec,
+                    )
+            })
+            .collect::<Vec<_>>();
+        let kept = newest(&canonical).filter(|_| !fresh);
+        let kept_id = kept.map(|entry| entry.facts.id);
+        let step = match kept {
+            Some(entry) if entry.facts.running() => {
+                let stale = match (
+                    self.holder_step,
+                    self.holder.and_then(|holder| holder.facts.netns),
+                ) {
+                    (HolderStep::Start(_), _) => true,
+                    (_, Some(holder_ns)) => entry.facts.netns.is_some_and(|ns| ns != holder_ns),
+                    (_, None) => false,
+                };
+                if stale {
+                    JoinedStep::Rejoin(entry.facts.id)
+                } else {
+                    JoinedStep::Keep(entry.facts.id)
+                }
+            }
+            Some(entry) if entry.facts.runtime == ContainerRuntimeObservation::Restarting => {
+                JoinedStep::Keep(entry.facts.id)
+            }
+            Some(entry) => JoinedStep::Start(entry.facts.id),
+            None => JoinedStep::Create(replacing(entries, None)),
+        };
+        (step, retirees(entries, kept_id))
+    }
+}
+
+/// The doors a legacy Deploy keeps: it asks for a Caddy and knows no other Door, so
+/// the holder's ports and the connector stay as this Machine has them.
+fn doors_as_found(inventory: &[DoorEntry], proxy: ServiceId) -> DoorSpecs {
+    let newest_of = |door: Door| {
+        newest(
+            &inventory
+                .iter()
+                .filter(|entry| entry.facts.door == door && usable(entry))
+                .collect::<Vec<_>>(),
+        )
+    };
+    let ports = match newest_of(Door::Holder) {
+        Some(holder) if holder.observation.resolved_spec.ports.is_empty() => IngressPorts::Closed,
+        _ => IngressPorts::Public,
+    };
+    let token = newest_of(Door::Tunnel)
+        .and_then(|tunnel| tunnel_sealed_token(&tunnel.observation.resolved_spec.container.labels));
+    DoorSpecs::new(proxy, ports, token.as_ref())
 }
 
 fn stage_failure(stage: IngressStage, error: &Error) -> IngressDoorsFailure {
@@ -215,6 +305,16 @@ fn stage_failure(stage: IngressStage, error: &Error) -> IngressDoorsFailure {
         RpcError::caused(RpcErrorCode::Internal, error)
     };
     IngressDoorsFailure { stage, error }
+}
+
+/// Whether a converge answers a legacy Deploy, which resends the Caddy and knows no
+/// Door but the Public one.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(super) enum Legacy {
+    No,
+    /// Replace the canonical Caddy even when it runs, and keep every other door as
+    /// this Machine has it.
+    Caddy,
 }
 
 /// Every Docker effect a converge made, recorded as Docker answers each request, so
@@ -234,27 +334,49 @@ impl LocalMachine {
     ///
     /// # Errors
     ///
-    /// Returns [`Error::UnsupportedDoors`] for any Doors but the Public Door, and the
-    /// admission errors of a creation. A Docker stage that fails is answered in the
-    /// result's `failure` instead, with the stages before it completed.
+    /// Returns [`Error::UnsupportedDoors`] for a Door this release doesn't know,
+    /// [`Error::TunnelTokenMissing`] and [`Error::TunnelToken`] for a Tunnel Door
+    /// without a token this Cluster opens, and the admission errors of a creation.
+    /// A Docker stage that fails is answered in the result's `failure` instead, with
+    /// the stages before it completed.
     pub(crate) async fn set_ingress_doors(
         &self,
         request: SetIngressDoorsRequest,
     ) -> Result<IngressDoorsSet, Error> {
-        if !request.doors.is_public_only() {
+        if !request.doors.is_known() {
             return Err(Error::UnsupportedDoors);
         }
-        self.converge_doors(&DoorSpecs::public(request.proxy_service), false)
-            .await
+        let ports = if request.doors.has(IngressDoor::Public) {
+            IngressPorts::Public
+        } else {
+            IngressPorts::Closed
+        };
+        let (sealed, token) = if request.doors.has(IngressDoor::Tunnel) {
+            let sealed = request
+                .sealed_token
+                .as_ref()
+                .ok_or(Error::TunnelTokenMissing)?;
+            let containers = self.containers.as_ref().ok_or(Error::DockerUnavailable)?;
+            let token = containers
+                .open_tunnel_token(sealed)
+                .map_err(Error::TunnelToken)?;
+            (Some(sealed), Some(token))
+        } else {
+            (None, None)
+        };
+        let specs = DoorSpecs::new(request.proxy_service, ports, sealed);
+        self.converge_doors(&specs, Legacy::No, token).await
     }
 
-    /// Place the doors `specs` describe. Both pins are pulled before any running
-    /// Container is touched, under the door lifecycle lock and before the admission
-    /// turn, so a slow pull holds up no other admitted work.
+    /// Place the doors `specs` describe, or the doors this Machine has with a fresh
+    /// Caddy for a legacy Deploy. Every pin is pulled and the tunnel `token` written
+    /// before any running Container is touched, under the door lifecycle lock and
+    /// before the admission turn, so a slow pull holds up no other admitted work.
     pub(super) async fn converge_doors(
         &self,
         specs: &DoorSpecs,
-        fresh_caddy: bool,
+        legacy: Legacy,
+        token: Option<TunnelToken>,
     ) -> Result<IngressDoorsSet, Error> {
         let containers = self.containers.clone().ok_or(Error::DockerUnavailable)?;
         self.door_effect()?;
@@ -263,45 +385,68 @@ impl LocalMachine {
         self.finish_installed(move |_installation| async move {
             let _doors = containers.door_lifecycle().await;
             local.door_effect()?;
-            containers
-                .prepare_pinned_image(&specs.holder.container.image)
-                .await?;
-            containers
-                .prepare_pinned_image(&specs.proxy.container.image)
-                .await?;
+            let machine_id = local.record().id();
+            let inventory = containers.door_inventory(&machine_id).await?;
+            let specs = match legacy {
+                Legacy::Caddy => doors_as_found(&inventory, specs.proxy.service_id),
+                Legacy::No => specs,
+            };
+            for spec in [
+                Some(&specs.holder),
+                Some(&specs.proxy),
+                specs.tunnel.as_ref(),
+            ]
+            .into_iter()
+            .flatten()
+            {
+                containers
+                    .prepare_pinned_image(&spec.container.image)
+                    .await?;
+            }
+            if let Some(token) = &token {
+                containers
+                    .write_tunnel_token(token)
+                    .map_err(Error::TunnelTokenFile)?;
+            }
             let _turn = local.owner.admission_lock().write_owned().await;
-            local
-                .converge_doors_admitted(&containers, &specs, fresh_caddy)
-                .await
+            let set = local
+                .converge_doors_admitted(&containers, &inventory, &specs, legacy)
+                .await?;
+            if specs.tunnel.is_none() && set.failure.is_none() {
+                containers
+                    .remove_tunnel_token()
+                    .map_err(Error::TunnelTokenFile)?;
+            }
+            Ok(set)
         })
         .await
     }
 
-    /// Carry out the plan in three stages: stop, holder, proxy.
+    /// Carry out the plan in four stages: stop, holder, proxy, tunnel.
     ///
     /// The stop stage stops every door the plan replaces before anything starts,
-    /// Caddys before holders, so a legacy Caddy has let go of 80 and 443 before the
-    /// holder takes them. The proxy stage stops only a Caddy it rejoins, and starts it
-    /// again at once. No new Caddy starts while an old one runs, so two Caddys never
-    /// run at once. Replaced doors are removed only once the new holder and Caddy run.
-    /// A removal that fails leaves that door stopped, and the next call retires it.
+    /// connectors and Caddys before holders, so a legacy Caddy has let go of 80 and
+    /// 443 before the holder takes them. The proxy and tunnel stages stop only a door
+    /// they rejoin, and start it again at once. No new Caddy starts while an old one
+    /// runs, so two Caddys never run at once. Replaced doors are removed only once the
+    /// new doors run. A removal that fails leaves that door stopped, and the next call
+    /// retires it.
     ///
     /// Each effect is recorded in [`Effects`] as Docker answers it. A failure in the
-    /// stop or holder stage, or in a proxy stage that creates a Caddy to replace doors
+    /// stop or holder stage, or in a later stage that creates a door to replace doors
     /// the plan retires, undoes the record: it removes what the call created, stops
     /// what it started, then starts again what it stopped while it ran. The previous
-    /// doors start again only once nothing the call made still runs. Any other proxy
-    /// failure leaves the completed holder stage in place with nothing to come back to,
-    /// and the next call starts or replaces the Caddy.
+    /// doors start again only once nothing the call made still runs. Any other
+    /// failure leaves the completed stages in place with nothing to come back to, and
+    /// the next call starts or replaces the door that failed.
     async fn converge_doors_admitted(
         &self,
         containers: &ContainerRuntime,
+        inventory: &[DoorEntry],
         specs: &DoorSpecs,
-        fresh_caddy: bool,
+        legacy: Legacy,
     ) -> Result<IngressDoorsSet, Error> {
-        let machine_id = self.record().id();
-        let inventory = containers.door_inventory(&machine_id).await?;
-        let plan = plan_doors(&inventory, specs, fresh_caddy);
+        let plan = plan_doors(inventory, specs, legacy == Legacy::Caddy);
         let mut set = IngressDoorsSet::default();
         let mut effects = Effects::default();
         if let Err((stage, error)) = self
@@ -309,11 +454,13 @@ impl LocalMachine {
             .await
         {
             let undo = stage == IngressStage::Holder
-                || (matches!(plan.proxy, ProxyStep::Create(_)) && plan.retirees().next().is_some());
+                || (plan.creates_at(stage) && plan.retirees().next().is_some());
             let error = if undo {
-                set.holder = set
-                    .holder
-                    .filter(|holder| holder.change == DoorChange::Unchanged);
+                let unchanged = |outcome: DoorOutcome| {
+                    (outcome.change == DoorChange::Unchanged).then_some(outcome)
+                };
+                set.holder = set.holder.and_then(unchanged);
+                set.proxy = set.proxy.and_then(unchanged);
                 self.undo(containers, &effects, error).await
             } else {
                 error
@@ -336,8 +483,8 @@ impl LocalMachine {
         Ok(set)
     }
 
-    /// The stop, holder and proxy stages, filling `set` as each completes. A failure
-    /// names its stage, and the stop stage reports as the holder's.
+    /// The stop, holder, proxy and tunnel stages, filling `set` as each completes. A
+    /// failure names its stage, and the stop stage reports as the holder's.
     async fn place_doors(
         &self,
         containers: &ContainerRuntime,
@@ -358,10 +505,17 @@ impl LocalMachine {
                 .map_err(holder_stage)?,
         );
         set.proxy = Some(
-            self.place_proxy(containers, specs, plan, effects)
+            self.place_joined(containers, &specs.proxy, &plan.proxy, effects)
                 .await
                 .map_err(|error| (IngressStage::Proxy, error))?,
         );
+        if let (Some(spec), Some(step)) = (&specs.tunnel, &plan.tunnel) {
+            set.tunnel = Some(
+                self.place_joined(containers, spec, step, effects)
+                    .await
+                    .map_err(|error| (IngressStage::Tunnel, error))?,
+            );
+        }
         Ok(())
     }
 
@@ -408,28 +562,28 @@ impl LocalMachine {
         Ok(DoorOutcome { now, change })
     }
 
-    async fn place_proxy(
+    async fn place_joined(
         &self,
         containers: &ContainerRuntime,
-        specs: &DoorSpecs,
-        plan: &DoorPlan,
+        spec: &ResolvedServiceSpec,
+        step: &JoinedStep,
         effects: &mut Effects,
     ) -> Result<DoorOutcome, Error> {
-        let (id, change) = match &plan.proxy {
-            ProxyStep::Keep(id) => (*id, DoorChange::Unchanged),
-            ProxyStep::Start(id) => {
+        let (id, change) = match step {
+            JoinedStep::Keep(id) => (*id, DoorChange::Unchanged),
+            JoinedStep::Start(id) => {
                 effects.started.push(*id);
                 self.start_door(containers, id).await?;
                 (*id, DoorChange::Started)
             }
-            ProxyStep::Rejoin(id) => {
+            JoinedStep::Rejoin(id) => {
                 self.door_effect()?;
                 containers.stop(id, None, None).await?;
                 self.start_door(containers, id).await?;
                 (*id, DoorChange::Rejoined)
             }
-            ProxyStep::Create(replacing) => {
-                let id = self.create_door(&specs.proxy, *replacing, effects).await?;
+            JoinedStep::Create(replacing) => {
+                let id = self.create_door(spec, *replacing, effects).await?;
                 self.start_door(containers, &id).await?;
                 (id, DoorChange::Created)
             }
@@ -663,16 +817,133 @@ mod tests {
         }
     }
 
+    fn token() -> ployz_core::Ciphertext {
+        ployz_core::Ciphertext::from_bytes(vec![7; 48])
+    }
+
+    fn tunnel_specs() -> DoorSpecs {
+        DoorSpecs::new(
+            ServiceId::parse("c".repeat(32)).unwrap(),
+            IngressPorts::Closed,
+            Some(&token()),
+        )
+    }
+
+    fn closed_holder(id: char, runtime: serde_json::Value) -> DoorEntry {
+        entry(id, Door::Holder, &tunnel_specs().holder, 1, runtime)
+    }
+
+    fn tunnel(id: char, holder: char, runtime: serde_json::Value) -> DoorEntry {
+        let spec = tunnel_specs().tunnel.unwrap();
+        let mut entry = entry(id, Door::Tunnel, &spec, 3, runtime);
+        entry.facts.joined_to = Some(self::id(holder));
+        entry
+    }
+
+    #[test]
+    fn opening_the_tunnel_door_replaces_the_public_holder_and_creates_the_connector() {
+        let plan = plan_doors(
+            &[holder('a', running()), caddy('b', 'a', running())],
+            &tunnel_specs(),
+            false,
+        );
+        assert_eq!(plan.holder, HolderStep::Create(Some(id('a'))));
+        assert_eq!(plan.retire_holders, vec![retiree('a', true)]);
+        assert_eq!(plan.proxy, JoinedStep::Create(Some(id('b'))));
+        assert_eq!(plan.tunnel, Some(JoinedStep::Create(None)));
+        assert!(plan.retire_tunnels.is_empty());
+        assert!(plan.creates_at(IngressStage::Tunnel));
+    }
+
+    #[test]
+    fn closing_the_tunnel_door_retires_the_connector_before_the_holder() {
+        let plan = plan_doors(
+            &[
+                in_netns(closed_holder('a', running()), 10),
+                in_netns(caddy('b', 'a', running()), 10),
+                in_netns(tunnel('c', 'a', running()), 10),
+            ],
+            &specs(),
+            false,
+        );
+        assert_eq!(plan.holder, HolderStep::Create(Some(id('a'))));
+        assert_eq!(plan.tunnel, None);
+        assert_eq!(plan.retire_tunnels, vec![retiree('c', true)]);
+        assert_eq!(
+            plan.retirees()
+                .map(|retiree| retiree.id)
+                .collect::<Vec<_>>(),
+            vec![id('c'), id('b'), id('a')],
+            "the connector and the Caddy stop before the holder whose network they share"
+        );
+    }
+
+    #[test]
+    fn a_running_tunnel_set_is_left_alone_and_a_new_token_replaces_the_connector() {
+        let inventory = [
+            in_netns(closed_holder('a', running()), 10),
+            in_netns(caddy('b', 'a', running()), 10),
+            in_netns(tunnel('c', 'a', running()), 10),
+        ];
+        let plan = plan_doors(&inventory, &tunnel_specs(), false);
+        assert_eq!(plan.holder, HolderStep::Keep(id('a')));
+        assert_eq!(plan.proxy, JoinedStep::Keep(id('b')));
+        assert_eq!(plan.tunnel, Some(JoinedStep::Keep(id('c'))));
+        assert_eq!(plan.retirees().count(), 0);
+
+        let other_token = ployz_core::Ciphertext::from_bytes(vec![8; 48]);
+        let renewed = DoorSpecs::new(
+            ServiceId::parse("c".repeat(32)).unwrap(),
+            IngressPorts::Closed,
+            Some(&other_token),
+        );
+        let plan = plan_doors(&inventory, &renewed, false);
+        assert_eq!(plan.holder, HolderStep::Keep(id('a')));
+        assert_eq!(plan.tunnel, Some(JoinedStep::Create(Some(id('c')))));
+        assert_eq!(plan.retire_tunnels, vec![retiree('c', true)]);
+    }
+
+    #[test]
+    fn the_doors_found_are_the_newest_holders_ports_and_the_connectors_token() {
+        let proxy = ServiceId::parse("c".repeat(32)).unwrap();
+        assert_eq!(doors_as_found(&[], proxy), DoorSpecs::public(proxy));
+        assert_eq!(
+            doors_as_found(&[holder('a', running()), caddy('b', 'a', running())], proxy),
+            DoorSpecs::public(proxy)
+        );
+        assert_eq!(
+            doors_as_found(
+                &[
+                    closed_holder('a', running()),
+                    caddy('b', 'a', running()),
+                    tunnel('c', 'a', running())
+                ],
+                proxy
+            ),
+            tunnel_specs()
+        );
+        assert_eq!(
+            doors_as_found(
+                &[closed_holder('a', running()), legacy_caddy('d', running())],
+                proxy
+            ),
+            DoorSpecs::new(proxy, IngressPorts::Closed, None),
+            "a closed holder with no connector stays closed until a command opens a Door"
+        );
+    }
+
     #[test]
     fn an_absent_pair_is_created() {
         assert_eq!(
             plan_doors(&[], &specs(), false),
             DoorPlan {
+                retire_tunnels: vec![],
                 retire_caddys: vec![],
                 legacy: vec![],
                 retire_holders: vec![],
                 holder: HolderStep::Create(None),
-                proxy: ProxyStep::Create(None),
+                proxy: JoinedStep::Create(None),
+                tunnel: None,
             }
         );
     }
@@ -687,7 +958,7 @@ mod tests {
         assert_eq!(plan.holder, HolderStep::Start(id('a')));
         assert_eq!(
             plan.proxy,
-            ProxyStep::Start(id('b')),
+            JoinedStep::Start(id('b')),
             "a Caddy at rest joins the holder's new network when it starts"
         );
         let plan = plan_doors(
@@ -697,7 +968,7 @@ mod tests {
         );
         assert_eq!(
             plan.proxy,
-            ProxyStep::Rejoin(id('b')),
+            JoinedStep::Rejoin(id('b')),
             "a Caddy running in the stopped holder's old network is rejoined"
         );
     }
@@ -713,7 +984,7 @@ mod tests {
             false,
         );
         assert_eq!(plan.holder, HolderStep::Keep(id('a')));
-        assert_eq!(plan.proxy, ProxyStep::Keep(id('b')));
+        assert_eq!(plan.proxy, JoinedStep::Keep(id('b')));
         assert_eq!(plan.retirees().count(), 0);
     }
 
@@ -725,7 +996,7 @@ mod tests {
             true,
         );
         assert_eq!(plan.holder, HolderStep::Keep(id('a')));
-        assert_eq!(plan.proxy, ProxyStep::Create(Some(id('b'))));
+        assert_eq!(plan.proxy, JoinedStep::Create(Some(id('b'))));
         assert_eq!(
             plan.retire_caddys,
             vec![retiree('b', false)],
@@ -748,7 +1019,7 @@ mod tests {
         assert_eq!(plan.holder, HolderStep::Create(Some(id('a'))));
         assert_eq!(plan.retire_holders, vec![retiree('a', true)]);
         assert_eq!(plan.retire_caddys, vec![retiree('b', true)]);
-        assert_eq!(plan.proxy, ProxyStep::Create(Some(id('b'))));
+        assert_eq!(plan.proxy, JoinedStep::Create(Some(id('b'))));
         assert_eq!(
             plan.retirees()
                 .map(|retiree| retiree.id)
@@ -769,7 +1040,7 @@ mod tests {
         );
         assert_eq!(plan.holder, HolderStep::Keep(id('a')));
         assert_eq!(plan.retire_caddys, vec![retiree('b', true)]);
-        assert_eq!(plan.proxy, ProxyStep::Create(Some(id('b'))));
+        assert_eq!(plan.proxy, JoinedStep::Create(Some(id('b'))));
     }
 
     #[test]
@@ -780,7 +1051,7 @@ mod tests {
         assert_eq!(plan.holder, HolderStep::Create(None));
         assert_eq!(
             plan.proxy,
-            ProxyStep::Create(None),
+            JoinedStep::Create(None),
             "a legacy Caddy's spec names no joined Caddy's slot"
         );
     }
@@ -798,7 +1069,7 @@ mod tests {
             &specs(),
             false,
         );
-        assert_eq!(plan.proxy, ProxyStep::Keep(id('b')));
+        assert_eq!(plan.proxy, JoinedStep::Keep(id('b')));
         assert_eq!(
             plan.retire_caddys,
             vec![retiree('d', false), retiree('e', true)]
@@ -814,7 +1085,7 @@ mod tests {
         let mut newer = caddy('d', 'f', created());
         newer.facts.created_at = 5;
         let plan = plan_doors(&[holder('a', running()), stale, newer], &specs(), false);
-        assert_eq!(plan.proxy, ProxyStep::Create(Some(id('d'))));
+        assert_eq!(plan.proxy, JoinedStep::Create(Some(id('d'))));
     }
 
     #[test]
@@ -827,7 +1098,7 @@ mod tests {
             &specs(),
             false,
         );
-        assert_eq!(plan.proxy, ProxyStep::Rejoin(id('b')));
+        assert_eq!(plan.proxy, JoinedStep::Rejoin(id('b')));
         let plan = plan_doors(
             &[
                 in_netns(holder('a', running()), 10),
@@ -838,7 +1109,7 @@ mod tests {
         );
         assert_eq!(
             plan.proxy,
-            ProxyStep::Keep(id('b')),
+            JoinedStep::Keep(id('b')),
             "an unreadable namespace reads as canonical"
         );
     }

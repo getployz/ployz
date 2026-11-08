@@ -770,6 +770,22 @@ impl Client {
         to_json(&check)
     }
 
+    /// Open `doors` (`public`, `tunnel`, or both) on every Server with the ingress role,
+    /// sealing the Cloudflare tunnel `token` to the Cluster when given.
+    #[napi(ts_return_type = "Promise<DoorsChanged>")]
+    pub async fn set_ingress_doors(
+        &self,
+        doors: Vec<String>,
+        token: Option<String>,
+    ) -> Result<serde_json::Value> {
+        let changed = self
+            .inner
+            .set_ingress_doors(&doors, token.as_deref())
+            .await
+            .map_err(rpc_to_napi)?;
+        to_json(&changed)
+    }
+
     /// Stop and remove the Ingress Proxy on `machine` once its ingress role is off.
     #[napi]
     pub async fn stop_ingress(&self, machine: String) -> Result<()> {

@@ -542,12 +542,20 @@ The public HTTP request path from DNS resolution through a Machine's Ingress Pro
 _Avoid_: Edge
 
 **Ingress Proxy**:
-The Machine-local process that receives published HTTP traffic and routes it toward Serving Containers. It is two Containers: a holder (`ployz-system/ingress-holder`) that owns the Machine's Doors, and Caddy (`ployz-system/ingress`) joined to the holder's network namespace. Caddy keeps the routing authority; the holder only keeps the ports bound while Caddy is replaced. The daemon pins both images and sets them through SetIngressDoors; no client builds their specs. It is one component of Public Ingress, not the whole public request path.
+The Machine-local process that receives published HTTP traffic and routes it toward Serving Containers. It is two Containers: a holder (`ployz-system/ingress-holder`) that owns the Machine's Doors, and Caddy (`ployz-system/ingress`) joined to the holder's network namespace, plus a Tunnel Connector when the Tunnel Door is open. Caddy keeps the routing authority; the holder only keeps the ports bound while Caddy is replaced. The daemon pins every image and sets them through SetIngressDoors; no client builds their specs. It is one component of Public Ingress, not the whole public request path.
 _Avoid_: Edge, public ingress as a process
 
 **Door**:
-A published listener the Ingress Proxy's holder owns. The Public Door is host ports 80 and 443. Caddy's 8480 loopback listener is not a Door.
-_Avoid_: Port mapping, ingress port
+A way published HTTP traffic enters a Machine's Ingress Proxy. The Public Door is host ports 80 and 443, which the holder owns. The Tunnel Door is a Tunnel Connector dialling Caddy's 8480 loopback listener, with the holder publishing no port. A Cluster's Doors are one set for every ingress Machine; `{Public, Tunnel}` holds both while a switch runs. A Machine's open Doors are read from its running door Containers, and a Machine with none is closed. Caddy's 8480 listener is not a Door on its own.
+_Avoid_: Port mapping, ingress port, mode
+
+**Tunnel Connector**:
+The reserved cloudflared Container (`ployz-system/tunnel`) that opens the Tunnel Door: joined to the holder's network namespace, it keeps outbound connections to Cloudflare and proxies each request to Caddy's loopback listener. It runs on the token the daemon opened from the sealed one its spec carries, read from a file on the Machine. The daemon pins its image. It never publishes a port, and it is not the Ingress Proxy.
+_Avoid_: cloudflared sidecar, tunnel service
+
+**Platform sealing purpose**:
+A named use of the Cluster's Sealing Key outside Sealed Environment values, such as `ingress-tunnel` for the tunnel token. Each purpose binds its ciphertext to the Cluster and to itself, so a token sealed for one purpose opens for no other and for no other Cluster. A client seals with the Cluster's public key; only a Machine holding the key opens it, and no RPC reads the plaintext back.
+_Avoid_: Sealed secret, generic sealing
 
 **Published Ingress Configuration**:
 A validated routing configuration made available to a Machine's Ingress Proxy. Publication records the daemon's completed handoff; it does not claim that the Ingress Proxy has adopted the configuration or successfully served traffic from it.

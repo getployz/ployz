@@ -1,7 +1,7 @@
 //! Real RPC adapter contracts for Global catch-up.
 
 use super::*;
-use ployz_core::{ContainerNow, EnsuredContainer, RpcResponse, ServiceName};
+use ployz_core::{ContainerNow, EnsuredContainer, IngressDoors, RpcResponse, ServiceName};
 
 fn global_slot(key: &str, service: &ServiceName) -> SlotKey {
     SlotKey {
@@ -1345,6 +1345,7 @@ async fn a_joiner_with_the_role_sets_its_public_door_once() {
         [SetIngressDoorsRequest {
             doors: IngressDoors::public(),
             proxy_service: service_id('a'),
+            sealed_token: None,
         }]
     );
     assert!(

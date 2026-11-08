@@ -934,7 +934,11 @@ impl LocalMachine {
             });
         }
         let set = self
-            .converge_doors(&DoorSpecs::public(new.resolved_spec.service_id), true)
+            .converge_doors(
+                &DoorSpecs::public(new.resolved_spec.service_id),
+                super::ingress_doors::Legacy::Caddy,
+                None,
+            )
             .await?;
         match (set.proxy, set.failure) {
             (Some(proxy), None) => Ok(EnsuredContainer::Ensured {
@@ -1771,6 +1775,7 @@ fn create_refusal(error: Error) -> Result<ContainerRefusal, Error> {
             | OpenError::BadName(_)
             | OpenError::Unbound(_)
             | OpenError::Unopenable(_)
+            | OpenError::TunnelToken
             | OpenError::ShortLine(_) => ContainerRefusalReason::SealedValueUnopenable,
         },
         _ => return Err(error),

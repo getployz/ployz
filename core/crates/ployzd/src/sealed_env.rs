@@ -11,13 +11,14 @@ use std::{
 use futures_util::StreamExt;
 use ployz_core::scrub::{self, Channel, FrameScrub, SealedForms, SealedValues};
 use ployz_core::{
-    ContainerId, EnvPart, EnvValue, HistoryRow, OpaquePayload, OpenedSealed, SealedIdentity,
-    SealedScope, SealedValue,
+    Ciphertext, ContainerId, EnvPart, EnvValue, HistoryRow, OpaquePayload, OpenedSealed,
+    PlatformPurpose, SealedIdentity, SealedScope, SealedValue,
 };
 use thiserror::Error;
 use tokio::sync::mpsc;
 use tokio_stream::wrappers::ReceiverStream;
 use tonic::Status;
+use zeroize::Zeroizing;
 
 use crate::{
     logs::{LogLineStream, LogSource, RawLogEntry, RpcStream},
@@ -44,6 +45,8 @@ pub enum OpenError {
     Unbound(String),
     #[error("env {0} does not open with this Cluster's Sealing Key")]
     Unopenable(String),
+    #[error("the tunnel token does not open with this Cluster's Sealing Key")]
+    TunnelToken,
     #[error("env {0} holds a multiline Sealed value with a line too short to scrub from logs")]
     ShortLine(String),
 }
@@ -373,6 +376,22 @@ fn parts(value: &EnvValue) -> Box<dyn Iterator<Item = Part<'_>> + '_> {
     }
 }
 
+/// Open a tunnel token the platform sealed to this Cluster.
+///
+/// # Errors
+///
+/// Returns [`OpenError::KeyMissing`] or [`OpenError::KeyUnreadable`] when this Machine
+/// holds no usable Sealing Key, and [`OpenError::TunnelToken`] when the token was
+/// sealed for another Cluster or another purpose.
+pub(crate) fn open_tunnel_token(
+    sealed: &Ciphertext,
+    key_dir: Option<&Path>,
+) -> Result<Zeroizing<Vec<u8>>, OpenError> {
+    load(key_dir)?
+        .open_platform(PlatformPurpose::IngressTunnel, sealed)
+        .ok_or(OpenError::TunnelToken)
+}
+
 fn load(key_dir: Option<&Path>) -> Result<SealingKey, OpenError> {
     let dir = key_dir.ok_or(OpenError::KeyMissing)?;
     SealingKey::load(dir)
@@ -424,6 +443,15 @@ pub(crate) mod test_support {
 
         pub(crate) fn open(&self, env: BTreeMap<String, EnvValue>) -> Result<OpenedEnv, OpenError> {
             open(env, Some(&self.identity), Some(&self.dir.0))
+        }
+
+        /// `plaintext` sealed to this Cluster for `purpose`, as a client seals it.
+        pub(crate) fn seal_platform(
+            &self,
+            purpose: PlatformPurpose,
+            plaintext: &[u8],
+        ) -> Ciphertext {
+            ployz_core::seal_platform(&self.key.public_key(), purpose, plaintext).unwrap()
         }
     }
 }

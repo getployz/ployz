@@ -15,6 +15,7 @@ fn door(hex: char, name: &str) -> DoorMachine {
         id: machine.id,
         name: machine.name,
         supported: true,
+        tunnels: true,
     }
 }
 
@@ -346,7 +347,10 @@ fn a_deploy_reports_what_each_daemon_did() {
 fn a_server_nothing_is_known_about_is_unchecked() {
     let one = door('a', "one");
 
-    let Err(older) = checked(&one, Answer::Refused(unsupported(&one.name))) else {
+    let Err(older) = checked(
+        &one,
+        Answer::Refused(unsupported(&one.name, SET_INGRESS_DOORS_CAPABILITY)),
+    ) else {
         panic!("an older daemon is unchecked");
     };
     assert_eq!(
@@ -509,4 +513,45 @@ async fn a_deploy_sets_the_doors_only_where_caddy_is_at_rest() {
         };
         assert_eq!(actions, expected, "{caddy:?}: {check:?}");
     }
+}
+
+// Catches a rerun of `ingress use tunnel` reopening ports 80 and 443 and replacing every
+// connector, which darkens a one-Server tunnel Cluster.
+#[test]
+fn only_a_switch_that_closes_an_open_public_door_goes_through_both_doors() {
+    let tunnel = || ClusterDoors {
+        doors: IngressDoors::tunnel(),
+        sealed_token: Some(ployz_core::Ciphertext::from_bytes(vec![7; 48])),
+    };
+    let open = |doors: &[IngressDoors]| {
+        doors
+            .iter()
+            .zip(['a', 'b'])
+            .map(|(doors, hex)| (machine(hex, "one").id, doors.clone()))
+            .collect::<BTreeMap<_, _>>()
+    };
+    let asked = |doors: ClusterDoors, open: &BTreeMap<MachineId, IngressDoors>| {
+        switch_steps(doors, open)
+            .into_iter()
+            .map(|step| step.doors)
+            .collect::<Vec<_>>()
+    };
+
+    let from_public = open(&[IngressDoors::public(), IngressDoors::public()]);
+    assert_eq!(
+        asked(tunnel(), &from_public),
+        vec![IngressDoors::both(), IngressDoors::tunnel()]
+    );
+    let one_still_public = open(&[IngressDoors::tunnel(), IngressDoors::public()]);
+    assert_eq!(
+        asked(tunnel(), &one_still_public),
+        vec![IngressDoors::both(), IngressDoors::tunnel()]
+    );
+    let rerun = open(&[IngressDoors::tunnel(), IngressDoors(Default::default())]);
+    assert_eq!(asked(tunnel(), &rerun), vec![IngressDoors::tunnel()]);
+    let back = ClusterDoors {
+        doors: IngressDoors::public(),
+        sealed_token: None,
+    };
+    assert_eq!(asked(back, &rerun), vec![IngressDoors::public()]);
 }

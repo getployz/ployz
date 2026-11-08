@@ -2819,6 +2819,73 @@ fn checkin_status_signed_out_says_who_without_a_scope_error() {
 }
 
 #[test]
+fn ingress_help_names_both_doors_and_the_token_switch() {
+    let output = ProcessCommand::new(env!("CARGO_BIN_EXE_ployz"))
+        .args(["ingress", "use", "--help"])
+        .output()
+        .unwrap();
+    let stdout = String::from_utf8(output.stdout).unwrap();
+    assert_eq!(output.status.code(), Some(0), "{stdout}");
+    for needle in ["public", "tunnel", "--token-stdin", "Cloudflare"] {
+        assert!(stdout.contains(needle), "{needle}: {stdout}");
+    }
+    let output = ProcessCommand::new(env!("CARGO_BIN_EXE_ployz"))
+        .args(["ingress", "--help"])
+        .output()
+        .unwrap();
+    let stdout = String::from_utf8(output.stdout).unwrap();
+    assert_eq!(output.status.code(), Some(0), "{stdout}");
+    assert!(stdout.contains("Door"), "{stdout}");
+}
+
+#[test]
+fn ingress_use_needs_a_known_door_and_a_token_on_stdin_when_asked() {
+    for args in [
+        &["ingress", "use"][..],
+        &["ingress", "use", "window"],
+        &["ingress", "use", "public", "tunnel"],
+    ] {
+        let (code, stderr) = run_human(args);
+        assert_eq!(code, Some(2), "{args:?}: {stderr}");
+    }
+    let output = ingress_use_with_stdin(&["ingress", "use", "tunnel", "--token-stdin"], b"\n");
+    let stderr = String::from_utf8(output.stderr).unwrap();
+    assert_eq!(output.status.code(), Some(2), "{stderr}");
+    assert!(stderr.contains("stdin holds no tunnel token"), "{stderr}");
+
+    let output = ingress_use_with_stdin(
+        &["--json", "ingress", "use", "tunnel", "--token-stdin"],
+        &vec![b'x'; 9000],
+    );
+    let stdout = String::from_utf8(output.stdout).unwrap();
+    assert_eq!(output.status.code(), Some(2), "{stdout}");
+    assert!(stdout.contains("over 8192 bytes"), "{stdout}");
+}
+
+fn ingress_use_with_stdin(args: &[&str], stdin: &[u8]) -> std::process::Output {
+    use std::io::Write;
+    let home = tempfile::tempdir().unwrap();
+    let config = home.path().join("config.yaml");
+    let mut child = ProcessCommand::new(env!("CARGO_BIN_EXE_ployz"))
+        .args(args)
+        .args(["--ployz-config", config.to_str().unwrap()])
+        .env("HOME", home.path())
+        .env_remove("XDG_CONFIG_HOME")
+        .env_remove("PLOYZ_CONTEXT")
+        .env_remove("PLOYZ_CONNECT")
+        .env_remove("PLOYZ_TOKEN")
+        .env("PLOYZ_CLOUD_URL", "http://127.0.0.1:9")
+        .env_remove("PLOYZ_STORE")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    child.stdin.take().unwrap().write_all(stdin).unwrap();
+    child.wait_with_output().unwrap()
+}
+
+#[test]
 fn checkin_help_names_install_and_the_token_file() {
     let output = ProcessCommand::new(env!("CARGO_BIN_EXE_ployz"))
         .args(["server", "checkin", "--help"])

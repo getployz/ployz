@@ -15,7 +15,7 @@
 use ployz_core::{
     AnonymousVolumes, BridgeEndpointCapacity, ContainerKind, ContainerObservation,
     ContainerRefusalReason, ContainerRuntimeObservation, ContainerWant, CopyRotation, CreationKey,
-    EnvironmentValues, HealthFailure, HealthVerdict, IngressDoors, IngressDoorsSet, InspectRequest,
+    EnvironmentValues, HealthFailure, HealthVerdict, IngressDoorsSet, InspectRequest,
     ListContainersRequest, LiveServices, Machine, MachineId, MachineTarget, NewContainer,
     PartialResult, QualifiedService, ResolvedServiceSpec, RpcError, RunRotation, RunTarget,
     ServiceId, ServiceMode, ServiceObservation, ServicePlacementEligibility,
@@ -27,6 +27,7 @@ use crate::deploy::cleanup::{self, BroughtIn, Copy, Step};
 use crate::drain::retirement::{Names, server_name};
 use crate::failure::partial_failure_details;
 use crate::global_slot::{slot_eligibility, unknown_eligibility};
+use crate::ingress::ClusterDoors;
 use crate::{
     connect::{Client, unreadable_answer},
     deploy::endpoint_capacity_error,
@@ -79,12 +80,13 @@ pub(crate) trait CatchUpClient {
         new: NewContainer,
         cancel: &CancellationToken,
     ) -> Result<Option<Copy>, RpcError>;
-    /// Set `machine_id`'s Public Door for the Ingress Proxy `proxy_service`, or remove
-    /// its Ingress Proxy when it doesn't hold the ingress role, answering `None`.
+    /// Set `machine_id`'s Doors to the Cluster's for the Ingress Proxy `proxy_service`,
+    /// or remove its Ingress Proxy when it doesn't hold the ingress role, answering `None`.
     async fn run_doors(
         &mut self,
         machine_id: &MachineId,
         proxy_service: ServiceId,
+        doors: ClusterDoors,
         cancel: &CancellationToken,
     ) -> Result<Option<IngressDoorsSet>, RpcError>;
     async fn bring_in(
@@ -258,6 +260,7 @@ impl CatchUpClient for Client {
         &mut self,
         machine_id: &MachineId,
         proxy_service: ServiceId,
+        doors: ClusterDoors,
         cancel: &CancellationToken,
     ) -> Result<Option<IngressDoorsSet>, RpcError> {
         if !takes_ingress(self, machine_id).await? {
@@ -267,8 +270,9 @@ impl CatchUpClient for Client {
         self.set_ingress_doors(
             machine_id,
             SetIngressDoorsRequest {
-                doors: IngressDoors::public(),
+                doors: doors.doors,
                 proxy_service,
+                sealed_token: doors.sealed_token,
             },
         )
         .await
@@ -560,9 +564,9 @@ struct Source {
 enum CatchUpWork {
     /// A copy of the newest In or Pending copy; none when no copy is either.
     Service(Option<Box<ContainerObservation>>),
-    /// The holder and Caddy, which the joiner's daemon builds for this Ingress Proxy
-    /// Service. Neither door identity is ever copied.
-    Ingress(ServiceId),
+    /// The holder, Caddy and Tunnel Connector, which the joiner's daemon builds for this
+    /// Ingress Proxy Service with the Cluster's Doors. No door identity is ever copied.
+    Ingress(ServiceId, ClusterDoors),
 }
 
 struct Started {
@@ -655,7 +659,10 @@ fn sources(services: &[ServiceObservation], takes_ingress: bool) -> Vec<Source> 
     if doors_run || takes_ingress {
         sources.push(Source {
             identity: QualifiedService::system_ingress(),
-            work: CatchUpWork::Ingress(crate::ingress::proxy_service(services)),
+            work: CatchUpWork::Ingress(
+                crate::ingress::proxy_service(services),
+                crate::ingress::cluster_doors(services),
+            ),
         });
     }
     sources
@@ -792,10 +799,10 @@ pub(crate) async fn catch_up_globals<C: CatchUpClient>(
         let identity = source.identity;
         let origin = match source.work {
             CatchUpWork::Service(origin) => origin,
-            CatchUpWork::Ingress(proxy_service) => {
+            CatchUpWork::Ingress(proxy_service, doors) => {
                 observe(CatchUpFact::Creating(identity.clone()));
                 let failure = match client
-                    .run_doors(&this_machine.id, proxy_service, cancel)
+                    .run_doors(&this_machine.id, proxy_service, doors, cancel)
                     .await
                 {
                     Ok(None) => {

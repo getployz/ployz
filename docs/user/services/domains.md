@@ -119,6 +119,10 @@ Keep ports 80 and 443 open on the servers that take web traffic: they use port 8
 certificates. Once a domain has its certificate, `http://` links redirect to `https://` with the
 same path. Until then, plain http shows **Nothing is deployed here**.
 
+Servers that can't open ports can serve every domain through a
+[Cloudflare Tunnel](cloudflare-tunnel.md) instead. Cloudflare then holds the certificate, and the
+DNS records point at the tunnel rather than at your servers.
+
 ## Check a domain's status
 
 Each domain's row shows its status after the port, like **→ Uses PORT · Issuing certificate**.
@@ -134,6 +138,7 @@ A live domain shows no status.
 | **Ingress isn't running on …** (shown only when no server takes the traffic) | [Deploy](../troubleshooting/app-not-reachable.md#ingress-isnt-running) to bring it back. |
 | **No Server receives traffic** | [Add a server](../servers/add-a-server.md). |
 | **via proxy** | Nothing. It works behind a proxy like Cloudflare. |
+| **via tunnel** | Nothing. It's served through your [Cloudflare Tunnel](cloudflare-tunnel.md). |
 
 For any other status, see [My app isn't reachable](../troubleshooting/app-not-reachable.md).
 

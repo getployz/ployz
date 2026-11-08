@@ -369,7 +369,7 @@ these there:
 
 | Port | From | Needed for |
 | --- | --- | --- |
-| TCP 80, TCP and UDP 443 | Anywhere | Your apps over https, and their certificates, on servers that take web traffic |
+| TCP 80, TCP and UDP 443 | Anywhere | Your apps over https, and their certificates, on servers that take web traffic. Not needed behind a [Cloudflare Tunnel](../services/cloudflare-tunnel.md) |
 | UDP 51820 | Your other servers | Services on different servers reaching each other |
 
 On a server that runs firewalld (`systemctl is-active firewalld` says `active`), also open UDP

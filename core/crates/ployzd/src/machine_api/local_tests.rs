@@ -825,6 +825,38 @@ async fn fake_docker_service_keeping_runtime(
     crate::docker::test_support::FakeDocker,
     crate::docker::ContainerRuntime,
 ) {
+    let (data_dir, store, service, fake, runtime) = fake_docker_service_built(prefix, None).await;
+    (data_dir, store, service, fake, runtime)
+}
+
+/// [`fake_docker_service_keeping_runtime`] on a Machine that holds a Cluster's Sealing
+/// Key and resolves Machine paths under `<data_dir>/root`.
+async fn fake_docker_service_sealing(
+    prefix: &str,
+) -> (
+    std::path::PathBuf,
+    RecordOwner,
+    MachineService,
+    crate::docker::test_support::FakeDocker,
+    crate::docker::ContainerRuntime,
+    crate::sealed_env::test_support::Cluster,
+) {
+    let cluster = crate::sealed_env::test_support::Cluster::new();
+    let (data_dir, store, service, fake, runtime) =
+        fake_docker_service_built(prefix, Some(cluster.dir.0.clone())).await;
+    (data_dir, store, service, fake, runtime, cluster)
+}
+
+async fn fake_docker_service_built(
+    prefix: &str,
+    sealing_key_dir: Option<std::path::PathBuf>,
+) -> (
+    std::path::PathBuf,
+    RecordOwner,
+    MachineService,
+    crate::docker::test_support::FakeDocker,
+    crate::docker::ContainerRuntime,
+) {
     use crate::docker::test_support::{FakeDocker, fake_runtime_with};
     use ployz_core::MachineName;
     let data_dir = std::env::temp_dir().join(format!("{prefix}-{}", MachineId::random()));
@@ -852,6 +884,12 @@ async fn fake_docker_service_keeping_runtime(
         ..Default::default()
     })
     .await;
+    let runtime = match sealing_key_dir {
+        Some(dir) => runtime
+            .with_sealing_key(dir)
+            .with_machine_root(data_dir.join("root")),
+        None => runtime,
+    };
     let mut service = MachineService::with_cluster(store.clone(), None)
         .with_optional_containers(Some(runtime.clone()));
     // `true` lists no pools, which reads as ZFS ready whatever the host has.
@@ -1035,12 +1073,12 @@ mod ingress_doors {
     }
 
     #[tokio::test]
-    async fn only_the_public_door_is_placed() {
-        let (data_dir, _store, service, fake) = fake_docker_service("ployzd-doors-public").await;
+    async fn an_unknown_door_is_refused_naming_the_doors_capability() {
+        let (data_dir, _store, service, fake) = fake_docker_service("ployzd-doors-unknown").await;
         let seen = docker_calls(&fake);
         let error = set_doors(
             &service,
-            json!({"doors": ["public", "tunnel"], "proxy_service": proxy_id()}),
+            json!({"doors": ["public", "window"], "proxy_service": proxy_id()}),
             false,
         )
         .await
@@ -1057,6 +1095,142 @@ mod ingress_doors {
             Some(&json!(SET_INGRESS_DOORS_CAPABILITY))
         );
         assert_eq!(docker_calls(&fake), seen);
+        std::fs::remove_dir_all(data_dir).unwrap();
+    }
+
+    #[tokio::test]
+    async fn the_tunnel_door_needs_a_token_sealed_for_this_cluster() {
+        let (data_dir, _store, service, fake, _runtime, _cluster) =
+            fake_docker_service_sealing("ployzd-doors-token").await;
+        let seen = docker_calls(&fake);
+        let missing = set_doors(
+            &service,
+            json!({"doors": ["tunnel"], "proxy_service": proxy_id()}),
+            false,
+        )
+        .await
+        .unwrap()
+        .unwrap_err();
+        assert_eq!(
+            missing.code,
+            RpcErrorCode::InvalidArgument,
+            "{}",
+            missing.message
+        );
+        assert_eq!(
+            missing.details.get("capability"),
+            Some(&json!(ployz_core::SET_INGRESS_TUNNEL_CAPABILITY))
+        );
+
+        let other = crate::sealed_env::test_support::Cluster::new();
+        let foreign = other.seal_platform(ployz_core::PlatformPurpose::IngressTunnel, b"cf-token");
+        let unopenable = set_doors(
+            &service,
+            json!({"doors": ["tunnel"], "proxy_service": proxy_id(), "sealed_token": foreign}),
+            false,
+        )
+        .await
+        .unwrap()
+        .unwrap_err();
+        assert_eq!(
+            unopenable.code,
+            RpcErrorCode::InvalidArgument,
+            "{}",
+            unopenable.message
+        );
+        assert_eq!(unopenable.details.get("capability"), None);
+        assert_eq!(
+            docker_calls(&fake),
+            seen,
+            "nothing reaches Docker without a token"
+        );
+        std::fs::remove_dir_all(data_dir).unwrap();
+    }
+
+    #[tokio::test]
+    async fn the_tunnel_door_closes_the_ports_and_runs_the_connector_on_the_opened_token() {
+        let (data_dir, _store, service, fake, runtime, cluster) =
+            fake_docker_service_sealing("ployzd-doors-tunnel").await;
+        let sealed = cluster.seal_platform(ployz_core::PlatformPurpose::IngressTunnel, b"cf-token");
+        let tunnel =
+            json!({"doors": ["tunnel"], "proxy_service": proxy_id(), "sealed_token": sealed});
+        let set = set_doors(&service, tunnel.clone(), false)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(set.failure, None, "{set:?}");
+        let specs = DoorSpecs::new(proxy_id(), ployz_core::IngressPorts::Closed, Some(&sealed));
+        let holder = set.holder.unwrap();
+        assert_eq!(holder.change, DoorChange::Created);
+        assert_eq!(
+            holder.now.resolved_spec, specs.holder,
+            "the holder publishes no port"
+        );
+        assert_eq!(set.proxy.unwrap().now.resolved_spec, specs.proxy);
+        let connector = set.tunnel.unwrap();
+        assert_eq!(connector.change, DoorChange::Created);
+        assert_eq!(connector.now.identity(), QualifiedService::system_tunnel());
+        assert_eq!(connector.now.resolved_spec, specs.tunnel.unwrap());
+        let token = data_dir.join("root/run/ployz/tunnel/token");
+        assert_eq!(std::fs::read(&token).unwrap(), b"cf-token");
+        let inventory = runtime
+            .door_inventory(&service.local.record().id())
+            .await
+            .unwrap();
+        assert_eq!(inventory.len(), 3);
+        assert!(inventory.iter().all(|entry| {
+            entry.facts.door == crate::docker::Door::Holder
+                || entry.facts.joined_to == Some(holder.now.container_id)
+        }));
+
+        let again = set_doors(&service, tunnel, false).await.unwrap().unwrap();
+        assert_eq!(again.holder.unwrap().change, DoorChange::Unchanged);
+        assert_eq!(again.tunnel.unwrap().change, DoorChange::Unchanged);
+
+        let seen = docker_calls(&fake);
+        let public = set_doors(&service, doors_request(), false)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(public.failure, None, "{public:?}");
+        assert_eq!(
+            public.tunnel, None,
+            "the Public Door alone retires the connector"
+        );
+        assert_eq!(
+            public.holder.unwrap().now.resolved_spec,
+            DoorSpecs::public(proxy_id()).holder
+        );
+        assert!(docker_calls(&fake) > seen);
+        assert!(
+            !token.exists(),
+            "the opened token leaves with the connector"
+        );
+        assert_eq!(
+            runtime
+                .door_inventory(&service.local.record().id())
+                .await
+                .unwrap()
+                .len(),
+            2
+        );
+
+        let both = set_doors(
+            &service,
+            json!({"doors": ["public", "tunnel"], "proxy_service": proxy_id(), "sealed_token": sealed}),
+            false,
+        )
+        .await
+        .unwrap()
+        .unwrap();
+        assert_eq!(both.failure, None, "{both:?}");
+        assert_eq!(
+            both.holder.unwrap().now.resolved_spec,
+            DoorSpecs::public(proxy_id()).holder,
+            "both Doors keep the ports open beside the connector"
+        );
+        assert!(both.tunnel.is_some());
+        runtime.remove_tunnel_token().unwrap();
         std::fs::remove_dir_all(data_dir).unwrap();
     }
 
@@ -1484,7 +1658,7 @@ mod ingress_doors {
             runtime.stop(&entry.facts.id, None, None).await.unwrap();
             match entry.facts.door {
                 crate::docker::Door::Holder => holder = Some(entry.facts.id),
-                crate::docker::Door::Proxy => {
+                crate::docker::Door::Proxy | crate::docker::Door::Tunnel => {
                     runtime.remove(&entry.facts.id, true, true).await.unwrap();
                 }
             }

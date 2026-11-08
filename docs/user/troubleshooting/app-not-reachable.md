@@ -177,7 +177,8 @@ sudo ss -ltnp '( sport = :80 or sport = :443 )'
 ```
 
 Stop that web server, or move it to another server. To keep Ployz Cloud on the same server,
-publish it through a Cloudflare Tunnel instead. Once port 80 is free, the server starts its
+publish it through a Cloudflare Tunnel instead, or serve your apps through one with
+[`ployz ingress use tunnel`](../services/cloudflare-tunnel.md). Once port 80 is free, the server starts its
 web server on its own within a minute. You don't need to remove and re-add the server. Then click
 **Check again** under **Domain** in **Organization → General**.
 
@@ -199,6 +200,20 @@ Ployz can't confirm such a server takes traffic, so check it yourself from a net
 `curl -I http://web.<your domain>`. Open TCP port 80 and TCP and UDP port 443 for IPv6 in every
 firewall, as in [Port 80 is closed](#port-80-is-closed). To reach your apps from an IPv4-only
 network, give a server an IPv4 address too.
+
+## My apps go through a Cloudflare Tunnel and don't answer
+
+Run `ployz ingress`. Every server that takes web traffic should list `tunnel`. One that lists
+**closed** has no web server running; see [Ingress isn't running](#ingress-isnt-running). One
+that still lists `public` never switched; run `ployz ingress use tunnel` again and read its row.
+
+When every server lists `tunnel` and the domain still doesn't answer, check the tunnel in
+Cloudflare under **Zero Trust → Networks → Tunnels**. It should show one connector per server,
+and a public hostname for the domain with service `http://localhost:8480`. A tunnel whose token
+you rotated needs the new token: `ployz ingress use tunnel --token-stdin`.
+
+A domain behind the tunnel never shows **Issuing certificate**; Cloudflare serves it. If the
+browser says "too many redirects", set **SSL/TLS** to **Full** or **Flexible** in Cloudflare.
 
 ## Ingress isn't running
 

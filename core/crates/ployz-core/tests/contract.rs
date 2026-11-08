@@ -1790,12 +1790,22 @@ fn ingress_doors_wire_shapes_stay_stable() {
     let request = SetIngressDoorsRequest {
         doors: IngressDoors::public(),
         proxy_service: ServiceId::parse("a".repeat(32)).unwrap(),
+        sealed_token: None,
     };
     assert_eq!(
         serde_json::to_value(&request).unwrap(),
-        json!({ "doors": ["public"], "proxy_service": "a".repeat(32) })
+        json!({ "doors": ["public"], "proxy_service": "a".repeat(32) }),
+        "an older daemon reads a Public request without the token field"
     );
     assert!(request.doors.is_public_only());
+    let tunnel: SetIngressDoorsRequest = serde_json::from_value(json!({
+        "doors": ["public", "tunnel"],
+        "proxy_service": "a".repeat(32),
+        "sealed_token": "A".repeat(64),
+    }))
+    .unwrap();
+    assert_eq!(tunnel.doors, IngressDoors::both());
+    assert!(tunnel.sealed_token.is_some());
     let newer: IngressDoors = serde_json::from_value(json!(["public", "tailnet"])).unwrap();
     assert_eq!(
         newer,

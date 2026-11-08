@@ -570,7 +570,7 @@ async fn the_ingress_proxy_is_set_once_through_its_doors() {
 
     assert_eq!(
         client.door_calls,
-        [service_id('a')],
+        [(service_id('a'), ClusterDoors::public())],
         "one call, for the observed Caddy, covers both doors"
     );
     assert!(
@@ -703,7 +703,7 @@ struct FakeCatchUpClient {
     target_services: Option<Vec<ServiceObservation>>,
     run_calls: Vec<NewContainer>,
     run_result: Result<Option<ContainerId>, RpcError>,
-    door_calls: Vec<ServiceId>,
+    door_calls: Vec<(ServiceId, ClusterDoors)>,
     doors_result: Result<Option<IngressDoorsSet>, RpcError>,
     bring_in: FakeBringIn,
     brought_in: Vec<Copy>,
@@ -830,10 +830,11 @@ impl CatchUpClient for FakeCatchUpClient {
         &mut self,
         machine_id: &MachineId,
         proxy_service: ServiceId,
+        doors: ClusterDoors,
         _cancel: &tokio_util::sync::CancellationToken,
     ) -> Result<Option<IngressDoorsSet>, RpcError> {
         assert_eq!(machine_id, &self.machine_id);
-        self.door_calls.push(proxy_service);
+        self.door_calls.push((proxy_service, doors));
         self.doors_result.clone()
     }
 

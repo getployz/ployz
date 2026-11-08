@@ -26,7 +26,7 @@ use serde_json::Value;
 use thiserror::Error;
 
 use crate::{
-    AdvertisedEndpoint, CapabilityName, CertificateHost, ContainerAddress, ContainerId,
+    AdvertisedEndpoint, CapabilityName, CertificateHost, Ciphertext, ContainerAddress, ContainerId,
     ContainerKind, ContainerObservation, DeviceCode, DeviceKey, Machine, MachineId,
     MachineLogService, MachineName, MachineObservation, MachineRuntime, MachineUpdate,
     ManagementCapability, ManagementClientLabel, Namespace, PinnedAddresses, PullPolicy,
@@ -1577,8 +1577,22 @@ pub struct RoutedAddresses {
 pub enum IngressDoor {
     /// The holder's host ports 80 and 443.
     Public,
+    /// A Tunnel Connector in the holder's network, reaching Caddy's loopback
+    /// listener. The holder publishes no host port for it.
+    Tunnel,
     #[serde(other)]
     Unrecognized,
+}
+
+impl IngressDoor {
+    #[must_use]
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Public => "public",
+            Self::Tunnel => "tunnel",
+            Self::Unrecognized => "unrecognized",
+        }
+    }
 }
 
 /// The Doors a Machine's Ingress Proxy should answer on.
@@ -1593,8 +1607,36 @@ impl IngressDoors {
     }
 
     #[must_use]
+    pub fn tunnel() -> Self {
+        Self(BTreeSet::from([IngressDoor::Tunnel]))
+    }
+
+    /// Both Doors, which a switch holds open while the other side catches up.
+    #[must_use]
+    pub fn both() -> Self {
+        Self(BTreeSet::from([IngressDoor::Public, IngressDoor::Tunnel]))
+    }
+
+    #[must_use]
     pub fn is_public_only(&self) -> bool {
         *self == Self::public()
+    }
+
+    #[must_use]
+    pub fn has(&self, door: IngressDoor) -> bool {
+        self.0.contains(&door)
+    }
+
+    /// Whether every Door is one this release knows, and at least one is asked for.
+    #[must_use]
+    pub fn is_known(&self) -> bool {
+        !self.0.is_empty() && !self.has(IngressDoor::Unrecognized)
+    }
+
+    /// The Doors as `ployz ingress` lists them.
+    #[must_use]
+    pub fn names(&self) -> Vec<&'static str> {
+        self.0.iter().map(|door| door.as_str()).collect()
     }
 }
 
@@ -1606,6 +1648,13 @@ pub struct SetIngressDoorsRequest {
     /// The Ingress Proxy Service's id. The operator allocates it, and every
     /// Machine derives the holder's id from it, so all Machines agree.
     pub proxy_service: ServiceId,
+    /// The Cloudflare tunnel token sealed to this Cluster under the
+    /// `ingress-tunnel` Platform sealing purpose. Required with the Tunnel Door
+    /// and ignored without it. A client sends it only to a daemon advertising
+    /// `ployz.ingress.tunnel.v1`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub sealed_token: Option<Ciphertext>,
 }
 
 /// What the daemon did to one Ingress component.
@@ -1637,6 +1686,7 @@ pub struct DoorOutcome {
 pub enum IngressStage {
     Holder,
     Proxy,
+    Tunnel,
     #[serde(other)]
     Unrecognized,
 }
@@ -1661,6 +1711,11 @@ pub struct IngressDoorsSet {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[ts(optional)]
     pub proxy: Option<DoorOutcome>,
+    /// The Tunnel Connector in the holder's network, once its stage completed.
+    /// Absent when the Tunnel Door was not asked for.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub tunnel: Option<DoorOutcome>,
     /// Reserved Containers the route removed.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub retired: Vec<ContainerId>,
