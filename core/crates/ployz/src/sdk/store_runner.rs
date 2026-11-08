@@ -5,7 +5,7 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::PathBuf;
-use std::sync::Arc;
+use std::sync::{Arc, OnceLock};
 use std::time::Duration;
 
 use ployz_core::{
@@ -173,6 +173,7 @@ pub async fn run_deployment_expecting(
         store,
         deployment,
         runner,
+        over: OnceLock::new(),
     };
     let claimed = run.claim(operator).await?;
     let (targets, built) = match checkouts
@@ -196,6 +197,8 @@ pub async fn run_deployment_expecting(
         .await
     {
         Ok(Some(session)) => session,
+        // A run the store no longer holds stops here too. The store refuses this record
+        // from it, and that refusal is what the run returns.
         Ok(None) => return run.not_executed("Cancelled before connecting".into()).await,
         // Users read it on the Deployment: the connection's own sentence first, naming the
         // Server where it knows which and saying whether a daemon answered, then what the
@@ -697,6 +700,53 @@ struct Run {
     store: Arc<ConfigStore>,
     deployment: DeploymentId,
     runner: RunnerId,
+    /// What the first read that found the store no longer holding the run said. The
+    /// store never takes a run back from Unknown or an end, so no later read changes it.
+    over: OnceLock<Over>,
+}
+
+/// What one read of the Deployment says this run may do.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Standing {
+    /// The store holds the run: Running.
+    Keep,
+    /// A user cancelled the Deployment: Cancelling.
+    Cancel,
+    Over(Over),
+    /// The read failed, so nothing is known: the run goes on and reads again.
+    Unread,
+}
+
+/// The store no longer holds the run.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Over {
+    /// The Deployment is Unknown: its lease lapsed, a newer claim took the Environment
+    /// over, its runner claimed it again after a preview, or Cloud abandoned it after
+    /// one. The store takes only an Interrupted outcome from the run.
+    Lost,
+    /// The Deployment ended, or another runner owns it: the store takes nothing more
+    /// from the run.
+    Ended,
+}
+
+/// What `read`, the store's answer to one of this run's records, says the run may do.
+fn standing(read: &Result<DeploymentSummary, RpcError>) -> Standing {
+    match read {
+        Ok(summary) => match summary.status {
+            DeploymentStatus::Running => Standing::Keep,
+            DeploymentStatus::Cancelling => Standing::Cancel,
+            DeploymentStatus::Unknown => Standing::Over(Over::Lost),
+            DeploymentStatus::Applied
+            | DeploymentStatus::Failed
+            | DeploymentStatus::Cancelled
+            | DeploymentStatus::WaitingForCi
+            | DeploymentStatus::Queued
+            | DeploymentStatus::Superseded => Standing::Over(Over::Ended),
+        },
+        // `record` refuses an ended Deployment, or another runner's, as a conflict.
+        Err(refused) if refused.code == RpcErrorCode::Conflict => Standing::Over(Over::Ended),
+        Err(_) => Standing::Unread,
+    }
 }
 
 fn ingress_failure_message<'a>(
@@ -760,13 +810,17 @@ impl Run {
             Ok(prepared) => prepared,
             Err(unprepared) => return self.unprepared(&earlier, &deletes, unprepared).await,
         };
-        let summary = self
+        let recorded = self
             .record(RunEvidence::Prepared(prepared.preview().clone()))
-            .await?;
-        if summary.status == DeploymentStatus::Cancelling {
-            return self
-                .not_executed("Cancelled before it executed".into())
-                .await;
+            .await;
+        match standing(&recorded) {
+            Standing::Keep => {}
+            Standing::Cancel => {
+                return self
+                    .not_executed("Cancelled before it executed".into())
+                    .await;
+            }
+            Standing::Over(_) | Standing::Unread => return recorded,
         }
         let log_id = self.deployment.as_str().parse().ok();
         let running = match prepared.confirm_with_log_id(log_id, ImageCleanup::Auto) {
@@ -780,8 +834,15 @@ impl Run {
             .await;
         match outcome {
             Ok((outcome, progress, mut warnings)) => {
-                if self.lost_to_another_runner().await {
-                    return self.interrupted(outcome, progress).await;
+                match self.standing().await {
+                    Standing::Over(Over::Lost) => {
+                        return self.interrupted(outcome, progress).await;
+                    }
+                    // The store refuses the outcome, and nothing more is deleted.
+                    Standing::Over(Over::Ended) => {
+                        return self.executed(outcome, progress, Vec::new()).await;
+                    }
+                    Standing::Keep | Standing::Cancel | Standing::Unread => {}
                 }
                 // The last chance: the store takes warnings only while the Deployment runs.
                 self.record_warnings(&mut warnings).await;
@@ -791,16 +852,14 @@ impl Run {
                 } else {
                     Vec::new()
                 };
-                if self.status().await.ok() != Some(DeploymentStatus::Cancelling) {
-                    self.fill_ingress(session, prepared.preview.machine_names())
-                        .await;
+                match self.standing().await {
+                    Standing::Keep | Standing::Unread => {
+                        self.fill_ingress(session, prepared.preview.machine_names())
+                            .await;
+                    }
+                    Standing::Cancel | Standing::Over(_) => {}
                 }
-                self.record(RunEvidence::Executed {
-                    progress,
-                    outcome: Box::new(outcome),
-                    removed,
-                })
-                .await
+                self.executed(outcome, progress, removed).await
             }
             // The session ended mid-execution: what ran is unknown.
             Err(_) => self.record(RunEvidence::Abandoned).await,
@@ -1206,33 +1265,28 @@ impl Run {
         loop {
             tokio::select! {
                 biased;
-                _ = poll.tick() => {
-                    if self.status().await.ok() == Some(DeploymentStatus::Cancelling) {
-                        return Ok(None);
-                    }
-                }
+                _ = poll.tick() => match self.standing().await {
+                    Standing::Keep | Standing::Unread => {}
+                    Standing::Cancel | Standing::Over(_) => return Ok(None),
+                },
                 done = &mut work => return done.map(Some),
             }
         }
     }
 
     /// Await `work` while renewing this runner's lease on the Deployment; a cancel, or
-    /// the store handing the environment to another runner, calls `abort`.
+    /// the store no longer holding the run, calls `abort`.
     async fn renewing<T>(&self, work: impl std::future::Future<Output = T>, abort: impl Fn()) -> T {
         tokio::pin!(work);
         let mut poll = tokio::time::interval(CANCEL_POLL);
         loop {
             tokio::select! {
                 done = &mut work => return done,
-                _ = poll.tick() => {
+                _ = poll.tick() => match self.standing().await {
                     // ponytail: a failed read skips one check; the next tick reads again.
-                    if matches!(
-                        self.status().await.ok(),
-                        Some(DeploymentStatus::Cancelling | DeploymentStatus::Unknown)
-                    ) {
-                        abort();
-                    }
-                }
+                    Standing::Keep | Standing::Unread => {}
+                    Standing::Cancel | Standing::Over(_) => abort(),
+                },
             }
         }
     }
@@ -1264,7 +1318,8 @@ impl Run {
         }
     }
 
-    /// Records what ran before the store handed the Environment to another runner.
+    /// Records what ran before the store set the Deployment Unknown: Interrupted is the
+    /// one outcome it takes from the run then.
     async fn interrupted(
         &self,
         outcome: DeployOutcome<ExecutionError>,
@@ -1276,6 +1331,37 @@ impl Run {
             removed: Vec::new(),
         })
         .await
+    }
+
+    /// Record what executing did. The store refuses any outcome but Interrupted from a
+    /// run it set Unknown, so a refused one is sent again as Interrupted. Its other
+    /// refusals turn on what it holds, not on the outcome sent, so the resend meets them
+    /// again. The one exception changes nothing: a store that already holds this same
+    /// Interrupted outcome accepts the resend as a replay. Not when the run tried to
+    /// delete a Volume: the store reads an Interrupted outcome's removed Volumes as never
+    /// attempted, and the refusal claims nothing.
+    async fn executed(
+        &self,
+        outcome: DeployOutcome<ExecutionError>,
+        progress: Vec<ployz_store::ServerProgress>,
+        removed: Vec<ployz_core::VolumeRemoval>,
+    ) -> Result<DeploymentSummary, RpcError> {
+        let deleted = removed
+            .iter()
+            .any(|removal| !matches!(removal.outcome, ployz_core::VolumeRemovalOutcome::Omitted));
+        let recorded = self
+            .record(RunEvidence::Executed {
+                progress: progress.clone(),
+                outcome: Box::new(outcome.clone()),
+                removed,
+            })
+            .await;
+        match recorded {
+            Err(refused) if refused.code == RpcErrorCode::Conflict && !deleted => {
+                self.interrupted(outcome, progress).await.or(Err(refused))
+            }
+            recorded => recorded,
+        }
     }
 
     async fn not_executed(&self, failure: Failure) -> Result<DeploymentSummary, RpcError> {
@@ -1377,18 +1463,18 @@ impl Run {
         .await
     }
 
-    /// One bounded read after execution: the store may have handed the environment
-    /// to another runner meanwhile, and then takes no outcome from this run.
-    async fn lost_to_another_runner(&self) -> bool {
-        self.status().await.ok() == Some(DeploymentStatus::Unknown)
-    }
-
-    /// Renew this runner's lease on the Deployment and read its status back, which
-    /// says whether it was cancelled or handed to another runner.
-    async fn status(&self) -> Result<DeploymentStatus, RpcError> {
-        self.record(RunEvidence::Alive)
-            .await
-            .map(|summary| summary.status)
+    /// Renew this runner's lease on the Deployment and read what the run may do. Once a
+    /// read found the store no longer holding the run, it reads nothing more and says
+    /// the same: a read that fails after a takeover still leaves the run lost.
+    async fn standing(&self) -> Standing {
+        if let Some(over) = self.over.get() {
+            return Standing::Over(*over);
+        }
+        let read = standing(&self.record(RunEvidence::Alive).await);
+        if let Standing::Over(over) = read {
+            self.over.get_or_init(|| over);
+        }
+        read
     }
 }
 
