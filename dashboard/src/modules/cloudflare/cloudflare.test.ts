@@ -129,7 +129,7 @@ describe("the Cloudflare API calls", () => {
   });
 
   it("creates the one record it is given", async () => {
-    const { http, seen } = cloudflare({ "POST /zones/z1/dns_records": { status: 200, result: {} } });
+    const { http, seen } = cloudflare({ "POST /zones/z1/dns_records": { status: 200, result: { id: "r1" } } });
     await Effect.runPromise(createRecord(http, token, "z1", wildcardRecord("example.com", "t1")));
     expect(seen.map(({ body }) => body)).toEqual([wildcardRecord("example.com", "t1")]);
   });

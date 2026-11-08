@@ -21,13 +21,13 @@ import {
   switchProblem,
   switchProgress,
 } from "#/modules/ingress/doors";
+import { listCloudflareZonesServerFn, setUpCloudflareServerFn, switchDoorsServerFn } from "#/modules/ingress/doors.functions";
 import {
-  listCloudflareZonesServerFn,
-  reviewDoorsSwitchServerFn,
-  setUpCloudflareServerFn,
-  switchDoorsServerFn,
-} from "#/modules/ingress/doors.functions";
-import { clusterIngressKeys, clusterIngressObservationQueryOptions, useClusterIngress } from "#/modules/ingress/doors.queries";
+  clusterIngressKeys,
+  clusterIngressObservationQueryOptions,
+  reviewDoorsSwitchQueryOptions,
+  useClusterIngress,
+} from "#/modules/ingress/doors.queries";
 import { useRoleGate } from "#/modules/organization/members.queries";
 
 const organizationRoute = getRouteApi("/_protected/cloud/$organizationSlug");
@@ -264,11 +264,7 @@ function SwitchDialog({ organizationSlug, to, onOpenChange, onConfirm }: {
   onOpenChange: (open: boolean) => void;
   onConfirm: () => Promise<void>;
 }) {
-  const review = useQuery({
-    queryKey: [...clusterIngressKeys.all, organizationSlug, "review", to] as const,
-    queryFn: () => reviewDoorsSwitchServerFn({ data: { organizationSlug, to } }),
-    gcTime: 0,
-  });
+  const review = useQuery(reviewDoorsSwitchQueryOptions(organizationSlug, to));
   const moves = review.data?.moves ?? [];
   const toCloudflare = to === "tunnel";
   return (
@@ -283,7 +279,7 @@ function SwitchDialog({ organizationSlug, to, onOpenChange, onConfirm }: {
               ? "Servers close ports 80 and 443 and take traffic through the tunnel. Expect a short interruption."
               : "Servers open ports 80 and 443 and the tunnel closes. Expect a short interruption."}
           </p>
-          {review.isPending ? <p role="status" className="flex items-center gap-2"><Spinner />Checking addresses</p> : null}
+          {review.isPending ? <p role="status">Checking addresses…</p> : null}
           {review.isError ? <p role="alert">Couldn't check the addresses. The switch checks them again before anything moves.</p> : null}
           {review.data?.gap ? <p role="alert">{review.data.gap}</p> : null}
           {moves.length === 0 ? null : (

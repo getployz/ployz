@@ -56,6 +56,7 @@ const SPINNER_FILES = {
   "routes/_protected/cloud/$organizationSlug/_project/$projectSlug/$environmentSlug/services/$serviceId/-components/ServiceActions.tsx": "a restart, stop or start moving the Service's containers",
   "routes/_protected/cloud/$organizationSlug/_project/$projectSlug/$environmentSlug/services/$serviceId/-components/monitoring/MonitoringTab.tsx": "Checking while a requested probe runs",
   "routes/_protected/cloud/$organizationSlug/_org/-components/ClusterDomainSection.tsx": "Setting up while the sync runs; Check again until the sync lands",
+  "routes/_protected/cloud/$organizationSlug/_org/-components/WebTrafficSection.tsx": "a switch running on the Servers; Find zones and Set up in flight",
   "routes/_protected/cloud/$organizationSlug/_org/-components/PendingEnrollmentResetSection.tsx": "reset in flight",
   "routes/_protected/cloud/$organizationSlug/_org/-components/members-settings.tsx": "invite, remove or leave in flight",
   "routes/_protected/cloud/$organizationSlug/_org/-components/tokens-settings.tsx": "token mint in flight",
@@ -79,6 +80,7 @@ const COMMAND_READ_FILES = {
   "routes/_protected/cloud/$organizationSlug/_org/~/servers/-components/remove-server-section.tsx": "gather data-loss evidence, then wait for the confirmed removal",
   "routes/_protected/cloud/$organizationSlug/_org/~/servers/-components/stray-namespaces.tsx": "gather a Namespace's data-loss evidence before the user confirms its removal",
   "routes/_protected/cloud/$organizationSlug/_org/-components/forget-servers-dialog.tsx": "try every Server and list what goes before the user confirms forgetting them",
+  "routes/_protected/cloud/$organizationSlug/_org/-components/WebTrafficSection.tsx": "find the zones a pasted Cloudflare token reaches before setting up; the token is used once and never stored",
 };
 
 const NETWORK = /\bfetch\(|new EventSource\(/;
@@ -109,6 +111,8 @@ const ON_DEMAND_READS = {
   serverMetricsQueryOptions: "asks a Server live, so a slow Server would hold the page; each Servers list row reads its own Server after the list shows, and the Resources section waits on it",
   latestServiceActQueryOptions: "keyed by the Service's name, which the drawer knows only once it reads the Store; the header shows no run until it answers",
   runtimeServiceMetricsQueryOptions:"asks every Server live, so a slow Server would hold the page; each Running here row waits on its own",
+  clusterIngressObservationQueryOptions: "asks every Server live for the doors it holds, so a slow Cluster never holds Settings; the section shows the stored state until it answers",
+  reviewDoorsSwitchQueryOptions: "the switch dialog's own review of what moves, read when it opens",
 };
 
 /** Hook files outside data files that await the server without making UI wait on it. */
@@ -127,6 +131,7 @@ const COMMAND_FILES = {
   "routes/_protected/cloud/$organizationSlug/_org/-components/github-settings.tsx": "linking a GitHub account checks the signed offer against GitHub, and a disconnect answers with the account's uninstall link",
   "routes/_protected/cloud/$organizationSlug/_org/-components/store-organization-danger.tsx": "deleting an organization is destructive and waits on its Servers letting go",
   "routes/_protected/cloud/$organizationSlug/_org/-components/forget-servers-dialog.tsx": "forgetting the Servers is destructive: it tries every Server again and forgets only when none answers",
+  "routes/_protected/cloud/$organizationSlug/_org/-components/WebTrafficSection.tsx": "setting up creates a tunnel in Cloudflare with a token used once, and says what Cloudflare kept if it stops; a switch moves every address and runs on the Servers, so the dialog waits for Cloud to admit it",
   "components/agent-sidebar/approvals.queries.ts": "an approved restart on enforcing Servers runs only with approvals the owner's passkey signs, so the card waits for them",
   "components/agent-sidebar/proposals.queries.ts": "an approved proposal runs only with the bundle the owner's passkey signs, so the card waits for it",
   "routes/_protected/cloud/index.tsx": "the server creates the new organization and its slug, which the page then opens",

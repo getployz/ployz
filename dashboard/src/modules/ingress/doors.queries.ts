@@ -1,5 +1,6 @@
 import { queryOptions, useSuspenseQuery } from "@tanstack/react-query";
-import { observeClusterIngressServerFn, readClusterIngressServerFn } from "./doors.functions";
+import type { DoorsWant } from "./doors";
+import { observeClusterIngressServerFn, readClusterIngressServerFn, reviewDoorsSwitchServerFn } from "./doors.functions";
 
 /** The Cluster's ingress; the change stream's `cluster_ingress` invalidates this root. */
 export const clusterIngressKeys = { all: ["cluster-ingress"] as const };
@@ -22,5 +23,15 @@ export function clusterIngressObservationQueryOptions(organizationSlug: string, 
     queryFn: () => observeClusterIngressServerFn({ data: { organizationSlug } }),
     staleTime: 10_000,
     refetchInterval: polling ? 4_000 : false,
+  });
+}
+
+/** What a switch to `to` moves, as the Servers show it when the review opens. Read afresh each time and kept no longer. */
+export function reviewDoorsSwitchQueryOptions(organizationSlug: string, to: DoorsWant) {
+  return queryOptions({
+    queryKey: [...clusterIngressKeys.all, organizationSlug, "review", to] as const,
+    queryFn: () => reviewDoorsSwitchServerFn({ data: { organizationSlug, to } }),
+    staleTime: 0,
+    gcTime: 0,
   });
 }
