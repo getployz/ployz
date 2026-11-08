@@ -6,9 +6,9 @@ use tokio::time::timeout;
 async fn machine_removal_reports_complete_and_partial_results() {
     for (warning, invalid_config) in [
         (None, false),
-        (Some("Docker reset failed: busy volume"), false),
+        (Some("replicated delete failed: store unavailable"), false),
         (None, true),
-        (Some("Docker reset failed: busy volume"), true),
+        (Some("replicated delete failed: store unavailable"), true),
     ] {
         let service = DiscoveryService::new(test_description());
         *service.reset_warning.lock().unwrap() = warning.map(str::to_owned);
@@ -42,11 +42,8 @@ async fn machine_removal_reports_complete_and_partial_results() {
         if invalid_config {
             std::fs::remove_file(config).unwrap();
         }
-        assert_eq!(
-            output.status.success(),
-            warning.is_none() && !invalid_config,
-            "{output:?}"
-        );
+        // The daemon's warning comes after its reset committed: the removal is no partial one.
+        assert_eq!(output.status.success(), !invalid_config, "{output:?}");
         assert_eq!(*resets.lock().unwrap(), [machine_id('a')]);
         assert!(erased.lock().unwrap().is_empty());
         let stdout = String::from_utf8_lossy(&output.stdout);
@@ -66,33 +63,28 @@ async fn machine_removal_reports_complete_and_partial_results() {
         }
         if let Some(warning) = warning {
             assert!(stderr.contains(warning), "{stderr}");
-            assert!(!stdout.contains("Deleted volume"), "{stdout}");
-        } else {
-            assert!(
-                stdout.contains("Reset left the data of Volume data on one."),
-                "{stdout}"
-            );
         }
+        assert!(
+            stdout.contains("Reset left the data of Volume data on one."),
+            "{stdout}"
+        );
         assert!(!stderr.contains("No changes made"), "{stderr}");
         server.abort();
     }
 }
 
 #[tokio::test]
-async fn a_reset_warning_and_the_volume_note_read_as_sentences() {
+async fn a_reset_row_warning_reads_as_a_sentence() {
     for (warning, read) in [
         (
-            "Docker reset failed: busy volume",
-            "Server one was not fully cleaned up or reset: Docker reset failed: busy volume. Reset does not erase volume data.",
+            "replicated delete failed: store unavailable",
+            "Server one reset, but its own row removal failed: replicated delete failed: store unavailable.",
         ),
         (
-            "Docker reset failed: busy volume.",
-            "Server one was not fully cleaned up or reset: Docker reset failed: busy volume. Reset does not erase volume data.",
+            "replicated delete failed: store unavailable.",
+            "Server one reset, but its own row removal failed: replicated delete failed: store unavailable.",
         ),
-        (
-            "",
-            "Server one was not fully cleaned up or reset. Reset does not erase volume data.",
-        ),
+        ("", "Server one reset, but its own row removal failed."),
     ] {
         let service = DiscoveryService::new(test_description());
         *service.reset_warning.lock().unwrap() = Some(warning.to_owned());

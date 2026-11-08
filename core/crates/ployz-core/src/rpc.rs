@@ -1730,10 +1730,72 @@ pub struct MachineUpdated {
     pub machine: Machine,
 }
 
-#[derive(Clone, Debug, Default, Eq, PartialEq, Serialize, Deserialize, TS)]
+/// How a removed Machine left the Cluster.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum Departed {
+    /// It answered Leave with [`Left::Left`]: its reset committed. `row_warning` is that
+    /// reply's `reset_warning`, why its own row removal failed after the reset.
+    Reset { row_warning: Option<String> },
+    /// Its Leave was unreachable, so its row was forgotten without a reset.
+    Unreachable { cause: String },
+    /// It was already gone from the Cluster: a Forget ran, and whether its reset did is unknown.
+    AlreadyForgotten,
+}
+
+impl Departed {
+    /// The reset warning a reader older than [`Departed`] reads: why the reset isn't proven,
+    /// or a reset's row warning.
+    fn warning(&self) -> Option<String> {
+        match self {
+            Self::Reset { row_warning } => row_warning.clone(),
+            Self::Unreachable { cause } => Some(format!(
+                "target is unreachable; removing shared rows: {cause}"
+            )),
+            Self::AlreadyForgotten => {
+                Some("its reset couldn't be confirmed: it was already gone from the Cluster".into())
+            }
+        }
+    }
+}
+
+/// A Machine removal that went through. `reset_warning` is `departed` as prose, for readers
+/// older than it; both come from one [`Departed`], so they can't disagree.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, TS)]
 pub struct LocalMachineRemoved {
-    #[serde(default)]
-    pub reset_warning: Option<String>,
+    reset_warning: Option<String>,
+    departed: Departed,
+}
+
+impl LocalMachineRemoved {
+    #[must_use]
+    pub fn departed(&self) -> &Departed {
+        &self.departed
+    }
+
+    #[must_use]
+    pub fn reset_warning(&self) -> Option<&str> {
+        self.reset_warning.as_deref()
+    }
+}
+
+impl From<Departed> for LocalMachineRemoved {
+    fn from(departed: Departed) -> Self {
+        Self {
+            reset_warning: departed.warning(),
+            departed,
+        }
+    }
+}
+
+impl<'de> Deserialize<'de> for LocalMachineRemoved {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        #[derive(Deserialize)]
+        struct Wire {
+            departed: Departed,
+        }
+        Wire::deserialize(deserializer).map(|wire| wire.departed.into())
+    }
 }
 
 /// Envelope identity: one row is the wire kind and the payload stored in that

@@ -1,6 +1,6 @@
 import "@tanstack/react-start/server-only";
 
-import type { LocalMachineRemoved, MachineId } from "@ployz/sdk";
+import type { Departed, LocalMachineRemoved, MachineId } from "@ployz/sdk";
 import { Data, Effect, Option } from "effect";
 import { createMachineRemoveRequestedEvent } from "#/modules/inngest/events";
 import type { Actor } from "#/modules/identity/actor";
@@ -44,11 +44,13 @@ export class MachineRemovalProviderFailure extends Data.TaggedError(
 }
 
 export function asRemoveMachineOutcome<R>(
-  run: Effect.Effect<LocalMachineRemoved, PloyzSdkError, R>,
+  run: Effect.Effect<Pick<LocalMachineRemoved, "reset_warning"> & { readonly departed?: Departed }, PloyzSdkError, R>,
   servers: readonly { readonly id: string; readonly name: string }[] = [],
 ) {
   return run.pipe(
-    Effect.map((removed): RemoveMachineOutcome => ({ kind: "removed", resetWarning: removed.reset_warning })),
+    Effect.map((removed): RemoveMachineOutcome => ({
+      kind: "removed", resetWarning: removed.reset_warning, departed: removed.departed,
+    })),
     // The Leave's reply is the only proof the Server reset; the step's result keeps it for the Forget after it.
     Effect.catchTag("LeftNotForgotten", (left) =>
       Effect.succeed({ kind: "left" as const, resetWarning: left.resetWarning } satisfies RemoveMachineOutcome),
@@ -166,7 +168,9 @@ export const removeMachineActivity = Effect.fn("MachineRemoval.remove")(
     const owned = yield* markOwnedMachineRemoveSent({ attemptId: attempt.id, inngestRunId: attempt.inngestRunId });
     if (!owned) return { kind: "superseded" } as const;
     const outcome = yield* asRemoveMachineOutcome(forgetOnly
-      ? session.connected.removeMachineMembership(machine).pipe(Effect.as({ reset_warning: left?.resetWarning ?? null }))
+      ? session.connected.removeMachineMembership(machine).pipe(Effect.as(left === null
+        ? { reset_warning: null }
+        : { reset_warning: left.resetWarning, departed: { kind: "reset", row_warning: left.resetWarning } as const }))
       : session.connected.removeMachine(machine, { confirmed: [...attempt.confirmDataLoss] }), servers);
     return { ...outcome, generation: access.generation };
   },
@@ -204,27 +208,34 @@ export const releaseLeavingLanesActivity = (input: {
   organizationId: string; machineId: MachineId; name: string | null; writes: readonly string[];
 }) => releaseLanesOff(input.organizationId, { id: input.machineId, name: input.name }, input.writes);
 
-/** The SDK's reset warning for a Server the Cluster had already forgotten (ployz `RESET_UNCONFIRMED`). */
+/**
+ * The SDK's reset warning for a Server the Cluster had already forgotten (ployz `RESET_UNCONFIRMED`). Only a removal
+ * step result that predates `departed` needs it.
+ */
 const RESET_UNCONFIRMED = "its reset couldn't be confirmed: it was already gone from the Cluster";
 
 /**
- * What a removed Server leaves of Cloud's hold. A reset that didn't finish is a partial outcome: the Server may keep
- * Cloud's key, so Cloud keeps its row and its pairing. Otherwise `dropRemovedServer` drops the Server's row of the
- * witnessed pairing. When a reset took that pairing's last Server, the Store lets go of everything that ran, and then
- * Cloud forgets the pairing. A Server taken out without a reset loses its row but never lets go of the Cluster. A Server
- * the Cluster had already forgotten is listed nowhere else, so its row goes while other Servers keep the pairing; as
- * the last, Cloud keeps its hold.
+ * What a removed Server leaves of Cloud's hold. A Server that was unreachable left without a reset, a partial outcome:
+ * it may keep Cloud's key, so Cloud keeps its row and its pairing. Otherwise `dropRemovedServer` drops the Server's row
+ * of the witnessed pairing, as after a reset whose own row removal on the Server failed. When a reset took that
+ * pairing's last Server, the Store lets go of everything that ran, and then Cloud forgets the pairing. A Server taken
+ * out without a reset loses its row but never lets go of the Cluster. A Server the Cluster had already forgotten is
+ * listed nowhere else, so its row goes while other Servers keep the pairing; as the last, Cloud keeps its hold.
  */
 export const releaseServerActivity = Effect.fn("MachineRemoval.release")(function* (input: {
-  organizationId: string; machineId: MachineId; generation: string; resetWarning: string | null; noReset: boolean;
+  organizationId: string; machineId: MachineId; generation: string; resetWarning: string | null; departed?: Departed;
+  noReset: boolean;
 }) {
   const kept = {
     kind: "kept",
     reason: `its reset didn't finish (${input.resetWarning}), so it may still hold Cloud's key.`,
   } satisfies ServerRelease;
-  const unconfirmed = input.resetWarning === RESET_UNCONFIRMED;
-  if (input.resetWarning !== null && !unconfirmed) return kept;
-  const dropped = yield* dropRemovedServer({ ...input, removal: input.noReset ? "membership" : unconfirmed ? "unconfirmed" : "reset" });
+  // A step result older than `departed` reads its prose as before: any warning but RESET_UNCONFIRMED keeps the hold.
+  const departed = input.departed?.kind
+    ?? (input.resetWarning === null ? "reset" : input.resetWarning === RESET_UNCONFIRMED ? "already_forgotten" : "unreachable");
+  if (departed === "unreachable") return kept;
+  const removal = input.noReset ? "membership" : departed === "already_forgotten" ? "unconfirmed" : "reset";
+  const dropped = yield* dropRemovedServer({ ...input, removal });
   if (dropped.kind === "unconfirmed_last") return kept;
   if (dropped.kind !== "last") return dropped;
   // The Store lets go first, while the pairing still fences a replacement: if this fails, nothing more is deleted and

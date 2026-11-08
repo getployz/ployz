@@ -157,6 +157,7 @@ export async function executeProcessMachineRemove({
       writes: leaving.writes,
     })),
   );
+  const departed = removed.kind === "removed" ? removed.departed : undefined;
   // Its own step: a retry after the reset releases again, never resets a Server that's gone.
   const release = await step.run("release-server", () =>
     runEffect(
@@ -165,6 +166,7 @@ export async function executeProcessMachineRemove({
         machineId: attempt.machineId,
         generation: removed.generation,
         resetWarning: removed.resetWarning,
+        departed,
         noReset: attempt.noReset,
       }),
     ),
@@ -177,7 +179,7 @@ export async function executeProcessMachineRemove({
         inngestRunId: runId,
         completion: {
           state: "succeeded",
-          result: { resetWarning: removed.resetWarning, release },
+          result: { resetWarning: removed.resetWarning, departed, release },
         },
         now: new Date(),
       }),

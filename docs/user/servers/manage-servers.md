@@ -860,6 +860,13 @@ If the server resets but your other servers can't forget it, `ployz server rm` s
 reset but is still listed." and prints `ployz server forget web-2` to finish. Ployz Cloud
 finishes such a removal on its own.
 
+If the server resets but can't remove its own row from the Cluster, `ployz server rm` warns
+"Server web-2 reset, but its own row removal failed:" with the cause. The removal still counts as
+a reset: Ployz Cloud lets go of the server as it does after any reset, and `ployz server rm` doesn't exit 3 for it.
+With `--json`, `departed` says how the server left: `reset` (with any `row_warning`),
+`unreachable` (with its `cause`), or `already_forgotten`. `reset_warning` keeps the same news as a
+sentence.
+
 A Ployz Cloud removal that retries can find the server already gone. Ployz then
 can't confirm the server reset. Cloud drops its record of the server, and `ployz server rm` says
 "Cloud let go of Server web-2, but its reset couldn't be confirmed: it was already gone from the

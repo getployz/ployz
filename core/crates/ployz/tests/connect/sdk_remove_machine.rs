@@ -30,7 +30,7 @@ async fn remove_machine_destroys_a_peer_after_named_data_loss_confirmation() {
         .remove_machine(worker.name.as_str(), &reviewed_confirmation)
         .await
         .unwrap();
-    assert!(removed.reset_warning.is_none());
+    assert!(removed.reset_warning().is_none());
     assert_eq!(
         service.reset_machines.lock().unwrap().as_slice(),
         &[worker.id]
@@ -45,7 +45,7 @@ async fn remove_machine_destroys_a_peer_after_named_data_loss_confirmation() {
         .remove_machine(empty.name.as_str(), &empty_confirmation)
         .await
         .unwrap();
-    assert!(none.reset_warning.is_none());
+    assert!(none.reset_warning().is_none());
 }
 
 #[tokio::test]
@@ -68,7 +68,7 @@ async fn sending_a_removal_again_skips_a_machine_already_forgotten_by_id() {
         .await
         .unwrap();
     assert_eq!(
-        again.reset_warning.as_deref(),
+        again.reset_warning(),
         Some("its reset couldn't be confirmed: it was already gone from the Cluster")
     );
     client
@@ -183,8 +183,7 @@ async fn an_unreachable_leave_forgets_and_a_resend_still_cannot_confirm_the_rese
         .unwrap();
     assert!(
         first
-            .reset_warning
-            .as_deref()
+            .reset_warning()
             .is_some_and(|warning| warning.starts_with("target is unreachable")),
         "{first:?}"
     );
@@ -198,7 +197,7 @@ async fn an_unreachable_leave_forgets_and_a_resend_still_cannot_confirm_the_rese
         .await
         .unwrap();
     assert_eq!(
-        again.reset_warning.as_deref(),
+        again.reset_warning(),
         Some("its reset couldn't be confirmed: it was already gone from the Cluster")
     );
     assert!(service.reset_machines.lock().unwrap().is_empty());
@@ -233,7 +232,7 @@ async fn a_leave_the_entry_no_longer_routes_still_forgets_without_confirming_the
         .await
         .unwrap();
     assert_eq!(
-        removed.reset_warning.as_deref(),
+        removed.reset_warning(),
         Some("its reset couldn't be confirmed: it was already gone from the Cluster")
     );
     assert_eq!(
@@ -398,10 +397,7 @@ async fn remove_machine_reports_a_failed_reset_instead_of_swallowing_it() {
         .remove_machine(worker.machine.name.as_str(), &confirmation)
         .await
         .unwrap();
-    assert_eq!(
-        removed.reset_warning.as_deref(),
-        Some("replicated delete failed")
-    );
+    assert_eq!(removed.reset_warning(), Some("replicated delete failed"));
     assert_eq!(
         service.removed_machines.lock().unwrap().as_slice(),
         &[worker.machine.id]
@@ -431,7 +427,7 @@ async fn cloud_removes_the_last_machine_it_holds() {
         .remove_machine(entry.machine.name.as_str(), &confirmation)
         .await
         .unwrap();
-    assert!(removed.reset_warning.is_none());
+    assert!(removed.reset_warning().is_none());
     assert_eq!(
         service.reset_machines.lock().unwrap().as_slice(),
         &[entry.machine.id]
@@ -589,7 +585,7 @@ async fn remove_machine_removes_the_final_unpaired_machine() {
         )
         .await
         .unwrap();
-    assert!(removed.reset_warning.is_none());
+    assert!(removed.reset_warning().is_none());
     assert_eq!(
         service.reset_machines.lock().unwrap().as_slice(),
         &[entry.machine.id]
