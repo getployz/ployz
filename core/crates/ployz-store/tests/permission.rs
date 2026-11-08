@@ -88,6 +88,7 @@ fn deploy_production(n: u8) -> Admit {
         message: None,
         prune: false,
         no_prune: false,
+        approval: None,
     })
 }
 
@@ -222,6 +223,7 @@ fn a_deploy_without_changes_deploy_is_refused_before_it_looks_anything_up() {
         message: None,
         prune: false,
         no_prune: false,
+        approval: None,
     });
     let refused = store
         .write_trusted(&who, &nowhere, &holding(&[Permission::ChangesStage]))

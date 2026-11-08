@@ -51,7 +51,7 @@ Tests alone are not sufficient verification. A PR is verified only when its unit
   - [ ] C3 after C2.
   - [ ] C4 after E4 and C1.
   - [ ] C5 after C2 and C4.
-- [ ] Hold the file boundaries. E0 touches only `core/scripts/verify-cluster`, `core/scripts/verify/**`, and `.claude/skills/verify-server/SKILL.md`. E1 to E4 touch only `core/**`, `docs/user/**`, `core/CONTEXT.md`, and `core/DESIGN.md`. C1 to C5 touch only `dashboard/**`, `docs/user/**`, and `dashboard/CONTEXT.md`.
+- [ ] Hold the file boundaries. E0 touches only `core/scripts/verify-cluster`, `core/scripts/verify/**`, and `.agents/skills/verify-server/SKILL.md` (`.claude/skills/verify-server` is a symlink to its directory). E1 to E4 touch only `core/**`, `docs/user/**`, `core/CONTEXT.md`, and `core/DESIGN.md`. C1 to C5 touch only `dashboard/**`, `docs/user/**`, and `dashboard/CONTEXT.md`.
 - [ ] Hold the review gate. E2, E3, E4, C1, C2, C3, C4, and C5 change an interaction. They wait for the operator's review in chat with screenshots and a video before the operator lands them.
 - [ ] Each PR body names every `core/DESIGN.md` bet it touches and the choice it changed, per `AGENTS.md`. Each engine PR body argues the Stable promise for its new route and capability.
 

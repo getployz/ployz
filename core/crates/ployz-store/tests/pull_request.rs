@@ -797,6 +797,7 @@ fn a_closed_pull_request_leaves_the_servers_before_the_store() {
                 message: None,
                 prune: false,
                 no_prune: false,
+                approval: None,
             }),
             &Trusted::default(),
         )
@@ -972,6 +973,7 @@ fn idle_branches_close_after_a_week_unless_kept() {
                     message: None,
                     prune: false,
                     no_prune: false,
+                    approval: None,
                 }),
                 &Trusted::default(),
             )
@@ -1035,6 +1037,7 @@ fn deploy(store: &ConfigStore, who: &Actor, environment: &str, services: &[&str]
                 message: None,
                 prune: false,
                 no_prune: false,
+                approval: None,
             }),
             &Trusted::default(),
         )
@@ -1890,6 +1893,7 @@ fn two_first_reports_of_a_pull_request_take_turns() {
                 services: Vec::new(),
                 version: None,
                 upload: None,
+                approval: None,
                 accept_volume_loss: Vec::new(),
                 message: None,
                 prune: false,

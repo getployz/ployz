@@ -598,6 +598,9 @@ pub struct Claimed {
     /// claim's runner may change the Environment, so a Pending copy one of these
     /// left is no run's.
     pub ended_runs: BTreeSet<DeploymentId>,
+    /// The approval a Device signed for this Deployment, which the runner hands to each
+    /// Server; none when a token or automation admitted it.
+    pub approval: Option<ployz_core::authority::Signed<ployz_core::authority::DeployApproval>>,
 }
 
 /// One node a Deployment targets, as frozen at admission.

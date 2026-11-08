@@ -375,6 +375,7 @@ async fn ensure_retried(
             ployz_core::EnsureContainerRequest {
                 want,
                 approval: None,
+                deploy: None,
             },
             Some(target),
         )

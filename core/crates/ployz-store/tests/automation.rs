@@ -743,6 +743,7 @@ fn a_deploy_asks_to_delete_a_volume_a_deploy_in_flight_creates() {
                 message: None,
                 prune: false,
                 no_prune: false,
+                approval: None,
             }),
             &Trusted {
                 volumes: Some(held_on_a()),
@@ -1256,6 +1257,7 @@ fn deploy_pr_5(store: &ConfigStore, who: &Actor, n: u8) -> ployz_store::Deployme
                 services: vec![ServiceName::parse("web").unwrap()],
                 version: None,
                 upload: None,
+                approval: None,
                 accept_volume_loss: Vec::new(),
                 message: None,
                 prune: false,
@@ -1401,6 +1403,7 @@ fn a_manual_deploy_never_pins_a_head_the_pull_request_has_not_approved() {
                 message: None,
                 prune: false,
                 no_prune: false,
+                approval: None,
             }),
             &Trusted::default(),
         )

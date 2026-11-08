@@ -443,6 +443,7 @@ fn admit(
             message: None,
             prune: false,
             no_prune: false,
+            approval: None,
         })),
         trusted,
     )
@@ -1224,6 +1225,7 @@ fn a_deploy_refuses_a_hostname_another_namespace_publishes_naming_its_owner() {
         message: None,
         prune: false,
         no_prune: false,
+        approval: None,
     }));
     store.write_trusted(&who, &staging, &trusted).unwrap();
     let refused = admit(

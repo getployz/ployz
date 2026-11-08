@@ -613,6 +613,7 @@ async fn ensure(
             EnsureContainerRequest {
                 want,
                 approval: None,
+                deploy: None,
             },
             Some(&MachineTarget::from(&machine_id)),
         )

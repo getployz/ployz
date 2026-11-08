@@ -100,6 +100,20 @@ impl PreparedDeploy {
         deployment_id: Option<ployz_core::DeploymentLogId>,
         cleanup: ImageCleanup,
     ) -> Result<RunningDeploy, RpcError> {
+        self.confirm_approved(deployment_id, cleanup, None)
+    }
+
+    /// As [`Self::confirm_with_log_id`], handing every Server the deploy approval a
+    /// Device signed for this Deploy. A Server that enforces Device approval creates
+    /// nothing without one.
+    /// # Errors
+    /// Returns the same admission and session errors as confirm.
+    pub fn confirm_approved(
+        &self,
+        deployment_id: Option<ployz_core::DeploymentLogId>,
+        cleanup: ImageCleanup,
+        approval: Option<ployz_core::authority::Signed<ployz_core::authority::DeployApproval>>,
+    ) -> Result<RunningDeploy, RpcError> {
         let session = Session {
             inner: self.session.upgrade().ok_or_else(closed)?,
         };
@@ -114,7 +128,7 @@ impl PreparedDeploy {
         }
         let cancel = session.inner.cancel.child_token();
         let (tx, rx) = mpsc::unbounded_channel();
-        let mut client = session.client()?;
+        let mut client = session.client()?.with_deploy_approval(approval);
         client.deployment_id = deployment_id;
         let preview = self.preview.clone();
         let token = cancel.clone();

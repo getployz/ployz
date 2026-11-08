@@ -294,6 +294,13 @@ const MIGRATIONS: &[(&str, Step)] = &[
             crate::pull_request::record_phases(tx).map(|()| None)
         }),
     ),
+    (
+        // Where a Device's approval of a Deploy is kept, for the runner to send each Server.
+        "0041_deployment_deploy_approval",
+        Step::Sql(include_str!(
+            "migrations/0041_deployment_deploy_approval.sql"
+        )),
+    ),
 ];
 
 enum Step {

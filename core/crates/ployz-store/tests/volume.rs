@@ -169,6 +169,7 @@ fn admit_named(
                 message: None,
                 prune: false,
                 no_prune: false,
+                approval: None,
             }),
             &Trusted {
                 volumes: observed,
@@ -1511,6 +1512,7 @@ fn a_deploy_that_leaves_out_the_volume_keeps_the_saved_consent() {
                 message: None,
                 prune: false,
                 no_prune: false,
+                approval: None,
             }),
             &Trusted {
                 volumes: Some(observed(&['a'])),
