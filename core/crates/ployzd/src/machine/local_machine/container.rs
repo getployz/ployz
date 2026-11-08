@@ -1440,7 +1440,7 @@ impl LocalMachine {
                     spec,
                     admission: async {
                         let network = if is_private_access_router(namespace, spec) {
-                            Some(self.cluster_network().await?)
+                            Some(Box::pin(self.cluster_network()).await?)
                         } else {
                             None
                         };
