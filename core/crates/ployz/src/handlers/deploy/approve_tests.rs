@@ -77,7 +77,7 @@ fn a_tag_image_fails_before_admission_naming_the_fix() {
         error
             .hints()
             .iter()
-            .any(|hint| matches!(hint, crate::ui::Hint::Next(next) if next == "ployz service set 'web.image=…'")),
+            .any(|hint| matches!(hint, crate::ui::Hint::Next(next) if next == "ployz set 'web.image=…'")),
         "{:?}",
         error.hints()
     );

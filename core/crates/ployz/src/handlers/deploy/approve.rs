@@ -162,7 +162,7 @@ fn enforced(observed: &[MachineObservation]) -> Option<Enforcing> {
 fn unpinned(matches: &ArgMatches, spec: &RequestedServiceSpec) -> Error {
     let next = super::super::store::next(
         matches,
-        &["service", "set", &format!("{}.image=…", spec.name)],
+        &["set", &format!("{}.image=…", spec.name)],
     );
     Error::detailed(
         RpcErrorCode::InvalidArgument,

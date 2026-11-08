@@ -36,9 +36,19 @@ impl LocalMachine {
         else {
             unreachable!("only a new creation has no lifecycle step");
         };
-        let approval = approval.ok_or(Error::DeployRefused(AuthorityRefusal::Unsigned {
-            purpose: Purpose::Workflow,
-        }))?;
+        let refused = |refusal: AuthorityRefusal| {
+            tracing::warn!(
+                kind = %new.slot.kind,
+                "deploy refused for {}: {refusal}",
+                new.slot.service,
+            );
+            Error::DeployRefused(refusal)
+        };
+        let approval = approval.ok_or_else(|| {
+            refused(AuthorityRefusal::Unsigned {
+                purpose: Purpose::Workflow,
+            })
+        })?;
         let record = self.record();
         let trusted = record.trusted_keys();
         let machine = record.id();
@@ -58,7 +68,7 @@ impl LocalMachine {
                 now,
             },
         )
-        .map_err(Error::DeployRefused)?;
+        .map_err(refused)?;
         if new.slot.kind == ContainerKind::PreDeployHook {
             self.approvals
                 .consume_hook(&approved.body, &new.slot.service, now)?;
@@ -110,7 +120,10 @@ impl LocalMachine {
                 now: Timestamp::now(),
             },
         )
-        .map_err(Error::DeployRefused)?;
+        .map_err(|refusal| {
+            tracing::warn!(?step, "deploy step refused for {identity}: {refusal}");
+            Error::DeployRefused(refusal)
+        })?;
         tracing::info!(
             ?step,
             container = observed.container_id.as_str().get(..12).unwrap_or_default(),

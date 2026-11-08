@@ -164,7 +164,7 @@ now. A tag stops the deploy before anything is queued:
 
 ```text
 Pin web's image by digest to deploy to Servers that enforce.
-next: ployz service set 'web.image=…'
+next: ployz set 'web.image=…'
 ```
 
 Servers that enforce refuse a deploy nobody approved: one from the dashboard, a Git push, an
