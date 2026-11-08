@@ -12,7 +12,7 @@ const target = (changes: Partial<{ verb: "restart" | "stop"; environmentId: stri
   environmentName: "production",
   namespace: "production",
   runtime: "web",
-  copies: [{ id: `${changes.runtime ?? "web"}-container`, machineId: "m1" }],
+  copies: [{ id: `${changes.runtime ?? "web"}-container`, machineId: "m1", hook: false }],
   machines: [],
   environmentMachines: [],
   ...changes,
@@ -26,7 +26,7 @@ describe("shownTarget", () => {
         target: {
           environment: { environmentId: "env-production", environmentName: "production", namespace: "production" },
           runtime: "web",
-          copies: [{ id: "web-container", machineId: "m1" }],
+          copies: [{ id: "web-container", machineId: "m1", hook: false }],
           machines: [],
           environmentMachines: [],
         },

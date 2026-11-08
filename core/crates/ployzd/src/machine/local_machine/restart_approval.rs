@@ -146,6 +146,7 @@ impl LocalMachine {
                 namespace: &identity.namespace,
                 service: &identity.name,
                 container: &observed.container_id,
+                kind: observed.kind,
                 step,
                 now,
             },

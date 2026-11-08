@@ -48,7 +48,7 @@ export function ensureApproval(scope: ApprovalScope, family: ActionFamily): Prom
 export type ActTarget = {
   readonly environment: { readonly environmentId: string; readonly environmentName: string; readonly namespace: string };
   readonly runtime: string;
-  readonly copies: readonly { readonly id: string; readonly machineId: string }[];
+  readonly copies: readonly { readonly id: string; readonly machineId: string; readonly hook: boolean }[];
   readonly machines: Parameters<typeof actScope>[2];
   readonly environmentMachines: readonly string[];
 };
@@ -61,7 +61,7 @@ export async function actApprovals(verb: ServiceVerb, target: ActTarget) {
   const { enforced, scope } = actScope(target.environment, target.copies, target.machines, target.environmentMachines);
   if (!enforced || scope === null) return undefined;
   if (!(await ensureApproval(scope, verb))) return null;
-  return approveAct(verb, scope, target.runtime, target.copies.map((copy) => ({ machine: copy.machineId, container: copy.id })));
+  return approveAct(verb, scope, target.runtime, target.copies.map((copy) => ({ machine: copy.machineId, container: copy.id, hook: copy.hook })));
 }
 
 export function ApprovalPrompt() {

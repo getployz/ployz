@@ -210,7 +210,7 @@ export const actTarget = Effect.fn("ServiceAct.actTarget")(function* (
   if (frame === null) return null;
   return {
     runtime: service.runtime,
-    copies: copiesIn(frame, `${service.namespace}/${service.runtime}`).map((copy) => ({ id: copy.container_id, machineId: copy.machine_id })),
+    copies: copiesIn(frame, `${service.namespace}/${service.runtime}`).map((copy) => ({ id: copy.container_id, machineId: copy.machine_id, hook: copy.hook })),
     machines: frame.machines.map(({ machine }) => ({
       id: machine.id,
       sealing: machine.runtime.sealing ?? null,
@@ -259,6 +259,8 @@ export const actOnContainer = Effect.fn("ServiceAct.leg")(function* (
     const takesApproval = supported?.sessionGrant === true && (row.verb !== "start" || supported.startApproval);
     const approval = takesApproval ? row.approvals?.[leg.container] ?? null : null;
     const withheld = approval === null && row.approvals?.[leg.container] !== undefined;
+    // With the Servers' records unread, Cloud can't tell whether this one takes an approval, so it sent none.
+    const unread = withheld && supported === undefined;
     const sent: Effect.Effect<readonly [LegStep, string | null], PloyzSdkError> = side === "stop"
       ? session.connected.stopContainer(leg.machine, leg.container, approval).pipe(Effect.as(["done", leg.reason] as const))
       : session.connected.startContainer(leg.machine, leg.container, approval).pipe(
@@ -269,7 +271,8 @@ export const actOnContainer = Effect.fn("ServiceAct.leg")(function* (
         error instanceof ServerLacks
           ? ["failed", `${leg.server} needs a newer Ployz to ${side} it.`] as const
           : refusedApproval(error)
-          ? ["failed", withheld ? `${leg.server} needs a newer Ployz to ${side} it.`
+          ? ["failed", unread ? `Cloud couldn't check ${leg.server}. Try again.`
+            : withheld ? `${leg.server} needs a newer Ployz to ${side} it.`
             : approval === null ? `${leg.server} needs your passkey to ${row.verb} it.`
             : `${leg.server} didn't accept the approval.`] as const
           : rpcErrorCode(error) === "unavailable"

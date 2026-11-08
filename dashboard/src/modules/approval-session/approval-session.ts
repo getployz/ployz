@@ -184,27 +184,30 @@ export async function startSession(scope: ApprovalScope, now = Date.now()): Prom
   return session;
 }
 
-export type ActCopy = { readonly machine: string; readonly container: string };
+/** `hook`: a pre-deploy hook's container, which a run only ever stops. */
+export type ActCopy = { readonly machine: string; readonly container: string; readonly hook: boolean };
 
 const operationId = () => hex(crypto.getRandomValues(new Uint8Array(16)));
 
 /**
- * One approval of `verb` per container of `service`, each signed by the session's browser key and lasting its full 15
- * minutes, which the session still covers. Keyed by container ID, as Cloud forwards them. Signs only when the session
- * covers `scope` and `verb` and each copy's Server, so a session for one scope never signs another.
+ * One approval per container of `service`, each signed by the session's browser key and lasting its full 15 minutes,
+ * which the session still covers. Keyed by container ID, as Cloud forwards them. Signs only when the session covers
+ * `scope` and `verb` and each copy's Server, so a session for one scope never signs another. A hook's container gets
+ * a stop approval at most, which can never start it: a start skips it, and a restart or stop only stops it.
  */
 export async function approveAct(verb: ServiceVerb, scope: ApprovalScope, service: string, copies: readonly ActCopy[], now = Date.now()): Promise<Record<string, Signed>> {
   if (current === null || promptReason(current.session, scope, verb, now) !== null || copies.some(({ machine }) => !scope.machines.includes(machine))) {
     throw new SessionRefused("Confirm it's you again.");
   }
   const { session, grant, publicKey, key } = current;
-  const entries = await Promise.all(copies.map(async ({ machine, container }) => {
+  const signs = copies.filter((copy) => !copy.hook || verb !== "start");
+  const entries = await Promise.all(signs.map(async ({ machine, container, hook }) => {
     const body = canonicalJson({
       cluster: session.scope.cluster,
       container,
       expires_at: now + APPROVAL_MS,
       issued_at: now,
-      kind: verb,
+      kind: hook ? "stop" : verb,
       machines: [machine],
       namespace: scope.namespace,
       operation: operationId(),

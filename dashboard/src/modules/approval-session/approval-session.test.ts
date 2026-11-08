@@ -122,7 +122,8 @@ describe("signingInput", () => {
 
 describe("approveAct", () => {
   afterEach(() => void vi.unstubAllGlobals());
-  const copy = { machine: "22222222222222222222222222222222", container: "c".repeat(64) };
+  const copy = { machine: "22222222222222222222222222222222", container: "c".repeat(64), hook: false };
+  const hook = { machine: "22222222222222222222222222222222", container: "d".repeat(64), hook: true };
   const bytes = (text: string) => new TextEncoder().encode(text).buffer;
   const passkey = async (now: number) => {
     vi.stubGlobal("location", { hostname: "localhost" });
@@ -141,6 +142,17 @@ describe("approveAct", () => {
       const signed = approvals[copy.container] ?? expect.fail("no approval");
       expect(JSON.parse(signed.body)).toMatchObject({ kind: verb, namespace: "production", machines: [copy.machine], container: copy.container });
       expect(JSON.parse(signed.grants?.[0]?.body ?? "{}")).toMatchObject({ families: ["restart", "start", "stop"], environment: "production" });
+    }
+  });
+
+  it("never lets a hook's container start: a start skips it, a restart or stop gives it a stop approval", async () => {
+    const now = Date.now();
+    await passkey(now);
+    expect(Object.keys(await approveAct("start", production, "web", [copy, hook], now))).toEqual([copy.container]);
+    for (const verb of ["restart", "stop"] as const) {
+      const approvals = await approveAct(verb, production, "web", [copy, hook], now);
+      expect(JSON.parse(approvals[copy.container]?.body ?? "{}")).toMatchObject({ kind: verb });
+      expect(JSON.parse(approvals[hook.container]?.body ?? "{}")).toMatchObject({ kind: "stop", container: hook.container });
     }
   });
 

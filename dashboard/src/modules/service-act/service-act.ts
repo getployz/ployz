@@ -118,10 +118,13 @@ export type EnforcementFrame = {
   readonly machines: readonly { readonly machine: { readonly id: string; readonly runtime: { readonly device_enforcement?: boolean | null } } }[];
 };
 
-/** The copies the Servers report of the Service `identity` (`namespace/runtime`), its hooks included. */
+/** The copies the Servers report of the Service `identity` (`namespace/runtime`), its hooks included and marked. */
 export function copiesIn(frame: Pick<EnforcementFrame, "services">, identity: string) {
   const service = frame.services.find((candidate) => candidate.identity === identity);
-  return service === undefined ? [] : [...service.containers, ...service.hook_containers];
+  return service === undefined ? [] : [
+    ...service.containers.map((copy) => ({ ...copy, hook: false })),
+    ...service.hook_containers.map((copy) => ({ ...copy, hook: true })),
+  ];
 }
 
 /**

@@ -43,7 +43,10 @@ export function usePress(state: StoreService, namespace: string | null) {
   const environmentMachines = useEnvironmentMachines(namespace);
   return {
     runtimeService: runtime === null ? null : runtime.identity.slice(runtime.identity.indexOf("/") + 1),
-    copies: runtime === null ? [] : [...runtime.containers, ...runtime.hookContainers],
+    copies: runtime === null ? [] : [
+      ...runtime.containers.map((copy) => ({ ...copy, hook: false })),
+      ...runtime.hookContainers.map((copy) => ({ ...copy, hook: true })),
+    ],
     machines,
     environmentMachines,
   };

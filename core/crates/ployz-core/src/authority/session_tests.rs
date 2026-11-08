@@ -1,6 +1,6 @@
 use super::*;
 use crate::{
-    ContainerId, OperationId, ServiceName,
+    ContainerId, ContainerKind, OperationId, ServiceName,
     authority::{
         Approver, RestartApproval, RestartFacts, RestartStep, Signed, Signer, SignerKey,
         WorkflowKind,
@@ -96,6 +96,7 @@ fn check(
             namespace,
             service: &service,
             container: &container,
+            kind: ContainerKind::ServiceContainer,
             step: RestartStep::Stop,
             now: at(now),
         },
@@ -451,6 +452,7 @@ fn a_stop_or_start_runs_only_under_a_grant_whose_families_name_it() {
                 namespace: &production(),
                 service: &service,
                 container: &container,
+                kind: ContainerKind::ServiceContainer,
                 step,
                 now: at(ISSUED + 2 * MINUTE),
             },
