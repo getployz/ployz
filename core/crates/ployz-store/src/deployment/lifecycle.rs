@@ -1,6 +1,8 @@
 //! A Deployment's life: admitted, claimed, recorded, retried, started, cancelled.
 
 use super::*;
+use ployz_core::OperationId;
+use ployz_core::authority::{DeployApproval, Signed};
 
 /// Which Deployment an admission queues.
 #[derive(Clone, Copy)]
@@ -251,6 +253,51 @@ pub(crate) fn admitted_by_user(
         &[id.as_str().into(), user.as_str().into()],
     )
     .map(drop)
+}
+
+/// Keep the deploy approval a Device signed for Deployment `id`, for its runner to
+/// hand each Server. One that names another operation is refused: every Server would.
+pub(crate) fn approved_by_device(
+    tx: &mut dyn Tx,
+    id: &DeploymentId,
+    approval: &Signed<DeployApproval>,
+) -> Result<(), RpcError> {
+    let named = approval.open().ok().map(|body| body.operation);
+    if named.is_none() || named != OperationId::from_uuid(id.as_str()).ok() {
+        return Err(error::invalid(
+            "The deploy approval names another Deployment: sign one for this Deployment's ID",
+            json!({ "deployment": id }),
+        ));
+    }
+    let approval =
+        serde_json::to_string(approval).map_err(|_| error::corrupt("Deploy approval"))?;
+    tx.execute(
+        "UPDATE config_deployment SET deploy_approval = ?2 WHERE id = ?1",
+        &[id.as_str().into(), approval.as_str().into()],
+    )
+    .map(drop)
+}
+
+/// The deploy approval a Device signed for Deployment `id`, if any.
+fn device_approval(
+    tx: &mut dyn Tx,
+    id: &DeploymentId,
+) -> Result<Option<Signed<DeployApproval>>, RpcError> {
+    let rows = tx.query(
+        "SELECT deploy_approval FROM config_deployment WHERE id = ?1",
+        &[id.as_str().into()],
+    )?;
+    let Some(text) = rows
+        .first()
+        .map(|row| row.optional_text(0))
+        .transpose()?
+        .flatten()
+    else {
+        return Ok(None);
+    };
+    serde_json::from_str(text)
+        .map(Some)
+        .map_err(|_| error::corrupt("Deploy approval"))
 }
 
 /// Who admitted Deployment `id`, by the immutable id Cloud authenticated: none for
@@ -1365,6 +1412,7 @@ pub(crate) fn claim(
     let build_order = crate::builders::order(tx, organization.as_str())?;
     let sealed_names = crate::review::sealed::names(tx, stored.summary.environment_id.as_str())?;
     let ended_runs = ended_runs(tx, &stored.summary)?;
+    let approval = device_approval(tx, id)?;
     Ok(Ok(Claimed {
         deployment: stored.summary,
         intent,
@@ -1376,6 +1424,7 @@ pub(crate) fn claim(
         uploads,
         build_order,
         ended_runs,
+        approval,
     }))
 }
 

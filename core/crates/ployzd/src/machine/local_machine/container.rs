@@ -1427,6 +1427,7 @@ impl LocalMachine {
             return Err(Error::NotParticipating);
         }
         let machine = record.machine().ok_or(Error::NotParticipating)?;
+        let enforced = record.device_enforcement();
         containers
             .create_with_admission(
                 machine,
@@ -1438,7 +1439,15 @@ impl LocalMachine {
                     kind,
                     namespace,
                     spec,
-                    admission: async { admit_reserved_door(namespace, spec) },
+                    admission: async {
+                        admit_reserved_door(namespace, spec)?;
+                        if enforced {
+                            containers
+                                .refuse_managed_external(&machine.id, spec)
+                                .await?;
+                        }
+                        Ok(())
+                    },
                     storage: self.observe_storage(),
                 },
             )

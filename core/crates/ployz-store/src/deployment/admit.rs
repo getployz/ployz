@@ -3,6 +3,7 @@
 //! an ended Deployment froze. Starting hands a queued one to a runner again, and
 //! cancelling stops one.
 
+use ployz_core::authority::{DeployApproval, Signed};
 use ployz_core::config::SavedEnvironmentIntent;
 use ployz_core::config::canonicalize_environment_intent;
 use ployz_core::{Namespace, RpcError, RpcErrorCode, ServiceName};
@@ -93,6 +94,12 @@ pub struct Deploy {
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     #[ts(optional, as = "Option<bool>")]
     pub no_prune: bool,
+    /// The approval a Device signed for this Deployment, naming the digest of each
+    /// Service's spec as it plans now. Its runner hands it to each Server, and a
+    /// Server that enforces Device approval creates nothing without one that matches.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional, as = "Option<Signed<DeployApproval>>")]
+    pub approval: Option<Box<Signed<DeployApproval>>>,
 }
 
 /// Redeploy an ended Deployment: its Saved revision, targets, Namespace,
@@ -486,6 +493,9 @@ fn deploy(
         &frozen,
     )?;
     deployment::admitted_by_user(tx, &summary.id, trusted)?;
+    if let Some(approval) = &admit.approval {
+        deployment::approved_by_device(tx, &summary.id, approval)?;
+    }
     // What merges landed and this Deploy ships no longer waits for a push.
     let shipped = match admit.services.is_empty() {
         true => Shipped::All(&saved_intent),

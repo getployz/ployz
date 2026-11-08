@@ -95,6 +95,7 @@ fn admit(
             message: None,
             prune: false,
             no_prune: false,
+            approval: None,
         }),
         &Trusted::default(),
     )
@@ -4325,6 +4326,7 @@ fn each_service_builds_from_its_own_upload_and_cloud_keeps_it() {
                 message: None,
                 prune: false,
                 no_prune: false,
+                approval: None,
             }),
             &Trusted::default(),
         )
@@ -4428,6 +4430,7 @@ fn deploy_sent(store: &ConfigStore, who: &Actor, n: u8, upload: Option<char>) ->
                 message: None,
                 prune: false,
                 no_prune: false,
+                approval: None,
             }),
             &Trusted::default(),
         )
@@ -4545,6 +4548,7 @@ fn a_reupload_stays_kept_whether_a_retry_of_an_older_upload_comes_before_or_afte
                         message: None,
                         prune: false,
                         no_prune: false,
+                        approval: None,
                     }),
                     &Trusted::default(),
                 )
@@ -4632,6 +4636,7 @@ fn an_upload_is_recorded_kept_for_later_deployments_and_its_receipts_come_back()
                 message: None,
                 prune: false,
                 no_prune: false,
+                approval: None,
             }),
             &ployz_store::Trusted::default(),
         )
@@ -4761,6 +4766,7 @@ fn an_upload_is_recorded_kept_for_later_deployments_and_its_receipts_come_back()
                 message: None,
                 prune: false,
                 no_prune: false,
+                approval: None,
             }),
             &ployz_store::Trusted::default(),
         )
@@ -4804,6 +4810,7 @@ fn cloud_names_the_uploader_and_uploaded_builds_report_like_git_ones() {
             message: None,
             prune: false,
             no_prune: false,
+            approval: None,
         }));
         // Cloud names who acts and what they hold; the Deployment records them as its
         // admitter and uploader.
@@ -4887,6 +4894,7 @@ fn a_deploy_message_shows_on_the_deployment_and_its_retry() {
                 message: Some(message),
                 prune: false,
                 no_prune: false,
+                approval: None,
             }),
         )
     };
@@ -5404,6 +5412,7 @@ fn deploy_choosing(
         message: None,
         prune: false,
         no_prune: false,
+        approval: None,
     };
     choose(&mut deploy);
     store.write_trusted(who, &Admit::Deploy(deploy), trusted)
@@ -5914,6 +5923,7 @@ fn agent_deploys_only(
             message: None,
             prune: false,
             no_prune: false,
+            approval: None,
         }),
         &Trusted {
             approval,
@@ -5959,6 +5969,7 @@ fn agent_deploys_upload(
             message: None,
             prune: false,
             no_prune: false,
+            approval: None,
         }),
         &Trusted {
             approval,
@@ -7293,6 +7304,7 @@ fn cloud_keeps_every_upload_a_queued_deploy_may_start_from_until_it_ends() {
                     message: None,
                     prune: false,
                     no_prune: false,
+                    approval: None,
                 }),
                 &Trusted::default(),
             )
@@ -7366,6 +7378,7 @@ fn verifier_a_failed_upload_keeps_the_upload_a_partial_retry_applied() {
                 message: None,
                 prune: false,
                 no_prune: false,
+                approval: None,
             }),
             &Trusted::default(),
         )
@@ -7408,6 +7421,7 @@ fn verifier_a_successful_no_op_retry_keeps_the_service_on_the_retried_upload() {
                     message: None,
                     prune: false,
                     no_prune: false,
+                    approval: None,
                 }),
                 &Trusted::default(),
             )
@@ -8128,5 +8142,105 @@ fn a_deploy_tokens_destroying_deploy_outside_protection_names_any_member() {
         refused.message,
         "Needs changes:destroy: this deploy would remove Service web. \
          Have a member, owner or admin deploy it."
+    );
+}
+
+/// A Device's approval of Deployment `deployment`, naming each Service `plan` lowered.
+fn device_approval(
+    deployment: &DeploymentId,
+    plan: &ployz_store::PlanView,
+) -> ployz_core::authority::Signed<ployz_core::authority::DeployApproval> {
+    use ployz_core::authority::{
+        ApprovedService, DeployApproval, PayloadDigest, Signed, Signer, SignerKey, Timestamp,
+    };
+    let signer = Signer::from_seed(&[7; 32]);
+    let mut services: Vec<ApprovedService> = plan
+        .target
+        .iter()
+        .flatten()
+        .map(|spec| ApprovedService {
+            name: spec.name.clone(),
+            digest: PayloadDigest::of(spec, &plan.namespace).unwrap(),
+        })
+        .collect();
+    services.sort_by(|left, right| left.name.cmp(&right.name));
+    let issued_at = Timestamp::now();
+    let body = DeployApproval {
+        cluster: ployz_core::SealingPublicKey::from_bytes([9; 32]),
+        operation: ployz_core::OperationId::from_uuid(deployment.as_str()).unwrap(),
+        namespace: plan.namespace.clone(),
+        machines: vec![MachineId::parse("1".repeat(32)).unwrap()],
+        services,
+        issued_at,
+        expires_at: issued_at.plus(60_000),
+        signer: SignerKey::Device(signer.public().into()),
+    };
+    Signed::sign(&body, &signer).unwrap()
+}
+
+#[test]
+fn a_device_approval_of_the_plan_reaches_the_runner_with_the_specs_it_names() {
+    let (store, who) = shop();
+    let plan = store
+        .read(
+            &who,
+            &PlanQuery {
+                environment: EnvironmentRef::default(),
+                services: Vec::new(),
+                target: true,
+            },
+        )
+        .unwrap();
+    let approval = device_approval(&id(1), &plan);
+    let deploy = |n: u8, approval| {
+        store.write_trusted(
+            &who,
+            &Admit::Deploy(Deploy {
+                id: id(n),
+                environment: EnvironmentRef::default(),
+                services: Vec::new(),
+                version: Some(plan.version.clone()),
+                upload: None,
+                accept_volume_loss: Vec::new(),
+                message: None,
+                prune: false,
+                no_prune: false,
+                approval: Some(Box::new(approval)),
+            }),
+            &Trusted::default(),
+        )
+    };
+    // An approval of another Deployment would be refused by every Server.
+    assert_eq!(
+        code(deploy(2, approval.clone())),
+        RpcErrorCode::InvalidArgument
+    );
+    deploy(1, approval.clone()).unwrap();
+    let claimed = store.claim(&id(1), &runner("runner-a")).unwrap();
+    assert_eq!(claimed.approval, Some(approval));
+    // The plan lowered exactly what the runner is handed to run.
+    assert_eq!(plan.target, Some(claimed.intent.target));
+}
+
+#[test]
+fn a_plan_lowers_its_target_only_when_asked() {
+    let (store, who) = shop();
+    let plan = store
+        .read(
+            &who,
+            &PlanQuery {
+                environment: EnvironmentRef::default(),
+                services: Vec::new(),
+                target: false,
+            },
+        )
+        .unwrap();
+    assert_eq!(plan.target, None);
+    assert!(
+        !serde_json::to_value(&plan)
+            .unwrap()
+            .as_object()
+            .unwrap()
+            .contains_key("target")
     );
 }

@@ -1,5 +1,6 @@
 //! Device-signed restart approvals: the switch that requires them, the gate an Operator
-//! caller's restart step passes under it, and the record of steps already taken.
+//! caller's restart step passes under it, and the record of steps already taken. A new
+//! creation, or a step carrying only a deploy approval, goes to `deploy_approval`.
 
 use std::{
     collections::BTreeMap,
@@ -10,11 +11,11 @@ use std::{
 
 use ployz_core::{
     ContainerId, ContainerLocator, ContainerNow, ContainerWant, DeviceEnforcementSet, DeviceKey,
-    LocalMachinePhase, ManagementScope, OperationId, RunTarget, Sealing,
+    LocalMachinePhase, ManagementScope, OperationId, RunTarget, Sealing, ServiceName,
     SetDeviceEnforcementRequest,
     authority::{
-        AuthorityRefusal, Purpose, RestartApproval, RestartFacts, RestartStep, Signed, StartingSet,
-        Timestamp, restart, starting_set,
+        AuthorityRefusal, DeployApproval, Purpose, RestartApproval, RestartFacts, RestartStep,
+        Signed, StartingSet, Timestamp, restart, starting_set,
     },
 };
 use serde::{Deserialize, Serialize};
@@ -99,28 +100,33 @@ impl LocalMachine {
     /// Under Device enforcement, let an Operator caller's restart step through only with
     /// an approved Device's approval of exactly this restart, or a browser key's under a
     /// trusted passkey's session grant that covers it, and record the step so the
-    /// same approval never runs it again. New-creation requests need deploy authorization
-    /// and are refused, including adoption. Returns a want pinned to the verified
-    /// Container ID. An absent target is refused. A Machine not enforcing passes untouched.
+    /// same approval never runs it again. A new creation, adoption included, needs a deploy
+    /// approval of its spec, and a step that carries only a deploy approval is checked
+    /// against it. Returns a want pinned to the verified Container ID. An absent target is
+    /// refused. A Machine not enforcing passes untouched.
     ///
     /// # Errors
-    /// Returns [`Error::RestartRefused`] naming what the approval lacks,
-    /// [`Error::ApprovalRecord`] when the record of taken steps cannot be read or written,
-    /// and [`Error::DockerUnavailable`] or [`Error::Docker`] when the Container cannot be
-    /// read.
+    /// Returns [`Error::RestartRefused`] or [`Error::DeployRefused`] naming what the
+    /// approval lacks, [`Error::ApprovalRecord`] when the record of taken steps cannot be
+    /// read or written, and [`Error::DockerUnavailable`] or [`Error::Docker`] when the
+    /// Container cannot be read.
     pub async fn admit_operator_restart(
         &self,
-        mut want: ContainerWant,
+        want: ContainerWant,
         approval: Option<&Signed<RestartApproval>>,
+        deploy: Option<&Signed<DeployApproval>>,
     ) -> Result<ContainerWant, Error> {
         let record = self.record();
         if !record.device_enforcement() {
             return Ok(want);
         }
         let Some((step, locator)) = RestartStep::of(&want) else {
-            self.admit_operator_deploy()?;
+            self.admit_operator_creation(&want, deploy)?;
             return Ok(want);
         };
+        if let (None, Some(deploy)) = (approval, deploy) {
+            return self.admit_deploy_step(want, deploy).await;
+        }
         let approval = approval.ok_or(AuthorityRefusal::Unsigned {
             purpose: Purpose::Workflow,
         })?;
@@ -164,23 +170,28 @@ impl LocalMachine {
             approved.body.kind,
             approved.by
         );
-        let locator = match &mut want {
-            ContainerWant::Held { container, .. }
-            | ContainerWant::Out { container, .. }
-            | ContainerWant::Stopped { container, .. }
-            | ContainerWant::Gone { container, .. }
-            | ContainerWant::Running {
-                container: RunTarget::Existing(container),
-                ..
-            } => container,
-            ContainerWant::Running {
-                container: RunTarget::New(_),
-                ..
-            } => unreachable!("new creations were refused"),
-        };
-        *locator = ContainerLocator::Id(observed.container_id);
-        Ok(want)
+        Ok(pinned(want, observed.container_id))
     }
+}
+
+/// `want` aimed at `container` by its ID, so the step acts on the Container verified.
+pub(super) fn pinned(mut want: ContainerWant, container: ContainerId) -> ContainerWant {
+    let locator = match &mut want {
+        ContainerWant::Held { container, .. }
+        | ContainerWant::Out { container, .. }
+        | ContainerWant::Stopped { container, .. }
+        | ContainerWant::Gone { container, .. }
+        | ContainerWant::Running {
+            container: RunTarget::Existing(container),
+            ..
+        } => container,
+        ContainerWant::Running {
+            container: RunTarget::New(_),
+            ..
+        } => unreachable!("a new creation has no Container to pin"),
+    };
+    *locator = ContainerLocator::Id(container);
+    want
 }
 
 /// Device approval consumption in the existing `restart-approvals.json` record.
@@ -314,6 +325,62 @@ impl ConsumptionLog {
             }
             .into());
         }
+        Ok(())
+    }
+
+    /// Take `service`'s hook place under deploy approval `approval`, refusing one taken
+    /// before. The entry's name is 32 hex digits of the hash of the operation and the
+    /// Service, so it shares the operations map and its expiry without a new record shape.
+    pub(super) fn consume_hook(
+        &self,
+        approval: &DeployApproval,
+        service: &ServiceName,
+        now: Timestamp,
+    ) -> Result<(), Error> {
+        let mut hasher = Sha256::new();
+        hasher.update(b"pre-deploy hook\n");
+        hasher.update(approval.operation.as_str().as_bytes());
+        hasher.update(b"\n");
+        hasher.update(service.as_str().as_bytes());
+        let digest = hasher.finalize();
+        let (head, _) = digest.split_at(16);
+        let key = OperationId::parse(hex::encode(head)).expect("the hash is lowercase hex");
+        let mut guard = self
+            .operations
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        if guard.is_none() {
+            *guard = Some(self.load().map_err(Error::ApprovalRecord)?);
+        }
+        let consumption = guard.as_ref().expect("loaded above");
+        let now = consumption
+            .expiry_time_floor
+            .map_or(now, |floor| now.max(floor));
+        ployz_core::authority::validity::verify(approval.issued_at, approval.expires_at, now)
+            .map_err(Error::DeployRefused)?;
+        if consumption.operations.contains_key(&key) {
+            return Err(Error::DeployRefused(AuthorityRefusal::Replayed {
+                operation: approval.operation,
+            }));
+        }
+        let mut updated = consumption.clone();
+        updated.expiry_time_floor = Some(now);
+        updated.operations.insert(
+            key,
+            Operation {
+                expires_at: approval.expires_at,
+                containers: BTreeMap::new(),
+            },
+        );
+        let written = serde_json::to_vec(&updated)
+            .map_err(io::Error::other)
+            .and_then(|contents| crate::filesystem::atomic_write(&self.path, &contents, 0o600))
+            .map_err(Error::ApprovalRecord);
+        if let Err(error) = written {
+            *guard = None;
+            return Err(error);
+        }
+        *guard = Some(updated);
         Ok(())
     }
 

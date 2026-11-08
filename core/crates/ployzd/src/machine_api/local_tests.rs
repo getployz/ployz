@@ -3950,11 +3950,13 @@ mod ensure_container {
         //! daemon restart.
 
         use ployz_core::{
-            DeviceKey, Namespace, OPERATOR_SCOPE_HEADER, OperationId, RESTART_APPROVAL_CAPABILITY,
-            SealingPublicKey, ServiceName, SetDeviceEnforcementRequest,
+            DEPLOY_APPROVAL_CAPABILITY, DeviceKey, Namespace, OPERATOR_SCOPE_HEADER, OperationId,
+            RESTART_APPROVAL_CAPABILITY, SealingPublicKey, ServiceName,
+            SetDeviceEnforcementRequest,
             authority::{
-                ProposalApproval, ProposalRef, ProposalStep, RestartApproval, Signed, Signer,
-                StartingSet, StepDigest, Timestamp, WorkflowKind, canonical,
+                ApprovedService, DeployApproval, PayloadDigest, ProposalApproval, ProposalRef,
+                ProposalStep, RestartApproval, Signed, Signer, StartingSet, StepDigest, Timestamp,
+                WorkflowKind, canonical,
             },
             rpc::status_details,
         };
@@ -4235,7 +4237,7 @@ mod ensure_container {
             .unwrap();
             let admitted = service
                 .local
-                .admit_operator_restart(want, Some(&signed))
+                .admit_operator_restart(want, Some(&signed), None)
                 .await
                 .unwrap();
             ensure(
@@ -4311,14 +4313,14 @@ mod ensure_container {
             let id = present(&ensure(service, new.clone()).await).container_id;
             ensure(service, json!({"want": stopped(&id)})).await;
             let seen = requests(&fixture.fake).len();
-            refused(
+            deploy_refused(
                 operator_ensure(service, new.get("want").unwrap().clone(), None).await,
-                "names a workflow",
+                "carries no signature",
             );
             let signed = fixture.signed(&fixture.approval(&id));
-            refused(
+            deploy_refused(
                 operator_ensure(service, new.get("want").unwrap().clone(), Some(&signed)).await,
-                "names a workflow",
+                "carries no signature",
             );
             let observed = fixture
                 .runtime
@@ -4779,6 +4781,218 @@ mod ensure_container {
                 assert_eq!(service.local.record().device_enforcement(), enforced);
             }
             std::fs::remove_dir_all(data_dir).unwrap();
+        }
+
+        const PINNED: &str = "example.test/api@sha256:00000000000000000000000000000000000000000000000000000000000000aa";
+
+        impl Enforced {
+            /// A deploy approval of `spec` for Service `api` in Namespace `app` on this Machine.
+            fn deploy(&self, spec: &Value) -> Signed<DeployApproval> {
+                let namespace = Namespace::parse("app").unwrap();
+                let resolved: ployz_core::ResolvedServiceSpec =
+                    serde_json::from_value(spec.clone()).unwrap();
+                let approval = DeployApproval {
+                    cluster: self.cluster,
+                    operation: OperationId::random(),
+                    namespace: namespace.clone(),
+                    machines: vec![self.service.local.record().id()],
+                    services: vec![ApprovedService {
+                        name: ServiceName::parse("api").unwrap(),
+                        digest: PayloadDigest::of(&resolved.to_requested(), &namespace).unwrap(),
+                    }],
+                    issued_at: Timestamp::now(),
+                    expires_at: Timestamp::now().plus(60_000),
+                    signer: ployz_core::authority::SignerKey::Device(self.signer.public().into()),
+                };
+                Signed::sign(&approval, &self.signer).unwrap()
+            }
+        }
+
+        #[expect(clippy::indexing_slicing, reason = "JSON fixture")]
+        async fn deploy_ensure(
+            service: &MachineService,
+            want: Value,
+            deploy: Option<&Signed<DeployApproval>>,
+        ) -> Result<EnsuredContainer, Status> {
+            let mut body = json!({"want": want});
+            if let Some(deploy) = deploy {
+                body["deploy"] = serde_json::to_value(deploy).unwrap();
+            }
+            let mut request = Request::new(
+                op::EnsureContainer::into_request(serde_json::from_value(body).unwrap())
+                    .encode()
+                    .unwrap(),
+            );
+            request
+                .metadata_mut()
+                .insert(OPERATOR_SCOPE_HEADER, "1".parse().unwrap());
+            let response = service
+                .ensure_container(request)
+                .await?
+                .into_inner()
+                .decode_response()
+                .unwrap();
+            Ok(response.decode::<op::EnsureContainer>().unwrap())
+        }
+
+        #[track_caller]
+        #[expect(clippy::indexing_slicing, reason = "JSON fixture assertions")]
+        fn deploy_refused(result: Result<EnsuredContainer, Status>, reason: &str) {
+            let status = result.expect_err("the creation must be refused");
+            assert_eq!(
+                status.code(),
+                Code::PermissionDenied,
+                "{}",
+                status.message()
+            );
+            assert!(status.message().contains(reason), "{}", status.message());
+            assert_eq!(
+                status_details(status.details()).unwrap()["capability"],
+                json!(DEPLOY_APPROVAL_CAPABILITY)
+            );
+        }
+
+        fn new_want(kind: &str, key: &str, spec: &Value) -> Value {
+            json!({"state":"running", "rotation":"pending", "container":{"new":{
+                "slot":{"namespace":"app", "service":"api", "kind":kind, "creation_key":key},
+                "resolved_spec":spec, "gen":1}}})
+        }
+
+        fn creates(fake: &FakeDocker, since: usize) -> usize {
+            ends_with(
+                &requests_since(fake, since),
+                Method::POST,
+                "/containers/create",
+            )
+            .count()
+        }
+
+        #[tokio::test]
+        async fn an_operator_creation_runs_only_the_approved_spec() {
+            let fixture = enforced("ployzd-deploy-approval").await;
+            let service = &fixture.service;
+            let approved = spec(PINNED);
+            let signed = fixture.deploy(&approved);
+            let seen = requests(&fixture.fake).len();
+
+            deploy_refused(
+                deploy_ensure(
+                    service,
+                    new_want("service_container", "k1", &approved),
+                    None,
+                )
+                .await,
+                "carries no signature",
+            );
+            let mut privileged = approved.clone();
+            *privileged
+                .pointer_mut("/container/privileged")
+                .expect("the fixture names privileged") = json!(true);
+            deploy_refused(
+                deploy_ensure(
+                    service,
+                    new_want("service_container", "k1", &privileged),
+                    Some(&signed),
+                )
+                .await,
+                "names a payload",
+            );
+            let tagged = spec("example.test/api:1");
+            deploy_refused(
+                deploy_ensure(
+                    service,
+                    new_want("service_container", "k1", &tagged),
+                    Some(&fixture.deploy(&tagged)),
+                )
+                .await,
+                "names an image",
+            );
+            assert_eq!(creates(&fixture.fake, seen), 0, "nothing reached Docker");
+
+            for key in ["k1", "k2"] {
+                deploy_ensure(
+                    service,
+                    new_want("service_container", key, &approved),
+                    Some(&signed),
+                )
+                .await
+                .unwrap();
+            }
+            assert_eq!(
+                creates(&fixture.fake, seen),
+                2,
+                "replicas repeat a Service Container"
+            );
+            std::fs::remove_dir_all(fixture.data_dir).unwrap();
+        }
+
+        #[tokio::test]
+        async fn a_hook_runs_once_per_approval_even_after_a_daemon_restart() {
+            let fixture = enforced("ployzd-deploy-hook-once").await;
+            let approved = spec(PINNED);
+            let signed = fixture.deploy(&approved);
+            deploy_ensure(
+                &fixture.service,
+                new_want("pre_deploy_hook", "h1", &approved),
+                Some(&signed),
+            )
+            .await
+            .unwrap();
+            let seen = requests(&fixture.fake).len();
+            for service in [&fixture.service, &fixture.restarted()] {
+                deploy_refused(
+                    deploy_ensure(
+                        service,
+                        new_want("pre_deploy_hook", "h2", &approved),
+                        Some(&signed),
+                    )
+                    .await,
+                    "already ran this step",
+                );
+            }
+            assert_eq!(creates(&fixture.fake, seen), 0);
+            let mut hookless = approved.clone();
+            hookless.as_object_mut().unwrap().remove("pre_deploy");
+            deploy_refused(
+                deploy_ensure(
+                    &fixture.service,
+                    new_want("pre_deploy_hook", "h3", &hookless),
+                    Some(&fixture.deploy(&hookless)),
+                )
+                .await,
+                "names a hook",
+            );
+            std::fs::remove_dir_all(fixture.data_dir).unwrap();
+        }
+
+        #[tokio::test]
+        async fn a_deploy_approval_admits_steps_in_its_namespace_only() {
+            let fixture = enforced("ployzd-deploy-steps").await;
+            let service = &fixture.service;
+            let id = present(&ensure(service, run_new("k1", spec(PINNED))).await).container_id;
+            let signed = fixture.deploy(&spec(PINNED));
+            let mut elsewhere = signed.open().unwrap();
+            elsewhere.namespace = Namespace::parse("other").unwrap();
+            let elsewhere = Signed::sign(&elsewhere, &fixture.signer).unwrap();
+            deploy_refused(
+                deploy_ensure(service, stopped(&id), Some(&elsewhere)).await,
+                "names an Environment",
+            );
+            let reply = deploy_ensure(service, stopped(&id), Some(&signed))
+                .await
+                .unwrap();
+            assert!(matches!(
+                present(&reply).runtime,
+                ContainerRuntimeObservation::Exited { .. }
+            ));
+            deploy_ensure(
+                service,
+                json!({"state":"gone", "container":{"id":id}, "drain":0}),
+                Some(&signed),
+            )
+            .await
+            .unwrap();
+            std::fs::remove_dir_all(fixture.data_dir).unwrap();
         }
     }
 }

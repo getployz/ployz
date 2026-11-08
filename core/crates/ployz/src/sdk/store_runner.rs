@@ -790,6 +790,7 @@ impl Run {
         built: BTreeMap<ServiceName, BuildReceipt>,
     ) -> Result<DeploymentSummary, RpcError> {
         let deletes = claimed.deletes.clone();
+        let approval = claimed.approval.clone();
         let scrub = Scrub::new(&claimed);
         let earlier = earlier(&targets);
         let prepared = if targets.is_empty() && built.is_empty() {
@@ -823,7 +824,7 @@ impl Run {
             Standing::Over(_) | Standing::Unread => return recorded,
         }
         let log_id = self.deployment.as_str().parse().ok();
-        let running = match prepared.confirm_with_log_id(log_id, ImageCleanup::Auto) {
+        let running = match prepared.confirm_approved(log_id, ImageCleanup::Auto, approval) {
             Ok(running) => running,
             Err(error) => return self.not_executed(Failure::from(&error)).await,
         };

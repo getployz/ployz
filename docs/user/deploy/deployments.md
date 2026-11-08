@@ -138,6 +138,41 @@ services to their branch's latest commit with nothing staged, use the CLI:
 ployz deploy
 ```
 
+## Deploy to servers that enforce device approval
+
+With [device enforcement](../servers/manage-servers.md#require-a-devices-signature-for-restarts-and-joins)
+on, a server creates a container only from a spec an approved device signed. Run `ployz deploy`
+on that device. It works out what each service will run, prints one line per service, signs
+them with your device key, and deploys, with no prompt:
+
+```text
+Approved web: nginx@sha256:3f1c2a9b8e7d…
+Approved worker: ghcr.io/acme/worker@sha256:9a0b1c2d3e4f… (adds NET_ADMIN, host port 9000)
+```
+
+Each line names the image and anything the service asks of the server: privileged mode, added
+capabilities, PID mode, sysctls, host ports, bind mounts and its pre-deploy hook. Each server
+checks every container it creates against what you signed: the image, command, variables and
+sealed values, mounts, config files, ports, privileges and hook. Ployz Cloud carries the
+approval but can't change what it covers. A server logs each one, such as
+`deploy 0f8fad5b… approved by device 3KQ7-M2XD for web digest=cb8d3c6ef656`. A hook runs once per
+approval, even if the same approval is sent again. The approval lasts 15 minutes. A rollout still
+going after that stops partway; run `ployz deploy` again.
+
+Every image must be pinned by digest, since a tag names whatever the registry holds under it
+now. A tag stops the deploy before anything is queued:
+
+```text
+Pin web's image by digest to deploy to Servers that enforce.
+next: ployz service set 'web.image=…'
+```
+
+Servers that enforce refuse a deploy nobody approved: one from the dashboard, a Git push, an
+organization token, `ployz up`, or a service that builds from source. Each server's part of
+that deployment fails with `ployz.container.deploy-approval.v1 refused this deploy`, and nothing
+new starts there. Running `ployz deploy` with a device key in a script approves whatever is
+saved in Ployz Cloud at that moment, without anyone looking.
+
 ## When another deployment is running
 
 An environment runs one deployment at a time. While one runs, **Deploy** reads **Deploy next**

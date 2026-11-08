@@ -3,12 +3,13 @@
 //! Cloud carries these but cannot mint them: a Machine checks the signature against the
 //! keys it trusts, checks every bound field against the request in hand, and keeps
 //! its own record of what it already acted on. The first statement is the Service
-//! restart approval; joins and other workflows add their own statement types here. A
+//! restart approval; joins, deploys and other workflows add their own statement types here. A
 //! workflow statement may also be signed by a browser key that a trusted passkey lent a
 //! session grant, which travels in the same envelope. A proposal signs an ordered plan of
 //! such statements once, and each step travels unsigned with the bundle in its envelope.
 
 pub mod canonical;
+pub mod deploy;
 pub mod join;
 pub mod keys;
 pub mod proposal;
@@ -20,6 +21,7 @@ pub mod trusted_key;
 pub mod validity;
 
 pub use canonical::{CanonicalError, Timestamp};
+pub use deploy::{ApprovedService, DeployApproval, DeployApproved, DeployFacts, PayloadDigest};
 pub use join::JoinApproval;
 pub use keys::{Approver, KeySignature, Purpose, Signed, Signer, SigningPublicKey, Statement};
 pub use proposal::{ProposalApproval, ProposalRef, ProposalStep, StepDigest};

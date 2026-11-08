@@ -128,6 +128,7 @@ fn admit(store: &ConfigStore, n: u8) -> DeploymentId {
                 message: None,
                 prune: false,
                 no_prune: false,
+                approval: None,
             }),
             &ployz_store::Trusted::default(),
         )
