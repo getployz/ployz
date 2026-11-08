@@ -50,11 +50,11 @@ reads **Needs approval** under **Open now**, with its commit like `a1b2c3d`. Unt
 approves it, nothing builds and no preview exists.
 
 Ployz knows a member by the GitHub account they signed in with. A member who signed in some other
-way has their pull requests wait too. Ployz checks again each time it would deploy, so once the
-author leaves your organization or unlinks GitHub, their pull request reads **Needs approval** from
-the next push, CI result or deploy in your organization, and its new commits wait for a member to
-approve them. If the author comes back, their pull request deploys on its own again from its next
-push.
+way has their pull requests wait too. Ployz checks again each time it would deploy a commit from
+Git, so once the author leaves your organization or unlinks GitHub, their pull request reads **Needs
+approval** from the next push, CI result, or deploy of a Service built from Git in your
+organization, and its new commits wait for a member to approve them. If the author comes back,
+their pull request deploys on its own again from its next push.
 
 To deploy it, read the pull request's changes on GitHub, then click **Approve deploy** beside it.
 From the CLI, run `ployz env pr approve 142`. The approval covers that one commit. A new push
