@@ -215,6 +215,23 @@ you rotated needs the new token: `ployz ingress use tunnel --token-stdin`.
 A domain behind the tunnel never shows **Issuing certificate**; Cloudflare serves it. If the
 browser says "too many redirects", set **SSL/TLS** to **Full** or **Flexible** in Cloudflare.
 
+## My custom domain isn't reaching my Cloudflare Tunnel
+
+You'll see **Not reaching your tunnel. Point it at 0a1b2c.cfargotunnel.com**. Ployz asked the
+domain for a page only your servers answer, and something else answered, or nothing did.
+
+1. Click **Show DNS records** and create that CNAME at your DNS provider. In Cloudflare, turn
+   **Proxied** on.
+2. Delete any other A, AAAA or CNAME record for the same name.
+3. A name in your Cloudflare zone needs no record of its own. If one shows this, check that the
+   zone's `*` CNAME to the tunnel still exists under **DNS → Records**.
+4. With the record right, check that the tunnel has a connector for each server, as
+   [above](#my-apps-go-through-a-cloudflare-tunnel-and-dont-answer).
+
+A name two levels under your zone, like `a.shop.example.com`, shows **The free certificate covers
+one level under example.com**. Cloudflare's free certificate doesn't cover it, so browsers warn.
+Use a name one level down, like `shop-a.example.com`.
+
 ## Ingress isn't running
 
 You'll see **Ingress isn't running on web-1**, under **Domain** in **Organization → General**

@@ -1,8 +1,9 @@
 import "@tanstack/react-start/server-only";
 import { Resolver } from "node:dns/promises";
-import type { ClusterDomainStatus as StoreClusterDomainStatus, ConfigDomainEvidence, DnsLookup, PublishedHostname, RuntimeWatchView } from "@ployz/sdk";
+import type { ClusterDomainStatus as StoreClusterDomainStatus, ConfigDomainEvidence, DnsLookup, PublishedHostname, RuntimeWatchView, TunnelEvidence } from "@ployz/sdk";
 import { Clock, Effect, Option, Schema } from "effect";
-import { activeCloudflareZone } from "#/modules/cloudflare/source.server";
+import { activeCloudflare } from "#/modules/cloudflare/source.server";
+import { reachesCluster } from "#/modules/cloudflare/tunnel-reach.server";
 import { clusterDomainStatus } from "#/modules/cluster-domain/cluster-domain";
 import { loadClusterDomain, reserveClusterDomain } from "#/modules/cluster-domain/cluster-domain.server";
 import type { OrganizationClusterDomain } from "#/modules/cluster-domain/tables";
@@ -49,13 +50,15 @@ function clusterDomain(row: OrganizationClusterDomain | null): ConfigDomainEvide
   return { name: row.name, status: seen };
 }
 
+/** The Cloudflare zone and tunnel target while the Cluster is served through Cloudflare, else null. */
+type Cloudflare = Effect.Success<ReturnType<typeof activeCloudflare>>;
+
 /**
  * The Cluster Domain the Store expands generated names under. Behind Cloudflare it is the user's zone, always ready,
  * and reserves nothing; otherwise it is the Hosted name, reserved first when the call generates a domain.
  */
-const clusterDomainOf = Effect.fn("ConfigStore.clusterDomainOf")(function* (organizationId: string, reserve: boolean) {
-  const zone = yield* activeCloudflareZone(organizationId);
-  if (zone !== null) return { name: zone, status: { kind: "ready" } } satisfies NonNullable<ConfigDomainEvidence["cluster_domain"]>;
+const clusterDomainOf = Effect.fn("ConfigStore.clusterDomainOf")(function* (organizationId: string, cloudflare: Cloudflare, reserve: boolean) {
+  if (cloudflare !== null) return { name: cloudflare.zone, status: { kind: "ready" } } satisfies NonNullable<ConfigDomainEvidence["cluster_domain"]>;
   return clusterDomain(reserve ? yield* reserveClusterDomain(organizationId) : yield* loadClusterDomain(organizationId));
 });
 
@@ -89,25 +92,27 @@ export function observedOf(frame: RuntimeWatchView) {
   };
 }
 
+/** What one Runtime Watch frame gave the domains, with the Machine ids that tell Cloud a fetch reached this Cluster. */
+export type Observed = { readonly seen: ReturnType<typeof observedOf>; readonly machineIds: ReadonlySet<string> };
+
 /** The Cluster's {@link observedOf}; nothing when no Cluster answers, so the Store reads its certificates as unobserved. */
 const observeCluster = Effect.fn("ConfigStore.observeCluster")(function* (organizationId: string) {
   const frame = yield* firstRuntimeFrame(organizationId);
-  return frame === null ? null : observedOf(frame);
+  return frame === null ? null : { seen: observedOf(frame), machineIds: new Set(frame.machines.map(({ machine }) => String(machine.id))) } satisfies Observed;
 }, Effect.catch((error) =>
   Effect.logWarning("No runtime frame for domain statuses; they read as unobserved.", error).pipe(Effect.as(null))));
 
-type ClusterObservation = Effect.Success<ReturnType<typeof observeCluster>>;
 // ponytail: one memo per Cloud process, never evicted; bounded by Organizations, and a TTL this short needs no sharing.
-const observations = new Map<string, { at: number; seen: ClusterObservation }>();
+const observations = new Map<string, { at: number; observed: Observed | null }>();
 
 /** The Cluster as last observed within the TTL, else observed now; a check (`fresh`) always observes now. */
 const observeClusterRecently = (organizationId: string, fresh: boolean) => Effect.gen(function* () {
   const now = yield* Clock.currentTimeMillis;
   const last = observations.get(organizationId);
-  if (!fresh && last !== undefined && now - last.at < OBSERVATION_TTL_MS) return last.seen;
-  const seen = yield* observeCluster(organizationId);
-  observations.set(organizationId, { at: now, seen });
-  return seen;
+  if (!fresh && last !== undefined && now - last.at < OBSERVATION_TTL_MS) return last.observed;
+  const observed = yield* observeCluster(organizationId);
+  observations.set(organizationId, { at: now, observed });
+  return observed;
 });
 
 /** How old an observation's published hostnames may be for a domain edit, which never waits on the Cluster (E14). */
@@ -116,7 +121,7 @@ const PUBLISHED_TTL_MS = 5 * 60_000;
 /** The hostnames the Cluster published when last observed recently; null when it wasn't, and the Store refuses nothing for them. */
 const recentlyPublished = (organizationId: string) => Effect.map(Clock.currentTimeMillis, (now) => {
   const last = observations.get(organizationId);
-  return last?.seen && now - last.at < PUBLISHED_TTL_MS ? last.seen.published : null;
+  return last?.observed && now - last.at < PUBLISHED_TTL_MS ? last.observed.seen.published : null;
 });
 
 /** The published hostnames a Store's own Deploy is gated on (`system`): the recent observation, else none. */
@@ -144,9 +149,42 @@ export const lookUpHostname = (hostname: string) => Effect.promise(async (): Pro
   ? Effect.logWarning("DNS didn't answer; the domain's DNS reads as unobserved.", { hostname })
   : Effect.void));
 
+/** How long a fetch through a hostname answers `domains` reads, as {@link OBSERVATION_TTL_MS} does for the Cluster. */
+const REACH_TTL_MS = 15_000;
+const reaches = new Map<string, { at: number; reached: boolean }>();
+
+/**
+ * Whether each hostname the Servers publish outside the zone reaches the tunnel: DNS can't say, since Cloudflare hides a
+ * proxied CNAME, so Cloud fetches the verify path through it, as the Servers do on the Public Door. Inside the zone the
+ * wildcard record covers a name, so there is nothing to look at. A hostname a fetch couldn't judge is left out and reads
+ * as unobserved; a check (`fresh`) always fetches. No address of a Server is looked at in this mode.
+ */
+export const tunnelEvidence = Effect.fn("ConfigStore.tunnelEvidence")(function* (
+  organizationId: string,
+  cloudflare: NonNullable<Cloudflare>,
+  observed: Observed | null,
+  fresh: boolean,
+  reach: typeof reachesCluster = reachesCluster,
+) {
+  if (observed === null) return { target: cloudflare.target, reached: [] } satisfies TunnelEvidence;
+  const now = yield* Clock.currentTimeMillis;
+  const outside = [...new Set(observed.seen.published.map(({ hostname }) => String(hostname)))].filter((hostname) => !hostname.endsWith(`.${cloudflare.zone}`));
+  const looked = yield* Effect.forEach(outside, (hostname) => Effect.gen(function* () {
+    const key = `${organizationId}/${hostname}`;
+    const last = reaches.get(key);
+    if (!fresh && last !== undefined && now - last.at < REACH_TTL_MS) return { hostname, reached: last.reached };
+    const reached = yield* reach(hostname, observed.machineIds);
+    if (reached === null) return null;
+    reaches.set(key, { at: now, reached });
+    return { hostname, reached };
+  }), { concurrency: 8 });
+  return { target: cloudflare.target, reached: looked.filter((one) => one !== null) } satisfies TunnelEvidence;
+});
+
 /**
  * What Cloud observes of the Organization's public domains, for the Store calls that need it. Staging or admitting a generated domain reserves the Cluster Domain first; reading domains
- * observes the Cluster (or reuses an observation from the last few seconds); checking one also looks up its DNS now and asks for a Cluster Domain sync. Nothing here comes
+ * observes the Cluster (or reuses an observation from the last few seconds); checking one also looks up its DNS now and asks for a Cluster Domain sync.
+ * Behind Cloudflare a read also says whether each custom hostname reaches the tunnel, and no DNS lookup of a Server's address is made. Nothing here comes
  * from the caller.
  */
 export const gatherDomainEvidence = Effect.fn("ConfigStore.gatherDomainEvidence")(function* (
@@ -160,10 +198,11 @@ export const gatherDomainEvidence = Effect.fn("ConfigStore.gatherDomainEvidence"
   if ((adding?.hostname ?? null) !== null) yield* requireClaimed(organizationId, "add_domain");
   const wanted = Option.getOrUndefined(Schema.decodeUnknownOption(DomainCall)(asked));
   if (wanted === undefined) return nothing;
+  const cloudflare = yield* activeCloudflare(organizationId);
   if ("command" in wanted) {
     if (wanted.command !== "admit") {
       const generates = wanted.command === "set_generated_domain" || (adding !== undefined && (adding.hostname ?? null) === null);
-      const edit: ConfigDomainEvidence = { ...nothing, cluster_domain: yield* clusterDomainOf(organizationId, generates) };
+      const edit: ConfigDomainEvidence = { ...nothing, cluster_domain: yield* clusterDomainOf(organizationId, cloudflare, generates) };
       const published = yield* recentlyPublished(organizationId);
       if (published) edit.published = published;
       return edit;
@@ -173,14 +212,21 @@ export const gatherDomainEvidence = Effect.fn("ConfigStore.gatherDomainEvidence"
     );
     const generated = Option.getOrUndefined(domains)?.domains.some((domain) => domain.kind === "generated") ?? false;
     // A Deploy refuses a hostname another Namespace publishes: it looks at the Cluster (or a look from seconds ago).
-    const deploy: ConfigDomainEvidence = { ...nothing, cluster_domain: yield* clusterDomainOf(organizationId, generated) };
-    const seen = generated ? yield* observeClusterRecently(organizationId, false) : null;
-    if (seen) deploy.published = seen.published;
+    const deploy: ConfigDomainEvidence = { ...nothing, cluster_domain: yield* clusterDomainOf(organizationId, cloudflare, generated) };
+    const observed = generated ? yield* observeClusterRecently(organizationId, false) : null;
+    if (observed) deploy.published = observed.seen.published;
     return deploy;
   }
-  const named: ConfigDomainEvidence = { ...nothing, cluster_domain: yield* clusterDomainOf(organizationId, false) };
+  const named: ConfigDomainEvidence = { ...nothing, cluster_domain: yield* clusterDomainOf(organizationId, cloudflare, false) };
   if (wanted.query !== "domains" && wanted.query !== "domain") return named;
-  const evidence: ConfigDomainEvidence = { ...named, ...(yield* observeClusterRecently(organizationId, wanted.query === "domain")) };
+  const fresh = wanted.query === "domain";
+  const observed = yield* observeClusterRecently(organizationId, fresh);
+  const evidence: ConfigDomainEvidence = { ...named, ...observed?.seen };
+  if (cloudflare !== null) {
+    // Behind Cloudflare no visitor reaches a Server's address, so none is offered to compare a DNS answer with.
+    evidence.ingress_addresses = [];
+    evidence.tunnel = yield* tunnelEvidence(organizationId, cloudflare, observed, fresh);
+  }
   if (wanted.query === "domains") return evidence;
   // A check refreshes what Cloud knows: the Cluster Domain's records and certificate, and this domain's DNS.
   yield* sendInngestEvent(createClusterDomainSyncRequestedEvent({ organizationId })).pipe(
@@ -189,7 +235,7 @@ export const gatherDomainEvidence = Effect.fn("ConfigStore.gatherDomainEvidence"
   const found = Option.getOrUndefined(yield* storeTry(() => read({
     query: "domain", environment: environmentOf(wanted.environment), domain: wanted.domain,
   })).pipe(Effect.option));
-  if (found?.domain.kind !== "custom") return evidence;
+  if (cloudflare !== null || found?.domain.kind !== "custom") return evidence;
   const lookup = yield* lookUp(found.domain.hostname);
   return lookup === null ? evidence : { ...evidence, lookups: [lookup] };
 });

@@ -110,6 +110,21 @@ A CNAME follows your servers as you add and remove them. A records don't, so upd
 your servers change. If your DNS provider supports ALIAS records or CNAME flattening, point the
 root at your organization's domain instead.
 
+### Behind a Cloudflare Tunnel
+
+With a [Cloudflare Tunnel](cloudflare-tunnel.md), no visitor reaches your servers' addresses, so
+**Show DNS records** lists a CNAME to your tunnel instead, like
+`CNAME shop 0a1b2c.cfargotunnel.com`.
+
+| Your domain | What to do |
+| --- | --- |
+| In your Cloudflare zone, like `shop.example.com` | Nothing. The zone's `*.example.com` record covers it. |
+| Elsewhere, like `shop.example.org` | Create the CNAME, with **Proxied** on. Delete any other A, AAAA or CNAME record for the name. |
+
+The row turns live once the name reaches your tunnel. Ployz checks by asking the domain for a page only your servers answer, so it works behind Cloudflare's
+proxy. A name two levels under your zone, like `a.shop.example.com`, shows
+**The free certificate covers one level under example.com**. Use `shop-a.example.com`.
+
 ## Use https
 
 Every domain serves https, and Ployz gets and renews its certificates for you. A custom
@@ -138,6 +153,9 @@ A live domain shows no status.
 | **Port 80 is closed on …** (shown only when no server takes the traffic) | [Open port 80](../troubleshooting/app-not-reachable.md#port-80-is-closed) in that server's firewall, for example `ufw allow 80/tcp`. |
 | **Something else answers on port 80 of …** (shown only when no server takes the traffic) | [Free port 80](../troubleshooting/app-not-reachable.md#something-else-answers-on-port-80) on that server. |
 | **Ingress isn't running on …** (shown only when no server takes the traffic) | [Deploy](../troubleshooting/app-not-reachable.md#ingress-isnt-running) to bring it back. |
+| **Not reaching your tunnel** | [Point the name at your tunnel](../troubleshooting/app-not-reachable.md#my-custom-domain-isnt-reaching-my-cloudflare-tunnel). |
+| **The free certificate covers one level under …** | Use a name one level under that zone, like `shop-a.example.com`. |
+| **Checking DNS** | Nothing. It settles on its own. |
 | **No Server receives traffic** | [Add a server](../servers/add-a-server.md). |
 | **via proxy** | Nothing. It works behind a proxy like Cloudflare. |
 | **via tunnel** | Nothing. It's served through your [Cloudflare Tunnel](cloudflare-tunnel.md). |

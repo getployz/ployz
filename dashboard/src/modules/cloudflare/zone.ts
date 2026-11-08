@@ -24,9 +24,12 @@ export function zoneProblem(typed: string, zones: readonly string[] | null) {
   return `${zone} isn't a zone in this Cloudflare account.`;
 }
 
+/** What a CNAME points at to reach the tunnel. */
+export const tunnelTarget = (tunnelId: string) => `${tunnelId}.cfargotunnel.com`;
+
 /** The record setup creates and no other: one wildcard CNAME to the tunnel. The zone's apex is never touched. */
 export function wildcardRecord(zone: string, tunnelId: string) {
-  return { type: "CNAME", name: `*.${zone}`, content: `${tunnelId}.cfargotunnel.com`, proxied: true, ttl: 1 } as const;
+  return { type: "CNAME", name: `*.${zone}`, content: tunnelTarget(tunnelId), proxied: true, ttl: 1 } as const;
 }
 
 export type CloudflareZone = { readonly id: string; readonly name: string; readonly accountId: string };
