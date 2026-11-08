@@ -42,7 +42,7 @@ export const actServiceServerFn = createServerFn({ method: "POST" })
     const found = yield* findService(caller.organization.id, data.environmentId, data.service);
     if (found === null) return yield* new NotFound({ message: "The service was not found." });
     // A press an owner must approve carries no approvals: the owner's browser makes them when it approves.
-    const unapproved = data.verb === "restart" && Object.keys(data.approvals ?? {}).length === 0;
+    const unapproved = Object.keys(data.approvals ?? {}).length === 0;
     if (unapproved && !(yield* asksProtector(caller, { ...found, environmentId: data.environmentId, verb: data.verb })) && (yield* serviceEnforces(caller.organization.id, found))) {
       return yield* new Conflict({ message: "Reload the page and try again.", userFacing: true });
     }

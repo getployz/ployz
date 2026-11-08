@@ -76,18 +76,20 @@ export function approvalSubject(command: string, review: ApprovalReview) {
 }
 
 /**
- * The restart an approval card shows, as Servers know it: the Environment and Service from the ask, and the Namespace and
- * runtime name its approvals carry. Null for anything else, or an ask made before its preview named them.
+ * The restart or stop an approval card shows, as Servers know it: the verb, the Environment and Service from the ask, and
+ * the Namespace and runtime name its approvals carry. Null for anything else, or an ask made before its preview named them.
  */
-export function shownRestart(review: ApprovalReview) {
-  if (!("operation" in review) || review.operation.verb !== "restart") return null;
+export function shownServiceAct(review: ApprovalReview) {
+  if (!("operation" in review)) return null;
+  const verb = review.operation.verb;
+  if (verb !== "restart" && verb !== "stop") return null;
   const preview = asRecord(review.operation.preview);
   const environment = asString(preview?.["environment"]);
   const service = asString(preview?.["service"]);
   const namespace = asString(preview?.["namespace"]);
   const runtime = asString(preview?.["runtime"]);
   if (environment === null || service === null || namespace === null || runtime === null) return null;
-  return { environment, service, namespace, runtime };
+  return { verb, environment, service, namespace, runtime };
 }
 
 /** An approval's verb and name for a list, a Store write's Environment under its Project: "Deploy" "shop/production". */

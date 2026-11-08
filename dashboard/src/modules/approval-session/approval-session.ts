@@ -1,12 +1,13 @@
 /**
- * A browser approval session. One passkey prompt lends a short-lived browser key the right to approve restarts in one
- * Environment for an hour. Each press then carries one approval per container, signed by that key, beside the passkey's
- * grant of it. Servers check the chain against the passkeys they trust; Cloud only carries it and never holds the key.
+ * A browser approval session. One passkey prompt lends a short-lived browser key the right to approve restarts, stops
+ * and starts in one Environment for an hour. Each press then carries one approval per container, signed by that key,
+ * beside the passkey's grant of it. Servers check the chain against the passkeys they trust; Cloud only carries it and
+ * never holds the key.
  *
  * The shapes and bytes follow `ployz_core::authority`: canonical JSON, the `ployz-authority/v1` signing input, and the
  * grant challenge `SHA-256(signing input of the grant body)`.
  */
-import type { ActionFamily, SessionGrant, Signed } from "@ployz/sdk";
+import type { ActionFamily, ServiceVerb, SessionGrant, Signed } from "@ployz/sdk";
 import type { JsonValue } from "#/db/tables";
 import { asBoolean, asFiniteNumber, asRecord, asString } from "#/lib/json";
 
@@ -18,7 +19,8 @@ export const SESSION_MINUTES = 60;
  */
 const APPROVAL_MS = 15 * 60_000;
 
-export const SESSION_FAMILIES = ["restart"] as const satisfies readonly ActionFamily[];
+/** Sorted, as Servers parse them. Each `ServiceVerb` is the family of the same name. */
+export const SESSION_FAMILIES = ["restart", "start", "stop"] as const satisfies readonly (ActionFamily & ServiceVerb)[];
 
 /** Where a press acts: the Environment, and the Cluster and Servers its grant must name. */
 export type ApprovalScope = {
@@ -125,7 +127,7 @@ export function grantBody(scope: ApprovalScope, browserKey: string, issuedAt: nu
     delegation: "none",
     environment: scope.namespace,
     expires_at: issuedAt + SESSION_MINUTES * 60_000,
-    families: [...SESSION_FAMILIES].sort(),
+    families: [...SESSION_FAMILIES],
     issued_at: issuedAt,
     machines: [...new Set(scope.machines)].sort(),
   });
@@ -182,17 +184,17 @@ export async function startSession(scope: ApprovalScope, now = Date.now()): Prom
   return session;
 }
 
-export type RestartCopy = { readonly machine: string; readonly container: string };
+export type ActCopy = { readonly machine: string; readonly container: string };
 
 const operationId = () => hex(crypto.getRandomValues(new Uint8Array(16)));
 
 /**
- * One approval per container for a restart of `service`, each signed by the session's browser key and lasting its full
- * 15 minutes, which the session still covers. Keyed by container ID, as Cloud forwards them. Signs `namespace` as
- * given, and only when the session's grant names it, so a session for another Environment never signs this one.
+ * One approval of `verb` per container of `service`, each signed by the session's browser key and lasting its full 15
+ * minutes, which the session still covers. Keyed by container ID, as Cloud forwards them. Signs only when the session
+ * covers `scope` and `verb` and each copy's Server, so a session for one scope never signs another.
  */
-export async function approveRestart(namespace: string, service: string, copies: readonly RestartCopy[], now = Date.now()): Promise<Record<string, Signed>> {
-  if (current === null || current.session.expiresAt - now < APPROVAL_MS || current.session.scope.namespace !== namespace) {
+export async function approveAct(verb: ServiceVerb, scope: ApprovalScope, service: string, copies: readonly ActCopy[], now = Date.now()): Promise<Record<string, Signed>> {
+  if (current === null || promptReason(current.session, scope, verb, now) !== null || copies.some(({ machine }) => !scope.machines.includes(machine))) {
     throw new SessionRefused("Confirm it's you again.");
   }
   const { session, grant, publicKey, key } = current;
@@ -202,9 +204,9 @@ export async function approveRestart(namespace: string, service: string, copies:
       container,
       expires_at: now + APPROVAL_MS,
       issued_at: now,
-      kind: "restart",
+      kind: verb,
       machines: [machine],
-      namespace,
+      namespace: scope.namespace,
       operation: operationId(),
       service,
       signer: { browser: publicKey },
@@ -226,14 +228,14 @@ type ScopeMachine = {
  * the Sealing Key of, and the Servers in that Cluster that run the Environment. A Server that never reported enforcement
  * asks nothing, since its own check is the one that counts.
  */
-export type RestartScope = { readonly enforced: boolean; readonly scope: ApprovalScope | null };
+export type ActScope = { readonly enforced: boolean; readonly scope: ApprovalScope | null };
 
-export function restartScope(
+export function actScope(
   environment: { readonly environmentId: string; readonly environmentName: string; readonly namespace: string },
   copies: readonly { readonly machineId: string }[],
   machines: readonly ScopeMachine[],
   environmentMachines: readonly string[],
-): RestartScope {
+): ActScope {
   const hosting = new Set(copies.map((copy) => copy.machineId));
   const hosts = machines.filter((machine) => hosting.has(machine.id));
   const enforced = hosts.some((machine) => machine.deviceEnforcement === true);

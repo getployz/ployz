@@ -15,7 +15,7 @@ import { actAlert, actBadge } from "#/modules/service-act/service-act-view";
 import { refetchApprovals } from "#/components/agent-sidebar/approvals.queries";
 import { actServiceServerFn } from "#/modules/service-act/service-act.functions";
 import { serviceActKeys, useLatestServiceAct } from "#/modules/service-act/service-act.queries";
-import { restartApprovals } from "#/modules/approval-session/approval-prompt";
+import { actApprovals } from "#/modules/approval-session/approval-prompt";
 import { useEnvironmentMachines } from "#/providers/runtime-provider";
 import { useRuntimeLens } from "#/modules/runtime/use-runtime-lens";
 import type { StoreService } from "./StoreServiceDrawer";
@@ -51,7 +51,7 @@ export function usePress(state: StoreService, namespace: string | null) {
 
 /**
  * The request id is minted here so a retried POST admits the same run instead of a second one. On Servers that enforce,
- * a restart first asks for a passkey session and carries one approval per copy, unless an owner must approve it.
+ * a press first asks for a passkey session and carries one approval per copy, unless an owner must approve it.
  */
 export function useServiceAct(subject: Subject) {
   const queryClient = useQueryClient();
@@ -69,11 +69,12 @@ export function useServiceAct(subject: Subject) {
     return () => clearTimeout(timer);
   }, [requested]);
 
-  // A press an owner must approve asks nothing of this browser: the owner's passkey approves it with the ask.
+  // A press an owner must approve asks nothing of this browser: the owner's passkey approves it with the ask. A start
+  // never asks an owner.
   const approvalsFor = (verb: ServiceVerb, press: Press) => {
-    if (verb !== "restart" || subject.asks || subject.namespace === null || press.runtimeService === null) return undefined;
+    if ((subject.asks && verb !== "start") || subject.namespace === null || press.runtimeService === null) return undefined;
     const environment = { environmentId, environmentName: subject.environmentName, namespace: subject.namespace };
-    return restartApprovals({ environment, runtime: press.runtimeService, copies: press.copies, machines: press.machines, environmentMachines: press.environmentMachines });
+    return actApprovals(verb, { environment, runtime: press.runtimeService, copies: press.copies, machines: press.machines, environmentMachines: press.environmentMachines });
   };
 
   const act = async (verb: ServiceVerb, press: Press) => {

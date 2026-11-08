@@ -26,10 +26,11 @@ import {
   takes,
 } from "#/modules/service-act/service-act";
 import { serviceAct } from "#/modules/service-act/tables";
-
-const SESSION_GRANT_CAPABILITY = "ployz.restart.session-grant.v1";
 import { Database } from "#/server/database.server";
 import { NotFound } from "#/server/public-error";
+
+const SESSION_GRANT_CAPABILITY = "ployz.restart.session-grant.v1";
+const START_APPROVAL_CAPABILITY = "ployz.restart.start-approval.v1";
 
 type ActRow = typeof serviceAct.$inferSelect;
 type ActRequest = ServiceActRequestedEventData;
@@ -164,11 +165,12 @@ const STARTED = {
   unhealthy: (leg: ServiceActLeg) => ["failed", `${leg.server} started it, but it isn't healthy.`] as const,
 } satisfies Record<"serving" | "unconfirmed" | "unhealthy", (leg: ServiceActLeg) => readonly [LegStep, string | null]>;
 
-type LegSupport = { readonly ensure: boolean | "unknown"; readonly sessionGrant: boolean };
+type LegSupport = { readonly ensure: boolean | "unknown"; readonly sessionGrant: boolean; readonly startApproval: boolean };
 
 /**
- * Whether each Server's record says it runs EnsureContainer, and takes a browser's approval. A Server Cloud can't read is
- * attempted, without an approval: one from before session grants would refuse the whole request for carrying it.
+ * Whether each Server's record says it runs EnsureContainer, takes a browser's approval, and takes one for a start. A
+ * Server Cloud can't read is attempted, without an approval: one from before session grants would refuse the whole
+ * request for carrying it.
  */
 const legSupport = (organizationId: string) => firstRuntimeFrame(organizationId).pipe(
   Effect.map((frame) => new Map<string, LegSupport>((frame?.machines ?? []).map(({ machine }) => {
@@ -176,6 +178,7 @@ const legSupport = (organizationId: string) => firstRuntimeFrame(organizationId)
     return [machine.id, {
       ensure: serverSupports({ capabilities }, requirements.ensureContainer),
       sessionGrant: capabilities.includes(SESSION_GRANT_CAPABILITY),
+      startApproval: capabilities.includes(START_APPROVAL_CAPABILITY),
     }];
   }))),
   Effect.orElseSucceed(() => new Map<string, LegSupport>()),
@@ -196,10 +199,10 @@ export const serviceEnforces = Effect.fn("ServiceAct.enforces")(function* (organ
 });
 
 /**
- * What a browser needs to approve a restart of the Service: its copies, the Servers, and which of them run the
+ * What a browser needs to approve a restart or stop of the Service: its copies, the Servers, and which of them run the
  * Environment. Null when Cloud can't read the Servers.
  */
-export const restartTarget = Effect.fn("ServiceAct.restartTarget")(function* (
+export const actTarget = Effect.fn("ServiceAct.actTarget")(function* (
   organizationId: string,
   service: { readonly namespace: string; readonly runtime: string },
 ) {
@@ -252,7 +255,10 @@ export const actOnContainer = Effect.fn("ServiceAct.leg")(function* (
       continue;
     }
     if (!(yield* write(leg, "sent"))) return legs;
-    const approval = supported?.sessionGrant === true ? row.approvals?.[leg.container] ?? null : null;
+    // A start approval reads as malformed to a Server from before them, so it never goes there.
+    const takesApproval = supported?.sessionGrant === true && (row.verb !== "start" || supported.startApproval);
+    const approval = takesApproval ? row.approvals?.[leg.container] ?? null : null;
+    const withheld = approval === null && row.approvals?.[leg.container] !== undefined;
     const sent: Effect.Effect<readonly [LegStep, string | null], PloyzSdkError> = side === "stop"
       ? session.connected.stopContainer(leg.machine, leg.container, approval).pipe(Effect.as(["done", leg.reason] as const))
       : session.connected.startContainer(leg.machine, leg.container, approval).pipe(
@@ -263,8 +269,9 @@ export const actOnContainer = Effect.fn("ServiceAct.leg")(function* (
         error instanceof ServerLacks
           ? ["failed", `${leg.server} needs a newer Ployz to ${side} it.`] as const
           : refusedApproval(error)
-          // A leg sent without an approval is one only an approved device can run, such as a stop under enforcement.
-          ? ["failed", approval === null ? `${leg.server} needs an approved device. Use ployz service ${row.verb}.` : `${leg.server} didn't accept the approval.`] as const
+          ? ["failed", withheld ? `${leg.server} needs a newer Ployz to ${side} it.`
+            : approval === null ? `${leg.server} needs your passkey to ${row.verb} it.`
+            : `${leg.server} didn't accept the approval.`] as const
           : rpcErrorCode(error) === "unavailable"
           ? ["unknown", `${leg.server} didn't answer.`] as const
           : ["failed", `${leg.server} couldn't ${side} it.`] as const,

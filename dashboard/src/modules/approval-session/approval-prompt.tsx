@@ -3,19 +3,19 @@
  * the press, at once or after one prompt.
  */
 import { useState, useSyncExternalStore } from "react";
-import type { ActionFamily } from "@ployz/sdk";
+import type { ActionFamily, ServiceVerb } from "@ployz/sdk";
 import { KeyRoundIcon } from "lucide-react";
 import { Button } from "#/components/ui/button";
 import { Dialog, DialogClose, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "#/components/ui/dialog";
 import { Spinner } from "#/components/ui/spinner";
 import {
+  actScope,
   type ApprovalScope,
   type ApprovalSession,
-  approveRestart,
+  approveAct,
   type PromptReason,
   promptReason,
   readSession,
-  restartScope,
   SessionRefused,
   startSession,
   subscribe,
@@ -44,24 +44,24 @@ export function ensureApproval(scope: ApprovalScope, family: ActionFamily): Prom
   return new Promise((resolve) => setAsk({ scope, reason, resolve }));
 }
 
-/** A restart as the browser approves it: where it runs, the Service's copies, and the Servers. */
-export type RestartTarget = {
+/** A restart, stop or start as the browser approves it: where it runs, the Service's copies, and the Servers. */
+export type ActTarget = {
   readonly environment: { readonly environmentId: string; readonly environmentName: string; readonly namespace: string };
   readonly runtime: string;
   readonly copies: readonly { readonly id: string; readonly machineId: string }[];
-  readonly machines: Parameters<typeof restartScope>[2];
+  readonly machines: Parameters<typeof actScope>[2];
   readonly environmentMachines: readonly string[];
 };
 
 /**
- * One approval per copy for a restart on Servers that enforce, after one prompt when the session doesn't cover it.
+ * One approval of `verb` per copy on Servers that enforce, after one prompt when the session doesn't cover it.
  * Undefined when no Server asks for one; null when the person cancels.
  */
-export async function restartApprovals(target: RestartTarget) {
-  const { enforced, scope } = restartScope(target.environment, target.copies, target.machines, target.environmentMachines);
+export async function actApprovals(verb: ServiceVerb, target: ActTarget) {
+  const { enforced, scope } = actScope(target.environment, target.copies, target.machines, target.environmentMachines);
   if (!enforced || scope === null) return undefined;
-  if (!(await ensureApproval(scope, "restart"))) return null;
-  return approveRestart(target.environment.namespace, target.runtime, target.copies.map((copy) => ({ machine: copy.machineId, container: copy.id })));
+  if (!(await ensureApproval(scope, verb))) return null;
+  return approveAct(verb, scope, target.runtime, target.copies.map((copy) => ({ machine: copy.machineId, container: copy.id })));
 }
 
 export function ApprovalPrompt() {
