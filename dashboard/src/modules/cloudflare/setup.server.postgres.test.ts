@@ -35,6 +35,8 @@ type Options = {
   readonly recordDeleteStatus?: number;
   /** Runs as the record is created: the moment something else can move while setup is between its Cloudflare calls. */
   readonly onRecord?: () => Promise<void>;
+  /** Runs as the tunnel this setup made is deleted: the moment another setup could reuse it. */
+  readonly onTunnelDelete?: () => Promise<void>;
 };
 
 /** A Cloudflare with one zone, remembering the tunnels and records written to it. */
@@ -78,6 +80,7 @@ function cloudflare(options: Options = {}) {
     if (method === "GET" && path.startsWith("/accounts/a1/cfd_tunnel?")) return reply(200, alive.has("t1") ? [{ id: "t1" }] : []);
     if (method === "DELETE" && path === "/accounts/a1/cfd_tunnel/t1/connections") return reply(200, {});
     if (method === "DELETE" && path === "/accounts/a1/cfd_tunnel/t1") {
+      await options.onTunnelDelete?.();
       if (options.deleteStatus !== undefined) return reply(options.deleteStatus);
       alive.delete("t1");
       return reply(200, {});
@@ -283,6 +286,22 @@ it("takes over a reservation left by a setup that died", async () => {
   const { runtime } = cluster();
   expect(await setUp("example.com", http, runtime)).toMatchObject({ tunnelId: "t1", state: "set_up" });
   expect(await setupRows()).toEqual([{ zone: "example.com", tunnel_id: "t1", tunnel_name: "ployz-acme", state: "set_up" }]);
+});
+
+it("holds the Cluster until its cleanup ends, so no other setup can take up the tunnel it is deleting", async () => {
+  let second: string | null = null;
+  const other = cloudflare({ existingTunnel: true });
+  const { runtime: otherRuntime } = cluster();
+  const { http } = cloudflare({
+    onTunnelDelete: async () => {
+      second = await setUp("example.com", other.http, otherRuntime).then(() => "set up", (error: { message: string }) => error.message);
+    },
+  });
+  const { runtime } = cluster(() => ["public"]);
+  await expect(setUp("example.com", http, runtime)).rejects.toMatchObject({ message: expect.stringContaining("Nothing was changed.") });
+  expect(second).toBe("Cloudflare is being set up. Wait for it to finish.");
+  expect(other.calls).toEqual([]);
+  expect(await setupRows()).toEqual([]);
 });
 
 it("puts the row back as it was when it fails: a Cluster that left Cloudflare is left again, with its old tunnel", async () => {

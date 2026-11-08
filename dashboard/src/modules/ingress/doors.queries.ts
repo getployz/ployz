@@ -5,12 +5,16 @@ import { observeClusterIngressServerFn, readClusterIngressServerFn, reviewDoorsS
 /** The Cluster's ingress; the change stream's `cluster_ingress` invalidates this root. */
 export const clusterIngressKeys = { all: ["cluster-ingress"] as const };
 
-/** Where the Cluster's names come from and the latest switch. The change stream refetches it when a row changes. */
+/**
+ * Where the Cluster's names come from and the latest switch. The change stream refetches it when a row changes; a
+ * setup that died changes no row when its reservation runs out, so the view is read again while one is held.
+ */
 export function clusterIngressQueryOptions(organizationSlug: string) {
   return queryOptions({
     queryKey: [...clusterIngressKeys.all, organizationSlug, "view"] as const,
     queryFn: () => readClusterIngressServerFn({ data: { organizationSlug } }),
     staleTime: 60_000,
+    refetchInterval: (query) => (query.state.data?.setup?.state === "setting_up" ? 30_000 : false),
   });
 }
 

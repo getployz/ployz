@@ -126,12 +126,12 @@ export const setUpCloudflare = Effect.fn("Cloudflare.setUp")(function* (
   let tunnel: { readonly id: string; readonly made: boolean } | null = null;
   let recordId: string | null = null;
   /**
-   * Put back what the steps below changed: the Doors first, so no connector holds the tunnel, then the row, then the
-   * record and the tunnel this setup made. What is left for the user, in words; a success line is true when it prints.
+   * Put back what the steps below changed: the Doors first, so no connector holds the tunnel, then the record and the
+   * tunnel this setup made, and the row last, so the Cluster stays reserved until nothing of this setup is left for
+   * another to pick up. What is left for the user, in words; a success line is true when it prints.
    */
-  const undo = Effect.gen(function* () {
+  const cleanUp = Effect.gen(function* () {
     const doorsLeft = session === null ? null : yield* restorePublic(session);
-    yield* putBack;
     const recordGone = recordId === null ? true : yield* deleteRecord(http, input.token, zone.id, recordId);
     const tunnelGone = tunnel === null || !tunnel.made ? true : yield* deleteTunnel(http, input.token, zone.accountId, tunnel.id);
     const kept = [recordGone ? null : name, tunnelGone ? null : `the tunnel ${tunnelName}`].filter((item) => item !== null);
@@ -143,6 +143,7 @@ export const setUpCloudflare = Effect.fn("Cloudflare.setUp")(function* (
     duration: SETUP_RUNNING_LIMIT_MS,
     orElse: () => Effect.succeed(`Check your servers' doors, and the tunnel ${tunnelName} and ${name} in Cloudflare.`),
   }));
+  const undo = cleanUp.pipe(Effect.tap(() => putBack));
 
   const finish = Effect.gen(function* () {
     const opened = yield* (yield* OrganizationRuntime).open(organizationId);
