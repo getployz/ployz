@@ -75,6 +75,7 @@ pub(crate) type PeerInspect = std::sync::Arc<
 mod container;
 mod deploy_approval;
 mod ingress_doors;
+mod private_access;
 pub(crate) use container::CutRefusal;
 #[cfg(test)]
 pub(crate) use container::{EnsurePause, EnsurePausePoint};
@@ -205,6 +206,24 @@ pub enum Error {
     Cluster(#[from] crate::corrosion::Error),
     #[error(transparent)]
     IngressProxyServiceSpec(#[from] ployz_core::IngressProxyServiceSpecError),
+    #[error("This isn't a router spec Ployz builds.")]
+    PrivateAccessRouterSpec,
+    #[error("Private Access needs a Tailscale auth key.")]
+    PrivateAccessKeyMissing,
+    #[error(transparent)]
+    PrivateAccessKey(crate::sealed_env::OpenError),
+    #[error("Could not write the Tailscale auth key for the router.")]
+    PrivateAccessKeyFile(#[source] std::io::Error),
+    #[error("Could not change the Private Access node state on this Server.")]
+    PrivateAccessState(#[source] std::io::Error),
+    #[error(
+        "Could not remove Private Access router {container_id}, so this Server is not off yet."
+    )]
+    PrivateAccessRouterStays {
+        container_id: ContainerId,
+        #[source]
+        source: Box<crate::docker::Error>,
+    },
     #[error("this Server opens only the Public and Tunnel Doors")]
     UnsupportedDoors,
     #[error("the Tunnel Door needs a sealed tunnel token")]

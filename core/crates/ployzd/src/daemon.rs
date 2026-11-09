@@ -529,6 +529,12 @@ impl Daemon {
                     .with_containers(Some(runtime))
                     .with_plugin(plugin.clone())
                     .with_cluster(Some((replicated.clone(), admin.clone())));
+                if let Err(error) = machine.restore_private_access().await {
+                    tracing::warn!(
+                        error = %ployz_core::error_chain::inline(&error),
+                        "could not place the Private Access router this Machine held again; it stays as it is until the next `ployz private-access on`"
+                    );
+                }
                 let unplaced = match machine.restore_doors().await {
                     Ok(Some(set)) => set.failure.map(|failure| failure.error.message),
                     Ok(None) => None,

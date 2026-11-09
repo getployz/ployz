@@ -27,6 +27,15 @@ use crate::images::DoorSpecs;
 /// An opened tunnel token, written for the connector before it is placed.
 pub(super) type TunnelToken = Zeroizing<Vec<u8>>;
 
+/// Which Machine role a reserved placement needs.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(super) enum Gate {
+    /// The Ingress doors need a Machine that accepts ingress.
+    Ingress,
+    /// The Private Access router needs no role.
+    Router,
+}
+
 /// How long a started door may take to be observed running. The holder is a pause
 /// process and Caddy binds its listeners at once, so this is a bound, not a budget.
 const DOOR_START_WAIT: Duration = Duration::from_secs(15);
@@ -368,13 +377,13 @@ pub(super) enum Legacy {
 /// Every Docker effect a converge made, recorded as Docker answers each request, so
 /// a failure undoes exactly what the call did and nothing it found.
 #[derive(Default)]
-struct Effects {
+pub(super) struct Effects {
     /// Retirees that ran until this call stopped them, in stop order.
-    stopped: Vec<ContainerId>,
+    pub(super) stopped: Vec<ContainerId>,
     /// Doors at rest that this call started, recorded before the start request.
-    started: Vec<ContainerId>,
+    pub(super) started: Vec<ContainerId>,
     /// Doors this call created, in creation order.
-    created: Vec<ContainerId>,
+    pub(super) created: Vec<ContainerId>,
 }
 
 impl LocalMachine {
@@ -638,12 +647,14 @@ impl LocalMachine {
             HolderStep::Keep(id) => (*id, DoorChange::Unchanged),
             HolderStep::Start(id) => {
                 effects.started.push(*id);
-                self.start_door(containers, id).await?;
+                self.start_door(containers, id, Gate::Ingress).await?;
                 (*id, DoorChange::Started)
             }
             HolderStep::Create(replacing) => {
-                let id = self.create_door(&specs.holder, *replacing, effects).await?;
-                self.start_door(containers, &id).await?;
+                let id = self
+                    .create_door(&specs.holder, *replacing, effects, Gate::Ingress)
+                    .await?;
+                self.start_door(containers, &id, Gate::Ingress).await?;
                 (id, DoorChange::Created)
             }
         };
@@ -662,18 +673,20 @@ impl LocalMachine {
             JoinedStep::Keep(id) => (*id, DoorChange::Unchanged),
             JoinedStep::Start(id) => {
                 effects.started.push(*id);
-                self.start_door(containers, id).await?;
+                self.start_door(containers, id, Gate::Ingress).await?;
                 (*id, DoorChange::Started)
             }
             JoinedStep::Rejoin(id) => {
                 self.door_effect()?;
                 containers.stop(id, None, None).await?;
-                self.start_door(containers, id).await?;
+                self.start_door(containers, id, Gate::Ingress).await?;
                 (*id, DoorChange::Rejoined)
             }
             JoinedStep::Create(replacing) => {
-                let id = self.create_door(spec, *replacing, effects).await?;
-                self.start_door(containers, &id).await?;
+                let id = self
+                    .create_door(spec, *replacing, effects, Gate::Ingress)
+                    .await?;
+                self.start_door(containers, &id, Gate::Ingress).await?;
                 (id, DoorChange::Created)
             }
         };
@@ -684,6 +697,11 @@ impl LocalMachine {
     /// The Machine may place doors now: it participates, accepts ingress and is not
     /// leaving. Checked again before every effect, since a stage may be slow.
     fn door_effect(&self) -> Result<(), Error> {
+        self.reserved_effect(Gate::Ingress)
+    }
+
+    /// The Machine may place a reserved Container now. `gate` names the role it needs.
+    pub(super) fn reserved_effect(&self, gate: Gate) -> Result<(), Error> {
         let record = self.record();
         if !matches!(
             record.phase(),
@@ -692,7 +710,7 @@ impl LocalMachine {
             return Err(Error::NotParticipating);
         }
         let machine = record.machine().ok_or(Error::NotParticipating)?;
-        if !machine.accepts_ingress {
+        if gate == Gate::Ingress && !machine.accepts_ingress {
             return Err(crate::docker::Error::WorkNotAccepted.into());
         }
         if self
@@ -708,12 +726,13 @@ impl LocalMachine {
         Ok(())
     }
 
-    async fn start_door(
+    pub(super) async fn start_door(
         &self,
         containers: &ContainerRuntime,
         id: &ContainerId,
+        gate: Gate,
     ) -> Result<(), Error> {
-        self.door_effect()?;
+        self.reserved_effect(gate)?;
         containers.start(id).await?;
         let machine_id = self.record().id();
         let deadline = tokio::time::Instant::now() + DOOR_START_WAIT;
@@ -737,13 +756,14 @@ impl LocalMachine {
     }
 
     /// Create a door and record it in `effects` as soon as Docker names it.
-    async fn create_door(
+    pub(super) async fn create_door(
         &self,
         spec: &ResolvedServiceSpec,
         replacing: Replacing,
         effects: &mut Effects,
+        gate: Gate,
     ) -> Result<ContainerId, Error> {
-        self.door_effect()?;
+        self.reserved_effect(gate)?;
         let key = global_creation_key(spec);
         let key = match replacing {
             Some(old) => format!("{key}:replace:{old}"),
@@ -769,7 +789,7 @@ impl LocalMachine {
     /// ones it stopped while they ran, holders before their Caddys. A failure of any
     /// step is folded into `error`, and one that leaves a door of this call running or
     /// present keeps the previous doors stopped.
-    async fn undo(
+    pub(super) async fn undo(
         &self,
         containers: &ContainerRuntime,
         effects: &Effects,

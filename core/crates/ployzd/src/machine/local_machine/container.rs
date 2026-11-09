@@ -24,7 +24,7 @@ use ployz_core::{
 };
 
 use self::rotation::RotationWant;
-use super::super::ingress::admit_reserved_door;
+use super::super::ingress::{admit_reserved_door, is_private_access_router};
 use super::{Error, LocalMachine};
 use crate::docker::{
     ContainerCreated, ContainerRequest, ContainerRuntime, ImageIngest, RotationTurn, Withdrawal,
@@ -1445,7 +1445,12 @@ impl LocalMachine {
                     namespace,
                     spec,
                     admission: async {
-                        admit_reserved_door(namespace, spec)?;
+                        let network = if is_private_access_router(namespace, spec) {
+                            Some(Box::pin(self.cluster_network()).await?)
+                        } else {
+                            None
+                        };
+                        admit_reserved_door(namespace, spec, network)?;
                         // A deploy's hook runs once: a slot whose hook was made and
                         // is now gone is never made again, so it never reruns.
                         if enforced
@@ -1803,6 +1808,7 @@ fn create_refusal(error: Error) -> Result<ContainerRefusal, Error> {
             | OpenError::Unbound(_)
             | OpenError::Unopenable(_)
             | OpenError::TunnelToken
+            | OpenError::PrivateAccessKey
             | OpenError::ShortLine(_) => ContainerRefusalReason::SealedValueUnopenable,
         },
         _ => return Err(error),

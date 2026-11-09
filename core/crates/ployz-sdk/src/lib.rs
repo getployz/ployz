@@ -786,6 +786,22 @@ impl Client {
         to_json(&changed)
     }
 
+    /// Turn Private Access on or off on every Server: run the Tailscale router with
+    /// `auth_key`, sealed to the Cluster here, or remove it.
+    #[napi(ts_return_type = "Promise<AccessChanged>")]
+    pub async fn set_private_access(
+        &self,
+        enabled: bool,
+        auth_key: Option<String>,
+    ) -> Result<serde_json::Value> {
+        let changed = self
+            .inner
+            .set_private_access(enabled, auth_key.as_deref())
+            .await
+            .map_err(rpc_to_napi)?;
+        to_json(&changed)
+    }
+
     /// Stop and remove the Ingress Proxy on `machine` once its ingress role is off.
     #[napi]
     pub async fn stop_ingress(&self, machine: String) -> Result<()> {

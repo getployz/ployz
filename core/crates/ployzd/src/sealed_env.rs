@@ -47,6 +47,8 @@ pub enum OpenError {
     Unopenable(String),
     #[error("the tunnel token does not open with this Cluster's Sealing Key")]
     TunnelToken,
+    #[error("the Tailscale auth key does not open with this Cluster's Sealing Key")]
+    PrivateAccessKey,
     #[error("env {0} holds a multiline Sealed value with a line too short to scrub from logs")]
     ShortLine(String),
 }
@@ -390,6 +392,22 @@ pub(crate) fn open_tunnel_token(
     load(key_dir)?
         .open_platform(PlatformPurpose::IngressTunnel, sealed)
         .ok_or(OpenError::TunnelToken)
+}
+
+/// Open a Tailscale auth key the platform sealed to this Cluster.
+///
+/// # Errors
+///
+/// Returns [`OpenError::KeyMissing`] or [`OpenError::KeyUnreadable`] when this Machine
+/// holds no usable Sealing Key, and [`OpenError::PrivateAccessKey`] when the key was
+/// sealed for another Cluster or another purpose.
+pub(crate) fn open_private_access_key(
+    sealed: &Ciphertext,
+    key_dir: Option<&Path>,
+) -> Result<Zeroizing<Vec<u8>>, OpenError> {
+    load(key_dir)?
+        .open_platform(PlatformPurpose::PrivateAccess, sealed)
+        .ok_or(OpenError::PrivateAccessKey)
 }
 
 fn load(key_dir: Option<&Path>) -> Result<SealingKey, OpenError> {

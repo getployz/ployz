@@ -14,6 +14,7 @@ mod observe;
 pub(crate) use observe::published_spec;
 mod peer_pull;
 pub(crate) use peer_pull::ImageProxy;
+mod private_access;
 mod spec_store;
 mod stream;
 mod telemetry;

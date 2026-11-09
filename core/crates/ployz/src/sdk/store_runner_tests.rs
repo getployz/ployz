@@ -1329,6 +1329,14 @@ impl MachineOperations for Recording {
     ) -> Result<ployz_core::IngressDoorsSet, RpcError> {
         MachineOperations::set_ingress_doors(&self.client, machine_id, request).await
     }
+
+    async fn set_private_access(
+        &self,
+        machine_id: &MachineId,
+        request: ployz_core::SetPrivateAccessRequest,
+    ) -> Result<ployz_core::PrivateAccessSet, RpcError> {
+        MachineOperations::set_private_access(&self.client, machine_id, request).await
+    }
 }
 
 fn left_running(

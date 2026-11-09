@@ -3,11 +3,12 @@
 use std::num::NonZeroU64;
 
 use ployz_core::{
-    ContainerId, ContainerKind, ContainerObservation, ContainerPath, ContainerRefusal,
+    Ciphertext, ContainerId, ContainerKind, ContainerObservation, ContainerPath, ContainerRefusal,
     ContainerRuntimeObservation, DEPLOYMENT_ID_LABEL, DeploymentLogId, DockerVolumeName, Gen,
     HealthObservation, MachineId, MachineStorageObservation, Namespace, Placement,
-    ProvisionedVolumeMaximumBytes, RequestedServiceSpec, ResolvedUpdateConfig, ServiceMode,
-    ServiceMount, ServiceObservation, ServiceVolume, ServiceVolumeGraph, ServiceVolumeReference,
+    PrivateAccessSet, ProvisionedVolumeMaximumBytes, RequestedServiceSpec, ResolvedUpdateConfig,
+    ServiceMode, ServiceMount, ServiceObservation, ServiceVolume, ServiceVolumeGraph,
+    ServiceVolumeReference,
 };
 
 use super::*;
@@ -691,6 +692,99 @@ async fn a_caddy_that_is_not_running_after_its_doors_fails_catch_up() {
     assert!(message(error, &joiner).contains("keeps crashing"));
 }
 
+// Catches the router reaching the ordinary copy path, which would run it on the joiner
+// without its key file, or without any key at all.
+#[tokio::test(start_paused = true)]
+async fn a_joiner_gets_the_router_through_the_sealed_key_an_observed_one_carries() {
+    let mut joiner = machine('1', "joiner");
+    joiner.accepts_ingress = false;
+    let founder = machine('f', "founder");
+    let sealed = Ciphertext::from_bytes(vec![5; 48]);
+    let mut client = fake(&joiner, vec![router_service(&founder, &sealed)]);
+
+    catch_up(&mut client, &joiner).await.unwrap();
+
+    assert_eq!(client.private_access_calls, [sealed]);
+    assert!(
+        client.run_calls.is_empty(),
+        "the router never reaches the ordinary copy path"
+    );
+    assert!(client.door_calls.is_empty());
+}
+
+// Catches catch-up sending the router to a joiner whose daemon predates Private Access,
+// which would answer an unknown route instead of the client naming the capability.
+#[tokio::test(start_paused = true)]
+async fn a_joiner_whose_daemon_predates_private_access_is_named_and_not_asked() {
+    let founder = machine('f', "founder");
+    let mut joiner = machine('1', "joiner");
+    joiner.accepts_ingress = false;
+    joiner.runtime.capabilities = [ployz_core::SET_INGRESS_DOORS_CAPABILITY.to_owned()].into();
+    let mut client = fake(
+        &joiner,
+        vec![router_service(
+            &founder,
+            &Ciphertext::from_bytes(vec![5; 48]),
+        )],
+    );
+
+    let error = catch_up(&mut client, &joiner).await.unwrap_err();
+
+    assert!(client.private_access_calls.is_empty());
+    assert!(
+        message(error, &joiner).contains(ployz_core::SET_PRIVATE_ACCESS_CAPABILITY),
+        "the refusal names the capability the joiner lacks"
+    );
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_cluster_with_no_router_asks_the_joiner_for_none() {
+    let mut joiner = machine('1', "joiner");
+    joiner.accepts_ingress = false;
+    let mut client = fake(&joiner, Vec::new());
+
+    catch_up(&mut client, &joiner).await.unwrap();
+
+    assert!(client.private_access_calls.is_empty());
+}
+
+// Catches a joiner that Tailscale refused counting as caught up.
+#[tokio::test(start_paused = true)]
+async fn a_router_tailscale_refused_fails_catch_up_and_names_the_way_to_retry() {
+    let mut joiner = machine('1', "joiner");
+    joiner.accepts_ingress = false;
+    let founder = machine('f', "founder");
+    let mut client = fake(
+        &joiner,
+        vec![router_service(
+            &founder,
+            &Ciphertext::from_bytes(vec![5; 48]),
+        )],
+    );
+    client.private_access_result = Ok(PrivateAccessSet {
+        failure: Some(ployz_core::PrivateAccessFailure {
+            problem: ployz_core::PrivateAccessProblem::KeyRefused,
+            detail: "invalid key".into(),
+        }),
+        ..router_on(&joiner)
+    });
+
+    let error = catch_up(&mut client, &joiner).await.unwrap_err();
+    let failure = joined_catch_up_error(error, &joiner, |args| {
+        shell_words::join(std::iter::once("ployz").chain(args.iter().copied()))
+    });
+    let said = crate::ui::chain_text(&failure);
+
+    assert!(said.contains("refused the auth key"), "{said}");
+    assert!(!said.contains("redeploy"), "{said}");
+    assert_eq!(
+        failure.hints(),
+        [crate::ui::Hint::Retry(
+            "ployz private-access on --auth-key-stdin".to_owned()
+        )]
+    );
+}
+
 #[tokio::test(start_paused = true)]
 async fn interruption_settles_started_work_and_only_reports_unresolved_globals() {
     for excluded in [false, true] {
@@ -768,6 +862,8 @@ struct FakeCatchUpClient {
     run_result: Result<Option<ContainerId>, RpcError>,
     door_calls: Vec<(ServiceId, ClusterDoors)>,
     doors_result: Result<Option<IngressDoorsSet>, RpcError>,
+    private_access_calls: Vec<Ciphertext>,
+    private_access_result: Result<PrivateAccessSet, RpcError>,
     bring_in: FakeBringIn,
     brought_in: Vec<Copy>,
     retired: Vec<Copy>,
@@ -791,6 +887,8 @@ fn fake(joiner: &Machine, services: Vec<ServiceObservation>) -> FakeCatchUpClien
         run_result: Ok(Some(container_id('a'))),
         door_calls: Vec::new(),
         doors_result: Ok(Some(doors_on(joiner))),
+        private_access_calls: Vec::new(),
+        private_access_result: Ok(router_on(joiner)),
         bring_in: FakeBringIn::In,
         brought_in: Vec::new(),
         retired: Vec::new(),
@@ -803,6 +901,36 @@ fn fake(joiner: &Machine, services: Vec<ServiceObservation>) -> FakeCatchUpClien
         listings: 0,
         starting: std::collections::VecDeque::new(),
     }
+}
+
+/// The answer of a daemon that created the Private Access router on `machine`, running.
+fn router_on(machine: &Machine) -> PrivateAccessSet {
+    PrivateAccessSet {
+        router: Some(ployz_core::DoorOutcome {
+            now: running_on(machine, 'c'),
+            change: ployz_core::DoorChange::Created,
+        }),
+        ..PrivateAccessSet::default()
+    }
+}
+
+/// The router a Server runs, carrying `sealed` as its auth key.
+fn router_service(server: &Machine, sealed: &Ciphertext) -> ServiceObservation {
+    let identity = QualifiedService::system_tailscale();
+    let mut spec = requested(ServiceMode::Global);
+    spec.name = identity.name.clone();
+    spec.container.labels =
+        ployz_core::ContainerLabels::parse(std::collections::BTreeMap::from([(
+            ployz_core::PRIVATE_ACCESS_KEY_LABEL.to_owned(),
+            String::from(sealed.clone()),
+        )]))
+        .unwrap();
+    grouped(
+        identity,
+        spec.to_resolved(service_id('c'), ResolvedUpdateConfig::default())
+            .unwrap(),
+        running_on(server, 'c'),
+    )
 }
 
 /// The answer of a daemon that created the holder and Caddy on `machine`, both running.
@@ -899,6 +1027,16 @@ impl CatchUpClient for FakeCatchUpClient {
         assert_eq!(machine_id, &self.machine_id);
         self.door_calls.push((proxy_service, doors));
         self.doors_result.clone()
+    }
+
+    async fn run_private_access(
+        &mut self,
+        machine_id: &MachineId,
+        sealed: Ciphertext,
+    ) -> Result<PrivateAccessSet, RpcError> {
+        assert_eq!(machine_id, &self.machine_id);
+        self.private_access_calls.push(sealed);
+        self.private_access_result.clone()
     }
 
     async fn bring_in(

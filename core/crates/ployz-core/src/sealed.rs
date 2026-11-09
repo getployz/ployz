@@ -23,6 +23,8 @@ pub const PLATFORM_SEALED_INFO: &[u8] = b"ployz-platform-sealed-v1";
 pub enum PlatformPurpose {
     /// The Cloudflare tunnel token the Tunnel Connector runs with.
     IngressTunnel,
+    /// The Tailscale auth key the Private Access router joins the tailnet with.
+    PrivateAccess,
 }
 
 impl PlatformPurpose {
@@ -30,6 +32,7 @@ impl PlatformPurpose {
     pub fn as_str(self) -> &'static str {
         match self {
             Self::IngressTunnel => "ingress-tunnel",
+            Self::PrivateAccess => "private-access",
         }
     }
 
@@ -446,6 +449,28 @@ mod sealer {
             let mut moved = sealed;
             moved.value.scope = SealedScope::Service(Uuid::from_u128(4));
             assert_eq!(keypair.open(&authored(), &moved), None);
+        }
+
+        #[test]
+        fn a_private_access_key_opens_for_its_purpose_only() {
+            let cluster = Keypair::generate();
+            let sealed = seal_platform(
+                &cluster.public(),
+                PlatformPurpose::PrivateAccess,
+                b"tskey-auth-k",
+            )
+            .unwrap();
+            assert_eq!(
+                cluster
+                    .open_platform(PlatformPurpose::PrivateAccess, &sealed)
+                    .as_deref(),
+                Some(&b"tskey-auth-k"[..])
+            );
+            assert_eq!(
+                cluster.open_platform(PlatformPurpose::IngressTunnel, &sealed),
+                None,
+                "a tunnel token's purpose does not open it"
+            );
         }
 
         #[test]

@@ -1076,6 +1076,18 @@ impl MachineRpc for MachineService {
         finish(self.local.set_ingress_doors(request).await)
     }
 
+    async fn set_private_access(
+        &self,
+        request: Request<OpaquePayload>,
+    ) -> Result<Response<OpaquePayload>, Status> {
+        let operator = from_operator(&request);
+        let request = expect::<op::SetPrivateAccess>(request)?;
+        if operator && let Err(error) = self.local.admit_operator_deploy() {
+            return local_error(error);
+        }
+        finish(self.local.set_private_access(request).await)
+    }
+
     async fn read_cluster_name(
         &self,
         request: Request<OpaquePayload>,
@@ -1229,6 +1241,25 @@ fn local_failure(error: LocalMachineError) -> Result<RpcError, Status> {
         )),
         LocalMachineError::IngressProxyServiceSpec(error) => {
             Ok(RpcError::caused(RpcErrorCode::InvalidArgument, &error))
+        }
+        LocalMachineError::PrivateAccessRouterSpec | LocalMachineError::PrivateAccessKey(_) => {
+            Ok(RpcError {
+                code: RpcErrorCode::InvalidArgument,
+                message: error.to_string(),
+                details: Value::Null,
+                cause: Vec::new(),
+            })
+        }
+        LocalMachineError::PrivateAccessKeyMissing => Ok(RpcError {
+            code: RpcErrorCode::InvalidArgument,
+            message: error.to_string(),
+            details: serde_json::json!({ "capability": ployz_core::SET_PRIVATE_ACCESS_CAPABILITY }),
+            cause: Vec::new(),
+        }),
+        LocalMachineError::PrivateAccessKeyFile(_)
+        | LocalMachineError::PrivateAccessState(_)
+        | LocalMachineError::PrivateAccessRouterStays { .. } => {
+            Ok(RpcError::caused(RpcErrorCode::Internal, &error))
         }
         LocalMachineError::Network(error) => Err(ployz_core::rpc::caused_status(
             tonic::Code::Internal,

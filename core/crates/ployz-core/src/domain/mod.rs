@@ -20,6 +20,7 @@ mod runtime_watch;
 mod selector;
 mod service_graph;
 mod spec;
+mod tailscale;
 mod tunnel;
 mod volume;
 
@@ -45,6 +46,7 @@ pub use runtime_watch::*;
 pub use selector::*;
 pub use service_graph::*;
 pub use spec::*;
+pub use tailscale::*;
 pub use tunnel::*;
 pub use volume::*;
 
