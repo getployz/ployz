@@ -103,35 +103,37 @@ Outcome. A Machine can verify a raw GitHub OIDC token against GitHub's keys and 
 
 **Files.**
 
-- [ ] Create `core/crates/ployz-core/src/authority/rule.rs` with `AutoDeployRule`, `RuleService`, `BuildPolicy`, `PolicyDigest`, `SealedDigest`, `BuildClaim` (with `audience()`) and `GithubClaims`, the parsed claims the rule checks. It has no crypto, so it builds for the browser SDK.
-- [ ] Create `core/crates/ployzd/src/github/oidc.rs` with `verify(token, keys, now) -> GithubClaims` (RS256 through `ring::signature::RSA_PKCS1_2048_8192_SHA256`, fixed issuer) and `IssuerKeys`, which fetches the JWKS over TLS, caches it, and fetches again once on an unknown `kid`.
-- [ ] Create `core/crates/ployzd/src/github/head.rs` with `branch_head(repository_id, branch, credential)`. It is a `GET https://api.github.com/repositories/<id>/git/ref/heads/<branch>` with a 10 second timeout, and it maps 404 to "unreadable".
-- [ ] Commit fixtures under `core/crates/ployzd/src/github/fixtures/`. They are a real token from the Appendix B repository, the JWKS at that time and the claims, with the signature intact and the issued token long expired.
+- [x] Create `core/crates/ployz-core/src/authority/rule.rs` with `AutoDeployRule`, `RuleService`, `BuildPolicy`, `PolicyDigest`, `SealedDigest`, `BuildClaim` (with `audience()`) and `GithubClaims`, the parsed claims the rule checks. It has no crypto, so it builds for the browser SDK.
+- [x] Create `core/crates/ployzd/src/github/oidc.rs` with `verify(token, keys, now) -> GithubClaims` (RS256 through `ring::signature::RSA_PKCS1_2048_8192_SHA256`, fixed issuer) and `IssuerKeys`, which fetches the JWKS over TLS, caches it, and fetches again once on an unknown `kid`.
+- [x] Create `core/crates/ployzd/src/github/head.rs` with `branch_head(repository_id, branch, credential)`. It is a `GET https://api.github.com/repositories/<id>/git/ref/heads/<branch>` with a 10 second timeout, and it maps 404 to "unreadable".
+- [x] Commit fixtures under `core/crates/ployzd/src/github/fixtures/`. They are a real token from the Appendix B repository, the JWKS at that time and the claims, with the signature intact and the issued token long expired.
 
 **Build.**
 
-- [ ] `AutoDeployRule::verify_claims(&GithubClaims)` returns `Mismatch { field }` naming the first failing claim, in the table order of `d-build-proof.md`.
-- [ ] `BuildClaim::audience` is `"ployz-build:" + hex(SHA-256(canonical JSON))`. It has a golden test whose bytes the builder copies in D3.
-- [ ] The verifier never logs the token. A refusal logs the claim name and the rule ID.
+- [x] `AutoDeployRule::verify_claims(&GithubClaims)` returns `Mismatch { field }` naming the first failing claim, in the table order of `d-build-proof.md`.
+- [x] `BuildClaim::audience` is `"ployz-build:" + hex(SHA-256(canonical JSON))`. It has a golden test whose bytes the builder copies in D3.
+- [x] The verifier never logs the token. A refusal logs the claim name and the rule ID.
 
 **Verify, unit.**
 
-- [ ] The real fixture verifies at its `iat`. Then one changed byte in each part is refused, and so are an unknown `kid`, another issuer, an expired token, `alg: none`, and HS256 signed with the JWKS modulus.
-- [ ] `verify_claims` refuses, one per case, another `repository_id`, another owner, `ref_type: tag`, another branch, an event not in the rule, another `workflow_ref`, another `job_workflow_ref`, another `job_workflow_sha`, and `runner_environment: self-hosted`. Run `cargo nextest run -p ployz-core authority::rule` and `-p ployzd github::`.
-- [ ] `PolicyDigest` and `BuildClaim::audience` golden tests.
+- [x] The real fixture verifies at its `iat`. Then one changed byte in each part is refused, and so are an unknown `kid`, another issuer, an expired token, `alg: none`, and HS256 signed with the JWKS modulus.
+- [x] `verify_claims` refuses, one per case, another `repository_id`, another owner, `ref_type: tag`, another branch, an event not in the rule, another `workflow_ref`, another `job_workflow_ref`, another `job_workflow_sha`, and `runner_environment: self-hosted`. Run `cargo nextest run -p ployz-core authority::rule` and `-p ployzd github::`.
+- [x] `PolicyDigest` and `BuildClaim::audience` golden tests.
 
 **Verify, live.** Six lanes. Lanes marked **GitHub** use Appendix B.
 
-- [ ] Lane 1. **GitHub.** A workflow in the test repository prints `exp - iat` and the claim names (not values) of its token. Save `d2-lifetime.txt`. Pass when the lifetime is recorded. It feeds D4's accepted-build record.
-- [ ] Lane 2. **GitHub.** From a Boat Machine, `branch_head` on the private test repository with an installation token narrowed to `contents: read` and that one repository. Save `d2-private-head.png`. Pass when it returns the head `git ls-remote` shows.
-- [ ] Lane 3. **GitHub.** The same with a token for another installation that cannot see the repository, and with none. Save `d2-head-refused.png`. Pass when both are "unreadable".
-- [ ] Lane 4. **GitHub.** Re-run an old run of the test workflow. Save `d2-rerun.png`. Pass when its token's `sha` is the old commit and `run_attempt` went up, as thread Y's report says.
-- [ ] Lane 5. **GitHub.** Force push the test branch back one commit. Save `d2-force.png`. Pass when the new push run's `sha` is the older commit and `branch_head` returns it.
-- [ ] Lane 6. Block egress to `api.github.com` on one Machine. Save `d2-offline.png`. Pass when `branch_head` fails within 15 seconds.
+- [x] Lane 1. **GitHub.** A workflow in the test repository prints `exp - iat` and the claim names (not values) of its token. Save `d2-lifetime.txt`. Pass when the lifetime is recorded. It feeds D4's accepted-build record.
+- [x] Lane 2. **GitHub.** From a Boat Machine, `branch_head` on the private test repository with an installation token narrowed to `contents: read` and that one repository. Save `d2-private-head.png`. Pass when it returns the head `git ls-remote` shows.
+- [x] Lane 3. **GitHub.** The same with a token for another installation that cannot see the repository, and with none. Save `d2-head-refused.png`. Pass when both are "unreadable".
+- [x] Lane 4. **GitHub.** Re-run an old run of the test workflow. Save `d2-rerun.png`. Pass when its token's `sha` is the old commit and `run_attempt` went up, as thread Y's report says.
+- [x] Lane 5. **GitHub.** Force push the test branch back one commit. Save `d2-force.png`. Pass when the new push run's `sha` is the older commit and `branch_head` returns it.
+- [x] Lane 6. Block egress to `api.github.com` on one Machine. Save `d2-offline.png`. Pass when `branch_head` fails within 15 seconds.
 
 **Verify, perf.**
 
-- [ ] Metric. Token verification with a warm JWKS, and `branch_head` latency from a Boat Machine. Rule: verification under 2 ms, head read under 1 s at the median of ten.
+- [x] Metric. Token verification with a warm JWKS, and `branch_head` latency from a Boat Machine. Rule: verification under 2 ms, head read under 1 s at the median of ten.
+
+Lane evidence is text, not screenshots: `media/d2-*.txt`. The perf numbers are in `media/d2-perf.txt`.
 
 **Review gate.** None.
 
@@ -146,7 +148,7 @@ Outcome. On an enforcing Cluster with a rule, a push to the approved branch runs
 - [ ] Edit `core/crates/ployz-core/src/rpc.rs` so `MintBuildGrantRequest` gains `rule: Option<Signed<AutoDeployRule>>` and `proof: Option<String>` (the raw token). Edit `rpc_catalog.rs` to add `BUILD_GRANT_RULE_CAPABILITY: ("ployz.build.grant.rule.v1", Always)`.
 - [ ] Edit `core/crates/ployzd/src/management/build_grant.rs` so `Mint::check` under enforcement needs the rule and proof. It runs the token checks, then the commit's authority (`Head` only in D3), all before it opens the record. It consumes the `jti` and checks the Sealed record against the rule's `secrets` digest. `sealed` (`:482`) stops serving plaintext. It returns the opened values HPKE auth-sealed from the attest key to the audience's recipient, with the audience bytes in the info. Edit `admit_operator_build` from D1 to let a rule-bearing `MintBuildGrant` through.
 - [ ] Edit `core/crates/ployzd/src/sealed_env.rs` (or its key module) to derive the attest key pair from the Sealing Key with HKDF-SHA-256 and the info `ployz build-secrets attest v1`, and expose its public half to `CheckIn`.
-- [ ] Edit `core/crates/ployz-core/src/authority/rule.rs` so `Claim` carries `commit` and `authority` in both stages, `Grant { holder, recipient }`, and `Built { image, attest }`.
+- [x] `BuildClaim` already carries `commit` and `authority` in both stages, `Grant { holder, recipient }` and `Built { image, attest }` (D2), so its golden audience is final.
 - [ ] Edit `core/crates/ployz/src/connect/build_grant.rs` and `core/crates/ployz-core/src/sealed_record.rs` so the runner opens the grant's response only in HPKE authenticated mode with the relayed attest key and the expected info. A response that fails to open stops the build. `OpenedSealed::covering` (`sealed_record.rs:131`) still checks the names, after authentication.
 - [ ] Edit `core/crates/ployz/src/handlers/build.rs` (the runner's `ployz build`) to check out `github.sha` or the `commit` input, make the holder and recipient keys, compute the policy digest from the relayed rule, request both tokens with their audiences, put the attest key it opened with into `Built`, refuse any registry cache, and set the Actions cache `scope` to the policy digest.
 - [ ] Edit `core/crates/ployz/src/sdk/github_build.rs` so check-in for a rule build returns the rule, the Cluster key, the attest key and the grant Machine. It returns no commit and no `ployzVersion`. It relays the runner's grant token to `MintBuildGrant`.
@@ -357,13 +359,11 @@ Run on 2026-11-09, read-only, from this design thread.
 
 - **Proven.** `GET https://api.github.com/repositories/<id>/git/ref/heads/main` returns the head for a public repository with no credential, and for a private repository with a read credential. Without one, the private repository returns `404`. The credential was a user token.
 - **Proven.** GitHub's OIDC discovery document lists `job_workflow_ref`, `job_workflow_sha`, `runner_environment`, `run_attempt`, `repository_id`, `repository_owner_id`, `actor_id` and `jti` among its claims. Its JWKS keys are RSA with `RS256`.
+- **Proven in D2.** An installation token narrowed to `contents: read` and one repository reads the head by repository ID (lane 2). A token lives 300 seconds, `exp - iat`, and GitHub backdates `nbf` by 300 seconds (lane 1). A re-run keeps `sha` and raises `run_attempt`, and a force push gives the new tip as `sha` (lanes 4 and 5).
 - **Documented, not run.** A job asks for a token with a custom audience through `$ACTIONS_ID_TOKEN_REQUEST_URL&audience=…`. `job_workflow_ref` and `job_workflow_sha` name the reusable workflow and its commit.
 
 Unproven until the slice that proves it:
 
-- An installation token narrowed to `contents: read` and one repository reads the head by repository ID. D2 lane 2.
-- The token lifetime. D2 lane 1.
-- A re-run keeps `sha` and raises `run_attempt`, and a force push gives the new tip as `sha`. D2 lanes 4 and 5.
 - An audience as long as `ployz-build:` plus 64 hex characters is accepted. D3 lane 2.
 - Actions cache isolation by branch. D3 lane 9.
 - A PR Environment's spec differs from its parent's only in fields `PreviewTemplate` derives, and Own Copies keep their logical Volume names. D7's prototype.

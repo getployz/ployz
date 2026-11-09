@@ -1,0 +1,10 @@
+D2 lane 4. Re-run an old run of the probe workflow after a newer push.
+
+run 42597355451 attempt 1  push at 54dfcf4a46870fa09f5d5d6c965dd705c1a24e5c   sha 54dfcf4a…  run_attempt 1
+newer push 01c45d8443418fe0fc201629e183a43cbd8b3714 (run 42601141931)
+gh run rerun 42597355451  -> attempt 2, headSha 54dfcf4a46870fa09f5d5d6c965dd705c1a24e5c
+  token: sha 54dfcf4a46870fa09f5d5d6c965dd705c1a24e5c  run_attempt 2  ref refs/heads/main  event_name push
+branch_head from the Boat Machine at that moment: 01c45d8443418fe0fc201629e183a43cbd8b3714
+
+Result: pass. A re-run's token keeps the old sha and raises run_attempt, as thread Y reported, so only
+the head check tells it apart from a fresh push.

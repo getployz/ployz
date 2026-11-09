@@ -28,6 +28,7 @@ pub mod dns;
 pub mod docker;
 pub mod faults;
 pub(crate) mod filesystem;
+pub mod github;
 mod host_capacity;
 pub(crate) mod images;
 pub(crate) mod ingress;

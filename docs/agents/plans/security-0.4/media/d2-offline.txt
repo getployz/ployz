@@ -1,0 +1,9 @@
+D2 lane 6. Egress to api.github.com dropped on the Boat Machine (iptables and ip6tables OUTPUT DROP
+for every address api.github.com resolved to), then branch_head.
+
+run 0 refused in 10001 ms: GitHub did not answer for the branch head | cause: error sending request
+for url (https://api.github.com/repositories/1450985696/git/ref/heads/main) | cause: operation timed out
+wall seconds: 10.004870228
+after restoring egress: run 0 head 54dfcf4a46870fa09f5d5d6c965dd705c1a24e5c in 370 ms
+
+Result: pass. The read fails at its 10-second timeout, inside the 15-second bound.

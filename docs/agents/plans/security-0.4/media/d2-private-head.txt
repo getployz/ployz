@@ -1,0 +1,21 @@
+D2 lane 2. branch_head from a Boat Machine (Ubuntu 24.04 sandbox, verify-server, release daemon)
+on the private lab repository (repository ID 1450985696, branch main), with a ployz-lab installation
+token narrowed at mint to repository_ids [1450985696] and permissions {contents: read}.
+GitHub granted: permissions {'contents': 'read', 'metadata': 'read'}, repositories ['Ployz-test/lab-service'].
+
+run 0 head 54dfcf4a46870fa09f5d5d6c965dd705c1a24e5c in 371 ms
+run 1 head 54dfcf4a46870fa09f5d5d6c965dd705c1a24e5c in 308 ms
+run 2 head 54dfcf4a46870fa09f5d5d6c965dd705c1a24e5c in 300 ms
+run 3 head 54dfcf4a46870fa09f5d5d6c965dd705c1a24e5c in 327 ms
+run 4 head 54dfcf4a46870fa09f5d5d6c965dd705c1a24e5c in 331 ms
+run 5 head 54dfcf4a46870fa09f5d5d6c965dd705c1a24e5c in 311 ms
+run 6 head 54dfcf4a46870fa09f5d5d6c965dd705c1a24e5c in 302 ms
+run 7 head 54dfcf4a46870fa09f5d5d6c965dd705c1a24e5c in 337 ms
+run 8 head 54dfcf4a46870fa09f5d5d6c965dd705c1a24e5c in 324 ms
+run 9 head 54dfcf4a46870fa09f5d5d6c965dd705c1a24e5c in 318 ms
+
+git ls-remote https://github.com/Ployz-test/lab-service refs/heads/main
+54dfcf4a46870fa09f5d5d6c965dd705c1a24e5c	refs/heads/main
+
+Result: pass. The head matches ls-remote. Median 321 ms over one reused HTTPS client (run 0 includes
+the TLS handshake).
