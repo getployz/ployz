@@ -998,7 +998,7 @@ mod ingress_doors {
         );
     }
 
-    fn docker_calls(fake: &FakeDocker) -> usize {
+    fn docker_calls(fake: &crate::docker::test_support::FakeDocker) -> usize {
         fake.requests.lock().unwrap().len()
     }
 
@@ -1472,14 +1472,14 @@ mod ingress_doors {
         std::fs::remove_dir_all(data_dir).unwrap();
     }
 
-    fn caddy_create_refused(fake: &FakeDocker) {
+    fn caddy_create_refused(fake: &crate::docker::test_support::FakeDocker) {
         fake.refuse_create_of
             .lock()
             .unwrap()
             .insert("ingress".into());
     }
 
-    fn caddy_start_exits(fake: &FakeDocker) {
+    fn caddy_start_exits(fake: &crate::docker::test_support::FakeDocker) {
         fake.exit_on_start
             .store(true, std::sync::atomic::Ordering::SeqCst);
     }
@@ -1633,7 +1633,7 @@ mod ingress_doors {
         std::fs::remove_dir_all(data_dir).unwrap();
     }
 
-    fn inspect_fails_after_start(fake: &FakeDocker, service: &str) {
+    fn inspect_fails_after_start(fake: &crate::docker::test_support::FakeDocker, service: &str) {
         fake.fail_inspect_after_start
             .lock()
             .unwrap()
@@ -2180,16 +2180,19 @@ mod private_access {
         std::fs::remove_dir_all(data_dir).unwrap();
     }
 
-    // Catches `on` keeping a router an `off` could not stop. That router still mounts
-    // the node state `off` deleted, so its next restart would register a new node.
-    #[tokio::test]
-    async fn on_after_an_off_that_could_not_stop_the_router_replaces_it() {
-        let (data_dir, _store, service, fake, runtime, cluster) =
-            fake_docker_service_sealing("ployzd-access-off-then-on").await;
-        let machine = service.local.record().id();
-        let sealed = cluster.seal_platform(PlatformPurpose::PrivateAccess, b"tskey-auth-test");
-        let on = json!({"enabled": true, "sealed_auth_key": sealed});
-        let first = set_access(&service, on.clone())
+    fn refuse_stop(fake: &crate::docker::test_support::FakeDocker, refused: bool) {
+        fake.refuse_stop
+            .store(refused, std::sync::atomic::Ordering::SeqCst);
+    }
+
+    /// A router an `off` could not stop, and an `on` that could not stop it either, so
+    /// the router still mounts the node state `off` deleted while a new one is kept.
+    async fn strand_router(
+        service: &MachineService,
+        fake: &crate::docker::test_support::FakeDocker,
+        on: &Value,
+    ) -> ContainerId {
+        let stranded = set_access(service, on.clone())
             .await
             .unwrap()
             .unwrap()
@@ -2197,28 +2200,79 @@ mod private_access {
             .unwrap()
             .now
             .container_id;
-        fake.refuse_stop
-            .store(true, std::sync::atomic::Ordering::SeqCst);
-        set_access(&service, json!({"enabled": false}))
+        refuse_stop(fake, true);
+        set_access(service, json!({"enabled": false}))
             .await
             .unwrap()
             .unwrap_err();
-        fake.refuse_stop
-            .store(false, std::sync::atomic::Ordering::SeqCst);
+        set_access(service, on.clone()).await.unwrap().unwrap_err();
+        refuse_stop(fake, false);
+        stranded
+    }
+
+    // Catches `on` keeping a router an `off` could not stop, once an `on` that could
+    // not stop it either had kept new node state. That router still mounts the state
+    // `off` deleted, so its next restart would register a new node.
+    #[tokio::test]
+    async fn on_after_an_off_that_could_not_stop_the_router_replaces_it() {
+        let (data_dir, _store, service, fake, runtime, cluster) =
+            fake_docker_service_sealing("ployzd-access-off-then-on").await;
+        let machine = service.local.record().id();
+        let sealed = cluster.seal_platform(PlatformPurpose::PrivateAccess, b"tskey-auth-test");
+        let on = json!({"enabled": true, "sealed_auth_key": sealed});
+        let stranded = strand_router(&service, &fake, &on).await;
 
         let again = set_access(&service, on).await.unwrap().unwrap();
-        let second = again.router.unwrap().now.container_id;
-        assert_ne!(second, first, "a new router mounts the new node state");
-        assert_eq!(again.retired, vec![first]);
+        let placed = again.router.unwrap();
+        assert_eq!(placed.change, DoorChange::Created, "{placed:?}");
+        assert_eq!(again.retired, vec![stranded]);
         let routers = runtime.routers(&machine).await.unwrap();
         assert_eq!(
             routers
                 .iter()
                 .map(|router| router.container_id)
                 .collect::<Vec<_>>(),
-            vec![second]
+            vec![placed.now.container_id]
         );
-        assert!(node_state(&data_dir).is_dir());
+        set_access(&service, json!({"enabled": false}))
+            .await
+            .unwrap()
+            .unwrap();
+        std::fs::remove_dir_all(data_dir).unwrap();
+    }
+
+    // Catches a reboot keeping or starting a router that mounts node state `off`
+    // deleted, after an `on` that could not stop it kept new state.
+    #[tokio::test]
+    async fn a_reboot_after_a_stranded_router_replaces_it() {
+        let (data_dir, _store, service, fake, runtime, cluster) =
+            fake_docker_service_sealing("ployzd-access-stranded-reboot").await;
+        let machine = service.local.record().id();
+        let sealed = cluster.seal_platform(PlatformPurpose::PrivateAccess, b"tskey-auth-test");
+        let on = json!({"enabled": true, "sealed_auth_key": sealed});
+        let stranded = strand_router(&service, &fake, &on).await;
+
+        let restored = service
+            .local
+            .restore_private_access()
+            .await
+            .unwrap()
+            .unwrap();
+        let placed = restored.router.unwrap();
+        assert_eq!(placed.change, DoorChange::Created, "{placed:?}");
+        assert_eq!(restored.retired, vec![stranded]);
+        let routers = runtime.routers(&machine).await.unwrap();
+        assert_eq!(
+            routers
+                .iter()
+                .map(|router| router.container_id)
+                .collect::<Vec<_>>(),
+            vec![placed.now.container_id]
+        );
+        assert_eq!(
+            std::fs::read(key_file(&data_dir)).unwrap(),
+            b"tskey-auth-test"
+        );
         set_access(&service, json!({"enabled": false}))
             .await
             .unwrap()
@@ -2448,14 +2502,20 @@ mod set_volume_copy {
 
     /// A running Container that mounts the Volume, as Docker lists it for the cut,
     /// beside any holder already there.
-    async fn running_holder(service: &MachineService, fake: &FakeDocker) -> ContainerId {
+    async fn running_holder(
+        service: &MachineService,
+        fake: &crate::docker::test_support::FakeDocker,
+    ) -> ContainerId {
         let created = kept_holder(service, fake).await;
         start_holder(fake, &created);
         created
     }
 
     /// A stopped Container that mounts the Volume: Docker lists it for the cut too.
-    async fn kept_holder(service: &MachineService, fake: &FakeDocker) -> ContainerId {
+    async fn kept_holder(
+        service: &MachineService,
+        fake: &crate::docker::test_support::FakeDocker,
+    ) -> ContainerId {
         let created = stopped_container(service).await;
         fake.volume_users
             .lock()
@@ -2503,7 +2563,11 @@ mod set_volume_copy {
         });
     }
 
-    async fn requested(fake: &FakeDocker, method: http::Method, suffix: &str) {
+    async fn requested(
+        fake: &crate::docker::test_support::FakeDocker,
+        method: http::Method,
+        suffix: &str,
+    ) {
         let arrived = || {
             fake.requests
                 .lock()
@@ -2521,7 +2585,7 @@ mod set_volume_copy {
         .expect("the request reached the fake Docker");
     }
 
-    fn start_holder(fake: &FakeDocker, id: &ContainerId) {
+    fn start_holder(fake: &crate::docker::test_support::FakeDocker, id: &ContainerId) {
         let id = id.to_string();
         for container in fake
             .named_containers
@@ -2542,7 +2606,7 @@ mod set_volume_copy {
             .container_id
     }
 
-    fn running(fake: &FakeDocker) -> usize {
+    fn running(fake: &crate::docker::test_support::FakeDocker) -> usize {
         holder_status(fake)
             .iter()
             .filter(|status| **status == json!("running"))
@@ -2721,7 +2785,7 @@ mod set_volume_copy {
         std::fs::remove_dir_all(data_dir).unwrap();
     }
 
-    fn holder_status(fake: &FakeDocker) -> Vec<Value> {
+    fn holder_status(fake: &crate::docker::test_support::FakeDocker) -> Vec<Value> {
         fake.named_containers
             .as_ref()
             .unwrap()
@@ -3998,11 +4062,14 @@ mod ensure_container {
         observed
     }
 
-    fn requests(fake: &FakeDocker) -> Vec<(Method, String)> {
+    fn requests(fake: &crate::docker::test_support::FakeDocker) -> Vec<(Method, String)> {
         fake.requests.lock().unwrap().clone()
     }
 
-    fn requests_since(fake: &FakeDocker, seen: usize) -> Vec<(Method, String)> {
+    fn requests_since(
+        fake: &crate::docker::test_support::FakeDocker,
+        seen: usize,
+    ) -> Vec<(Method, String)> {
         requests(fake).split_off(seen)
     }
 
@@ -4016,7 +4083,7 @@ mod ensure_container {
             .filter(move |(seen, path)| *seen == method && path.ends_with(suffix))
     }
 
-    fn set_state(fake: &FakeDocker, id: &ContainerId, state: Value) {
+    fn set_state(fake: &crate::docker::test_support::FakeDocker, id: &ContainerId, state: Value) {
         for container in fake
             .named_containers
             .as_ref()
@@ -4069,8 +4136,9 @@ mod ensure_container {
         let (data_dir, _store, service, fake) = fake_docker_service("ployzd-ensure-prepared").await;
         let mut spec = spec("example.test/api:1");
         spec["container"]["pull_policy"] = json!("always");
-        let pulls =
-            |fake: &FakeDocker| ends_with(&requests(fake), Method::POST, "/images/create").count();
+        let pulls = |fake: &crate::docker::test_support::FakeDocker| {
+            ends_with(&requests(fake), Method::POST, "/images/create").count()
+        };
 
         let mut prepared = run_new("k1", spec.clone());
         prepared["want"]["container"]["new"]["image_prepared"] = json!(true);
@@ -5484,7 +5552,7 @@ mod ensure_container {
                 "resolved_spec":spec, "gen":1}}})
         }
 
-        fn creates(fake: &FakeDocker, since: usize) -> usize {
+        fn creates(fake: &crate::docker::test_support::FakeDocker, since: usize) -> usize {
             ends_with(
                 &requests_since(fake, since),
                 Method::POST,
