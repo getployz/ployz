@@ -4,13 +4,14 @@
 use std::io::Read;
 
 use clap::{ArgMatches, Command};
-use ployz_core::{MachineFailure, MachineName, PartialResult, RpcError, RpcErrorCode};
+use ployz_core::{MachineFailure, PartialResult, RpcError, RpcErrorCode};
 use tokio_util::sync::CancellationToken;
 
 use super::{Error, leaf_matches, with_client};
 use crate::cli::{base, switch};
 use crate::private_access::{
-    AccessChanged, MachineAccess, key_refused, observe_access, seal_key, shown, turn_off, turn_on,
+    AccessChanged, AccessMachine, MachineAccess, key_refused, observe_access, seal_key, shown,
+    turn_off, turn_on,
 };
 use crate::ui::{self, Cell, Gaps, Hint, Table};
 
@@ -101,6 +102,7 @@ pub(crate) fn on(root: &ArgMatches) -> Result<(), Error> {
         Box::pin(async move {
             let observed = observe_access(client).await?;
             let sealed = seal_key(&observed, &key)?;
+            let addressed = observed.machines.clone();
             let changed = turn_on(
                 &*client,
                 observed.machines,
@@ -111,7 +113,7 @@ pub(crate) fn on(root: &ArgMatches) -> Result<(), Error> {
             let AccessChanged { machines, failures } = changed;
             let refused = failures.iter().any(|failure| key_refused(&failure.error));
             let any_ran = machines.iter().any(|machine| machine.router);
-            let gaps = gaps_of(&machines, failures);
+            let gaps = gaps_of(&addressed, failures);
             let table = table(&machines);
             let outcome = ui::finish_fanout("machines", &machines, &gaps, || {
                 if machines.is_empty() && gaps.is_complete() {
@@ -140,8 +142,9 @@ pub(crate) fn off(root: &ArgMatches) -> Result<(), Error> {
     with_client(root, |client| {
         Box::pin(async move {
             let observed = observe_access(client).await?;
+            let addressed = observed.machines.clone();
             let changed = turn_off(&*client, observed.machines, &CancellationToken::new()).await;
-            let gaps = gaps_of(&changed.machines, changed.failures);
+            let gaps = gaps_of(&addressed, changed.failures);
             let table = table(&changed.machines);
             ui::finish_fanout("machines", &changed.machines, &gaps, || {
                 if changed.machines.is_empty() && gaps.is_complete() {
@@ -167,21 +170,15 @@ fn table(rows: &[MachineAccess]) -> Table {
     table
 }
 
-fn gaps_of(rows: &[MachineAccess], failures: Vec<MachineFailure<RpcError>>) -> Gaps {
+/// The gaps in a change, naming every Machine the command addressed: one whose answer
+/// was a failure has no row, and its warning still carries its name.
+fn gaps_of(addressed: &[AccessMachine], failures: Vec<MachineFailure<RpcError>>) -> Gaps {
     let listing: PartialResult<(), RpcError> = PartialResult {
         successes: Vec::new(),
         failures,
         omissions: Vec::new(),
     };
-    let names = rows
-        .iter()
-        .filter_map(|row| {
-            MachineName::parse(&row.server)
-                .ok()
-                .map(|name| (row.machine, name))
-        })
-        .collect::<Vec<_>>();
-    Gaps::of(&listing).named(names.iter().map(|(id, name)| (*id, name)))
+    Gaps::of(&listing).named(addressed.iter().map(|machine| (machine.id, &machine.name)))
 }
 
 fn read_key(stdin: impl Read) -> Result<String, Error> {
@@ -231,7 +228,37 @@ fn ask_key() -> Result<String, Error> {
 
 #[cfg(test)]
 mod tests {
+    use ployz_core::{MachineId, MachineName};
+
     use super::*;
+
+    #[test]
+    fn a_machine_whose_off_failed_is_named_in_its_warning() {
+        let id = MachineId::parse("a".repeat(32)).unwrap();
+        let machines = vec![AccessMachine {
+            id,
+            name: MachineName::parse("machine-1").unwrap(),
+            supported: true,
+        }];
+        let failures = vec![MachineFailure {
+            machine_id: id,
+            error: RpcError {
+                code: RpcErrorCode::Internal,
+                message:
+                    "Could not remove Private Access router abc, so this Server is not off yet."
+                        .to_owned(),
+                details: serde_json::Value::Null,
+                cause: Vec::new(),
+            },
+        }];
+        let gaps = gaps_of(&machines, failures);
+        assert!(!gaps.is_complete());
+        assert!(
+            gaps.stopped_answering(&id).starts_with("machine-1 "),
+            "{}",
+            gaps.stopped_answering(&id)
+        );
+    }
 
     #[test]
     fn a_key_on_stdin_is_trimmed_and_an_empty_or_oversized_one_refused() {
