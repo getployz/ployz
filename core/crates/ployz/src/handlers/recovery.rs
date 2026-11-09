@@ -535,6 +535,7 @@ mod tests {
     ) -> Daemon {
         let socket = dir.join("ployzd.sock");
         let contract = ContractDescription {
+            attest: None,
             machine_id: MachineId::random(),
             protocol_major: ployz_core::PROTOCOL_MAJOR,
             daemon_version: "fixture".into(),

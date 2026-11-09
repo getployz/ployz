@@ -124,8 +124,15 @@ impl CapturedBuild {
                 path(&root.join("private/docker")),
             ),
         ]);
+        let (cache, cache_scope) = match &self.local_cache {
+            super::LocalCache::Runner => (true, None),
+            super::LocalCache::Pinned(scope) => (scope.is_some(), scope.as_deref()),
+        };
+        // Only the cache service's own variables: the run's token credentials stay here.
         for name in ACTIONS_CACHE_VARIABLES {
-            if let Ok(value) = std::env::var(name) {
+            if let Ok(value) = std::env::var(name)
+                && cache
+            {
                 environment.insert(name.to_owned(), value);
             }
         }
@@ -148,6 +155,7 @@ impl CapturedBuild {
             no_cache: false,
             pull: false,
             sealed: self.opened.is_some(),
+            cache_scope,
         };
         let images = execute(&request, scrub.as_ref()).map_err(build)?;
         Ok((captured, images))

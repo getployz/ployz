@@ -9,6 +9,7 @@ use iroh::{
 };
 use ployz_core::{
     BUILD_GRANT_ALPN, BUILD_GRANT_ENDED, BUILD_GRANT_REFUSED, BuildGrant, OpenedSealed,
+    X25519Secret, authority::AttestKey,
 };
 use tokio::net::TcpListener;
 
@@ -51,6 +52,31 @@ impl GrantRegistry {
     /// # Errors
     /// Reports the Machine's refusal or an unreadable answer.
     pub async fn sealed(&self) -> io::Result<OpenedSealed> {
+        serde_json::from_slice(&self.fetch_sealed().await?).map_err(io::Error::other)
+    }
+
+    /// The Sealed values of a rule build: sealed by the Machine to `recipient`, from the
+    /// Cluster's attest key `attest`, for the grant token's `audience`. Anything else,
+    /// such as plaintext or values another key sealed, opens nothing.
+    ///
+    /// # Errors
+    /// Reports the Machine's refusal, or a response that does not open.
+    pub async fn sealed_for_build(
+        &self,
+        recipient: &X25519Secret,
+        attest: &AttestKey,
+        audience: &str,
+    ) -> io::Result<OpenedSealed> {
+        OpenedSealed::open_build(&self.fetch_sealed().await?, recipient, attest, audience).map_err(
+            |_| {
+                io::Error::other(
+                    "the build secrets did not come from this Cluster's attest key; refusing to build",
+                )
+            },
+        )
+    }
+
+    async fn fetch_sealed(&self) -> io::Result<Vec<u8>> {
         let response = reqwest::Client::builder()
             .no_proxy()
             .build()
@@ -60,7 +86,7 @@ impl GrantRegistry {
             .await
             .map_err(|error| self.refused(error.to_string()))?;
         if response.status().is_success() {
-            return response.json().await.map_err(io::Error::other);
+            return Ok(response.bytes().await.map_err(io::Error::other)?.to_vec());
         }
         let status = response.status();
         let body: serde_json::Value = response.json().await.unwrap_or_default();

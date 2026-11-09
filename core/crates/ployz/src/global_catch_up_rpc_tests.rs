@@ -73,6 +73,7 @@ async fn real_catch_up_client_retries_readiness_and_placement_to_their_budget() 
                         if matches!(body, RpcRequestBody::DescribeContract(_)) {
                             return Ok(Response::new(
                                 RpcResponse::from(ployz_core::ContractDescription {
+                                    attest: None,
                                     machine_id: target.id,
                                     protocol_major: ployz_core::PROTOCOL_MAJOR,
                                     daemon_version: "fixture".into(),

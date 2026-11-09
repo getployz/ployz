@@ -579,6 +579,7 @@ async fn failed_connection_attempts_do_not_reorder_the_context() {
 #[tokio::test]
 async fn volume_listing_retains_successes_and_target_failures() {
     let (address, server) = serve_discovery(DiscoveryService::new(ContractDescription {
+        attest: None,
         machine_id: MachineId::random(),
         protocol_major: PROTOCOL_MAJOR,
         daemon_version: "test".into(),
@@ -1211,6 +1212,7 @@ fn listing_container(
 #[tokio::test]
 async fn volume_listing_omits_down_and_unknown_and_probes_suspect() {
     let (address, server) = serve_discovery(DiscoveryService::new(ContractDescription {
+        attest: None,
         machine_id: MachineId::random(),
         protocol_major: PROTOCOL_MAJOR,
         daemon_version: "test".into(),
@@ -1370,6 +1372,7 @@ async fn machine_discovery_uses_the_same_rpc_over_tcp_and_unix() {
     let tcp_address = tcp.local_addr().unwrap();
     let unix = UnixListener::bind(&socket).unwrap();
     let description = ContractDescription {
+        attest: None,
         machine_id: MachineId::parse("0123456789abcdef0123456789abcdef").unwrap(),
         protocol_major: PROTOCOL_MAJOR,
         daemon_version: "test".into(),

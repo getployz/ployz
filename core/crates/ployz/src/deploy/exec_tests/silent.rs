@@ -81,6 +81,7 @@ async fn destination_and_holder(
         )]
         let response = match rpc.into_inner().decode_request().unwrap().body {
             RpcRequestBody::DescribeContract(_) => RpcResponse::from(ContractDescription {
+                attest: None,
                 machine_id: machine('1'),
                 protocol_major: PROTOCOL_MAJOR,
                 daemon_version: "fixture".into(),
@@ -336,6 +337,7 @@ async fn live_and_second(
             )]
             let response = match rpc.into_inner().decode_request().unwrap().body {
                 RpcRequestBody::DescribeContract(_) => RpcResponse::from(ContractDescription {
+                    attest: None,
                     machine_id: machine('1'),
                     protocol_major: PROTOCOL_MAJOR,
                     daemon_version: "fixture".into(),

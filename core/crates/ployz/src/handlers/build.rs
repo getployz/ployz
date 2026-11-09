@@ -5,6 +5,8 @@
 
 use std::{collections::BTreeMap, path::Path, process::Command, sync::Arc};
 
+mod rule;
+
 use clap::{ArgMatches, ValueHint};
 use tokio_util::sync::CancellationToken;
 
@@ -52,6 +54,8 @@ enum BuildCommandError {
     Sealed(String),
     #[error("the build was cancelled")]
     Cancelled,
+    #[error("{0}")]
+    Rule(&'static str),
 }
 
 impl From<BuildCommandError> for Failure {
@@ -62,6 +66,9 @@ impl From<BuildCommandError> for Failure {
 
 pub(super) fn build(root: &ArgMatches) -> Result<(), Error> {
     let matches = leaf_matches(root);
+    if let Some(cloud) = matches.get_one::<String>("cloud") {
+        return build_under_rule(matches, cloud);
+    }
     let grant = BuildGrant::parse(required(matches, "grant")?)?;
     let expected = required(matches, "fingerprint")?;
     let commit = required(matches, "commit")?;
@@ -112,7 +119,177 @@ pub(super) fn build(root: &ArgMatches) -> Result<(), Error> {
         },
         opened,
     )?;
-    runtime.block_on(run(captured.build, &grant, events, &cancellation))
+    let pushed = runtime.block_on(run(captured.build, &grant, events, &cancellation))?;
+    pushed.print(None)
+}
+
+/// A build under the automatic deploy rule Cloud relays, on the run GitHub started for
+/// `commit`. See [`rule`].
+fn build_under_rule(matches: &ArgMatches, cloud: &str) -> Result<(), Error> {
+    let commit = required(matches, "commit")?;
+    let commit = ployz_core::authority::CommitSha::parse(&commit)
+        .map_err(|_| Error::usage("--commit must be a full lowercase Git SHA"))?;
+    let source = Path::new(
+        matches
+            .get_one::<String>("source")
+            .expect("source has a default"),
+    )
+    .canonicalize()?;
+    let cloud = rule::Cloud::new(cloud)?;
+    let oidc = rule::Oidc::from_env()?;
+    check_out(&source, &commit.to_string())?;
+    let events = Arc::new(Events(
+        matches
+            .get_one::<String>("events")
+            .map(std::fs::File::create)
+            .transpose()?
+            .map(std::sync::Mutex::new),
+    ));
+    let (cancellation, _sigterm) = crate::cancellation::interrupted_or_terminated()?;
+    let runtime = runtime()?;
+    let checked_in: rule::CheckedIn = runtime.block_on(until_cancelled(
+        &cancellation,
+        cloud.post(&oidc, "/api/builds/check-in", &json!({"commit": commit})),
+    ))?;
+    let built = built_under_rule(
+        &checked_in,
+        commit,
+        source,
+        &oidc,
+        &cloud,
+        &events,
+        &runtime,
+        &cancellation,
+    );
+    // The build's one report, its end: Cloud reads the image token from it.
+    let report = |platforms: &[String], token: Option<&ployz_core::GithubToken>| {
+        let events: Vec<Value> = matches
+            .get_one::<String>("events")
+            .and_then(|path| std::fs::read_to_string(path).ok())
+            .unwrap_or_default()
+            .lines()
+            .filter_map(|line| serde_json::from_str(line).ok())
+            .collect();
+        let body = FinalReport {
+            from: 0,
+            events,
+            platforms,
+            image_token: token.map(ployz_core::GithubToken::as_str),
+        };
+        let sent = runtime.block_on(cloud.post::<Value>(
+            &oidc,
+            &format!("/api/builds/{}/steps", checked_in.build),
+            &body,
+        ));
+        if let Err(error) = sent {
+            crate::ui::warn_cause("Ployz Cloud did not take the build's report", &error);
+        }
+    };
+    match built {
+        Ok((pushed, token)) => {
+            report(&pushed.platforms, Some(&token));
+            pushed.print(Some(&token))
+        }
+        Err(error) => {
+            report(&[], None);
+            Err(error)
+        }
+    }
+}
+
+/// A rule build's last Build Steps report, which carries its image token.
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct FinalReport<'a> {
+    from: u64,
+    events: Vec<Value>,
+    platforms: &'a [String],
+    #[serde(skip_serializing_if = "Option::is_none")]
+    image_token: Option<&'a str>,
+}
+
+/// Everything a rule build does after check-in: the grant, the secrets, the build, the
+/// push, and the image token.
+#[expect(clippy::too_many_arguments, reason = "one build's state, passed once")]
+fn built_under_rule(
+    checked_in: &rule::CheckedIn,
+    commit: ployz_core::authority::CommitSha,
+    source: std::path::PathBuf,
+    oidc: &rule::Oidc,
+    cloud: &rule::Cloud,
+    events: &Arc<Events>,
+    runtime: &tokio::runtime::Runtime,
+    cancellation: &CancellationToken,
+) -> Result<(Pushed, ployz_core::GithubToken), Error> {
+    let relayed = checked_in
+        .rule
+        .open()
+        .map_err(|_| BuildCommandError::Rule("Cloud relayed no readable rule"))?;
+    let policy = rule::policy(&relayed, &checked_in.service, &checked_in.deployment)?.clone();
+    let keys = rule::Keys::generate();
+    let grant_claim = rule::grant_claim(
+        checked_in,
+        &relayed,
+        &policy,
+        commit,
+        keys.holder(),
+        keys.recipient.recipient(),
+    )?;
+    let audience = grant_claim.audience().map_err(Error::command)?;
+    let (grant, opened) = runtime.block_on(until_cancelled(cancellation, async {
+        let proof = oidc.token(&audience).await?;
+        let granted: rule::Granted = cloud
+            .post(
+                oidc,
+                &format!("/api/builds/{}/grant", checked_in.build),
+                &rule::GrantAsk {
+                    proof: &proof,
+                    service: &checked_in.service,
+                    holder: keys.holder(),
+                    recipient: keys.recipient.recipient(),
+                    commit,
+                    authority: ployz_core::authority::CommitAuthority::Head,
+                },
+            )
+            .await?;
+        let machine = ployz_core::ManagementIdentity::parse_hex(&granted.machine)
+            .map_err(|_| BuildCommandError::Rule("Cloud named no valid Machine"))?;
+        let grant = BuildGrant::new(machine, keys.holder_seed);
+        let registry = open_grant_registry(&grant, &ManagementRelay::default()).await?;
+        // A build with no secrets opens an empty set: it still proves the Cluster.
+        let opened = registry
+            .sealed_for_build(&keys.recipient, &checked_in.attest, &audience)
+            .await
+            .inspect_err(|_| events.push_line(SEALED_UNREAD))?;
+        drop(registry);
+        Ok((grant, opened))
+    }))?;
+    let opened = opened
+        .covering(policy.secrets.iter().map(String::as_str))
+        .map_err(|missing| BuildCommandError::Sealed(missing.to_string()))?;
+    let service = checked_in.service.clone();
+    let mut captured = capture_opened(
+        PreparationInput {
+            deployment: checked_in.deployment.clone(),
+            sources: BTreeMap::from([(service.clone(), source)]),
+            source_commits: BTreeMap::from([(service, commit.to_string())]),
+            ..PreparationInput::default()
+        },
+        Some(opened),
+    )?
+    .build;
+    captured.pin_local(
+        policy.platforms.iter().cloned().collect(),
+        rule::cache_scope(&policy)?,
+    );
+    let pushed = runtime.block_on(run(captured, &grant, Arc::clone(events), cancellation))?;
+    let image = ployz_core::authority::ImageDigest::parse(&pushed.digest)
+        .map_err(|_| BuildCommandError::NotDigestIdentified)?;
+    let built = rule::built_claim(&grant_claim, image, checked_in.attest);
+    let token = runtime.block_on(until_cancelled(cancellation, async {
+        oidc.token(&built.audience().map_err(Error::command)?).await
+    }))?;
+    Ok((pushed, token))
 }
 
 /// Build `build` locally, push it through `grant` and export its cache, stopping at
@@ -122,7 +299,7 @@ async fn run(
     grant: &BuildGrant,
     events: Arc<Events>,
     cancellation: &CancellationToken,
-) -> Result<(), Error> {
+) -> Result<Pushed, Error> {
     let token = cancellation.clone();
     let building = Arc::clone(&events);
     let (build, built) = tokio::task::spawn_blocking(move || {
@@ -131,7 +308,7 @@ async fn run(
     })
     .await
     .map_err(std::io::Error::other)?;
-    push(
+    let pushed = push(
         grant,
         &built.map_err(BuildCommandError::from)?,
         &events,
@@ -150,7 +327,43 @@ async fn run(
             &error,
         );
     }
-    Ok(())
+    Ok(pushed)
+}
+
+/// What the Machine verified it received.
+struct Pushed {
+    digest: String,
+    tag: String,
+    platforms: Vec<String>,
+}
+
+impl Pushed {
+    /// The Cloud runner's fixed result line, on stdout in every mode. A rule build adds
+    /// its image token, which names the image and the attest key its secrets opened with.
+    fn print(&self, image_token: Option<&ployz_core::GithubToken>) -> Result<(), Error> {
+        use std::io::Write as _;
+        #[derive(serde::Serialize)]
+        #[serde(rename_all = "camelCase")]
+        struct Line<'a> {
+            digest: &'a str,
+            tag: &'a str,
+            platforms: &'a [String],
+            #[serde(skip_serializing_if = "Option::is_none")]
+            image_token: Option<&'a str>,
+        }
+        let line = Line {
+            digest: &self.digest,
+            tag: &self.tag,
+            platforms: &self.platforms,
+            image_token: image_token.map(ployz_core::GithubToken::as_str),
+        };
+        writeln!(
+            crate::ui::stdout_bytes(),
+            "{}",
+            serde_json::to_string(&line).map_err(std::io::Error::other)?
+        )?;
+        Ok(())
+    }
 }
 
 async fn until_cancelled<T>(
@@ -288,7 +501,7 @@ async fn push(
     built: &LocalImage,
     events: &Events,
     cancellation: &CancellationToken,
-) -> Result<(), Error> {
+) -> Result<Pushed, Error> {
     let digest = &built.image.reference;
     let hex = digest
         .strip_prefix("sha256:")
@@ -312,14 +525,11 @@ async fn push(
     events.push_line(&format!("Pushed {digest}"));
     // The Machine stores a tagged manifest only when its bytes hash to the tag's
     // digest, so a completed push is the Machine's confirmation of `digest`.
-    // The Cloud runner's fixed result line: stdout in every mode.
-    use std::io::Write as _;
-    writeln!(
-        crate::ui::stdout_bytes(),
-        "{}",
-        json!({"digest": digest, "tag": tag, "platforms": built.image.platforms})
-    )?;
-    Ok(())
+    Ok(Pushed {
+        digest: digest.clone(),
+        tag,
+        platforms: built.image.platforms.clone(),
+    })
 }
 
 /// `docker push`, its per-layer lines streamed to the events file as they come.
@@ -386,19 +596,22 @@ pub(super) fn command(command: clap::Command) -> clap::Command {
             value("grant", None)
                 .env(env::BUILD_GRANT)
                 .hide_env_values(true)
-                .required(true)
+                .required_unless_present("cloud")
+                .conflicts_with("cloud")
                 .help("Build Grant naming the receiving Server; prefer the environment variable"),
         )
         .arg(
             value("deployment", None)
-                .required(true)
+                .required_unless_present("cloud")
+                .conflicts_with("cloud")
                 .value_hint(ValueHint::FilePath)
                 .help("Frozen deployment JSON holding exactly one Git-sourced Service"),
         )
         .arg(value("commit", None).required(true).help("Commit to build"))
         .arg(
             value("fingerprint", None)
-                .required(true)
+                .required_unless_present("cloud")
+                .conflicts_with("cloud")
                 .help("Expected build-input fingerprint; the build is refused on mismatch"),
         )
         .arg(
@@ -406,6 +619,11 @@ pub(super) fn command(command: clap::Command) -> clap::Command {
                 .default_value(".")
                 .value_hint(ValueHint::DirPath)
                 .help("Repository working tree of the Service"),
+        )
+        .arg(
+            value("cloud", None)
+                .value_hint(ValueHint::Url)
+                .help("Build under the automatic deploy rule this Ployz Cloud origin relays, on a GitHub Actions run"),
         )
         .arg(
             value("events", None)
