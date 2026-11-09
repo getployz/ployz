@@ -517,7 +517,7 @@ it.live("an owner's approval of a stop is refused, with nothing stopped, when a 
     const found = (yield* provided(findService(ORGANIZATION, ENVIRONMENT, "web"))) ?? expect.fail("no web");
     const container = "c".repeat(64);
     const machine = "b".repeat(32);
-    let capabilities: string[] = ["ployz.restart.session-grant.v1"];
+    let capabilities: string[] = ["ployz.restart.session-grant.v2"];
     let readable = false;
     const cluster = <A, E, R>(effect: Effect.Effect<A, E, R>) => provided(effect.pipe(Effect.provideService(
       OrganizationRuntime,

@@ -35,7 +35,7 @@ import { serviceAct } from "#/modules/service-act/tables";
 import { Database } from "#/server/database.server";
 import { NotFound } from "#/server/public-error";
 
-const SESSION_GRANT_CAPABILITY = "ployz.restart.session-grant.v1";
+const SESSION_GRANT_CAPABILITY = "ployz.restart.session-grant.v2";
 
 type ActRow = typeof serviceAct.$inferSelect;
 type ActRequest = ServiceActRequestedEventData;
