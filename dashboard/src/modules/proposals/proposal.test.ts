@@ -71,7 +71,7 @@ describe("shownSteps", () => {
 });
 
 describe("strandedByProposal", () => {
-  const host = { id: "m1", name: "fra-1", capabilities: ["ployz.restart.session-grant.v1"], deviceEnforcement: true };
+  const host = { id: "m1", name: "fra-1", capabilities: ["ployz.restart.session-grant.v2"], deviceEnforcement: true };
   it("names an enforcing host that hasn't learnt proposals, and no other", () => {
     expect(strandedByProposal(copies, [host])).toBe("fra-1");
     expect(strandedByProposal(copies, [{ ...host, capabilities: [...host.capabilities, PROPOSAL_CAPABILITY] }])).toBeNull();

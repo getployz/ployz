@@ -25,7 +25,7 @@ use super::{
     trusted_key::TrustedKeys,
 };
 use crate::{
-    ContainerKind, MachineId, Namespace, OperationId, PortPublication, RawVolumeSource,
+    ContainerKind, EnvValue, MachineId, Namespace, OperationId, PortPublication, RawVolumeSource,
     RequestedServiceSpec, ResolvedServiceSpec, SealingPublicKey, ServiceName,
 };
 
@@ -507,6 +507,33 @@ pub fn verify(
         .map(|creation| creation_digest(&body, creation))
         .transpose()?;
     Ok(DeployApproved { body, by, digest })
+}
+
+/// Whether `by` may approve a Container that opens the Sealed values `spec` carries, in its
+/// environment or its hook's. A Device opens any. A browser key under a session grant
+/// opens only values sealed for its grant's Environment, so a dashboard holding a session
+/// in one Environment cannot deploy a Container that opens another's.
+#[must_use]
+pub fn sealed_scope_allows(by: &Approver, spec: &ResolvedServiceSpec) -> bool {
+    let Approver::Browser { grant, .. } = by else {
+        return true;
+    };
+    let hook = spec
+        .pre_deploy
+        .iter()
+        .flat_map(|hook| hook.environment.values());
+    let sealed = spec
+        .container
+        .environment
+        .values()
+        .chain(hook)
+        .any(EnvValue::is_sealed);
+    !sealed
+        || spec
+            .container
+            .sealed_identity
+            .as_ref()
+            .is_some_and(|identity| identity.environment == grant.body.environment_id)
 }
 
 fn open_signed(
