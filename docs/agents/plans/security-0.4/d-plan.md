@@ -257,13 +257,13 @@ The semantics are in `d-build-proof.md`, "A person deploys a built image (D6)". 
 **Files.**
 
 - [ ] Edit `core/crates/ployz-core/src/authority/rule.rs` to add `BuildApproval` (purpose `Workflow`, thread C's 15-minute window) and `Authority::Approved`.
-- [ ] Edit `core/crates/ployzd/src/management/build_grant.rs` so grant admission accepts `Approved(d)`. That means the signature, the rule, generation, Service and commit, a `workflow_dispatch` run on the rule's branch, and the commit on the branch's history. The Machine reads `GET /repositories/<id>/compare/<commit>...<branch>` now and accepts `identical` or `behind`. Add the compare read to `core/crates/ployzd/src/github/head.rs`.
+- [ ] Edit `core/crates/ployzd/src/management/build_grant.rs` so grant admission accepts `Approved(d)`. That means the signature, the rule, generation, Service and commit, a `workflow_dispatch` run on the rule's branch, and the commit on the branch's history. The Machine reads `GET /repositories/<id>/compare/<commit>...<branch>` now and accepts `identical` or `ahead` (the branch descends from the commit) and refuses `behind` and `diverged`. Add the compare read to `core/crates/ployzd/src/github/head.rs`.
 - [ ] Edit `core/crates/ployz/src/handlers/deploy.rs` (and `core/crates/ployz-sdk/src/lib.rs` for the dashboard) so a deploy of a Git Service at a commit verifies a stored image token for that commit, if one exists. The client checks the signature against the JWKS it fetches, every claim and the audience against the rule, `attest` equal to the Cluster's attest key, and ignores `exp`. With no usable token, it signs a `BuildApproval`, waits for the build, and verifies the new token. Then it signs `DeployApproval` with `image = <repository>@<digest>`.
 - [ ] Edit `docs/user/deploy/history-and-rollback.md`.
 
 **Verify, unit.**
 
-- [ ] `build_grant.rs` tests admit `Approved` for a commit behind the head, and refuse a commit not on the branch (compare `diverged` or `ahead`), another Service, another generation, an expired approval and a `push` run.
+- [ ] `build_grant.rs` tests admit `Approved` for a commit the branch descends from (compare `ahead` or `identical`), and refuse a commit not on the branch (compare `diverged`), an unmerged descendant of the head (compare `behind`), another Service, another generation, an expired approval and a `push` run.
 - [ ] `handlers/deploy.rs` tests verify an expired fixture token whose claims match, and refuse one with another commit, another policy, another attest key, and a `kid` missing from the JWKS (which falls back to a rebuild).
 
 **Verify, live.** Six lanes, all **GitHub**.
@@ -369,7 +369,7 @@ Unproven until the slice that proves it:
 - A PR Environment's spec differs from its parent's only in fields `PreviewTemplate` derives, and Own Copies keep their logical Volume names. D7's prototype.
 - HPKE authenticated mode in `hpke` 0.13 opens on the runner with the attest public key, and refuses a base-mode or wrongly keyed response. D3's unit tests and lane 11.
 - `workflow_dispatch` with a `commit` input can check out a fork pull request's commit from the base repository. D7 lane 7.
-- `GET /repositories/<id>/compare/<base>...<head>` by repository ID reports `behind` or `identical` for an ancestor. D6 lane 2.
+- `GET /repositories/<id>/compare/<base>...<head>` by repository ID reports `ahead` or `identical` when the head descends from the base, and `behind` for an unmerged descendant of the head. Checked read-only during review. D6 lane 2 confirms it on the lab repository.
 - A Boat Cloud runs against a real GitHub App, and runners reach a Boat Machine's grant door. Appendix B.
 
 ## Appendix D. Handoffs
