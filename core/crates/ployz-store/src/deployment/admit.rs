@@ -634,10 +634,21 @@ fn reapply(
             json!({ "services": services }),
         ));
     };
+    // An older revision may still give a Service it doesn't ship a hostname that
+    // Service has since released, so only what it ships is checked.
+    let shipping = SavedEnvironmentIntent {
+        services: saved
+            .services
+            .iter()
+            .filter(|service| frozen.nodes.iter().any(|node| node.id() == service.id))
+            .cloned()
+            .collect(),
+        ..saved.clone()
+    };
     gate(
         tx,
         who,
-        (&environment, &saved),
+        (&environment, &shipping),
         (cluster_domain, &namespace),
         trusted,
     )?;

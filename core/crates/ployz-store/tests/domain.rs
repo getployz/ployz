@@ -2010,3 +2010,59 @@ fn services_that_run_different_revisions_reapply_one_at_a_time() {
     assert_eq!(shipped(&intent, "worker").0, ["worker.acme-apps.com"]);
     assert!(!shipped(&intent, "worker").1.contains(&"LEVEL".to_owned()));
 }
+
+#[test]
+fn a_reapply_checks_only_the_hostnames_it_ships() {
+    let (store, who) = shop();
+    store
+        .write(
+            &who,
+            &CreateService {
+                id: ServiceLineageId::parse(uuid(6)).unwrap(),
+                environment: EnvironmentRef::default(),
+                name: ServiceName::parse("worker").unwrap(),
+                image: Some("redis:7".into()),
+                template: None,
+            },
+        )
+        .unwrap();
+    store
+        .write_trusted(&who, &add_prefix("web"), &cloud())
+        .unwrap();
+    store
+        .write_trusted(
+            &who,
+            &AddDomain {
+                service: ServiceName::parse("worker").unwrap(),
+                ..add(Some("released.example.org"), Some(80))
+            },
+            &cloud(),
+        )
+        .unwrap();
+    admit(&store, &who, 1, &cloud()).unwrap();
+    apply_service(&store, 1, &["web", "worker"]);
+    edit(&store, &who, "web.env.MODE", "staged");
+    store
+        .write_trusted(
+            &who,
+            &RemoveDomain {
+                environment: EnvironmentRef::default(),
+                domain: "released.example.org".into(),
+            },
+            &cloud(),
+        )
+        .unwrap();
+    deploy_only(&store, &who, 2, "worker");
+    let mut elsewhere = tunnel();
+    elsewhere.domains.published.push(PublishedHostname {
+        hostname: host("released.example.org"),
+        namespace: ployz_core::Namespace::parse("another-production").unwrap(),
+        service: ServiceName::parse("other").unwrap(),
+    });
+
+    let Written::Deployment(summary) = reapply(&store, &who, 3, &["web"], &elsewhere).unwrap()
+    else {
+        panic!("not a Deployment");
+    };
+    assert_eq!((summary.saved.0, summary.ships.len()), (1, 1));
+}
