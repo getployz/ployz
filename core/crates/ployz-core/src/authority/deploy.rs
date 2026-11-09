@@ -79,7 +79,7 @@ impl PayloadDigest {
     }
 }
 
-fn drop_nulls(value: &mut Value) {
+pub(super) fn drop_nulls(value: &mut Value) {
     match value {
         Value::Object(fields) => {
             fields.retain(|_, field| !field.is_null());
