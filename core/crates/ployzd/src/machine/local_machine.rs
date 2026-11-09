@@ -191,7 +191,7 @@ pub enum Error {
     DeployRefused(ployz_core::authority::AuthorityRefusal),
     /// Device enforcement refused an Operator's `Build` or `MintBuildGrant`. The refusal
     /// names `capability` in its details.
-    #[error("This server runs only builds an approved device starts.")]
+    #[error("{}", ployz_core::BUILD_REFUSED_BY_ENFORCEMENT)]
     BuildRefused { capability: &'static str },
     #[error("ployz.machine.join.device-approval.v1 needs a Device-signed join approval: {0}")]
     JoinRefused(ployz_core::authority::AuthorityRefusal),

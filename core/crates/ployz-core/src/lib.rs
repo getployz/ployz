@@ -72,6 +72,11 @@ pub use volume_switch::*;
 /// this long; clients waiting for Participating must wait at least this long.
 pub const MACHINE_START_WAIT: std::time::Duration = std::time::Duration::from_secs(5 * 60);
 
+/// What a Machine that enforces Device approval says when an Operator asks it to `Build`
+/// or `MintBuildGrant`. Clients compare against it to show the refusal as it is.
+pub const BUILD_REFUSED_BY_ENFORCEMENT: &str =
+    "This server runs only builds an approved device starts.";
+
 /// Daemon exit status for an operator-actionable Docker network or WireGuard
 /// interface refusal.
 pub const NETWORK_CONFLICT_EXIT_STATUS: u8 = 78;
