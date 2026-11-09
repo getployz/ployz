@@ -240,7 +240,8 @@ pub(super) fn refusal_text(refusal: &AuthorityRefusal) -> String {
         | AuthorityRefusal::BadSignature { .. }
         | AuthorityRefusal::ApproveOnly { .. }
         | AuthorityRefusal::Mismatch { .. }
-        | AuthorityRefusal::NoClusterIdentity => {
+        | AuthorityRefusal::NoClusterIdentity
+        | AuthorityRefusal::ProofReplayed => {
             return format!("This server can't check the deploy's approval: {refusal}.");
         }
     };

@@ -27,4 +27,6 @@ pub enum AuthorityRefusal {
     NoClusterIdentity,
     #[error("operation {operation} already ran this step; a new restart signs a new approval")]
     Replayed { operation: OperationId },
+    #[error("this GitHub token already minted a Build Grant; a build asks for a new one")]
+    ProofReplayed,
 }

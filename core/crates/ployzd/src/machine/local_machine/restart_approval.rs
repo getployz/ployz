@@ -14,8 +14,8 @@ use ployz_core::{
     LocalMachinePhase, ManagementScope, OperationId, RunTarget, Sealing, ServiceName,
     SetDeviceEnforcementRequest,
     authority::{
-        AuthorityRefusal, DeployApproval, Purpose, RestartApproval, RestartFacts, RestartStep,
-        Signed, StartingSet, Timestamp, restart, starting_set,
+        AuthorityRefusal, AutoDeployRule, DeployApproval, Purpose, RestartApproval, RestartFacts,
+        RestartStep, RuleId, Signed, StartingSet, Timestamp, restart, starting_set,
     },
 };
 use serde::{Deserialize, Serialize};
@@ -223,8 +223,25 @@ struct Consumption {
     joins: BTreeMap<ployz_core::MachineId, JoinResult>,
     #[serde(default)]
     expiry_time_floor: Option<Timestamp>,
+    /// What this Machine saw first and highest of each automatic deploy rule.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    rules: BTreeMap<RuleId, RuleMark>,
+    /// GitHub tokens that minted a Build Grant, by SHA-256 of their `jti`, until they
+    /// expire.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    proofs: BTreeMap<String, Timestamp>,
     #[serde(flatten)]
     operations: BTreeMap<OperationId, Operation>,
+}
+
+/// A rule's identity as this Machine first saw it, which no later generation may change,
+/// and the highest generation it has seen.
+#[derive(Clone, Debug, Deserialize, Serialize)]
+struct RuleMark {
+    generation: u64,
+    repository_id: u64,
+    branch: String,
+    namespace: ployz_core::Namespace,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -581,6 +598,77 @@ impl ConsumptionLog {
             .map_err(io::Error::other)
             .and_then(|contents| crate::filesystem::atomic_write(&self.path, &contents, 0o600))
             .map_err(Error::JoinRecord);
+        if let Err(error) = written {
+            *guard = None;
+            return Err(error);
+        }
+        *guard = Some(updated);
+        Ok(())
+    }
+
+    /// Spend the GitHub token `jti`, valid until `expires_at`, on a grant under `rule`.
+    /// Refuses a token already spent, a generation lower than the highest this Machine has
+    /// seen of the rule, and a generation that moves the rule to another repository,
+    /// branch or Namespace. Raises the rule's mark. Written before the grant is minted, so
+    /// a crash after it costs the builder a new token, never a second grant.
+    pub(crate) fn consume_rule_proof(
+        &self,
+        rule: &AutoDeployRule,
+        jti: &str,
+        expires_at: Timestamp,
+        now: Timestamp,
+    ) -> Result<(), Error> {
+        let mut guard = self
+            .operations
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        if guard.is_none() {
+            *guard = Some(self.load().map_err(Error::ApprovalRecord)?);
+        }
+        let consumption = guard.as_ref().expect("loaded above");
+        let now = consumption
+            .expiry_time_floor
+            .map_or(now, |floor| now.max(floor));
+        let refused = |field| {
+            Err(Error::RuleGrantRefused(AuthorityRefusal::Mismatch {
+                field,
+            }))
+        };
+        if let Some(mark) = consumption.rules.get(&rule.rule) {
+            if rule.generation < mark.generation {
+                return refused("a generation");
+            }
+            if rule.source.repository_id != mark.repository_id {
+                return refused("a repository");
+            }
+            if rule.source.branch != mark.branch {
+                return refused("a branch");
+            }
+            if rule.namespace != mark.namespace {
+                return refused("a Namespace");
+            }
+        }
+        let spent = hex::encode(Sha256::digest(jti.as_bytes()));
+        if consumption.proofs.contains_key(&spent) {
+            return Err(Error::RuleGrantRefused(AuthorityRefusal::ProofReplayed));
+        }
+        let mut updated = consumption.clone();
+        updated.expiry_time_floor = Some(now);
+        updated.proofs.retain(|_, expires| {
+            expires.plus(ployz_core::authority::validity::CLOCK_SKEW_MILLIS) >= now
+        });
+        updated.proofs.insert(spent, expires_at);
+        let mark = updated.rules.entry(rule.rule).or_insert_with(|| RuleMark {
+            generation: rule.generation,
+            repository_id: rule.source.repository_id,
+            branch: rule.source.branch.clone(),
+            namespace: rule.namespace.clone(),
+        });
+        mark.generation = mark.generation.max(rule.generation);
+        let written = serde_json::to_vec(&updated)
+            .map_err(io::Error::other)
+            .and_then(|contents| crate::filesystem::atomic_write(&self.path, &contents, 0o600))
+            .map_err(Error::ApprovalRecord);
         if let Err(error) = written {
             *guard = None;
             return Err(error);

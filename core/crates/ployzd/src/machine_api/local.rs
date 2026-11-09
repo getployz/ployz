@@ -48,9 +48,38 @@ pub struct MachineService {
     pub(crate) published_routes: tokio::sync::watch::Receiver<crate::ingress::PublishedRoutes>,
     /// This Machine's observation of its mesh path to each peer.
     pub(crate) paths: crate::network::PathBook,
+    /// GitHub as a test fixes it, in place of `api.github.com` and its issuer.
+    #[cfg(test)]
+    pub(crate) github: Option<Arc<crate::machine::local_machine::rule_grant::FixedGithub>>,
 }
 
 impl MachineService {
+    /// Run every check of a rule build's grant against GitHub, or `None` when this daemon
+    /// cannot reach GitHub at all.
+    async fn admit_rule_grant(
+        &self,
+        grant: &ployz_core::RuleGrant,
+        holder: Option<&ployz_core::BuildGrantId>,
+        sealed: Option<&ployz_core::SealedRecord>,
+    ) -> Option<Result<crate::machine::local_machine::rule_grant::AdmittedRule, LocalMachineError>>
+    {
+        let now = ployz_core::authority::Timestamp::now();
+        #[cfg(test)]
+        if let Some(github) = &self.github {
+            return Some(
+                self.local
+                    .admit_rule_grant(grant, holder, sealed, github.as_ref(), github.now(now))
+                    .await,
+            );
+        }
+        let github = crate::machine::local_machine::rule_grant::GithubOnline::shared()?;
+        Some(
+            self.local
+                .admit_rule_grant(grant, holder, sealed, github, now)
+                .await,
+        )
+    }
+
     #[must_use]
     pub fn with_cluster(
         owner: RecordOwner,
@@ -68,6 +97,8 @@ impl MachineService {
             grants: Arc::default(),
             endpoint_chooser: None,
             paths: crate::network::PathBook::default(),
+            #[cfg(test)]
+            github: None,
             published_routes: tokio::sync::watch::channel(
                 crate::ingress::PublishedRoutes::default(),
             )
@@ -958,14 +989,36 @@ impl MachineRpc for MachineService {
     ) -> Result<Response<OpaquePayload>, Status> {
         let operator = from_operator(&request);
         let request = expect::<op::MintBuildGrant>(request)?;
-        // Refused before `Mint::check`, which opens the Sealed record to check it.
-        if operator
-            && let Err(error) = self
-                .local
-                .admit_operator_build(ployz_core::MINT_BUILD_GRANT_CAPABILITY)
-        {
-            return local_error(error);
-        }
+        // Refused before `Mint::check`, which opens the Sealed record to check it. A rule
+        // build's grant passes enforcement only once every check of its proof passed.
+        let admitted = match &request.rule {
+            None => {
+                if operator
+                    && let Err(error) = self
+                        .local
+                        .admit_operator_build(ployz_core::MINT_BUILD_GRANT_CAPABILITY)
+                {
+                    return local_error(error);
+                }
+                None
+            }
+            Some(grant) => {
+                let admitted =
+                    self.admit_rule_grant(grant, request.holder.as_ref(), request.sealed.as_ref());
+                let Some(admitted) = admitted.await else {
+                    return respond(RpcError {
+                        code: RpcErrorCode::Unavailable,
+                        message: "This Server cannot reach GitHub to check a rule build".into(),
+                        details: Value::Null,
+                        cause: Vec::new(),
+                    });
+                };
+                match admitted {
+                    Ok(admitted) => Some(admitted),
+                    Err(error) => return local_error(error),
+                }
+            }
+        };
         let key_dir = self
             .containers()
             .ok()
@@ -975,7 +1028,9 @@ impl MachineRpc for MachineService {
         } else {
             ployz_core::ManagementScope::Full
         };
-        let mint = match crate::management::build_grant::Mint::check(request, key_dir) {
+        let mint = match crate::management::build_grant::Mint::check_admitted(
+            request, key_dir, admitted,
+        ) {
             Ok(mint) => mint.minted_by(scope),
             Err(refused) => return respond(refused),
         };
@@ -1194,6 +1249,12 @@ fn local_failure(error: LocalMachineError) -> Result<RpcError, Status> {
             }),
         )),
         LocalMachineError::BuildRefused { capability } => Err(build_refused(&error, capability)),
+        LocalMachineError::RuleGrantRefused(_)
+        | LocalMachineError::RuleProofRefused(_)
+        | LocalMachineError::RuleHeadUnread(_) => Err(build_refused(
+            &error,
+            ployz_core::BUILD_GRANT_RULE_CAPABILITY,
+        )),
         LocalMachineError::EnforcementRefused(_) => Err(ployz_core::rpc::hinted_status(
             tonic::Code::PermissionDenied,
             &error,

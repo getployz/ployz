@@ -187,8 +187,8 @@ impl<'de> Deserialize<'de> for OpenedSealed {
 #[cfg(not(target_arch = "wasm32"))]
 mod build_secrets {
     use hpke::{
-        Deserializable as _, Kem as _, OpModeR, OpModeS, Serializable as _,
-        aead::ChaCha20Poly1305, kdf::HkdfSha256, kem::X25519HkdfSha256,
+        Deserializable as _, Kem as _, OpModeR, OpModeS, Serializable as _, aead::ChaCha20Poly1305,
+        kdf::HkdfSha256, kem::X25519HkdfSha256,
     };
     use rand_core::{OsRng, TryRngCore as _};
     use thiserror::Error;
@@ -289,9 +289,8 @@ mod build_secrets {
                 .map_err(|_| BuildSecretsError::Seal)?;
             let sender_private = sender.private();
             let sender_public = Kem::sk_to_pk(&sender_private);
-            let plaintext = Zeroizing::new(
-                serde_json::to_vec(self).map_err(|_| BuildSecretsError::Seal)?,
-            );
+            let plaintext =
+                Zeroizing::new(serde_json::to_vec(self).map_err(|_| BuildSecretsError::Seal)?);
             let (encapped, ciphertext) =
                 hpke::single_shot_seal::<ChaCha20Poly1305, HkdfSha256, Kem, _>(
                     &OpModeS::Auth((sender_private, sender_public)),
@@ -365,7 +364,11 @@ mod build_secrets {
             let sealed = values()
                 .seal_for_build(&attest, &recipient.recipient(), AUDIENCE)
                 .unwrap();
-            assert!(!sealed.windows(MARKER.len()).any(|window| window == MARKER.as_bytes()));
+            assert!(
+                !sealed
+                    .windows(MARKER.len())
+                    .any(|window| window == MARKER.as_bytes())
+            );
             let opened =
                 OpenedSealed::open_build(&sealed, &recipient, &attest.attest(), AUDIENCE).unwrap();
             assert_eq!(opened.get("NPM_TOKEN"), Some(MARKER));
@@ -401,10 +404,9 @@ mod build_secrets {
         fn a_build_refuses_values_sealed_in_base_mode() {
             let attest = X25519Secret::generate();
             let recipient = X25519Secret::generate();
-            let public = <Kem as hpke::Kem>::PublicKey::from_bytes(
-                recipient.recipient().as_bytes(),
-            )
-            .unwrap();
+            let public =
+                <Kem as hpke::Kem>::PublicKey::from_bytes(recipient.recipient().as_bytes())
+                    .unwrap();
             let plaintext = serde_json::to_vec(&values()).unwrap();
             let (encapped, ciphertext) =
                 hpke::single_shot_seal::<ChaCha20Poly1305, HkdfSha256, Kem, _>(

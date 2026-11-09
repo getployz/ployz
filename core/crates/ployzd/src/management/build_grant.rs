@@ -15,6 +15,10 @@
 //!
 //! A grant minted for a holder can carry the built Service's Sealed values, still
 //! sealed. Its holder reads them opened from `GET /ployz/sealed` once, before the push.
+//! A grant minted under an automatic deploy rule, after every check in `rule_grant`,
+//! survives enforcement, and serves its values only HPKE-sealed from the Cluster's attest
+//! key to the build's recipient key, bound to the grant's audience. It serves that even
+//! with no Sealed values, so the builder can tell a Cluster Machine from any endpoint.
 
 use std::{
     collections::HashMap,
@@ -38,13 +42,14 @@ use iroh::{
 use ployz_core::{
     BUILD_GRANT_ENDED, BUILD_GRANT_REFUSED, BuildGrant, BuildGrantId, BuildGrantInspected,
     BuildGrantMinted, BuildGrantRepository, ImageDigest, ManagementIdentity, ManagementScope,
-    MintBuildGrantRequest, MintedKey, RETAINED_DIGEST_TAG_PREFIX, RpcError, RpcErrorCode,
-    SealedRecord,
+    MintBuildGrantRequest, MintedKey, OpenedSealed, RETAINED_DIGEST_TAG_PREFIX, RpcError,
+    RpcErrorCode, SealedRecord, authority::RecipientKey,
 };
 use sha2::{Digest as _, Sha256};
 use tokio::time::Instant;
 use tokio_util::sync::CancellationToken;
 
+use crate::machine::local_machine::rule_grant::AdmittedRule;
 use crate::sealed_env::Unseal as _;
 
 /// How long a grant lives. Ployz Cloud mints it at
@@ -67,9 +72,9 @@ pub struct BuildGrants {
 }
 
 struct Grant {
-    /// The scope of the caller that minted it. An Operator's grant opens nothing on a
-    /// Machine that enforces Device approval.
-    minted_by: ManagementScope,
+    /// Who minted it. An Operator's grant opens nothing on a Machine that enforces
+    /// Device approval.
+    minted_by: Minter,
     repository: BuildGrantRepository,
     ingest: SocketAddr,
     expires: Instant,
@@ -78,17 +83,38 @@ struct Grant {
     sealed: Mutex<Sealing>,
 }
 
+/// Who minted a grant.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum Minter {
+    Operator,
+    Full,
+    /// Any caller, under an automatic deploy rule this Machine checked.
+    Rule,
+}
+
 enum Sealing {
     None,
-    Sealed(Sealed),
+    Ready(Release),
     /// Its holder read them; nothing more is served.
     Served,
 }
 
-/// A record this Machine opened at mint, kept sealed until its holder reads it.
-struct Sealed {
-    record: SealedRecord,
-    key_dir: PathBuf,
+/// How a grant releases its build's Sealed values, kept sealed until its holder reads
+/// them.
+enum Release {
+    /// Opened, to the holder over the grant connection.
+    Plain {
+        record: SealedRecord,
+        key_dir: PathBuf,
+    },
+    /// Opened, then sealed from the attest key to a rule build's recipient. `None` holds
+    /// no values and still seals the empty set.
+    Attested {
+        record: Option<SealedRecord>,
+        key_dir: PathBuf,
+        recipient: RecipientKey,
+        audience: String,
+    },
 }
 
 enum Push {
@@ -103,8 +129,8 @@ enum Push {
 pub struct Mint {
     repository: BuildGrantRepository,
     key: Key,
-    sealed: Option<Sealed>,
-    minted_by: ManagementScope,
+    release: Option<Release>,
+    minted_by: Minter,
 }
 
 enum Key {
@@ -122,6 +148,19 @@ impl Mint {
     /// `InvalidArgument` when the holder is not a public key or Sealed values have no
     /// holder; `Conflict` when this Machine has no Sealing Key or they don't open here.
     pub fn check(request: MintBuildGrantRequest, key_dir: Option<&Path>) -> Result<Mint, RpcError> {
+        Self::check_admitted(request, key_dir, None)
+    }
+
+    /// [`Self::check`] for a request whose rule build `admitted` passed every
+    /// `rule_grant` check, which the caller ran first.
+    ///
+    /// # Errors
+    /// As [`Self::check`].
+    pub(crate) fn check_admitted(
+        request: MintBuildGrantRequest,
+        key_dir: Option<&Path>,
+        admitted: Option<AdmittedRule>,
+    ) -> Result<Mint, RpcError> {
         let key = match request.holder {
             None => Key::Made(SecretKey::generate()),
             Some(holder) => Key::Holder(
@@ -137,43 +176,63 @@ impl Mint {
                     })?,
             ),
         };
-        let sealed = match request.sealed {
-            None => None,
-            Some(_) if matches!(key, Key::Made(_)) => {
-                return Err(refused(
-                    RpcErrorCode::InvalidArgument,
-                    "a Build Grant carrying Sealed values needs a holder".into(),
-                ));
-            }
-            Some(record) => {
-                let key_dir = key_dir.ok_or_else(|| {
-                    refused(
-                        RpcErrorCode::Conflict,
-                        "this Machine has no Sealing Key to open the Build's Sealed values".into(),
-                    )
-                })?;
-                record
-                    .open_for_build(Some(key_dir))
-                    .map_err(|error| refused(RpcErrorCode::Conflict, error.to_string()))?;
-                Some(Sealed {
+        if matches!(key, Key::Made(_)) && (request.sealed.is_some() || admitted.is_some()) {
+            return Err(refused(
+                RpcErrorCode::InvalidArgument,
+                "a Build Grant carrying Sealed values needs a holder".into(),
+            ));
+        }
+        let key_dir = || {
+            key_dir.ok_or_else(|| {
+                refused(
+                    RpcErrorCode::Conflict,
+                    "this Machine has no Sealing Key to open the Build's Sealed values".into(),
+                )
+            })
+        };
+        if let Some(record) = &request.sealed {
+            record
+                .open_for_build(Some(key_dir()?))
+                .map_err(|error| refused(RpcErrorCode::Conflict, error.to_string()))?;
+        }
+        let (release, minted_by) = match (admitted, request.sealed) {
+            (None, None) => (None, Minter::Operator),
+            (None, Some(record)) => (
+                Some(Release::Plain {
                     record,
-                    key_dir: key_dir.to_owned(),
-                })
-            }
+                    key_dir: key_dir()?.to_owned(),
+                }),
+                Minter::Operator,
+            ),
+            (Some(admitted), record) => (
+                Some(Release::Attested {
+                    record,
+                    key_dir: key_dir()?.to_owned(),
+                    recipient: admitted.recipient,
+                    audience: admitted.audience,
+                }),
+                Minter::Rule,
+            ),
         };
         Ok(Mint {
             repository: request.repository,
             key,
-            sealed,
-            // Until the caller says otherwise, a grant counts as an Operator's.
-            minted_by: ManagementScope::Operator,
+            release,
+            // Until the caller says otherwise, a grant without a rule counts as an
+            // Operator's.
+            minted_by,
         })
     }
 
-    /// Record the scope of the caller that asked for this grant.
+    /// Record the scope of the caller that asked for this grant. A rule grant stays one.
     #[must_use]
     pub fn minted_by(mut self, scope: ManagementScope) -> Self {
-        self.minted_by = scope;
+        if self.minted_by != Minter::Rule {
+            self.minted_by = match scope {
+                ManagementScope::Operator => Minter::Operator,
+                ManagementScope::Full => Minter::Full,
+            };
+        }
         self
     }
 }
@@ -205,7 +264,7 @@ impl BuildGrants {
             ingest,
             expires: Instant::now() + GRANT_LIFETIME,
             push: Mutex::new(Push::Open),
-            sealed: Mutex::new(mint.sealed.map_or(Sealing::None, Sealing::Sealed)),
+            sealed: Mutex::new(mint.release.map_or(Sealing::None, Sealing::Ready)),
         });
         let mut grants = self.grants.lock().expect("grant registry lock");
         grants.retain(|_, grant| grant.expires > Instant::now());
@@ -303,7 +362,7 @@ impl Grant {
     /// An Operator's grant is dead while this Machine enforces Device approval, however
     /// long ago it was minted: Cloud could have minted it for its own key.
     fn refused_by(&self, enforcing: &(dyn Fn() -> bool + Sync)) -> bool {
-        self.minted_by == ManagementScope::Operator && enforcing()
+        self.minted_by == Minter::Operator && enforcing()
     }
 
     fn pushed(&self) -> bool {
@@ -535,7 +594,7 @@ fn sealed(grant: &Grant) -> Response<Body> {
         }
         let mut sealing = grant.sealed.lock().expect("grant sealed lock");
         match std::mem::replace(&mut *sealing, Sealing::Served) {
-            Sealing::Sealed(sealed) => sealed,
+            Sealing::Ready(release) => release,
             Sealing::Served => {
                 return denied(
                     StatusCode::FORBIDDEN,
@@ -551,16 +610,49 @@ fn sealed(grant: &Grant) -> Response<Body> {
             }
         }
     };
-    match sealed.record.open_for_build(Some(&sealed.key_dir)) {
-        Ok(opened) => Response::builder()
-            .status(StatusCode::OK)
-            .header(header::CONTENT_TYPE, "application/json")
-            .header(header::CACHE_CONTROL, "no-store")
-            .body(Body::from(
+    let (body, content_type) = match release(sealed) {
+        Ok(released) => released,
+        Err(message) => return denied(StatusCode::PRECONDITION_FAILED, &message),
+    };
+    Response::builder()
+        .status(StatusCode::OK)
+        .header(header::CONTENT_TYPE, content_type)
+        .header(header::CACHE_CONTROL, "no-store")
+        .body(Body::from(body))
+        .expect("static response")
+}
+
+/// The body a grant serves its holder, and its content type.
+fn release(release: Release) -> Result<(Vec<u8>, &'static str), String> {
+    match release {
+        Release::Plain { record, key_dir } => {
+            let opened = record
+                .open_for_build(Some(&key_dir))
+                .map_err(|error| error.to_string())?;
+            Ok((
                 serde_json::to_vec(&opened).expect("opened values encode"),
+                "application/json",
             ))
-            .expect("static response"),
-        Err(error) => denied(StatusCode::PRECONDITION_FAILED, &error.to_string()),
+        }
+        Release::Attested {
+            record,
+            key_dir,
+            recipient,
+            audience,
+        } => {
+            let opened = match record {
+                Some(record) => record
+                    .open_for_build(Some(&key_dir))
+                    .map_err(|error| error.to_string())?,
+                None => OpenedSealed::new(Default::default(), Vec::new()),
+            };
+            let attest =
+                crate::sealed_env::attest_key(Some(&key_dir)).map_err(|error| error.to_string())?;
+            let sealed = opened
+                .seal_for_build(&attest, &recipient, &audience)
+                .map_err(|error| error.to_string())?;
+            Ok((sealed, "application/octet-stream"))
+        }
     }
 }
 
@@ -718,7 +810,7 @@ mod tests {
             ingest: live.ingest,
             expires: Instant::now(),
             push: Mutex::new(Push::Open),
-            sealed: Mutex::new(Sealing::Sealed(Sealed {
+            sealed: Mutex::new(Sealing::Ready(Release::Plain {
                 record: sealed_request(&cluster).sealed.unwrap(),
                 key_dir: cluster.dir.0.clone(),
             })),
@@ -777,7 +869,7 @@ mod tests {
         assert_eq!(status, StatusCode::FORBIDDEN, "{body}");
         assert!(!body.contains(MARKER), "{body}");
         assert!(
-            matches!(*admitted.sealed.lock().unwrap(), Sealing::Sealed(_)),
+            matches!(*admitted.sealed.lock().unwrap(), Sealing::Ready(_)),
             "a refused request leaves the Sealed record unopened and unread"
         );
 
@@ -838,7 +930,7 @@ mod tests {
         let cluster = Cluster::new();
         let elsewhere = Cluster::new();
         let grant = sealed_grant(&cluster);
-        *grant.sealed.lock().unwrap() = Sealing::Sealed(Sealed {
+        *grant.sealed.lock().unwrap() = Sealing::Ready(Release::Plain {
             record: sealed_request(&cluster).sealed.unwrap(),
             key_dir: elsewhere.dir.0.clone(),
         });
@@ -1053,6 +1145,122 @@ mod tests {
             ),
         ] {
             assert_eq!(route(method.clone(), &path, query), None, "{method} {path}");
+        }
+    }
+
+    mod rule {
+        //! A grant minted under a rule: it survives enforcement, and serves its values
+        //! sealed from the attest key to the build's recipient, bound to its audience.
+
+        use ployz_core::X25519Secret;
+
+        use super::*;
+        use crate::machine::local_machine::rule_grant::AdmittedRule;
+
+        const AUDIENCE: &str = "ployz-build:rule-test";
+
+        fn rule_grant(
+            cluster: &Cluster,
+            record: Option<SealedRecord>,
+            recipient: &X25519Secret,
+        ) -> Arc<Grant> {
+            let admitted = AdmittedRule {
+                recipient: recipient.recipient(),
+                audience: AUDIENCE.to_owned(),
+                rule: ployz_core::authority::RuleId::from_bytes([1; 16]),
+                generation: 1,
+                service: ployz_core::ServiceName::parse("web").unwrap(),
+                commit: ployz_core::authority::CommitSha::from_bytes([2; 20]),
+            };
+            let request = MintBuildGrantRequest {
+                sealed: record,
+                ..request(Some(&hex::encode(holder().as_bytes())))
+            };
+            let mint = Mint::check_admitted(request, Some(&cluster.dir.0), Some(admitted))
+                .unwrap()
+                .minted_by(ManagementScope::Operator);
+            let grants = BuildGrants::default();
+            grants
+                .mint(
+                    ManagementIdentity::from_bytes([7; 32]),
+                    mint,
+                    SocketAddr::from(([127, 0, 0, 1], 5000)),
+                )
+                .unwrap();
+            grants.admit(holder().as_bytes(), &|| true).unwrap()
+        }
+
+        async fn body(response: Response<Body>) -> (StatusCode, Vec<u8>) {
+            let status = response.status();
+            (
+                status,
+                response
+                    .into_body()
+                    .collect()
+                    .await
+                    .unwrap()
+                    .to_bytes()
+                    .to_vec(),
+            )
+        }
+
+        fn attest(cluster: &Cluster) -> ployz_core::authority::AttestKey {
+            crate::sealed_env::attest_key(Some(&cluster.dir.0))
+                .unwrap()
+                .attest()
+        }
+
+        #[tokio::test]
+        async fn a_rule_grant_serves_its_values_sealed_only_to_its_build_under_enforcement() {
+            let cluster = Cluster::new();
+            let recipient = X25519Secret::generate();
+            let grant = rule_grant(&cluster, sealed_request(&cluster).sealed, &recipient);
+            let (status, sealed) = body(sealed(&grant)).await;
+            assert_eq!(status, StatusCode::OK);
+            assert!(
+                !sealed
+                    .windows(MARKER.len())
+                    .any(|window| window == MARKER.as_bytes()),
+                "the response is ciphertext"
+            );
+            let opened =
+                OpenedSealed::open_build(&sealed, &recipient, &attest(&cluster), AUDIENCE).unwrap();
+            assert_eq!(opened.get("NPM_TOKEN"), Some(MARKER));
+            assert!(
+                OpenedSealed::open_build(&sealed, &recipient, &attest(&Cluster::new()), AUDIENCE)
+                    .is_err(),
+                "another Cluster's attest key opens nothing"
+            );
+            assert!(
+                OpenedSealed::open_build(&sealed, &recipient, &attest(&cluster), "ployz-build:x")
+                    .is_err(),
+                "another audience opens nothing"
+            );
+        }
+
+        #[tokio::test]
+        async fn a_rule_grant_without_secrets_still_proves_its_cluster() {
+            let cluster = Cluster::new();
+            let recipient = X25519Secret::generate();
+            let grant = rule_grant(&cluster, None, &recipient);
+            let (status, sealed) = body(sealed(&grant)).await;
+            assert_eq!(status, StatusCode::OK);
+            let opened =
+                OpenedSealed::open_build(&sealed, &recipient, &attest(&cluster), AUDIENCE).unwrap();
+            assert!(opened.is_empty());
+        }
+
+        #[tokio::test]
+        async fn a_rule_grant_reaches_its_holder_through_enforcement() {
+            let cluster = Cluster::new();
+            let grant = rule_grant(&cluster, None, &X25519Secret::generate());
+            let request = Request::builder()
+                .method(Method::GET)
+                .uri("/ployz/sealed")
+                .body(http_body_util::Empty::<Bytes>::new())
+                .unwrap();
+            let response = handle(request, &grant, &reqwest::Client::new(), &|| true).await;
+            assert_eq!(response.status(), StatusCode::OK);
         }
     }
 }
