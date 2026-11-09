@@ -120,6 +120,7 @@ as you in that organization, expires after 365 days, and shows as `agent` under 
 `ployz token ls`. Running `ployz mcp login` again makes a new one and revokes the old. Once the
 token is revoked or expired, each tool call fails with `Cloud refused the agent token` and names
 `ployz mcp login`; run it again. An agent token can't answer an approval, so the agent can't approve its own calls through `ployz mcp`.
+`ployz mcp` never reads this computer's [device key](../servers/manage-servers.md#require-a-devices-signature-for-restarts), and says so on its first line of stderr.
 When `ployz mcp` asks you, your answer goes with your own sign-in. An agent that can run commands
 in your terminal still acts with your sign-in there, so don't let it run `ployz org approval`
 for you. With `PLOYZ_TOKEN` set, `ployz mcp` uses that token instead, and Ployz still treats its
@@ -248,7 +249,8 @@ have an owner or admin approve the code. See
 [Approve a device](../servers/manage-servers.md#approve-a-device). With
 [device enforcement](../servers/manage-servers.md#require-a-devices-signature-for-restarts) on,
 `service restart` signs each restart with your device key, and a server refuses a restart no
-approved device signed.
+approved device signed. Signing never asks: `service restart`, `service stop`, `service start` and
+`deploy` show no prompt on an approved device.
 
 `logs`, `ps` and `metrics` work for anyone who can read logs and metrics, including members and
 `read` and `deploy` tokens. Without server access they read through Ployz Cloud instead: `logs`

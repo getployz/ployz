@@ -13,15 +13,15 @@ use ployz_core::{
     PULL_IMAGE_CAPABILITY, PULL_IMAGE_FROM_MACHINE_CAPABILITY, READ_CLUSTER_NAME_CAPABILITY,
     READ_ROUTED_ADDRESSES_CAPABILITY, READ_ROUTES_CAPABILITY, RECOVER_SEALING_KEY_CAPABILITY,
     REGISTER_MACHINE_CAPABILITY, REMOVE_TRUSTED_KEY_CAPABILITY, REMOVE_VOLUME_CAPABILITY,
-    REQUEST_MACHINE_UPGRADE_CAPABILITY, RESTART_APPROVAL_CAPABILITY, RETAINED_ENV_CAPABILITY,
-    RUNTIME_WATCH_CAPABILITY, Rpc, SEED_VOLUME_CAPABILITY, SELECT_ENDPOINT_CAPABILITY,
-    SET_CLUSTER_NAME_CAPABILITY, SET_DEVICE_CAPABILITY, SET_DEVICE_ENFORCEMENT_CAPABILITY,
-    SET_INGRESS_DOORS_CAPABILITY, SET_INGRESS_TUNNEL_CAPABILITY, SET_MANAGEMENT_CLIENT_CAPABILITY,
-    SET_PASSKEY_CAPABILITY, SET_PRIVATE_ACCESS_CAPABILITY, SET_PUSH_TARGET_CAPABILITY,
-    SET_VOLUME_COPY_CAPABILITY, SET_VOLUME_SIZE_CAPABILITY, SHARE_SEALING_KEY_CAPABILITY,
-    TAIL_LOGS_CAPABILITY, UPDATE_CONTAINER_LIMITS_CAPABILITY, UPDATE_MACHINE_CAPABILITY,
-    UPGRADE_EXACT_CAPABILITY, VOLUME_FLOOR_CAPABILITY, VOLUME_SHRINK_CAPABILITY,
-    WRAP_SEALING_KEY_CAPABILITY, op,
+    REQUEST_MACHINE_UPGRADE_CAPABILITY, RESTART_APPROVAL_CAPABILITY,
+    RESTART_SESSION_GRANT_CAPABILITY, RETAINED_ENV_CAPABILITY, RUNTIME_WATCH_CAPABILITY, Rpc,
+    SEED_VOLUME_CAPABILITY, SELECT_ENDPOINT_CAPABILITY, SET_CLUSTER_NAME_CAPABILITY,
+    SET_DEVICE_CAPABILITY, SET_DEVICE_ENFORCEMENT_CAPABILITY, SET_INGRESS_DOORS_CAPABILITY,
+    SET_INGRESS_TUNNEL_CAPABILITY, SET_MANAGEMENT_CLIENT_CAPABILITY, SET_PASSKEY_CAPABILITY,
+    SET_PRIVATE_ACCESS_CAPABILITY, SET_PUSH_TARGET_CAPABILITY, SET_VOLUME_COPY_CAPABILITY,
+    SET_VOLUME_SIZE_CAPABILITY, SHARE_SEALING_KEY_CAPABILITY, TAIL_LOGS_CAPABILITY,
+    UPDATE_CONTAINER_LIMITS_CAPABILITY, UPDATE_MACHINE_CAPABILITY, UPGRADE_EXACT_CAPABILITY,
+    VOLUME_FLOOR_CAPABILITY, VOLUME_SHRINK_CAPABILITY, WRAP_SEALING_KEY_CAPABILITY, op,
 };
 
 /// Capability constants are generated from the catalog, so a typo would stay
@@ -148,6 +148,10 @@ fn catalogued_capabilities_keep_stable_spellings() {
         (EXEC_CONTAINER_CAPABILITY, "ployz.container.exec.v1"),
         (VOLUME_FLOOR_CAPABILITY, "ployz.volume.copy.floor.v1"),
         (VOLUME_SHRINK_CAPABILITY, "ployz.volume.size.shrink.v1"),
+        (
+            RESTART_SESSION_GRANT_CAPABILITY,
+            "ployz.restart.session-grant.v2",
+        ),
     ];
     for (capability, spelling) in frozen {
         assert_eq!(capability, spelling);
@@ -193,7 +197,7 @@ fn advertised_capability_groups_match_the_frozen_catalog() {
             "ployz.build.sealed.v1",
             "ployz.build.grant.holder.v1",
             "ployz.restart.device-approval.v2",
-            "ployz.restart.session-grant.v1",
+            "ployz.restart.session-grant.v2",
             "ployz.restart.start-approval.v1",
             "ployz.restart.proposal.v1",
             "ployz.container.deploy-approval.v1",
@@ -386,8 +390,8 @@ const ABOVE_FLOOR: &[(&str, &str)] = &[
         "falls back: an older daemon ignores the approval on EnsureContainer and restarts as before, since it enforces nothing",
     ),
     (
-        "ployz.restart.session-grant.v1",
-        "gated: Cloud attaches a browser approval only for a Machine that advertises it; an older enforcing Machine refuses the restart and the dashboard names that Server",
+        "ployz.restart.session-grant.v2",
+        "gated: Cloud attaches a browser approval only for a Machine that advertises it; an older enforcing Machine refuses the restart and the dashboard names that Server. A grant naming its Environment's ID fails closed on a daemon that reads only v1 grants, which refuses unknown grant fields and lends the browser key nothing",
     ),
     (
         "ployz.restart.proposal.v1",

@@ -133,8 +133,8 @@ macro_rules! rpc_catalog {
                 BUILD_GRANT_HOLDER_CAPABILITY: ("ployz.build.grant.holder.v1", Always),
                 /// `EnsureContainer` takes a Device-signed restart approval and, under Device enforcement, refuses an Operator's restart step without one.
                 RESTART_APPROVAL_CAPABILITY: ("ployz.restart.device-approval.v2", Always),
-                /// A restart approval may be signed by a browser key under a trusted passkey's session grant that rides in its envelope.
-                RESTART_SESSION_GRANT_CAPABILITY: ("ployz.restart.session-grant.v1", Always),
+                /// A restart or deploy approval may be signed by a browser key under a trusted passkey's session grant that rides in its envelope. The grant names its Environment's ID, and a deploy under it opens only Sealed values sealed for that Environment.
+                RESTART_SESSION_GRANT_CAPABILITY: ("ployz.restart.session-grant.v2", Always),
                 /// A restart approval may be of kind `start`, which permits only an existing Container's start step.
                 START_APPROVAL_CAPABILITY: ("ployz.restart.start-approval.v1", Always),
                 /// `SetIngressDoors` takes the Tunnel Door with a `sealed_token`, and places the Tunnel Connector.

@@ -4514,11 +4514,31 @@ mod ensure_container {
             runtime: crate::docker::ContainerRuntime,
             signer: Signer,
             cluster: SealingPublicKey,
+            /// The key the runtime opens Sealed values with, when the Machine holds one.
+            sealed: Option<crate::sealed_env::test_support::Cluster>,
         }
 
         async fn enforced(prefix: &str) -> Enforced {
-            let (data_dir, store, service, fake, runtime) =
-                fake_docker_service_keeping_runtime(prefix).await;
+            enforce(fake_docker_service_keeping_runtime(prefix).await, None).await
+        }
+
+        /// An enforcing Machine whose runtime opens what its test Cluster seals.
+        async fn enforced_sealing(prefix: &str) -> Enforced {
+            let (data_dir, store, service, fake, runtime, cluster) =
+                fake_docker_service_sealing(prefix).await;
+            enforce((data_dir, store, service, fake, runtime), Some(cluster)).await
+        }
+
+        async fn enforce(
+            (data_dir, store, service, fake, runtime): (
+                std::path::PathBuf,
+                RecordOwner,
+                MachineService,
+                FakeDocker,
+                crate::docker::ContainerRuntime,
+            ),
+            sealed: Option<crate::sealed_env::test_support::Cluster>,
+        ) -> Enforced {
             let signer = Signer::from_seed(&[7; 32]);
             let device = DeviceKey::from(signer.public());
             store
@@ -4540,6 +4560,7 @@ mod ensure_container {
                 runtime,
                 signer,
                 cluster,
+                sealed,
             }
         }
 
@@ -5005,37 +5026,49 @@ mod ensure_container {
             std::fs::remove_dir_all(fixture.data_dir).unwrap();
         }
 
+        fn browser() -> Signer {
+            Signer::from_seed(&[8; 32])
+        }
+
         /// A browser key's restart approval under a session grant from a passkey this
         /// Machine trusts, as the dashboard sends it.
         fn browser_approval(fixture: &Enforced, id: &ContainerId) -> Signed<RestartApproval> {
-            use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
-            use ed25519_dalek::Signer as _;
-            use ployz_core::authority::{
-                ActionFamily, GrantBody, PasskeyAssertion, SessionGrant, SignerKey,
-                session::Delegation, trusted_key::Base64Url,
-            };
-            use sha2::{Digest, Sha256};
+            use ployz_core::authority::{ActionFamily, GrantBody, SignerKey, session::Delegation};
 
-            let authenticator = ed25519_dalek::SigningKey::from_bytes(&[5; 32]);
-            let credential = Base64Url::new(vec![5, 1, 2, 3]);
-            let browser = Signer::from_seed(&[8; 32]);
             let approval = RestartApproval {
                 signer: SignerKey::Browser {
-                    browser: browser.public(),
+                    browser: browser().public(),
                 },
                 ..fixture.approval(id)
             };
-            let body = ployz_core::authority::canonical::to_canonical(&GrantBody {
-                browser_key: browser.public(),
+            let grant = session_grant(&GrantBody {
+                browser_key: browser().public(),
                 cluster: fixture.cluster,
                 environment: approval.namespace.clone(),
+                environment_id: uuid::Uuid::nil(),
                 machines: approval.machines.clone(),
                 families: vec![ActionFamily::Restart],
                 issued_at: approval.issued_at,
                 expires_at: approval.issued_at.plus(60 * 60_000),
                 delegation: Delegation::None,
-            })
-            .unwrap();
+            });
+            Signed::sign_under(&approval, &browser(), grant).unwrap()
+        }
+
+        /// The trusted passkey's answer to a session prompt for `grant`.
+        fn session_grant(
+            grant: &ployz_core::authority::GrantBody,
+        ) -> ployz_core::authority::SessionGrant {
+            use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
+            use ed25519_dalek::Signer as _;
+            use ployz_core::authority::{
+                GrantBody, PasskeyAssertion, SessionGrant, trusted_key::Base64Url,
+            };
+            use sha2::{Digest, Sha256};
+
+            let authenticator = ed25519_dalek::SigningKey::from_bytes(&[5; 32]);
+            let credential = Base64Url::new(vec![5, 1, 2, 3]);
+            let body = ployz_core::authority::canonical::to_canonical(grant).unwrap();
             let client_data = json!({
                 "type": "webauthn.get",
                 "challenge": URL_SAFE_NO_PAD.encode(GrantBody::challenge(&body)),
@@ -5047,7 +5080,7 @@ mod ensure_container {
             authenticator_data.extend_from_slice(&[0x05, 0, 0, 0, 1]);
             let mut answered = authenticator_data.clone();
             answered.extend_from_slice(&Sha256::digest(&client_data));
-            let grant = SessionGrant {
+            SessionGrant {
                 body,
                 assertion: PasskeyAssertion {
                     credential_id: credential.try_into().unwrap(),
@@ -5055,8 +5088,7 @@ mod ensure_container {
                     client_data_json: Base64Url::new(client_data),
                     signature: Base64Url::new(authenticator.sign(&answered).to_bytes().to_vec()),
                 },
-            };
-            Signed::sign_under(&approval, &browser, grant).unwrap()
+            }
         }
 
         async fn trust_passkey(fixture: &Enforced) {
@@ -5330,25 +5362,75 @@ mod ensure_container {
         impl Enforced {
             /// A deploy approval of `spec` for Service `api` in Namespace `app` on this Machine.
             fn deploy(&self, spec: &Value) -> Signed<DeployApproval> {
+                let approval = self.deploy_body(
+                    &[spec],
+                    ployz_core::authority::SignerKey::Device(self.signer.public().into()),
+                );
+                Signed::sign(&approval, &self.signer).unwrap()
+            }
+
+            /// A deploy approval of every Service in `specs`, each named by its spec, signed
+            /// by the browser key under a grant for Environment `environment_id`.
+            fn browser_deploy(
+                &self,
+                environment_id: uuid::Uuid,
+                specs: &[&Value],
+            ) -> Signed<DeployApproval> {
+                use ployz_core::authority::{
+                    ActionFamily, GrantBody, SignerKey, session::Delegation,
+                };
+                let approval = self.deploy_body(
+                    specs,
+                    SignerKey::Browser {
+                        browser: browser().public(),
+                    },
+                );
+                let grant = session_grant(&GrantBody {
+                    browser_key: browser().public(),
+                    cluster: self.cluster,
+                    environment: approval.namespace.clone(),
+                    environment_id,
+                    machines: approval.machines.clone(),
+                    families: vec![ActionFamily::Deploy],
+                    issued_at: approval.issued_at,
+                    expires_at: approval.issued_at.plus(60 * 60_000),
+                    delegation: Delegation::None,
+                });
+                Signed::sign_under(&approval, &browser(), grant).unwrap()
+            }
+
+            fn deploy_body(
+                &self,
+                specs: &[&Value],
+                signer: ployz_core::authority::SignerKey,
+            ) -> DeployApproval {
                 let namespace = Namespace::parse("app").unwrap();
-                let resolved: ployz_core::ResolvedServiceSpec =
-                    serde_json::from_value(spec.clone()).unwrap();
-                let approval = DeployApproval {
+                let mut services: Vec<ApprovedService> = specs
+                    .iter()
+                    .map(|spec| {
+                        let resolved: ployz_core::ResolvedServiceSpec =
+                            serde_json::from_value((*spec).clone()).unwrap();
+                        ApprovedService {
+                            digest: PayloadDigest::of(&resolved.to_requested(), &namespace)
+                                .unwrap(),
+                            name: resolved.name,
+                            image: None,
+                        }
+                    })
+                    .collect();
+                services.sort_by(|left, right| left.name.cmp(&right.name));
+                let issued_at = Timestamp::now();
+                DeployApproval {
                     cluster: self.cluster,
                     operation: OperationId::random(),
-                    namespace: namespace.clone(),
+                    namespace,
                     machines: vec![self.service.local.record().id()],
-                    services: vec![ApprovedService {
-                        name: ServiceName::parse("api").unwrap(),
-                        digest: PayloadDigest::of(&resolved.to_requested(), &namespace).unwrap(),
-                        image: None,
-                    }],
-                    issued_at: Timestamp::now(),
-                    expires_at: Timestamp::now().plus(60_000),
-                    signer: ployz_core::authority::SignerKey::Device(self.signer.public().into()),
+                    services,
+                    issued_at,
+                    expires_at: issued_at.plus(60_000),
+                    signer,
                     proposal: None,
-                };
-                Signed::sign(&approval, &self.signer).unwrap()
+                }
             }
         }
 
@@ -5398,7 +5480,7 @@ mod ensure_container {
 
         fn new_want(kind: &str, key: &str, spec: &Value) -> Value {
             json!({"state":"running", "rotation":"pending", "container":{"new":{
-                "slot":{"namespace":"app", "service":"api", "kind":kind, "creation_key":key},
+                "slot":{"namespace":"app", "service":spec["name"], "kind":kind, "creation_key":key},
                 "resolved_spec":spec, "gen":1}}})
         }
 
@@ -5650,6 +5732,152 @@ mod ensure_container {
             .unwrap();
             assert_eq!(creates(&fixture.fake, seen), 1);
             std::fs::remove_dir_all(fixture.data_dir).unwrap();
+        }
+
+        /// The Environment the test Cluster's Sealed values were sealed for.
+        const PRODUCTION: uuid::Uuid = uuid::Uuid::from_u128(1);
+        /// Another Environment a session may be open in.
+        const FIX_API: uuid::Uuid = uuid::Uuid::from_u128(9);
+        const SECRET: &str = "hunter2-production";
+
+        /// Service `name` at the pinned image. With `sealed`, its environment, or only its
+        /// hook's, holds a value sealed for the test Cluster's production Environment.
+        #[expect(clippy::indexing_slicing, reason = "JSON fixture")]
+        fn sealed_spec(fixture: &Enforced, name: &str, sealed: Option<Sealed>) -> Value {
+            let mut spec = spec(PINNED);
+            spec["name"] = json!(name);
+            spec["pre_deploy"] = json!({"command": ["migrate"]});
+            let Some(sealed) = sealed else {
+                return spec;
+            };
+            let cluster = fixture.sealed.as_ref().expect("a sealing fixture");
+            let value = cluster.seal("TOKEN", ployz_core::SealedScope::Shared, SECRET);
+            let environment = match sealed {
+                Sealed::Container => &mut spec["container"]["environment"],
+                Sealed::Hook => &mut spec["pre_deploy"]["environment"],
+            };
+            *environment = json!({"TOKEN": value});
+            spec["container"]["sealed_identity"] = serde_json::to_value(&cluster.identity).unwrap();
+            spec
+        }
+
+        #[derive(Clone, Copy)]
+        enum Sealed {
+            Container,
+            Hook,
+        }
+
+        #[tokio::test]
+        async fn a_browser_approval_opens_only_its_own_environments_sealed_values() {
+            let fixture = enforced_sealing("ployzd-deploy-sealed-scope").await;
+            trust_passkey(&fixture).await;
+            let service = &fixture.service;
+            let sealed = sealed_spec(&fixture, "api", Some(Sealed::Container));
+            let seen = requests(&fixture.fake).len();
+            let (log, guard) = crate::diag::test_support::capture();
+            deploy_refused(
+                deploy_ensure(
+                    service,
+                    new_want("service_container", "k1", &sealed),
+                    Some(&fixture.browser_deploy(FIX_API, &[&sealed])),
+                )
+                .await,
+                "sealed values belong to another environment",
+            );
+            drop(guard);
+            assert_eq!(creates(&fixture.fake, seen), 0, "nothing reached Docker");
+            let log = log.text();
+            assert!(
+                log.contains("Sealed values belong to another Environment")
+                    && log.contains("refused deploy")
+                    && log.contains("service=api"),
+                "{log}"
+            );
+            assert!(!log.contains(SECRET), "the refusal prints no value: {log}");
+
+            deploy_ensure(
+                service,
+                new_want("service_container", "k1", &sealed),
+                Some(&fixture.deploy(&sealed)),
+            )
+            .await
+            .expect("a Device opens any Environment's Sealed values");
+            deploy_ensure(
+                service,
+                new_want("service_container", "k2", &sealed),
+                Some(&fixture.browser_deploy(PRODUCTION, &[&sealed])),
+            )
+            .await
+            .expect("a session opens its own Environment's Sealed values");
+            assert_eq!(creates(&fixture.fake, seen), 2);
+            std::fs::remove_dir_all(&fixture.data_dir).unwrap();
+        }
+
+        #[tokio::test]
+        async fn a_browser_approval_of_a_spec_without_sealed_values_runs_in_any_session() {
+            let fixture = enforced_sealing("ployzd-deploy-sealed-plain").await;
+            trust_passkey(&fixture).await;
+            let plain = sealed_spec(&fixture, "api", None);
+            let seen = requests(&fixture.fake).len();
+            deploy_ensure(
+                &fixture.service,
+                new_want("service_container", "k1", &plain),
+                Some(&fixture.browser_deploy(FIX_API, &[&plain])),
+            )
+            .await
+            .unwrap();
+            assert_eq!(creates(&fixture.fake, seen), 1);
+            std::fs::remove_dir_all(&fixture.data_dir).unwrap();
+        }
+
+        #[tokio::test]
+        async fn a_hooks_sealed_values_for_another_environment_are_refused() {
+            let fixture = enforced_sealing("ployzd-deploy-sealed-hook").await;
+            trust_passkey(&fixture).await;
+            let hooked = sealed_spec(&fixture, "api", Some(Sealed::Hook));
+            let signed = fixture.browser_deploy(FIX_API, &[&hooked]);
+            let seen = requests(&fixture.fake).len();
+            for (kind, key) in [("pre_deploy_hook", "h1"), ("service_container", "k1")] {
+                deploy_refused(
+                    deploy_ensure(
+                        &fixture.service,
+                        new_want(kind, key, &hooked),
+                        Some(&signed),
+                    )
+                    .await,
+                    "sealed values belong to another environment",
+                );
+            }
+            assert_eq!(creates(&fixture.fake, seen), 0, "nothing reached Docker");
+            std::fs::remove_dir_all(&fixture.data_dir).unwrap();
+        }
+
+        #[tokio::test]
+        async fn one_approval_of_two_services_refuses_only_the_cross_environment_one() {
+            let fixture = enforced_sealing("ployzd-deploy-sealed-mixed").await;
+            trust_passkey(&fixture).await;
+            let api = sealed_spec(&fixture, "api", None);
+            let worker = sealed_spec(&fixture, "worker", Some(Sealed::Container));
+            let signed = fixture.browser_deploy(FIX_API, &[&api, &worker]);
+            let seen = requests(&fixture.fake).len();
+            deploy_refused(
+                deploy_ensure(
+                    &fixture.service,
+                    new_want("service_container", "w1", &worker),
+                    Some(&signed),
+                )
+                .await,
+                "sealed values belong to another environment",
+            );
+            deploy_ensure(
+                &fixture.service,
+                new_want("service_container", "a1", &api),
+                Some(&signed),
+            )
+            .await
+            .unwrap();
+            assert_eq!(creates(&fixture.fake, seen), 1, "only api reached Docker");
+            std::fs::remove_dir_all(&fixture.data_dir).unwrap();
         }
 
         #[tokio::test]

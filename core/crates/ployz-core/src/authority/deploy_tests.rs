@@ -28,6 +28,11 @@ fn web() -> ServiceName {
     ServiceName::parse("web").unwrap()
 }
 
+/// The Environment the fixture's Sealed values were sealed for.
+fn environment_id() -> uuid::Uuid {
+    uuid::Uuid::from_u128(0x1111_1111_1111_1111_1111_1111_1111_1111)
+}
+
 fn machine_id(fill: char) -> MachineId {
     MachineId::parse(fill.to_string().repeat(32)).unwrap()
 }
@@ -577,6 +582,7 @@ fn browser_approval(families: Vec<ActionFamily>) -> (Signed<DeployApproval>, Mac
         browser_key: browser.public(),
         cluster: SealingPublicKey::from_bytes([9; 32]),
         environment: namespace(),
+        environment_id: environment_id(),
         machines: vec![machine_id('1'), machine_id('2')],
         families,
         issued_at: Timestamp::from_millis(0).unwrap(),
@@ -607,6 +613,68 @@ fn a_grant_must_name_the_deploy_family() {
         verify(&signed, &machine.facts(None)).unwrap_err(),
         AuthorityRefusal::Mismatch { field: "an action" }
     );
+}
+
+/// Who approved a deploy under a grant for the fixture's Environment.
+fn browser_approver() -> Approver {
+    let (signed, machine) = browser_approval(vec![ActionFamily::Deploy]);
+    verify(&signed, &machine.facts(None)).unwrap().by
+}
+
+#[expect(clippy::indexing_slicing, reason = "JSON fixture")]
+fn sealed_for(environment: &str, edit: impl FnOnce(&mut Value)) -> ResolvedServiceSpec {
+    let mut spec = requested_json();
+    spec["container"]["sealed_identity"]["environment"] = json!(environment);
+    edit(&mut spec);
+    resolved(&requested(spec))
+}
+
+const OTHER_ENVIRONMENT: &str = "33333333-3333-3333-3333-333333333333";
+
+#[test]
+fn a_browser_approval_opens_only_its_own_environments_sealed_values() {
+    let browser = browser_approver();
+    let own = sealed_for("11111111-1111-1111-1111-111111111111", |_| {});
+    assert!(sealed_scope_allows(&browser, &own));
+    let other = sealed_for(OTHER_ENVIRONMENT, |_| {});
+    assert!(!sealed_scope_allows(&browser, &other));
+    let device = Approver::Device(signer(1).public());
+    assert!(sealed_scope_allows(&device, &other), "a Device opens any");
+}
+
+#[test]
+#[expect(clippy::indexing_slicing, reason = "JSON fixture")]
+fn a_browser_approval_of_a_spec_without_sealed_values_names_no_environment() {
+    let plain = sealed_for(OTHER_ENVIRONMENT, |spec| {
+        spec["container"]["environment"] = json!({"PLAIN": "one"});
+        spec["container"]
+            .as_object_mut()
+            .unwrap()
+            .remove("sealed_identity");
+    });
+    assert!(sealed_scope_allows(&browser_approver(), &plain));
+}
+
+#[test]
+#[expect(clippy::indexing_slicing, reason = "JSON fixture")]
+fn a_hooks_sealed_values_for_another_environment_are_refused() {
+    let hook_only = sealed_for(OTHER_ENVIRONMENT, |spec| {
+        spec["container"]["environment"] = json!({"PLAIN": "one"});
+        spec["pre_deploy"]["environment"] =
+            json!({"SECRET": {"sealed": SEALED_B, "scope": "shared", "key": "SECRET"}});
+    });
+    assert!(!sealed_scope_allows(&browser_approver(), &hook_only));
+}
+
+#[test]
+fn sealed_values_with_no_identity_are_refused_to_a_browser() {
+    let unnamed = sealed_for(OTHER_ENVIRONMENT, |spec| {
+        spec["container"]
+            .as_object_mut()
+            .unwrap()
+            .remove("sealed_identity");
+    });
+    assert!(!sealed_scope_allows(&browser_approver(), &unnamed));
 }
 
 #[test]

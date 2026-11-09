@@ -24,6 +24,7 @@ export const SESSION_FAMILIES = ["restart", "start", "stop"] as const satisfies 
 
 /** Where a press acts: the Environment, and the Cluster and Servers its grant must name. */
 export type ApprovalScope = {
+  /** The Environment's ID, which a Sealed value names: a Server opens only Sealed values sealed for it under this grant. */
   readonly environmentId: string;
   readonly environmentName: string;
   readonly namespace: string;
@@ -127,6 +128,7 @@ export function grantBody(scope: ApprovalScope, browserKey: string, issuedAt: nu
     cluster: scope.cluster,
     delegation: "none",
     environment: scope.namespace,
+    environment_id: scope.environmentId,
     expires_at: issuedAt + SESSION_MINUTES * 60_000,
     families: [...SESSION_FAMILIES],
     issued_at: issuedAt,
@@ -149,8 +151,8 @@ async function browserKey(): Promise<CryptoKeyPair> {
 }
 
 /**
- * One passkey prompt. The grant body names the browser key, the Environment's Cluster and Servers, the actions and the
- * hour; the passkey answers its digest, so the grant covers that body and nothing else.
+ * One passkey prompt. The grant body names the browser key, the Environment and its Cluster and Servers, the actions and
+ * the hour; the passkey answers its digest, so the grant covers that body and nothing else.
  */
 export async function startSession(scope: ApprovalScope, now = Date.now()): Promise<ApprovalSession> {
   const key = await browserKey();

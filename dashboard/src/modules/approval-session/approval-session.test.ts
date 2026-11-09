@@ -19,7 +19,7 @@ import {
 import { actApprovals, ensureApproval, proposalApprovals } from "./approval-prompt";
 
 const production: ApprovalScope = {
-  environmentId: "env-production",
+  environmentId: "0f8fad5b-d9cb-469f-a165-70867728950e",
   environmentName: "production",
   namespace: "production",
   cluster: "CQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQk=",
@@ -55,11 +55,12 @@ describe("grantBody", () => {
     const browserKey = "ea4a6c63e29c520abef5507b132ec5f9954776aebebe7b92421eea691446d22c";
     const body = grantBody(production, browserKey, 1_000_000);
     expect(body).toBe(
-      `{"browser_key":"${browserKey}","cluster":"${production.cluster}","delegation":"none","environment":"production","expires_at":4600000,`
+      `{"browser_key":"${browserKey}","cluster":"${production.cluster}","delegation":"none","environment":"production",`
+        + `"environment_id":"${production.environmentId}","expires_at":4600000,`
         + `"families":["restart","start","stop"],"issued_at":1000000,"machines":["11111111111111111111111111111111","22222222222222222222222222222222"]}`,
     );
     const rustBody = body.replace(`"families":["restart","start","stop"]`, `"families":["restart","stop"]`);
-    expect(hex(await grantChallenge(rustBody))).toBe("3f6c4b9b3dc458f09a5b0ec4dd6b15a4e0794a22641b2b0ecc2523002b56888a");
+    expect(hex(await grantChallenge(rustBody))).toBe("e02a7c52d5c358134a9af54f1b72df1c0fb5b02a89fefb1be3f260c5fcde15df");
   });
 });
 
@@ -170,7 +171,7 @@ describe("approveAct", () => {
       environment,
       runtime: "web",
       copies: [{ id: copy.container, machineId: copy.machine, hook: false }],
-      machines: [{ id: copy.machine, name: "machine-2", sealing: held, deviceEnforcement: true, capabilities: ["ployz.restart.session-grant.v1"] }],
+      machines: [{ id: copy.machine, name: "machine-2", sealing: held, deviceEnforcement: true, capabilities: ["ployz.restart.session-grant.v2"] }],
       environmentMachines: [copy.machine],
     };
     const { scope } = actScope(environment, target.copies, target.machines, target.environmentMachines);
@@ -259,8 +260,8 @@ describe("approveProposal", () => {
       machines: [server(capabilities)],
       environmentMachines: [web.machine],
     });
-    await expect(proposalApprovals(target(["ployz.restart.session-grant.v1", "ployz.restart.start-approval.v1"]))).rejects.toThrow("machine-2 needs a newer Ployz to stop it.");
-    await expect(proposalApprovals(target(["ployz.restart.session-grant.v1", "ployz.restart.proposal.v1"]))).rejects.toThrow("machine-2 needs a newer Ployz to stop it.");
+    await expect(proposalApprovals(target(["ployz.restart.session-grant.v2", "ployz.restart.start-approval.v1"]))).rejects.toThrow("machine-2 needs a newer Ployz to stop it.");
+    await expect(proposalApprovals(target(["ployz.restart.session-grant.v2", "ployz.restart.proposal.v1"]))).rejects.toThrow("machine-2 needs a newer Ployz to stop it.");
     expect(get).not.toHaveBeenCalled();
   });
 
