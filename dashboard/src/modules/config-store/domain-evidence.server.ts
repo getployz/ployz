@@ -23,8 +23,8 @@ const DomainCall = Schema.Union([
   Schema.Struct({ command: Schema.Literals(["add_domain", "remove_domain", "set_generated_domain"]) }),
   // A Branch's name lengthens the generated domains it copies: the Store checks them under the Cluster Domain.
   Schema.Struct({ command: Schema.Literals(["create_branch", "copy_node", "sync", "take"]) }),
-  // Only a Deploy expands domains: a removal expands none, a retry inherits what its source froze.
-  Schema.Struct({ command: Schema.Literal("admit"), admit: Schema.Literal("deploy"), environment: Schema.optional(EnvironmentRef) }),
+  // Only a Deploy or a reapply expands domains: a removal expands none, a retry inherits what its source froze.
+  Schema.Struct({ command: Schema.Literal("admit"), admit: Schema.Literals(["deploy", "reapply"]), environment: Schema.optional(EnvironmentRef) }),
   Schema.Struct({ query: Schema.Literals(["domains", "domain"]) }),
   // A change's views name the generated domains it stages under the Cluster Domain.
   Schema.Struct({ query: Schema.Literals(["diff", "plan", "service"]) }),
