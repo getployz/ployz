@@ -367,6 +367,16 @@ impl Gaps {
                 next.map(|next| Under::Next(next.to_owned())),
             );
         }
+        // It answered that its router isn't serving, which its message says whole.
+        if crate::private_access::router_not_serving(&failure.error) {
+            return (
+                failure.error.message.clone(),
+                super::causes(&failure.error)
+                    .last()
+                    .cloned()
+                    .map(Under::Cause),
+            );
+        }
         // The entry Machine stopped listing it between our membership read and this
         // call, as `ployz server rm` does. Its id would only repeat the name.
         if failure.error.server_unlisted(&failure.machine_id) {
@@ -516,6 +526,35 @@ mod tests {
             (
                 "machine-4 did not answer; its rows are missing.".to_owned(),
                 Some(Under::Cause("deadline has elapsed".to_owned()))
+            )
+        );
+    }
+
+    /// A Server whose router isn't serving answered: its message and the router's last
+    /// word stand, never "did not answer".
+    #[test]
+    fn a_server_whose_router_is_not_serving_says_so() {
+        use ployz_core::RpcErrorCode;
+
+        let machine_id = MachineId::parse("4".repeat(32)).unwrap();
+        let name = MachineName::parse("machine-4").unwrap();
+        let error = RpcError {
+            code: RpcErrorCode::Unavailable,
+            message: "Tailscale refused the auth key on machine-4. It may be revoked or expired."
+                .into(),
+            details: serde_json::json!({ "problem": "key_refused" }),
+            cause: vec!["invalid key: unable to validate API key".into()],
+        };
+        let gaps = Gaps::default().named([(machine_id, &name)]);
+
+        assert_eq!(
+            gaps.warning(&MachineFailure { machine_id, error }),
+            (
+                "Tailscale refused the auth key on machine-4. It may be revoked or expired."
+                    .to_owned(),
+                Some(Under::Cause(
+                    "invalid key: unable to validate API key".to_owned()
+                ))
             )
         );
     }

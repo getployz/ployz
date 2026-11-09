@@ -131,6 +131,14 @@ impl MachineOperations for Recording {
     ) -> Result<ployz_core::IngressDoorsSet, RpcError> {
         self.fake.set_ingress_doors(machine_id, request).await
     }
+
+    async fn set_private_access(
+        &self,
+        machine_id: &MachineId,
+        request: ployz_core::SetPrivateAccessRequest,
+    ) -> Result<ployz_core::PrivateAccessSet, RpcError> {
+        self.fake.set_private_access(machine_id, request).await
+    }
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -517,6 +525,48 @@ async fn user_stop_start_restart_remove() {
                 .all(|applied| !matches!(applied, Move::To(..)))
         );
     }
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_remove_of_a_container_its_machine_holds_without_a_spec_says_it_stays() {
+    let fake = Scripted::new(vec![Step(
+        Call::Inspect(machine('a'), container('1')),
+        Reply::Error(RpcError {
+            code: RpcErrorCode::NotFound,
+            message: format!(
+                "resolved spec not found in machine.db for {}",
+                container('1')
+            ),
+            details: serde_json::json!({ "reason": "no_resolved_spec" }),
+            cause: Vec::new(),
+        }),
+    )]);
+
+    let ran = run_command(Command::Remove, Recording::of(fake)).await;
+
+    let Err(error) = &ran.answer else {
+        panic!("the remove answered removed: {:?}", ran.answer);
+    };
+    assert_eq!(error.code, RpcErrorCode::Conflict, "{error:?}");
+    assert_eq!(
+        error.details,
+        serde_json::json!({ "reason": "no_resolved_spec" })
+    );
+    assert_eq!(
+        error.message,
+        format!(
+            "Container {} was not removed: Docker on its Server has it, and the Server holds no Resolved Service Spec under its ID.",
+            container('1')
+        )
+    );
+    assert_eq!(
+        error.cause,
+        [format!(
+            "resolved spec not found in machine.db for {}",
+            container('1')
+        )]
+    );
+    assert!(ran.wants.is_empty());
 }
 
 /// After a partial recovery a gen 3 copy runs beside a gen 4 copy that is In. The owner

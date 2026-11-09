@@ -4,6 +4,7 @@ import { createResourceServerChallenge } from "@better-auth/oauth-provider";
 import { type CallToolResult, createMcpHandler, fromJsonSchema, type JsonSchemaValidator, type jsonSchemaValidator, McpServer } from "@modelcontextprotocol/server";
 import { APIError } from "better-auth/api";
 import { Effect, Option, Schema } from "effect";
+import type { ToolOutcome } from "#/modules/agent/agent";
 import { AGENT_TOOLS, type AgentCaller, type AgentResult, type AgentTool, runAgentCall } from "#/modules/agent/agent-runner.server";
 import { CATALOG } from "#/modules/agent/agent-tools";
 import { findCommand } from "#/modules/commands/commands.server";
@@ -88,7 +89,7 @@ const carrying = (tool: AgentTool, approval: string | null, result: AgentResult)
   return input === null ? result : { outcome: { ok: false, refusal: { ...refusal, retry: { ...refusal.retry, input: { ...input, approval } } } } };
 };
 
-const resultOf = (result: AgentResult, key: string, link: () => string, claim: Claim | null): CallToolResult => {
+const resultOf = (tool: string, result: AgentResult, key: string, link: () => string, claim: Claim | null): CallToolResult => {
   if ("asking" in result) {
     const { approvalId, refusal } = result.asking;
     const url = link();
@@ -109,7 +110,16 @@ const resultOf = (result: AgentResult, key: string, link: () => string, claim: C
       structuredContent: { ok: false, claim_required: claim, request_key: key },
     };
   }
-  return text(projectJsonObject({ ...outcome, request_key: key }) ?? { ok: outcome.ok, request_key: key }, !outcome.ok);
+  const answer = tool === "proposal_present" ? withCard(outcome, link()) : outcome;
+  return text(projectJsonObject({ ...answer, request_key: key }) ?? { ok: outcome.ok, request_key: key }, !outcome.ok);
+};
+
+/** A presented proposal waits on a person like an approval does, so its answer names the card to open. */
+const withCard = (outcome: ToolOutcome, url: string): ToolOutcome => {
+  const value = asRecord(outcome.ok ? outcome.value : null);
+  if (!outcome.ok || value === null) return outcome;
+  const message = `${asString(value["message"]) ?? "Presented."} A person must approve it: open ${url} and approve it under Waiting on you.`;
+  return { ...outcome, value: { ...value, message, url } };
 };
 
 /** One MCP server for one request, acting as `caller`; every request key it uses lands in `keys`. */
@@ -143,7 +153,7 @@ const serverFor = (caller: AgentCaller, request: Request, run: Run, appUrl: URL,
       })));
       const refused = "outcome" in result && "refusal" in result.outcome ? result.outcome.refusal : null;
       const claim = refused?.code === "claim_required" ? { message: refused.message, url: await run(claimUrlFor(caller.organization.id)) } : null;
-      return resultOf(result, key, link, claim);
+      return resultOf(tool.name, result, key, link, claim);
     });
   }
   return server;

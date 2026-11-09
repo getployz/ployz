@@ -1,0 +1,18 @@
+D2 lane 3. branch_head from the same Boat Machine on the private lab repository, with credentials
+that cannot read it. There is no second installation, so the "other installation" case is a token
+from the same App narrowed at mint to the fork Ployz-test/build only, plus a revoked token.
+
+no credential:
+run 0 refused in 221 ms: GitHub shows no branch main this Machine can read
+token narrowed to Ployz-test/build only:
+run 0 refused in 306 ms: GitHub shows no branch main this Machine can read
+control, the same narrowed token reads its own repository (1450985829):
+run 0 head 7b57cb849cfeb58f8bf35fc1ca6b565cc2802e75 in 383 ms
+revoked token (DELETE /installation/token answered 204):
+  immediately after the 204: run 0 head 54dfcf4a46870fa09f5d5d6c965dd705c1a24e5c in 282 ms
+  20 s later:                run 0 refused in 138 ms: GitHub shows no branch main this Machine can read
+  40 s and 60 s later:       refused the same way (GitHub answers 401)
+
+Result: pass for no credential, another repository's token, and a revoked token once GitHub applied
+the revocation. Revocation is not instant: one read within about a second of the 204 still answered.
+A revoked credential can only keep answering the true head, so this is not a hole.

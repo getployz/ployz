@@ -75,6 +75,7 @@ pub(crate) type PeerInspect = std::sync::Arc<
 mod container;
 mod deploy_approval;
 mod ingress_doors;
+mod private_access;
 pub(crate) use container::CutRefusal;
 #[cfg(test)]
 pub(crate) use container::{EnsurePause, EnsurePausePoint};
@@ -189,6 +190,10 @@ pub enum Error {
     /// approval. The refusal names [`ployz_core::DEPLOY_APPROVAL_CAPABILITY`] in its details.
     #[error("{}", deploy_approval::refusal_text(.0))]
     DeployRefused(ployz_core::authority::AuthorityRefusal),
+    /// Device enforcement refused an Operator's `Build` or `MintBuildGrant`. The refusal
+    /// names `capability` in its details.
+    #[error("{}", ployz_core::BUILD_REFUSED_BY_ENFORCEMENT)]
+    BuildRefused { capability: &'static str },
     #[error("ployz.machine.join.device-approval.v1 needs a Device-signed join approval: {0}")]
     JoinRefused(ployz_core::authority::AuthorityRefusal),
     #[error("{SET_DEVICE_ENFORCEMENT_CAPABILITY} needs a Device-signed starting set: {0}")]
@@ -205,6 +210,24 @@ pub enum Error {
     Cluster(#[from] crate::corrosion::Error),
     #[error(transparent)]
     IngressProxyServiceSpec(#[from] ployz_core::IngressProxyServiceSpecError),
+    #[error("This isn't a router spec Ployz builds.")]
+    PrivateAccessRouterSpec,
+    #[error("Private Access needs a Tailscale auth key.")]
+    PrivateAccessKeyMissing,
+    #[error(transparent)]
+    PrivateAccessKey(crate::sealed_env::OpenError),
+    #[error("Could not write the Tailscale auth key for the router.")]
+    PrivateAccessKeyFile(#[source] std::io::Error),
+    #[error("Could not change the Private Access node state on this Server.")]
+    PrivateAccessState(#[source] std::io::Error),
+    #[error(
+        "Could not remove Private Access router {container_id}, so this Server is not off yet."
+    )]
+    PrivateAccessRouterStays {
+        container_id: ContainerId,
+        #[source]
+        source: Box<crate::docker::Error>,
+    },
     #[error("this Server opens only the Public and Tunnel Doors")]
     UnsupportedDoors,
     #[error("the Tunnel Door needs a sealed tunnel token")]
@@ -811,7 +834,18 @@ impl LocalMachine {
             id = machine.id.as_str(),
             "enrolled"
         );
-        Ok(Enrolled::Enrolled { machine })
+        let join_confirmation = match &machine.join_approval {
+            Some(approval) if self.record().device_enforcement() => {
+                SealingKey::load(self.owner.data_dir())
+                    .map_err(Error::JoinRecord)?
+                    .map(|key| key.confirm_join(approval))
+            }
+            _ => None,
+        };
+        Ok(Enrolled::Enrolled {
+            machine,
+            join_confirmation,
+        })
     }
 
     /// Publish a client-selected assignment from a participating Entry Machine.
@@ -863,9 +897,21 @@ impl LocalMachine {
                 let restart_approval::JoinReply::Register(registration) = stored.reply else {
                     return Err(Error::JoinConsumed(request.machine_id));
                 };
-                publication
-                    .register(registration.assigned_machine.clone())
-                    .await?;
+                if let Some(confirmation) = &request.join_confirmation {
+                    let confirmed = SealingKey::load(self.owner.data_dir())
+                        .map_err(Error::JoinRecord)?
+                        .is_some_and(|key| key.confirms_join(&stored.approval, confirmation));
+                    if !confirmed {
+                        return Err(Error::JoinRefused(
+                            ployz_core::authority::AuthorityRefusal::Mismatch {
+                                field: "a join confirmation",
+                            },
+                        ));
+                    }
+                    publication
+                        .register(registration.assigned_machine.clone())
+                        .await?;
+                }
                 return Ok(*registration);
             }
             let subnet = ipnet::Ipv4Net::from(assignment.machine.subnet);
@@ -914,6 +960,7 @@ impl LocalMachine {
                 approval,
                 reply: restart_approval::JoinReply::Register(Box::new(registration.clone())),
             })?;
+            return Ok(registration);
         }
         publication
             .register(registration.assigned_machine.clone())

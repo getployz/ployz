@@ -666,6 +666,14 @@ impl MachineRpc for MachineService {
         &self,
         request: Request<tonic::Streaming<OpaquePayload>>,
     ) -> Result<Response<Self::BuildStream>, Status> {
+        // Refused before the request stream is read, so no source or recipe is taken.
+        if from_operator(&request)
+            && let Err(error) = self
+                .local
+                .admit_operator_build(ployz_core::BUILD_CAPABILITY)
+        {
+            return Err(build_refused(&error, ployz_core::BUILD_CAPABILITY));
+        }
         let containers = self
             .containers()
             .map_err(|error| Status::unavailable(error.message))?;
@@ -947,13 +955,27 @@ impl MachineRpc for MachineService {
         &self,
         request: Request<OpaquePayload>,
     ) -> Result<Response<OpaquePayload>, Status> {
+        let operator = from_operator(&request);
         let request = expect::<op::MintBuildGrant>(request)?;
+        // Refused before `Mint::check`, which opens the Sealed record to check it.
+        if operator
+            && let Err(error) = self
+                .local
+                .admit_operator_build(ployz_core::MINT_BUILD_GRANT_CAPABILITY)
+        {
+            return local_error(error);
+        }
         let key_dir = self
             .containers()
             .ok()
             .and_then(|containers| containers.sealing_key_dir());
+        let scope = if operator {
+            ployz_core::ManagementScope::Operator
+        } else {
+            ployz_core::ManagementScope::Full
+        };
         let mint = match crate::management::build_grant::Mint::check(request, key_dir) {
-            Ok(mint) => mint,
+            Ok(mint) => mint.minted_by(scope),
             Err(refused) => return respond(refused),
         };
         match crate::management::build_grant::mint_for(
@@ -1076,6 +1098,18 @@ impl MachineRpc for MachineService {
         finish(self.local.set_ingress_doors(request).await)
     }
 
+    async fn set_private_access(
+        &self,
+        request: Request<OpaquePayload>,
+    ) -> Result<Response<OpaquePayload>, Status> {
+        let operator = from_operator(&request);
+        let request = expect::<op::SetPrivateAccess>(request)?;
+        if operator && let Err(error) = self.local.admit_operator_deploy() {
+            return local_error(error);
+        }
+        finish(self.local.set_private_access(request).await)
+    }
+
     async fn read_cluster_name(
         &self,
         request: Request<OpaquePayload>,
@@ -1158,6 +1192,7 @@ fn local_failure(error: LocalMachineError) -> Result<RpcError, Status> {
                 "next": "ployz deploy from an approved device",
             }),
         )),
+        LocalMachineError::BuildRefused { capability } => Err(build_refused(&error, capability)),
         LocalMachineError::EnforcementRefused(_) => Err(ployz_core::rpc::hinted_status(
             tonic::Code::PermissionDenied,
             &error,
@@ -1229,6 +1264,25 @@ fn local_failure(error: LocalMachineError) -> Result<RpcError, Status> {
         )),
         LocalMachineError::IngressProxyServiceSpec(error) => {
             Ok(RpcError::caused(RpcErrorCode::InvalidArgument, &error))
+        }
+        LocalMachineError::PrivateAccessRouterSpec | LocalMachineError::PrivateAccessKey(_) => {
+            Ok(RpcError {
+                code: RpcErrorCode::InvalidArgument,
+                message: error.to_string(),
+                details: Value::Null,
+                cause: Vec::new(),
+            })
+        }
+        LocalMachineError::PrivateAccessKeyMissing => Ok(RpcError {
+            code: RpcErrorCode::InvalidArgument,
+            message: error.to_string(),
+            details: serde_json::json!({ "capability": ployz_core::SET_PRIVATE_ACCESS_CAPABILITY }),
+            cause: Vec::new(),
+        }),
+        LocalMachineError::PrivateAccessKeyFile(_)
+        | LocalMachineError::PrivateAccessState(_)
+        | LocalMachineError::PrivateAccessRouterStays { .. } => {
+            Ok(RpcError::caused(RpcErrorCode::Internal, &error))
         }
         LocalMachineError::Network(error) => Err(ployz_core::rpc::caused_status(
             tonic::Code::Internal,
@@ -1444,6 +1498,15 @@ fn request_body(request: Request<OpaquePayload>) -> Result<RpcRequestBody, Statu
         .decode_request()
         .map(|request| request.body)
         .map_err(invalid_request)
+}
+
+/// The refusal an enforcing Machine answers an Operator's `Build` or `MintBuildGrant` with.
+fn build_refused(error: &LocalMachineError, capability: &'static str) -> Status {
+    ployz_core::rpc::hinted_status(
+        tonic::Code::PermissionDenied,
+        error,
+        serde_json::json!({ "capability": capability }),
+    )
 }
 
 fn from_operator<T>(request: &Request<T>) -> bool {

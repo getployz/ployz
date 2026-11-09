@@ -314,6 +314,29 @@ pub(in crate::handlers) async fn enroll(
     client: &mut Client,
     request: EnrollRequest,
 ) -> Result<Machine, Error> {
+    Ok(enroll_with::<op::Enroll>(client, request).await?.0)
+}
+
+/// An approved join whose Server sent no confirmation. Its daemon predates confirmations, so
+/// the admitting Server would never publish it.
+pub(in crate::handlers) fn confirmation_missing() -> Error {
+    Error::conflict(
+        "The joining Server's ployz is too old to finish an approved join. Update ployz on it, then rerun the same command.",
+    )
+}
+
+/// Enroll as a member, with the confirmation an approved join returns for its driver to
+/// relay in Register.
+pub(in crate::handlers) async fn enroll_member(
+    client: &mut Client,
+    request: EnrollRequest,
+) -> Result<
+    (
+        Machine,
+        Option<ployz_core::authority::join::JoinConfirmation>,
+    ),
+    Error,
+> {
     enroll_with::<op::Enroll>(client, request).await
 }
 
@@ -324,14 +347,23 @@ pub(in crate::handlers) async fn enroll_for_recovery(
     enroll: EnrollRequest,
     recovery: RecoverySeed,
 ) -> Result<Machine, Error> {
-    enroll_with::<op::EnrollForRecovery>(client, EnrollForRecoveryRequest { enroll, recovery })
-        .await
+    Ok(
+        enroll_with::<op::EnrollForRecovery>(client, EnrollForRecoveryRequest { enroll, recovery })
+            .await?
+            .0,
+    )
 }
 
 async fn enroll_with<T: Rpc<Response = Enrolled>>(
     client: &mut Client,
     request: T::Request,
-) -> Result<Machine, Error> {
+) -> Result<
+    (
+        Machine,
+        Option<ployz_core::authority::join::JoinConfirmation>,
+    ),
+    Error,
+> {
     let enrolled = client
         .call_repeatable_for::<T>(request, None, None, None, MACHINE_START_WAIT)
         .await
@@ -340,7 +372,10 @@ async fn enroll_with<T: Rpc<Response = Enrolled>>(
             exhausted => ConnectError::Exhausted(Box::new(exhausted)),
         })?;
     match enrolled {
-        Enrolled::Enrolled { machine } => Ok(machine),
+        Enrolled::Enrolled {
+            machine,
+            join_confirmation,
+        } => Ok((machine, join_confirmation)),
         Enrolled::Refused { error, .. } => Err(ConnectError::Remote(error).into()),
     }
 }

@@ -146,7 +146,7 @@ on that device. It works out what each service will run, prints one line per ser
 them with your device key, and deploys, with no prompt:
 
 ```text
-Approved web: nginx@sha256:3f1c2a9b8e7d…
+Approved web: nginx:1.29-alpine → @sha256:3f1c2a9b8e7d…
 Approved worker: ghcr.io/acme/worker@sha256:9a0b1c2d3e4f… (adds NET_ADMIN, host port 9000)
 ```
 
@@ -159,17 +159,27 @@ approval but can't change what it covers. A server logs each one, such as
 approval, even if the same approval is sent again. The approval lasts 15 minutes. A rollout still
 going after that stops partway; run `ployz deploy` again.
 
-Every image must be pinned by digest, since a tag names whatever the registry holds under it
-now. If your servers run different CPU architectures, pin the multi-arch digest (the image
-index), not one platform's. A tag stops the deploy before anything is queued:
+Every image runs by digest, since a tag names whatever the registry holds under it now. For
+a tag on a public registry, `ployz deploy` reads the digest from the registry itself and
+signs it, so `web` above keeps `nginx:1.29-alpine` in your settings and runs that exact
+image. The next deploy reads the tag again, so a tag pushed again runs its new image only
+after you deploy. The digest is the tag's multi-arch index, which works across CPU
+architectures. If you write a digest yourself, write the index digest, not one platform's.
+
+A private image can't be read without credentials, so write its digest. `ployz deploy` stops
+before anything is queued:
 
 ```text
-Pin web's image by digest to deploy to servers that enforce device approval.
-next: ployz set 'web.image=nginx@sha256:…'
+ghcr.io wants credentials to read web's image, so ployz can't pin it. Write its digest.
+next: ployz set 'web.image=ghcr.io/acme/web@sha256:…'
 ```
+
+If the registry doesn't answer within 10 seconds, `ployz deploy` stops and names it.
 
 A narrowed deploy, such as `ployz deploy web`, checks only the services it ships. A service
 that builds from source can't deploy to these servers yet; `ployz deploy` says so and stops.
+A deploy through Ployz Cloud that builds from source, such as a Git push, fails earlier: these
+servers refuse the build with `This server runs only builds an approved device starts.`
 
 If `ployz deploy` can't reach your servers to ask whether they enforce, it warns and deploys
 without signing, and servers that enforce refuse it.

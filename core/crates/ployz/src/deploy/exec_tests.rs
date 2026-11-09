@@ -1360,6 +1360,14 @@ impl MachineOperations for Scripted {
         unreachable!("a Deploy never places the Ingress Proxy")
     }
 
+    async fn set_private_access(
+        &self,
+        _machine_id: &MachineId,
+        _request: ployz_core::SetPrivateAccessRequest,
+    ) -> Result<ployz_core::PrivateAccessSet, RpcError> {
+        unreachable!("a Deploy never places the Private Access router")
+    }
+
     async fn inspect_container(
         &self,
         machine_id: &MachineId,

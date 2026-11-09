@@ -20,10 +20,11 @@ use ployz_core::{
     InspectContainerRequest, ListContainersRequest, MachineAction, MachineFailure, MachineId,
     MachineName, MachineTarget, MembershipObservation, Namespace, NewContainer, ObservationGap,
     ObservationGapReason, ObservationKind, OperationPhase, OutOfMemory, PortPublication,
-    PullPolicy, QualifiedService, ReadRoutesRequest, RemoveContainerPurpose, RemoveVolumeRequest,
-    ResolvedServiceSpec, Retry, RoutesRead, RpcError, RpcErrorCode, RunRotation, RunTarget,
-    ServiceId, ServiceName, ServiceOutcome, SetIngressDoorsRequest, SlotKey, StopOptions,
-    TransportProtocol, UpdateContainerLimitsRequest, UpdateOrder, op,
+    PrivateAccessSet, PullPolicy, QualifiedService, ReadRoutesRequest, RemoveContainerPurpose,
+    RemoveVolumeRequest, ResolvedServiceSpec, Retry, RoutesRead, RpcError, RpcErrorCode,
+    RunRotation, RunTarget, ServiceId, ServiceName, ServiceOutcome, SetIngressDoorsRequest,
+    SetPrivateAccessRequest, SlotKey, StopOptions, TransportProtocol, UpdateContainerLimitsRequest,
+    UpdateOrder, op,
 };
 use sha2::{Digest, Sha256};
 use tokio::sync::mpsc::UnboundedSender;
@@ -246,6 +247,12 @@ pub(crate) trait MachineOperations {
         machine_id: &MachineId,
         request: SetIngressDoorsRequest,
     ) -> Result<IngressDoorsSet, RpcError>;
+    /// Place or remove `machine_id`'s Private Access router for `request`.
+    async fn set_private_access(
+        &self,
+        machine_id: &MachineId,
+        request: SetPrivateAccessRequest,
+    ) -> Result<PrivateAccessSet, RpcError>;
     /// Dial the entry Machine again on the same connection, after the session a call
     /// went out on closed. None when this client can't.
     async fn redial(&self) -> Option<Result<(), RedialFailure>> {
@@ -423,6 +430,14 @@ impl MachineOperations for Client {
         request: SetIngressDoorsRequest,
     ) -> Result<IngressDoorsSet, RpcError> {
         Client::set_ingress_doors(self, machine_id, request).await
+    }
+
+    async fn set_private_access(
+        &self,
+        machine_id: &MachineId,
+        request: SetPrivateAccessRequest,
+    ) -> Result<PrivateAccessSet, RpcError> {
+        Client::set_private_access(self, machine_id, request).await
     }
 
     async fn redial(&self) -> Option<Result<(), RedialFailure>> {
@@ -675,6 +690,7 @@ restart_policy! {
     wait fn read_routes(&self, machine_id: &MachineId, service: &QualifiedService) -> Result<RoutesRead, RpcError>;
     wait fn read_entry_routes(&self, service: &QualifiedService) -> Result<RoutesRead, RpcError>;
     wait fn set_ingress_doors(&self, machine_id: &MachineId, request: SetIngressDoorsRequest) -> Result<IngressDoorsSet, RpcError>;
+    wait fn set_private_access(&self, machine_id: &MachineId, request: SetPrivateAccessRequest) -> Result<PrivateAccessSet, RpcError>;
 }
 
 async fn wait_out_restart<T, Fut, Redial>(

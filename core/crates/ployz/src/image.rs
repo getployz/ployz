@@ -15,12 +15,14 @@ use crate::{
 
 mod built;
 mod cleanup;
+mod pin;
 pub use built::push_from_machine;
 pub(crate) use built::{
     available_variant, holds_platform, platform_compatible, push_from_machine_using_machines,
 };
 pub use cleanup::prune_images;
 pub(crate) use cleanup::prune_targets;
+pub use pin::{PinError, PinnedImage, pin_public};
 
 #[derive(Debug, Error)]
 pub enum PushError {

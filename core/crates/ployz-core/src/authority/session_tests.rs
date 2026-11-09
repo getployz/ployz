@@ -20,6 +20,10 @@ fn production() -> Namespace {
     Namespace::parse("production").unwrap()
 }
 
+fn production_id() -> Uuid {
+    Uuid::from_u128(0x0f8f_ad5b_d9cb_469f_a165_7086_7728_950e)
+}
+
 fn cluster() -> SealingPublicKey {
     SealingPublicKey::from_bytes([9; 32])
 }
@@ -37,6 +41,7 @@ fn grant_body(lifetime: u64) -> GrantBody {
         browser_key: browser().public(),
         cluster: cluster(),
         environment: production(),
+        environment_id: production_id(),
         machines: vec![machine('1'), machine('2')],
         families: vec![ActionFamily::Restart, ActionFamily::Stop],
         issued_at: at(ISSUED),
@@ -175,6 +180,57 @@ fn a_grant_whose_scope_widened_after_the_passkey_answered_fails_its_challenge() 
         Err(AuthorityRefusal::Mismatch {
             field: "a challenge"
         })
+    );
+}
+
+#[test]
+fn a_grant_whose_environment_id_changed_after_the_passkey_answered_fails_its_challenge() {
+    let passkey = Authenticator::es256(4);
+    let mut grant = granted(&passkey, &grant_body(60 * MINUTE), "webauthn.get");
+    grant.body = canonical::to_canonical(&GrantBody {
+        environment_id: Uuid::from_u128(1),
+        ..grant_body(60 * MINUTE)
+    })
+    .unwrap();
+    let signed = envelope(&approval(production(), vec![machine('2')]), grant);
+    assert_eq!(
+        check(
+            &signed,
+            &trusting(&passkey),
+            &production(),
+            ISSUED + 2 * MINUTE
+        ),
+        Err(AuthorityRefusal::Mismatch {
+            field: "a challenge"
+        })
+    );
+}
+
+#[test]
+fn a_grant_without_an_environment_id_lends_its_browser_key_nothing() {
+    let passkey = Authenticator::es256(4);
+    let mut older = serde_json::to_value(grant_body(60 * MINUTE)).unwrap();
+    older.as_object_mut().unwrap().remove("environment_id");
+    let body = canonical::to_canonical(&older).unwrap();
+    let assertion = passkey.answer(&Answer {
+        challenge: &GrantBody::challenge(&body),
+        ..HONEST
+    });
+    let signed = envelope(
+        &approval(production(), vec![machine('2')]),
+        SessionGrant { body, assertion },
+    );
+    assert_eq!(
+        check(
+            &signed,
+            &trusting(&passkey),
+            &production(),
+            ISSUED + 2 * MINUTE
+        ),
+        Err(AuthorityRefusal::UnknownKey {
+            key: browser().public()
+        }),
+        "a grant that doesn't parse lends its browser key nothing"
     );
 }
 
@@ -411,7 +467,7 @@ fn the_browser_writes_this_grant_body_and_challenge() {
     assert_eq!(
         body,
         format!(
-            r#"{{"browser_key":"{}","cluster":"{}","delegation":"none","environment":"production","expires_at":4600000,"families":["restart","stop"],"issued_at":1000000,"machines":["11111111111111111111111111111111","22222222222222222222222222222222"]}}"#,
+            r#"{{"browser_key":"{}","cluster":"{}","delegation":"none","environment":"production","environment_id":"0f8fad5b-d9cb-469f-a165-70867728950e","expires_at":4600000,"families":["restart","stop"],"issued_at":1000000,"machines":["11111111111111111111111111111111","22222222222222222222222222222222"]}}"#,
             browser().public(),
             cluster()
         )
@@ -420,7 +476,7 @@ fn the_browser_writes_this_grant_body_and_challenge() {
     let hex: String = challenge.iter().map(|byte| format!("{byte:02x}")).collect();
     assert_eq!(
         hex,
-        "3f6c4b9b3dc458f09a5b0ec4dd6b15a4e0794a22641b2b0ecc2523002b56888a"
+        "e02a7c52d5c358134a9af54f1b72df1c0fb5b02a89fefb1be3f260c5fcde15df"
     );
     assert_eq!(browser().public().code().to_string(), "72asyextvn");
 }

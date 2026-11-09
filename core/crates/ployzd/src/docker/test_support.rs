@@ -64,6 +64,8 @@ pub(crate) struct FakeDocker {
     pub(crate) exit_on_start: Arc<AtomicBool>,
     /// Named mode: Docker refuses to create a Container of these Service names.
     pub(crate) refuse_create_of: Arc<Mutex<BTreeSet<String>>>,
+    /// Named mode: Docker refuses to remove a Container of these Service names.
+    pub(crate) refuse_remove_of: Arc<Mutex<BTreeSet<String>>>,
     pub(crate) stopped_once: Arc<Mutex<BTreeSet<String>>>,
     /// Named mode: each start of a stopped Container stamps a new `StartedAt`, and a
     /// stop keeps it and stamps `FinishedAt`, as Docker does.
@@ -288,6 +290,17 @@ async fn answer(fake: FakeDocker, method: Method, uri: Uri, body: Bytes) -> Resp
                 return Json(container).into_response();
             }
             if method == Method::DELETE {
+                if container
+                    .pointer("/Config/Labels/ployz.service.name")
+                    .and_then(serde_json::Value::as_str)
+                    .is_some_and(|service| fake.refuse_remove_of.lock().unwrap().contains(service))
+                {
+                    return (
+                        StatusCode::INTERNAL_SERVER_ERROR,
+                        Json(serde_json::json!({"message":"cannot remove container"})),
+                    )
+                        .into_response();
+                }
                 containers.remove(&name);
                 return StatusCode::NO_CONTENT.into_response();
             }

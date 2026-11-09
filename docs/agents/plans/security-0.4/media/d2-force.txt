@@ -1,0 +1,8 @@
+D2 lane 5. Force push main back one commit, from 01c45d8443418fe0fc201629e183a43cbd8b3714 to
+54dfcf4a46870fa09f5d5d6c965dd705c1a24e5c.
+
+new push run 42601318796, event push, headSha 54dfcf4a46870fa09f5d5d6c965dd705c1a24e5c
+  token: sha 54dfcf4a46870fa09f5d5d6c965dd705c1a24e5c  run_attempt 1  ref refs/heads/main
+branch_head from the Boat Machine: run 0 head 54dfcf4a46870fa09f5d5d6c965dd705c1a24e5c in 374 ms
+
+Result: pass. The force push's run names the older commit and the Machine reads it as the head.

@@ -1,11 +1,14 @@
-//! The images this daemon runs for the Ingress Proxy, and the reserved specs built
-//! on them. The daemon pins all three, so every Machine on one release runs the same
-//! holder, Caddy and Tunnel Connector, and no client chooses them.
+//! The images this daemon runs for the Ingress Proxy and Private Access, and the
+//! reserved specs built on them. The daemon pins every one, so every Machine on one
+//! release runs the same holder, Caddy, Tunnel Connector and router, and no client
+//! chooses them.
 
+use ipnet::Ipv4Net;
 use ployz_core::{
-    Ciphertext, IngressPorts, Namespace, QualifiedService, ResolvedServiceSpec,
-    ResolvedUpdateConfig, ServiceId, caddy_service_spec, holder_service_spec, tunnel_sealed_token,
-    tunnel_service_spec,
+    Ciphertext, IngressPorts, Namespace, PrivateAccessStateId, QualifiedService,
+    ResolvedServiceSpec, ResolvedUpdateConfig, ServiceId, caddy_service_spec, holder_service_spec,
+    private_access_sealed_key, private_access_service_spec, private_access_state,
+    tunnel_sealed_token, tunnel_service_spec,
 };
 
 /// Caddy v2.11.9, resolved 2026-11-07.
@@ -16,6 +19,9 @@ pub(crate) const PAUSE: &str = "registry.k8s.io/pause:3.10@sha256:ee6521f290b216
 
 /// cloudflared 2026.10.7, resolved 2026-11-08. The Tunnel Connector.
 pub(crate) const CLOUDFLARED: &str = "docker.io/cloudflare/cloudflared:2026.10.7@sha256:4955524aeaa379e154023d5a027c250f7b35041a2e7e950cf13f144bc9b9c5ba";
+
+/// Tailscale 1.104.4, resolved 2026-11-08. The Private Access router.
+pub(crate) const TAILSCALE: &str = "docker.io/tailscale/tailscale:v1.104.4@sha256:ed6480b33c6eb67c9cbd203ed42b9fb57e361986725b6856def71b7a3d9e276c";
 
 /// The reserved Ingress door specs this daemon builds for one set of Doors: the
 /// holder, the Caddy that joins it, and the Tunnel Connector when the Tunnel Door
@@ -74,22 +80,54 @@ impl DoorSpecs {
 /// The holder's Service id, derived from the proxy's so every Machine agrees without
 /// another allocated id. Domain-separated, so no other derivation collides with it.
 fn holder_service_id(proxy: ServiceId) -> ServiceId {
-    derived_service_id(b"ployz-ingress-holder\0", proxy)
+    derived_service_id(b"ployz-ingress-holder\0", proxy.as_str().as_bytes())
 }
 
 /// The Tunnel Connector's Service id, derived like the holder's.
 fn tunnel_service_id(proxy: ServiceId) -> ServiceId {
-    derived_service_id(b"ployz-ingress-tunnel\0", proxy)
+    derived_service_id(b"ployz-ingress-tunnel\0", proxy.as_str().as_bytes())
 }
 
-fn derived_service_id(domain: &[u8], proxy: ServiceId) -> ServiceId {
+fn derived_service_id(domain: &[u8], seed: &[u8]) -> ServiceId {
     use sha2::{Digest, Sha256};
     let mut hasher = Sha256::new();
     hasher.update(domain);
-    hasher.update(proxy.as_str().as_bytes());
+    hasher.update(seed);
     let digest = hasher.finalize();
     ServiceId::parse(hex::encode(digest.get(..16).expect("SHA-256 has 32 bytes")))
         .expect("16 bytes of hex are a Service id")
+}
+
+/// The Private Access router's Service id. Every Machine derives the same one, so no
+/// client allocates it.
+fn private_access_service_id() -> ServiceId {
+    derived_service_id(b"ployz-private-access\0", &[])
+}
+
+/// The router this daemon builds for the Cluster `network`, the auth key
+/// `sealed_key` names, and the node state `state` names.
+#[must_use]
+pub(crate) fn private_access_router(
+    network: Ipv4Net,
+    sealed_key: &Ciphertext,
+    state: PrivateAccessStateId,
+) -> ResolvedServiceSpec {
+    private_access_service_spec(TAILSCALE, network, sealed_key, state)
+        .to_resolved(private_access_service_id(), ResolvedUpdateConfig::default())
+        .expect("the built-in router mounts are valid")
+}
+
+/// Whether `spec` at `namespace` is the router this daemon builds for `network`.
+#[must_use]
+pub(crate) fn private_access_built_here(
+    namespace: &Namespace,
+    spec: &ResolvedServiceSpec,
+    network: Ipv4Net,
+) -> bool {
+    QualifiedService::new(namespace.clone(), spec.name.clone()).is_private_access_router()
+        && private_access_sealed_key(&spec.container.labels)
+            .zip(private_access_state(&spec.container.labels))
+            .is_some_and(|(key, state)| *spec == private_access_router(network, &key, state))
 }
 
 fn holder_spec(service_id: ServiceId, ports: IngressPorts) -> ResolvedServiceSpec {

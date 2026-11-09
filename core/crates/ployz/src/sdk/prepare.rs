@@ -177,7 +177,12 @@ pub async fn select_build_machine(
                             "Build capability could not be verified: {}",
                             crate::ui::row(&error)
                         ),
-                        "its build capability check failed",
+                        // A refusal by device enforcement is no failed check: it says what it is.
+                        if error.to_string() == ployz_core::BUILD_REFUSED_BY_ENFORCEMENT {
+                            ployz_core::BUILD_REFUSED_BY_ENFORCEMENT
+                        } else {
+                            "its build capability check failed"
+                        },
                     ),
                 },
                 Err(error) => (

@@ -127,6 +127,7 @@ async fn enroll_resends_past_the_read_budget_until_the_machine_replies() {
     let machine = founder();
     let (mut client, enrolls, server) = enrolling_machine(Enrolled::Enrolled {
         machine: machine.clone(),
+        join_confirmation: None,
     })
     .await;
     let started = Instant::now();
@@ -170,6 +171,7 @@ async fn held_setup_rpcs_keep_the_mutation_and_read_deadlines() {
     let machine = founder();
     let (mut client, enrolls, server) = enrolling_machine(Enrolled::Enrolled {
         machine: machine.clone(),
+        join_confirmation: None,
     })
     .await;
     let started = Instant::now();

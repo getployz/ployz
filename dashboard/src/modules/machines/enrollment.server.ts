@@ -784,7 +784,9 @@ export const enrollMachine = Effect.fn("MachineEnrollment.enrollMachine")(
       // The assignment commits before dispatch; a lost response is never replayed.
       const registration = joined
         ? { assigned_machine: joined, visible_peers: snapshot.machines.filter((machine) => machine !== joined), target_versions: snapshot.target_versions }
-        : yield* session.register(assignment).pipe(Effect.catchTag("PloyzProviderError", (error) => {
+        : yield* session.register(input.identity.joinConfirmation === undefined
+          ? assignment
+          : { ...assignment, request: { ...assignment.request, join_confirmation: input.identity.joinConfirmation } }).pipe(Effect.catchTag("PloyzProviderError", (error) => {
           const needsApproval = Schema.is(Schema.Struct({
             code: Schema.Literal("forbidden"),
             details: Schema.Struct({ capability: Schema.Literal("ployz.machine.join.device-approval.v1") }),

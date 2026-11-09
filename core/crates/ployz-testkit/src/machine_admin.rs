@@ -77,6 +77,7 @@ impl Cluster {
         .ok_or_else(|| TestkitError::Rpc("missing enrollment snapshot".into()))?;
         let mut request = RegisterRequest {
             join_approval: None,
+            join_confirmation: None,
             machine_id: token.id,
             assigned_subnet: None,
             initial_policy: Default::default(),

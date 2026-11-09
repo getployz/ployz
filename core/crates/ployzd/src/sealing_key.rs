@@ -222,6 +222,44 @@ impl SealingKey {
         Self::open_with(&OpModeR::Auth(sender), SHARE_INFO, sealed, recipient)
     }
 
+    /// What a joiner that opened `approval`'s capsule with this key sends back.
+    pub(crate) fn confirm_join(
+        &self,
+        approval: &ployz_core::authority::Signed<ployz_core::authority::JoinApproval>,
+    ) -> ployz_core::authority::join::JoinConfirmation {
+        use hkdf::hmac::Mac as _;
+        ployz_core::authority::join::JoinConfirmation(
+            self.join_mac(approval).finalize().into_bytes().into(),
+        )
+    }
+
+    /// Whether `confirmation` proves its sender opened `approval`'s capsule with this key.
+    pub(crate) fn confirms_join(
+        &self,
+        approval: &ployz_core::authority::Signed<ployz_core::authority::JoinApproval>,
+        confirmation: &ployz_core::authority::join::JoinConfirmation,
+    ) -> bool {
+        use hkdf::hmac::Mac as _;
+        self.join_mac(approval)
+            .verify_slice(&confirmation.0)
+            .is_ok()
+    }
+
+    fn join_mac(
+        &self,
+        approval: &ployz_core::authority::Signed<ployz_core::authority::JoinApproval>,
+    ) -> hkdf::hmac::Hmac<sha2_0_10::Sha256> {
+        use hkdf::hmac::Mac as _;
+        let mut key = Zeroizing::new([0; 32]);
+        hkdf::Hkdf::<sha2_0_10::Sha256>::new(None, &self.0)
+            .expand(b"ployz-join-confirmation-v1", key.as_mut())
+            .expect("32 bytes is a valid HKDF-SHA256 output length");
+        let mut mac = hkdf::hmac::Hmac::<sha2_0_10::Sha256>::new_from_slice(key.as_ref())
+            .expect("HMAC takes a key of any length");
+        mac.update(&approval.signing_input());
+        mac
+    }
+
     pub(crate) fn seal_join(
         &self,
         recipient: &WireGuardPublicKey,

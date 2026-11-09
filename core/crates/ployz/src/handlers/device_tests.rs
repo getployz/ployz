@@ -452,6 +452,7 @@ async fn automatic_join_approval_refuses_clouds_substituted_recipient() {
     let expected_machine = machine('a', "joiner");
     let expected = RegisterRequest {
         join_approval: None,
+        join_confirmation: None,
         machine_id: expected_machine.id,
         assigned_subnet: Some(expected_machine.subnet),
         initial_policy: Default::default(),

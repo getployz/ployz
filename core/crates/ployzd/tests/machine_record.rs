@@ -66,6 +66,7 @@ async fn initialize_commits_policy_in_the_first_participating_record() {
     .unwrap();
     let Enrolled::Enrolled {
         machine: initialized,
+        ..
     } = local.enroll(request).await.unwrap()
     else {
         panic!("a fresh Machine enrolls");

@@ -218,6 +218,8 @@ pub(crate) struct EnrollIdentity {
     disk_available_bytes: Option<u64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     recovery_support: Option<u8>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    join_confirmation: Option<ployz_core::authority::join::JoinConfirmation>,
 }
 
 fn serialize_as_wireguard_base64<S>(
@@ -251,6 +253,19 @@ impl EnrollIdentity {
             disk_total_bytes: token.disk_total_bytes,
             disk_available_bytes: token.disk_available_bytes,
             recovery_support: recovery_supported.then_some(RECOVERY_SUPPORT),
+            join_confirmation: None,
+        }
+    }
+
+    /// The same identity, carrying the joiner's confirmation of its approved capsule for Cloud
+    /// to relay in Register.
+    pub(crate) fn confirming(
+        &self,
+        confirmation: ployz_core::authority::join::JoinConfirmation,
+    ) -> Self {
+        Self {
+            join_confirmation: Some(confirmation),
+            ..self.clone()
         }
     }
 }

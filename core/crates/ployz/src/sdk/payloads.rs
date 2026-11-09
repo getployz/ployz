@@ -80,6 +80,7 @@ fn typescript_declarations() -> String {
     declarations.add::<crate::sealing_backfill::BackfillSealingKeyReport>();
     declarations.add::<crate::drain::DrainScope>();
     declarations.add::<crate::ingress::DoorsChanged>();
+    declarations.add::<crate::private_access::AccessChanged>();
     declarations.add::<crate::ingress::IngressCheck>();
     declarations.add::<ExecutionError>();
     declarations.add::<LocalMachineRemoved>();
@@ -88,6 +89,9 @@ fn typescript_declarations() -> String {
     declarations.add::<ployz_core::authority::Signed<ployz_core::authority::RestartApproval>>();
     declarations.add::<ployz_core::authority::RestartApproval>();
     declarations.add::<ployz_core::authority::ProposalApproval>();
+    declarations.add::<ployz_core::authority::DeployApproval>();
+    declarations.add::<ployz_core::authority::ApprovedChange>();
+    declarations.add::<ployz_core::authority::DeployTerms>();
     declarations.add::<ployz_core::authority::GrantBody>();
     declarations.add::<ployz_core::MachineUpdate>();
     declarations.add::<ployz_core::MachineUpdated>();

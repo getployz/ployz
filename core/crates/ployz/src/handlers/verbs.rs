@@ -11,7 +11,7 @@ use super::debug;
 use super::{
     Handler, account, build, catalog, cloud, cluster, completion, config, config_item, context,
     deploy, device, docs, domain, env, github, ingress, link, login, mcp, metrics, operator,
-    project, recovery, review, server, service, up, volume,
+    private_access, project, recovery, review, server, service, up, volume,
 };
 use Approval::{Always, Depends, Never};
 
@@ -448,6 +448,28 @@ pub(crate) const INGRESS_USE: Verb = Verb::cloud(
 )
 .stdin(&[("--token-stdin", Stdin::Only)])
 .docs("services/cloudflare-tunnel.md");
+pub(crate) const PRIVATE_ACCESS: Verb = Verb::cloud(
+    "private-access",
+    Never,
+    private_access::show_command,
+    private_access::show,
+)
+.docs("services/private-networking.md");
+pub(crate) const PRIVATE_ACCESS_ON: Verb = Verb::cloud(
+    "private-access on",
+    Never,
+    private_access::on_command,
+    private_access::on,
+)
+.stdin(&[("--auth-key-stdin", Stdin::Only)])
+.docs("services/private-networking.md");
+pub(crate) const PRIVATE_ACCESS_OFF: Verb = Verb::cloud(
+    "private-access off",
+    Never,
+    private_access::off_command,
+    private_access::off,
+)
+.docs("services/private-networking.md");
 pub(crate) const HISTORY_RESTORE: Verb = Verb::cloud(
     "history restore",
     Never,
@@ -920,6 +942,9 @@ pub(crate) const VERBS: &[Verb] = &[
     ORG_NEW,
     ORG_RM,
     ORG_USE,
+    PRIVATE_ACCESS,
+    PRIVATE_ACCESS_OFF,
+    PRIVATE_ACCESS_ON,
     PROJECT_LS,
     PROJECT_NEW,
     PROJECT_RENAME,

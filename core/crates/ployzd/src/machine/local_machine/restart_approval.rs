@@ -97,6 +97,21 @@ impl LocalMachine {
         Ok(())
     }
 
+    /// Under Device enforcement an Operator caller's `Build` or `MintBuildGrant` is
+    /// refused before anything opens. A Build runs recipe steps of the caller's choosing
+    /// with Sealed values opened, and a Build Grant hands them to a key the caller names,
+    /// so neither is Cloud's to start. `capability` is the RPC refused. A Full caller and a
+    /// Machine not enforcing pass untouched.
+    ///
+    /// # Errors
+    /// Returns [`Error::BuildRefused`] naming `capability` under enforcement.
+    pub(crate) fn admit_operator_build(&self, capability: &'static str) -> Result<(), Error> {
+        if self.record().device_enforcement() {
+            return Err(Error::BuildRefused { capability });
+        }
+        Ok(())
+    }
+
     /// Under Device enforcement, let an Operator caller's restart step through only with
     /// an approved Device's approval of exactly this restart, or a browser key's under a
     /// trusted passkey's session grant that covers it, and record the step so the

@@ -998,7 +998,7 @@ mod ingress_doors {
         );
     }
 
-    fn docker_calls(fake: &FakeDocker) -> usize {
+    fn docker_calls(fake: &crate::docker::test_support::FakeDocker) -> usize {
         fake.requests.lock().unwrap().len()
     }
 
@@ -1472,14 +1472,14 @@ mod ingress_doors {
         std::fs::remove_dir_all(data_dir).unwrap();
     }
 
-    fn caddy_create_refused(fake: &FakeDocker) {
+    fn caddy_create_refused(fake: &crate::docker::test_support::FakeDocker) {
         fake.refuse_create_of
             .lock()
             .unwrap()
             .insert("ingress".into());
     }
 
-    fn caddy_start_exits(fake: &FakeDocker) {
+    fn caddy_start_exits(fake: &crate::docker::test_support::FakeDocker) {
         fake.exit_on_start
             .store(true, std::sync::atomic::Ordering::SeqCst);
     }
@@ -1633,7 +1633,7 @@ mod ingress_doors {
         std::fs::remove_dir_all(data_dir).unwrap();
     }
 
-    fn inspect_fails_after_start(fake: &FakeDocker, service: &str) {
+    fn inspect_fails_after_start(fake: &crate::docker::test_support::FakeDocker, service: &str) {
         fake.fail_inspect_after_start
             .lock()
             .unwrap()
@@ -1856,6 +1856,562 @@ mod ingress_doors {
     }
 }
 
+mod private_access {
+    //! The Private Access route against the fake Docker: who it answers, what it
+    //! places, and what it leaves on the Machine.
+
+    use ployz_core::{
+        DoorChange, OPERATOR_SCOPE_HEADER, PlatformPurpose, PrivateAccessSet, QualifiedService,
+        RpcError, SET_PRIVATE_ACCESS_CAPABILITY,
+    };
+    use serde_json::{Value, json};
+    use tonic::Status;
+
+    use super::*;
+    use crate::images::private_access_router;
+
+    async fn set_access(
+        service: &MachineService,
+        body: Value,
+    ) -> Result<Result<PrivateAccessSet, RpcError>, Status> {
+        let mut request = Request::new(
+            op::SetPrivateAccess::into_request(serde_json::from_value(body).unwrap())
+                .encode()
+                .unwrap(),
+        );
+        request
+            .metadata_mut()
+            .insert(OPERATOR_SCOPE_HEADER, "1".parse().unwrap());
+        let response = service
+            .set_private_access(request)
+            .await?
+            .into_inner()
+            .decode_response()
+            .unwrap();
+        if let RpcResponseBody::Error(error) = response.body {
+            return Ok(Err(error));
+        }
+        let shown = format!("{response:?}");
+        Ok(Ok(response
+            .decode::<op::SetPrivateAccess>()
+            .unwrap_or_else(|error| panic!("{error}: {shown}"))))
+    }
+
+    fn key_file(data_dir: &std::path::Path) -> std::path::PathBuf {
+        data_dir.join("root/run/ployz/tailscale/auth-key")
+    }
+
+    fn node_state(data_dir: &std::path::Path) -> std::path::PathBuf {
+        data_dir.join("root/var/lib/ployz/tailscale")
+    }
+
+    #[tokio::test]
+    async fn on_places_the_router_on_the_opened_key_and_off_removes_both() {
+        let (data_dir, _store, service, _fake, runtime, cluster) =
+            fake_docker_service_sealing("ployzd-access-on-off").await;
+        let machine = service.local.record().id();
+        let sealed = cluster.seal_platform(PlatformPurpose::PrivateAccess, b"tskey-auth-test");
+        let on = json!({"enabled": true, "sealed_auth_key": sealed});
+
+        let set = set_access(&service, on.clone()).await.unwrap().unwrap();
+        assert_eq!(set.failure, None, "{set:?}");
+        let router = set.router.unwrap();
+        assert_eq!(router.change, DoorChange::Created);
+        assert_eq!(router.now.identity(), QualifiedService::system_tailscale());
+        let network = service.local.cluster_network().await.unwrap();
+        assert_eq!(
+            router.now.resolved_spec,
+            private_access_router(
+                network,
+                &sealed,
+                runtime.keep_private_access_state().unwrap()
+            )
+        );
+        assert_eq!(
+            std::fs::read(key_file(&data_dir)).unwrap(),
+            b"tskey-auth-test"
+        );
+        assert!(
+            node_state(&data_dir).is_dir(),
+            "the node state directory is there before the router starts"
+        );
+
+        let again = set_access(&service, on).await.unwrap().unwrap();
+        assert_eq!(again.router.unwrap().change, DoorChange::Unchanged);
+        assert_eq!(runtime.routers(&machine).await.unwrap().len(), 1);
+
+        let off = set_access(&service, json!({"enabled": false}))
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(off.router, None);
+        assert_eq!(off.retired.len(), 1, "{off:?}");
+        assert!(runtime.routers(&machine).await.unwrap().is_empty());
+        assert!(
+            !key_file(&data_dir).exists(),
+            "the key leaves with the router"
+        );
+        assert!(
+            !node_state(&data_dir).exists(),
+            "off forgets the node, so a later on registers a new one"
+        );
+
+        let off_again = set_access(&service, json!({"enabled": false}))
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(off_again, PrivateAccessSet::default());
+        std::fs::remove_dir_all(data_dir).unwrap();
+    }
+
+    #[tokio::test]
+    async fn a_reboot_leaves_the_router_at_rest_and_the_router_held_starts_again() {
+        let (data_dir, _store, service, _fake, runtime, cluster) =
+            fake_docker_service_sealing("ployzd-access-reboot").await;
+        let machine = service.local.record().id();
+        let running = || async {
+            runtime
+                .routers(&machine)
+                .await
+                .unwrap()
+                .iter()
+                .all(|router| matches!(router.runtime, ContainerRuntimeObservation::Running { .. }))
+        };
+        assert!(
+            service
+                .local
+                .restore_private_access()
+                .await
+                .unwrap()
+                .is_none(),
+            "a Machine with Private Access off places no router"
+        );
+        assert!(runtime.routers(&machine).await.unwrap().is_empty());
+        assert!(!key_file(&data_dir).exists());
+
+        let sealed = cluster.seal_platform(PlatformPurpose::PrivateAccess, b"tskey-auth-test");
+        let on = json!({"enabled": true, "sealed_auth_key": sealed});
+        let placed = set_access(&service, on).await.unwrap().unwrap();
+        let router = placed.router.unwrap().now.container_id;
+
+        let untouched = service
+            .local
+            .restore_private_access()
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(untouched.failure, None, "{untouched:?}");
+        assert_eq!(
+            untouched.router.unwrap().change,
+            DoorChange::Unchanged,
+            "a daemon restart leaves the running router alone"
+        );
+
+        runtime.stop(&router, None, None).await.unwrap();
+        runtime.remove_private_access_key().unwrap();
+        assert!(!running().await && !key_file(&data_dir).exists());
+        std::fs::write(node_state(&data_dir).join("tailscaled.state"), b"node").unwrap();
+
+        let restored = service
+            .local
+            .restore_private_access()
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(restored.failure, None, "{restored:?}");
+        let started = restored.router.unwrap();
+        assert_eq!(started.change, DoorChange::Started);
+        assert_eq!(started.now.container_id, router);
+        assert!(restored.retired.is_empty());
+        assert_eq!(
+            std::fs::read(key_file(&data_dir)).unwrap(),
+            b"tskey-auth-test"
+        );
+        assert_eq!(
+            std::fs::read(node_state(&data_dir).join("tailscaled.state")).unwrap(),
+            b"node",
+            "the node the router registered comes back with it"
+        );
+        assert!(running().await);
+
+        set_access(&service, json!({"enabled": false}))
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(
+            service
+                .local
+                .restore_private_access()
+                .await
+                .unwrap()
+                .is_none(),
+            "a Machine turned off stays off after a reboot"
+        );
+        assert!(runtime.routers(&machine).await.unwrap().is_empty());
+        assert!(!key_file(&data_dir).exists());
+        assert!(!node_state(&data_dir).exists());
+        std::fs::remove_dir_all(data_dir).unwrap();
+    }
+
+    // Catches `off` answering success while Docker kept the stopped router, which the
+    // next boot restore would start again, with the key its label carries.
+    #[tokio::test]
+    async fn off_that_cannot_remove_the_router_fails_and_a_reboot_finishes_it() {
+        let (data_dir, _store, service, fake, runtime, cluster) =
+            fake_docker_service_sealing("ployzd-access-off-stays").await;
+        let machine = service.local.record().id();
+        let sealed = cluster.seal_platform(PlatformPurpose::PrivateAccess, b"tskey-auth-test");
+        let router = set_access(
+            &service,
+            json!({"enabled": true, "sealed_auth_key": sealed}),
+        )
+        .await
+        .unwrap()
+        .unwrap()
+        .router
+        .unwrap()
+        .now
+        .container_id;
+        let service_name = QualifiedService::system_tailscale().name.to_string();
+        fake.refuse_remove_of
+            .lock()
+            .unwrap()
+            .insert(service_name.clone());
+
+        let refused = set_access(&service, json!({"enabled": false}))
+            .await
+            .unwrap()
+            .unwrap_err();
+        assert_eq!(refused.code, RpcErrorCode::Internal, "{refused:?}");
+        assert!(
+            refused.message.contains("not off yet"),
+            "the answer says the Server is not off: {}",
+            refused.message
+        );
+        let stays = || async {
+            let routers = runtime.routers(&machine).await.unwrap();
+            let [stayed] = routers.as_slice() else {
+                panic!("the router Docker refused to remove stays: {routers:?}");
+            };
+            assert_eq!(stayed.container_id, router);
+            assert!(
+                !matches!(stayed.runtime, ContainerRuntimeObservation::Running { .. }),
+                "the router is stopped, never started: {:?}",
+                stayed.runtime
+            );
+        };
+        stays().await;
+        assert!(
+            !key_file(&data_dir).exists(),
+            "the key is gone before the router"
+        );
+        assert!(
+            !node_state(&data_dir).exists(),
+            "the node is forgotten before the router"
+        );
+
+        service.local.restore_private_access().await.unwrap_err();
+        stays().await;
+        assert!(
+            !key_file(&data_dir).exists(),
+            "a reboot writes no key for a router turned off"
+        );
+
+        fake.refuse_remove_of.lock().unwrap().remove(&service_name);
+        let finished = service
+            .local
+            .restore_private_access()
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(finished.router, None);
+        assert_eq!(finished.retired, vec![router]);
+        assert!(runtime.routers(&machine).await.unwrap().is_empty());
+        assert!(
+            service
+                .local
+                .restore_private_access()
+                .await
+                .unwrap()
+                .is_none()
+        );
+        std::fs::remove_dir_all(data_dir).unwrap();
+    }
+
+    // Catches an `off` cut short before it forgets the node, which a reboot read as
+    // `on` and so started the router again.
+    #[tokio::test]
+    async fn off_cut_short_before_the_router_stops_is_still_off_after_a_reboot() {
+        let (data_dir, _store, service, fake, runtime, cluster) =
+            fake_docker_service_sealing("ployzd-access-off-cut").await;
+        let machine = service.local.record().id();
+        let sealed = cluster.seal_platform(PlatformPurpose::PrivateAccess, b"tskey-auth-test");
+        let router = set_access(
+            &service,
+            json!({"enabled": true, "sealed_auth_key": sealed}),
+        )
+        .await
+        .unwrap()
+        .unwrap()
+        .router
+        .unwrap()
+        .now
+        .container_id;
+        fake.refuse_stop
+            .store(true, std::sync::atomic::Ordering::SeqCst);
+
+        set_access(&service, json!({"enabled": false}))
+            .await
+            .unwrap()
+            .unwrap_err();
+        assert!(
+            !node_state(&data_dir).exists(),
+            "the node is forgotten before the router is touched"
+        );
+
+        fake.refuse_stop
+            .store(false, std::sync::atomic::Ordering::SeqCst);
+        let finished = service
+            .local
+            .restore_private_access()
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(finished.router, None, "a reboot never starts the router");
+        assert_eq!(finished.retired, vec![router]);
+        assert!(runtime.routers(&machine).await.unwrap().is_empty());
+        assert!(!key_file(&data_dir).exists());
+        std::fs::remove_dir_all(data_dir).unwrap();
+    }
+
+    fn refuse_stop(fake: &crate::docker::test_support::FakeDocker, refused: bool) {
+        fake.refuse_stop
+            .store(refused, std::sync::atomic::Ordering::SeqCst);
+    }
+
+    /// A router an `off` could not stop, and an `on` that could not stop it either, so
+    /// the router still mounts the node state `off` deleted while a new one is kept.
+    async fn strand_router(
+        service: &MachineService,
+        fake: &crate::docker::test_support::FakeDocker,
+        on: &Value,
+    ) -> ContainerId {
+        let stranded = set_access(service, on.clone())
+            .await
+            .unwrap()
+            .unwrap()
+            .router
+            .unwrap()
+            .now
+            .container_id;
+        refuse_stop(fake, true);
+        set_access(service, json!({"enabled": false}))
+            .await
+            .unwrap()
+            .unwrap_err();
+        set_access(service, on.clone()).await.unwrap().unwrap_err();
+        refuse_stop(fake, false);
+        stranded
+    }
+
+    // Catches `on` keeping a router an `off` could not stop, once an `on` that could
+    // not stop it either had kept new node state. That router still mounts the state
+    // `off` deleted, so its next restart would register a new node.
+    #[tokio::test]
+    async fn on_after_an_off_that_could_not_stop_the_router_replaces_it() {
+        let (data_dir, _store, service, fake, runtime, cluster) =
+            fake_docker_service_sealing("ployzd-access-off-then-on").await;
+        let machine = service.local.record().id();
+        let sealed = cluster.seal_platform(PlatformPurpose::PrivateAccess, b"tskey-auth-test");
+        let on = json!({"enabled": true, "sealed_auth_key": sealed});
+        let stranded = strand_router(&service, &fake, &on).await;
+
+        let again = set_access(&service, on).await.unwrap().unwrap();
+        let placed = again.router.unwrap();
+        assert_eq!(placed.change, DoorChange::Created, "{placed:?}");
+        assert_eq!(
+            ployz_core::private_access_state(&placed.now.resolved_spec.container.labels),
+            Some(runtime.keep_private_access_state().unwrap()),
+            "the new router mounts the node state on disk now"
+        );
+        assert_eq!(again.retired, vec![stranded]);
+        let routers = runtime.routers(&machine).await.unwrap();
+        assert_eq!(
+            routers
+                .iter()
+                .map(|router| router.container_id)
+                .collect::<Vec<_>>(),
+            vec![placed.now.container_id]
+        );
+        set_access(&service, json!({"enabled": false}))
+            .await
+            .unwrap()
+            .unwrap();
+        std::fs::remove_dir_all(data_dir).unwrap();
+    }
+
+    // Catches a reboot keeping or starting a router that mounts node state `off`
+    // deleted, after an `on` that could not stop it kept new state.
+    #[tokio::test]
+    async fn a_reboot_after_a_stranded_router_replaces_it() {
+        let (data_dir, _store, service, fake, runtime, cluster) =
+            fake_docker_service_sealing("ployzd-access-stranded-reboot").await;
+        let machine = service.local.record().id();
+        let sealed = cluster.seal_platform(PlatformPurpose::PrivateAccess, b"tskey-auth-test");
+        let on = json!({"enabled": true, "sealed_auth_key": sealed});
+        let stranded = strand_router(&service, &fake, &on).await;
+
+        let restored = service
+            .local
+            .restore_private_access()
+            .await
+            .unwrap()
+            .unwrap();
+        let placed = restored.router.unwrap();
+        assert_eq!(placed.change, DoorChange::Created, "{placed:?}");
+        assert_eq!(
+            ployz_core::private_access_state(&placed.now.resolved_spec.container.labels),
+            Some(runtime.keep_private_access_state().unwrap()),
+            "the new router mounts the node state on disk now"
+        );
+        assert_eq!(restored.retired, vec![stranded]);
+        let routers = runtime.routers(&machine).await.unwrap();
+        assert_eq!(
+            routers
+                .iter()
+                .map(|router| router.container_id)
+                .collect::<Vec<_>>(),
+            vec![placed.now.container_id]
+        );
+        assert_eq!(
+            std::fs::read(key_file(&data_dir)).unwrap(),
+            b"tskey-auth-test"
+        );
+        set_access(&service, json!({"enabled": false}))
+            .await
+            .unwrap()
+            .unwrap();
+        std::fs::remove_dir_all(data_dir).unwrap();
+    }
+
+    #[tokio::test]
+    async fn a_new_key_replaces_the_router() {
+        let (data_dir, _store, service, _fake, runtime, cluster) =
+            fake_docker_service_sealing("ployzd-access-rekey").await;
+        let machine = service.local.record().id();
+        let first = cluster.seal_platform(PlatformPurpose::PrivateAccess, b"first");
+        let second = cluster.seal_platform(PlatformPurpose::PrivateAccess, b"second");
+        let before = set_access(&service, json!({"enabled": true, "sealed_auth_key": first}))
+            .await
+            .unwrap()
+            .unwrap()
+            .router
+            .unwrap();
+        let after = set_access(
+            &service,
+            json!({"enabled": true, "sealed_auth_key": second}),
+        )
+        .await
+        .unwrap()
+        .unwrap();
+        let router = after.router.unwrap();
+        assert_eq!(router.change, DoorChange::Created);
+        assert_ne!(router.now.container_id, before.now.container_id);
+        assert_eq!(after.retired, vec![before.now.container_id]);
+        assert_eq!(runtime.routers(&machine).await.unwrap().len(), 1);
+        assert_eq!(std::fs::read(key_file(&data_dir)).unwrap(), b"second");
+        runtime.remove_private_access_key().unwrap();
+        std::fs::remove_dir_all(data_dir).unwrap();
+    }
+
+    #[tokio::test]
+    async fn on_needs_a_key_this_cluster_opens_and_reaches_no_docker_without_one() {
+        let (data_dir, _store, service, fake, _runtime, _cluster) =
+            fake_docker_service_sealing("ployzd-access-key").await;
+        let seen = fake.requests.lock().unwrap().len();
+        let missing = set_access(&service, json!({"enabled": true}))
+            .await
+            .unwrap()
+            .unwrap_err();
+        assert_eq!(
+            missing.code,
+            RpcErrorCode::InvalidArgument,
+            "{}",
+            missing.message
+        );
+        assert_eq!(
+            missing.details.get("capability"),
+            Some(&json!(SET_PRIVATE_ACCESS_CAPABILITY))
+        );
+
+        let other = crate::sealed_env::test_support::Cluster::new();
+        let foreign = other.seal_platform(PlatformPurpose::PrivateAccess, b"tskey-auth-test");
+        let unopenable = set_access(
+            &service,
+            json!({"enabled": true, "sealed_auth_key": foreign}),
+        )
+        .await
+        .unwrap()
+        .unwrap_err();
+        assert_eq!(unopenable.code, RpcErrorCode::InvalidArgument);
+        assert_eq!(unopenable.details.get("capability"), None);
+
+        let tunnel = other.seal_platform(PlatformPurpose::IngressTunnel, b"cf-token");
+        assert!(
+            set_access(
+                &service,
+                json!({"enabled": true, "sealed_auth_key": tunnel})
+            )
+            .await
+            .unwrap()
+            .is_err(),
+            "a tunnel token's purpose does not open as an auth key"
+        );
+        assert_eq!(
+            fake.requests.lock().unwrap().len(),
+            seen,
+            "nothing reaches Docker without a key"
+        );
+        assert!(!key_file(&data_dir).exists());
+        std::fs::remove_dir_all(data_dir).unwrap();
+    }
+
+    #[tokio::test]
+    async fn the_router_runs_on_a_machine_that_accepts_only_ingress() {
+        let (data_dir, store, service, _fake, runtime, cluster) =
+            fake_docker_service_sealing("ployzd-access-ingress-only").await;
+        store
+            .mutate(|store| {
+                store.update(
+                    serde_json::from_value(json!({"accepts_services": false})).unwrap(),
+                    &[],
+                )
+            })
+            .await
+            .unwrap()
+            .unwrap();
+        let sealed = cluster.seal_platform(PlatformPurpose::PrivateAccess, b"tskey-auth-test");
+        let set = set_access(
+            &service,
+            json!({"enabled": true, "sealed_auth_key": sealed}),
+        )
+        .await
+        .unwrap()
+        .unwrap();
+        assert_eq!(set.failure, None, "{set:?}");
+        assert_eq!(
+            runtime
+                .routers(&service.local.record().id())
+                .await
+                .unwrap()
+                .len(),
+            1
+        );
+        runtime.remove_private_access_key().unwrap();
+        std::fs::remove_dir_all(data_dir).unwrap();
+    }
+}
+
 mod set_volume_copy {
     //! The daemon half of SetVolumeCopy against a fake Docker and a fake plugin: the
     //! Container side of the cut and of a Writer start, and the refusals that stop
@@ -1960,14 +2516,20 @@ mod set_volume_copy {
 
     /// A running Container that mounts the Volume, as Docker lists it for the cut,
     /// beside any holder already there.
-    async fn running_holder(service: &MachineService, fake: &FakeDocker) -> ContainerId {
+    async fn running_holder(
+        service: &MachineService,
+        fake: &crate::docker::test_support::FakeDocker,
+    ) -> ContainerId {
         let created = kept_holder(service, fake).await;
         start_holder(fake, &created);
         created
     }
 
     /// A stopped Container that mounts the Volume: Docker lists it for the cut too.
-    async fn kept_holder(service: &MachineService, fake: &FakeDocker) -> ContainerId {
+    async fn kept_holder(
+        service: &MachineService,
+        fake: &crate::docker::test_support::FakeDocker,
+    ) -> ContainerId {
         let created = stopped_container(service).await;
         fake.volume_users
             .lock()
@@ -2015,7 +2577,11 @@ mod set_volume_copy {
         });
     }
 
-    async fn requested(fake: &FakeDocker, method: http::Method, suffix: &str) {
+    async fn requested(
+        fake: &crate::docker::test_support::FakeDocker,
+        method: http::Method,
+        suffix: &str,
+    ) {
         let arrived = || {
             fake.requests
                 .lock()
@@ -2033,7 +2599,7 @@ mod set_volume_copy {
         .expect("the request reached the fake Docker");
     }
 
-    fn start_holder(fake: &FakeDocker, id: &ContainerId) {
+    fn start_holder(fake: &crate::docker::test_support::FakeDocker, id: &ContainerId) {
         let id = id.to_string();
         for container in fake
             .named_containers
@@ -2054,7 +2620,7 @@ mod set_volume_copy {
             .container_id
     }
 
-    fn running(fake: &FakeDocker) -> usize {
+    fn running(fake: &crate::docker::test_support::FakeDocker) -> usize {
         holder_status(fake)
             .iter()
             .filter(|status| **status == json!("running"))
@@ -2233,7 +2799,7 @@ mod set_volume_copy {
         std::fs::remove_dir_all(data_dir).unwrap();
     }
 
-    fn holder_status(fake: &FakeDocker) -> Vec<Value> {
+    fn holder_status(fake: &crate::docker::test_support::FakeDocker) -> Vec<Value> {
         fake.named_containers
             .as_ref()
             .unwrap()
@@ -3510,11 +4076,14 @@ mod ensure_container {
         observed
     }
 
-    fn requests(fake: &FakeDocker) -> Vec<(Method, String)> {
+    fn requests(fake: &crate::docker::test_support::FakeDocker) -> Vec<(Method, String)> {
         fake.requests.lock().unwrap().clone()
     }
 
-    fn requests_since(fake: &FakeDocker, seen: usize) -> Vec<(Method, String)> {
+    fn requests_since(
+        fake: &crate::docker::test_support::FakeDocker,
+        seen: usize,
+    ) -> Vec<(Method, String)> {
         requests(fake).split_off(seen)
     }
 
@@ -3528,7 +4097,7 @@ mod ensure_container {
             .filter(move |(seen, path)| *seen == method && path.ends_with(suffix))
     }
 
-    fn set_state(fake: &FakeDocker, id: &ContainerId, state: Value) {
+    fn set_state(fake: &crate::docker::test_support::FakeDocker, id: &ContainerId, state: Value) {
         for container in fake
             .named_containers
             .as_ref()
@@ -3581,8 +4150,9 @@ mod ensure_container {
         let (data_dir, _store, service, fake) = fake_docker_service("ployzd-ensure-prepared").await;
         let mut spec = spec("example.test/api:1");
         spec["container"]["pull_policy"] = json!("always");
-        let pulls =
-            |fake: &FakeDocker| ends_with(&requests(fake), Method::POST, "/images/create").count();
+        let pulls = |fake: &crate::docker::test_support::FakeDocker| {
+            ends_with(&requests(fake), Method::POST, "/images/create").count()
+        };
 
         let mut prepared = run_new("k1", spec.clone());
         prepared["want"]["container"]["new"]["image_prepared"] = json!(true);
@@ -4026,11 +4596,31 @@ mod ensure_container {
             runtime: crate::docker::ContainerRuntime,
             signer: Signer,
             cluster: SealingPublicKey,
+            /// The key the runtime opens Sealed values with, when the Machine holds one.
+            sealed: Option<crate::sealed_env::test_support::Cluster>,
         }
 
         async fn enforced(prefix: &str) -> Enforced {
-            let (data_dir, store, service, fake, runtime) =
-                fake_docker_service_keeping_runtime(prefix).await;
+            enforce(fake_docker_service_keeping_runtime(prefix).await, None).await
+        }
+
+        /// An enforcing Machine whose runtime opens what its test Cluster seals.
+        async fn enforced_sealing(prefix: &str) -> Enforced {
+            let (data_dir, store, service, fake, runtime, cluster) =
+                fake_docker_service_sealing(prefix).await;
+            enforce((data_dir, store, service, fake, runtime), Some(cluster)).await
+        }
+
+        async fn enforce(
+            (data_dir, store, service, fake, runtime): (
+                std::path::PathBuf,
+                RecordOwner,
+                MachineService,
+                FakeDocker,
+                crate::docker::ContainerRuntime,
+            ),
+            sealed: Option<crate::sealed_env::test_support::Cluster>,
+        ) -> Enforced {
             let signer = Signer::from_seed(&[7; 32]);
             let device = DeviceKey::from(signer.public());
             store
@@ -4052,6 +4642,7 @@ mod ensure_container {
                 runtime,
                 signer,
                 cluster,
+                sealed,
             }
         }
 
@@ -4143,6 +4734,243 @@ mod ensure_container {
                 status_details(status.details()).unwrap()["capability"],
                 json!(RESTART_APPROVAL_CAPABILITY)
             );
+        }
+
+        /// Connects to a Machine's local socket, the way a Full caller on the Machine does.
+        #[derive(Clone)]
+        struct LocalSocket(std::path::PathBuf);
+
+        impl tower_service::Service<tonic::transport::Uri> for LocalSocket {
+            type Response = hyper_util::rt::TokioIo<tokio::net::UnixStream>;
+            type Error = std::io::Error;
+            type Future = std::pin::Pin<
+                Box<dyn std::future::Future<Output = std::io::Result<Self::Response>> + Send>,
+            >;
+
+            fn poll_ready(
+                &mut self,
+                _: &mut std::task::Context<'_>,
+            ) -> std::task::Poll<std::io::Result<()>> {
+                std::task::Poll::Ready(Ok(()))
+            }
+
+            fn call(&mut self, _: tonic::transport::Uri) -> Self::Future {
+                let path = self.0.clone();
+                Box::pin(async move {
+                    tokio::net::UnixStream::connect(path)
+                        .await
+                        .map(hyper_util::rt::TokioIo::new)
+                })
+            }
+        }
+
+        /// A socket path of its own under `dir`, short enough for a Unix socket.
+        fn socket_in(dir: &std::path::Path) -> std::path::PathBuf {
+            static NEXT: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+            let next = NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            dir.join(format!("m{next}.sock"))
+        }
+
+        /// A Machine's gRPC front over its local socket. A request with no Operator header
+        /// reaches it as a Full caller, even under enforcement, and one with it as Cloud does.
+        async fn served(
+            service: &MachineService,
+            socket: &std::path::Path,
+        ) -> (
+            MachineRpcClient<tonic::transport::Channel>,
+            tokio::task::JoinHandle<Result<(), tonic::transport::Error>>,
+        ) {
+            let api = crate::machine_api::MachineApi::from_local(service.clone());
+            let listener = tokio::net::UnixListener::bind(socket).unwrap();
+            let server = tokio::spawn(Server::builder().serve_with_incoming(
+                api,
+                tokio_stream::wrappers::UnixListenerStream::new(listener),
+            ));
+            let channel = tonic::transport::Endpoint::try_from("http://machine.invalid")
+                .unwrap()
+                .connect_with_connector(LocalSocket(socket.to_owned()))
+                .await
+                .unwrap();
+            (MachineRpcClient::new(channel), server)
+        }
+
+        fn as_operator<T>(mut request: Request<T>, operator: bool) -> Request<T> {
+            if operator {
+                request
+                    .metadata_mut()
+                    .insert(OPERATOR_SCOPE_HEADER, "1".parse().unwrap());
+            }
+            request
+        }
+
+        /// What a Build whose start frame is not one says, when it was admitted at all.
+        async fn build_answer(
+            service: &MachineService,
+            dir: &std::path::Path,
+            operator: bool,
+        ) -> Result<String, Status> {
+            let (mut client, server) = served(service, &socket_in(dir)).await;
+            let garbage = ployz_core::OpaquePayload::new(b"{}".to_vec());
+            let request = as_operator(Request::new(tokio_stream::iter([garbage])), operator);
+            let answer = async {
+                let mut events = client.build(request).await?.into_inner();
+                let payload = events.message().await?.expect("a terminal event");
+                match ployz_build::remote::decode::<ployz_build::remote::Event>(&payload).unwrap() {
+                    ployz_build::remote::Event::Finished(
+                        ployz_build::remote::Outcome::Failed { message, .. },
+                    ) => Ok(message),
+                    other @ (ployz_build::remote::Event::Admitted { .. }
+                    | ployz_build::remote::Event::Progress(_)
+                    | ployz_build::remote::Event::Finished(_)) => {
+                        panic!("expected a failed start, got {other:?}")
+                    }
+                }
+            }
+            .await;
+            server.abort();
+            answer
+        }
+
+        /// A Sealed record this Machine's Sealing Key cannot open: any attempt to open it
+        /// answers a Conflict, so an open shows as a different error than a refusal.
+        fn foreign_sealed() -> ployz_core::SealedRecord {
+            let other = crate::sealed_env::test_support::Cluster::new();
+            let env = BTreeMap::from([(
+                "NPM_TOKEN".to_owned(),
+                ployz_core::EnvValue::Sealed(other.seal(
+                    "NPM_TOKEN",
+                    ployz_core::SealedScope::Shared,
+                    "marker-sealed-0123456789",
+                )),
+            )]);
+            other.open(env).unwrap().record.unwrap()
+        }
+
+        async fn mint(
+            service: &MachineService,
+            operator: bool,
+        ) -> Result<ployz_core::RpcResponse, Status> {
+            let holder = hex::encode([3u8; 32]);
+            let request = op::MintBuildGrant::into_request(ployz_core::MintBuildGrantRequest {
+                repository: ployz_core::BuildGrantRepository::parse("ployz-build/web").unwrap(),
+                holder: Some(ployz_core::BuildGrantId::parse(holder).unwrap()),
+                sealed: Some(foreign_sealed()),
+            })
+            .encode()
+            .unwrap();
+            Ok(service
+                .mint_build_grant(as_operator(Request::new(request), operator))
+                .await?
+                .into_inner()
+                .decode_response()
+                .unwrap())
+        }
+
+        /// The Conflict `Mint::check` answers once it tries to open the record.
+        #[track_caller]
+        fn opened_and_failed(response: &ployz_core::RpcResponse) {
+            let RpcResponseBody::Error(error) = &response.body else {
+                panic!("the open must fail: {response:?}");
+            };
+            assert_eq!(error.code, RpcErrorCode::Conflict, "{error:?}");
+        }
+
+        #[track_caller]
+        #[expect(clippy::indexing_slicing, reason = "JSON fixture assertions")]
+        fn refused_build(status: &Status, capability: &str) {
+            assert_eq!(
+                status.code(),
+                Code::PermissionDenied,
+                "{}",
+                status.message()
+            );
+            assert_eq!(
+                status.message(),
+                "This server runs only builds an approved device starts."
+            );
+            let details = status_details(status.details()).unwrap();
+            assert_eq!(details["capability"], json!(capability));
+        }
+
+        #[tokio::test]
+        async fn an_operator_mint_is_refused_under_enforcement_before_the_sealed_record_opens() {
+            let fixture = enforced_sealing("ployzd-enforce-mint").await;
+
+            let status = mint(&fixture.service, true)
+                .await
+                .expect_err("an Operator's mint must be refused");
+            refused_build(&status, ployz_core::MINT_BUILD_GRANT_CAPABILITY);
+
+            // The same request from a Full caller does reach the record and fails to open it,
+            // so the refusal above came from the gate and not from the open.
+            opened_and_failed(&mint(&fixture.service, false).await.unwrap());
+            std::fs::remove_dir_all(&fixture.data_dir).unwrap();
+        }
+
+        #[tokio::test]
+        async fn an_operator_mint_is_admitted_with_enforcement_off() {
+            let (data_dir, _store, service, _fake, _runtime, _cluster) =
+                fake_docker_service_sealing("ployzd-enforce-off-mint").await;
+
+            opened_and_failed(&mint(&service, true).await.unwrap());
+            opened_and_failed(&mint(&service, false).await.unwrap());
+            std::fs::remove_dir_all(data_dir).unwrap();
+        }
+
+        #[tokio::test]
+        async fn an_operator_build_is_refused_under_enforcement_before_its_stream_is_read() {
+            let fixture = enforced("ployzd-enforce-build").await;
+            let (mut client, server) =
+                served(&fixture.service, &socket_in(&fixture.data_dir)).await;
+
+            // A request stream that never yields: only a refusal that does not read it answers.
+            let silent = tokio_stream::pending::<ployz_core::OpaquePayload>();
+            let status = tokio::time::timeout(
+                Duration::from_secs(5),
+                client.build(as_operator(Request::new(silent), true)),
+            )
+            .await
+            .expect("the refusal does not wait for a start frame")
+            .expect_err("an Operator's build must be refused");
+            refused_build(&status, ployz_core::BUILD_CAPABILITY);
+
+            assert_eq!(
+                build_answer(&fixture.service, &fixture.data_dir, true)
+                    .await
+                    .expect_err("an Operator's build is refused whatever it sends")
+                    .code(),
+                Code::PermissionDenied
+            );
+            server.abort();
+            std::fs::remove_dir_all(&fixture.data_dir).unwrap();
+        }
+
+        #[tokio::test]
+        async fn a_full_build_is_admitted_under_enforcement() {
+            let fixture = enforced("ployzd-enforce-build-full").await;
+
+            assert_eq!(
+                build_answer(&fixture.service, &fixture.data_dir, false)
+                    .await
+                    .unwrap(),
+                "expected a valid Build start frame"
+            );
+            std::fs::remove_dir_all(&fixture.data_dir).unwrap();
+        }
+
+        #[tokio::test]
+        async fn builds_are_admitted_from_both_callers_with_enforcement_off() {
+            let (data_dir, _store, service, _fake) =
+                fake_docker_service("ployzd-enforce-off-build").await;
+
+            for operator in [true, false] {
+                assert_eq!(
+                    build_answer(&service, &data_dir, operator).await.unwrap(),
+                    "expected a valid Build start frame",
+                    "operator: {operator}"
+                );
+            }
+            std::fs::remove_dir_all(data_dir).unwrap();
         }
 
         #[tokio::test]
@@ -4517,37 +5345,49 @@ mod ensure_container {
             std::fs::remove_dir_all(fixture.data_dir).unwrap();
         }
 
+        fn browser() -> Signer {
+            Signer::from_seed(&[8; 32])
+        }
+
         /// A browser key's restart approval under a session grant from a passkey this
         /// Machine trusts, as the dashboard sends it.
         fn browser_approval(fixture: &Enforced, id: &ContainerId) -> Signed<RestartApproval> {
-            use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
-            use ed25519_dalek::Signer as _;
-            use ployz_core::authority::{
-                ActionFamily, GrantBody, PasskeyAssertion, SessionGrant, SignerKey,
-                session::Delegation, trusted_key::Base64Url,
-            };
-            use sha2::{Digest, Sha256};
+            use ployz_core::authority::{ActionFamily, GrantBody, SignerKey, session::Delegation};
 
-            let authenticator = ed25519_dalek::SigningKey::from_bytes(&[5; 32]);
-            let credential = Base64Url::new(vec![5, 1, 2, 3]);
-            let browser = Signer::from_seed(&[8; 32]);
             let approval = RestartApproval {
                 signer: SignerKey::Browser {
-                    browser: browser.public(),
+                    browser: browser().public(),
                 },
                 ..fixture.approval(id)
             };
-            let body = ployz_core::authority::canonical::to_canonical(&GrantBody {
-                browser_key: browser.public(),
+            let grant = session_grant(&GrantBody {
+                browser_key: browser().public(),
                 cluster: fixture.cluster,
                 environment: approval.namespace.clone(),
+                environment_id: uuid::Uuid::nil(),
                 machines: approval.machines.clone(),
                 families: vec![ActionFamily::Restart],
                 issued_at: approval.issued_at,
                 expires_at: approval.issued_at.plus(60 * 60_000),
                 delegation: Delegation::None,
-            })
-            .unwrap();
+            });
+            Signed::sign_under(&approval, &browser(), grant).unwrap()
+        }
+
+        /// The trusted passkey's answer to a session prompt for `grant`.
+        fn session_grant(
+            grant: &ployz_core::authority::GrantBody,
+        ) -> ployz_core::authority::SessionGrant {
+            use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
+            use ed25519_dalek::Signer as _;
+            use ployz_core::authority::{
+                GrantBody, PasskeyAssertion, SessionGrant, trusted_key::Base64Url,
+            };
+            use sha2::{Digest, Sha256};
+
+            let authenticator = ed25519_dalek::SigningKey::from_bytes(&[5; 32]);
+            let credential = Base64Url::new(vec![5, 1, 2, 3]);
+            let body = ployz_core::authority::canonical::to_canonical(grant).unwrap();
             let client_data = json!({
                 "type": "webauthn.get",
                 "challenge": URL_SAFE_NO_PAD.encode(GrantBody::challenge(&body)),
@@ -4559,7 +5399,7 @@ mod ensure_container {
             authenticator_data.extend_from_slice(&[0x05, 0, 0, 0, 1]);
             let mut answered = authenticator_data.clone();
             answered.extend_from_slice(&Sha256::digest(&client_data));
-            let grant = SessionGrant {
+            SessionGrant {
                 body,
                 assertion: PasskeyAssertion {
                     credential_id: credential.try_into().unwrap(),
@@ -4567,8 +5407,7 @@ mod ensure_container {
                     client_data_json: Base64Url::new(client_data),
                     signature: Base64Url::new(authenticator.sign(&answered).to_bytes().to_vec()),
                 },
-            };
-            Signed::sign_under(&approval, &browser, grant).unwrap()
+            }
         }
 
         async fn trust_passkey(fixture: &Enforced) {
@@ -4668,7 +5507,7 @@ mod ensure_container {
                     .enumerate()
                     .map(|(index, step)| ProposalStep {
                         index: u32::try_from(index).unwrap(),
-                        kind: step.kind,
+                        kind: step.kind.into(),
                         digest: StepDigest::of(&canonical::to_canonical(step).unwrap()),
                     })
                     .collect(),
@@ -4842,23 +5681,75 @@ mod ensure_container {
         impl Enforced {
             /// A deploy approval of `spec` for Service `api` in Namespace `app` on this Machine.
             fn deploy(&self, spec: &Value) -> Signed<DeployApproval> {
+                let approval = self.deploy_body(
+                    &[spec],
+                    ployz_core::authority::SignerKey::Device(self.signer.public().into()),
+                );
+                Signed::sign(&approval, &self.signer).unwrap()
+            }
+
+            /// A deploy approval of every Service in `specs`, each named by its spec, signed
+            /// by the browser key under a grant for Environment `environment_id`.
+            fn browser_deploy(
+                &self,
+                environment_id: uuid::Uuid,
+                specs: &[&Value],
+            ) -> Signed<DeployApproval> {
+                use ployz_core::authority::{
+                    ActionFamily, GrantBody, SignerKey, session::Delegation,
+                };
+                let approval = self.deploy_body(
+                    specs,
+                    SignerKey::Browser {
+                        browser: browser().public(),
+                    },
+                );
+                let grant = session_grant(&GrantBody {
+                    browser_key: browser().public(),
+                    cluster: self.cluster,
+                    environment: approval.namespace.clone(),
+                    environment_id,
+                    machines: approval.machines.clone(),
+                    families: vec![ActionFamily::Deploy],
+                    issued_at: approval.issued_at,
+                    expires_at: approval.issued_at.plus(60 * 60_000),
+                    delegation: Delegation::None,
+                });
+                Signed::sign_under(&approval, &browser(), grant).unwrap()
+            }
+
+            fn deploy_body(
+                &self,
+                specs: &[&Value],
+                signer: ployz_core::authority::SignerKey,
+            ) -> DeployApproval {
                 let namespace = Namespace::parse("app").unwrap();
-                let resolved: ployz_core::ResolvedServiceSpec =
-                    serde_json::from_value(spec.clone()).unwrap();
-                let approval = DeployApproval {
+                let mut services: Vec<ApprovedService> = specs
+                    .iter()
+                    .map(|spec| {
+                        let resolved: ployz_core::ResolvedServiceSpec =
+                            serde_json::from_value((*spec).clone()).unwrap();
+                        ApprovedService {
+                            digest: PayloadDigest::of(&resolved.to_requested(), &namespace)
+                                .unwrap(),
+                            name: resolved.name,
+                            image: None,
+                        }
+                    })
+                    .collect();
+                services.sort_by(|left, right| left.name.cmp(&right.name));
+                let issued_at = Timestamp::now();
+                DeployApproval {
                     cluster: self.cluster,
                     operation: OperationId::random(),
-                    namespace: namespace.clone(),
+                    namespace,
                     machines: vec![self.service.local.record().id()],
-                    services: vec![ApprovedService {
-                        name: ServiceName::parse("api").unwrap(),
-                        digest: PayloadDigest::of(&resolved.to_requested(), &namespace).unwrap(),
-                    }],
-                    issued_at: Timestamp::now(),
-                    expires_at: Timestamp::now().plus(60_000),
-                    signer: ployz_core::authority::SignerKey::Device(self.signer.public().into()),
-                };
-                Signed::sign(&approval, &self.signer).unwrap()
+                    services,
+                    issued_at,
+                    expires_at: issued_at.plus(60_000),
+                    signer,
+                    proposal: None,
+                }
             }
         }
 
@@ -4908,11 +5799,11 @@ mod ensure_container {
 
         fn new_want(kind: &str, key: &str, spec: &Value) -> Value {
             json!({"state":"running", "rotation":"pending", "container":{"new":{
-                "slot":{"namespace":"app", "service":"api", "kind":kind, "creation_key":key},
+                "slot":{"namespace":"app", "service":spec["name"], "kind":kind, "creation_key":key},
                 "resolved_spec":spec, "gen":1}}})
         }
 
-        fn creates(fake: &FakeDocker, since: usize) -> usize {
+        fn creates(fake: &crate::docker::test_support::FakeDocker, since: usize) -> usize {
             ends_with(
                 &requests_since(fake, since),
                 Method::POST,
@@ -5160,6 +6051,152 @@ mod ensure_container {
             .unwrap();
             assert_eq!(creates(&fixture.fake, seen), 1);
             std::fs::remove_dir_all(fixture.data_dir).unwrap();
+        }
+
+        /// The Environment the test Cluster's Sealed values were sealed for.
+        const PRODUCTION: uuid::Uuid = uuid::Uuid::from_u128(1);
+        /// Another Environment a session may be open in.
+        const FIX_API: uuid::Uuid = uuid::Uuid::from_u128(9);
+        const SECRET: &str = "hunter2-production";
+
+        /// Service `name` at the pinned image. With `sealed`, its environment, or only its
+        /// hook's, holds a value sealed for the test Cluster's production Environment.
+        #[expect(clippy::indexing_slicing, reason = "JSON fixture")]
+        fn sealed_spec(fixture: &Enforced, name: &str, sealed: Option<Sealed>) -> Value {
+            let mut spec = spec(PINNED);
+            spec["name"] = json!(name);
+            spec["pre_deploy"] = json!({"command": ["migrate"]});
+            let Some(sealed) = sealed else {
+                return spec;
+            };
+            let cluster = fixture.sealed.as_ref().expect("a sealing fixture");
+            let value = cluster.seal("TOKEN", ployz_core::SealedScope::Shared, SECRET);
+            let environment = match sealed {
+                Sealed::Container => &mut spec["container"]["environment"],
+                Sealed::Hook => &mut spec["pre_deploy"]["environment"],
+            };
+            *environment = json!({"TOKEN": value});
+            spec["container"]["sealed_identity"] = serde_json::to_value(&cluster.identity).unwrap();
+            spec
+        }
+
+        #[derive(Clone, Copy)]
+        enum Sealed {
+            Container,
+            Hook,
+        }
+
+        #[tokio::test]
+        async fn a_browser_approval_opens_only_its_own_environments_sealed_values() {
+            let fixture = enforced_sealing("ployzd-deploy-sealed-scope").await;
+            trust_passkey(&fixture).await;
+            let service = &fixture.service;
+            let sealed = sealed_spec(&fixture, "api", Some(Sealed::Container));
+            let seen = requests(&fixture.fake).len();
+            let (log, guard) = crate::diag::test_support::capture();
+            deploy_refused(
+                deploy_ensure(
+                    service,
+                    new_want("service_container", "k1", &sealed),
+                    Some(&fixture.browser_deploy(FIX_API, &[&sealed])),
+                )
+                .await,
+                "sealed values belong to another environment",
+            );
+            drop(guard);
+            assert_eq!(creates(&fixture.fake, seen), 0, "nothing reached Docker");
+            let log = log.text();
+            assert!(
+                log.contains("Sealed values belong to another Environment")
+                    && log.contains("refused deploy")
+                    && log.contains("service=api"),
+                "{log}"
+            );
+            assert!(!log.contains(SECRET), "the refusal prints no value: {log}");
+
+            deploy_ensure(
+                service,
+                new_want("service_container", "k1", &sealed),
+                Some(&fixture.deploy(&sealed)),
+            )
+            .await
+            .expect("a Device opens any Environment's Sealed values");
+            deploy_ensure(
+                service,
+                new_want("service_container", "k2", &sealed),
+                Some(&fixture.browser_deploy(PRODUCTION, &[&sealed])),
+            )
+            .await
+            .expect("a session opens its own Environment's Sealed values");
+            assert_eq!(creates(&fixture.fake, seen), 2);
+            std::fs::remove_dir_all(&fixture.data_dir).unwrap();
+        }
+
+        #[tokio::test]
+        async fn a_browser_approval_of_a_spec_without_sealed_values_runs_in_any_session() {
+            let fixture = enforced_sealing("ployzd-deploy-sealed-plain").await;
+            trust_passkey(&fixture).await;
+            let plain = sealed_spec(&fixture, "api", None);
+            let seen = requests(&fixture.fake).len();
+            deploy_ensure(
+                &fixture.service,
+                new_want("service_container", "k1", &plain),
+                Some(&fixture.browser_deploy(FIX_API, &[&plain])),
+            )
+            .await
+            .unwrap();
+            assert_eq!(creates(&fixture.fake, seen), 1);
+            std::fs::remove_dir_all(&fixture.data_dir).unwrap();
+        }
+
+        #[tokio::test]
+        async fn a_hooks_sealed_values_for_another_environment_are_refused() {
+            let fixture = enforced_sealing("ployzd-deploy-sealed-hook").await;
+            trust_passkey(&fixture).await;
+            let hooked = sealed_spec(&fixture, "api", Some(Sealed::Hook));
+            let signed = fixture.browser_deploy(FIX_API, &[&hooked]);
+            let seen = requests(&fixture.fake).len();
+            for (kind, key) in [("pre_deploy_hook", "h1"), ("service_container", "k1")] {
+                deploy_refused(
+                    deploy_ensure(
+                        &fixture.service,
+                        new_want(kind, key, &hooked),
+                        Some(&signed),
+                    )
+                    .await,
+                    "sealed values belong to another environment",
+                );
+            }
+            assert_eq!(creates(&fixture.fake, seen), 0, "nothing reached Docker");
+            std::fs::remove_dir_all(&fixture.data_dir).unwrap();
+        }
+
+        #[tokio::test]
+        async fn one_approval_of_two_services_refuses_only_the_cross_environment_one() {
+            let fixture = enforced_sealing("ployzd-deploy-sealed-mixed").await;
+            trust_passkey(&fixture).await;
+            let api = sealed_spec(&fixture, "api", None);
+            let worker = sealed_spec(&fixture, "worker", Some(Sealed::Container));
+            let signed = fixture.browser_deploy(FIX_API, &[&api, &worker]);
+            let seen = requests(&fixture.fake).len();
+            deploy_refused(
+                deploy_ensure(
+                    &fixture.service,
+                    new_want("service_container", "w1", &worker),
+                    Some(&signed),
+                )
+                .await,
+                "sealed values belong to another environment",
+            );
+            deploy_ensure(
+                &fixture.service,
+                new_want("service_container", "a1", &api),
+                Some(&signed),
+            )
+            .await
+            .unwrap();
+            assert_eq!(creates(&fixture.fake, seen), 1, "only api reached Docker");
+            std::fs::remove_dir_all(&fixture.data_dir).unwrap();
         }
 
         #[tokio::test]

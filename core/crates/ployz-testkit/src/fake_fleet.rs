@@ -33,12 +33,12 @@ use ployz_core::{
     MachineName, MachineObservation, MachinePath, MachineRelease, MachineRpc, MachineRpcServer,
     MachineRuntime, MachineUpgradeAttempt, MachineUpgradeOutcome, MachineVersion,
     MembershipObservation, NAMESPACE_LABEL, Namespace, OpaquePayload, PROTOCOL_MAJOR,
-    ProvisionedCopy, ProvisionedVolumeMaximumBytes, QualifiedService,
+    PrivateAccessSet, ProvisionedCopy, ProvisionedVolumeMaximumBytes, QualifiedService,
     RUNTIME_WATCH_MESSAGE_SIZE_LIMIT, ResolvedServiceSpec, RotationEdge, RoutedAddresses,
     RoutesRead, RoutingRequest, RpcError, RpcErrorCode, RpcRequestBody, RpcResponse, RunTarget,
-    RuntimeWatchFrame, ServiceId, ServiceName, SlotId, SlotRole, StorageBacking, StorageCapacity,
-    VolumeCopy, VolumeCopyView, VolumeInventory, WireGuardPublicKey, WriterEpoch,
-    encode_runtime_watch_frame,
+    RuntimeWatchFrame, ServiceId, ServiceName, SetPrivateAccessRequest, SlotId, SlotRole,
+    StorageBacking, StorageCapacity, VolumeCopy, VolumeCopyView, VolumeInventory,
+    WireGuardPublicKey, WriterEpoch, encode_runtime_watch_frame,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -830,6 +830,9 @@ impl Fleet {
                 unary(self.ensure(target, container_id, &request.want)?)
             }
             RpcRequestBody::SetIngressDoors(_) => unary(self.set_doors(target)?.into()),
+            RpcRequestBody::SetPrivateAccess(request) => {
+                unary(self.set_private_access(target, &request)?.into())
+            }
             RpcRequestBody::ReadRoutes(request) => unary(self.routes(&request.service).into()),
             RpcRequestBody::ReadRoutedAddresses(_) => unary(
                 RoutedAddresses {
@@ -1008,47 +1011,7 @@ impl Fleet {
             (QualifiedService::system_ingress_holder(), "pause"),
             (QualifiedService::system_ingress(), "caddy"),
         ] {
-            let machine = self.by_id_mut(target)?;
-            let name = format!("{}-{}", machine.name, identity.name);
-            let found = machine.containers.iter_mut().find(|container| {
-                container.spec.namespace == identity.namespace
-                    && container.spec.service == identity.name
-            });
-            let (id, change) = match found {
-                Some(container) if container.spec.state == RunState::Running => {
-                    (container.id, DoorChange::Unchanged)
-                }
-                Some(container) => {
-                    container.spec.state = RunState::Running;
-                    (container.id, DoorChange::Started)
-                }
-                None => {
-                    let id = container_id(&name);
-                    machine.containers.push(ContainerState {
-                        spec: FleetContainer {
-                            name,
-                            namespace: identity.namespace.clone(),
-                            service: identity.name.clone(),
-                            image: image.into(),
-                            state: RunState::Running,
-                            env: BTreeMap::new(),
-                            deployment: None,
-                            logs: Vec::new(),
-                            rotation: CopyRotation::default(),
-                        },
-                        id,
-                    });
-                    (id, DoorChange::Created)
-                }
-            };
-            let machine = self.by_id(target)?;
-            let container = machine
-                .container(&id)
-                .ok_or_else(|| Status::internal("the set door Container vanished"))?;
-            let outcome = Some(DoorOutcome {
-                now: machine.observe(container)?,
-                change,
-            });
+            let outcome = Some(self.place_system(target, &identity, image)?);
             if identity == QualifiedService::system_ingress_holder() {
                 set.holder = outcome;
             } else {
@@ -1056,6 +1019,87 @@ impl Fleet {
             }
         }
         Ok(set)
+    }
+
+    /// Private Access on `target` as a daemon sets it: the router created or started
+    /// unless it already runs, or every router removed.
+    fn set_private_access(
+        &mut self,
+        target: MachineId,
+        request: &SetPrivateAccessRequest,
+    ) -> Result<PrivateAccessSet, Status> {
+        let identity = QualifiedService::system_tailscale();
+        if request.enabled {
+            return Ok(PrivateAccessSet {
+                router: Some(self.place_system(target, &identity, "tailscale")?),
+                ..PrivateAccessSet::default()
+            });
+        }
+        let machine = self.by_id_mut(target)?;
+        let mut retired = Vec::new();
+        machine.containers.retain(|container| {
+            let router = container.spec.namespace == identity.namespace
+                && container.spec.service == identity.name;
+            if router {
+                retired.push(container.id);
+            }
+            !router
+        });
+        Ok(PrivateAccessSet {
+            retired,
+            ..PrivateAccessSet::default()
+        })
+    }
+
+    /// The reserved Container `identity` on `target`, created or started unless it
+    /// already runs.
+    fn place_system(
+        &mut self,
+        target: MachineId,
+        identity: &QualifiedService,
+        image: &str,
+    ) -> Result<DoorOutcome, Status> {
+        let machine = self.by_id_mut(target)?;
+        let name = format!("{}-{}", machine.name, identity.name);
+        let found = machine.containers.iter_mut().find(|container| {
+            container.spec.namespace == identity.namespace
+                && container.spec.service == identity.name
+        });
+        let (id, change) = match found {
+            Some(container) if container.spec.state == RunState::Running => {
+                (container.id, DoorChange::Unchanged)
+            }
+            Some(container) => {
+                container.spec.state = RunState::Running;
+                (container.id, DoorChange::Started)
+            }
+            None => {
+                let id = container_id(&name);
+                machine.containers.push(ContainerState {
+                    spec: FleetContainer {
+                        name,
+                        namespace: identity.namespace.clone(),
+                        service: identity.name.clone(),
+                        image: image.into(),
+                        state: RunState::Running,
+                        env: BTreeMap::new(),
+                        deployment: None,
+                        logs: Vec::new(),
+                        rotation: CopyRotation::default(),
+                    },
+                    id,
+                });
+                (id, DoorChange::Created)
+            }
+        };
+        let machine = self.by_id(target)?;
+        let container = machine
+            .container(&id)
+            .ok_or_else(|| Status::internal("the placed Container vanished"))?;
+        Ok(DoorOutcome {
+            now: machine.observe(container)?,
+            change,
+        })
     }
 
     fn routes(&self, service: &QualifiedService) -> RoutesRead {
