@@ -14,7 +14,7 @@ use ployz_store::{
     DestructiveKind, DiffQuery, DiffView, DnsLookup, DomainAction, DomainChange, DomainEvidence,
     DomainQuery, DomainRow, DomainStatus, DomainsQuery, EnvironmentId, EnvironmentName,
     EnvironmentRef, Hostname, OrganizationId, PlanQuery, ProjectId, ProjectName, Publish,
-    PublishedHostname, Query, RemoveDomain, RenameProject, Retry, RunEvidence, RunnerId,
+    PublishedHostname, Query, Reapply, RemoveDomain, RenameProject, Retry, RunEvidence, RunnerId,
     ServiceLineageId, SetGeneratedDomain, Trusted, TunnelEvidence, View, Written,
 };
 use serde_json::{Value, json};
@@ -1639,4 +1639,281 @@ fn a_new_service_follows_into_a_branch_with_its_generated_name() {
         "{names:?}"
     );
     assert_eq!(hints, 0);
+}
+
+fn reapply(
+    store: &ConfigStore,
+    who: &Actor,
+    n: u8,
+    services: &[&str],
+    trusted: &Trusted,
+) -> Result<Written, ployz_core::RpcError> {
+    store.write_trusted(
+        who,
+        &Command::Admit(Admit::Reapply(Reapply {
+            id: deployment(n),
+            environment: EnvironmentRef::default(),
+            services: services
+                .iter()
+                .map(|name| ServiceName::parse(*name).unwrap())
+                .collect(),
+            message: None,
+        })),
+        trusted,
+    )
+}
+
+fn edit(store: &ConfigStore, who: &Actor, path: &str, value: &str) {
+    let command: Command = serde_json::from_value(
+        json!({ "command": "edit", "changes": [{ "op": "set", "path": path, "value": value }] }),
+    )
+    .unwrap();
+    store.write(who, &command).unwrap();
+}
+
+/// What `intent` ships of `service`: the hostnames it serves and its variables' names.
+fn shipped(intent: &ployz_core::DeployIntent, service: &str) -> (Vec<String>, Vec<String>) {
+    let intent = serde_json::to_value(intent).unwrap();
+    let spec = intent["target"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|spec| spec["name"] == service)
+        .unwrap_or_else(|| panic!("{service} isn't in {intent}"))
+        .clone();
+    let mut hostnames: Vec<String> = spec["ports"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter_map(|port| port["hostname"].as_str().map(str::to_owned))
+        .collect();
+    hostnames.sort();
+    let mut env: Vec<String> = spec["container"]["environment"]
+        .as_object()
+        .map_or_else(Vec::new, |env| env.keys().cloned().collect());
+    env.sort();
+    (hostnames, env)
+}
+
+/// `web` deployed under the Hosted Cluster Domain with a generated and a custom
+/// domain and a variable, then the custom one removed and saved, and another
+/// variable added.
+fn web_with_staged_edits() -> (ConfigStore, Actor) {
+    let (store, who) = shop();
+    store
+        .write_trusted(&who, &add_prefix("web"), &cloud())
+        .unwrap();
+    store
+        .write_trusted(&who, &add(Some("shop.example.org"), Some(80)), &cloud())
+        .unwrap();
+    edit(&store, &who, "web.env.KEPT", "1");
+    admit(&store, &who, 1, &cloud()).unwrap();
+    apply(&store, 1);
+    store
+        .write_trusted(
+            &who,
+            &RemoveDomain {
+                environment: EnvironmentRef::default(),
+                domain: "shop.example.org".into(),
+            },
+            &cloud(),
+        )
+        .unwrap();
+    store
+        .write(
+            &who,
+            &Publish {
+                id: None,
+                environment: EnvironmentRef::default(),
+                version: None,
+                message: None,
+                accept_volume_loss: Vec::new(),
+            },
+        )
+        .unwrap();
+    edit(&store, &who, "web.env.MODE", "new");
+    (store, who)
+}
+
+/// A Door switch moves a generated name by shipping its Service again as it runs,
+/// so what Working and Saved State stage stays staged.
+#[test]
+fn a_reapply_ships_what_runs_under_the_cluster_domain_now() {
+    let (store, who) = web_with_staged_edits();
+    let staged: DiffView = store.read(&who, &DiffQuery::default()).unwrap();
+
+    let reapplied = reapply(&store, &who, 2, &["web"], &tunnel()).unwrap();
+    let Written::Deployment(summary) = reapplied else {
+        panic!("{reapplied:?}");
+    };
+    assert_eq!(summary.saved.0, 1, "it ships the revision web runs");
+    let (hostnames, env) = shipped(&apply(&store, 2), "web");
+    assert_eq!(hostnames, ["shop.example.org", "web.acme-apps.com"]);
+    assert!(
+        env.contains(&"KEPT".to_owned()) && !env.contains(&"MODE".to_owned()),
+        "{env:?}"
+    );
+    let after: DiffView = store.read(&who, &DiffQuery::default()).unwrap();
+    assert_eq!(
+        (after.saved, after.changes),
+        (staged.saved, staged.changes),
+        "what was staged is still staged"
+    );
+}
+
+/// Run Deployment `n` to success, confirming each of `services`.
+fn apply_services(store: &ConfigStore, n: u8, services: &[&str]) {
+    let runner = RunnerId::parse("runner").unwrap();
+    store.claim(&deployment(n), &runner).unwrap();
+    let operations: Vec<Value> = (0..services.len())
+        .map(|at| json!({"type": "remove_container", "machine_id": "a".repeat(32), "container_id": format!("{at:064}")}))
+        .collect();
+    let preview: DeployPreview = serde_json::from_value(json!({
+        "namespace": "shop-production",
+        "operations": services.iter().zip(&operations).enumerate().map(|(index, (service, operation))| json!({
+            "index": index, "machine_id": "a".repeat(32), "service_name": service,
+            "operation": operation, "status": {"type": "pending"}
+        })).collect::<Vec<_>>(),
+        "warnings": [], "would_remove": [], "preserved_volumes": []
+    }))
+    .unwrap();
+    store
+        .record(&deployment(n), &runner, RunEvidence::Prepared(preview))
+        .unwrap();
+    let outcome: DeployOutcome<ployz_core::ExecutionError> =
+        serde_json::from_value(json!({ "type": "success", "completed": operations })).unwrap();
+    store
+        .record(
+            &deployment(n),
+            &runner,
+            RunEvidence::Executed {
+                progress: Vec::new(),
+                outcome: Box::new(outcome),
+                removed: Vec::new(),
+            },
+        )
+        .unwrap();
+}
+
+/// `web`, with a generated domain, referencing `worker`, both deployed.
+fn web_referencing_worker() -> (ConfigStore, Actor) {
+    let (store, who) = shop();
+    store
+        .write(
+            &who,
+            &CreateService {
+                id: ServiceLineageId::parse(uuid(6)).unwrap(),
+                environment: EnvironmentRef::default(),
+                name: ServiceName::parse("worker").unwrap(),
+                image: Some("redis:7".into()),
+                template: None,
+            },
+        )
+        .unwrap();
+    store
+        .write_trusted(&who, &add_prefix("web"), &cloud())
+        .unwrap();
+    edit(
+        &store,
+        &who,
+        "web.env.WORKER",
+        "${{ worker.PLOYZ_PRIVATE_DOMAIN }}",
+    );
+    admit(&store, &who, 1, &cloud()).unwrap();
+    apply_services(&store, 1, &["web", "worker"]);
+    (store, who)
+}
+
+/// A narrowed Deployment also ships each Service its targets reference, as its
+/// revision has it, so a reapply never ships a revision that would roll one back.
+#[test]
+fn a_reapply_refuses_a_revision_that_ships_a_referenced_service_otherwise_than_it_runs() {
+    let (store, who) = web_referencing_worker();
+    edit(&store, &who, "web.env.MODE", "new");
+    edit(&store, &who, "worker.env.LEVEL", "2");
+    store
+        .write_trusted(
+            &who,
+            &Command::Admit(Admit::Deploy(Deploy {
+                id: deployment(2),
+                environment: EnvironmentRef::default(),
+                services: vec![ServiceName::parse("worker").unwrap()],
+                version: None,
+                upload: None,
+                accept_volume_loss: Vec::new(),
+                message: None,
+                prune: false,
+                no_prune: false,
+                approval: None,
+            })),
+            &cloud(),
+        )
+        .unwrap();
+    apply_services(&store, 2, &["worker"]);
+
+    let refused = reapply(&store, &who, 3, &["web"], &tunnel()).unwrap_err();
+    assert_eq!(
+        (refused.code, refused.message.as_str()),
+        (
+            RpcErrorCode::Conflict,
+            "web can't redeploy unchanged. Deploy production, then try again."
+        )
+    );
+}
+
+#[test]
+fn a_reapply_ships_a_referenced_service_only_as_it_runs() {
+    let (store, who) = web_referencing_worker();
+    edit(&store, &who, "worker.env.LEVEL", "2");
+    store
+        .write(
+            &who,
+            &Publish {
+                id: None,
+                environment: EnvironmentRef::default(),
+                version: None,
+                message: None,
+                accept_volume_loss: Vec::new(),
+            },
+        )
+        .unwrap();
+
+    let Written::Deployment(summary) = reapply(&store, &who, 2, &["web"], &tunnel()).unwrap()
+    else {
+        panic!("not a Deployment");
+    };
+    assert_eq!(
+        summary.saved.0, 1,
+        "the latest revision ships worker otherwise"
+    );
+    let intent = apply(&store, 2);
+    assert_eq!(shipped(&intent, "web").0, ["web.acme-apps.com"]);
+    assert!(!shipped(&intent, "worker").1.contains(&"LEVEL".to_owned()));
+}
+
+#[test]
+fn a_reapply_waits_for_a_deployment_in_flight() {
+    let (store, who) = web_with_staged_edits();
+    admit(&store, &who, 2, &cloud()).unwrap();
+    let refused = reapply(&store, &who, 3, &["web"], &tunnel()).unwrap_err();
+    assert_eq!(
+        (refused.code, refused.message.as_str()),
+        (
+            RpcErrorCode::Conflict,
+            "#2 is still deploying. Wait for it to finish, then try again."
+        )
+    );
+}
+
+#[test]
+fn only_the_stores_own_automation_reapplies_and_only_what_runs() {
+    let (store, who) = web_with_staged_edits();
+    let person = Actor {
+        principal: Some(ployz_store::Principal::parse("user:ada").unwrap()),
+        ..who.clone()
+    };
+    let refused = reapply(&store, &person, 2, &["web"], &tunnel()).unwrap_err();
+    assert_eq!(refused.code.as_str(), "forbidden", "{refused:?}");
+    let refused = reapply(&store, &who, 2, &["api"], &tunnel()).unwrap_err();
+    assert_eq!(refused.code, RpcErrorCode::NotFound, "{refused:?}");
 }

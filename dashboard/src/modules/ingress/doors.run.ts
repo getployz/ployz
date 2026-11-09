@@ -20,7 +20,7 @@ export type SwitchPorts<EngineError, RowError, R> = {
   readonly moving: () => Effect.Effect<{ readonly moves: readonly MovedHostname[] } | { readonly failure: string }, RowError, R>;
   /** Move the Cluster Domain's source to where `want` goes. */
   readonly flip: () => Effect.Effect<void, RowError, R>;
-  /** Deploy the Services publishing `moves` again, so each is served under the new source. Why they aren't all, or null. */
+  /** Ship the Services publishing `moves` again as they run, so each is served under the new source. Why they aren't all, or null. */
   readonly redeploy: (moves: readonly MovedHostname[]) => Effect.Effect<string | null, RowError, R>;
 };
 
@@ -55,7 +55,7 @@ export const runSwitch = <EngineError, RowError, R>(want: DoorsWant, ports: Swit
 
 /** What redeploying the moved names needs of the Store and the Servers. */
 export type RedeployPorts<E, R> = {
-  /** Admit a Deployment of the Environment's named Services, as its Deploy button would: its id, or the Store's refusal. */
+  /** Admit a Deployment of the Environment's named Services as they run: its id, or the Store's refusal. */
   readonly deploy: (scope: RedeployScope) => Effect.Effect<{ readonly id: string } | { readonly refused: string }, E, R>;
   /** The Deployment's status once it is no longer in flight. */
   readonly ended: (id: string) => Effect.Effect<DeploymentStatus, E, R>;

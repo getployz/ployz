@@ -265,6 +265,40 @@ pub(crate) enum Ships {
     },
 }
 
+/// Whether `saved`'s `service` would run otherwise than `landing` leaves it: it,
+/// or a Config or Volume it mounts, isn't settled there. A changed Config or Volume
+/// ships with the Service that mounts it, and is recorded only once that Service is
+/// a node.
+pub(crate) fn changed(
+    saved: &SavedEnvironmentIntent,
+    landing: &Landing<'_>,
+    service: &SavedServiceIntent,
+) -> bool {
+    !landing.settled_service(service)
+        || service.config_attachments.iter().any(|mount| {
+            let id = &mount.config_resource_id;
+            match saved
+                .configs
+                .iter()
+                .find(|config| config.resource_id == *id)
+            {
+                Some(config) => !landing.settled_config(config),
+                None => landing.configs().any(|config| config.resource_id == *id),
+            }
+        })
+        || service.volume_attachments.iter().any(|mount| {
+            let id = &mount.volume_resource_id;
+            match saved
+                .volumes
+                .iter()
+                .find(|volume| volume.resource_id == *id)
+            {
+                Some(volume) => !landing.settled_volume(volume),
+                None => landing.volumes().any(|volume| volume.resource_id == *id),
+            }
+        })
+}
+
 /// Freeze a Deployment of `saved` over `scope`, diffed against `landing`: its
 /// target nodes, checked to lower to a Deploy Intent. Generated domains expand
 /// under `cluster_domain`; a plan, which has none, checks the rest.
@@ -304,33 +338,7 @@ pub(crate) fn freeze(
             json!({}),
         ));
     }
-    // A changed Config or Volume ships with the Service that mounts it, and is
-    // recorded only once that Service is a node.
-    let changed = |service: &SavedServiceIntent| {
-        !landing.settled_service(service)
-            || service.config_attachments.iter().any(|mount| {
-                let id = &mount.config_resource_id;
-                match saved
-                    .configs
-                    .iter()
-                    .find(|config| config.resource_id == *id)
-                {
-                    Some(config) => !landing.settled_config(config),
-                    None => landing.configs().any(|config| config.resource_id == *id),
-                }
-            })
-            || service.volume_attachments.iter().any(|mount| {
-                let id = &mount.volume_resource_id;
-                match saved
-                    .volumes
-                    .iter()
-                    .find(|volume| volume.resource_id == *id)
-                {
-                    Some(volume) => !landing.settled_volume(volume),
-                    None => landing.volumes().any(|volume| volume.resource_id == *id),
-                }
-            })
-    };
+    let changed = |service: &SavedServiceIntent| changed(saved, landing, service);
     let mut named = services.to_vec();
     if every_saved {
         for service in saved.services.iter().filter(|service| changed(service)) {

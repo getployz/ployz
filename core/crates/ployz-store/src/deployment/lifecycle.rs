@@ -16,12 +16,15 @@ pub(crate) enum Admission<'a> {
     /// This one, waiting for CI, in place: same push, numbered next as it queues.
     /// It supersedes only the queued one.
     Promote(&'a DeploymentId),
+    /// A new one, numbered next, that ships only what already runs: it supersedes
+    /// only the queued one, and what waits for CI still waits.
+    Beside(&'a DeploymentId),
 }
 
 impl Admission<'_> {
     fn id(self) -> DeploymentId {
         match self {
-            Self::New { id, .. } | Self::Promote(id) => id.clone(),
+            Self::New { id, .. } | Self::Promote(id) | Self::Beside(id) => id.clone(),
         }
     }
 }
@@ -45,6 +48,7 @@ pub(crate) fn admit(
     let id = &admission.id();
     let (held, push) = match admission {
         Admission::New { push, .. } => (false, push.cloned()),
+        Admission::Beside(_) => (false, None),
         Admission::Promote(id) => {
             let hold = load(tx, id)?.summary;
             if hold.status != DeploymentStatus::WaitingForCi {
@@ -108,7 +112,8 @@ pub(crate) fn admit(
     );
     let upload_text = upload.as_ref().map(json_text);
     let service_uploads_text = service_uploads.as_ref().map(json_text);
-    let number = queue(tx, environment, held, |tx, number| {
+    let keeps_holds = held || matches!(admission, Admission::Beside(_));
+    let number = queue(tx, environment, keeps_holds, |tx, number| {
         let frozen_columns: [crate::storage::Param<'_>; 12] = [
             revision_param(saved)?.into(),
             targets_text.as_str().into(),
@@ -419,14 +424,14 @@ fn inherit(
 }
 
 /// Queue a Deployment of `environment`, written by `insert` with the next number,
-/// superseding the queued one, if any. `held` queues the Deployment waiting for CI in
-/// place; otherwise a new one queues, superseding every one waiting for CI too. Each
-/// superseded one ends now. The superseded queued one leaves flight, so the sealed
-/// values only it kept in History go once the new one holds its revision.
+/// superseding the queued one, if any, and unless it `keeps_holds`, every one
+/// waiting for CI too. Each superseded one ends now. The superseded queued one
+/// leaves flight, so the sealed values only it kept in History go once the new one
+/// holds its revision.
 pub(super) fn queue(
     tx: &mut dyn Tx,
     environment: &EnvironmentId,
-    held: bool,
+    keeps_holds: bool,
     insert: impl FnOnce(&mut dyn Tx, u64) -> Result<(), RpcError>,
 ) -> Result<u64, RpcError> {
     let now = now();
@@ -435,7 +440,7 @@ pub(super) fn queue(
          WHERE environment_id = ?1 AND status = 'queued'",
         &[environment.as_str().into(), now.into()],
     )?;
-    if !held {
+    if !keeps_holds {
         tx.execute(
             "UPDATE config_deployment SET status = 'superseded', ended = ?2 \
              WHERE environment_id = ?1 AND status = 'waiting_for_ci'",
