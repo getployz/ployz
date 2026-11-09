@@ -10,7 +10,7 @@ url="https://github.com/rhysd/actionlint/releases/download/v${version}/${archive
 temporary_dir="$(mktemp -d)"
 trap 'rm -rf "$temporary_dir"' EXIT
 
-curl -fsSL "$url" -o "$temporary_dir/$archive"
+curl -fsSL --retry 5 --retry-all-errors --retry-max-time 120 "$url" -o "$temporary_dir/$archive"
 printf '%s  %s\n' "$checksum" "$temporary_dir/$archive" | sha256sum -c -
 tar -xzf "$temporary_dir/$archive" -C "$temporary_dir" actionlint
 
