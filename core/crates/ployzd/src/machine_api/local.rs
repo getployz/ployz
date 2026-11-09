@@ -300,6 +300,7 @@ impl MachineRpc for MachineService {
             daemon_version: env!("CARGO_PKG_VERSION").to_owned(),
             capabilities,
             sealing: self.local.held_sealing(record.phase()),
+            attest: self.local.held_attest(record.phase()),
         })
     }
 

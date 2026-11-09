@@ -4855,6 +4855,7 @@ mod ensure_container {
                 repository: ployz_core::BuildGrantRepository::parse("ployz-build/web").unwrap(),
                 holder: Some(ployz_core::BuildGrantId::parse(holder).unwrap()),
                 sealed: Some(foreign_sealed()),
+                rule: None,
             })
             .encode()
             .unwrap();

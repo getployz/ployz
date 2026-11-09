@@ -638,6 +638,24 @@ impl LocalMachine {
             .map(|public_key| ployz_core::Sealing::Held { public_key })
     }
 
+    /// The build attest key this Machine derives from the Sealing Key its file holds, on
+    /// the phases [`Self::held_sealing`] reports one.
+    pub(crate) fn held_attest(
+        &self,
+        phase: LocalMachinePhase,
+    ) -> Option<ployz_core::authority::AttestKey> {
+        if !matches!(
+            phase,
+            LocalMachinePhase::Joining | LocalMachinePhase::Participating
+        ) {
+            return None;
+        }
+        SealingKey::load(self.owner.data_dir())
+            .ok()
+            .flatten()
+            .map(|key| key.attest().attest())
+    }
+
     /// The key this Machine's file holds, or, when it holds none, the key a recovery
     /// awaits as Generate reads it, and otherwise that it needs access. `None` when the
     /// file or the Cluster's Sealing could not be read.

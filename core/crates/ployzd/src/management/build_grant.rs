@@ -646,6 +646,7 @@ mod tests {
             repository: BuildGrantRepository::parse("ployz-build/web").unwrap(),
             holder: holder.map(|holder| BuildGrantId::parse(holder).unwrap()),
             sealed: None,
+            rule: None,
         }
     }
 
