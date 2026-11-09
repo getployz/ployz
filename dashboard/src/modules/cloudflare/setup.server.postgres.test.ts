@@ -119,7 +119,7 @@ function cluster(take: (doors: readonly string[]) => readonly string[] = (doors)
 }
 
 /** The first Server joined on an instruction founding the Cluster with every Door closed, as the card asks for Cloudflare. */
-const foundedClosed = () => harness.pool.query(`
+const foundedClosed = (state: "running" | "joined" = "joined") => harness.pool.query(`
   with person as (
     insert into "user" (id, name, email) values (gen_random_uuid(), 'Ada', gen_random_uuid() || '@example.com') returning id
   ), fleet as (
@@ -130,8 +130,8 @@ const foundedClosed = () => harness.pool.query(`
     select $1, id, 'key', '{}'::jsonb, '203.0.113.9' from fleet returning id, fleet_token_id
   )
   insert into server_enrollment (organization_id, waiting_server_id, fleet_token_id, role, instruction, enroll_token_id, state)
-  select $1, id, fleet_token_id, 'founder', '{"ingressClosed": true}'::jsonb, gen_random_uuid(), 'joined' from server
-`, [ORG]);
+  select $1, id, fleet_token_id, 'founder', '{"ingressClosed": true}'::jsonb, gen_random_uuid(), $2 from server
+`, [ORG, state]);
 
 const setUp = (zone: string, http: CloudflareHttp, runtime: OrganizationRuntime["Service"]) =>
   harness.runEffect(setUpCloudflare(ORG, { token: Redacted.make(API_TOKEN), zone }, http).pipe(
@@ -259,6 +259,37 @@ it("won't open the ports from the unfinished-setup alert once the tunnel is set 
   await expect(harness.runEffect(openPublicPorts(ORG).pipe(Effect.provideService(OrganizationRuntime, runtime))))
     .rejects.toMatchObject({ message: expect.stringContaining("Cloudflare Tunnel is set up") });
   expect(sets).toEqual([]);
+});
+
+it("opens only the tunnel while the founder's enrollment hasn't yet been marked joined, as the Machine founded closed already", async () => {
+  await foundedClosed("running");
+  const { runtime, sets } = cluster((doors) => doors, CLOSED_FRAME);
+  expect(await setUp("example.com", cloudflare().http, runtime)).toMatchObject({ state: "active" });
+  expect(sets.map(({ doors }) => doors)).toEqual([["tunnel"]]);
+});
+
+it("refuses on a Cluster founded closed until a Server taking web traffic shows, opening no Door", async () => {
+  await foundedClosed("running");
+  const { runtime, sets } = cluster((doors) => doors, NO_SERVER_FRAME);
+  await expect(setUp("example.com", cloudflare().http, runtime)).rejects.toMatchObject({ message: expect.stringMatching(/^Your servers aren't answering/) });
+  expect(sets).toEqual([]);
+});
+
+it("won't open the ports once a setup that finished while the fallback connected holds the tunnel", async () => {
+  await foundedClosed();
+  let connect!: () => void;
+  const connected = new Promise<void>((resolve) => { connect = resolve; });
+  const fallback = cluster((doors) => doors, CLOSED_FRAME);
+  const slow = asTestDouble<OrganizationRuntime["Service"]>()({
+    cancel: () => Effect.void,
+    open: (organizationId: string) => Effect.promise(() => connected).pipe(Effect.andThen(fallback.runtime.open(organizationId))),
+  });
+  const opening = harness.runEffect(openPublicPorts(ORG).pipe(Effect.provideService(OrganizationRuntime, slow)));
+  const { runtime } = cluster((doors) => doors, CLOSED_FRAME);
+  expect(await setUp("example.com", cloudflare().http, runtime)).toMatchObject({ state: "active" });
+  connect();
+  await expect(opening).rejects.toMatchObject({ message: expect.stringContaining("already uses Cloudflare") });
+  expect(fallback.sets).toEqual([]);
 });
 
 it("keeps the API token out of every table and the outbox, and the tunnel token out of every table", async () => {

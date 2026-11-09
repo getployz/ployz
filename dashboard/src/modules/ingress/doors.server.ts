@@ -86,12 +86,16 @@ const latestChange = Effect.fn("IngressDoors.latest")(function* (organizationId:
   return latest === undefined ? null : yield* latestChangeOf(latest);
 });
 
-/** Whether the newest founder that joined started the Cluster with every Door closed, as its instruction asked. */
+/**
+ * Whether the newest founder was told to start the Cluster with every Door closed. Read from the instruction, not the
+ * enrollment's end: the Machine founds as told before the enrollment's own run marks it joined, and one that failed
+ * late may have founded all the same.
+ */
 const foundedClosed = Effect.fn("IngressDoors.foundedClosed")(function* (organizationId: string) {
   const { drizzle } = yield* Database;
   const [founder] = yield* drizzle.select({ closed: sql<boolean>`coalesce((${serverEnrollment.instruction}->>'ingressClosed')::boolean, false)` })
     .from(serverEnrollment)
-    .where(and(eq(serverEnrollment.organizationId, organizationId), eq(serverEnrollment.role, "founder"), eq(serverEnrollment.state, "joined")))
+    .where(and(eq(serverEnrollment.organizationId, organizationId), eq(serverEnrollment.role, "founder")))
     .orderBy(desc(serverEnrollment.requestedAt))
     .limit(1);
   return founder?.closed ?? false;
@@ -129,7 +133,8 @@ function observationOf(frame: RuntimeWatchView): ClusterIngressObservation {
 
 /**
  * Whether Cloudflare setup may open only the tunnel: the Cluster was founded closed and, seen whole, no Server holds the
- * Public Door, whether or not it takes web traffic now. Unknown while a Server isn't seen, since it may hold the ports.
+ * Public Door, whether or not it takes web traffic now. Unknown while a Server isn't seen, since it may hold the ports,
+ * or while none takes web traffic yet.
  */
 export const closedFounding = Effect.fn("IngressDoors.closedFounding")(function* (organizationId: string) {
   if (!(yield* foundedClosed(organizationId))) return { kind: "open" } as const;
@@ -137,8 +142,9 @@ export const closedFounding = Effect.fn("IngressDoors.closedFounding")(function*
   if (frame === null) return { kind: "unknown" } as const;
   const seen = observationOf(frame);
   if (seen.partial) return { kind: "unknown" } as const;
-  const publicHeld = [...doorsOpenOn(frame).values()].some((doors) => doors.has("public"));
-  if (publicHeld || seen.servers.length === 0) return { kind: "open" } as const;
+  if ([...doorsOpenOn(frame).values()].some((doors) => doors.has("public"))) return { kind: "open" } as const;
+  // The founder may not show yet; until a Server takes web traffic there is nothing to tell the tunnel to.
+  if (seen.servers.length === 0) return { kind: "unknown" } as const;
   return { kind: "closed", hostnames: seen.hostnames } as const;
 });
 

@@ -83,21 +83,29 @@ const setupProblem = Effect.fn("Cloudflare.setupProblem")(function* (organizatio
   return switching === null ? null : "A switch is under way. Wait for it to finish, then set up.";
 });
 
+/** How long opening the ports may hold the lock that setup and a switch wait on. */
+const OPEN_PUBLIC_LIMIT_MS = 60_000;
+
 /**
  * Open ports 80 and 443 on a Cluster founded closed whose Cloudflare setup never finished, so its apps answer instead of
  * staying dark. Refused once Cloudflare is set up or in use, while it is being set up, or while a switch runs.
  */
 export const openPublicPorts = Effect.fn("Cloudflare.openPublic")(function* (organizationId: string) {
-  const setup = yield* loadCloudflareSetup(organizationId);
-  if (setup?.state === "set_up") return yield* new Conflict({ userFacing: true, message: "Cloudflare Tunnel is set up. Switch web traffic in Settings, Network." });
-  const early = yield* setupProblem(organizationId);
-  if (early !== null) return yield* new Conflict({ userFacing: true, message: early });
+  const database = yield* Database;
   const opened = yield* (yield* OrganizationRuntime).open(organizationId);
   if (opened.status !== "connected") return yield* refuse("Your servers aren't answering. Try again once they are.");
-  const answered = yield* opened.connected.setIngressDoors(PUBLIC).pipe(Effect.result);
-  const gap = answered._tag === "Failure" ? "Your servers didn't answer." : doorsGap(answered.success, PUBLIC);
-  if (gap !== null) return yield* refuse(gap);
-  return { opened: true } as const;
+  // Checked and opened under the lock setup reserves with, so no setup lands between the check and the ports opening.
+  return yield* database.transaction(Effect.gen(function* () {
+    yield* lockIngressRows(organizationId);
+    const setup = yield* loadCloudflareSetup(organizationId);
+    if (setup?.state === "set_up") return yield* new Conflict({ userFacing: true, message: "Cloudflare Tunnel is set up. Switch web traffic in Settings, Network." });
+    const early = yield* setupProblem(organizationId);
+    if (early !== null) return yield* new Conflict({ userFacing: true, message: early });
+    const answered = yield* opened.connected.setIngressDoors(PUBLIC).pipe(Effect.timeout(OPEN_PUBLIC_LIMIT_MS), Effect.result);
+    const gap = answered._tag === "Failure" ? "Your servers didn't answer." : doorsGap(answered.success, PUBLIC);
+    if (gap !== null) return yield* refuse(gap);
+    return { opened: true } as const;
+  }));
 }, Effect.scoped);
 
 /** The Doors back to public only, after a failed setup. Why a Server still holds the tunnel, or null once none does. */
