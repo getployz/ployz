@@ -451,12 +451,17 @@ fn admit(
 
 /// Run Deployment `n` to a success that confirms `web`.
 fn apply(store: &ConfigStore, n: u8) -> ployz_core::DeployIntent {
+    apply_service(store, n, "web")
+}
+
+/// Run Deployment `n` to success, confirming Service `service`.
+fn apply_service(store: &ConfigStore, n: u8, service: &str) -> ployz_core::DeployIntent {
     let runner = RunnerId::parse("runner").unwrap();
     let claimed = store.claim(&deployment(n), &runner).unwrap();
     let operation = json!({"type": "remove_container", "machine_id": "a".repeat(32), "container_id": "a".repeat(64)});
     let preview: DeployPreview = serde_json::from_value(json!({
         "namespace": "shop-production",
-        "operations": [{ "index": 0, "machine_id": "a".repeat(32), "service_name": "web",
+        "operations": [{ "index": 0, "machine_id": "a".repeat(32), "service_name": service,
             "operation": operation, "status": {"type": "pending"} }],
         "warnings": [], "would_remove": [], "preserved_volumes": []
     }))
@@ -1532,4 +1537,106 @@ fn a_restored_generated_prefix_never_takes_a_hostname_a_custom_domain_holds() {
     let refused = store.write_trusted(&who, &discard, &trusted).unwrap_err();
     assert_eq!(refused.code, RpcErrorCode::Conflict, "{refused:?}");
     assert_eq!(refused.details["hostname"], "web.acme-apps.com");
+}
+
+/// Branch `feature` of production holding a copy of `web`, and a new Service `api` in
+/// production with the generated prefix `api`, its Deploy admitted under `admitted`.
+fn api_beside_feature(admitted: &Trusted) -> (ConfigStore, Actor) {
+    let (store, who) = shop();
+    let branch = ployz_store::CreateBranch {
+        id: EnvironmentId::parse(uuid(30)).unwrap(),
+        from: at(None),
+        name: EnvironmentName::parse("feature").unwrap(),
+        copy: vec![ployz_store::NodeName::Service(
+            ServiceName::parse("web").unwrap(),
+        )],
+        live: Vec::new(),
+        setup: Vec::new(),
+        keep: false,
+        fix: None,
+    };
+    store.write_trusted(&who, &branch, &cloud()).unwrap();
+    let api = CreateService {
+        id: ServiceLineageId::parse(uuid(31)).unwrap(),
+        environment: at(None),
+        name: ServiceName::parse("api").unwrap(),
+        image: Some("nginx:1".into()),
+        template: None,
+    };
+    store.write_trusted(&who, &api, &cloud()).unwrap();
+    let prefix = AddDomain {
+        service: ServiceName::parse("api").unwrap(),
+        ..add_prefix("api")
+    };
+    store.write_trusted(&who, &prefix, &cloud()).unwrap();
+    admit(&store, &who, 1, admitted).unwrap();
+    (store, who)
+}
+
+/// The hostnames `feature` lists under the tunnel zone, and how many Follow hints it holds.
+fn feature_after_follow(store: &ConfigStore, who: &Actor) -> (Vec<String>, usize) {
+    let feature = at(Some("feature"));
+    let found = store
+        .read_trusted(
+            who,
+            &DomainsQuery {
+                environment: feature.clone(),
+                service: None,
+            },
+            &tunnel(),
+        )
+        .unwrap();
+    let names = found
+        .domains
+        .iter()
+        .map(|row| row.domain.shown().to_owned())
+        .collect();
+    let diff: DiffView = store
+        .read(
+            who,
+            &DiffQuery {
+                environment: feature,
+            },
+        )
+        .unwrap();
+    (names, diff.follow_hints.len())
+}
+
+/// A Deployment's Follow brings a new Service into its Branches with a generated prefix
+/// the Branch suffixes. That name expands under the Cluster Domain current when the
+/// Branch deploys, which a Door switch may have changed since the Deployment's
+/// admission, so a name a custom domain holds stays a hint however it was admitted.
+#[test]
+fn a_new_service_follows_into_a_branch_without_a_name_a_custom_domain_holds() {
+    for (admitted, trusted) in [("before the switch", cloud()), ("after it", tunnel())] {
+        let (store, who) = api_beside_feature(&trusted);
+        let custom = AddDomain {
+            environment: at(Some("staging")),
+            ..add(Some("api-feature.acme-apps.com"), None)
+        };
+        store.write_trusted(&who, &custom, &tunnel()).unwrap();
+        apply_service(&store, 1, "api");
+
+        let (names, hints) = feature_after_follow(&store, &who);
+        assert!(
+            !names.iter().any(|name| name == "api-feature.acme-apps.com"),
+            "admitted {admitted}: feature took staging's custom domain as generated: {names:?}"
+        );
+        assert!(hints > 0, "admitted {admitted}: api arrived as no hint");
+    }
+}
+
+/// A new Service whose generated name no custom domain holds follows into the Branch,
+/// expanding under the Cluster Domain Cloud knows now, after a Door switch too.
+#[test]
+fn a_new_service_follows_into_a_branch_with_its_generated_name() {
+    let (store, who) = api_beside_feature(&cloud());
+    apply_service(&store, 1, "api");
+
+    let (names, hints) = feature_after_follow(&store, &who);
+    assert!(
+        names.iter().any(|name| name == "api-feature.acme-apps.com"),
+        "{names:?}"
+    );
+    assert_eq!(hints, 0);
 }
