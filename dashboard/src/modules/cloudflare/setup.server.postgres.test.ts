@@ -292,6 +292,23 @@ it("won't open the ports once a setup that finished while the fallback connected
   expect(fallback.sets).toEqual([]);
 });
 
+it("says the ports may be open when the fallback reached only some servers of a Cluster founded closed", async () => {
+  await foundedClosed();
+  const sets: Set[] = [];
+  const session = asTestDouble<PloyzSession>()({
+    watchFirstFrame: () => Effect.succeed(CLOSED_FRAME),
+    setIngressDoors: (doors: readonly string[]) => Effect.sync(() => {
+      sets.push({ doors, token: undefined });
+      return doors.includes("tunnel")
+        ? { machines: [{ server: "s1", doors: [] }], failures: [] }
+        : { machines: [{ server: "s1", doors: ["public"] }], failures: [{ error: { message: "s2 unavailable" } }] };
+    }),
+  });
+  const runtime = asTestDouble<OrganizationRuntime["Service"]>()({ cancel: () => Effect.void, open: () => Effect.succeed({ status: "connected" as const, connected: session }) });
+  await expect(setUp("example.com", cloudflare().http, runtime)).rejects.toMatchObject({ message: expect.stringContaining("Some servers may now take web traffic on ports 80 and 443.") });
+  expect(sets.map(({ doors }) => doors)).toEqual([["tunnel"], ["public"]]);
+});
+
 it("keeps the API token out of every table and the outbox, and the tunnel token out of every table", async () => {
   const { http } = cloudflare();
   const { runtime } = cluster();

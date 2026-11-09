@@ -181,8 +181,10 @@ export const setUpCloudflare = Effect.fn("Cloudflare.setUp")(function* (
    */
   const cleanUp = Effect.gen(function* () {
     const doorsLeft = session === null ? null : yield* restorePublic(session);
-    // The Engine sets no empty Door set, so the only way to close the tunnel this setup opened is back to the ports.
-    const opened = closed && session !== null && doorsLeft === null ? "Your servers now take web traffic on ports 80 and 443." : null;
+    // The Engine sets no empty Door set, so the only way to close the tunnel this setup opened is back to the ports. Any
+    // Server that took them now publishes 80 and 443, even when another didn't answer.
+    const opened = !closed || session === null ? null
+      : doorsLeft === null ? "Your servers now take web traffic on ports 80 and 443." : "Some servers may now take web traffic on ports 80 and 443.";
     const recordGone = recordId === null ? true : yield* deleteRecord(http, input.token, zone.id, recordId);
     const tunnelGone = tunnel === null || !tunnel.made ? true : yield* deleteTunnel(http, input.token, zone.accountId, tunnel.id);
     const kept = [recordGone ? null : name, tunnelGone ? null : `the tunnel ${tunnelName}`].filter((item) => item !== null);
