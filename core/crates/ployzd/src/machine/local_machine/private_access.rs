@@ -112,18 +112,30 @@ pub(super) fn plan_router(
             RouterStep::Keep(router.container_id)
         }
         Some(router) => RouterStep::Start(router.container_id),
-        None => RouterStep::Create(
-            routers
-                .iter()
-                .map(|router| (router.created_at_unix_nanos, router.container_id))
-                .max()
-                .map(|(_, id)| id),
-        ),
+        None => RouterStep::Create(newest(routers)),
     };
     RouterPlan {
         retire: retirees(routers, kept_id),
         step: Some(step),
     }
+}
+
+/// The plan for `on` once this Machine's node was forgotten. A router left from before
+/// still mounts the state `off` deleted, so none is kept and a new one mounts the new
+/// state.
+fn fresh_router(routers: &[ContainerObservation]) -> RouterPlan {
+    RouterPlan {
+        retire: retirees(routers, None),
+        step: Some(RouterStep::Create(newest(routers))),
+    }
+}
+
+fn newest(routers: &[ContainerObservation]) -> Option<ContainerId> {
+    routers
+        .iter()
+        .map(|router| (router.created_at_unix_nanos, router.container_id))
+        .max()
+        .map(|(_, id)| id)
 }
 
 fn retirees(routers: &[ContainerObservation], kept: Option<ContainerId>) -> Vec<Retiree> {
@@ -243,6 +255,7 @@ impl LocalMachine {
             local.reserved_effect(Gate::Router)?;
             let machine_id = local.record().id();
             let routers = containers.routers(&machine_id).await?;
+            let forgotten = !containers.private_access_state_kept();
             if let Some(wanted) = &wanted {
                 containers
                     .prepare_pinned_image(&wanted.spec.container.image)
@@ -255,7 +268,10 @@ impl LocalMachine {
                     .map_err(Error::PrivateAccessState)?;
             }
             let _turn = local.owner.admission_lock().write_owned().await;
-            let plan = plan_router(&routers, wanted.as_ref().map(|wanted| &wanted.spec));
+            let plan = match &wanted {
+                Some(_) if forgotten => fresh_router(&routers),
+                wanted => plan_router(&routers, wanted.as_ref().map(|wanted| &wanted.spec)),
+            };
             local
                 .converge_router(&containers, &plan, wanted.as_ref(), Watch::Settle)
                 .await

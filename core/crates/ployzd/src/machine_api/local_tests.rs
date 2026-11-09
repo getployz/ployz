@@ -2180,6 +2180,52 @@ mod private_access {
         std::fs::remove_dir_all(data_dir).unwrap();
     }
 
+    // Catches `on` keeping a router an `off` could not stop. That router still mounts
+    // the node state `off` deleted, so its next restart would register a new node.
+    #[tokio::test]
+    async fn on_after_an_off_that_could_not_stop_the_router_replaces_it() {
+        let (data_dir, _store, service, fake, runtime, cluster) =
+            fake_docker_service_sealing("ployzd-access-off-then-on").await;
+        let machine = service.local.record().id();
+        let sealed = cluster.seal_platform(PlatformPurpose::PrivateAccess, b"tskey-auth-test");
+        let on = json!({"enabled": true, "sealed_auth_key": sealed});
+        let first = set_access(&service, on.clone())
+            .await
+            .unwrap()
+            .unwrap()
+            .router
+            .unwrap()
+            .now
+            .container_id;
+        fake.refuse_stop
+            .store(true, std::sync::atomic::Ordering::SeqCst);
+        set_access(&service, json!({"enabled": false}))
+            .await
+            .unwrap()
+            .unwrap_err();
+        fake.refuse_stop
+            .store(false, std::sync::atomic::Ordering::SeqCst);
+
+        let again = set_access(&service, on).await.unwrap().unwrap();
+        let second = again.router.unwrap().now.container_id;
+        assert_ne!(second, first, "a new router mounts the new node state");
+        assert_eq!(again.retired, vec![first]);
+        let routers = runtime.routers(&machine).await.unwrap();
+        assert_eq!(
+            routers
+                .iter()
+                .map(|router| router.container_id)
+                .collect::<Vec<_>>(),
+            vec![second]
+        );
+        assert!(node_state(&data_dir).is_dir());
+        set_access(&service, json!({"enabled": false}))
+            .await
+            .unwrap()
+            .unwrap();
+        std::fs::remove_dir_all(data_dir).unwrap();
+    }
+
     #[tokio::test]
     async fn a_new_key_replaces_the_router() {
         let (data_dir, _store, service, _fake, runtime, cluster) =
