@@ -240,6 +240,7 @@ impl IssuerKeys {
     pub fn github() -> Result<Self, KeysError> {
         let client = reqwest::Client::builder()
             .https_only(true)
+            .redirect(reqwest::redirect::Policy::none())
             .timeout(FETCH_TIMEOUT)
             .user_agent("ployzd")
             .build()
@@ -309,10 +310,11 @@ impl IssuerKeys {
         if recent {
             return Ok(Arc::clone(&self.lock().keys));
         }
-        let keys = Arc::new(self.fetch().await.map_err(TokenRefusal::Keys)?);
-        let mut cached = self.lock();
-        cached.keys = Arc::clone(&keys);
-        cached.fetched = Some(Instant::now());
+        let fetched = self.fetch().await;
+        // A failed fetch counts toward the floor too, so an outage can't make every token refetch.
+        self.lock().fetched = Some(Instant::now());
+        let keys = Arc::new(fetched.map_err(TokenRefusal::Keys)?);
+        self.lock().keys = Arc::clone(&keys);
         Ok(keys)
     }
 

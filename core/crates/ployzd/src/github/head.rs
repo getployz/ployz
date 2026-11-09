@@ -80,6 +80,7 @@ impl GithubApi {
     pub fn github() -> Result<Self, HeadError> {
         let client = reqwest::Client::builder()
             .https_only(true)
+            .redirect(reqwest::redirect::Policy::none())
             .timeout(TIMEOUT)
             .user_agent("ployzd")
             .build()
