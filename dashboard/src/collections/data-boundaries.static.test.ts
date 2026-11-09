@@ -58,6 +58,7 @@ const SPINNER_FILES = {
   "routes/_protected/cloud/$organizationSlug/_org/-components/ClusterDomainSection.tsx": "Setting up while the sync runs; Check again until the sync lands",
   "routes/_protected/cloud/$organizationSlug/_org/-components/WebTrafficSection.tsx": "a switch running on the Servers; Find zones and Set up in flight",
   "routes/_protected/cloud/$organizationSlug/_org/-components/PendingEnrollmentResetSection.tsx": "reset in flight",
+  "routes/_protected/cloud/$organizationSlug/_org/-components/integrations.tsx": "Connect starting a router on every Server",
   "routes/_protected/cloud/$organizationSlug/_org/-components/members-settings.tsx": "invite, remove or leave in flight",
   "routes/_protected/cloud/$organizationSlug/_org/-components/tokens-settings.tsx": "token mint in flight",
   "routes/invite/$token.tsx": "joining in flight",
@@ -112,6 +113,7 @@ const ON_DEMAND_READS = {
   latestServiceActQueryOptions: "keyed by the Service's name, which the drawer knows only once it reads the Store; the header shows no run until it answers",
   runtimeServiceMetricsQueryOptions:"asks every Server live, so a slow Server would hold the page; each Running here row waits on its own",
   clusterIngressObservationQueryOptions: "asks every Server live for the doors it holds, so a slow Cluster never holds Settings; the section shows the stored state until it answers",
+  privateAccessQueryOptions: "asks every Server live for its router, so a slow Cluster never holds Integrations; the section says it is checking until it answers",
   reviewDoorsSwitchQueryOptions: "the switch dialog's own review of what moves, read when it opens",
 };
 
@@ -132,6 +134,7 @@ const COMMAND_FILES = {
   "routes/_protected/cloud/$organizationSlug/_org/-components/store-organization-danger.tsx": "deleting an organization is destructive and waits on its Servers letting go",
   "routes/_protected/cloud/$organizationSlug/_org/-components/forget-servers-dialog.tsx": "forgetting the Servers is destructive: it tries every Server again and forgets only when none answers",
   "routes/_protected/cloud/$organizationSlug/_org/-components/WebTrafficSection.tsx": "setting up creates a tunnel in Cloudflare with a token used once, and says what Cloudflare kept if it stops; a switch moves every address and runs on the Servers, so the dialog waits for Cloud to admit it",
+  "routes/_protected/cloud/$organizationSlug/_org/-components/integrations.tsx": "Connect and Turn off run on every Server, and the card lists each Server that refused the key, so it waits for their answers",
   "components/agent-sidebar/approvals.queries.ts": "an approved restart on enforcing Servers runs only with approvals the owner's passkey signs, so the card waits for them",
   "components/agent-sidebar/proposals.queries.ts": "an approved proposal runs only with the bundle the owner's passkey signs, so the card waits for it",
   "routes/_protected/cloud/index.tsx": "the server creates the new organization and its slug, which the page then opens",

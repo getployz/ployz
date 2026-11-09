@@ -20,7 +20,7 @@ import {
   TAILSCALE_MACHINES_URL,
 } from "#/modules/private-access/private-access";
 import { setPrivateAccessServerFn } from "#/modules/private-access/private-access.functions";
-import { asksForAuthKeys, privateAccessQueryOptions } from "#/modules/private-access/private-access.queries";
+import { privateAccessKeys, privateAccessQueryOptions } from "#/modules/private-access/private-access.queries";
 
 const organizationRoute = getRouteApi("/_protected/cloud/$organizationSlug");
 
@@ -56,7 +56,7 @@ function TailscaleSection({ organizationSlug }: { organizationSlug: string }) {
   const on = observed !== null && privateAccessOn(observed);
   const settle = async (changed: PrivateAccessChanged) => {
     setLast(changed);
-    await queryClient.invalidateQueries({ queryKey: asksForAuthKeys.all });
+    await queryClient.invalidateQueries({ queryKey: privateAccessKeys.all });
   };
 
   return (

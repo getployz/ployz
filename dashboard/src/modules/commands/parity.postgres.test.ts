@@ -190,7 +190,7 @@ it.live("gives the same answer and leaves the same rows through ployz and the si
       ["uptime_show", { service: "web" }],
     ];
     const raced = ["uptime_check"];
-    const asked = ["cluster_rename", "org_member_role", "org_member_rm", "org_invite_revoke", "web_traffic_use"];
+    const asked = ["cluster_rename", "org_member_role", "org_member_rm", "org_invite_revoke", "private_access_use", "web_traffic_use"];
     expect([...fixtures.map(([name]) => name), ...raced, ...asked].sort()).toEqual(COMMANDS.filter((command) => command.agents).map((command) => command.name).sort());
     for (const [name, input] of fixtures) {
       const before = yield* rows;
