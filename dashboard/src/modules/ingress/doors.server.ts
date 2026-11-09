@@ -7,8 +7,7 @@ import { operationDigest, type OperationAsked } from "#/modules/approvals/approv
 import { loadClusterDomain } from "#/modules/cluster-domain/cluster-domain.server";
 import { doorsOpenOn } from "#/modules/cluster-domain/ingress-running";
 import { loadCloudflareSetup } from "#/modules/cloudflare/source.server";
-import { readStore } from "#/modules/config-store/config-store.server";
-import { deployToFirstServer } from "#/modules/config-store/store-deployment.server";
+import { callStore, readStore } from "#/modules/config-store/config-store.server";
 import { publishedOf } from "#/modules/config-store/domain-evidence.server";
 import { owners } from "#/modules/config-store/store-lookup.server";
 import { StoreRefused } from "#/modules/config-store/store.contract";
@@ -288,11 +287,6 @@ const movingNow = Effect.fn("IngressDoors.moving")(function* (organizationId: st
   return gap === null ? { moves: looked.moving } : { failure: gap };
 });
 
-/**
- * Redeploy the Services whose generated names the switch moves, and only those, so each expands under the Cluster
- * Domain's new source, and wait until the Servers serve every one there. Why they don't all, or null once they do:
- * the Door the switch leaves stays open until then.
- */
 const redeployMoving = Effect.fn("IngressDoors.redeploy")(function* (organizationId: string, moving: readonly MovedHostname[]) {
   if (moving.length === 0) return null;
   const owned = yield* owners(organizationId);
@@ -306,10 +300,12 @@ const redeployMoving = Effect.fn("IngressDoors.redeploy")(function* (organizatio
   const [orphan] = left;
   if (orphan !== undefined) return `${orphan.from} is served by ${orphan.namespace}/${orphan.service}, which isn't a Service Cloud can redeploy. Remove it, then switch again.`;
   const ports: RedeployPorts<RedeployError, RedeployServices> = {
-    deploy: ({ project, environment, services }) => Effect.gen(function* () {
+    reapply: ({ project, environment, services }) => Effect.gen(function* () {
       const id = randomUUID();
-      const admission = yield* deployToFirstServer(organizationId, { project, environment }, id, services);
-      return admission.refused === undefined ? { id } : { refused: admission.message };
+      const admission = yield* callStore(organizationId, null, { operation: "write", command: {
+        command: "admit", admit: "reapply", id, environment: { project, environment }, services: [...services], message: null,
+      } });
+      return admission.ok ? { id } : { refused: admission.refusal.message };
     }),
     ended: (id) => deploymentEnd(organizationId, id),
     observe: () => observeClusterIngress(organizationId),
@@ -317,7 +313,7 @@ const redeployMoving = Effect.fn("IngressDoors.redeploy")(function* (organizatio
   return yield* redeployMoved(moving, environments, ports);
 });
 
-type Admission = ReturnType<typeof deployToFirstServer>;
+type Admission = ReturnType<typeof callStore>;
 type Observation = ReturnType<typeof observeClusterIngress>;
 type Ending = ReturnType<typeof deploymentEnd>;
 type RedeployError = Effect.Error<Admission> | Effect.Error<Ending> | Effect.Error<Observation>;

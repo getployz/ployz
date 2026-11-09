@@ -4,8 +4,8 @@
 //! cancelling stops one.
 
 use ployz_core::authority::{DeployApproval, Signed};
-use ployz_core::config::SavedEnvironmentIntent;
 use ployz_core::config::canonicalize_environment_intent;
+use ployz_core::config::{SavedEnvironmentIntent, SavedServiceIntent};
 use ployz_core::{Namespace, RpcError, RpcErrorCode, ServiceName};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
@@ -15,7 +15,7 @@ use crate::automation::Shipped;
 use crate::deployment::{self, DeploymentSummary, TargetNode, UploadedSource};
 use crate::domain;
 use crate::error;
-use crate::id::{DeploymentId, Hostname, VolumeName};
+use crate::id::{DeploymentId, EnvironmentId, Hostname, Revision, VolumeName};
 use crate::registry;
 use crate::review;
 use crate::scope::{self, EnvironmentRef};
@@ -35,6 +35,8 @@ pub enum Admit {
     Remove(AdmitRemoval),
     /// Take an Environment off the Servers and keep it.
     ShutDown(ShutDown),
+    /// Ship some Services again as they run, under the Cluster Domain now.
+    Reapply(Reapply),
 }
 
 impl Admit {
@@ -46,6 +48,7 @@ impl Admit {
             Self::Retry(retry) => &retry.id,
             Self::Remove(removal) => &removal.id,
             Self::ShutDown(shut_down) => &shut_down.id,
+            Self::Reapply(reapply) => &reapply.id,
         }
     }
 }
@@ -157,6 +160,25 @@ pub struct ShutDown {
     pub accept_volume_loss: Vec<VolumeName>,
 }
 
+/// Ship Services again as Applied State holds them, with their generated domains
+/// under the Cluster Domain now: how a Door switch moves them. It saves nothing,
+/// so what Working and Saved State stage stays staged. Only an Actor without a
+/// principal admits one: the Store's own automation or the hidden local Store.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
+#[serde(deny_unknown_fields)]
+pub struct Reapply {
+    pub id: DeploymentId,
+    #[serde(default)]
+    pub environment: EnvironmentRef,
+    /// Deployed Services, each by its name in Working State, or in Applied State
+    /// once Working State no longer has it.
+    pub services: Vec<ServiceName>,
+    /// As [`Deploy::message`].
+    #[serde(default)]
+    #[ts(optional = nullable)]
+    pub message: Option<String>,
+}
+
 /// Cancel a Deployment: a queued one never runs, and a running one stops.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
 #[serde(deny_unknown_fields)]
@@ -221,6 +243,7 @@ pub(crate) fn admit(
         Admit::Remove(removal) => crate::removal::admit(tx, who, removal, trusted),
         Admit::ShutDown(shut_down) => crate::removal::shut_down(tx, who, shut_down, trusted),
         Admit::Deploy(deploy) => self::deploy(tx, who, deploy, trusted),
+        Admit::Reapply(reapply) => self::reapply(tx, who, reapply, trusted),
     }
 }
 
@@ -510,4 +533,229 @@ fn deploy(
     };
     crate::automation::shipped_landed(tx, id, &shipped)?;
     Ok(summary)
+}
+
+/// Queue a Deployment of `admit`'s Services as Applied State holds them, with their
+/// generated domains under the Cluster Domain now. Refused while a Deployment is in
+/// flight, since that may still change Applied State, and when no Saved revision
+/// ships them all unchanged.
+fn reapply(
+    tx: &mut dyn Tx,
+    who: &Actor,
+    admit: &Reapply,
+    trusted: &Trusted,
+) -> Result<DeploymentSummary, RpcError> {
+    if who.principal.is_some() {
+        return Err(error::forbidden(
+            "Only Ployz Cloud redeploys services unchanged. Deploy them instead.",
+            json!({}),
+        ));
+    }
+    trusted.runnable()?;
+    let environment = scope::lock(tx, who, &admit.environment)?;
+    trusted.writes(&environment.summary.name)?;
+    crate::removal::marked(tx, &environment)?;
+    let id = &environment.summary.id;
+    if let Some(flying) = deployment::in_flight(tx, id)? {
+        return Err(error::conflict(
+            format!(
+                "#{} is still deploying. Wait for it to finish, then try again.",
+                flying.numbered()?
+            ),
+            json!({ "deployment": flying.id }),
+        ));
+    }
+    let head = deployment::head(tx, &environment)?;
+    let landing = deployment::Landing::of(&head);
+    let goes_by = |applied: &SavedServiceIntent, name: &ServiceName| {
+        environment
+            .working
+            .services
+            .iter()
+            .find(|service| service.id == applied.id)
+            .map_or(applied.slug.as_str(), |service| service.slug.as_str())
+            == name.as_str()
+    };
+    let mut running: Vec<&SavedServiceIntent> = Vec::new();
+    for name in &admit.services {
+        let applied = head
+            .applied
+            .services
+            .iter()
+            .find(|applied| goes_by(applied, name))
+            .ok_or_else(|| {
+                error::not_found(
+                    format!("{name} isn't deployed."),
+                    json!({ "service": name }),
+                )
+            })?;
+        if !running.contains(&applied) {
+            running.push(applied);
+        }
+    }
+    if running.is_empty() {
+        return Err(error::invalid("Name a service to redeploy.", json!({})));
+    }
+    let services = running
+        .iter()
+        .map(|service| {
+            ServiceName::parse(service.slug.as_str()).map_err(|_| error::corrupt("Service name"))
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    let namespace = deployment::namespace(tx, who, &environment.summary, true)?;
+    let cluster_domain = trusted
+        .domains
+        .cluster_domain
+        .as_ref()
+        .map(|cluster| &cluster.name);
+    let Some((revision, saved, mut frozen)) = unchanged(
+        tx,
+        who,
+        (id, &running),
+        (&services, &landing),
+        (&namespace, cluster_domain),
+    )?
+    else {
+        return Err(error::conflict(
+            format!(
+                "{} can't redeploy as {} now. Deploy {} or discard its changes, then try again.",
+                services
+                    .iter()
+                    .map(ServiceName::as_str)
+                    .collect::<Vec<_>>()
+                    .join(", "),
+                if services.len() == 1 {
+                    "it runs"
+                } else {
+                    "they run"
+                },
+                environment.summary.name
+            ),
+            json!({ "services": services }),
+        ));
+    };
+    // The gate checks the Services the runner gets, named or referenced: an older
+    // revision may give one it doesn't get a hostname released since.
+    let shipping = SavedEnvironmentIntent {
+        services: saved
+            .services
+            .iter()
+            .filter(|service| frozen.shipped.contains(&service.config.private_dns))
+            .cloned()
+            .collect(),
+        ..saved.clone()
+    };
+    gate(
+        tx,
+        who,
+        (&environment, &shipping),
+        (cluster_domain, &namespace),
+        trusted,
+    )?;
+    frozen.credentials = registry::freeze(tx, id, &saved, &frozen)?;
+    let summary = deployment::admit(
+        tx,
+        who,
+        (
+            deployment::Admission::Beside(&admit.id),
+            &services,
+            None,
+            admit.message.clone(),
+        ),
+        id,
+        revision,
+        &frozen,
+    )?;
+    for service in &running {
+        pin_running_commit(tx, (id, &summary.id), service)?;
+    }
+    Ok(summary)
+}
+
+/// The newest Saved revision that ships each of `running`, and each Service it
+/// references, as Applied State has it, frozen for `services`. It looks back to
+/// the oldest revision a Deployment that put a node of Applied State in place
+/// shipped, so a Saved edit since never hides one.
+fn unchanged(
+    tx: &mut dyn Tx,
+    who: &Actor,
+    (environment, running): (&EnvironmentId, &[&SavedServiceIntent]),
+    (services, landing): (&[ServiceName], &deployment::Landing<'_>),
+    (namespace, cluster_domain): (&Namespace, Option<&Hostname>),
+) -> Result<Option<(Revision, SavedEnvironmentIntent, deployment::Frozen)>, RpcError> {
+    for revision in revisions(tx, environment)? {
+        let saved = deployment::saved_at(tx, environment, revision)?;
+        if !running
+            .iter()
+            .all(|applied| saved.services.contains(applied))
+        {
+            continue;
+        }
+        let frozen = deployment::freeze(
+            environment,
+            &who.organization,
+            &saved,
+            landing,
+            deployment::Scope::Narrow {
+                services,
+                retire: &[],
+                losses: &[],
+                every_saved: false,
+            },
+            namespace.clone(),
+            cluster_domain,
+        )?;
+        let ships_as_it_runs = frozen.nodes.iter().all(|node| {
+            saved
+                .services
+                .iter()
+                .filter(|service| service.id == node.id())
+                .all(|service| !deployment::changed(&saved, landing, service))
+        });
+        if ships_as_it_runs {
+            return Ok(Some((revision, saved, frozen)));
+        }
+    }
+    Ok(None)
+}
+
+/// The Saved revisions of `environment` a reapply may ship, newest first: each one
+/// since the oldest that a Deployment putting a node of Applied State in place
+/// shipped.
+fn revisions(tx: &mut dyn Tx, environment: &EnvironmentId) -> Result<Vec<Revision>, RpcError> {
+    tx.query(
+        "SELECT s.revision FROM config_saved s WHERE s.environment_id = ?1 \
+         AND s.revision >= (SELECT MIN(d.saved_revision) FROM config_applied a \
+         JOIN config_deployment d ON d.id = a.deployment_id WHERE a.environment_id = ?1) \
+         ORDER BY s.revision DESC",
+        &[environment.as_str().into()],
+    )?
+    .iter()
+    .map(|row| row.number(0, "revision"))
+    .collect()
+}
+
+/// Pin `service`'s build in Deployment `id` to the commit it runs, as built by the
+/// Deployment that put it in Applied State. A Service without a Git source has no
+/// build to pin. Builds go by the runtime name, which a rename keeps.
+fn pin_running_commit(
+    tx: &mut dyn Tx,
+    (environment, id): (&EnvironmentId, &DeploymentId),
+    service: &SavedServiceIntent,
+) -> Result<(), RpcError> {
+    tx.execute(
+        "INSERT INTO config_build \
+         (deployment_id, service, organization_id, commit_sha, status, message, log) \
+         SELECT ?1, b.service, b.organization_id, b.commit_sha, 'pending', NULL, '' \
+         FROM config_build b JOIN config_applied a ON a.deployment_id = b.deployment_id \
+         WHERE a.environment_id = ?2 AND a.node_id = ?3 AND b.service = ?4 \
+         AND b.commit_sha IS NOT NULL",
+        &[
+            id.as_str().into(),
+            environment.as_str().into(),
+            service.id.as_str().into(),
+            service.config.private_dns.as_str().into(),
+        ],
+    )
+    .map(drop)
 }
