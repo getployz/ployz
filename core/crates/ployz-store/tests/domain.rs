@@ -1434,3 +1434,115 @@ fn a_renamed_project_reads_by_its_new_name() {
         RpcErrorCode::NotFound
     );
 }
+
+/// `cloud()` behind a Cloudflare Tunnel, with `acme-apps.com` as the zone.
+fn tunnel() -> Trusted {
+    let mut trusted = cloud();
+    trusted.domains.cluster_domain.as_mut().unwrap().name = host("acme-apps.com");
+    trusted.domains.tunnel = Some(TunnelEvidence {
+        target: host("0a1b2c.cfargotunnel.com"),
+        reached: Vec::new(),
+    });
+    trusted
+}
+
+/// A Door switch changes the Cluster Domain without a Deployment of a Service that
+/// has no generated name to move, so the one its last Deployment froze is stale: a
+/// write checks its names under the Cluster Domain Cloud knows now.
+#[test]
+fn a_generated_prefix_is_checked_under_the_cluster_domain_cloud_knows_now() {
+    let (store, who) = shop();
+    store
+        .write_trusted(&who, &add(Some("web.acme-apps.com"), None), &tunnel())
+        .unwrap();
+    admit(&store, &who, 1, &tunnel()).unwrap();
+    apply(&store, 1);
+
+    let added = store
+        .write_trusted(&who, &add_prefix("web"), &cloud())
+        .unwrap();
+    assert_eq!(added.written.domain.shown(), "web.acme.ployz.app");
+}
+
+/// A restore brings a generated prefix back into Working State like an add does: refused
+/// when another Service took its hostname as a custom domain since, in an Environment
+/// that never deployed too.
+#[test]
+fn a_restored_generated_prefix_never_takes_a_hostname_a_custom_domain_holds() {
+    let (store, who) = shop();
+    let trusted = tunnel();
+    store
+        .write_trusted(&who, &add_prefix("web"), &trusted)
+        .unwrap();
+    let saved = store
+        .write_trusted(
+            &who,
+            &Publish {
+                id: None,
+                environment: at(None),
+                version: None,
+                message: None,
+                accept_volume_loss: Vec::new(),
+            },
+            &trusted,
+        )
+        .unwrap()
+        .saved
+        .unwrap();
+    store
+        .write_trusted(
+            &who,
+            &RemoveDomain {
+                environment: at(None),
+                domain: "web".into(),
+            },
+            &trusted,
+        )
+        .unwrap();
+    store
+        .write_trusted(
+            &who,
+            &AddDomain {
+                environment: at(Some("staging")),
+                ..add(Some("web.acme-apps.com"), None)
+            },
+            &trusted,
+        )
+        .unwrap();
+
+    let preview = ployz_store::HistoryPreviewQuery {
+        environment: at(None),
+        revision: saved,
+        action: ployz_store::HistoryAction::Restore,
+        change: None,
+    };
+    let refused = store.read_trusted(&who, &preview, &trusted).unwrap_err();
+    assert_eq!(refused.code, RpcErrorCode::Conflict, "{refused:?}");
+    assert_eq!(
+        refused.message,
+        "web.acme-apps.com is already the custom domain of web in shop/staging"
+    );
+    let diff: DiffView = store
+        .read_trusted(&who, &DiffQuery::default(), &trusted)
+        .unwrap();
+    let stage = ployz_store::StageHistory {
+        environment: at(None),
+        revision: saved,
+        action: ployz_store::HistoryAction::Restore,
+        change: None,
+        version: diff.version,
+        accept_overwrite: true,
+    };
+    let refused = store.write_trusted(&who, &stage, &trusted).unwrap_err();
+    assert_eq!(refused.code, RpcErrorCode::Conflict, "{refused:?}");
+
+    let discard = ployz_store::Discard {
+        environment: at(None),
+        target: Some(ployz_store::DiscardTarget::Saved),
+        path: None,
+        version: None,
+    };
+    let refused = store.write_trusted(&who, &discard, &trusted).unwrap_err();
+    assert_eq!(refused.code, RpcErrorCode::Conflict, "{refused:?}");
+    assert_eq!(refused.details["hostname"], "web.acme-apps.com");
+}
