@@ -814,6 +814,9 @@ pub(crate) struct Frozen {
     pub(crate) cluster_domain: Option<Hostname>,
     /// Its target Services with no source of their own: they run only an upload.
     pub(crate) sourceless: Vec<String>,
+    /// By runtime name, every Service a narrowed one hands the runner: the named
+    /// ones and each they reference, changed or not. Empty for a full one.
+    pub(crate) shipped: BTreeSet<ServiceName>,
 }
 
 impl Frozen {

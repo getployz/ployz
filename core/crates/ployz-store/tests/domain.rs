@@ -2066,3 +2066,29 @@ fn a_reapply_checks_only_the_hostnames_it_ships() {
     };
     assert_eq!((summary.saved.0, summary.ships.len()), (1, 1));
 }
+
+#[test]
+fn a_reapply_checks_the_hostnames_of_a_referenced_service_it_hands_the_runner() {
+    let (store, who) = web_referencing_worker();
+    store
+        .write_trusted(
+            &who,
+            &AddDomain {
+                service: ServiceName::parse("worker").unwrap(),
+                ..add(Some("worker.example.org"), Some(80))
+            },
+            &cloud(),
+        )
+        .unwrap();
+    admit(&store, &who, 2, &cloud()).unwrap();
+    apply_service(&store, 2, &["web", "worker"]);
+    let mut elsewhere = tunnel();
+    elsewhere.domains.published.push(PublishedHostname {
+        hostname: host("worker.example.org"),
+        namespace: ployz_core::Namespace::parse("another-production").unwrap(),
+        service: ServiceName::parse("other").unwrap(),
+    });
+
+    let refused = reapply(&store, &who, 3, &["web"], &elsewhere).unwrap_err();
+    assert_eq!(refused.code, RpcErrorCode::Conflict, "{refused:?}");
+}

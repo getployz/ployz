@@ -564,6 +564,7 @@ pub(crate) fn freeze(
         credentials: BTreeMap::new(),
         cluster_domain: cluster_domain.cloned(),
         sourceless,
+        shipped: lowered.shipped,
     })
 }
 

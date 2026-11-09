@@ -634,13 +634,13 @@ fn reapply(
             json!({ "services": services }),
         ));
     };
-    // An older revision may still give a Service it doesn't ship a hostname that
-    // Service has since released, so only what it ships is checked.
+    // The gate checks the Services the runner gets, named or referenced: an older
+    // revision may give one it doesn't get a hostname released since.
     let shipping = SavedEnvironmentIntent {
         services: saved
             .services
             .iter()
-            .filter(|service| frozen.nodes.iter().any(|node| node.id() == service.id))
+            .filter(|service| frozen.shipped.contains(&service.config.private_dns))
             .cloned()
             .collect(),
         ..saved.clone()
