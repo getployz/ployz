@@ -2,7 +2,7 @@
 
 A compromised Cloud must not run code of its choosing on a Server or read its secrets. Today it can do both through builds. Under Device enforcement, `Build` and `MintBuildGrant` are not gated (#4002). Cloud can start a Build whose `RUN` steps it wrote, with the Build's Sealed values opened, or mint a Build Grant for its own key and read any Service's Sealed values opened. Slice D1 closes that first. The later slices replace the blanket refusal with a proof each Machine checks for itself.
 
-The design is in [d-build-proof.md](d-build-proof.md). A person approves an automatic deploy rule once. A pinned GitHub builder attests, through the audience of GitHub-signed OIDC tokens, which holder gets the build secrets and which image it built from which commit under which policy. Each Machine checks the token, the signed rule and the branch head it reads from GitHub itself. [d-inventory.md](d-inventory.md) lists every input Cloud chooses today and the slice that closes it.
+The design is in [d-build-proof.md](d-build-proof.md). A person approves an automatic deploy rule once. A pinned GitHub builder attests, through the audience of GitHub-signed OIDC tokens, which commit it checked out, which recipient gets the build secrets, and which image it built under which policy. Each Machine checks the token, the signed rule, the commit's authority and the branch head it reads from GitHub itself before any secret opens. Secrets reach the builder sealed from a key only Cluster Machines can derive. [d-inventory.md](d-inventory.md) lists every input Cloud chooses today and the slice that closes it.
 
 Seven PRs, in dependency order:
 
@@ -10,11 +10,11 @@ Seven PRs, in dependency order:
 | --- | --- | --- |
 | D1 | Enforcing Machines refuse Cloud's `Build` and `MintBuildGrant` | #4002, today's bar crossing |
 | D2 | Machines can verify a GitHub OIDC token and read a branch head. Rule types exist. | Nothing yet. It is the verifier. |
-| D3 | A push builds under enforcement. The grant is bound to a verified token. | Cloud picking the commit, inputs, builder or holder |
+| D3 | A push builds under enforcement. The grant is bound to a verified token and the commit checked out, and secrets reach only the builder. | Cloud picking the commit, inputs, builder, holder or secrets endpoint |
 | D4 | A push deploys under enforcement with no prompt | Cloud substituting source, settings, artifact, stale or replayed proof |
 | D5 | The dashboard approves and re-approves rules | Settings riding along shows as "approve again", not as a silent deploy |
 | D6 | A person can deploy or roll back a built image under enforcement | Built-image deploys refused since thread C |
-| D7 | Trusted previews deploy, and inherit only the Sealed values a rule names | Trust from Cloud rows, preview secrets kept apart by Cloud alone (checkpoint C3) |
+| D7 | Trusted previews deploy into a Namespace and hostnames the Machine derives, and inherit only the Sealed values a rule names | Trust from Cloud rows, Cloud-chosen preview Namespaces, preview secrets kept apart by Cloud alone (checkpoint C3) |
 
 ## Operator decisions
 
@@ -35,6 +35,11 @@ The operator took every recommendation on 2026-11-09, with the additions below. 
 9. **A real GitHub environment for live lanes.** `verify-dashboard` fakes SHAs and OIDC, and no isolated real setup exists in this repository, its skills or its docs. *Recommendation.* Create the one in Appendix B before D2's live lanes.
 10. **Moving customers to the new workflow file.** A rule needs `on: push` and the pinned reusable workflow. *Recommendation.* The dashboard's existing "Add workflow" link opens GitHub's editor with the new file. The old file keeps working on Clusters that do not enforce, until thread F's cutover removes the old path.
 
+Added after Codex's review on 2026-11-09. These are open, and the operator has not answered them yet. Neither blocks D1 to D4.
+
+11. **Preview Namespaces and URLs change shape under enforcement.** To stop a preview proof from landing in a production Namespace, the Machine derives a preview's Namespace (`pv-<rule>-<branch or PR hash>`) and its hostnames (`<label>.<Namespace>.<preview domain>`). Today a PR Environment gets `{project}-pr-N` and its hostnames from the Organization's generated domain. Existing PR Environments keep their old Namespace, which is fixed at first admission, so they need closing and reopening once a preview rule exists. *Recommendation.* Accept the derived names. They are long but stable, and the preview's page shows its URL. A shorter readable form would need a name the Machine can check, and Cloud chooses every readable name today.
+12. **Who may sign a `BuildApproval` (D6).** It authorizes a grant, and so build secrets, for a commit that is not the head. The Machine accepts only commits on the approved branch's history, read from GitHub. *Recommendation.* The same signers as a thread C deploy approval, a browser session included. A compromised dashboard could then rebuild an old commit from the approved branch with today's build secrets. That is code someone with push rights already put on the branch, and the deploy still needs a person's approval of the image.
+
 ## How to read this
 
 Same conventions as `c-plan.md`. One box is one unit of work, and every box names the evidence that checks it. Check a box only when that evidence exists. Tests alone are not sufficient verification. A PR is verified only when its unit, live and perf boxes are all checked.
@@ -45,8 +50,8 @@ Terms follow `core/CONTEXT.md` (Build, Build Grant, Build Receipt, Uploaded Sour
 
 The program runs the way `c-plan.md` "Program checklist" says: arming, the audit tick, owners, PR mechanics, verdict and merge. These differences apply.
 
-- [ ] Dependency graph. D1 branches from `main` now. D2 after D1. D3 after D2 and after decisions 8 and 9. D4 after D3. D5 after D4 and after Appendix A gap 2 with thread B. D6 after D4. D7 after D4, and its prototype box closes before its build.
-- [ ] File boundaries. D1 touches `core/crates/ployzd/src/machine_api/local.rs`, `core/crates/ployzd/src/machine/local_machine/restart_approval.rs`, `core/crates/ployz/src/sdk/github_build.rs` (refusal wording only) and `docs/user/`. D2 adds `core/crates/ployz-core/src/authority/rule.rs`, `core/crates/ployzd/src/github/{oidc,head}.rs`. D3 touches `core/crates/ployzd/src/management/build_grant.rs`, `core/crates/ployz-core/src/rpc.rs` (two fields), `rpc_catalog.rs` (one row), `core/crates/ployz/src/handlers/build.rs`, `core/crates/ployz/src/sdk/github_build.rs`, `core/crates/ployz-store/src/build.rs`, `dashboard/src/modules/config-store/store-github*`, `dashboard/src/modules/github/**`, `.github/workflows/ployz-build.yml` and the external builder workflow. D4 touches `core/crates/ployz-core/src/authority/rule.rs`, `core/crates/ployzd/src/machine/local_machine/{deploy_approval,restart_approval}.rs`, `core/crates/ployz-core/src/rpc.rs` (one field), `core/crates/ployz-store/src/automation.rs`, `core/crates/ployz/src/sdk/store_runner.rs`, `core/crates/ployz/src/cluster.rs`, `core/crates/ployz/src/handlers/github.rs` and `docs/user/deploy/`. D5 touches `dashboard/src/modules/github/**`, `dashboard/src/modules/approvals/**` and the SDK export. D6 touches `core/crates/ployz-core/src/authority/deploy.rs` and `core/crates/ployz/src/handlers/deploy.rs`. D7 touches `core/crates/ployz-core/src/authority/{rule,deploy}.rs`, `core/crates/ployz-core/src/sealed.rs`, `core/crates/ployzd/src/sealed_env.rs`, `core/crates/ployz-store/src/pull_request/**`, `dashboard/src/modules/config-store/store-pull-request.server.ts` and `docs/user/`.
+- [ ] Dependency graph. D1 branches from `main` now. D2 after D1 and Appendix A gap 1. D3 after D2, after decisions 8 and 9, and after Appendix A gap 6 (the grant-endpoint authentication contract: the Cluster attest key and HPKE authenticated mode). D4 after D3 and Appendix A gap 3. D5 after D4 and Appendix A gap 2 with thread B. D6 after D4, Appendix A gap 7 (`BuildApproval` and its grant authority) and decision 12. D7 after D4. Before D7 builds, its prototype box must close, along with Appendix A gaps 4, 8 (`PreviewReview` grant authority and B's decision 6 signing path) and 9 (reserved preview Namespaces), and decision 11.
+- [ ] File boundaries. D1 touches `core/crates/ployzd/src/machine_api/local.rs`, `core/crates/ployzd/src/machine/local_machine/restart_approval.rs`, `core/crates/ployz/src/sdk/github_build.rs` (refusal wording only) and `docs/user/`. D2 adds `core/crates/ployz-core/src/authority/rule.rs`, `core/crates/ployzd/src/github/{oidc,head}.rs`. D3 touches `core/crates/ployzd/src/management/build_grant.rs`, `core/crates/ployzd/src/sealed_env.rs` (attest key), `core/crates/ployz/src/connect/build_grant.rs`, `core/crates/ployz-core/src/sealed_record.rs`, `core/crates/ployz-core/src/authority/rule.rs`, `core/crates/ployz-core/src/rpc.rs` (two fields), `rpc_catalog.rs` (one row), `core/crates/ployz/src/handlers/build.rs`, `core/crates/ployz/src/sdk/github_build.rs`, `core/crates/ployz-store/src/build.rs`, `dashboard/src/modules/config-store/store-github*`, `dashboard/src/modules/github/**`, `.github/workflows/ployz-build.yml` and the external builder workflow. D4 touches `core/crates/ployz-core/src/authority/rule.rs`, `core/crates/ployzd/src/machine/local_machine/{deploy_approval,restart_approval}.rs`, `core/crates/ployz-core/src/rpc.rs` (one field), `core/crates/ployz-store/src/automation.rs`, `core/crates/ployz/src/sdk/store_runner.rs`, `core/crates/ployz/src/cluster.rs`, `core/crates/ployz/src/handlers/github.rs` and `docs/user/deploy/`. D5 touches `dashboard/src/modules/github/**`, `dashboard/src/modules/approvals/**` and the SDK export. D6 touches `core/crates/ployz-core/src/authority/rule.rs`, `core/crates/ployzd/src/management/build_grant.rs`, `core/crates/ployzd/src/github/head.rs`, `core/crates/ployz/src/handlers/deploy.rs`, `core/crates/ployz-sdk/src/lib.rs` and `docs/user/deploy/history-and-rollback.md`. D7 touches `core/crates/ployz-core/src/authority/{rule,deploy}.rs`, `core/crates/ployz-core/src/sealed.rs`, `core/crates/ployzd/src/sealed_env.rs`, `core/crates/ployzd/src/management/build_grant.rs`, `core/crates/ployzd/src/machine/local_machine/deploy_approval.rs`, `core/crates/ployz-store/src/deployment/mod.rs`, `core/crates/ployz-store/src/pull_request/**`, `dashboard/src/modules/config-store/store-pull-request.server.ts` and `docs/user/`.
 - [ ] Bets every D PR names. Bet 6, Machine-local authority, because each Machine checks the token, rule and head itself, and no Machine acts on another's record. Bet 7, Cloud drives and never owns, because Cloud relays rules and tokens it cannot mint. Bet 9, lean on proven primitives, because GitHub OIDC is verified with `ring`'s RS256, already in the tree. Bet 1, observer-relative truth, because freshness is the head this Machine read at admission. The stable promise, because of new optional request fields and capability rows.
 - [ ] Residuals each D PR names once (see `d-build-proof.md`, "What remains"). Anyone who can push to the approved branch deploys. Cloud can withhold a new rule generation, re-run or dispatch the current head, cancel builds and show false status. Until the minter is live, Cloud can push a commit.
 - [ ] Live lanes run per `c-plan.md` "Boot recipe", plus the real GitHub environment in Appendix B for every lane marked **GitHub**. The attacker harness is C1's `.audit/c-attacker/`, extended with `MintBuildGrant` and token relay.
@@ -132,16 +137,19 @@ Outcome. A Machine can verify a raw GitHub OIDC token against GitHub's keys and 
 
 ## Build a push under enforcement (D3)
 
-Outcome. On an enforcing Cluster with a rule, a push to the approved branch runs the pinned builder, and the grant Machine gives the build secrets only to the holder key in a verified token. The image lands on that Machine. It does not deploy until D4. Attack path closed. Cloud cannot pick the commit, the inputs, the builder, the runner or the holder, and cannot read build secrets.
+Outcome. On an enforcing Cluster with a rule, a push to the approved branch runs the pinned builder. The grant Machine checks that the commit the builder checked out is the head, before anything opens. It then seals the build secrets to the builder's recipient key from the Cluster attest key, and the builder refuses values from any other sender. The image lands on that Machine. It does not deploy until D4. Attack path closed. Cloud cannot pick the commit, the inputs, the builder, the runner or the holder, cannot read build secrets, and cannot feed the builder secret values of its own through an endpoint it names.
 
-**Depends on.** D2. Operator decisions 8 and 9.
+**Depends on.** D2. Operator decisions 8 and 9. Appendix A gap 6.
 
 **Files.**
 
 - [ ] Edit `core/crates/ployz-core/src/rpc.rs` so `MintBuildGrantRequest` gains `rule: Option<Signed<AutoDeployRule>>` and `proof: Option<String>` (the raw token). Edit `rpc_catalog.rs` to add `BUILD_GRANT_RULE_CAPABILITY: ("ployz.build.grant.rule.v1", Always)`.
-- [ ] Edit `core/crates/ployzd/src/management/build_grant.rs` so `Mint::check` under enforcement needs the rule and proof, runs the grant checks in `d-build-proof.md`, consumes the `jti`, and checks the Sealed record against the rule's `secrets` digest. Edit `admit_operator_build` from D1 to let a rule-bearing `MintBuildGrant` through.
-- [ ] Edit `core/crates/ployz/src/handlers/build.rs` (the runner's `ployz build`) to make the holder key, compute the policy digest from the relayed rule, request both tokens with their audiences, refuse any registry cache, and set the Actions cache `scope` to the policy digest.
-- [ ] Edit `core/crates/ployz/src/sdk/github_build.rs` so check-in for a rule build returns the rule, the Cluster key and the grant Machine. It returns no commit and no `ployzVersion`. It relays the runner's grant token to `MintBuildGrant`.
+- [ ] Edit `core/crates/ployzd/src/management/build_grant.rs` so `Mint::check` under enforcement needs the rule and proof. It runs the token checks, then the commit's authority (`Head` only in D3), all before it opens the record. It consumes the `jti` and checks the Sealed record against the rule's `secrets` digest. `sealed` (`:482`) stops serving plaintext. It returns the opened values HPKE auth-sealed from the attest key to the audience's recipient, with the audience bytes in the info. Edit `admit_operator_build` from D1 to let a rule-bearing `MintBuildGrant` through.
+- [ ] Edit `core/crates/ployzd/src/sealed_env.rs` (or its key module) to derive the attest key pair from the Sealing Key with HKDF-SHA-256 and the info `ployz build-secrets attest v1`, and expose its public half to `CheckIn`.
+- [ ] Edit `core/crates/ployz-core/src/authority/rule.rs` so `Claim` carries `commit` and `authority` in both stages, `Grant { holder, recipient }`, and `Built { image, attest }`.
+- [ ] Edit `core/crates/ployz/src/connect/build_grant.rs` and `core/crates/ployz-core/src/sealed_record.rs` so the runner opens the grant's response only in HPKE authenticated mode with the relayed attest key and the expected info. A response that fails to open stops the build. `OpenedSealed::covering` (`sealed_record.rs:131`) still checks the names, after authentication.
+- [ ] Edit `core/crates/ployz/src/handlers/build.rs` (the runner's `ployz build`) to check out `github.sha` or the `commit` input, make the holder and recipient keys, compute the policy digest from the relayed rule, request both tokens with their audiences, put the attest key it opened with into `Built`, refuse any registry cache, and set the Actions cache `scope` to the policy digest.
+- [ ] Edit `core/crates/ployz/src/sdk/github_build.rs` so check-in for a rule build returns the rule, the Cluster key, the attest key and the grant Machine. It returns no commit and no `ployzVersion`. It relays the runner's grant token to `MintBuildGrant`.
 - [ ] Edit `dashboard/src/modules/config-store/store-github-builds.server.ts` and `dashboard/src/modules/github/github-build.server.ts` so a rule build follows the push-triggered run of the rule's workflow, rather than dispatching one, and receives the image token with the final Build Steps report.
 - [ ] Edit `core/crates/ployz-store/src/build.rs` so `github_authorize` matches a push run on the rule's branch by `run_id`. Claims checked there are bookkeeping only.
 - [ ] Edit `.github/workflows/ployz-build.yml` to the file in `d-build-proof.md`.
@@ -154,11 +162,13 @@ Outcome. On an enforcing Cluster with a rule, a push to the approved branch runs
 
 **Verify, unit.**
 
-- [ ] `build_grant.rs` tests use D2's fixture token with a rule built to match. A valid token mints. Then each grant check fails once: another holder in `aud`, another policy in `aud`, a `jti` already consumed, a Sealed record that does not match `secrets`, an old generation, an `ended` rule, a Machine not in `machines`, and a head that differs (with a stubbed head reader). A mint without a rule under enforcement is refused as in D1.
-- [ ] `handlers/build.rs` tests show the audience bytes equal D2's golden test, and a policy with `cache_from` of type `registry` refused before the build.
+- [ ] `build_grant.rs` tests use D2's fixture token with a rule built to match. A valid token mints. Then each grant check fails once: another holder in `aud`, another recipient, another policy in `aud`, a `jti` already consumed, a Sealed record that does not match `secrets`, an old generation, an `ended` rule, a Machine not in `machines`, and a head that differs (with a stubbed head reader). A mint without a rule under enforcement is refused as in D1.
+- [ ] `build_grant.rs` tests show the commit's authority is checked before the record opens. A `commit` that differs from `sha` under `Head`, and `Approved` or `Review` with no statement, are each refused, using a key directory that would fail to open, so an open attempt shows as a different error.
+- [ ] `sealed_record.rs` and `connect/build_grant.rs` tests open a response sealed by the right attest key, and refuse one sealed by another key, one sealed in base mode, and one sealed for another audience's info. Run `cargo nextest run -p ployz-core sealed_record` and `-p ployz connect::build_grant`.
+- [ ] `handlers/build.rs` tests show the audience bytes equal D2's golden test, `Built.attest` equals the key the secrets opened with, and a policy with `cache_from` of type `registry` refused before the build.
 - [ ] `pnpm vitest run src/modules/config-store/store-github-builds` covers following a push run and receiving the image token.
 
-**Verify, live.** Ten lanes, all **GitHub**, against a Boat Cluster with enforcement on and a rule approved from `cli --device`. D3 has no rule CLI yet, so the lanes sign the rule with a test helper. D4 adds the CLI.
+**Verify, live.** Twelve lanes, all **GitHub**, against a Boat Cluster with enforcement on and a rule approved from `cli --device`. D3 has no rule CLI yet, so the lanes sign the rule with a test helper. D4 adds the CLI.
 
 - [ ] Lane 1. Regression lane against trunk. Enforcement off, the old workflow file, a dispatched build. Save `d3-legacy.png`. Pass when it builds at trunk and at head.
 - [ ] Lane 2. Push to the approved branch. Save `d3-push-build.png`. Pass when the image lands on the grant Machine and its log names the rule, generation and commit.
@@ -170,6 +180,8 @@ Outcome. On an enforcing Cluster with a rule, a push to the approved branch runs
 - [ ] Lane 8. Push to a builder fork at a new commit, and point a copy of the workflow at it. Save `d3-builder.png`. Pass when it is refused naming `job_workflow_sha`.
 - [ ] Lane 9. Actions cache. A run on branch `other` writes the policy-digest scope, then the approved branch builds. Save `d3-cache.png`. Pass when the approved build does not hit the `other` entry. If it does, record that and turn the cache off for rule builds (operator decision 7).
 - [ ] Lane 10. A build secret in the Dockerfile (`RUN --mount=type=secret`). Save `d3-secret.png`. Pass when the build reads it, and neither the runner log, Cloud's database nor the Machine log holds its value (`grep -c` of a marker only).
+- [ ] Lane 11. Attacker harness. The Dockerfile runs a script from a Sealed URL. Check-in names an iroh endpoint the harness runs, which serves its own value for that URL, first with the real attest key and then with its own key in place of it. Save `d3-endpoint.png`. Pass when the first build stops at opening the secrets, and the second build's image token names the harness's key, which D4's lane 11 then refuses.
+- [ ] Lane 12. Attacker harness. Dispatch the workflow on the approved branch's head with `commit` set to a commit from a fork. Save `d3-commit-input.png`. Pass when the grant is refused naming the commit, the Machine log shows no Sealed open, and the runner log shows no secret file.
 
 **Verify, perf.**
 
@@ -195,11 +207,11 @@ Outcome. With a rule approved once from the CLI, every push to the approved bran
 
 **Verify, unit.**
 
-- [ ] `rule.rs` tests take one approved spec and token, and change one thing per case, each refused naming it. The cases are the image digest, a plain value, a Sealed ciphertext, `privileged`, a Bind Mount, a host port, the hook command, the generation (lower), the commit (not the head), and `aud` naming another image.
+- [ ] `rule.rs` tests take one approved spec and token, and change one thing per case, each refused naming it. The cases are the image digest, a plain value, a Sealed ciphertext, `privileged`, a Bind Mount, a host port, the hook command, the generation (lower), the commit (not the head), `aud` naming another image, `attest` naming another key, and authority `Approved` (a rule never admits it at creation).
 - [ ] `deploy_approval.rs` tests admit a second creation of the same image after the token's `exp` through the accepted-build record, and refuse it once the head moved. They also admit a hook once per commit.
 - [ ] `automation.rs` tests hold a push for re-approval when the Saved revision changes a setting, and admit it when only the commit changed. Run `cargo nextest run -p ployz-core authority::rule`, `-p ployzd deploy_approval`, `-p ployz-store automation`.
 
-**Verify, live.** Ten lanes, all **GitHub**, two Machines, enforcement on, rule approved with `cli --device -- github rule approve web`.
+**Verify, live.** Eleven lanes, all **GitHub**, two Machines, enforcement on, rule approved with `cli --device -- github rule approve web`.
 
 - [ ] Lane 1. Regression lane against trunk. Enforcement off. A push deploys at trunk and at head. Save `d4-enforce-off.png`.
 - [ ] Lane 2. A push deploys with no prompt. Save `d4-push.png`. Pass when both Machines run the new digest and log `rule <id> gen <n> commit <12 hex>`.
@@ -211,6 +223,7 @@ Outcome. With a rule approved once from the CLI, every push to the approved bran
 - [ ] Lane 8. Attacker harness. Replay a generation n token after lane 7. Save `d4-old-gen.png`. Pass when it is refused naming the generation.
 - [ ] Lane 9. A pre-deploy hook that appends a line. Push once, then replay the hook creation. Save `d4-hook.png`. Pass when the file has one line.
 - [ ] Lane 10. `github rule end`, then push. Save `d4-ended.png`. Pass when nothing deploys and the Machines log the ended rule.
+- [ ] Lane 11. Attacker harness. Deploy D3 lane 11's image, whose token names the harness's attest key. Save `d4-attest.png`. Pass when every Machine refuses naming the attest key.
 
 **Verify, perf.**
 
@@ -235,42 +248,85 @@ Outcome. A dashboard user turns automatic deploy on for an Environment with one 
 
 ## Approve a built image deploy (D6)
 
-Outcome. A person deploys or rolls back a Git-sourced Service at a named commit under enforcement, from the CLI or the dashboard, with thread C's deploy approval. Attack path. Cloud cannot swap the image for one built from another commit or policy.
+Outcome. A person deploys or rolls back a Git-sourced Service at a named commit under enforcement, from the CLI or the dashboard. Attack path closed. Cloud cannot swap the image for one built from another commit or policy. It cannot get build secrets for a commit that never sat on the approved branch.
 
-**Depends on.** D4.
+The semantics are in `d-build-proof.md`, "A person deploys a built image (D6)". In short, a rollback has no `Head` authority, so a person supplies it twice. A `BuildApproval` names the commit and lets the grant Machine release secrets for it. The client then verifies the image token itself and signs thread C's ordinary `DeployApproval` with the content-addressed image. Machines never check an expired image token. They check a person's approval of a digest, as thread C already does.
 
-**Build.**
+**Depends on.** D4. Appendix A gap 7. Operator decision 12.
 
-- [ ] `ApprovedService` (`ployz-core/src/authority/deploy.rs:139`) gains `built: Option<Built { rule, commit, policy }>`. When present, the digest is the template digest (image emptied), and the creation needs an image token whose `aud` names that commit. A person's approval replaces the head check.
-- [ ] `ployz deploy` of a Git Service builds it under the rule, then signs the approval with the commit it printed.
+**Files.**
 
-**Verify.** Unit tests change the commit, the policy and the image, one per case. Live, **GitHub**: a rollback to the previous commit deploys, a substituted commit is refused, and the Machines log the approver. Perf as C1.
+- [ ] Edit `core/crates/ployz-core/src/authority/rule.rs` to add `BuildApproval` (purpose `Workflow`, thread C's 15-minute window) and `Authority::Approved`.
+- [ ] Edit `core/crates/ployzd/src/management/build_grant.rs` so grant admission accepts `Approved(d)`. That means the signature, the rule, generation, Service and commit, a `workflow_dispatch` run on the rule's branch, and the commit on the branch's history. The Machine reads `GET /repositories/<id>/compare/<commit>...<branch>` now and accepts `identical` or `behind`. Add the compare read to `core/crates/ployzd/src/github/head.rs`.
+- [ ] Edit `core/crates/ployz/src/handlers/deploy.rs` (and `core/crates/ployz-sdk/src/lib.rs` for the dashboard) so a deploy of a Git Service at a commit verifies a stored image token for that commit, if one exists. The client checks the signature against the JWKS it fetches, every claim and the audience against the rule, `attest` equal to the Cluster's attest key, and ignores `exp`. With no usable token, it signs a `BuildApproval`, waits for the build, and verifies the new token. Then it signs `DeployApproval` with `image = <repository>@<digest>`.
+- [ ] Edit `docs/user/deploy/history-and-rollback.md`.
+
+**Verify, unit.**
+
+- [ ] `build_grant.rs` tests admit `Approved` for a commit behind the head, and refuse a commit not on the branch (compare `diverged` or `ahead`), another Service, another generation, an expired approval and a `push` run.
+- [ ] `handlers/deploy.rs` tests verify an expired fixture token whose claims match, and refuse one with another commit, another policy, another attest key, and a `kid` missing from the JWKS (which falls back to a rebuild).
+
+**Verify, live.** Six lanes, all **GitHub**.
+
+- [ ] Lane 1. Roll back to the previous commit's image from `cli --device`. Save `d6-rollback.png`. Pass when both Machines run it and log the approving Device.
+- [ ] Lane 2. Deploy an older commit with no stored token. Save `d6-rebuild.png`. Pass when it builds under a `BuildApproval` and deploys.
+- [ ] Lane 3. Attacker harness. A `BuildApproval` for a fork commit. Save `d6-fork.png`. Pass when the grant is refused naming the commit, with no Sealed open.
+- [ ] Lane 4. Attacker harness. Cloud stores another image's token against the rollback commit. Save `d6-token-swap.png`. Pass when the CLI refuses before signing.
+- [ ] Lane 5. A build that outlasts 15 minutes (a `sleep` in the Dockerfile). Save `d6-long.png`. Pass when the deploy approval, signed after the build, is accepted.
+- [ ] Lane 6. Regression lane against trunk. A rollback with enforcement off. Save `d6-enforce-off.png`.
+
+**Verify, perf.** As C1. Signing and token verification add under 1 s to a rollback.
+
+**Review gate.** None.
 
 ## Previews under a rule (D7, checkpoint C3)
 
-Outcome. Pushes by trusted GitHub accounts to branches of the repository deploy their PR Environment with no review. A preview inherits only the parent Sealed values the preview rule names, opened in place on the Machine. Untrusted PRs keep the review path, bound to the reviewed commit. Attack path closed. Cloud's membership rows and bot flag no longer decide trust. Cloud cannot give a preview a parent secret the rule does not name.
+Outcome. Pushes by trusted GitHub accounts to branches of the repository deploy their PR Environment with no review. The Machine derives each preview's Namespace and hostnames from the signed preview rule and facts it verified, so a preview can land only in a Namespace holding nothing but that preview. A preview inherits only the parent Sealed values the preview rule names, opened in place on the Machine. Untrusted PRs keep the review path. A review is checked before the reviewed build gets any secret, and it is bound to the commit the builder checked out. Attack path closed. Cloud's membership rows and bot flag no longer decide trust. Cloud cannot place preview code in a production Namespace or behind a production hostname. It cannot give a preview a parent secret the rule does not name, or release preview secrets to an unreviewed commit.
 
-**Depends on.** D4. The prototype box below.
+**Depends on.** D4. The prototype box below. Appendix A gaps 4, 8 and 9. Operator decisions 6 and 11, and thread B's passkey-direct signing path for decision 6 (gap 2).
 
 **Prototype first.**
 
-- [ ] Lower a parent Environment and its PR Environment for the same commit, and diff their requested specs. Pass when they differ only in the Namespace, preview hostnames and Own Copy Volume names, so `PreviewTemplate::of` can name every PR-derived field. If more fields differ, stop and redesign the template before building.
+- [ ] Lower a parent Environment and its PR Environment for the same commit, and diff their requested specs. Pass when they differ only in the Namespace (including strings that embed it), preview hostnames and the Sealed identity, and when Own Copies keep their parent's logical Volume names. If Own Copies are renamed, D7 changes the lowering to keep the names. If any other field differs, stop and redesign the template before building.
 
 **Files.**
 
 - [ ] Edit `core/crates/ployz-core/src/sealed.rs` so `SealedValue` gains `environment: Option<Uuid>`, which replaces the identity's Environment in the associated data.
-- [ ] Edit `core/crates/ployzd/src/sealed_env.rs` to open such a value only when admission handed it the preview rule's `inherit` list for that Environment.
-- [ ] Edit `core/crates/ployz-core/src/authority/rule.rs` to add `PreviewRule`, `PreviewTemplate` and `PreviewReview`. Edit `deploy.rs` to widen `sealed_scope_allows` to inherited keys under a review.
+- [ ] Edit `core/crates/ployzd/src/sealed_env.rs` to check the override on every Sealed part, template parts and build records included. It opens a value carrying one only when admission handed it the preview rule's `inherit` list for that Environment.
+- [ ] Edit `core/crates/ployz-core/src/authority/rule.rs` to add `PreviewRule`, `PreviewReview`, `Authority::Review`, `preview_namespace(rule, key)`, `preview_hostname(label, namespace, domain)` and `PreviewTemplate::of(spec, derived)`. Placeholders replace only strings the Machine derived.
+- [ ] Edit `core/crates/ployzd/src/management/build_grant.rs` so grant admission accepts a trusted push (`Head` on a non-parent branch, `actor_id` in `trusted`) and `Review(d)`. A review needs its signature, rule, generation and commit, a `workflow_dispatch` run on the parent's branch, and the signer rule of decision 6. All of that is checked before the record opens.
+- [ ] Edit `core/crates/ployzd/src/machine/local_machine/deploy_approval.rs`. A preview-rule creation must be in the derived Namespace, with derived hostnames, and Sealed parts inherited or, under a review, sealed for the review's Environment. Thread C's deploy approval and the automatic deploy rule refuse the reserved preview Namespace pattern.
+- [ ] Edit `core/crates/ployz-core/src/authority/deploy.rs` to widen `sealed_scope_allows` for reviews only, as `d-build-proof.md` says.
+- [ ] Edit `core/crates/ployz-store/src/deployment/mod.rs` (`namespace`, `:1539`) so a PR Environment under a preview rule gets the derived Namespace, and no other Environment ever gets the reserved pattern. Edit the preview lowering to emit derived hostnames.
 - [ ] Edit `core/crates/ployz-store/src/pull_request/mod.rs` and `dashboard/src/modules/config-store/store-pull-request.server.ts` so trust comes from the preview rule. The members join stays only as the label shown before a rule exists.
+- [ ] Create the CLI `ployz github preview approve`, which prints the trusted accounts, inherited keys, preview domain, and any Bind Mount or External Volume as "shared with production". It refuses those mounts unless `--share-mounts` is given.
 - [ ] Edit `docs/user/environments/preview-environments.md` and `docs/user/services/variables.md`.
 
-**Verify, unit.** An inherited value opens under its rule, and is refused for a key not in `inherit`, for another parent, under a production deploy approval, and relabelled as another key. An untrusted `actor_id` is refused. A review is refused for another commit. An older daemon refuses the new field.
+**Verify, unit.**
 
-**Verify, live.** Ten lanes, all **GitHub**. A trusted account's push deploys a preview that reads `DATABASE_URL` (length only) and not `STRIPE_KEY`. An untrusted account's push waits for review. A review deploys exactly that commit. Adding the untrusted account to Cloud's `member ⋈ account` rows changes nothing. Relaying the parent's `STRIPE_KEY` ciphertext to the preview is refused. A fork PR does not count as trusted. Lane 1 is a regression lane against trunk with enforcement off.
+- [ ] An inherited value opens under its rule, and is refused for a key not in `inherit`, for another parent, under a production deploy approval, under an automatic deploy rule, and relabelled as another key. A Sealed part in a template carrying an override is checked like any other.
+- [ ] A preview-rule creation is refused in the parent's Namespace, in another rule's derived Namespace, in an ordinary Namespace, and with a hostname not derived. Thread C's approval and the automatic deploy rule are refused in a reserved Namespace. `PreviewTemplate::of` leaves a production Namespace string inside an environment value literal, so it fails the template.
+- [ ] An untrusted `actor_id` is refused. A trusted push to the parent's branch is refused as a preview.
+- [ ] A reviewed grant is refused for another commit, for another rule, and with no review. Each refusal happens before the record opens, using a key directory that would fail to open.
+- [ ] Decision 6 on the Machine. A session-signed review is refused at grant and at creation for a Service with a non-empty `inherit` or a `secrets` digest. The same review signed by a passkey's own assertion is admitted. A session-signed review of a Service with neither is admitted.
+- [ ] An older daemon refuses the new Sealed field.
+
+**Verify, live.** Ten lanes, all **GitHub**, enforcement on, a preview rule approved from `cli --device`.
+
+- [ ] Lane 1. Regression lane against trunk. A trusted preview deploys with enforcement off. Save `d7-enforce-off.png`.
+- [ ] Lane 2. A trusted account's push deploys a preview that reads `DATABASE_URL` (length only) and not `STRIPE_KEY`. Save `d7-trusted.png`. Pass when the Namespace and URL have the derived form.
+- [ ] Lane 3. Adding an untrusted account to Cloud's `member ⋈ account` rows, then pushing as that account. Save `d7-members.png`. Pass when nothing deploys without review.
+- [ ] Lane 4. Attacker harness. Lane 2's proof with the parent's Namespace and a production Volume name. Save `d7-prod-namespace.png`. Pass when it is refused naming the Namespace, and no Container mounts the Volume.
+- [ ] Lane 5. Attacker harness. Lane 2's proof with a production hostname. Save `d7-prod-host.png`. Pass when it is refused naming the payload.
+- [ ] Lane 6. Attacker harness. Relay the parent's `STRIPE_KEY` ciphertext into the preview. Save `d7-uninherited.png`. Pass when it is refused before any open.
+- [ ] Lane 7. A fork PR, reviewed with a passkey prompt. Save `d7-review.png`. Pass when exactly the reviewed commit builds and deploys.
+- [ ] Lane 8. Attacker harness. Dispatch the reviewed build with another commit as `commit`. Save `d7-review-commit.png`. Pass when the grant is refused before any Sealed open.
+- [ ] Lane 9. A session-signed review of a preview that inherits `DATABASE_URL`. Save `d7-session-review.png`. Pass when the Machine refuses naming the signer.
+- [ ] Lane 10. Read the changed `docs/user` pages against lanes 2 and 7. Save `d7-docs.png`.
 
 **Verify, perf.** Admission per creation within 10 ms of D4.
 
-**Review gate.** The operator reviews the preview rule UI before merge.
+**Review gate.** The operator reviews the preview rule UI and the derived URLs before merge.
 
 ## Appendix A. Contract gaps
 
@@ -278,7 +334,11 @@ Outcome. Pushes by trusted GitHub accounts to branches of the repository deploy 
 2. **Passkey-direct signing in the dashboard (thread B).** D5 needs a passkey assertion over a rule body outside a session. B's enrollment and proposal approval already prompt directly, so the helper may exist. Confirm it with the B owner.
 3. **Generation and accepted-build records (thread A).** D4 adds a per-rule high-water mark and an accepted-build entry to the consumption log. Like C1's hook entry, this is "C inside authority", and A must agree to the record kinds.
 4. **`SealedValue.environment` (threads A and C).** D7 changes Sealed associated data. That is a wire change in a type C's digest covers. An older daemon refuses it, which fails closed.
-5. **The GitHub minter (no owner).** See operator decision 1.
+5. **The GitHub minter.** The root runs it as its own slice after D4 (operator decision 1).
+6. **The grant-endpoint authentication contract (thread A).** D3 has every Machine derive an attest key pair from the Sealing Key (HKDF-SHA-256, info `ployz build-secrets attest v1`). The grant response is sealed with HPKE in authenticated mode (RFC 9180 §5.1.3, already in `hpke` 0.13), from that key to the builder's recipient key, with the grant audience as info. This is a new use of the Sealing Key. A owns key derivation and must agree before D3 builds.
+7. **`BuildApproval` and its grant authority (thread A, with C).** D6 adds a `Workflow` statement that authorizes a grant for a non-head commit on the approved branch's history. It also uses thread C's existing `DeployApproval` with a content-addressed image for the deploy, so C's digest semantics are unchanged. A must agree to the statement. C confirms that a built image's `<repository>@<digest>` passes `content_addressed` (`ployz-core/src/authority/deploy.rs:122`).
+8. **`PreviewReview` grant authority, and the decision 6 signing path (threads A and B).** D7 checks a review at grant, before secrets open, and refuses a session-signed review of a Service that inherits values or has build secrets. A must agree to the statement and to the signer rule. B must provide a passkey-direct assertion over a review body in the dashboard, the same helper as gap 2.
+9. **Reserved preview Namespaces (thread C).** D7 makes thread C's deploy approval refuse the `pv-<16 hex>-<12 hex>` Namespace pattern, and makes Cloud's Namespace allocator never assign it. That is a check inside C's `deploy::verify`, so C's owner reviews it.
 
 ## Appendix B. The real GitHub environment
 
@@ -306,13 +366,16 @@ Unproven until the slice that proves it:
 - A re-run keeps `sha` and raises `run_attempt`, and a force push gives the new tip as `sha`. D2 lanes 4 and 5.
 - An audience as long as `ployz-build:` plus 64 hex characters is accepted. D3 lane 2.
 - Actions cache isolation by branch. D3 lane 9.
-- A PR Environment's spec differs from its parent's only in fields `PreviewTemplate` names. D7's prototype.
+- A PR Environment's spec differs from its parent's only in fields `PreviewTemplate` derives, and Own Copies keep their logical Volume names. D7's prototype.
+- HPKE authenticated mode in `hpke` 0.13 opens on the runner with the attest public key, and refuses a base-mode or wrongly keyed response. D3's unit tests and lane 11.
+- `workflow_dispatch` with a `commit` input can check out a fork pull request's commit from the base repository. D7 lane 7.
+- `GET /repositories/<id>/compare/<base>...<head>` by repository ID reports `behind` or `identical` for an ancestor. D6 lane 2.
 - A Boat Cloud runs against a real GitHub App, and runners reach a Boat Machine's grant door. Appendix B.
 
 ## Appendix D. Handoffs
 
-- **Thread A.** Gaps 1, 3 and 4 above.
-- **Thread B.** Gap 2. Decision 6 changes what a session may approve for previews.
-- **Thread C.** D6 extends `ApprovedService`. D7 widens `sealed_scope_allows`, as C4 left it to do. C's cache decision is applied as `d-build-proof.md` says.
+- **Thread A.** Gaps 1, 3, 4, 6, 7 and 8 above.
+- **Thread B.** Gaps 2 and 8. Decision 6 changes what a session may approve for previews, and the Machine enforces it.
+- **Thread C.** D6 uses C's `DeployApproval` unchanged, with a content-addressed built image. D7 widens `sealed_scope_allows` for reviews, as C4 left it to do, and adds gap 9's reserved Namespace refusal to `deploy::verify`. C's cache decision is applied as `d-build-proof.md` says.
 - **Thread F.** `MintBuildGrant`, `Build` and the two new capability rows join F's coverage table. Removing the old dispatched workflow path belongs to F's cutover.
 - **Operator, outside code.** Y's O1 and O2 on the `getployz` organization and the App, the minter's owner, and Appendix B.
