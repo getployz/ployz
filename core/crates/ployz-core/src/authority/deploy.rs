@@ -7,7 +7,8 @@
 //! privileges or hook it approves. The image must also be content-addressed, since a tag
 //! names whatever Cloud last wrote under it.
 
-use std::fmt;
+use std::collections::BTreeMap;
+use std::fmt::{self, Write as _};
 
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -17,14 +18,15 @@ use ts_rs::TS;
 use super::{
     canonical::{self, CanonicalError, Timestamp, hex_bytes, write_hex},
     keys::{Approver, Purpose, Signed, Statement},
+    proposal::{self, ProposalRef, StepBody, StepKind},
     refusal::AuthorityRefusal,
     restart::SignerKey,
     session::{ActionFamily, GrantScope},
     trusted_key::TrustedKeys,
 };
 use crate::{
-    ContainerKind, MachineId, Namespace, OperationId, RequestedServiceSpec, ResolvedServiceSpec,
-    SealingPublicKey, ServiceName,
+    ContainerKind, MachineId, Namespace, OperationId, PortPublication, RawVolumeSource,
+    RequestedServiceSpec, ResolvedServiceSpec, SealingPublicKey, ServiceName,
 };
 
 /// SHA-256 of one Service's requested spec in canonical JSON, without its replica count
@@ -146,6 +148,132 @@ pub struct ApprovedService {
     pub image: Option<String>,
 }
 
+/// One Service as the approver's client shows it before signing: the digest the approval
+/// names, the image, and what the spec asks of the host beyond an ordinary Container.
+/// The CLI and the browser show these, computed from the specs they sign.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, TS)]
+pub struct ApprovedChange {
+    pub service: ServiceName,
+    /// The image the Servers run, always by digest.
+    pub image: String,
+    /// The tag the Saved State names, when the client pinned it to `image`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub tag: Option<String>,
+    pub digest: PayloadDigest,
+    /// Privileges, devices, capabilities, PID mode, sysctls, host ports, Bind Mounts and
+    /// the hook.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    #[ts(optional, as = "Option<Vec<String>>")]
+    pub host: Vec<String>,
+}
+
+impl ApprovedChange {
+    /// One change per Service of `target`, sorted by name and distinct, as a
+    /// [`DeployApproval`] lists them. A Service in `pins` is approved with its image set
+    /// to the pinned reference, so the digest covers the spec the runner sends.
+    ///
+    /// # Errors
+    /// Returns a [`CanonicalError`] when a spec has no [`PayloadDigest`] in `namespace`.
+    pub fn of(
+        target: &[RequestedServiceSpec],
+        namespace: &Namespace,
+        pins: &BTreeMap<ServiceName, String>,
+    ) -> Result<Vec<Self>, CanonicalError> {
+        let mut changes = target
+            .iter()
+            .map(|spec| {
+                let mut pinned = spec.clone();
+                let tag = pins
+                    .get(&spec.name)
+                    .map(|pin| std::mem::replace(&mut pinned.container.image, pin.clone()));
+                Ok(Self {
+                    service: spec.name.clone(),
+                    digest: PayloadDigest::of(&pinned, namespace)?,
+                    image: pinned.container.image,
+                    tag,
+                    host: host_sensitive(spec),
+                })
+            })
+            .collect::<Result<Vec<_>, CanonicalError>>()?;
+        changes.sort_by(|left, right| left.service.cmp(&right.service));
+        changes.dedup_by(|left, right| left.service == right.service);
+        Ok(changes)
+    }
+
+    /// `Approved web: nginx@sha256:0123456789ab…`, or `nginx:1.29-alpine → @sha256:0123456789ab…`
+    /// for a pinned tag, then what the spec asks of the host.
+    #[must_use]
+    pub fn line(&self) -> String {
+        let image = match (&self.tag, self.image.rsplit_once("@sha256:")) {
+            (Some(tag), Some((_, hex))) => {
+                format!("{tag} → @sha256:{}…", hex.get(..12).unwrap_or(hex))
+            }
+            (None, Some((name, hex))) => {
+                format!("{name}@sha256:{}…", hex.get(..12).unwrap_or(hex))
+            }
+            (_, None) => self.image.clone(),
+        };
+        let mut line = format!("Approved {}: {image}", self.service);
+        if !self.host.is_empty() {
+            let _ = write!(line, " ({})", self.host.join(", "));
+        }
+        line
+    }
+
+    #[must_use]
+    pub fn approved(&self) -> ApprovedService {
+        ApprovedService {
+            name: self.service.clone(),
+            digest: self.digest,
+            image: self.tag.is_some().then(|| self.image.clone()),
+        }
+    }
+}
+
+/// What `spec` asks of the host beyond an ordinary Container.
+fn host_sensitive(spec: &RequestedServiceSpec) -> Vec<String> {
+    let container = &spec.container;
+    let mut host = Vec::new();
+    if container.privileged {
+        host.push("privileged".to_owned());
+    }
+    host.extend(container.resources.devices.iter().map(|device| {
+        format!(
+            "device {}:{}",
+            device.machine_path.as_str(),
+            device.container_path.as_str()
+        )
+    }));
+    host.extend(container.cap_add.iter().map(|cap| format!("adds {cap}")));
+    if let Some(pid_mode) = &container.pid_mode {
+        host.push(format!("pid {pid_mode}"));
+    }
+    host.extend(container.sysctls.keys().map(|key| format!("sysctl {key}")));
+    host.extend(spec.ports.iter().filter_map(|port| match port {
+        PortPublication::Host { published_port, .. } => Some(format!("host port {published_port}")),
+        PortPublication::Ingress { .. } => None,
+    }));
+    host.extend(spec.volume_graph().volumes().iter().filter_map(
+        |volume| match volume.source.kind() {
+            RawVolumeSource::Bind { machine_path, .. } => {
+                Some(format!("binds {}", machine_path.as_str()))
+            }
+            RawVolumeSource::External { .. }
+            | RawVolumeSource::Ordinary { .. }
+            | RawVolumeSource::Provisioned { .. }
+            | RawVolumeSource::Tmpfs { .. } => None,
+        },
+    ));
+    if let Some(hook) = &spec.pre_deploy {
+        host.push(format!("hook {}", hook.command.as_slice().join(" ")));
+        if hook.privileged == Some(true) {
+            host.push("privileged hook".to_owned());
+        }
+    }
+    host
+}
+
 /// A Device, or a browser key under a session grant, approves one Deploy: the Services it
 /// may create in one Cluster and Namespace, on named Machines, for a bounded lifetime.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
@@ -166,13 +294,87 @@ pub struct DeployApproval {
     pub expires_at: Timestamp,
     /// The key that signed, which the signature must come from.
     pub signer: SignerKey,
+    /// Which step of a signed proposal this is, when it is one. Absent from a single
+    /// approval, which keeps the bytes a daemon from before deploy steps reads.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub proposal: Option<ProposalRef>,
 }
 
 impl Statement for DeployApproval {
     const PURPOSE: Purpose = Purpose::Workflow;
 }
 
+/// What an approver's client sets around the Services a plan ships.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
+#[serde(deny_unknown_fields)]
+pub struct DeployTerms {
+    pub cluster: SealingPublicKey,
+    /// The Deployment's ID, without its dashes.
+    pub operation: OperationId,
+    pub machines: Vec<MachineId>,
+    pub issued_at: Timestamp,
+    pub expires_at: Timestamp,
+    pub signer: SignerKey,
+    /// The proposal step this approval is, if it is one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub proposal: Option<ProposalRef>,
+}
+
+impl StepBody for DeployApproval {
+    fn kind(&self) -> StepKind {
+        StepKind::Deploy
+    }
+    fn place(&self) -> Option<ProposalRef> {
+        self.proposal
+    }
+    fn signer(&self) -> SignerKey {
+        self.signer
+    }
+    fn cluster(&self) -> SealingPublicKey {
+        self.cluster
+    }
+    fn namespace(&self) -> &Namespace {
+        &self.namespace
+    }
+    fn window(&self) -> (Timestamp, Timestamp) {
+        (self.issued_at, self.expires_at)
+    }
+}
+
 impl DeployApproval {
+    /// The approval of every Service of `target` in `namespace` under `terms`, with each
+    /// Service in `pins` pinned to its reference, and what each Service shows the
+    /// approver. The CLI and Cloud's SDK both build it here, so the browser signs a body
+    /// it never hashed.
+    ///
+    /// # Errors
+    /// Returns a [`CanonicalError`] when a spec has no [`PayloadDigest`] in `namespace`.
+    pub fn draft(
+        terms: DeployTerms,
+        namespace: Namespace,
+        target: &[RequestedServiceSpec],
+        pins: &BTreeMap<ServiceName, String>,
+    ) -> Result<(Self, Vec<ApprovedChange>), CanonicalError> {
+        let changes = ApprovedChange::of(target, &namespace, pins)?;
+        let mut machines = terms.machines;
+        machines.sort_unstable();
+        machines.dedup();
+        let body = Self {
+            cluster: terms.cluster,
+            operation: terms.operation,
+            namespace,
+            machines,
+            services: changes.iter().map(ApprovedChange::approved).collect(),
+            issued_at: terms.issued_at,
+            expires_at: terms.expires_at,
+            signer: terms.signer,
+            proposal: terms.proposal,
+        };
+        Ok((body, changes))
+    }
+
     /// What this approval names for `service`.
     #[must_use]
     pub fn service(&self, service: &ServiceName) -> Option<&ApprovedService> {
@@ -257,7 +459,8 @@ pub struct DeployApproved {
 }
 
 /// Check `approval` approves this request, signed by one of this Machine's Devices or by
-/// a browser key a trusted passkey lent a grant covering deploys.
+/// a browser key a trusted passkey lent a grant covering deploys, or riding unsigned as a
+/// step of a proposal bundle one of them signed.
 ///
 /// For a creation it recomputes the [`PayloadDigest`] of the requested spec and requires
 /// the one the approval names for that Service, a hook in that spec for a hook creation,
@@ -271,22 +474,12 @@ pub fn verify(
     approval: &Signed<DeployApproval>,
     facts: &DeployFacts<'_>,
 ) -> Result<DeployApproved, AuthorityRefusal> {
-    if approval.proposal.is_some() {
-        return Err(AuthorityRefusal::Mismatch {
-            field: "a proposal",
-        });
-    }
-    let approvers = approval.approvers(facts.trusted, facts.now)?;
-    let body = approval.open()?;
-    let Some(cluster) = facts.cluster else {
-        return Err(AuthorityRefusal::NoClusterIdentity);
+    let (body, by, cluster) = match &approval.proposal {
+        Some(bundle) => {
+            proposal::open_step(bundle, approval, facts.trusted, facts.cluster, facts.now)?
+        }
+        None => open_signed(approval, facts)?,
     };
-    let by = approvers
-        .into_iter()
-        .find(|approver| approver.signs_as(body.signer))
-        .ok_or(AuthorityRefusal::Mismatch {
-            field: "the signer",
-        })?;
     let checks = [
         ("a Cluster", body.cluster == cluster),
         (
@@ -314,6 +507,29 @@ pub fn verify(
         .map(|creation| creation_digest(&body, creation))
         .transpose()?;
     Ok(DeployApproved { body, by, digest })
+}
+
+fn open_signed(
+    approval: &Signed<DeployApproval>,
+    facts: &DeployFacts<'_>,
+) -> Result<(DeployApproval, Approver, SealingPublicKey), AuthorityRefusal> {
+    let approvers = approval.approvers(facts.trusted, facts.now)?;
+    let body = approval.open()?;
+    let Some(cluster) = facts.cluster else {
+        return Err(AuthorityRefusal::NoClusterIdentity);
+    };
+    if body.proposal.is_some() {
+        return Err(AuthorityRefusal::Mismatch {
+            field: "a proposal",
+        });
+    }
+    let by = approvers
+        .into_iter()
+        .find(|approver| approver.signs_as(body.signer))
+        .ok_or(AuthorityRefusal::Mismatch {
+            field: "the signer",
+        })?;
+    Ok((body, by, cluster))
 }
 
 fn creation_digest(

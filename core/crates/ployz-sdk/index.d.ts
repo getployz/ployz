@@ -44,6 +44,7 @@ export {
   observeRunning,
   observeVolumes,
   ployzVersion,
+  deployApprovalBody,
   SealedNames,
 } from "./generated/native";
 export type { NamesRead } from "./generated/native";

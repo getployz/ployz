@@ -1,13 +1,14 @@
 //! The bundle a person signs once over an ordered plan of steps, and the check a Machine
 //! runs when one step of that plan reaches it.
 //!
-//! Each step is a [`RestartApproval`] body that nobody signed. What vouches for it is the
-//! bundle in its envelope: a signed list of step digests in order. A Machine checks that
-//! its step sits in the bundle at the index the step names, with the same kind, and that
-//! the body it was handed hashes to that digest. Cloud can carry a step but cannot add
-//! or alter one, and a step runs only once, since each step consumes its own place in
-//! the Machine's record. A Machine sees only its own step, so the order Cloud runs the
-//! steps in, and whether it runs them all, stays Cloud's.
+//! Each step is a [`RestartApproval`] or [`super::DeployApproval`] body that nobody
+//! signed. What vouches for it is the bundle in its envelope: a signed list of step
+//! digests in order. A Machine checks that its step sits in the bundle at the index the
+//! step names, with the same kind, and that the body it was handed hashes to that digest.
+//! Cloud can carry a step but cannot add or alter one. A restart step runs only once,
+//! since each step consumes its own place in the Machine's record; a deploy step is
+//! consumed as a signed deploy approval is. A Machine sees only its own step, so the
+//! order Cloud runs the steps in, and whether it runs them all, stays Cloud's.
 
 use std::fmt;
 
@@ -21,6 +22,7 @@ use super::{
     refusal::AuthorityRefusal,
     restart::{Approved, RestartApproval, RestartFacts, SignerKey, WorkflowKind},
     session::GrantScope,
+    trusted_key::TrustedKeys,
 };
 use crate::{Namespace, OperationId, SealingPublicKey};
 
@@ -71,13 +73,35 @@ impl From<StepDigest> for String {
     }
 }
 
-/// One step of a proposal: its place in the order, the workflow it runs, and the digest
-/// of the step body a Machine must be handed.
+/// What one step of a proposal runs. The first three are a [`RestartApproval`]'s
+/// [`WorkflowKind`], written the same way; a deploy is a [`super::DeployApproval`]. A
+/// daemon from before deploy steps refuses a bundle that lists one.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "snake_case")]
+pub enum StepKind {
+    Restart,
+    Stop,
+    Start,
+    Deploy,
+}
+
+impl From<WorkflowKind> for StepKind {
+    fn from(kind: WorkflowKind) -> Self {
+        match kind {
+            WorkflowKind::Restart => Self::Restart,
+            WorkflowKind::Stop => Self::Stop,
+            WorkflowKind::Start => Self::Start,
+        }
+    }
+}
+
+/// One step of a proposal: its place in the order, what it runs, and the digest of the
+/// step body a Machine must be handed.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
 #[serde(deny_unknown_fields)]
 pub struct ProposalStep {
     pub index: u32,
-    pub kind: WorkflowKind,
+    pub kind: StepKind,
     pub digest: StepDigest,
 }
 
@@ -128,58 +152,108 @@ pub struct ProposalRef {
     pub index: u32,
 }
 
-/// Check that `step`, an unsigned step body, is the step of `bundle` it names, that the
-/// bundle approves exactly this request, and that one of this Machine's Devices or a
-/// browser key under a trusted passkey's grant signed the bundle.
+/// A statement a proposal may list as one of its steps.
+pub(super) trait StepBody: Statement {
+    fn kind(&self) -> StepKind;
+    /// Where the body says it sits, absent from a single approval.
+    fn place(&self) -> Option<ProposalRef>;
+    fn signer(&self) -> SignerKey;
+    fn cluster(&self) -> SealingPublicKey;
+    fn namespace(&self) -> &Namespace;
+    fn window(&self) -> (Timestamp, Timestamp);
+}
+
+impl StepBody for RestartApproval {
+    fn kind(&self) -> StepKind {
+        self.kind.into()
+    }
+    fn place(&self) -> Option<ProposalRef> {
+        self.proposal
+    }
+    fn signer(&self) -> SignerKey {
+        self.signer
+    }
+    fn cluster(&self) -> SealingPublicKey {
+        self.cluster
+    }
+    fn namespace(&self) -> &Namespace {
+        &self.namespace
+    }
+    fn window(&self) -> (Timestamp, Timestamp) {
+        (self.issued_at, self.expires_at)
+    }
+}
+
+/// Open `step`, an unsigned step body, as the step of `bundle` it names, signed by one of
+/// this Machine's Devices or a browser key under a trusted passkey's grant. Returns the
+/// body, its approver, and this Machine's Cluster key. The caller checks the body against
+/// its request, the grant's scope and the window.
 ///
 /// # Errors
 /// Returns the first [`AuthorityRefusal`] found: a step that carries its own signatures
 /// or grants, a bundle nested in a bundle, a signature or grant problem on the bundle, a
-/// malformed body, a step outside the bundle or differing from its digest, a request the
-/// step does not match, or a bundle whose window has passed.
-pub fn verify_step(
+/// malformed body, or a step outside the bundle, of another kind, differing from its
+/// digest, or naming another Cluster, Environment or window than the bundle.
+pub(super) fn open_step<T: StepBody>(
     bundle: &Signed<ProposalApproval>,
-    step: &Signed<RestartApproval>,
-    facts: &RestartFacts<'_>,
-) -> Result<Approved, AuthorityRefusal> {
+    step: &Signed<T>,
+    trusted: &TrustedKeys,
+    cluster: Option<SealingPublicKey>,
+    now: Timestamp,
+) -> Result<(T, Approver, SealingPublicKey), AuthorityRefusal> {
     if !step.signatures.is_empty() || !step.grants.is_empty() || bundle.proposal.is_some() {
         return Err(AuthorityRefusal::Mismatch {
             field: "a proposal",
         });
     }
-    let approvers = bundle.approvers(facts.trusted, facts.now)?;
+    let approvers = bundle.approvers(trusted, now)?;
     let plan = bundle.open()?;
     let body = step.open()?;
-    let Some(cluster) = facts.cluster else {
+    let Some(cluster) = cluster else {
         return Err(AuthorityRefusal::NoClusterIdentity);
     };
     let by = approvers
         .into_iter()
         .find(|approver| approver.signs_as(plan.signer));
     let place = body
-        .proposal
+        .place()
         .filter(|place| place.operation == plan.operation);
     let listed = place.and_then(|place| plan.steps.get(place.index as usize));
     let checks = [
-        ("the signer", by.is_some() && body.signer == plan.signer),
+        ("the signer", by.is_some() && body.signer() == plan.signer),
         ("a proposal", place.is_some()),
         (
             "a step",
             listed.is_some_and(|listed| {
-                listed.kind == body.kind && listed.digest == StepDigest::of(&step.body)
+                listed.kind == body.kind() && listed.digest == StepDigest::of(&step.body)
             }),
         ),
-        ("a Cluster", plan.cluster == body.cluster),
-        ("an Environment", plan.environment == body.namespace),
+        ("a Cluster", plan.cluster == body.cluster()),
+        ("an Environment", &plan.environment == body.namespace()),
         (
             "a window",
-            plan.issued_at == body.issued_at && plan.expires_at == body.expires_at,
+            (plan.issued_at, plan.expires_at) == body.window(),
         ),
     ];
     if let Some((field, _)) = checks.iter().find(|(_, holds)| !holds) {
         return Err(AuthorityRefusal::Mismatch { field });
     }
     let by = by.expect("the signer check passed");
+    Ok((body, by, cluster))
+}
+
+/// Check that `step`, an unsigned restart step, is the step of `bundle` it names, and
+/// that the bundle approves exactly this request.
+///
+/// # Errors
+/// Returns the first [`AuthorityRefusal`] [`open_step`] finds, a request the step does
+/// not match, a grant that does not cover it, or a bundle whose window has passed.
+pub fn verify_step(
+    bundle: &Signed<ProposalApproval>,
+    step: &Signed<RestartApproval>,
+    facts: &RestartFacts<'_>,
+) -> Result<Approved, AuthorityRefusal> {
+    let (body, by, cluster) = open_step(bundle, step, facts.trusted, facts.cluster, facts.now)?;
     body.matches(cluster, facts)?;
     if let Approver::Browser { grant, .. } = &by {
         grant.body.covers(&GrantScope {
@@ -187,11 +261,11 @@ pub fn verify_step(
             environment: &body.namespace,
             machines: &body.machines,
             family: body.kind.family(),
-            issued_at: plan.issued_at,
-            expires_at: plan.expires_at,
+            issued_at: body.issued_at,
+            expires_at: body.expires_at,
         })?;
     }
-    super::validity::verify(plan.issued_at, plan.expires_at, facts.now)?;
+    super::validity::verify(body.issued_at, body.expires_at, facts.now)?;
     Ok(Approved { body, by })
 }
 
@@ -281,7 +355,7 @@ mod tests {
                 .enumerate()
                 .map(|(index, step)| ProposalStep {
                     index: u32::try_from(index).unwrap(),
-                    kind: step.kind,
+                    kind: step.kind.into(),
                     digest: StepDigest::of(&canonical::to_canonical(step).unwrap()),
                 })
                 .collect(),
@@ -415,7 +489,7 @@ mod tests {
         let signer = SignerKey::Device(device().public().into());
         let steps = plan(signer);
         let mut listed = bundle_body(signer, &steps);
-        listed.steps.first_mut().unwrap().kind = WorkflowKind::Start;
+        listed.steps.first_mut().unwrap().kind = StepKind::Start;
         let bundle = Signed::sign(&listed, &device()).unwrap();
         assert_eq!(
             check(

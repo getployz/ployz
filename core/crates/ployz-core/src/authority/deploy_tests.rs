@@ -110,6 +110,7 @@ fn approval(signer: &Signer, spec: &RequestedServiceSpec) -> DeployApproval {
         issued_at: Timestamp::from_millis(100_000).unwrap(),
         expires_at: Timestamp::from_millis(1_000_000).unwrap(),
         signer: SignerKey::Device(DeviceKey::from(signer.public())),
+        proposal: None,
     }
 }
 
@@ -422,6 +423,48 @@ fn the_runner_writes_the_pinned_image_into_the_spec_the_digest_covers() {
 }
 
 #[test]
+fn a_drafted_pin_is_in_the_body_and_its_digest_and_the_pinned_spec_creates() {
+    let signer = signer(1);
+    let fixture = approval(&signer, &requested(requested_json()));
+    let terms = DeployTerms {
+        cluster: fixture.cluster,
+        operation: fixture.operation,
+        machines: fixture.machines,
+        issued_at: fixture.issued_at,
+        expires_at: fixture.expires_at,
+        signer: fixture.signer,
+        proposal: None,
+    };
+    let tagged = requested(with(&["container", "image"], json!(TAG)));
+    let (body, changes) = DeployApproval::draft(
+        terms,
+        namespace(),
+        std::slice::from_ref(&tagged),
+        &BTreeMap::from([(web(), PINNED.to_owned())]),
+    )
+    .unwrap();
+    assert_eq!(body, pinned_approval(&signer).open().unwrap());
+    let [change] = changes.as_slice() else {
+        panic!("one change: {changes:?}");
+    };
+    assert_eq!(
+        (change.tag.as_deref(), change.image.as_str()),
+        (Some(TAG), PINNED)
+    );
+    let mut sent = tagged;
+    body.pin(&mut sent);
+    let sent = resolved(&sent);
+    let signed = Signed::sign(&body, &signer).unwrap();
+    assert!(
+        verify(
+            &signed,
+            &Machine::new(&[&signer]).facts(Some(service(&sent)))
+        )
+        .is_ok()
+    );
+}
+
+#[test]
 fn an_approval_without_an_image_signs_the_same_bytes_as_before() {
     let signer = signer(1);
     let base = requested(requested_json());
@@ -588,5 +631,169 @@ fn the_fixture_digest_is_golden() {
             .unwrap()
             .to_string(),
         "cb8d3c6ef656772fbe9764188fc4ff7b7059e682de60a7686263ab386cd4ffa5"
+    );
+}
+
+#[test]
+fn a_browser_approval_under_a_deploy_grant_creates_and_another_environment_is_refused() {
+    let (signed, machine) = browser_approval(vec![ActionFamily::Deploy]);
+    let spec = resolved(&requested(requested_json()));
+    let approved = verify(&signed, &machine.facts(Some(service(&spec)))).unwrap();
+    assert!(matches!(approved.by, Approver::Browser { .. }));
+
+    let (mut signed, machine) = browser_approval(vec![ActionFamily::Deploy]);
+    let mut grant: GrantBody =
+        canonical::from_canonical(&signed.grants.first().unwrap().body).unwrap();
+    grant.environment = Namespace::parse("other").unwrap();
+    let passkey = Authenticator::es256(4);
+    let body = canonical::to_canonical(&grant).unwrap();
+    let assertion = passkey.answer(&Answer {
+        challenge: &GrantBody::challenge(&body),
+        ..HONEST
+    });
+    signed.grants = vec![SessionGrant { body, assertion }];
+    assert_eq!(
+        verify(&signed, &machine.facts(Some(service(&spec)))).unwrap_err(),
+        AuthorityRefusal::Mismatch {
+            field: "an Environment"
+        }
+    );
+}
+
+#[test]
+fn a_signed_approval_that_names_a_proposal_is_refused() {
+    let signer = signer(1);
+    let mut body = approval(&signer, &requested(requested_json()));
+    body.proposal = Some(ProposalRef {
+        operation: proposal_operation(),
+        index: 0,
+    });
+    let signed = Signed::sign(&body, &signer).unwrap();
+    assert_eq!(
+        verify(&signed, &Machine::new(&[&signer]).facts(None)).unwrap_err(),
+        AuthorityRefusal::Mismatch {
+            field: "a proposal"
+        }
+    );
+}
+
+fn proposal_operation() -> OperationId {
+    OperationId::parse("e".repeat(32)).unwrap()
+}
+
+/// A proposal whose step 1 deploys the fixture and whose step 0 restarts a Container.
+/// Returns the deploy step's body and the bundle, signed by `signer`.
+fn deploy_proposal(
+    signer: &Signer,
+    listed: impl FnOnce(&mut Vec<crate::authority::ProposalStep>),
+) -> (DeployApproval, Signed<crate::authority::ProposalApproval>) {
+    use crate::authority::{ProposalApproval, ProposalStep, StepDigest, StepKind};
+    let mut step = approval(signer, &requested(requested_json()));
+    step.proposal = Some(ProposalRef {
+        operation: proposal_operation(),
+        index: 1,
+    });
+    let mut steps = vec![
+        ProposalStep {
+            index: 0,
+            kind: StepKind::Restart,
+            digest: StepDigest::of("a restart step"),
+        },
+        ProposalStep {
+            index: 1,
+            kind: StepKind::Deploy,
+            digest: StepDigest::of(&canonical::to_canonical(&step).unwrap()),
+        },
+    ];
+    listed(&mut steps);
+    let bundle = ProposalApproval {
+        cluster: step.cluster,
+        environment: namespace(),
+        operation: proposal_operation(),
+        steps,
+        issued_at: step.issued_at,
+        expires_at: step.expires_at,
+        signer: step.signer,
+    };
+    (step, Signed::sign(&bundle, signer).unwrap())
+}
+
+fn verify_step(
+    step: &DeployApproval,
+    bundle: &Signed<crate::authority::ProposalApproval>,
+    signer: &Signer,
+) -> Result<DeployApproved, AuthorityRefusal> {
+    let envelope = Signed::proposed(step, bundle.clone()).unwrap();
+    let spec = resolved(&requested(requested_json()));
+    verify(
+        &envelope,
+        &Machine::new(&[signer]).facts(Some(service(&spec))),
+    )
+}
+
+#[test]
+fn a_deploy_step_whose_body_matches_its_digest_creates() {
+    let signer = signer(1);
+    let (step, bundle) = deploy_proposal(&signer, |_| {});
+    let approved = verify_step(&step, &bundle, &signer).unwrap();
+    assert_eq!(approved.body, step);
+    assert_eq!(approved.by, Approver::Device(signer.public()));
+}
+
+#[test]
+fn a_deploy_step_refuses_another_digest_index_or_kind() {
+    use crate::authority::StepKind;
+    let signer = signer(1);
+    let (mut step, bundle) = deploy_proposal(&signer, |_| {});
+    step.services.first_mut().unwrap().digest = PayloadDigest::parse(&"0".repeat(64)).unwrap();
+    assert_eq!(
+        verify_step(&step, &bundle, &signer).unwrap_err(),
+        AuthorityRefusal::Mismatch { field: "a step" }
+    );
+
+    let (mut step, bundle) = deploy_proposal(&signer, |_| {});
+    step.proposal = Some(ProposalRef {
+        operation: proposal_operation(),
+        index: 2,
+    });
+    assert_eq!(
+        verify_step(&step, &bundle, &signer).unwrap_err(),
+        AuthorityRefusal::Mismatch { field: "a step" }
+    );
+
+    let (step, bundle) = deploy_proposal(&signer, |steps| {
+        steps.get_mut(1).unwrap().kind = StepKind::Restart;
+    });
+    assert_eq!(
+        verify_step(&step, &bundle, &signer).unwrap_err(),
+        AuthorityRefusal::Mismatch { field: "a step" }
+    );
+}
+
+#[test]
+fn a_deploy_step_still_checks_the_spec_it_creates() {
+    let signer = signer(1);
+    let (step, bundle) = deploy_proposal(&signer, |_| {});
+    let envelope = Signed::proposed(&step, bundle).unwrap();
+    let spec = resolved(&requested(with(&["container", "privileged"], json!(true))));
+    assert_eq!(
+        verify(
+            &envelope,
+            &Machine::new(&[&signer]).facts(Some(service(&spec)))
+        )
+        .unwrap_err(),
+        AuthorityRefusal::Mismatch { field: "a payload" }
+    );
+}
+
+#[test]
+fn a_deploy_step_in_a_bundle_no_trusted_key_signed_is_refused() {
+    let stranger = signer(2);
+    let (step, bundle) = deploy_proposal(&stranger, |_| {});
+    assert_eq!(
+        verify_step(&step, &bundle, &signer(1)).unwrap_err(),
+        AuthorityRefusal::UnknownKey {
+            key: stranger.public()
+        }
     );
 }

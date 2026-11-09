@@ -195,6 +195,7 @@ fn advertised_capability_groups_match_the_frozen_catalog() {
             "ployz.restart.start-approval.v1",
             "ployz.restart.proposal.v1",
             "ployz.container.deploy-approval.v1",
+            "ployz.container.deploy-proposal.v1",
         ]
     );
     assert_eq!(
@@ -396,6 +397,10 @@ const ABOVE_FLOOR: &[(&str, &str)] = &[
     (
         "ployz.container.deploy-approval.v1",
         "falls back: an older daemon ignores the approval on EnsureContainer; one not enforcing creates as before, and one enforcing refuses every Operator creation as it did, naming the restart capability",
+    ),
+    (
+        "ployz.container.deploy-proposal.v1",
+        "gated: B5 must have Cloud send a deploy step of a proposal only to a Machine that advertises it, since nothing sends one yet; an older enforcing Machine refuses one, as it refuses any deploy approval it can't verify",
     ),
     (
         "ployz.image.pull.v1",

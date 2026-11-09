@@ -4,12 +4,11 @@
 //! Server then creates only the specs this Device approved.
 
 use std::collections::BTreeMap;
-use std::fmt::Write as _;
 use std::time::Duration;
 
 use clap::ArgMatches;
 use ployz_core::authority::{
-    ApprovedService, DeployApproval, PayloadDigest, Signed, Signer, SignerKey, Timestamp,
+    ApprovedChange, DeployApproval, DeployTerms, Signed, Signer, SignerKey, Timestamp,
     deploy::content_addressed,
 };
 use ployz_core::{
@@ -17,34 +16,18 @@ use ployz_core::{
     ServiceName,
 };
 use ployz_store::{DeploymentId, EnvironmentRef, PlanQuery};
-use serde::Serialize;
 use serde_json::json;
 
 use super::super::store::Store;
 use super::super::{Error, server};
-use crate::image::{PinError, PinnedImage, pin_public};
+use crate::image::{PinError, pin_public};
 use crate::ui::Hint;
-
-/// What this Device approved for one Service, as `ployz deploy` prints it.
-#[derive(Clone, Debug, Serialize)]
-pub(in crate::handlers) struct Approved {
-    pub(in crate::handlers) service: ServiceName,
-    /// The image the Servers run, always by digest.
-    pub(in crate::handlers) image: String,
-    /// The tag the Saved State names, when this CLI pinned it to `image`'s digest.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub(in crate::handlers) tag: Option<String>,
-    pub(in crate::handlers) digest: PayloadDigest,
-    /// What the spec asks of the host: privileges, host ports, Bind Mounts, the hook.
-    #[serde(skip_serializing_if = "Vec::is_empty")]
-    pub(in crate::handlers) host: Vec<String>,
-}
 
 /// A signed approval, the plan version it approves, and what it approved.
 pub(in crate::handlers) struct DeviceApproval {
     pub(in crate::handlers) signed: Signed<DeployApproval>,
     pub(in crate::handlers) version: String,
-    pub(in crate::handlers) approved: Vec<Approved>,
+    pub(in crate::handlers) approved: Vec<ApprovedChange>,
 }
 
 /// The Cluster as this Device sees it: the Sealing key every Server holds and the
@@ -108,47 +91,22 @@ pub(in crate::handlers) fn sign(
     let plan = plan?;
     let target = signable(plan.target)?;
     let pins = pin_tags(matches, &target)?;
-    let mut approved = target
-        .iter()
-        .map(|spec| {
-            let mut pinned = spec.clone();
-            let tag = pins
-                .get(&spec.name)
-                .map(|pin| std::mem::replace(&mut pinned.container.image, pin.as_str().to_owned()));
-            let digest = PayloadDigest::of(&pinned, &plan.namespace).map_err(Error::command)?;
-            Ok(Approved {
-                service: spec.name.clone(),
-                image: pinned.container.image,
-                tag,
-                digest,
-                host: host_sensitive(spec),
-            })
-        })
-        .collect::<Result<Vec<_>, Error>>()?;
-    approved.sort_by(|left, right| left.service.cmp(&right.service));
-    approved.dedup_by(|left, right| left.service == right.service);
     let signer = Signer::from_seed(&secret);
     let issued_at = Timestamp::now();
-    let body = DeployApproval {
+    let terms = DeployTerms {
         cluster: enforcing.cluster,
         operation: OperationId::from_uuid(id.as_str()).map_err(Error::command)?,
-        namespace: plan.namespace,
         machines: enforcing.machines,
-        services: approved
-            .iter()
-            .map(|approved| ApprovedService {
-                name: approved.service.clone(),
-                digest: approved.digest,
-                image: approved.tag.is_some().then(|| approved.image.clone()),
-            })
-            .collect(),
         issued_at,
         expires_at: issued_at.plus(ployz_core::authority::restart::MAX_LIFETIME_MILLIS),
         signer: SignerKey::Device(signer.public().into()),
+        proposal: None,
     };
+    let (body, approved) =
+        DeployApproval::draft(terms, plan.namespace, &target, &pins).map_err(Error::command)?;
     let signed = Signed::sign(&body, &signer).map_err(Error::command)?;
     for approved in &approved {
-        crate::ui::stream(format_args!("{}", line(approved)));
+        crate::ui::stream(format_args!("{}", approved.line()));
     }
     Ok(Some(DeviceApproval {
         signed,
@@ -185,7 +143,7 @@ fn signable(target: Option<Vec<RequestedServiceSpec>>) -> Result<Vec<RequestedSe
 fn pin_tags(
     matches: &ArgMatches,
     target: &[RequestedServiceSpec],
-) -> Result<BTreeMap<ServiceName, PinnedImage>, Error> {
+) -> Result<BTreeMap<ServiceName, String>, Error> {
     let tagged: Vec<_> = target
         .iter()
         .filter(|spec| !content_addressed(&spec.container.image))
@@ -199,7 +157,7 @@ fn pin_tags(
         .into_iter()
         .zip(found)
         .map(|(spec, found)| match found {
-            Ok(pin) => Ok((spec.name.clone(), pin)),
+            Ok(pin) => Ok((spec.name.clone(), pin.as_str().to_owned())),
             Err(error) => Err(unpinnable(matches, spec, error)),
         })
         .collect()
@@ -321,70 +279,6 @@ fn repository(image: &str) -> &str {
         Some((name, tag)) if !tag.contains('/') => name,
         _ => image,
     }
-}
-
-/// `Approved web: nginx@sha256:0123456789ab…`, or `nginx:1.29-alpine → @sha256:0123456789ab…`
-/// for a tag this CLI pinned, then what the spec asks of the host.
-pub(in crate::handlers) fn line(approved: &Approved) -> String {
-    let image = match (&approved.tag, approved.image.rsplit_once("@sha256:")) {
-        (Some(tag), Some((_, hex))) => {
-            format!("{tag} → @sha256:{}…", hex.get(..12).unwrap_or(hex))
-        }
-        (None, Some((name, hex))) => {
-            format!("{name}@sha256:{}…", hex.get(..12).unwrap_or(hex))
-        }
-        (_, None) => approved.image.clone(),
-    };
-    let mut line = format!("Approved {}: {image}", approved.service);
-    if !approved.host.is_empty() {
-        let _ = write!(line, " ({})", approved.host.join(", "));
-    }
-    line
-}
-
-/// What `spec` asks of the host beyond an ordinary Container.
-fn host_sensitive(spec: &RequestedServiceSpec) -> Vec<String> {
-    let container = &spec.container;
-    let mut host = Vec::new();
-    if container.privileged {
-        host.push("privileged".to_owned());
-    }
-    host.extend(container.resources.devices.iter().map(|device| {
-        format!(
-            "device {}:{}",
-            device.machine_path.as_str(),
-            device.container_path.as_str()
-        )
-    }));
-    host.extend(container.cap_add.iter().map(|cap| format!("adds {cap}")));
-    if let Some(pid_mode) = &container.pid_mode {
-        host.push(format!("pid {pid_mode}"));
-    }
-    host.extend(container.sysctls.keys().map(|key| format!("sysctl {key}")));
-    host.extend(spec.ports.iter().filter_map(|port| match port {
-        ployz_core::PortPublication::Host { published_port, .. } => {
-            Some(format!("host port {published_port}"))
-        }
-        ployz_core::PortPublication::Ingress { .. } => None,
-    }));
-    host.extend(spec.volume_graph().volumes().iter().filter_map(
-        |volume| match volume.source.kind() {
-            ployz_core::RawVolumeSource::Bind { machine_path, .. } => {
-                Some(format!("binds {}", machine_path.as_str()))
-            }
-            ployz_core::RawVolumeSource::External { .. }
-            | ployz_core::RawVolumeSource::Ordinary { .. }
-            | ployz_core::RawVolumeSource::Provisioned { .. }
-            | ployz_core::RawVolumeSource::Tmpfs { .. } => None,
-        },
-    ));
-    if let Some(hook) = &spec.pre_deploy {
-        host.push(format!("hook {}", hook.command.as_slice().join(" ")));
-        if hook.privileged == Some(true) {
-            host.push("privileged hook".to_owned());
-        }
-    }
-    host
 }
 
 #[cfg(test)]
