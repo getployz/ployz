@@ -10,14 +10,15 @@
 //! The node state on the Machine says whether a router is wanted here. `on` keeps it
 //! before placing the router, and `off` forgets it, with the key, before removing the
 //! routers, so a removal that fails is answered as a failure and the next restore
-//! finishes the removal rather than starting the router again.
+//! finishes the removal rather than starting the router again. The router wanted
+//! names the state's ID, so a router left from state `off` forgot is never kept.
 
 use std::time::Duration;
 
 use ployz_core::{
     ContainerId, ContainerKind, ContainerObservation, ContainerRuntimeObservation, DoorChange,
     DoorOutcome, Namespace, PrivateAccessFailure, PrivateAccessProblem, PrivateAccessSet,
-    ResolvedServiceSpec, SetPrivateAccessRequest, private_access_sealed_key,
+    ResolvedServiceSpec, SetPrivateAccessRequest, private_access_sealed_key, private_access_state,
 };
 use zeroize::Zeroizing;
 
@@ -112,30 +113,18 @@ pub(super) fn plan_router(
             RouterStep::Keep(router.container_id)
         }
         Some(router) => RouterStep::Start(router.container_id),
-        None => RouterStep::Create(newest(routers)),
+        None => RouterStep::Create(
+            routers
+                .iter()
+                .map(|router| (router.created_at_unix_nanos, router.container_id))
+                .max()
+                .map(|(_, id)| id),
+        ),
     };
     RouterPlan {
         retire: retirees(routers, kept_id),
         step: Some(step),
     }
-}
-
-/// The plan for `on` once this Machine's node was forgotten. A router left from before
-/// still mounts the state `off` deleted, so none is kept and a new one mounts the new
-/// state.
-fn fresh_router(routers: &[ContainerObservation]) -> RouterPlan {
-    RouterPlan {
-        retire: retirees(routers, None),
-        step: Some(RouterStep::Create(newest(routers))),
-    }
-}
-
-fn newest(routers: &[ContainerObservation]) -> Option<ContainerId> {
-    routers
-        .iter()
-        .map(|router| (router.created_at_unix_nanos, router.container_id))
-        .max()
-        .map(|(_, id)| id)
 }
 
 fn retirees(routers: &[ContainerObservation], kept: Option<ContainerId>) -> Vec<Retiree> {
@@ -233,18 +222,14 @@ impl LocalMachine {
         request: SetPrivateAccessRequest,
     ) -> Result<PrivateAccessSet, Error> {
         let containers = self.containers.clone().ok_or(Error::DockerUnavailable)?;
-        let wanted = if request.enabled {
+        let opened = if request.enabled {
             let sealed = request
                 .sealed_auth_key
                 .ok_or(Error::PrivateAccessKeyMissing)?;
             let key = containers
                 .open_private_access_key(&sealed)
                 .map_err(Error::PrivateAccessKey)?;
-            let network = self.cluster_network().await?;
-            Some(Wanted {
-                spec: private_access_router(network, &sealed),
-                key,
-            })
+            Some((sealed, key, self.cluster_network().await?))
         } else {
             None
         };
@@ -255,23 +240,24 @@ impl LocalMachine {
             local.reserved_effect(Gate::Router)?;
             let machine_id = local.record().id();
             let routers = containers.routers(&machine_id).await?;
-            let forgotten = !containers.private_access_state_kept();
-            if let Some(wanted) = &wanted {
-                containers
-                    .prepare_pinned_image(&wanted.spec.container.image)
-                    .await?;
-                containers
-                    .write_private_access_key(&wanted.key)
-                    .map_err(Error::PrivateAccessKeyFile)?;
-                containers
-                    .keep_private_access_state()
-                    .map_err(Error::PrivateAccessState)?;
-            }
-            let _turn = local.owner.admission_lock().write_owned().await;
-            let plan = match &wanted {
-                Some(_) if forgotten => fresh_router(&routers),
-                wanted => plan_router(&routers, wanted.as_ref().map(|wanted| &wanted.spec)),
+            let wanted = match opened {
+                Some((sealed, key, network)) => {
+                    let state = containers
+                        .keep_private_access_state()
+                        .map_err(Error::PrivateAccessState)?;
+                    let spec = private_access_router(network, &sealed, state);
+                    containers
+                        .prepare_pinned_image(&spec.container.image)
+                        .await?;
+                    containers
+                        .write_private_access_key(&key)
+                        .map_err(Error::PrivateAccessKeyFile)?;
+                    Some(Wanted { spec, key })
+                }
+                None => None,
             };
+            let _turn = local.owner.admission_lock().write_owned().await;
+            let plan = plan_router(&routers, wanted.as_ref().map(|wanted| &wanted.spec));
             local
                 .converge_router(&containers, &plan, wanted.as_ref(), Watch::Settle)
                 .await
@@ -290,7 +276,9 @@ impl LocalMachine {
     /// waits for it to join the tailnet.
     ///
     /// A router Docker still has on a Machine whose node state is gone was turned off
-    /// and could not be removed then, so it is removed now and never started.
+    /// and could not be removed then, so it is removed now and never started. A newest
+    /// router that names other state than the state on disk mounts state `off` forgot,
+    /// so it is replaced by one built on the state there now.
     ///
     /// # Errors
     ///
@@ -333,6 +321,18 @@ impl LocalMachine {
             let key = containers
                 .open_private_access_key(&sealed)
                 .map_err(Error::PrivateAccessKey)?;
+            let state = containers
+                .keep_private_access_state()
+                .map_err(Error::PrivateAccessState)?;
+            let spec = if private_access_state(&spec.container.labels) == Some(state) {
+                spec
+            } else {
+                let spec = private_access_router(local.cluster_network().await?, &sealed, state);
+                containers
+                    .prepare_pinned_image(&spec.container.image)
+                    .await?;
+                spec
+            };
             containers
                 .write_private_access_key(&key)
                 .map_err(Error::PrivateAccessKeyFile)?;

@@ -9,15 +9,19 @@ use std::collections::BTreeMap;
 use ipnet::Ipv4Net;
 
 use crate::{
-    Ciphertext, ContainerLabels, ContainerPath, MachinePath, QualifiedService, RawVolumeSource,
-    RequestedServiceSpec, ServiceMode, ServiceMount, ServiceMountGraph, ServiceVolume,
-    ServiceVolumeGraph, ServiceVolumeReference, UpdateConfig, caddy_container,
+    Ciphertext, ContainerLabels, ContainerPath, MachinePath, PrivateAccessStateId,
+    QualifiedService, RawVolumeSource, RequestedServiceSpec, ServiceMode, ServiceMount,
+    ServiceMountGraph, ServiceVolume, ServiceVolumeGraph, ServiceVolumeReference, UpdateConfig,
+    caddy_container,
 };
 
 /// The label on the router's spec that carries the sealed auth key, so every
 /// Machine's observation of it lets a client or a joiner resend the same key. It sits
 /// outside the `ployz.*` management namespace, which spec labels refuse.
 pub const PRIVATE_ACCESS_KEY_LABEL: &str = "dev.ployz.private-access/sealed-key";
+/// The label on the router's spec that names the node state it mounts, so the daemon
+/// keeps only a router whose state is the one on disk now.
+pub const PRIVATE_ACCESS_STATE_LABEL: &str = "dev.ployz.private-access/state-id";
 /// Where the daemon keeps the opened auth key on the Machine: a directory on `/run`,
 /// which is memory, so a reboot clears it.
 pub const PRIVATE_ACCESS_KEY_MACHINE_DIR: &str = "/run/ployz/tailscale";
@@ -33,7 +37,7 @@ const PRIVATE_ACCESS_STATE_MOUNT: &str = "/var/lib/tailscale";
 pub const PRIVATE_ACCESS_HOSTNAME: &str = "ployz-router";
 
 /// Build the reserved Private Access router that advertises `network` to the tailnet
-/// `sealed_key` joins.
+/// `sealed_key` joins, mounting the node state `state` names.
 ///
 /// The daemon's image pin in `ployzd/src/images.rs` is its only production input.
 /// The CLI must not call it.
@@ -42,6 +46,7 @@ pub fn private_access_service_spec(
     image: &str,
     network: Ipv4Net,
     sealed_key: &Ciphertext,
+    state: PrivateAccessStateId,
 ) -> RequestedServiceSpec {
     let mut container = caddy_container(image.to_owned());
     container.command = Vec::new();
@@ -61,11 +66,14 @@ pub fn private_access_service_spec(
     .into_iter()
     .map(|(name, value)| (name.to_owned(), value.into()))
     .collect();
-    container.labels = ContainerLabels::parse(BTreeMap::from([(
-        PRIVATE_ACCESS_KEY_LABEL.to_owned(),
-        String::from(sealed_key.clone()),
-    )]))
-    .expect("the key label is outside the management namespace");
+    container.labels = ContainerLabels::parse(BTreeMap::from([
+        (
+            PRIVATE_ACCESS_KEY_LABEL.to_owned(),
+            String::from(sealed_key.clone()),
+        ),
+        (PRIVATE_ACCESS_STATE_LABEL.to_owned(), String::from(state)),
+    ]))
+    .expect("the router labels are outside the management namespace");
     RequestedServiceSpec {
         name: QualifiedService::system_tailscale().name,
         mode: ServiceMode::Global,
@@ -87,6 +95,15 @@ pub fn private_access_sealed_key(labels: &ContainerLabels) -> Option<Ciphertext>
         .get(PRIVATE_ACCESS_KEY_LABEL)
         .cloned()
         .and_then(|label| Ciphertext::try_from(label).ok())
+}
+
+/// The node state a router spec mounts, when it names one.
+#[must_use]
+pub fn private_access_state(labels: &ContainerLabels) -> Option<PrivateAccessStateId> {
+    labels
+        .as_map()
+        .get(PRIVATE_ACCESS_STATE_LABEL)
+        .and_then(|label| PrivateAccessStateId::parse(label).ok())
 }
 
 /// The key, read-only, and the node state, which the router writes. The daemon makes
@@ -140,13 +157,17 @@ mod tests {
         Ciphertext::from_bytes(vec![9; 48])
     }
 
+    fn state() -> PrivateAccessStateId {
+        PrivateAccessStateId::parse("a".repeat(32)).unwrap()
+    }
+
     fn network() -> Ipv4Net {
         "10.210.0.0/16".parse().unwrap()
     }
 
     #[test]
     fn the_router_advertises_the_cluster_network_and_reads_its_key_from_a_file() {
-        let spec = private_access_service_spec("tailscale:1", network(), &sealed());
+        let spec = private_access_service_spec("tailscale:1", network(), &sealed(), state());
         assert_eq!(spec.container.network, None);
         assert!(spec.ports.is_empty());
         assert_eq!(spec.mode, ServiceMode::Global);
@@ -177,7 +198,7 @@ mod tests {
     // route needs approving again, and needs the key again after it expired.
     #[test]
     fn the_node_state_lives_on_the_machine_and_the_key_is_read_once() {
-        let spec = private_access_service_spec("tailscale:1", network(), &sealed());
+        let spec = private_access_service_spec("tailscale:1", network(), &sealed(), state());
         assert_eq!(
             spec.container.environment.get("TS_AUTH_ONCE"),
             Some(&crate::EnvValue::Text("true".to_owned()))
@@ -202,20 +223,21 @@ mod tests {
     }
 
     #[test]
-    fn the_sealed_key_rides_in_a_label_and_reads_back() {
-        let spec = private_access_service_spec("tailscale:1", network(), &sealed());
+    fn the_sealed_key_and_the_node_state_ride_in_labels_and_read_back() {
+        let spec = private_access_service_spec("tailscale:1", network(), &sealed(), state());
         assert_eq!(
             private_access_sealed_key(&spec.container.labels),
             Some(sealed())
         );
+        assert_eq!(private_access_state(&spec.container.labels), Some(state()));
     }
 
     #[test]
     fn two_networks_make_two_specs() {
         let other: Ipv4Net = "10.99.0.0/16".parse().unwrap();
         assert_ne!(
-            private_access_service_spec("tailscale:1", network(), &sealed()),
-            private_access_service_spec("tailscale:1", other, &sealed()),
+            private_access_service_spec("tailscale:1", network(), &sealed(), state()),
+            private_access_service_spec("tailscale:1", other, &sealed(), state()),
         );
     }
 }

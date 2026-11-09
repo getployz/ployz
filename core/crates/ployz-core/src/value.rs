@@ -344,6 +344,14 @@ hex_id_newtype!(
     "32 lowercase hexadecimal characters"
 );
 hex_id_newtype!(
+    /// One node state the Private Access router keeps on a Machine: minted when the
+    /// daemon makes the state, and stamped on each router that mounts it.
+    PrivateAccessStateId,
+    "Private Access state ID",
+    32,
+    "32 lowercase hexadecimal characters"
+);
+hex_id_newtype!(
     /// Public handle of one Build Grant: its key's public half. Not secret.
     BuildGrantId,
     "Build Grant ID",
@@ -412,6 +420,15 @@ impl MachineUpgradeAttemptId {
 }
 
 impl ServiceId {
+    #[must_use]
+    pub fn random() -> Self {
+        let mut hex = [0_u8; 32];
+        uuid::Uuid::new_v4().simple().encode_lower(&mut hex);
+        Self(hex)
+    }
+}
+
+impl PrivateAccessStateId {
     #[must_use]
     pub fn random() -> Self {
         let mut hex = [0_u8; 32];

@@ -7,6 +7,11 @@
 //! presence is the durable word that this Machine wants a router: `off` renames it
 //! away before it touches the router, so an `off` that fails or is cut short leaves
 //! nothing a reboot would start.
+//!
+//! A router can outlive the state it mounts, when `off` forgets the state and then
+//! cannot stop the router. So the state carries a random ID, written when the state
+//! is made and stamped on each router created to mount it, and a router is the one
+//! wanted only while its ID is the one on disk.
 
 use std::{
     fs, io,
@@ -19,7 +24,7 @@ use futures_util::StreamExt;
 use ployz_core::{
     Ciphertext, ContainerId, ContainerKind, ContainerObservation, MachineId,
     PRIVATE_ACCESS_KEY_FILE, PRIVATE_ACCESS_KEY_MACHINE_DIR, PRIVATE_ACCESS_STATE_MACHINE_DIR,
-    QualifiedService,
+    PrivateAccessStateId, QualifiedService,
 };
 use zeroize::Zeroizing;
 
@@ -35,13 +40,30 @@ fn state_dir(root: &Path) -> PathBuf {
     root.join(PRIVATE_ACCESS_STATE_MACHINE_DIR.trim_start_matches('/'))
 }
 
-/// Make the node state directory the router's bind mount finds, for root alone. The
-/// router runs as root, so the daemon's own ownership is the router's. What the
-/// router already wrote there stays, so the node it registered comes back.
-pub(crate) fn keep_state(root: &Path) -> io::Result<()> {
+/// The file in the node state directory that holds the state's ID.
+const STATE_ID_FILE: &str = "ployz-state-id";
+
+/// Make the node state directory the router's bind mount finds, for root alone, and
+/// return its ID. The router runs as root, so the daemon's own ownership is the
+/// router's. What the router already wrote there stays, so the node it registered
+/// comes back. A directory with no ID gets a new one, which no router carries yet.
+pub(crate) fn keep_state(root: &Path) -> io::Result<PrivateAccessStateId> {
     let dir = state_dir(root);
     fs::create_dir_all(&dir)?;
-    fs::set_permissions(&dir, fs::Permissions::from_mode(0o700))
+    fs::set_permissions(&dir, fs::Permissions::from_mode(0o700))?;
+    let path = dir.join(STATE_ID_FILE);
+    match fs::read_to_string(&path) {
+        Ok(text) => {
+            if let Ok(id) = PrivateAccessStateId::parse(text.trim()) {
+                return Ok(id);
+            }
+        }
+        Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+        Err(error) => return Err(error),
+    }
+    let id = PrivateAccessStateId::random();
+    atomic_write(&path, id.as_str().as_bytes(), 0o600)?;
+    Ok(id)
 }
 
 fn forgotten_dir(root: &Path) -> PathBuf {
@@ -129,7 +151,7 @@ impl ContainerRuntime {
         remove(&self.machine_root)
     }
 
-    pub(crate) fn keep_private_access_state(&self) -> io::Result<()> {
+    pub(crate) fn keep_private_access_state(&self) -> io::Result<PrivateAccessStateId> {
         keep_state(&self.machine_root)
     }
 
@@ -231,15 +253,21 @@ mod tests {
             0o700
         );
         fs::write(state_dir(&root).join("tailscaled.state"), b"node").unwrap();
-        keep_state(&root).unwrap();
+        let id = keep_state(&root).unwrap();
         assert_eq!(
             fs::read(state_dir(&root).join("tailscaled.state")).unwrap(),
             b"node",
             "keeping the state again keeps the node"
         );
+        assert_eq!(keep_state(&root).unwrap(), id, "and its ID");
         forget_state(&root).unwrap();
         assert!(!state_kept(&root));
         forget_state(&root).unwrap();
+        assert_ne!(
+            keep_state(&root).unwrap(),
+            id,
+            "state made again after a forget is new state"
+        );
         fs::remove_dir_all(root).unwrap();
     }
 

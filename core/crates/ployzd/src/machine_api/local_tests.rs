@@ -1921,7 +1921,11 @@ mod private_access {
         let network = service.local.cluster_network().await.unwrap();
         assert_eq!(
             router.now.resolved_spec,
-            private_access_router(network, &sealed)
+            private_access_router(
+                network,
+                &sealed,
+                runtime.keep_private_access_state().unwrap()
+            )
         );
         assert_eq!(
             std::fs::read(key_file(&data_dir)).unwrap(),
@@ -2225,6 +2229,11 @@ mod private_access {
         let again = set_access(&service, on).await.unwrap().unwrap();
         let placed = again.router.unwrap();
         assert_eq!(placed.change, DoorChange::Created, "{placed:?}");
+        assert_eq!(
+            ployz_core::private_access_state(&placed.now.resolved_spec.container.labels),
+            Some(runtime.keep_private_access_state().unwrap()),
+            "the new router mounts the node state on disk now"
+        );
         assert_eq!(again.retired, vec![stranded]);
         let routers = runtime.routers(&machine).await.unwrap();
         assert_eq!(
@@ -2260,6 +2269,11 @@ mod private_access {
             .unwrap();
         let placed = restored.router.unwrap();
         assert_eq!(placed.change, DoorChange::Created, "{placed:?}");
+        assert_eq!(
+            ployz_core::private_access_state(&placed.now.resolved_spec.container.labels),
+            Some(runtime.keep_private_access_state().unwrap()),
+            "the new router mounts the node state on disk now"
+        );
         assert_eq!(restored.retired, vec![stranded]);
         let routers = runtime.routers(&machine).await.unwrap();
         assert_eq!(

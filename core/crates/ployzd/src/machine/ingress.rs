@@ -77,6 +77,7 @@ mod tests {
         crate::images::private_access_router(
             network,
             &ployz_core::Ciphertext::from_bytes(vec![9; 48]),
+            ployz_core::PrivateAccessStateId::random(),
         )
     }
 

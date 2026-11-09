@@ -5,10 +5,10 @@
 
 use ipnet::Ipv4Net;
 use ployz_core::{
-    Ciphertext, IngressPorts, Namespace, QualifiedService, ResolvedServiceSpec,
-    ResolvedUpdateConfig, ServiceId, caddy_service_spec, holder_service_spec,
-    private_access_sealed_key, private_access_service_spec, tunnel_sealed_token,
-    tunnel_service_spec,
+    Ciphertext, IngressPorts, Namespace, PrivateAccessStateId, QualifiedService,
+    ResolvedServiceSpec, ResolvedUpdateConfig, ServiceId, caddy_service_spec, holder_service_spec,
+    private_access_sealed_key, private_access_service_spec, private_access_state,
+    tunnel_sealed_token, tunnel_service_spec,
 };
 
 /// Caddy v2.11.9, resolved 2026-11-07.
@@ -104,14 +104,15 @@ fn private_access_service_id() -> ServiceId {
     derived_service_id(b"ployz-private-access\0", &[])
 }
 
-/// The router this daemon builds for the Cluster `network` and the auth key
-/// `sealed_key` names.
+/// The router this daemon builds for the Cluster `network`, the auth key
+/// `sealed_key` names, and the node state `state` names.
 #[must_use]
 pub(crate) fn private_access_router(
     network: Ipv4Net,
     sealed_key: &Ciphertext,
+    state: PrivateAccessStateId,
 ) -> ResolvedServiceSpec {
-    private_access_service_spec(TAILSCALE, network, sealed_key)
+    private_access_service_spec(TAILSCALE, network, sealed_key, state)
         .to_resolved(private_access_service_id(), ResolvedUpdateConfig::default())
         .expect("the built-in router mounts are valid")
 }
@@ -125,7 +126,8 @@ pub(crate) fn private_access_built_here(
 ) -> bool {
     QualifiedService::new(namespace.clone(), spec.name.clone()).is_private_access_router()
         && private_access_sealed_key(&spec.container.labels)
-            .is_some_and(|key| *spec == private_access_router(network, &key))
+            .zip(private_access_state(&spec.container.labels))
+            .is_some_and(|(key, state)| *spec == private_access_router(network, &key, state))
 }
 
 fn holder_spec(service_id: ServiceId, ports: IngressPorts) -> ResolvedServiceSpec {
