@@ -1184,26 +1184,19 @@ fn a_branch_whose_name_makes_a_generated_hostname_too_long_is_refused() {
         fix: None,
     };
 
-    admit(&store, &who, 1, &trusted).unwrap();
-    apply(&store, 1);
+    let refused = store
+        .write_trusted(&who, &branch("fixit"), &trusted)
+        .unwrap_err();
+    assert_eq!(refused.code, RpcErrorCode::InvalidArgument, "{refused:?}");
+    assert!(refused.message.contains("253"), "{refused:?}");
+    assert!(
+        refused.message.contains("shorter branch name"),
+        "{refused:?}"
+    );
+    assert_eq!(refused.details["hostname"], format!("web-fixit.{cluster}"));
 
-    // Without Cloud's evidence, the Cluster Domain the Parent last deployed under.
-    for refused in [
-        store
-            .write_trusted(&who, &branch("fixit"), &trusted)
-            .unwrap_err(),
-        store.write(&who, &branch("fixit")).unwrap_err(),
-    ] {
-        assert_eq!(refused.code, RpcErrorCode::InvalidArgument, "{refused:?}");
-        assert!(refused.message.contains("253"), "{refused:?}");
-        assert!(
-            refused.message.contains("shorter branch name"),
-            "{refused:?}"
-        );
-        assert_eq!(refused.details["hostname"], format!("web-fixit.{cluster}"));
-    }
-
-    store.write(&who, &branch("fix")).unwrap();
+    store.write_trusted(&who, &branch("fix"), &trusted).unwrap();
+    store.write(&who, &branch("fixit")).unwrap();
 }
 
 /// A Branch's name can make a copied subdomain longer than a DNS label: refused with
@@ -1289,12 +1282,6 @@ fn a_branch_whose_name_makes_a_generated_hostname_a_custom_domain_is_refused() {
         refused.message,
         "web-feature.acme-apps.com is already the custom domain of web in shop/staging"
     );
-
-    // Without Cloud's evidence, the Cluster Domain the Parent last deployed under.
-    admit(&store, &who, 1, &trusted).unwrap();
-    apply(&store, 1);
-    let refused = store.write(&who, &branch("feature")).unwrap_err();
-    assert_eq!(refused.code, RpcErrorCode::Conflict, "{refused:?}");
     assert_eq!(refused.details["hostname"], "web-feature.acme-apps.com");
 
     store.write_trusted(&who, &branch("fix"), &trusted).unwrap();

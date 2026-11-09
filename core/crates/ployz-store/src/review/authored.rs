@@ -5,7 +5,7 @@ use super::{NodeChange, Review};
 use crate::scope::{Environment, EnvironmentSummary};
 use crate::settings::{NodeName, ServiceSetting, SettingPath, Target, shown};
 use crate::storage::Tx;
-use crate::{error, scope};
+use crate::{Trusted, error, scope};
 use ployz_core::config::{
     At, AuthoredServiceConfig, BuildMethod, ChangeKind, CompiledNodeConfig, ConfigAttachment,
     EnvironmentNodeType, PlainText, ReviewComparisonRole, ReviewLifecycleKind, ReviewNodeIdentity,
@@ -2179,6 +2179,7 @@ impl Prepared {
         saved: Option<&SavedEnvironmentIntent>,
         target: SavedEnvironmentIntent,
         from: Option<&SavedEnvironmentIntent>,
+        trusted: &Trusted,
     ) -> Result<Self, RpcError> {
         prevent_plaintext(&environment.working, &target)?;
         let working = scope::validated_working_from(
@@ -2191,7 +2192,7 @@ impl Prepared {
                 inherited: environment.inherited.clone(),
             },
             from,
-            None,
+            trusted,
         )?;
         crate::volume::check_storage(
             tx,
@@ -2236,9 +2237,9 @@ pub(super) fn prepare_history(
     environment: &Environment,
     ledger: &SealLedger,
     saved: Option<&SavedEnvironmentIntent>,
-    selected: &SavedEnvironmentIntent,
-    previous: Option<&SavedEnvironmentIntent>,
+    (selected, previous): (&SavedEnvironmentIntent, Option<&SavedEnvironmentIntent>),
     change: Option<&str>,
+    trusted: &Trusted,
 ) -> Result<Prepared, RpcError> {
     let mut target = if let Some(previous) = previous {
         let plan = Plan::between(previous, selected)?;
@@ -2273,7 +2274,7 @@ pub(super) fn prepare_history(
     };
     let not_set = keep_sealed(environment, ledger, &mut target)?;
     crate::names::refuse_new_taken(tx, environment, &target)?;
-    let mut prepared = Prepared::from_target(tx, environment, saved, target, None)?;
+    let mut prepared = Prepared::from_target(tx, environment, saved, target, None, trusted)?;
     prepared.not_set = not_set;
     Ok(prepared)
 }
@@ -2372,6 +2373,7 @@ pub(super) fn prepare_discard(
     reviewed: &Review,
     target: Option<DiscardTarget>,
     path: Option<&SettingPath>,
+    trusted: &Trusted,
 ) -> Result<Prepared, RpcError> {
     let saved = reviewed.saved.as_ref().map(|saved| &saved.intent);
     let target = target.unwrap_or_else(|| {
@@ -2465,21 +2467,27 @@ pub(super) fn prepare_discard(
     } else {
         working = baseline;
     }
-    Prepared::from_target(tx, environment, saved, working, Some(&reviewed.head.intent)).map_err(
-        |failure| {
-            if failure.code == ployz_core::RpcErrorCode::InvalidArgument {
-                error::conflict(
-                    format!(
-                        "Discard would leave an invalid Environment: {}",
-                        failure.message
-                    ),
-                    failure.details,
-                )
-            } else {
-                failure
-            }
-        },
+    Prepared::from_target(
+        tx,
+        environment,
+        saved,
+        working,
+        Some(&reviewed.head.intent),
+        trusted,
     )
+    .map_err(|failure| {
+        if failure.code == ployz_core::RpcErrorCode::InvalidArgument {
+            error::conflict(
+                format!(
+                    "Discard would leave an invalid Environment: {}",
+                    failure.message
+                ),
+                failure.details,
+            )
+        } else {
+            failure
+        }
+    })
 }
 
 /// The baseline a path's row discards to, as `diff` lists it: Saved when only a

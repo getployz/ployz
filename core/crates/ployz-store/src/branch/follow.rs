@@ -45,6 +45,7 @@ pub(crate) fn follow(
     shipped: &SavedEnvironmentIntent,
     lineages: &BTreeSet<String>,
     seal_below: bool,
+    trusted: &Trusted,
 ) -> Result<(), RpcError> {
     let branches = tx.query(
         "SELECT environment_id, organization_id FROM config_environment_branch b \
@@ -84,7 +85,9 @@ pub(crate) fn follow(
                 continue;
             }
             locked => {
-                match locked.and_then(|mut locked| into(tx, &who, &parent, &mut locked, lineages)) {
+                match locked
+                    .and_then(|mut locked| into(tx, &who, &parent, &mut locked, lineages, trusted))
+                {
                     Err(error) if crate::automation::skippable(&error) => Vec::new(),
                     done => done?,
                 }
@@ -133,7 +136,7 @@ pub(crate) fn follow(
             for lineage in left {
                 let withdrawn = crate::storage::attempt(tx, |tx| {
                     let mut branch = scope::lock_id(tx, &who, &branch)?;
-                    withdraw(tx, &mut branch, &parent.summary.id, &lineage)
+                    withdraw(tx, &mut branch, &parent.summary.id, &lineage, trusted)
                 });
                 match withdrawn {
                     Ok(false) => refused.push(lineage),
@@ -191,6 +194,7 @@ fn into(
     parent: &Environment,
     branch: &mut Environment,
     lineages: &BTreeSet<String>,
+    trusted: &Trusted,
 ) -> Result<Vec<RowId>, RpcError> {
     let before = Cells::of(&branch.working, "");
     let follow = Move::follow(tx, parent, branch)?;
@@ -236,7 +240,7 @@ fn into(
     }
     if !landing.is_empty() {
         let landed = crate::storage::attempt(tx, |tx| {
-            checked.apply(tx, who, branch, &landing, &none, (Owner::None, None))
+            checked.apply(tx, who, branch, &landing, &none, (Owner::None, trusted))
         });
         match landed {
             // One of the Branch's own rules refuses it: all of it is a hint.
@@ -381,14 +385,7 @@ pub(crate) fn take(
         ));
     }
     let none = BTreeMap::new();
-    let staged = checked.apply(
-        tx,
-        who,
-        &mut branch,
-        &picks,
-        &none,
-        (Owner::None, Some(trusted)),
-    )?;
+    let staged = checked.apply(tx, who, &mut branch, &picks, &none, (Owner::None, trusted))?;
     let asked = json!({ "version": take.version, "rows": take.rows });
     review::approve_move(
         tx,

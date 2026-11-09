@@ -835,7 +835,13 @@ pub(crate) fn land(
     for landing in landings {
         let into = landing.into.summary.clone();
         let landed = storage::attempt(tx, |tx| {
-            land_one(tx, who, &from, landing, (&pull_request, merge.target))
+            land_one(
+                tx,
+                who,
+                &from,
+                landing,
+                (&pull_request, merge.target, merge.trusted),
+            )
         });
         match landed {
             Ok(services) => {
@@ -922,7 +928,7 @@ fn land_one(
     who: &Actor,
     from: &Environment,
     landing: Landing,
-    (pull_request, target): (&PullRequestRef, &BranchName),
+    (pull_request, target, trusted): (&PullRequestRef, &BranchName, &Trusted),
 ) -> Result<MergedServices, RpcError> {
     let picks = landing.riding();
     let Landing {
@@ -1092,7 +1098,7 @@ fn land_one(
             (&from.working, &carried),
             working,
             &staged,
-            None,
+            trusted,
         )?;
     } else if consumed {
         scope::persist_working(tx, &mut destination)?;

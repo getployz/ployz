@@ -123,11 +123,20 @@ const recentlyPublished = (organizationId: string) => Effect.map(Clock.currentTi
   return last?.observed && now - last.at < PUBLISHED_TTL_MS ? last.observed.seen.published : null;
 });
 
-/** The published hostnames a Store's own Deploy is gated on (`system`): the recent observation, else none. */
-export const systemDomainEvidence = (organizationId: string) => Effect.map(recentlyPublished(organizationId), (published) => {
-  const evidence: ConfigDomainEvidence = { ...nothing };
+/**
+ * What a Store's own event (`system`) carries: the Cluster Domain its writes check names under, and the published
+ * hostnames a Deploy is gated on from the recent observation, else none.
+ */
+export const systemDomainEvidence = Effect.fn("ConfigStore.systemDomainEvidence")(function* (organizationId: string) {
+  const evidence: ConfigDomainEvidence = { ...nothing, cluster_domain: yield* clusterDomainNow(organizationId) };
+  const published = yield* recentlyPublished(organizationId);
   if (published) evidence.published = published;
   return evidence;
+});
+
+/** The Cluster Domain as Cloud knows it now, reserving none: null until a generated domain reserves one. */
+const clusterDomainNow = Effect.fn("ConfigStore.clusterDomainNow")(function* (organizationId: string) {
+  return yield* clusterDomainOf(organizationId, yield* activeCloudflare(organizationId), false);
 });
 
 /** A name that doesn't resolve answers nothing; any other failure (a timeout, SERVFAIL) is no answer at all. */
@@ -241,7 +250,10 @@ export const gatherDomainEvidence = Effect.fn("ConfigStore.gatherDomainEvidence"
   const adding = Option.getOrUndefined(Schema.decodeUnknownOption(AddDomainAnyHostname)(asked));
   if ((adding?.hostname ?? null) !== null) yield* requireClaimed(organizationId, "add_domain");
   const wanted = Option.getOrUndefined(Schema.decodeUnknownOption(DomainCall)(asked));
-  if (wanted === undefined) return nothing;
+  if (wanted === undefined) {
+    const checksNames = call.operation === "write" || call.query.query === "history_preview";
+    return checksNames ? { ...nothing, cluster_domain: yield* clusterDomainNow(organizationId) } : nothing;
+  }
   const cloudflare = yield* activeCloudflare(organizationId);
   if ("command" in wanted) {
     if (wanted.command !== "admit") {

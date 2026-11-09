@@ -265,6 +265,7 @@ pub(crate) fn discard(
     tx: &mut dyn Tx,
     who: &Actor,
     discard: &Discard,
+    trusted: &Trusted,
 ) -> Result<Discarded, RpcError> {
     let environment = scope::lock(tx, who, &discard.environment)?;
     let reviewed = review::review(tx, &environment)?;
@@ -275,6 +276,7 @@ pub(crate) fn discard(
         &reviewed,
         discard.target,
         discard.path.as_ref(),
+        trusted,
     )?;
     let (mut environment, changed) = prepared.persist(tx)?;
     // Discarding the whole draft ends its proposals; a path keeps them.

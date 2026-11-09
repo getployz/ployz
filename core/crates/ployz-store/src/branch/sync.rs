@@ -247,7 +247,7 @@ pub(crate) fn sync(
         sync: &id,
     };
     let before = proposal::credentials(tx, &into)?;
-    let staged = checked.apply(tx, who, &mut into, &picks, &values, (owner, Some(trusted)))?;
+    let staged = checked.apply(tx, who, &mut into, &picks, &values, (owner, trusted))?;
     proposal::keep_carried(tx, &into, &proposal, &before)?;
     if close_after {
         trusted.writes(&from.summary.name)?;
@@ -644,9 +644,14 @@ fn closable(tx: &mut dyn Tx, branch: &Environment) -> Result<(), RpcError> {
 
 /// Undo Sync `request.sync` in its receiver. A Sync that included a proposal is
 /// undone by removing it, while it is that proposal's only Sync.
-pub(crate) fn undo(tx: &mut dyn Tx, who: &Actor, request: &UndoSync) -> Result<Undone, RpcError> {
+pub(crate) fn undo(
+    tx: &mut dyn Tx,
+    who: &Actor,
+    request: &UndoSync,
+    trusted: &Trusted,
+) -> Result<Undone, RpcError> {
     let id = &request.sync;
-    if let Some(undone) = proposal::undo(tx, who, id)? {
+    if let Some(undone) = proposal::undo(tx, who, id, trusted)? {
         return Ok(undone);
     }
     let landed = tx.query(
@@ -661,7 +666,7 @@ pub(crate) fn undo(tx: &mut dyn Tx, who: &Actor, request: &UndoSync) -> Result<U
     let receiver = receiver.parse::<EnvironmentId>(0, "Sync")?;
     scope::lock_project(tx, &receiver)?;
     let mut receiver = scope::lock_id(tx, who, &receiver)?;
-    if !pair::undo(tx, &mut receiver, id)? {
+    if !pair::undo(tx, &mut receiver, id, trusted)? {
         return Err(missing());
     }
     Ok(Undone {

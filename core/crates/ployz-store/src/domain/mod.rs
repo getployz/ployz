@@ -424,10 +424,9 @@ pub(crate) fn add_domain(
     let mut environment = scope::lock(tx, who, &add.environment)?;
     // Hostnames under a Cluster Domain Ployz reserved are Ployz's to hand out, never custom. Behind a Cloudflare
     // Tunnel the zone is the user's own, and a name in it is as good as any other.
-    let cluster = cluster_of(tx, &environment, trusted)?;
+    let cluster = trusted.cluster_domain();
     let own = environment.service(&add.service)?;
-    if let (Some(hostname), Some(cluster), None) =
-        (&add.hostname, &cluster, &trusted.domains.tunnel)
+    if let (Some(hostname), Some(cluster), None) = (&add.hostname, cluster, &trusted.domains.tunnel)
     {
         let (hostname, cluster) = (hostname.as_str(), cluster.as_str());
         if hostname == cluster || hostname.ends_with(&format!(".{cluster}")) {
@@ -456,13 +455,13 @@ pub(crate) fn add_domain(
             .map(|managed| managed.prefix.clone())
             .collect::<Vec<_>>(),
     );
-    let taken = taken_prefixes(tx, who, &environment, &own, (trusted, cluster.as_ref()))?;
+    let taken = taken_prefixes(tx, who, &environment, &own, (trusted, cluster))?;
     if let Some(prefix) = &add.prefix {
         refuse_taken(tx, who, &taken, prefix.as_str())?;
     }
     // A custom name one label under the Cluster Domain is spelled like a generated domain,
     // so no generated domain of the Organization may hold its label.
-    if let (Some(hostname), Some(cluster)) = (&add.hostname, &cluster)
+    if let (Some(hostname), Some(cluster)) = (&add.hostname, cluster)
         && let Some(label) = label_under(hostname.as_str(), cluster)
     {
         let generated_by = |holder: &str| {
@@ -550,7 +549,7 @@ pub(crate) fn add_domain(
                         Some(prefix) => prefix.as_str().to_owned(),
                         None => free_prefix(&base, &taken),
                     };
-                    refuse_too_long(&prefix, cluster.as_ref(), "prefix")?;
+                    refuse_too_long(&prefix, cluster, "prefix")?;
                     managed.push(ServiceManagedHostname {
                         prefix: prefix.clone(),
                         target_port: add.port,
@@ -566,7 +565,7 @@ pub(crate) fn add_domain(
         }
     };
     if changed {
-        scope::save_working(tx, &mut environment)?;
+        scope::save_working(tx, &mut environment, trusted)?;
     }
     Ok(DomainAdded {
         written: DomainStaged {
@@ -595,10 +594,10 @@ pub(crate) fn set_generated_domain(
     let mut environment = scope::lock(tx, who, &set.environment)?;
     let prefix = set.prefix.as_str();
     let own = environment.service(&set.service)?.id.clone();
-    let cluster = cluster_of(tx, &environment, trusted)?;
-    let taken = taken_prefixes(tx, who, &environment, &own, (trusted, cluster.as_ref()))?;
+    let cluster = trusted.cluster_domain();
+    let taken = taken_prefixes(tx, who, &environment, &own, (trusted, cluster))?;
     refuse_taken(tx, who, &taken, prefix)?;
-    refuse_too_long(prefix, cluster.as_ref(), "prefix")?;
+    refuse_too_long(prefix, cluster, "prefix")?;
     let generated_domains = domains_of(&environment.working, trusted)
         .into_iter()
         .filter_map(|domain| match &domain.name {
@@ -664,7 +663,7 @@ pub(crate) fn set_generated_domain(
     prefix.clone_into(&mut managed.prefix);
     managed.target_port = port;
     if changed {
-        scope::save_working(tx, &mut environment)?;
+        scope::save_working(tx, &mut environment, trusted)?;
     }
     Ok(DomainStaged {
         environment: environment.summary,
@@ -837,12 +836,9 @@ pub(crate) fn refuse_long_subdomains(
 
 /// Refuse each generated prefix `after` gives a Service that `before` didn't, when the
 /// hostname it makes is too long. A Branch adds its name to the prefixes it copies, so a
-/// hostname that fits its Parent can be too long on the Branch. The Cluster Domain is
-/// Cloud's, else the one `environment` or its nearest ancestor last deployed under.
+/// hostname that fits its Parent can be too long on the Branch.
 pub(crate) fn refuse_too_long_copies(
-    tx: &mut dyn Tx,
-    environment: &crate::EnvironmentId,
-    trusted: Option<&Trusted>,
+    cluster: Option<&Hostname>,
     (before, after): (&SavedEnvironmentIntent, &SavedEnvironmentIntent),
 ) -> Result<(), RpcError> {
     let new: Vec<&str> = after
@@ -868,47 +864,23 @@ pub(crate) fn refuse_too_long_copies(
                 })
         })
         .collect();
-    if new.is_empty() {
-        return Ok(());
-    }
-    let cluster = cluster_for(tx, environment, trusted)?;
     new.into_iter()
-        .try_for_each(|prefix| refuse_too_long(prefix, cluster.as_ref(), "branch name"))
-}
-
-/// The Cluster Domain `environment`'s generated domains expand under: Cloud's, when the
-/// write carries its evidence, else the one `environment` or its nearest ancestor last
-/// deployed under.
-fn cluster_for(
-    tx: &mut dyn Tx,
-    environment: &crate::EnvironmentId,
-    trusted: Option<&Trusted>,
-) -> Result<Option<Hostname>, RpcError> {
-    if let Some(cluster) = trusted.and_then(|trusted| trusted.domains.cluster_domain.as_ref()) {
-        return Ok(Some(cluster.name.clone()));
-    }
-    let mut cluster = crate::deployment::cluster_domain(tx, environment)?;
-    for ancestor in crate::branch::ancestors(tx, environment)? {
-        if cluster.is_some() {
-            break;
-        }
-        cluster = crate::deployment::cluster_domain(tx, &ancestor)?;
-    }
-    Ok(cluster)
+        .try_for_each(|prefix| refuse_too_long(prefix, cluster, "branch name"))
 }
 
 /// Refuse each hostname `after` newly spells two ways under the Cluster Domain: as one
 /// Service's generated prefix and as another's custom domain, anywhere in the
 /// Organization. Every write of Working State comes through here, so a Branch that
 /// suffixes the prefixes it copies, a Sync or a restore can't mint a name a custom
-/// domain holds. What `before` already held is not new.
+/// domain holds. What `before` already held is not new. `cluster` is the Cluster
+/// Domain Cloud knows now; without one, no generated name spells a hostname.
 pub(crate) fn refuse_new_shared_hostnames(
     tx: &mut dyn Tx,
     environment: &Environment,
-    trusted: Option<&Trusted>,
+    cluster: Option<&Hostname>,
     (before, after): (&SavedEnvironmentIntent, &SavedEnvironmentIntent),
 ) -> Result<(), RpcError> {
-    let Some(cluster) = cluster_for(tx, &environment.summary.id, trusted)? else {
+    let Some(cluster) = cluster else {
         return Ok(());
     };
     let mut prefixes = Vec::new();
@@ -926,7 +898,7 @@ pub(crate) fn refuse_new_shared_hostnames(
             }
         }
         for route in &service.config.routes {
-            if let Some(label) = label_under(&route.hostname, &cluster)
+            if let Some(label) = label_under(&route.hostname, cluster)
                 && held.is_none_or(|held| {
                     held.config
                         .routes
@@ -954,7 +926,7 @@ pub(crate) fn refuse_new_shared_hostnames(
         for service in &intent.services {
             let holder = || format!("{} in {place}", service.slug);
             for route in &service.config.routes {
-                if let Some(label) = label_under(&route.hostname, &cluster)
+                if let Some(label) = label_under(&route.hostname, cluster)
                     && prefixes.contains(&label)
                 {
                     return Err(error::conflict(
@@ -982,19 +954,6 @@ pub(crate) fn refuse_new_shared_hostnames(
     Ok(())
 }
 
-/// The Cluster Domain `environment`'s generated domains live under: the one Cloud
-/// reserved, else the one its last Deploy used.
-fn cluster_of(
-    tx: &mut dyn Tx,
-    environment: &Environment,
-    trusted: &Trusted,
-) -> Result<Option<Hostname>, RpcError> {
-    match &trusted.domains.cluster_domain {
-        Some(cluster) => Ok(Some(cluster.name.clone())),
-        None => crate::deployment::cluster_domain(tx, &environment.summary.id),
-    }
-}
-
 /// Fills in the full hostname of each generated domain the Service changes in
 /// `changes` stage: as `head` deploys it, else under the Cluster Domain.
 pub(crate) fn name_generated<'a>(
@@ -1012,7 +971,10 @@ pub(crate) fn name_generated<'a>(
         return Ok(());
     }
     let deployed = crate::deployment::cluster_domains(tx, &environment.summary.id, head)?;
-    let cluster = cluster_of(tx, environment, trusted)?;
+    let cluster = match trusted.cluster_domain() {
+        Some(cluster) => Some(cluster.clone()),
+        None => crate::deployment::cluster_domain(tx, &environment.summary.id)?,
+    };
     for (service, row) in rows {
         let hostnames = [&row.before, &row.after]
             .into_iter()
@@ -1134,7 +1096,7 @@ pub(crate) fn remove_domain(
             .managed_hostnames
             .retain(|managed| managed.prefix != *prefix),
     }
-    scope::save_working(tx, &mut environment)?;
+    scope::save_working(tx, &mut environment, trusted)?;
     Ok(DomainStaged {
         environment: environment.summary,
         staged: vec![SettingPath::whole(&found.service)],

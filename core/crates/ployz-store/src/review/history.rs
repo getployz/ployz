@@ -11,7 +11,7 @@ use crate::review::{self, NodeChange};
 use crate::scope::{self, Environment, EnvironmentRef, EnvironmentSummary, revision_param};
 
 use crate::storage::Tx;
-use crate::{Actor, error};
+use crate::{Actor, Trusted, error};
 
 /// Saved revisions of one Environment, newest first.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize, TS)]
@@ -249,6 +249,7 @@ pub(crate) fn preview(
     tx: &mut dyn Tx,
     who: &Actor,
     query: &HistoryPreviewQuery,
+    trusted: &Trusted,
 ) -> Result<HistoryPreview, RpcError> {
     let environment = scope::environment(tx, who, &query.environment)?;
     let reviewed = review::review(tx, &environment)?;
@@ -259,6 +260,7 @@ pub(crate) fn preview(
         query.revision,
         query.action,
         query.change.as_deref(),
+        trusted,
     )?;
     Ok(preview_of(&environment, &reviewed, &prepared, query))
 }
@@ -267,6 +269,7 @@ pub(crate) fn stage(
     tx: &mut dyn Tx,
     who: &Actor,
     command: &StageHistory,
+    trusted: &Trusted,
 ) -> Result<HistoryStaged, RpcError> {
     let environment = scope::lock(tx, who, &command.environment)?;
     let reviewed = review::review(tx, &environment)?;
@@ -283,6 +286,7 @@ pub(crate) fn stage(
         command.revision,
         command.action,
         command.change.as_deref(),
+        trusted,
     )?;
     if !prepared.overwritten().is_empty() && !command.accept_overwrite {
         let query = HistoryPreviewQuery {
@@ -349,6 +353,7 @@ fn prepare(
     revision: Revision,
     action: HistoryAction,
     change: Option<&str>,
+    trusted: &Trusted,
 ) -> Result<super::authored::Prepared, RpcError> {
     if action == HistoryAction::Restore && change.is_some() {
         return Err(error::invalid(
@@ -381,9 +386,9 @@ fn prepare(
         environment,
         scrub.ledger(),
         reviewed.saved.as_ref().map(|saved| &saved.intent),
-        &selected,
-        previous.as_ref(),
+        (&selected, previous.as_ref()),
         change,
+        trusted,
     ) {
         Err(error) if error.details.get("removed").is_some() => {
             Err(deleted_since(tx, environment, revision, &selected, error)?)

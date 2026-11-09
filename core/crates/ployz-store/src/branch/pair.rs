@@ -318,7 +318,7 @@ impl Checked<'_> {
         into: &mut Environment,
         picks: &BTreeSet<RowId>,
         values: &BTreeMap<RowId, SealedCell>,
-        (owner, trusted): (Owner<'_>, Option<&Trusted>),
+        (owner, trusted): (Owner<'_>, &Trusted),
     ) -> Result<Vec<NodeName>, RpcError> {
         let of = self.of;
         if picks.is_empty() {
@@ -2049,6 +2049,7 @@ pub(super) fn undo(
     tx: &mut dyn Tx,
     receiver: &mut Environment,
     sync: &SyncId,
+    trusted: &Trusted,
 ) -> Result<bool, RpcError> {
     let id = receiver.summary.id.clone();
     let rows = arrived(tx, &id, Which::Of(sync))?;
@@ -2103,7 +2104,7 @@ pub(super) fn undo(
         }
         Err(Unapplied::Invalid(error)) => return Err(config(error)),
     };
-    scope::save_working(tx, receiver)?;
+    scope::save_working(tx, receiver, trusted)?;
     ledger::undo(tx, &id, (sync, landed.len()))?;
     let priors = others
         .into_iter()
@@ -2125,6 +2126,7 @@ pub(super) fn withdraw(
     receiver: &mut Environment,
     other: &EnvironmentId,
     lineage: &str,
+    trusted: &Trusted,
 ) -> Result<bool, RpcError> {
     let id = receiver.summary.id.clone();
     let node = RowId::node(lineage);
@@ -2173,7 +2175,7 @@ pub(super) fn withdraw(
         return Ok(false);
     }
     receiver.working = put_back(&receiver.working, &node, &Cell::Absent).map_err(config)?;
-    scope::save_working(tx, receiver)?;
+    scope::save_working(tx, receiver, trusted)?;
     ledger::withdraw(tx, &id, other, (lineage, landed.len()))?;
     rewind_bases(tx, &id, vec![(other.clone(), node, Cell::Absent)])?;
     Ok(true)
@@ -2266,14 +2268,9 @@ pub(crate) fn land(
     (from, carried): (&SavedEnvironmentIntent, &Carried),
     next: SavedEnvironmentIntent,
     picks: &BTreeSet<RowId>,
-    trusted: Option<&Trusted>,
+    trusted: &Trusted,
 ) -> Result<Vec<NodeName>, RpcError> {
-    crate::domain::refuse_too_long_copies(
-        tx,
-        &branch.summary.id,
-        trusted,
-        (&branch.working, &next),
-    )?;
+    crate::domain::refuse_too_long_copies(trusted.cluster_domain(), (&branch.working, &next))?;
     let before = std::mem::replace(&mut branch.working, next);
     crate::volume::check_storage(
         tx,

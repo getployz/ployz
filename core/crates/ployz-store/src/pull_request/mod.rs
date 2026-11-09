@@ -1039,7 +1039,7 @@ pub(crate) fn pull_request(
             .is_some_and(|before| before.head_branch != event.head_branch);
         if renamed {
             for (environment, _) in &current {
-                retrack(tx, who, environment, event)?;
+                retrack(tx, who, environment, event, trusted)?;
             }
         }
         let retargeted = before
@@ -1383,7 +1383,7 @@ fn create(
     )?;
     let mut environment = scope::lock_id(tx, who, &id)?;
     environment.working = derive(environment.working, event);
-    scope::save_working(tx, &mut environment)?;
+    scope::save_working(tx, &mut environment, trusted)?;
     // Copies keep their Deployment Policy, except that the repository's Services
     // deploy on push whatever the start-from's says; wait for CI and watch paths stay.
     for service in environment
@@ -1508,6 +1508,7 @@ fn retrack(
     who: &Actor,
     id: &EnvironmentId,
     event: &PullRequest,
+    trusted: &Trusted,
 ) -> Result<(), RpcError> {
     let mut environment = scope::lock_id(tx, who, id)?;
     if let Some(latest) = review::latest_saved(tx, id)? {
@@ -1524,7 +1525,7 @@ fn retrack(
     let tracked = track(environment.working.clone(), event);
     if tracked != environment.working {
         environment.working = tracked;
-        scope::save_working(tx, &mut environment)?;
+        scope::save_working(tx, &mut environment, trusted)?;
     }
     Ok(())
 }

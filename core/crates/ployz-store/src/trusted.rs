@@ -11,9 +11,9 @@ use ployz_core::{
 use serde::{Deserialize, Serialize};
 use ts_rs::TS;
 
-use crate::domain::DomainEvidence;
+use crate::domain::{ClusterDomain, ClusterDomainStatus, DomainEvidence};
 use crate::git::AuthorizedRepository;
-use crate::id::{ApprovalDigest, EnvironmentName, GithubUserId};
+use crate::id::{ApprovalDigest, EnvironmentName, GithubUserId, Hostname};
 use crate::permission::Permission;
 use crate::storage::Tx;
 
@@ -139,6 +139,30 @@ pub enum Asks {
 }
 
 impl Trusted {
+    /// The Cluster Domain Cloud knows now: what generated domains expand under.
+    pub(crate) fn cluster_domain(&self) -> Option<&Hostname> {
+        self.domains
+            .cluster_domain
+            .as_ref()
+            .map(|cluster| &cluster.name)
+    }
+
+    /// Evidence for a write the Deployment lifecycle makes by itself, with no Cloud
+    /// call to gather any: the Cluster Domain the Deployment froze is the one its names
+    /// run under.
+    pub(crate) fn deployed_under(cluster_domain: Option<&Hostname>) -> Self {
+        Self {
+            domains: DomainEvidence {
+                cluster_domain: cluster_domain.map(|name| ClusterDomain {
+                    name: name.clone(),
+                    status: ClusterDomainStatus::Ready,
+                }),
+                ..DomainEvidence::default()
+            },
+            ..Self::default()
+        }
+    }
+
     /// Refuse to admit a Deployment no Server could run: `conflict`, as the
     /// Organization's state refuses it, naming `ployz server add`.
     pub(crate) fn runnable(&self) -> Result<(), RpcError> {

@@ -195,7 +195,7 @@ pub(crate) fn system(
             ..Automated::default()
         }),
         SystemEvent::VolumeResized(resized) => {
-            crate::volume::size::record(tx, &who, resized).map(|()| Automated::default())
+            crate::volume::size::record(tx, &who, resized, trusted).map(|()| Automated::default())
         }
     }
 }
