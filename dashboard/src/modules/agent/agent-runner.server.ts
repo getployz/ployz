@@ -61,7 +61,7 @@ const PROPOSAL = {
 /** The Service tools a proposal may hold a step of: the ones a Server checks against the approval a person signed. */
 export const PROPOSAL_TOOLS = new Set(["service_restart", "service_stop", "service_start"]);
 const WITH_PROPOSAL = new Set(PROPOSAL_TOOLS);
-const STAGE_SEVERAL = "For several steps under one approval, stage them with proposal_create.";
+const STAGE_SEVERAL = "For several steps under one approval, stage them in a proposal.";
 /** What a person approves: a gated call each time, an ungated one only as a step of a proposal. */
 const personApproves = (gated: boolean): string =>
   gated ? `A person approves it in the dashboard. ${STAGE_SEVERAL}` : `It runs without approval; as a step of a proposal, a person approves it in the dashboard. ${STAGE_SEVERAL}`;

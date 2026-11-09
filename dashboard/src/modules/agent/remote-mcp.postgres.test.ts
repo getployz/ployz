@@ -466,7 +466,7 @@ it.live("a remote agent reaches a restart through one Approval card or a proposa
     const { tools } = yield* Effect.promise(() => agent.client.listTools());
     for (const name of ["service_restart", "service_stop", "service_start"]) {
       expect(tools.find((tool) => tool.name === name)?.description).toMatch(/a person approves it in the dashboard/i);
-      expect(tools.find((tool) => tool.name === name)?.description).toContain("proposal_create");
+      expect(tools.find((tool) => tool.name === name)?.description).toContain("stage them in a proposal");
     }
     expect(tools.find((tool) => tool.name === "service_start")?.description).toContain("It runs without approval");
     const answers: Array<unknown> = [];
