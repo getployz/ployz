@@ -10,7 +10,7 @@ import { decideApproval } from "#/modules/approvals/approvals.server";
 import { CloudStore } from "#/modules/config-store/store-sdk.server";
 import { InngestClient } from "#/modules/inngest/client";
 import { freshApproval, freshOperationDigest } from "#/modules/machines/server-operations.server";
-import { REFUSED_RESTARTS_MS, TAILSCALE } from "#/modules/private-access/private-access";
+import { TAILSCALE } from "#/modules/private-access/private-access";
 import { privateAccessUse } from "#/modules/private-access/private-access.commands.server";
 import { approvePrivateAccess, setPrivateAccess } from "#/modules/private-access/private-access.server";
 import { OrganizationRuntime, type ScopedRuntimeClientSession } from "#/modules/runtime/organization-runtime.server";
@@ -21,8 +21,7 @@ import {
   runtimeWatchMachineFixture,
   runtimeWatchMachineObservationFixture,
 } from "#/modules/runtime/runtime-watch-frame.test-fixture";
-import { operationApprovals } from "#/modules/approvals/tables";
-import { Database, type DatabaseService } from "#/server/database.server";
+import { Database } from "#/server/database.server";
 import { type PostgresTestHarness, startPostgresTestHarness } from "#/test/postgres";
 
 const ORG = "00000000-0000-4000-8000-0000000c4a01";
@@ -40,12 +39,11 @@ let refuses = false;
 let paused: Promise<void> | null = null;
 let fails = false;
 let unanswered = false;
+let unreadable = false;
+let disconnected = false;
 const routers: ContainerObservation[] = [];
 const placeRouter = (runtime: ContainerObservation["runtime"] = { state: "running", health: "none" }) => {
   routers.push({ ...runtimeWatchContainerFixture(SERVER, `router-${routers.length + 1}`), created_at_unix_nanos: Date.now() * 1e6, runtime });
-};
-const ageRouters = (ms: number) => {
-  for (const router of routers) router.created_at_unix_nanos -= ms * 1e6;
 };
 const frame = () => runtimeWatchFrameFixture({
   machines: [runtimeWatchMachineObservationFixture({ machine: runtimeWatchMachineFixture(SERVER, "fra-1") })],
@@ -54,7 +52,7 @@ const frame = () => runtimeWatchFrameFixture({
 const session: ScopedRuntimeClientSession = {
   status: "connected",
   connected: asTestDouble<PloyzSession>()({
-    watchFirstFrame: () => Effect.sync(frame),
+    watchFirstFrame: () => unreadable ? Effect.fail(new Error("no frame")) : Effect.sync(frame),
     setPrivateAccess: (authKey: Redacted.Redacted<string> | null) => Effect.gen(function* () {
       handed.push(authKey === null ? null : Redacted.value(authKey));
       if (paused !== null) yield* Effect.promise(() => paused ?? Promise.resolve());
@@ -70,7 +68,10 @@ const session: ScopedRuntimeClientSession = {
     }),
   }),
 };
-const runtime = asTestDouble<OrganizationRuntime["Service"]>()({ cancel: () => Effect.void, open: () => Effect.succeed(session) });
+const runtime = asTestDouble<OrganizationRuntime["Service"]>()({
+  cancel: () => Effect.void,
+  open: () => Effect.succeed<ScopedRuntimeClientSession>(disconnected ? { status: "unreachable", error: null } : session),
+});
 
 const store = asTestDouble<CloudStore["Service"]>()({});
 
@@ -104,6 +105,9 @@ async function onlyApproval() {
   return approval;
 }
 
+const connect = (approval: { id: string; digest: string }) =>
+  approvePrivateAccess(dashboard, { id: approval.id, digest: approval.digest, authKey: Redacted.make(KEY) });
+
 const keyKept = async () => {
   const stored = await everyRow();
   const events = JSON.stringify(sent.mock.calls);
@@ -124,10 +128,11 @@ beforeEach(async () => {
   paused = null;
   fails = false;
   unanswered = false;
+  unreadable = false;
+  disconnected = false;
   routers.length = 0;
   sent.mockClear();
   await harness.pool.query(`
-    drop trigger if exists approving on operation_approvals;
     truncate table operation_outbox, operation_approvals, "user", organization cascade;
     insert into organization (id, name, slug) values ('${ORG}', 'Acme', '${SLUG}');
     insert into "user" (id, email, name) values ('${ADA}', 'ada@example.test', 'Ada');
@@ -142,7 +147,7 @@ it("hands the key from the dashboard to the Servers and stores it nowhere", asyn
   expect(await keyKept()).toEqual({ stored: false, events: false });
 });
 
-it("asks an agent's turn-on as an Approval, which the approver finishes with the key, and stores the key nowhere", async () => {
+it("asks an agent's turn-on as an Approval, which the approver decides with the key, and stores the key nowhere", async () => {
   const asked = await run(privateAccessUse.invoke(agent, { to: "on" }, { approvalId: null, key: null }));
   expect(asked).toMatchObject({ ok: false, refusal: { code: "approval_required" } });
   expect(handed).toEqual([]);
@@ -153,14 +158,14 @@ it("asks an agent's turn-on as an Approval, which the approver finishes with the
   expect(generic).toMatchObject({ ok: false, refusal: { code: "forbidden", message: "Approve it in Ployz Cloud, where you paste the Tailscale auth key." } });
 
   refuses = true;
-  const refused = await run(approvePrivateAccess(dashboard, { id: approval.id, digest: approval.digest, authKey: Redacted.make(KEY) }));
-  expect(refused.decided).toBeNull();
-  expect(refused.changed.failures.map(({ message }) => message)).toEqual(["Tailscale refused the auth key on fra-1. It may be revoked or expired."]);
-  expect((await harness.pool.query("select status from operation_approvals")).rows).toEqual([{ status: "pending" }]);
+  const refused = await run(connect(approval));
+  expect(refused).toMatchObject({ approval: { status: "approved" }, sent: { failures: [{ problem: "key_refused" }] } });
+  expect(await statusOf(approval.id)).toBe("approved");
 
   refuses = false;
-  const approved = await run(approvePrivateAccess(dashboard, { id: approval.id, digest: approval.digest, authKey: Redacted.make(KEY) }));
-  expect(approved.decided?.status).toBe("approved");
+  await expect(run(connect(approval))).rejects.toMatchObject({ _tag: "Conflict" });
+  const retried = await run(setPrivateAccess(ORG, Redacted.make(KEY)));
+  expect(retried.failures).toEqual([]);
   expect(handed).toEqual([KEY, KEY]);
   expect(await keyKept()).toEqual({ stored: false, events: false });
 });
@@ -185,185 +190,95 @@ const askedOn = async () => {
   return onlyApproval();
 };
 
-const connect = (approval: { id: string; digest: string }) =>
-  approvePrivateAccess(dashboard, { id: approval.id, digest: approval.digest, authKey: Redacted.make(KEY) });
-
-type ApprovalWrite = Partial<typeof operationApprovals.$inferInsert>;
-
-const claims = (values: ApprovalWrite) => (values.claim ?? null) !== null || values.usedAt instanceof Date;
-
-/** Make a write that claims a row commit, then answer only once `gate` settles, so a test can abort between the two. */
-const answerClaimLate = (drizzle: DatabaseService["drizzle"], gate: Promise<void>, written: () => void) => {
-  const update = drizzle.update.bind(drizzle);
-  drizzle.update = (table) => {
-    const query = update(table);
-    const set = query.set.bind(query);
-    query.set = (values) => {
-      const next = set(values);
-      if (!claims(asTestDouble<ApprovalWrite>()(values))) return next;
-      const answered = Effect.flatMap(asTestDouble<Effect.Effect<unknown>>()(next), (rows) =>
-        Effect.as(Effect.promise(() => { written(); return gate; }), rows));
-      return Object.assign(next, { [Symbol.iterator]: () => answered[Symbol.iterator]() });
-    };
-    return query;
-  };
-  return () => { drizzle.update = update; };
-};
-
 const deny = (id: string) => decideApproval(dashboard, id, { reject: { reason: "not now" } }, freshOperationDigest);
 
-const blockedOn = async (statement: string) =>
-  ((await harness.pool.query("select 1 from pg_stat_activity where wait_event_type = 'Lock' and query ilike $1", [`${statement}%`])).rowCount ?? 0) > 0;
-
-it("holds the Approval while the Servers take the key, so a deny or a second key can't land until they answer", async () => {
-  await run(privateAccessUse.invoke(agent, { to: "on" }, { approvalId: null, key: null }));
-  const approval = await onlyApproval();
+const holdConnect = () => {
   let release = () => {};
   paused = new Promise((resolve) => { release = resolve; });
-  const connecting = run(approvePrivateAccess(dashboard, { id: approval.id, digest: approval.digest, authKey: Redacted.make(KEY) }));
-  await vi.waitFor(() => expect(handed).toEqual([KEY]));
+  return () => release();
+};
 
-  const denied = await run(decideApproval(dashboard, approval.id, { reject: { reason: "not now" } }));
-  expect(denied).toMatchObject({ ok: false, refusal: { code: "conflict" } });
-  await expect(run(approvePrivateAccess(dashboard, { id: approval.id, digest: approval.digest, authKey: Redacted.make(KEY) }))).rejects.toThrow();
+it("decides before the key goes out, so a deny or a second key during Connect finds the Approval approved", async () => {
+  const approval = await askedOn();
+  const release = holdConnect();
+  const connecting = run(connect(approval));
+  await vi.waitFor(() => expect(handed).toEqual([KEY]));
+  expect(await statusOf(approval.id)).toBe("approved");
+
+  expect(await run(deny(approval.id))).toMatchObject({ ok: false, refusal: { code: "conflict", message: "This approval was already decided elsewhere (approved)." } });
+  await expect(run(connect(approval))).rejects.toMatchObject({ _tag: "Conflict" });
   expect(handed).toEqual([KEY]);
-  expect(await statusOf(approval.id)).toBe("pending");
 
   release();
-  const connected = await connecting;
-  expect(connected.decided?.status).toBe("approved");
+  expect(await connecting).toMatchObject({ approval: { status: "approved" }, sent: { failures: [] } });
   expect(await statusOf(approval.id)).toBe("approved");
-  expect(await keyKept()).toEqual({ stored: false, events: false });
 });
 
-it("lets go of the Approval when the Servers fail, so a deny then lands", async () => {
-  await run(privateAccessUse.invoke(agent, { to: "on" }, { approvalId: null, key: null }));
-  const approval = await onlyApproval();
-  fails = true;
-  await expect(run(approvePrivateAccess(dashboard, { id: approval.id, digest: approval.digest, authKey: Redacted.make(KEY) }))).rejects.toThrow();
-  expect(await statusOf(approval.id)).toBe("pending");
-
-  const denied = await run(decideApproval(dashboard, approval.id, { reject: { reason: "not now" } }));
-  expect(denied).toMatchObject({ ok: true, approval: { status: "denied" } });
-});
-
-it("lets a deny land once a claim whose Servers placed no router has outlived the work's bound", async () => {
+it("asks an opposite turn-off during Connect as its own Approval, leaving the decided turn-on as it is", async () => {
   const approval = await askedOn();
-  await harness.pool.query(`update operation_approvals set claim = jsonb_build_object('token', gen_random_uuid(), 'by', null, 'at', now() - interval '1 hour', 'before', '[]'::jsonb) where id = $1`, [approval.id]);
-  const denied = await run(deny(approval.id));
-  expect(denied).toMatchObject({ ok: true, approval: { status: "denied" } });
+  const release = holdConnect();
+  const connecting = run(connect(approval));
+  await vi.waitFor(() => expect(handed).toEqual([KEY]));
+
+  const off = await run(privateAccessUse.invoke(agent, { to: "off" }, { approvalId: null, key: null }));
+  expect(off).toMatchObject({ ok: false, refusal: { code: "approval_required" } });
+  const { rows } = await harness.pool.query<{ name: string; status: string }>("select review->'operation'->>'name' as name, status from operation_approvals order by created_at");
+  expect(rows).toEqual([{ name: "on", status: "approved" }, { name: "off", status: "pending" }]);
+
+  release();
+  expect(await connecting).toMatchObject({ approval: { status: "approved" } });
 });
 
-it("lets go when the request is aborted as the claim is written, so no key goes out and a deny lands", async () => {
+it("supersedes a turn-on asked before an opposite turn-off, so a later Connect sends no key", async () => {
   const approval = await askedOn();
-  let answer = () => {};
-  const gate = new Promise<void>((resolve) => { answer = resolve; });
-  let written = () => {};
-  const claimed = new Promise<void>((resolve) => { written = resolve; });
-  await run(Effect.gen(function* () {
-    const restore = answerClaimLate((yield* Database).drizzle, gate, written);
-    const connecting = yield* Effect.forkChild(connect(approval));
-    yield* Effect.promise(() => claimed);
-    const aborting = yield* Effect.forkChild(Fiber.interrupt(connecting));
-    yield* Fiber.await(aborting).pipe(Effect.timeoutOption("200 millis"));
-    answer();
-    yield* Fiber.join(aborting);
-    restore();
-  }));
+  await run(privateAccessUse.invoke(agent, { to: "off" }, { approvalId: null, key: null }));
+  expect(await statusOf(approval.id)).toBe("superseded");
+  await expect(run(connect(approval))).rejects.toMatchObject({ _tag: "Conflict" });
   expect(handed).toEqual([]);
-  expect(await run(deny(approval.id))).toMatchObject({ ok: true, approval: { status: "denied" } });
 });
 
-it("keeps the Approval claimed when the request is aborted mid-Connect, and approves it once the Servers answer", async () => {
+it("tells the waiting agent the Servers are still connecting while Connect runs, then what they show", async () => {
   const approval = await askedOn();
-  let release = () => {};
-  paused = new Promise((resolve) => { release = resolve; });
-  await run(Effect.gen(function* () {
-    const connecting = yield* Effect.forkChild(connect(approval));
-    yield* Effect.promise(() => vi.waitFor(() => expect(handed).toEqual([KEY])));
-    const aborting = yield* Effect.forkChild(Fiber.interrupt(connecting));
-    yield* Fiber.await(aborting).pipe(Effect.timeoutOption("200 millis"));
-    expect(yield* deny(approval.id)).toMatchObject({ ok: false, refusal: { code: "conflict" } });
-    expect(yield* Effect.flip(connect(approval))).toMatchObject({ _tag: "Conflict" });
-    release();
-    yield* Fiber.join(aborting);
-  }));
+  const release = holdConnect();
+  const connecting = run(connect(approval));
+  await vi.waitFor(() => expect(handed).toEqual([KEY]));
+
+  const waiting = await run(privateAccessUse.invoke(agent, { to: "on" }, { approvalId: approval.id, key: null }));
+  expect(waiting).toMatchObject({ ok: true, output: { to: "on", routers: 0 } });
+  expect(waiting.ok && waiting.message).toMatch(/^Servers are still connecting/u);
+
+  release();
+  await connecting;
+  const shown = await run(privateAccessUse.invoke(agent, { to: "on" }, { approvalId: approval.id, key: null }));
+  expect(shown).toMatchObject({ ok: false, refusal: { code: "approval_required" } });
   expect(handed).toEqual([KEY]);
-  expect(await statusOf(approval.id)).toBe("approved");
 });
 
-it("keeps the Approval claimed past Cloud's wait, refusing a deny, until the Servers' new router has run past the refusal window", async () => {
+it("keeps the Approval approved when Cloud stops waiting for the Servers, whatever a later read of the Cluster shows", async () => {
   const approval = await askedOn();
   paused = new Promise(() => {});
-  await run(Effect.gen(function* () {
+  const timedOut = await run(Effect.gen(function* () {
     const connecting = yield* Effect.forkChild(connect(approval));
     yield* Effect.promise(() => vi.waitFor(() => expect(handed).toEqual([KEY])));
     yield* TestClock.adjust("91 seconds");
-    expect(yield* Effect.flip(Fiber.join(connecting))).toMatchObject({ _tag: "Validation", message: "Your servers didn't finish in time. Check again in a minute." });
+    return yield* Fiber.join(connecting);
   }).pipe(Effect.provide(TestClock.layer())));
-  expect(await run(deny(approval.id))).toMatchObject({ ok: false, refusal: { code: "conflict" } });
+  expect(timedOut).toMatchObject({ approval: { status: "approved" }, sent: { problem: "Your servers didn't finish in time. Check again in a minute." } });
 
-  placeRouter();
-  expect(await freshStatus(approval.id)).toBe("pending");
-  expect(await run(deny(approval.id))).toMatchObject({ ok: false, refusal: { code: "conflict" } });
-
-  ageRouters(REFUSED_RESTARTS_MS);
+  unreadable = true;
   expect(await freshStatus(approval.id)).toBe("approved");
-});
-
-it("lets go once the Servers' new router stays stopped after Cloud stopped waiting, so a corrected key can follow", async () => {
-  const approval = await askedOn();
-  paused = new Promise(() => {});
-  await run(Effect.gen(function* () {
-    const connecting = yield* Effect.forkChild(connect(approval));
-    yield* Effect.promise(() => vi.waitFor(() => expect(handed).toEqual([KEY])));
-    yield* TestClock.adjust("91 seconds");
-    yield* Effect.flip(Fiber.join(connecting));
-  }).pipe(Effect.provide(TestClock.layer())));
+  expect(await run(deny(approval.id))).toMatchObject({ ok: false, refusal: { code: "conflict" } });
+  unreadable = false;
   placeRouter({ state: "exited", code: 0 });
-  ageRouters(REFUSED_RESTARTS_MS);
-  expect(await freshStatus(approval.id)).toBe("pending");
-  paused = null;
-  expect((await run(connect(approval))).decided?.status).toBe("approved");
-});
-
-it("approves once the Servers took the key, even when the request is aborted during the final write", async () => {
-  const approval = await askedOn();
-  await harness.pool.query(`
-    create or replace function pause_approving() returns trigger language plpgsql as $$ begin perform pg_advisory_xact_lock(4029); return new; end $$;
-    create trigger approving before update on operation_approvals for each row when (new.status = 'approved') execute function pause_approving();
-  `);
-  const locker = await harness.pool.connect();
-  try {
-    await locker.query("select pg_advisory_lock(4029)");
-    await run(Effect.gen(function* () {
-      const connecting = yield* Effect.forkChild(connect(approval));
-      yield* Effect.promise(() => vi.waitFor(async () => expect(await blockedOn('update "operation_approvals" set "status"')).toBe(true)));
-      const aborting = yield* Effect.forkChild(Fiber.interrupt(connecting));
-      yield* Effect.promise(() => locker.query("select pg_advisory_unlock(4029)"));
-      yield* Fiber.join(aborting);
-    }));
-  } finally {
-    await locker.query("select pg_advisory_unlock_all()");
-    locker.release();
-  }
-  expect(await statusOf(approval.id)).toBe("approved");
-});
-
-it("keeps the Approval claimed when the final write fails, and approves it from the Servers' routers once they read", async () => {
-  const approval = await askedOn();
-  await harness.pool.query(`
-    create or replace function refuse_approving() returns trigger language plpgsql as $$ begin raise exception 'the database refused the write'; end $$;
-    create trigger approving before update on operation_approvals for each row when (new.status = 'approved') execute function refuse_approving();
-  `);
-  await expect(run(connect(approval))).rejects.toThrow();
-  expect(await statusOf(approval.id)).toBe("pending");
-  expect(await run(deny(approval.id))).toMatchObject({ ok: false, refusal: { code: "conflict" } });
-
-  await harness.pool.query("drop trigger approving on operation_approvals");
-  expect(await freshStatus(approval.id)).toBe("pending");
-  ageRouters(REFUSED_RESTARTS_MS);
   expect(await freshStatus(approval.id)).toBe("approved");
+});
+
+it("refuses Connect before deciding when the Servers can't be reached, so the ask stays pending", async () => {
+  const approval = await askedOn();
+  disconnected = true;
+  await expect(run(connect(approval))).rejects.toMatchObject({ _tag: "Validation" });
+  expect(handed).toEqual([]);
+  expect(await statusOf(approval.id)).toBe("pending");
 });
 
 it("names a refused key apart from a Server that didn't answer", async () => {
