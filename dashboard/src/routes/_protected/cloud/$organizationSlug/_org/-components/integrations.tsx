@@ -1,6 +1,6 @@
 import { type ReactNode, useState } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
-import { getRouteApi, Link } from "@tanstack/react-router";
+import { Link } from "@tanstack/react-router";
 import { ExternalLinkIcon } from "lucide-react";
 import { ConfirmDialog } from "#/components/confirm-dialog";
 import { CopyButton } from "#/components/copy-button";
@@ -10,7 +10,6 @@ import { Button } from "#/components/ui/button";
 import { Input } from "#/components/ui/input";
 import { Spinner } from "#/components/ui/spinner";
 import { toErrorMessage } from "#/lib/error-message";
-import { useRoleGate } from "#/modules/organization/members.queries";
 import {
   authKeyProblem,
   type ObservedServer,
@@ -21,14 +20,12 @@ import {
 import { setPrivateAccessServerFn } from "#/modules/private-access/private-access.functions";
 import { privateAccessKeys, privateAccessQueryOptions } from "#/modules/private-access/private-access.queries";
 
-const organizationRoute = getRouteApi("/_protected/cloud/$organizationSlug");
-
 const LINUX = "tailscale up --accept-routes";
 
-export function Integrations({ organizationSlug }: { organizationSlug: string }) {
+export function Integrations({ organizationSlug, editable }: { organizationSlug: string; editable: boolean }) {
   return (
     <div className="flex flex-col gap-6">
-      <TailscaleSection organizationSlug={organizationSlug} />
+      <TailscaleSection organizationSlug={organizationSlug} editable={editable} />
       <SettingsSection id="cloudflare" title="Cloudflare">
         <SettingsRow label="Cloudflare Tunnel" hint="Serve web traffic through Cloudflare." commit="none"
           control={<Button variant="outline" size="sm" nativeButton={false} render={<Link to="/cloud/$organizationSlug/~/settings" params={{ organizationSlug }} search={{ section: "network" }} />}>Open Network</Button>} />
@@ -41,11 +38,8 @@ export function Integrations({ organizationSlug }: { organizationSlug: string })
   );
 }
 
-function TailscaleSection({ organizationSlug }: { organizationSlug: string }) {
+function TailscaleSection({ organizationSlug, editable }: { organizationSlug: string; editable: boolean }) {
   const queryClient = useQueryClient();
-  const { access } = organizationRoute.useLoaderData();
-  const gate = useRoleGate(organizationSlug, "servers:operate");
-  const editable = access !== "support" && gate.allowed;
   const query = useQuery(privateAccessQueryOptions(organizationSlug));
   const observed = query.data ?? null;
   const [connecting, setConnecting] = useState(false);
