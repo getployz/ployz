@@ -87,10 +87,11 @@ service still gets the real value when it deploys.
   [A new server joined, but Global catch-up can't read another server](../troubleshooting/servers.md#a-new-server-joined-but-global-catch-up-cant-read-another-server).
 - On servers with
   [device enforcement](../servers/manage-servers.md#require-a-devices-signature-for-restarts-and-joins)
-  on, a deploy approved with your [passkey](../servers/manage-servers.md#add-a-passkey) opens
-  only the sealed values of the environment you approved it in. If a service in it carries
-  another environment's sealed values, each server refuses to create that service and names
-  it. A deploy approved from your device opens any of your sealed values.
+  on, a deploy approved from your device opens any of your sealed values. Approving deploys
+  with a [passkey](../servers/manage-servers.md#add-a-passkey) arrives in a later release, and
+  a passkey approval will open only the sealed values of the environment you approved it in:
+  each server refuses to create a service that carries another environment's sealed values,
+  and names it.
 - Your sealed values open only on your servers. Keep your organization's
   [recovery code](../servers/recovery-code.md): if you lose every server, it's the only way to
   open them again.
