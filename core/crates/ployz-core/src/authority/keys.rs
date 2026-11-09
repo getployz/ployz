@@ -24,6 +24,9 @@ pub enum Purpose {
     Workflow,
     Join,
     Enforce,
+    /// Standing authority over every future push, such as an automatic deploy rule. Only a
+    /// Device signs one: a session grant covers workflows only.
+    Rule,
 }
 
 impl Purpose {
@@ -33,6 +36,7 @@ impl Purpose {
             Self::Workflow => "workflow",
             Self::Join => "join",
             Self::Enforce => "enforce",
+            Self::Rule => "rule",
         }
     }
 }

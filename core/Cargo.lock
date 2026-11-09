@@ -4243,6 +4243,7 @@ dependencies = [
  "rcgen",
  "regex",
  "reqwest",
+ "ring",
  "rusqlite",
  "rustix",
  "rustls",
