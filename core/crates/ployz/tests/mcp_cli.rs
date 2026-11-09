@@ -199,7 +199,10 @@ fn a_device_key_beside_the_config_is_never_read_and_the_first_line_says_so() {
     stderr.read_to_string(&mut rest).unwrap();
     for seen in [&answer, &rest] {
         assert!(!seen.contains("device.key"), "{seen}");
-        assert!(!seen.contains("signature") && !seen.contains("grant"), "{seen}");
+        assert!(
+            !seen.contains("signature") && !seen.contains("grant"),
+            "{seen}"
+        );
     }
 }
 
