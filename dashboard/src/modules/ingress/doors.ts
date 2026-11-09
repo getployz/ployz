@@ -98,16 +98,32 @@ export const unservedMoves = (published: readonly PublishedHostname[], moving: r
   moving.filter((move) => !published.some(({ hostname, namespace }) => hostname === move.to && namespace === move.namespace));
 
 /**
- * Every hostname Services publish under `from` and the one it becomes under `to`. A custom domain isn't under the
- * Cluster Domain, so it doesn't move.
+ * Every generated hostname Services publish one label under `from` and the one it becomes under `to`. A custom domain
+ * keeps its route whatever the source, so one spelled the same way (`custom`, by the Store's word) doesn't move.
  */
-export function movedHostnames(published: readonly PublishedHostname[], from: string, to: string): MovedHostname[] {
-  const suffix = `.${from}`;
+export function movedHostnames(published: readonly PublishedHostname[], from: string, to: string, custom: ReadonlySet<string>): MovedHostname[] {
   return published
-    .filter(({ hostname }) => hostname.endsWith(suffix) && !hostname.slice(0, -suffix.length).includes("."))
-    .map(({ hostname, namespace, service }) => ({ from: hostname, to: `${hostname.slice(0, -suffix.length)}.${to}`, namespace, service }))
+    .flatMap(({ hostname, namespace, service }) => {
+      const label = labelUnder(hostname, from);
+      return label === null || custom.has(hostname) ? [] : [{ from: hostname, to: `${label}.${to}`, namespace, service }];
+    })
     .sort((a, b) => a.from.localeCompare(b.from));
 }
+
+/** The label of `hostname` one level under `zone`, where generated names sit, or null. */
+const labelUnder = (hostname: string, zone: string) => {
+  const suffix = `.${zone}`;
+  if (!hostname.endsWith(suffix)) return null;
+  const label = hostname.slice(0, -suffix.length);
+  return label.length > 0 && !label.includes(".") ? label : null;
+};
+
+/**
+ * The custom domains the Servers publish. A switch leaves each where it is, but its DNS still points at the Door the
+ * switch closes, so the review names them for the user to repoint.
+ */
+export const keptHostnames = (published: readonly PublishedHostname[], custom: ReadonlySet<string>) =>
+  [...new Set(published.map(({ hostname }) => hostname).filter((hostname) => custom.has(hostname)))].sort((a, b) => a.localeCompare(b));
 
 /** An Environment a switch redeploys, with only the Services whose hostnames move, by their names in the Store. */
 export type RedeployScope = { readonly namespace: string; readonly project: string; readonly environment: string; readonly services: readonly string[] };

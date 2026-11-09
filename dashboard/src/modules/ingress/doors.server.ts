@@ -22,6 +22,7 @@ import {
   type DoorsWant,
   type LatestDoorsChange,
   type MovedHostname,
+  keptHostnames,
   movedHostnames,
   observationGap,
   redeployScope,
@@ -111,18 +112,34 @@ export const observeClusterIngress = Effect.fn("IngressDoors.observe")(function*
  * What a switch to `to` moves, from what the Servers showed: every generated hostname they publish under the source the
  * switch leaves, with the Service publishing it. Nothing before Cloudflare is set up or the Hosted name exists.
  */
-const movesOf = (setup: CloudflareSetup | null, hosted: string | null, seen: ClusterIngressObservation, to: DoorsWant) => {
+const movesOf = (setup: CloudflareSetup | null, hosted: string | null, seen: ClusterIngressObservation, to: DoorsWant, custom: ReadonlySet<string>) => {
   const zone = setup?.zone ?? null;
   if (zone === null || hosted === null) return [];
-  return to === "tunnel" ? movedHostnames(seen.hostnames, hosted, zone) : movedHostnames(seen.hostnames, zone, hosted);
+  return to === "tunnel" ? movedHostnames(seen.hostnames, hosted, zone, custom) : movedHostnames(seen.hostnames, zone, hosted, custom);
 };
+
+/**
+ * The custom hostnames of every Environment that owns a Namespace, as the Store holds them. Behind Cloudflare a custom
+ * domain may sit one label under the zone, spelled like a generated name, so what the Servers publish can't tell the two apart.
+ */
+const customHostnames = Effect.fn("IngressDoors.custom")(function* (organizationId: string) {
+  const owned = yield* owners(organizationId);
+  const views = yield* Effect.forEach(
+    owned,
+    ({ project, environment }) => readStore(organizationId, { query: "domains", environment: { project, environment }, service: null }),
+    { concurrency: 4 },
+  );
+  return new Set(views.flatMap(({ domains }) => domains.flatMap((domain) => domain.kind === "custom" ? [String(domain.hostname)] : [])));
+});
 
 /** One look at the Cluster for a switch to `to`: its setup, Hosted name, what the Servers showed and the moves that follow. */
 const switchSeen = Effect.fn("IngressDoors.seen")(function* (organizationId: string, to: DoorsWant) {
   const setup = yield* loadCloudflareSetup(organizationId);
   const hosted = (yield* loadClusterDomain(organizationId))?.name ?? null;
   const seen = yield* observeClusterIngress(organizationId);
-  return { setup, hosted, seen, moving: seen === null ? [] : movesOf(setup, hosted, seen, to) };
+  if (seen === null) return { setup, hosted, seen, moving: [], kept: [] };
+  const custom = yield* customHostnames(organizationId);
+  return { setup, hosted, seen, moving: movesOf(setup, hosted, seen, to, custom), kept: keptHostnames(seen.hostnames, custom) };
 });
 
 /**
@@ -131,21 +148,24 @@ const switchSeen = Effect.fn("IngressDoors.seen")(function* (organizationId: str
  * Cloud can name the move, and always, since a switch changes where every address points.
  */
 export const switchAsked = Effect.fn("IngressDoors.asked")(function* (organizationId: string, to: DoorsWant) {
-  const { setup, hosted, moving } = yield* switchSeen(organizationId, to);
+  const { setup, hosted, moving, kept } = yield* switchSeen(organizationId, to);
   return {
     subject: `cluster:${organizationId}`,
     verb: "set_ingress_doors",
     name: to === "tunnel" ? "to Cloudflare" : "to public ports",
-    preview: { to, zone: setup?.zone ?? null, hostedName: hosted, hostnames: moving.map(({ from, to: next }) => ({ from, to: next })) },
+    preview: { to, zone: setup?.zone ?? null, hostedName: hosted, hostnames: moving.map(({ from, to: next }) => ({ from, to: next })), kept },
     effects: moving.map(({ from, namespace, service }) => ({ kind: "removes_domain", name: from, node: from, path: `${namespace}/${service}.managedHostnames` })),
     alwaysAsks: true,
   } satisfies OperationAsked;
 });
 
-/** The review before a human confirms: the moves the Servers showed, and why the list may be short when they didn't all answer. */
+/**
+ * The review before a human confirms: the moves the Servers showed, the custom domains that stay and need their DNS
+ * repointed, and why the lists may be short when the Servers didn't all answer.
+ */
 export const reviewSwitch = Effect.fn("IngressDoors.review")(function* (organizationId: string, to: DoorsWant) {
-  const { setup, hosted, seen, moving } = yield* switchSeen(organizationId, to);
-  return { moves: moving.map(({ from, to: next }) => ({ from, to: next })), zone: setup?.zone ?? null, hostedName: hosted, gap: observationGap(seen) };
+  const { setup, hosted, seen, moving, kept } = yield* switchSeen(organizationId, to);
+  return { moves: moving.map(({ from, to: next }) => ({ from, to: next })), kept, zone: setup?.zone ?? null, hostedName: hosted, gap: observationGap(seen) };
 });
 
 const Switched = Schema.Struct({ to: Schema.Literals(["tunnel", "public"]) });

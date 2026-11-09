@@ -970,6 +970,57 @@ fn behind_a_tunnel_a_custom_domain_may_sit_in_the_users_own_zone() {
     }
 }
 
+#[test]
+fn behind_a_tunnel_a_custom_name_and_a_generated_prefix_never_share_a_hostname() {
+    let (store, who) = shop();
+    let mut trusted = cloud();
+    trusted.domains.cluster_domain.as_mut().unwrap().name = host("acme-apps.com");
+    trusted.domains.tunnel = Some(TunnelEvidence {
+        target: host("0a1b2c.cfargotunnel.com"),
+        reached: Vec::new(),
+    });
+    let staging = |hostname: &str| AddDomain {
+        environment: at(Some("staging")),
+        ..add(Some(hostname), None)
+    };
+    // production's web generates shop.acme-apps.com: no Service may take it as a custom name.
+    store
+        .write_trusted(&who, &add_prefix("shop"), &trusted)
+        .unwrap();
+    let refused = store
+        .write_trusted(&who, &staging("shop.acme-apps.com"), &trusted)
+        .unwrap_err();
+    assert_eq!(refused.code, RpcErrorCode::Conflict);
+    assert_eq!(
+        refused.message,
+        "shop.acme-apps.com is already the generated domain of web in shop/production"
+    );
+    let own = store
+        .write_trusted(&who, &add(Some("shop.acme-apps.com"), None), &trusted)
+        .unwrap_err();
+    assert_eq!(own.code, RpcErrorCode::Conflict);
+    // The other way round: a custom name in the zone keeps its label from every generated domain.
+    store
+        .write_trusted(&who, &staging("blog.acme-apps.com"), &trusted)
+        .unwrap();
+    let refused = store
+        .write_trusted(&who, &add_prefix("blog"), &trusted)
+        .unwrap_err();
+    assert_eq!(refused.code, RpcErrorCode::Conflict);
+    assert_eq!(
+        refused.message,
+        "blog.acme-apps.com is already the custom domain of web in shop/staging"
+    );
+    let renamed = store
+        .write_trusted(&who, &set_prefix(None, "blog"), &trusted)
+        .unwrap_err();
+    assert_eq!(renamed.code, RpcErrorCode::Conflict);
+    // A deeper name shares no label with a generated domain.
+    store
+        .write_trusted(&who, &staging("a.shop.acme-apps.com"), &trusted)
+        .unwrap();
+}
+
 /// `cloud()` with `hostname` published by `service` in Namespace `namespace`.
 fn publishing(hostname: &str, namespace: &str, service: &str) -> Trusted {
     let mut trusted = cloud();

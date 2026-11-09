@@ -61,6 +61,12 @@ ports 80 and 443 again and your addresses return to your organization's domain. 
 the `*.example.com` record stay in your Cloudflare account. Delete them there when you're done
 with them.
 
+A switch either way moves only generated addresses. Your custom domains stay on their services,
+and the review lists them: their DNS still points at the door that closes, so they stop answering
+until you update their records. Each one's row under its service shows the records to set once
+the switch is done. A custom domain in your zone, like `shop.example.com`, is one of them, even
+though it looks like a generated address.
+
 `ployz cluster web-traffic cloudflare` and `ployz cluster web-traffic public` ask for the same
 switch from the CLI. They wait for an owner or admin to approve it in the dashboard, as do
 agents. Approved while a switch the same way already runs, they say so and start no second one.

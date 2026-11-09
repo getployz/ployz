@@ -1,6 +1,7 @@
 import "@tanstack/react-start/server-only";
 import { Effect, Schema } from "effect";
 import { defineCommand, refused } from "#/modules/commands/command.server";
+import type { CloudStore } from "#/modules/config-store/store-sdk.server";
 import { wantWords } from "#/modules/ingress/doors";
 import { requestDoorsSwitch, switchAsked } from "#/modules/ingress/doors.server";
 import { OPERATIONS } from "#/modules/operations/operations";
@@ -8,8 +9,8 @@ import type { OrganizationRuntime } from "#/modules/runtime/organization-runtime
 
 const use = OPERATIONS["ingress.use"];
 
-/** The command's ask looks at the Servers, so its run names the same services; a command's two halves share one requirement. */
-const withRuntime = <A, E, R>(effect: Effect.Effect<A, E, R>): Effect.Effect<A, E, R | OrganizationRuntime> => effect;
+/** The command's ask looks at the Servers and reads the Store, so its run names the same services; a command's two halves share one requirement. */
+const withRuntime = <A, E, R>(effect: Effect.Effect<A, E, R>): Effect.Effect<A, E, R | OrganizationRuntime | CloudStore> => effect;
 
 const Where = Schema.Literals(["public", "cloudflare"]).annotate({
   description: "public or cloudflare. Cloudflare needs the setup done in Settings.",
@@ -25,7 +26,10 @@ export const webTrafficUse = defineCommand({
   removes: false,
   gate: {
     gate: "ask",
-    asked: (caller, input) => switchAsked(caller.organization.id, input.to === "cloudflare" ? "tunnel" : "public"),
+    // The ask reads the Store for the custom domains that stay. A Store Cloud can't open is Cloud's own fault, not a refusal.
+    asked: (caller, input) => switchAsked(caller.organization.id, input.to === "cloudflare" ? "tunnel" : "public").pipe(
+      Effect.catchTag("ConfigStoreOpenFailure", (failure) => Effect.die(failure)),
+    ),
   },
   agents: true,
   typed: null,

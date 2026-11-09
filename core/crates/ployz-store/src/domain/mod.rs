@@ -87,12 +87,25 @@ pub struct TunnelEvidence {
     pub reached: Vec<TunnelReach>,
 }
 
-/// Whether a fetch through one hostname reached a Server of the Cluster.
+/// What one fetch through a hostname found.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
 #[serde(deny_unknown_fields)]
 pub struct TunnelReach {
     pub hostname: Hostname,
-    pub reached: bool,
+    pub answer: TunnelAnswer,
+}
+
+/// Who answered a fetch through a hostname. A fetch that finished says one of these; one
+/// that was never made leaves the hostname out of [`TunnelEvidence::reached`].
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "snake_case")]
+pub enum TunnelAnswer {
+    /// A Server of this Cluster: the hostname reaches the tunnel.
+    Cluster,
+    /// Something else, or nothing: DNS sends the hostname elsewhere, or nowhere.
+    Elsewhere,
+    /// Nobody: the connection was refused, its TLS failed, or it timed out.
+    Unanswered,
 }
 
 /// A hostname a Service on the Servers publishes.
@@ -447,6 +460,31 @@ pub(crate) fn add_domain(
     if let Some(prefix) = &add.prefix {
         refuse_taken(tx, who, &taken, prefix.as_str())?;
     }
+    // A custom name one label under the Cluster Domain is spelled like a generated domain,
+    // so no generated domain of the Organization may hold its label.
+    if let (Some(hostname), Some(cluster)) = (&add.hostname, &cluster)
+        && let Some(label) = label_under(hostname.as_str(), cluster)
+    {
+        let generated_by = |holder: &str| {
+            error::conflict(
+                format!("{hostname} is already the generated domain of {holder}"),
+                json!({ "hostname": hostname }),
+            )
+        };
+        if own_prefixes.iter().any(|prefix| prefix == label) {
+            let summary = &environment.summary;
+            return Err(generated_by(&format!(
+                "{} in {}/{}",
+                add.service, summary.project, summary.name
+            )));
+        }
+        match taken.iter().find(|(taken, _)| taken == label) {
+            Some((_, Holder::Generated(holder))) => return Err(generated_by(holder)),
+            Some((_, Holder::Published(published))) => return Err(clash(tx, who, published)?),
+            // Another Service's custom domain is refused below, by name.
+            Some((_, Holder::Custom { .. })) | None => {}
+        }
+    }
     if let Some(hostname) = &add.hostname {
         crate::names::refuse_taken(
             tx,
@@ -642,44 +680,90 @@ pub(crate) fn set_generated_domain(
     })
 }
 
-/// Refuse `prefix` when another Service's generated domain or another Namespace's
-/// published hostname holds it.
+/// Who holds a label a generated domain can't take.
+enum Holder<'t> {
+    /// Another Service's generated domain: `service in project/environment`.
+    Generated(String),
+    /// A custom domain one label under the Cluster Domain, by its hostname and
+    /// `service in project/environment`.
+    Custom { hostname: String, holder: String },
+    /// A hostname another Namespace publishes under the Cluster Domain.
+    Published(&'t PublishedHostname),
+}
+
+/// Refuse `prefix` when a generated domain, a custom domain under the Cluster Domain or
+/// another Namespace's published hostname holds it.
 fn refuse_taken(
     tx: &mut dyn Tx,
     who: &Actor,
-    taken: &[(String, Option<&PublishedHostname>)],
+    taken: &[(String, Holder<'_>)],
     prefix: &str,
 ) -> Result<(), RpcError> {
     match taken.iter().find(|(taken, _)| taken == prefix) {
-        Some((_, Some(published))) => Err(clash(tx, who, published)?),
-        Some((_, None)) => Err(error::conflict(
+        Some((_, Holder::Published(published))) => Err(clash(tx, who, published)?),
+        Some((_, Holder::Generated(_))) => Err(error::conflict(
             format!("Another generated domain of this Organization is {prefix}"),
             json!({ "prefix": prefix }),
+        )),
+        Some((_, Holder::Custom { hostname, holder })) => Err(error::conflict(
+            format!("{hostname} is already the custom domain of {holder}"),
+            json!({ "prefix": prefix, "hostname": hostname }),
         )),
         None => Ok(()),
     }
 }
 
-/// Each prefix a generated domain of Service `own` in `environment` can't take,
-/// with who holds it: another Service's generated domain in the Organization
-/// (none), or a hostname another Namespace publishes under `cluster`.
+/// The label of `hostname` one level under `cluster`, when it is one.
+fn label_under<'h>(hostname: &'h str, cluster: &Hostname) -> Option<&'h str> {
+    let label = hostname.strip_suffix(cluster.as_str())?.strip_suffix('.')?;
+    (!label.is_empty() && !label.contains('.')).then_some(label)
+}
+
+/// Each label a generated domain of Service `own` in `environment` can't take, with who
+/// holds it: another Service's generated domain in the Organization, any Service's custom
+/// domain one label under `cluster` (its own included), or a hostname another Namespace
+/// publishes under `cluster`.
 fn taken_prefixes<'t>(
     tx: &mut dyn Tx,
     who: &Actor,
     environment: &Environment,
     own: &str,
     (trusted, cluster): (&'t Trusted, Option<&Hostname>),
-) -> Result<Vec<(String, Option<&'t PublishedHostname>)>, RpcError> {
-    let mut taken: Vec<(String, Option<&PublishedHostname>)> =
-        crate::names::other_environments(tx, environment)?
-            .iter()
-            .map(|other| &other.working)
-            .chain(std::iter::once(&environment.working))
-            .flat_map(|intent| &intent.services)
-            .filter(|service| service.id != own)
-            .flat_map(|service| &service.config.managed_hostnames)
-            .map(|managed| (managed.prefix.clone(), None))
-            .collect();
+) -> Result<Vec<(String, Holder<'t>)>, RpcError> {
+    let others = crate::names::other_environments(tx, environment)?;
+    let summary = &environment.summary;
+    let environments = others
+        .iter()
+        .map(|other| (format!("{}/{}", other.project, other.name), &other.working))
+        .chain(std::iter::once((
+            format!("{}/{}", summary.project, summary.name),
+            &environment.working,
+        )));
+    let mut taken = Vec::new();
+    for (environment, intent) in environments {
+        for service in &intent.services {
+            let holder = || format!("{} in {environment}", service.slug);
+            if service.id != own {
+                taken.extend(
+                    service
+                        .config
+                        .managed_hostnames
+                        .iter()
+                        .map(|managed| (managed.prefix.clone(), Holder::Generated(holder()))),
+                );
+            }
+            if let Some(cluster) = cluster {
+                taken.extend(service.config.routes.iter().filter_map(|route| {
+                    let label = label_under(&route.hostname, cluster)?;
+                    let custom = Holder::Custom {
+                        hostname: route.hostname.clone(),
+                        holder: holder(),
+                    };
+                    Some((label.to_owned(), custom))
+                }));
+            }
+        }
+    }
     if let Some(cluster) = cluster {
         let namespace = crate::deployment::namespace(tx, who, &environment.summary, false)?;
         let under = format!(".{cluster}");
@@ -691,7 +775,7 @@ fn taken_prefixes<'t>(
                 .filter(|published| published.namespace != namespace)
                 .filter_map(|published| {
                     let prefix = published.hostname.as_str().strip_suffix(&under)?;
-                    Some((prefix.to_owned(), Some(published)))
+                    Some((prefix.to_owned(), Holder::Published(published)))
                 })
                 .collect::<Vec<_>>(),
         );

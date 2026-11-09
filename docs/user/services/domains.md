@@ -119,12 +119,15 @@ With a [Cloudflare Tunnel](cloudflare-tunnel.md), no visitor reaches your server
 
 | Your domain | What to do |
 | --- | --- |
-| In your Cloudflare zone, like `shop.example.com` | Nothing. The zone's `*.example.com` record covers it. |
+| In your Cloudflare zone, like `shop.example.com` | Nothing, unless the name has a record of its own. Then replace that record with the CNAME. |
 | Elsewhere, like `shop.example.org` | Create the CNAME, with **Proxied** on. Delete any other A, AAAA or CNAME record for the name. |
 
-The row turns live once the name reaches your tunnel. Ployz checks by asking the domain for a page only your servers answer, so it works behind Cloudflare's
+The row turns live once the name reaches your tunnel. Ployz checks every custom domain the same way, by asking it for a page only your servers answer, so it works behind Cloudflare's
 proxy. A name two levels under your zone, like `a.shop.example.com`, shows
 **The free certificate covers one level under example.com**. Use `shop-a.example.com`.
+
+A name in your zone can't be both a custom domain and a generated address. `shop.example.com` as a
+custom domain refuses the generated prefix `shop` for every service, and the other way round.
 
 ## Use https
 
@@ -154,9 +157,9 @@ A live domain shows no status.
 | **Port 80 is closed on …** (shown only when no server takes the traffic) | [Open port 80](../troubleshooting/app-not-reachable.md#port-80-is-closed) in that server's firewall, for example `ufw allow 80/tcp`. |
 | **Something else answers on port 80 of …** (shown only when no server takes the traffic) | [Free port 80](../troubleshooting/app-not-reachable.md#something-else-answers-on-port-80) on that server. |
 | **Ingress isn't running on …** (shown only when no server takes the traffic) | [Deploy](../troubleshooting/app-not-reachable.md#ingress-isnt-running) to bring it back. |
-| **Not reaching your tunnel** | [Point the name at your tunnel](../troubleshooting/app-not-reachable.md#my-custom-domain-isnt-reaching-my-cloudflare-tunnel). |
+| **Not reaching your tunnel**, **No answer over HTTPS** | [Point the name at your tunnel](../troubleshooting/app-not-reachable.md#my-custom-domain-isnt-reaching-my-cloudflare-tunnel). |
 | **The free certificate covers one level under …** | Use a name one level under that zone, like `shop-a.example.com`. |
-| **Checking DNS** | Nothing. It settles on its own. |
+| **Checking DNS** | Nothing. Ployz hasn't asked the name yet; it does on the next look. |
 | **No Server receives traffic** | [Add a server](../servers/add-a-server.md). |
 | **via proxy** | Nothing. It works behind a proxy like Cloudflare. |
 | **via tunnel** | Nothing. It's served through your [Cloudflare Tunnel](cloudflare-tunnel.md). |

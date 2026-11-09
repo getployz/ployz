@@ -2,6 +2,7 @@ import "@tanstack/react-start/server-only";
 import { lookup as resolve, type LookupAddress } from "node:dns";
 import { request } from "node:https";
 import { BlockList, isIP, type LookupFunction } from "node:net";
+import type { TunnelAnswer } from "@ployz/sdk";
 import { Effect } from "effect";
 
 /** Every Server answers it with its Machine id, behind any door (core `HOSTNAME_VERIFY_PATH`). */
@@ -39,18 +40,22 @@ const publicLookup: LookupFunction = (hostname, options, done) => {
   });
 };
 
-/** `true` when a Server of the Cluster answered through `hostname`, `false` when DNS or something else answered, `null` when this look couldn't tell. */
-export type Reach = boolean | null;
-
 const NOT_FOUND = new Set(["ENOTFOUND", "ENODATA", "ENOTPUBLIC"]);
 
 /**
- * Whether `hostname` reaches the Cluster through Cloudflare: fetch the verify path over https and read a Machine id of
- * the Cluster from the answer. DNS can't say, since Cloudflare hides a proxied CNAME behind its own addresses. A name
- * that doesn't resolve, or resolves only inward, or answers with anything else, doesn't reach it. A refused connection,
- * a bad certificate or a timeout says nothing about DNS, so those are `null`.
+ * What a fetch that failed with `code` says: a name DNS sends nowhere, or only inward, answers from elsewhere; a
+ * refused connection, a failed TLS handshake or a timeout is nobody answering.
  */
-export const reachesCluster = (hostname: string, machineIds: ReadonlySet<string>): Effect.Effect<Reach> => isIP(hostname) !== 0 ? Effect.succeed(false) : Effect.tryPromise({
+export const failedAnswer = (code: string | undefined): TunnelAnswer => code !== undefined && NOT_FOUND.has(code) ? "elsewhere" : "unanswered";
+
+/**
+ * Who answers through `hostname` behind Cloudflare: fetch the verify path over https and read a Machine id of the
+ * Cluster from the answer. DNS can't say, since Cloudflare hides a proxied CNAME behind its own addresses. A Server's
+ * id means the Cluster; a name that doesn't resolve, resolves only inward, or answers with anything else means
+ * elsewhere; a refused connection, a failed TLS handshake or a timeout means nobody answered, which a user fixes the
+ * same way and so is told about rather than left unobserved.
+ */
+export const reachesCluster = (hostname: string, machineIds: ReadonlySet<string>): Effect.Effect<TunnelAnswer> => isIP(hostname) !== 0 ? Effect.succeed("elsewhere") : Effect.tryPromise({
   try: (signal) => new Promise<boolean>((done, fail) => {
     const asked = request({
       host: hostname, path: VERIFY_PATH, method: "GET", lookup: publicLookup, signal, timeout: REACH_TIMEOUT_MS,
@@ -74,9 +79,11 @@ export const reachesCluster = (hostname: string, machineIds: ReadonlySet<string>
   // SAFETY: the promise rejects only with what `request` emits, a Node system error, which may carry a `code`.
   catch: (error) => error as NodeJS.ErrnoException,
 }).pipe(
+  Effect.map((cluster): TunnelAnswer => cluster ? "cluster" : "elsewhere"),
   Effect.timeout(REACH_TIMEOUT_MS + 1_000),
-  Effect.catch((error): Effect.Effect<Reach> => {
+  Effect.catch((error) => {
     const code = "code" in error ? error.code : undefined;
-    return code !== undefined && NOT_FOUND.has(code) ? Effect.succeed(false) : Effect.logWarning("A fetch through a hostname didn't finish; its DNS reads as unobserved.", { hostname, code }).pipe(Effect.as(null));
+    const answer = failedAnswer(code);
+    return answer === "unanswered" ? Effect.logInfo("A fetch through a hostname got no answer.", { hostname, code }).pipe(Effect.as(answer)) : Effect.succeed(answer);
   }),
 );

@@ -7,6 +7,7 @@ import {
   doorsGap,
   doorWords,
   type LatestDoorsChange,
+  keptHostnames,
   movedHostnames,
   type MovedHostname,
   observationGap,
@@ -101,9 +102,23 @@ describe("what a switch moves", () => {
   ];
 
   it("moves each generated hostname one label below the new source, and leaves custom domains alone", () => {
-    expect(movedHostnames(published, "acme.ployz.app", "example.com")).toEqual([
+    expect(movedHostnames(published, "acme.ployz.app", "example.com", new Set(["www.example.org"]))).toEqual([
       { from: "web-prod.acme.ployz.app", to: "web-prod.example.com", namespace: "shop-prod", service: "web" },
     ]);
+  });
+
+  it("tells a custom domain spelled like a generated name by the Store's word, not its shape, and lists it as staying", () => {
+    const back = [
+      { hostname: "web-prod.example.com", namespace: "shop-prod", service: "web" },
+      { hostname: "shop.example.com", namespace: "shop-prod", service: "shop" },
+      { hostname: "www.example.org", namespace: "shop-prod", service: "web" },
+    ];
+    const custom = new Set(["shop.example.com", "www.example.org"]);
+    expect(movedHostnames(back, "example.com", "acme.ployz.app", custom)).toEqual([
+      { from: "web-prod.example.com", to: "web-prod.acme.ployz.app", namespace: "shop-prod", service: "web" },
+    ]);
+    expect(keptHostnames(back, custom)).toEqual(["shop.example.com", "www.example.org"]);
+    expect(keptHostnames(back, new Set())).toEqual([]);
   });
 
   it("redeploys only the deployed Services publishing a moved hostname, by their Store names, and never a whole Environment", () => {

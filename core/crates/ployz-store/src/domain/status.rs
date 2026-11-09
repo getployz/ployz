@@ -274,32 +274,33 @@ fn tunnel_path<'zone>(hostname: &Hostname, evidence: &'zone DomainEvidence) -> T
 
 /// A custom domain's status while Cloudflare serves the Cluster: the Servers' public
 /// addresses and port 80 don't apply, so only whether the hostname reaches the tunnel does.
+/// Inside the zone a record of the name's own overrides the wildcard, so a fetch judges
+/// every name alike; only a name the free certificate can't cover is told from its path.
 fn tunnel_status(
     hostname: &Hostname,
     tunnel: &TunnelEvidence,
     evidence: &DomainEvidence,
 ) -> Status {
-    let via_tunnel = (DomainStatus::Ready, Some("via tunnel".to_owned()), None);
-    match tunnel_path(hostname, evidence) {
-        TunnelPath::Wildcard => via_tunnel,
-        TunnelPath::TooDeep(zone) => attention(
+    if let TunnelPath::TooDeep(zone) = tunnel_path(hostname, evidence) {
+        return attention(
             format!("The free certificate covers one level under {zone}"),
             None,
-        ),
-        TunnelPath::OwnRecord => {
-            match tunnel
-                .reached
-                .iter()
-                .find(|seen| seen.hostname == *hostname)
-            {
-                Some(seen) if seen.reached => via_tunnel,
-                Some(_) => attention(
-                    format!("Not reaching your tunnel. Point it at {}", tunnel.target),
-                    dns_action(hostname, evidence),
-                ),
-                None => setting_up("Checking DNS"),
-            }
+        );
+    }
+    let answer = tunnel
+        .reached
+        .iter()
+        .find(|seen| seen.hostname == *hostname)
+        .map(|seen| seen.answer);
+    match answer {
+        Some(TunnelAnswer::Cluster) => (DomainStatus::Ready, Some("via tunnel".to_owned()), None),
+        Some(TunnelAnswer::Elsewhere) => {
+            attention("Not reaching your tunnel", dns_action(hostname, evidence))
         }
+        Some(TunnelAnswer::Unanswered) => {
+            attention("No answer over HTTPS", dns_action(hostname, evidence))
+        }
+        None => setting_up("Checking DNS"),
     }
 }
 
@@ -376,8 +377,9 @@ fn points_here(lookup: &DnsLookup, evidence: &DomainEvidence) -> Option<bool> {
 
 /// The records that point `hostname` here: a CNAME to the Cluster Domain, which
 /// follows the ingress Servers, or A/AAAA records to their addresses at an apex or
-/// without a Cluster Domain. Behind a Cloudflare Tunnel, a CNAME to the tunnel, or
-/// none for a name the zone's wildcard already covers.
+/// without a Cluster Domain. Behind a Cloudflare Tunnel, a CNAME to the tunnel: inside
+/// the zone the wildcard supplies it unless a record of the name's own stands in its way,
+/// and none helps a name the free certificate can't cover.
 fn dns_records(hostname: &Hostname, evidence: &DomainEvidence) -> Vec<DnsRecord> {
     // ponytail: the registrable domain is taken as the last two labels; a public-suffix
     // list makes example.co.uk right.
@@ -388,12 +390,12 @@ fn dns_records(hostname: &Hostname, evidence: &DomainEvidence) -> Vec<DnsRecord>
     };
     if let Some(tunnel) = &evidence.tunnel {
         return match tunnel_path(hostname, evidence) {
-            TunnelPath::OwnRecord => vec![DnsRecord {
+            TunnelPath::OwnRecord | TunnelPath::Wildcard => vec![DnsRecord {
                 kind: DnsRecordKind::Cname,
                 name,
                 value: tunnel.target.to_string(),
             }],
-            TunnelPath::Wildcard | TunnelPath::TooDeep(_) => Vec::new(),
+            TunnelPath::TooDeep(_) => Vec::new(),
         };
     }
     if let Some(cluster) = &evidence.cluster_domain
@@ -794,7 +796,7 @@ mod tests {
         );
     }
 
-    fn behind_a_tunnel(reached: &[(&str, bool)]) -> DomainEvidence {
+    fn behind_a_tunnel(reached: &[(&str, TunnelAnswer)]) -> DomainEvidence {
         let mut evidence = evidence(None);
         evidence.cluster_domain = Some(ClusterDomain {
             name: host("acme-apps.com"),
@@ -805,13 +807,21 @@ mod tests {
             target: host("0a1b2c.cfargotunnel.com"),
             reached: reached
                 .iter()
-                .map(|&(name, reached)| TunnelReach {
+                .map(|&(name, answer)| TunnelReach {
                     hostname: host(name),
-                    reached,
+                    answer,
                 })
                 .collect(),
         });
         evidence
+    }
+
+    fn tunnel_cname(name: &str) -> Vec<DnsRecord> {
+        vec![DnsRecord {
+            kind: DnsRecordKind::Cname,
+            name: name.into(),
+            value: "0a1b2c.cfargotunnel.com".into(),
+        }]
     }
 
     fn records(domain: &Domain, evidence: &DomainEvidence) -> Vec<DnsRecord> {
@@ -822,18 +832,35 @@ mod tests {
     }
 
     #[test]
-    fn behind_a_tunnel_a_name_one_level_under_the_zone_is_covered_by_its_wildcard() {
+    fn behind_a_tunnel_a_name_one_level_under_the_zone_is_judged_by_what_answers_through_it() {
+        // The zone's wildcard covers it, unless a record of its own sends it elsewhere: only a
+        // fetch through it tells.
         let domain = custom("shop.acme-apps.com");
-        let evidence = behind_a_tunnel(&[]);
+        let unlooked = behind_a_tunnel(&[]);
         assert_eq!(
-            status(&domain, Deployed::Yes, &evidence),
+            status(&domain, Deployed::Yes, &unlooked),
+            setting_up("Checking DNS")
+        );
+        let reached = behind_a_tunnel(&[("shop.acme-apps.com", TunnelAnswer::Cluster)]);
+        assert_eq!(
+            status(&domain, Deployed::Yes, &reached),
             (DomainStatus::Ready, Some("via tunnel".into()), None)
         );
-        assert_eq!(records(&domain, &evidence), Vec::new());
+        assert_eq!(records(&domain, &reached), tunnel_cname("shop"));
+        let overridden = behind_a_tunnel(&[("shop.acme-apps.com", TunnelAnswer::Elsewhere)]);
+        assert_eq!(
+            status(&domain, Deployed::Yes, &overridden),
+            attention(
+                "Not reaching your tunnel",
+                Some(DomainAction::Dns {
+                    records: tunnel_cname("shop")
+                })
+            )
+        );
         // A suffix that only looks like the zone is another domain.
         let lookalike = custom("shopacme-apps.com");
         assert_eq!(
-            status(&lookalike, Deployed::Yes, &evidence).0,
+            status(&lookalike, Deployed::Yes, &unlooked).0,
             DomainStatus::SettingUp
         );
     }
@@ -855,27 +882,34 @@ mod tests {
     #[test]
     fn behind_a_tunnel_a_name_elsewhere_is_ready_once_the_tunnel_answers_through_it() {
         let domain = custom("shop.example.org");
-        let cname = vec![DnsRecord {
-            kind: DnsRecordKind::Cname,
-            name: "shop".into(),
-            value: "0a1b2c.cfargotunnel.com".into(),
-        }];
-        let reached = behind_a_tunnel(&[("shop.example.org", true)]);
+        let cname = tunnel_cname("shop");
+        let reached = behind_a_tunnel(&[("shop.example.org", TunnelAnswer::Cluster)]);
         assert_eq!(
             status(&domain, Deployed::Yes, &reached),
             (DomainStatus::Ready, Some("via tunnel".into()), None)
         );
         assert_eq!(records(&domain, &reached), cname);
-        let missed = behind_a_tunnel(&[("shop.example.org", false)]);
+        let missed = behind_a_tunnel(&[("shop.example.org", TunnelAnswer::Elsewhere)]);
         assert_eq!(
             status(&domain, Deployed::Yes, &missed),
             attention(
-                "Not reaching your tunnel. Point it at 0a1b2c.cfargotunnel.com",
+                "Not reaching your tunnel",
+                Some(DomainAction::Dns {
+                    records: cname.clone()
+                })
+            )
+        );
+        // A fetch that found nobody listening is a finished check, not one still to come.
+        let refused = behind_a_tunnel(&[("shop.example.org", TunnelAnswer::Unanswered)]);
+        assert_eq!(
+            status(&domain, Deployed::Yes, &refused),
+            attention(
+                "No answer over HTTPS",
                 Some(DomainAction::Dns { records: cname })
             )
         );
-        // A look that couldn't finish says nothing either way, and a Server's address never matters.
-        let unseen = behind_a_tunnel(&[("other.example.org", true)]);
+        // A name nobody fetched through says nothing either way, and a Server's address never matters.
+        let unseen = behind_a_tunnel(&[("other.example.org", TunnelAnswer::Cluster)]);
         assert_eq!(
             status(&domain, Deployed::Yes, &unseen),
             setting_up("Checking DNS")

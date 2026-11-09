@@ -4,7 +4,7 @@ import { afterAll, beforeAll, beforeEach, expect, it, vi } from "vitest";
 import { asTestDouble } from "#/lib/test-double";
 import type { ConfigStore } from "@ployz/sdk";
 import { CloudStore } from "#/modules/config-store/store-sdk.server";
-import { closeDoorsRun, closeStaleDoors, bindDoorsRun, executeDoorsOnce, freshSwitchDigest, requestDoorsSwitch } from "#/modules/ingress/doors.server";
+import { closeDoorsRun, closeStaleDoors, bindDoorsRun, executeDoorsOnce, freshSwitchDigest, requestDoorsSwitch, reviewSwitch } from "#/modules/ingress/doors.server";
 import { OrganizationRuntime, type ScopedRuntimeClientSession } from "#/modules/runtime/organization-runtime.server";
 import type { PloyzSession } from "#/modules/runtime/ployz.server";
 import { GithubApi } from "#/modules/github/github-observation.api";
@@ -46,8 +46,15 @@ const answering = (held: (doors: readonly string[]) => readonly string[] = (door
 });
 const runtime = asTestDouble<OrganizationRuntime["Service"]>()({ cancel: () => Effect.void, open: () => Effect.sync(() => session) });
 
-/** A config store a switch never writes to: with no hostname moving, no Service is redeployed. */
-const store = { open: Effect.succeed(asTestDouble<ConfigStore>()({ read: async () => ({ projects: [] }) })) };
+/** What the Store double answers a read with: the rows a switch looks at, and nothing for anything else. */
+type StoreRows =
+  | { namespaces: { namespace: string; project: string; environment: string }[] }
+  | { domains: { kind: "custom" | "generated"; hostname: string; service: string }[] }
+  | { projects: never[] };
+/** The Store as a switch reads it: no Environment owns a Namespace unless a test says so, and a switch never writes to it. */
+const noOwners = ({ query }: { query: string }): StoreRows => query === "namespaces" ? { namespaces: [] } : { projects: [] };
+let storeViews = noOwners;
+const store = { open: Effect.succeed(asTestDouble<ConfigStore>()({ read: async (_organizationId: string, query: { query: string }) => storeViews(query) })) };
 
 const inngest = new Inngest({ id: "doors-test" });
 vi.spyOn(inngest, "send").mockResolvedValue({ ids: [] });
@@ -93,6 +100,7 @@ afterAll(async () => {
 beforeEach(async () => {
   sets.length = 0;
   session = answering();
+  storeViews = noOwners;
   await harness.pool.query(`
     truncate table operation_outbox, "user", organization cascade;
     insert into organization (id, name, slug) values ('${ORG}', 'Acme', 'acme');
@@ -142,6 +150,26 @@ it("finishes a switch whose last step failed when asked again, and refuses one a
 
 it("goes back to public ports the same way and leaves the tunnel as the user's to delete", async () => {
   await setup("active");
+  const request = await asked("public");
+  expect(await run(executeDoorsOnce(request, RUN))).toMatchObject({ state: "finished" });
+  expect(sets).toEqual([["public", "tunnel"], ["public"]]);
+  expect(await stateNow()).toBe("left");
+});
+
+it("leaves a custom domain spelled like a generated name where it is on the way back, and names it in the review", async () => {
+  await setup("active");
+  await harness.pool.query(
+    "insert into organization_cluster_domain (organization_id, endpoint, name, encrypted_token, reserved_at, lease_renewed_at) values ($1, 'https://dns.example.test/', 'acme.ployz.test', '{}', now(), now())",
+    [ORG],
+  );
+  const serving = (hostname: string) => ({ kind: "service_container", namespace: "shop-prod", resolved_spec: { name: "shop", ports: [{ mode: "ingress", hostname }] } });
+  session = answering((doors) => doors, Effect.succeed({ ...EMPTY_FRAME, containers: [serving("shop.example.com")] }));
+  storeViews = ({ query }) => query === "namespaces"
+    ? { namespaces: [{ namespace: "shop-prod", project: "shop", environment: "production" }] }
+    : query === "domains"
+    ? { domains: [{ kind: "custom", hostname: "shop.example.com", service: "shop" }] }
+    : noOwners({ query });
+  expect(await run(reviewSwitch(ORG, "public"))).toEqual({ moves: [], kept: ["shop.example.com"], zone: "example.com", hostedName: "acme.ployz.test", gap: null });
   const request = await asked("public");
   expect(await run(executeDoorsOnce(request, RUN))).toMatchObject({ state: "finished" });
   expect(sets).toEqual([["public", "tunnel"], ["public"]]);

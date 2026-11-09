@@ -1,5 +1,5 @@
-import type { RuntimeWatchView } from "@ployz/sdk";
-import { Effect } from "effect";
+import type { RuntimeWatchView, TunnelAnswer } from "@ployz/sdk";
+import { Deferred, Effect } from "effect";
 import { expect, it } from "vitest";
 import { asTestDouble } from "#/lib/test-double";
 import { type Observed, observedOf, publishedOf, tunnelEvidence } from "./domain-evidence.server";
@@ -51,43 +51,66 @@ const observed = (...hostnames: string[]) => asTestDouble<Observed>()({
   machineIds: new Set(["machine-1"]),
 } as never);
 const cloudflare = { zone: "acme-apps.com", target: "0a1b2c.cfargotunnel.com" };
+const answering = (cluster: string) => (hostname: string) => Effect.succeed<TunnelAnswer>(hostname === cluster ? "cluster" : "elsewhere");
 
-it("looks only at the hostnames outside the zone, since its wildcard covers the rest, and names the tunnel's target", async () => {
+it("fetches through each custom hostname the read judges that the Servers publish, inside the zone too, and names the tunnel's target", async () => {
   const looked: string[] = [];
-  const reach = (hostname: string) => Effect.sync(() => { looked.push(hostname); return hostname === "shop.example.org"; });
+  const reach = (hostname: string) => Effect.sync((): TunnelAnswer => { looked.push(hostname); return hostname === "shop.example.org" ? "cluster" : "elsewhere"; });
+  const custom = ["shop.acme-apps.com", "shop.example.org", "acme-apps.com", "a.b.acme-apps.com", "unpublished.example.net"];
   const evidence = await Effect.runPromise(tunnelEvidence(
-    "org-1", cloudflare, observed("web.acme-apps.com", "a.b.acme-apps.com", "shop.example.org", "acme-apps.com", "wrong.example.net"), true, reach,
+    "org-1", cloudflare, observed("web.acme-apps.com", "shop.acme-apps.com", "a.b.acme-apps.com", "shop.example.org", "acme-apps.com"), true, custom, reach,
   ));
   expect(evidence).toEqual({
     target: "0a1b2c.cfargotunnel.com",
     reached: [
-      { hostname: "shop.example.org", reached: true },
-      { hostname: "acme-apps.com", reached: false },
-      { hostname: "wrong.example.net", reached: false },
+      { hostname: "shop.acme-apps.com", answer: "elsewhere" },
+      { hostname: "shop.example.org", answer: "cluster" },
+      { hostname: "acme-apps.com", answer: "elsewhere" },
+      { hostname: "a.b.acme-apps.com", answer: "elsewhere" },
     ],
   });
-  // A look-alike suffix is another domain, not the zone's.
+  // A generated name is the zone's wildcard's to serve, and a name no Server publishes isn't live to fetch through.
   expect(looked).not.toContain("web.acme-apps.com");
-  const lookalike = await Effect.runPromise(tunnelEvidence("org-1", cloudflare, observed("shopacme-apps.com"), true, (hostname) => Effect.succeed(hostname === "x")));
-  expect(lookalike.reached).toEqual([{ hostname: "shopacme-apps.com", reached: false }]);
+  expect(looked).not.toContain("unpublished.example.net");
 });
 
-it("leaves a hostname out when a fetch couldn't judge it, and says nothing when no Server was observed", async () => {
-  const evidence = await Effect.runPromise(tunnelEvidence("org-2", cloudflare, observed("shop.example.org", "blog.example.org"), true, (hostname) => Effect.succeed(hostname === "blog.example.org" ? true : null)));
-  expect(evidence.reached).toEqual([{ hostname: "blog.example.org", reached: true }]);
-  const nothingSeen = await Effect.runPromise(tunnelEvidence("org-2", cloudflare, null, true, () => Effect.die("never fetches")));
+it("reports a fetch nobody answered as that, and says nothing when no Server was observed", async () => {
+  const evidence = await Effect.runPromise(tunnelEvidence(
+    "org-2", cloudflare, observed("shop.example.org", "blog.example.org"), true, ["shop.example.org", "blog.example.org"],
+    (hostname) => Effect.succeed<TunnelAnswer>(hostname === "blog.example.org" ? "cluster" : "unanswered"),
+  ));
+  expect(evidence.reached).toEqual([{ hostname: "shop.example.org", answer: "unanswered" }, { hostname: "blog.example.org", answer: "cluster" }]);
+  const nothingSeen = await Effect.runPromise(tunnelEvidence("org-2", cloudflare, null, true, ["shop.example.org"], () => Effect.die("never fetches")));
   expect(nothingSeen).toEqual({ target: "0a1b2c.cfargotunnel.com", reached: [] });
 });
 
-it("reuses a fetch from seconds ago for a read and fetches again for a check", async () => {
+it("reuses a fetch from seconds ago for a read, a failed one too, and fetches again for a check", async () => {
   let fetched = 0;
-  const reach = () => Effect.sync(() => { fetched += 1; return true; });
-  await Effect.runPromise(tunnelEvidence("org-3", cloudflare, observed("shop.example.org"), true, reach));
-  await Effect.runPromise(tunnelEvidence("org-3", cloudflare, observed("shop.example.org"), false, reach));
-  expect(fetched).toBe(1);
-  await Effect.runPromise(tunnelEvidence("org-3", cloudflare, observed("shop.example.org"), true, reach));
+  const reach = (hostname: string) => Effect.sync((): TunnelAnswer => { fetched += 1; return hostname === "dead.example.org" ? "unanswered" : "cluster"; });
+  const read = (organization: string, fresh: boolean, ...hostnames: string[]) =>
+    Effect.runPromise(tunnelEvidence(organization, cloudflare, observed(...hostnames), fresh, hostnames, reach));
+  await read("org-3", true, "shop.example.org", "dead.example.org");
+  await read("org-3", false, "shop.example.org", "dead.example.org");
   expect(fetched).toBe(2);
-  // Another Organization's answer is its own.
-  await Effect.runPromise(tunnelEvidence("org-4", cloudflare, observed("shop.example.org"), false, reach));
+  await read("org-3", true, "shop.example.org");
   expect(fetched).toBe(3);
+  // Another Organization's answer is its own.
+  await read("org-4", false, "shop.example.org");
+  expect(fetched).toBe(4);
+});
+
+it("shares one fetch between reads that overlap, and fetches through a bounded number of hostnames", async () => {
+  const gate = await Effect.runPromise(Deferred.make<TunnelAnswer>());
+  const started = await Effect.runPromise(Deferred.make<void>());
+  let fetched = 0;
+  const reach = () => Effect.suspend(() => { fetched += 1; return Deferred.succeed(started, undefined).pipe(Effect.andThen(Deferred.await(gate))); });
+  const read = (fresh: boolean) => tunnelEvidence("org-5", cloudflare, observed("shop.example.org"), fresh, ["shop.example.org"], reach);
+  const both = Effect.runPromise(Effect.all([read(true), read(true), read(false)], { concurrency: "unbounded" }));
+  await Effect.runPromise(Deferred.await(started));
+  await Effect.runPromise(Deferred.succeed(gate, "cluster"));
+  for (const evidence of await both) expect(evidence.reached).toEqual([{ hostname: "shop.example.org", answer: "cluster" }]);
+  expect(fetched).toBe(1);
+  const many = Array.from({ length: 40 }, (_, index) => `site-${index}.example.org`);
+  const evidence = await Effect.runPromise(tunnelEvidence("org-6", cloudflare, observed(...many), true, many, answering("none")));
+  expect(evidence.reached).toHaveLength(16);
 });
