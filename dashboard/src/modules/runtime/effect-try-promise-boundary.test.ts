@@ -11,6 +11,7 @@ const TRY_PROMISE_ALLOWLIST = new Set([
   "modules/analytics/posthog.server.ts",
   "modules/github/github-observation.api.ts",
   "modules/cloudflare/api.server.ts",
+  "modules/cloudflare/tunnel-reach.server.ts",
   "modules/github/github-source.server.ts",
   "modules/github/github-oidc.server.ts",
   "modules/github/github-token.server.ts",
