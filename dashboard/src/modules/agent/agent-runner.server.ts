@@ -61,7 +61,10 @@ const PROPOSAL = {
 /** The Service tools a proposal may hold a step of: the ones a Server checks against the approval a person signed. */
 export const PROPOSAL_TOOLS = new Set(["service_restart", "service_stop", "service_start"]);
 const WITH_PROPOSAL = new Set(PROPOSAL_TOOLS);
-const PERSON_APPROVES = "A person approves it in the dashboard. For several steps under one approval, stage them with proposal_create.";
+const STAGE_SEVERAL = "For several steps under one approval, stage them with proposal_create.";
+/** What a person approves: a gated call each time, an ungated one only as a step of a proposal. */
+const personApproves = (gated: boolean): string =>
+  gated ? `A person approves it in the dashboard. ${STAGE_SEVERAL}` : `It runs without approval; as a step of a proposal, a person approves it in the dashboard. ${STAGE_SEVERAL}`;
 
 /** Tools that build a proposal: several Service restarts, stops and starts a person approves together, in order. */
 const PROPOSAL_STEPS: ReadonlyArray<AgentTool> = [
@@ -101,7 +104,7 @@ export const AGENT_TOOLS: ReadonlyArray<AgentTool> = [
     const schema = tool.input_schema as JsonObject;
     const properties = asRecord(schema["properties"]) ?? {};
     const inputSchema = WITH_PROPOSAL.has(tool.name) ? { ...schema, properties: { ...properties, proposal: PROPOSAL } } : schema;
-    const description = WITH_PROPOSAL.has(tool.name) ? `${tool.description} ${PERSON_APPROVES}` : tool.description;
+    const description = WITH_PROPOSAL.has(tool.name) ? `${tool.description} ${personApproves(tool.gate !== "never")}` : tool.description;
     return { name: tool.name, description, inputSchema, gated: tool.gate !== "never", readOnly: tool.read_only, destructive: tool.destructive, keyed: keyed(schema) };
   }),
   ...COMMANDS.filter((command) => command.agents && command.typed === null).map((command) => ({
