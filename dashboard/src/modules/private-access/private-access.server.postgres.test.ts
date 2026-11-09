@@ -27,17 +27,24 @@ const sent = vi.spyOn(inngest, "send").mockResolvedValue({ ids: [] });
 
 const handed: (string | null)[] = [];
 let refuses = false;
+let paused: Promise<void> | null = null;
+let fails = false;
+let unanswered = false;
 const session: ScopedRuntimeClientSession = {
   status: "connected",
   connected: asTestDouble<PloyzSession>()({
-    setPrivateAccess: (authKey: Redacted.Redacted<string> | null) => {
+    setPrivateAccess: (authKey: Redacted.Redacted<string> | null) => Effect.gen(function* () {
       handed.push(authKey === null ? null : Redacted.value(authKey));
-      const failure = { machine_id: SERVER, error: { code: "unavailable", message: "Tailscale refused the auth key on fra-1. It may be revoked or expired.", details: { problem: "key_refused" }, cause: [] } };
-      return Effect.succeed({
+      if (paused !== null) yield* Effect.promise(() => paused ?? Promise.resolve());
+      if (fails) return yield* Effect.fail(new Error("connection reset"));
+      const failure = { machine_id: SERVER, error: unanswered
+        ? { code: "unavailable", message: "fra-1 didn't answer.", details: null, cause: [] }
+        : { code: "unavailable", message: "Tailscale refused the auth key on fra-1. It may be revoked or expired.", details: { problem: "key_refused" }, cause: [] } };
+      return {
         machines: [{ machine: SERVER, server: "fra-1", router: authKey !== null && !refuses }],
         failures: refuses ? [failure] : [],
-      } satisfies AccessChanged);
-    },
+      } satisfies AccessChanged;
+    }),
   }),
 };
 const runtime = asTestDouble<OrganizationRuntime["Service"]>()({ cancel: () => Effect.void, open: () => Effect.succeed(session) });
@@ -91,6 +98,9 @@ afterAll(async () => {
 beforeEach(async () => {
   handed.length = 0;
   refuses = false;
+  paused = null;
+  fails = false;
+  unanswered = false;
   sent.mockClear();
   await harness.pool.query(`
     truncate table operation_outbox, operation_approvals, "user", organization cascade;
@@ -138,4 +148,56 @@ it("leaves everything as it was when the agent's ask is denied", async () => {
   expect(again).toMatchObject({ ok: false });
   expect(handed).toEqual([]);
   expect((await harness.pool.query("select status from operation_approvals where id = $1", [approval.id])).rows).toEqual([{ status: "denied" }]);
+});
+
+const statusOf = async (id: string) =>
+  (await harness.pool.query<{ status: string }>("select status from operation_approvals where id = $1", [id])).rows[0]?.status;
+
+it("holds the Approval while the Servers take the key, so a deny or a second key can't land until they answer", async () => {
+  await run(privateAccessUse.invoke(agent, { to: "on" }, { approvalId: null, key: null }));
+  const approval = await onlyApproval();
+  let release = () => {};
+  paused = new Promise((resolve) => { release = resolve; });
+  const connecting = run(approvePrivateAccess(dashboard, { id: approval.id, digest: approval.digest, authKey: Redacted.make(KEY) }));
+  await vi.waitFor(() => expect(handed).toEqual([KEY]));
+
+  const denied = await run(decideApproval(dashboard, approval.id, { reject: { reason: "not now" } }));
+  expect(denied).toMatchObject({ ok: false, refusal: { code: "conflict" } });
+  await expect(run(approvePrivateAccess(dashboard, { id: approval.id, digest: approval.digest, authKey: Redacted.make(KEY) }))).rejects.toThrow();
+  expect(handed).toEqual([KEY]);
+  expect(await statusOf(approval.id)).toBe("pending");
+
+  release();
+  const connected = await connecting;
+  expect(connected.decided?.status).toBe("approved");
+  expect(await statusOf(approval.id)).toBe("approved");
+  expect(await keyKept()).toEqual({ stored: false, events: false });
+});
+
+it("lets go of the Approval when the Servers fail, so a deny then lands", async () => {
+  await run(privateAccessUse.invoke(agent, { to: "on" }, { approvalId: null, key: null }));
+  const approval = await onlyApproval();
+  fails = true;
+  await expect(run(approvePrivateAccess(dashboard, { id: approval.id, digest: approval.digest, authKey: Redacted.make(KEY) }))).rejects.toThrow();
+  expect(await statusOf(approval.id)).toBe("pending");
+
+  const denied = await run(decideApproval(dashboard, approval.id, { reject: { reason: "not now" } }));
+  expect(denied).toMatchObject({ ok: true, approval: { status: "denied" } });
+});
+
+it("lets a deny land once a hold whose run never answered has lapsed", async () => {
+  await run(privateAccessUse.invoke(agent, { to: "on" }, { approvalId: null, key: null }));
+  const approval = await onlyApproval();
+  await harness.pool.query("update operation_approvals set used_at = now() - interval '1 hour' where id = $1", [approval.id]);
+  const denied = await run(decideApproval(dashboard, approval.id, { reject: {} }));
+  expect(denied).toMatchObject({ ok: true, approval: { status: "denied" } });
+});
+
+it("names a refused key apart from a Server that didn't answer", async () => {
+  refuses = true;
+  const changed = await run(setPrivateAccess(ORG, Redacted.make(KEY)));
+  expect(changed.failures.map(({ problem }) => problem)).toEqual(["key_refused"]);
+  unanswered = true;
+  const unreached = await run(setPrivateAccess(ORG, Redacted.make(KEY)));
+  expect(unreached.failures.map(({ problem }) => problem)).toEqual(["unreachable"]);
 });
