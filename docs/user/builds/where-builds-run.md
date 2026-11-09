@@ -130,10 +130,10 @@ and why.
 A build runs steps from your repository and opens your service's sealed values. A server with
 [device enforcement](../servers/manage-servers.md#require-a-devices-signature-for-restarts-and-joins)
 on refuses a build Ployz Cloud starts, so Ployz Cloud can't run steps of its choosing there. The
-build log and the deployment say:
+deployment fails with:
 
 ```text
-This server runs only builds an approved device starts.
+No eligible Build Machine was selected; no build was started: Server web-1 (…): This server runs only builds an approved device starts.
 ```
 
 This covers builds on your servers, builds on GitHub Actions, and builds in a preview. A GitHub
