@@ -726,6 +726,7 @@ mod tests {
             browser_key: browser().public(),
             cluster: cluster(),
             environment: production(),
+            environment_id: uuid::Uuid::nil(),
             machines: vec![machine('2')],
             families: vec![
                 ActionFamily::Restart,

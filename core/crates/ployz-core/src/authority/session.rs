@@ -10,6 +10,7 @@
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use ts_rs::TS;
+use uuid::Uuid;
 
 use super::{
     AuthorityRefusal, Purpose, SigningPublicKey, Statement, Timestamp,
@@ -49,6 +50,10 @@ pub struct GrantBody {
     pub browser_key: SigningPublicKey,
     pub cluster: SealingPublicKey,
     pub environment: Namespace,
+    /// The Cloud Environment `environment` deploys, as a [`crate::SealedIdentity`] names
+    /// it. The browser key approves only Containers whose Sealed values were sealed for it.
+    #[ts(type = "string")]
+    pub environment_id: Uuid,
     /// Sorted and distinct.
     #[serde(deserialize_with = "sorted_distinct")]
     pub machines: Vec<MachineId>,

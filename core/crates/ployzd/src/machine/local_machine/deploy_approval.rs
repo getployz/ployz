@@ -5,9 +5,11 @@
 use std::time::Instant;
 
 use ployz_core::{
-    ContainerKind, ContainerNow, ContainerWant, RunTarget, Sealing,
+    ContainerKind, ContainerNow, ContainerWant, ResolvedServiceSpec, RunTarget, Sealing,
+    ServiceName,
     authority::{
-        AuthorityRefusal, DeployApproval, DeployFacts, Purpose, RestartStep, Signed, Timestamp,
+        AuthorityRefusal, DeployApproval, DeployApproved, DeployFacts, Purpose, RestartStep,
+        Signed, Timestamp,
         deploy::{self, Creation},
     },
 };
@@ -69,6 +71,7 @@ impl LocalMachine {
             },
         )
         .map_err(refused)?;
+        admit_sealed_scope(&approved, &new.slot.service, &new.resolved_spec)?;
         if new.slot.kind == ContainerKind::PreDeployHook {
             self.approvals.consume_hook(
                 &approved.body,
@@ -166,6 +169,28 @@ impl LocalMachine {
     }
 }
 
+/// Refuse a creation whose Sealed values its approver may not open, before anything
+/// opens them. A start needs no check: the Container opened its values when it was made.
+fn admit_sealed_scope(
+    approved: &DeployApproved,
+    service: &ServiceName,
+    spec: &ResolvedServiceSpec,
+) -> Result<(), Error> {
+    if deploy::sealed_scope_allows(&approved.by, spec) {
+        return Ok(());
+    }
+    tracing::warn!(
+        %service,
+        "refused deploy {}: Sealed values belong to another Environment",
+        approved.body.operation,
+    );
+    Err(Error::DeployRefused(AuthorityRefusal::Mismatch {
+        field: SEALED_VALUES,
+    }))
+}
+
+const SEALED_VALUES: &str = "Sealed values";
+
 /// What a refused deploy says to the person who ran it.
 pub(super) fn refusal_text(refusal: &AuthorityRefusal) -> String {
     let text = match refusal {
@@ -180,6 +205,11 @@ pub(super) fn refusal_text(refusal: &AuthorityRefusal) -> String {
         }
         AuthorityRefusal::Mismatch { field: "a Service" } => {
             "The device didn't approve this service."
+        }
+        AuthorityRefusal::Mismatch {
+            field: SEALED_VALUES,
+        } => {
+            "This service's sealed values belong to another environment, so a passkey approval can't open them."
         }
         AuthorityRefusal::Mismatch { field: "a hook" } => {
             "The device approved no pre-deploy command for this service."
