@@ -11,6 +11,10 @@ Cloudflare in front of every request.
 Both doors work with the same services and domains. Ployz runs the tunnel on every server that
 takes web traffic, so a request reaches your app whichever server Cloudflare picks.
 
+A new organization can choose Cloudflare Tunnel before its first server, on the card that
+gives the install line; see
+[Choose a name and Cloudflare Tunnel first](../servers/add-a-server.md#choose-a-name-and-cloudflare-tunnel-first).
+
 ## Switch from Settings
 
 Open **Settings → Network**. **Web traffic** lists the two ways your servers answer. **Public
@@ -92,6 +96,11 @@ SERVER   DOORS
 web-1    tunnel
 web-2    tunnel
 ```
+
+To start a new Cluster whose ports never open, add `--ingress-closed` to the first server's
+`ployz server add`. It starts the web server with ports 80 and 443 closed and no door open, so
+nothing reaches your apps until you run `ployz ingress use tunnel`. A server that joins
+meanwhile opens no door either. The flag does nothing for a server that joins a Cluster.
 
 Run `ployz ingress use tunnel` without the switch to type the token at a prompt. Ployz keeps the
 token sealed for your servers; nobody reads it back, and a server that joins later gets it on

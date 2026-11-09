@@ -111,7 +111,7 @@ const host = (name: string): Host => {
   return { name, key: Buffer.from(x, "base64url").toString("hex"), privateKey };
 };
 
-const checkin = async (target: Host, extra: Pick<CheckinRequest, "prep" | "attempt"> = {}) => {
+const checkin = async (target: Host, extra: Pick<CheckinRequest, "prep" | "attempt" | "enrollOptions"> = {}) => {
   const request: CheckinRequest = { protocolVersion: 1, checkinKey: target.key, cliVersion: "0.3.0", report: { ...report, hostname: target.name }, ...extra };
   const body = Buffer.from(JSON.stringify(request));
   const timestamp = BigInt(Math.floor(Date.now() / 1000));
@@ -181,6 +181,33 @@ it("tells only the first server the Cluster Name: the one saved, else the slug c
     "select role, instruction->>'clusterName' as cluster_name from server_enrollment order by role",
   );
   expect(rows).toEqual([{ role: "founder", cluster_name: "acme" }, { role: "joiner", cluster_name: null }]);
+});
+
+it("founds closed for Cloudflare only on a Fleet Token that asks it, and only on a CLI that offers it", async () => {
+  await harness.pool.query("update fleet_token set founds_closed = true");
+  const older = host("web-old");
+  await checkin(older);
+  const refused = await failure(enroll([older]));
+  expect(refused).toMatchObject({ message: expect.stringContaining("can't start with ports 80 and 443 closed") });
+  expect(await attempts()).toEqual([]);
+
+  const current = host("web-new");
+  await checkin(current, { enrollOptions: ["ingressClosed"] });
+  const joiner = host("web-two");
+  await checkin(joiner, { enrollOptions: ["ingressClosed"] });
+  await run(enroll([current, joiner], { first: current.id }));
+  const { rows } = await harness.pool.query<{ role: string; closed: string | null }>(
+    "select role, instruction->>'ingressClosed' as closed from server_enrollment order by role",
+  );
+  expect(rows).toEqual([{ role: "founder", closed: "true" }, { role: "joiner", closed: null }]);
+});
+
+it("founds with the Public Door on a Fleet Token that doesn't ask for closed", async () => {
+  const [a] = await waiting("web-a");
+  if (a === undefined) throw new Error("one host");
+  await run(enroll([a]));
+  const { rows } = await harness.pool.query<{ closed: string | null }>("select instruction->>'ingressClosed' as closed from server_enrollment");
+  expect(rows).toEqual([{ closed: null }]);
 });
 
 it("joins servers added while the first server is on its way, and skips a host already enrolling", async () => {

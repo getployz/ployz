@@ -1,5 +1,5 @@
 import { sql } from "drizzle-orm";
-import { index, integer, jsonb, pgTable, primaryKey, text, timestamp, uniqueIndex, uuid } from "drizzle-orm/pg-core";
+import { boolean, index, integer, jsonb, pgTable, primaryKey, text, timestamp, uniqueIndex, uuid } from "drizzle-orm/pg-core";
 import { createdAt, type EncryptedSecretValue, type MachineId } from "#/db/tables";
 import type { StoredReport } from "#/modules/machines/waiting/checkin-wire";
 import type {
@@ -25,6 +25,8 @@ export const fleetToken = pgTable(
     expiresAt: timestamp("expires_at", { mode: "date", withTimezone: true }).notNull(),
     /** How many hosts this token may admit without a person's approval; null means every host waits. */
     autoEnrollMax: integer("auto_enroll_max"),
+    /** A first Server enrolled on this token founds the Cluster with every Door closed, for Cloudflare Tunnel setup after. */
+    foundsClosed: boolean("founds_closed").default(false).notNull(),
     createdByUserId: uuid("created_by_user_id")
       .notNull()
       .references(() => user.id, { onDelete: "restrict" }),

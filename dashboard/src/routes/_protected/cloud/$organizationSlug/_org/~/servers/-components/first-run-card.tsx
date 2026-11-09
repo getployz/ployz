@@ -1,19 +1,7 @@
-import { TerminalIcon } from "lucide-react";
-import { Button } from "#/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "#/components/ui/card";
-import { Item, ItemContent, ItemDescription, ItemGroup, ItemMedia, ItemTitle } from "#/components/ui/item";
-import { Separator } from "#/components/ui/separator";
-import { Spinner } from "#/components/ui/spinner";
-import { cliLifetimeLabel } from "#/modules/machines/waiting/install-lines";
-import { useRoleGate } from "#/modules/organization/members.queries";
+import { ClusterSetup } from "./cluster-setup";
 import { InstallTabs } from "./copy-block";
-import { ADD_SERVERS_REFUSED, useMintFleetToken } from "./use-waiting";
-
-const STEPS = [
-  { title: "Run the line", description: "Installs the agent. Docker too, if missing." },
-  { title: "Review", description: "See its size, disks and blockers before it joins." },
-  { title: "Enroll", description: "Sets up storage and networking, then it's ready for deploys." },
-] as const;
+import { useMintFleetToken } from "./use-waiting";
 
 /**
  * First run: mint a token in place, show the line once, and wait for a server to check in. Once one arrives the card
@@ -21,7 +9,6 @@ const STEPS = [
  */
 export function FirstRunCard({ organizationSlug, arrived }: { organizationSlug: string; arrived: boolean }) {
   const mint = useMintFleetToken(organizationSlug);
-  const gate = useRoleGate(organizationSlug, "servers:add", ADD_SERVERS_REFUSED);
   if (arrived) {
     return mint.data === undefined ? (
       <p className="text-sm text-muted-foreground">Add servers to queue more here.</p>
@@ -38,42 +25,8 @@ export function FirstRunCard({ organizationSlug, arrived }: { organizationSlug: 
         <CardTitle>Add your first server</CardTitle>
         <CardDescription>Run this on any Linux server with root. It shows up below in a few seconds.</CardDescription>
       </CardHeader>
-      <CardContent className="flex flex-col gap-4">
-        {gate.reason === ADD_SERVERS_REFUSED ? (
-          <p className="text-sm text-muted-foreground">{ADD_SERVERS_REFUSED}</p>
-        ) : mint.data === undefined ? (
-          <Button
-            variant="ink"
-            className="w-fit"
-            disabled={!gate.allowed || mint.isPending}
-            title={gate.reason}
-            onClick={() => mint.mutate({ name: null, expiresIn: "1d", autoEnroll: null })}
-          >
-            {mint.isPending ? <Spinner data-icon="inline-start" /> : <TerminalIcon data-icon="inline-start" />}
-            Get install command
-          </Button>
-        ) : (
-          <div className="flex flex-col gap-3">
-            <InstallTabs target={mint.data} />
-            <p className="text-sm text-warning">Shown once. Expires in {cliLifetimeLabel("1d")}.</p>
-            <div className="flex items-center gap-2 text-sm text-muted-foreground">
-              <Spinner />
-              Listening for servers…
-            </div>
-          </div>
-        )}
-        <Separator />
-        <ItemGroup className="grid gap-2 sm:grid-cols-3">
-          {STEPS.map((step, index) => (
-            <Item key={step.title} size="sm">
-              <ItemMedia variant="icon">{index + 1}</ItemMedia>
-              <ItemContent>
-                <ItemTitle>{step.title}</ItemTitle>
-                <ItemDescription>{step.description}</ItemDescription>
-              </ItemContent>
-            </Item>
-          ))}
-        </ItemGroup>
+      <CardContent>
+        <ClusterSetup organizationSlug={organizationSlug} mint={mint} />
       </CardContent>
     </Card>
   );

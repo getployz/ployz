@@ -1,0 +1,1 @@
+ALTER TABLE "fleet_token" ADD COLUMN "founds_closed" boolean DEFAULT false NOT NULL;

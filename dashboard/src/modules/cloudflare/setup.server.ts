@@ -17,7 +17,8 @@ import {
 } from "#/modules/cloudflare/api.server";
 import { loadCloudflareSetup } from "#/modules/cloudflare/source.server";
 import { normalizeZone, wildcardRecord, zoneProblem } from "#/modules/cloudflare/zone";
-import { doorsGap, SETUP_RUNNING_LIMIT_MS } from "#/modules/ingress/doors";
+import { doorsGap, holdingCount, SETUP_RUNNING_LIMIT_MS } from "#/modules/ingress/doors";
+import { observeClusterIngress } from "#/modules/ingress/doors.server";
 import { activeDoorsAttempt, lockIngressRows } from "#/modules/ingress/doors.lock.server";
 import { organizationCloudflareIngress } from "#/modules/ingress/tables";
 import { organization } from "#/modules/organization/tables";
@@ -31,6 +32,7 @@ export const realCloudflare = new CloudflareHttp({ fetch: (input, init) => fetch
 
 const BOTH = ["public", "tunnel"] as const;
 const PUBLIC = ["public"] as const;
+const TUNNEL = ["tunnel"] as const;
 
 const refuse = (message: string) => new Validation({ message, userFacing: true });
 
@@ -51,6 +53,27 @@ export const listCloudflareZoneNames = Effect.fn("Cloudflare.zoneNames")(functio
   return zones.map((zone) => zone.name).sort();
 });
 
+/**
+ * Whether `token` can set Cloudflare up on `zone`, asked before the Cluster's first Server exists, so the first-run card
+ * can wait on an answer instead of a guess. Nothing is created and the token is not kept: setup asks again with it once
+ * the Server joins.
+ */
+export const checkCloudflareSetup = Effect.fn("Cloudflare.check")(function* (
+  input: { readonly token: Redacted.Redacted<string>; readonly zone: string },
+  http: CloudflareHttp = realCloudflare,
+) {
+  const zones = yield* listZones(http, input.token).pipe(words);
+  const zoneTrouble = zoneProblem(input.zone, zones.map((zone) => zone.name));
+  if (zoneTrouble !== null) return yield* refuse(zoneTrouble);
+  const zone = zones.find((candidate) => candidate.name === normalizeZone(input.zone));
+  if (zone === undefined) return yield* refuse(`${normalizeZone(input.zone)} isn't a zone in this Cloudflare account.`);
+  yield* checkEditPermissions(http, input.token, zone).pipe(words);
+  const name = `*.${zone.name}`;
+  const there = yield* findRecords(http, input.token, zone.id, name).pipe(words);
+  if (there.length > 0) return yield* refuse(`${name} already exists in Cloudflare. Remove that record or pick another zone.`);
+  return { zone: zone.name };
+});
+
 /** Why the Cluster can't be set up now: it already uses Cloudflare, another setup holds it, or a switch is moving its Doors. */
 const setupProblem = Effect.fn("Cloudflare.setupProblem")(function* (organizationId: string) {
   const existing = yield* loadCloudflareSetup(organizationId);
@@ -59,6 +82,21 @@ const setupProblem = Effect.fn("Cloudflare.setupProblem")(function* (organizatio
   const switching = yield* activeDoorsAttempt(organizationId);
   return switching === null ? null : "A switch is under way. Wait for it to finish, then set up.";
 });
+
+/**
+ * Open ports 80 and 443 on a Cluster founded closed whose Cloudflare setup never finished, so its apps answer instead of
+ * staying dark. Refused while Cloudflare is in use, being set up, or a switch runs.
+ */
+export const openPublicPorts = Effect.fn("Cloudflare.openPublic")(function* (organizationId: string) {
+  const early = yield* setupProblem(organizationId);
+  if (early !== null) return yield* new Conflict({ userFacing: true, message: early });
+  const opened = yield* (yield* OrganizationRuntime).open(organizationId);
+  if (opened.status !== "connected") return yield* refuse("Your servers aren't answering. Try again once they are.");
+  const answered = yield* opened.connected.setIngressDoors(PUBLIC).pipe(Effect.result);
+  const gap = answered._tag === "Failure" ? "Your servers didn't answer." : doorsGap(answered.success, PUBLIC);
+  if (gap !== null) return yield* refuse(gap);
+  return { opened: true } as const;
+}, Effect.scoped);
 
 /** The Doors back to public only, after a failed setup. Why a Server still holds the tunnel, or null once none does. */
 const restorePublic = Effect.fn("Cloudflare.restorePublic")(function* (session: PloyzSession) {
@@ -125,6 +163,7 @@ export const setUpCloudflare = Effect.fn("Cloudflare.setUp")(function* (
   let session: PloyzSession | null = null;
   let tunnel: { readonly id: string; readonly made: boolean } | null = null;
   let recordId: string | null = null;
+  let closed = false;
   /**
    * Put back what the steps below changed: the Doors first, so no connector holds the tunnel, then the record and the
    * tunnel this setup made, and the row last, so the Cluster stays reserved until nothing of this setup is left for
@@ -132,10 +171,12 @@ export const setUpCloudflare = Effect.fn("Cloudflare.setUp")(function* (
    */
   const cleanUp = Effect.gen(function* () {
     const doorsLeft = session === null ? null : yield* restorePublic(session);
+    // A Cluster that held no Door has none to go back to, so it falls back to the ports rather than staying dark.
+    const opened = closed && session !== null && doorsLeft === null ? "Your servers now take web traffic on ports 80 and 443." : null;
     const recordGone = recordId === null ? true : yield* deleteRecord(http, input.token, zone.id, recordId);
     const tunnelGone = tunnel === null || !tunnel.made ? true : yield* deleteTunnel(http, input.token, zone.accountId, tunnel.id);
     const kept = [recordGone ? null : name, tunnelGone ? null : `the tunnel ${tunnelName}`].filter((item) => item !== null);
-    const left = [doorsLeft, kept.length === 0 ? null : `Delete ${kept.join(" and ")} in Cloudflare.`].filter((item) => item !== null);
+    const left = [doorsLeft, opened, kept.length === 0 ? null : `Delete ${kept.join(" and ")} in Cloudflare.`].filter((item) => item !== null);
     if (left.length === 0) return "Nothing was changed.";
     yield* Effect.logWarning(`A failed Cloudflare setup left: ${left.join(" ")}`);
     return left.join(" ");
@@ -148,6 +189,10 @@ export const setUpCloudflare = Effect.fn("Cloudflare.setUp")(function* (
   const finish = Effect.gen(function* () {
     const opened = yield* (yield* OrganizationRuntime).open(organizationId);
     if (opened.status !== "connected") return yield* refuse("Your servers aren't answering. Try again once they are.");
+    // A Cluster founded closed holds no Public Door to hand over, so only the tunnel opens and the ports stay shut.
+    const seen = yield* observeClusterIngress(organizationId);
+    closed = seen !== null && !seen.partial && seen.servers.length > 0 && holdingCount(seen.servers, "public") === 0;
+    const doors = closed ? TUNNEL : BOTH;
     const found = yield* findTunnel(http, input.token, zone.accountId, tunnelName);
     const there = yield* findRecords(http, input.token, zone.id, name);
     if (there.some((row) => found === null || row.content !== wildcardRecord(zone.name, found).content)) {
@@ -157,14 +202,16 @@ export const setUpCloudflare = Effect.fn("Cloudflare.setUp")(function* (
     tunnel = { id: made.id, made: found === null };
     const token = made.token ?? (yield* tunnelToken(http, input.token, zone.accountId, made.id));
     session = opened.connected;
-    const answered = yield* session.setIngressDoors(BOTH, token).pipe(Effect.result);
+    const answered = yield* session.setIngressDoors(doors, token).pipe(Effect.result);
     if (answered._tag === "Failure") return yield* refuse("Your servers didn't take the tunnel.");
-    const gap = doorsGap(answered.success, BOTH);
+    const gap = doorsGap(answered.success, doors);
     if (gap !== null) return yield* refuse(gap);
 
     if (there.length === 0) recordId = yield* createRecord(http, input.token, zone.id, wildcardRecord(zone.name, tunnel.id));
 
-    const row = { zone: zone.name, tunnelId: tunnel.id, tunnelName, state: "set_up" } as const;
+    // With nothing published to move, the zone is the Cluster Domain's source at once, as a switch would leave it.
+    const state = closed && seen?.hostnames.length === 0 ? "active" : "set_up";
+    const row = { zone: zone.name, tunnelId: tunnel.id, tunnelName, state } as const;
     return yield* database.transaction(Effect.gen(function* () {
       yield* lockIngressRows(organizationId);
       const { drizzle } = yield* Database;

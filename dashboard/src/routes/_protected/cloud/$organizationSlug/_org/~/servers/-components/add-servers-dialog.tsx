@@ -13,6 +13,7 @@ import { FLEET_TOKEN_LIFETIMES, type FleetTokenLifetime } from "#/modules/machin
 import { cliLifetimeLabel } from "#/modules/machines/waiting/install-lines";
 import { fleetTokensQueryOptions, waitingServersQueryOptions } from "#/modules/machines/waiting/waiting.queries";
 import { useRoleGate } from "#/modules/organization/members.queries";
+import { ClusterSetup } from "./cluster-setup";
 import { InstallTabs } from "./copy-block";
 import { ADD_SERVERS_REFUSED, useMintFleetToken } from "./use-waiting";
 
@@ -21,10 +22,12 @@ const NAME_PATTERN = /^[a-z0-9][a-z0-9-]{0,62}$/;
 
 type Minted = { readonly name: string; readonly token: string; readonly cloudOrigin: string; readonly ployzVersion: string; readonly expiresIn: FleetTokenLifetime; readonly autoEnroll: { readonly maxServers: number } | null };
 
-export function AddServersDialog({ organizationSlug, label = "Add servers", variant = "ink" }: {
+export function AddServersDialog({ organizationSlug, label = "Add servers", variant = "ink", firstServer = false }: {
   organizationSlug: string;
   label?: ReactNode;
   variant?: ButtonVariants["variant"];
+  /** No Server yet: the Servers page's first-run card, with its Cluster choices, instead of the token options. */
+  firstServer?: boolean;
 }) {
   const [open, setOpen] = useState(false);
   const mint = useMintFleetToken(organizationSlug);
@@ -38,7 +41,15 @@ export function AddServersDialog({ organizationSlug, label = "Add servers", vari
       </Button>
       <Dialog open={open} onOpenChange={(next) => mint.holding || setOpen(next)}>
         <DialogContent className="sm:max-w-xl">
-          {open ? <MintFlow organizationSlug={organizationSlug} mint={mint} onDone={() => setOpen(false)} /> : null}
+          {open && firstServer ? (
+            <>
+              <DialogHeader>
+                <DialogTitle>Add your first server</DialogTitle>
+                <DialogDescription>Run this on any Linux server with root. It shows up under Servers in a few seconds.</DialogDescription>
+              </DialogHeader>
+              <ClusterSetup organizationSlug={organizationSlug} mint={mint} steps={false} />
+            </>
+          ) : open ? <MintFlow organizationSlug={organizationSlug} mint={mint} onDone={() => setOpen(false)} /> : null}
         </DialogContent>
       </Dialog>
     </>

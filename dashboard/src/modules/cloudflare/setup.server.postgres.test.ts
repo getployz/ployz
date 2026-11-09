@@ -3,7 +3,7 @@ import { Inngest } from "inngest";
 import { afterAll, beforeAll, beforeEach, expect, it, vi } from "vitest";
 import { asTestDouble } from "#/lib/test-double";
 import { CloudflareHttp } from "#/modules/cloudflare/api.server";
-import { listCloudflareZoneNames, setUpCloudflare } from "#/modules/cloudflare/setup.server";
+import { checkCloudflareSetup, listCloudflareZoneNames, setUpCloudflare } from "#/modules/cloudflare/setup.server";
 import { requestDoorsSwitch } from "#/modules/ingress/doors.server";
 import { InngestClient } from "#/modules/inngest/client";
 import { OrganizationRuntime, type ScopedRuntimeClientSession } from "#/modules/runtime/organization-runtime.server";
@@ -95,12 +95,17 @@ const writesOf = (calls: readonly Call[]) => calls.filter(({ method, body }) => 
 
 type Set = { readonly doors: readonly string[]; readonly token: string | undefined };
 
-/** A Cluster whose Servers take any doors they are told, unless `take` says otherwise. */
-function cluster(take: (doors: readonly string[]) => readonly string[] = (doors) => doors) {
+const NO_SERVER_FRAME = { machines: [], services: [], containers: [], incomplete_ids: { machines: [], containers: [], certificates: [] }, unanswered: [] };
+/** One Server taking web traffic and running no door Container, as a Cluster founded closed is before its tunnel opens. */
+const CLOSED_FRAME = { ...NO_SERVER_FRAME, machines: [{ machine: { id: "m1", name: "s1", accepts_ingress: true, runtime: { running_builds: 0 } }, membership: "up" }] };
+
+/** A Cluster whose Servers take any doors they are told, unless `take` says otherwise, showing `frame` when watched. */
+function cluster(take: (doors: readonly string[]) => readonly string[] = (doors) => doors, frame: unknown = NO_SERVER_FRAME) {
   const sets: Set[] = [];
   const session: ScopedRuntimeClientSession = {
     status: "connected",
     connected: asTestDouble<PloyzSession>()({
+      watchFirstFrame: () => Effect.succeed(frame),
       setIngressDoors: (doors: readonly string[], token?: Redacted.Redacted<string>) => {
         sets.push({ doors, token: token === undefined ? undefined : Redacted.value(token) });
         return Effect.succeed({ machines: [{ server: "s1", doors: take(doors) }], failures: [] });
@@ -163,6 +168,24 @@ it("sets up a zone with one wildcard record, a tunnel and both doors, and moves 
   expect(await setupRows()).toEqual([{ zone: "example.com", tunnel_id: "t1", tunnel_name: "ployz-acme", state: "set_up" }]);
   expect(writesOf(calls).map(({ method, path }) => `${method} ${path}`)).toEqual(["POST /accounts/a1/cfd_tunnel", "POST /zones/z1/dns_records"]);
   expect(calls.at(-1)).toMatchObject({ method: "POST", path: "/zones/z1/dns_records" });
+});
+
+it("opens only the tunnel on a Cluster founded closed and makes the zone the source at once, so ports 80 and 443 never open", async () => {
+  const { http, records } = cloudflare();
+  const { runtime, sets } = cluster((doors) => doors, CLOSED_FRAME);
+  expect(await setUp("example.com", http, runtime)).toMatchObject({ zone: "example.com", tunnelId: "t1", state: "active" });
+  expect(sets).toEqual([{ doors: ["tunnel"], token: TUNNEL_TOKEN }]);
+  expect(records).toHaveLength(1);
+  expect(await setupRows()).toEqual([{ zone: "example.com", tunnel_id: "t1", tunnel_name: "ployz-acme", state: "active" }]);
+});
+
+it("falls back to the ports on a Cluster founded closed when its servers don't take the tunnel, and says so", async () => {
+  const { http, alive } = cloudflare();
+  const { runtime, sets } = cluster((doors) => doors.filter((door) => door !== "tunnel"), CLOSED_FRAME);
+  await expect(setUp("example.com", http, runtime)).rejects.toMatchObject({ message: expect.stringContaining("ports 80 and 443") });
+  expect(sets.map(({ doors }) => doors)).toEqual([["tunnel"], ["public"]]);
+  expect(alive.has("t1")).toBe(false);
+  expect(await setupRows()).toEqual([]);
 });
 
 it("keeps the API token out of every table and the outbox, and the tunnel token out of every table", async () => {
@@ -375,6 +398,19 @@ it("accepts a wildcard that already points at the account's tunnel of that name,
   expect(await setUp("example.com", http, runtime)).toMatchObject({ state: "set_up", tunnelId: "t1" });
   expect(records).toEqual([]);
   expect(writesOf(calls)).toEqual([]);
+});
+
+it("checks a token can set a zone up before any Server exists, creating nothing", async () => {
+  const { http, calls } = cloudflare();
+  expect(await harness.runEffect(checkCloudflareSetup({ token: Redacted.make(API_TOKEN), zone: "example.com" }, http))).toEqual({ zone: "example.com" });
+  expect(writesOf(calls)).toEqual([]);
+  const taken = cloudflare({ existingRecord: "elsewhere.example.net" });
+  await expect(harness.runEffect(checkCloudflareSetup({ token: Redacted.make(API_TOKEN), zone: "example.com" }, taken.http)))
+    .rejects.toMatchObject({ message: expect.stringContaining("*.example.com already exists") });
+  const weak = cloudflare({ dnsStatus: 403 });
+  await expect(harness.runEffect(checkCloudflareSetup({ token: Redacted.make(API_TOKEN), zone: "example.com" }, weak.http)))
+    .rejects.toMatchObject({ message: expect.stringContaining("DNS") });
+  expect(await setupRows()).toEqual([]);
 });
 
 it("lists the zone names a token can see without changing anything", async () => {

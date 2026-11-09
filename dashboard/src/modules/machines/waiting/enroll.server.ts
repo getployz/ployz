@@ -14,6 +14,7 @@ import { machineNameFromHostname } from "#/modules/machines/waiting/names";
 import {
   COMMITTED_STAGES,
   ENROLL_MIN_CLI_VERSION,
+  INGRESS_CLOSED_OPTION,
   type EnrollInput,
   type EnrollInstruction,
   type EnrollmentRole,
@@ -41,6 +42,8 @@ export type EnrollCandidate = {
   readonly enrolling: boolean;
   readonly joined?: boolean;
   readonly tokenEnded: "expired" | "revoked" | null;
+  /** Its Fleet Token founds the Cluster with every Door closed. */
+  readonly foundsClosed?: boolean;
 };
 
 export type PlannedEnrollment = {
@@ -123,6 +126,11 @@ export function planServerEnrollment(
     if (pick === undefined) return { kind: "refused", message: "Pick the first server: it sets up the cluster the rest join." };
     const skip = skipped.find((row) => row.id === pick);
     if (skip !== undefined) return { kind: "refused", message: `The first server can't enroll: ${skip.reason}.` };
+    // A CLI that doesn't list the option would drop it and open ports 80 and 443.
+    const picked = byId.get(pick);
+    if (picked?.foundsClosed === true && picked.report.enrollOptions?.includes(INGRESS_CLOSED_OPTION) !== true) {
+      return { kind: "refused", message: "The first server's ployz can't start with ports 80 and 443 closed. Update ployz on it, or get an install command without Cloudflare Tunnel." };
+    }
     founder = pick;
   }
   const ordered = founder === null
@@ -159,8 +167,10 @@ export function planServerEnrollment(
   };
   const { clusterName } = organization;
   const instructionFor = (row: EnrollCandidate, storage: EnrollStorage): EnrollInstruction => {
-    const instruction = { name: nameFor(row), storage, policy };
-    return row.id === founder && clusterName !== undefined ? { ...instruction, clusterName } : instruction;
+    const instruction = { name: nameFor(row), storage, policy } satisfies EnrollInstruction;
+    if (row.id !== founder) return instruction;
+    const named = clusterName === undefined ? instruction : { ...instruction, clusterName };
+    return row.foundsClosed === true ? { ...named, ingressClosed: true } : named;
   };
   const rows = ordered.map(({ row, storage }): PlannedEnrollment => ({
     waitingServerId: row.id,
@@ -194,6 +204,7 @@ const candidatesOf = Effect.fn("ServerEnrollment.candidates")(function* (organiz
       enrolling: sql<boolean>`exists (select 1 from ${serverEnrollment} where ${serverEnrollment.waitingServerId} = ${waitingServer.id} and ${serverEnrollment.endedAt} is null)`,
       joined: sql<boolean>`exists (select 1 from ${serverEnrollment} where ${serverEnrollment.waitingServerId} = ${waitingServer.id} and ${serverEnrollment.state} = 'joined')`,
       tokenEnded: sql<"expired" | "revoked" | null>`case when ${fleetToken.revokedAt} is not null then 'revoked' when ${fleetToken.expiresAt} <= now() then 'expired' end`,
+      foundsClosed: fleetToken.foundsClosed,
     })
     .from(waitingServer)
     .innerJoin(fleetToken, eq(fleetToken.id, waitingServer.fleetTokenId))

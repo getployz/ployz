@@ -7,6 +7,7 @@ import { operationDigest, type OperationAsked } from "#/modules/approvals/approv
 import { loadClusterDomain } from "#/modules/cluster-domain/cluster-domain.server";
 import { doorsOpenOn } from "#/modules/cluster-domain/ingress-running";
 import { loadCloudflareSetup } from "#/modules/cloudflare/source.server";
+import { serverEnrollment } from "#/modules/machines/waiting/tables";
 import { readStore } from "#/modules/config-store/config-store.server";
 import { deployToFirstServer } from "#/modules/config-store/store-deployment.server";
 import { publishedOf } from "#/modules/config-store/domain-evidence.server";
@@ -90,7 +91,13 @@ export const readClusterIngress = Effect.fn("IngressDoors.read")(function* (orga
   const setup = yield* loadCloudflareSetup(organizationId);
   const change = yield* latestChange(organizationId);
   const hosted = yield* loadClusterDomain(organizationId);
-  return { setup, change, hostedName: hosted?.name ?? null } satisfies ClusterIngressView;
+  const { drizzle } = yield* Database;
+  const [founder] = yield* drizzle.select({ closed: sql<boolean>`coalesce((${serverEnrollment.instruction}->>'ingressClosed')::boolean, false)` })
+    .from(serverEnrollment)
+    .where(and(eq(serverEnrollment.organizationId, organizationId), eq(serverEnrollment.role, "founder"), eq(serverEnrollment.state, "joined")))
+    .orderBy(desc(serverEnrollment.requestedAt))
+    .limit(1);
+  return { setup, change, hostedName: hosted?.name ?? null, foundedClosed: founder?.closed ?? false } satisfies ClusterIngressView;
 });
 
 /**

@@ -10,6 +10,7 @@ import { prefetchRemote } from "#/collections/route-data";
 import { AddServersDialog } from "./-components/add-servers-dialog";
 import { enrollingRows } from "./-components/enrolling-list";
 import { FirstRunCard } from "./-components/first-run-card";
+import { FirstTunnelStatus } from "./-components/first-tunnel";
 import { FleetHealth } from "./-components/fleet-health";
 import { SERVER_LIST, ServerRow } from "./-components/server-row";
 import { foundingFirstServer, serversPageState } from "./-components/servers-page-state";
@@ -73,6 +74,7 @@ function RouteComponent() {
       ) : null}
       {/* Above the list: the skeleton below is a guess at the list's height, and the tray must not jump when it settles. */}
       {page.intake ? <IntakeTray organizationSlug={organizationSlug} token={token} firstRun={page.kind === "first-run"} /> : null}
+      {page.kind === "fleet" ? <FirstTunnelStatus organizationSlug={organizationSlug} /> : null}
       {page.kind === "loading" ? (
         <ServersSkeleton />
       ) : page.kind === "unreachable" ? (
