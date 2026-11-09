@@ -20,7 +20,7 @@ export type SwitchPorts<EngineError, RowError, R> = {
   readonly moving: () => Effect.Effect<{ readonly moves: readonly MovedHostname[] } | { readonly failure: string }, RowError, R>;
   /** Move the Cluster Domain's source to where `want` goes. */
   readonly flip: () => Effect.Effect<void, RowError, R>;
-  /** Ship the Services publishing `moves` again as they run, so each is served under the new source. Why they aren't all, or null. */
+  /** Ship the Services publishing `moves` again as they run, staged edits left staged, and wait until the Servers serve each under the new source. Why they don't all, or null. */
   readonly redeploy: (moves: readonly MovedHostname[]) => Effect.Effect<string | null, RowError, R>;
 };
 
@@ -56,7 +56,7 @@ export const runSwitch = <EngineError, RowError, R>(want: DoorsWant, ports: Swit
 /** What redeploying the moved names needs of the Store and the Servers. */
 export type RedeployPorts<E, R> = {
   /** Admit a Deployment of the Environment's named Services as they run: its id, or the Store's refusal. */
-  readonly deploy: (scope: RedeployScope) => Effect.Effect<{ readonly id: string } | { readonly refused: string }, E, R>;
+  readonly reapply: (scope: RedeployScope) => Effect.Effect<{ readonly id: string } | { readonly refused: string }, E, R>;
   /** The Deployment's status once it is no longer in flight. */
   readonly ended: (id: string) => Effect.Effect<DeploymentStatus, E, R>;
   /** One look at the Servers: the hostnames they publish now. */
@@ -69,6 +69,29 @@ export const REDEPLOY_TIMING: RedeployTiming = { poll: "2 seconds", limit: "90 s
 
 const environmentWords = (scope: RedeployScope) => `${scope.project}/${scope.environment}`;
 
+/** Wait for the Deployment `admission` admitted for `scope` to end. Why it didn't ship, or null. */
+const shipped = <E, R>(scope: RedeployScope, admission: { readonly id: string } | { readonly refused: string }, ports: RedeployPorts<E, R>) =>
+  Effect.gen(function* () {
+    if ("refused" in admission) return `${environmentWords(scope)} didn't redeploy: ${admission.refused}`;
+    const status = yield* ports.ended(admission.id);
+    return status === "applied" || status === "superseded" ? null : `${environmentWords(scope)} didn't redeploy. Check its deployments, then switch again.`;
+  });
+
+/**
+ * Reapply an Environment's Services together, or one at a time once the Store refuses them together: Services deployed
+ * apart may run Saved revisions no one Deployment ships as they all run.
+ */
+const reappliedEach = <E, R>(scope: RedeployScope, ports: RedeployPorts<E, R>) => Effect.gen(function* () {
+  const together = yield* ports.reapply(scope);
+  if (!("refused" in together) || scope.services.length < 2) return yield* shipped(scope, together, ports);
+  for (const service of scope.services) {
+    const alone = { ...scope, services: [service] };
+    const end = yield* shipped(alone, yield* ports.reapply(alone), ports);
+    if (end !== null) return end;
+  }
+  return null;
+});
+
 /**
  * Redeploy each Environment in `scope` and wait until the Servers publish every name in `moves` under the new source.
  * A Deployment's own end isn't proof: one superseded before it ran changed nothing, and one applied may not have
@@ -78,15 +101,9 @@ export const redeployMoved = <E, R>(
   moves: readonly MovedHostname[], scope: readonly RedeployScope[], ports: RedeployPorts<E, R>, timing: RedeployTiming = REDEPLOY_TIMING,
 ) => Effect.gen(function* () {
   if (moves.length === 0) return null;
-  const asked = yield* Effect.forEach(scope, (environment) => ports.deploy(environment).pipe(Effect.map((admission) => ({ environment, admission }))));
-  for (const { environment, admission } of asked) {
-    if ("refused" in admission) return `${environmentWords(environment)} didn't redeploy: ${admission.refused}`;
-  }
-  for (const { environment, admission } of asked) {
-    if ("refused" in admission) continue;
-    const status = yield* ports.ended(admission.id);
-    if (status !== "applied" && status !== "superseded") return `${environmentWords(environment)} didn't redeploy. Check its deployments, then switch again.`;
-  }
+  const ends = yield* Effect.forEach(scope, (environment) => reappliedEach(environment, ports), { concurrency: "unbounded" });
+  const stuck = ends.find((end) => end !== null);
+  if (stuck !== undefined) return stuck;
   const seen = yield* ports.observe().pipe(Effect.repeat({
     schedule: Schedule.spaced(timing.poll).pipe(Schedule.upTo({ duration: timing.limit })),
     while: (observed) => observed === null || observed.partial || unservedMoves(observed.hostnames, moves).length > 0,

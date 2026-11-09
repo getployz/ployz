@@ -287,11 +287,6 @@ const movingNow = Effect.fn("IngressDoors.moving")(function* (organizationId: st
   return gap === null ? { moves: looked.moving } : { failure: gap };
 });
 
-/**
- * Ship the Services whose generated names the switch moves again, as they run and only those, so each expands under
- * the Cluster Domain's new source while every staged edit stays staged, and wait until the Servers serve every one
- * there. Why they don't all, or null once they do: the Door the switch leaves stays open until then.
- */
 const redeployMoving = Effect.fn("IngressDoors.redeploy")(function* (organizationId: string, moving: readonly MovedHostname[]) {
   if (moving.length === 0) return null;
   const owned = yield* owners(organizationId);
@@ -305,7 +300,7 @@ const redeployMoving = Effect.fn("IngressDoors.redeploy")(function* (organizatio
   const [orphan] = left;
   if (orphan !== undefined) return `${orphan.from} is served by ${orphan.namespace}/${orphan.service}, which isn't a Service Cloud can redeploy. Remove it, then switch again.`;
   const ports: RedeployPorts<RedeployError, RedeployServices> = {
-    deploy: ({ project, environment, services }) => Effect.gen(function* () {
+    reapply: ({ project, environment, services }) => Effect.gen(function* () {
       const id = randomUUID();
       const admission = yield* callStore(organizationId, null, { operation: "write", command: {
         command: "admit", admit: "reapply", id, environment: { project, environment }, services: [...services], message: null,

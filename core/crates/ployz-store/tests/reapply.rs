@@ -56,7 +56,7 @@ fn deployed_at_h1() -> (ConfigStore, Actor) {
     (store, who)
 }
 
-fn reapply(store: &ConfigStore, who: &Actor, n: u8) -> DeploymentId {
+fn reapply(store: &ConfigStore, who: &Actor, n: u8, service: &str) -> DeploymentId {
     let id = DeploymentId::parse(format!("00000000-0000-4000-8000-0000000002{n:02}")).unwrap();
     let written = store
         .write_trusted(
@@ -64,7 +64,7 @@ fn reapply(store: &ConfigStore, who: &Actor, n: u8) -> DeploymentId {
             &Command::Admit(Admit::Reapply(Reapply {
                 id: id.clone(),
                 environment: EnvironmentRef::default(),
-                services: vec![ServiceName::parse("web").unwrap()],
+                services: vec![ServiceName::parse(service).unwrap()],
                 message: None,
             })),
             &Trusted::default(),
@@ -74,19 +74,43 @@ fn reapply(store: &ConfigStore, who: &Actor, n: u8) -> DeploymentId {
     id
 }
 
-#[test]
-fn a_reapply_builds_the_commit_a_service_runs() {
-    let (store, who) = deployed_at_h1();
-    let id = reapply(&store, &who, 1);
-    let sources = store.sources(&id).unwrap();
+/// The commit Deployment `id` builds `web` from, by its runtime name.
+fn web_commit(store: &ConfigStore, id: &DeploymentId) -> Option<String> {
+    let sources = store.sources(id).unwrap();
     let web = sources
         .iter()
         .find(|source| source.service.as_str() == "web")
         .unwrap();
-    assert_eq!(
-        web.commit.as_ref().map(ToString::to_string).as_deref(),
-        Some(H1)
-    );
+    web.commit.as_ref().map(ToString::to_string)
+}
+
+#[test]
+fn a_reapply_builds_the_commit_a_service_runs() {
+    let (store, who) = deployed_at_h1();
+    let id = reapply(&store, &who, 1, "web");
+    assert_eq!(web_commit(&store, &id).as_deref(), Some(H1));
+}
+
+#[test]
+fn a_reapply_builds_the_commit_a_renamed_service_runs() {
+    let (store, who) = deployed_at_h1();
+    store
+        .write(
+            &who,
+            &ployz_store::RenameService {
+                environment: EnvironmentRef::default(),
+                service: ServiceName::parse("web").unwrap(),
+                name: ServiceName::parse("site").unwrap(),
+            },
+        )
+        .unwrap();
+    publish(&store, &who);
+    let pushed = system(&store, &push(Some(H1), Some(H2), None));
+    let [admitted] = <[_; 1]>::try_from(pushed.admitted).unwrap();
+    apply(&store, &admitted.deployment.id, &["web", "api"]);
+
+    let id = reapply(&store, &who, 1, "site");
+    assert_eq!(web_commit(&store, &id).as_deref(), Some(H2));
 }
 
 #[test]
@@ -97,7 +121,7 @@ fn a_reapply_leaves_a_push_waiting_for_ci_waiting() {
     system(&store, &push(Some(H1), Some(H2), None));
     let [hold] = <[_; 1]>::try_from(held(&store, &who)).unwrap();
 
-    reapply(&store, &who, 1);
+    reapply(&store, &who, 1, "web");
     let still = deployments(&store, &who)
         .into_iter()
         .find(|deployment| deployment.id == hold.id)

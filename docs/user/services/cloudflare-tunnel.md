@@ -38,8 +38,9 @@ Click **Review and switch**. The review lists every address that moves, like
 and follow **Step 1 of 3** to **Step 3 of 3**. Expect a short interruption. The switch redeploys
 only the services on that list, as they run now, and closes the old door only once your servers
 serve every new address. A service that isn't running stays stopped. Changes you haven't deployed
-stay staged, so `ployz diff` still shows them. The switch stops if one of those environments is
-still deploying. Wait for that deployment to finish, then switch again.
+stay staged, so `ployz diff` still shows them. Services you deployed separately may redeploy one at
+a time. The switch stops if one of those environments is still deploying. Wait for that deployment
+to finish, then switch again.
 
 While a switch runs, each door's row shows what your servers hold right now. A second switch the
 same way joins the running one. One the other way is refused until it finishes.

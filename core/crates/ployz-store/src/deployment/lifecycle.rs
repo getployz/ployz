@@ -423,11 +423,11 @@ fn inherit(
     Ok(())
 }
 
-/// Queue a Deployment of `environment`, written by `insert` with the next number,
-/// superseding the queued one, if any, and unless it `keeps_holds`, every one
-/// waiting for CI too. Each superseded one ends now. The superseded queued one
-/// leaves flight, so the sealed values only it kept in History go once the new one
-/// holds its revision.
+/// Queue a Deployment of `environment`, written by `insert` with the next number.
+/// It supersedes the queued one, if any, and every one waiting for CI unless
+/// `keeps_holds`. Each superseded one ends now. The superseded queued one leaves
+/// flight, so the sealed values only it kept in History go once the new one holds
+/// its revision.
 pub(super) fn queue(
     tx: &mut dyn Tx,
     environment: &EnvironmentId,

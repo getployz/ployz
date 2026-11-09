@@ -197,13 +197,20 @@ describe("what the Servers showed", () => {
 });
 
 describe("redeploying what moves", () => {
-  const scope = [{ namespace: "shop-prod", project: "shop", environment: "production", services: ["web"] }];
+  const web = { namespace: "shop-prod", project: "shop", environment: "production", services: ["web"] };
+  const scope = [web];
+  const both = [{ ...web, services: ["web", "worker"] }];
   const fast = { poll: "5 millis", limit: "40 millis" } as const;
   /** A Store whose Deployments end as `status`, and Servers publishing `served` on each look. */
-  const ports = (status: "applied" | "superseded" | "failed", served: ReadonlyArray<ReadonlyArray<string> | null>, log: string[]): RedeployPorts<never, never> => {
+  const ports = (
+    status: "applied" | "superseded" | "failed", served: ReadonlyArray<ReadonlyArray<string> | null>, log: string[], refusesTogether = false,
+  ): RedeployPorts<never, never> => {
     let looks = 0;
     return {
-      deploy: ({ project, environment, services }) => Effect.sync(() => { log.push(`deploy ${project}/${environment} ${services.join(",")}`); return { id: "d1" }; }),
+      reapply: ({ project, environment, services }) => Effect.sync(() => {
+        log.push(`reapply ${project}/${environment} ${services.join(",")}`);
+        return refusesTogether && services.length > 1 ? { refused: "web, worker can't redeploy as they run now." } : { id: "d1" };
+      }),
       ended: () => Effect.sync(() => { log.push(`ended ${status}`); return status; }),
       observe: () => Effect.sync(() => {
         const now = served[Math.min(looks, served.length - 1)] ?? null;
@@ -216,7 +223,7 @@ describe("redeploying what moves", () => {
   it("ends once the Servers publish every moved address, however the Deployment ended", async () => {
     const log: string[] = [];
     expect(await Effect.runPromise(redeployMoved([MOVE], scope, ports("superseded", [["web-prod.acme.ployz.app"], ["web-prod.example.com"]], log), fast))).toBeNull();
-    expect(log).toEqual(["deploy shop/production web", "ended superseded"]);
+    expect(log).toEqual(["reapply shop/production web", "ended superseded"]);
   });
 
   it("doesn't take a superseded Deployment as proof: an address never served names its Environment", async () => {
@@ -233,7 +240,26 @@ describe("redeploying what moves", () => {
     const log: string[] = [];
     const end = await Effect.runPromise(redeployMoved([MOVE], scope, ports("failed", [["web-prod.example.com"]], log), fast));
     expect(end).toBe("shop/production didn't redeploy. Check its deployments, then switch again.");
-    expect(log).toEqual(["deploy shop/production web", "ended failed"]);
+    expect(log).toEqual(["reapply shop/production web", "ended failed"]);
+  });
+
+  it("reapplies one Service at a time once the Store refuses them together", async () => {
+    const log: string[] = [];
+    expect(await Effect.runPromise(redeployMoved([MOVE], both, ports("applied", [["web-prod.example.com"]], log, true), fast))).toBeNull();
+    expect(log).toEqual(["reapply shop/production web,worker", "reapply shop/production web", "ended applied", "reapply shop/production worker", "ended applied"]);
+  });
+
+  it("stops at the first Service that doesn't reapply alone", async () => {
+    const log: string[] = [];
+    const end = await Effect.runPromise(redeployMoved([MOVE], both, ports("failed", [["web-prod.example.com"]], log, true), fast));
+    expect(end).toBe("shop/production didn't redeploy. Check its deployments, then switch again.");
+    expect(log).toEqual(["reapply shop/production web,worker", "reapply shop/production web", "ended failed"]);
+  });
+
+  it("doesn't reapply one at a time when the Deployment of them together fails", async () => {
+    const log: string[] = [];
+    await Effect.runPromise(redeployMoved([MOVE], both, ports("failed", [["web-prod.example.com"]], log), fast));
+    expect(log).toEqual(["reapply shop/production web,worker", "ended failed"]);
   });
 
   it("deploys nothing when nothing moves", async () => {

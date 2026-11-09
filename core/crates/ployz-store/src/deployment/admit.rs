@@ -162,15 +162,16 @@ pub struct ShutDown {
 
 /// Ship Services again as Applied State holds them, with their generated domains
 /// under the Cluster Domain now: how a Door switch moves them. It saves nothing,
-/// so what Working and Saved State stage stays staged. Only the Store's own
-/// automation admits one.
+/// so what Working and Saved State stage stays staged. Only an Actor without a
+/// principal admits one: the Store's own automation or the hidden local Store.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
 #[serde(deny_unknown_fields)]
 pub struct Reapply {
     pub id: DeploymentId,
     #[serde(default)]
     pub environment: EnvironmentRef,
-    /// Deployed Services, by the name each has now.
+    /// Deployed Services, each by its name in Working State, or in Applied State
+    /// once Working State no longer has it.
     pub services: Vec<ServiceName>,
     /// As [`Deploy::message`].
     #[serde(default)]
@@ -535,10 +536,9 @@ fn deploy(
 }
 
 /// Queue a Deployment of `admit`'s Services as Applied State holds them, with their
-/// generated domains under the Cluster Domain now. It ships the newest Saved
-/// revision in which each of them, and each Service it references, runs as Applied
-/// State has it, so nothing staged ships. Refused while a Deployment is in flight,
-/// since that may still change Applied State.
+/// generated domains under the Cluster Domain now. Refused while a Deployment is in
+/// flight, since that may still change Applied State, and when no Saved revision
+/// ships them all unchanged.
 fn reapply(
     tx: &mut dyn Tx,
     who: &Actor,
@@ -567,8 +567,7 @@ fn reapply(
     }
     let head = deployment::head(tx, &environment)?;
     let landing = deployment::Landing::of(&head);
-    // A Service goes by the name Working State gives it, or else as Applied State has it.
-    let named = |applied: &SavedServiceIntent, name: &ServiceName| {
+    let goes_by = |applied: &SavedServiceIntent, name: &ServiceName| {
         environment
             .working
             .services
@@ -583,7 +582,7 @@ fn reapply(
             .applied
             .services
             .iter()
-            .find(|applied| named(applied, name))
+            .find(|applied| goes_by(applied, name))
             .ok_or_else(|| {
                 error::not_found(
                     format!("{name} isn't deployed."),
@@ -609,21 +608,85 @@ fn reapply(
         .cluster_domain
         .as_ref()
         .map(|cluster| &cluster.name);
-    for revision in revisions(tx, id)? {
-        let saved = deployment::saved_at(tx, id, revision)?;
+    let Some((revision, saved, mut frozen)) = unchanged(
+        tx,
+        who,
+        (id, &running),
+        (&services, &landing),
+        (&namespace, cluster_domain),
+    )?
+    else {
+        return Err(error::conflict(
+            format!(
+                "{} can't redeploy as {} now. Deploy {} or discard its changes, then try again.",
+                services
+                    .iter()
+                    .map(ServiceName::as_str)
+                    .collect::<Vec<_>>()
+                    .join(", "),
+                if services.len() == 1 {
+                    "it runs"
+                } else {
+                    "they run"
+                },
+                environment.summary.name
+            ),
+            json!({ "services": services }),
+        ));
+    };
+    gate(
+        tx,
+        who,
+        (&environment, &saved),
+        (cluster_domain, &namespace),
+        trusted,
+    )?;
+    frozen.credentials = registry::freeze(tx, id, &saved, &frozen)?;
+    let summary = deployment::admit(
+        tx,
+        who,
+        (
+            deployment::Admission::Beside(&admit.id),
+            &services,
+            None,
+            admit.message.clone(),
+        ),
+        id,
+        revision,
+        &frozen,
+    )?;
+    for service in &running {
+        pin_running_commit(tx, (id, &summary.id), service)?;
+    }
+    Ok(summary)
+}
+
+/// The newest Saved revision that ships each of `running`, and each Service it
+/// references, as Applied State has it, frozen for `services`. It looks back to
+/// the oldest revision a Deployment that put a node of Applied State in place
+/// shipped, so a Saved edit since never hides one.
+fn unchanged(
+    tx: &mut dyn Tx,
+    who: &Actor,
+    (environment, running): (&EnvironmentId, &[&SavedServiceIntent]),
+    (services, landing): (&[ServiceName], &deployment::Landing<'_>),
+    (namespace, cluster_domain): (&Namespace, Option<&Hostname>),
+) -> Result<Option<(Revision, SavedEnvironmentIntent, deployment::Frozen)>, RpcError> {
+    for revision in revisions(tx, environment)? {
+        let saved = deployment::saved_at(tx, environment, revision)?;
         if !running
             .iter()
             .all(|applied| saved.services.contains(applied))
         {
             continue;
         }
-        let mut frozen = deployment::freeze(
-            id,
+        let frozen = deployment::freeze(
+            environment,
             &who.organization,
             &saved,
-            &landing,
+            landing,
             deployment::Scope::Narrow {
-                services: &services,
+                services,
                 retire: &[],
                 losses: &[],
                 every_saved: false,
@@ -631,80 +694,39 @@ fn reapply(
             namespace.clone(),
             cluster_domain,
         )?;
-        let unchanged = frozen.nodes.iter().all(|node| {
+        let ships_as_it_runs = frozen.nodes.iter().all(|node| {
             saved
                 .services
                 .iter()
                 .filter(|service| service.id == node.id())
-                .all(|service| !deployment::changed(&saved, &landing, service))
+                .all(|service| !deployment::changed(&saved, landing, service))
         });
-        if !unchanged {
-            continue;
+        if ships_as_it_runs {
+            return Ok(Some((revision, saved, frozen)));
         }
-        gate(
-            tx,
-            who,
-            (&environment, &saved),
-            (cluster_domain, &namespace),
-            trusted,
-        )?;
-        frozen.credentials = registry::freeze(tx, id, &saved, &frozen)?;
-        let summary = deployment::admit(
-            tx,
-            who,
-            (
-                deployment::Admission::Beside(&admit.id),
-                &services,
-                None,
-                admit.message.clone(),
-            ),
-            id,
-            revision,
-            &frozen,
-        )?;
-        for service in &running {
-            pin_running_commit(tx, (id, &summary.id), service)?;
-        }
-        return Ok(summary);
     }
-    Err(error::conflict(
-        format!(
-            "{} can't redeploy unchanged. Deploy {}, then try again.",
-            services
-                .iter()
-                .map(ServiceName::as_str)
-                .collect::<Vec<_>>()
-                .join(", "),
-            environment.summary.name
-        ),
-        json!({ "services": services }),
-    ))
+    Ok(None)
 }
 
-/// The Saved revisions a reapply may ship, newest first: each one a Deployment
-/// that put a node of Applied State in place shipped, and the latest.
+/// The Saved revisions of `environment` a reapply may ship, newest first: each one
+/// since the oldest that a Deployment putting a node of Applied State in place
+/// shipped.
 fn revisions(tx: &mut dyn Tx, environment: &EnvironmentId) -> Result<Vec<Revision>, RpcError> {
-    let mut revisions = tx
-        .query(
-            "SELECT DISTINCT d.saved_revision FROM config_applied a \
-             JOIN config_deployment d ON d.id = a.deployment_id \
-             WHERE a.environment_id = ?1",
-            &[environment.as_str().into()],
-        )?
-        .iter()
-        .map(|row| row.number(0, "revision"))
-        .collect::<Result<Vec<Revision>, _>>()?;
-    if let Some(latest) = review::latest_saved(tx, environment)? {
-        revisions.push(latest.revision);
-    }
-    revisions.sort_unstable_by(|left, right| right.cmp(left));
-    revisions.dedup();
-    revisions.retain(|revision| *revision != deployment::NOTHING);
-    Ok(revisions)
+    tx.query(
+        "SELECT s.revision FROM config_saved s WHERE s.environment_id = ?1 \
+         AND s.revision >= (SELECT MIN(d.saved_revision) FROM config_applied a \
+         JOIN config_deployment d ON d.id = a.deployment_id WHERE a.environment_id = ?1) \
+         ORDER BY s.revision DESC",
+        &[environment.as_str().into()],
+    )?
+    .iter()
+    .map(|row| row.number(0, "revision"))
+    .collect()
 }
 
-/// Pin `service`'s build in Deployment `id` to the commit it runs: the one the
-/// Deployment that put it in Applied State built. One without a Git source has none.
+/// Pin `service`'s build in Deployment `id` to the commit it runs, as built by the
+/// Deployment that put it in Applied State. A Service without a Git source has no
+/// build to pin. Builds go by the runtime name, which a rename keeps.
 fn pin_running_commit(
     tx: &mut dyn Tx,
     (environment, id): (&EnvironmentId, &DeploymentId),
@@ -721,7 +743,7 @@ fn pin_running_commit(
             id.as_str().into(),
             environment.as_str().into(),
             service.id.as_str().into(),
-            service.slug.as_str().into(),
+            service.config.private_dns.as_str().into(),
         ],
     )
     .map(drop)
