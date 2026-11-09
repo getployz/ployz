@@ -10,8 +10,9 @@ pub use crate::config_item::query::{
     ConfigItemQuery, ConfigItemView, ConfigListing, ConfigMountChange, ConfigsQuery, ConfigsView,
 };
 pub use crate::deployment::query::{
-    DeploymentQuery, DeploymentsQuery, DeploymentsView, NamespaceQuery, NamespaceView,
-    NamespacesQuery, NamespacesView, NumberedDeploymentQuery, OwnedNamespace, PlanQuery, PlanView,
+    AppliedRoute, DeploymentQuery, DeploymentsQuery, DeploymentsView, NamespaceQuery,
+    NamespaceView, NamespacesQuery, NamespacesView, NumberedDeploymentQuery, OwnedNamespace,
+    PlanQuery, PlanView, RouteKind,
 };
 pub use crate::deployment::uploads::{HeldUpload, UploadsQuery, UploadsView};
 pub use crate::review::diff::DiffQuery;

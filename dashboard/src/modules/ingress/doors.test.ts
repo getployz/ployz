@@ -8,12 +8,16 @@ import {
   doorWords,
   type LatestDoorsChange,
   keptHostnames,
+  type KnownRoutes,
   movedHostnames,
   type MovedHostname,
   observationGap,
   redeployScope,
+  routeKey,
   switchProblem,
   switchProgress,
+  unknownGap,
+  unknownHostnames,
   unservedMoves,
 } from "#/modules/ingress/doors";
 import { redeployMoved, type RedeployPorts, runSwitch, switchSteps, type SwitchPorts } from "#/modules/ingress/doors.run";
@@ -101,24 +105,46 @@ describe("what a switch moves", () => {
     { hostname: "www.example.org", namespace: "shop-prod", service: "web" },
   ];
 
+  const known = (...routes: [string, string, "generated" | "custom"][]): KnownRoutes =>
+    new Map(routes.map(([namespace, hostname, kind]) => [routeKey(namespace, hostname), kind]));
+
   it("moves each generated hostname one label below the new source, and leaves custom domains alone", () => {
-    expect(movedHostnames(published, "acme.ployz.app", "example.com", new Set(["www.example.org"]))).toEqual([
+    const routes = known(["shop-prod", "web-prod.acme.ployz.app", "generated"], ["shop-prod", "deep.web-prod.acme.ployz.app", "generated"], ["shop-prod", "www.example.org", "custom"]);
+    expect(movedHostnames(published, "acme.ployz.app", "example.com", routes)).toEqual([
       { from: "web-prod.acme.ployz.app", to: "web-prod.example.com", namespace: "shop-prod", service: "web" },
     ]);
+    expect(unknownHostnames(published, "acme.ployz.app", routes)).toEqual([]);
   });
 
-  it("tells a custom domain spelled like a generated name by the Store's word, not its shape, and lists it as staying", () => {
+  it("tells a custom domain spelled like a generated name by the Deployment that put it there, not its shape, and lists it as staying", () => {
     const back = [
       { hostname: "web-prod.example.com", namespace: "shop-prod", service: "web" },
       { hostname: "shop.example.com", namespace: "shop-prod", service: "shop" },
       { hostname: "www.example.org", namespace: "shop-prod", service: "web" },
     ];
-    const custom = new Set(["shop.example.com", "www.example.org"]);
-    expect(movedHostnames(back, "example.com", "acme.ployz.app", custom)).toEqual([
+    const routes = known(["shop-prod", "web-prod.example.com", "generated"], ["shop-prod", "shop.example.com", "custom"], ["shop-prod", "www.example.org", "custom"]);
+    expect(movedHostnames(back, "example.com", "acme.ployz.app", routes)).toEqual([
       { from: "web-prod.example.com", to: "web-prod.acme.ployz.app", namespace: "shop-prod", service: "web" },
     ]);
-    expect(keptHostnames(back, custom)).toEqual(["shop.example.com", "www.example.org"]);
-    expect(keptHostnames(back, new Set())).toEqual([]);
+    expect(keptHostnames(back, routes)).toEqual(["shop.example.com", "www.example.org"]);
+    expect(keptHostnames(back, new Map())).toEqual([]);
+  });
+
+  it("never moves a name no Deployment accounts for, in another Namespace or none, and names the first as why the switch stops", () => {
+    const back = [
+      { hostname: "web-prod.example.com", namespace: "shop-prod", service: "web" },
+      { hostname: "web-prod.example.com", namespace: "old-prod", service: "web" },
+      { hostname: "deep.stray.example.com", namespace: "shop-prod", service: "web" },
+    ];
+    const routes = known(["shop-prod", "web-prod.example.com", "generated"]);
+    expect(movedHostnames(back, "example.com", "acme.ployz.app", routes)).toEqual([
+      { from: "web-prod.example.com", to: "web-prod.acme.ployz.app", namespace: "shop-prod", service: "web" },
+    ]);
+    const unknown = unknownHostnames(back, "example.com", routes);
+    expect(unknown).toEqual([{ hostname: "web-prod.example.com", namespace: "old-prod", service: "web" }]);
+    expect(unknownGap(unknown)).toBe("web-prod.example.com is served by old-prod/web, which Cloud can't match to a deployed domain. Deploy it again or remove it, then switch again.");
+    expect(unknownGap([])).toBeNull();
+    expect(movedHostnames(back, "example.com", "acme.ployz.app", new Map())).toEqual([]);
   });
 
   it("redeploys only the deployed Services publishing a moved hostname, by their Store names, and never a whole Environment", () => {

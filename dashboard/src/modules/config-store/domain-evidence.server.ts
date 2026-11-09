@@ -154,7 +154,7 @@ export const lookUpHostname = (hostname: string) => Effect.promise(async (): Pro
  */
 const REACH_TTL_MS = 15_000;
 const UNANSWERED_TTL_MS = 5_000;
-/** How many hostnames one read fetches through at most. The rest read as unobserved until a later read reaches them. */
+/** How many hostnames one read fetches through at most: the ones never observed first, then the longest unobserved, so later reads reach the rest. */
 const REACH_LIMIT = 16;
 /** How long a read waits for the first fetch through a name. One that takes longer lands in the memo and answers the next read; a check waits it out. */
 const REACH_WAIT_MS = 250;
@@ -184,10 +184,11 @@ const fetchOnce = (key: string, fetch: Effect.Effect<TunnelAnswer>) => Effect.ge
  * Who answers through each of `hostnames` the Servers publish: DNS can't say, since Cloudflare hides a proxied CNAME,
  * so Cloud fetches the verify path through it, as the Servers do on the Public Door. A name inside the zone is fetched
  * too: the wildcard record covers it only while no record of its own sends it elsewhere. A read asks only for the
- * custom hostnames it judges, and no fetch holds the page: an answer past its time serves the read while a fetch
- * refreshes it for the next one, and a name never answered waits {@link REACH_WAIT_MS} before it reads as unobserved.
- * A check (`fresh`) fetches again rather than reusing an answer from seconds ago, and waits for it. No address of a
- * Server is looked at in this mode.
+ * custom hostnames it judges, and every answer it has serves, however old; the fetches it starts, {@link REACH_LIMIT}
+ * at most, go to the names whose answer is missing or past its time, the longest unobserved first. No fetch holds the
+ * page: an answer past its time serves the read while a fetch refreshes it for the next one, and a name never
+ * answered waits {@link REACH_WAIT_MS} before it reads as unobserved. A check (`fresh`) fetches again rather than
+ * reusing an answer from seconds ago, and waits for it. No address of a Server is looked at in this mode.
  */
 export const tunnelEvidence = Effect.fn("ConfigStore.tunnelEvidence")(function* (
   organizationId: string,
@@ -200,12 +201,17 @@ export const tunnelEvidence = Effect.fn("ConfigStore.tunnelEvidence")(function* 
   if (observed === null) return { target: cloudflare.target, reached: [] } satisfies TunnelEvidence;
   const now = yield* Clock.currentTimeMillis;
   const published = new Set(observed.seen.published.map(({ hostname }) => String(hostname)));
-  const looked = [...new Set(hostnames)].filter((hostname) => published.has(hostname)).slice(0, REACH_LIMIT);
+  const looked = [...new Set(hostnames)].filter((hostname) => published.has(hostname));
+  const lastOf = (hostname: string) => reaches.get(`${organizationId}/${hostname}`);
+  const due = (last: { at: number; answer: TunnelAnswer } | undefined) =>
+    fresh || last === undefined || now - last.at >= (last.answer === "unanswered" ? UNANSWERED_TTL_MS : REACH_TTL_MS);
+  const fetches = new Set(
+    looked.filter((hostname) => due(lastOf(hostname))).sort((a, b) => (lastOf(a)?.at ?? -1) - (lastOf(b)?.at ?? -1)).slice(0, REACH_LIMIT),
+  );
   const answers = yield* Effect.forEach(looked, (hostname) => Effect.gen(function* () {
     const key = `${organizationId}/${hostname}`;
     const last = reaches.get(key);
-    const ttl = last?.answer === "unanswered" ? UNANSWERED_TTL_MS : REACH_TTL_MS;
-    if (!fresh && last !== undefined && now - last.at < ttl) return Option.some({ hostname, answer: last.answer } satisfies TunnelReach);
+    if (!fetches.has(hostname)) return last === undefined ? Option.none() : Option.some({ hostname, answer: last.answer } satisfies TunnelReach);
     const pending = yield* fetchOnce(key, reach(hostname, observed.machineIds));
     // A stale answer serves this read while the fetch under way lands for the next one.
     if (!fresh && last !== undefined) return Option.some({ hostname, answer: last.answer } satisfies TunnelReach);

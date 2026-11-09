@@ -2282,7 +2282,7 @@ pub(crate) fn land(
         crate::volume::StorageRule::Replay,
     )?;
     // What arrives from `from` may bring a rule it already broke; that's not new.
-    scope::save_working_from(tx, branch, Some(from))?;
+    scope::save_working_from(tx, branch, Some(from), trusted)?;
     let id = branch.summary.id.clone();
     let source_of = |lineage: &str| {
         from.services

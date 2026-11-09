@@ -49,7 +49,9 @@ cause, then click **Review and switch** again to finish.
 The switch needs every server to answer. When a server is down, the switch stops with both doors
 open and says so, since Ployz can't see which addresses that server moves. The review and each
 door's row say when some servers didn't answer. Bring the server back, or remove it, then switch
-again.
+again. The same goes for an address under the domain the switch leaves that no deployment
+put there, since Ployz can't tell whether it moves. The review names it. Deploy that
+environment again, or remove the address, then switch again.
 
 Custom domains stay as they are. Add each to your tunnel's DNS in Cloudflare, as the CLI steps
 below show.

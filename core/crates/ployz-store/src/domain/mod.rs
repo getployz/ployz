@@ -871,21 +871,115 @@ pub(crate) fn refuse_too_long_copies(
     if new.is_empty() {
         return Ok(());
     }
-    let cluster = match trusted.and_then(|trusted| trusted.domains.cluster_domain.as_ref()) {
-        Some(cluster) => Some(cluster.name.clone()),
-        None => {
-            let mut cluster = crate::deployment::cluster_domain(tx, environment)?;
-            for ancestor in crate::branch::ancestors(tx, environment)? {
-                if cluster.is_some() {
-                    break;
-                }
-                cluster = crate::deployment::cluster_domain(tx, &ancestor)?;
-            }
-            cluster
-        }
-    };
+    let cluster = cluster_for(tx, environment, trusted)?;
     new.into_iter()
         .try_for_each(|prefix| refuse_too_long(prefix, cluster.as_ref(), "branch name"))
+}
+
+/// The Cluster Domain `environment`'s generated domains expand under: Cloud's, when the
+/// write carries its evidence, else the one `environment` or its nearest ancestor last
+/// deployed under.
+fn cluster_for(
+    tx: &mut dyn Tx,
+    environment: &crate::EnvironmentId,
+    trusted: Option<&Trusted>,
+) -> Result<Option<Hostname>, RpcError> {
+    if let Some(cluster) = trusted.and_then(|trusted| trusted.domains.cluster_domain.as_ref()) {
+        return Ok(Some(cluster.name.clone()));
+    }
+    let mut cluster = crate::deployment::cluster_domain(tx, environment)?;
+    for ancestor in crate::branch::ancestors(tx, environment)? {
+        if cluster.is_some() {
+            break;
+        }
+        cluster = crate::deployment::cluster_domain(tx, &ancestor)?;
+    }
+    Ok(cluster)
+}
+
+/// Refuse each hostname `after` newly spells two ways under the Cluster Domain: as one
+/// Service's generated prefix and as another's custom domain, anywhere in the
+/// Organization. Every write of Working State comes through here, so a Branch that
+/// suffixes the prefixes it copies, a Sync or a restore can't mint a name a custom
+/// domain holds. What `before` already held is not new.
+pub(crate) fn refuse_new_shared_hostnames(
+    tx: &mut dyn Tx,
+    environment: &Environment,
+    trusted: Option<&Trusted>,
+    (before, after): (&SavedEnvironmentIntent, &SavedEnvironmentIntent),
+) -> Result<(), RpcError> {
+    let Some(cluster) = cluster_for(tx, &environment.summary.id, trusted)? else {
+        return Ok(());
+    };
+    let mut prefixes = Vec::new();
+    let mut labels = Vec::new();
+    for service in &after.services {
+        let held = before.services.iter().find(|held| held.id == service.id);
+        for managed in &service.config.managed_hostnames {
+            if held.is_none_or(|held| {
+                held.config
+                    .managed_hostnames
+                    .iter()
+                    .all(|was| was.prefix != managed.prefix)
+            }) {
+                prefixes.push(managed.prefix.as_str());
+            }
+        }
+        for route in &service.config.routes {
+            if let Some(label) = label_under(&route.hostname, &cluster)
+                && held.is_none_or(|held| {
+                    held.config
+                        .routes
+                        .iter()
+                        .all(|was| was.hostname != route.hostname)
+                })
+            {
+                labels.push((route.hostname.as_str(), label));
+            }
+        }
+    }
+    if prefixes.is_empty() && labels.is_empty() {
+        return Ok(());
+    }
+    let others = crate::names::other_environments(tx, environment)?;
+    let summary = &environment.summary;
+    let environments = others
+        .iter()
+        .map(|other| (format!("{}/{}", other.project, other.name), &other.working))
+        .chain(std::iter::once((
+            format!("{}/{}", summary.project, summary.name),
+            after,
+        )));
+    for (place, intent) in environments {
+        for service in &intent.services {
+            let holder = || format!("{} in {place}", service.slug);
+            for route in &service.config.routes {
+                if let Some(label) = label_under(&route.hostname, &cluster)
+                    && prefixes.contains(&label)
+                {
+                    return Err(error::conflict(
+                        format!(
+                            "{} is already the custom domain of {}",
+                            route.hostname,
+                            holder()
+                        ),
+                        json!({ "prefix": label, "hostname": route.hostname }),
+                    ));
+                }
+            }
+            for managed in &service.config.managed_hostnames {
+                if let Some((hostname, _)) =
+                    labels.iter().find(|(_, label)| *label == managed.prefix)
+                {
+                    return Err(error::conflict(
+                        format!("{hostname} is already the generated domain of {}", holder()),
+                        json!({ "hostname": hostname }),
+                    ));
+                }
+            }
+        }
+    }
+    Ok(())
 }
 
 /// The Cluster Domain `environment`'s generated domains live under: the one Cloud

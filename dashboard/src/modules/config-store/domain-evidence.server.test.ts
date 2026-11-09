@@ -116,6 +116,18 @@ it("shares one fetch between reads that overlap, and fetches through a bounded n
   expect(evidence.reached).toHaveLength(16);
 });
 
+it("answers every name it has an answer for, spends the fetch budget on the ones never observed, and reaches the rest on later reads", async () => {
+  const many = Array.from({ length: 17 }, (_, index) => `site-${String(index).padStart(2, "0")}.example.org`);
+  let fetched = 0;
+  const reach = () => Effect.sync((): TunnelAnswer => { fetched += 1; return "cluster"; });
+  const read = () => Effect.runPromise(tunnelEvidence("org-8", cloudflare, observed(...many), false, many, reach));
+  expect((await read()).reached).toHaveLength(16);
+  expect(fetched).toBe(16);
+  const second = await read();
+  expect(second.reached.map(({ hostname }) => hostname).sort()).toEqual([...many].sort());
+  expect(fetched).toBe(17);
+});
+
 it("waits a bounded time for a first fetch, serves a stale answer while a fetch refreshes it, and never holds a read on a slow name", () => Effect.gen(function* () {
   let gate = yield* Deferred.make<TunnelAnswer>();
   let fetched = 0;

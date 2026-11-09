@@ -10,7 +10,7 @@ use ts_rs::TS;
 use crate::Actor;
 use crate::deployment::{self, DeploymentSummary, DeploymentView};
 use crate::error;
-use crate::id::DeploymentId;
+use crate::id::{DeploymentId, Hostname};
 use crate::removal::{self, VolumeLoss};
 use crate::review::{self, NodeChange};
 use crate::scope::{self, EnvironmentRef, EnvironmentSummary};
@@ -74,6 +74,30 @@ pub struct NamespaceView {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[ts(optional)]
     pub authored: Option<std::collections::BTreeSet<ServiceName>>,
+    /// Every hostname the Namespace serves as Applied State has it, by what produced
+    /// it. A name the Servers publish that isn't here, no Deployment Cloud knows of put
+    /// there. Absent from an older Store.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub routes: Option<Vec<AppliedRoute>>,
+}
+
+/// A hostname Applied State serves in the Namespace.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
+pub struct AppliedRoute {
+    pub hostname: Hostname,
+    /// The runtime name of the Service serving it, as its containers carry it.
+    pub service: ServiceName,
+    pub kind: RouteKind,
+}
+
+/// What produced a route: a generated domain, expanded under the Cluster Domain its
+/// Deployment used, or a custom domain.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "snake_case")]
+pub enum RouteKind {
+    Generated,
+    Custom,
 }
 
 /// Every Namespace the Organization's Environments own on the Servers.
@@ -339,8 +363,10 @@ pub(crate) fn namespace(
 ) -> Result<NamespaceView, RpcError> {
     let environment = scope::environment(tx, who, &query.environment)?;
     let namespace = deployment::namespace(tx, who, &environment.summary, false)?;
+    let head = deployment::head(tx, &environment)?;
+    let clusters = deployment::cluster_domains(tx, &environment.summary.id, &head)?;
+    let applied = &head.applied;
     // Containers run as Applied State has them, under the name the Service has now.
-    let applied = deployment::applied_state(tx, &environment.summary.id, &environment.working)?;
     let services = applied
         .services
         .iter()
@@ -361,11 +387,35 @@ pub(crate) fn namespace(
         .iter()
         .filter_map(|service| ServiceName::parse(service.slug.as_str()).ok())
         .collect::<std::collections::BTreeSet<_>>();
+    let mut routes = Vec::new();
+    for service in &applied.services {
+        let mut route = |hostname: &str, kind| {
+            if let Ok(hostname) = Hostname::parse(hostname) {
+                routes.push(AppliedRoute {
+                    hostname,
+                    service: service.config.private_dns.clone(),
+                    kind,
+                });
+            }
+        };
+        for held in &service.config.routes {
+            route(&held.hostname, RouteKind::Custom);
+        }
+        for managed in &service.config.managed_hostnames {
+            if let Some(cluster) = clusters.get(&(service.id.clone(), managed.prefix.clone())) {
+                route(
+                    &format!("{}.{cluster}", managed.prefix),
+                    RouteKind::Generated,
+                );
+            }
+        }
+    }
     Ok(NamespaceView {
         environment: environment.summary,
         namespace,
         services,
         authored: Some(authored),
+        routes: Some(routes),
     })
 }
 
