@@ -198,7 +198,7 @@ pub struct Builder {
 
 /// The commit of `getployz/build` whose reusable workflow a rule approved from the CLI
 /// pins by default.
-pub const BUILDER_SHA: &str = "0000000000000000000000000000000000000000";
+pub const BUILDER_SHA: &str = "5f35eaa8e1372d0d86ff82788adadf308e5f3f97";
 
 impl Builder {
     /// `getployz/build`'s reusable workflow at [`BUILDER_SHA`].
