@@ -156,7 +156,7 @@ const REACH_TTL_MS = 15_000;
 const UNANSWERED_TTL_MS = 5_000;
 /** How many hostnames one read fetches through at most. The rest read as unobserved until a later read reaches them. */
 const REACH_LIMIT = 16;
-/** How long a read waits for a fetch it started. One that takes longer lands in the memo and answers the next read; a check waits it out. */
+/** How long a read waits for the first fetch through a name. One that takes longer lands in the memo and answers the next read; a check waits it out. */
 const REACH_WAIT_MS = 250;
 // ponytail: as `observations`, one memo per process, bounded by the custom domains Organizations publish.
 const reaches = new Map<string, { at: number; answer: TunnelAnswer }>();
@@ -175,7 +175,7 @@ const fetchOnce = (key: string, fetch: Effect.Effect<TunnelAnswer>) => Effect.ge
       fetching.delete(key);
       return Deferred.done(mine, exit);
     }),
-    Effect.forkDetach,
+    Effect.forkDetach({ startImmediately: true }),
   );
   return mine;
 });
@@ -184,9 +184,10 @@ const fetchOnce = (key: string, fetch: Effect.Effect<TunnelAnswer>) => Effect.ge
  * Who answers through each of `hostnames` the Servers publish: DNS can't say, since Cloudflare hides a proxied CNAME,
  * so Cloud fetches the verify path through it, as the Servers do on the Public Door. A name inside the zone is fetched
  * too: the wildcard record covers it only while no record of its own sends it elsewhere. A read asks only for the
- * custom hostnames it judges and waits {@link REACH_WAIT_MS} for an answer, so one slow name never holds the page: a
- * name still being fetched reads as unobserved and answers the next read. A check (`fresh`) fetches again rather than
- * reusing an answer from seconds ago, and waits for it. No address of a Server is looked at in this mode.
+ * custom hostnames it judges, and no fetch holds the page: an answer past its time serves the read while a fetch
+ * refreshes it for the next one, and a name never answered waits {@link REACH_WAIT_MS} before it reads as unobserved.
+ * A check (`fresh`) fetches again rather than reusing an answer from seconds ago, and waits for it. No address of a
+ * Server is looked at in this mode.
  */
 export const tunnelEvidence = Effect.fn("ConfigStore.tunnelEvidence")(function* (
   organizationId: string,
@@ -206,6 +207,8 @@ export const tunnelEvidence = Effect.fn("ConfigStore.tunnelEvidence")(function* 
     const ttl = last?.answer === "unanswered" ? UNANSWERED_TTL_MS : REACH_TTL_MS;
     if (!fresh && last !== undefined && now - last.at < ttl) return Option.some({ hostname, answer: last.answer } satisfies TunnelReach);
     const pending = yield* fetchOnce(key, reach(hostname, observed.machineIds));
+    // A stale answer serves this read while the fetch under way lands for the next one.
+    if (!fresh && last !== undefined) return Option.some({ hostname, answer: last.answer } satisfies TunnelReach);
     const answer = yield* Deferred.await(pending).pipe(fresh ? Effect.map(Option.some) : Effect.timeoutOption(REACH_WAIT_MS));
     return Option.map(answer, (answer) => ({ hostname, answer } satisfies TunnelReach));
   }), { concurrency: "unbounded" });

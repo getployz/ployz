@@ -116,8 +116,8 @@ it("shares one fetch between reads that overlap, and fetches through a bounded n
   expect(evidence.reached).toHaveLength(16);
 });
 
-it("waits a bounded time for a fetch it started; one that lands later answers the next read", () => Effect.gen(function* () {
-  const gate = yield* Deferred.make<TunnelAnswer>();
+it("waits a bounded time for a first fetch, serves a stale answer while a fetch refreshes it, and never holds a read on a slow name", () => Effect.gen(function* () {
+  let gate = yield* Deferred.make<TunnelAnswer>();
   let fetched = 0;
   const reach = (hostname: string) => Effect.suspend(() => {
     fetched += 1;
@@ -130,6 +130,11 @@ it("waits a bounded time for a fetch it started; one that lands later answers th
   expect((yield* Fiber.join(first)).reached).toEqual([{ hostname: "fast.example.org", answer: "cluster" }]);
   yield* Deferred.succeed(gate, "elsewhere");
   yield* Effect.yieldNow;
-  expect((yield* read()).reached).toEqual([{ hostname: "fast.example.org", answer: "cluster" }, { hostname: "slow.example.org", answer: "elsewhere" }]);
+  const settled = [{ hostname: "fast.example.org", answer: "cluster" }, { hostname: "slow.example.org", answer: "elsewhere" }];
+  expect((yield* read()).reached).toEqual(settled);
   expect(fetched).toBe(2);
+  gate = yield* Deferred.make<TunnelAnswer>();
+  yield* TestClock.adjust("16 seconds");
+  expect((yield* read()).reached).toEqual(settled);
+  expect(fetched).toBe(4);
 }).pipe(Effect.provide(TestClock.layer()), Effect.runPromise));
