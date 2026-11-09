@@ -1775,13 +1775,17 @@ it.live(
         yield* request("write", alice, shop);
         yield* request("write", alice, web);
         const caller = yield* resolveCaller(signedIn(alice));
-        // Reading domains loads the Cluster Domain from Cloud's database; make that read fail after the write commits.
+        // The write and the domains reread both load the Cluster Domain; the Store's own commit hides it, so only the reread fails.
         const { drizzle } = yield* Database;
-        yield* drizzle.execute(sql`ALTER TABLE organization_cluster_domain RENAME TO organization_cluster_domain_gone`);
+        yield* drizzle.execute(sql.raw(`CREATE FUNCTION hide_cluster_domain() RETURNS trigger LANGUAGE plpgsql AS $$
+          BEGIN ALTER TABLE IF EXISTS organization_cluster_domain RENAME TO organization_cluster_domain_gone; RETURN NULL; END $$`));
+        yield* drizzle.execute(sql`CREATE TRIGGER hide_cluster_domain AFTER UPDATE ON config_environment EXECUTE FUNCTION hide_cluster_domain()`);
         const domains: ConfigQuery = { query: "domains", environment: here, service: null };
         const edited = yield* writeStoreAsMember(caller, caller.organization.slug, {
           command: "edit", environment: here, expect: null, changes: [{ op: "set", path: "web.replicas", value: 2 }],
         }, [domains, get("web.replicas")]);
+        yield* drizzle.execute(sql`DROP TRIGGER hide_cluster_domain ON config_environment`);
+        yield* drizzle.execute(sql`DROP FUNCTION hide_cluster_domain()`);
         yield* drizzle.execute(sql`ALTER TABLE organization_cluster_domain_gone RENAME TO organization_cluster_domain`);
 
         assert.isTrue(edited.ok, "the write committed, so it answers as committed");
