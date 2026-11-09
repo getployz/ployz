@@ -113,6 +113,37 @@ impl JoinApproval {
     }
 }
 
+/// The joining Machine's proof that it opened its approved key capsule: a MAC under the
+/// Cluster's Sealing Key over the signed approval. Only a holder of that key can make one, so
+/// an admitting Machine publishes the joiner's row only after seeing it. A joiner Cloud cut off
+/// from its capsule never becomes a peer.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, TS)]
+#[ts(type = "string")]
+pub struct JoinConfirmation(pub [u8; 32]);
+
+impl Serialize for JoinConfirmation {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        serializer.collect_str(&format_args!("{self}"))
+    }
+}
+
+impl<'de> Deserialize<'de> for JoinConfirmation {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        let value = String::deserialize(deserializer)?;
+        super::canonical::hex_bytes(&value)
+            .map(Self)
+            .ok_or_else(|| {
+                serde::de::Error::custom("a join confirmation must be 64 lowercase hex digits")
+            })
+    }
+}
+
+impl std::fmt::Display for JoinConfirmation {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        super::canonical::write_hex(&self.0, formatter)
+    }
+}
+
 /// Verify a join at an admitting Machine using only its own trusted keys and identity.
 ///
 /// # Errors
@@ -194,5 +225,20 @@ mod tests {
         );
         assert_ne!(code, super::code(MachineId::random(), key));
         assert_ne!(code, super::code(machine, WireGuardPublicKey([2; 32])));
+    }
+
+    #[test]
+    fn a_join_confirmation_travels_as_lowercase_hex() {
+        let confirmation = JoinConfirmation([0xab; 32]);
+        let wire = serde_json::to_string(&confirmation).unwrap();
+        assert_eq!(wire, format!("\"{}\"", "ab".repeat(32)));
+        assert_eq!(
+            serde_json::from_str::<JoinConfirmation>(&wire).unwrap(),
+            confirmation
+        );
+        assert!(
+            serde_json::from_str::<JoinConfirmation>(&format!("\"{}\"", "AB".repeat(32))).is_err()
+        );
+        assert!(serde_json::from_str::<JoinConfirmation>("\"abab\"").is_err());
     }
 }

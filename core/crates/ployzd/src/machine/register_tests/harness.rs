@@ -66,6 +66,7 @@ pub(super) fn machine_service(
 pub(super) fn request(name: &str, public_key: WireGuardPublicKey) -> RegisterRequest {
     RegisterRequest {
         join_approval: None,
+        join_confirmation: None,
         machine_id: MachineId::random(),
         assigned_subnet: Some("10.210.1.0/24".parse().unwrap()),
         initial_policy: Default::default(),

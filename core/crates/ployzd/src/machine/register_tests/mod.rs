@@ -24,6 +24,7 @@ async fn register_rejects_an_uninitialized_machine() {
     let empty = local
         .register(RegisterRequest {
             join_approval: None,
+            join_confirmation: None,
             machine_id: MachineId::random(),
             assigned_subnet: None,
             advertised_endpoints: Vec::new(),
@@ -419,6 +420,7 @@ async fn register_replaces_a_pending_row_that_carries_a_daemon_version() {
     local.register(identity.clone()).await.unwrap();
     let rekeyed = RegisterRequest {
         join_approval: None,
+        join_confirmation: None,
         public_key: WireGuardPublicKey([42; 32]),
         ..identity
     };
@@ -494,6 +496,7 @@ async fn a_register_with_another_key_over_a_published_row_is_replaced_and_its_pu
 
     let rekeyed = RegisterRequest {
         join_approval: None,
+        join_confirmation: None,
         public_key: WireGuardPublicKey([43; 32]),
         ..identity
     };

@@ -1103,7 +1103,7 @@ async fn enroll(
     )?
     .decode::<op::Enroll>()?
     {
-        Enrolled::Enrolled { machine } => Ok(machine),
+        Enrolled::Enrolled { machine, .. } => Ok(machine),
         Enrolled::Refused { error, .. } => Err(TestkitError::Rpc(error.message)),
     }
 }

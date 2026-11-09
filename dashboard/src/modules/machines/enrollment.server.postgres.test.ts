@@ -559,6 +559,21 @@ describe("organization enrollment coordinator", () => {
     expect(replaced.rows[0].assignments).toEqual([fresh.published[1]]);
   });
 
+  it("relays a joiner's confirmation in Register and keeps it out of the saved assignment", async () => {
+    const fake = fakeSession(harness.database);
+    const founder = await fake.coordinator.enroll({ token: (tokens[0] ?? ""), identity: identity(0) });
+    if (Result.isFailure(founder) || founder.success.kind !== "initialize") throw new Error("Founder missing");
+    await fake.coordinator.publish({ token: tokens[0] ?? "", machineId: identity(0).machineId, pairingCredential: founder.success.pairing.secret, capability });
+    await fake.coordinator.completeFounding({ token: (tokens[0] ?? ""), machineId: founderMachineId, pairingCredential: founder.success.pairing.secret });
+    expect(await fake.coordinator.enroll({ token: (tokens[1] ?? ""), identity: identity(1) })).toMatchObject({ success: { kind: "join" } });
+    const confirmation = "ab".repeat(32);
+    const confirmed = await fake.coordinator.enroll({ token: (tokens[1] ?? ""), identity: { ...identity(1), joinConfirmation: confirmation } });
+    expect(confirmed).toMatchObject({ success: { kind: "join" } });
+    expect(fake.published.map((assignment) => assignment.request.join_confirmation)).toEqual([undefined, confirmation]);
+    const saved = await harness.pool.query("select assignments from enrollment_allocation");
+    expect(saved.rows[0].assignments).toEqual([fake.published[0]]);
+  });
+
   it("refuses a joined Server's rerun with other options, and says how to proceed", async () => {
     const fake = fakeSession(harness.database);
     const founder = await pendingFounder(fake);

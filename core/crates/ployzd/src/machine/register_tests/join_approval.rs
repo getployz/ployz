@@ -121,6 +121,7 @@ async fn approved_join_uses_only_encrypted_approved_devices_and_cannot_be_redeem
     );
     assert!(joiner.record().device_enforcement());
     assert!(entry.register(request.clone()).await.is_ok());
+    confirm(&entry, &request, &approval, join_dir.path()).await;
     assert!(matches!(
         entry
             .approve_join(ApproveJoinRequest {
@@ -414,14 +415,133 @@ async fn approved_registration(
     (request, registration)
 }
 
+/// Relay the joiner's confirmation, read from the key its capsule gave it, as a driver does.
+async fn confirm(
+    entry: &LocalMachine,
+    request: &ployz_core::RegisterRequest,
+    approval: &Signed<ployz_core::authority::JoinApproval>,
+    joiner: &std::path::Path,
+) {
+    let key = crate::sealing_key::SealingKey::load(joiner)
+        .unwrap()
+        .unwrap();
+    entry
+        .register(ployz_core::RegisterRequest {
+            join_confirmation: Some(key.confirm_join(approval)),
+            ..request.clone()
+        })
+        .await
+        .unwrap();
+}
+
 #[tokio::test]
-async fn stripped_capsule_cannot_authorize_a_second_machine_on_an_honest_member() {
+async fn an_approved_row_is_published_only_once_the_joiner_confirms_its_capsule() {
+    let (entry, raw, _, directory, server) = participating().await;
+    let signer = Signer::from_seed(&[1; 32]);
+    enforce(&entry, &signer).await;
+    let join_dir = tempfile::tempdir().unwrap();
+    let joiner = LocalMachine::new(
+        RecordOwner::spawn(LocalMachineStore::open(join_dir.path()).unwrap()).unwrap(),
+    );
+    let mut request = request("approved", joiner.record().private_key().public_key());
+    request.machine_id = joiner.record().id();
+    assert!(entry.register(request.clone()).await.is_err());
+    let mut body = entry.pending_joins().unwrap().joins.pop().unwrap();
+    body.signer = signer.public().into();
+    entry
+        .approve_join(ApproveJoinRequest {
+            approval: Signed::sign(&body, &signer).unwrap(),
+        })
+        .await
+        .unwrap();
+    let registration = entry.register(request.clone()).await.unwrap();
+    assert!(registration.sealing_key.is_some());
+    assert!(
+        raw.machine(request.machine_id.as_str())
+            .await
+            .unwrap()
+            .is_none(),
+        "Register wraps the key but publishes nothing before the joiner confirms"
+    );
+
+    let ployz_core::Enrolled::Enrolled {
+        join_confirmation: Some(confirmation),
+        ..
+    } = Box::pin(joiner.enroll(EnrollRequest {
+        role: EnrollAs::Member {
+            registration: registration.clone(),
+        },
+        wireguard_mtu: None,
+        pinned: Default::default(),
+    }))
+    .await
+    .unwrap()
+    else {
+        panic!("an approved join returns its confirmation");
+    };
+    assert_eq!(
+        joiner.record().devices().collect::<Vec<_>>(),
+        vec![signer.public().into()]
+    );
+    assert_eq!(
+        crate::sealing_key::SealingKey::load(join_dir.path()).unwrap(),
+        crate::sealing_key::SealingKey::load(&directory).unwrap(),
+    );
+
+    let mut wrong = confirmation;
+    wrong.0[0] ^= 1;
+    assert!(matches!(
+        entry
+            .register(ployz_core::RegisterRequest {
+                join_confirmation: Some(wrong),
+                ..request.clone()
+            })
+            .await,
+        Err(LocalMachineError::JoinRefused(AuthorityRefusal::Mismatch {
+            field: "a join confirmation"
+        }))
+    ));
+    assert!(
+        raw.machine(request.machine_id.as_str())
+            .await
+            .unwrap()
+            .is_none()
+    );
+
+    let confirmed = entry
+        .register(ployz_core::RegisterRequest {
+            join_confirmation: Some(confirmation),
+            ..request.clone()
+        })
+        .await
+        .unwrap();
+    assert_eq!(confirmed, registration);
+    assert!(
+        entry
+            .replicated()
+            .unwrap()
+            .machines()
+            .await
+            .unwrap()
+            .observations
+            .iter()
+            .any(|row| row.id == request.machine_id),
+        "a confirmed join is published and accepted"
+    );
+    server.abort();
+    drop(entry);
+    std::fs::remove_dir_all(directory).unwrap();
+}
+
+#[tokio::test]
+async fn a_joiner_cut_off_from_its_capsule_is_never_published_nor_authorizes_another() {
     let (entry, raw, _, directory, server) = participating().await;
     let signer = Signer::from_seed(&[1; 32]);
     enforce(&entry, &signer).await;
     let join_dir = tempfile::tempdir().unwrap();
     let mut joiner = LocalMachineStore::open(join_dir.path()).unwrap();
-    let (_, mut registration) = approved_registration(&entry, &joiner, &signer).await;
+    let (request, mut registration) = approved_registration(&entry, &joiner, &signer).await;
+    let approval = registration.assigned_machine.join_approval.clone().unwrap();
     registration.sealing_key = None;
     registration.devices = vec![DeviceKey::from_bytes([9; 32])];
     joiner
@@ -432,15 +552,27 @@ async fn stripped_capsule_cannot_authorize_a_second_machine_on_an_honest_member(
         })
         .unwrap();
     assert!(!joiner.record().device_enforcement());
-    assert!(
-        entry
-            .record()
-            .accepts_machine(joiner.record().machine().unwrap())
-    );
+    let stripped = joiner.record().machine().unwrap().id;
     assert!(
         crate::sealing_key::SealingKey::load(join_dir.path())
             .unwrap()
             .is_none()
+    );
+    let guessed = crate::sealing_key::SealingKey::generate().confirm_join(&approval);
+    assert!(matches!(
+        entry
+            .register(ployz_core::RegisterRequest {
+                join_confirmation: Some(guessed),
+                ..request
+            })
+            .await,
+        Err(LocalMachineError::JoinRefused(AuthorityRefusal::Mismatch {
+            field: "a join confirmation"
+        }))
+    ));
+    assert!(
+        raw.machine(stripped.as_str()).await.unwrap().is_none(),
+        "a joiner cut off from its capsule is never published, so no Machine peers with it"
     );
     assert_eq!(
         joiner.record().devices().collect::<Vec<_>>(),
@@ -484,7 +616,7 @@ async fn forged_capsule_only_establishes_the_attackers_own_cluster() {
     enforce(&entry, &signer).await;
     let join_dir = tempfile::tempdir().unwrap();
     let mut joiner = LocalMachineStore::open(join_dir.path()).unwrap();
-    let (_, mut registration) = approved_registration(&entry, &joiner, &signer).await;
+    let (request, mut registration) = approved_registration(&entry, &joiner, &signer).await;
     let attacker = Signer::from_seed(&[9; 32]);
     let fake_key = crate::sealing_key::SealingKey::generate();
     let mut body = registration
@@ -513,6 +645,17 @@ async fn forged_capsule_only_establishes_the_attackers_own_cluster() {
         })
         .unwrap();
     let forged = joiner.record().machine().unwrap();
+    assert!(matches!(
+        entry
+            .register(ployz_core::RegisterRequest {
+                join_confirmation: Some(fake_key.confirm_join(&approval)),
+                ..request
+            })
+            .await,
+        Err(LocalMachineError::JoinRefused(AuthorityRefusal::Mismatch {
+            field: "a join confirmation"
+        }))
+    ));
     raw.publish_local_machine(forged).await.unwrap();
     assert!(joiner.record().device_enforcement());
     assert!(!entry.record().accepts_machine(forged));
@@ -537,7 +680,8 @@ async fn unsigned_visible_peers_never_seed_an_approved_join_or_its_membership() 
     enforce(&entry, &signer).await;
     let join_dir = tempfile::tempdir().unwrap();
     let mut joiner = LocalMachineStore::open(join_dir.path()).unwrap();
-    let (_, mut registration) = approved_registration(&entry, &joiner, &signer).await;
+    let (request, mut registration) = approved_registration(&entry, &joiner, &signer).await;
+    let approval = registration.assigned_machine.join_approval.clone().unwrap();
     let mut attacker = founder.clone();
     attacker.id = MachineId::random();
     attacker.public_key = WireGuardPublicKey([9; 32]);
@@ -550,6 +694,7 @@ async fn unsigned_visible_peers_never_seed_an_approved_join_or_its_membership() 
             pinned: Default::default(),
         })
         .unwrap();
+    confirm(&entry, &request, &approval, join_dir.path()).await;
     assert_eq!(
         joiner
             .record()
@@ -735,8 +880,17 @@ async fn removing_the_signing_device_keeps_an_admitted_machine_peered() {
     let signer = Signer::from_seed(&[1; 32]);
     enforce(&entry, &signer).await;
     let join_dir = tempfile::tempdir().unwrap();
-    let joiner = LocalMachineStore::open(join_dir.path()).unwrap();
-    let (request, _) = approved_registration(&entry, &joiner, &signer).await;
+    let mut joiner = LocalMachineStore::open(join_dir.path()).unwrap();
+    let (request, registration) = approved_registration(&entry, &joiner, &signer).await;
+    let approval = registration.assigned_machine.join_approval.clone().unwrap();
+    joiner
+        .enroll(EnrollRequest {
+            role: EnrollAs::Member { registration },
+            wireguard_mtu: None,
+            pinned: Default::default(),
+        })
+        .unwrap();
+    confirm(&entry, &request, &approval, join_dir.path()).await;
     let members = || async {
         entry
             .replicated()

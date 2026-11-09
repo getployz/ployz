@@ -304,12 +304,14 @@ pub enum EnrollAs {
 pub enum Enrolled {
     Enrolled {
         machine: Machine,
+        /// Present after an approved join: the driver relays it in Register so the admitting
+        /// Machine publishes this Machine's row.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        #[ts(optional)]
+        join_confirmation: Option<crate::authority::join::JoinConfirmation>,
     },
     /// Enrolled as someone else. `error.code` is `conflict`.
-    Refused {
-        now: MachineNow,
-        error: RpcError,
-    },
+    Refused { now: MachineNow, error: RpcError },
 }
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize, Deserialize, TS)]
@@ -361,6 +363,11 @@ pub struct RegisterRequest {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[ts(optional)]
     pub join_approval: Option<crate::authority::Signed<crate::authority::JoinApproval>>,
+    /// The joiner's proof that it opened its approved capsule. Under Device enforcement the
+    /// admitting Machine publishes an approved row only once a Register carries it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub join_confirmation: Option<crate::authority::join::JoinConfirmation>,
     /// Durable identity of the joining Machine.
     pub machine_id: MachineId,
     /// Client-selected subnet, required for Register publication.

@@ -146,6 +146,8 @@ export const enrollmentIdentitySchema = Schema.Struct({
   diskTotalBytes: Schema.optionalKey(Schema.NullOr(NonnegativeSafeInteger)),
   diskAvailableBytes: Schema.optionalKey(Schema.NullOr(NonnegativeSafeInteger)),
   recoverySupport: Schema.optionalKey(Schema.Literal(1)),
+  /** The joiner's proof that it opened its approved capsule. Cloud relays it in Register; it opens nothing. */
+  joinConfirmation: Schema.optionalKey(Schema.String.check(Schema.isPattern(/^[0-9a-f]{64}$/u))),
 });
 
 export type EnrollmentIdentity = typeof enrollmentIdentitySchema.Type;
