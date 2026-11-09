@@ -1575,6 +1575,88 @@ async fn holder_contract() {
     machine.stop().await;
 }
 
+/// A grant an Operator minted while enforcement was off reaches nothing once it is on:
+/// not on a new connection, and not on one admitted earlier. A Full caller's grant does.
+#[tokio::test(flavor = "multi_thread")]
+async fn enforcement_closes_an_operators_grant_on_new_and_open_connections() {
+    tokio::time::timeout(Duration::from_secs(120), enforcement_contract())
+        .await
+        .expect("build grant test timed out");
+}
+
+async fn enforcement_contract() {
+    use ployz_core::{BuildGrant, BuildGrantId, ManagementScope, MintedKey};
+
+    let machine = GrantMachine::start().await;
+    let http = reqwest::Client::new();
+    let mint = |scope: ManagementScope| {
+        let holder = iroh::SecretKey::generate();
+        let id = BuildGrantId::parse(hex::encode(holder.public().as_bytes())).unwrap();
+        let request = ployz_core::MintBuildGrantRequest {
+            repository: ployz_core::BuildGrantRepository::parse("ployz-build/web").unwrap(),
+            holder: Some(id),
+            sealed: None,
+        };
+        let minted = machine
+            .grants
+            .mint(
+                machine.local.record().management_secret().public_key(),
+                ployzd::management::Mint::check(request, None)
+                    .unwrap()
+                    .minted_by(scope),
+                machine.ingest,
+            )
+            .unwrap();
+        let MintedKey::Holder { machine: dial } = minted.key else {
+            panic!("a holder mint returns the Machine to dial");
+        };
+        BuildGrant::new(dial, holder.to_bytes())
+    };
+    let sealed_status = async |registry: &ployz::connect::GrantRegistry| {
+        http.get(format!("http://{}/ployz/sealed", registry.address()))
+            .send()
+            .await
+            .map(|response| response.status())
+            .ok()
+    };
+
+    let operator = mint(ManagementScope::Operator);
+    let full = mint(ManagementScope::Full);
+    // Enforcement off: both reach the endpoint, which has no Sealed values to give.
+    let open_operator = open_grant_registry(&operator, &machine.relay)
+        .await
+        .unwrap();
+    assert_eq!(
+        sealed_status(&open_operator).await,
+        Some(reqwest::StatusCode::NOT_FOUND)
+    );
+
+    machine
+        .local
+        .owner()
+        .mutate(|store| store.set_device_enforcement(true, Vec::new()).unwrap())
+        .await
+        .unwrap();
+
+    // (b) The connection admitted before enforcement came on is refused its next request.
+    assert_eq!(
+        sealed_status(&open_operator).await,
+        Some(reqwest::StatusCode::FORBIDDEN)
+    );
+    // (a) A new connection on the same grant is refused at admission.
+    let redial = open_grant_registry(&operator, &machine.relay)
+        .await
+        .unwrap();
+    assert_eq!(sealed_status(&redial).await, None);
+    // A Full caller's grant is untouched by enforcement.
+    let open_full = open_grant_registry(&full, &machine.relay).await.unwrap();
+    assert_eq!(
+        sealed_status(&open_full).await,
+        Some(reqwest::StatusCode::NOT_FOUND)
+    );
+    machine.stop().await;
+}
+
 /// A Machine that already holds the image answers the pusher's manifest HEAD, and the
 /// pusher never PUTs it; that HEAD of the grant's own tag is the grant's push.
 #[tokio::test(flavor = "multi_thread")]

@@ -969,8 +969,13 @@ impl MachineRpc for MachineService {
             .containers()
             .ok()
             .and_then(|containers| containers.sealing_key_dir());
+        let scope = if operator {
+            ployz_core::ManagementScope::Operator
+        } else {
+            ployz_core::ManagementScope::Full
+        };
         let mint = match crate::management::build_grant::Mint::check(request, key_dir) {
-            Ok(mint) => mint,
+            Ok(mint) => mint.minted_by(scope),
             Err(refused) => return respond(refused),
         };
         match crate::management::build_grant::mint_for(

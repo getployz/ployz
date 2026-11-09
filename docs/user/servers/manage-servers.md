@@ -335,7 +335,8 @@ device signed with `ployz deploy`, and only from an image pinned by digest. See
 Enforcement also covers builds: a server refuses a build Ployz Cloud starts. That includes a
 build on your servers, on GitHub Actions and in a preview. The deployment fails at its build
 with `This server runs only builds an approved device starts.`, before the build opens any
-sealed value or runs any step. A build started over a device's own connection still runs. Turn
+sealed value or runs any step, and a build Ployz Cloud already started stops when you turn
+enforcement on. A build started over a device's own connection still runs. Turn
 enforcement off to build through Ployz Cloud again. See
 [Builds on servers that enforce device approval](../builds/where-builds-run.md#builds-on-servers-that-enforce-device-approval).
 

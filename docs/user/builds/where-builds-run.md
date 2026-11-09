@@ -139,7 +139,8 @@ No eligible Build Machine was selected; no build was started: Server web-1 (…)
 This covers builds on your servers, builds on GitHub Actions, and builds in a preview. A GitHub
 build checks in, is refused, and moves to your servers, which refuse it too, so the deploy
 stops before anything changes. A build an approved device starts over its own connection still
-runs. Turn enforcement off to build through Ployz Cloud again.
+runs. A build already under way when you turn enforcement on stops opening sealed values and
+pushing its image. Turn enforcement off to build through Ployz Cloud again.
 
 ## When a build fails
 
