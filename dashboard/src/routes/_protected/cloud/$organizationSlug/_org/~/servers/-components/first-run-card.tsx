@@ -1,4 +1,5 @@
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "#/components/ui/card";
+import { type ClusterNameControl, useClusterName } from "#/modules/cluster-name/cluster-name.hooks";
 import { ClusterSetup } from "./cluster-setup";
 import { InstallTabs } from "./copy-block";
 import { useMintFleetToken } from "./use-waiting";
@@ -7,7 +8,11 @@ import { useMintFleetToken } from "./use-waiting";
  * First run: mint a token in place, show the line once, and wait for a server to check in. Once one arrives the card
  * shrinks to the line, if this visit minted it, so the user can still run it on more servers.
  */
-export function FirstRunCard({ organizationSlug, arrived }: { organizationSlug: string; arrived: boolean }) {
+export function FirstRun({ organizationSlug, arrived }: { organizationSlug: string; arrived: boolean }) {
+  return <FirstRunCard organizationSlug={organizationSlug} arrived={arrived} cluster={useClusterName(organizationSlug)} />;
+}
+
+export function FirstRunCard({ organizationSlug, arrived, cluster }: { organizationSlug: string; arrived: boolean; cluster: ClusterNameControl }) {
   const mint = useMintFleetToken(organizationSlug);
   if (arrived) {
     return mint.data === undefined ? (
@@ -26,7 +31,7 @@ export function FirstRunCard({ organizationSlug, arrived }: { organizationSlug: 
         <CardDescription>Run this on any Linux server with root. It shows up below in a few seconds.</CardDescription>
       </CardHeader>
       <CardContent>
-        <ClusterSetup organizationSlug={organizationSlug} mint={mint} />
+        <ClusterSetup organizationSlug={organizationSlug} cluster={cluster} mint={mint} />
       </CardContent>
     </Card>
   );

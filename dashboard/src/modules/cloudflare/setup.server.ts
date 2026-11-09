@@ -17,8 +17,8 @@ import {
 } from "#/modules/cloudflare/api.server";
 import { loadCloudflareSetup } from "#/modules/cloudflare/source.server";
 import { normalizeZone, wildcardRecord, zoneProblem } from "#/modules/cloudflare/zone";
-import { doorsGap, holdingCount, SETUP_RUNNING_LIMIT_MS } from "#/modules/ingress/doors";
-import { observeClusterIngress } from "#/modules/ingress/doors.server";
+import { doorsGap, SETUP_RUNNING_LIMIT_MS } from "#/modules/ingress/doors";
+import { closedFounding } from "#/modules/ingress/doors.server";
 import { activeDoorsAttempt, lockIngressRows } from "#/modules/ingress/doors.lock.server";
 import { organizationCloudflareIngress } from "#/modules/ingress/tables";
 import { organization } from "#/modules/organization/tables";
@@ -190,8 +190,9 @@ export const setUpCloudflare = Effect.fn("Cloudflare.setUp")(function* (
     const opened = yield* (yield* OrganizationRuntime).open(organizationId);
     if (opened.status !== "connected") return yield* refuse("Your servers aren't answering. Try again once they are.");
     // A Cluster founded closed holds no Public Door to hand over, so only the tunnel opens and the ports stay shut.
-    const seen = yield* observeClusterIngress(organizationId);
-    closed = seen !== null && !seen.partial && seen.servers.length > 0 && holdingCount(seen.servers, "public") === 0;
+    const founding = yield* closedFounding(organizationId);
+    if (founding.kind === "unknown") return yield* refuse("Your servers aren't answering yet. Try again once they all do.");
+    closed = founding.kind === "closed";
     const doors = closed ? TUNNEL : BOTH;
     const found = yield* findTunnel(http, input.token, zone.accountId, tunnelName);
     const there = yield* findRecords(http, input.token, zone.id, name);
@@ -210,7 +211,7 @@ export const setUpCloudflare = Effect.fn("Cloudflare.setUp")(function* (
     if (there.length === 0) recordId = yield* createRecord(http, input.token, zone.id, wildcardRecord(zone.name, tunnel.id));
 
     // With nothing published to move, the zone is the Cluster Domain's source at once, as a switch would leave it.
-    const state = closed && seen?.hostnames.length === 0 ? "active" : "set_up";
+    const state = founding.kind === "closed" && founding.hostnames.length === 0 ? "active" : "set_up";
     const row = { zone: zone.name, tunnelId: tunnel.id, tunnelName, state } as const;
     return yield* database.transaction(Effect.gen(function* () {
       yield* lockIngressRows(organizationId);

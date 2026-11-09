@@ -12,6 +12,7 @@ import { Switch } from "#/components/ui/switch";
 import { FLEET_TOKEN_LIFETIMES, type FleetTokenLifetime } from "#/modules/machines/waiting/fleet-token";
 import { cliLifetimeLabel } from "#/modules/machines/waiting/install-lines";
 import { fleetTokensQueryOptions, waitingServersQueryOptions } from "#/modules/machines/waiting/waiting.queries";
+import { useClusterName } from "#/modules/cluster-name/cluster-name.hooks";
 import { useRoleGate } from "#/modules/organization/members.queries";
 import { ClusterSetup } from "./cluster-setup";
 import { InstallTabs } from "./copy-block";
@@ -47,7 +48,7 @@ export function AddServersDialog({ organizationSlug, label = "Add servers", vari
                 <DialogTitle>Add your first server</DialogTitle>
                 <DialogDescription>Run this on any Linux server with root. It shows up under Servers in a few seconds.</DialogDescription>
               </DialogHeader>
-              <ClusterSetup organizationSlug={organizationSlug} mint={mint} steps={false} />
+              <FirstServerSetup organizationSlug={organizationSlug} mint={mint} />
             </>
           ) : open ? <MintFlow organizationSlug={organizationSlug} mint={mint} onDone={() => setOpen(false)} /> : null}
         </DialogContent>
@@ -198,4 +199,8 @@ function Arrivals({ organizationSlug, token, auto, onDone }: { organizationSlug:
       )}
     </div>
   );
+}
+
+function FirstServerSetup({ organizationSlug, mint }: { organizationSlug: string; mint: ReturnType<typeof useMintFleetToken> }) {
+  return <ClusterSetup organizationSlug={organizationSlug} cluster={useClusterName(organizationSlug)} mint={mint} steps={false} />;
 }

@@ -1,7 +1,7 @@
 import "@tanstack/react-start/server-only";
 import { randomUUID } from "node:crypto";
 import { and, desc, eq, inArray, isNull, lt, or, sql } from "drizzle-orm";
-import type { JsonValue, PublishedHostname } from "@ployz/sdk";
+import type { JsonValue, PublishedHostname, RuntimeWatchView } from "@ployz/sdk";
 import { Effect, Schedule, Schema } from "effect";
 import { operationDigest, type OperationAsked } from "#/modules/approvals/approvals.server";
 import { loadClusterDomain } from "#/modules/cluster-domain/cluster-domain.server";
@@ -86,18 +86,23 @@ const latestChange = Effect.fn("IngressDoors.latest")(function* (organizationId:
   return latest === undefined ? null : yield* latestChangeOf(latest);
 });
 
-/** The Cluster's ingress as the database holds it: its Cloudflare setup, the latest switch and the Hosted name. */
-export const readClusterIngress = Effect.fn("IngressDoors.read")(function* (organizationId: string) {
-  const setup = yield* loadCloudflareSetup(organizationId);
-  const change = yield* latestChange(organizationId);
-  const hosted = yield* loadClusterDomain(organizationId);
+/** Whether the newest founder that joined started the Cluster with every Door closed, as its instruction asked. */
+const foundedClosed = Effect.fn("IngressDoors.foundedClosed")(function* (organizationId: string) {
   const { drizzle } = yield* Database;
   const [founder] = yield* drizzle.select({ closed: sql<boolean>`coalesce((${serverEnrollment.instruction}->>'ingressClosed')::boolean, false)` })
     .from(serverEnrollment)
     .where(and(eq(serverEnrollment.organizationId, organizationId), eq(serverEnrollment.role, "founder"), eq(serverEnrollment.state, "joined")))
     .orderBy(desc(serverEnrollment.requestedAt))
     .limit(1);
-  return { setup, change, hostedName: hosted?.name ?? null, foundedClosed: founder?.closed ?? false } satisfies ClusterIngressView;
+  return founder?.closed ?? false;
+});
+
+/** The Cluster's ingress as the database holds it: its Cloudflare setup, the latest switch and the Hosted name. */
+export const readClusterIngress = Effect.fn("IngressDoors.read")(function* (organizationId: string) {
+  const setup = yield* loadCloudflareSetup(organizationId);
+  const change = yield* latestChange(organizationId);
+  const hosted = yield* loadClusterDomain(organizationId);
+  return { setup, change, hostedName: hosted?.name ?? null, foundedClosed: yield* foundedClosed(organizationId) } satisfies ClusterIngressView;
 });
 
 /**
@@ -107,7 +112,10 @@ export const readClusterIngress = Effect.fn("IngressDoors.read")(function* (orga
  */
 export const observeClusterIngress = Effect.fn("IngressDoors.observe")(function* (organizationId: string) {
   const frame = yield* firstRuntimeFrame(organizationId).pipe(Effect.catch(() => Effect.succeed(null)));
-  if (frame === null) return null;
+  return frame === null ? null : observationOf(frame);
+});
+
+function observationOf(frame: RuntimeWatchView): ClusterIngressObservation {
   const open = doorsOpenOn(frame);
   const offline = offlineServers(frame.machines.map(({ machine, membership }) =>
     ({ id: machine.id, membership, runningBuilds: machine.runtime.running_builds, unanswered: frame.unanswered.includes(machine.id) })));
@@ -116,7 +124,22 @@ export const observeClusterIngress = Effect.fn("IngressDoors.observe")(function*
       .map(({ machine }) => ({ id: machine.id, name: machine.name, doors: [...(open.get(machine.id) ?? [])].sort() })),
     hostnames: publishedOf(frame),
     partial: frame.incomplete_ids.machines.length > 0 || frame.incomplete_ids.containers.length > 0 || offline.size > 0,
-  } satisfies ClusterIngressObservation;
+  };
+}
+
+/**
+ * Whether Cloudflare setup may open only the tunnel: the Cluster was founded closed and, seen whole, no Server holds the
+ * Public Door, whether or not it takes web traffic now. Unknown while a Server isn't seen, since it may hold the ports.
+ */
+export const closedFounding = Effect.fn("IngressDoors.closedFounding")(function* (organizationId: string) {
+  if (!(yield* foundedClosed(organizationId))) return { kind: "open" } as const;
+  const frame = yield* firstRuntimeFrame(organizationId).pipe(Effect.catch(() => Effect.succeed(null)));
+  if (frame === null) return { kind: "unknown" } as const;
+  const seen = observationOf(frame);
+  if (seen.partial) return { kind: "unknown" } as const;
+  const publicHeld = [...doorsOpenOn(frame).values()].some((doors) => doors.has("public"));
+  if (publicHeld || seen.servers.length === 0) return { kind: "open" } as const;
+  return { kind: "closed", hostnames: seen.hostnames } as const;
 });
 
 /** Where a switch to `to` takes generated names from, and to. Nothing before Cloudflare is set up or the Hosted name exists. */

@@ -9,7 +9,7 @@ import { channelReleaseQueryOptions, latestServerUpgradesQueryOptions } from "#/
 import { prefetchRemote } from "#/collections/route-data";
 import { AddServersDialog } from "./-components/add-servers-dialog";
 import { enrollingRows } from "./-components/enrolling-list";
-import { FirstRunCard } from "./-components/first-run-card";
+import { FirstRun } from "./-components/first-run-card";
 import { FirstTunnelStatus } from "./-components/first-tunnel";
 import { FleetHealth } from "./-components/fleet-health";
 import { SERVER_LIST, ServerRow } from "./-components/server-row";
@@ -80,7 +80,7 @@ function RouteComponent() {
       ) : page.kind === "unreachable" ? (
         <ServersUnreachable organizationSlug={organizationSlug} older={older} awaitingKey={awaitingKey} />
       ) : page.kind === "first-run" ? (
-        <FirstRunCard key={organizationSlug} organizationSlug={organizationSlug} arrived={page.intake} />
+        <FirstRun key={organizationSlug} organizationSlug={organizationSlug} arrived={page.intake} />
       ) : (
         <>
           {page.stale ? <ServersStaleAlert /> : null}

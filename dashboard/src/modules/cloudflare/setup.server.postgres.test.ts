@@ -1,3 +1,4 @@
+import type { RuntimeWatchView } from "@ployz/sdk";
 import { Effect, Redacted, type Schema } from "effect";
 import { Inngest } from "inngest";
 import { afterAll, beforeAll, beforeEach, expect, it, vi } from "vitest";
@@ -95,12 +96,13 @@ const writesOf = (calls: readonly Call[]) => calls.filter(({ method, body }) => 
 
 type Set = { readonly doors: readonly string[]; readonly token: string | undefined };
 
-const NO_SERVER_FRAME = { machines: [], services: [], containers: [], incomplete_ids: { machines: [], containers: [], certificates: [] }, unanswered: [] };
+const frameOf = asTestDouble<RuntimeWatchView>();
+const NO_SERVER_FRAME = frameOf({ machines: [], services: [], containers: [], incomplete_ids: { machines: [], containers: [], certificates: [] }, unanswered: [] });
 /** One Server taking web traffic and running no door Container, as a Cluster founded closed is before its tunnel opens. */
-const CLOSED_FRAME = { ...NO_SERVER_FRAME, machines: [{ machine: { id: "m1", name: "s1", accepts_ingress: true, runtime: { running_builds: 0 } }, membership: "up" }] };
+const CLOSED_FRAME = frameOf({ ...NO_SERVER_FRAME, machines: [{ machine: { id: "m1", name: "s1", accepts_ingress: true, runtime: { running_builds: 0 } }, membership: "up" }] });
 
 /** A Cluster whose Servers take any doors they are told, unless `take` says otherwise, showing `frame` when watched. */
-function cluster(take: (doors: readonly string[]) => readonly string[] = (doors) => doors, frame: unknown = NO_SERVER_FRAME) {
+function cluster(take: (doors: readonly string[]) => readonly string[] = (doors) => doors, frame: RuntimeWatchView = NO_SERVER_FRAME) {
   const sets: Set[] = [];
   const session: ScopedRuntimeClientSession = {
     status: "connected",
@@ -115,6 +117,21 @@ function cluster(take: (doors: readonly string[]) => readonly string[] = (doors)
   const runtime = asTestDouble<OrganizationRuntime["Service"]>()({ cancel: () => Effect.void, open: () => Effect.succeed(session) });
   return { sets, runtime };
 }
+
+/** The first Server joined on an instruction founding the Cluster with every Door closed, as the card asks for Cloudflare. */
+const foundedClosed = () => harness.pool.query(`
+  with person as (
+    insert into "user" (id, name, email) values (gen_random_uuid(), 'Ada', gen_random_uuid() || '@example.com') returning id
+  ), fleet as (
+    insert into fleet_token (organization_id, name, token_hash, expires_at, founds_closed, created_by_user_id)
+    select $1, 'fleet', 'hash', now() + interval '1 day', true, id from person returning id
+  ), server as (
+    insert into waiting_server (organization_id, fleet_token_id, checkin_key, report, observed_ip)
+    select $1, id, 'key', '{}'::jsonb, '203.0.113.9' from fleet returning id, fleet_token_id
+  )
+  insert into server_enrollment (organization_id, waiting_server_id, fleet_token_id, role, instruction, enroll_token_id, state)
+  select $1, id, fleet_token_id, 'founder', '{"ingressClosed": true}'::jsonb, gen_random_uuid(), 'joined' from server
+`, [ORG]);
 
 const setUp = (zone: string, http: CloudflareHttp, runtime: OrganizationRuntime["Service"]) =>
   harness.runEffect(setUpCloudflare(ORG, { token: Redacted.make(API_TOKEN), zone }, http).pipe(
@@ -171,6 +188,7 @@ it("sets up a zone with one wildcard record, a tunnel and both doors, and moves 
 });
 
 it("opens only the tunnel on a Cluster founded closed and makes the zone the source at once, so ports 80 and 443 never open", async () => {
+  await foundedClosed();
   const { http, records } = cloudflare();
   const { runtime, sets } = cluster((doors) => doors, CLOSED_FRAME);
   expect(await setUp("example.com", http, runtime)).toMatchObject({ zone: "example.com", tunnelId: "t1", state: "active" });
@@ -180,12 +198,40 @@ it("opens only the tunnel on a Cluster founded closed and makes the zone the sou
 });
 
 it("falls back to the ports on a Cluster founded closed when its servers don't take the tunnel, and says so", async () => {
+  await foundedClosed();
   const { http, alive } = cloudflare();
   const { runtime, sets } = cluster((doors) => doors.filter((door) => door !== "tunnel"), CLOSED_FRAME);
   await expect(setUp("example.com", http, runtime)).rejects.toMatchObject({ message: expect.stringContaining("ports 80 and 443") });
   expect(sets.map(({ doors }) => doors)).toEqual([["tunnel"], ["public"]]);
   expect(alive.has("t1")).toBe(false);
   expect(await setupRows()).toEqual([]);
+});
+
+it("refuses on a Cluster founded closed while a Server isn't seen, opening no Door, since that Server may hold the ports", async () => {
+  await foundedClosed();
+  const { http, calls } = cloudflare();
+  const { runtime, sets } = cluster((doors) => doors, frameOf({ ...CLOSED_FRAME, incomplete_ids: { machines: [], containers: ["m2"], certificates: [] } }));
+  await expect(setUp("example.com", http, runtime)).rejects.toMatchObject({ message: expect.stringMatching(/^Your servers aren't answering/) });
+  expect(sets).toEqual([]);
+  expect(writesOf(calls)).toEqual([]);
+  expect(await setupRows()).toEqual([]);
+});
+
+it("keeps both doors on a Cluster whose ports are open, on a Server that no longer takes web traffic or one founded public", async () => {
+  const publicElsewhere = frameOf({
+    ...CLOSED_FRAME,
+    machines: [...CLOSED_FRAME.machines, { machine: { id: "m2", name: "s2", accepts_ingress: false, runtime: { running_builds: 0 } }, membership: "up" }],
+    services: [{ identity: "ployz-system/ingress-holder", containers: [{ machine_id: "m2", runtime: { state: "running" }, resolved_spec: { ports: [{ mode: "host", published_port: 80 }] } }] }],
+  });
+  const founded = cluster((doors) => doors, CLOSED_FRAME);
+  expect(await setUp("example.com", cloudflare().http, founded.runtime)).toMatchObject({ state: "set_up" });
+  expect(founded.sets.map(({ doors }) => doors)).toEqual([["public", "tunnel"]]);
+
+  await harness.pool.query("delete from organization_cloudflare_ingress");
+  await foundedClosed();
+  const opened = cluster((doors) => doors, publicElsewhere);
+  expect(await setUp("example.com", cloudflare().http, opened.runtime)).toMatchObject({ state: "set_up" });
+  expect(opened.sets.map(({ doors }) => doors)).toEqual([["public", "tunnel"]]);
 });
 
 it("keeps the API token out of every table and the outbox, and the tunnel token out of every table", async () => {

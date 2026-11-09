@@ -10,7 +10,7 @@ import { Spinner } from "#/components/ui/spinner";
 import { Switch } from "#/components/ui/switch";
 import { toErrorMessage } from "#/lib/error-message";
 import { clusterNameProblem } from "#/modules/cluster-name/cluster-name";
-import { useClusterName } from "#/modules/cluster-name/cluster-name.hooks";
+import type { ClusterNameControl } from "#/modules/cluster-name/cluster-name.hooks";
 import { normalizeZone, zoneProblem } from "#/modules/cloudflare/zone";
 import { checkCloudflareServerFn, listCloudflareZonesServerFn } from "#/modules/ingress/doors.functions";
 import { cliLifetimeLabel } from "#/modules/machines/waiting/install-lines";
@@ -30,8 +30,9 @@ const STEPS = [
  * The first server's install line, with the Cluster's choices tucked under it: its name, and Cloudflare Tunnel instead
  * of public ports. The Servers page's first-run card and the canvas's Add servers dialog both show it.
  */
-export function ClusterSetup({ organizationSlug, mint, steps = true }: {
+export function ClusterSetup({ organizationSlug, cluster, mint, steps = true }: {
   organizationSlug: string;
+  cluster: ClusterNameControl;
   /** The caller's, so the line it minted outlives this card. */
   mint: ReturnType<typeof useMintFleetToken>;
   /** The three steps under the line. The dialog leaves them out. */
@@ -39,7 +40,6 @@ export function ClusterSetup({ organizationSlug, mint, steps = true }: {
 }) {
   const gate = useRoleGate(organizationSlug, "servers:add", ADD_SERVERS_REFUSED);
   const operate = useRoleGate(organizationSlug, "servers:operate");
-  const cluster = useClusterName(organizationSlug);
   const saved = cluster.view.name ?? "";
   const [name, setName] = useState(saved);
   const [open, setOpen] = useState(false);
