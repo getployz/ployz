@@ -356,6 +356,8 @@ type RedeployServices = Effect.Services<Admission> | Effect.Services<Ending> | E
 const applySwitch = Effect.fn("IngressDoors.apply")(function* (session: PloyzSession, request: DoorsRequest, runId: string, want: DoorsWant) {
   const { drizzle } = yield* Database;
   const owned = and(eq(ingressDoorsAttempt.id, request.attemptId), eq(ingressDoorsAttempt.inngestRunId, runId));
+  const founding = want === "tunnel" ? yield* closedFounding(request.organizationId) : { kind: "open" } as const;
+  if (founding.kind === "unknown") return { ok: false, failure: "Some servers didn't answer. Switch again once they all do." } as const;
   return yield* runSwitch(want, {
     open: (doors) => session.setIngressDoors(doors),
     at: (stage) => drizzle.update(ingressDoorsAttempt).set({ stage }).where(owned).pipe(Effect.asVoid),
@@ -363,7 +365,7 @@ const applySwitch = Effect.fn("IngressDoors.apply")(function* (session: PloyzSes
       .where(eq(organizationCloudflareIngress.organizationId, request.organizationId)).pipe(Effect.asVoid),
     moving: () => movingNow(request.organizationId, want),
     redeploy: (moves) => redeployMoving(request.organizationId, moves),
-  });
+  }, founding.kind === "closed");
 });
 
 /**

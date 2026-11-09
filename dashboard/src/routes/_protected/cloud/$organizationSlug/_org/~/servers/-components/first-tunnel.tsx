@@ -28,7 +28,7 @@ async function runFirstSetup(organizationSlug: string, queryClient: QueryClient)
   holdCloudflare(organizationSlug, { kind: "setting-up", token, zone });
   for (let tried = 1; ; tried++) {
     try {
-      await setUpCloudflareServerFn({ data: { organizationSlug, token, zone } });
+      await setUpCloudflareServerFn({ data: { organizationSlug, token: token.trim(), zone } });
       holdCloudflare(organizationSlug, { kind: "done", zone });
       toast.success(`Cloudflare Tunnel is set up on ${zone}.`);
       break;

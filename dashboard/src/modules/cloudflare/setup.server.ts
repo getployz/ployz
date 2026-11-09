@@ -85,9 +85,11 @@ const setupProblem = Effect.fn("Cloudflare.setupProblem")(function* (organizatio
 
 /**
  * Open ports 80 and 443 on a Cluster founded closed whose Cloudflare setup never finished, so its apps answer instead of
- * staying dark. Refused while Cloudflare is in use, being set up, or a switch runs.
+ * staying dark. Refused once Cloudflare is set up or in use, while it is being set up, or while a switch runs.
  */
 export const openPublicPorts = Effect.fn("Cloudflare.openPublic")(function* (organizationId: string) {
+  const setup = yield* loadCloudflareSetup(organizationId);
+  if (setup?.state === "set_up") return yield* new Conflict({ userFacing: true, message: "Cloudflare Tunnel is set up. Switch web traffic in Settings, Network." });
   const early = yield* setupProblem(organizationId);
   if (early !== null) return yield* new Conflict({ userFacing: true, message: early });
   const opened = yield* (yield* OrganizationRuntime).open(organizationId);

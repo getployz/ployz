@@ -4,7 +4,7 @@ import { Inngest } from "inngest";
 import { afterAll, beforeAll, beforeEach, expect, it, vi } from "vitest";
 import { asTestDouble } from "#/lib/test-double";
 import { CloudflareHttp } from "#/modules/cloudflare/api.server";
-import { checkCloudflareSetup, listCloudflareZoneNames, setUpCloudflare } from "#/modules/cloudflare/setup.server";
+import { checkCloudflareSetup, listCloudflareZoneNames, openPublicPorts, setUpCloudflare } from "#/modules/cloudflare/setup.server";
 import { requestDoorsSwitch } from "#/modules/ingress/doors.server";
 import { InngestClient } from "#/modules/inngest/client";
 import { OrganizationRuntime, type ScopedRuntimeClientSession } from "#/modules/runtime/organization-runtime.server";
@@ -232,6 +232,33 @@ it("keeps both doors on a Cluster whose ports are open, on a Server that no long
   const opened = cluster((doors) => doors, publicElsewhere);
   expect(await setUp("example.com", cloudflare().http, opened.runtime)).toMatchObject({ state: "set_up" });
   expect(opened.sets.map(({ doors }) => doors)).toEqual([["public", "tunnel"]]);
+});
+
+it("refuses on a Cluster founded closed when its Servers can't be read at all, opening no Door", async () => {
+  await foundedClosed();
+  const { http, calls } = cloudflare();
+  const sets: Set[] = [];
+  const unread = asTestDouble<OrganizationRuntime["Service"]>()({
+    cancel: () => Effect.void,
+    open: () => Effect.succeed({
+      status: "connected" as const,
+      connected: asTestDouble<PloyzSession>()({
+        watchFirstFrame: () => Effect.fail(new Error("no frame")),
+        setIngressDoors: (doors: readonly string[]) => Effect.sync(() => { sets.push({ doors, token: undefined }); return { machines: [], failures: [] }; }),
+      }),
+    }),
+  });
+  await expect(setUp("example.com", http, unread)).rejects.toMatchObject({ message: expect.stringMatching(/^Your servers aren't answering/) });
+  expect(sets).toEqual([]);
+  expect(writesOf(calls)).toEqual([]);
+});
+
+it("won't open the ports from the unfinished-setup alert once the tunnel is set up", async () => {
+  await priorRow("set_up");
+  const { runtime, sets } = cluster();
+  await expect(harness.runEffect(openPublicPorts(ORG).pipe(Effect.provideService(OrganizationRuntime, runtime))))
+    .rejects.toMatchObject({ message: expect.stringContaining("Cloudflare Tunnel is set up") });
+  expect(sets).toEqual([]);
 });
 
 it("keeps the API token out of every table and the outbox, and the tunnel token out of every table", async () => {

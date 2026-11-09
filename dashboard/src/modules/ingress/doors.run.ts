@@ -26,8 +26,11 @@ export type SwitchPorts<EngineError, RowError, R> = {
 
 export type SwitchEnd = { readonly ok: true } | { readonly ok: false; readonly failure: string };
 
-/** The Doors a switch to `want` asks for, in order: both beside each other first, then only the one it goes to. */
-export const switchSteps = (want: DoorsWant) => [["public", "tunnel"], [want]] as const;
+/**
+ * The Doors a switch to `want` asks for, in order: both beside each other first, then only the one it goes to. A
+ * Cluster founded closed holds no Door to keep serving beside the new one, so it opens only `want`, as the Engine does.
+ */
+export const switchSteps = (want: DoorsWant, closed = false) => closed ? [[want], [want]] as const : [["public", "tunnel"], [want]] as const;
 
 /**
  * Switch the Cluster to `want`. Both Doors open on every Server before anything moves, so a connector or the ports are
@@ -36,8 +39,8 @@ export const switchSteps = (want: DoorsWant) => [["public", "tunnel"], [want]] a
  * A step that doesn't land ends the switch there, leaving both Doors open as the first step did, and a switch asked
  * again in the same direction finds each step done and carries on from it.
  */
-export const runSwitch = <EngineError, RowError, R>(want: DoorsWant, ports: SwitchPorts<EngineError, RowError, R>) => Effect.gen(function* () {
-  const [both, only] = switchSteps(want);
+export const runSwitch = <EngineError, RowError, R>(want: DoorsWant, ports: SwitchPorts<EngineError, RowError, R>, closed = false) => Effect.gen(function* () {
+  const [both, only] = switchSteps(want, closed);
   yield* ports.at("opening");
   const opened = doorsGap(yield* ports.open(both), both);
   if (opened !== null) return { ok: false, failure: opened } satisfies SwitchEnd;
@@ -48,8 +51,8 @@ export const runSwitch = <EngineError, RowError, R>(want: DoorsWant, ports: Swit
   const stuck = yield* ports.redeploy(seen.moves);
   if (stuck !== null) return { ok: false, failure: stuck } satisfies SwitchEnd;
   yield* ports.at("closing");
-  const closed = doorsGap(yield* ports.open(only), only);
-  if (closed !== null) return { ok: false, failure: closed } satisfies SwitchEnd;
+  const left = doorsGap(yield* ports.open(only), only);
+  if (left !== null) return { ok: false, failure: left } satisfies SwitchEnd;
   return { ok: true } satisfies SwitchEnd;
 });
 
