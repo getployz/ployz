@@ -114,6 +114,7 @@ const ON_DEMAND_READS = {
   runtimeServiceMetricsQueryOptions:"asks every Server live, so a slow Server would hold the page; each Running here row waits on its own",
   clusterIngressObservationQueryOptions: "asks every Server live for the doors it holds, so a slow Cluster never holds Settings; the section shows the stored state until it answers",
   privateAccessQueryOptions: "asks every Server live for its router, so a slow Cluster never holds Integrations; the section says it is checking until it answers",
+  lastAnswerOptions: "fetches nothing: it holds the Servers' last answer to a Connect or Turn off made in this tab",
   reviewDoorsSwitchQueryOptions: "the switch dialog's own review of what moves, read when it opens",
 };
 

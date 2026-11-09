@@ -14,6 +14,7 @@ import { approvalBadge, approvalSubject, type ApprovalDecision, destroyedLine, d
 import { Input } from "#/components/ui/input";
 import { authKeyProblem } from "#/modules/private-access/private-access";
 import { approvePrivateAccessServerFn } from "#/modules/private-access/private-access.functions";
+import { landAnswer } from "#/modules/private-access/private-access.queries";
 import { lossMoment } from "#/modules/volume-placement/volume-placement";
 import { toErrorMessage } from "#/lib/error-message";
 import { approvalOptions, approverApprovals, decideApproval, landDecision, refetchApprovals, runsServiceAct, type ApprovalView } from "./approvals.queries";
@@ -30,6 +31,7 @@ export function ApprovalCard({ organizationSlug, id, seed, onSettled }: {
   onSettled?: () => void;
 }) {
   const { data: approval } = useQuery({ ...approvalOptions(organizationSlug, id), initialData: seed });
+  const [outcome, setOutcome] = useState<readonly string[]>([]);
   const settled = approval !== undefined && approval.status !== "pending";
   useEffect(() => {
     if (settled) onSettled?.();
@@ -37,8 +39,17 @@ export function ApprovalCard({ organizationSlug, id, seed, onSettled }: {
 
   if (approval === undefined) return null;
   switch (approval.status) {
-    case "pending": return <PendingCard organizationSlug={organizationSlug} approval={approval} />;
-    case "approved": return <TraceLine>Approved. {approvedLine(approval)}</TraceLine>;
+    case "pending": return <PendingCard organizationSlug={organizationSlug} approval={approval} onOutcome={setOutcome} />;
+    case "approved": return (
+      <>
+        <TraceLine>Approved. {approvedLine(approval)}</TraceLine>
+        {outcome.length === 0 ? null : (
+          <ul role="alert" aria-label="Servers" className="flex flex-col gap-1 text-xs text-destructive">
+            {outcome.map((line) => <li key={line}>{line}</li>)}
+          </ul>
+        )}
+      </>
+    );
     case "denied": return <TraceLine>Denied{approval.reason ? `: ${approval.reason}` : "."}</TraceLine>;
     case "superseded": return <TraceLine>The plan changed since this was asked. Ask again to review the new one.</TraceLine>;
   }
@@ -46,11 +57,15 @@ export function ApprovalCard({ organizationSlug, id, seed, onSettled }: {
 
 function approvedLine(approval: ApprovalView) {
   if (approval.command === "publish") return "Saves without deploying.";
-  if (approval.command === "set_private_access") return asksForAuthKey(approval.review) ? "Private access is on." : "Private access turns off.";
+  if (approval.command === "set_private_access") return asksForAuthKey(approval.review) ? "Integrations shows each router." : "Private access turns off.";
   return `${approvalSubject(approval.command, approval.review).verb} goes ahead.`;
 }
 
-function PendingCard({ organizationSlug, approval }: { organizationSlug: string; approval: ApprovalView }) {
+function PendingCard({ organizationSlug, approval, onOutcome }: {
+  organizationSlug: string;
+  approval: ApprovalView;
+  onOutcome: (lines: readonly string[]) => void;
+}) {
   const queryClient = useQueryClient();
   const [reason, setReason] = useState<string | null>(null);
   const [sending, setSending] = useState(false);
@@ -96,9 +111,11 @@ function PendingCard({ organizationSlug, approval }: { organizationSlug: string;
       .catch((error: Error) => ({ error: toErrorMessage(error, "Your servers didn't answer. Try again.") }));
     setSending(false);
     if ("error" in answer) return setRefused(answer.error);
-    if (answer.decided === null) return setRefused(answer.changed.failures.map((failure) => failure.message).join(" "));
     setAuthKey("");
-    return landDecision(queryClient, organizationSlug, approval.id, { ...approval, ...answer.decided });
+    const { sent } = answer;
+    onOutcome("problem" in sent ? [sent.problem] : sent.failures.map((failure) => failure.message));
+    if (!("problem" in sent)) await landAnswer(queryClient, organizationSlug, { to: "on", changed: sent, at: Date.now() });
+    return landDecision(queryClient, organizationSlug, approval.id, { ...approval, ...answer.approval });
   };
   const approve = () => keyed ? approveWithKey() : decide({ approve: { digest: approval.digest } });
   const deny = () => decide({ reject: reason?.trim() ? { reason: reason.trim() } : {} });

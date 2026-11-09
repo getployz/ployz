@@ -3,7 +3,6 @@ import type { DestructiveEffect, QualifiedService, RuntimeWatchView } from "@plo
 import { Effect } from "effect";
 import { getApproval, operationDigest, type OperationDigest, pendingApprovals } from "#/modules/approvals/approvals.server";
 import type { OperationAsked } from "#/modules/approvals/approvals.server";
-import type { Claim } from "#/modules/approvals/approvals";
 import { freshSwitchDigest } from "#/modules/ingress/doors.server";
 import { freshRenameDigest } from "#/modules/cluster-name/cluster-name.server";
 import { readStore } from "#/modules/config-store/config-store.server";
@@ -12,7 +11,6 @@ import { ownedNamespaces } from "#/modules/machines/namespace-cleanup.server";
 import { machineUpdateForPolicyChange, type ServerPolicyChange } from "#/modules/machines/server-policy";
 import { SYSTEM_NAMESPACE, splitQualifiedService } from "#/modules/machines/server-services";
 import { needsAttention, serverStatus } from "#/modules/machines/server-status";
-import { claimOutcome } from "#/modules/private-access/private-access";
 import type { DataLossIdentity } from "#/modules/runtime/data-loss-identity";
 import {
   clusterRead,
@@ -344,7 +342,7 @@ export const planRemove = Effect.fn("ServerOperations.planRemove")(function* (
  * or a Namespace an Environment owns by now, no longer applies. When the Cluster can't be read within 5 seconds of Cluster
  * time, the stored preview stands.
  */
-const freshDigest: OperationDigest<Effect.Services<ReturnType<typeof planClean>> | Database> = (organizationId, subject, verb, stored, preview) => {
+export const freshOperationDigest: OperationDigest<Effect.Services<ReturnType<typeof planClean>> | Database> = (organizationId, subject, verb, stored, preview) => {
   const separator = subject.indexOf(":");
   const key = subject.slice(separator + 1);
   // A member, invite, Service, Project, Environment, Organization or forget-every-Server approval is planned again when
@@ -387,18 +385,6 @@ const freshDigest: OperationDigest<Effect.Services<ReturnType<typeof planClean>>
   });
   return fresh.pipe(withClusterBudget(5_000), Effect.orElseSucceed(() => stored));
 };
-
-/**
- * `freshDigest`, and what the Servers did with a held Approval's key, from its routers now. When the Cluster can't be
- * read within 5 seconds of Cluster time, the claim's bound alone decides.
- */
-export const freshOperationDigest: OperationDigest<Effect.Services<ReturnType<typeof planClean>> | Database> = Object.assign(freshDigest, {
-  settle: (organizationId: string, claim: Claim) => operationRuntimeFrame(organizationId).pipe(
-    withClusterBudget(5_000),
-    Effect.orElseSucceed(() => null),
-    Effect.map((frame) => claimOutcome(claim, frame, Date.now())),
-  ),
-});
 
 /** Every approval still waiting in the Organization, each operation's preview recomputed against the Cluster first. */
 export const freshPendingApprovals = (organizationId: string) => pendingApprovals(organizationId, freshOperationDigest);

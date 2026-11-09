@@ -1,7 +1,6 @@
 import type { AccessChanged, ContainerObservation, RuntimeWatchView } from "@ployz/sdk";
 import { Schema } from "effect";
 import { asRecord } from "#/lib/json";
-import type { Claim, ClaimOutcome } from "#/modules/approvals/approvals";
 import { offlineServers } from "#/modules/machines/server-status";
 
 export const TAILSCALE = "ployz-system/tailscale";
@@ -56,9 +55,6 @@ type RouterFrame = Pick<RuntimeWatchView, "services">;
 const routerContainers = (frame: RouterFrame): readonly ContainerObservation[] =>
   frame.services.find((service) => service.identity === TAILSCALE)?.containers ?? [];
 
-/** Every router container the frame shows, so a claim tells the routers its key placed from those already there. */
-export const routerIds = (frame: RouterFrame) => routerContainers(frame).map((container) => container.container_id);
-
 export function routersOn(frame: RouterFrame): Map<string, RouterState> {
   const states = new Map<string, RouterState>();
   for (const container of routerContainers(frame)) {
@@ -68,8 +64,6 @@ export function routersOn(frame: RouterFrame): Map<string, RouterState> {
   }
   return states;
 }
-
-export const privateAccessOn = (observed: PrivateAccessObservation) => observed.servers.some((server) => server.router === "running");
 
 export const routerCount = (servers: readonly RouterRow[]) => servers.filter((server) => server.router).length;
 
@@ -84,38 +78,4 @@ export function privateAccessObservation(frame: ObservedFrame): PrivateAccessObs
     servers: frame.machines.map(({ machine }) => ({ id: machine.id, name: machine.name, router: routers.get(machine.id) ?? "none" })),
     partial: frame.incomplete_ids.machines.length > 0 || frame.incomplete_ids.containers.length > 0 || offline.size > 0,
   };
-}
-
-/** A router Tailscale refused keeps restarting for about two minutes before it stays exited. */
-export const REFUSED_RESTARTS_MS = 3 * 60_000;
-
-/** How long a key's image pull and router settle may take before a Server that placed no router counts as failed. */
-export const CLAIM_WORK_MS = 5 * 60_000;
-
-type ServerAnswer = "took" | "failed" | "settling" | "none";
-
-const answerOn = (machineId: string, placed: readonly ContainerObservation[], now: number): ServerAnswer => {
-  const routers = placed.filter((router) => router.machine_id === machineId);
-  if (routers.length === 0) return "none";
-  if (routers.some((router) => now - router.created_at_unix_nanos / 1e6 < REFUSED_RESTARTS_MS)) return "settling";
-  return routers.some((router) => router.runtime.state === "running") ? "took" : "failed";
-};
-
-/**
- * What the Servers did with a claim's key, from the routers Cloud sees now. A router counts only when the claim didn't
- * see it before. The key took once every Server runs one for longer than a refused one keeps restarting. It failed once
- * every Server has shown its answer and one stopped, or once the work's bound passed with a Server unseen or showing no
- * router. Until then, unknown: the Servers may still be pulling or settling.
- */
-export function claimOutcome(claim: Pick<Claim, "at" | "before">, frame: ObservedFrame | null, now: number): ClaimOutcome {
-  const lapsed = now - Date.parse(claim.at) > CLAIM_WORK_MS;
-  if (frame === null) return lapsed ? "failed" : "unknown";
-  const before = new Set(claim.before);
-  const placed = routerContainers(frame).filter((router) =>
-    !before.has(router.container_id) && router.runtime.state !== "removing" && router.runtime.state !== "dead");
-  const answers = frame.machines.map(({ machine }) => answerOn(machine.id, placed, now));
-  const { partial } = privateAccessObservation(frame);
-  if (answers.includes("settling")) return "unknown";
-  if (partial || answers.length === 0 || answers.includes("none")) return lapsed ? "failed" : "unknown";
-  return answers.every((answer) => answer === "took") ? "took" : "failed";
 }

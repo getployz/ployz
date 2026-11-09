@@ -14,6 +14,11 @@ const To = Schema.Literals(PRIVATE_ACCESS_WANTS).annotate({
   description: "on or off. On waits for an owner or admin to approve and paste the Tailscale auth key in Ployz Cloud.",
 });
 
+/** A running router may still be one Tailscale refused, so only the approver's Connect, in Ployz Cloud, says it took. */
+const onMessage = (routers: number, servers: number) => routers === servers && servers > 0
+  ? `${routers} ${routers === 1 ? "router" : "routers"} running. Integrations in Ployz Cloud shows whether Tailscale took the key.`
+  : `Servers are still connecting: ${routers} of ${servers} run a router. Integrations in Ployz Cloud shows each one.`;
+
 export const privateAccessUse = defineCommand({
   name: "private_access_use",
   requires: use.requires,
@@ -38,7 +43,7 @@ export const privateAccessUse = defineCommand({
       Effect.map(({ servers, failures }) => {
         const routers = routerCount(servers);
         if (failures.length > 0) return refused("unavailable", failures.map(({ name, message }) => `${name}: ${message}`).join(" "));
-        return { ok: true, output: { to: input.to, routers }, message: input.to === "on" ? `Private Access is on. ${routers} ${routers === 1 ? "router" : "routers"}.` : "Private Access is off." } as const;
+        return { ok: true, output: { to: input.to, routers }, message: input.to === "on" ? onMessage(routers, servers.length) : "Private Access is off." } as const;
       }),
       Effect.catchTag("Validation", (problem) => Effect.succeed(refused("failed_precondition", problem.message))),
     ),

@@ -3,6 +3,10 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { createMemoryHistory, createRootRoute, createRouter, RouterProvider } from "@tanstack/react-router";
 import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
+import type { ReactNode } from "react";
+import { ApprovalCard } from "#/components/agent-sidebar/approval-card";
+import type { ApprovalView } from "#/components/agent-sidebar/approvals.queries";
+import * as approvals from "#/modules/approvals/approvals.functions";
 import * as functions from "#/modules/private-access/private-access.functions";
 import { machineId } from "#/test/ids";
 import { Integrations } from "./integrations";
@@ -33,8 +37,8 @@ afterEach(() => {
   vi.restoreAllMocks();
 });
 
-async function show() {
-  const router = createRouter({ routeTree: createRootRoute({ component: () => <Integrations organizationSlug="acme" editable /> }), history: createMemoryHistory() });
+async function show(page: () => ReactNode = () => <Integrations organizationSlug="acme" editable />) {
+  const router = createRouter({ routeTree: createRootRoute({ component: page }), history: createMemoryHistory() });
   await router.load();
   render(<QueryClientProvider client={new QueryClient()}><RouterProvider router={router} /></QueryClientProvider>);
   await waitFor(() => expect(screen.queryByText("Checking your servers…")).toBeNull());
@@ -91,4 +95,50 @@ it("keeps a refused key marked on a router Docker still lists as running", async
   expect(within(rowOf("fra-1")).getByText("Key refused")).toBeTruthy();
   expect(within(rowOf("ams-1")).getByText("Key refused")).toBeTruthy();
   expect(screen.getByText("Tailscale refused the auth key on ams-1.")).toBeTruthy();
+});
+
+it("marks a key the approver pasted in an Approval card refused on Integrations, and offers another key there", async () => {
+  observed = servers("none", "none");
+  let asked: ApprovalView = {
+    id: "00000000-0000-4000-8000-0000000000a1",
+    status: "pending",
+    digest: "set_private_access:on",
+    command: "set_private_access",
+    reason: null,
+    review: { effects: [], operation: { verb: "set_private_access", name: "on", preview: { to: "on" } } },
+    protected: false,
+    requested_by: null,
+    created_at: "2026-11-09T12:00:00.000Z",
+    decided_at: null,
+    asker: null,
+    yours: false,
+  };
+  vi.spyOn(approvals, "getApprovalServerFn").mockImplementation(() => Promise.resolve(asked));
+  const refused = (id: typeof FRA, name: string) => ({ id, name, message: `Tailscale refused the auth key on ${name}.`, problem: "key_refused" }) as const;
+  vi.spyOn(functions, "approvePrivateAccessServerFn").mockImplementation(() => {
+    observed = servers("running", "running");
+    asked = { ...asked, status: "approved", decided_at: "2026-11-09T12:01:00.000Z" };
+    return Promise.resolve({
+      approval: asked,
+      sent: { servers: [{ id: FRA, name: "fra-1", router: false }, { id: AMS, name: "ams-1", router: false }], failures: [refused(FRA, "fra-1"), refused(AMS, "ams-1")] },
+    });
+  });
+  await show(() => (
+    <>
+      <ApprovalCard organizationSlug="acme" id={asked.id} seed={asked} />
+      <Integrations organizationSlug="acme" editable />
+    </>
+  ));
+
+  const card = screen.getByLabelText("Turn private access on needs approval");
+  fireEvent.change(within(card).getByLabelText("Auth key"), { target: { value: KEY } });
+  await act(async () => { fireEvent.click(within(card).getByRole("button", { name: "Connect" })); });
+
+  expect(await screen.findByText("Approved. Integrations shows each router.")).toBeTruthy();
+  expect(within(screen.getByRole("alert", { name: "Servers" })).getByText("Tailscale refused the auth key on fra-1.")).toBeTruthy();
+  expect(await screen.findByText("Not connected")).toBeTruthy();
+  expect(within(rowOf("fra-1")).getByText("Key refused")).toBeTruthy();
+  expect(within(rowOf("ams-1")).getByText("Key refused")).toBeTruthy();
+  expect(screen.getByRole("button", { name: "Try another key" })).toBeTruthy();
+  expect(screen.getByRole("button", { name: "Turn off" })).toBeTruthy();
 });

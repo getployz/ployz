@@ -8,15 +8,6 @@ import { holds } from "#/modules/support-access/support-view";
 export const APPROVAL_STATUSES = ["pending", "approved", "denied", "superseded"] as const;
 export type ApprovalStatus = (typeof APPROVAL_STATUSES)[number];
 
-/**
- * A pending Approval held while the key it carries is out on the Servers: who sent it, when, and the routers that ran
- * before, so Cloud tells the new ones apart. Never the key. `token` is the holder's, so only it ends its own hold.
- */
-export type Claim = { readonly token: string; readonly by: string | null; readonly at: string; readonly before: readonly string[] };
-
-/** What the Servers did with a claim's key: took it, didn't, or haven't shown yet. */
-export type ClaimOutcome = "took" | "failed" | "unknown";
-
 /** The operations `ployz` and agents run through Cloud that may wait for a human. Upgrade and a Service start never do. */
 export type OperationVerb = "drain" | "set" | "clean" | "remove" | "forget" | "release" | "remove_mirror" | "stop" | "restart" | "unprotect" | "move" | "restore" | "resize" | "set_cluster_name" | "set_ingress_doors" | "set_private_access";
 

@@ -18,7 +18,7 @@ import {
   TAILSCALE_MACHINES_URL,
 } from "#/modules/private-access/private-access";
 import { setPrivateAccessServerFn } from "#/modules/private-access/private-access.functions";
-import { privateAccessKeys, privateAccessQueryOptions } from "#/modules/private-access/private-access.queries";
+import { landAnswer, lastAnswerOptions, type PrivateAccessAnswer, privateAccessQueryOptions } from "#/modules/private-access/private-access.queries";
 
 const LINUX = "tailscale up --accept-routes";
 
@@ -45,7 +45,7 @@ function TailscaleSection({ organizationSlug, editable }: { organizationSlug: st
   const [connecting, setConnecting] = useState(false);
   const [starting, setStarting] = useState(false);
   const [turningOff, setTurningOff] = useState(false);
-  const [last, setLast] = useState<Answer | null>(null);
+  const last = useQuery(lastAnswerOptions(organizationSlug)).data ?? null;
   const [offRefusal, setOffRefusal] = useState<string | null>(null);
   const rows = observed?.servers.map((server) => ({ ...server, state: stateOf(server, last) })) ?? [];
   const placed = rows.filter((row) => row.state !== "none").length;
@@ -54,10 +54,7 @@ function TailscaleSection({ organizationSlug, editable }: { organizationSlug: st
   const on = placed > 0 && !starting;
   const refused = rows.some((row) => row.state === "refused");
   const failures = last === null ? [] : last.changed.failures.filter((failure) => !putRight(last.to, rows.find((row) => row.id === failure.id)?.state));
-  const settle = async (answer: Answer) => {
-    setLast(answer);
-    await queryClient.invalidateQueries({ queryKey: privateAccessKeys.all });
-  };
+  const settle = (answer: PrivateAccessAnswer) => landAnswer(queryClient, organizationSlug, answer);
 
   return (
     <SettingsSection id="tailscale" title="Tailscale">
@@ -124,8 +121,6 @@ function TailscaleSection({ organizationSlug, editable }: { organizationSlug: st
   );
 }
 
-type Answer = { readonly to: PrivateAccessWant; readonly changed: PrivateAccessChanged; readonly at: number };
-
 /** How long a removal outranks the Servers' watch, which lists a removed router for a few seconds. */
 const REMOVAL_LAG_MS = 30_000;
 
@@ -135,7 +130,7 @@ type RowState = ObservedServer["router"] | "refused";
  * The last answer outranks the poll only where the poll lags: a router whose key Tailscale refused
  * runs until it gives up, and a removed one is listed until the Servers' watch catches up.
  */
-function stateOf(server: ObservedServer, last: Answer | null): RowState {
+function stateOf(server: ObservedServer, last: PrivateAccessAnswer | null): RowState {
   if (server.router === "none" || last === null) return server.router;
   const failure = last.changed.failures.find((failed) => failed.id === server.id);
   if (last.to === "on") return failure?.problem === "key_refused" ? "refused" : server.router;
