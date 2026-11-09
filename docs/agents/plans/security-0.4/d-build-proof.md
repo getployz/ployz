@@ -80,7 +80,7 @@ AutoDeployRule                       purpose: Rule (new)
   services       [RuleService]        sorted by name, distinct
     name         ServiceName
     template     PayloadDigest         the requested spec with `container.image` emptied
-    policy       PolicyDigest          the build policy below
+    policy       BuildPolicy           the build policy below, whose PolicyDigest the builder reports
     secrets      Option<SealedDigest>  the build's SealedRecord, ciphertexts only
   issued_at      Timestamp
   ended          bool                 true for the generation that switches the rule off
@@ -260,7 +260,7 @@ Thread Y's alternatives were a deploy key per repository (H2), a customer-owned 
 - The promise is "head when this Machine admitted it". A push that lands mid-rollout makes the remaining creations refuse. That Machine reports a partial result (bet 4), and the next push's deploy replaces it.
 - A creation long after the push, such as a copy rescheduled to another Machine, needs the head to still be that commit. If a later push failed to build, the old image cannot be placed anew until a person deploys (D6). Restarting existing Containers is unaffected.
 - GitHub's API may lag a push by seconds. A Machine may accept the previous head briefly. That is bounded freshness, not a new effect.
-- Token lifetime is not documented. If it is short, a slow first rollout to some Machine misses the token. The accepted-build record covers later creations on Machines that saw it. A Machine that never saw a valid token reports refused. Slice D2 measures `exp - iat`.
+- A token lives 300 seconds (`exp - iat`, measured in D2 lane 1), so a slow first rollout to some Machine can miss the token. The accepted-build record covers later creations on Machines that saw it. A Machine that never saw a valid token reports refused.
 
 ## A person deploys a built image (D6)
 
@@ -294,7 +294,7 @@ PreviewRule                          purpose: Rule
   services       [PreviewService]
     name         ServiceName
     template     PayloadDigest          the preview's spec with derived fields as placeholders (below)
-    policy       PolicyDigest
+    policy       BuildPolicy
     secrets      Option<SealedDigest>
     inherit      [String]               parent Sealed keys this Service may open in a preview
 ```

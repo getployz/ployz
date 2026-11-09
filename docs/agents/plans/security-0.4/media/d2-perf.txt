@@ -1,0 +1,13 @@
+D2 perf. On the Boat Machine (2 vCPU AMD Ryzen 7 9700X sandbox), release build.
+
+Token verification of the committed fixture at its iat, through IssuerKeys::github():
+cold verify (fetches GitHub's JWKS over TLS) in 313070 us: ok, repository_id 1450985696
+warm verify us, sorted: [15, 15, 15, 15, 15, 15, 16, 17, 18, 22], median 15
+verify now: the GitHub token is outside its lifetime | cause: the approval expired
+
+branch_head, ten reads: median 321 ms (d2-private-head.txt), slowest 371 ms with a new TLS connection.
+
+Rule: verification under 2 ms (15 us), head read under 1 s (321 ms). Pass. The warm figure is one
+RSA-2048 public-key operation with e = 65537 plus base64 and JSON parsing of a 2 KB token, which is
+the expected order for one core. The head read is one HTTPS round trip to api.github.com.
+The cold verify also shows the fixture's key is still in GitHub's live JWKS, fetched over TLS.
