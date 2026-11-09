@@ -599,7 +599,9 @@ pub async fn stop_one(
 ///
 /// # Errors
 /// Returns the Machine's refusal, a copy proxies kept routing (left running), or the
-/// transport's error when it did not answer.
+/// transport's error when it did not answer. A Container Docker has while the Machine
+/// holds no Resolved Service Spec under its ID stays, and answers `conflict` with
+/// `details.reason` `no_resolved_spec`.
 pub async fn remove_one(
     session: &Session,
     machine: MachineId,

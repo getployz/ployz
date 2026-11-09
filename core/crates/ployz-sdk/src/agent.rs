@@ -166,7 +166,9 @@ impl Client {
     /// named Volumes. A Container the Machine no longer has answers Ok.
     ///
     /// # Errors
-    /// Returns the Machine's refusal, or the transport's error when it did not answer.
+    /// Returns the Machine's refusal, or the transport's error when it did not answer. A
+    /// Container Docker has while the Machine holds no Resolved Service Spec under its ID
+    /// stays, and answers `conflict` with `details.reason` `no_resolved_spec`.
     #[napi]
     pub async fn remove_container(&self, machine: String, container: String) -> Result<()> {
         let (machine, container) = ids(&machine, &container)?;

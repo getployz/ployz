@@ -196,6 +196,15 @@ const finish = ({ step, runEffect, run, runId }: RunSteps, id: string, message: 
   step.run(id, () => runEffect(endRun(run, runId, "done", message)));
 
 /**
+ * A finished run's message: its parts in order, or null when it has none. A remove step taken before it returned the
+ * Containers that stay replays its output as null.
+ */
+const doneMessage = (...parts: ReadonlyArray<string | readonly string[] | null>) => {
+  const kept = parts.flatMap((part) => part ?? []);
+  return kept.length === 0 ? null : kept.join("; ");
+};
+
+/**
  * One SetVolumeCopy. A Machine answers Busy while a Container step or another switch holds the Volume, so the run
  * sleeps and asks again with the same request, which spends no retry. `at` is when the Machine answered, in ms. A
  * retried attempt's answer has `lateAt` instead: the attempt before may have made the change and lost the answer, so
@@ -561,13 +570,14 @@ async function releaseVolume(steps: RunSteps, phase: PhaseOf<"release">, epoch: 
       const root = from.kind === "cut" ? from.root : from.writer;
       const holder = await kept("03-holder", [root.machine]);
       await resume("04-resume", root, holder?.containerId ?? null);
+      const stays: Array<string | null> = [];
       if (from.kind === "writer") {
         for (const slot of from.behind) {
           const old = await kept(`05-kept-${slot.machine.name}`, [slot.machine]);
-          if (old !== null) await steps.step.run(`05-remove-${slot.machine.name}`, () => steps.runEffect(removeContainer(run, steps.runId, slot.machine, old.containerId)));
+          if (old !== null) stays.push(await steps.step.run(`05-remove-${slot.machine.name}`, () => steps.runEffect(removeContainer(run, steps.runId, slot.machine, old.containerId))));
         }
       }
-      await finish(steps, "06-finish");
+      await finish(steps, "06-finish", doneMessage(...stays));
       return { runId: run.id, released: root.machine.name };
     }
     const source = await kept("03-holder", from.slots.map((slot) => slot.machine));
@@ -645,6 +655,7 @@ async function finishRelease(steps: RunSteps, current: MachineId, plan: ReleaseP
     }
     const { target, copy } = forward;
     const { epoch } = await step.run("02-epoch", () => runEffect(takeEpoch(run, runId, observedEpoch(members))));
+    let stays: readonly string[] | null;
     try {
       const started = await settle(steps, "03-start", commitAndStart(run, runId, {
         to: target.machine,
@@ -654,11 +665,11 @@ async function finishRelease(steps: RunSteps, current: MachineId, plan: ReleaseP
         epoch: copy.kind === "root" ? copy.epoch : epoch,
       }), `${target.machine.name} is still starting ${run.volumeName}'s Service`);
       if (!started.ok) throw new NonRetriableError(started.message);
-      await step.run("04-remove", () => runEffect(removeKept(run, runId, forward.removeOn)));
+      stays = await step.run("04-remove", () => runEffect(removeKept(run, runId, forward.removeOn)));
     } catch (error) {
       return stopped(steps, "05-failed", error instanceof Error ? error : new Error(String(error)));
     }
-    await finish(steps, "05-finish");
+    await finish(steps, "05-finish", doneMessage(stays));
     return { runId: run.id, moved: target.machine.name };
   }
 }
@@ -690,6 +701,7 @@ async function moveVolume(steps: RunSteps, phase: PhaseOf<"move">, epoch: number
   let service = "the Service";
   let stoppedAt: number | null = null;
   let downtime: string | null = null;
+  let stays: readonly string[] | null = null;
   const note = (id: string, message: string) => step.run(id, () => runEffect(noteRun(run, runId, message)));
 
   if (phase.start === "rounds") {
@@ -738,7 +750,7 @@ async function moveVolume(steps: RunSteps, phase: PhaseOf<"move">, epoch: number
       epoch: copy?.kind === "root" ? copy.epoch : epoch,
     }), `${B.name} is still starting ${name}'s Service`);
     if (!started.ok) throw new NonRetriableError(started.message);
-    await step.run("08-remove", () => runEffect(removeKept(run, runId, [A])));
+    stays = await step.run("08-remove", () => runEffect(removeKept(run, runId, [A])));
     // A late start may have been made before its answer, and the cut's answer follows the stop, so the time is
     // only an estimate either way. Times stamped by different workers can disagree; a negative one says nothing.
     const startedAt = started.at ?? started.lateAt;
@@ -749,7 +761,7 @@ async function moveVolume(steps: RunSteps, phase: PhaseOf<"move">, epoch: number
   } catch (error) {
     return release(steps, "09-failed", error instanceof Error ? error : new Error(String(error)));
   }
-  await finish(steps, "09-finish", downtime);
+  await finish(steps, "09-finish", doneMessage(downtime, stays));
   return { runId: run.id, moved: B.name };
 }
 
