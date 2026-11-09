@@ -1,13 +1,15 @@
 import "@tanstack/react-start/server-only";
-import { createHash } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import type { Approval, ConfigCommand, DestructiveEffect, DiffView, EnvironmentRef, JsonValue } from "@ployz/sdk";
-import { and, desc, eq, inArray, isNull, lt, ne, or, type SQL, sql } from "drizzle-orm";
-import { Effect, Option, Schema } from "effect";
+import { and, desc, eq, inArray, isNull, ne, type SQL, sql } from "drizzle-orm";
+import { Effect, Exit, Fiber, Option, Schema } from "effect";
 import { canonicalJson } from "#/lib/json";
 import { Uuid } from "#/lib/schema";
 import {
   type ApprovalDecision,
   type ApprovalReview,
+  type Claim,
+  type ClaimOutcome,
   type Redeploy,
   approvalCommand,
   asksForAuthKey,
@@ -162,16 +164,36 @@ const staleOperation = (verb: OperationVerb, fresh: string | null) => Effect.suc
   fresh === null ? undefined : ne(operationApprovals.digest, fresh),
 ));
 
-export type OperationDigest<R> = (
+export type OperationDigest<R> = ((
   organizationId: string,
   subject: string,
   verb: OperationVerb,
   stored: string,
   preview: JsonValue,
-) => Effect.Effect<string | null, never, R>;
+) => Effect.Effect<string | null, never, R>) & {
+  /** What the Servers did with a held row's key, read from the Cluster now. Without it, only the holder ends a hold. */
+  readonly settle?: (organizationId: string, claim: Claim) => Effect.Effect<ClaimOutcome, never, R>;
+};
+
+const claimedBy = (id: string, claim: Claim) =>
+  and(eq(operationApprovals.id, id), eq(operationApprovals.status, "pending"), sql`${operationApprovals.claim}->>'token' = ${claim.token}`);
+
+const endClaim = Effect.fn("Approvals.endClaim")(function* (id: string, claim: Claim, outcome: ClaimOutcome) {
+  if (outcome === "unknown") return undefined;
+  const { drizzle } = yield* Database;
+  const now = new Date();
+  const [ended] = yield* drizzle.update(operationApprovals)
+    .set(outcome === "took" ? { status: "approved", decidedByUserId: claim.by, decidedAt: now, updatedAt: now, claim: null } : { claim: null })
+    .where(claimedBy(id, claim))
+    .returning();
+  return ended;
+});
 
 const freshen = <R>(row: ApprovalRow, operationDigest?: OperationDigest<R>) => Effect.gen(function* () {
   if (row.status !== "pending") return row;
+  if (row.claim !== null && operationDigest?.settle !== undefined) {
+    yield* endClaim(row.id, row.claim, yield* operationDigest.settle(row.organizationId, row.claim));
+  }
   const review = row.review;
   if ("diff" in review) {
     yield* recordAndSweep(row.organizationId, row.subject, Effect.void, staleEnvironment(row.organizationId, review.diff.environment));
@@ -650,11 +672,7 @@ const mayNotDecide = (decider: Decider, row: ApprovalRow, approve: boolean, keye
   return "Only a person in Ployz Cloud, or the prompt that asked, can approve this.";
 };
 
-const HOLD_LAPSES_MS = 2 * 60_000;
-
-const holding = (row: ApprovalRow) => row.status === "pending" && row.usedAt !== null && Date.now() - row.usedAt.getTime() < HOLD_LAPSES_MS;
-
-const unheld = (now: Date) => or(isNull(operationApprovals.usedAt), lt(operationApprovals.usedAt, new Date(now.getTime() - HOLD_LAPSES_MS)));
+const holding = (row: ApprovalRow) => row.status === "pending" && row.claim !== null;
 
 const conflict = (message: string, current: ApprovalRow): Decided =>
   ({ ok: false, refusal: { code: "conflict", message, details: { approval: approvalView(current) } } });
@@ -663,7 +681,7 @@ const settled = (decision: ApprovalDecision, current: ApprovalRow): Decided => {
   if ("approve" in decision ? current.status === "approved" && current.digest === decision.approve.digest : current.status === "denied") {
     return { ok: true, approval: approvalView(current) };
   }
-  if (current.status === "pending") return conflict("Servers are connecting for this approval. Try again in a minute.", current);
+  if (current.status === "pending") return conflict("Servers are still connecting. Try again in a few minutes.", current);
   return current.status === "superseded"
     ? conflict("The plan changed since this was asked; run the command again to review it.", current)
     : conflict(`This approval was already decided elsewhere (${current.status}).`, current);
@@ -717,7 +735,7 @@ export const decideApproval = <R = never>(
     .set("approve" in decision
       ? { status: "approved", ...decided }
       : { status: "denied", reason: decision.reject.reason ?? null, ...decided })
-    .where(and(eq(operationApprovals.id, admitted.row.id), eq(operationApprovals.status, "pending"), unheld(now)))
+    .where(and(eq(operationApprovals.id, admitted.row.id), eq(operationApprovals.status, "pending"), isNull(operationApprovals.claim)))
     .returning();
   if (updated !== undefined) return { ok: true, approval: approvalView(updated), decided: true } satisfies Decided;
   return yield* settledNow(caller.organization.id, id, decision);
@@ -729,17 +747,26 @@ const asRefusal = (answer: Decided): Refused => answer.ok
   ? { ok: false, refusal: { code: "conflict", message: `This approval was already decided elsewhere (${answer.approval.status}).`, details: { approval: answer.approval } } }
   : answer;
 
+/** A keyed operation: what it sees before it runs, the run that carries the key, and what its end says the Servers did. */
+export type KeyedRun<A, E, R> = {
+  readonly before: Effect.Effect<readonly string[], E, R>;
+  readonly run: Effect.Effect<A, E, R>;
+  readonly outcome: (ran: Exit.Exit<A, E>) => ClaimOutcome;
+};
+
 /**
- * Approve a row that asks for a key (`asksForAuthKey`) by running `run`, which carries the key. The row is held pending
- * first, by its digest, so no other decision or key lands while `run` runs. It is approved once `took` says the key
- * took, and let go otherwise, or when `run` fails or is interrupted, so a corrected key or a deny can follow. Only the
- * hold's start is written; the key stays in `run`.
+ * Approve a row that asks for a key (`asksForAuthKey`) by running `keyed.run`, which carries the key. The row is
+ * claimed pending first, by its digest, so no other decision or key lands until Cloud knows what the Servers did.
+ *
+ * The Servers carry on with a key once sent, whoever stops waiting. So once the claim is written, an abort waits for
+ * the run to end and for the claim to end with it. An outcome the run's end can't tell, or a write that fails, leaves
+ * the claim for `freshen` to settle from the Cluster. An abort before the key goes out lets go at once. Only `Claim`
+ * is written; the key stays in `run`.
  */
 export const approveKeyed = <A, E, R, D = never>(
   caller: Decider,
   input: { readonly id: string; readonly digest: string },
-  run: Effect.Effect<A, E, R>,
-  took: (ran: A) => boolean,
+  keyed: KeyedRun<A, E, R>,
   operationDigest?: OperationDigest<D>,
 ) => Effect.gen(function* () {
   const decision = { approve: { digest: input.digest } };
@@ -748,24 +775,21 @@ export const approveKeyed = <A, E, R, D = never>(
   if (!asksForAuthKey(admitted.row.review)) {
     return forbidden("This approval doesn't ask for a key.", admitted.row);
   }
+  const claim: Claim = { token: randomUUID(), by: caller.userId, at: new Date().toISOString(), before: yield* keyed.before };
   const { drizzle } = yield* Database;
-  const heldAt = new Date();
-  const ours = and(eq(operationApprovals.id, input.id), eq(operationApprovals.status, "pending"), eq(operationApprovals.usedAt, heldAt));
-  const [hold] = yield* drizzle.update(operationApprovals).set({ usedAt: heldAt })
-    .where(and(eq(operationApprovals.id, input.id), eq(operationApprovals.status, "pending"), eq(operationApprovals.digest, input.digest), unheld(heldAt)))
-    .returning({ id: operationApprovals.id });
-  if (hold === undefined) return asRefusal(yield* settledNow(caller.organization.id, input.id, decision));
-  const letGo = drizzle.update(operationApprovals).set({ usedAt: null }).where(ours).pipe(Effect.orDie);
-  const ran = yield* run.pipe(Effect.onError(() => letGo));
-  if (!took(ran)) {
-    yield* letGo;
-    return { ok: true, ran, approval: null } satisfies Keyed<A>;
-  }
-  const now = new Date();
-  const [approved] = yield* drizzle.update(operationApprovals)
-    .set({ status: "approved", decidedByUserId: caller.userId, decidedAt: now, updatedAt: now, usedAt: null })
-    .where(ours)
-    .returning();
-  if (approved === undefined) return asRefusal(yield* settledNow(caller.organization.id, input.id, decision));
-  return { ok: true, ran, approval: approvalView(approved) } satisfies Keyed<A>;
+  return yield* Effect.uninterruptibleMask((restore) => Effect.gen(function* () {
+    const [held] = yield* drizzle.update(operationApprovals).set({ claim })
+      .where(and(eq(operationApprovals.id, input.id), eq(operationApprovals.status, "pending"), eq(operationApprovals.digest, input.digest), isNull(operationApprovals.claim)))
+      .returning({ id: operationApprovals.id });
+    if (held === undefined) return asRefusal(yield* settledNow(caller.organization.id, input.id, decision));
+    const aborted = yield* Effect.exit(restore(Effect.void));
+    if (Exit.isFailure(aborted)) {
+      yield* endClaim(input.id, claim, "failed");
+      return yield* Effect.failCause(aborted.cause);
+    }
+    const ran = yield* Fiber.await(yield* Effect.forkChild(keyed.run));
+    const ended = (yield* endClaim(input.id, claim, keyed.outcome(ran))) ?? (yield* readRow(caller.organization.id, input.id));
+    const value = yield* ran;
+    return { ok: true, ran: value, approval: ended?.status === "approved" ? approvalView(ended) : null } satisfies Keyed<A>;
+  }));
 }).pipe(Effect.withSpan("Approvals.approveKeyed"));

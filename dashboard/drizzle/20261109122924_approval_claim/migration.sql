@@ -1,0 +1,2 @@
+ALTER TABLE "operation_approvals" ADD COLUMN "claim" jsonb;--> statement-breakpoint
+ALTER TABLE "operation_approvals" ADD CONSTRAINT "operation_approvals_claim_check" CHECK ("claim" is null or "status" = 'pending');

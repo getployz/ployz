@@ -4,7 +4,7 @@ import { createdAt, sqlStringLiterals, updatedAt } from "#/db/tables";
 import type { Caller, CredentialKind } from "#/modules/identity/actor";
 import { user } from "#/modules/identity/tables";
 import { organization } from "#/modules/organization/tables";
-import { APPROVAL_STATUSES, type ApprovalReview, type ApprovalStatus } from "#/modules/approvals/approvals";
+import { APPROVAL_STATUSES, type ApprovalReview, type ApprovalStatus, type Claim } from "#/modules/approvals/approvals";
 
 /**
  * One destructive CLI write or Server operation a human must approve, by the digest of exactly what it destroys. Only
@@ -33,11 +33,10 @@ export const operationApprovals = pgTable(
     reason: text("reason"),
     decidedByUserId: uuid("decided_by_user_id").references(() => user.id, { onDelete: "set null" }),
     decidedAt: timestamp("decided_at", { mode: "date", withTimezone: true }),
-    /**
-     * When the operation it approved ran: an approval runs once. A Store write's digest binds a version its write moves.
-     * On a pending row that asks for a key, when the approver's key started running, which holds the row until it ends.
-     */
+    /** When the operation it approved ran: an approval runs once. A Store write's digest binds a version its write moves. */
     usedAt: timestamp("used_at", { mode: "date", withTimezone: true }),
+    /** On a pending row that asks for a key, the hold while the Servers take it. Never the key. */
+    claim: jsonb("claim").$type<Claim>(),
     createdAt,
     updatedAt,
   },
@@ -51,5 +50,6 @@ export const operationApprovals = pgTable(
     check("operation_approvals_via_check", sql`${table.via} is null or ${table.via} in ('dashboard', 'cli', 'agent')`),
     check("operation_approvals_reason_check", sql`${table.reason} is null or ${table.status} = 'denied'`),
     check("operation_approvals_decided_check", sql`(${table.status} in ('approved', 'denied')) = (${table.decidedAt} is not null)`),
+    check("operation_approvals_claim_check", sql`${table.claim} is null or ${table.status} = 'pending'`),
   ],
 );

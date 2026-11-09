@@ -169,7 +169,8 @@ your services at their private addresses, on any port and protocol.
 **Integrations** lists each server's router, links to the Tailscale admin console, and has
 the Linux command to copy. If you ask an agent, or run `ployz cluster private-access on`, it
 waits for an owner or admin to approve. The approver pastes the key in the approval card, so
-the agent never sees it.
+the agent never sees it. Until the servers take the key or refuse it, no one can deny the
+approval, even if the approver closes the page. That can take a few minutes.
 
 `ployz private-access` shows which servers run a router. A server added later runs one too,
 and joins with the key, so keep the key reusable. If Tailscale refuses the key,
