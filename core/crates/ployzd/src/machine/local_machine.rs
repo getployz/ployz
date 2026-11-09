@@ -196,8 +196,8 @@ pub enum Error {
     #[error("This Server refused the rule build's grant: {0}")]
     RuleGrantRefused(ployz_core::authority::AuthorityRefusal),
     /// GitHub did not prove a rule build: its token failed to verify or match the rule.
-    #[error("This Server refused the rule build's GitHub token")]
-    RuleProofRefused(#[source] crate::github::oidc::ProofRefusal),
+    #[error("This Server refused the rule build's GitHub token: {0}")]
+    RuleProofRefused(crate::github::oidc::ProofRefusal),
     /// This Server could not read the approved branch's head from GitHub.
     #[error("This Server could not read the approved branch's head from GitHub")]
     RuleHeadUnread(#[source] crate::github::head::HeadError),

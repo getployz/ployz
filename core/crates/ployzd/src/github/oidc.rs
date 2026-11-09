@@ -212,8 +212,16 @@ pub fn verify(token: &str, keys: &KeySet, now: Timestamp) -> Result<GithubClaims
 pub enum ProofRefusal {
     #[error(transparent)]
     Token(TokenRefusal),
-    #[error("the GitHub token does not match the rule")]
-    Claim(#[source] AuthorityRefusal),
+    #[error("{}", claim_refusal(.0))]
+    Claim(AuthorityRefusal),
+}
+
+fn claim_refusal(refusal: &AuthorityRefusal) -> String {
+    if let AuthorityRefusal::Mismatch { field } = refusal {
+        format!("the GitHub token's {field} claim does not match the rule")
+    } else {
+        format!("the GitHub token does not match the rule: {refusal}")
+    }
 }
 
 /// GitHub's token keys, fetched over TLS from the fixed issuer and cached. A token naming

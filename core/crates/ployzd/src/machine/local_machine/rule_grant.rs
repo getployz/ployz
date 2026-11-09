@@ -166,10 +166,13 @@ impl LocalMachine {
         github: &impl Github,
         now: Timestamp,
     ) -> Result<AdmittedRule, Error> {
-        let refused = |field| Error::RuleGrantRefused(AuthorityRefusal::Mismatch { field });
         let record = self.record();
         let (rule, _) = verify_signature(&grant.rule, &record.trusted_keys(), now)
             .map_err(Error::RuleGrantRefused)?;
+        let refused = |field| {
+            tracing::warn!(rule = %rule.rule, field, "refused a rule build's grant");
+            Error::RuleGrantRefused(AuthorityRefusal::Mismatch { field })
+        };
         let cluster =
             self.held_sealing(record.phase())
                 .and_then(|sealing| match sealing {
@@ -188,8 +191,10 @@ impl LocalMachine {
         if rule.ended {
             return Err(refused("an ended rule"));
         }
-        let service = rule.service(&grant.service).ok_or(refused("a Service"))?;
-        let holder = holder.ok_or(refused("a holder"))?;
+        let service = rule
+            .service(&grant.service)
+            .ok_or_else(|| refused("a Service"))?;
+        let holder = holder.ok_or_else(|| refused("a holder"))?;
         let claims = github
             .claims(&rule, grant.proof.as_str(), now)
             .await
@@ -209,7 +214,6 @@ impl LocalMachine {
         };
         let audience = expected.audience().map_err(|_| refused("an audience"))?;
         if claims.aud != audience {
-            tracing::warn!(rule = %rule.rule, claim = "aud", "refused a rule build's grant");
             return Err(refused("an audience"));
         }
         match grant.authority {

@@ -371,12 +371,12 @@ impl AutoDeployRule {
                     == format!("{}/{}@{git_ref}", source.repository, source.workflow),
             ),
             (
-                "job_workflow_ref",
-                claims.job_workflow_ref == source.builder.r#ref,
-            ),
-            (
                 "job_workflow_sha",
                 claims.job_workflow_sha == source.builder.sha,
+            ),
+            (
+                "job_workflow_ref",
+                claims.job_workflow_ref == source.builder.r#ref,
             ),
             (
                 "runner_environment",
