@@ -1871,6 +1871,13 @@ impl SshFailure {
 /// The code of a refusal on the caller's access, such as a Server refusing a scope.
 pub(crate) const FORBIDDEN: &str = "forbidden";
 
+/// Whether a Machine refused `capability` because Device enforcement is on, as it
+/// refuses an Operator's `Build` and `MintBuildGrant`.
+pub(crate) fn refused_by_enforcement(error: &RpcError, capability: &str) -> bool {
+    error.code.as_str() == FORBIDDEN
+        && error.details.get("capability").and_then(Value::as_str) == Some(capability)
+}
+
 fn rpc_error_code(code: tonic::Code) -> RpcErrorCode {
     match code {
         tonic::Code::InvalidArgument => RpcErrorCode::InvalidArgument,

@@ -4736,6 +4736,243 @@ mod ensure_container {
             );
         }
 
+        /// Connects to a Machine's local socket, the way a Full caller on the Machine does.
+        #[derive(Clone)]
+        struct LocalSocket(std::path::PathBuf);
+
+        impl tower_service::Service<tonic::transport::Uri> for LocalSocket {
+            type Response = hyper_util::rt::TokioIo<tokio::net::UnixStream>;
+            type Error = std::io::Error;
+            type Future = std::pin::Pin<
+                Box<dyn std::future::Future<Output = std::io::Result<Self::Response>> + Send>,
+            >;
+
+            fn poll_ready(
+                &mut self,
+                _: &mut std::task::Context<'_>,
+            ) -> std::task::Poll<std::io::Result<()>> {
+                std::task::Poll::Ready(Ok(()))
+            }
+
+            fn call(&mut self, _: tonic::transport::Uri) -> Self::Future {
+                let path = self.0.clone();
+                Box::pin(async move {
+                    tokio::net::UnixStream::connect(path)
+                        .await
+                        .map(hyper_util::rt::TokioIo::new)
+                })
+            }
+        }
+
+        /// A socket path of its own under `dir`, short enough for a Unix socket.
+        fn socket_in(dir: &std::path::Path) -> std::path::PathBuf {
+            static NEXT: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+            let next = NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            dir.join(format!("m{next}.sock"))
+        }
+
+        /// A Machine's gRPC front over its local socket. A request with no Operator header
+        /// reaches it as a Full caller, even under enforcement, and one with it as Cloud does.
+        async fn served(
+            service: &MachineService,
+            socket: &std::path::Path,
+        ) -> (
+            MachineRpcClient<tonic::transport::Channel>,
+            tokio::task::JoinHandle<Result<(), tonic::transport::Error>>,
+        ) {
+            let api = crate::machine_api::MachineApi::from_local(service.clone());
+            let listener = tokio::net::UnixListener::bind(socket).unwrap();
+            let server = tokio::spawn(Server::builder().serve_with_incoming(
+                api,
+                tokio_stream::wrappers::UnixListenerStream::new(listener),
+            ));
+            let channel = tonic::transport::Endpoint::try_from("http://machine.invalid")
+                .unwrap()
+                .connect_with_connector(LocalSocket(socket.to_owned()))
+                .await
+                .unwrap();
+            (MachineRpcClient::new(channel), server)
+        }
+
+        fn as_operator<T>(mut request: Request<T>, operator: bool) -> Request<T> {
+            if operator {
+                request
+                    .metadata_mut()
+                    .insert(OPERATOR_SCOPE_HEADER, "1".parse().unwrap());
+            }
+            request
+        }
+
+        /// What a Build whose start frame is not one says, when it was admitted at all.
+        async fn build_answer(
+            service: &MachineService,
+            dir: &std::path::Path,
+            operator: bool,
+        ) -> Result<String, Status> {
+            let (mut client, server) = served(service, &socket_in(dir)).await;
+            let garbage = ployz_core::OpaquePayload::new(b"{}".to_vec());
+            let request = as_operator(Request::new(tokio_stream::iter([garbage])), operator);
+            let answer = async {
+                let mut events = client.build(request).await?.into_inner();
+                let payload = events.message().await?.expect("a terminal event");
+                match ployz_build::remote::decode::<ployz_build::remote::Event>(&payload).unwrap() {
+                    ployz_build::remote::Event::Finished(
+                        ployz_build::remote::Outcome::Failed { message, .. },
+                    ) => Ok(message),
+                    other @ (ployz_build::remote::Event::Admitted { .. }
+                    | ployz_build::remote::Event::Progress(_)
+                    | ployz_build::remote::Event::Finished(_)) => {
+                        panic!("expected a failed start, got {other:?}")
+                    }
+                }
+            }
+            .await;
+            server.abort();
+            answer
+        }
+
+        /// A Sealed record this Machine's Sealing Key cannot open: any attempt to open it
+        /// answers a Conflict, so an open shows as a different error than a refusal.
+        fn foreign_sealed() -> ployz_core::SealedRecord {
+            let other = crate::sealed_env::test_support::Cluster::new();
+            let env = BTreeMap::from([(
+                "NPM_TOKEN".to_owned(),
+                ployz_core::EnvValue::Sealed(other.seal(
+                    "NPM_TOKEN",
+                    ployz_core::SealedScope::Shared,
+                    "marker-sealed-0123456789",
+                )),
+            )]);
+            other.open(env).unwrap().record.unwrap()
+        }
+
+        async fn mint(
+            service: &MachineService,
+            operator: bool,
+        ) -> Result<ployz_core::RpcResponse, Status> {
+            let holder = hex::encode([3u8; 32]);
+            let request = op::MintBuildGrant::into_request(ployz_core::MintBuildGrantRequest {
+                repository: ployz_core::BuildGrantRepository::parse("ployz-build/web").unwrap(),
+                holder: Some(ployz_core::BuildGrantId::parse(holder).unwrap()),
+                sealed: Some(foreign_sealed()),
+            })
+            .encode()
+            .unwrap();
+            Ok(service
+                .mint_build_grant(as_operator(Request::new(request), operator))
+                .await?
+                .into_inner()
+                .decode_response()
+                .unwrap())
+        }
+
+        /// The Conflict `Mint::check` answers once it tries to open the record.
+        #[track_caller]
+        fn opened_and_failed(response: &ployz_core::RpcResponse) {
+            let RpcResponseBody::Error(error) = &response.body else {
+                panic!("the open must fail: {response:?}");
+            };
+            assert_eq!(error.code, RpcErrorCode::Conflict, "{error:?}");
+        }
+
+        #[track_caller]
+        #[expect(clippy::indexing_slicing, reason = "JSON fixture assertions")]
+        fn refused_build(status: &Status, capability: &str) {
+            assert_eq!(
+                status.code(),
+                Code::PermissionDenied,
+                "{}",
+                status.message()
+            );
+            assert_eq!(
+                status.message(),
+                "This server runs only builds an approved device starts."
+            );
+            let details = status_details(status.details()).unwrap();
+            assert_eq!(details["capability"], json!(capability));
+        }
+
+        #[tokio::test]
+        async fn an_operator_mint_is_refused_under_enforcement_before_the_sealed_record_opens() {
+            let fixture = enforced_sealing("ployzd-enforce-mint").await;
+
+            let status = mint(&fixture.service, true)
+                .await
+                .expect_err("an Operator's mint must be refused");
+            refused_build(&status, ployz_core::MINT_BUILD_GRANT_CAPABILITY);
+
+            // The same request from a Full caller does reach the record and fails to open it,
+            // so the refusal above came from the gate and not from the open.
+            opened_and_failed(&mint(&fixture.service, false).await.unwrap());
+            std::fs::remove_dir_all(&fixture.data_dir).unwrap();
+        }
+
+        #[tokio::test]
+        async fn an_operator_mint_is_admitted_with_enforcement_off() {
+            let (data_dir, _store, service, _fake, _runtime, _cluster) =
+                fake_docker_service_sealing("ployzd-enforce-off-mint").await;
+
+            opened_and_failed(&mint(&service, true).await.unwrap());
+            opened_and_failed(&mint(&service, false).await.unwrap());
+            std::fs::remove_dir_all(data_dir).unwrap();
+        }
+
+        #[tokio::test]
+        async fn an_operator_build_is_refused_under_enforcement_before_its_stream_is_read() {
+            let fixture = enforced("ployzd-enforce-build").await;
+            let (mut client, server) =
+                served(&fixture.service, &socket_in(&fixture.data_dir)).await;
+
+            // A request stream that never yields: only a refusal that does not read it answers.
+            let silent = tokio_stream::pending::<ployz_core::OpaquePayload>();
+            let status = tokio::time::timeout(
+                Duration::from_secs(5),
+                client.build(as_operator(Request::new(silent), true)),
+            )
+            .await
+            .expect("the refusal does not wait for a start frame")
+            .expect_err("an Operator's build must be refused");
+            refused_build(&status, ployz_core::BUILD_CAPABILITY);
+
+            assert_eq!(
+                build_answer(&fixture.service, &fixture.data_dir, true)
+                    .await
+                    .expect_err("an Operator's build is refused whatever it sends")
+                    .code(),
+                Code::PermissionDenied
+            );
+            server.abort();
+            std::fs::remove_dir_all(&fixture.data_dir).unwrap();
+        }
+
+        #[tokio::test]
+        async fn a_full_build_is_admitted_under_enforcement() {
+            let fixture = enforced("ployzd-enforce-build-full").await;
+
+            assert_eq!(
+                build_answer(&fixture.service, &fixture.data_dir, false)
+                    .await
+                    .unwrap(),
+                "expected a valid Build start frame"
+            );
+            std::fs::remove_dir_all(&fixture.data_dir).unwrap();
+        }
+
+        #[tokio::test]
+        async fn builds_are_admitted_from_both_callers_with_enforcement_off() {
+            let (data_dir, _store, service, _fake) =
+                fake_docker_service("ployzd-enforce-off-build").await;
+
+            for operator in [true, false] {
+                assert_eq!(
+                    build_answer(&service, &data_dir, operator).await.unwrap(),
+                    "expected a valid Build start frame",
+                    "operator: {operator}"
+                );
+            }
+            std::fs::remove_dir_all(data_dir).unwrap();
+        }
+
         #[tokio::test]
         async fn enforcement_off_leaves_an_unsigned_operator_restart_as_it_was() {
             let (data_dir, _store, service, fake) = fake_docker_service("ployzd-enforce-off").await;

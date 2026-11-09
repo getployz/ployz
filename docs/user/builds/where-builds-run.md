@@ -125,6 +125,24 @@ A deploy names the server each service built on. When GitHub came first and coul
 the build, for example because the repository has no Ployz build workflow, the deploy says so
 and why.
 
+## Builds on servers that enforce device approval
+
+A build runs steps from your repository and opens your service's sealed values. A server with
+[device enforcement](../servers/manage-servers.md#require-a-devices-signature-for-restarts-and-joins)
+on refuses a build Ployz Cloud starts, so Ployz Cloud can't run steps of its choosing there. The
+deployment fails with:
+
+```text
+No eligible Build Machine was selected; no build was started: Server web-1 (…): This server runs only builds an approved device starts.
+```
+
+This covers builds on your servers, builds on GitHub Actions, and builds in a preview. A GitHub
+build checks in, is refused, and moves to your servers, which refuse it too, so the deploy
+stops before anything changes. A build an approved device starts over its own connection still
+runs. A build already under way when you turn enforcement on can't start another request for
+sealed values or another image push, though a request it started before then may still finish.
+Turn enforcement off to build through Ployz Cloud again.
+
 ## When a build fails
 
 A build moves to the next builder when a builder can't take it, or when a GitHub run ends early

@@ -190,6 +190,10 @@ pub enum Error {
     /// approval. The refusal names [`ployz_core::DEPLOY_APPROVAL_CAPABILITY`] in its details.
     #[error("{}", deploy_approval::refusal_text(.0))]
     DeployRefused(ployz_core::authority::AuthorityRefusal),
+    /// Device enforcement refused an Operator's `Build` or `MintBuildGrant`. The refusal
+    /// names `capability` in its details.
+    #[error("{}", ployz_core::BUILD_REFUSED_BY_ENFORCEMENT)]
+    BuildRefused { capability: &'static str },
     #[error("ployz.machine.join.device-approval.v1 needs a Device-signed join approval: {0}")]
     JoinRefused(ployz_core::authority::AuthorityRefusal),
     #[error("{SET_DEVICE_ENFORCEMENT_CAPABILITY} needs a Device-signed starting set: {0}")]

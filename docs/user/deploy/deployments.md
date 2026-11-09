@@ -178,6 +178,8 @@ If the registry doesn't answer within 10 seconds, `ployz deploy` stops and names
 
 A narrowed deploy, such as `ployz deploy web`, checks only the services it ships. A service
 that builds from source can't deploy to these servers yet; `ployz deploy` says so and stops.
+A deploy through Ployz Cloud that builds from source, such as a Git push, fails earlier: these
+servers refuse the build with `This server runs only builds an approved device starts.`
 
 If `ployz deploy` can't reach your servers to ask whether they enforce, it warns and deploys
 without signing, and servers that enforce refuse it.

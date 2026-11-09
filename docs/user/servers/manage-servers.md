@@ -332,6 +332,14 @@ Enforcement also covers deploys: a server creates a container only from a spec a
 device signed with `ployz deploy`, and only from an image pinned by digest. See
 [Deploy to servers that enforce device approval](../deploy/deployments.md#deploy-to-servers-that-enforce-device-approval).
 
+Enforcement also covers builds: a server refuses a build Ployz Cloud starts. That includes a
+build on your servers, on GitHub Actions and in a preview. The deployment fails at its build
+with `This server runs only builds an approved device starts.`, before the build opens any
+sealed value or runs any step, and a build Ployz Cloud already started can't open sealed values
+or push again once you turn enforcement on, though a request already in progress may finish. A build started over a device's own connection still runs. Turn
+enforcement off to build through Ployz Cloud again. See
+[Builds on servers that enforce device approval](../builds/where-builds-run.md#builds-on-servers-that-enforce-device-approval).
+
 Enforcement also requires an approved Device to authorize a new server's identity, keys,
 allocation, and initial Devices. See [Approve a join](add-a-server.md#approve-a-join-when-device-enforcement-is-on).
 A joining server inherits enforcement. Approvals name one existing server that may admit the

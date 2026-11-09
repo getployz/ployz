@@ -236,6 +236,22 @@ pub async fn github_check_in(
         }
         Err(error) => {
             session.close().await;
+            // An enforcing Machine takes no build Cloud starts. Say so on the build, so
+            // the Deployment reads why now and not after the run's own end.
+            if crate::connect::refused_by_enforcement(
+                &error,
+                ployz_core::MINT_BUILD_GRANT_CAPABILITY,
+            ) {
+                let end = GithubEnd::Unstarted {
+                    message: error.message.clone(),
+                };
+                // The runner still reads the refusal if the run no longer holds the build.
+                let _ = store_call(&store, {
+                    let id = id.clone();
+                    move |store| store.github_end(&id, Some(run_id), &end)
+                })
+                .await;
+            }
             return Err(error);
         }
     };
@@ -801,6 +817,24 @@ mod tests {
             grant_read(Err(error(RpcErrorCode::Unavailable)), &machine),
             GrantRead::Unreachable
         );
+    }
+
+    #[test]
+    fn only_an_enforcing_machines_refusal_of_the_mint_ends_the_build_by_name() {
+        let refusal = |code: &str, capability: &str| RpcError {
+            code: RpcErrorCode::from(code),
+            message: "This server runs only builds an approved device starts.".into(),
+            details: serde_json::json!({ "capability": capability }),
+            cause: Vec::new(),
+        };
+        let mint = ployz_core::MINT_BUILD_GRANT_CAPABILITY;
+        let refused = |error| crate::connect::refused_by_enforcement(&error, mint);
+        assert!(refused(refusal(crate::connect::FORBIDDEN, mint)));
+        assert!(!refused(refusal(
+            crate::connect::FORBIDDEN,
+            ployz_core::BUILD_CAPABILITY
+        )));
+        assert!(!refused(refusal("conflict", mint)));
     }
 
     #[tokio::test]
