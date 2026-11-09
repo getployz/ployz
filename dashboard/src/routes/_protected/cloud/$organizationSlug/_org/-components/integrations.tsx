@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { type ReactNode, useState } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { getRouteApi, Link } from "@tanstack/react-router";
 import { ExternalLinkIcon } from "lucide-react";
@@ -13,10 +13,9 @@ import { toErrorMessage } from "#/lib/error-message";
 import { useRoleGate } from "#/modules/organization/members.queries";
 import {
   authKeyProblem,
+  type ObservedServer,
   type PrivateAccessChanged,
-  type PrivateAccessObservation,
-  privateAccessOn,
-  routerCount,
+  type PrivateAccessWant,
   TAILSCALE_MACHINES_URL,
 } from "#/modules/private-access/private-access";
 import { setPrivateAccessServerFn } from "#/modules/private-access/private-access.functions";
@@ -50,12 +49,17 @@ function TailscaleSection({ organizationSlug }: { organizationSlug: string }) {
   const query = useQuery(privateAccessQueryOptions(organizationSlug));
   const observed = query.data ?? null;
   const [connecting, setConnecting] = useState(false);
+  const [starting, setStarting] = useState(false);
   const [turningOff, setTurningOff] = useState(false);
-  const [last, setLast] = useState<PrivateAccessChanged | null>(null);
+  const [last, setLast] = useState<Answer | null>(null);
   const [offRefusal, setOffRefusal] = useState<string | null>(null);
-  const on = observed !== null && privateAccessOn(observed);
-  const settle = async (changed: PrivateAccessChanged) => {
-    setLast(changed);
+  const rows = observed?.servers.map((server) => ({ ...server, state: stateOf(server, last) })) ?? [];
+  const placed = rows.filter((row) => row.state !== "none");
+  const serving = placed.filter((row) => row.state === "running").length;
+  // Until Connect answers, a running router may still be refused.
+  const on = placed.length > 0 && !starting;
+  const settle = async (answer: Answer) => {
+    setLast(answer);
     await queryClient.invalidateQueries({ queryKey: privateAccessKeys.all });
   };
 
@@ -63,20 +67,21 @@ function TailscaleSection({ organizationSlug }: { organizationSlug: string }) {
     <SettingsSection id="tailscale" title="Tailscale">
       <SettingsRow
         label="Private access"
-        hint={hintOf(query.isPending, observed)}
+        hint={hintOf(query.isPending, observed === null ? null : { serving, placed: on ? placed.length : 0, partial: observed.partial })}
         commit="none"
         control={(
           <>
-            {on ? <Badge variant="success">Connected</Badge> : null}
+            {on ? <StatusBadge serving={serving} placed={placed.length} /> : null}
             {editable && on ? <Button type="button" variant="outline" size="sm" onClick={() => setTurningOff(true)}>Turn off</Button> : null}
-            {editable && !on && !connecting && observed !== null ? <Button type="button" size="sm" onClick={() => setConnecting(true)}>Connect</Button> : null}
+            {editable && on && serving < placed.length && !connecting ? <Button type="button" size="sm" onClick={() => setConnecting(true)}>Try another key</Button> : null}
+            {editable && placed.length === 0 && !connecting && observed !== null ? <Button type="button" size="sm" onClick={() => setConnecting(true)}>Connect</Button> : null}
           </>
         )}
       >
         {offRefusal === null ? null : <p role="alert" className="text-sm text-destructive">{offRefusal}</p>}
-        {last === null || last.failures.length === 0 ? null : (
+        {last === null || last.changed.failures.length === 0 ? null : (
           <ul role="alert" aria-label="Failures" className="flex flex-col gap-1 text-sm text-destructive">
-            {last.failures.map((failure) => <li key={failure.id}>{failure.message}</li>)}
+            {last.changed.failures.map((failure) => <li key={failure.id}>{failure.message}</li>)}
           </ul>
         )}
       </SettingsRow>
@@ -84,14 +89,15 @@ function TailscaleSection({ organizationSlug }: { organizationSlug: string }) {
         <ConnectForm
           organizationSlug={organizationSlug}
           onCancel={() => setConnecting(false)}
+          onPending={setStarting}
           onDone={async (changed) => {
             if (changed.failures.length === 0) setConnecting(false);
-            await settle(changed);
+            await settle({ to: "on", changed, at: Date.now() });
           }}
         />
       ) : null}
-      {observed === null || !on ? null : <Routers observed={observed} />}
-      {on ? (
+      {on ? <Routers rows={rows} /> : null}
+      {on && serving > 0 ? (
         <>
           <SettingsRow label="Approve the route" hint={<>Once per server, unless your tailnet auto-approves <span className="font-mono">tag:ployz</span>.</>} commit="none"
             control={<Button variant="outline" size="sm" nativeButton={false} render={<a href={TAILSCALE_MACHINES_URL} target="_blank" rel="noreferrer" />}>Open Tailscale<ExternalLinkIcon aria-hidden /></Button>} />
@@ -103,14 +109,14 @@ function TailscaleSection({ organizationSlug }: { organizationSlug: string }) {
         open={turningOff}
         onOpenChange={setTurningOff}
         title="Turn off private access?"
-        description={`Removes ${observed === null ? "the" : routerCount(observed.servers)} ${observed !== null && routerCount(observed.servers) === 1 ? "router" : "routers"} from your tailnet. Turning it on again needs new route approvals.`}
+        description={`Removes ${placed.length} ${placed.length === 1 ? "router" : "routers"} from your tailnet. Turning it on again needs new route approvals.`}
         actionLabel="Turn off"
         pendingLabel="Turning off…"
         variant="destructive"
         onConfirm={async () => {
           setOffRefusal(null);
           try {
-            await settle(await setPrivateAccessServerFn({ data: { organizationSlug, to: "off" } }));
+            await settle({ to: "off", changed: await setPrivateAccessServerFn({ data: { organizationSlug, to: "off" } }), at: Date.now() });
           } catch (error) {
             setOffRefusal(toErrorMessage(error, "Your servers didn't answer. Try again."));
           }
@@ -121,23 +127,55 @@ function TailscaleSection({ organizationSlug }: { organizationSlug: string }) {
   );
 }
 
-function hintOf(loading: boolean, observed: PrivateAccessObservation | null) {
-  if (loading) return "Checking your servers…";
-  if (observed === null) return "Your servers aren't answering.";
-  if (!privateAccessOn(observed)) return "Reach your servers from your tailnet.";
-  const routers = routerCount(observed.servers);
-  const shown = `${routers} ${routers === 1 ? "router" : "routers"}`;
-  return observed.partial ? `${shown} · some servers didn't answer` : shown;
+type Answer = { readonly to: PrivateAccessWant; readonly changed: PrivateAccessChanged; readonly at: number };
+
+/** How long a removal outranks the Servers' watch, which lists a removed router for a few seconds. */
+const REMOVAL_LAG_MS = 30_000;
+
+type RowState = ObservedServer["router"] | "refused";
+
+/**
+ * The last answer outranks the poll: a refused router runs until Tailscale gives up, and a
+ * removed one can still be listed until the Servers' watch catches up.
+ */
+function stateOf(server: ObservedServer, last: Answer | null): RowState {
+  if (server.router === "none" || last === null) return server.router;
+  const failed = last.changed.failures.some((failure) => failure.id === server.id);
+  if (failed) return last.to === "on" ? "refused" : server.router;
+  const removed = last.to === "off" && Date.now() - last.at < REMOVAL_LAG_MS && last.changed.servers.some((row) => row.id === server.id && !row.router);
+  return removed ? "none" : server.router;
 }
 
-function Routers({ observed }: { observed: PrivateAccessObservation }) {
+function hintOf(loading: boolean, routers: { serving: number; placed: number; partial: boolean } | null) {
+  if (loading) return "Checking your servers…";
+  if (routers === null) return "Your servers aren't answering.";
+  if (routers.placed === 0) return "Reach your servers from your tailnet.";
+  if (routers.serving === 0) return "No router is running. Try another key, or turn it off.";
+  const shown = `${routers.serving} ${routers.serving === 1 ? "router" : "routers"}`;
+  return routers.partial ? `${shown} · some servers didn't answer` : shown;
+}
+
+function StatusBadge({ serving, placed }: { serving: number; placed: number }) {
+  if (serving === 0) return <Badge variant="warning">Not connected</Badge>;
+  if (serving < placed) return <Badge variant="warning">Partly connected</Badge>;
+  return <Badge variant="success">Connected</Badge>;
+}
+
+const ROW_BADGE = {
+  running: <Badge variant="success">Running</Badge>,
+  refused: <Badge variant="destructive">Key refused</Badge>,
+  stopped: <Badge variant="warning">Stopped</Badge>,
+  none: <Badge variant="warning">No router</Badge>,
+} satisfies Record<RowState, ReactNode>;
+
+function Routers({ rows }: { rows: readonly (ObservedServer & { state: RowState })[] }) {
   return (
     <SettingsRow label="Routers" commit="none">
       <ul aria-label="Routers" className="flex flex-col gap-1 text-sm">
-        {observed.servers.map((server) => (
-          <li key={server.id} className="flex items-center gap-2">
-            <span className="min-w-0 flex-1 truncate">{server.name}</span>
-            {server.router ? <Badge variant="success">Running</Badge> : <Badge variant="warning">No router</Badge>}
+        {rows.map((row) => (
+          <li key={row.id} className="flex items-center gap-2">
+            <span className="min-w-0 flex-1 truncate">{row.name}</span>
+            {ROW_BADGE[row.state]}
           </li>
         ))}
       </ul>
@@ -145,9 +183,10 @@ function Routers({ observed }: { observed: PrivateAccessObservation }) {
   );
 }
 
-function ConnectForm({ organizationSlug, onCancel, onDone }: {
+function ConnectForm({ organizationSlug, onCancel, onPending, onDone }: {
   organizationSlug: string;
   onCancel: () => void;
+  onPending: (pending: boolean) => void;
   onDone: (changed: PrivateAccessChanged) => Promise<void>;
 }) {
   const [key, setKey] = useState("");
@@ -156,6 +195,7 @@ function ConnectForm({ organizationSlug, onCancel, onDone }: {
   const problem = key === "" ? null : authKeyProblem(key);
   const connect = async () => {
     setBusy(true);
+    onPending(true);
     setRefusal(null);
     try {
       const changed = await setPrivateAccessServerFn({ data: { organizationSlug, to: "on", authKey: key.trim() } });
@@ -165,6 +205,7 @@ function ConnectForm({ organizationSlug, onCancel, onDone }: {
       setRefusal(toErrorMessage(error, "Your servers didn't answer. Try again."));
     } finally {
       setBusy(false);
+      onPending(false);
     }
   };
   return (

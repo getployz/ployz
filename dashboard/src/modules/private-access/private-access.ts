@@ -27,18 +27,29 @@ export const ApprovePrivateAccessInput = Schema.Struct({ organizationSlug: Slug,
 
 export type RouterRow = { readonly id: string; readonly name: string; readonly router: boolean };
 
-export type PrivateAccessObservation = { readonly servers: readonly RouterRow[]; readonly partial: boolean };
+/** A stopped router was placed but isn't running, such as one Tailscale refused the key for. */
+export type RouterState = "running" | "stopped" | "none";
+
+export type ObservedServer = { readonly id: string; readonly name: string; readonly router: RouterState };
+
+export type PrivateAccessObservation = { readonly servers: readonly ObservedServer[]; readonly partial: boolean };
 
 export type PrivateAccessChanged = {
   readonly servers: readonly RouterRow[];
   readonly failures: readonly { readonly id: string; readonly name: string; readonly message: string }[];
 };
 
-export function routersRunningOn(frame: Pick<RuntimeWatchView, "services">): Set<string> {
+export function routersOn(frame: Pick<RuntimeWatchView, "services">): Map<string, RouterState> {
   const routers = frame.services.find((service) => service.identity === TAILSCALE);
-  return new Set(routers?.containers.flatMap((container) => container.runtime.state === "running" ? [container.machine_id] : []));
+  const states = new Map<string, RouterState>();
+  for (const container of routers?.containers ?? []) {
+    const { state } = container.runtime;
+    if (state === "running") states.set(container.machine_id, "running");
+    else if (state !== "removing" && state !== "dead" && !states.has(container.machine_id)) states.set(container.machine_id, "stopped");
+  }
+  return states;
 }
 
-export const privateAccessOn = (observed: PrivateAccessObservation) => observed.servers.some((server) => server.router);
+export const privateAccessOn = (observed: PrivateAccessObservation) => observed.servers.some((server) => server.router === "running");
 
 export const routerCount = (servers: readonly RouterRow[]) => servers.filter((server) => server.router).length;

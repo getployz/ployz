@@ -9,7 +9,7 @@ import {
   type PrivateAccessObservation,
   type PrivateAccessWant,
   privateAccessOn,
-  routersRunningOn,
+  routersOn,
 } from "#/modules/private-access/private-access";
 import { firstRuntimeFrame, OrganizationRuntime } from "#/modules/runtime/organization-runtime.server";
 import { Database } from "#/server/database.server";
@@ -23,11 +23,11 @@ const refuse = (message: string) => new Validation({ message, userFacing: true }
 export const observePrivateAccess = Effect.fn("PrivateAccess.observe")(function* (organizationId: string) {
   const frame = yield* firstRuntimeFrame(organizationId).pipe(Effect.catch(() => Effect.succeed(null)));
   if (frame === null) return null;
-  const running = routersRunningOn(frame);
+  const routers = routersOn(frame);
   const offline = offlineServers(frame.machines.map(({ machine, membership }) =>
     ({ id: machine.id, membership, runningBuilds: machine.runtime.running_builds, unanswered: frame.unanswered.includes(machine.id) })));
   return {
-    servers: frame.machines.map(({ machine }) => ({ id: machine.id, name: machine.name, router: running.has(machine.id) })),
+    servers: frame.machines.map(({ machine }) => ({ id: machine.id, name: machine.name, router: routers.get(machine.id) ?? "none" })),
     partial: frame.incomplete_ids.machines.length > 0 || frame.incomplete_ids.containers.length > 0 || offline.size > 0,
   } satisfies PrivateAccessObservation;
 });
@@ -78,5 +78,5 @@ export const runPrivateAccess = Effect.fn("PrivateAccess.run")(function* (organi
   if (observed === null || !privateAccessOn(observed)) {
     return yield* refuse("Private Access isn't on yet. Approve it in Ployz Cloud, where you paste the auth key.");
   }
-  return { servers: observed.servers, failures: [] };
+  return { servers: observed.servers.map((server) => ({ ...server, router: server.router === "running" })), failures: [] };
 });
