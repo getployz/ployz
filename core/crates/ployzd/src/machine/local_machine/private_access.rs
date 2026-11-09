@@ -334,7 +334,8 @@ impl LocalMachine {
     /// Carry out the plan: stop what it retires, place the router, watch it join the
     /// tailnet, then remove what it retired. A router that cannot be created or
     /// started undoes the call, so the previous router starts again. With no router
-    /// wanted, the key and the node state go before the routers do, and a router that
+    /// wanted, the node state goes before any router stops and the key before any
+    /// router is removed, and a router that
     /// stays is an error, so the caller knows this Machine is not off yet. A replaced
     /// router that stays is only logged: stopped, it serves nothing, and the next call
     /// retires it.
@@ -347,6 +348,11 @@ impl LocalMachine {
     ) -> Result<PrivateAccessSet, Error> {
         let mut set = PrivateAccessSet::default();
         let mut effects = Effects::default();
+        if wanted.is_none() {
+            containers
+                .forget_private_access_state()
+                .map_err(Error::PrivateAccessState)?;
+        }
         let placed = self
             .place_router(containers, plan, wanted, &mut effects)
             .await;
@@ -362,9 +368,6 @@ impl LocalMachine {
             containers
                 .remove_private_access_key()
                 .map_err(Error::PrivateAccessKeyFile)?;
-            containers
-                .forget_private_access_state()
-                .map_err(Error::PrivateAccessState)?;
         }
         let mut stays = None;
         for retiree in &plan.retire {

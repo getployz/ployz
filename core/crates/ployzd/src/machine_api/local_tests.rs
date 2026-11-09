@@ -2134,6 +2134,52 @@ mod private_access {
         std::fs::remove_dir_all(data_dir).unwrap();
     }
 
+    // Catches an `off` cut short before it forgets the node, which a reboot read as
+    // `on` and so started the router again.
+    #[tokio::test]
+    async fn off_cut_short_before_the_router_stops_is_still_off_after_a_reboot() {
+        let (data_dir, _store, service, fake, runtime, cluster) =
+            fake_docker_service_sealing("ployzd-access-off-cut").await;
+        let machine = service.local.record().id();
+        let sealed = cluster.seal_platform(PlatformPurpose::PrivateAccess, b"tskey-auth-test");
+        let router = set_access(
+            &service,
+            json!({"enabled": true, "sealed_auth_key": sealed}),
+        )
+        .await
+        .unwrap()
+        .unwrap()
+        .router
+        .unwrap()
+        .now
+        .container_id;
+        fake.refuse_stop
+            .store(true, std::sync::atomic::Ordering::SeqCst);
+
+        set_access(&service, json!({"enabled": false}))
+            .await
+            .unwrap()
+            .unwrap_err();
+        assert!(
+            !node_state(&data_dir).exists(),
+            "the node is forgotten before the router is touched"
+        );
+
+        fake.refuse_stop
+            .store(false, std::sync::atomic::Ordering::SeqCst);
+        let finished = service
+            .local
+            .restore_private_access()
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(finished.router, None, "a reboot never starts the router");
+        assert_eq!(finished.retired, vec![router]);
+        assert!(runtime.routers(&machine).await.unwrap().is_empty());
+        assert!(!key_file(&data_dir).exists());
+        std::fs::remove_dir_all(data_dir).unwrap();
+    }
+
     #[tokio::test]
     async fn a_new_key_replaces_the_router() {
         let (data_dir, _store, service, _fake, runtime, cluster) =

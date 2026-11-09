@@ -4,8 +4,9 @@
 //! the key, and Docker starts the router before the daemon can write it again, so the
 //! daemon starts the router itself once the key is back
 //! (`LocalMachine::restore_private_access`). The node state is on disk, and its
-//! presence is the durable word that this Machine wants a router: `off` deletes it
-//! before the router, so a removal that fails leaves nothing a reboot would start.
+//! presence is the durable word that this Machine wants a router: `off` renames it
+//! away before it touches the router, so an `off` that fails or is cut short leaves
+//! nothing a reboot would start.
 
 use std::{
     fs, io,
@@ -43,13 +44,33 @@ pub(crate) fn keep_state(root: &Path) -> io::Result<()> {
     fs::set_permissions(&dir, fs::Permissions::from_mode(0o700))
 }
 
-/// Forget the node, once no router is wanted here, so a later `on` registers a new
-/// one.
-pub(crate) fn forget_state(root: &Path) -> io::Result<()> {
-    match fs::remove_dir_all(state_dir(root)) {
+fn forgotten_dir(root: &Path) -> PathBuf {
+    state_dir(root).with_extension("forgotten")
+}
+
+fn remove_dir_if_present(dir: &Path) -> io::Result<()> {
+    match fs::remove_dir_all(dir) {
         Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(()),
         result => result,
     }
+}
+
+/// Forget the node, once no router is wanted here, so a later `on` registers a new
+/// one. One rename moves the state out of the router's path and is the moment the
+/// Machine stops wanting a router, so a daemon killed while the rest is deleted leaves
+/// no half-deleted state that a reboot would read as `on`.
+pub(crate) fn forget_state(root: &Path) -> io::Result<()> {
+    let dir = state_dir(root);
+    let forgotten = forgotten_dir(root);
+    remove_dir_if_present(&forgotten)?;
+    match fs::rename(&dir, &forgotten) {
+        Ok(()) => {
+            fs::File::open(dir.parent().expect("the state directory has a parent"))?.sync_all()?;
+        }
+        Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+        Err(error) => return Err(error),
+    }
+    remove_dir_if_present(&forgotten)
 }
 
 /// Whether this Machine wants a router: `on` keeps the node state and `off` forgets it.
@@ -219,6 +240,28 @@ mod tests {
         forget_state(&root).unwrap();
         assert!(!state_kept(&root));
         forget_state(&root).unwrap();
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    // Catches a forget cut short partway through deleting the node, which left a
+    // half-deleted directory a reboot read as a Machine that wants a router.
+    #[test]
+    fn a_forget_cut_short_after_its_rename_still_reads_as_off() {
+        let root = std::env::temp_dir().join(format!("ployzd-ts-cut-{}", MachineId::random()));
+        keep_state(&root).unwrap();
+        fs::write(state_dir(&root).join("tailscaled.state"), b"node").unwrap();
+        fs::rename(state_dir(&root), forgotten_dir(&root)).unwrap();
+        assert!(!state_kept(&root));
+        forget_state(&root).unwrap();
+        assert!(
+            !forgotten_dir(&root).exists(),
+            "the next forget finishes the delete"
+        );
+        keep_state(&root).unwrap();
+        assert!(
+            !state_dir(&root).join("tailscaled.state").exists(),
+            "a later on starts a fresh node"
+        );
         fs::remove_dir_all(root).unwrap();
     }
 }
