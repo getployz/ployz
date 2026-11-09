@@ -231,8 +231,7 @@ timed out, as with a name still pointing at an old server.
 4. With the record right, check that the tunnel has a connector for each server, as
    [above](#my-apps-go-through-a-cloudflare-tunnel-and-dont-answer).
 
-Ployz asks again on the next look at the page. A failed answer is asked again within seconds; one
-that reached the tunnel or landed elsewhere holds for a quarter of a minute. **Check** asks now.
+Ployz asks the name again each time you open the page. **Check** asks now.
 
 A name two levels under your zone, like `a.shop.example.com`, shows **The free certificate covers
 one level under example.com**. Cloudflare's free certificate doesn't cover it, so browsers warn.

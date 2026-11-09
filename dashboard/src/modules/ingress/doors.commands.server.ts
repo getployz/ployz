@@ -26,7 +26,7 @@ export const webTrafficUse = defineCommand({
   removes: false,
   gate: {
     gate: "ask",
-    // The ask reads the Store for the custom domains that stay. A Store Cloud can't open is Cloud's own fault, not a refusal.
+    // A Store Cloud can't open is Cloud's own failure, not a refusal the caller can act on.
     asked: (caller, input) => switchAsked(caller.organization.id, input.to === "cloudflare" ? "tunnel" : "public").pipe(
       Effect.catchTag("ConfigStoreOpenFailure", (failure) => Effect.die(failure)),
     ),

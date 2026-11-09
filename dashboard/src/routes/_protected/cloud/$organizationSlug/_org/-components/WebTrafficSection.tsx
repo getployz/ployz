@@ -299,10 +299,7 @@ function SwitchDialog({ organizationSlug, to, onOpenChange, onConfirm }: {
           )}
           {kept.length === 0 ? null : (
             <>
-              <p>
-                These custom domains stay on your services. Their DNS still points at the {toCloudflare ? "public ports" : "tunnel"}, so update each from
-                its service's DNS records after the switch.
-              </p>
+              <p>These custom domains stay. Update their DNS records after the switch.</p>
               <ItemGroup aria-label="Custom domains that stay" className="max-h-72 overflow-y-auto text-foreground">
                 {kept.map((hostname) => (
                   <Item key={hostname} variant="outline" size="xs" data-row={hostname}>
