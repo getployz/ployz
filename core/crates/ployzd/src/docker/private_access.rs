@@ -1,8 +1,11 @@
-//! The Private Access router as Docker shows it, and the opened auth key on the
-//! Machine: one file root writes and the router reads once at start. `/run` is memory,
-//! so a reboot clears it. Docker starts the router before the daemon can write it
-//! again, so the daemon starts the router itself once the key is back
-//! (`LocalMachine::restore_private_access`).
+//! The Private Access router as Docker shows it, and what it keeps on the Machine: the
+//! opened auth key, one file root writes and the router reads when its node first
+//! joins, and the node state the router writes. `/run` is memory, so a reboot clears
+//! the key, and Docker starts the router before the daemon can write it again, so the
+//! daemon starts the router itself once the key is back
+//! (`LocalMachine::restore_private_access`). The node state is on disk, and its
+//! presence is the durable word that this Machine wants a router: `off` deletes it
+//! before the router, so a removal that fails leaves nothing a reboot would start.
 
 use std::{
     fs, io,
@@ -14,7 +17,8 @@ use bollard::query_parameters::LogsOptionsBuilder;
 use futures_util::StreamExt;
 use ployz_core::{
     Ciphertext, ContainerId, ContainerKind, ContainerObservation, MachineId,
-    PRIVATE_ACCESS_KEY_FILE, PRIVATE_ACCESS_KEY_MACHINE_DIR, QualifiedService,
+    PRIVATE_ACCESS_KEY_FILE, PRIVATE_ACCESS_KEY_MACHINE_DIR, PRIVATE_ACCESS_STATE_MACHINE_DIR,
+    QualifiedService,
 };
 use zeroize::Zeroizing;
 
@@ -24,6 +28,33 @@ use crate::sealed_env::{self, OpenError};
 
 fn key_dir(root: &Path) -> PathBuf {
     root.join(PRIVATE_ACCESS_KEY_MACHINE_DIR.trim_start_matches('/'))
+}
+
+fn state_dir(root: &Path) -> PathBuf {
+    root.join(PRIVATE_ACCESS_STATE_MACHINE_DIR.trim_start_matches('/'))
+}
+
+/// Make the node state directory the router's bind mount finds, for root alone. The
+/// router runs as root, so the daemon's own ownership is the router's. What the
+/// router already wrote there stays, so the node it registered comes back.
+pub(crate) fn keep_state(root: &Path) -> io::Result<()> {
+    let dir = state_dir(root);
+    fs::create_dir_all(&dir)?;
+    fs::set_permissions(&dir, fs::Permissions::from_mode(0o700))
+}
+
+/// Forget the node, once no router is wanted here, so a later `on` registers a new
+/// one.
+pub(crate) fn forget_state(root: &Path) -> io::Result<()> {
+    match fs::remove_dir_all(state_dir(root)) {
+        Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(()),
+        result => result,
+    }
+}
+
+/// Whether this Machine wants a router: `on` keeps the node state and `off` forgets it.
+pub(crate) fn state_kept(root: &Path) -> bool {
+    state_dir(root).is_dir()
 }
 
 /// Write `key` where the router's bind mount finds it.
@@ -75,6 +106,18 @@ impl ContainerRuntime {
 
     pub(crate) fn remove_private_access_key(&self) -> io::Result<()> {
         remove(&self.machine_root)
+    }
+
+    pub(crate) fn keep_private_access_state(&self) -> io::Result<()> {
+        keep_state(&self.machine_root)
+    }
+
+    pub(crate) fn forget_private_access_state(&self) -> io::Result<()> {
+        forget_state(&self.machine_root)
+    }
+
+    pub(crate) fn private_access_state_kept(&self) -> bool {
+        state_kept(&self.machine_root)
     }
 
     /// Open `sealed` with this Machine's Sealing Key.
@@ -151,6 +194,31 @@ mod tests {
         remove(&root).unwrap();
         assert!(!present(&root));
         remove(&root).unwrap();
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    // Catches the state directory losing what the router wrote when `on` runs again,
+    // which would register a new node, and surviving `off`, which would keep one.
+    #[test]
+    fn the_node_state_is_kept_for_root_across_on_and_forgotten_by_off() {
+        let root = std::env::temp_dir().join(format!("ployzd-ts-state-{}", MachineId::random()));
+        assert!(!state_kept(&root));
+        keep_state(&root).unwrap();
+        assert!(state_kept(&root));
+        assert_eq!(
+            fs::metadata(state_dir(&root)).unwrap().mode() & 0o777,
+            0o700
+        );
+        fs::write(state_dir(&root).join("tailscaled.state"), b"node").unwrap();
+        keep_state(&root).unwrap();
+        assert_eq!(
+            fs::read(state_dir(&root).join("tailscaled.state")).unwrap(),
+            b"node",
+            "keeping the state again keeps the node"
+        );
+        forget_state(&root).unwrap();
+        assert!(!state_kept(&root));
+        forget_state(&root).unwrap();
         fs::remove_dir_all(root).unwrap();
     }
 }

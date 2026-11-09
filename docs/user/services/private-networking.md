@@ -160,20 +160,27 @@ your services at their private addresses, on any port and protocol.
    The key is sealed to your cluster and never printed.
 3. In the admin console, open **Machines**, then **ployz-router**, then **Edit route settings**,
    and approve the route. Do this once per server, unless your tailnet auto-approves the tag.
+   A server keeps its router's identity across restarts and reboots, so the route stays
+   approved and the key isn't needed again.
 4. On a Linux device, run `tailscale up --accept-routes`. Other systems accept the route on
    their own.
 
-`ployz private-access` shows which servers run a router. A server added later runs one too.
-If Tailscale refuses the key, `ployz private-access on` names the server. Run it again with a
-new key.
+`ployz private-access` shows which servers run a router. A server added later runs one too,
+and joins with the key, so keep the key reusable. If Tailscale refuses the key,
+`ployz private-access on` names the server. Run it again with a new key. A server whose router
+already joined keeps its identity when you run `on` again with another key; to join another
+tailnet, turn Private Access off first.
 
 If the router a device uses stops, the device moves to another in about 16 seconds. It stays
 there when the first one returns. Services see the router's private address as the client.
 
 Ployz doesn't set up Tailscale DNS, so use a service's private address.
 
-To remove the routers and the key, run `ployz private-access off`. Remove the routers from the
-Tailscale admin console too.
+To remove the routers and the key, run `ployz private-access off`. Each server forgets its
+router's identity too, so a later `on` registers new routers whose routes need approving
+again. Remove the old routers from the Tailscale admin console. If a server couldn't remove
+its router, the command names it and exits with a failure; that server starts no router again,
+and running `off` again finishes the removal.
 
 ## Good to know
 

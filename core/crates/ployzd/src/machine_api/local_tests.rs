@@ -1901,6 +1901,10 @@ mod private_access {
         data_dir.join("root/run/ployz/tailscale/auth-key")
     }
 
+    fn node_state(data_dir: &std::path::Path) -> std::path::PathBuf {
+        data_dir.join("root/var/lib/ployz/tailscale")
+    }
+
     #[tokio::test]
     async fn on_places_the_router_on_the_opened_key_and_off_removes_both() {
         let (data_dir, _store, service, _fake, runtime, cluster) =
@@ -1923,6 +1927,10 @@ mod private_access {
             std::fs::read(key_file(&data_dir)).unwrap(),
             b"tskey-auth-test"
         );
+        assert!(
+            node_state(&data_dir).is_dir(),
+            "the node state directory is there before the router starts"
+        );
 
         let again = set_access(&service, on).await.unwrap().unwrap();
         assert_eq!(again.router.unwrap().change, DoorChange::Unchanged);
@@ -1938,6 +1946,10 @@ mod private_access {
         assert!(
             !key_file(&data_dir).exists(),
             "the key leaves with the router"
+        );
+        assert!(
+            !node_state(&data_dir).exists(),
+            "off forgets the node, so a later on registers a new one"
         );
 
         let off_again = set_access(&service, json!({"enabled": false}))
@@ -1994,6 +2006,7 @@ mod private_access {
         runtime.stop(&router, None, None).await.unwrap();
         runtime.remove_private_access_key().unwrap();
         assert!(!running().await && !key_file(&data_dir).exists());
+        std::fs::write(node_state(&data_dir).join("tailscaled.state"), b"node").unwrap();
 
         let restored = service
             .local
@@ -2009,6 +2022,11 @@ mod private_access {
         assert_eq!(
             std::fs::read(key_file(&data_dir)).unwrap(),
             b"tskey-auth-test"
+        );
+        assert_eq!(
+            std::fs::read(node_state(&data_dir).join("tailscaled.state")).unwrap(),
+            b"node",
+            "the node the router registered comes back with it"
         );
         assert!(running().await);
 
@@ -2027,6 +2045,92 @@ mod private_access {
         );
         assert!(runtime.routers(&machine).await.unwrap().is_empty());
         assert!(!key_file(&data_dir).exists());
+        assert!(!node_state(&data_dir).exists());
+        std::fs::remove_dir_all(data_dir).unwrap();
+    }
+
+    // Catches `off` answering success while Docker kept the stopped router, which the
+    // next boot restore would start again, with the key its label carries.
+    #[tokio::test]
+    async fn off_that_cannot_remove_the_router_fails_and_a_reboot_finishes_it() {
+        let (data_dir, _store, service, fake, runtime, cluster) =
+            fake_docker_service_sealing("ployzd-access-off-stays").await;
+        let machine = service.local.record().id();
+        let sealed = cluster.seal_platform(PlatformPurpose::PrivateAccess, b"tskey-auth-test");
+        let router = set_access(
+            &service,
+            json!({"enabled": true, "sealed_auth_key": sealed}),
+        )
+        .await
+        .unwrap()
+        .unwrap()
+        .router
+        .unwrap()
+        .now
+        .container_id;
+        let service_name = QualifiedService::system_tailscale().name.to_string();
+        fake.refuse_remove_of
+            .lock()
+            .unwrap()
+            .insert(service_name.clone());
+
+        let refused = set_access(&service, json!({"enabled": false}))
+            .await
+            .unwrap()
+            .unwrap_err();
+        assert_eq!(refused.code, RpcErrorCode::Internal, "{refused:?}");
+        assert!(
+            refused.message.contains("not off yet"),
+            "the answer says the Server is not off: {}",
+            refused.message
+        );
+        let stays = || async {
+            let routers = runtime.routers(&machine).await.unwrap();
+            let [stayed] = routers.as_slice() else {
+                panic!("the router Docker refused to remove stays: {routers:?}");
+            };
+            assert_eq!(stayed.container_id, router);
+            assert!(
+                !matches!(stayed.runtime, ContainerRuntimeObservation::Running { .. }),
+                "the router is stopped, never started: {:?}",
+                stayed.runtime
+            );
+        };
+        stays().await;
+        assert!(
+            !key_file(&data_dir).exists(),
+            "the key is gone before the router"
+        );
+        assert!(
+            !node_state(&data_dir).exists(),
+            "the node is forgotten before the router"
+        );
+
+        service.local.restore_private_access().await.unwrap_err();
+        stays().await;
+        assert!(
+            !key_file(&data_dir).exists(),
+            "a reboot writes no key for a router turned off"
+        );
+
+        fake.refuse_remove_of.lock().unwrap().remove(&service_name);
+        let finished = service
+            .local
+            .restore_private_access()
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(finished.router, None);
+        assert_eq!(finished.retired, vec![router]);
+        assert!(runtime.routers(&machine).await.unwrap().is_empty());
+        assert!(
+            service
+                .local
+                .restore_private_access()
+                .await
+                .unwrap()
+                .is_none()
+        );
         std::fs::remove_dir_all(data_dir).unwrap();
     }
 

@@ -30,6 +30,7 @@ use crate::drain::retirement::{Names, server_name};
 use crate::failure::partial_failure_details;
 use crate::global_slot::{slot_eligibility, unknown_eligibility};
 use crate::ingress::{ClusterDoors, DoorMachine};
+use crate::private_access::AccessMachine;
 use crate::{
     connect::{Client, unreadable_answer},
     deploy::endpoint_capacity_error,
@@ -839,7 +840,11 @@ pub(crate) async fn catch_up_globals<C: CatchUpClient>(
             CatchUpWork::Service(origin) => origin,
             CatchUpWork::PrivateAccess(sealed) => {
                 observe(CatchUpFact::Creating(identity.clone()));
-                let failure = match client.run_private_access(&this_machine.id, sealed).await {
+                let answer = match AccessMachine::of(this_machine).refusal() {
+                    Some(refusal) => Err(refusal),
+                    None => client.run_private_access(&this_machine.id, sealed).await,
+                };
+                let failure = match answer {
                     Ok(set) => crate::private_access::failure_of(&set),
                     Err(error) => Some(crate::ui::row(&error)),
                 };

@@ -6,6 +6,11 @@
 //! only once the new one runs, so a replacement that fails to start leaves the old one
 //! to start again. A router that starts and then cannot join the tailnet stays in
 //! place, and the answer says why, so one corrected key replaces it.
+//!
+//! The node state on the Machine says whether a router is wanted here. `on` keeps it
+//! before placing the router, and `off` forgets it, with the key, before removing the
+//! routers, so a removal that fails is answered as a failure and the next restore
+//! finishes the removal rather than starting the router again.
 
 use std::time::Duration;
 
@@ -207,9 +212,10 @@ impl LocalMachine {
     /// # Errors
     ///
     /// Returns [`Error::PrivateAccessKeyMissing`] and [`Error::PrivateAccessKey`] for
-    /// a request to turn on without an auth key this Cluster opens, and the errors of a
-    /// Docker stage that fails. A router that was placed and did not serve is
-    /// answered in the result's `failure` instead.
+    /// a request to turn on without an auth key this Cluster opens,
+    /// [`Error::PrivateAccessRouterStays`] when a router turned off could not be
+    /// removed, and the errors of a Docker stage that fails. A router that was placed
+    /// and did not serve is answered in the result's `failure` instead.
     pub(crate) async fn set_private_access(
         &self,
         request: SetPrivateAccessRequest,
@@ -244,18 +250,15 @@ impl LocalMachine {
                 containers
                     .write_private_access_key(&wanted.key)
                     .map_err(Error::PrivateAccessKeyFile)?;
+                containers
+                    .keep_private_access_state()
+                    .map_err(Error::PrivateAccessState)?;
             }
             let _turn = local.owner.admission_lock().write_owned().await;
             let plan = plan_router(&routers, wanted.as_ref().map(|wanted| &wanted.spec));
-            let set = local
+            local
                 .converge_router(&containers, &plan, wanted.as_ref(), Watch::Settle)
-                .await?;
-            if wanted.is_none() {
-                containers
-                    .remove_private_access_key()
-                    .map_err(Error::PrivateAccessKeyFile)?;
-            }
-            Ok(set)
+                .await
         })
         .await
     }
@@ -270,10 +273,14 @@ impl LocalMachine {
     /// spec it was created from, so a new image pin replaces nothing here, and nobody
     /// waits for it to join the tailnet.
     ///
+    /// A router Docker still has on a Machine whose node state is gone was turned off
+    /// and could not be removed then, so it is removed now and never started.
+    ///
     /// # Errors
     ///
-    /// Returns [`Error::PrivateAccessKey`] when the router's key no longer opens, and
-    /// the errors of the Docker reads and the key write.
+    /// Returns [`Error::PrivateAccessKey`] when the router's key no longer opens,
+    /// [`Error::PrivateAccessRouterStays`] when a router turned off still cannot be
+    /// removed, and the errors of the Docker reads and the key write.
     pub(crate) async fn restore_private_access(&self) -> Result<Option<PrivateAccessSet>, Error> {
         let containers = self.containers.clone().ok_or(Error::DockerUnavailable)?;
         self.reserved_effect(Gate::Router)?;
@@ -282,6 +289,20 @@ impl LocalMachine {
             let _doors = containers.door_lifecycle().await;
             local.reserved_effect(Gate::Router)?;
             let routers = containers.routers(&local.record().id()).await?;
+            if routers.is_empty() {
+                return Ok(None);
+            }
+            if !containers.private_access_state_kept() {
+                tracing::info!(
+                    "a Private Access router turned off is still here, so it is removed, not started"
+                );
+                let _turn = local.owner.admission_lock().write_owned().await;
+                let plan = plan_router(&routers, None);
+                return local
+                    .converge_router(&containers, &plan, None, Watch::Skip)
+                    .await
+                    .map(Some);
+            }
             let Some((spec, sealed)) = routers
                 .iter()
                 .rev()
@@ -312,7 +333,11 @@ impl LocalMachine {
 
     /// Carry out the plan: stop what it retires, place the router, watch it join the
     /// tailnet, then remove what it retired. A router that cannot be created or
-    /// started undoes the call, so the previous router starts again.
+    /// started undoes the call, so the previous router starts again. With no router
+    /// wanted, the key and the node state go before the routers do, and a router that
+    /// stays is an error, so the caller knows this Machine is not off yet. A replaced
+    /// router that stays is only logged: stopped, it serves nothing, and the next call
+    /// retires it.
     async fn converge_router(
         &self,
         containers: &ContainerRuntime,
@@ -333,10 +358,25 @@ impl LocalMachine {
             set.failure = self.watch_router(containers, router, &wanted.key).await;
         }
         set.router = router;
+        if wanted.is_none() {
+            containers
+                .remove_private_access_key()
+                .map_err(Error::PrivateAccessKeyFile)?;
+            containers
+                .forget_private_access_state()
+                .map_err(Error::PrivateAccessState)?;
+        }
+        let mut stays = None;
         for retiree in &plan.retire {
             match containers.remove(&retiree.id, true, true).await {
                 Ok(()) => set.retired.push(retiree.id),
                 Err(crate::docker::Error::ContainerNotFound(_)) => {}
+                Err(source) if wanted.is_none() => {
+                    stays.get_or_insert(Error::PrivateAccessRouterStays {
+                        container_id: retiree.id,
+                        source: Box::new(source),
+                    });
+                }
                 Err(error) => tracing::warn!(
                     container = %retiree.id,
                     error = %ployz_core::error_chain::inline(&error),
@@ -344,7 +384,7 @@ impl LocalMachine {
                 ),
             }
         }
-        Ok(set)
+        stays.map_or(Ok(set), Err)
     }
 
     async fn place_router(

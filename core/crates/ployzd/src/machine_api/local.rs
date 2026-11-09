@@ -1256,7 +1256,9 @@ fn local_failure(error: LocalMachineError) -> Result<RpcError, Status> {
             details: serde_json::json!({ "capability": ployz_core::SET_PRIVATE_ACCESS_CAPABILITY }),
             cause: Vec::new(),
         }),
-        LocalMachineError::PrivateAccessKeyFile(_) => {
+        LocalMachineError::PrivateAccessKeyFile(_)
+        | LocalMachineError::PrivateAccessState(_)
+        | LocalMachineError::PrivateAccessRouterStays { .. } => {
             Ok(RpcError::caused(RpcErrorCode::Internal, &error))
         }
         LocalMachineError::Network(error) => Err(ployz_core::rpc::caused_status(

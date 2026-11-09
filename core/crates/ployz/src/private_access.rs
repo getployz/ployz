@@ -4,7 +4,7 @@
 
 use futures_util::{StreamExt, stream};
 use ployz_core::{
-    Ciphertext, ContainerRuntimeObservation, EnvironmentValues, MachineFailure, MachineId,
+    Ciphertext, ContainerRuntimeObservation, EnvironmentValues, Machine, MachineFailure, MachineId,
     MachineName, MachineObservation, PartialResult, PlatformPurpose, PrivateAccessProblem,
     PrivateAccessSet, QualifiedService, RowStanding, RpcError, RpcErrorCode,
     SET_PRIVATE_ACCESS_CAPABILITY, Sealing, SealingPublicKey, ServiceObservation,
@@ -36,6 +36,25 @@ pub(crate) struct AccessMachine {
     pub(crate) supported: bool,
 }
 
+impl AccessMachine {
+    pub(crate) fn of(machine: &Machine) -> Self {
+        let capabilities = &machine.runtime.capabilities;
+        Self {
+            id: machine.id,
+            name: machine.name.clone(),
+            // An empty list is a row that predates it, which claims nothing, so the
+            // daemon is asked and answers for itself.
+            supported: capabilities.is_empty()
+                || capabilities.contains(SET_PRIVATE_ACCESS_CAPABILITY),
+        }
+    }
+
+    /// The refusal for this Server when its daemon can't set Private Access, if any.
+    pub(crate) fn refusal(&self) -> Option<RpcError> {
+        (!self.supported).then(|| unsupported(&self.name, SET_PRIVATE_ACCESS_CAPABILITY))
+    }
+}
+
 /// The Machines that run a router: every reachable one that isn't leaving.
 pub(crate) fn access_machines(observed: &[MachineObservation]) -> Vec<AccessMachine> {
     observed
@@ -47,17 +66,7 @@ pub(crate) fn access_machines(observed: &[MachineObservation]) -> Vec<AccessMach
                     RowStanding::Leaving { .. } => false,
                 }
         })
-        .map(|machine| {
-            let capabilities = &machine.machine.runtime.capabilities;
-            AccessMachine {
-                id: machine.machine.id,
-                name: machine.machine.name.clone(),
-                // An empty list is a row that predates it, which claims nothing, so the
-                // daemon is asked and answers for itself.
-                supported: capabilities.is_empty()
-                    || capabilities.contains(SET_PRIVATE_ACCESS_CAPABILITY),
-            }
-        })
+        .map(|machine| AccessMachine::of(&machine.machine))
         .collect()
 }
 

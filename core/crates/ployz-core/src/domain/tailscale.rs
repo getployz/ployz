@@ -1,6 +1,8 @@
 //! Wiring of the reserved Private Access router: Tailscale in userspace mode on the
 //! ployz bridge, advertising the Cluster network to a tailnet with an auth key the
-//! daemon opened.
+//! daemon opened. The node it registers lives on the Machine, so a restart or a reboot
+//! brings the same node back, with its approved route, and the key is read only
+//! when the node first joins.
 
 use std::collections::BTreeMap;
 
@@ -22,6 +24,11 @@ pub const PRIVATE_ACCESS_KEY_MACHINE_DIR: &str = "/run/ployz/tailscale";
 /// The key's file name under [`PRIVATE_ACCESS_KEY_MACHINE_DIR`] and its mount.
 pub const PRIVATE_ACCESS_KEY_FILE: &str = "auth-key";
 const PRIVATE_ACCESS_KEY_MOUNT: &str = "/run/ployz-auth";
+/// Where the daemon keeps the router's node state on the Machine: the identity and
+/// the keys Tailscale registered, on disk, so a restart or a reboot is the same node.
+/// `ployz private-access off` deletes it, so a later `on` registers a new node.
+pub const PRIVATE_ACCESS_STATE_MACHINE_DIR: &str = "/var/lib/ployz/tailscale";
+const PRIVATE_ACCESS_STATE_MOUNT: &str = "/var/lib/tailscale";
 /// The name a router shows in the tailnet. Tailscale numbers the ones that follow.
 pub const PRIVATE_ACCESS_HOSTNAME: &str = "ployz-router";
 
@@ -42,6 +49,10 @@ pub fn private_access_service_spec(
         ("TS_USERSPACE", "true".to_owned()),
         ("TS_ROUTES", network.to_string()),
         ("TS_HOSTNAME", PRIVATE_ACCESS_HOSTNAME.to_owned()),
+        ("TS_STATE_DIR", PRIVATE_ACCESS_STATE_MOUNT.to_owned()),
+        // Log in only when the node state holds no login, and apply the routes and
+        // the hostname on every start, so a restarted node needs no key.
+        ("TS_AUTH_ONCE", "true".to_owned()),
         (
             "TS_EXTRA_ARGS",
             format!("--auth-key=file:{PRIVATE_ACCESS_KEY_MOUNT}/{PRIVATE_ACCESS_KEY_FILE}"),
@@ -61,7 +72,7 @@ pub fn private_access_service_spec(
         container,
         placement: Default::default(),
         ports: Vec::new(),
-        mount_graph: ServiceMountGraph::parse(key_volume_graph(), Default::default())
+        mount_graph: ServiceMountGraph::parse(router_volume_graph(), Default::default())
             .expect("built-in router mounts are valid"),
         pre_deploy: None,
         update: UpdateConfig::default(),
@@ -78,31 +89,47 @@ pub fn private_access_sealed_key(labels: &ContainerLabels) -> Option<Ciphertext>
         .and_then(|label| Ciphertext::try_from(label).ok())
 }
 
-fn key_volume_graph() -> ServiceVolumeGraph {
+/// The key, read-only, and the node state, which the router writes. The daemon makes
+/// both directories with the modes it wants before the router is placed, so Docker
+/// creates neither.
+fn router_volume_graph() -> ServiceVolumeGraph {
     let key = ServiceVolumeReference::parse("auth-key").expect("static volume is valid");
+    let state = ServiceVolumeReference::parse("node-state").expect("static volume is valid");
     ServiceVolumeGraph::parse(
-        vec![ServiceVolume {
-            reference: key.clone(),
-            source: RawVolumeSource::Bind {
-                machine_path: MachinePath::parse(PRIVATE_ACCESS_KEY_MACHINE_DIR)
-                    .expect("static key path is valid"),
-                create_machine_path: false,
-                propagation: None,
-                recursive: None,
-            }
-            .admit()
-            .expect("built-in router volume is valid"),
-        }],
-        vec![ServiceMount {
-            volume: key,
-            target: ContainerPath::parse(PRIVATE_ACCESS_KEY_MOUNT)
-                .expect("static mount path is valid"),
-            read_only: true,
-            no_copy: false,
-            subpath: None,
-        }],
+        vec![
+            bind_volume(key.clone(), PRIVATE_ACCESS_KEY_MACHINE_DIR),
+            bind_volume(state.clone(), PRIVATE_ACCESS_STATE_MACHINE_DIR),
+        ],
+        vec![
+            mount(&key, PRIVATE_ACCESS_KEY_MOUNT, true),
+            mount(&state, PRIVATE_ACCESS_STATE_MOUNT, false),
+        ],
     )
     .expect("static router Volume graph is valid")
+}
+
+fn bind_volume(reference: ServiceVolumeReference, machine_path: &str) -> ServiceVolume {
+    ServiceVolume {
+        reference,
+        source: RawVolumeSource::Bind {
+            machine_path: MachinePath::parse(machine_path).expect("static router path is valid"),
+            create_machine_path: false,
+            propagation: None,
+            recursive: None,
+        }
+        .admit()
+        .expect("built-in router volume is valid"),
+    }
+}
+
+fn mount(volume: &ServiceVolumeReference, target: &str, read_only: bool) -> ServiceMount {
+    ServiceMount {
+        volume: volume.clone(),
+        target: ContainerPath::parse(target).expect("static mount path is valid"),
+        read_only,
+        no_copy: false,
+        subpath: None,
+    }
 }
 
 #[cfg(test)]
@@ -137,11 +164,41 @@ mod tests {
             "the key is a file path, never a value"
         );
         assert!(!spec.container.environment.contains_key("TS_AUTHKEY"));
-        let [mount] = spec.mount_graph.volume_graph().mounts() else {
-            panic!("the router has one mount");
+        let [key, state] = spec.mount_graph.volume_graph().mounts() else {
+            panic!("the router mounts the key and its node state");
         };
-        assert!(mount.read_only);
-        assert_eq!(mount.target.to_string(), PRIVATE_ACCESS_KEY_MOUNT);
+        assert!(key.read_only);
+        assert_eq!(key.target.to_string(), PRIVATE_ACCESS_KEY_MOUNT);
+        assert!(!state.read_only, "the router writes its node state");
+        assert_eq!(state.target.to_string(), env("TS_STATE_DIR"));
+    }
+
+    // Catches a router that logs in on every start, which registers a new node whose
+    // route needs approving again, and needs the key again after it expired.
+    #[test]
+    fn the_node_state_lives_on_the_machine_and_the_key_is_read_once() {
+        let spec = private_access_service_spec("tailscale:1", network(), &sealed());
+        assert_eq!(
+            spec.container.environment.get("TS_AUTH_ONCE"),
+            Some(&crate::EnvValue::Text("true".to_owned()))
+        );
+        let machine_paths: Vec<String> = spec
+            .mount_graph
+            .volume_graph()
+            .volumes()
+            .iter()
+            .filter_map(|volume| match volume.source.kind() {
+                RawVolumeSource::Bind { machine_path, .. } => Some(machine_path.to_string()),
+                RawVolumeSource::External { .. }
+                | RawVolumeSource::Ordinary { .. }
+                | RawVolumeSource::Provisioned { .. }
+                | RawVolumeSource::Tmpfs { .. } => None,
+            })
+            .collect();
+        assert!(
+            machine_paths.contains(&PRIVATE_ACCESS_STATE_MACHINE_DIR.to_owned()),
+            "the node state is a Machine path, not a Docker volume: {machine_paths:?}"
+        );
     }
 
     #[test]

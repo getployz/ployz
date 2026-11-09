@@ -712,6 +712,31 @@ async fn a_joiner_gets_the_router_through_the_sealed_key_an_observed_one_carries
     assert!(client.door_calls.is_empty());
 }
 
+// Catches catch-up sending the router to a joiner whose daemon predates Private Access,
+// which would answer an unknown route instead of the client naming the capability.
+#[tokio::test(start_paused = true)]
+async fn a_joiner_whose_daemon_predates_private_access_is_named_and_not_asked() {
+    let founder = machine('f', "founder");
+    let mut joiner = machine('1', "joiner");
+    joiner.accepts_ingress = false;
+    joiner.runtime.capabilities = [ployz_core::SET_INGRESS_DOORS_CAPABILITY.to_owned()].into();
+    let mut client = fake(
+        &joiner,
+        vec![router_service(
+            &founder,
+            &Ciphertext::from_bytes(vec![5; 48]),
+        )],
+    );
+
+    let error = catch_up(&mut client, &joiner).await.unwrap_err();
+
+    assert!(client.private_access_calls.is_empty());
+    assert!(
+        message(error, &joiner).contains(ployz_core::SET_PRIVATE_ACCESS_CAPABILITY),
+        "the refusal names the capability the joiner lacks"
+    );
+}
+
 #[tokio::test(start_paused = true)]
 async fn a_cluster_with_no_router_asks_the_joiner_for_none() {
     let mut joiner = machine('1', "joiner");
