@@ -1,5 +1,6 @@
 import type { RuntimeWatchView, TunnelAnswer } from "@ployz/sdk";
-import { Deferred, Effect } from "effect";
+import { Deferred, Effect, Fiber } from "effect";
+import { TestClock } from "effect/testing";
 import { expect, it } from "vitest";
 import { asTestDouble } from "#/lib/test-double";
 import { type Observed, observedOf, publishedOf, tunnelEvidence } from "./domain-evidence.server";
@@ -114,3 +115,21 @@ it("shares one fetch between reads that overlap, and fetches through a bounded n
   const evidence = await Effect.runPromise(tunnelEvidence("org-6", cloudflare, observed(...many), true, many, answering("none")));
   expect(evidence.reached).toHaveLength(16);
 });
+
+it("waits a bounded time for a fetch it started; one that lands later answers the next read", () => Effect.gen(function* () {
+  const gate = yield* Deferred.make<TunnelAnswer>();
+  let fetched = 0;
+  const reach = (hostname: string) => Effect.suspend(() => {
+    fetched += 1;
+    return hostname === "slow.example.org" ? Deferred.await(gate) : Effect.succeed<TunnelAnswer>("cluster");
+  });
+  const names = ["fast.example.org", "slow.example.org"];
+  const read = () => tunnelEvidence("org-7", cloudflare, observed(...names), false, names, reach);
+  const first = yield* Effect.forkChild(read());
+  yield* TestClock.adjust("250 millis");
+  expect((yield* Fiber.join(first)).reached).toEqual([{ hostname: "fast.example.org", answer: "cluster" }]);
+  yield* Deferred.succeed(gate, "elsewhere");
+  yield* Effect.yieldNow;
+  expect((yield* read()).reached).toEqual([{ hostname: "fast.example.org", answer: "cluster" }, { hostname: "slow.example.org", answer: "elsewhere" }]);
+  expect(fetched).toBe(2);
+}).pipe(Effect.provide(TestClock.layer()), Effect.runPromise));

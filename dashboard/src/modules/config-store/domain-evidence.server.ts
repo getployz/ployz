@@ -1,7 +1,7 @@
 import "@tanstack/react-start/server-only";
 import { Resolver } from "node:dns/promises";
 import type { ClusterDomainStatus as StoreClusterDomainStatus, ConfigDomainEvidence, ConfigView, DnsLookup, PublishedHostname, RuntimeWatchView, TunnelAnswer, TunnelEvidence, TunnelReach } from "@ployz/sdk";
-import { Clock, Deferred, Effect, Option, Schema } from "effect";
+import { Array as Arr, Clock, Deferred, Effect, Option, Schema } from "effect";
 import { activeCloudflare } from "#/modules/cloudflare/source.server";
 import { reachesCluster } from "#/modules/cloudflare/tunnel-reach.server";
 import { clusterDomainStatus } from "#/modules/cluster-domain/cluster-domain";
@@ -156,29 +156,37 @@ const REACH_TTL_MS = 15_000;
 const UNANSWERED_TTL_MS = 5_000;
 /** How many hostnames one read fetches through at most. The rest read as unobserved until a later read reaches them. */
 const REACH_LIMIT = 16;
+/** How long a read waits for a fetch it started. One that takes longer lands in the memo and answers the next read; a check waits it out. */
+const REACH_WAIT_MS = 250;
 // ponytail: as `observations`, one memo per process, bounded by the custom domains Organizations publish.
 const reaches = new Map<string, { at: number; answer: TunnelAnswer }>();
 /** The fetches under way, so reads that overlap share one fetch per hostname instead of each making their own. */
 const fetching = new Map<string, Deferred.Deferred<TunnelAnswer>>();
 
-/** `fetch` once for `key`, shared with every caller that asks while it runs. */
+/** The fetch under way for `key`, started now when none is. It runs on its own: its answer is memoised when it lands, whether or not a read still waits. */
 const fetchOnce = (key: string, fetch: Effect.Effect<TunnelAnswer>) => Effect.gen(function* () {
   const shared = fetching.get(key);
-  if (shared !== undefined) return yield* Deferred.await(shared);
+  if (shared !== undefined) return shared;
   const mine = yield* Deferred.make<TunnelAnswer>();
   fetching.set(key, mine);
-  return yield* fetch.pipe(Effect.onExit((exit) => {
-    fetching.delete(key);
-    return Deferred.done(mine, exit);
-  }));
+  yield* fetch.pipe(
+    Effect.tap((answer) => Effect.map(Clock.currentTimeMillis, (at) => { reaches.set(key, { at, answer }); })),
+    Effect.onExit((exit) => {
+      fetching.delete(key);
+      return Deferred.done(mine, exit);
+    }),
+    Effect.forkDetach,
+  );
+  return mine;
 });
 
 /**
  * Who answers through each of `hostnames` the Servers publish: DNS can't say, since Cloudflare hides a proxied CNAME,
  * so Cloud fetches the verify path through it, as the Servers do on the Public Door. A name inside the zone is fetched
  * too: the wildcard record covers it only while no record of its own sends it elsewhere. A read asks only for the
- * custom hostnames it judges; a check (`fresh`) fetches again rather than reusing an answer from seconds ago. No
- * address of a Server is looked at in this mode.
+ * custom hostnames it judges and waits {@link REACH_WAIT_MS} for an answer, so one slow name never holds the page: a
+ * name still being fetched reads as unobserved and answers the next read. A check (`fresh`) fetches again rather than
+ * reusing an answer from seconds ago, and waits for it. No address of a Server is looked at in this mode.
  */
 export const tunnelEvidence = Effect.fn("ConfigStore.tunnelEvidence")(function* (
   organizationId: string,
@@ -192,16 +200,16 @@ export const tunnelEvidence = Effect.fn("ConfigStore.tunnelEvidence")(function* 
   const now = yield* Clock.currentTimeMillis;
   const published = new Set(observed.seen.published.map(({ hostname }) => String(hostname)));
   const looked = [...new Set(hostnames)].filter((hostname) => published.has(hostname)).slice(0, REACH_LIMIT);
-  const reached = yield* Effect.forEach(looked, (hostname) => Effect.gen(function* () {
+  const answers = yield* Effect.forEach(looked, (hostname) => Effect.gen(function* () {
     const key = `${organizationId}/${hostname}`;
     const last = reaches.get(key);
     const ttl = last?.answer === "unanswered" ? UNANSWERED_TTL_MS : REACH_TTL_MS;
-    if (!fresh && last !== undefined && now - last.at < ttl) return { hostname, answer: last.answer } satisfies TunnelReach;
-    const answer = yield* fetchOnce(key, reach(hostname, observed.machineIds));
-    reaches.set(key, { at: now, answer });
-    return { hostname, answer } satisfies TunnelReach;
-  }), { concurrency: 4 });
-  return { target: cloudflare.target, reached } satisfies TunnelEvidence;
+    if (!fresh && last !== undefined && now - last.at < ttl) return Option.some({ hostname, answer: last.answer } satisfies TunnelReach);
+    const pending = yield* fetchOnce(key, reach(hostname, observed.machineIds));
+    const answer = yield* Deferred.await(pending).pipe(fresh ? Effect.map(Option.some) : Effect.timeoutOption(REACH_WAIT_MS));
+    return Option.map(answer, (answer) => ({ hostname, answer } satisfies TunnelReach));
+  }), { concurrency: "unbounded" });
+  return { target: cloudflare.target, reached: Arr.getSomes(answers) } satisfies TunnelEvidence;
 });
 
 /** The custom hostnames a domains or domain view lists. */

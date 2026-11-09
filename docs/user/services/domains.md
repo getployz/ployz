@@ -159,7 +159,7 @@ A live domain shows no status.
 | **Ingress isn't running on …** (shown only when no server takes the traffic) | [Deploy](../troubleshooting/app-not-reachable.md#ingress-isnt-running) to bring it back. |
 | **Not reaching your tunnel**, **No answer over HTTPS** | [Point the name at your tunnel](../troubleshooting/app-not-reachable.md#my-custom-domain-isnt-reaching-my-cloudflare-tunnel). |
 | **The free certificate covers one level under …** | Use a name one level under that zone, like `shop-a.example.com`. |
-| **Checking DNS** | Nothing. Open the page again, or click **Check**. |
+| **Checking DNS** | Nothing. The page asks again within half a minute. **Check** asks now. |
 | **No Server receives traffic** | [Add a server](../servers/add-a-server.md). |
 | **via proxy** | Nothing. It works behind a proxy like Cloudflare. |
 | **via tunnel** | Nothing. It's served through your [Cloudflare Tunnel](cloudflare-tunnel.md). |
