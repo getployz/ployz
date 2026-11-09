@@ -309,6 +309,36 @@ it("says the ports may be open when the fallback reached only some servers of a 
   expect(sets.map(({ doors }) => doors)).toEqual([["tunnel"], ["public"]]);
 });
 
+it("keeps both doors on a Cluster founded closed whose port holder isn't running when looked at", async () => {
+  await foundedClosed();
+  for (const state of ["restarting", "created", "exited"]) {
+    await harness.pool.query("delete from organization_cloudflare_ingress");
+    const holder = frameOf({
+      ...CLOSED_FRAME,
+      services: [{ identity: "ployz-system/ingress-holder", containers: [{ machine_id: "m1", runtime: { state }, resolved_spec: { ports: [{ mode: "host", published_port: 443 }] } }] }],
+    });
+    const { runtime, sets } = cluster((doors) => doors, holder);
+    expect(await setUp("example.com", cloudflare().http, runtime)).toMatchObject({ state: "set_up" });
+    expect(sets.map(({ doors }) => doors)).toEqual([["public", "tunnel"]]);
+  }
+});
+
+it("says what a setup that died left behind, ports opened included", async () => {
+  await foundedClosed();
+  const sets: Set[] = [];
+  const session = asTestDouble<PloyzSession>()({
+    watchFirstFrame: () => Effect.succeed(CLOSED_FRAME),
+    setIngressDoors: (doors: readonly string[]) => {
+      sets.push({ doors, token: undefined });
+      return doors.includes("tunnel") ? Effect.die(new Error("napi panic")) : Effect.succeed({ machines: [{ server: "s1", doors: ["public"] }], failures: [] });
+    },
+  });
+  const runtime = asTestDouble<OrganizationRuntime["Service"]>()({ cancel: () => Effect.void, open: () => Effect.succeed({ status: "connected" as const, connected: session }) });
+  await expect(setUp("example.com", cloudflare().http, runtime)).rejects.toMatchObject({ message: expect.stringContaining("Setup didn't finish. Your servers now take web traffic on ports 80 and 443.") });
+  expect(sets.map(({ doors }) => doors)).toEqual([["tunnel"], ["public"]]);
+  expect(await setupRows()).toEqual([]);
+});
+
 it("keeps the API token out of every table and the outbox, and the tunnel token out of every table", async () => {
   const { http } = cloudflare();
   const { runtime } = cluster();

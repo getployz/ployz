@@ -241,5 +241,8 @@ export const setUpCloudflare = Effect.fn("Cloudflare.setUp")(function* (
   const failure = Cause.findErrorOption(ended.cause);
   if (failure._tag === "Some" && failure.value instanceof Conflict) return yield* new Conflict({ userFacing: true, message: `${failure.value.message} ${left}` });
   if (failure._tag === "Some" && failure.value instanceof Validation) return yield* refuse(`${failure.value.message} ${left}`);
-  return yield* Effect.failCause(ended.cause);
+  if (Cause.hasInterruptsOnly(ended.cause)) return yield* Effect.failCause(ended.cause);
+  // Whatever ended it, the undo above ran, so what it left, ports opened included, is the user's to know.
+  yield* Effect.logError("Cloudflare setup failed", ended.cause);
+  return yield* refuse(`Setup didn't finish. ${left}`);
 }, Effect.scoped);

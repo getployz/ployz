@@ -90,7 +90,7 @@ export function FirstTunnelStatus({ organizationSlug }: { organizationSlug: stri
           <AlertDescription className="flex flex-wrap items-center gap-x-2">
             {state.switched
               ? "Apps you deploy get addresses under it. Settings, Network shows how many servers are connected."
-              : "Your apps keep their current addresses until you switch web traffic to Cloudflare in Settings, Network."}
+              : "To serve apps you deployed under it, switch web traffic to Cloudflare in Settings, Network."}
             <Button type="button" variant="link" size="sm" className="h-auto px-0" onClick={() => forgetCloudflare(organizationSlug)}>Dismiss</Button>
           </AlertDescription>
         </Alert>

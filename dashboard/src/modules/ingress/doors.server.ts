@@ -5,7 +5,7 @@ import type { JsonValue, PublishedHostname, RuntimeWatchView } from "@ployz/sdk"
 import { Effect, Schedule, Schema } from "effect";
 import { operationDigest, type OperationAsked } from "#/modules/approvals/approvals.server";
 import { loadClusterDomain } from "#/modules/cluster-domain/cluster-domain.server";
-import { doorsOpenOn } from "#/modules/cluster-domain/ingress-running";
+import { doorsOpenOn, publicSpecifiedAnywhere } from "#/modules/cluster-domain/ingress-running";
 import { loadCloudflareSetup } from "#/modules/cloudflare/source.server";
 import { serverEnrollment } from "#/modules/machines/waiting/tables";
 import { readStore } from "#/modules/config-store/config-store.server";
@@ -142,7 +142,7 @@ export const closedFounding = Effect.fn("IngressDoors.closedFounding")(function*
   if (frame === null) return { kind: "unknown" } as const;
   const seen = observationOf(frame);
   if (seen.partial) return { kind: "unknown" } as const;
-  if ([...doorsOpenOn(frame).values()].some((doors) => doors.has("public"))) return { kind: "open" } as const;
+  if (publicSpecifiedAnywhere(frame)) return { kind: "open" } as const;
   // The founder may not show yet; until a Server takes web traffic there is nothing to tell the tunnel to.
   if (seen.servers.length === 0) return { kind: "unknown" } as const;
   return { kind: "closed", hostnames: seen.hostnames } as const;
