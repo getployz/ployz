@@ -15,6 +15,7 @@ import { Input } from "#/components/ui/input";
 import { authKeyProblem } from "#/modules/private-access/private-access";
 import { approvePrivateAccessServerFn } from "#/modules/private-access/private-access.functions";
 import { landAnswer } from "#/modules/private-access/private-access.queries";
+import { toast } from "sonner";
 import { lossMoment } from "#/modules/volume-placement/volume-placement";
 import { toErrorMessage } from "#/lib/error-message";
 import { approvalOptions, approverApprovals, decideApproval, landDecision, refetchApprovals, runsServiceAct, type ApprovalView } from "./approvals.queries";
@@ -31,7 +32,6 @@ export function ApprovalCard({ organizationSlug, id, seed, onSettled }: {
   onSettled?: () => void;
 }) {
   const { data: approval } = useQuery({ ...approvalOptions(organizationSlug, id), initialData: seed });
-  const [outcome, setOutcome] = useState<readonly string[]>([]);
   const settled = approval !== undefined && approval.status !== "pending";
   useEffect(() => {
     if (settled) onSettled?.();
@@ -39,17 +39,8 @@ export function ApprovalCard({ organizationSlug, id, seed, onSettled }: {
 
   if (approval === undefined) return null;
   switch (approval.status) {
-    case "pending": return <PendingCard organizationSlug={organizationSlug} approval={approval} onOutcome={setOutcome} />;
-    case "approved": return (
-      <>
-        <TraceLine>Approved. {approvedLine(approval)}</TraceLine>
-        {outcome.length === 0 ? null : (
-          <ul role="alert" aria-label="Servers" className="flex flex-col gap-1 text-xs text-destructive">
-            {outcome.map((line) => <li key={line}>{line}</li>)}
-          </ul>
-        )}
-      </>
-    );
+    case "pending": return <PendingCard organizationSlug={organizationSlug} approval={approval} />;
+    case "approved": return <TraceLine>Approved. {approvedLine(approval)}</TraceLine>;
     case "denied": return <TraceLine>Denied{approval.reason ? `: ${approval.reason}` : "."}</TraceLine>;
     case "superseded": return <TraceLine>The plan changed since this was asked. Ask again to review the new one.</TraceLine>;
   }
@@ -61,11 +52,7 @@ function approvedLine(approval: ApprovalView) {
   return `${approvalSubject(approval.command, approval.review).verb} goes ahead.`;
 }
 
-function PendingCard({ organizationSlug, approval, onOutcome }: {
-  organizationSlug: string;
-  approval: ApprovalView;
-  onOutcome: (lines: readonly string[]) => void;
-}) {
+function PendingCard({ organizationSlug, approval }: { organizationSlug: string; approval: ApprovalView }) {
   const queryClient = useQueryClient();
   const [reason, setReason] = useState<string | null>(null);
   const [sending, setSending] = useState(false);
@@ -113,7 +100,8 @@ function PendingCard({ organizationSlug, approval, onOutcome }: {
     if ("error" in answer) return setRefused(answer.error);
     setAuthKey("");
     const { sent } = answer;
-    onOutcome("problem" in sent ? [sent.problem] : sent.failures.map((failure) => failure.message));
+    const failed = "problem" in sent ? [sent.problem] : sent.failures.map((failure) => failure.message);
+    if (failed.length > 0) toast.error("Approved. Not every server connected.", { description: [...failed, "Try another key or turn it off in Integrations."].join(" ") });
     if (!("problem" in sent)) await landAnswer(queryClient, organizationSlug, { to: "on", changed: sent, at: Date.now() });
     return landDecision(queryClient, organizationSlug, approval.id, { ...approval, ...answer.approval });
   };

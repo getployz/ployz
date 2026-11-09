@@ -4,6 +4,7 @@ import { createMemoryHistory, createRootRoute, createRouter, RouterProvider } fr
 import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import type { ReactNode } from "react";
+import { toast } from "sonner";
 import { ApprovalCard } from "#/components/agent-sidebar/approval-card";
 import type { ApprovalView } from "#/components/agent-sidebar/approvals.queries";
 import * as approvals from "#/modules/approvals/approvals.functions";
@@ -123,6 +124,7 @@ it("marks a key the approver pasted in an Approval card refused on Integrations,
       sent: { servers: [{ id: FRA, name: "fra-1", router: false }, { id: AMS, name: "ams-1", router: false }], failures: [refused(FRA, "fra-1"), refused(AMS, "ams-1")] },
     });
   });
+  const toasted = vi.spyOn(toast, "error");
   await show(() => (
     <>
       <ApprovalCard organizationSlug="acme" id={asked.id} seed={asked} />
@@ -135,7 +137,9 @@ it("marks a key the approver pasted in an Approval card refused on Integrations,
   await act(async () => { fireEvent.click(within(card).getByRole("button", { name: "Connect" })); });
 
   expect(await screen.findByText("Approved. Integrations shows each router.")).toBeTruthy();
-  expect(within(screen.getByRole("alert", { name: "Servers" })).getByText("Tailscale refused the auth key on fra-1.")).toBeTruthy();
+  expect(toasted).toHaveBeenCalledWith("Approved. Not every server connected.", {
+    description: "Tailscale refused the auth key on fra-1. Tailscale refused the auth key on ams-1. Try another key or turn it off in Integrations.",
+  });
   expect(await screen.findByText("Not connected")).toBeTruthy();
   expect(within(rowOf("fra-1")).getByText("Key refused")).toBeTruthy();
   expect(within(rowOf("ams-1")).getByText("Key refused")).toBeTruthy();
