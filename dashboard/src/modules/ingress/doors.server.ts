@@ -1,7 +1,7 @@
 import "@tanstack/react-start/server-only";
 import { randomUUID } from "node:crypto";
 import { and, desc, eq, inArray, isNull, lt, or, sql } from "drizzle-orm";
-import type { JsonValue } from "@ployz/sdk";
+import type { JsonValue, PublishedHostname } from "@ployz/sdk";
 import { Effect, Schedule, Schema } from "effect";
 import { operationDigest, type OperationAsked } from "#/modules/approvals/approvals.server";
 import { loadClusterDomain } from "#/modules/cluster-domain/cluster-domain.server";
@@ -20,12 +20,17 @@ import {
   DOORS_RUNNING_LIMIT_MS,
   type DoorsState,
   type DoorsWant,
+  type KnownRoutes,
   type LatestDoorsChange,
   type MovedHostname,
+  keptHostnames,
   movedHostnames,
   observationGap,
   redeployScope,
+  routeKey,
   switchProblem,
+  unknownGap,
+  unknownHostnames,
   wantWords,
 } from "#/modules/ingress/doors";
 import { activeDoorsAttempt, lockIngressRows } from "#/modules/ingress/doors.lock.server";
@@ -107,23 +112,52 @@ export const observeClusterIngress = Effect.fn("IngressDoors.observe")(function*
   } satisfies ClusterIngressObservation;
 });
 
-/**
- * What a switch to `to` moves, from what the Servers showed: every generated hostname they publish under the source the
- * switch leaves, with the Service publishing it. Nothing before Cloudflare is set up or the Hosted name exists.
- */
-const movesOf = (setup: CloudflareSetup | null, hosted: string | null, seen: ClusterIngressObservation, to: DoorsWant) => {
+/** Where a switch to `to` takes generated names from, and to. Nothing before Cloudflare is set up or the Hosted name exists. */
+const sourcesOf = (setup: CloudflareSetup | null, hosted: string | null, to: DoorsWant) => {
   const zone = setup?.zone ?? null;
-  if (zone === null || hosted === null) return [];
-  return to === "tunnel" ? movedHostnames(seen.hostnames, hosted, zone) : movedHostnames(seen.hostnames, zone, hosted);
+  if (zone === null || hosted === null) return null;
+  return to === "tunnel" ? { from: hosted, to: zone } : { from: zone, to: hosted };
 };
 
-/** One look at the Cluster for a switch to `to`: its setup, Hosted name, what the Servers showed and the moves that follow. */
+/**
+ * What produced each hostname the Store's Applied State serves, in every Namespace an Environment owns. Behind Cloudflare
+ * a custom domain may sit one label under the zone, spelled like a generated name, so what the Servers publish can't
+ * tell the two apart, and Working State can't either: a domain removed there is still deployed until the next Deploy.
+ */
+const knownRoutes = Effect.fn("IngressDoors.known")(function* (organizationId: string) {
+  const owned = yield* owners(organizationId);
+  const views = yield* Effect.forEach(
+    owned,
+    ({ project, environment }) => readStore(organizationId, { query: "namespace", environment: { project, environment } }),
+    { concurrency: 4 },
+  );
+  return new Map(views.flatMap((view) => (view.routes ?? []).map((route) => [routeKey(view.namespace, String(route.hostname)), route.kind] as const))) satisfies KnownRoutes;
+});
+
+/**
+ * One look at the Cluster for a switch to `to`: its setup, Hosted name, what the Servers showed, the moves that follow,
+ * the custom domains that stay, and the names under the source that no Deployment accounts for.
+ */
 const switchSeen = Effect.fn("IngressDoors.seen")(function* (organizationId: string, to: DoorsWant) {
   const setup = yield* loadCloudflareSetup(organizationId);
   const hosted = (yield* loadClusterDomain(organizationId))?.name ?? null;
   const seen = yield* observeClusterIngress(organizationId);
-  return { setup, hosted, seen, moving: seen === null ? [] : movesOf(setup, hosted, seen, to) };
+  const sources = sourcesOf(setup, hosted, to);
+  if (seen === null || sources === null) return { setup, hosted, seen, moving: [], kept: [], unknown: [] };
+  const known = yield* knownRoutes(organizationId);
+  return {
+    setup,
+    hosted,
+    seen,
+    moving: movedHostnames(seen.hostnames, sources.from, sources.to, known),
+    kept: keptHostnames(seen.hostnames, known),
+    unknown: unknownHostnames(seen.hostnames, sources.from, known),
+  };
 });
+
+/** Why a switch can't trust what it saw: a Server that didn't answer, or a published name no Deployment accounts for. */
+const switchGap = ({ seen, unknown }: { readonly seen: ClusterIngressObservation | null; readonly unknown: readonly PublishedHostname[] }) =>
+  observationGap(seen) ?? unknownGap(unknown);
 
 /**
  * What switching the Cluster to `to` asks a human: every generated hostname moves between the Hosted domain and the
@@ -131,21 +165,25 @@ const switchSeen = Effect.fn("IngressDoors.seen")(function* (organizationId: str
  * Cloud can name the move, and always, since a switch changes where every address points.
  */
 export const switchAsked = Effect.fn("IngressDoors.asked")(function* (organizationId: string, to: DoorsWant) {
-  const { setup, hosted, moving } = yield* switchSeen(organizationId, to);
+  const { setup, hosted, moving, kept } = yield* switchSeen(organizationId, to);
   return {
     subject: `cluster:${organizationId}`,
     verb: "set_ingress_doors",
     name: to === "tunnel" ? "to Cloudflare" : "to public ports",
-    preview: { to, zone: setup?.zone ?? null, hostedName: hosted, hostnames: moving.map(({ from, to: next }) => ({ from, to: next })) },
+    preview: { to, zone: setup?.zone ?? null, hostedName: hosted, hostnames: moving.map(({ from, to: next }) => ({ from, to: next })), kept },
     effects: moving.map(({ from, namespace, service }) => ({ kind: "removes_domain", name: from, node: from, path: `${namespace}/${service}.managedHostnames` })),
     alwaysAsks: true,
   } satisfies OperationAsked;
 });
 
-/** The review before a human confirms: the moves the Servers showed, and why the list may be short when they didn't all answer. */
+/**
+ * The review before a human confirms: the moves the Servers showed, the custom domains that stay and need their DNS
+ * repointed, and why the lists may be short when the Servers didn't all answer.
+ */
 export const reviewSwitch = Effect.fn("IngressDoors.review")(function* (organizationId: string, to: DoorsWant) {
-  const { setup, hosted, seen, moving } = yield* switchSeen(organizationId, to);
-  return { moves: moving.map(({ from, to: next }) => ({ from, to: next })), zone: setup?.zone ?? null, hostedName: hosted, gap: observationGap(seen) };
+  const looked = yield* switchSeen(organizationId, to);
+  const { setup, hosted, moving, kept } = looked;
+  return { moves: moving.map(({ from, to: next }) => ({ from, to: next })), kept, zone: setup?.zone ?? null, hostedName: hosted, gap: switchGap(looked) };
 });
 
 const Switched = Schema.Struct({ to: Schema.Literals(["tunnel", "public"]) });
@@ -241,12 +279,13 @@ const deploymentEnd = (organizationId: string, id: string) =>
 
 /**
  * The generated names a switch to `want` moves, read while both Doors are open, or why Cloud can't tell: a Server
- * that didn't answer may publish a name the switch would otherwise leave behind, so the switch stops before its source moves.
+ * that didn't answer may publish a name the switch would otherwise leave behind, and a name no Deployment accounts for
+ * may be either kind, so the switch stops before its source moves.
  */
 const movingNow = Effect.fn("IngressDoors.moving")(function* (organizationId: string, want: DoorsWant) {
-  const { seen, moving } = yield* switchSeen(organizationId, want);
-  const gap = observationGap(seen);
-  return gap === null ? { moves: moving } : { failure: gap };
+  const looked = yield* switchSeen(organizationId, want);
+  const gap = switchGap(looked);
+  return gap === null ? { moves: looked.moving } : { failure: gap };
 });
 
 /**

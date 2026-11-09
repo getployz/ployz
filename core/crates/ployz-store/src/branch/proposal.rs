@@ -7,6 +7,7 @@
 
 use super::pair::{self, Arrival, Claim, Which};
 use super::*;
+use crate::Trusted;
 use crate::id::{ProposalId, RepositoryId};
 use crate::pull_request::PullRequestRef;
 use crate::storage::Param;
@@ -444,6 +445,7 @@ pub(crate) fn remove(
     tx: &mut dyn Tx,
     who: &Actor,
     request: &RemoveProposal,
+    trusted: &Trusted,
 ) -> Result<Removed, RpcError> {
     let id = scope::environment(tx, who, &request.environment)?
         .summary
@@ -460,7 +462,7 @@ pub(crate) fn remove(
     if let Some(version) = request.version.as_deref() {
         review::check(&review::review(tx, &into)?, Some(version))?;
     }
-    take_out(tx, &mut into, &proposal)?;
+    take_out(tx, &mut into, &proposal, trusted)?;
     Ok(Removed {
         environment: into.summary,
         removed: true,
@@ -470,7 +472,12 @@ pub(crate) fn remove(
 /// Put back in `into`, whose lock the caller holds, what `proposal` still owns there,
 /// rewind the pair base, and forget the proposal. Refused when another node uses a
 /// node it brought, or a row of one was edited since.
-fn take_out(tx: &mut dyn Tx, into: &mut Environment, proposal: &Proposal) -> Result<(), RpcError> {
+fn take_out(
+    tx: &mut dyn Tx,
+    into: &mut Environment,
+    proposal: &Proposal,
+    trusted: &Trusted,
+) -> Result<(), RpcError> {
     let id = into.summary.id.clone();
     let owned = pair::arrived(tx, &id, Which::Owned(&proposal.id))?;
     let owned_rows = owned.len();
@@ -616,7 +623,7 @@ fn take_out(tx: &mut dyn Tx, into: &mut Environment, proposal: &Proposal) -> Res
         &[proposal.id.as_str().into()],
     )?;
     // Last: the rows put back are no longer owned, so nothing is left to release.
-    scope::save_working(tx, into)
+    scope::save_working(tx, into, trusted)
 }
 
 /// What an introduced Service carried in besides its configuration: never the
@@ -784,6 +791,7 @@ pub(crate) fn undo(
     tx: &mut dyn Tx,
     who: &Actor,
     sync: &SyncId,
+    trusted: &Trusted,
 ) -> Result<Option<Undone>, RpcError> {
     let rows = tx.query(
         "SELECT r.environment_id, r.proposal_id FROM config_sync_receipt r \
@@ -834,7 +842,7 @@ pub(crate) fn undo(
             Some(&changed.value),
         ));
     }
-    take_out(tx, &mut into, &proposal)?;
+    take_out(tx, &mut into, &proposal, trusted)?;
     Ok(Some(Undone { into: into.summary }))
 }
 

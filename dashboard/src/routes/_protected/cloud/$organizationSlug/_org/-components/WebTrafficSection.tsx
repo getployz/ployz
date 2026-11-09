@@ -266,6 +266,7 @@ function SwitchDialog({ organizationSlug, to, onOpenChange, onConfirm }: {
 }) {
   const review = useQuery(reviewDoorsSwitchQueryOptions(organizationSlug, to));
   const moves = review.data?.moves ?? [];
+  const kept = review.data?.kept ?? [];
   const toCloudflare = to === "tunnel";
   return (
     <ConfirmDialog
@@ -290,6 +291,20 @@ function SwitchDialog({ organizationSlug, to, onOpenChange, onConfirm }: {
                   <Item key={from} variant="outline" size="xs" data-row={from}>
                     <ItemContent className="min-w-0">
                       <ItemTitle className="font-mono break-words">{from} → {next}</ItemTitle>
+                    </ItemContent>
+                  </Item>
+                ))}
+              </ItemGroup>
+            </>
+          )}
+          {kept.length === 0 ? null : (
+            <>
+              <p>These custom domains stay. Update their DNS records after the switch.</p>
+              <ItemGroup aria-label="Custom domains that stay" className="max-h-72 overflow-y-auto text-foreground">
+                {kept.map((hostname) => (
+                  <Item key={hostname} variant="outline" size="xs" data-row={hostname}>
+                    <ItemContent className="min-w-0">
+                      <ItemTitle className="font-mono break-words">{hostname}</ItemTitle>
                     </ItemContent>
                   </Item>
                 ))}

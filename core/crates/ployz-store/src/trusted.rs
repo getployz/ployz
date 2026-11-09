@@ -13,7 +13,7 @@ use ts_rs::TS;
 
 use crate::domain::DomainEvidence;
 use crate::git::AuthorizedRepository;
-use crate::id::{ApprovalDigest, EnvironmentName, GithubUserId};
+use crate::id::{ApprovalDigest, EnvironmentName, GithubUserId, Hostname};
 use crate::permission::Permission;
 use crate::storage::Tx;
 
@@ -139,6 +139,14 @@ pub enum Asks {
 }
 
 impl Trusted {
+    /// The Cluster Domain Cloud knows now: what generated domains expand under.
+    pub(crate) fn cluster_domain(&self) -> Option<&Hostname> {
+        self.domains
+            .cluster_domain
+            .as_ref()
+            .map(|cluster| &cluster.name)
+    }
+
     /// Refuse to admit a Deployment no Server could run: `conflict`, as the
     /// Organization's state refuses it, naming `ployz server add`.
     pub(crate) fn runnable(&self) -> Result<(), RpcError> {

@@ -4,6 +4,7 @@ import { Effect } from "effect";
 import { type CloudflareSetup, SETUP_STALE_MS } from "#/modules/ingress/doors";
 import { organizationCloudflareIngress } from "#/modules/ingress/tables";
 import { Database } from "#/server/database.server";
+import { tunnelTarget } from "./zone";
 
 /**
  * The Organization's Cloudflare tunnel and zone, or null when it never set one up. A reservation a setup left behind
@@ -28,8 +29,13 @@ export const loadCloudflareSetup = Effect.fn("Cloudflare.loadSetup")(function* (
   return { zone, tunnelName, tunnelId, state } satisfies CloudflareSetup;
 });
 
+/** The zone generated names sit under, and the CNAME target that reaches the tunnel, while the Cluster Domain's source is Cloudflare, else null. */
+export const activeCloudflare = Effect.fn("Cloudflare.active")(function* (organizationId: string) {
+  const setup = yield* loadCloudflareSetup(organizationId);
+  return setup?.state === "active" ? { zone: setup.zone, target: tunnelTarget(setup.tunnelId) } : null;
+});
+
 /** The zone generated names sit under while the Cluster Domain's source is Cloudflare, else null. */
 export const activeCloudflareZone = Effect.fn("Cloudflare.activeZone")(function* (organizationId: string) {
-  const setup = yield* loadCloudflareSetup(organizationId);
-  return setup?.state === "active" ? setup.zone : null;
+  return (yield* activeCloudflare(organizationId))?.zone ?? null;
 });

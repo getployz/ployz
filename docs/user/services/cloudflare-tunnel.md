@@ -49,7 +49,9 @@ cause, then click **Review and switch** again to finish.
 The switch needs every server to answer. When a server is down, the switch stops with both doors
 open and says so, since Ployz can't see which addresses that server moves. The review and each
 door's row say when some servers didn't answer. Bring the server back, or remove it, then switch
-again.
+again. The same goes for an address under the domain the switch leaves that no deployment
+put there, since Ployz can't tell whether it moves. The review names it. Deploy that
+environment again, or remove the address, then switch again.
 
 Custom domains stay as they are. Add each to your tunnel's DNS in Cloudflare, as the CLI steps
 below show.
@@ -60,6 +62,11 @@ Click **Switch back** next to **Public ports** and review the same way. Your ser
 ports 80 and 443 again and your addresses return to your organization's domain. The tunnel and
 the `*.example.com` record stay in your Cloudflare account. Delete them there when you're done
 with them.
+
+A switch moves only generated addresses. Your custom domains stay, and the review lists them.
+Their DNS still points at the old way in, so update their records once the switch is done; each
+one's row under its service shows the records to set. A custom domain in your zone, like
+`shop.example.com`, is one of them.
 
 `ployz cluster web-traffic cloudflare` and `ployz cluster web-traffic public` ask for the same
 switch from the CLI. They wait for an owner or admin to approve it in the dashboard, as do

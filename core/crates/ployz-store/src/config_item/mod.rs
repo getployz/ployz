@@ -18,6 +18,7 @@ use serde_json::{Value, json};
 use ts_rs::TS;
 
 use crate::Actor;
+use crate::Trusted;
 use crate::error;
 use crate::id::ConfigId;
 use crate::scope::{self, Environment, EnvironmentRef, EnvironmentSummary};
@@ -179,6 +180,7 @@ pub(crate) fn create_config(
     tx: &mut dyn Tx,
     who: &Actor,
     create: &CreateConfig,
+    trusted: &Trusted,
 ) -> Result<ConfigStaged, RpcError> {
     let mut environment = scope::lock(tx, who, &create.environment)?;
     crate::names::refuse_taken(
@@ -203,7 +205,7 @@ pub(crate) fn create_config(
             ));
         }
     }
-    scope::save_working(tx, &mut environment)?;
+    scope::save_working(tx, &mut environment, trusted)?;
     scope::introduce(tx, who, &environment.summary.id, scope::Node::Config(&node))?;
     Ok(ConfigStaged {
         config: summary(&node, &environment.names())?,
@@ -216,6 +218,7 @@ pub(crate) fn put_file(
     tx: &mut dyn Tx,
     who: &Actor,
     put: &PutConfigFile,
+    trusted: &Trusted,
 ) -> Result<ConfigStaged, RpcError> {
     let mut environment = scope::lock(tx, who, &put.environment)?;
     let names = environment.names();
@@ -269,7 +272,7 @@ pub(crate) fn put_file(
                 return Err(error);
             }
         }
-        scope::save_working(tx, &mut environment)?;
+        scope::save_working(tx, &mut environment, trusted)?;
     }
     staged(environment, &put.config, changed)
 }
@@ -278,6 +281,7 @@ pub(crate) fn remove_file(
     tx: &mut dyn Tx,
     who: &Actor,
     remove: &RemoveConfigFile,
+    trusted: &Trusted,
 ) -> Result<ConfigStaged, RpcError> {
     let mut environment = scope::lock(tx, who, &remove.environment)?;
     let config = environment.config_mut(&remove.config)?;
@@ -289,7 +293,7 @@ pub(crate) fn remove_file(
             files.iter().map(String::as_str),
         ));
     }
-    scope::save_working(tx, &mut environment)?;
+    scope::save_working(tx, &mut environment, trusted)?;
     staged(environment, &remove.config, true)
 }
 
@@ -297,6 +301,7 @@ pub(crate) fn rename_config(
     tx: &mut dyn Tx,
     who: &Actor,
     rename: &RenameConfig,
+    trusted: &Trusted,
 ) -> Result<ConfigStaged, RpcError> {
     let mut environment = scope::lock(tx, who, &rename.environment)?;
     let changed = rename.name != rename.config;
@@ -308,7 +313,7 @@ pub(crate) fn rename_config(
             None,
         )?;
         environment.config_mut(&rename.config)?.name = rename.name.clone();
-        scope::save_working(tx, &mut environment)?;
+        scope::save_working(tx, &mut environment, trusted)?;
     }
     staged(environment, &rename.name, changed)
 }
@@ -317,6 +322,7 @@ pub(crate) fn delete_config(
     tx: &mut dyn Tx,
     who: &Actor,
     delete: &DeleteConfig,
+    trusted: &Trusted,
 ) -> Result<ConfigStaged, RpcError> {
     let mut environment = scope::lock(tx, who, &delete.environment)?;
     let names = environment.names();
@@ -340,7 +346,7 @@ pub(crate) fn delete_config(
         .working
         .configs
         .retain(|node| node.resource_id != config.id.as_str());
-    scope::save_working(tx, &mut environment)?;
+    scope::save_working(tx, &mut environment, trusted)?;
     Ok(ConfigStaged {
         config,
         environment: environment.summary,
@@ -352,11 +358,12 @@ pub(crate) fn attach_config(
     tx: &mut dyn Tx,
     who: &Actor,
     mount: &AttachConfig,
+    trusted: &Trusted,
 ) -> Result<ConfigStaged, RpcError> {
     let mut environment = scope::lock(tx, who, &mount.environment)?;
     let changed = attach(&mut environment, &mount.service, &mount.config, &mount.dir)?;
     if changed {
-        scope::save_working(tx, &mut environment)?;
+        scope::save_working(tx, &mut environment, trusted)?;
     }
     mounted(environment, &mount.service, &mount.config, changed)
 }
@@ -365,11 +372,12 @@ pub(crate) fn detach_config(
     tx: &mut dyn Tx,
     who: &Actor,
     unmount: &DetachConfig,
+    trusted: &Trusted,
 ) -> Result<ConfigStaged, RpcError> {
     let mut environment = scope::lock(tx, who, &unmount.environment)?;
     let changed = detach(&mut environment, &unmount.service, &unmount.config)?;
     if changed {
-        scope::save_working(tx, &mut environment)?;
+        scope::save_working(tx, &mut environment, trusted)?;
     }
     mounted(environment, &unmount.service, &unmount.config, changed)
 }

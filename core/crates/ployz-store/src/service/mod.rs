@@ -17,6 +17,7 @@ use serde_json::json;
 use ts_rs::TS;
 
 use crate::Actor;
+use crate::Trusted;
 use crate::error;
 use crate::id::ServiceLineageId;
 use crate::scope::{self, EnvironmentRef, EnvironmentSummary};
@@ -94,6 +95,7 @@ pub(crate) fn create_service(
     tx: &mut dyn Tx,
     who: &Actor,
     create: &CreateService,
+    trusted: &Trusted,
 ) -> Result<ServiceStaged, RpcError> {
     let source = match &create.image {
         Some(image) => image_source(image.clone(), ServiceImageCredentials::None)?,
@@ -109,6 +111,7 @@ pub(crate) fn create_service(
         &create.environment,
         &create.name,
         (source, create.template.as_ref()),
+        trusted,
     )
 }
 
@@ -120,6 +123,7 @@ pub(crate) fn insert_service(
     environment: &EnvironmentRef,
     name: &ServiceName,
     (source, template): (ServiceSource, Option<&ServiceTemplate>),
+    trusted: &Trusted,
 ) -> Result<ServiceStaged, RpcError> {
     let mut environment = scope::lock(tx, who, environment)?;
     crate::names::refuse_taken(
@@ -161,7 +165,7 @@ pub(crate) fn insert_service(
         config_attachments: Vec::new(),
     };
     environment.working.services.push(node.clone());
-    scope::save_working(tx, &mut environment)?;
+    scope::save_working(tx, &mut environment, trusted)?;
     scope::introduce(
         tx,
         who,
@@ -180,6 +184,7 @@ pub(crate) fn rename_service(
     tx: &mut dyn Tx,
     who: &Actor,
     rename: &RenameService,
+    trusted: &Trusted,
 ) -> Result<ServiceStaged, RpcError> {
     let mut environment = scope::lock(tx, who, &rename.environment)?;
     let id = environment.service(&rename.service)?.id.clone();
@@ -192,7 +197,7 @@ pub(crate) fn rename_service(
             Some(&id),
         )?;
         environment.service_mut(&rename.service)?.slug = rename.name.to_string();
-        scope::save_working(tx, &mut environment)?;
+        scope::save_working(tx, &mut environment, trusted)?;
     }
     let service = summary(environment.service(&rename.name)?)?;
     Ok(ServiceStaged {
@@ -207,6 +212,7 @@ pub(crate) fn remove_service(
     tx: &mut dyn Tx,
     who: &Actor,
     remove: &RemoveService,
+    trusted: &Trusted,
 ) -> Result<ServiceStaged, RpcError> {
     let mut environment = scope::lock(tx, who, &remove.environment)?;
     let node = environment.service(&remove.service)?;
@@ -216,7 +222,7 @@ pub(crate) fn remove_service(
         .working
         .services
         .retain(|node| node.id != service.id.as_str());
-    scope::save_working(tx, &mut environment)?;
+    scope::save_working(tx, &mut environment, trusted)?;
     let removed = crate::Missing::Service {
         from: Some(service.name.clone()),
     };

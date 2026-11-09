@@ -258,7 +258,7 @@ commands! {
         keyed [c.id.as_str()] if crate::replay::service
         needs ChangesStage
         agent [ServiceAdd]
-        => crate::service::create_service(tx, who, c);
+        => crate::service::create_service(tx, who, c, trusted);
     /// Create a Service that builds a GitHub repository.
     CreateGitService(crate::CreateGitService) -> Service(ServiceStaged)
         keyed [c.id.as_str()] if crate::replay::git_service
@@ -269,75 +269,75 @@ commands! {
     RenameService(RenameService) -> ServiceRenamed(ServiceStaged)
         needs ChangesStage
         agent [ServiceRename]
-        => crate::service::rename_service(tx, who, c);
+        => crate::service::rename_service(tx, who, c, trusted);
     /// Remove a Service from Working State; a Deploy removes it.
     RemoveService(RemoveService) -> ServiceRemoved(ServiceStaged)
         needs ChangesStage
         agent [ServiceRemove]
-        => crate::service::remove_service(tx, who, c);
+        => crate::service::remove_service(tx, who, c, trusted);
     /// Create a Volume, optionally mounted into Services.
     CreateVolume(CreateVolume) -> Volume(VolumeStaged)
         keyed [c.id.as_str()] if crate::replay::volume
         needs ChangesStage
         agent [VolumeAdd]
-        => crate::volume::create_volume(tx, who, c);
+        => crate::volume::create_volume(tx, who, c, trusted);
     /// Change a draft Volume's storage; a deployed Managed Volume resizes through
     /// `ployz volume set --size` instead.
     SetVolumeStorage(SetVolumeStorage) -> Volume(VolumeStaged)
         needs ChangesStage
         agent [VolumeUpdate]
-        => crate::volume::set_storage(tx, who, c);
+        => crate::volume::set_storage(tx, who, c, trusted);
     /// Allow or refuse more than one writer of a Volume; applies at once.
     SetVolumeSharedWrites(SetVolumeSharedWrites) -> Volume(VolumeStaged)
         needs ChangesStage
         agent [VolumeUpdate]
-        => crate::volume::set_shared_writes(tx, who, c);
+        => crate::volume::set_shared_writes(tx, who, c, trusted);
     /// Remove a Volume from Working State; a Deploy deletes its data.
     RemoveVolume(RemoveVolume) -> VolumeRemoved(VolumeStaged)
         needs ChangesStage
         agent [VolumeRemove]
-        => crate::volume::remove_volume(tx, who, c);
+        => crate::volume::remove_volume(tx, who, c, trusted);
     /// Rename a Volume; mounts follow it.
     RenameVolume(RenameVolume) -> VolumeRenamed(VolumeStaged)
         needs ChangesStage
         agent [VolumeUpdate]
-        => crate::volume::rename_volume(tx, who, c);
+        => crate::volume::rename_volume(tx, who, c, trusted);
     /// Create a Config, optionally mounted into Services.
     CreateConfig(CreateConfig) -> Config(ConfigStaged)
         keyed [c.id.as_str()] if crate::replay::config
         needs ChangesStage
         agent [ConfigWrite]
-        => crate::config_item::create_config(tx, who, c);
+        => crate::config_item::create_config(tx, who, c, trusted);
     /// Put a file into a Config, replacing one of that name.
     PutConfigFile(PutConfigFile) -> Config(ConfigStaged)
         needs ChangesStage
         agent [ConfigWrite]
-        => crate::config_item::put_file(tx, who, c);
+        => crate::config_item::put_file(tx, who, c, trusted);
     /// Remove a file from a Config.
     RemoveConfigFile(RemoveConfigFile) -> Config(ConfigStaged)
         needs ChangesStage
         agent [ConfigRemove]
-        => crate::config_item::remove_file(tx, who, c);
+        => crate::config_item::remove_file(tx, who, c, trusted);
     /// Rename a Config; mounts follow it.
     RenameConfig(RenameConfig) -> ConfigRenamed(ConfigStaged)
         needs ChangesStage
         agent [ConfigRename]
-        => crate::config_item::rename_config(tx, who, c);
+        => crate::config_item::rename_config(tx, who, c, trusted);
     /// Delete a Config from Working State, unmounting it everywhere.
     DeleteConfig(DeleteConfig) -> ConfigRemoved(ConfigStaged)
         needs ChangesStage
         agent [ConfigRemove]
-        => crate::config_item::delete_config(tx, who, c);
+        => crate::config_item::delete_config(tx, who, c, trusted);
     /// Mount a Config into a Service at a directory.
     AttachConfig(AttachConfig) -> Config(ConfigStaged)
         needs ChangesStage
         agent [ConfigWrite]
-        => crate::config_item::attach_config(tx, who, c);
+        => crate::config_item::attach_config(tx, who, c, trusted);
     /// Unmount a Config from a Service.
     DetachConfig(DetachConfig) -> Config(ConfigStaged)
         needs ChangesStage
         agent none "service_update unmounts a Config with an edit."
-        => crate::config_item::detach_config(tx, who, c);
+        => crate::config_item::detach_config(tx, who, c, trusted);
     /// Set and unset Settings in one Environment.
     Edit(Edit) -> Edited(Edited)
         needs ChangesStage
@@ -353,12 +353,12 @@ commands! {
     StageHistory(StageHistory) -> HistoryStaged(HistoryStaged)
         needs ChangesStage
         agent [History]
-        => crate::review::history::stage(tx, who, c);
+        => crate::review::history::stage(tx, who, c, trusted);
     /// Return Working State, or part of it, to what is deployed.
     Discard(Discard) -> Discarded(Discarded)
         needs ChangesStage
         agent [DiscardInput]
-        => crate::review::publish::discard(tx, who, c);
+        => crate::review::publish::discard(tx, who, c, trusted);
     /// Freeze Saved State into a queued Deployment, publishing Working State first,
     /// or queue again what an ended Deployment froze.
     Admit(Admit) -> Deployment(crate::DeploymentSummary)
@@ -408,12 +408,12 @@ commands! {
     UndoSync(crate::UndoSync) -> Undone(crate::Undone)
         needs ChangesStage
         agent none "No tool works on branches."
-        => crate::branch::undo(tx, who, c);
+        => crate::branch::undo(tx, who, c, trusted);
     /// Remove a source included in a draft: what it still owns there goes back.
     RemoveProposal(crate::RemoveProposal) -> Removed(crate::Removed)
         needs ChangesStage
         agent none "No tool works on branches."
-        => crate::branch::remove_proposal(tx, who, c);
+        => crate::branch::remove_proposal(tx, who, c, trusted);
     /// Stage the hints a Parent left in an Environment.
     Take(crate::Take) -> Taken(crate::Taken)
         needs ChangesStage

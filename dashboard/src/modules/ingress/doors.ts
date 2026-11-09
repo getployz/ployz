@@ -93,21 +93,57 @@ export function observationGap(observed: ClusterIngressObservation | null) {
 /** A generated hostname and where it goes when the switch changes the Cluster Domain's source. */
 export type MovedHostname = { readonly from: string; readonly to: string; readonly namespace: string; readonly service: string };
 
+/**
+ * What produced each hostname the Store's Applied State serves, by {@link routeKey}: a generated domain or a custom
+ * one. A published name not here, no Deployment Cloud knows of put there, so a switch can't tell whether it moves.
+ */
+export type KnownRoutes = ReadonlyMap<string, "generated" | "custom">;
+export const routeKey = (namespace: string, hostname: string) => `${namespace}/${hostname}`;
+
 /** The moves whose new hostname no container of its Namespace publishes yet. */
 export const unservedMoves = (published: readonly PublishedHostname[], moving: readonly MovedHostname[]) =>
   moving.filter((move) => !published.some(({ hostname, namespace }) => hostname === move.to && namespace === move.namespace));
 
 /**
- * Every hostname Services publish under `from` and the one it becomes under `to`. A custom domain isn't under the
- * Cluster Domain, so it doesn't move.
+ * Every hostname Services publish one label under `from` that a Deployment generated there, and the one it becomes
+ * under `to`. A custom domain keeps its route whatever the source, so one spelled the same way doesn't move, and
+ * only a name `known` as generated moves: Working State can't say, since a domain removed there is still deployed.
  */
-export function movedHostnames(published: readonly PublishedHostname[], from: string, to: string): MovedHostname[] {
-  const suffix = `.${from}`;
+export function movedHostnames(published: readonly PublishedHostname[], from: string, to: string, known: KnownRoutes): MovedHostname[] {
   return published
-    .filter(({ hostname }) => hostname.endsWith(suffix) && !hostname.slice(0, -suffix.length).includes("."))
-    .map(({ hostname, namespace, service }) => ({ from: hostname, to: `${hostname.slice(0, -suffix.length)}.${to}`, namespace, service }))
+    .flatMap(({ hostname, namespace, service }) => {
+      const label = labelUnder(hostname, from);
+      return label === null || known.get(routeKey(namespace, hostname)) !== "generated" ? [] : [{ from: hostname, to: `${label}.${to}`, namespace, service }];
+    })
     .sort((a, b) => a.from.localeCompare(b.from));
 }
+
+/** The hostnames published one label under `from` that no Deployment the Store knows of put there. */
+export const unknownHostnames = (published: readonly PublishedHostname[], from: string, known: KnownRoutes) =>
+  published.filter(({ hostname, namespace }) => labelUnder(hostname, from) !== null && !known.has(routeKey(namespace, hostname)));
+
+/** Why a switch stops on the first of `unknown`: moving it could leave a custom domain behind, and leaving it could strand a generated one. */
+export function unknownGap(unknown: readonly PublishedHostname[]) {
+  const [first] = unknown;
+  if (first === undefined) return null;
+  return `${first.hostname} is served by ${first.namespace}/${first.service}, which Cloud can't match to a deployed domain. Deploy it again or remove it, then switch again.`;
+}
+
+/** The label of `hostname` one level under `zone`, where generated names sit, or null. */
+const labelUnder = (hostname: string, zone: string) => {
+  const suffix = `.${zone}`;
+  if (!hostname.endsWith(suffix)) return null;
+  const label = hostname.slice(0, -suffix.length);
+  return label.length > 0 && !label.includes(".") ? label : null;
+};
+
+/**
+ * The custom domains the Servers publish, as the Deployments that put them there say. A switch leaves each where it
+ * is, but its DNS still points at the Door the switch closes, so the review names them for the user to repoint.
+ */
+export const keptHostnames = (published: readonly PublishedHostname[], known: KnownRoutes) =>
+  [...new Set(published.filter(({ hostname, namespace }) => known.get(routeKey(namespace, hostname)) === "custom").map(({ hostname }) => hostname))]
+    .sort((a, b) => a.localeCompare(b));
 
 /** An Environment a switch redeploys, with only the Services whose hostnames move, by their names in the Store. */
 export type RedeployScope = { readonly namespace: string; readonly project: string; readonly environment: string; readonly services: readonly string[] };

@@ -227,7 +227,7 @@ pub(crate) fn create_branch(
         (&from, &carried),
         applied.next,
         &picks,
-        Some(trusted),
+        trusted,
     )?;
     Ok(Branched {
         branch: view(tx, &branch)?,
@@ -319,14 +319,7 @@ pub(crate) fn copy_node(
         .map(|row| row.id.clone())
         .collect();
     let none = BTreeMap::new();
-    let staged = checked.apply(
-        tx,
-        who,
-        &mut branch,
-        &picks,
-        &none,
-        (Owner::None, Some(trusted)),
-    )?;
+    let staged = checked.apply(tx, who, &mut branch, &picks, &none, (Owner::None, trusted))?;
     // The copy's variables have their own IDs: keep the owner's, from the very
     // state the copy landed, for its seals.
     for service in &own.from.services {

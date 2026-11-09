@@ -39,6 +39,10 @@ pub struct IncomingChange {
 /// Sync, its arrivals unrecorded (#3788). With `seal_below`, a seal a
 /// Branch holds back also reaches the Branches below it that inherited the value:
 /// once per Deployment, as it ends (#3780). The caller holds the Project's lock.
+///
+/// It runs as the Parent's runner records, with no Cloud call before it, so it holds no
+/// evidence, of the Cluster Domain neither: a Door switch may have replaced the one the
+/// Deployment froze, and a prefix it brings expands under the one the Branch deploys with.
 pub(crate) fn follow(
     tx: &mut dyn Tx,
     parent: &EnvironmentId,
@@ -46,6 +50,7 @@ pub(crate) fn follow(
     lineages: &BTreeSet<String>,
     seal_below: bool,
 ) -> Result<(), RpcError> {
+    let trusted = &Trusted::default();
     let branches = tx.query(
         "SELECT environment_id, organization_id FROM config_environment_branch b \
          WHERE parent_id = ?1 AND NOT EXISTS (SELECT 1 FROM config_removal_mark m \
@@ -84,7 +89,9 @@ pub(crate) fn follow(
                 continue;
             }
             locked => {
-                match locked.and_then(|mut locked| into(tx, &who, &parent, &mut locked, lineages)) {
+                match locked
+                    .and_then(|mut locked| into(tx, &who, &parent, &mut locked, lineages, trusted))
+                {
                     Err(error) if crate::automation::skippable(&error) => Vec::new(),
                     done => done?,
                 }
@@ -133,7 +140,7 @@ pub(crate) fn follow(
             for lineage in left {
                 let withdrawn = crate::storage::attempt(tx, |tx| {
                     let mut branch = scope::lock_id(tx, &who, &branch)?;
-                    withdraw(tx, &mut branch, &parent.summary.id, &lineage)
+                    withdraw(tx, &mut branch, &parent.summary.id, &lineage, trusted)
                 });
                 match withdrawn {
                     Ok(false) => refused.push(lineage),
@@ -183,7 +190,8 @@ pub(super) fn stopped(tx: &mut dyn Tx, branch: &EnvironmentId) -> Result<bool, R
 }
 
 /// Stage in `branch`, locked, what `parent` deployed to `lineages` and hasn't
-/// delivered yet. Answers each variable `parent` sealed that the Branch's own change
+/// delivered yet, unless a hostname it brings could be a custom domain's under any
+/// Cluster Domain. Answers each variable `parent` sealed that the Branch's own change
 /// holds back.
 fn into(
     tx: &mut dyn Tx,
@@ -191,6 +199,7 @@ fn into(
     parent: &Environment,
     branch: &mut Environment,
     lineages: &BTreeSet<String>,
+    trusted: &Trusted,
 ) -> Result<Vec<RowId>, RpcError> {
     let before = Cells::of(&branch.working, "");
     let follow = Move::follow(tx, parent, branch)?;
@@ -236,7 +245,14 @@ fn into(
     }
     if !landing.is_empty() {
         let landed = crate::storage::attempt(tx, |tx| {
-            checked.apply(tx, who, branch, &landing, &none, (Owner::None, None))
+            let was = branch.working.clone();
+            checked.apply(tx, who, branch, &landing, &none, (Owner::None, trusted))?;
+            crate::domain::refuse_new_shared_hostnames(
+                tx,
+                branch,
+                crate::domain::Under::Any,
+                (&was, &branch.working),
+            )
         });
         match landed {
             // One of the Branch's own rules refuses it: all of it is a hint.
@@ -381,14 +397,7 @@ pub(crate) fn take(
         ));
     }
     let none = BTreeMap::new();
-    let staged = checked.apply(
-        tx,
-        who,
-        &mut branch,
-        &picks,
-        &none,
-        (Owner::None, Some(trusted)),
-    )?;
+    let staged = checked.apply(tx, who, &mut branch, &picks, &none, (Owner::None, trusted))?;
     let asked = json!({ "version": take.version, "rows": take.rows });
     review::approve_move(
         tx,

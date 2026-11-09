@@ -761,9 +761,14 @@ fn inherited(
 /// Persist changed Working State as the next revision. The document is validated
 /// whole first, so the Store never holds one it cannot read back, and must break no
 /// rule of [`crate::rules`] that the Working State it replaces didn't. Refreshes
-/// `environment.live` for the new Working State.
-pub(crate) fn save_working(tx: &mut dyn Tx, environment: &mut Environment) -> Result<(), RpcError> {
-    save_working_from(tx, environment, None)
+/// `environment.live` for the new Working State. `trusted` carries the Cluster Domain
+/// the names it introduces are checked under.
+pub(crate) fn save_working(
+    tx: &mut dyn Tx,
+    environment: &mut Environment,
+    trusted: &crate::Trusted,
+) -> Result<(), RpcError> {
+    save_working_from(tx, environment, None, trusted)
 }
 
 /// [`save_working`] for Working State copied or restored from `from`: what `from`
@@ -772,8 +777,9 @@ pub(crate) fn save_working_from(
     tx: &mut dyn Tx,
     environment: &mut Environment,
     from: Option<&SavedEnvironmentIntent>,
+    trusted: &crate::Trusted,
 ) -> Result<(), RpcError> {
-    validate_and_refresh_working_from(tx, environment, from)?;
+    validate_and_refresh_working_from(tx, environment, from, trusted)?;
     persist_working(tx, environment)
 }
 
@@ -883,8 +889,9 @@ pub(crate) fn validated_working_from(
     tx: &mut dyn Tx,
     mut environment: Environment,
     from: Option<&SavedEnvironmentIntent>,
+    trusted: &crate::Trusted,
 ) -> Result<ValidatedWorking, RpcError> {
-    validate_and_refresh_working_from(tx, &mut environment, from)?;
+    validate_and_refresh_working_from(tx, &mut environment, from, trusted)?;
     environment.working = ployz_core::config::canonicalize_environment_intent(environment.working);
     Ok(ValidatedWorking { environment })
 }
@@ -893,6 +900,7 @@ pub(crate) fn validate_and_refresh_working_from(
     tx: &mut dyn Tx,
     environment: &mut Environment,
     from: Option<&SavedEnvironmentIntent>,
+    trusted: &crate::Trusted,
 ) -> Result<(), RpcError> {
     // What is stored now is what this write replaces: the rules compare the two.
     let rows = tx.query(
@@ -906,6 +914,12 @@ pub(crate) fn validate_and_refresh_working_from(
     // Every write of Working State, whole or not, comes through here.
     crate::variables::make_generated(&mut environment.working)?;
     crate::names::refuse_new_reserved(&before, &environment.working)?;
+    crate::domain::refuse_new_shared_hostnames(
+        tx,
+        environment,
+        crate::domain::Under::Cloud(trusted.cluster_domain()),
+        (&before, &environment.working),
+    )?;
     crate::client_sealed::refuse_port(&environment.working)?;
     let (working, live) = checked(
         tx,

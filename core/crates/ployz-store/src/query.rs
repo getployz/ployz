@@ -10,8 +10,9 @@ pub use crate::config_item::query::{
     ConfigItemQuery, ConfigItemView, ConfigListing, ConfigMountChange, ConfigsQuery, ConfigsView,
 };
 pub use crate::deployment::query::{
-    DeploymentQuery, DeploymentsQuery, DeploymentsView, NamespaceQuery, NamespaceView,
-    NamespacesQuery, NamespacesView, NumberedDeploymentQuery, OwnedNamespace, PlanQuery, PlanView,
+    AppliedRoute, DeploymentQuery, DeploymentsQuery, DeploymentsView, NamespaceQuery,
+    NamespaceView, NamespacesQuery, NamespacesView, NumberedDeploymentQuery, OwnedNamespace,
+    PlanQuery, PlanView, RouteKind,
 };
 pub use crate::deployment::uploads::{HeldUpload, UploadsQuery, UploadsView};
 pub use crate::review::diff::DiffQuery;
@@ -173,7 +174,7 @@ queries! {
     /// Immutable Saved revisions and their redacted summaries.
     History(HistoryQuery) -> HistoryView => crate::review::history::history(tx, who, q);
     /// What Restore or Undo would stage and overwrite in the draft.
-    HistoryPreview(HistoryPreviewQuery) -> HistoryPreview => crate::review::history::preview(tx, who, q);
+    HistoryPreview(HistoryPreviewQuery) -> HistoryPreview => crate::review::history::preview(tx, who, q, trusted);
     /// The variable names under which an Environment's Containers may hold Sealed values.
     SealedNames(SealedNamesQuery) -> SealedNamesView => crate::review::sealed::names_view(tx, who, q);
     /// Where a write's secrets land, for a CLI that seals them itself.

@@ -102,6 +102,7 @@ pub(crate) fn create_git_service(
         &create.environment,
         &create.name,
         (source, None),
+        trusted,
     )
 }
 

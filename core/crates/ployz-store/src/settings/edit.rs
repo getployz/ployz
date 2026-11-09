@@ -390,7 +390,7 @@ pub(crate) fn edit(
     } = editing;
     crate::git::check_sources(&before, &environment.working, trusted)?;
     if environment.working != before {
-        scope::save_working(tx, &mut environment)?;
+        scope::save_working(tx, &mut environment, trusted)?;
     }
     Ok(Edited {
         environment: environment.summary,

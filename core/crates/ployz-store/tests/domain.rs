@@ -15,7 +15,7 @@ use ployz_store::{
     DomainQuery, DomainRow, DomainStatus, DomainsQuery, EnvironmentId, EnvironmentName,
     EnvironmentRef, Hostname, OrganizationId, PlanQuery, ProjectId, ProjectName, Publish,
     PublishedHostname, Query, RemoveDomain, RenameProject, Retry, RunEvidence, RunnerId,
-    ServiceLineageId, SetGeneratedDomain, Trusted, View, Written,
+    ServiceLineageId, SetGeneratedDomain, Trusted, TunnelEvidence, View, Written,
 };
 use serde_json::{Value, json};
 
@@ -451,12 +451,17 @@ fn admit(
 
 /// Run Deployment `n` to a success that confirms `web`.
 fn apply(store: &ConfigStore, n: u8) -> ployz_core::DeployIntent {
+    apply_service(store, n, "web")
+}
+
+/// Run Deployment `n` to success, confirming Service `service`.
+fn apply_service(store: &ConfigStore, n: u8, service: &str) -> ployz_core::DeployIntent {
     let runner = RunnerId::parse("runner").unwrap();
     let claimed = store.claim(&deployment(n), &runner).unwrap();
     let operation = json!({"type": "remove_container", "machine_id": "a".repeat(32), "container_id": "a".repeat(64)});
     let preview: DeployPreview = serde_json::from_value(json!({
         "namespace": "shop-production",
-        "operations": [{ "index": 0, "machine_id": "a".repeat(32), "service_name": "web",
+        "operations": [{ "index": 0, "machine_id": "a".repeat(32), "service_name": service,
             "operation": operation, "status": {"type": "pending"} }],
         "warnings": [], "would_remove": [], "preserved_volumes": []
     }))
@@ -950,6 +955,77 @@ fn a_custom_domain_under_the_cluster_domain_is_refused() {
         .unwrap();
 }
 
+#[test]
+fn behind_a_tunnel_a_custom_domain_may_sit_in_the_users_own_zone() {
+    let (store, who) = shop();
+    let mut trusted = cloud();
+    trusted.domains.cluster_domain.as_mut().unwrap().name = host("acme-apps.com");
+    let refused = store
+        .write_trusted(&who, &add(Some("shop.acme-apps.com"), None), &trusted)
+        .unwrap_err();
+    assert_eq!(refused.code, RpcErrorCode::InvalidArgument);
+    trusted.domains.tunnel = Some(TunnelEvidence {
+        target: host("0a1b2c.cfargotunnel.com"),
+        reached: Vec::new(),
+    });
+    for hostname in ["shop.acme-apps.com", "a.b.acme-apps.com"] {
+        store
+            .write_trusted(&who, &add(Some(hostname), None), &trusted)
+            .unwrap();
+    }
+}
+
+#[test]
+fn behind_a_tunnel_a_custom_name_and_a_generated_prefix_never_share_a_hostname() {
+    let (store, who) = shop();
+    let mut trusted = cloud();
+    trusted.domains.cluster_domain.as_mut().unwrap().name = host("acme-apps.com");
+    trusted.domains.tunnel = Some(TunnelEvidence {
+        target: host("0a1b2c.cfargotunnel.com"),
+        reached: Vec::new(),
+    });
+    let staging = |hostname: &str| AddDomain {
+        environment: at(Some("staging")),
+        ..add(Some(hostname), None)
+    };
+    // production's web generates shop.acme-apps.com: no Service may take it as a custom name.
+    store
+        .write_trusted(&who, &add_prefix("shop"), &trusted)
+        .unwrap();
+    let refused = store
+        .write_trusted(&who, &staging("shop.acme-apps.com"), &trusted)
+        .unwrap_err();
+    assert_eq!(refused.code, RpcErrorCode::Conflict);
+    assert_eq!(
+        refused.message,
+        "shop.acme-apps.com is already the generated domain of web in shop/production"
+    );
+    let own = store
+        .write_trusted(&who, &add(Some("shop.acme-apps.com"), None), &trusted)
+        .unwrap_err();
+    assert_eq!(own.code, RpcErrorCode::Conflict);
+    // The other way round: a custom name in the zone keeps its label from every generated domain.
+    store
+        .write_trusted(&who, &staging("blog.acme-apps.com"), &trusted)
+        .unwrap();
+    let refused = store
+        .write_trusted(&who, &add_prefix("blog"), &trusted)
+        .unwrap_err();
+    assert_eq!(refused.code, RpcErrorCode::Conflict);
+    assert_eq!(
+        refused.message,
+        "blog.acme-apps.com is already the custom domain of web in shop/staging"
+    );
+    let renamed = store
+        .write_trusted(&who, &set_prefix(None, "blog"), &trusted)
+        .unwrap_err();
+    assert_eq!(renamed.code, RpcErrorCode::Conflict);
+    // A deeper name shares no label with a generated domain.
+    store
+        .write_trusted(&who, &staging("a.shop.acme-apps.com"), &trusted)
+        .unwrap();
+}
+
 /// `cloud()` with `hostname` published by `service` in Namespace `namespace`.
 fn publishing(hostname: &str, namespace: &str, service: &str) -> Trusted {
     let mut trusted = cloud();
@@ -1113,26 +1189,19 @@ fn a_branch_whose_name_makes_a_generated_hostname_too_long_is_refused() {
         fix: None,
     };
 
-    admit(&store, &who, 1, &trusted).unwrap();
-    apply(&store, 1);
+    let refused = store
+        .write_trusted(&who, &branch("fixit"), &trusted)
+        .unwrap_err();
+    assert_eq!(refused.code, RpcErrorCode::InvalidArgument, "{refused:?}");
+    assert!(refused.message.contains("253"), "{refused:?}");
+    assert!(
+        refused.message.contains("shorter branch name"),
+        "{refused:?}"
+    );
+    assert_eq!(refused.details["hostname"], format!("web-fixit.{cluster}"));
 
-    // Without Cloud's evidence, the Cluster Domain the Parent last deployed under.
-    for refused in [
-        store
-            .write_trusted(&who, &branch("fixit"), &trusted)
-            .unwrap_err(),
-        store.write(&who, &branch("fixit")).unwrap_err(),
-    ] {
-        assert_eq!(refused.code, RpcErrorCode::InvalidArgument, "{refused:?}");
-        assert!(refused.message.contains("253"), "{refused:?}");
-        assert!(
-            refused.message.contains("shorter branch name"),
-            "{refused:?}"
-        );
-        assert_eq!(refused.details["hostname"], format!("web-fixit.{cluster}"));
-    }
-
-    store.write(&who, &branch("fix")).unwrap();
+    store.write_trusted(&who, &branch("fix"), &trusted).unwrap();
+    store.write(&who, &branch("fixit")).unwrap();
 }
 
 /// A Branch's name can make a copied subdomain longer than a DNS label: refused with
@@ -1172,6 +1241,100 @@ fn a_branch_whose_name_makes_a_generated_subdomain_too_long_is_refused() {
     assert_eq!(refused.details["prefix"], format!("abcdefghijkl-{long}"));
 
     store.write(&who, &branch(&"n".repeat(50))).unwrap();
+}
+
+/// A Branch adds its name to each generated prefix it copies, so the hostname it makes
+/// can be a custom domain another Service holds: refused when the Branch is made, as
+/// adding that prefix would be.
+#[test]
+fn a_branch_whose_name_makes_a_generated_hostname_a_custom_domain_is_refused() {
+    let (store, who) = shop();
+    let mut trusted = cloud();
+    trusted.domains.cluster_domain.as_mut().unwrap().name = host("acme-apps.com");
+    trusted.domains.tunnel = Some(TunnelEvidence {
+        target: host("0a1b2c.cfargotunnel.com"),
+        reached: Vec::new(),
+    });
+    store
+        .write_trusted(&who, &add(None, None), &trusted)
+        .unwrap();
+    let staging = AddDomain {
+        environment: at(Some("staging")),
+        ..add(Some("web-feature.acme-apps.com"), None)
+    };
+    store.write_trusted(&who, &staging, &trusted).unwrap();
+    let branch = |name: &str| ployz_store::CreateBranch {
+        id: EnvironmentId::parse(
+            uuid::Uuid::new_v5(&uuid::Uuid::NAMESPACE_OID, name.as_bytes()).to_string(),
+        )
+        .unwrap(),
+        from: at(None),
+        name: EnvironmentName::parse(name).unwrap(),
+        copy: vec![ployz_store::NodeName::Service(
+            ServiceName::parse("web").unwrap(),
+        )],
+        live: Vec::new(),
+        setup: Vec::new(),
+        keep: false,
+        fix: None,
+    };
+
+    let refused = store
+        .write_trusted(&who, &branch("feature"), &trusted)
+        .unwrap_err();
+    assert_eq!(refused.code, RpcErrorCode::Conflict, "{refused:?}");
+    assert_eq!(
+        refused.message,
+        "web-feature.acme-apps.com is already the custom domain of web in shop/staging"
+    );
+    assert_eq!(refused.details["hostname"], "web-feature.acme-apps.com");
+
+    store.write_trusted(&who, &branch("fix"), &trusted).unwrap();
+}
+
+/// The Namespace view says what produced each hostname Applied State serves, so a
+/// switch of the Cluster's Door tells a custom domain from a generated one by the
+/// Deployment that put it there, not by Working State, which may have dropped it since.
+#[test]
+fn a_namespace_lists_the_routes_it_serves_by_what_produced_them() {
+    let (store, who) = shop();
+    let trusted = cloud();
+    store
+        .write_trusted(&who, &add(None, None), &trusted)
+        .unwrap();
+    store
+        .write_trusted(&who, &add(Some("shop.example.org"), None), &trusted)
+        .unwrap();
+    let query = ployz_store::NamespaceQuery::default();
+    assert_eq!(store.read(&who, &query).unwrap().routes, Some(Vec::new()));
+    admit(&store, &who, 1, &trusted).unwrap();
+    apply(&store, 1);
+    store
+        .write_trusted(
+            &who,
+            &RemoveDomain {
+                environment: EnvironmentRef::default(),
+                domain: "shop.example.org".into(),
+            },
+            &trusted,
+        )
+        .unwrap();
+    let web = ServiceName::parse("web").unwrap();
+    assert_eq!(
+        store.read(&who, &query).unwrap().routes,
+        Some(vec![
+            ployz_store::AppliedRoute {
+                hostname: host("shop.example.org"),
+                service: web.clone(),
+                kind: ployz_store::RouteKind::Custom,
+            },
+            ployz_store::AppliedRoute {
+                hostname: host("web.acme.ployz.app"),
+                service: web,
+                kind: ployz_store::RouteKind::Generated,
+            },
+        ])
+    );
 }
 
 #[test]
@@ -1262,4 +1425,218 @@ fn a_renamed_project_reads_by_its_new_name() {
         store.write(&who, &missing).unwrap_err().code,
         RpcErrorCode::NotFound
     );
+}
+
+/// `cloud()` behind a Cloudflare Tunnel, with `acme-apps.com` as the zone.
+fn tunnel() -> Trusted {
+    let mut trusted = cloud();
+    trusted.domains.cluster_domain.as_mut().unwrap().name = host("acme-apps.com");
+    trusted.domains.tunnel = Some(TunnelEvidence {
+        target: host("0a1b2c.cfargotunnel.com"),
+        reached: Vec::new(),
+    });
+    trusted
+}
+
+/// A Door switch changes the Cluster Domain without a Deployment of a Service that
+/// has no generated name to move, so the one its last Deployment froze is stale: a
+/// write checks its names under the Cluster Domain Cloud knows now.
+#[test]
+fn a_generated_prefix_is_checked_under_the_cluster_domain_cloud_knows_now() {
+    let (store, who) = shop();
+    store
+        .write_trusted(&who, &add(Some("web.acme-apps.com"), None), &tunnel())
+        .unwrap();
+    admit(&store, &who, 1, &tunnel()).unwrap();
+    apply(&store, 1);
+
+    let added = store
+        .write_trusted(&who, &add_prefix("web"), &cloud())
+        .unwrap();
+    assert_eq!(added.written.domain.shown(), "web.acme.ployz.app");
+}
+
+/// A restore brings a generated prefix back into Working State like an add does: refused
+/// when another Service took its hostname as a custom domain since, in an Environment
+/// that never deployed too.
+#[test]
+fn a_restored_generated_prefix_never_takes_a_hostname_a_custom_domain_holds() {
+    let (store, who) = shop();
+    let trusted = tunnel();
+    store
+        .write_trusted(&who, &add_prefix("web"), &trusted)
+        .unwrap();
+    let saved = store
+        .write_trusted(
+            &who,
+            &Publish {
+                id: None,
+                environment: at(None),
+                version: None,
+                message: None,
+                accept_volume_loss: Vec::new(),
+            },
+            &trusted,
+        )
+        .unwrap()
+        .saved
+        .unwrap();
+    store
+        .write_trusted(
+            &who,
+            &RemoveDomain {
+                environment: at(None),
+                domain: "web".into(),
+            },
+            &trusted,
+        )
+        .unwrap();
+    store
+        .write_trusted(
+            &who,
+            &AddDomain {
+                environment: at(Some("staging")),
+                ..add(Some("web.acme-apps.com"), None)
+            },
+            &trusted,
+        )
+        .unwrap();
+
+    let preview = ployz_store::HistoryPreviewQuery {
+        environment: at(None),
+        revision: saved,
+        action: ployz_store::HistoryAction::Restore,
+        change: None,
+    };
+    let refused = store.read_trusted(&who, &preview, &trusted).unwrap_err();
+    assert_eq!(refused.code, RpcErrorCode::Conflict, "{refused:?}");
+    assert_eq!(
+        refused.message,
+        "web.acme-apps.com is already the custom domain of web in shop/staging"
+    );
+    let diff: DiffView = store
+        .read_trusted(&who, &DiffQuery::default(), &trusted)
+        .unwrap();
+    let stage = ployz_store::StageHistory {
+        environment: at(None),
+        revision: saved,
+        action: ployz_store::HistoryAction::Restore,
+        change: None,
+        version: diff.version,
+        accept_overwrite: true,
+    };
+    let refused = store.write_trusted(&who, &stage, &trusted).unwrap_err();
+    assert_eq!(refused.code, RpcErrorCode::Conflict, "{refused:?}");
+
+    let discard = ployz_store::Discard {
+        environment: at(None),
+        target: Some(ployz_store::DiscardTarget::Saved),
+        path: None,
+        version: None,
+    };
+    let refused = store.write_trusted(&who, &discard, &trusted).unwrap_err();
+    assert_eq!(refused.code, RpcErrorCode::Conflict, "{refused:?}");
+    assert_eq!(refused.details["hostname"], "web.acme-apps.com");
+}
+
+/// Branch `feature` of production holding a copy of `web`, and a new Service `api` in
+/// production with the generated prefix `api`, its Deploy admitted under `admitted`.
+fn api_beside_feature(admitted: &Trusted) -> (ConfigStore, Actor) {
+    let (store, who) = shop();
+    let branch = ployz_store::CreateBranch {
+        id: EnvironmentId::parse(uuid(30)).unwrap(),
+        from: at(None),
+        name: EnvironmentName::parse("feature").unwrap(),
+        copy: vec![ployz_store::NodeName::Service(
+            ServiceName::parse("web").unwrap(),
+        )],
+        live: Vec::new(),
+        setup: Vec::new(),
+        keep: false,
+        fix: None,
+    };
+    store.write_trusted(&who, &branch, &cloud()).unwrap();
+    let api = CreateService {
+        id: ServiceLineageId::parse(uuid(31)).unwrap(),
+        environment: at(None),
+        name: ServiceName::parse("api").unwrap(),
+        image: Some("nginx:1".into()),
+        template: None,
+    };
+    store.write_trusted(&who, &api, &cloud()).unwrap();
+    let prefix = AddDomain {
+        service: ServiceName::parse("api").unwrap(),
+        ..add_prefix("api")
+    };
+    store.write_trusted(&who, &prefix, &cloud()).unwrap();
+    admit(&store, &who, 1, admitted).unwrap();
+    (store, who)
+}
+
+/// The hostnames `feature` lists under the tunnel zone, and how many Follow hints it holds.
+fn feature_after_follow(store: &ConfigStore, who: &Actor) -> (Vec<String>, usize) {
+    let feature = at(Some("feature"));
+    let found = store
+        .read_trusted(
+            who,
+            &DomainsQuery {
+                environment: feature.clone(),
+                service: None,
+            },
+            &tunnel(),
+        )
+        .unwrap();
+    let names = found
+        .domains
+        .iter()
+        .map(|row| row.domain.shown().to_owned())
+        .collect();
+    let diff: DiffView = store
+        .read(
+            who,
+            &DiffQuery {
+                environment: feature,
+            },
+        )
+        .unwrap();
+    (names, diff.follow_hints.len())
+}
+
+/// A Deployment's Follow brings a new Service into its Branches with a generated prefix
+/// the Branch suffixes. That name expands under the Cluster Domain current when the
+/// Branch deploys, which a Door switch may have changed since the Deployment's
+/// admission, so a name a custom domain holds stays a hint however it was admitted.
+#[test]
+fn a_new_service_follows_into_a_branch_without_a_name_a_custom_domain_holds() {
+    for (admitted, trusted) in [("before the switch", cloud()), ("after it", tunnel())] {
+        let (store, who) = api_beside_feature(&trusted);
+        let custom = AddDomain {
+            environment: at(Some("staging")),
+            ..add(Some("api-feature.acme-apps.com"), None)
+        };
+        store.write_trusted(&who, &custom, &tunnel()).unwrap();
+        apply_service(&store, 1, "api");
+
+        let (names, hints) = feature_after_follow(&store, &who);
+        assert!(
+            !names.iter().any(|name| name == "api-feature.acme-apps.com"),
+            "admitted {admitted}: feature took staging's custom domain as generated: {names:?}"
+        );
+        assert!(hints > 0, "admitted {admitted}: api arrived as no hint");
+    }
+}
+
+/// A new Service whose generated name no custom domain holds follows into the Branch,
+/// expanding under the Cluster Domain Cloud knows now, after a Door switch too.
+#[test]
+fn a_new_service_follows_into_a_branch_with_its_generated_name() {
+    let (store, who) = api_beside_feature(&cloud());
+    apply_service(&store, 1, "api");
+
+    let (names, hints) = feature_after_follow(&store, &who);
+    assert!(
+        names.iter().any(|name| name == "api-feature.acme-apps.com"),
+        "{names:?}"
+    );
+    assert_eq!(hints, 0);
 }
