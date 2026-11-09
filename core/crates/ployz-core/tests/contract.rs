@@ -647,6 +647,7 @@ fn per_machine_capability_fixture_is_stable_and_additive() {
             CapabilityName::parse(DESCRIBE_CONTRACT_CAPABILITY).unwrap(),
         ]),
         sealing: None,
+        attest: None,
     };
 
     assert!(description.supports(DESCRIBE_CONTRACT_CAPABILITY));

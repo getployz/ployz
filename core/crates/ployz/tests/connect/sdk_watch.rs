@@ -521,6 +521,7 @@ fn watch_description() -> ContractDescription {
         ]
         .into(),
         sealing: None,
+        attest: None,
     }
 }
 
