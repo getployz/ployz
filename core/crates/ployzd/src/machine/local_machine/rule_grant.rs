@@ -188,6 +188,8 @@ impl LocalMachine {
         if !rule.machines.contains(&record.id()) {
             return Err(refused("a Machine"));
         }
+        // An ended generation still supersedes every one below it.
+        self.approvals.mark_rule(&rule)?;
         if rule.ended {
             return Err(refused("an ended rule"));
         }

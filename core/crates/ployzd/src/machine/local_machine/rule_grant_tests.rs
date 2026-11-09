@@ -423,6 +423,21 @@ async fn an_ended_rule_is_refused() {
 }
 
 #[tokio::test]
+async fn an_ended_generation_refuses_every_generation_below_it() {
+    let fixture = fixture().await;
+    let ended = fixture
+        .admit_changed("gen-4-ended", |rule, claim, _| {
+            rule.generation = 4;
+            claim.generation = 4;
+            rule.ended = true;
+        })
+        .await;
+    refused(ended, "an ended rule");
+    let older = fixture.admit_changed("gen-3", |_, _, _| {}).await;
+    refused(older, "a generation");
+}
+
+#[tokio::test]
 async fn a_machine_the_rule_does_not_name_is_refused() {
     let fixture = fixture().await;
     let result = fixture

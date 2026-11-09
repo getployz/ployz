@@ -234,6 +234,44 @@ struct Consumption {
     operations: BTreeMap<OperationId, Operation>,
 }
 
+impl Consumption {
+    /// Refuse `rule` when it is below this Machine's mark for it, or moves it to another
+    /// repository, branch or Namespace.
+    fn check_mark(&self, rule: &AutoDeployRule) -> Result<(), Error> {
+        let refused = |field| {
+            Err(Error::RuleGrantRefused(AuthorityRefusal::Mismatch {
+                field,
+            }))
+        };
+        let Some(mark) = self.rules.get(&rule.rule) else {
+            return Ok(());
+        };
+        if rule.generation < mark.generation {
+            return refused("a generation");
+        }
+        if rule.source.repository_id != mark.repository_id {
+            return refused("a repository");
+        }
+        if rule.source.branch != mark.branch {
+            return refused("a branch");
+        }
+        if rule.namespace != mark.namespace {
+            return refused("a Namespace");
+        }
+        Ok(())
+    }
+
+    fn raise_mark(&mut self, rule: &AutoDeployRule) {
+        let mark = self.rules.entry(rule.rule).or_insert_with(|| RuleMark {
+            generation: rule.generation,
+            repository_id: rule.source.repository_id,
+            branch: rule.source.branch.clone(),
+            namespace: rule.namespace.clone(),
+        });
+        mark.generation = mark.generation.max(rule.generation);
+    }
+}
+
 /// A rule's identity as this Machine first saw it, which no later generation may change,
 /// and the highest generation it has seen.
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -629,25 +667,7 @@ impl ConsumptionLog {
         let now = consumption
             .expiry_time_floor
             .map_or(now, |floor| now.max(floor));
-        let refused = |field| {
-            Err(Error::RuleGrantRefused(AuthorityRefusal::Mismatch {
-                field,
-            }))
-        };
-        if let Some(mark) = consumption.rules.get(&rule.rule) {
-            if rule.generation < mark.generation {
-                return refused("a generation");
-            }
-            if rule.source.repository_id != mark.repository_id {
-                return refused("a repository");
-            }
-            if rule.source.branch != mark.branch {
-                return refused("a branch");
-            }
-            if rule.namespace != mark.namespace {
-                return refused("a Namespace");
-            }
-        }
+        consumption.check_mark(rule)?;
         let spent = hex::encode(Sha256::digest(jti.as_bytes()));
         if consumption.proofs.contains_key(&spent) {
             return Err(Error::RuleGrantRefused(AuthorityRefusal::ProofReplayed));
@@ -658,22 +678,50 @@ impl ConsumptionLog {
             expires.plus(ployz_core::authority::validity::CLOCK_SKEW_MILLIS) >= now
         });
         updated.proofs.insert(spent, expires_at);
-        let mark = updated.rules.entry(rule.rule).or_insert_with(|| RuleMark {
-            generation: rule.generation,
-            repository_id: rule.source.repository_id,
-            branch: rule.source.branch.clone(),
-            namespace: rule.namespace.clone(),
-        });
-        mark.generation = mark.generation.max(rule.generation);
+        updated.raise_mark(rule);
+        self.write(&mut guard, updated)
+    }
+
+    /// Record that a validly signed `rule` exists, ended or not, before anything else
+    /// decides on it: no generation below it is admitted again. Refuses a generation
+    /// lower than the mark, or one that moves the rule to another repository, branch or
+    /// Namespace. Writes only when the mark rises.
+    pub(crate) fn mark_rule(&self, rule: &AutoDeployRule) -> Result<(), Error> {
+        let mut guard = self
+            .operations
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        if guard.is_none() {
+            *guard = Some(self.load().map_err(Error::ApprovalRecord)?);
+        }
+        let consumption = guard.as_ref().expect("loaded above");
+        consumption.check_mark(rule)?;
+        if consumption
+            .rules
+            .get(&rule.rule)
+            .is_some_and(|mark| mark.generation >= rule.generation)
+        {
+            return Ok(());
+        }
+        let mut updated = consumption.clone();
+        updated.raise_mark(rule);
+        self.write(&mut guard, updated)
+    }
+
+    fn write(
+        &self,
+        guard: &mut std::sync::MutexGuard<'_, Option<Consumption>>,
+        updated: Consumption,
+    ) -> Result<(), Error> {
         let written = serde_json::to_vec(&updated)
             .map_err(io::Error::other)
             .and_then(|contents| crate::filesystem::atomic_write(&self.path, &contents, 0o600))
             .map_err(Error::ApprovalRecord);
         if let Err(error) = written {
-            *guard = None;
+            **guard = None;
             return Err(error);
         }
-        *guard = Some(updated);
+        **guard = Some(updated);
         Ok(())
     }
 
