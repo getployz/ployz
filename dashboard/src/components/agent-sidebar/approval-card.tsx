@@ -10,7 +10,10 @@ import { TraceLine } from "#/components/ui/trace";
 import { Textarea } from "#/components/ui/textarea";
 import { useMinute } from "#/hooks/use-minute";
 import { cn } from "#/lib/utils";
-import { approvalBadge, approvalSubject, type ApprovalDecision, destroyedLine, droppedLine, losesVolumeAccess, prunes, redeployLine, renamedAddresses, shownServiceAct, switchedAddresses } from "#/modules/approvals/approvals";
+import { approvalBadge, approvalSubject, type ApprovalDecision, destroyedLine, droppedLine, losesVolumeAccess, asksForAuthKey, prunes, redeployLine, renamedAddresses, shownServiceAct, switchedAddresses } from "#/modules/approvals/approvals";
+import { Input } from "#/components/ui/input";
+import { authKeyProblem } from "#/modules/private-access/private-access";
+import { approvePrivateAccessServerFn } from "#/modules/private-access/private-access.functions";
 import { lossMoment } from "#/modules/volume-placement/volume-placement";
 import { toErrorMessage } from "#/lib/error-message";
 import { approvalOptions, approverApprovals, decideApproval, landDecision, refetchApprovals, runsServiceAct, type ApprovalView } from "./approvals.queries";
@@ -35,10 +38,16 @@ export function ApprovalCard({ organizationSlug, id, seed, onSettled }: {
   if (approval === undefined) return null;
   switch (approval.status) {
     case "pending": return <PendingCard organizationSlug={organizationSlug} approval={approval} />;
-    case "approved": return <TraceLine>Approved. {approval.command === "publish" ? "Saves without deploying." : `${approvalSubject(approval.command, approval.review).verb} goes ahead.`}</TraceLine>;
+    case "approved": return <TraceLine>Approved. {approvedLine(approval)}</TraceLine>;
     case "denied": return <TraceLine>Denied{approval.reason ? `: ${approval.reason}` : "."}</TraceLine>;
     case "superseded": return <TraceLine>The plan changed since this was asked. Ask again to review the new one.</TraceLine>;
   }
+}
+
+function approvedLine(approval: ApprovalView) {
+  if (approval.command === "publish") return "Saves without deploying.";
+  if (approval.command === "set_private_access") return asksForAuthKey(approval.review) ? "Private access is on." : "Private access turns off.";
+  return `${approvalSubject(approval.command, approval.review).verb} goes ahead.`;
 }
 
 function PendingCard({ organizationSlug, approval }: { organizationSlug: string; approval: ApprovalView }) {
@@ -51,7 +60,10 @@ function PendingCard({ organizationSlug, approval }: { organizationSlug: string;
   const redeploy = redeployLine(approval.command, approval.review);
   const renamed = renamedAddresses(approval.review);
   const switched = switchedAddresses(approval.review);
-  const destroys = approval.command !== "set_cluster_name" && !(approval.command === "set_ingress_doors" && effects.length === 0);
+  const keyed = asksForAuthKey(approval.review);
+  const [authKey, setAuthKey] = useState("");
+  const keyProblem = authKey === "" ? null : authKeyProblem(authKey);
+  const destroys = approval.command !== "set_cluster_name" && !keyed && !(approval.command === "set_ingress_doors" && effects.length === 0);
   // The name Servers know a restarted or stopped Service by, which the approvals this card makes carry.
   const serviceAct = shownServiceAct(approval.review);
   const place = subject.project === null ? subject.name : `${subject.project}/${subject.name}`;
@@ -76,7 +88,19 @@ function PendingCard({ organizationSlug, approval }: { organizationSlug: string;
     setRefused(answer.message);
     return refetchApprovals(queryClient, organizationSlug);
   };
-  const approve = () => decide({ approve: { digest: approval.digest } });
+  const approveWithKey = async () => {
+    if (sending) return;
+    setSending(true);
+    setRefused(null);
+    const answer = await approvePrivateAccessServerFn({ data: { organizationSlug, id: approval.id, digest: approval.digest, authKey: authKey.trim() } })
+      .catch((error: Error) => ({ error: toErrorMessage(error, "Your servers didn't answer. Try again.") }));
+    setSending(false);
+    if ("error" in answer) return setRefused(answer.error);
+    if (answer.decided === null) return setRefused(answer.changed.failures.map((failure) => failure.message).join(" "));
+    setAuthKey("");
+    return landDecision(queryClient, organizationSlug, approval.id, { ...approval, ...answer.decided });
+  };
+  const approve = () => keyed ? approveWithKey() : decide({ approve: { digest: approval.digest } });
   const deny = () => decide({ reject: reason?.trim() ? { reason: reason.trim() } : {} });
 
   return (
@@ -140,6 +164,11 @@ function PendingCard({ organizationSlug, approval }: { organizationSlug: string;
             </CollapsibleContent>
           </Collapsible>
         )}
+        {keyed && (
+          <Input aria-label="Auth key" type="password" placeholder="tskey-auth-…" value={authKey} spellCheck={false} autoComplete="off"
+            disabled={sending} aria-invalid={keyProblem !== null} className="font-mono" onChange={(event) => setAuthKey(event.target.value)} />
+        )}
+        {keyProblem !== null && <p className="text-xs text-destructive">{keyProblem}</p>}
         {reason !== null && (
           <Textarea autoFocus aria-label="Reason" placeholder="Why not? The agent reads this." value={reason}
             onChange={(event) => setReason(event.target.value)} className="min-h-14 text-xs" />
@@ -149,8 +178,8 @@ function PendingCard({ organizationSlug, approval }: { organizationSlug: string;
       {waits ? (
         <CardFooter><p className="text-xs text-muted-foreground">Waiting on an owner or admin.</p></CardFooter>
       ) : <CardFooter className="gap-1.5">
-        <Button size="sm" variant={destroys ? "destructive" : "default"} disabled={sending} onClick={() => void approve()}>
-          Approve
+        <Button size="sm" variant={destroys ? "destructive" : "default"} disabled={sending || (keyed && (authKey === "" || keyProblem !== null))} onClick={() => void approve()}>
+          {keyed ? "Connect" : "Approve"}
         </Button>
         <Button size="sm" variant="outline" disabled={sending} onClick={() => void deny()}>
           Deny

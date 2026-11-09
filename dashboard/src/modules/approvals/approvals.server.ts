@@ -10,6 +10,7 @@ import {
   type ApprovalReview,
   type Redeploy,
   approvalCommand,
+  asksForAuthKey,
   approvalSubject,
   type OperationVerb,
   type ServiceApply,
@@ -506,7 +507,10 @@ const requestOperationApproval = Effect.fn("Approvals.requestOperation")(functio
     operation: renames || switches ? { ...operation, preview: asked.preview, subject: asked.subject } : { ...operation, subject: asked.subject },
     organization: caller.organization.slug,
   };
-  const what = renames ? `renaming the Cluster to ${asked.name}` : switches ? `switching web traffic ${asked.name}` : `this ${asked.verb.replaceAll("_", " ")} of ${asked.name}`;
+  const what = renames ? `renaming the Cluster to ${asked.name}`
+    : switches ? `switching web traffic ${asked.name}`
+    : asked.verb === "set_private_access" ? `turning Private Access ${asked.name}`
+    : `this ${asked.verb.replaceAll("_", " ")} of ${asked.name}`;
   return {
     code: "approval_required",
     message: `A human must approve ${what} before it runs.`,
@@ -630,7 +634,8 @@ const held = (decider: Decider) => "role" in decider && decider.credential !== u
  * who can protect it, other than its asker, however they decide. Any other is denied by
  * any member and approved by a person in Ployz Cloud, or the prompt that asked.
  */
-const mayNotDecide = (decider: Decider, row: ApprovalRow, approve: boolean): string | null => {
+const mayNotDecide = (decider: Decider, row: ApprovalRow, approve: boolean, keyed: boolean): string | null => {
+  if (approve && !keyed && asksForAuthKey(row.review)) return "Approve it in Ployz Cloud, where you paste the Tailscale auth key.";
   const guarded = row.review.protected;
   if (guarded !== undefined) {
     if (decider.userId === row.requestedByUserId) return "You asked for this, so someone else who can protect it decides.";
@@ -653,6 +658,7 @@ export const decideApproval = <R = never>(
   id: string,
   decision: ApprovalDecision,
   operationDigest?: OperationDigest<R>,
+  keyed = false,
 ) => Effect.gen(function* () {
   const found = yield* readRow(caller.organization.id, id);
   if (found === undefined) return yield* new NotFound({ message: "No such approval." });
@@ -674,7 +680,7 @@ export const decideApproval = <R = never>(
   if (lacking !== null) {
     return { ok: false, refusal: { code: "forbidden", message: lacking, details: { approval: approvalView(row) } } } satisfies Decided;
   }
-  const refused = mayNotDecide(caller, row, "approve" in decision);
+  const refused = mayNotDecide(caller, row, "approve" in decision, keyed);
   if (refused !== null) {
     return { ok: false, refusal: { code: "forbidden", message: refused, details: { approval: approvalView(row) } } } satisfies Decided;
   }

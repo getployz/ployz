@@ -93,13 +93,17 @@ describe("dashboard navigation model", () => {
       { label: "Tokens", to: "/cloud/$organizationSlug/~/settings", current: false },
       { label: "GitHub", to: "/cloud/$organizationSlug/~/settings", current: false },
       { label: "Builds", to: "/cloud/$organizationSlug/~/settings", current: false },
+      { label: "Integrations", to: "/cloud/$organizationSlug/~/integrations", current: false },
       { label: "Billing", to: "/cloud/$organizationSlug/~/billing", current: true },
     ]);
+    const integrations = createDashboardNavigation(organization, { section: "integrations" }).places.find((place) => place.label === "Organization");
+    expect(integrations?.current).toBe(true);
+    expect(integrations?.sections.find((item) => item.current)?.label).toBe("Integrations");
     expect(settings("organization-settings", { section: "builds" }, true)?.sections.find((item) => item.current)?.label).toBe("Builds");
     expect(settings("organization-settings", { section: "github" }, true)?.sections.find((item) => item.current)?.label).toBe("GitHub");
     expect(settings("organization-settings", { section: "network" }, true)?.sections.find((item) => item.current)?.label).toBe("Network");
     expect(settings("organization-settings", { section: "tokens" }, true)?.sections.find((item) => item.current)?.label).toBe("Tokens");
-    expect(settings("organization-settings", {}, false)?.sections.map((item) => item.label)).toEqual(["General", "Network", "Members", "Tokens", "GitHub", "Builds"]);
+    expect(settings("organization-settings", {}, false)?.sections.map((item) => item.label)).toEqual(["General", "Network", "Members", "Tokens", "GitHub", "Builds", "Integrations"]);
   });
 
   it("keeps a section across scopes where it exists, else falls back to the scope's home", () => {

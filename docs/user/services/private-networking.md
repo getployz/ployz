@@ -151,7 +151,8 @@ your services at their private addresses, on any port and protocol.
 
 1. In the Tailscale admin console, open **Settings → Keys** and create a reusable auth key
    tagged `tag:ployz`.
-2. Run `ployz private-access on` and paste the key, or pipe it:
+2. In Ployz Cloud, open **Organization → Integrations**, click **Connect** under **Tailscale**
+   and paste the key. Or run `ployz private-access on` and paste the key, or pipe it:
 
    ```sh
    ployz private-access on --auth-key-stdin < auth-key.txt
@@ -165,6 +166,11 @@ your services at their private addresses, on any port and protocol.
 4. On a Linux device, run `tailscale up --accept-routes`. Other systems accept the route on
    their own.
 
+**Integrations** lists each server's router, links to the Tailscale admin console, and has
+the Linux command to copy. If you ask an agent, or run `ployz cluster private-access on`, it
+waits for an owner or admin to approve. The approver pastes the key in the approval card, so
+the agent never sees it.
+
 `ployz private-access` shows which servers run a router. A server added later runs one too,
 and joins with the key, so keep the key reusable. If Tailscale refuses the key,
 `ployz private-access on` names the server. Run it again with a new key. A server whose router
@@ -176,7 +182,8 @@ there when the first one returns. Services see the router's private address as t
 
 Ployz doesn't set up Tailscale DNS, so use a service's private address.
 
-To remove the routers and the key, run `ployz private-access off`. Each server forgets its
+To remove the routers and the key, click **Turn off** in **Integrations**, or run
+`ployz private-access off`. Each server forgets its
 router's identity too, so a later `on` registers new routers whose routes need approving
 again. Remove the old routers from the Tailscale admin console. If a server couldn't remove
 its router, the command names it and exits with a failure; that server starts no router again,

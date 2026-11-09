@@ -1,6 +1,6 @@
 {
   "format": 1,
-  "revision": "244d0385db0f",
+  "revision": "2c17de515e40",
   "permissions": [
     "org:read",
     "org:settings",
@@ -247,6 +247,78 @@
         "required": [
           "to",
           "state"
+        ],
+        "additionalProperties": false
+      },
+      "render": "message"
+    },
+    {
+      "name": "private_access_use",
+      "path": [
+        "cluster",
+        "private-access"
+      ],
+      "about": "Turn Private Access over Tailscale on or off. Never pass an auth key; the approver pastes it.",
+      "examples": [
+        "ployz cluster private-access on",
+        "ployz cluster private-access off"
+      ],
+      "requires": "servers:operate",
+      "kind": "write",
+      "gate": "ask",
+      "removes": false,
+      "agents": true,
+      "typed": null,
+      "positional": [
+        "to"
+      ],
+      "input": {
+        "type": "object",
+        "properties": {
+          "to": {
+            "type": "string",
+            "enum": [
+              "on",
+              "off"
+            ],
+            "description": "on or off. On waits for an owner or admin to approve and paste the Tailscale auth key in Ployz Cloud."
+          }
+        },
+        "required": [
+          "to"
+        ],
+        "additionalProperties": false
+      },
+      "output": {
+        "type": "object",
+        "properties": {
+          "to": {
+            "type": "string",
+            "enum": [
+              "on",
+              "off"
+            ],
+            "description": "on or off. On waits for an owner or admin to approve and paste the Tailscale auth key in Ployz Cloud."
+          },
+          "routers": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "string",
+                "enum": [
+                  "Infinity",
+                  "-Infinity",
+                  "NaN"
+                ]
+              }
+            ]
+          }
+        },
+        "required": [
+          "to",
+          "routers"
         ],
         "additionalProperties": false
       },

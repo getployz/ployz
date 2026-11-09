@@ -1,6 +1,7 @@
 import { Schema } from "effect";
 import { ClusterName, RenameClusterInput } from "#/modules/cluster-name/cluster-name";
 import { DOORS_WANTS, SwitchDoorsInput } from "#/modules/ingress/doors";
+import { PRIVATE_ACCESS_WANTS, SetPrivateAccessInput } from "#/modules/private-access/private-access";
 import { EnqueueMachineRemoveInput, ForgetServerInput } from "#/modules/machines/machine-removal";
 import { ForgetServersInput } from "#/modules/machines/forget-servers";
 import { RemoveNamespaceInput } from "#/modules/machines/namespace-cleanup";
@@ -447,6 +448,22 @@ export const OPERATIONS = {
         input: SwitchDoorsInput,
         ungated: "The human read the review of every address that moves and pressed Switch.",
         options: { to: { via: "to" } },
+      },
+    },
+  }),
+  "private_access.use": operation({
+    options: Schema.Struct({ to: Schema.Literals(PRIVATE_ACCESS_WANTS), authKey: Name }),
+    requires: "servers:operate",
+    gate: "approval",
+    idempotency: { none: "Turning it on or off again leaves every Server's router as it is." },
+    surfaces: {
+      cli: { absent: "`ployz cluster private-access` runs the private_access_use command, which asks through its own gate and carries no auth key." },
+      agent: { absent: "Agents call the published private_access_use command, which carries no auth key: no agent may hold a secret's value." },
+      ui: {
+        fn: "setPrivateAccessServerFn",
+        input: SetPrivateAccessInput,
+        ungated: "The human pasted the auth key and pressed Connect, or pressed Turn off.",
+        options: { to: { via: "to" }, authKey: { via: "authKey" } },
       },
     },
   }),
