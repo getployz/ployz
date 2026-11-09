@@ -154,13 +154,18 @@ async fn open_and_admit(
     {
         Ok(Ok(responses)) => responses,
         Ok(Err(error)) => {
-            return Err(failed(
-                Stage::Admission,
-                format!(
-                    "Machine {machine_id} cannot accept the Build: {}",
-                    crate::ui::row(&error)
-                ),
-            ));
+            let refusal = error.to_rpc_error();
+            // An enforcing Machine's refusal is a sentence of its own, not a failure to reach it.
+            let message =
+                if crate::connect::refused_by_enforcement(&refusal, ployz_core::BUILD_CAPABILITY) {
+                    refusal.message
+                } else {
+                    format!(
+                        "Machine {machine_id} cannot accept the Build: {}",
+                        crate::ui::row(&error)
+                    )
+                };
+            return Err(failed(Stage::Admission, message));
         }
         Err(_) => {
             return Err(failed(
