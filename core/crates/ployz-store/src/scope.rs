@@ -917,7 +917,7 @@ pub(crate) fn validate_and_refresh_working_from(
     crate::domain::refuse_new_shared_hostnames(
         tx,
         environment,
-        trusted.cluster_domain(),
+        crate::domain::Under::Cloud(trusted.cluster_domain()),
         (&before, &environment.working),
     )?;
     crate::client_sealed::refuse_port(&environment.working)?;

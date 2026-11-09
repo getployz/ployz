@@ -128,6 +128,11 @@ proxy. A name two levels under your zone, like `a.shop.example.com`, shows
 
 A name in your zone can't be both a custom domain and a generated address. `shop.example.com` as a
 custom domain refuses the generated prefix `shop` for every service, and the other way round.
+A new service production deploys arrives in a branch with the branch's name on its subdomain, like
+`shop-feature`. If any custom domain in your organization starts with that label, like
+`shop-feature.example.com`, the service doesn't arrive on its own: the branch is offered it as
+for a [setting it changed itself](../environments/environments.md#productions-changes-follow-into-staging),
+and taking it checks the name then.
 
 ## Use https
 

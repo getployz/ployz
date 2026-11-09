@@ -868,21 +868,41 @@ pub(crate) fn refuse_too_long_copies(
         .try_for_each(|prefix| refuse_too_long(prefix, cluster, "branch name"))
 }
 
+/// The Cluster Domain a write checks generated names under.
+#[derive(Clone, Copy, Debug)]
+pub(crate) enum Under<'a> {
+    /// The one Cloud knows now, from the write's evidence. Without one, as in the
+    /// hidden local Store, no generated name spells a hostname.
+    Cloud(Option<&'a Hostname>),
+    /// Any, as for a Follow, which has no evidence: a custom domain may share a
+    /// hostname with the prefix its first label spells.
+    Any,
+}
+
+impl Under<'_> {
+    /// The generated prefix `hostname` would be the hostname of, if any.
+    fn prefix(self, hostname: &str) -> Option<&str> {
+        match self {
+            Self::Cloud(cluster) => label_under(hostname, cluster?),
+            Self::Any => hostname.split_once('.').map(|(label, _)| label),
+        }
+    }
+}
+
 /// Refuse each hostname `after` newly spells two ways under the Cluster Domain: as one
 /// Service's generated prefix and as another's custom domain, anywhere in the
 /// Organization. Every write of Working State comes through here, so a Branch that
 /// suffixes the prefixes it copies, a Sync or a restore can't mint a name a custom
-/// domain holds. What `before` already held is not new. `cluster` is the Cluster
-/// Domain Cloud knows now; without one, no generated name spells a hostname.
+/// domain holds. What `before` already held is not new.
 pub(crate) fn refuse_new_shared_hostnames(
     tx: &mut dyn Tx,
     environment: &Environment,
-    cluster: Option<&Hostname>,
+    under: Under<'_>,
     (before, after): (&SavedEnvironmentIntent, &SavedEnvironmentIntent),
 ) -> Result<(), RpcError> {
-    let Some(cluster) = cluster else {
+    if matches!(under, Under::Cloud(None)) {
         return Ok(());
-    };
+    }
     let mut prefixes = Vec::new();
     let mut labels = Vec::new();
     for service in &after.services {
@@ -898,7 +918,7 @@ pub(crate) fn refuse_new_shared_hostnames(
             }
         }
         for route in &service.config.routes {
-            if let Some(label) = label_under(&route.hostname, cluster)
+            if let Some(label) = under.prefix(&route.hostname)
                 && held.is_none_or(|held| {
                     held.config
                         .routes
@@ -926,7 +946,7 @@ pub(crate) fn refuse_new_shared_hostnames(
         for service in &intent.services {
             let holder = || format!("{} in {place}", service.slug);
             for route in &service.config.routes {
-                if let Some(label) = label_under(&route.hostname, cluster)
+                if let Some(label) = under.prefix(&route.hostname)
                     && prefixes.contains(&label)
                 {
                     return Err(error::conflict(

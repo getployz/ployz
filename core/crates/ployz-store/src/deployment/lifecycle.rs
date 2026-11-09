@@ -2490,7 +2490,6 @@ fn advance(
             &saved,
             &deployed,
             seal_below,
-            &crate::Trusted::deployed_under(stored.cluster_domain.as_ref()),
         )?;
     }
     Ok(())
