@@ -10,6 +10,7 @@ import {
   type ApprovalReview,
   type Redeploy,
   approvalCommand,
+  asksForAuthKey,
   approvalSubject,
   type OperationVerb,
   type ServiceApply,
@@ -506,7 +507,10 @@ const requestOperationApproval = Effect.fn("Approvals.requestOperation")(functio
     operation: renames || switches ? { ...operation, preview: asked.preview, subject: asked.subject } : { ...operation, subject: asked.subject },
     organization: caller.organization.slug,
   };
-  const what = renames ? `renaming the Cluster to ${asked.name}` : switches ? `switching web traffic ${asked.name}` : `this ${asked.verb.replaceAll("_", " ")} of ${asked.name}`;
+  const what = renames ? `renaming the Cluster to ${asked.name}`
+    : switches ? `switching web traffic ${asked.name}`
+    : asked.verb === "set_private_access" ? `turning Private Access ${asked.name}`
+    : `this ${asked.verb.replaceAll("_", " ")} of ${asked.name}`;
   return {
     code: "approval_required",
     message: `A human must approve ${what} before it runs.`,
@@ -630,7 +634,9 @@ const held = (decider: Decider) => "role" in decider && decider.credential !== u
  * who can protect it, other than its asker, however they decide. Any other is denied by
  * any member and approved by a person in Ployz Cloud, or the prompt that asked.
  */
-const mayNotDecide = (decider: Decider, row: ApprovalRow, approve: boolean): string | null => {
+const mayNotDecide = (decider: Decider, row: ApprovalRow, approve: boolean, keyed: boolean): string | null => {
+  if (keyed && !asksForAuthKey(row.review)) return "This approval doesn't ask for a key.";
+  if (approve && !keyed && asksForAuthKey(row.review)) return "Approve it in Ployz Cloud, where you paste the Tailscale auth key.";
   const guarded = row.review.protected;
   if (guarded !== undefined) {
     if (decider.userId === row.requestedByUserId) return "You asked for this, so someone else who can protect it decides.";
@@ -643,16 +649,12 @@ const mayNotDecide = (decider: Decider, row: ApprovalRow, approve: boolean): str
   return "Only a person in Ployz Cloud, or the prompt that asked, can approve this.";
 };
 
-/**
- * Approve exactly the digest the human saw, or deny with a reason. Repeating a decision answers the row; anything
- * else on a row no longer pending, or a digest that isn't the row's, refuses `conflict` with the row. Who may decide is
- * `mayNotDecide`'s. The row records who decided.
- */
-export const decideApproval = <R = never>(
+const decide = <R>(
   caller: Decider,
   id: string,
   decision: ApprovalDecision,
-  operationDigest?: OperationDigest<R>,
+  operationDigest: OperationDigest<R> | undefined,
+  keyed: boolean,
 ) => Effect.gen(function* () {
   const found = yield* readRow(caller.organization.id, id);
   if (found === undefined) return yield* new NotFound({ message: "No such approval." });
@@ -674,7 +676,7 @@ export const decideApproval = <R = never>(
   if (lacking !== null) {
     return { ok: false, refusal: { code: "forbidden", message: lacking, details: { approval: approvalView(row) } } } satisfies Decided;
   }
-  const refused = mayNotDecide(caller, row, "approve" in decision);
+  const refused = mayNotDecide(caller, row, "approve" in decision, keyed);
   if (refused !== null) {
     return { ok: false, refusal: { code: "forbidden", message: refused, details: { approval: approvalView(row) } } } satisfies Decided;
   }
@@ -694,4 +696,32 @@ export const decideApproval = <R = never>(
   if (updated !== undefined) return { ok: true, approval: approvalView(updated), decided: true } satisfies Decided;
   const current = yield* readRow(caller.organization.id, id);
   return current === undefined ? yield* new NotFound({ message: "No such approval." }) : settled(current);
-}).pipe(Effect.withSpan("Approvals.decide"));
+});
+
+/**
+ * Approve exactly the digest the human saw, or deny with a reason. Repeating a decision answers the row; anything
+ * else on a row no longer pending, or a digest that isn't the row's, refuses `conflict` with the row. Who may decide is
+ * `mayNotDecide`'s. The row records who decided.
+ */
+export const decideApproval = <R = never>(
+  caller: Decider,
+  id: string,
+  decision: ApprovalDecision,
+  operationDigest?: OperationDigest<R>,
+) => decide(caller, id, decision, operationDigest, false).pipe(Effect.withSpan("Approvals.decide"));
+
+/**
+ * Approve a row that asks for a key (`asksForAuthKey`) before the key goes anywhere. Only the call that moves the row
+ * from pending to approved goes on to send it; a deny or a second key after that finds the row decided. What the
+ * Servers then do with the key is that run's outcome, not this Approval's.
+ */
+export const approveKeyed = <R = never>(
+  caller: Decider,
+  input: { readonly id: string; readonly digest: string },
+  operationDigest?: OperationDigest<R>,
+) => decide(caller, input.id, { approve: { digest: input.digest } }, operationDigest, true).pipe(
+  Effect.map((answer): Decided => answer.ok && answer.decided !== true
+    ? { ok: false, refusal: { code: "conflict", message: `This approval was already decided elsewhere (${answer.approval.status}).`, details: { approval: answer.approval } } }
+    : answer),
+  Effect.withSpan("Approvals.approveKeyed"),
+);

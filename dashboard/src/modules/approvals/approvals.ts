@@ -9,7 +9,7 @@ export const APPROVAL_STATUSES = ["pending", "approved", "denied", "superseded"]
 export type ApprovalStatus = (typeof APPROVAL_STATUSES)[number];
 
 /** The operations `ployz` and agents run through Cloud that may wait for a human. Upgrade and a Service start never do. */
-export type OperationVerb = "drain" | "set" | "clean" | "remove" | "forget" | "release" | "remove_mirror" | "stop" | "restart" | "unprotect" | "move" | "restore" | "resize" | "set_cluster_name" | "set_ingress_doors";
+export type OperationVerb = "drain" | "set" | "clean" | "remove" | "forget" | "release" | "remove_mirror" | "stop" | "restart" | "unprotect" | "move" | "restore" | "resize" | "set_cluster_name" | "set_ingress_doors" | "set_private_access";
 
 /** An operation as a human approves it: its verb, what it acts on by name, and the preview its digest covers. */
 export type OperationReview = { verb: OperationVerb; name: string; preview: JsonValue; subject?: string };
@@ -68,7 +68,8 @@ const capitalized = (word: string) => `${word.charAt(0).toUpperCase()}${word.sli
 export function approvalSubject(command: string, review: ApprovalReview) {
   if ("operation" in review) {
     const verb = review.operation.verb === "set_cluster_name" ? "Rename cluster"
-      : review.operation.verb === "set_ingress_doors" ? "Switch web traffic" : capitalized(review.operation.verb);
+      : review.operation.verb === "set_ingress_doors" ? "Switch web traffic"
+      : review.operation.verb === "set_private_access" ? "Turn private access" : capitalized(review.operation.verb);
     return { verb, name: review.operation.name, project: null };
   }
   const verb = command === "publish" ? "Save" : command === "retry" ? (shutsDownAgain(review) ? "Shut down" : rollsBack(review) ? "Roll back" : "Redeploy") : command === "remove" ? "Remove"
@@ -163,6 +164,9 @@ export function switchedAddresses(review: ApprovalReview) {
   return from === null || onto === null ? null : { from: `*.${from}`, to: `*.${onto}` };
 }
 
+export const asksForAuthKey = (review: ApprovalReview) => "operation" in review
+  && review.operation.verb === "set_private_access" && review.operation.name === "on";
+
 /** A Server removal: its Volumes' data stays on the disk, so the card lists effects rather than destruction. */
 export const losesVolumeAccess = (review?: ApprovalReview) => review !== undefined && "operation" in review
   && review.operation.verb === "remove" && review.operation.subject?.startsWith("server:") === true;
@@ -183,6 +187,7 @@ export function approvalBadge(command: string, review: ApprovalReview) {
   if (command === "restore") return "Restores volume";
   if (command === "resize") return "Resizes volume";
   if (command === "set_cluster_name") return "Renames cluster";
+  if (command === "set_private_access") return asksForAuthKey(review) ? "Joins a tailnet" : "Removes routers";
   if (command === "set_ingress_doors") return effects.length === 0 ? "Switches web traffic" : `Moves ${effects.length} ${effects.length === 1 ? "address" : "addresses"}`;
   if (command === "release" && effects.length === 0) return "Releases volume";
   if (effects.length === 0) return prunes(review) ? "Removes other services" : "Deploys";

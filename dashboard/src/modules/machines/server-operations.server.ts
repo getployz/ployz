@@ -375,6 +375,7 @@ export const freshOperationDigest: OperationDigest<Effect.Services<ReturnType<ty
       case "stop":
       case "restart":
       case "unprotect":
+      case "set_private_access":
         return stored;
       case "set_cluster_name":
         return yield* freshRenameDigest(organizationId, stored, preview);
