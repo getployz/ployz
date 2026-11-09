@@ -55,7 +55,7 @@ test("a Cloudflare choice the tab holds reads as its own step until it ends", ()
   expect(firstTunnelState({ ...base, held: { kind: "setting-up", token: "t", zone: "zenploy.dev" } })).toEqual({ kind: "setting-up", zone: "zenploy.dev" });
   expect(firstTunnelState({ ...base, held: { kind: "failed", token: "t", zone: "zenploy.dev", message: "No." } }))
     .toEqual({ kind: "failed", zone: "zenploy.dev", message: "No." });
-  expect(firstTunnelState({ ...base, held: { kind: "done", zone: "zenploy.dev" } })).toEqual({ kind: "done", zone: "zenploy.dev" });
+  expect(firstTunnelState({ ...base, held: { kind: "done", zone: "zenploy.dev", switched: true } })).toEqual({ kind: "done", zone: "zenploy.dev", switched: true });
 });
 
 test("a Cluster founded closed that no tab is setting up is unfinished only while its Servers are seen holding no Door", () => {

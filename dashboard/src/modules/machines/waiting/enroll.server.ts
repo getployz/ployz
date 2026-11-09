@@ -128,6 +128,9 @@ export function planServerEnrollment(
     if (skip !== undefined) return { kind: "refused", message: `The first server can't enroll: ${skip.reason}.` };
     // A CLI that doesn't list the option would drop it and open ports 80 and 443.
     const picked = byId.get(pick);
+    if (picked?.foundsClosed === true && !input.runs.ingress) {
+      return { kind: "refused", message: "The first server takes the Cloudflare Tunnel, so it must run web traffic. Turn on web traffic, or get an install command without Cloudflare Tunnel." };
+    }
     if (picked?.foundsClosed === true && picked.report.enrollOptions?.includes(INGRESS_CLOSED_OPTION) !== true) {
       return { kind: "refused", message: "The first server's ployz can't start with ports 80 and 443 closed. Update ployz on it, or get an install command without Cloudflare Tunnel." };
     }

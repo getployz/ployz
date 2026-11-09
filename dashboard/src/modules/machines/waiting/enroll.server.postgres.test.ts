@@ -193,6 +193,9 @@ it("founds closed for Cloudflare only on a Fleet Token that asks it, and only on
 
   const current = host("web-new");
   await checkin(current, { enrollOptions: ["ingressClosed"] });
+  const dark = await failure(enroll([current], { runs: { services: true, ingress: false, builds: false } }));
+  expect(dark).toMatchObject({ message: expect.stringContaining("must run web traffic") });
+  expect(await attempts()).toEqual([]);
   const joiner = host("web-two");
   await checkin(joiner, { enrollOptions: ["ingressClosed"] });
   await run(enroll([current, joiner], { first: current.id }));

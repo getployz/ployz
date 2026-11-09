@@ -8,7 +8,8 @@ import { useSyncExternalStore } from "react";
 export type HeldCloudflare =
   | { readonly kind: "waiting" | "setting-up"; readonly token: string; readonly zone: string }
   | { readonly kind: "failed"; readonly token: string; readonly zone: string; readonly message: string }
-  | { readonly kind: "done"; readonly zone: string };
+  /** `switched` once the zone is the Cluster Domain's source; until then apps keep their addresses until a switch. */
+  | { readonly kind: "done"; readonly zone: string; readonly switched: boolean };
 
 const held = new Map<string, HeldCloudflare>();
 const listeners = new Set<() => void>();

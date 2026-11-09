@@ -52,7 +52,7 @@ export function WebTrafficSection({ organizationSlug }: { organizationSlug: stri
   const refresh = () => queryClient.invalidateQueries({ queryKey: clusterIngressKeys.all });
   const onCloudflare = setup?.state === "active";
   const canSwitchBack = setup !== null && switchProblem(setup, "public", change) === null && (onCloudflare || change?.state === "failed");
-  const publicInUse = setup !== null || !foundedClosed || (observed !== null && holdingCount(observed.servers, "public") > 0);
+  const publicInUse = !foundedClosed || (observed !== null && holdingCount(observed.servers, "public") > 0);
 
   return (
     <SettingsSection id="web-traffic" title="Web traffic">

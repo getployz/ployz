@@ -181,7 +181,7 @@ export const setUpCloudflare = Effect.fn("Cloudflare.setUp")(function* (
    */
   const cleanUp = Effect.gen(function* () {
     const doorsLeft = session === null ? null : yield* restorePublic(session);
-    // A Cluster that held no Door has none to go back to, so it falls back to the ports rather than staying dark.
+    // The Engine sets no empty Door set, so the only way to close the tunnel this setup opened is back to the ports.
     const opened = closed && session !== null && doorsLeft === null ? "Your servers now take web traffic on ports 80 and 443." : null;
     const recordGone = recordId === null ? true : yield* deleteRecord(http, input.token, zone.id, recordId);
     const tunnelGone = tunnel === null || !tunnel.made ? true : yield* deleteTunnel(http, input.token, zone.accountId, tunnel.id);

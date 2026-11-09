@@ -28,8 +28,8 @@ async function runFirstSetup(organizationSlug: string, queryClient: QueryClient)
   holdCloudflare(organizationSlug, { kind: "setting-up", token, zone });
   for (let tried = 1; ; tried++) {
     try {
-      await setUpCloudflareServerFn({ data: { organizationSlug, token: token.trim(), zone } });
-      holdCloudflare(organizationSlug, { kind: "done", zone });
+      const row = await setUpCloudflareServerFn({ data: { organizationSlug, token: token.trim(), zone } });
+      holdCloudflare(organizationSlug, { kind: "done", zone, switched: row.state === "active" });
       toast.success(`Cloudflare Tunnel is set up on ${zone}.`);
       break;
     } catch (error) {
@@ -88,7 +88,9 @@ export function FirstTunnelStatus({ organizationSlug }: { organizationSlug: stri
         <Alert role="status">
           <AlertTitle>Cloudflare Tunnel is set up on <span className="font-mono">{state.zone}</span></AlertTitle>
           <AlertDescription className="flex flex-wrap items-center gap-x-2">
-            Apps you deploy get addresses under it. Settings, Network shows how many servers are connected.
+            {state.switched
+              ? "Apps you deploy get addresses under it. Settings, Network shows how many servers are connected."
+              : "Your apps keep their current addresses until you switch web traffic to Cloudflare in Settings, Network."}
             <Button type="button" variant="link" size="sm" className="h-auto px-0" onClick={() => forgetCloudflare(organizationSlug)}>Dismiss</Button>
           </AlertDescription>
         </Alert>

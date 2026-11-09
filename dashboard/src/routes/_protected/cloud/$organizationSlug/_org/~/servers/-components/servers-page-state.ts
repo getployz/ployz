@@ -48,7 +48,8 @@ export function foundingFirstServer(status: {
  */
 export type FirstTunnelState =
   | { readonly kind: "none" }
-  | { readonly kind: "waiting" | "setting-up" | "done"; readonly zone: string }
+  | { readonly kind: "waiting" | "setting-up"; readonly zone: string }
+  | { readonly kind: "done"; readonly zone: string; readonly switched: boolean }
   | { readonly kind: "failed"; readonly zone: string; readonly message: string }
   | { readonly kind: "unfinished" };
 
@@ -60,7 +61,10 @@ export function firstTunnelState({ held, foundedClosed, setup, observed }: {
   /** The Servers seen and the Doors each holds; null before a look, or when none answered. */
   observed: ClusterIngressObservation | null;
 }): FirstTunnelState {
-  if (held !== undefined) return held.kind === "failed" ? { kind: "failed", zone: held.zone, message: held.message } : { kind: held.kind, zone: held.zone };
+  if (held !== undefined) {
+    if (held.kind === "failed") return { kind: "failed", zone: held.zone, message: held.message };
+    return held.kind === "done" ? held : { kind: held.kind, zone: held.zone };
+  }
   if (!foundedClosed || setup !== null || observed === null || observed.partial || observed.servers.length === 0) return { kind: "none" };
   return observed.servers.every((server) => server.doors.length === 0) ? { kind: "unfinished" } : { kind: "none" };
 }
