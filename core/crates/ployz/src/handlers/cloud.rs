@@ -220,6 +220,9 @@ where
             if cluster_name.is_some() {
                 super::server::joined_unnamed();
             }
+            if matches.get_flag("ingress-closed") {
+                super::server::joined_open();
+            }
             enroll_join(
                 command,
                 matches,
@@ -761,7 +764,11 @@ where
     };
     let mut partial = None;
     if machine.accepts_ingress
-        && let Err(error) = crate::ingress::follow_roles(&mut ready).await
+        && let Err(error) = if matches.get_flag("ingress-closed") {
+            crate::ingress::found_closed(&mut ready).await
+        } else {
+            crate::ingress::follow_roles(&mut ready).await
+        }
     {
         // An Ingress Proxy that failed only on other Servers, as a resumed founding finds,
         // does not hold back publication, as a joiner's catch-up failure does not.

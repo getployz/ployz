@@ -103,6 +103,13 @@ pub(crate) struct ClusterDoors {
 }
 
 impl ClusterDoors {
+    fn closed() -> Self {
+        Self {
+            doors: IngressDoors::closed(),
+            sealed_token: None,
+        }
+    }
+
     #[cfg(test)]
     pub(crate) fn public() -> Self {
         Self {
@@ -122,7 +129,9 @@ impl ClusterDoors {
 
 /// The Doors the Cluster holds, read from the newest holder any Server runs and the
 /// newest Tunnel Connector with a token. A Cluster with no holder and no connector holds
-/// the Public Door, as every Cluster did before the Tunnel Door existed.
+/// the Public Door, as every Cluster did before the Tunnel Door existed, and one whose
+/// newest holder publishes no port and runs no connector holds none, as a Cluster
+/// founded closed does until its tunnel opens.
 pub(crate) fn cluster_doors(services: &[ServiceObservation]) -> ClusterDoors {
     let newest = |identity: QualifiedService| {
         services
@@ -137,7 +146,8 @@ pub(crate) fn cluster_doors(services: &[ServiceObservation]) -> ClusterDoors {
         .and_then(|holder| validate_ingress_service_spec(&holder.resolved_spec).ok())
         .map_or(IngressPorts::Public, IngressWiring::ports);
     let doors = match (ports, sealed_token.is_some()) {
-        (_, false) => IngressDoors::public(),
+        (IngressPorts::Public, false) => IngressDoors::public(),
+        (IngressPorts::Closed, false) => IngressDoors::closed(),
         (IngressPorts::Public, true) => IngressDoors::both(),
         (IngressPorts::Closed, true) => IngressDoors::tunnel(),
     };
@@ -414,11 +424,32 @@ impl From<NotFollowed> for Failure {
 /// naming each such Server. The first one's failure is the diagnostic's.
 pub(crate) async fn follow_roles(client: &mut Client) -> Result<Vec<Followed>, NotFollowed> {
     let doors = observe_doors(client).await?;
+    let cluster = doors.cluster.clone();
+    set_roles(client, doors, &cluster).await
+}
+
+/// Set the Ingress Proxy on every Server that holds the ingress role with no Door open,
+/// as a Cluster founded closed starts: Caddy runs, and ports 80 and 443 never open, until
+/// `ployz ingress use tunnel` opens the Tunnel Door.
+///
+/// # Errors
+///
+/// As [`follow_roles`].
+pub(crate) async fn found_closed(client: &mut Client) -> Result<Vec<Followed>, NotFollowed> {
+    let doors = observe_doors(client).await?;
+    set_roles(client, doors, &ClusterDoors::closed()).await
+}
+
+async fn set_roles(
+    client: &Client,
+    doors: Doors,
+    cluster: &ClusterDoors,
+) -> Result<Vec<Followed>, NotFollowed> {
     let answers = set_doors(
-        &*client,
+        client,
         &doors.machines,
         doors.proxy,
-        &doors.cluster,
+        cluster,
         FOLLOW_AT_ONCE,
         &CancellationToken::new(),
     )

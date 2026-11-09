@@ -159,16 +159,19 @@ pub(in crate::handlers) fn init(root: &ArgMatches) -> Result<(), Error> {
             );
         }
         if machine.accepts_ingress {
-            let followed = crate::ingress::follow_roles(&mut ready)
-                .await
-                .map_err(|error| {
-                    ingress_incomplete(
-                        super::super::ingress_hints(error.into(), |args| {
-                            super::super::recovery_command(matches, &context_name, args)
-                        }),
-                        ingress_recovery.clone(),
-                    )
-                })?;
+            let followed = if matches.get_flag("ingress-closed") {
+                crate::ingress::found_closed(&mut ready).await
+            } else {
+                crate::ingress::follow_roles(&mut ready).await
+            }
+            .map_err(|error| {
+                ingress_incomplete(
+                    super::super::ingress_hints(error.into(), |args| {
+                        super::super::recovery_command(matches, &context_name, args)
+                    }),
+                    ingress_recovery.clone(),
+                )
+            })?;
             return Ok(Some(followed));
         }
         Ok::<_, Error>(None)
