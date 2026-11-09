@@ -4960,7 +4960,7 @@ mod ensure_container {
                     .enumerate()
                     .map(|(index, step)| ProposalStep {
                         index: u32::try_from(index).unwrap(),
-                        kind: step.kind,
+                        kind: step.kind.into(),
                         digest: StepDigest::of(&canonical::to_canonical(step).unwrap()),
                     })
                     .collect(),
@@ -5145,10 +5145,12 @@ mod ensure_container {
                     services: vec![ApprovedService {
                         name: ServiceName::parse("api").unwrap(),
                         digest: PayloadDigest::of(&resolved.to_requested(), &namespace).unwrap(),
+                        image: None,
                     }],
                     issued_at: Timestamp::now(),
                     expires_at: Timestamp::now().plus(60_000),
                     signer: ployz_core::authority::SignerKey::Device(self.signer.public().into()),
+                    proposal: None,
                 };
                 Signed::sign(&approval, &self.signer).unwrap()
             }

@@ -16,6 +16,7 @@ export const allocateEnrollment = fail;
 export const setVolumeCopyRefusal = fail;
 export const machineUpgradeAttemptId = fail;
 export const ployzVersion = fail;
+export const deployApprovalBody = fail;
 export const agentTools = fail;
 export const agentStart = fail;
 export const agentResume = fail;

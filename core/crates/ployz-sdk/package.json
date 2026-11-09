@@ -17,6 +17,10 @@
       "types": "./config.d.ts",
       "default": "./config.mjs"
     },
+    "./authority": {
+      "types": "./authority.d.ts",
+      "default": "./authority.mjs"
+    },
     "./capabilities": {
       "types": "./generated/capabilities.d.ts",
       "import": "./generated/capabilities.mjs",
@@ -31,7 +35,9 @@
     "browser.mjs",
     "generated",
     "config.mjs",
-    "config.d.ts"
+    "config.d.ts",
+    "authority.mjs",
+    "authority.d.ts"
   ],
   "devDependencies": {
     "typescript": "^5.9.2"

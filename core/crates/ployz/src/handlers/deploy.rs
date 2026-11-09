@@ -390,7 +390,7 @@ pub(super) struct Shipped {
     pub(super) needs_upload: bool,
     pub(super) presented: bool,
     /// What this Device approved for each Service, when a Server enforces Device approval.
-    pub(super) approved: Vec<approve::Approved>,
+    pub(super) approved: Vec<ployz_core::authority::ApprovedChange>,
 }
 
 /// A Deployment's view with what this Device approved, under `--json`.
@@ -399,7 +399,7 @@ struct WithApproved<'a> {
     #[serde(flatten)]
     view: &'a DeploymentView,
     #[serde(skip_serializing_if = "<[_]>::is_empty")]
-    approved: &'a [approve::Approved],
+    approved: &'a [ployz_core::authority::ApprovedChange],
 }
 
 impl Shipped {

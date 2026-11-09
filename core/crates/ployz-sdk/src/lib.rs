@@ -1317,6 +1317,60 @@ pub fn machine_upgrade_attempt_id(uuid: String) -> Result<String> {
         .map_err(invalid_argument)
 }
 
+/// The deploy approval a browser key signs for `preview`, a Store plan read with
+/// `target`, under `terms`: the canonical body to sign as it is, what each Service shows
+/// the approver, and one line per Service. The digest of each spec is taken here, by the
+/// code the CLI and the Servers run, so the browser never hashes a spec.
+///
+/// A tag image is refused, not pinned: this runs in Cloud, and the CLI's pin is safe only
+/// because the approver's own client asks the registry, so Cloud never answers it.
+///
+/// # Errors
+/// Rejects a plan read without `target`, a Service built from source or whose image is
+/// not pinned by digest, and malformed terms.
+#[napi(ts_return_type = "{ body: string; changes: ApprovedChange[]; lines: string[] }")]
+pub fn deploy_approval_body(
+    #[napi(ts_arg_type = "PlanView")] preview: serde_json::Value,
+    #[napi(ts_arg_type = "DeployTerms")] terms: serde_json::Value,
+) -> Result<serde_json::Value> {
+    use ployz_core::authority::{DeployApproval, canonical, deploy::content_addressed};
+    let preview: ployz_store::PlanView = from_js(preview).map_err(invalid_argument)?;
+    let terms = from_js(terms).map_err(invalid_argument)?;
+    let target = preview
+        .target
+        .ok_or_else(|| invalid_argument("Read the plan with target set to sign a deploy."))?;
+    if let Some(spec) = target
+        .iter()
+        .find(|spec| spec.container.image.starts_with("ployz-build/"))
+    {
+        return Err(invalid_argument(format_args!(
+            "{} builds from source, and servers that enforce device approval can't run a \
+             build yet. Deploy it from an image pinned by digest.",
+            spec.name
+        )));
+    }
+    if let Some(spec) = target
+        .iter()
+        .find(|spec| !content_addressed(&spec.container.image))
+    {
+        return Err(invalid_argument(format_args!(
+            "Pin {}'s image by digest to deploy it from the dashboard to servers that \
+             enforce device approval. ployz deploy pins a public tag for you.",
+            spec.name
+        )));
+    }
+    let (body, changes) = DeployApproval::draft(
+        terms,
+        preview.namespace,
+        &target,
+        &std::collections::BTreeMap::new(),
+    )
+    .map_err(invalid_argument)?;
+    let lines: Vec<String> = changes.iter().map(|change| change.line()).collect();
+    let body = canonical::to_canonical(&body).map_err(invalid_argument)?;
+    to_json(&serde_json::json!({ "body": body, "changes": changes, "lines": lines }))
+}
+
 /// The ployz version fingerprints cover; a GitHub runner installs exactly this one.
 #[napi]
 #[must_use]

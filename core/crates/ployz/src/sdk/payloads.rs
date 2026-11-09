@@ -89,6 +89,9 @@ fn typescript_declarations() -> String {
     declarations.add::<ployz_core::authority::Signed<ployz_core::authority::RestartApproval>>();
     declarations.add::<ployz_core::authority::RestartApproval>();
     declarations.add::<ployz_core::authority::ProposalApproval>();
+    declarations.add::<ployz_core::authority::DeployApproval>();
+    declarations.add::<ployz_core::authority::ApprovedChange>();
+    declarations.add::<ployz_core::authority::DeployTerms>();
     declarations.add::<ployz_core::authority::GrantBody>();
     declarations.add::<ployz_core::MachineUpdate>();
     declarations.add::<ployz_core::MachineUpdated>();

@@ -8161,6 +8161,7 @@ fn device_approval(
         .map(|spec| ApprovedService {
             name: spec.name.clone(),
             digest: PayloadDigest::of(spec, &plan.namespace).unwrap(),
+            image: None,
         })
         .collect();
     services.sort_by(|left, right| left.name.cmp(&right.name));
@@ -8174,6 +8175,7 @@ fn device_approval(
         issued_at,
         expires_at: issued_at.plus(60_000),
         signer: SignerKey::Device(signer.public().into()),
+        proposal: None,
     };
     Signed::sign(&body, &signer).unwrap()
 }

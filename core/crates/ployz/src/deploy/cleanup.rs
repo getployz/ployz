@@ -2,10 +2,11 @@ use std::collections::BTreeSet;
 use std::time::Duration;
 
 use ployz_core::{
-    AnonymousVolumes, ContainerId, ContainerKind, ContainerLocator, ContainerObservation,
-    ContainerRefusal, ContainerRefusalReason, ContainerWant, CopyRotation, DeploymentLogId, Drain,
-    EnsuredContainer, HealthVerdict, MachineId, QualifiedService, ResolvedServiceSpec, RoutesRead,
-    RpcError, RpcErrorCode, RunRotation, RunTarget, StopOptions, Unacked,
+    AnonymousVolumes, ContainerId, ContainerKind, ContainerLocator, ContainerNotFoundReason,
+    ContainerObservation, ContainerRefusal, ContainerRefusalReason, ContainerWant, CopyRotation,
+    DeploymentLogId, Drain, EnsuredContainer, HealthVerdict, MachineId, QualifiedService,
+    ResolvedServiceSpec, RoutesRead, RpcError, RpcErrorCode, RunRotation, RunTarget, StopOptions,
+    Unacked,
 };
 use serde_json::Value;
 use tokio::time::Instant;
@@ -572,7 +573,14 @@ pub(crate) async fn user_remove<C: MachineOperations>(
     cancellation: &CancellationToken,
 ) -> Result<(), RpcError> {
     let observed = match observe(client, machine_id, container_id).await {
-        Err(error) if error.code == RpcErrorCode::NotFound => return Ok(()),
+        Err(error) if error.code == RpcErrorCode::NotFound => {
+            return match ContainerNotFoundReason::from_details(&error.details) {
+                Some(ContainerNotFoundReason::NoResolvedSpec) => {
+                    Err(kept_without_spec(container_id, error))
+                }
+                None => Ok(()),
+            };
+        }
         observed => observed?,
     };
     let copy = Copy::observed(&observed);
@@ -582,6 +590,21 @@ pub(crate) async fn user_remove<C: MachineOperations>(
         remove(client, &copy, AnonymousVolumes::Remove).await?
     };
     left_running(&copy, "Out", step)
+}
+
+/// The inspect saw Docker answer for `container_id` while its Machine holds no Resolved
+/// Service Spec under that ID. The remove asks for nothing, so the Container stays.
+fn kept_without_spec(container_id: &ContainerId, inspected: RpcError) -> RpcError {
+    RpcError {
+        code: RpcErrorCode::Conflict,
+        message: format!(
+            "Container {container_id} was not removed: Docker on its Server has it, and the Server holds no Resolved Service Spec under its ID."
+        ),
+        details: serde_json::json!({ "reason": ContainerNotFoundReason::NoResolvedSpec }),
+        cause: std::iter::once(inspected.message)
+            .chain(inspected.cause)
+            .collect(),
+    }
 }
 
 async fn observe<C: MachineOperations>(

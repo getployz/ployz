@@ -114,7 +114,11 @@ type FakeMachine = {
   switching?: number;
 };
 
-type FakeContainer = { machine: string; id: string; running: boolean; created?: number; rotation?: CopyRotation; gen?: number };
+type FakeContainer = {
+  machine: string; id: string; running: boolean; created?: number; rotation?: CopyRotation; gen?: number;
+  /** Docker has it and its Machine holds no Resolved Service Spec under its ID: a remove leaves it and answers as the client does. */
+  specless?: true;
+};
 
 /**
  * What a fake Machine does with the next request of one label: refuse, apply it and lose the reply, fail with its own error, or
@@ -403,9 +407,20 @@ describe("volume runs", () => {
     copyContainerImage: (from: string, container: string, to: string) => Effect.sync(() => {
       verbs.push(`copy_image@${machine(from).name}->${machine(to).name}(${container})`);
     }),
-    removeContainer: (target: string, container: string) => Effect.sync(() => {
+    removeContainer: (target: string, container: string) => Effect.suspend(() => {
       verbs.push(`remove@${machine(target).name}(${container})`);
+      if (containers.some((entry) => entry.id === container && entry.specless === true)) {
+        return Effect.fail(new PloyzProviderError({
+          operation: "remove container",
+          cause: new RpcError({
+            code: "conflict",
+            message: `Container ${container} was not removed: Docker on its Server has it, and the Server holds no Resolved Service Spec under its ID.`,
+            details: { reason: "no_resolved_spec" },
+          }),
+        }));
+      }
       containers = containers.filter((entry) => entry.id !== container);
+      return Effect.void;
     }),
     volumeSwitch: (target: string, request: VolumeSwitchRequest) => Effect.suspend((): Effect.Effect<VolumeCopyView | SetVolumeCopyReply | SetVolumeSizeReply, PloyzSdkError> => {
       const fake = machine(target);
@@ -1880,6 +1895,27 @@ describe("volume runs", () => {
       expect((await releaseRow()).state).toBe("done");
     });
 
+    it("on a committed row whose A's stopped Container has no spec on its Server finishes on B, says the Container stays, and owes nothing", async () => {
+      const G = newSnap("f-1");
+      named("fsn-1").copy = slotCopy(G);
+      for (const container of containers) Object.assign(container, { running: false, specless: true });
+      machines[1] = { name: "fsn-2", pool: true, copy: slotCopy(G, null, "2") };
+      await owned("committed");
+
+      await runEffect(closeVolumeRun("run-1", "failure"));
+      const release = await releaseRow();
+      const output = await execute(release.id, "run-2");
+
+      expect(await rows()).toMatchObject([
+        { kind: "move", state: "failed" },
+        { id: release.id, kind: "release", state: "done", message: "web-fsn-1 stays on fsn-1, not removed" },
+      ]);
+      expect(output.result).toMatchObject({ moved: "fsn-2" });
+      expect(verbs).toEqual(["writer@fsn-2(create)", "remove@fsn-1(web-fsn-1)"]);
+      expect(containers.map(({ id }) => id)).toEqual(["web-fsn-1", `created-${volumeId}-${G.guid}`]);
+      expect(await request({ kind: "resize", args: { maximum_bytes: 20 * GB } })).toMatchObject({ ok: true });
+    });
+
     it("on a committed row whose B already runs the Service only removes A's stopped Container", async () => {
       const G = newSnap("f-1");
       named("fsn-1").copy = slotCopy(G);
@@ -2744,6 +2780,22 @@ describe("volume runs", () => {
       expect(verbs).toEqual(["writer@fsn-2(create)", "remove@fsn-1(web-fsn-1)"]);
     });
 
+    it("a kept Container its Server holds without a spec stays: the Move finishes saying so, and the Volume owes no release", async () => {
+      const G = newSnap("f-1");
+      cut(G);
+      for (const container of containers) container.specless = true;
+      machines[1] = { name: "fsn-2", pool: true, copy: slotCopy(G) };
+      const run = await requested({ kind: "move", args: { to: "fsn-2" } });
+
+      const output = await execute(run.id);
+
+      expect(await rows()).toMatchObject([{ id: run.id, kind: "move", state: "done", message: "web-fsn-1 stays on fsn-1, not removed" }]);
+      expect(output.result).toEqual({ runId: run.id, moved: "fsn-2" });
+      expect(verbs).toEqual(["writer@fsn-2(create)", "remove@fsn-1(web-fsn-1)"]);
+      expect(containers.map(({ machine, id }) => `${machine}:${id}`)).toEqual(["fsn-1:web-fsn-1", `fsn-2:created-${volumeId}-${G.guid}`]);
+      expect(await request({ kind: "resize", args: { maximum_bytes: 20 * GB } })).toMatchObject({ ok: true });
+    });
+
     it("again once B writes and runs the Service only removes A's kept Container", async () => {
       const G = newSnap("f-1");
       cut(G);
@@ -2872,6 +2924,21 @@ describe("volume runs", () => {
 
       expect(output.result).toEqual({ runId: run.id, released: "fsn-2" });
       expect(verbs).toEqual(["floor@fsn-1", "floor@fsn-2", "writer@fsn-2(kept)", "remove@fsn-1(web-fsn-1)"]);
+    });
+
+    it("a writer whose Move reached B leaves the Container A kept when its Server holds no spec for it, and says so", async () => {
+      const at = G();
+      for (const container of containers) container.specless = true;
+      machines[1] = { name: "fsn-2", pool: true, copy: writerCopy(at, 1) };
+      containers.push({ machine: "fsn-2", id: "created-1", running: true });
+      const run = await requested({ kind: "release", args: {} });
+
+      const output = await execute(run.id);
+
+      expect(await rows()).toMatchObject([{ id: run.id, kind: "release", state: "done", message: "web-fsn-1 stays on fsn-1, not removed" }]);
+      expect(output.result).toEqual({ runId: run.id, released: "fsn-2" });
+      expect(verbs).toEqual(["floor@fsn-1", "floor@fsn-2", "writer@fsn-2(kept)", "remove@fsn-1(web-fsn-1)"]);
+      expect(containers.map(({ id }) => id)).toEqual(["web-fsn-1", "created-1"]);
     });
 
     it("with only slots, forgets B's copy at G before A becomes the writer again", async () => {
