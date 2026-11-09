@@ -84,15 +84,22 @@ starting set you signed with `ployz device enforce` are trusted without a join a
 saved by an older unsigned join that isn't in that set is dropped as a WireGuard and gossip peer,
 including after a restart.
 
+The admitting server doesn't publish the new server as a member until the new server proves it
+opened its capsule. Opening the capsule gives the new server the Cluster's Sealing Key, and it
+answers with a confirmation only that key can produce. The join command sends the confirmation
+back through the same path as the join, and the admitting server checks it before it publishes
+the new server. Until then, no server peers with it. A join command from before this release
+never sends a confirmation, so its join times out waiting for the new server to become ready.
+Update ployz where you run the join, then rerun it.
+
 A fresh server has no independent pin for its first authority. If Cloud withholds the
-capsule during an approved join, the new server joins without the Sealing Key and under
-Devices Cloud chose, with enforcement off. Honest servers can peer with it because you
-approved its ID and key. It cannot decrypt sealed secrets or admit other servers to the
-enforcing Cluster. Each honest server refuses a new Machine whose membership its own
-Device did not sign. Cloud can also forge a capsule under its own Sealing Key and Devices,
-but honest servers refuse that forged membership and never wrap the real Sealing Key to
-an unapproved key. Without an approval, bootstrap keeps today's behavior and takes Cloud's
-Devices and peers.
+capsule during an approved join, the new server joins without the Sealing Key, under Devices
+Cloud chose and with enforcement off. It can't confirm, so no honest server publishes or peers
+with it. It holds no sealed secret, reaches no server over the mesh, and admits no other server.
+Cloud can also forge a capsule under its own Sealing Key and Devices. Its confirmation fails
+the admitting server's check, and honest servers refuse that forged membership and never wrap
+the real Sealing Key to an unapproved key. Without an approval, bootstrap keeps today's
+behavior and takes Cloud's Devices and peers.
 
 Pinning the joining server's initial authority through verified SSH or a short code matched in
 the browser is follow-up work. This release does not change the bootstrap default for customers

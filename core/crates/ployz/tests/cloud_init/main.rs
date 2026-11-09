@@ -10,8 +10,8 @@ mod setup_report;
 mod signed_in;
 
 use harness::{
-    EnrollListen, EventLog, JoinDaemon, PAIRING, RESET_PUBLIC_KEY, TOKEN, founder_machine,
-    ingress_on, registration, serve_machine,
+    EnrollListen, EventLog, JOIN_CONFIRMATION, JoinDaemon, PAIRING, RESET_PUBLIC_KEY, TOKEN,
+    approved_registration, founder_machine, ingress_on, registration, serve_machine,
 };
 use ployz_core::{EnrollAs, EnrollRequest, InspectRequest, LocalMachinePhase, Registered, op};
 use serde_json::json;
@@ -100,6 +100,92 @@ async fn cloud_init_join_participates() {
             "machineId": machine_id.as_str(),
             "pairingCredential": PAIRING,
         })]
+    );
+}
+
+async fn add_through_cloud(daemon: JoinDaemon, enroll: &EnrollListen) -> std::process::Output {
+    let machine_addr = serve_machine(daemon).await;
+    let mut child = harness::cli()
+        .args([
+            "--connect",
+            &format!("ssh://root@{machine_addr}"),
+            "server",
+            "add",
+            "--token-stdin",
+            "--cloud-url",
+            &enroll.url,
+            "--name",
+            "joiner",
+            "--yes",
+        ])
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .unwrap();
+    tokio::io::AsyncWriteExt::write_all(
+        &mut child.stdin.take().unwrap(),
+        format!("{TOKEN}\n").as_bytes(),
+    )
+    .await
+    .unwrap();
+    child.wait_with_output().await.unwrap()
+}
+
+#[tokio::test]
+async fn an_approved_join_relays_the_joiners_confirmation_through_cloud() {
+    let registration = approved_registration();
+    let join = json!({
+        "kind": "join",
+        "storage": "none",
+        "pairing": { "secret": PAIRING },
+        "registration": registration,
+    });
+    let enroll = EnrollListen::script([join.clone(), join]).await;
+    let output = add_through_cloud(JoinDaemon::new(registration), &enroll).await;
+    assert!(
+        output.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let confirmations = enroll
+        .posts()
+        .into_iter()
+        .map(|post| post.get("joinConfirmation").cloned())
+        .collect::<Vec<_>>();
+    assert_eq!(
+        confirmations,
+        [None, Some(json!(JOIN_CONFIRMATION.to_string()))],
+        "the identity, then the identity with the confirmation"
+    );
+    assert_eq!(
+        enroll.paths().get(..2),
+        Some(["/api/enroll".to_owned(), "/api/enroll".to_owned()].as_slice())
+    );
+}
+
+#[tokio::test]
+async fn an_approved_join_to_a_server_that_cannot_confirm_stops_and_names_the_update() {
+    let registration = approved_registration();
+    let enroll = EnrollListen::start(json!({
+        "kind": "join",
+        "storage": "none",
+        "pairing": { "secret": PAIRING },
+        "registration": registration,
+    }))
+    .await;
+    let output = add_through_cloud(
+        JoinDaemon::new(registration).predating_confirmation(),
+        &enroll,
+    )
+    .await;
+    assert!(!output.status.success());
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("Update ployz on it"), "{stderr}");
+    assert_eq!(
+        enroll.posts().len(),
+        1,
+        "nothing is relayed without a confirmation"
     );
 }
 

@@ -811,7 +811,18 @@ impl LocalMachine {
             id = machine.id.as_str(),
             "enrolled"
         );
-        Ok(Enrolled::Enrolled { machine })
+        let join_confirmation = match &machine.join_approval {
+            Some(approval) if self.record().device_enforcement() => {
+                SealingKey::load(self.owner.data_dir())
+                    .map_err(Error::JoinRecord)?
+                    .map(|key| key.confirm_join(approval))
+            }
+            _ => None,
+        };
+        Ok(Enrolled::Enrolled {
+            machine,
+            join_confirmation,
+        })
     }
 
     /// Publish a client-selected assignment from a participating Entry Machine.
@@ -863,9 +874,21 @@ impl LocalMachine {
                 let restart_approval::JoinReply::Register(registration) = stored.reply else {
                     return Err(Error::JoinConsumed(request.machine_id));
                 };
-                publication
-                    .register(registration.assigned_machine.clone())
-                    .await?;
+                if let Some(confirmation) = &request.join_confirmation {
+                    let confirmed = SealingKey::load(self.owner.data_dir())
+                        .map_err(Error::JoinRecord)?
+                        .is_some_and(|key| key.confirms_join(&stored.approval, confirmation));
+                    if !confirmed {
+                        return Err(Error::JoinRefused(
+                            ployz_core::authority::AuthorityRefusal::Mismatch {
+                                field: "a join confirmation",
+                            },
+                        ));
+                    }
+                    publication
+                        .register(registration.assigned_machine.clone())
+                        .await?;
+                }
                 return Ok(*registration);
             }
             let subnet = ipnet::Ipv4Net::from(assignment.machine.subnet);
@@ -914,6 +937,7 @@ impl LocalMachine {
                 approval,
                 reply: restart_approval::JoinReply::Register(Box::new(registration.clone())),
             })?;
+            return Ok(registration);
         }
         publication
             .register(registration.assigned_machine.clone())

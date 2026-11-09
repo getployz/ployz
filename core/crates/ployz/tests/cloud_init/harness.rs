@@ -114,6 +114,7 @@ struct JoinInner {
     join_request: Mutex<Option<MemberEnroll>>,
     join_attempts: AtomicUsize,
     lose_lifecycle_reply: AtomicBool,
+    predates_confirmation: AtomicBool,
     initialize_requests: Mutex<Vec<FounderEnroll>>,
     register_request: Mutex<Option<ployz_core::RegisterRequest>>,
     lose_initialize_reply: AtomicBool,
@@ -161,6 +162,7 @@ impl JoinDaemon {
                 join_request: Mutex::new(None),
                 join_attempts: AtomicUsize::new(0),
                 lose_lifecycle_reply: AtomicBool::new(false),
+                predates_confirmation: AtomicBool::new(false),
                 initialize_requests: Mutex::new(Vec::new()),
                 register_request: Mutex::new(None),
                 lose_initialize_reply: AtomicBool::new(false),
@@ -313,6 +315,29 @@ impl JoinDaemon {
             .replace_identity_on_initialize
             .store(true, Ordering::SeqCst);
         self
+    }
+
+    /// Answer an approved join as a daemon from before join confirmations: with none.
+    pub fn predating_confirmation(self) -> Self {
+        self.inner
+            .predates_confirmation
+            .store(true, Ordering::SeqCst);
+        self
+    }
+
+    fn confirmation(
+        &self,
+        enroll: &EnrollRequest,
+    ) -> Option<ployz_core::authority::join::JoinConfirmation> {
+        match &enroll.role {
+            EnrollAs::Member { registration }
+                if registration.assigned_machine.join_approval.is_some()
+                    && !self.inner.predates_confirmation.load(Ordering::SeqCst) =>
+            {
+                Some(JOIN_CONFIRMATION)
+            }
+            EnrollAs::Member { .. } | EnrollAs::Founder { .. } => None,
+        }
     }
 
     pub fn join_attempts(&self) -> usize {
@@ -1154,6 +1179,33 @@ impl FakeMachine for JoinDaemon {
     }
 }
 
+/// What the fake joiner answers an approved join with, as a real one does from its capsule.
+pub const JOIN_CONFIRMATION: ployz_core::authority::join::JoinConfirmation =
+    ployz_core::authority::join::JoinConfirmation([5; 32]);
+
+/// The registration an enforcing Machine hands back once a Device approved the join.
+pub fn approved_registration() -> Registered {
+    use ployz_core::authority::{JoinApproval, Signed, Signer, Timestamp, join::JoinAllocation};
+    let mut registration = registration();
+    let machine = &registration.assigned_machine;
+    let signer = Signer::from_seed(&[1; 32]);
+    let issued_at = Timestamp::now();
+    let body = JoinApproval {
+        cluster: ployz_core::SealingPublicKey::from_bytes([3; 32]),
+        machine: JoinAllocation::from(machine),
+        network: "10.210.0.0/16".parse().unwrap(),
+        sealing_recipient: machine.public_key,
+        devices: vec![signer.public().into()],
+        admitting_machines: vec![founder_machine().id],
+        bootstrap: vec![JoinAllocation::from(&founder_machine())],
+        issued_at,
+        expires_at: issued_at.plus(60_000),
+        signer: signer.public().into(),
+    };
+    registration.assigned_machine.join_approval = Some(Signed::sign(&body, &signer).unwrap());
+    registration
+}
+
 pub fn registration() -> Registered {
     Registered {
         assigned_machine: joiner_machine(),
@@ -1248,6 +1300,7 @@ impl JoinDaemon {
             if stored == Some((enroll.clone(), self.public_key())) {
                 return rpc_ok(Enrolled::Enrolled {
                     machine: self.inner.current_machine.lock().unwrap().clone(),
+                    join_confirmation: self.confirmation(&enroll),
                 });
             }
             let current = self.inner.current_machine.lock().unwrap().clone();
@@ -1360,6 +1413,10 @@ impl JoinDaemon {
                 }
             }
         }
-        rpc_ok(Enrolled::Enrolled { machine })
+        let join_confirmation = self.confirmation(&enroll);
+        rpc_ok(Enrolled::Enrolled {
+            machine,
+            join_confirmation,
+        })
     }
 }

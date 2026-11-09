@@ -52,7 +52,14 @@ pub(in crate::handlers) fn add(root: &ArgMatches) -> Result<(), Error> {
         let name = helpers::machine_name(requested_name, &token);
         require_free_name(&snapshot, token.id, &name, destination)?;
         let history = config.path().with_extension("enrollment");
+        // A Server still joining under this identity resumes: an approved join stays unlisted
+        // until its confirmation is relayed below.
+        let joining = details.phase == LocalMachinePhase::Joining
+            && details.machine.as_ref().is_some_and(|machine| {
+                machine.id == token.id && machine.public_key == token.public_key
+            });
         if details.phase != LocalMachinePhase::Uninitialized
+            && !joining
             && !resumes(&snapshot, token.id, token.public_key)
         {
             helpers::confirm(yes, "Reset the Server before adding it to this Cluster?")?;
@@ -67,6 +74,7 @@ pub(in crate::handlers) fn add(root: &ArgMatches) -> Result<(), Error> {
             &history,
             &RegisterRequest {
                 join_approval: None,
+                join_confirmation: None,
                 machine_id: token.id,
                 assigned_subnet: None,
                 initial_policy: policy,
@@ -109,7 +117,8 @@ pub(in crate::handlers) fn add(root: &ArgMatches) -> Result<(), Error> {
             }
             result => result?,
         };
-        helpers::enroll(
+        let approved = registration.assigned_machine.join_approval.is_some();
+        let (_, join_confirmation) = helpers::enroll_member(
             &mut target_client,
             EnrollRequest {
                 role: EnrollAs::Member { registration },
@@ -118,6 +127,12 @@ pub(in crate::handlers) fn add(root: &ArgMatches) -> Result<(), Error> {
             },
         )
         .await?;
+        if approved {
+            let mut confirmed = assignment.clone();
+            confirmed.request.join_confirmation =
+                Some(join_confirmation.ok_or_else(helpers::confirmation_missing)?);
+            crate::enrollment::publish_enrollment(&mut entry, &confirmed).await?;
+        }
 
         Ok::<_, Error>(assigned)
     })?;
@@ -289,6 +304,7 @@ mod tests {
             history.path(),
             &RegisterRequest {
                 join_approval: None,
+                join_confirmation: None,
                 machine_id: returning.id,
                 assigned_subnet: None,
                 initial_policy: Default::default(),

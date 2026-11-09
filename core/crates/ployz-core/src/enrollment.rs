@@ -233,6 +233,7 @@ mod tests {
     fn request(seed: u8) -> RegisterRequest {
         RegisterRequest {
             join_approval: None,
+            join_confirmation: None,
             machine_id: MachineId::parse(format!("{seed:032x}")).unwrap(),
             assigned_subnet: None,
             initial_policy: Default::default(),

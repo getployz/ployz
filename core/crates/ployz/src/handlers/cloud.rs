@@ -199,7 +199,7 @@ where
         client = ensure_uninitialized(matches, matches.get_flag("yes"), true, client).await?;
     }
     report.step(Step::Enroll);
-    let (details, machine_token, name, outcome) = enroll_current_identity(
+    let (details, machine_token, name, identity, outcome) = enroll_current_identity(
         command,
         matches,
         &mut client,
@@ -229,6 +229,8 @@ where
                 &initial_policy,
                 pinned,
                 &cloud_enroll::callback_url(cloud_url),
+                &url,
+                &identity,
                 token,
                 install,
                 report,
@@ -354,7 +356,16 @@ async fn enroll_current_identity(
     url: &str,
     token: &CloudEnrollToken,
     progress: &dyn Fn(EnrollStage),
-) -> Result<(MachineDetails, MachineToken, MachineName, Outcome), Error> {
+) -> Result<
+    (
+        MachineDetails,
+        MachineToken,
+        MachineName,
+        EnrollIdentity,
+        Outcome,
+    ),
+    Error,
+> {
     let (details, machine_token) =
         crate::handlers::server::inspect_token(client, token_request).await?;
     let name = crate::handlers::server::machine_name(requested_name, &machine_token);
@@ -376,6 +387,7 @@ async fn enroll_current_identity(
                 let mut entry = super::server::connect(matches, None).await?;
                 let expected = ployz_core::RegisterRequest {
                     join_approval: None,
+                    join_confirmation: None,
                     machine_id: machine_token.id,
                     assigned_subnet: None,
                     initial_policy: initial_policy.clone(),
@@ -400,7 +412,7 @@ async fn enroll_current_identity(
         }
         result => result?,
     };
-    Ok((details, machine_token, name, outcome))
+    Ok((details, machine_token, name, identity, outcome))
 }
 
 #[expect(
@@ -416,6 +428,8 @@ async fn enroll_join<Install, InstallFuture>(
     initial_policy: &ployz_core::InitialMachinePolicy,
     pinned: PinnedAddresses,
     callback_url: &str,
+    enroll_url: &str,
+    identity: &EnrollIdentity,
     token: &CloudEnrollToken,
     install: &Install,
     report: &mut SetupReport,
@@ -451,9 +465,26 @@ where
         )));
     }
     let pairing = join.pairing;
-    if local.is_some() {
+    // An approved join is published only once the joiner's confirmation comes back through
+    // Cloud. A rerun that finds the Server still joining replays its Enroll to read it again.
+    let relays =
+        assigned.join_approval.is_some() && details.phase != LocalMachinePhase::Participating;
+    let member = EnrollRequest {
+        role: EnrollAs::Member {
+            registration: join.registration,
+        },
+        wireguard_mtu: matches.get_one::<u32>("wg-mtu").copied(),
+        pinned,
+    };
+    let confirmation = if local.is_some() {
         report.step(Step::Join);
-        progress(EnrollStage::Joining);
+        if relays {
+            crate::handlers::server::enroll_member(&mut client, member)
+                .await?
+                .1
+        } else {
+            None
+        }
     } else {
         unlisted_participation(&details, &assigned)?;
         client = ensure_uninitialized(
@@ -469,19 +500,23 @@ where
             .await
             .map_err(undoable)?;
         report.step(Step::Join);
-        crate::handlers::server::enroll(
-            &mut client,
-            EnrollRequest {
-                role: EnrollAs::Member {
-                    registration: join.registration,
-                },
-                wireguard_mtu: matches.get_one::<u32>("wg-mtu").copied(),
-                pinned,
-            },
+        crate::handlers::server::enroll_member(&mut client, member)
+            .await?
+            .1
+    };
+    if relays {
+        let confirmation =
+            confirmation.ok_or_else(crate::handlers::server::confirmation_missing)?;
+        cloud_enroll::enroll(
+            command,
+            enroll_url,
+            token,
+            &identity.confirming(confirmation),
+            progress,
         )
         .await?;
-        progress(EnrollStage::Joining);
     }
+    progress(EnrollStage::Joining);
     let mut ready = wait_phase(
         matches,
         Awaited::Enrolled {
@@ -1224,6 +1259,25 @@ pub(super) fn reset(root: &ArgMatches) -> Result<(), Error> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn test_identity(machine: &Machine) -> EnrollIdentity {
+        EnrollIdentity::from_machine_token(
+            machine.name.clone(),
+            &MachineToken {
+                id: machine.id,
+                public_key: machine.public_key,
+                public_ip: None,
+                advertised_endpoints: Vec::new(),
+                runtime: Default::default(),
+                memory_total_bytes: None,
+                disk_total_bytes: None,
+                disk_available_bytes: None,
+            },
+            ployz_core::StorageChoice::None,
+            Default::default(),
+            false,
+        )
+    }
     use std::{io, path::PathBuf};
 
     use crate::context::ConnectionSource;
@@ -1576,6 +1630,7 @@ mod tests {
         let policy = ployz_core::InitialMachinePolicy::default();
         let mut report = SetupReport::start();
         let install = |_| async { Ok(()) };
+        let identity = test_identity(&machine);
         let enrolling = async {
             if founder {
                 enroll_founder(
@@ -1629,6 +1684,8 @@ mod tests {
                     &policy,
                     Default::default(),
                     "http://unused.invalid",
+                    "http://unused.invalid",
+                    &identity,
                     &token,
                     &install,
                     &mut report,
@@ -1724,6 +1781,7 @@ mod tests {
             let stages = RefCell::new(Vec::new());
             let progress = |stage| stages.borrow_mut().push(stage);
             let install = |_| async { Ok(()) };
+            let identity = test_identity(&machine);
             let enrolling = async {
                 if founder {
                     enroll_founder(
@@ -1777,6 +1835,8 @@ mod tests {
                         &policy,
                         Default::default(),
                         "http://unused.invalid",
+                        "http://unused.invalid",
+                        &identity,
                         &token,
                         &install,
                         &mut report,
@@ -1926,6 +1986,7 @@ mod tests {
                     sealing_key: Some(ployz_core::SealedSealingKey::from_bytes(vec![7; 80])),
                 },
             };
+            let identity = test_identity(&join.registration.assigned_machine);
             let (client, daemon) = crate::connect::test_support::rpc_client(|_| async {
                 panic!("a refused add sends no daemon RPC");
             })
@@ -1942,6 +2003,8 @@ mod tests {
                 &Default::default(),
                 Default::default(),
                 "http://127.0.0.1:9/api/enroll/callback",
+                "http://127.0.0.1:9/api/enroll",
+                &identity,
                 &CloudEnrollToken::parse("pmet_fake").unwrap(),
                 &|_| async { Ok(()) },
                 &mut SetupReport::start(),
