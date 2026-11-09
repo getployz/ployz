@@ -175,7 +175,9 @@ the agent never sees it.
 and joins with the key, so keep the key reusable. If Tailscale refuses the key,
 `ployz private-access on` names the server. Run it again with a new key. **Integrations**
 marks that server **Key refused** and offers **Try another key**. A router that stopped
-shows as **Stopped** until you try another key or turn Private Access off. A server whose router
+shows as **Stopped** until you try another key or turn Private Access off. A server that
+didn't answer shows **No router**, and the card reads **Partly connected**. Click **Connect**
+once it's back; the routers already running stay on. A server whose router
 already joined keeps its identity when you run `on` again with another key; to join another
 tailnet, turn Private Access off first.
 

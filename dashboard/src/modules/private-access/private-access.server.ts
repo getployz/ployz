@@ -1,6 +1,6 @@
 import "@tanstack/react-start/server-only";
 import { Effect, Redacted } from "effect";
-import { decideApproval, getApproval, type Decider, type OperationAsked } from "#/modules/approvals/approvals.server";
+import { approveKeyed, type Decider, type OperationAsked } from "#/modules/approvals/approvals.server";
 import { offlineServers } from "#/modules/machines/server-status";
 import { refusalWords } from "#/modules/machines/server-web-traffic.server";
 import { freshOperationDigest } from "#/modules/machines/server-operations.server";
@@ -9,6 +9,7 @@ import {
   type PrivateAccessObservation,
   type PrivateAccessWant,
   privateAccessOn,
+  routerProblem,
   routersOn,
 } from "#/modules/private-access/private-access";
 import { firstRuntimeFrame, OrganizationRuntime } from "#/modules/runtime/organization-runtime.server";
@@ -42,7 +43,8 @@ export const setPrivateAccess = Effect.fn("PrivateAccess.set")(function* (organi
   const names = new Map(changed.machines.map(({ machine, server }) => [machine, server]));
   return {
     servers: changed.machines.map(({ machine, server, router }) => ({ id: machine, name: server, router })),
-    failures: changed.failures.map(({ machine_id, error }) => ({ id: machine_id, name: names.get(machine_id) ?? machine_id, message: error.message })),
+    failures: changed.failures.map(({ machine_id, error }) =>
+      ({ id: machine_id, name: names.get(machine_id) ?? machine_id, message: error.message, problem: routerProblem(error) })),
   } satisfies PrivateAccessChanged;
 }, Effect.scoped);
 
@@ -55,21 +57,20 @@ export const privateAccessAsked = (organizationId: string, to: PrivateAccessWant
   alwaysAsks: true,
 }) satisfies OperationAsked;
 
+/** Turn Private Access on with the key the approver pasted, holding the Approval while the Servers take it. */
 export const approvePrivateAccess = Effect.fn("PrivateAccess.approve")(function* (
   decider: Decider,
   input: { readonly id: string; readonly digest: string; readonly authKey: Redacted.Redacted<string> },
 ) {
-  const organizationId = decider.organization.id;
-  const approval = yield* getApproval(organizationId, input.id, freshOperationDigest);
-  const asks = approval.command === "set_private_access" && "operation" in approval.review && approval.review.operation.name === "on";
-  if (!asks) return yield* refuse("This approval doesn't ask to turn private access on.");
-  if (approval.status !== "pending") return yield* new Conflict({ userFacing: true, message: `This approval was already decided (${approval.status}).` });
-  if (approval.digest !== input.digest) return yield* new Conflict({ userFacing: true, message: "This approval changed. Review it again." });
-  const changed = yield* setPrivateAccess(organizationId, input.authKey);
-  if (changed.failures.length > 0) return { changed, decided: null };
-  const decided = yield* decideApproval(decider, input.id, { approve: { digest: input.digest } }, freshOperationDigest, true);
-  if (!decided.ok) return yield* new Conflict({ userFacing: true, message: decided.refusal.message });
-  return { changed, decided: decided.approval };
+  const keyed = yield* approveKeyed(
+    decider,
+    input,
+    setPrivateAccess(decider.organization.id, input.authKey),
+    (changed) => changed.failures.length === 0,
+    freshOperationDigest,
+  );
+  if (!keyed.ok) return yield* new Conflict({ userFacing: true, message: keyed.refusal.message });
+  return { changed: keyed.ran, decided: keyed.approval };
 });
 
 export const runPrivateAccess = Effect.fn("PrivateAccess.run")(function* (organizationId: string, to: PrivateAccessWant): Effect.fn.Return<PrivateAccessChanged, Validation | Error, Database | OrganizationRuntime> {

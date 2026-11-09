@@ -1,5 +1,6 @@
-import type { RuntimeWatchView } from "@ployz/sdk";
+import type { AccessChanged, RuntimeWatchView } from "@ployz/sdk";
 import { Schema } from "effect";
+import { asRecord } from "#/lib/json";
 
 export const TAILSCALE = "ployz-system/tailscale";
 
@@ -34,10 +35,19 @@ export type ObservedServer = { readonly id: string; readonly name: string; reado
 
 export type PrivateAccessObservation = { readonly servers: readonly ObservedServer[]; readonly partial: boolean };
 
-export type PrivateAccessChanged = {
-  readonly servers: readonly RouterRow[];
-  readonly failures: readonly { readonly id: string; readonly name: string; readonly message: string }[];
-};
+/** Why a Server's router didn't take: Tailscale refused the key, the router didn't run, or the Server didn't answer. */
+export type RouterProblem = "key_refused" | "not_running" | "unreachable";
+
+export type RouterFailure = { readonly id: string; readonly name: string; readonly message: string; readonly problem: RouterProblem };
+
+export type PrivateAccessChanged = { readonly servers: readonly RouterRow[]; readonly failures: readonly RouterFailure[] };
+
+/** The Engine names a router's problem in `details.problem`; a Server that didn't answer names none. */
+export function routerProblem(error: AccessChanged["failures"][number]["error"]): RouterProblem {
+  const problem = asRecord(error.details)?.["problem"];
+  if (problem === undefined) return "unreachable";
+  return problem === "key_refused" ? "key_refused" : "not_running";
+}
 
 export function routersOn(frame: Pick<RuntimeWatchView, "services">): Map<string, RouterState> {
   const routers = frame.services.find((service) => service.identity === TAILSCALE);

@@ -33,7 +33,10 @@ export const operationApprovals = pgTable(
     reason: text("reason"),
     decidedByUserId: uuid("decided_by_user_id").references(() => user.id, { onDelete: "set null" }),
     decidedAt: timestamp("decided_at", { mode: "date", withTimezone: true }),
-    /** When the operation it approved ran: an approval runs once. A Store write's digest binds a version its write moves. */
+    /**
+     * When the operation it approved ran: an approval runs once. A Store write's digest binds a version its write moves.
+     * On a pending row that asks for a key, when the approver's key started running, which holds the row until it ends.
+     */
     usedAt: timestamp("used_at", { mode: "date", withTimezone: true }),
     createdAt,
     updatedAt,

@@ -1,7 +1,7 @@
 import "@tanstack/react-start/server-only";
 import { createHash } from "node:crypto";
 import type { Approval, ConfigCommand, DestructiveEffect, DiffView, EnvironmentRef, JsonValue } from "@ployz/sdk";
-import { and, desc, eq, inArray, isNull, ne, type SQL, sql } from "drizzle-orm";
+import { and, desc, eq, inArray, isNull, lt, ne, or, type SQL, sql } from "drizzle-orm";
 import { Effect, Option, Schema } from "effect";
 import { canonicalJson } from "#/lib/json";
 import { Uuid } from "#/lib/schema";
@@ -613,8 +613,10 @@ export const pendingApprovals = <R = never>(organizationId: string, operationDig
     return fresh.filter((row) => row.status === "pending").map(approvalView);
   }).pipe(Effect.withSpan("Approvals.pending"));
 
+type Refused = { ok: false; refusal: StoreRefusal };
+
 /** `decided` is set when this call decided it, not when it answers a decision already made. */
-type Decided = { ok: true; approval: ApprovalView; decided?: true } | { ok: false; refusal: StoreRefusal };
+type Decided = { ok: true; approval: ApprovalView; decided?: true } | Refused;
 
 /**
  * Who decides: a person in the dashboard with what they hold there, or a Caller through the credential it signed in
@@ -648,46 +650,66 @@ const mayNotDecide = (decider: Decider, row: ApprovalRow, approve: boolean, keye
   return "Only a person in Ployz Cloud, or the prompt that asked, can approve this.";
 };
 
+const HOLD_LAPSES_MS = 2 * 60_000;
+
+const holding = (row: ApprovalRow) => row.status === "pending" && row.usedAt !== null && Date.now() - row.usedAt.getTime() < HOLD_LAPSES_MS;
+
+const unheld = (now: Date) => or(isNull(operationApprovals.usedAt), lt(operationApprovals.usedAt, new Date(now.getTime() - HOLD_LAPSES_MS)));
+
+const conflict = (message: string, current: ApprovalRow): Decided =>
+  ({ ok: false, refusal: { code: "conflict", message, details: { approval: approvalView(current) } } });
+
+const settled = (decision: ApprovalDecision, current: ApprovalRow): Decided => {
+  if ("approve" in decision ? current.status === "approved" && current.digest === decision.approve.digest : current.status === "denied") {
+    return { ok: true, approval: approvalView(current) };
+  }
+  if (current.status === "pending") return conflict("Servers are connecting for this approval. Try again in a minute.", current);
+  return current.status === "superseded"
+    ? conflict("The plan changed since this was asked; run the command again to review it.", current)
+    : conflict(`This approval was already decided elsewhere (${current.status}).`, current);
+};
+
+const settledNow = Effect.fn("Approvals.settledNow")(function* (organizationId: string, id: string, decision: ApprovalDecision) {
+  const current = yield* readRow(organizationId, id);
+  return current === undefined ? yield* new NotFound({ message: "No such approval." }) : settled(decision, current);
+});
+
+const forbidden = (message: string, row: ApprovalRow): Refused =>
+  ({ ok: false, refusal: { code: "forbidden", message, details: { approval: approvalView(row) } } });
+
+type Admitted = { readonly row: ApprovalRow };
+
+const admit = <R>(caller: Decider, id: string, decision: ApprovalDecision, operationDigest: OperationDigest<R> | undefined, keyed: boolean) =>
+  Effect.gen(function* () {
+    const found = yield* readRow(caller.organization.id, id);
+    if (found === undefined) return yield* new NotFound({ message: "No such approval." });
+    if (caller.via === "agent") return forbidden("Agents can't answer approvals.", found);
+    const row = yield* freshen(found, operationDigest);
+    const lacking = caller.via === "dashboard" ? null : lacks(caller, "approvals:answer");
+    if (lacking !== null) return forbidden(lacking, row);
+    const refused = mayNotDecide(caller, row, "approve" in decision, keyed);
+    if (refused !== null) return forbidden(refused, row);
+    if (row.status !== "pending" || holding(row)) return settled(decision, row);
+    if ("approve" in decision && decision.approve.digest !== row.digest) {
+      return conflict("That digest isn't the one this approval asks about; review it again.", row);
+    }
+    const admitted: Admitted = { row };
+    return admitted;
+  });
+
 /**
  * Approve exactly the digest the human saw, or deny with a reason. Repeating a decision answers the row; anything
- * else on a row no longer pending, or a digest that isn't the row's, refuses `conflict` with the row. Who may decide is
- * `mayNotDecide`'s. The row records who decided.
+ * else on a row no longer pending, held by a key that is running, or a digest that isn't the row's, refuses `conflict`
+ * with the row. Who may decide is `mayNotDecide`'s. The row records who decided.
  */
 export const decideApproval = <R = never>(
   caller: Decider,
   id: string,
   decision: ApprovalDecision,
   operationDigest?: OperationDigest<R>,
-  keyed = false,
 ) => Effect.gen(function* () {
-  const found = yield* readRow(caller.organization.id, id);
-  if (found === undefined) return yield* new NotFound({ message: "No such approval." });
-  const conflict = (message: string, current: ApprovalRow): Decided =>
-    ({ ok: false, refusal: { code: "conflict", message, details: { approval: approvalView(current) } } });
-  const settled = (current: ApprovalRow): Decided => {
-    if ("approve" in decision ? current.status === "approved" && current.digest === decision.approve.digest : current.status === "denied") {
-      return { ok: true, approval: approvalView(current) };
-    }
-    return current.status === "superseded"
-      ? conflict("The plan changed since this was asked; run the command again to review it.", current)
-      : conflict(`This approval was already decided elsewhere (${current.status}).`, current);
-  };
-  if (caller.via === "agent") {
-    return { ok: false, refusal: { code: "forbidden", message: "Agents can't answer approvals.", details: { approval: approvalView(found) } } } satisfies Decided;
-  }
-  const row = yield* freshen(found, operationDigest);
-  const lacking = caller.via === "dashboard" ? null : lacks(caller, "approvals:answer");
-  if (lacking !== null) {
-    return { ok: false, refusal: { code: "forbidden", message: lacking, details: { approval: approvalView(row) } } } satisfies Decided;
-  }
-  const refused = mayNotDecide(caller, row, "approve" in decision, keyed);
-  if (refused !== null) {
-    return { ok: false, refusal: { code: "forbidden", message: refused, details: { approval: approvalView(row) } } } satisfies Decided;
-  }
-  if (row.status !== "pending") return settled(row);
-  if ("approve" in decision && decision.approve.digest !== row.digest) {
-    return conflict("That digest isn't the one this approval asks about; review it again.", row);
-  }
+  const admitted = yield* admit(caller, id, decision, operationDigest, false);
+  if (!("row" in admitted)) return admitted;
   const { drizzle } = yield* Database;
   const now = new Date();
   const decided = { decidedByUserId: caller.userId, decidedAt: now, updatedAt: now };
@@ -695,9 +717,55 @@ export const decideApproval = <R = never>(
     .set("approve" in decision
       ? { status: "approved", ...decided }
       : { status: "denied", reason: decision.reject.reason ?? null, ...decided })
-    .where(and(eq(operationApprovals.id, row.id), eq(operationApprovals.status, "pending")))
+    .where(and(eq(operationApprovals.id, admitted.row.id), eq(operationApprovals.status, "pending"), unheld(now)))
     .returning();
   if (updated !== undefined) return { ok: true, approval: approvalView(updated), decided: true } satisfies Decided;
-  const current = yield* readRow(caller.organization.id, id);
-  return current === undefined ? yield* new NotFound({ message: "No such approval." }) : settled(current);
+  return yield* settledNow(caller.organization.id, id, decision);
 }).pipe(Effect.withSpan("Approvals.decide"));
+
+type Keyed<A> = { ok: true; ran: A; approval: ApprovalView | null } | Refused;
+
+const asRefusal = (answer: Decided): Refused => answer.ok
+  ? { ok: false, refusal: { code: "conflict", message: `This approval was already decided elsewhere (${answer.approval.status}).`, details: { approval: answer.approval } } }
+  : answer;
+
+/**
+ * Approve a row that asks for a key (`asksForAuthKey`) by running `run`, which carries the key. The row is held pending
+ * first, by its digest, so no other decision or key lands while `run` runs. It is approved once `took` says the key
+ * took, and let go otherwise, or when `run` fails or is interrupted, so a corrected key or a deny can follow. Only the
+ * hold's start is written; the key stays in `run`.
+ */
+export const approveKeyed = <A, E, R, D = never>(
+  caller: Decider,
+  input: { readonly id: string; readonly digest: string },
+  run: Effect.Effect<A, E, R>,
+  took: (ran: A) => boolean,
+  operationDigest?: OperationDigest<D>,
+) => Effect.gen(function* () {
+  const decision = { approve: { digest: input.digest } };
+  const admitted = yield* admit(caller, input.id, decision, operationDigest, true);
+  if (!("row" in admitted)) return asRefusal(admitted);
+  if (!asksForAuthKey(admitted.row.review)) {
+    return forbidden("This approval doesn't ask for a key.", admitted.row);
+  }
+  const { drizzle } = yield* Database;
+  const heldAt = new Date();
+  const ours = and(eq(operationApprovals.id, input.id), eq(operationApprovals.status, "pending"), eq(operationApprovals.usedAt, heldAt));
+  const [hold] = yield* drizzle.update(operationApprovals).set({ usedAt: heldAt })
+    .where(and(eq(operationApprovals.id, input.id), eq(operationApprovals.status, "pending"), eq(operationApprovals.digest, input.digest), unheld(heldAt)))
+    .returning({ id: operationApprovals.id });
+  if (hold === undefined) return asRefusal(yield* settledNow(caller.organization.id, input.id, decision));
+  const letGo = drizzle.update(operationApprovals).set({ usedAt: null }).where(ours).pipe(Effect.orDie);
+  const ran = yield* run.pipe(Effect.onError(() => letGo));
+  if (!took(ran)) {
+    yield* letGo;
+    return { ok: true, ran, approval: null } satisfies Keyed<A>;
+  }
+  const now = new Date();
+  const [approved] = yield* drizzle.update(operationApprovals)
+    .set({ status: "approved", decidedByUserId: caller.userId, decidedAt: now, updatedAt: now, usedAt: null })
+    .where(ours)
+    .returning();
+  if (approved === undefined) return asRefusal(yield* settledNow(caller.organization.id, input.id, decision));
+  return { ok: true, ran, approval: approvalView(approved) } satisfies Keyed<A>;
+}).pipe(Effect.withSpan("Approvals.approveKeyed"));

@@ -48,10 +48,12 @@ function TailscaleSection({ organizationSlug, editable }: { organizationSlug: st
   const [last, setLast] = useState<Answer | null>(null);
   const [offRefusal, setOffRefusal] = useState<string | null>(null);
   const rows = observed?.servers.map((server) => ({ ...server, state: stateOf(server, last) })) ?? [];
-  const placed = rows.filter((row) => row.state !== "none");
-  const serving = placed.filter((row) => row.state === "running").length;
+  const placed = rows.filter((row) => row.state !== "none").length;
+  const serving = rows.filter((row) => row.state === "running").length;
   // Until Connect answers, a running router may still be refused.
-  const on = placed.length > 0 && !starting;
+  const on = placed > 0 && !starting;
+  const refused = rows.some((row) => row.state === "refused");
+  const failures = last === null ? [] : last.changed.failures.filter((failure) => !putRight(last.to, rows.find((row) => row.id === failure.id)?.state));
   const settle = async (answer: Answer) => {
     setLast(answer);
     await queryClient.invalidateQueries({ queryKey: privateAccessKeys.all });
@@ -61,21 +63,22 @@ function TailscaleSection({ organizationSlug, editable }: { organizationSlug: st
     <SettingsSection id="tailscale" title="Tailscale">
       <SettingsRow
         label="Private access"
-        hint={hintOf(query.isPending, observed === null ? null : { serving, placed: on ? placed.length : 0, partial: observed.partial })}
+        hint={hintOf(query.isPending, observed === null ? null : { serving, placed: on ? placed : 0, partial: observed.partial })}
         commit="none"
         control={(
           <>
-            {on ? <StatusBadge serving={serving} placed={placed.length} /> : null}
+            {on ? <StatusBadge serving={serving} servers={rows.length} /> : null}
             {editable && on ? <Button type="button" variant="outline" size="sm" onClick={() => setTurningOff(true)}>Turn off</Button> : null}
-            {editable && on && serving < placed.length && !connecting ? <Button type="button" size="sm" onClick={() => setConnecting(true)}>Try another key</Button> : null}
-            {editable && placed.length === 0 && !connecting && observed !== null ? <Button type="button" size="sm" onClick={() => setConnecting(true)}>Connect</Button> : null}
+            {editable && observed !== null && !connecting && (!on || serving < rows.length)
+              ? <Button type="button" size="sm" onClick={() => setConnecting(true)}>{refused ? "Try another key" : "Connect"}</Button>
+              : null}
           </>
         )}
       >
         {offRefusal === null ? null : <p role="alert" className="text-sm text-destructive">{offRefusal}</p>}
-        {last === null || last.changed.failures.length === 0 ? null : (
+        {failures.length === 0 ? null : (
           <ul role="alert" aria-label="Failures" className="flex flex-col gap-1 text-sm text-destructive">
-            {last.changed.failures.map((failure) => <li key={failure.id}>{failure.message}</li>)}
+            {failures.map((failure) => <li key={failure.id}>{failure.message}</li>)}
           </ul>
         )}
       </SettingsRow>
@@ -103,7 +106,7 @@ function TailscaleSection({ organizationSlug, editable }: { organizationSlug: st
         open={turningOff}
         onOpenChange={setTurningOff}
         title="Turn off private access?"
-        description={`Removes ${placed.length} ${placed.length === 1 ? "router" : "routers"} from your tailnet. Turning it on again needs new route approvals.`}
+        description={`Removes ${placed} ${placed === 1 ? "router" : "routers"} from your tailnet. Turning it on again needs new route approvals.`}
         actionLabel="Turn off"
         pendingLabel="Turning off…"
         variant="destructive"
@@ -129,16 +132,18 @@ const REMOVAL_LAG_MS = 30_000;
 type RowState = ObservedServer["router"] | "refused";
 
 /**
- * The last answer outranks the poll: a refused router runs until Tailscale gives up, and a
- * removed one can still be listed until the Servers' watch catches up.
+ * The last answer outranks the poll only where the poll lags: a router whose key Tailscale refused
+ * runs until it gives up, and a removed one is listed until the Servers' watch catches up.
  */
 function stateOf(server: ObservedServer, last: Answer | null): RowState {
   if (server.router === "none" || last === null) return server.router;
-  const failed = last.changed.failures.some((failure) => failure.id === server.id);
-  if (failed) return last.to === "on" ? "refused" : server.router;
-  const removed = last.to === "off" && Date.now() - last.at < REMOVAL_LAG_MS && last.changed.servers.some((row) => row.id === server.id && !row.router);
+  const failure = last.changed.failures.find((failed) => failed.id === server.id);
+  if (last.to === "on") return failure?.problem === "key_refused" ? "refused" : server.router;
+  const removed = failure === undefined && Date.now() - last.at < REMOVAL_LAG_MS && last.changed.servers.some((row) => row.id === server.id && !row.router);
   return removed ? "none" : server.router;
 }
+
+const putRight = (to: PrivateAccessWant, state: RowState | undefined) => to === "on" ? state === "running" : state === "none";
 
 function hintOf(loading: boolean, routers: { serving: number; placed: number; partial: boolean } | null) {
   if (loading) return "Checking your servers…";
@@ -149,9 +154,9 @@ function hintOf(loading: boolean, routers: { serving: number; placed: number; pa
   return routers.partial ? `${shown} · some servers didn't answer` : shown;
 }
 
-function StatusBadge({ serving, placed }: { serving: number; placed: number }) {
+function StatusBadge({ serving, servers }: { serving: number; servers: number }) {
   if (serving === 0) return <Badge variant="warning">Not connected</Badge>;
-  if (serving < placed) return <Badge variant="warning">Partly connected</Badge>;
+  if (serving < servers) return <Badge variant="warning">Partly connected</Badge>;
   return <Badge variant="success">Connected</Badge>;
 }
 
