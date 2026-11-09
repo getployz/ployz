@@ -82,6 +82,11 @@ fn located(config: PathBuf) -> Locate {
     })
 }
 
+/// The first line on stderr. `ployz mcp` never opens the Device key beside the config, so
+/// an agent on a trusted computer can't borrow it: a person answers every approval.
+const CLOUD_CREDENTIAL: &str = "ployz mcp: tools run with your Cloud credential, never this \
+     computer's Device key. You approve in the dashboard or your agent's prompt.";
+
 pub(super) fn serve(root: &ArgMatches) -> Result<(), Error> {
     let config = super::config_path(leaf_matches(root))?;
     let local = if store::local_mode() {
@@ -93,6 +98,9 @@ pub(super) fn serve(root: &ArgMatches) -> Result<(), Error> {
         Some(store::Backend::Local(store, who)) => Store::Local(store, who),
         _ => Store::Cloud,
     };
+    if matches!(store, Store::Cloud) {
+        crate::ui::note(CLOUD_CREDENTIAL);
+    }
     let cloud = std::env::var(crate::cli::env::CLOUD_URL).ok();
     let token = crate::cloud_account::env_token();
     // Only Cloud runs a published command, so a local Store lists none.

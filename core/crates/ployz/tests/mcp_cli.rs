@@ -21,7 +21,7 @@ fn mcp(cloud: &str, home: &std::path::Path) -> Child {
         .env("no_proxy", "127.0.0.1")
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
-        .stderr(Stdio::null())
+        .stderr(Stdio::piped())
         .spawn()
         .unwrap()
 }
@@ -156,6 +156,53 @@ fn stuck_call() -> Stuck {
         stdin,
         stdout,
         _held: (cloud, held, home),
+    }
+}
+
+#[test]
+fn a_device_key_beside_the_config_is_never_read_and_the_first_line_says_so() {
+    use std::io::Read;
+    use std::os::unix::fs::PermissionsExt;
+
+    let home = tempfile::tempdir().unwrap();
+    // Readable by others and not a key: loading it fails with a message naming the file.
+    let key = home.path().join("device.key");
+    std::fs::write(&key, b"not a key").unwrap();
+    std::fs::set_permissions(&key, std::fs::Permissions::from_mode(0o644)).unwrap();
+    let mut server = mcp("http://127.0.0.1:9", home.path());
+    let mut stdin = server.stdin.take().unwrap();
+    let mut stdout = BufReader::new(server.stdout.take().unwrap());
+    let mut stderr = BufReader::new(server.stderr.take().unwrap());
+    let mut first = String::new();
+    stderr.read_line(&mut first).unwrap();
+    assert_eq!(
+        first.trim_end(),
+        "ployz mcp: tools run with your Cloud credential, never this computer's Device key. \
+         You approve in the dashboard or your agent's prompt."
+    );
+    initialize(&mut stdin, &mut stdout);
+    send(
+        &mut stdin,
+        &json!({
+            "jsonrpc": "2.0",
+            "id": 2,
+            "method": "tools/call",
+            "params": { "name": "server_show", "arguments": {} },
+        }),
+    );
+    let mut answer = String::new();
+    stdout.read_line(&mut answer).unwrap();
+    assert!(answer.contains("\"id\":2"), "{answer}");
+    drop(stdin);
+    exited_within(&mut server, Duration::from_secs(5)).expect("the server stops");
+    let mut rest = String::new();
+    stderr.read_to_string(&mut rest).unwrap();
+    for seen in [&answer, &rest] {
+        assert!(!seen.contains("device.key"), "{seen}");
+        assert!(
+            !seen.contains("signature") && !seen.contains("grant"),
+            "{seen}"
+        );
     }
 }
 
