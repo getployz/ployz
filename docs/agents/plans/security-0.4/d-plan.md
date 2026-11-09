@@ -18,7 +18,11 @@ Seven PRs, in dependency order:
 
 ## Operator decisions
 
-Each one has a recommendation. Nothing below blocks D1 or D2.
+The operator took every recommendation on 2026-11-09, with the additions below. Nothing here blocks D1 or D2.
+
+- Decision 1: the minter becomes its own slice after D4, run by the program's root. Until it is live, the docs suggest the branch ruleset.
+- Decision 8: the root applies Y's O1 to `getployz/build`.
+- Decision 9: an agent builds the Appendix B environment.
 
 1. **Automatic deploy under enforcement before the GitHub minter is live.** While Cloud holds the App key, or any GitHub token with Contents or Workflows write, it can push its own commit to the approved branch, and no Machine check can tell. The minter decision in the program's decision record removes that, but no thread owns building it. *Recommendation.* Build D1 to D4 now. Name an owner for the minter. Until it is live, the docs say automatic deploy under enforcement resists everything except a pushed commit, and suggest a branch ruleset that blocks direct pushes. Thread R tests D4 with Cloud's write credentials removed.
 2. **Who may sign a rule.** *Recommendation.* A Device, or a passkey through its own prompt. A browser key under a session grant may not, because a rule is standing authority over every future push.
