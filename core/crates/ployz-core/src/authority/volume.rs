@@ -274,7 +274,7 @@ impl VolumeWorkflow {
 }
 
 /// What a person approved in a Volume approval, as a client shows it, computed from the
-/// statement it signs. Each Server goes by the name the client knows it by.
+/// statement it signs. The Volume and each Server go by the names the client knows them by.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum ApprovedVolumeChange {
@@ -282,7 +282,7 @@ pub enum ApprovedVolumeChange {
     /// without another approval until the Mirror is removed. With `replace` it first
     /// destroys the copy it holds.
     Mirror {
-        volume: DockerVolumeName,
+        volume: String,
         writer: String,
         mirror: String,
         replace: bool,
@@ -290,17 +290,21 @@ pub enum ApprovedVolumeChange {
 }
 
 impl ApprovedVolumeChange {
-    /// The change `approval` makes, naming each Server with `name`. `None` for a workflow
-    /// no client signs yet.
+    /// The change `approval` makes to the Volume the client calls `volume`, naming each Server
+    /// with `name`. `None` for a workflow no client signs yet.
     #[must_use]
-    pub fn of(approval: &VolumeApproval, name: impl Fn(&MachineId) -> String) -> Option<Self> {
+    pub fn of(
+        approval: &VolumeApproval,
+        volume: &str,
+        name: impl Fn(&MachineId) -> String,
+    ) -> Option<Self> {
         match &approval.workflow {
             VolumeWorkflow::Mirror {
                 writer,
                 mirror,
                 replace,
             } => Some(Self::Mirror {
-                volume: approval.volume.clone(),
+                volume: volume.to_owned(),
                 writer: name(writer),
                 mirror: name(mirror),
                 replace: *replace,
@@ -313,8 +317,8 @@ impl ApprovedVolumeChange {
         }
     }
 
-    /// One line a person reads: the Volume by its declared name, both Servers, and that
-    /// later syncs need no approval.
+    /// One line a person reads: the Volume, both Servers, and that later syncs need no
+    /// approval.
     #[must_use]
     pub fn line(&self) -> String {
         match self {
@@ -324,13 +328,12 @@ impl ApprovedVolumeChange {
                 mirror,
                 replace,
             } => {
-                let shown = Namespace::declared_volume_name(volume).unwrap_or(volume.as_str());
                 let change = if *replace {
                     format!(
-                        "copy {shown} from {writer} to {mirror} again, replacing the copy there"
+                        "copy {volume} from {writer} to {mirror} again, replacing the copy there"
                     )
                 } else {
-                    format!("mirror {shown} from {writer} to {mirror}")
+                    format!("mirror {volume} from {writer} to {mirror}")
                 };
                 format!(
                     "Approved: {change}. Later syncs run without asking until you remove the Mirror."

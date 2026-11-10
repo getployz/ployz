@@ -98,7 +98,7 @@ pub(super) fn sign(
         signer: SignerKey::Device(signer.public().into()),
     };
     let signed = Signed::sign(&body, &signer).map_err(Error::command)?;
-    let change = ApprovedVolumeChange::of(&body, |id| {
+    let change = ApprovedVolumeChange::of(&body, volume.as_str(), |id| {
         seen.iter()
             .find(|seen| seen.id == *id)
             .map_or_else(|| id.to_string(), |seen| seen.name.clone())
