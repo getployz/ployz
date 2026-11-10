@@ -79,6 +79,10 @@ check-in refreshes the row. Offline servers have stopped checking in.
 current install line from **Add servers** or `ployz server token create`, run it on the server,
 then enroll it. An older line installs the release it names.
 
+**Update ployz to join a Cluster with closed ports 80 and 443** means the Cluster keeps those
+ports closed and that server's `ployz` can't. Update `ployz` on it, then enroll it. A server whose
+`ployz` is current joins without opening a port.
+
 When no server already in the organization has contacted Ployz Cloud for three hours, the sheet
 says **Servers offline**. A running server contacts Cloud at least once an hour. Cloud can't join
 servers to ones it can't reach, so the enroll fails. If those servers were deleted, follow

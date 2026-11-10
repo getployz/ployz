@@ -106,6 +106,10 @@ To start a new Cluster whose ports never open, add `--ingress-closed` to the fir
 nothing reaches your apps until you run `ployz ingress use tunnel`. A server that joins
 meanwhile opens no door either. The flag does nothing for a server that joins a Cluster.
 
+While a Cluster keeps its ports closed, a server whose `ployz` is too old to keep them closed
+can't join it, and setting up Cloudflare Tunnel says which servers to update first. Update
+`ployz` on them, then set up again.
+
 Run `ployz ingress use tunnel` without the switch to type the token at a prompt. Ployz keeps the
 token sealed for your servers; nobody reads it back, and a server that joins later gets it on
 its own.

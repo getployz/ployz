@@ -102,7 +102,7 @@ A Cloud-owned bearer (`PLOYZ_TOKEN`) made by a member with `ployz token new`. It
 _Avoid_: API key, personal access token, CLI token
 
 **Fleet Token**:
-A `pflt_` secret a signed-in member makes for one Organization so many hosts can carry it and ask to join; an Organization Token can't make or revoke one. It has a two-word name such as `amber-falcon`, unique among the Organization's unrevoked tokens, and lasts 1, 7 or 30 days or until revoked. Only its hash is stored; the secret is shown once. It is not membership: a host carrying it is not a Server until it enrolls. One made on the first-run card with Cloudflare Tunnel chosen founds closed: the first Server it enrolls starts the Cluster with every Door shut, and Cloud sends that only to a host whose `ployz` lists it in its check-in. The tab that chose it holds the Cloudflare API token, never Cloud, and sets the tunnel up once that Server joins.
+A `pflt_` secret a signed-in member makes for one Organization so many hosts can carry it and ask to join; an Organization Token can't make or revoke one. It has a two-word name such as `amber-falcon`, unique among the Organization's unrevoked tokens, and lasts 1, 7 or 30 days or until revoked. Only its hash is stored; the secret is shown once. It is not membership: a host carrying it is not a Server until it enrolls. One made on the first-run card with Cloudflare Tunnel chosen founds closed: the first Server it enrolls starts the Cluster with every Door shut, and Cloud sends that only to a host whose `ployz` lists the capability that carries it out in its check-in. The tab that chose it holds the Cloudflare API token, never Cloud, and sets the tunnel up once that Server joins.
 _Avoid_: Enrollment token, join token, bootstrap token
 
 **Waiting Server**:
@@ -148,6 +148,10 @@ _Avoid_: Deployment Mode, Editor Mode, deployment view of the canvas
 **Target Node List**:
 The Environment Nodes a Deployment covers, each marked changed, removed or needing a build against Applied State. It is provisional while the attempt is queued and freezes with the Attempt Target when the attempt starts.
 _Avoid_: Attempt nodes, deployment diff, queued node preview
+
+**Cluster Requirement**:
+A feature a Cluster has turned on, with the Engine capability every Server in it must carry out (today, closed Doors needs `ployz.ingress.closed-doors.v1`). One table maps each feature to its capability, and every way a Server joins asks the same check before Cloud registers it. A `ployz` too old to list capabilities lacks every one, so it is refused only by a Cluster that requires something. Cloud derives what a Cluster requires and stores no flag: what it recorded asking for (a closed founding, or an active Cloudflare Tunnel), and what the Servers show, which wins when seen whole. A refused joiner is told which feature and to update `ployz`. Turning a feature on while a Server lacks it names that Server and waits for its update.
+_Avoid_: Minimum CLI version, version floor, compatibility gate, Deployment Requirement
 
 **Deployment Requirement**:
 The caller-selected failure policy for updating one Service in an Attempt Target: required or opportunistic; manual Deploy makes every included Service update required. An opportunistic failure preserves or attempts to restore the prior working version and allows deployment work to continue only when that version is retained or recovery succeeds; a required failure or failed recovery cancels later phases.

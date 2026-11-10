@@ -167,6 +167,12 @@ Servers page says your apps aren't reachable yet: paste the token again to finis
 ports. A server whose `ployz` predates this can't start closed, and enrolling it says to update
 `ployz` or get an install command without Cloudflare Tunnel.
 
+A Cluster that keeps ports 80 and 443 closed refuses a server whose `ployz` is too old to keep
+them closed, whichever way it joins. `ployz server add` stops before the server joins and says
+`This Cluster keeps ports 80 and 443 closed. Update ployz on this server to join it.` Update
+`ployz` there and rerun the command. A Cluster that keeps its ports open still takes any `ployz`
+the install line names.
+
 The bottom bar of an environment offers the same card under **Add servers** while you have no
 server. You can skip it and build your project first.
 
