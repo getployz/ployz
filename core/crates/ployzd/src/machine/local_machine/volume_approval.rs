@@ -115,7 +115,9 @@ impl LocalMachine {
     /// Withdraw `recipient` from `volume` here, before anything is destroyed: every Mirror
     /// operation this Machine admitted for it ends, and so does every grant to it. It needs
     /// no approval, because it only narrows what a driver can do. An approval this Machine
-    /// never admitted is still new work while its window lasts.
+    /// never admitted is still new work while its window lasts. `replacing` names the
+    /// Mirror operation whose own `Forget` writes this withdrawal: it stays open, and this
+    /// withdrawal does not outrank its grants.
     ///
     /// # Errors
     /// Returns [`Error::ApprovalRecord`] when the record cannot be read or written.
@@ -123,11 +125,12 @@ impl LocalMachine {
         &self,
         volume: &DockerVolumeName,
         recipient: &MachineId,
+        replacing: Option<OperationId>,
     ) -> Result<(), Error> {
         let machine = self.record().id();
         self.approvals
             .change_volumes(Timestamp::now(), |records, _| {
-                records.withdraw(&machine, volume, recipient);
+                records.withdraw(&machine, volume, recipient, replacing);
                 Ok(())
             })
     }
@@ -223,6 +226,9 @@ struct Withdrawal {
     volume: DockerVolumeName,
     recipient: MachineId,
     at: u64,
+    /// The replacing Mirror operation this withdrawal leaves open.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    replacing: Option<OperationId>,
 }
 
 impl VolumeRecords {
@@ -339,6 +345,7 @@ impl VolumeRecords {
             withdrawal.volume == record.volume
                 && withdrawal.recipient == recipient
                 && withdrawal.at > record.admitted
+                && withdrawal.replacing != Some(operation)
         });
         if outranked {
             return refused(AuthorityRefusal::Replayed { operation });
@@ -387,19 +394,28 @@ impl VolumeRecords {
 
     /// End every open operation here that mirrors `volume` to `recipient`: a Mirror's own,
     /// on either Machine, and a Move's following on the recipient itself. A Move between
-    /// two other Machines goes on, but can no longer grant `recipient` anything.
-    fn withdraw(&mut self, machine: &MachineId, volume: &DockerVolumeName, recipient: &MachineId) {
+    /// two other Machines goes on, but can no longer grant `recipient` anything. The
+    /// `replacing` operation, and its grants, stay.
+    fn withdraw(
+        &mut self,
+        machine: &MachineId,
+        volume: &DockerVolumeName,
+        recipient: &MachineId,
+        replacing: Option<OperationId>,
+    ) {
         self.sequence += 1;
         self.withdrawals.push(Withdrawal {
             volume: volume.clone(),
             recipient: *recipient,
             at: self.sequence,
+            replacing,
         });
         let mirrored: Vec<OperationId> = self
             .operations
             .iter()
-            .filter(|(_, record)| {
-                record.state == OperationState::Open
+            .filter(|(operation, record)| {
+                Some(**operation) != replacing
+                    && record.state == OperationState::Open
                     && record.volume == *volume
                     && record.workflow.mirrors_to(recipient)
                     && (matches!(record.workflow, VolumeWorkflow::Mirror { .. })
@@ -410,8 +426,10 @@ impl VolumeRecords {
         for operation in mirrored {
             self.end(operation);
         }
-        self.grants
-            .retain(|grant| !(grant.volume == *volume && grant.recipient == *recipient));
+        self.grants.retain(|grant| {
+            Some(grant.operation) == replacing
+                || !(grant.volume == *volume && grant.recipient == *recipient)
+        });
     }
 }
 

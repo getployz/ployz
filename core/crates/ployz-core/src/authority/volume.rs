@@ -188,12 +188,15 @@ impl VolumeWorkflow {
         }
     }
 
-    /// Whether this workflow changes the role of `machine`'s copy, or destroys it. A
-    /// Machine holds at most one open owner of a Volume's copy.
+    /// Whether this workflow drives `machine`'s copy: changes its role, destroys it, or,
+    /// for a Mirror a Move keeps following, says where it pulls from. A Machine holds at
+    /// most one open owner of a Volume's copy.
     #[must_use]
     pub fn owns(&self, machine: &MachineId) -> bool {
         match self {
-            Self::Move { from, to, .. } => machine == from || machine == to,
+            Self::Move {
+                from, to, mirrors, ..
+            } => machine == from || machine == to || mirrors.contains(machine),
             Self::Mirror { mirror, .. } | Self::MirrorRemoval { mirror, .. } => machine == mirror,
             Self::Restore { machine: owner, .. } => machine == owner,
             Self::Resize { .. } | Self::Seed { .. } => false,

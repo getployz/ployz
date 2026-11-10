@@ -135,9 +135,23 @@ impl Records<'_> {
     }
 
     fn withdraw(&self, volume: &DockerVolumeName, recipient: char) {
+        self.withdraw_replacing(volume, recipient, None);
+    }
+
+    fn withdraw_replacing(
+        &self,
+        volume: &DockerVolumeName,
+        recipient: char,
+        replacing: Option<char>,
+    ) {
         self.log()
             .change_volumes(at(5_000), |records, _| {
-                records.withdraw(&self.machine, volume, &id(recipient));
+                records.withdraw(
+                    &self.machine,
+                    volume,
+                    &id(recipient),
+                    replacing.map(operation),
+                );
                 Ok(())
             })
             .unwrap();
@@ -339,11 +353,11 @@ fn a_mirror_that_withdraws_itself_ends_its_own_pulls_and_a_followed_move() {
         machine: id('c'),
     };
     removed.admit_new('1', mirror('a', 'c'), &pull());
-    removed.admit_new('2', moving('a', 'b', &['c']), &pull());
-
     removed.withdraw(&data(), 'c');
-
     assert!(replayed(removed.admit_late('1', &pull()), '1'));
+
+    removed.admit_new('2', moving('a', 'b', &['c']), &pull());
+    removed.withdraw(&data(), 'c');
     assert!(replayed(removed.admit_late('2', &pull()), '2'));
 }
 
@@ -643,7 +657,10 @@ async fn a_withdrawal_by_this_machine_survives_a_reload() {
         .machine
         .admit_volume_step(&approval, &data(), &snapshot())
         .unwrap();
-    fixture.machine.withdraw_volume(&data(), &id('b')).unwrap();
+    fixture
+        .machine
+        .withdraw_volume(&data(), &id('b'), None)
+        .unwrap();
     assert!(matches!(
         fixture.machine.grant_volume(
             operation('1'),
@@ -662,6 +679,78 @@ async fn a_withdrawal_by_this_machine_survives_a_reload() {
             volume: data(),
             recipient: id('b'),
             at: 2,
+            replacing: None,
         }]
     );
+}
+
+#[test]
+fn a_later_owner_of_a_following_mirrors_copy_ends_the_move_there() {
+    let dir = tempfile::tempdir().unwrap();
+    let follower = Records {
+        dir: dir.path(),
+        machine: id('c'),
+    };
+    follower.admit_new('1', moving('a', 'b', &['c']), &pull());
+    follower.admit_new('2', mirror('b', 'c'), &pull());
+
+    assert!(replayed(follower.admit_late('1', &pull()), '1'));
+    follower.admit_late('2', &pull()).unwrap();
+}
+
+#[test]
+fn a_replacing_mirror_survives_the_withdrawal_its_own_forget_writes() {
+    let dir = tempfile::tempdir().unwrap();
+    let replaced = Records {
+        dir: dir.path(),
+        machine: id('b'),
+    };
+    let replacing = VolumeWorkflow::Mirror {
+        writer: id('a'),
+        mirror: id('b'),
+        replace: true,
+    };
+    replaced.admit_new('1', mirror('a', 'b'), &pull());
+    replaced.admit_new(
+        '2',
+        replacing.clone(),
+        &VolumeStep::Copy(CopyTransition::MirrorToForget),
+    );
+    replaced.withdraw_replacing(&data(), 'b', Some('2'));
+
+    assert!(replayed(replaced.admit_late('1', &pull()), '1'));
+    replaced
+        .admit_late('2', &VolumeStep::Copy(CopyTransition::NoneToMirror))
+        .unwrap();
+
+    let writer_dir = tempfile::tempdir().unwrap();
+    let writer = Records {
+        dir: writer_dir.path(),
+        machine: id('a'),
+    };
+    writer.admit_new('1', mirror('a', 'b'), &snapshot());
+    writer.grant('1', 'b', GrantScope::Standing).unwrap();
+    writer.admit_new('2', replacing, &snapshot());
+    writer.grant('2', 'b', GrantScope::Standing).unwrap();
+    writer.withdraw_replacing(&data(), 'b', Some('2'));
+    assert!(replayed(writer.admit_late('1', &snapshot()), '1'));
+    assert!(replayed(writer.grant('1', 'b', GrantScope::Standing), '1'));
+    writer.admit_late('2', &snapshot()).unwrap();
+    assert!(writer.live(&data(), 'b', "w-1-1"));
+    writer.grant('2', 'b', GrantScope::Standing).unwrap();
+}
+
+#[test]
+fn a_replacement_spares_its_operation_only_from_its_own_withdrawal() {
+    let dir = tempfile::tempdir().unwrap();
+    let source = Records {
+        dir: dir.path(),
+        machine: id('a'),
+    };
+    source.admit_new('1', moving('a', 'b', &['c', 'e']), &snapshot());
+    source.withdraw(&data(), 'c');
+    source.withdraw_replacing(&data(), 'e', Some('1'));
+
+    assert!(replayed(source.grant('1', 'c', GrantScope::Standing), '1'));
+    source.grant('1', 'e', GrantScope::Standing).unwrap();
 }
