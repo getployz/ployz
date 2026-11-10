@@ -284,7 +284,7 @@ async fn set_forget(socket: &Path, expect: &ployz_core::ExpectedCopy) -> Value {
         copy.as_ref(),
         false,
         expect,
-        &ployz_core::WantedCopy::Forget,
+        &ployz_core::WantedCopy::Forget { recipient: None },
     );
     if plan != ployz_core::CopyPlan::Transition(ployz_core::CopyTransition::MirrorToForget) {
         return json!({"Planned": format!("{plan:?}")});
@@ -2805,8 +2805,8 @@ async fn pair(a_markers: &[&str], b_markers: &[&str]) -> (Machine, Machine) {
         tokio::spawn(serve(unix, storage));
         tokio::spawn(ployzd::volume_send::serve(
             listener,
-            zfs,
-            zpool,
+            (zfs, zpool),
+            SendsToAll,
             CancellationToken::new(),
         ));
         machines.push(Machine { test, socket });
@@ -3262,7 +3262,7 @@ async fn set_copy(machine: &Machine, docker: &mut Docker, set: &Set) -> Value {
                 )
                 .await
         }
-        (CopyTransition::WriterToForget, WantedCopy::Forget) => {
+        (CopyTransition::WriterToForget, WantedCopy::Forget { .. }) => {
             machine
                 .call("/Volume.Copy.Forget", json!({"name": "data"}))
                 .await
@@ -3275,7 +3275,10 @@ async fn set_copy(machine: &Machine, docker: &mut Docker, set: &Set) -> Value {
                 .call("/Volume.Copy.Pull", pull(&target.to_string()))
                 .await
         }
-        (CopyTransition::MirrorToForget | CopyTransition::SeedToForget, WantedCopy::Forget) => {
+        (
+            CopyTransition::MirrorToForget | CopyTransition::SeedToForget,
+            WantedCopy::Forget { .. },
+        ) => {
             machine
                 .call("/Volume.Copy.Destroy", json!({"name": "data"}))
                 .await
@@ -3483,7 +3486,7 @@ async fn every_request_of_a_move_replayed_late_through_the_planner_keeps_one_wri
         .send(Set {
             side: Side::A,
             expect: mirror_expect(&a),
-            want: ployz_core::WantedCopy::Forget,
+            want: ployz_core::WantedCopy::Forget { recipient: None },
             run: None,
         })
         .await;
@@ -3521,7 +3524,7 @@ async fn every_request_of_a_move_replayed_late_through_the_planner_keeps_one_wri
         .send(Set {
             side: Side::B,
             expect: mirror_expect(&b),
-            want: ployz_core::WantedCopy::Forget,
+            want: ployz_core::WantedCopy::Forget { recipient: None },
             run: None,
         })
         .await;
@@ -3545,7 +3548,7 @@ async fn every_request_of_a_move_replayed_late_through_the_planner_keeps_one_wri
         .send(Set {
             side: Side::B,
             expect: mirror_expect(&b),
-            want: ployz_core::WantedCopy::Forget,
+            want: ployz_core::WantedCopy::Forget { recipient: None },
             run: None,
         })
         .await;
@@ -4043,5 +4046,20 @@ async fn every_stop_of_a_writer_path_leaves_a_slot_the_departure_keeps_until_a_p
             );
             server.abort();
         }
+    }
+}
+
+/// A send stream that serves every peer, as a Machine that doesn't enforce does.
+#[derive(Clone)]
+struct SendsToAll;
+
+impl ployzd::volume_send::Recipients for SendsToAll {
+    async fn sends(
+        &self,
+        _: std::net::IpAddr,
+        _: &ployz_core::DockerVolumeName,
+        _: Option<&ployz_core::SnapshotName>,
+    ) -> Result<ployzd::volume_send::Sends, String> {
+        Ok(ployzd::volume_send::Sends::Open)
     }
 }

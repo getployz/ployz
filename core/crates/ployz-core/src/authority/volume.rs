@@ -217,6 +217,26 @@ impl VolumeWorkflow {
         }
     }
 
+    /// The Servers this workflow lets `machine` pull the Volume from: a Mirror's Writer, a
+    /// Move's source for its target, and either side of a Move for a Mirror it keeps
+    /// following. Empty when it lets `machine` pull from nobody.
+    #[must_use]
+    pub fn pulls_from(&self, machine: &MachineId) -> Vec<MachineId> {
+        match self {
+            Self::Mirror { writer, mirror, .. } if mirror == machine => vec![*writer],
+            Self::Move { from, to, .. } if to == machine => vec![*from],
+            Self::Move {
+                from, to, mirrors, ..
+            } if mirrors.contains(machine) => vec![*from, *to],
+            Self::Move { .. }
+            | Self::Mirror { .. }
+            | Self::MirrorRemoval { .. }
+            | Self::Restore { .. }
+            | Self::Resize { .. }
+            | Self::Seed { .. } => Vec::new(),
+        }
+    }
+
     /// Whether `machine` is the source of a Move under this workflow.
     #[must_use]
     pub fn moves_from(&self, machine: &MachineId) -> bool {

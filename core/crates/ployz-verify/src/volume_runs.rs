@@ -809,7 +809,7 @@ fn wanted(want: Want) -> WantedCopy {
             target: snapshot(target).name,
             drain: Drain::NONE,
         },
-        Want::Forget => WantedCopy::Forget,
+        Want::Forget => WantedCopy::Forget { recipient: None },
         Want::Floor => WantedCopy::Floor,
         Want::Size { .. } => unreachable!("SetVolumeSize never asks plan"),
     }

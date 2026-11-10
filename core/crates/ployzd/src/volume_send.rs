@@ -3,10 +3,14 @@
 //! A request names one stream with [`SendStream`]: a full send of a snapshot, an
 //! incremental one between two, or the rest of an interrupted one by its ZFS resume
 //! token. The body is `zfs send`'s stdout, so the mirroring Machine pipes it straight
-//! into `zfs receive`. The firewall admits the port from the mesh only.
+//! into `zfs receive`. The firewall admits the port from the mesh only, and WireGuard
+//! binds each mesh source address to its peer's key. Before any `zfs` call the server asks
+//! [`Recipients`] whether the connection's source may read that stream.
 
 use std::{
+    future::Future,
     io,
+    net::{IpAddr, SocketAddr},
     path::{Path, PathBuf},
     process::Stdio,
 };
@@ -14,15 +18,55 @@ use std::{
 use axum::{
     Router,
     body::Body,
-    extract::{Request, State},
+    extract::{ConnectInfo, Request, State},
     http::StatusCode,
     response::{IntoResponse, Response},
 };
-use ployz_core::{DATASET_ROOT, DockerVolumeName, MIRROR_ROOT, SendSource, SendStream};
+use ployz_core::{
+    DATASET_ROOT, DockerVolumeName, MIRROR_ROOT, MachineId, MachineName, SendSource, SendStream,
+    SnapshotName,
+};
 use tokio::{net::TcpListener, process::Command};
 use tokio_util::{io::ReaderStream, sync::CancellationToken};
 
 use crate::{machine_pool, volume_copy::BOUND_PATH_PREFIX};
+
+/// Whether this Machine sends a Volume to a mesh peer.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum Sends {
+    /// The Machine doesn't enforce, so it sends to any mesh peer.
+    Open,
+    /// A live grant to this accepted Machine covers the stream.
+    Granted(MachineId),
+    /// No accepted Machine has the address, or, when `recipient` names one, it holds no
+    /// live grant that covers the stream.
+    Refused { recipient: Option<MachineName> },
+}
+
+/// Who this Machine sends a Volume's streams to.
+pub trait Recipients: Clone + Send + Sync + 'static {
+    /// Whether the mesh address `peer` may read `snapshot` of `volume`, or with none the
+    /// bound of the copy. An error is a record this Machine could not read.
+    fn sends(
+        &self,
+        peer: IpAddr,
+        volume: &DockerVolumeName,
+        snapshot: Option<&SnapshotName>,
+    ) -> impl Future<Output = Result<Sends, String>> + Send;
+}
+
+impl Recipients for crate::machine::LocalMachine {
+    async fn sends(
+        &self,
+        peer: IpAddr,
+        volume: &DockerVolumeName,
+        snapshot: Option<&SnapshotName>,
+    ) -> Result<Sends, String> {
+        self.sends_volume(peer, volume, snapshot)
+            .await
+            .map_err(|error| error.to_string())
+    }
+}
 
 #[derive(Clone)]
 struct Programs {
@@ -30,39 +74,65 @@ struct Programs {
     zpool: PathBuf,
 }
 
-/// Serves send streams until `shutdown` fires.
+#[derive(Clone)]
+struct Sender<R> {
+    programs: Programs,
+    recipients: R,
+}
+
+/// Serves send streams to the peers `recipients` admits until `shutdown` fires.
 ///
 /// # Errors
 ///
 /// Returns the error that stopped the server.
-pub async fn serve(
+pub async fn serve<R: Recipients>(
     listener: TcpListener,
-    zfs: PathBuf,
-    zpool: PathBuf,
+    (zfs, zpool): (PathBuf, PathBuf),
+    recipients: R,
     shutdown: CancellationToken,
 ) -> io::Result<()> {
-    let router = Router::new()
-        .fallback(send)
-        .with_state(Programs { zfs, zpool });
-    axum::serve(listener, router)
-        .with_graceful_shutdown(shutdown.cancelled_owned())
-        .await
+    let router = Router::new().fallback(send::<R>).with_state(Sender {
+        programs: Programs { zfs, zpool },
+        recipients,
+    });
+    axum::serve(
+        listener,
+        router.into_make_service_with_connect_info::<SocketAddr>(),
+    )
+    .with_graceful_shutdown(shutdown.cancelled_owned())
+    .await
 }
 
-async fn send(State(programs): State<Programs>, request: Request) -> Response {
+async fn send<R: Recipients>(
+    State(sender): State<Sender<R>>,
+    ConnectInfo(peer): ConnectInfo<SocketAddr>,
+    request: Request,
+) -> Response {
     if request.method() != axum::http::Method::GET {
         return StatusCode::METHOD_NOT_ALLOWED.into_response();
     }
+    let programs = &sender.programs;
     if let Some(name) = request.uri().path().strip_prefix(BOUND_PATH_PREFIX) {
-        return match name.parse::<DockerVolumeName>() {
-            Ok(name) => bound(&programs, &name).await.into_response(),
-            Err(_) => (StatusCode::NOT_FOUND, "no such Volume").into_response(),
+        let Ok(name) = name.parse::<DockerVolumeName>() else {
+            return (StatusCode::NOT_FOUND, "no such Volume").into_response();
         };
+        if let Err(refusal) = admit(&sender.recipients, peer.ip(), &name, None).await {
+            return refusal;
+        }
+        return bound(programs, &name).await.into_response();
     }
     let Some(stream) = SendStream::parse(request.uri().path(), request.uri().query()) else {
         return (StatusCode::NOT_FOUND, "no such send stream").into_response();
     };
-    match stream_args(&programs, &stream).await {
+    let target = match &stream.source {
+        SendSource::Full { target }
+        | SendSource::Incremental { target, .. }
+        | SendSource::Resume { target, .. } => target,
+    };
+    if let Err(refusal) = admit(&sender.recipients, peer.ip(), &stream.name, Some(target)).await {
+        return refusal;
+    }
+    match stream_args(programs, &stream).await {
         Ok(args) => {
             let mut child = match Command::new(&programs.zfs)
                 .arg("send")
@@ -90,6 +160,42 @@ async fn send(State(programs): State<Programs>, request: Request) -> Response {
             Body::from_stream(ReaderStream::new(stdout)).into_response()
         }
         Err(refusal) => refusal.into_response(),
+    }
+}
+
+/// Refuse with no bytes of the Volume unless `recipients` sends `snapshot` of `volume` to
+/// `peer`. A refusal names the Server the address belongs to in this Machine's journal.
+async fn admit<R: Recipients>(
+    recipients: &R,
+    peer: IpAddr,
+    volume: &DockerVolumeName,
+    snapshot: Option<&SnapshotName>,
+) -> Result<(), Response> {
+    match recipients.sends(peer, volume, snapshot).await {
+        Ok(Sends::Open | Sends::Granted(_)) => Ok(()),
+        Ok(Sends::Refused { recipient }) => {
+            let server = recipient.as_ref().map_or("no Server", |name| name.as_str());
+            tracing::warn!(
+                %peer,
+                %server,
+                %volume,
+                snapshot = snapshot.map(SnapshotName::as_str),
+                "send stream refused: no live grant to this address"
+            );
+            Err((
+                StatusCode::FORBIDDEN,
+                format!("this Server sends {volume} only to a Server approved to receive it"),
+            )
+                .into_response())
+        }
+        Err(error) => {
+            tracing::warn!(%peer, %volume, %error, "send stream refused: records unread");
+            Err((
+                StatusCode::SERVICE_UNAVAILABLE,
+                format!("this Server could not read who may receive {volume}"),
+            )
+                .into_response())
+        }
     }
 }
 
@@ -300,7 +406,52 @@ mod tests {
 
     const POOLS: &str = "tank\t4294967296\t0\t4294967296\tONLINE\toff\nold\t4294967296\t0\t4294967296\tONLINE\ton\n";
 
+    /// Serves every peer, as a Machine that doesn't enforce.
+    #[derive(Clone)]
+    struct ToAll;
+
+    impl Recipients for ToAll {
+        async fn sends(
+            &self,
+            _: IpAddr,
+            _: &DockerVolumeName,
+            _: Option<&SnapshotName>,
+        ) -> Result<Sends, String> {
+            Ok(Sends::Open)
+        }
+    }
+
+    /// Answers each ask from a fixed table, and counts the asks.
+    #[derive(Clone)]
+    struct Asked {
+        answer: fn(IpAddr, Option<&SnapshotName>) -> Result<Sends, String>,
+        asks: std::sync::Arc<std::sync::Mutex<Vec<(IpAddr, Option<String>)>>>,
+    }
+
+    impl Recipients for Asked {
+        async fn sends(
+            &self,
+            peer: IpAddr,
+            _: &DockerVolumeName,
+            snapshot: Option<&SnapshotName>,
+        ) -> Result<Sends, String> {
+            self.asks
+                .lock()
+                .unwrap()
+                .push((peer, snapshot.map(|name| name.as_str().to_owned())));
+            (self.answer)(peer, snapshot)
+        }
+    }
+
     async fn start(dir: &TestDir, pools: &str) -> (String, CancellationToken) {
+        start_for(dir, pools, ToAll).await
+    }
+
+    async fn start_for(
+        dir: &TestDir,
+        pools: &str,
+        recipients: impl Recipients,
+    ) -> (String, CancellationToken) {
         fs::create_dir_all(&dir.0).unwrap();
         let zpool = dir.0.join("zpool");
         fs::write(
@@ -345,7 +496,7 @@ esac
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let address = listener.local_addr().unwrap();
         let shutdown = CancellationToken::new();
-        tokio::spawn(serve(listener, zfs, zpool, shutdown.clone()));
+        tokio::spawn(serve(listener, (zfs, zpool), recipients, shutdown.clone()));
         (format!("http://{address}"), shutdown)
     }
 
@@ -353,6 +504,88 @@ esac
         let response = reqwest::get(format!("{base}{path}")).await.unwrap();
         let status = response.status();
         (status, response.text().await.unwrap())
+    }
+
+    /// `get` from the loopback source address `from`.
+    async fn get_from(from: IpAddr, base: &str, path: &str) -> (StatusCode, String) {
+        let client = reqwest::Client::builder()
+            .local_address(from)
+            .build()
+            .unwrap();
+        let response = client.get(format!("{base}{path}")).send().await.unwrap();
+        let status = response.status();
+        (status, response.text().await.unwrap())
+    }
+
+    const GRANTED: IpAddr = IpAddr::V4(std::net::Ipv4Addr::new(127, 0, 0, 1));
+    const STRANGER: IpAddr = IpAddr::V4(std::net::Ipv4Addr::new(127, 0, 0, 2));
+
+    /// A grant to one peer that covers `w-1-2` only, and a Server with no grant.
+    fn granted_w_1_2(peer: IpAddr, snapshot: Option<&SnapshotName>) -> Result<Sends, String> {
+        let covered = snapshot.is_none_or(|name| name.as_str() == "w-1-2");
+        Ok(if peer == GRANTED && covered {
+            Sends::Granted(MachineId::random())
+        } else {
+            Sends::Refused {
+                recipient: Some(MachineName::parse("web-3").unwrap()),
+            }
+        })
+    }
+
+    #[tokio::test]
+    async fn serves_a_granted_peer_and_refuses_any_other_before_zfs_runs() {
+        let dir = TestDir::new("ployzd-volume-send");
+        let asked = Asked {
+            answer: granted_w_1_2,
+            asks: Default::default(),
+        };
+        let (base, shutdown) = start_for(&dir, POOLS, asked.clone()).await;
+        assert_eq!(
+            get_from(GRANTED, &base, "/volume-send/data?target=w-1-2&base=11").await,
+            (StatusCode::OK, "incremental stream".to_owned())
+        );
+        assert_eq!(
+            get_from(GRANTED, &base, "/volume-bound/data").await,
+            (StatusCode::OK, "1073741824".to_owned())
+        );
+        for (from, path) in [
+            (STRANGER, "/volume-send/data?target=w-1-2"),
+            (STRANGER, "/volume-send/data?target=w-1-2&token=token-1"),
+            (STRANGER, "/volume-bound/data"),
+            (GRANTED, "/volume-send/data?target=w-1-1"),
+            (GRANTED, "/volume-send/other?target=w-1-1"),
+        ] {
+            let (status, body) = get_from(from, &base, path).await;
+            assert_eq!(status, StatusCode::FORBIDDEN, "{path}: {body}");
+            assert!(body.contains("only to a Server approved"), "{path}: {body}");
+            assert!(!body.contains("stream"), "no bytes of the Volume: {body}");
+        }
+        assert_eq!(
+            asked.asks.lock().unwrap()[..3],
+            [
+                (GRANTED, Some("w-1-2".to_owned())),
+                (GRANTED, None),
+                (STRANGER, Some("w-1-2".to_owned())),
+            ],
+            "the stream asks for the snapshot it would send, and the bound for none"
+        );
+        shutdown.cancel();
+    }
+
+    #[tokio::test]
+    async fn refuses_every_stream_while_its_records_are_unread() {
+        let dir = TestDir::new("ployzd-volume-send");
+        let unread = Asked {
+            answer: |_, _| Err("the approvals log is unreadable".to_owned()),
+            asks: Default::default(),
+        };
+        let (base, shutdown) = start_for(&dir, POOLS, unread).await;
+        for path in ["/volume-send/data?target=w-1-2", "/volume-bound/data"] {
+            let (status, body) = get(&base, path).await;
+            assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE, "{path}: {body}");
+            assert!(!body.contains("unreadable"), "{path}: {body}");
+        }
+        shutdown.cancel();
     }
 
     #[tokio::test]

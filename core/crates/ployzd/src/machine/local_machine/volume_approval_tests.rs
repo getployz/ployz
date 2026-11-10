@@ -5,6 +5,8 @@ use ployz_core::{
     authority::{ApprovedService, PayloadDigest, Signer, SignerKey, validity::MAX_LIFETIME_MILLIS},
 };
 
+use ployz_decide::volume_records::{Decision, Withdrawal};
+
 use super::*;
 use crate::machine::{
     LocalMachineStore, RecordOwner, local_machine::restart_approval::ConsumptionLog,
@@ -102,14 +104,16 @@ impl Records<'_> {
         verified: Result<VolumeWorkflow, AuthorityRefusal>,
     ) -> Result<(), Error> {
         self.log().change_volumes(at(5_000), |records, _| {
-            records.admit(
-                operation(op),
-                digest(body),
-                &self.machine,
-                volume,
-                step,
-                || verified,
-            )
+            records
+                .admit(
+                    operation(op),
+                    digest(body),
+                    &self.machine,
+                    volume,
+                    step,
+                    || verified,
+                )
+                .map_err(Error::VolumeStepRefused)
         })
     }
 
@@ -124,13 +128,15 @@ impl Records<'_> {
 
     fn grant(&self, op: char, recipient: char, scope: GrantScope) -> Result<(), Error> {
         self.log().change_volumes(at(5_000), |records, _| {
-            records.grant(operation(op), id(recipient), scope)
+            records
+                .grant(operation(op), id(recipient), scope)
+                .map_err(Error::VolumeStepRefused)
         })
     }
 
     fn live(&self, volume: &DockerVolumeName, recipient: char, snapshot: &str) -> bool {
         self.log()
-            .read_volumes(|records| records.live(volume, &id(recipient), &name(snapshot)))
+            .read_volumes(|records| records.live(volume, &id(recipient), Some(&name(snapshot))))
             .unwrap()
     }
 
@@ -145,7 +151,7 @@ impl Records<'_> {
 
     fn withdrawals(&self) -> Vec<Withdrawal> {
         self.log()
-            .read_volumes(|records| records.withdrawals.clone())
+            .read_volumes(|records| records.withdrawals().to_vec())
             .unwrap()
     }
 
@@ -160,12 +166,7 @@ impl Records<'_> {
 
     fn decision(&self, op: char) -> Option<Decision> {
         self.log()
-            .read_volumes(|records| {
-                records
-                    .operations
-                    .get(&operation(op))
-                    .and_then(|record| record.decision)
-            })
+            .read_volumes(|records| records.decision(operation(op)))
             .unwrap()
     }
 }
@@ -213,14 +214,16 @@ fn an_open_operation_finishes_after_its_window_and_an_ended_one_never_runs_again
     writer
         .log()
         .change_volumes(at(1), |records, _| {
-            records.admit(
-                operation('1'),
-                digest('1'),
-                &id('a'),
-                &data(),
-                &snapshot(),
-                || unreachable!("an open operation is not checked against the clock"),
-            )
+            records
+                .admit(
+                    operation('1'),
+                    digest('1'),
+                    &id('a'),
+                    &data(),
+                    &snapshot(),
+                    || unreachable!("an open operation is not checked against the clock"),
+                )
+                .map_err(Error::VolumeStepRefused)
         })
         .unwrap();
     writer.grant('1', 'b', GrantScope::Standing).unwrap();
@@ -488,6 +491,11 @@ struct Enforcing {
 }
 
 async fn enforcing() -> Enforcing {
+    enforcing_with(Vec::new()).await
+}
+
+/// An enforcing Machine that pins `starting` as the Cluster's other Members.
+async fn enforcing_with(starting: Vec<ployz_core::authority::Member>) -> Enforcing {
     let sealing = crate::sealed_env::test_support::Cluster::new();
     let data_dir = crate::test_dir::TestDir::new("volume-approval");
     let mut store = LocalMachineStore::open(&data_dir.0).unwrap();
@@ -518,7 +526,7 @@ async fn enforcing() -> Enforcing {
     owner
         .mutate(move |store| {
             store.approve_device(device).unwrap();
-            store.set_device_enforcement(true, Vec::new()).unwrap();
+            store.set_device_enforcement(true, starting).unwrap();
         })
         .await
         .unwrap();
@@ -623,7 +631,7 @@ async fn only_a_replacing_mirror_of_this_volume_and_machine_withdraws_with_its_f
         .admit_volume_step(&replacement, &data(), &forget())
         .unwrap();
     let withdrawals = ConsumptionLog::new(&fixture.data_dir.0)
-        .read_volumes(|records| records.withdrawals.clone())
+        .read_volumes(|records| records.withdrawals().to_vec())
         .unwrap();
     assert_eq!(
         withdrawals,
@@ -688,7 +696,7 @@ async fn a_device_approval_opens_the_operation_on_disk_and_a_late_or_foreign_one
     assert!(
         fixture
             .machine
-            .volume_grant_live(&data(), &id('b'), &name("f-1"))
+            .volume_grant_live(&data(), &id('b'), Some(&name("f-1")))
             .unwrap()
     );
 
@@ -699,19 +707,21 @@ async fn a_device_approval_opens_the_operation_on_disk_and_a_late_or_foreign_one
     let reopened = ConsumptionLog::new(&fixture.data_dir.0);
     assert!(
         !reopened
-            .read_volumes(|records| records.live(&data(), &id('b'), &name("f-1")))
+            .read_volumes(|records| records.live(&data(), &id('b'), Some(&name("f-1"))))
             .unwrap()
     );
     assert!(matches!(
         reopened.change_volumes(Timestamp::now(), |records, _| {
-            records.admit(
-                operation('1'),
-                StepDigest::of(&approval.body),
-                &fixture.machine.record().id(),
-                &data(),
-                &snapshot(),
-                || unreachable!("an ended operation is refused before any check"),
-            )
+            records
+                .admit(
+                    operation('1'),
+                    StepDigest::of(&approval.body),
+                    &fixture.machine.record().id(),
+                    &data(),
+                    &snapshot(),
+                    || unreachable!("an ended operation is refused before any check"),
+                )
+                .map_err(Error::VolumeStepRefused)
         }),
         Err(Error::VolumeStepRefused(AuthorityRefusal::Replayed { .. }))
     ));
@@ -742,7 +752,7 @@ async fn a_withdrawal_by_this_machine_survives_a_reload() {
     ));
     let reopened = ConsumptionLog::new(&fixture.data_dir.0);
     let withdrawn = reopened
-        .read_volumes(|records| records.withdrawals.clone())
+        .read_volumes(|records| records.withdrawals().to_vec())
         .unwrap();
     assert_eq!(
         withdrawn,
@@ -847,4 +857,258 @@ fn a_replacement_opened_by_a_pull_withdraws_nothing() {
     mirror_machine.admit_new('2', replacing('a', 'b'), &pull());
     assert!(mirror_machine.withdrawals().is_empty());
     mirror_machine.admit_late('2', &pull()).unwrap();
+}
+
+/// A peer's row, as its own daemon publishes it.
+fn peer(name: &str, seed: u8) -> ployz_core::Machine {
+    ployz_core::Machine {
+        labels: Default::default(),
+        accepts_builds: true,
+        accepts_services: true,
+        accepts_ingress: true,
+        id: MachineId::random(),
+        name: MachineName::parse(name).unwrap(),
+        subnet: format!("10.210.{seed}.0/24").parse().unwrap(),
+        public_key: crate::network::WireGuardPrivateKey::from_bytes([seed; 32]).public_key(),
+        public_ip: None,
+        advertised_endpoints: Vec::new(),
+        runtime: Default::default(),
+        join_approval: None,
+        build_concurrency: None,
+    }
+}
+
+fn address(machine: &ployz_core::Machine) -> std::net::IpAddr {
+    std::net::IpAddr::V6(machine.management_address().0)
+}
+
+/// An enforcing Machine that pins web-2 and web-3, with their rows and web-4's in its
+/// Cluster store. It never accepted web-4.
+struct Peered {
+    machine: LocalMachine,
+    fixture: Enforcing,
+    web2: ployz_core::Machine,
+    web3: ployz_core::Machine,
+    web4: ployz_core::Machine,
+    _server: tokio::task::JoinHandle<()>,
+}
+
+async fn peered() -> Peered {
+    let (web2, web3, web4) = (peer("web-2", 2), peer("web-3", 3), peer("web-4", 4));
+    let fixture = enforcing_with(vec![(&web2).into(), (&web3).into()]).await;
+    let (replicated, server) = crate::corrosion::fake_cluster::store().await;
+    for row in [&web2, &web3, &web4] {
+        replicated.publish_local_machine(row).await.unwrap();
+    }
+    let machine = LocalMachine::new(fixture.machine.owner().clone()).with_cluster(Some((
+        replicated,
+        crate::corrosion::AdminClient::new("/no/admin"),
+    )));
+    Peered {
+        machine,
+        fixture,
+        web2,
+        web3,
+        web4,
+        _server: server,
+    }
+}
+
+fn refused(result: Result<(), Error>) -> Option<AuthorityRefusal> {
+    match result {
+        Err(Error::VolumeStepRefused(refusal)) => Some(refusal),
+        _ => None,
+    }
+}
+
+#[tokio::test]
+async fn the_send_stream_serves_only_an_accepted_machine_a_live_grant_covers() {
+    let peered = peered().await;
+    let this = peered.machine.record().id();
+    let sends = |peer: std::net::IpAddr, snapshot: Option<&'static str>| {
+        let machine = &peered.machine;
+        async move {
+            machine
+                .sends_volume(peer, &data(), snapshot.map(name).as_ref())
+                .await
+                .unwrap()
+        }
+    };
+    assert_eq!(
+        sends(address(&peered.web2), Some("w-1-1")).await,
+        Sends::Refused {
+            recipient: Some(peered.web2.name.clone())
+        },
+        "no grant before a Mirror approval"
+    );
+    let approval = peered.fixture.signed(
+        data(),
+        VolumeWorkflow::Mirror {
+            writer: this,
+            mirror: peered.web2.id,
+            replace: false,
+        },
+    );
+    peered
+        .machine
+        .admit_operator_copy(Some(&approval), &data(), CopyStep::Snapshot)
+        .await
+        .unwrap();
+    assert_eq!(
+        sends(address(&peered.web2), Some("w-1-1")).await,
+        Sends::Granted(peered.web2.id)
+    );
+    assert_eq!(
+        sends(address(&peered.web2), None).await,
+        Sends::Granted(peered.web2.id),
+        "the bound of a granted Volume"
+    );
+    assert!(matches!(
+        peered
+            .machine
+            .sends_volume(address(&peered.web2), &other_volume(), None)
+            .await
+            .unwrap(),
+        Sends::Refused { .. }
+    ));
+    assert_eq!(
+        sends(address(&peered.web3), Some("w-1-1")).await,
+        Sends::Refused {
+            recipient: Some(peered.web3.name.clone())
+        },
+        "another accepted Machine"
+    );
+    let stranger: std::net::IpAddr = "fdcc::99".parse().unwrap();
+    for peer in [
+        address(&peered.web4),
+        stranger,
+        "10.210.2.1".parse().unwrap(),
+    ] {
+        assert_eq!(
+            sends(peer, Some("w-1-1")).await,
+            Sends::Refused { recipient: None },
+            "{peer} is no Machine this one accepts"
+        );
+    }
+    let withdrew = peered
+        .machine
+        .withdraw_volume(&data(), &peered.web2.id)
+        .unwrap();
+    assert!(withdrew);
+    assert!(matches!(
+        sends(address(&peered.web2), Some("w-1-1")).await,
+        Sends::Refused { .. }
+    ));
+    assert_eq!(
+        refused(
+            peered
+                .machine
+                .admit_operator_copy(Some(&approval), &data(), CopyStep::Snapshot)
+                .await
+        ),
+        Some(AuthorityRefusal::Replayed {
+            operation: operation('1')
+        }),
+        "the old approval's snapshot step"
+    );
+}
+
+#[tokio::test]
+async fn a_machine_that_does_not_enforce_sends_to_any_peer() {
+    let peered = peered().await;
+    peered
+        .fixture
+        .machine
+        .owner()
+        .mutate(|store| store.set_device_enforcement(false, Vec::new()).unwrap())
+        .await
+        .unwrap();
+    let stranger: std::net::IpAddr = "fdcc::99".parse().unwrap();
+    assert_eq!(
+        peered
+            .machine
+            .sends_volume(stranger, &data(), None)
+            .await
+            .unwrap(),
+        Sends::Open
+    );
+    assert!(peered.fixture.records_empty());
+}
+
+#[tokio::test]
+async fn a_pull_needs_an_approval_that_names_this_machine_and_its_source() {
+    let peered = peered().await;
+    let this = peered.machine.record().id();
+    let pull = |from| CopyStep::Pull {
+        transition: CopyTransition::NoneToMirror,
+        from,
+    };
+    let web2 = peered.web2.management_address();
+    let web3 = peered.web3.management_address();
+    let admit = |approval: Option<Signed<VolumeApproval>>, from| {
+        let machine = &peered.machine;
+        async move {
+            machine
+                .admit_operator_copy(approval.as_ref(), &data(), pull(from))
+                .await
+        }
+    };
+    assert_eq!(
+        refused(admit(None, &web2).await),
+        Some(AuthorityRefusal::Unsigned {
+            purpose: ployz_core::authority::Purpose::Volume
+        })
+    );
+    let elsewhere = peered.fixture.signed(
+        data(),
+        VolumeWorkflow::Mirror {
+            writer: peered.web2.id,
+            mirror: peered.web3.id,
+            replace: false,
+        },
+    );
+    assert_eq!(
+        refused(admit(Some(elsewhere), &web2).await),
+        Some(AuthorityRefusal::Mismatch {
+            field: "this Server"
+        })
+    );
+    let approval = peered.fixture.signed(
+        data(),
+        VolumeWorkflow::Mirror {
+            writer: peered.web2.id,
+            mirror: this,
+            replace: false,
+        },
+    );
+    assert_eq!(
+        refused(admit(Some(approval.clone()), &web3).await),
+        Some(AuthorityRefusal::Mismatch {
+            field: "the source Server"
+        })
+    );
+    assert!(
+        peered.fixture.records_empty(),
+        "no refused pull opened anything"
+    );
+    admit(Some(approval.clone()), &web2).await.unwrap();
+    admit(Some(approval.clone()), &web2)
+        .await
+        .expect("a resent pull under the same approval");
+    assert!(peered.machine.withdraw_volume(&data(), &this).unwrap());
+    let reloaded = LocalMachine::new(peered.fixture.machine.owner().clone()).with_cluster(Some((
+        peered.machine.replicated().unwrap().clone(),
+        crate::corrosion::AdminClient::new("/no/admin"),
+    )));
+    assert_eq!(
+        refused(
+            reloaded
+                .admit_operator_copy(Some(&approval), &data(), pull(&web2))
+                .await
+        ),
+        Some(AuthorityRefusal::Replayed {
+            operation: operation('1')
+        }),
+        "a Forget withdrew this Mirror, so its old approval never pulls again"
+    );
 }

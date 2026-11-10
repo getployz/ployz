@@ -1,25 +1,26 @@
 //! The Volume verbs an enforcing Machine refuses from an Operator caller, and this
-//! Machine's own record of the Volume operations a Device approved: which are open, which
-//! ended, who may pull what, and which recipients were withdrawn.
+//! Machine's own record of the Volume operations a Device approved, kept as
+//! [`VolumeRecords`] in the approvals log.
 //!
 //! An operation is admitted once inside its window and then runs on its record, so the
 //! work a person started finishes after the window. An ended operation never runs again.
 //! Each record is synced before the effect it guards, and none reads a clock again.
 
-use std::collections::BTreeMap;
+use std::net::IpAddr;
 
 use ployz_core::{
-    CopyTransition, DockerVolumeName, MachineId, OperationId, SEED_REFUSED_BY_ENFORCEMENT,
-    SEED_VOLUME_CAPABILITY, SET_VOLUME_COPY_CAPABILITY, Sealing, SnapshotName,
-    VOLUME_START_REFUSED_BY_ENFORCEMENT,
+    CopyTransition, DockerVolumeName, MachineId, ManagementAddress, OperationId,
+    SEED_REFUSED_BY_ENFORCEMENT, SEED_VOLUME_CAPABILITY, SET_VOLUME_COPY_CAPABILITY, Sealing,
+    SnapshotName, VOLUME_START_REFUSED_BY_ENFORCEMENT,
     authority::{
-        AuthorityRefusal, Signed, StepDigest, Timestamp, VolumeApproval, VolumeFacts, VolumeStep,
-        VolumeWorkflow, volume,
+        AuthorityRefusal, Purpose, Signed, StepDigest, Timestamp, VolumeApproval, VolumeFacts,
+        VolumeStep, VolumeWorkflow, volume,
     },
 };
-use serde::{Deserialize, Serialize};
+pub(crate) use ployz_decide::volume_records::{GrantScope, VolumeRecords};
 
 use super::{Error, LocalMachine};
+use crate::volume_send::Sends;
 
 impl LocalMachine {
     /// Admit `step` on `volume` under `approval`. An operation this Machine ended is
@@ -53,20 +54,22 @@ impl LocalMachine {
         let digest = StepDigest::of(&approval.body);
         self.approvals
             .change_volumes(Timestamp::now(), |records, now| {
-                records.admit(operation, digest, &machine, volume, step, || {
-                    volume::verify(
-                        approval,
-                        &VolumeFacts {
-                            cluster,
-                            machine: &machine,
-                            trusted: &trusted,
-                            volume,
-                            step,
-                            now,
-                        },
-                    )
-                    .map(|approved| approved.body.workflow)
-                })
+                records
+                    .admit(operation, digest, &machine, volume, step, || {
+                        volume::verify(
+                            approval,
+                            &VolumeFacts {
+                                cluster,
+                                machine: &machine,
+                                trusted: &trusted,
+                                volume,
+                                step,
+                                now,
+                            },
+                        )
+                        .map(|approved| approved.body.workflow)
+                    })
+                    .map_err(Error::VolumeStepRefused)
             })
             .inspect(|()| tracing::info!(%operation, %volume, ?step, "Volume step admitted"))?;
         Ok(operation)
@@ -99,11 +102,14 @@ impl LocalMachine {
     ) -> Result<(), Error> {
         self.approvals
             .change_volumes(Timestamp::now(), |records, _| {
-                records.grant(operation, recipient, scope)
+                records
+                    .grant(operation, recipient, scope)
+                    .map_err(Error::VolumeStepRefused)
             })
     }
 
-    /// Whether a live grant lets `recipient` pull `snapshot` of `volume` from here.
+    /// Whether a live grant lets `recipient` pull `snapshot` of `volume` from here, or,
+    /// with no snapshot, any of it.
     ///
     /// # Errors
     /// Returns [`Error::ApprovalRecord`] when the record cannot be read.
@@ -111,16 +117,18 @@ impl LocalMachine {
         &self,
         volume: &DockerVolumeName,
         recipient: &MachineId,
-        snapshot: &SnapshotName,
+        snapshot: Option<&SnapshotName>,
     ) -> Result<bool, Error> {
         self.approvals
             .read_volumes(|records| records.live(volume, recipient, snapshot))
     }
 
-    /// Withdraw `recipient` from `volume` here, before anything is destroyed: every Mirror
-    /// operation this Machine admitted for it ends, and so does every grant to it. It needs
-    /// no approval, because it only narrows what a driver can do. An approval this Machine
-    /// never admitted is still new work while its window lasts.
+    /// Withdraw `recipient` from `volume` here, before a `Forget` destroys anything: every
+    /// Mirror operation this Machine admitted for it ends, and so does every grant to it. It
+    /// needs no approval, because it only narrows what a driver can do. An approval this
+    /// Machine never admitted is still new work while its window lasts. A Machine that
+    /// doesn't enforce writes one only when it holds something the withdrawal ends. Returns
+    /// whether it wrote one.
     ///
     /// # Errors
     /// Returns [`Error::ApprovalRecord`] when the record cannot be read or written.
@@ -128,13 +136,129 @@ impl LocalMachine {
         &self,
         volume: &DockerVolumeName,
         recipient: &MachineId,
-    ) -> Result<(), Error> {
-        let machine = self.record().id();
-        self.approvals
+    ) -> Result<bool, Error> {
+        let record = self.record();
+        let machine = record.id();
+        let enforcing = record.device_enforcement();
+        let withdrew = self
+            .approvals
             .change_volumes(Timestamp::now(), |records, _| {
-                records.withdraw(&machine, volume, recipient);
-                Ok(())
+                let withdraws = enforcing || records.sends(volume, recipient);
+                if withdraws {
+                    records.withdraw(&machine, volume, recipient);
+                }
+                Ok(withdraws)
+            })?;
+        if withdrew {
+            tracing::info!(%volume, %recipient, "Volume recipient withdrawn");
+        }
+        Ok(withdrew)
+    }
+
+    /// Under Device enforcement, admit an Operator's `SetVolumeCopy` step against the Volume
+    /// approval it carries. A pull needs one that lets this Machine pull, and its `from`
+    /// must be the address this Machine's own accepted row gives a Server the approval pulls
+    /// from. A Snapshot with one opens its operation, and under a Mirror approval grants the
+    /// Mirror every snapshot of the Volume. A Snapshot without one runs and records nothing.
+    ///
+    /// # Errors
+    /// Returns [`Error::VolumeStepRefused`] for a pull with no approval, from another
+    /// source, or that the approval does not admit, and a Snapshot whose approval does not
+    /// admit it; [`Error::ApprovalRecord`] or a store error when a record cannot be read.
+    pub(crate) async fn admit_operator_copy(
+        &self,
+        approval: Option<&Signed<VolumeApproval>>,
+        volume: &DockerVolumeName,
+        step: CopyStep<'_>,
+    ) -> Result<(), Error> {
+        if !self.record().device_enforcement() {
+            return Ok(());
+        }
+        match step {
+            CopyStep::Pull { transition, from } => {
+                let Some(approval) = approval else {
+                    return Err(Error::VolumeStepRefused(AuthorityRefusal::Unsigned {
+                        purpose: Purpose::Volume,
+                    }));
+                };
+                self.admit_source(approval, from).await?;
+                self.admit_volume_step(approval, volume, &VolumeStep::Copy(transition))?;
+            }
+            CopyStep::Snapshot => {
+                let Some(approval) = approval else {
+                    return Ok(());
+                };
+                let step = VolumeStep::Copy(CopyTransition::WriterToSnapshot);
+                let operation = self.admit_volume_step(approval, volume, &step)?;
+                let body = approval.open().map_err(Error::VolumeStepRefused)?;
+                if let VolumeWorkflow::Mirror { mirror, .. } = body.workflow {
+                    self.grant_volume(operation, mirror, GrantScope::Standing)?;
+                }
+            }
+        }
+        Ok(())
+    }
+
+    /// Refuse a pull whose `from` is not the management address this Machine's own accepted
+    /// row gives a Server `approval` lets it pull from. An approval that lets this Machine
+    /// pull from nobody is left for admission to refuse by name.
+    async fn admit_source(
+        &self,
+        approval: &Signed<VolumeApproval>,
+        from: &ManagementAddress,
+    ) -> Result<(), Error> {
+        let body = approval.open().map_err(Error::VolumeStepRefused)?;
+        let sources = body.workflow.pulls_from(&self.record().id());
+        if sources.is_empty() {
+            return Ok(());
+        }
+        let replicated = self.replicated()?;
+        for source in sources {
+            if let Some(row) = replicated.machine(source.as_str()).await?
+                && row.management_address() == *from
+            {
+                return Ok(());
+            }
+        }
+        Err(Error::VolumeStepRefused(AuthorityRefusal::Mismatch {
+            field: "the source Server",
+        }))
+    }
+
+    /// Whether this Machine sends `snapshot` of `volume`, or with none its bound, to the
+    /// mesh address `peer`. A Machine that doesn't enforce sends to any. Under enforcement
+    /// the address must be the management address of a Machine this one accepts, holding a
+    /// live grant that covers the snapshot.
+    ///
+    /// # Errors
+    /// Returns [`Error::ApprovalRecord`] or a store error when a record cannot be read.
+    pub(crate) async fn sends_volume(
+        &self,
+        peer: IpAddr,
+        volume: &DockerVolumeName,
+        snapshot: Option<&SnapshotName>,
+    ) -> Result<Sends, Error> {
+        if !self.record().device_enforcement() {
+            return Ok(Sends::Open);
+        }
+        let IpAddr::V6(address) = peer.to_canonical() else {
+            return Ok(Sends::Refused { recipient: None });
+        };
+        let machines = self.replicated()?.machines().await?;
+        let Some(recipient) = machines
+            .observations
+            .into_iter()
+            .find(|machine| machine.management_address().0 == address)
+        else {
+            return Ok(Sends::Refused { recipient: None });
+        };
+        if self.volume_grant_live(volume, &recipient.id, snapshot)? {
+            Ok(Sends::Granted(recipient.id))
+        } else {
+            Ok(Sends::Refused {
+                recipient: Some(recipient.name),
             })
+        }
     }
 
     /// Under Device enforcement an Operator's `SetVolumeCopy` that starts the Writer's
@@ -165,267 +289,17 @@ impl LocalMachine {
     }
 }
 
-/// What a grant lets its recipient pull.
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum GrantScope {
-    /// Every snapshot of the Volume: a Mirror's, until it is withdrawn.
-    Standing,
-    /// Only these snapshots, which this Machine took under the operation.
-    Snapshots(Vec<SnapshotName>),
-}
-
-/// This Machine's Volume operations, grants and withdrawals, kept in the approvals log.
-/// No record here is pruned.
-#[derive(Clone, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
-pub(super) struct VolumeRecords {
-    /// Raised by each admission and each withdrawal, so a withdrawal outranks exactly the
-    /// operations admitted before it. It orders events on this Machine and reads no clock.
-    sequence: u64,
-    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
-    operations: BTreeMap<OperationId, OperationRecord>,
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    grants: Vec<Grant>,
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    withdrawals: Vec<Withdrawal>,
-}
-
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
-struct OperationRecord {
-    /// The approval's body as signed, so another body under the same ID is refused.
-    digest: StepDigest,
-    volume: DockerVolumeName,
-    workflow: VolumeWorkflow,
-    admitted: u64,
-    state: OperationState,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    decision: Option<Decision>,
-}
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-enum OperationState {
-    Open,
-    Ended,
-}
-
-/// What the source of a Move did after its cut. Written once.
-#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-enum Decision {
-    Resumed,
-}
-
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
-struct Grant {
-    operation: OperationId,
-    volume: DockerVolumeName,
-    recipient: MachineId,
-    scope: GrantScope,
-}
-
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
-struct Withdrawal {
-    volume: DockerVolumeName,
-    recipient: MachineId,
-    at: u64,
-}
-
-impl VolumeRecords {
-    pub(super) fn is_empty(&self) -> bool {
-        *self == Self::default()
-    }
-
-    fn admit(
-        &mut self,
-        operation: OperationId,
-        digest: StepDigest,
-        machine: &MachineId,
-        volume: &DockerVolumeName,
-        step: &VolumeStep,
-        verify: impl FnOnce() -> Result<VolumeWorkflow, AuthorityRefusal>,
-    ) -> Result<(), Error> {
-        let refused = |field| {
-            Err(Error::VolumeStepRefused(AuthorityRefusal::Mismatch {
-                field,
-            }))
-        };
-        if let Some(record) = self.operations.get(&operation) {
-            if record.state == OperationState::Ended {
-                return Err(Error::VolumeStepRefused(AuthorityRefusal::Replayed {
-                    operation,
-                }));
-            }
-            if record.digest != digest {
-                return refused("an operation");
-            }
-            if record.volume != *volume {
-                return refused("a Volume");
-            }
-            if !record.workflow.permits(machine, step) {
-                return refused("a Volume step");
-            }
-            return Ok(());
-        }
-        let workflow = verify().map_err(Error::VolumeStepRefused)?;
-        if workflow.owns(machine) {
-            let owners: Vec<OperationId> = self
-                .operations
-                .iter()
-                .filter(|(_, record)| {
-                    record.state == OperationState::Open
-                        && record.volume == *volume
-                        && record.workflow.owns(machine)
-                })
-                .map(|(operation, _)| *operation)
-                .collect();
-            for owner in owners {
-                self.end_owner(owner, machine);
-            }
-        }
-        let replaces_here = matches!(
-            &workflow,
-            VolumeWorkflow::Mirror { mirror, replace: true, .. } if mirror == machine
-        ) && *step == VolumeStep::Copy(CopyTransition::MirrorToForget);
-        if replaces_here {
-            self.withdraw(machine, volume, machine);
-        }
-        self.sequence += 1;
-        self.operations.insert(
-            operation,
-            OperationRecord {
-                digest,
-                volume: volume.clone(),
-                workflow,
-                admitted: self.sequence,
-                state: OperationState::Open,
-                decision: None,
-            },
-        );
-        Ok(())
-    }
-
-    /// End an earlier owner of this Machine's copy. A Move this Machine is the source of,
-    /// and that has no decision yet, records `Resumed`, so no handoff can follow.
-    fn end_owner(&mut self, operation: OperationId, machine: &MachineId) {
-        if let Some(record) = self.operations.get_mut(&operation)
-            && record.workflow.moves_from(machine)
-            && record.decision.is_none()
-        {
-            record.decision = Some(Decision::Resumed);
-        }
-        self.end(operation);
-    }
-
-    fn end(&mut self, operation: OperationId) {
-        if let Some(record) = self.operations.get_mut(&operation) {
-            record.state = OperationState::Ended;
-        }
-        self.grants.retain(|grant| grant.operation != operation);
-    }
-
-    fn grant(
-        &mut self,
-        operation: OperationId,
-        recipient: MachineId,
-        scope: GrantScope,
-    ) -> Result<(), Error> {
-        let refused = |refusal| Err(Error::VolumeStepRefused(refusal));
-        let Some(record) = self.operations.get(&operation) else {
-            return refused(AuthorityRefusal::Mismatch {
-                field: "an operation",
-            });
-        };
-        if record.state == OperationState::Ended {
-            return refused(AuthorityRefusal::Replayed { operation });
-        }
-        let target =
-            matches!(&record.workflow, VolumeWorkflow::Move { to, .. } if *to == recipient);
-        let sends = record.workflow.mirrors_to(&recipient)
-            || (target && matches!(scope, GrantScope::Snapshots(_)));
-        if !sends {
-            return refused(AuthorityRefusal::Mismatch {
-                field: "a recipient",
-            });
-        }
-        let outranked = self.withdrawals.iter().any(|withdrawal| {
-            withdrawal.volume == record.volume
-                && withdrawal.recipient == recipient
-                && withdrawal.at > record.admitted
-        });
-        if outranked {
-            return refused(AuthorityRefusal::Replayed { operation });
-        }
-        let volume = record.volume.clone();
-        let held = self
-            .grants
-            .iter_mut()
-            .find(|grant| grant.operation == operation && grant.recipient == recipient);
-        match (held, scope) {
-            (Some(held), GrantScope::Standing) => held.scope = GrantScope::Standing,
-            (Some(held), GrantScope::Snapshots(added)) => {
-                if let GrantScope::Snapshots(names) = &mut held.scope {
-                    for name in added {
-                        if !names.contains(&name) {
-                            names.push(name);
-                        }
-                    }
-                }
-            }
-            (None, scope) => self.grants.push(Grant {
-                operation,
-                volume,
-                recipient,
-                scope,
-            }),
-        }
-        Ok(())
-    }
-
-    fn live(
-        &self,
-        volume: &DockerVolumeName,
-        recipient: &MachineId,
-        snapshot: &SnapshotName,
-    ) -> bool {
-        self.grants.iter().any(|grant| {
-            grant.volume == *volume
-                && grant.recipient == *recipient
-                && match &grant.scope {
-                    GrantScope::Standing => true,
-                    GrantScope::Snapshots(names) => names.contains(snapshot),
-                }
-        })
-    }
-
-    /// End every open operation here that mirrors `volume` to `recipient`: a Mirror's own,
-    /// on either Machine, and a Move's following on the recipient itself. A Move between
-    /// two other Machines goes on, but can no longer grant `recipient` anything.
-    fn withdraw(&mut self, machine: &MachineId, volume: &DockerVolumeName, recipient: &MachineId) {
-        self.sequence += 1;
-        self.withdrawals.push(Withdrawal {
-            volume: volume.clone(),
-            recipient: *recipient,
-            at: self.sequence,
-        });
-        let mirrored: Vec<OperationId> = self
-            .operations
-            .iter()
-            .filter(|(_, record)| {
-                record.state == OperationState::Open
-                    && record.volume == *volume
-                    && record.workflow.mirrors_to(recipient)
-                    && (matches!(record.workflow, VolumeWorkflow::Mirror { .. })
-                        || machine == recipient)
-            })
-            .map(|(operation, _)| *operation)
-            .collect();
-        for operation in mirrored {
-            self.end(operation);
-        }
-        self.grants
-            .retain(|grant| !(grant.volume == *volume && grant.recipient == *recipient));
-    }
+/// The step of an Operator's `SetVolumeCopy` an enforcing Machine checks against its
+/// Volume approval.
+#[derive(Clone, Copy, Debug)]
+pub(crate) enum CopyStep<'a> {
+    /// A pull that makes or refreshes a Mirror, from `from`.
+    Pull {
+        transition: CopyTransition,
+        from: &'a ManagementAddress,
+    },
+    /// A run snapshot on the Writer, taken or already held.
+    Snapshot,
 }
 
 /// What a refused Volume verb answers, by the capability refused.
