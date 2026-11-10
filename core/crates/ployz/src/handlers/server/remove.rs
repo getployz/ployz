@@ -66,21 +66,16 @@ fn refuse_without_device(
     else {
         return Ok(());
     };
-    let (capability, verb, command) = match removal {
-        Removal::Reset => (ployz_core::LEAVE_MACHINE_CAPABILITY, "Removing", "rm"),
-        Removal::Forget => (
-            ployz_core::FORGET_MACHINE_CAPABILITY,
-            "Forgetting",
-            "forget",
-        ),
+    let (capability, verb) = match removal {
+        Removal::Reset => (ployz_core::LEAVE_MACHINE_CAPABILITY, "Removing"),
+        Removal::Forget => (ployz_core::FORGET_MACHINE_CAPABILITY, "Forgetting"),
     };
     Err(Error::detailed(
         RpcErrorCode::from(ployz_core::FORBIDDEN_CODE),
         format!(
-            "{verb} Server {} needs an approved device: Server {} acts on it only for one. \
-             Run ployz server {command} {} from a device you approved, or over SSH on a Server. \
-             No changes made.",
-            selected.name, unreached.machine.name, selected.name
+            "{verb} Server {} needs an approved device: Server {} refuses it otherwise. Run it \
+             from an approved device, or over SSH on a Server. No changes made.",
+            selected.name, unreached.machine.name
         ),
         json!({
             "capability": capability,

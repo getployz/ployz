@@ -89,11 +89,11 @@ pub const SEED_REFUSED_BY_ENFORCEMENT: &str = "This server restores into a new v
 /// What a Machine that enforces Device approval says when an Operator asks it to `Leave`.
 /// Clients compare against it to show the refusal as it is.
 pub const LEAVE_REFUSED_BY_ENFORCEMENT: &str =
-    "This server leaves only when you approve it. Run `ployz server rm` from an approved device.";
+    "This server leaves only when you approve it. Run ployz server rm from an approved device.";
 
 /// What a Machine that enforces Device approval says when an Operator asks it to `Forget`
 /// another Machine.
-pub const FORGET_REFUSED_BY_ENFORCEMENT: &str = "This server forgets another server only when you approve it. Run `ployz server forget` from an approved device.";
+pub const FORGET_REFUSED_BY_ENFORCEMENT: &str = "This server forgets another server only when you approve it. Run ployz server forget from an approved device.";
 
 /// What a Machine that enforces Device approval says when an Operator asks it to set its
 /// Ingress Doors or Private Access, which no statement approves yet.
