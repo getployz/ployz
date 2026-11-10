@@ -57,6 +57,11 @@ impl fmt::Display for Purpose {
 /// Machine cannot read could be a restriction it would fail to enforce.
 pub trait Statement: Serialize + DeserializeOwned {
     const PURPOSE: Purpose;
+    /// Whether a trusted passkey's own answer to [`Signed::challenge`] may sign it. A
+    /// session grant has limits the statement's own check reads; a passkey's own answer has
+    /// none, so only a statement whose check needs none takes one: a rule, which no session
+    /// may sign, and a statement that refuses a browser key.
+    const PASSKEY_ANSWERS: bool = matches!(Self::PURPOSE, Purpose::Rule);
 }
 
 /// The bytes a signer signs: `ployz-authority/v1`, the purpose, and the canonical body,
@@ -237,8 +242,8 @@ pub struct Signed<T> {
     #[ts(optional)]
     pub proposal: Option<Box<Signed<ProposalApproval>>>,
     /// Passkeys' own answers to [`Signed::challenge`], each a prompt of its own rather
-    /// than a session. Only a rule takes one. A daemon from before passkey-signed rules
-    /// refuses an envelope that carries one.
+    /// than a session. Only a statement whose [`Statement::PASSKEY_ANSWERS`] holds takes
+    /// one. A daemon from before passkey-signed rules refuses an envelope that carries one.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     #[ts(optional, as = "Option<Vec<PasskeyAssertion>>")]
     pub assertions: Vec<PasskeyAssertion>,
@@ -377,9 +382,10 @@ impl<T: Statement> Signed<T> {
     }
 
     /// Who signed this statement, each checked against `trusted` at `now`: a Device it
-    /// trusts, a browser key a grant in this envelope vouches for, or, on a rule only, a
-    /// trusted passkey's own answer to [`Self::challenge`]. A grant only says what its key
-    /// may do; the statement's own check decides whether its scope covers this statement.
+    /// trusts, a browser key a grant in this envelope vouches for, or, on a statement whose
+    /// [`Statement::PASSKEY_ANSWERS`] holds, a trusted passkey's own answer to
+    /// [`Self::challenge`]. A grant only says what its key may do; the statement's own
+    /// check decides whether its scope covers this statement.
     ///
     /// # Errors
     /// Returns [`AuthorityRefusal::Unsigned`] when nothing signed,
@@ -429,10 +435,7 @@ impl<T: Statement> Signed<T> {
         if self.assertions.is_empty() {
             return Ok(approvers);
         }
-        // A workflow rests on a passkey only through a session grant, whose limits the
-        // workflow's own check reads. A passkey's own answer has none, so only a rule,
-        // which no session may sign, takes one.
-        if T::PURPOSE != Purpose::Rule {
+        if !T::PASSKEY_ANSWERS {
             return Err(AuthorityRefusal::Mismatch { field: "a passkey" });
         }
         let challenge = self.challenge();
