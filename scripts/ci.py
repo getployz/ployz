@@ -9,7 +9,7 @@ import subprocess
 import sys
 
 ROOT = Path(__file__).resolve().parent.parent
-JOBS = {"contracts", "rust-lint", "rust-tests", "uptime", "macos-cli", "cloud", "release-contracts"}
+JOBS = {"contracts", "rust-lint", "rust-tests", "uptime", "minter", "macos-cli", "cloud", "release-contracts"}
 NORMAL = JOBS - {"release-contracts"}
 RUST = {"rust-lint", "rust-tests"}
 CONTRACT_SCRIPTS = {
@@ -74,6 +74,10 @@ def select_normal(paths):
             selected |= RUST
             continue
         if path.endswith(".md") or path.startswith(("docs/", ".agents/", ".claude/", ".cursor/", "core/site/")):
+            continue
+        # The minter imports nothing from the rest of the repository.
+        if path.startswith("minter/"):
+            selected.add("minter")
             continue
         # The uptime crate is its own Cargo workspace, so its manifests select only its job.
         if path.startswith("dashboard/uptime/"):

@@ -27,6 +27,8 @@ class CiTest(unittest.TestCase):
             (["core/crates/ployz-core/tests/rpc.rs"], {"contracts", "rust-lint", "rust-tests", "macos-cli"}),
             (["core/crates/ployz-store/src/lib.rs"], {"contracts", "rust-lint", "rust-tests", "macos-cli", "cloud"}),
             (["core/crates/ployz-store/tests/snapshots/agent_tools.json"], {"contracts", "rust-lint", "rust-tests", "macos-cli", "cloud"}),
+            (["minter/src/routes.ts"], {"contracts", "minter"}),
+            (["minter/pnpm-lock.yaml"], {"contracts", "minter"}),
             (["dashboard/uptime/src/main.rs"], {"contracts", "uptime"}),
             (["dashboard/uptime/Cargo.lock"], {"contracts", "uptime"}),
             (["dashboard/uptime/Dockerfile"], {"contracts", "uptime"}),
