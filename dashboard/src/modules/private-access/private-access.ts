@@ -1,6 +1,7 @@
 import type { AccessChanged, ContainerObservation, RuntimeWatchView } from "@ployz/sdk";
 import { Schema } from "effect";
 import { asRecord } from "#/lib/json";
+import { AnsweredInput } from "#/modules/approval-session/approvals-input";
 import { offlineServers } from "#/modules/machines/server-status";
 
 export const TAILSCALE = "ployz-system/tailscale";
@@ -16,16 +17,16 @@ export function authKeyProblem(key: string): string | null {
   return AUTH_KEY.test(key.trim()) ? null : "Keys start with tskey-auth-.";
 }
 
-const AuthKey = Schema.String.check(
-  Schema.isTrimmed(),
-  Schema.isMaxLength(512),
-  Schema.makeFilter((key: string) => authKeyProblem(key) === null || "Keys start with tskey-auth-."),
-);
-
 const Slug = Schema.String.check(Schema.isNonEmpty());
 
-export const SetPrivateAccessInput = Schema.Struct({ organizationSlug: Slug, to: Schema.Literals(PRIVATE_ACCESS_WANTS), authKey: Schema.optional(AuthKey) });
-export const ApprovePrivateAccessInput = Schema.Struct({ organizationSlug: Slug, id: Schema.String.check(Schema.isUUID()), digest: Schema.NonEmptyString, authKey: AuthKey });
+/** The auth key as the browser sealed it to the Cluster, with the passkey's approval of exactly that ciphertext. */
+const PrivateAccessOnInput = Schema.Struct({
+  sealed_auth_key: Schema.String.check(Schema.isPattern(/^[A-Za-z0-9+/]{1,2048}={0,2}$/)),
+  approval: AnsweredInput,
+});
+
+export const SetPrivateAccessInput = Schema.Struct({ organizationSlug: Slug, to: Schema.Literals(PRIVATE_ACCESS_WANTS), on: Schema.optional(PrivateAccessOnInput) });
+export const ApprovePrivateAccessInput = Schema.Struct({ organizationSlug: Slug, id: Schema.String.check(Schema.isUUID()), digest: Schema.NonEmptyString, on: PrivateAccessOnInput });
 
 export type RouterRow = { readonly id: string; readonly name: string; readonly router: boolean };
 

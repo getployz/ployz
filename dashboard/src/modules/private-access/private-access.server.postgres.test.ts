@@ -1,4 +1,5 @@
-import { Effect, Fiber, Redacted } from "effect";
+import type { PrivateAccessOn } from "@ployz/sdk";
+import { Effect, Fiber } from "effect";
 import { TestClock } from "effect/testing";
 import { Inngest } from "inngest";
 import type { AccessChanged, ContainerObservation, MachineId, ServiceId } from "@ployz/sdk";
@@ -27,14 +28,19 @@ import { type PostgresTestHarness, startPostgresTestHarness } from "#/test/postg
 const ORG = "00000000-0000-4000-8000-0000000c4a01";
 const ADA = "00000000-0000-4000-8000-0000000c4a02";
 const SLUG = "acme";
-const KEY = "tskey-auth-kC4TEST1CNTRL-c4PlaintextNeverStoredAnywhere0123456789";
+/** A key the browser sealed and a passkey approved. Cloud relays it as it came and keeps none of it. */
+const SEALED = "c2VhbGVkLWluLXRoZS1icm93c2VyLW5ldmVyLXN0b3JlZC1ieS1DbG91ZC0wMTIzNDU2Nzg5";
+const ON: PrivateAccessOn = {
+  sealed_auth_key: SEALED,
+  approval: { body: "{\"signer\":\"passkey\"}", signatures: [], assertions: [{ credential_id: "AQID", authenticator_data: "AQID", client_data_json: "AQID", signature: "AQID" }] },
+};
 const SERVER = "a".repeat(32) as MachineId;
 
 let harness: PostgresTestHarness;
 const inngest = new Inngest({ id: "private-access-test" });
 const sent = vi.spyOn(inngest, "send").mockResolvedValue({ ids: [] });
 
-const handed: (string | null)[] = [];
+const handed: (PrivateAccessOn | null)[] = [];
 let refuses = false;
 let paused: Promise<void> | null = null;
 let fails = false;
@@ -53,16 +59,16 @@ const session: ScopedRuntimeClientSession = {
   status: "connected",
   connected: asTestDouble<PloyzSession>()({
     watchFirstFrame: () => unreadable ? Effect.fail(new Error("no frame")) : Effect.sync(frame),
-    setPrivateAccess: (authKey: Redacted.Redacted<string> | null) => Effect.gen(function* () {
-      handed.push(authKey === null ? null : Redacted.value(authKey));
+    setPrivateAccess: (on: PrivateAccessOn | null) => Effect.gen(function* () {
+      handed.push(on);
       if (paused !== null) yield* Effect.promise(() => paused ?? Promise.resolve());
       if (fails) return yield* Effect.fail(new Error("connection reset"));
-      if (authKey !== null && !refuses) placeRouter();
+      if (on !== null && !refuses) placeRouter();
       const failure = { machine_id: SERVER, error: unanswered
         ? { code: "unavailable", message: "fra-1 didn't answer.", details: null, cause: [] }
         : { code: "unavailable", message: "Tailscale refused the auth key on fra-1. It may be revoked or expired.", details: { problem: "key_refused" }, cause: [] } };
       return {
-        machines: [{ machine: SERVER, server: "fra-1", router: authKey !== null && !refuses }],
+        machines: [{ machine: SERVER, server: "fra-1", router: on !== null && !refuses }],
         failures: refuses ? [failure] : [],
       } satisfies AccessChanged;
     }),
@@ -106,12 +112,12 @@ async function onlyApproval() {
 }
 
 const connect = (approval: { id: string; digest: string }) =>
-  approvePrivateAccess(dashboard, { id: approval.id, digest: approval.digest, authKey: Redacted.make(KEY) });
+  approvePrivateAccess(dashboard, { id: approval.id, digest: approval.digest, on: ON });
 
 const keyKept = async () => {
   const stored = await everyRow();
   const events = JSON.stringify(sent.mock.calls);
-  return { stored: stored.includes(KEY) || stored.includes(KEY.slice(0, 24)), events: events.includes(KEY.slice(0, 24)) };
+  return { stored: stored.includes(SEALED.slice(0, 24)), events: events.includes(SEALED.slice(0, 24)) };
 };
 
 beforeAll(async () => {
@@ -140,14 +146,14 @@ beforeEach(async () => {
   `);
 });
 
-it("hands the key from the dashboard to the Servers and stores it nowhere", async () => {
-  const changed = await run(setPrivateAccess(ORG, Redacted.make(KEY)));
+it("relays the key the browser sealed and approved to the Servers as it came, and stores it nowhere", async () => {
+  const changed = await run(setPrivateAccess(ORG, ON));
   expect(changed).toEqual({ servers: [{ id: SERVER, name: "fra-1", router: true }], failures: [] });
-  expect(handed).toEqual([KEY]);
+  expect(handed).toEqual([ON]);
   expect(await keyKept()).toEqual({ stored: false, events: false });
 });
 
-it("asks an agent's turn-on as an Approval, which the approver decides with the key, and stores the key nowhere", async () => {
+it("asks an agent's turn-on as an Approval, which the approver decides with a sealed, approved key, and stores the key nowhere", async () => {
   const asked = await run(privateAccessUse.invoke(agent, { to: "on" }, { approvalId: null, key: null }));
   expect(asked).toMatchObject({ ok: false, refusal: { code: "approval_required" } });
   expect(handed).toEqual([]);
@@ -164,9 +170,9 @@ it("asks an agent's turn-on as an Approval, which the approver decides with the 
 
   refuses = false;
   await expect(run(connect(approval))).rejects.toMatchObject({ _tag: "Conflict" });
-  const retried = await run(setPrivateAccess(ORG, Redacted.make(KEY)));
+  const retried = await run(setPrivateAccess(ORG, ON));
   expect(retried.failures).toEqual([]);
-  expect(handed).toEqual([KEY, KEY]);
+  expect(handed).toEqual([ON, ON]);
   expect(await keyKept()).toEqual({ stored: false, events: false });
 });
 
@@ -202,12 +208,12 @@ it("decides before the key goes out, so a deny or a second key during Connect fi
   const approval = await askedOn();
   const release = holdConnect();
   const connecting = run(connect(approval));
-  await vi.waitFor(() => expect(handed).toEqual([KEY]));
+  await vi.waitFor(() => expect(handed).toEqual([ON]));
   expect(await statusOf(approval.id)).toBe("approved");
 
   expect(await run(deny(approval.id))).toMatchObject({ ok: false, refusal: { code: "conflict", message: "This approval was already decided elsewhere (approved)." } });
   await expect(run(connect(approval))).rejects.toMatchObject({ _tag: "Conflict" });
-  expect(handed).toEqual([KEY]);
+  expect(handed).toEqual([ON]);
 
   release();
   expect(await connecting).toMatchObject({ approval: { status: "approved" }, sent: { failures: [] } });
@@ -218,7 +224,7 @@ it("asks an opposite turn-off during Connect as its own Approval, leaving the de
   const approval = await askedOn();
   const release = holdConnect();
   const connecting = run(connect(approval));
-  await vi.waitFor(() => expect(handed).toEqual([KEY]));
+  await vi.waitFor(() => expect(handed).toEqual([ON]));
 
   const off = await run(privateAccessUse.invoke(agent, { to: "off" }, { approvalId: null, key: null }));
   expect(off).toMatchObject({ ok: false, refusal: { code: "approval_required" } });
@@ -241,7 +247,7 @@ it("tells the waiting agent the Servers are still connecting while Connect runs,
   const approval = await askedOn();
   const release = holdConnect();
   const connecting = run(connect(approval));
-  await vi.waitFor(() => expect(handed).toEqual([KEY]));
+  await vi.waitFor(() => expect(handed).toEqual([ON]));
 
   const waiting = await run(privateAccessUse.invoke(agent, { to: "on" }, { approvalId: approval.id, key: null }));
   expect(waiting).toMatchObject({ ok: true, output: { to: "on", routers: 0 } });
@@ -251,7 +257,7 @@ it("tells the waiting agent the Servers are still connecting while Connect runs,
   await connecting;
   const shown = await run(privateAccessUse.invoke(agent, { to: "on" }, { approvalId: approval.id, key: null }));
   expect(shown).toMatchObject({ ok: false, refusal: { code: "approval_required" } });
-  expect(handed).toEqual([KEY]);
+  expect(handed).toEqual([ON]);
 });
 
 it("keeps the Approval approved when Cloud stops waiting for the Servers, whatever a later read of the Cluster shows", async () => {
@@ -259,7 +265,7 @@ it("keeps the Approval approved when Cloud stops waiting for the Servers, whatev
   paused = new Promise(() => {});
   const timedOut = await run(Effect.gen(function* () {
     const connecting = yield* Effect.forkChild(connect(approval));
-    yield* Effect.promise(() => vi.waitFor(() => expect(handed).toEqual([KEY])));
+    yield* Effect.promise(() => vi.waitFor(() => expect(handed).toEqual([ON])));
     yield* TestClock.adjust("91 seconds");
     return yield* Fiber.join(connecting);
   }).pipe(Effect.provide(TestClock.layer())));
@@ -283,9 +289,9 @@ it("refuses Connect before deciding when the Servers can't be reached, so the as
 
 it("names a refused key apart from a Server that didn't answer", async () => {
   refuses = true;
-  const changed = await run(setPrivateAccess(ORG, Redacted.make(KEY)));
+  const changed = await run(setPrivateAccess(ORG, ON));
   expect(changed.failures.map(({ problem }) => problem)).toEqual(["key_refused"]);
   unanswered = true;
-  const unreached = await run(setPrivateAccess(ORG, Redacted.make(KEY)));
+  const unreached = await run(setPrivateAccess(ORG, ON));
   expect(unreached.failures.map(({ problem }) => problem)).toEqual(["unreachable"]);
 });
