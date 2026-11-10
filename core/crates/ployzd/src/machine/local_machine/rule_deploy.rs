@@ -87,7 +87,14 @@ impl LocalMachine {
         record.machine().ok_or(Error::NotParticipating)?;
         let machine = record.id();
         // An ended generation still supersedes every one below it.
-        self.approvals.mark_rule(&rule, refused)?;
+        self.approvals.mark_rule(&rule, |refusal| {
+            tracing::warn!(
+                rule = %rule.rule,
+                generation = rule.generation,
+                "refused a deploy under a rule: {refusal}"
+            );
+            refused(refusal)
+        })?;
         let claim = &proof.claim;
         if !self.approvals.accepted(&rule, claim)? {
             let claims = github
