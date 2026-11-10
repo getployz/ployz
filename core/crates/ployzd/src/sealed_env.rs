@@ -471,6 +471,26 @@ pub(crate) mod test_support {
             value
         }
 
+        /// A value of `key` sealed for `environment` in place of this Cluster's own, as
+        /// a preview inherits its parent's.
+        pub(crate) fn seal_inherited(
+            &self,
+            key: &str,
+            environment: Uuid,
+            plaintext: &str,
+        ) -> SealedValue {
+            let mut value = SealedValue {
+                environment: Some(environment),
+                sealed: ployz_core::Ciphertext::from_bytes(vec![0; 48]),
+                scope: SealedScope::Shared,
+                key: key.into(),
+            };
+            value.sealed = self
+                .key
+                .seal_value(&value.associated_data(&self.identity), plaintext.as_bytes());
+            value
+        }
+
         pub(crate) fn open(&self, env: BTreeMap<String, EnvValue>) -> Result<OpenedEnv, OpenError> {
             open(env, Some(&self.identity), Some(&self.dir.0))
         }

@@ -1695,6 +1695,7 @@ impl Client {
         let want_for_rule = &want;
         let rule = self.approvals.rule_for(want_for_rule);
         let payload = op::EnsureContainer::into_request(EnsureContainerRequest {
+            preview: None,
             want,
             approval: self.approvals.restart.clone(),
             deploy: self.approvals.deploy.clone(),

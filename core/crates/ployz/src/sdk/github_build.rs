@@ -436,6 +436,7 @@ pub async fn github_rule_grant(
         }
         let minted = session
             .mint_build_grant(MintBuildGrantRequest {
+                preview: None,
                 repository: repository(&id)?,
                 holder: Some(ask.holder),
                 sealed,
@@ -571,6 +572,7 @@ async fn mint(
     };
     let minted = session
         .mint_build_grant(MintBuildGrantRequest {
+            preview: None,
             repository: repository(id)?,
             holder,
             sealed,

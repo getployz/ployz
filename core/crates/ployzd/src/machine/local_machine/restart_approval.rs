@@ -15,8 +15,8 @@ use ployz_core::{
     SetDeviceEnforcementRequest,
     authority::{
         AuthorityRefusal, AutoDeployRule, BuildClaim, BuildStage, ClaimRule, DeployApproval,
-        Purpose, RestartApproval, RestartFacts, RestartStep, RuleId, RuleIdentity, Signed,
-        StartingSet, Timestamp, restart, starting_set,
+        PreviewKey, Purpose, RestartApproval, RestartFacts, RestartStep, RuleId, RuleIdentity,
+        Signed, StartingSet, Timestamp, restart, starting_set,
     },
 };
 use serde::{Deserialize, Serialize};
@@ -133,13 +133,20 @@ impl LocalMachine {
         approval: Option<&Signed<RestartApproval>>,
         deploy: Option<&Signed<DeployApproval>>,
         rule: Option<&ployz_core::authority::RuleProof>,
+        preview: Option<&ployz_core::authority::PreviewProof>,
     ) -> Result<ContainerWant, Error> {
         let record = self.record();
         if !record.device_enforcement() {
             return Ok(want);
         }
-        if let (None, None, Some(rule)) = (approval, deploy, rule) {
-            return self.admit_rule_deploy_online(want, rule).await;
+        match (approval, deploy, rule, preview) {
+            (None, None, Some(rule), None) => {
+                return self.admit_rule_deploy_online(want, rule).await;
+            }
+            (None, None, None, Some(preview)) => {
+                return self.admit_preview_deploy_online(want, preview).await;
+            }
+            _ => {}
         }
         let Some((step, locator)) = RestartStep::of(&want) else {
             self.admit_operator_creation(&want, deploy)?;
@@ -301,15 +308,19 @@ struct AcceptedBuild {
     generation: u64,
     commit: ployz_core::authority::CommitSha,
     image: ployz_core::authority::ImageDigest,
+    /// The preview the build's token named, for a preview rule's build.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    preview: Option<PreviewKey>,
 }
 
 impl AcceptedBuild {
-    fn of(claim: &BuildClaim) -> Option<Self> {
+    fn of(claim: &BuildClaim, preview: Option<&PreviewKey>) -> Option<Self> {
         match claim.stage {
             BuildStage::Built { image, .. } => Some(Self {
                 generation: claim.generation,
                 commit: claim.commit,
                 image,
+                preview: preview.cloned(),
             }),
             BuildStage::Grant { .. } => None,
         }
@@ -787,25 +798,53 @@ impl ConsumptionLog {
             .expect("loaded above")
             .accepted
             .get(&rule_service_key(rule.rule, None, &claim.service));
-        Ok(AcceptedBuild::of(claim).is_some_and(|build| accepted == Some(&build)))
+        Ok(AcceptedBuild::of(claim, None).is_some_and(|build| accepted == Some(&build)))
+    }
+
+    /// The preview this Machine already admitted a creation of `claim`'s build for under
+    /// `rule` in `namespace`, which only that preview's Namespace derives from.
+    pub(crate) fn accepted_preview(
+        &self,
+        rule: RuleId,
+        namespace: &Namespace,
+        claim: &BuildClaim,
+    ) -> Result<Option<PreviewKey>, Error> {
+        let guard = self.loaded()?;
+        let accepted = guard
+            .as_ref()
+            .expect("loaded above")
+            .accepted
+            .get(&rule_service_key(rule, Some(namespace), &claim.service));
+        Ok(accepted.and_then(|build| {
+            let preview = build.preview.as_ref()?;
+            (AcceptedBuild::of(claim, Some(preview)).as_ref() == Some(build))
+                .then(|| preview.clone())
+        }))
     }
 
     /// Record `claim`'s build as the one `rule`'s Service last created a Container from
-    /// here. Written before the Container is made. Refuses, through `refused`, a `rule`
-    /// a newer generation replaced while its admission waited on GitHub.
+    /// here, in the preview `preview` names for a preview rule. Written before the
+    /// Container is made. Refuses, through `refused`, a `rule` a newer generation replaced
+    /// while its admission waited on GitHub.
     pub(crate) fn accept(
         &self,
-        rule: &AutoDeployRule,
+        rule: &impl ClaimRule,
+        preview: Option<(&Namespace, &PreviewKey)>,
         claim: &BuildClaim,
         refused: impl FnOnce(AuthorityRefusal) -> Error,
     ) -> Result<(), Error> {
         let mut guard = self.loaded()?;
         let consumption = guard.as_ref().expect("loaded above");
-        consumption.check_mark(rule.identity()).map_err(refused)?;
-        let Some(build) = AcceptedBuild::of(claim) else {
+        let rule = rule.identity();
+        consumption.check_mark(rule).map_err(refused)?;
+        let Some(build) = AcceptedBuild::of(claim, preview.map(|(_, key)| key)) else {
             return Ok(());
         };
-        let key = rule_service_key(rule.rule, None, &claim.service);
+        let key = rule_service_key(
+            rule.rule,
+            preview.map(|(namespace, _)| namespace),
+            &claim.service,
+        );
         if consumption.accepted.get(&key) == Some(&build) {
             return Ok(());
         }

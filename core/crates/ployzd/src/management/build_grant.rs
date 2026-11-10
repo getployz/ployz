@@ -719,6 +719,7 @@ mod tests {
 
     fn request(holder: Option<&str>) -> MintBuildGrantRequest {
         MintBuildGrantRequest {
+            preview: None,
             repository: BuildGrantRepository::parse("ployz-build/web").unwrap(),
             holder: holder.map(|holder| BuildGrantId::parse(holder).unwrap()),
             sealed: None,

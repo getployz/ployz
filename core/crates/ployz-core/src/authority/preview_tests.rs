@@ -181,7 +181,7 @@ struct Case {
     key: PreviewKey,
     namespace: Namespace,
     spec: Value,
-    first: bool,
+    kind: ContainerKind,
     review: Option<CheckedReview>,
 }
 
@@ -194,12 +194,16 @@ impl Case {
             key: search(),
             spec: preview_json(namespace.as_str(), "zyxwvutsrqponmlk", false),
             namespace,
-            first: false,
+            kind: ContainerKind::ServiceContainer,
             review: None,
         }
     }
 
     fn create(&self) -> Result<ImageDigest, AuthorityRefusal> {
+        self.created().map(|created| created.image)
+    }
+
+    fn created(&self) -> Result<PreviewCreation, AuthorityRefusal> {
         let spec = resolved(&requested(self.spec.clone()), &self.namespace);
         let machine = machine();
         let facts = PreviewFacts {
@@ -213,14 +217,13 @@ impl Case {
                 .review
                 .is_none()
                 .then(|| CommitSha::parse(HEAD).unwrap()),
-            first: self.first,
         };
         self.rule.verify_creation(
             &self.claim,
             &facts,
             Creation {
                 service: &spec.name,
-                kind: ContainerKind::ServiceContainer,
+                kind: self.kind,
                 spec: &spec,
             },
             self.review.as_ref(),
@@ -347,15 +350,16 @@ fn a_generated_value_must_be_one_its_generator_could_make() {
 }
 
 #[test]
-fn setup_commands_run_only_on_a_previews_first_creation() {
-    let setup = |first| {
+fn only_a_hook_of_the_setup_template_runs_the_setup_commands() {
+    let created = |kind, setup| {
         let mut case = Case::trusted();
-        case.spec = preview_json(case.namespace.as_str(), "zyxwvutsrqponmlk", true);
-        case.first = first;
-        case.create()
+        case.spec = preview_json(case.namespace.as_str(), "zyxwvutsrqponmlk", setup);
+        case.kind = kind;
+        case.created().map(|created| created.runs_setup)
     };
-    assert_eq!(setup(true), Ok(ImageDigest::from_bytes([0x44; 32])));
-    assert_eq!(setup(false), refused("a Setup Command"));
+    assert_eq!(created(ContainerKind::PreDeployHook, true), Ok(true));
+    assert_eq!(created(ContainerKind::ServiceContainer, true), Ok(false));
+    assert_eq!(created(ContainerKind::PreDeployHook, false), Ok(false));
 }
 
 #[test]
@@ -614,7 +618,7 @@ fn a_reviewed_preview_deploys_only_the_reviewed_commit_and_settings() {
         key: PreviewKey::Fork(7),
         namespace: namespace.clone(),
         spec,
-        first: false,
+        kind: ContainerKind::ServiceContainer,
         review: Some(checked.clone()),
     };
     let spec = preview_json(namespace.as_str(), "zyxwvutsrqponmlk", false);

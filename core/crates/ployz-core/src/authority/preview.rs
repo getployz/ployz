@@ -315,9 +315,16 @@ pub struct PreviewFacts<'a> {
     /// The head of the preview's branch, read from GitHub now. `None` for a reviewed
     /// build, whose authority is the review.
     pub head: Option<CommitSha>,
-    /// No Service Container of this Service exists in the Namespace on this Machine, so
-    /// a creation may still run the Setup Commands.
-    pub first: bool,
+}
+
+/// A preview creation [`PreviewRule::verify_creation`] admitted.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct PreviewCreation {
+    pub image: ImageDigest,
+    /// The creation is a Hook Container that runs the Setup Commands, which only a
+    /// preview's first deploy of the Service may do: the caller checks that no Service
+    /// Container of it exists here yet.
+    pub runs_setup: bool,
 }
 
 impl PreviewRule {
@@ -377,7 +384,8 @@ impl PreviewRule {
     /// Check a new Container of a preview: everything [`Self::verify_step`] checks, the
     /// image the token names built with secrets sealed from this Machine's attest key, its
     /// Sealed values, and its spec's [`template`] against what the person signed: the
-    /// rule's, or for a reviewed build the review's. Returns the image.
+    /// rule's, or for a reviewed build the review's. Returns the image, and whether the
+    /// creation runs the Setup Commands.
     ///
     /// # Errors
     /// Returns [`AuthorityRefusal::Mismatch`] naming the first fact that does not hold.
@@ -387,7 +395,7 @@ impl PreviewRule {
         facts: &PreviewFacts<'_>,
         creation: Creation<'_>,
         review: Option<&CheckedReview>,
-    ) -> Result<ImageDigest, AuthorityRefusal> {
+    ) -> Result<PreviewCreation, AuthorityRefusal> {
         let mismatch = |field| AuthorityRefusal::Mismatch { field };
         if creation.service != facts.service || &creation.spec.name != facts.service {
             return Err(mismatch("a Service"));
@@ -415,21 +423,21 @@ impl PreviewRule {
         let spec = creation.spec.to_requested();
         self.verify_sealed(&spec, service, review)?;
         let digest = template(&spec, facts.namespace, service)?;
-        match review {
+        let setup = match review {
             Some(review) => {
                 if review.digest_for(facts.service) != Some(digest) {
                     return Err(mismatch("a payload"));
                 }
+                false
             }
-            None if digest == service.template => {}
-            None if Some(digest) == service.setup => {
-                if !facts.first {
-                    return Err(mismatch("a Setup Command"));
-                }
-            }
+            None if digest == service.template => false,
+            None if Some(digest) == service.setup => true,
             None => return Err(mismatch("a payload")),
-        }
-        Ok(image)
+        };
+        Ok(PreviewCreation {
+            image,
+            runs_setup: setup && creation.kind == ContainerKind::PreDeployHook,
+        })
     }
 
     /// Refuse a preview's Sealed value unless it is a parent value this Service inherits,
@@ -471,6 +479,50 @@ impl PreviewRule {
             })
         }
     }
+}
+
+impl PreviewRule {
+    /// Refuse a preview build's Sealed record unless each of its values is a parent value
+    /// `service` inherits, then return its [`secrets_digest`] for the caller to compare
+    /// with the rule's.
+    ///
+    /// # Errors
+    /// Returns [`AuthorityRefusal::Mismatch`] naming the Sealed value.
+    pub fn build_secrets(
+        &self,
+        service: &PreviewService,
+        record: &crate::SealedRecord,
+    ) -> Result<SealedDigest, AuthorityRefusal> {
+        let refused = || AuthorityRefusal::Mismatch {
+            field: SEALED_VALUE,
+        };
+        let inherited = record
+            .values()
+            .values()
+            .flat_map(EnvValue::sealed_parts)
+            .all(|value| {
+                value.environment == Some(self.parent_id) && service.inherit.contains(&value.key)
+            });
+        if !inherited {
+            return Err(refused());
+        }
+        secrets_digest(record).map_err(|_| refused())
+    }
+}
+
+/// The digest a preview rule approves for a preview build's Sealed record: SHA-256 of its
+/// values in canonical JSON, without the identity, which names each preview's own
+/// Environment.
+///
+/// # Errors
+/// Returns a [`super::CanonicalError`] when the values have no canonical form.
+pub fn secrets_digest(record: &crate::SealedRecord) -> Result<SealedDigest, super::CanonicalError> {
+    let mut value = serde_json::to_value(record.values())
+        .map_err(|error| super::CanonicalError::Parse(error.to_string()))?;
+    super::deploy::drop_nulls(&mut value);
+    Ok(SealedDigest::from_bytes(
+        Sha256::digest(canonical::to_canonical(&value)?).into(),
+    ))
 }
 
 /// The field a refused Sealed value names.
@@ -550,6 +602,25 @@ fn placeholder(value: &mut Value, namespace: &str) {
         }
         Value::Null | Value::Bool(_) | Value::Number(_) => {}
     }
+}
+
+/// What a preview's Container change carries in place of a deploy approval: the signed
+/// preview rule, the pinned builder's image token and the claim whose audience it names,
+/// and for a reviewed build the review. Cloud relays all of it.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
+#[serde(deny_unknown_fields)]
+pub struct PreviewProof {
+    #[ts(type = "unknown")]
+    pub rule: Signed<PreviewRule>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub review: Option<Review>,
+    pub token: crate::GithubToken,
+    pub claim: BuildClaim,
+    /// A token that may read the preview branch's head. `None` reads a public repository.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub reader: Option<crate::GithubToken>,
 }
 
 /// One Service of a review, and the [`template`] digest of its spec as the reviewer saw

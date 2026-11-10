@@ -81,6 +81,8 @@ pub(crate) use container::CutRefusal;
 pub(crate) use container::{EnsurePause, EnsurePausePoint};
 mod join_approval;
 mod management_client;
+pub(crate) mod preview_deploy;
+pub(crate) mod preview_grant;
 mod push_target;
 pub(super) mod restart_approval;
 pub(crate) mod rule_deploy;
@@ -202,6 +204,14 @@ pub enum Error {
     /// details.
     #[error("{0}")]
     RuleDeployRefused(rule_deploy::RuleDeployRefusal),
+    /// A preview build's grant failed a check before anything opened. The refusal names
+    /// [`ployz_core::BUILD_GRANT_PREVIEW_CAPABILITY`] in its details.
+    #[error("This Server refused the preview build's grant: {0}")]
+    PreviewGrantRefused(preview_deploy::PreviewRefusal),
+    /// Device enforcement refused an Operator's Container change under a preview rule.
+    /// The refusal names [`ployz_core::DEPLOY_PREVIEW_CAPABILITY`] in its details.
+    #[error("{0}")]
+    PreviewDeployRefused(preview_deploy::PreviewRefusal),
     /// GitHub did not prove a rule build: its token failed to verify or match the rule.
     #[error("This Server refused the rule build's GitHub token: {0}")]
     RuleProofRefused(crate::github::oidc::ProofRefusal),

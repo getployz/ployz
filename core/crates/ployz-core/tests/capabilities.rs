@@ -1,6 +1,7 @@
 use ployz_core::{
-    BUILD_GRANT_HOLDER_CAPABILITY, BUILD_GRANT_RULE_CAPABILITY, BUILD_SEALED_CAPABILITY,
-    CERTIFICATE_POLICY_CAPABILITY, CapabilityAdvertisement, CapabilityName, DEPLOY_RULE_CAPABILITY,
+    BUILD_GRANT_HOLDER_CAPABILITY, BUILD_GRANT_PREVIEW_CAPABILITY, BUILD_GRANT_RULE_CAPABILITY,
+    BUILD_SEALED_CAPABILITY, CERTIFICATE_POLICY_CAPABILITY, CapabilityAdvertisement,
+    CapabilityName, DEPLOY_PREVIEW_CAPABILITY, DEPLOY_RULE_CAPABILITY,
     DESCRIBE_CONTRACT_CAPABILITY, ENROLL_FOR_RECOVERY_CAPABILITY, ENROLL_MACHINE_CAPABILITY,
     ENSURE_CONTAINER_CAPABILITY, ENSURE_IMAGE_INGEST_CAPABILITY, ENV_SEALED_CAPABILITY,
     EXEC_CONTAINER_CAPABILITY, FORGET_MACHINE_CAPABILITY, GENERATE_SEALING_KEY_CAPABILITY,
@@ -74,6 +75,14 @@ fn catalogued_capabilities_keep_stable_spellings() {
         (BUILD_GRANT_RULE_CAPABILITY, "ployz.build.grant.rule.v1"),
         (DEPLOY_RULE_CAPABILITY, "ployz.container.deploy-rule.v1"),
         (RULE_PASSKEY_CAPABILITY, "ployz.rule.passkey.v1"),
+        (
+            BUILD_GRANT_PREVIEW_CAPABILITY,
+            "ployz.build.grant.preview.v1",
+        ),
+        (
+            DEPLOY_PREVIEW_CAPABILITY,
+            "ployz.container.deploy-preview.v1",
+        ),
         (
             SET_DEVICE_ENFORCEMENT_CAPABILITY,
             "ployz.machine.set-device-enforcement.v2",
