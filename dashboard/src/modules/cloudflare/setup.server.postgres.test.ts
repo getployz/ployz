@@ -99,7 +99,8 @@ type Set = { readonly doors: readonly string[]; readonly token: string | undefin
 const frameOf = asTestDouble<RuntimeWatchView>();
 const NO_SERVER_FRAME = frameOf({ machines: [], services: [], containers: [], incomplete_ids: { machines: [], containers: [], certificates: [] }, unanswered: [] });
 /** One Server taking web traffic and running no door Container, as a Cluster founded closed is before its tunnel opens. */
-const CLOSED_FRAME = frameOf({ ...NO_SERVER_FRAME, machines: [{ machine: { id: "m1", name: "s1", accepts_ingress: true, runtime: { running_builds: 0 } }, membership: "up" }] });
+const CLOSED_DOORS = "ployz.ingress.closed-doors.v1";
+const CLOSED_FRAME = frameOf({ ...NO_SERVER_FRAME, machines: [{ machine: { id: "m1", name: "s1", accepts_ingress: true, runtime: { running_builds: 0, capabilities: [CLOSED_DOORS] } }, membership: "up" }] });
 
 /** A Cluster whose Servers take any doors they are told, unless `take` says otherwise, showing `frame` when watched. */
 function cluster(take: (doors: readonly string[]) => readonly string[] = (doors) => doors, frame: RuntimeWatchView = NO_SERVER_FRAME) {
@@ -217,10 +218,25 @@ it("refuses on a Cluster founded closed while a Server isn't seen, opening no Do
   expect(await setupRows()).toEqual([]);
 });
 
+it("refuses on a Cluster founded closed while a Server taking web traffic can't keep it closed, opening no Door and making no tunnel", async () => {
+  await foundedClosed();
+  const { http, calls } = cloudflare();
+  const older = frameOf({
+    ...CLOSED_FRAME,
+    machines: [...CLOSED_FRAME.machines, { machine: { id: "m2", name: "s2", accepts_ingress: true, runtime: { running_builds: 0, capabilities: [] } }, membership: "up" }],
+    services: [{ identity: "ployz-system/ingress-holder", containers: [{ machine_id: "m2", runtime: { state: "running" }, resolved_spec: { ports: [{ mode: "host", published_port: 80 }, { mode: "host", published_port: 443 }] } }] }],
+  });
+  const { runtime, sets } = cluster((doors) => doors, older);
+  await expect(setUp("example.com", http, runtime)).rejects.toMatchObject({ message: "Update ployz on s2 to use Cloudflare Tunnel." });
+  expect(sets).toEqual([]);
+  expect(writesOf(calls)).toEqual([]);
+  expect(await setupRows()).toEqual([]);
+});
+
 it("keeps both doors on a Cluster whose ports are open, on a Server that no longer takes web traffic or one founded public", async () => {
   const publicElsewhere = frameOf({
     ...CLOSED_FRAME,
-    machines: [...CLOSED_FRAME.machines, { machine: { id: "m2", name: "s2", accepts_ingress: false, runtime: { running_builds: 0 } }, membership: "up" }],
+    machines: [...CLOSED_FRAME.machines, { machine: { id: "m2", name: "s2", accepts_ingress: false, runtime: { running_builds: 0, capabilities: [CLOSED_DOORS] } }, membership: "up" }],
     services: [{ identity: "ployz-system/ingress-holder", containers: [{ machine_id: "m2", runtime: { state: "running" }, resolved_spec: { ports: [{ mode: "host", published_port: 80 }] } }] }],
   });
   const founded = cluster((doors) => doors, CLOSED_FRAME);

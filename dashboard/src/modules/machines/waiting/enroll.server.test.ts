@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import type { ClusterFeature } from "#/modules/cluster-requirements/cluster-requirements";
 import type { Prep, StoredReport } from "#/modules/machines/waiting/checkin-wire";
 import { type EnrollCandidate, type EnrollPlan, planServerEnrollment } from "#/modules/machines/waiting/enroll.server";
 import { type EnrollInput, type EnrollStorage, isReadyFor } from "#/modules/machines/waiting/server-enrollment";
@@ -39,8 +40,12 @@ const input = (overrides: Partial<EnrollInput> = {}): EnrollInput => ({
   ...overrides,
 });
 
-const empty = { hasFirst: false, takenNames: new Set<string>(), heldNames: new Map<string, ReadonlySet<string>>() };
-const founded = { hasFirst: true, takenNames: new Set<string>(), heldNames: new Map<string, ReadonlySet<string>>() };
+const noFeatures = new Set<ClusterFeature>();
+const closedFeatures = new Set<ClusterFeature>(["closedDoors"]);
+const empty = { hasFirst: false, features: noFeatures, takenNames: new Set<string>(), heldNames: new Map<string, ReadonlySet<string>>() };
+const founded = { hasFirst: true, features: noFeatures, takenNames: new Set<string>(), heldNames: new Map<string, ReadonlySet<string>>() };
+const foundedClosed = { ...founded, features: closedFeatures };
+const CLOSED_DOORS = ["ployz.ingress.closed-doors.v1"];
 
 const planned = (plan: EnrollPlan) => {
   if (plan.kind !== "planned") throw new Error(`expected a plan, got: ${plan.message}`);
@@ -273,5 +278,49 @@ describe("readiness", () => {
     const blocked = { ...report, prep: { docker: "ready", zfs: "ready" }, blockers: [{ code: "x", message: "x" }] } as const;
     expect(isReadyFor(blocked, none)).toBe(false);
     expect(isReadyFor(blocked, zfs)).toBe(false);
+  });
+});
+
+describe("Cluster Requirements", () => {
+  const old = (id: string, overrides: Partial<Omit<EnrollCandidate, "report">> = {}) => row(id, overrides);
+  const current = (id: string, overrides: Partial<Omit<EnrollCandidate, "report">> = {}) => row(id, { ...overrides, report: { capabilities: CLOSED_DOORS } });
+
+  it("skips a joiner that lists nothing when it enrolls beside a closed founder in one batch", () => {
+    const plan = planned(planServerEnrollment(
+      input({ ids: ["a", "b"], first: "a" }),
+      [current("a", { foundsClosed: true }), old("b")],
+      empty,
+    ));
+    expect(plan.rows.map((r) => r.waitingServerId)).toEqual(["a"]);
+    expect(plan.skipped).toEqual([{ id: "b", reason: "Update ployz to join a Cluster with closed ports 80 and 443" }]);
+  });
+
+  it("enrolls a joiner that lists the capability beside a closed founder", () => {
+    const plan = planned(planServerEnrollment(input({ ids: ["a", "b"], first: "a" }), [current("a", { foundsClosed: true }), current("b")], empty));
+    expect(plan.rows.map((r) => r.role)).toEqual(["founder", "joiner"]);
+  });
+
+  it("refuses a closed founder that lists nothing, naming the feature", () => {
+    expect(planServerEnrollment(input(), [old("a", { foundsClosed: true })], empty)).toEqual({
+      kind: "refused",
+      message: "Closed ports 80 and 443 need a newer ployz on the first server. Update ployz on it, or get an install command without Cloudflare Tunnel.",
+    });
+  });
+
+  it("skips a joiner that lists nothing in a Cluster that already requires closed doors", () => {
+    const plan = planned(planServerEnrollment(input({ ids: ["a", "b"] }), [old("a"), current("b")], foundedClosed));
+    expect(plan.rows.map((r) => r.waitingServerId)).toEqual(["b"]);
+    expect(plan.skipped.map((s) => s.id)).toEqual(["a"]);
+  });
+
+  it("enrolls a CLI that lists nothing in a default Cluster, as before", () => {
+    const plan = planned(planServerEnrollment(input({ ids: ["a"] }), [old("a")], founded));
+    expect(plan.rows.map((r) => r.waitingServerId)).toEqual(["a"]);
+    expect(plan.skipped).toEqual([]);
+  });
+
+  it("enrolls a CLI that lists nothing as the first Server of a default Fleet Token", () => {
+    const plan = planned(planServerEnrollment(input(), [old("a")], empty));
+    expect(plan.rows.map((r) => r.role)).toEqual(["founder"]);
   });
 });

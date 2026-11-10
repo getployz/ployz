@@ -113,7 +113,7 @@ function fakeSession(database: PostgresTestHarness["database"]) {
   };
   /** The Machines each Runtime Watch frame reports, as `[id, name]`. */
   /** With `joins`, every Machine registered through the fake is then listed running in the Cluster it joined. */
-  const cluster = { frames: [] as Array<Array<[string, string]>>, snapshot, joins: false, managementClients: ["cloud"], revocable: false, inspectedId: undefined as string | undefined, accepted: undefined as string | undefined };
+  const cluster = { frames: [] as Array<Array<[string, string]>>, services: [] as unknown[], snapshot, joins: false, managementClients: ["cloud"], revocable: false, inspectedId: undefined as string | undefined, accepted: undefined as string | undefined };
   const coordinator = enrollmentTestClient(database, async (options) => {
     connected.push(options);
     aborts.watch(options.signal);
@@ -154,7 +154,12 @@ function fakeSession(database: PostgresTestHarness["database"]) {
       runtime: {
         watch: async function* () {
           for (const machines of cluster.frames) {
-            yield asTestDouble<RuntimeWatchView>()({ machines: machines.map(([id, name]) => ({ machine: { id, name, runtime: {} } })) });
+            yield asTestDouble<RuntimeWatchView>()({
+              machines: machines.map(([id, name]) => ({ machine: { id, name, runtime: {} } })),
+              services: cluster.services,
+              incomplete_ids: { machines: [], containers: [] },
+              unanswered: [],
+            });
           }
         },
       },
@@ -572,6 +577,57 @@ describe("organization enrollment coordinator", () => {
     expect(fake.published.map((assignment) => assignment.request.join_confirmation)).toEqual([undefined, confirmation]);
     const saved = await harness.pool.query("select assignments from enrollment_allocation");
     expect(saved.rows[0].assignments).toEqual([fake.published[0]]);
+  });
+
+  describe("a Cluster that keeps ports 80 and 443 closed", () => {
+    const CLOSED_DOORS = "ployz.ingress.closed-doors.v1";
+    const holderPublishing = (ports: readonly number[]) => ({
+      identity: "ployz-system/ingress-holder",
+      containers: [{ machine_id: "m1", runtime: { state: "running" }, resolved_spec: { ports: ports.map((port) => ({ mode: "host", published_port: port })) } }],
+    });
+    const readyCluster = async (services: unknown[]) => {
+      const fake = fakeSession(harness.database);
+      await readyFounder(fake);
+      fake.cluster.frames = [[]];
+      fake.cluster.services = services;
+      return fake;
+    };
+
+    it("refuses a joiner that lists nothing before it registers, and frees its token", async () => {
+      const fake = await readyCluster([holderPublishing([])]);
+      const token = await issueToken();
+      const refused = await fake.coordinator.enroll({ token, identity: identity(1) });
+      expect(refused).toMatchObject({ failure: { _tag: "Conflict", message: "This Cluster keeps ports 80 and 443 closed. Update ployz on this server to join it." } });
+      expect(fake.registerCalls()).toBe(0);
+      expect(fake.published).toEqual([]);
+      const capable = await fake.coordinator.enroll({ token, identity: { ...identity(1), capabilities: [CLOSED_DOORS] } });
+      expect(capable).toMatchObject({ success: { kind: "join" } });
+      expect(fake.registerCalls()).toBe(1);
+    });
+
+    it("refuses a joiner that lists other capabilities but not closed doors", async () => {
+      const fake = await readyCluster([holderPublishing([])]);
+      const refused = await fake.coordinator.enroll({ token: await issueToken(), identity: { ...identity(1), capabilities: ["ployz.logs.tail.v1"] } });
+      expect(refused).toMatchObject({ failure: { _tag: "Conflict" } });
+      expect(fake.registerCalls()).toBe(0);
+    });
+
+    it("joins a joiner that lists nothing when the Cluster's holder publishes 80 and 443, as before", async () => {
+      const fake = await readyCluster([holderPublishing([80, 443])]);
+      expect(await fake.coordinator.enroll({ token: await issueToken(), identity: identity(1) })).toMatchObject({ success: { kind: "join" } });
+    });
+
+    it("joins a joiner that lists nothing when no holder exists and nothing recorded a closed founding", async () => {
+      const fake = await readyCluster([]);
+      expect(await fake.coordinator.enroll({ token: await issueToken(), identity: identity(1) })).toMatchObject({ success: { kind: "join" } });
+    });
+
+    it("joins when the Cluster can't be read and nothing recorded a closed founding", async () => {
+      const fake = fakeSession(harness.database);
+      await readyFounder(fake);
+      fake.cluster.frames = [];
+      expect(await fake.coordinator.enroll({ token: await issueToken(), identity: identity(1) })).toMatchObject({ success: { kind: "join" } });
+    });
   });
 
   it("refuses a joined Server's rerun with other options, and says how to proceed", async () => {

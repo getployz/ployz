@@ -111,7 +111,7 @@ const host = (name: string): Host => {
   return { name, key: Buffer.from(x, "base64url").toString("hex"), privateKey };
 };
 
-const checkin = async (target: Host, extra: Pick<CheckinRequest, "prep" | "attempt" | "enrollOptions"> = {}) => {
+const checkin = async (target: Host, extra: Pick<CheckinRequest, "prep" | "attempt" | "capabilities"> = {}) => {
   const request: CheckinRequest = { protocolVersion: 1, checkinKey: target.key, cliVersion: "0.3.0", report: { ...report, hostname: target.name }, ...extra };
   const body = Buffer.from(JSON.stringify(request));
   const timestamp = BigInt(Math.floor(Date.now() / 1000));
@@ -183,26 +183,60 @@ it("tells only the first server the Cluster Name: the one saved, else the slug c
   expect(rows).toEqual([{ role: "founder", cluster_name: "acme" }, { role: "joiner", cluster_name: null }]);
 });
 
-it("founds closed for Cloudflare only on a Fleet Token that asks it, and only on a CLI that offers it", async () => {
+const CLOSED_DOORS = ["ployz.ingress.closed-doors.v1"];
+
+it("founds closed for Cloudflare only on a Fleet Token that asks it, and only on a CLI that lists closed doors", async () => {
   await harness.pool.query("update fleet_token set founds_closed = true");
   const older = host("web-old");
   await checkin(older);
   const refused = await failure(enroll([older]));
-  expect(refused).toMatchObject({ message: expect.stringContaining("is too old for Cloudflare Tunnel") });
+  expect(refused).toMatchObject({ message: expect.stringContaining("need a newer ployz on the first server") });
   expect(await attempts()).toEqual([]);
 
   const current = host("web-new");
-  await checkin(current, { enrollOptions: ["ingressClosed"] });
+  await checkin(current, { capabilities: CLOSED_DOORS });
   const dark = await failure(enroll([current], { runs: { services: true, ingress: false, builds: false } }));
   expect(dark).toMatchObject({ message: expect.stringContaining("needs the first server to take web traffic") });
   expect(await attempts()).toEqual([]);
   const joiner = host("web-two");
-  await checkin(joiner, { enrollOptions: ["ingressClosed"] });
+  await checkin(joiner, { capabilities: CLOSED_DOORS });
   await run(enroll([current, joiner], { first: current.id }));
   const { rows } = await harness.pool.query<{ role: string; closed: string | null }>(
     "select role, instruction->>'ingressClosed' as closed from server_enrollment order by role",
   );
   expect(rows).toEqual([{ role: "founder", closed: "true" }, { role: "joiner", closed: null }]);
+});
+
+it("skips a joiner that lists nothing when it enrolls beside a closed founder", async () => {
+  await harness.pool.query("update fleet_token set founds_closed = true");
+  const current = host("web-new");
+  await checkin(current, { capabilities: CLOSED_DOORS });
+  const older = host("web-old");
+  await checkin(older);
+  const result = await run(enroll([current, older], { first: current.id }));
+  expect(result.skipped).toEqual([{ id: older.id, reason: expect.stringContaining("closed ports 80 and 443") }]);
+  expect(result.attempts.map((attempt) => attempt.role)).toEqual(["founder"]);
+});
+
+it("skips a host that lists nothing once the Cluster was founded closed", async () => {
+  await harness.pool.query("update fleet_token set founds_closed = true");
+  const first = host("web-new");
+  await checkin(first, { capabilities: CLOSED_DOORS });
+  await run(enroll([first]));
+  const older = host("web-old");
+  await checkin(older);
+  const later = await run(enroll([older]));
+  expect(later.skipped).toEqual([{ id: older.id, reason: expect.stringContaining("closed ports 80 and 443") }]);
+  expect(later.attempts).toEqual([]);
+});
+
+it("enrolls a host that lists nothing in a Cluster not founded closed", async () => {
+  const [first, older] = await waiting("web-a", "web-old");
+  if (first === undefined || older === undefined) throw new Error("two hosts");
+  await run(enroll([first]));
+  const later = await run(enroll([older]));
+  expect(later.skipped).toEqual([]);
+  expect(later.attempts.map((attempt) => attempt.role)).toEqual(["joiner"]);
 });
 
 it("founds with the Public Door on a Fleet Token that doesn't ask for closed", async () => {

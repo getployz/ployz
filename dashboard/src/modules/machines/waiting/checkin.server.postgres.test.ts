@@ -100,6 +100,7 @@ type Send = {
   readonly prep?: Prep;
   readonly probe?: CheckinRequest["probe"];
   readonly attempt?: CheckinRequest["attempt"];
+  readonly capabilities?: CheckinRequest["capabilities"];
   readonly skew?: number;
   readonly badSignature?: boolean;
   readonly ip?: string;
@@ -114,7 +115,8 @@ const request = (token: string, host: Host, options: Send = {}) => {
   } as const;
   const withPrep: CheckinRequest = options.prep === undefined ? base : { ...base, prep: options.prep };
   const withProbe: CheckinRequest = options.probe === undefined ? withPrep : { ...withPrep, probe: options.probe };
-  const checkin: CheckinRequest = options.attempt === undefined ? withProbe : { ...withProbe, attempt: options.attempt };
+  const withAttempt: CheckinRequest = options.attempt === undefined ? withProbe : { ...withProbe, attempt: options.attempt };
+  const checkin: CheckinRequest = options.capabilities === undefined ? withAttempt : { ...withAttempt, capabilities: options.capabilities };
   const body = Buffer.from(JSON.stringify(checkin));
   const timestamp = BigInt(Math.floor(Date.now() / 1000) + (options.skew ?? 0));
   const signature = sign(null, checkinMessage(host.key, timestamp, body), host.privateKey);
@@ -1230,4 +1232,22 @@ it("answers an admitted check-in with a plain wait when its arrival fails", asyn
   } finally {
     await harness.pool.query("drop trigger refuse_enrollment on server_enrollment; drop function refuse_enrollment();");
   }
+});
+
+it("starts no arrival for a host that lists nothing once the Cluster was founded closed", async () => {
+  await foundOrganization();
+  const { token } = await autoToken(10);
+  const closedDoors = ["ployz.ingress.closed-doors.v1"];
+  expect(await send(token, newHost(), { ...readyAuto, capabilities: closedDoors })).toMatchObject({ kind: "enroll", role: "joiner" });
+  await harness.pool.query(`update server_enrollment set role = 'founder', instruction = instruction || '{"ingressClosed": true}'::jsonb`);
+  expect(await send(token, newHost(), readyAuto)).toEqual(arrivalWait);
+  expect(await autoAttempts()).toHaveLength(1);
+  expect(await send(token, newHost(), { ...readyAuto, capabilities: closedDoors })).toMatchObject({ kind: "enroll", role: "joiner" });
+  expect(await autoAttempts()).toHaveLength(2);
+});
+
+it("starts an arrival for a host that lists nothing in a Cluster not founded closed", async () => {
+  await foundOrganization();
+  const { token } = await autoToken(10);
+  expect(await send(token, newHost(), readyAuto)).toMatchObject({ kind: "enroll", role: "joiner" });
 });
