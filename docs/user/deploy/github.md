@@ -99,6 +99,61 @@ A volume deletion you confirmed when you saved goes out with the push without as
 the data changed since, the push keeps it and your next deploy asks; see
 [Confirm a deploy that deletes data](deployments.md#confirm-a-deploy-that-deletes-data).
 
+### Deploy on push to servers that enforce device approval
+
+Servers with [device enforcement](../servers/manage-servers.md#require-a-devices-signature-for-restarts-and-joins)
+on deploy a push only under an automatic deploy rule you approve from an approved device. Approve
+it once for the services that build from one branch:
+
+```bash
+ployz github rule approve web worker
+```
+
+It prints what you approve, then signs it with your device key:
+
+```text
+Approving automatic deploys for production:
+  repository  acme/web on main
+  workflow    .github/workflows/ployz-build.yml, on push
+  builder     getployz/build/.github/workflows/build.yml@5f35eaa8e1372d0d86ff82788adadf308e5f3f97
+  servers     2 in the cluster
+  web
+    builds    Dockerfile in ., for linux/amd64, with the Actions cache
+    variables LOG_LEVEL=info, DATABASE_URL (sealed)
+Approved. Every push to main now deploys web, worker with these settings.
+```
+
+From then on every push to that branch deploys with no prompt, force pushes included. GitHub
+Actions builds it with Ployz's pinned builder, and each server checks that the image is the one
+built for the branch's current head, under these settings. The repository needs
+`.github/workflows/ployz-build.yml` on that branch, run on push:
+
+```yaml
+name: Ployz build
+on:
+  push:
+    branches: [main]
+permissions:
+  contents: read
+  id-token: write
+jobs:
+  build:
+    uses: getployz/build/.github/workflows/build.yml@5f35eaa8e1372d0d86ff82788adadf308e5f3f97
+    with:
+      cloud: https://ployz.dev
+```
+
+- **A saved change waits for you.** After you save a change to a service the rule covers, the next
+  push waits with `Approve the automatic deploy rule again: web changed since it was approved.`
+  Run `ployz github rule approve web` again, then push. A push that changes only the code
+  deploys as before.
+- **A new server waits too.** The rule names the servers it was approved for. Approve it again
+  after you [add a server](../servers/add-a-server.md).
+- **Stop it** with `ployz github rule end`. Pushes no longer deploy on those servers.
+- **Someone who can push to the branch can deploy.** Ployz Cloud can't swap the commit, the
+  image or the settings, but its GitHub App can push a commit to the branch itself. Add a branch
+  ruleset on GitHub that blocks direct pushes to the branch.
+
 ## Wait for CI
 
 Turn on **Wait for CI** under **Settings → Source** to hold a push's deploy until its GitHub
@@ -213,9 +268,9 @@ instead of printing it. Pass `--ref` to read a branch, tag or commit other than 
 
 - **Every deploy ships the newest commit.** Clicking **Deploy** to apply a setting also picks up
   whatever is on the service's Git branch now.
-- **Servers that enforce device approval build no push.** A push builds through Ployz Cloud,
-  which those servers refuse, so the deployment fails at its build and nothing changes. See
-  [Builds on servers that enforce device approval](../builds/where-builds-run.md#builds-on-servers-that-enforce-device-approval).
+- **Servers that enforce device approval deploy a push only under a rule.** Without one, the
+  deployment fails at its build and nothing changes. See
+  [Deploy on push to servers that enforce device approval](#deploy-on-push-to-servers-that-enforce-device-approval).
 - **Changing a variable rebuilds your app.** See [How builds work](../builds/overview.md#good-to-know).
 - **Only the service's Git branch deploys.** Pull requests can get their own
   [preview environments](../environments/preview-environments.md) instead.

@@ -23,6 +23,8 @@ The operator took every recommendation on 2026-11-09, with the additions below. 
 - Decision 1: the minter becomes its own slice after D4, run by the program's root. Until it is live, the docs suggest the branch ruleset.
 - Decision 8: the root applies Y's O1 to `getployz/build`.
 - Decision 9: an agent builds the Appendix B environment.
+- Decision 11: accepted on 2026-11-10. Previews take the derived Namespace and hostnames.
+- Decision 12: accepted on 2026-11-10. A `BuildApproval` takes the same signers as a thread C deploy approval, a browser session included.
 
 1. **Automatic deploy under enforcement before the GitHub minter is live.** While Cloud holds the App key, or any GitHub token with Contents or Workflows write, it can push its own commit to the approved branch, and no Machine check can tell. The minter decision in the program's decision record removes that, but no thread owns building it. *Recommendation.* Build D1 to D4 now. Name an owner for the minter. Until it is live, the docs say automatic deploy under enforcement resists everything except a pushed commit, and suggest a branch ruleset that blocks direct pushes. Thread R tests D4 with Cloud's write credentials removed.
 2. **Who may sign a rule.** *Recommendation.* A Device, or a passkey through its own prompt. A browser key under a session grant may not, because a rule is standing authority over every future push.
@@ -35,7 +37,7 @@ The operator took every recommendation on 2026-11-09, with the additions below. 
 9. **A real GitHub environment for live lanes.** `verify-dashboard` fakes SHAs and OIDC, and no isolated real setup exists in this repository, its skills or its docs. *Recommendation.* Create the one in Appendix B before D2's live lanes.
 10. **Moving customers to the new workflow file.** A rule needs `on: push` and the pinned reusable workflow. *Recommendation.* The dashboard's existing "Add workflow" link opens GitHub's editor with the new file. The old file keeps working on Clusters that do not enforce, until thread F's cutover removes the old path.
 
-Added after Codex's review on 2026-11-09. These are open, and the operator has not answered them yet. Neither blocks D1 to D4.
+Added after Codex's review on 2026-11-09. The operator accepted both recommendations on 2026-11-10.
 
 11. **Preview Namespaces and URLs change shape under enforcement.** To stop a preview proof from landing in a production Namespace, the Machine derives a preview's Namespace (`pv-<rule>-<branch or PR hash>`) and its hostnames (`<label>.<Namespace>.<preview domain>`). Today a PR Environment gets `{project}-pr-N` and its hostnames from the Organization's generated domain. Existing PR Environments keep their old Namespace, which is fixed at first admission, so they need closing and reopening once a preview rule exists. *Recommendation.* Accept the derived names. They are long but stable, and the preview's page shows its URL. A shorter readable form would need a name the Machine can check, and Cloud chooses every readable name today.
 12. **Who may sign a `BuildApproval` (D6).** It authorizes a grant, and so build secrets, for a commit that is not the head. The Machine accepts only commits on the approved branch's history, read from GitHub. *Recommendation.* The same signers as a thread C deploy approval, a browser session included. A compromised dashboard could then rebuild an old commit from the approved branch with today's build secrets. That is code someone with push rights already put on the branch, and the deploy still needs a person's approval of the image.
@@ -199,19 +201,19 @@ Outcome. With a rule approved once from the CLI, every push to the approved bran
 
 **Files.**
 
-- [ ] Edit `core/crates/ployz-core/src/authority/rule.rs` to add `verify_creation`, the creation checks in `d-build-proof.md`, and `RuleProof { rule, token }`.
-- [ ] Edit `core/crates/ployz-core/src/rpc.rs` so `EnsureContainerRequest` gains `rule: Option<RuleProof>`. Edit `rpc_catalog.rs` to add `DEPLOY_RULE_CAPABILITY: ("ployz.container.deploy-rule.v1", Always)`.
-- [ ] Edit `core/crates/ployzd/src/machine/local_machine/deploy_approval.rs` to add `admit_rule_creation` and the rule's lifecycle steps. Edit `restart_approval.rs` so a creation with a rule goes there. The approval record gains the generation high-water mark per rule, accepted builds, and hook consumption per (rule, generation, commit, Service).
-- [ ] Edit `core/crates/ployz-store/src/automation.rs` so a push admitted under a rule records the rule and waits for the image token. A Saved revision whose template no longer matches makes the push wait as "approve the rule again", with the changed Services listed.
-- [ ] Edit `core/crates/ployz/src/sdk/store_runner.rs` and `core/crates/ployz/src/cluster.rs` so the runner attaches the rule proof to every `EnsureContainer` of that Deployment.
-- [ ] Create the CLI commands `ployz github rule approve <service>...` and `ployz github rule end`. Approve prints the repository, branch, Environment, builder commit, each Service's policy and the settings it pins, then signs with the Device key. Run the `ui-copy` skill.
-- [ ] Edit `docs/user/deploy/github.md` and `docs/user/servers/manage-servers.md`.
+- [x] Edit `core/crates/ployz-core/src/authority/rule.rs` to add `verify_creation`, the creation checks in `d-build-proof.md`, and `RuleProof { rule, token }`.
+- [x] Edit `core/crates/ployz-core/src/rpc.rs` so `EnsureContainerRequest` gains `rule: Option<RuleProof>`. Edit `rpc_catalog.rs` to add `DEPLOY_RULE_CAPABILITY: ("ployz.container.deploy-rule.v1", Always)`.
+- [x] Edit `core/crates/ployzd/src/machine/local_machine/deploy_approval.rs` to add `admit_rule_creation` and the rule's lifecycle steps. Edit `restart_approval.rs` so a creation with a rule goes there. The approval record gains the generation high-water mark per rule, accepted builds, and hook consumption per (rule, generation, commit, Service).
+- [x] Edit `core/crates/ployz-store/src/automation.rs` so a push admitted under a rule records the rule and waits for the image token. A Saved revision whose template no longer matches makes the push wait as "approve the rule again", with the changed Services listed.
+- [x] Edit `core/crates/ployz/src/sdk/store_runner.rs` and `core/crates/ployz/src/cluster.rs` so the runner attaches the rule proof to every `EnsureContainer` of that Deployment.
+- [x] Create the CLI commands `ployz github rule approve <service>...` and `ployz github rule end`. Approve prints the repository, branch, Environment, builder commit, each Service's policy and the settings it pins, then signs with the Device key. Run the `ui-copy` skill.
+- [x] Edit `docs/user/deploy/github.md` and `docs/user/servers/manage-servers.md`.
 
 **Verify, unit.**
 
-- [ ] `rule.rs` tests take one approved spec and token, and change one thing per case, each refused naming it. The cases are the image digest, a plain value, a Sealed ciphertext, `privileged`, a Bind Mount, a host port, the hook command, the generation (lower), the commit (not the head), `aud` naming another image, `attest` naming another key, and authority `Approved` (a rule never admits it at creation).
-- [ ] `deploy_approval.rs` tests admit a second creation of the same image after the token's `exp` through the accepted-build record, and refuse it once the head moved. They also admit a hook once per commit.
-- [ ] `automation.rs` tests hold a push for re-approval when the Saved revision changes a setting, and admit it when only the commit changed. Run `cargo nextest run -p ployz-core authority::rule`, `-p ployzd deploy_approval`, `-p ployz-store automation`.
+- [x] `rule.rs` tests take one approved spec and token, and change one thing per case, each refused naming it. The cases are the image digest, a plain value, a Sealed ciphertext, `privileged`, a Bind Mount, a host port, the hook command, the generation (lower), the commit (not the head), `aud` naming another image, `attest` naming another key, and authority `Approved` (a rule never admits it at creation).
+- [x] `deploy_approval.rs` tests admit a second creation of the same image after the token's `exp` through the accepted-build record, and refuse it once the head moved. They also admit a hook once per commit.
+- [x] `automation.rs` tests hold a push for re-approval when the Saved revision changes a setting, and admit it when only the commit changed. Run `cargo nextest run -p ployz-core authority::rule`, `-p ployzd deploy_approval`, `-p ployz-store automation`.
 
 **Verify, live.** Eleven lanes, all **GitHub**, two Machines, enforcement on, rule approved with `cli --device -- github rule approve web`.
 

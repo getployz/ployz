@@ -70,8 +70,7 @@ impl LocalMachine {
         record.machine().ok_or(Error::NotParticipating)?;
         let machine = record.id();
         // An ended generation still supersedes every one below it.
-        self.approvals
-            .mark_rule(&rule, refused)?;
+        self.approvals.mark_rule(&rule, refused)?;
         let claim = &proof.claim;
         if !self.approvals.accepted(&rule, claim)? {
             let claims = github
@@ -234,16 +233,14 @@ fn refusal_text(refusal: &AuthorityRefusal) -> String {
             "This server runs only the image GitHub built for this commit under the rule."
         }
         AuthorityRefusal::Mismatch { field: "a commit" } => {
-            "This build isn't of the branch's current head, so this server won't run it."
+            "This commit is no longer the head of its branch."
         }
         AuthorityRefusal::Mismatch {
             field: "a generation",
-        } => "This server has seen a newer approval of the rule. Deploy again.",
+        } => "A newer approval of the automatic deploy rule replaced this one.",
         AuthorityRefusal::Mismatch {
             field: "the attest key",
-        } => {
-            "This image's build secrets didn't come from this cluster, so this server won't run it."
-        }
+        } => "This image wasn't built with this cluster's build secrets.",
         AuthorityRefusal::Mismatch {
             field: "an ended rule",
         } => "Automatic deploys for this environment are off.",

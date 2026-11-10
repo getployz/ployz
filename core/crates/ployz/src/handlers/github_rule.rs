@@ -305,7 +305,7 @@ fn owner(root: &ArgMatches, repository: &str, repository_id: u64) -> Result<u64,
         return Err(Error::coded(
             RpcErrorCode::Conflict,
             format!(
-                "{repository} is now another repository than the one your services build from."
+                "{repository} now names another repository. Connect your services to it again, then approve."
             ),
         ));
     }
@@ -387,10 +387,12 @@ fn show(view: &RuleView, rule: &AutoDeployRule, names: &[ServiceName]) {
         source.repository, source.branch
     ));
     crate::ui::stream(format_args!("  workflow    {}, on push", source.workflow));
-    crate::ui::stream(format_args!(
-        "  builder     {} at {}",
-        source.builder.r#ref, source.builder.sha
-    ));
+    let builder = &source.builder;
+    let sha = builder.sha.to_string();
+    match builder.r#ref.ends_with(&sha) {
+        true => crate::ui::stream(format_args!("  builder     {}", builder.r#ref)),
+        false => crate::ui::stream(format_args!("  builder     {} at {sha}", builder.r#ref)),
+    }
     crate::ui::stream(format_args!(
         "  servers     {} in the cluster",
         rule.machines.len()
@@ -402,9 +404,7 @@ fn show(view: &RuleView, rule: &AutoDeployRule, names: &[ServiceName]) {
         crate::ui::stream(format_args!("  {name}"));
         let policy = &approved.policy;
         let method = match &policy.method {
-            ployz_core::authority::rule::PolicyMethod::Dockerfile { path } => {
-                format!("Dockerfile {path}")
-            }
+            ployz_core::authority::rule::PolicyMethod::Dockerfile { path } => path.clone(),
             ployz_core::authority::rule::PolicyMethod::Railpack { .. } => "Railpack".to_owned(),
         };
         crate::ui::stream(format_args!(

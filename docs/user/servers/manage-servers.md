@@ -336,8 +336,10 @@ Enforcement also covers builds: a server refuses a build Ployz Cloud starts. Tha
 build on your servers, on GitHub Actions and in a preview. The deployment fails at its build
 with `This server runs only builds an approved device starts.`, before the build opens any
 sealed value or runs any step, and a build Ployz Cloud already started can't open sealed values
-or push again once you turn enforcement on, though a request already in progress may finish. A build started over a device's own connection still runs. Turn
-enforcement off to build through Ployz Cloud again. See
+or push again once you turn enforcement on, though a request already in progress may finish. A build started over a device's own connection still runs, and so does a push under an
+[automatic deploy rule](../deploy/github.md#deploy-on-push-to-servers-that-enforce-device-approval).
+A rule names the servers it was approved for, so after you add a server, approve it again with
+`ployz github rule approve`. Turn enforcement off to build through Ployz Cloud again. See
 [Builds on servers that enforce device approval](../builds/where-builds-run.md#builds-on-servers-that-enforce-device-approval).
 
 Enforcement also requires an approved Device to authorize a new server's identity, keys,
