@@ -608,7 +608,7 @@ async fn cloud_manages(
     Ok(details
         .management_clients
         .iter()
-        .any(|label| label.as_str() == "cloud"))
+        .any(ployz_core::ManagementClientLabel::is_cloud))
 }
 
 /// The warning that the Server runs Services a drain could move off it, with the drain

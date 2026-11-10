@@ -211,12 +211,7 @@ pub(crate) fn retrying(operation: &str, error: Chain<'_>, seconds: u64) {
 }
 
 pub(crate) fn rpc_error(code: ployz_core::RpcErrorCode, error: Chain<'_>) -> ployz_core::RpcError {
-    ployz_core::RpcError {
-        code,
-        message: inline(error),
-        details: Value::Null,
-        cause: Vec::new(),
-    }
+    ployz_core::RpcError::new(code, inline(error))
 }
 
 /// `text` as a failure's first line: a sentence, ending with a period.

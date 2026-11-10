@@ -10,7 +10,7 @@ use std::collections::BTreeMap;
 use futures_util::future::join_all;
 use ployz_core::{
     ListMachinesRequest, MachineFailure, MachineId, MachineSuccess, MachineTarget,
-    QualifiedService, RpcError, RpcErrorCode,
+    QualifiedService, RpcError,
     metrics::{
         MetricHistoryReply, MetricHistoryRequest, MetricPoints, MetricRange, MetricScope,
         ServicePoint,
@@ -18,10 +18,9 @@ use ployz_core::{
     op,
 };
 use serde::{Deserialize, Serialize};
-use serde_json::Value;
 use ts_rs::TS;
 
-use super::{Session, invalid_argument};
+use super::Session;
 use crate::connect::Client;
 
 /// Whose history to read: one Machine's host totals, or one Service summed
@@ -105,7 +104,7 @@ pub async fn metric_history(
         range,
         step_nanos,
     };
-    request.validate().map_err(invalid_argument)?;
+    request.validate().map_err(RpcError::invalid_argument)?;
     let machines = match machine {
         Some(machine_id) => Asked::one(machine_id),
         None => Asked::cluster(client).await?,
@@ -161,7 +160,7 @@ impl Asked {
             } else {
                 asked.unreachable.push(MachineFailure {
                     machine_id: machine.machine.id,
-                    error: unavailable("the Server is not up, so it was not asked"),
+                    error: RpcError::unavailable("the Server is not up, so it was not asked"),
                 });
             }
         }
@@ -186,7 +185,9 @@ fn merge(
                 let MetricPoints::Service(points) = &reply.value.points else {
                     unanswered.push(MachineFailure {
                         machine_id: reply.machine_id,
-                        error: unavailable("the Server answered with host totals, not a Service"),
+                        error: RpcError::unavailable(
+                            "the Server answered with host totals, not a Service",
+                        ),
                     });
                     continue;
                 };
@@ -332,16 +333,7 @@ impl Total {
 fn nanos(value: &str, field: &str) -> Result<i64, RpcError> {
     value
         .parse()
-        .map_err(|_| invalid_argument(format!("{field} must be a decimal integer")))
-}
-
-fn unavailable(message: &str) -> RpcError {
-    RpcError {
-        code: RpcErrorCode::Unavailable,
-        message: message.into(),
-        details: Value::Null,
-        cause: Vec::new(),
-    }
+        .map_err(|_| RpcError::invalid_argument(format!("{field} must be a decimal integer")))
 }
 
 #[cfg(test)]

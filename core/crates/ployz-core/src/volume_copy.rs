@@ -314,12 +314,8 @@ impl SetVolumeCopyRefused {
             | CopyRefusal::NoSource
             | CopyRefusal::Stale => RpcErrorCode::Conflict,
         };
-        RpcError {
-            code,
-            message: message.into(),
-            details: serde_json::to_value(self).expect("a copy refusal is JSON serializable"),
-            cause: Vec::new(),
-        }
+        RpcError::new(code, message)
+            .with_details(serde_json::to_value(self).expect("a copy refusal is JSON serializable"))
     }
 }
 

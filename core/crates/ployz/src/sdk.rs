@@ -201,10 +201,10 @@ fn volume_switch_path(body: &RpcRequestBody) -> Result<&'static str, RpcError> {
         Body::InspectVolumeCopy(_)
         | Body::SeedVolume(_)
         | Body::SetVolumeCopy(_)
-        | Body::SetVolumeSize(_) => body
-            .unary_path()
-            .ok_or_else(|| invalid_argument(format!("{} is not a unary RPC", body.command()))),
-        _ => Err(invalid_argument(format!(
+        | Body::SetVolumeSize(_) => body.unary_path().ok_or_else(|| {
+            RpcError::invalid_argument(format!("{} is not a unary RPC", body.command()))
+        }),
+        _ => Err(RpcError::invalid_argument(format!(
             "{} is not a Volume switch command",
             body.command()
         ))),
@@ -223,19 +223,15 @@ fn volume_switch_payload(command: &str, body: RpcResponseBody) -> Result<Value, 
         RpcResponseBody::SetVolumeSizeReply(reply) => serde_json::to_value(reply),
         RpcResponseBody::Error(error) => return Err(error),
         other => {
-            return Err(RpcError {
-                code: RpcErrorCode::Internal,
-                message: format!("Machine answered {command} with {}", other.kind().as_str()),
-                details: Value::Null,
-                cause: Vec::new(),
-            });
+            return Err(RpcError::internal(format!(
+                "Machine answered {command} with {}",
+                other.kind().as_str()
+            )));
         }
     };
-    payload.map_err(|error| RpcError {
-        code: RpcErrorCode::Internal,
-        message: "Volume switch reply could not be encoded".into(),
-        details: Value::Null,
-        cause: vec![error.to_string()],
+    payload.map_err(|error| {
+        RpcError::internal("Volume switch reply could not be encoded")
+            .with_causes(vec![error.to_string()])
     })
 }
 
@@ -362,7 +358,7 @@ pub async fn connect_expecting(
     expect: Option<crate::connect::ClusterExpectation>,
 ) -> Result<Session, CallError> {
     if connections.is_empty() {
-        return Err(invalid_argument("connections must not be empty".into()).into());
+        return Err(RpcError::invalid_argument("connections must not be empty").into());
     }
     Ok(dial(connections, connector, expect).await?)
 }
@@ -486,11 +482,7 @@ impl Session {
         let mut client = self.client()?;
         tokio::select! {
             biased;
-            () = self.inner.cancel.cancelled() => Err(RpcError {
-                code: RpcErrorCode::Unavailable,
-                message: "session closed; in-flight Register outcome may be uncertain".into(),
-                details: Value::Null, cause: Vec::new(),
-            }),
+            () = self.inner.cancel.cancelled() => Err(RpcError::unavailable("session closed; in-flight Register outcome may be uncertain")),
             result = crate::enrollment::publish_enrollment(&mut client, assignment) => result,
         }
     }
@@ -530,15 +522,10 @@ impl Session {
         let description = self.about().await?;
         if !description.supports(ployz_core::SET_PUSH_TARGET_CAPABILITY) {
             return Err(name_refusal(
-                RpcError {
-                    code: RpcErrorCode::Unsupported,
-                    message: format!(
-                        "{} is not advertised",
-                        ployz_core::SET_PUSH_TARGET_CAPABILITY
-                    ),
-                    details: Value::Null,
-                    cause: Vec::new(),
-                },
+                RpcError::unsupported(format!(
+                    "{} is not advertised",
+                    ployz_core::SET_PUSH_TARGET_CAPABILITY
+                )),
                 op::SetPushTarget::PATH,
                 &MachineTarget::from(&description.machine_id),
             ));
@@ -561,15 +548,10 @@ impl Session {
         let description = self.about().await?;
         if !description.supports(ployz_core::SET_CLUSTER_NAME_CAPABILITY) {
             return Err(name_refusal(
-                RpcError {
-                    code: RpcErrorCode::Unsupported,
-                    message: format!(
-                        "{} is not advertised",
-                        ployz_core::SET_CLUSTER_NAME_CAPABILITY
-                    ),
-                    details: Value::Null,
-                    cause: Vec::new(),
-                },
+                RpcError::unsupported(format!(
+                    "{} is not advertised",
+                    ployz_core::SET_CLUSTER_NAME_CAPABILITY
+                )),
                 op::SetClusterName::PATH,
                 &MachineTarget::from(&description.machine_id),
             ));
@@ -593,13 +575,8 @@ impl Session {
             )
             .await?;
         response.capability.ok_or_else(|| {
-            RpcError {
-                code: RpcErrorCode::Internal,
-                message: "Machine set a Management Client without a Management Capability".into(),
-                details: Value::Null,
-                cause: Vec::new(),
-            }
-            .into()
+            RpcError::internal("Machine set a Management Client without a Management Capability")
+                .into()
         })
     }
 
@@ -621,8 +598,8 @@ impl Session {
         &self,
         machine: &str,
     ) -> Result<ployz_core::MachineDetails, RpcError> {
-        let target =
-            MachineTarget::parse(machine).map_err(|error| invalid_argument(error.to_string()))?;
+        let target = MachineTarget::parse(machine)
+            .map_err(|error| RpcError::invalid_argument(error.to_string()))?;
         let client = self.client()?;
         self.until_closed(client.invoke::<op::Inspect>(
             ployz_core::InspectRequest::default(),
@@ -707,12 +684,7 @@ impl Session {
         let entry = MachineTarget::from(&description.machine_id);
         if !description.supports(RUNTIME_WATCH_CAPABILITY) {
             return Err(name_refusal(
-                RpcError {
-                    code: RpcErrorCode::Unsupported,
-                    message: format!("{RUNTIME_WATCH_CAPABILITY} is not advertised"),
-                    details: Value::Null,
-                    cause: Vec::new(),
-                },
+                RpcError::unsupported(format!("{RUNTIME_WATCH_CAPABILITY} is not advertised")),
                 op::RuntimeWatch::PATH,
                 &entry,
             ));
@@ -1003,10 +975,10 @@ impl Session {
     /// `unanswered`: the Machine may have taken the request. One whose entry Machine
     /// could not dial `machine` is not, since `machine` never got it.
     pub async fn volume_switch(&self, machine: &str, request: Value) -> Result<Value, CallError> {
-        let target =
-            MachineTarget::parse(machine).map_err(|error| invalid_argument(error.to_string()))?;
-        let body: RpcRequestBody =
-            serde_json::from_value(request).map_err(|error| invalid_argument(error.to_string()))?;
+        let target = MachineTarget::parse(machine)
+            .map_err(|error| RpcError::invalid_argument(error.to_string()))?;
+        let body: RpcRequestBody = serde_json::from_value(request)
+            .map_err(|error| RpcError::invalid_argument(error.to_string()))?;
         let path = volume_switch_path(&body)?;
         let request = ployz_core::RpcRequest::from(body);
         let client = self.client()?;
@@ -1043,8 +1015,8 @@ impl Session {
         &self,
         machine: &str,
     ) -> Result<ObservedDataLoss, RpcError> {
-        let target =
-            MachineTarget::parse(machine).map_err(|error| invalid_argument(error.to_string()))?;
+        let target = MachineTarget::parse(machine)
+            .map_err(|error| RpcError::invalid_argument(error.to_string()))?;
         let mut client = self.client()?;
         self.until_closed(client.data_loss_if_machine_removed(&target))
             .await
@@ -1069,8 +1041,8 @@ impl Session {
         machine: &str,
         confirm_data_loss: &DataLossConfirmation,
     ) -> Result<LocalMachineRemoved, RpcError> {
-        let target =
-            MachineTarget::parse(machine).map_err(|error| invalid_argument(error.to_string()))?;
+        let target = MachineTarget::parse(machine)
+            .map_err(|error| RpcError::invalid_argument(error.to_string()))?;
         let mut client = self.client()?;
         self.until_closed(client.remove_machine(
             &target,
@@ -1100,8 +1072,8 @@ impl Session {
         machine: &str,
         scope: &crate::drain::DrainScope,
     ) -> Result<crate::drain::DrainReport, RpcError> {
-        let target =
-            MachineTarget::parse(machine).map_err(|error| invalid_argument(error.to_string()))?;
+        let target = MachineTarget::parse(machine)
+            .map_err(|error| RpcError::invalid_argument(error.to_string()))?;
         let mut client = self.client()?;
         client
             .drain(&target, scope, &self.inner.cancel, &mut |_| {})
@@ -1143,8 +1115,8 @@ impl Session {
         &self,
         machine: &str,
     ) -> Result<crate::ingress::IngressCheck, RpcError> {
-        let target =
-            MachineTarget::parse(machine).map_err(|error| invalid_argument(error.to_string()))?;
+        let target = MachineTarget::parse(machine)
+            .map_err(|error| RpcError::invalid_argument(error.to_string()))?;
         let mut client = self.client()?;
         let cancel = &self.inner.cancel;
         self.until_closed(async {
@@ -1160,7 +1132,9 @@ impl Session {
                 crate::cluster::RoleWaitError::Connect(error) => RpcError::from(error),
                 error @ (crate::cluster::RoleWaitError::NotObserved(_)
                 | crate::cluster::RoleWaitError::ChangeNotObserved
-                | crate::cluster::RoleWaitError::Cancelled) => unavailable(error.to_string()),
+                | crate::cluster::RoleWaitError::Cancelled) => {
+                    RpcError::unavailable(error.to_string())
+                }
             })?;
             crate::ingress::fill_slots(&mut client, cancel)
                 .await
@@ -1188,13 +1162,15 @@ impl Session {
             .map(|door| {
                 serde_json::from_value::<ployz_core::IngressDoor>(Value::String(door.clone()))
                     .map_err(|_| {
-                        invalid_argument(format!("{door} is not a Door: public or tunnel"))
+                        RpcError::invalid_argument(format!(
+                            "{door} is not a Door: public or tunnel"
+                        ))
                     })
             })
             .collect::<Result<std::collections::BTreeSet<_>, _>>()?;
         if doors.is_empty() {
-            return Err(invalid_argument(
-                "name at least one Door: public or tunnel".into(),
+            return Err(RpcError::invalid_argument(
+                "name at least one Door: public or tunnel",
             ));
         }
         let doors = ployz_core::IngressDoors(doors);
@@ -1229,8 +1205,8 @@ impl Session {
     ) -> Result<crate::private_access::AccessChanged, RpcError> {
         let auth_key = auth_key.map(str::trim).filter(|key| !key.is_empty());
         if enabled && auth_key.is_none() {
-            return Err(invalid_argument(
-                "Private Access needs a Tailscale auth key.".into(),
+            return Err(RpcError::invalid_argument(
+                "Private Access needs a Tailscale auth key.",
             ));
         }
         let mut client = self.client()?;
@@ -1262,8 +1238,8 @@ impl Session {
     /// Machine Target or not visible, this entry hasn't observed the role within 30 s, or
     /// the Machine does not acknowledge a listing, stop or removal.
     pub async fn stop_ingress(&self, machine: &str) -> Result<(), RpcError> {
-        let target =
-            MachineTarget::parse(machine).map_err(|error| invalid_argument(error.to_string()))?;
+        let target = MachineTarget::parse(machine)
+            .map_err(|error| RpcError::invalid_argument(error.to_string()))?;
         let mut client = self.client()?;
         let cancel = &self.inner.cancel;
         self.until_closed(async {
@@ -1279,7 +1255,9 @@ impl Session {
                 crate::cluster::RoleWaitError::Connect(error) => RpcError::from(error),
                 error @ (crate::cluster::RoleWaitError::NotObserved(_)
                 | crate::cluster::RoleWaitError::ChangeNotObserved
-                | crate::cluster::RoleWaitError::Cancelled) => unavailable(error.to_string()),
+                | crate::cluster::RoleWaitError::Cancelled) => {
+                    RpcError::unavailable(error.to_string())
+                }
             })?;
             crate::drain::retirement::retire_ingress_proxy(&client, &id, cancel).await
         })
@@ -1295,8 +1273,8 @@ impl Session {
     /// Machine Target or not visible, it is the last Machine and a Management Client
     /// holds a key or its holders can't be read, or shared-row removal fails.
     pub async fn remove_machine_membership(&self, machine: &str) -> Result<(), RpcError> {
-        let target =
-            MachineTarget::parse(machine).map_err(|error| invalid_argument(error.to_string()))?;
+        let target = MachineTarget::parse(machine)
+            .map_err(|error| RpcError::invalid_argument(error.to_string()))?;
         let mut client = self.client()?;
         self.until_closed(client.remove_machine_membership(&target))
             .await
@@ -1314,10 +1292,10 @@ impl Session {
         machine: &str,
         container: &str,
     ) -> Result<Value, RpcError> {
-        let target =
-            MachineTarget::parse(machine).map_err(|error| invalid_argument(error.to_string()))?;
+        let target = MachineTarget::parse(machine)
+            .map_err(|error| RpcError::invalid_argument(error.to_string()))?;
         let container_id = ployz_core::ContainerId::parse(container)
-            .map_err(|error| invalid_argument(error.to_string()))?;
+            .map_err(|error| RpcError::invalid_argument(error.to_string()))?;
         let client = self.client()?;
         let details = self
             .until_closed(client.invoke::<ployz_core::op::InspectContainer>(
@@ -1326,12 +1304,8 @@ impl Session {
                 Some(crate::connect::TARGET_RPC_TIMEOUT),
             ))
             .await?;
-        serde_json::to_value(details).map_err(|error| RpcError {
-            code: RpcErrorCode::Internal,
-            message: format!("encoding Container {container}: {error}"),
-            details: Value::Null,
-            cause: Vec::new(),
-        })
+        serde_json::to_value(details)
+            .map_err(|error| RpcError::internal(format!("encoding Container {container}: {error}")))
     }
 
     /// Copy the image Container `container` runs on `source` to `dest`, by its local image
@@ -1350,11 +1324,12 @@ impl Session {
         dest: &str,
     ) -> Result<(), RpcError> {
         let parse = |machine: &str| {
-            MachineTarget::parse(machine).map_err(|error| invalid_argument(error.to_string()))
+            MachineTarget::parse(machine)
+                .map_err(|error| RpcError::invalid_argument(error.to_string()))
         };
         let (source, dest) = (parse(source)?, parse(dest)?);
         let container_id = ployz_core::ContainerId::parse(container)
-            .map_err(|error| invalid_argument(error.to_string()))?;
+            .map_err(|error| RpcError::invalid_argument(error.to_string()))?;
         let mut client = self.client()?;
         self.until_closed(async {
             let machines = client.machines().await.map_err(RpcError::from)?;
@@ -1371,14 +1346,11 @@ impl Session {
                     Some(crate::connect::TARGET_RPC_TIMEOUT),
                 )
                 .await?;
-            let image_id = details.image_id.ok_or_else(|| RpcError {
-                code: RpcErrorCode::Unsupported,
-                message: format!(
+            let image_id = details.image_id.ok_or_else(|| {
+                RpcError::unsupported(format!(
                     "{} does not report the image ID its Containers run",
                     source.name
-                ),
-                details: Value::Null,
-                cause: Vec::new(),
+                ))
             })?;
             let image = &details.container.resolved_spec.container.image;
             crate::image::copy_running_image(&client, &source, &dest, image, &image_id)
@@ -1402,8 +1374,8 @@ impl Session {
         machine: &str,
         update: ployz_core::MachineUpdate,
     ) -> Result<ployz_core::MachineUpdated, RpcError> {
-        let target =
-            MachineTarget::parse(machine).map_err(|error| invalid_argument(error.to_string()))?;
+        let target = MachineTarget::parse(machine)
+            .map_err(|error| RpcError::invalid_argument(error.to_string()))?;
         let client = self.client()?;
         self.until_closed(client.invoke::<op::UpdateMachine>(
             ployz_core::UpdateMachineRequest { update },
@@ -1439,8 +1411,8 @@ impl Session {
         machine: &str,
         request: T::Request,
     ) -> Result<T::Response, RpcError> {
-        let target =
-            MachineTarget::parse(machine).map_err(|error| invalid_argument(error.to_string()))?;
+        let target = MachineTarget::parse(machine)
+            .map_err(|error| RpcError::invalid_argument(error.to_string()))?;
         let mut client = self.client()?;
         self.until_closed(client.read::<T>(request, &target)).await
     }
@@ -1459,8 +1431,8 @@ impl Session {
         namespace: &str,
         volumes: VolumeFate,
     ) -> Result<ObservedDataLoss, RpcError> {
-        let namespace =
-            Namespace::parse(namespace).map_err(|error| invalid_argument(error.to_string()))?;
+        let namespace = Namespace::parse(namespace)
+            .map_err(|error| RpcError::invalid_argument(error.to_string()))?;
         let mut client = self.client()?;
         self.until_closed(client.data_loss_if_namespace_destroyed(&namespace, volumes))
             .await
@@ -1486,8 +1458,8 @@ impl Session {
         confirm_data_loss: &DataLossConfirmation,
         volumes: VolumeFate,
     ) -> Result<DeployOutcome<ExecutionError>, RpcError> {
-        let namespace =
-            Namespace::parse(namespace).map_err(|error| invalid_argument(error.to_string()))?;
+        let namespace = Namespace::parse(namespace)
+            .map_err(|error| RpcError::invalid_argument(error.to_string()))?;
         let mut client = self.client()?;
         self.until_closed(client.destroy_namespace(
             &namespace,
@@ -1605,12 +1577,9 @@ impl Watch {
                 if self.cancel.is_cancelled() {
                     Ok(None)
                 } else {
-                    Err(RpcError {
-                        code: RpcErrorCode::Unavailable,
-                        message: "Watch stream ended; reconnect to resume".into(),
-                        details: Value::Null,
-                        cause: Vec::new(),
-                    })
+                    Err(RpcError::unavailable(
+                        "Watch stream ended; reconnect to resume",
+                    ))
                 }
             }
             Some(Ok(Some(payload))) => match decode_runtime_watch_frame(&payload) {
@@ -1667,30 +1636,7 @@ impl Watch {
 }
 
 fn closed() -> RpcError {
-    RpcError {
-        code: RpcErrorCode::Unavailable,
-        message: "client is closed".into(),
-        details: Value::Null,
-        cause: Vec::new(),
-    }
-}
-
-fn invalid_argument(message: String) -> RpcError {
-    RpcError {
-        code: RpcErrorCode::InvalidArgument,
-        message,
-        details: Value::Null,
-        cause: Vec::new(),
-    }
-}
-
-fn unavailable(message: String) -> RpcError {
-    RpcError {
-        code: RpcErrorCode::Unavailable,
-        message,
-        details: Value::Null,
-        cause: Vec::new(),
-    }
+    RpcError::unavailable("client is closed")
 }
 
 /// The ID of the one visible Machine `target` names.
@@ -1708,7 +1654,7 @@ async fn visible_machine_id(
 async fn capture(input: PreparationInput) -> Result<preparation::CapturedPreparation, RpcError> {
     tokio::task::spawn_blocking(move || preparation::capture(input))
         .await
-        .map_err(|_| invalid_argument("source capture task failed".into()))?
+        .map_err(|_| RpcError::invalid_argument("source capture task failed"))?
 }
 
 pub(crate) fn preparation_error(
@@ -1735,25 +1681,24 @@ pub(crate) fn preparation_error(
                 .collect::<Vec<_>>();
             let message =
                 "No eligible Build Machine was selected; no build was started.".to_owned();
-            RpcError {
-                code: RpcErrorCode::Unavailable,
-                details: serde_json::json!({"preparation":{"kind":"failed", "stage":"Selection",
+            RpcError::unavailable(message.clone())
+                .with_details(
+                    serde_json::json!({"preparation":{"kind":"failed", "stage":"Selection",
                     "message":message, "rejections":rejections}}),
-                message,
-                cause: if reasons.is_empty() {
+                )
+                .with_causes(if reasons.is_empty() {
                     Vec::new()
                 } else {
                     vec![reasons.join("; ")]
-                },
-            }
+                })
         }
-        PreparationError::Connect(_) => RpcError {
-            code: RpcErrorCode::Unavailable,
-            message: "Could not read Machine observations during preparation.".into(),
-            details: serde_json::json!({"preparation":{"kind":"failed", "stage":"Observation",
+        PreparationError::Connect(_) => {
+            RpcError::unavailable("Could not read Machine observations during preparation.")
+                .with_details(
+                    serde_json::json!({"preparation":{"kind":"failed", "stage":"Observation",
                 "message":"Could not read Machine observations during preparation."}}),
-            cause: Vec::new(),
-        },
+                )
+        }
         PreparationError::Build(crate::build::Error::RemoteBuild { outcome }) => {
             let cancelled = cancellation_requested
                 && matches!(*outcome, crate::build::RemoteBuildFailure::Failed { .. });
@@ -1765,20 +1710,11 @@ pub(crate) fn preparation_error(
                     .expect("remote Build failures serialize a kind") =
                     serde_json::json!("cancelled");
             }
-            RpcError {
-                code: RpcErrorCode::Internal,
-                message,
-                details,
-                cause: Vec::new(),
-            }
+            RpcError::internal(message).with_details(details)
         }
         PreparationError::UploadNeeded(services) => preparation::upload_needed(&services),
-        PreparationError::Cancelled => RpcError {
-            code: RpcErrorCode::Unavailable,
-            message,
-            details: serde_json::json!({"preparation":{"kind":"cancelled"}}),
-            cause: Vec::new(),
-        },
+        PreparationError::Cancelled => RpcError::unavailable(message)
+            .with_details(serde_json::json!({"preparation":{"kind":"cancelled"}})),
         PreparationError::Build(_) | PreparationError::Plan(_) | PreparationError::Delivery(_) => {
             let mut details = serde_json::Map::new();
             details.insert(
@@ -1788,12 +1724,7 @@ pub(crate) fn preparation_error(
             if same_again {
                 details.insert("same_again".into(), Value::Bool(true));
             }
-            RpcError {
-                code: RpcErrorCode::Internal,
-                details: Value::Object(details),
-                message,
-                cause: Vec::new(),
-            }
+            RpcError::internal(message).with_details(Value::Object(details))
         }
     }
 }

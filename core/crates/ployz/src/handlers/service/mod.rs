@@ -8,8 +8,8 @@ use crate::cli::{base, positional, value};
 use ployz_core::{
     ContainerAction, ContainerId, ContainerObservation, ContainerRef, ContainerRuntimeObservation,
     CopyRotation, HealthFailure, HealthObservation, LiveServices, MachineFailure, MachineId,
-    MachineName, MachineObservation, OperationId, QualifiedService, RpcError, RpcErrorCode,
-    Sealing, ServiceContainer, ServiceObservation, ServiceSelector,
+    MachineName, MachineObservation, OperationId, QualifiedService, RpcError, Sealing,
+    ServiceContainer, ServiceObservation, ServiceSelector,
     authority::{RestartApproval, Signed, Signer, SignerKey, Timestamp, WorkflowKind},
     select_service,
 };
@@ -719,12 +719,10 @@ async fn apply_service_action(
 }
 
 fn unhealthy(failure: &HealthFailure) -> RpcError {
-    RpcError {
-        code: RpcErrorCode::Unavailable,
-        message: format!("The Container's healthcheck did not pass: {failure}."),
-        details: serde_json::to_value(failure).unwrap_or_default(),
-        cause: Vec::new(),
-    }
+    RpcError::unavailable(format!(
+        "The Container's healthcheck did not pass: {failure}."
+    ))
+    .with_details(serde_json::to_value(failure).unwrap_or_default())
 }
 
 fn change_selectors(

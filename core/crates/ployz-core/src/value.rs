@@ -521,6 +521,44 @@ validated_string_newtype!(
             && bytes.all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit() || byte == b'-')
     }
 );
+/// The namespace a [`ManagementClientLabel`] names, read from its text.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ManagementClientKind {
+    Cloud,
+    Cli,
+    Device,
+    Other,
+}
+
+impl ManagementClientLabel {
+    const CLOUD: &'static str = "cloud";
+    const CLI_PREFIX: &'static str = "cli-";
+
+    /// The label Cloud's slot carries.
+    #[must_use]
+    pub fn cloud() -> Self {
+        Self::parse(Self::CLOUD).expect("`cloud` is a valid Management Client label")
+    }
+
+    #[must_use]
+    pub fn is_cloud(&self) -> bool {
+        self.as_str() == Self::CLOUD
+    }
+
+    #[must_use]
+    pub fn kind(&self) -> ManagementClientKind {
+        if self.is_cloud() {
+            ManagementClientKind::Cloud
+        } else if self.as_str().starts_with(Self::CLI_PREFIX) {
+            ManagementClientKind::Cli
+        } else if crate::DeviceCode::reserves(self) {
+            ManagementClientKind::Device
+        } else {
+            ManagementClientKind::Other
+        }
+    }
+}
+
 validated_string_newtype!(
     DockerVolumeName,
     "Docker Volume name",
@@ -1277,6 +1315,26 @@ mod tests {
     }
 
     use super::*;
+
+    #[test]
+    fn a_management_client_label_names_its_kind() {
+        for (label, kind) in [
+            ("cloud", ManagementClientKind::Cloud),
+            (
+                "cli-0123456789abcdef0123456789ab",
+                ManagementClientKind::Cli,
+            ),
+            ("device-abc", ManagementClientKind::Device),
+            ("laptop", ManagementClientKind::Other),
+            ("cloud-2", ManagementClientKind::Other),
+            ("cli", ManagementClientKind::Other),
+        ] {
+            let label = ManagementClientLabel::parse(label).unwrap();
+            assert_eq!(label.kind(), kind, "{label}");
+            assert_eq!(label.is_cloud(), kind == ManagementClientKind::Cloud);
+        }
+        assert_eq!(ManagementClientLabel::cloud().as_str(), "cloud");
+    }
 
     #[test]
     fn a_hostname_normalises_to_a_machine_name() {

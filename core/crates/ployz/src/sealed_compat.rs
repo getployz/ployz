@@ -5,8 +5,8 @@ use std::borrow::Cow;
 
 use ployz_core::{
     BUILD_SEALED_CAPABILITY, ContainerWant, ENV_SEALED_CAPABILITY, EnvValue,
-    MANAGEMENT_SCOPE_CAPABILITY, MachineObservation, MachineTarget, RpcError, RpcErrorCode,
-    RunTarget, config::BuildMethod, machine_matches_target,
+    MANAGEMENT_SCOPE_CAPABILITY, MachineObservation, MachineTarget, RpcError, RunTarget,
+    config::BuildMethod, machine_matches_target,
 };
 
 use crate::{cluster::Client, connect::ConnectError};
@@ -45,7 +45,7 @@ pub(crate) async fn admit(
     if !machines.iter().any(|observation| {
         !observation.unarrived() && machine_matches_target(&observation.machine, target)
     }) {
-        return Err(unsupported(format!(
+        return Err(RpcError::unsupported(format!(
             "{target} shows no evidence it can open Sealed values; refusing to send them"
         )));
     }
@@ -61,7 +61,7 @@ pub(crate) async fn admit(
     if behind.is_empty() {
         return Ok(());
     }
-    Err(unsupported(format!(
+    Err(RpcError::unsupported(format!(
         "{} cannot open Sealed values; upgrade every Machine before deploying them",
         behind.join(", ")
     )))
@@ -122,21 +122,12 @@ pub(crate) fn builders<'a>(
             ),
         }
     };
-    let mut error = unsupported(reason.clone());
+    let mut error = RpcError::unsupported(reason.clone());
     error.details = serde_json::json!({
         "rejections": {"cannot open sealed values": behind.len()},
         "reasons": [reason],
     });
     Err(ConnectError::Remote(error))
-}
-
-fn unsupported(message: String) -> RpcError {
-    RpcError {
-        code: RpcErrorCode::Unsupported,
-        message,
-        details: serde_json::Value::Null,
-        cause: Vec::new(),
-    }
 }
 
 #[cfg(test)]

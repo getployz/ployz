@@ -421,7 +421,9 @@ pub(super) async fn reach_or_silent(
         if let Ok(credential) = cloud_account::from_env(&store).await {
             let access = match cloud_account::server_access(&credential).await {
                 Ok(access) => access,
-                Err(StoreCallError::Refused(error)) if error.code.as_str() == "forbidden" => {
+                Err(StoreCallError::Refused(error))
+                    if error.code.as_str() == ployz_core::FORBIDDEN_CODE =>
+                {
                     return Ok(Some(Reach::Ask(credential)));
                 }
                 Err(error) => return Err(Error::from(error).into()),

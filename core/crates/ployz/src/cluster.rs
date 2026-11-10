@@ -960,12 +960,9 @@ impl Client {
             .await
             .map_err(|status| TransportError::from_stream_status(status).to_rpc_error())?
         else {
-            return Err(RpcError {
-                code: RpcErrorCode::Unavailable,
-                message: "Runtime Watch ended before its first frame".into(),
-                details: Value::Null,
-                cause: Vec::new(),
-            });
+            return Err(RpcError::unavailable(
+                "Runtime Watch ended before its first frame",
+            ));
         };
         decode_runtime_watch_frame(&frame)
             .map_err(|error| crate::ui::rpc_error(RpcErrorCode::Internal, &error))
@@ -1315,14 +1312,9 @@ impl Client {
             .map_err(RpcError::from)?
             .machine_id;
         if selected == current && machines.len() > 1 {
-            return Err(RpcError {
-                code: RpcErrorCode::InvalidArgument,
-                message:
-                    "the current entry Machine cannot be removed while another Machine is visible"
-                        .into(),
-                details: Value::Null,
-                cause: Vec::new(),
-            });
+            return Err(RpcError::invalid_argument(
+                "the current entry Machine cannot be removed while another Machine is visible",
+            ));
         }
         let hold = refuse_last_managed(self, &machines, selected).await?;
         if hold == CloudHold::Last && remover == Remover::Operator {
@@ -1409,17 +1401,13 @@ impl Client {
             Err(error) => {
                 let error = rpc_error(error);
                 let unlisted = error.server_unlisted(&machine.machine.id);
-                let unchecked = RpcError {
-                    code: RpcErrorCode::Unavailable,
-                    // Often only the entry was busy, as when several forgets share it.
-                    message: format!(
-                        "Couldn't check whether Server {} holds Volume copies. No changes made. \
-                         Run the command again, one Server at a time if you're forgetting several.",
-                        machine.machine.name
-                    ),
-                    details: Value::Null,
-                    cause: std::iter::once(error.message).chain(error.cause).collect(),
-                };
+                // Often only the entry was busy, as when several forgets share it.
+                let unchecked = RpcError::unavailable(format!(
+                    "Couldn't check whether Server {} holds Volume copies. No changes made. \
+                     Run the command again, one Server at a time if you're forgetting several.",
+                    machine.machine.name
+                ))
+                .with_causes(std::iter::once(error.message).chain(error.cause).collect());
                 if unlisted {
                     Ok(HeldCopies::Gone(unchecked))
                 } else {
@@ -1782,12 +1770,7 @@ impl Client {
                             machine_id,
                             error: ContainerOperationFailure {
                                 container_id,
-                                error: RpcError {
-                                    code: RpcErrorCode::Unavailable,
-                                    message: error.to_string(),
-                                    details: Value::Null,
-                                    cause: Vec::new(),
-                                },
+                                error: RpcError::unavailable(error.to_string()),
                             },
                         });
                     }
@@ -1932,18 +1915,13 @@ pub(crate) enum DeadConfirmed {
 }
 
 fn stopped_answering(machine: &Machine) -> RpcError {
-    RpcError {
-        code: RpcErrorCode::ConfirmationRequired,
-        message: format!(
+    RpcError::confirmation_required(format!(
             "Server {} stopped answering after its name was typed. Forgetting it leaves any Volume copies on it behind, so it needs dead typed. No changes made.",
             machine.name
-        ),
-        details: json!({
+        )).with_details(json!({
             "server": { "id": machine.id, "name": machine.name },
             "answered": false,
-        }),
-        cause: Vec::new(),
-    }
+        }))
 }
 
 #[derive(Debug)]
@@ -1980,30 +1958,20 @@ pub(crate) fn copies_left_behind<'a>(
     machine: &MachineName,
     volumes: impl IntoIterator<Item = &'a str>,
 ) -> RpcError {
-    RpcError {
-        code: RpcErrorCode::Conflict,
-        message: format!(
-            "Server {machine} answers and holds copies of Volumes {}; forgetting it leaves them \
+    RpcError::conflict(format!(
+        "Server {machine} answers and holds copies of Volumes {}; forgetting it leaves them \
              behind. No changes made. Remove it with ployz server rm so its reset demotes them.",
-            volumes.into_iter().collect::<Vec<_>>().join(", ")
-        ),
-        details: Value::Null,
-        cause: Vec::new(),
-    }
+        volumes.into_iter().collect::<Vec<_>>().join(", ")
+    ))
 }
 
 /// The last Machine is Cloud's: anyone else removing it would leave Cloud paired
 /// with a Cluster that no longer exists.
 fn cloud_holds_last(machine: MachineId) -> RpcError {
-    RpcError {
-        code: RpcErrorCode::Conflict,
-        message: format!(
-            "Machine {machine} is the last Machine and Cloud manages it; only Cloud's removal \
+    RpcError::conflict(format!(
+        "Machine {machine} is the last Machine and Cloud manages it; only Cloud's removal \
              lets go of it too. No changes made."
-        ),
-        details: Value::Null,
-        cause: Vec::new(),
-    }
+    ))
 }
 
 /// Refuse removing the last Machine while a Management Client other than Cloud still
@@ -2030,24 +1998,27 @@ pub(crate) async fn refuse_last_managed(
             Some(TARGET_RPC_TIMEOUT),
         )
         .await
-        .map_err(|error| RpcError {
-            code: RpcErrorCode::Unavailable,
-            message: crate::ui::then_sentence(
+        .map_err(|error| {
+            RpcError::unavailable(crate::ui::then_sentence(
                 &format!(
                     "cannot read who manages Machine {selected}, the last Machine: {}",
                     crate::ui::row(&error)
                 ),
                 "No changes made.",
-            ),
-            details: Value::Null,
-            cause: Vec::new(),
+            ))
         })?
         .management_clients;
-    let cloud = holders.iter().any(|label| label.as_str() == "cloud");
+    let cloud = holders
+        .iter()
+        .any(ployz_core::ManagementClientLabel::is_cloud);
     let names: Vec<String> = holders
         .iter()
         .filter(|label| {
-            !cloud || (label.as_str() != "cloud" && !label.as_str().starts_with("cli-"))
+            !cloud
+                || !matches!(
+                    label.kind(),
+                    ployz_core::ManagementClientKind::Cloud | ployz_core::ManagementClientKind::Cli
+                )
         })
         .map(|label| format!("`{label}`"))
         .collect();
@@ -2057,16 +2028,11 @@ pub(crate) async fn refuse_last_managed(
         Some((last, [])) => last.clone(),
         Some((last, rest)) => format!("{} and {last}", rest.join(", ")),
     };
-    Err(RpcError {
-        code: RpcErrorCode::Conflict,
-        message: format!(
-            "this is the last Machine in the Cluster and it is still managed by {who}; \
+    Err(RpcError::conflict(format!(
+        "this is the last Machine in the Cluster and it is still managed by {who}; \
              removing it would leave {who} managing a Cluster that no longer exists. \
              No changes made. Disconnect {who} from this Machine first."
-        ),
-        details: Value::Null,
-        cause: Vec::new(),
-    })
+    )))
 }
 
 /// Resolve a Machine Target without hiding Name Ambiguity in the visible observations.
@@ -2079,28 +2045,21 @@ pub(crate) fn visible_machine<'list>(
 ) -> Result<&'list MachineObservation, RpcError> {
     let selected = match machine.resolve(machines.iter().map(|entry| &entry.machine)) {
         NameMatches::None => {
-            return Err(RpcError {
-                code: RpcErrorCode::NotFound,
-                message: format!("Server {} was not found", machine.as_str().escape_debug()),
-                details: Value::Null,
-                cause: Vec::new(),
-            });
+            return Err(RpcError::not_found(format!(
+                "Server {} was not found",
+                machine.as_str().escape_debug()
+            )));
         }
         matches @ NameMatches::Ambiguous { .. } => {
-            return Err(RpcError {
-                code: RpcErrorCode::Ambiguous,
-                message: format!(
-                    "Server name {} is ambiguous: {}",
-                    machine.as_str().escape_debug(),
-                    matches
-                        .iter()
-                        .map(|row| row.id.as_str())
-                        .collect::<Vec<_>>()
-                        .join(", ")
-                ),
-                details: Value::Null,
-                cause: Vec::new(),
-            });
+            return Err(RpcError::ambiguous(format!(
+                "Server name {} is ambiguous: {}",
+                machine.as_str().escape_debug(),
+                matches
+                    .iter()
+                    .map(|row| row.id.as_str())
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            )));
         }
         NameMatches::One(row) => row.id,
     };
@@ -2358,14 +2317,13 @@ pub(crate) struct LeftNotForgotten {
 
 impl LeftNotForgotten {
     fn carried_by(error: RpcError, reset_warning: Option<String>) -> RpcError {
-        RpcError {
-            details: serde_json::to_value(Self {
+        error.with_details(
+            serde_json::to_value(Self {
                 left: true,
                 reset_warning,
             })
             .expect("LeftNotForgotten is JSON"),
-            ..error
-        }
+        )
     }
 
     /// The Leave reply a failed removal carries, when it carries one.
@@ -2399,9 +2357,9 @@ async fn data_loss_on_machine(
     }
     let volumes = list_volumes_on_machine(client.clone(), selected)
         .await
-        .map_err(|failure| RpcError {
-            message: format!("Server {name}: {}", crate::ui::row(&failure.error)),
-            ..failure.error
+        .map_err(|failure| {
+            let message = format!("Server {name}: {}", crate::ui::row(&failure.error));
+            failure.error.with_message(message)
         })?;
     Ok(ObservedDataLoss {
         data_loss: volumes_lost(volumes.value),
@@ -2422,12 +2380,7 @@ fn volumes_lost(inventory: VolumeInventory) -> Vec<DataLoss> {
 }
 
 fn server_did_not_respond(name: &MachineName) -> RpcError {
-    RpcError {
-        code: RpcErrorCode::Unavailable,
-        message: format!("Server {name} did not respond"),
-        details: Value::Null,
-        cause: Vec::new(),
-    }
+    RpcError::unavailable(format!("Server {name} did not respond"))
 }
 
 /// Machines whose storage observation failed (`failures`) or did not answer in
@@ -2500,26 +2453,16 @@ fn validate_volume_inventory(
         .chain(inventory.failures.iter().map(|failure| &failure.id))
     {
         if id.machine_id != machine_id {
-            return Err(RpcError {
-                code: RpcErrorCode::Internal,
-                message: format!(
-                    "targeted ListVolumes response from Machine {machine_id} contained Docker Volume '{}' for Machine {}",
-                    id.name, id.machine_id
-                ),
-                details: Value::Null,
-                cause: Vec::new(),
-            });
+            return Err(RpcError::internal(format!(
+                "targeted ListVolumes response from Machine {machine_id} contained Docker Volume '{}' for Machine {}",
+                id.name, id.machine_id
+            )));
         }
         if !names.insert(&id.name) {
-            return Err(RpcError {
-                code: RpcErrorCode::Internal,
-                message: format!(
-                    "targeted ListVolumes response from Machine {machine_id} repeated Docker Volume '{}'",
-                    id.name
-                ),
-                details: Value::Null,
-                cause: Vec::new(),
-            });
+            return Err(RpcError::internal(format!(
+                "targeted ListVolumes response from Machine {machine_id} repeated Docker Volume '{}'",
+                id.name
+            )));
         }
     }
     Ok(inventory)
@@ -2555,10 +2498,7 @@ fn unanswered_kept(error: ConnectError) -> RpcError {
     }
     let unreached = error.target_unreached();
     let error = rpc_error(error);
-    let kept = RpcError {
-        cause: error.cause,
-        ..RpcError::unanswered_target(error.code, error.message)
-    };
+    let kept = RpcError::unanswered_target(error.code, error.message).with_causes(error.cause);
     match unreached {
         true => kept.undialed_target(),
         false => kept,
@@ -2629,14 +2569,9 @@ async fn change_container_rpc(
 fn admitted(started: UserStarted) -> Result<(), RpcError> {
     match started {
         UserStarted::In | UserStarted::Running => Ok(()),
-        UserStarted::NotIn(health) => Err(RpcError {
-            code: RpcErrorCode::Unavailable,
-            message: "The Container started but did not pass its healthcheck, so proxies do not route to it.".into(),
-            details: health
+        UserStarted::NotIn(health) => Err(RpcError::unavailable("The Container started but did not pass its healthcheck, so proxies do not route to it.").with_details(health
                 .and_then(ployz_core::HealthVerdict::into_failure)
-                .map_or(Value::Null, |failure| json!(failure)),
-            cause: Vec::new(),
-        }),
+                .map_or(Value::Null, |failure| json!(failure)))),
     }
 }
 

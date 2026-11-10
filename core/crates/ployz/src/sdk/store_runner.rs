@@ -251,9 +251,7 @@ pub async fn observe_volumes_expecting(
     expect: Option<crate::connect::ClusterExpectation>,
 ) -> Result<ployz_store::VolumeObservation, RpcError> {
     if connections.is_empty() {
-        return Err(super::invalid_argument(
-            "connections must not be empty".into(),
-        ));
+        return Err(RpcError::invalid_argument("connections must not be empty"));
     }
     let servers: Vec<MachineId> = connections
         .iter()
@@ -310,9 +308,7 @@ pub async fn observe_running_expecting(
     expect: Option<crate::connect::ClusterExpectation>,
 ) -> Result<ployz_store::RunningObservation, RpcError> {
     if connections.is_empty() {
-        return Err(super::invalid_argument(
-            "connections must not be empty".into(),
-        ));
+        return Err(RpcError::invalid_argument("connections must not be empty"));
     }
     let servers: Vec<MachineId> = connections
         .iter()
@@ -1059,7 +1055,7 @@ impl Run {
                 (status, None, Ok(receipt))
             }
             Ok(BuildOutcome::Queued) => {
-                let error = internal("No Server started the build");
+                let error = RpcError::internal("No Server started the build");
                 (
                     BuildStatus::Failed,
                     Some(crate::ui::row(&error)),
@@ -1873,15 +1869,6 @@ async fn remove_volumes(
         })
         .await
         .unwrap_or_default()
-}
-
-pub(super) fn internal(message: &str) -> RpcError {
-    RpcError {
-        code: RpcErrorCode::Internal,
-        message: message.to_owned(),
-        details: serde_json::Value::Null,
-        cause: Vec::new(),
-    }
 }
 
 #[cfg(test)]

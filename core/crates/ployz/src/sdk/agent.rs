@@ -9,8 +9,7 @@ use ployz_core::metrics::{MarkerKind, MetricMarker, MetricRange};
 use ployz_core::{
     ContainerId, ContainerKind, ContainerObservation, ContainerRuntimeObservation,
     EnvironmentValues, HealthObservation, HealthVerdict, LogHistoryRequest, MachineId,
-    MachineObservation, MachineStorageObservation, Namespace, RpcError, RpcErrorCode, ServiceName,
-    StopOptions,
+    MachineObservation, MachineStorageObservation, Namespace, RpcError, ServiceName, StopOptions,
 };
 use ployz_store::DeploymentId;
 use ployz_store::tools::cloud::{
@@ -70,14 +69,14 @@ pub async fn ask(
         CloudQuery::Logs(query) => encode(&logs(session, query, sealed).await?),
         CloudQuery::ServerLogs(query) => encode(&server_logs(session, query).await?),
         CloudQuery::Metrics(query) => encode(&metrics(session, query, readable).await?),
-        CloudQuery::Copies { .. } => Err(unsupported(
+        CloudQuery::Copies { .. } => Err(RpcError::unsupported(
             "Copies join the Config Store; Ployz Cloud answers them",
         )),
         CloudQuery::Operations(_)
         | CloudQuery::GithubTree(_)
         | CloudQuery::GithubFile(_)
         | CloudQuery::GithubConnection
-        | CloudQuery::GithubBranches { .. } => Err(unsupported(
+        | CloudQuery::GithubBranches { .. } => Err(RpcError::unsupported(
             "Operations and GitHub are Ployz Cloud's records; the Servers do not hold them",
         )),
     }
@@ -753,21 +752,8 @@ fn now() -> Timestamp {
 }
 
 fn encode(answer: &impl serde::Serialize) -> Result<Value, RpcError> {
-    serde_json::to_value(answer).map_err(|error| RpcError {
-        code: RpcErrorCode::Internal,
-        message: format!("encoding a Cloud answer: {error}"),
-        details: Value::Null,
-        cause: Vec::new(),
-    })
-}
-
-fn unsupported(message: &str) -> RpcError {
-    RpcError {
-        code: RpcErrorCode::Unsupported,
-        message: message.to_owned(),
-        details: Value::Null,
-        cause: Vec::new(),
-    }
+    serde_json::to_value(answer)
+        .map_err(|error| RpcError::internal(format!("encoding a Cloud answer: {error}")))
 }
 
 #[cfg(test)]

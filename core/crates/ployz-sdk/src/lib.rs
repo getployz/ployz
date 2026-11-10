@@ -12,7 +12,6 @@ use ployz::connect::diagnostics::{DialOutcome, DialTimings, should_emit};
 use ployz::sdk;
 use ployz_core::{
     DataLossConfirmation, ManagementClientLabel, Namespace, RemoveVolumesRequest, RpcError,
-    RpcErrorCode,
 };
 
 /// One cancellable connection attempt.
@@ -182,7 +181,7 @@ impl PendingConnection {
         let result = tokio::select! {
             biased;
             () = self.cancel.cancelled() => Err(sdk::CallError {
-                error: RpcError { code: RpcErrorCode::Unavailable, message: "connection cancelled".into(), details: serde_json::Value::Null, cause: Vec::new() },
+                error: RpcError::unavailable("connection cancelled"),
                 unanswered: true,
                 target_unreached: false,
             }),
@@ -313,6 +312,7 @@ pub struct RunningDeployHandle {
 #[cfg(test)]
 mod dial_diagnostic_tests {
     use super::*;
+    use ployz_core::RpcErrorCode;
 
     #[test]
     fn only_a_fired_deadline_is_timed_out() {
@@ -1230,12 +1230,7 @@ pub(crate) fn whole_numbers(value: serde_json::Value) -> serde_json::Value {
 }
 
 fn invalid_argument(error: impl std::fmt::Display) -> Error {
-    rpc_to_napi(RpcError {
-        code: RpcErrorCode::InvalidArgument,
-        message: error.to_string(),
-        details: serde_json::Value::Null,
-        cause: Vec::new(),
-    })
+    rpc_to_napi(RpcError::invalid_argument(error.to_string()))
 }
 
 const RPC_ERROR_PREFIX: &str = "PLOYZ_RPC_ERROR:";
@@ -1283,15 +1278,8 @@ pub fn allocate_enrollment(
     let request = from_js(request).map_err(invalid_argument)?;
     let snapshot = from_js(snapshot).map_err(invalid_argument)?;
     let saved: Vec<ployz_core::EnrollmentAssignment> = from_js(saved).map_err(invalid_argument)?;
-    let assignment =
-        ployz_core::allocate_enrollment(&request, &snapshot, &saved).map_err(|error| {
-            rpc_to_napi(ployz_core::RpcError {
-                code: ployz_core::RpcErrorCode::Conflict,
-                message: error.to_string(),
-                details: serde_json::Value::Null,
-                cause: Vec::new(),
-            })
-        })?;
+    let assignment = ployz_core::allocate_enrollment(&request, &snapshot, &saved)
+        .map_err(|error| rpc_to_napi(RpcError::conflict(error.to_string())))?;
     to_json(&assignment)
 }
 

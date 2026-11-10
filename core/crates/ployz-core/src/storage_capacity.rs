@@ -189,16 +189,12 @@ impl StorageCapacityError {
                 ]),
             );
         }
-        RpcError {
-            code: if matches!(self, Self::StorageCapacityUnknown { .. }) {
-                RpcErrorCode::Unavailable
-            } else {
-                RpcErrorCode::Conflict
-            },
-            message: self.to_string(),
-            details,
-            cause: Vec::new(),
-        }
+        let code = if matches!(self, Self::StorageCapacityUnknown { .. }) {
+            RpcErrorCode::Unavailable
+        } else {
+            RpcErrorCode::Conflict
+        };
+        RpcError::new(code, self.to_string()).with_details(details)
     }
 }
 

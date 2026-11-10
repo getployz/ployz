@@ -1072,14 +1072,8 @@ pub(crate) fn github_authorize(
         .into_iter()
         .find(|source| source.service == id.service)
         .ok_or_else(|| error::not_found("No GitHub build has this id", json!({})))?;
-    let refused = |message: &str| {
-        Err(ployz_core::RpcError {
-            code: ployz_core::RpcErrorCode::Unauthenticated,
-            message: message.to_owned(),
-            details: json!({}),
-            cause: Vec::new(),
-        })
-    };
+    let refused =
+        |message: &str| Err(RpcError::unauthenticated(message.to_owned()).with_details(json!({})));
     if claims.repository_id != source.repository_id.to_string() {
         return refused("The token is for another repository");
     }

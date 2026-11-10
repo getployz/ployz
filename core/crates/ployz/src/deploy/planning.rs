@@ -4,7 +4,7 @@ use ployz_core::{
     BlockedService, ContainerAction, ContainerId, CopyRotation, DataLoss, DependencyCondition,
     HookContainer, IngressHost, MachineId, MachineObservation, MembershipObservation, Namespace,
     ObservedDataLoss, PreservedVolume, PruneRefusal, QualifiedService, RequestedServiceSpec,
-    RowStanding, RpcError, RpcErrorCode, ServiceContainer, ServiceId, ServiceMode, ServiceName,
+    RowStanding, RpcError, ServiceContainer, ServiceId, ServiceMode, ServiceName,
     ServiceObservation, ServicePlacementEligibility, ServicePlacementIneligibleReason, UpdateOrder,
     VolumeToCreate, explicit_ingress_hosts, hostname_owners, machine_matches_placement,
     same_service_mode_kind,
@@ -1292,30 +1292,23 @@ fn assemble_plan(
 
 /// Why a Service that depends on a blocked one is blocked too.
 fn dependency_blocked(dependency: &ServiceName) -> RpcError {
-    RpcError {
-        code: RpcErrorCode::Conflict,
-        message: format!("depends on {dependency}, which was not attempted"),
-        details: serde_json::json!({ "reason": "dependency_blocked", "dependency": dependency }),
-        cause: Vec::new(),
-    }
+    RpcError::conflict(format!("depends on {dependency}, which was not attempted")).with_details(
+        serde_json::json!({ "reason": "dependency_blocked", "dependency": dependency }),
+    )
 }
 
 /// Why a Service handing a hostname to a blocked one is blocked too: replacing its copies
 /// would take the hostname from the only copies that answer.
 fn handover_blocked(handover: &HostnameHandover) -> RpcError {
-    RpcError {
-        code: RpcErrorCode::Conflict,
-        message: format!(
-            "hands hostname {} to {}, which was not attempted",
-            handover.hostname, handover.to
-        ),
-        details: serde_json::json!({
-            "reason": "dependency_blocked",
-            "dependency": handover.to,
-            "hostname": handover.hostname,
-        }),
-        cause: Vec::new(),
-    }
+    RpcError::conflict(format!(
+        "hands hostname {} to {}, which was not attempted",
+        handover.hostname, handover.to
+    ))
+    .with_details(serde_json::json!({
+        "reason": "dependency_blocked",
+        "dependency": handover.to,
+        "hostname": handover.hostname,
+    }))
 }
 
 fn reject_hostname_conflicts(

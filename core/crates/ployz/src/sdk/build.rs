@@ -38,10 +38,9 @@ pub(super) async fn run(
         .chain(captured.reused.keys())
         .collect();
     if captured.build.targets().count() > 1 || services.len() != 1 {
-        return Err(super::invalid_argument(
+        return Err(RpcError::invalid_argument(
             "build input must hold exactly one Git Service with its source commit, \
-             or one uploaded Service"
-                .into(),
+             or one uploaded Service",
         ));
     }
     let admit_by = start_within.map(|limit| tokio::time::Instant::now() + limit);
@@ -68,7 +67,7 @@ pub(super) async fn run(
                 }),
                 receipt,
             })
-            .ok_or_else(|| super::invalid_argument("Build produced no receipt".into())),
+            .ok_or_else(|| RpcError::invalid_argument("Build produced no receipt")),
         Err(PreparationError::Build(crate::build::Error::Withdrawn)) => Ok(BuildOutcome::Queued),
         Err(error) => Err(build_error(error, token.is_cancelled())),
     }
@@ -119,7 +118,7 @@ pub(super) async fn outside(
         return Ok(reused);
     }
     let platforms = crate::build::placement_platforms(&intent, &machines)
-        .map_err(|error| super::invalid_argument(error.to_string()))?;
+        .map_err(|error| RpcError::invalid_argument(error.to_string()))?;
     Ok(OutsideBuild::Build {
         platforms: platforms.into_iter().collect(),
     })
@@ -134,8 +133,8 @@ async fn reuse(
     token: &CancellationToken,
 ) -> Result<Option<OutsideBuild>, RpcError> {
     let [spec] = intent.target.as_slice() else {
-        return Err(super::invalid_argument(
-            "the deployment must hold exactly one Service".into(),
+        return Err(RpcError::invalid_argument(
+            "the deployment must hold exactly one Service",
         ));
     };
     // Fingerprints are keyed by Service, as `capture` computes them.

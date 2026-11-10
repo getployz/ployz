@@ -51,7 +51,7 @@ fn held_elsewhere(credential: &Credential, scoped: &Scoped) -> Result<(), Error>
     };
     match refusable::<ContainersAnswer>(credential, asked)? {
         Err(StoreCallError::Refused(refused))
-            if refused.code.as_str() == "forbidden"
+            if refused.code.as_str() == ployz_core::FORBIDDEN_CODE
                 && refused
                     .details
                     .get("environments")
