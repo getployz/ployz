@@ -77,6 +77,8 @@ When GitHub can't take a build, the build log says why, and the next builder tak
 
 - **The workflow is missing, disabled or not on the default branch**, or the repository shows
   **Installation lacks permission**. Fix it in GitHub, as above.
+- **The workflow file on the default branch isn't the one Ployz offers.** Ployz runs only that
+  exact file, whatever its line endings. Replace yours with the file above.
 - **The service deploys a public repository without the GitHub App**, or **runs on both x86 and
   ARM servers.** These build on your servers. With **GitHub only**, they fail, so keep your
   servers in the order for them.
