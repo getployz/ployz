@@ -1115,23 +1115,24 @@ impl GithubRule {
     }
 }
 
-/// The rule GitHub build `id` builds under, ended or not, when the Store's automation
-/// admitted the Deployment for a push and the rule covers the Service: its
-/// Environment's automatic deploy rule, or, for a preview, the preview rule its
-/// Namespace derives from. Its run is then the push's own, which Cloud follows.
+/// The rule GitHub build `id` builds under, ended or not, when the rule covers the
+/// Service: for a preview, the preview rule its Namespace derives from, when automation
+/// or a person's review admitted it; otherwise its Environment's automatic deploy rule,
+/// when the Store's automation admitted the Deployment for a push. Its run is then the
+/// push's own, which Cloud follows, or for a review the one Cloud dispatches.
 pub(crate) fn github_rule(
     tx: &mut dyn Tx,
     id: &GithubBuildId,
 ) -> Result<Option<GithubRule>, RpcError> {
     let stored = deployment::load(tx, &id.deployment)?;
-    if stored.summary.admitted_by.is_some() {
-        return Ok(None);
-    }
     if let Some(preview) = crate::preview_rule::of_deployment(tx, &stored)? {
         let covers = preview
             .open()
             .is_ok_and(|rule| rule.service(&id.service).is_some());
         return Ok(covers.then_some(GithubRule::Preview(preview)));
+    }
+    if stored.summary.admitted_by.is_some() {
+        return Ok(None);
     }
     let rule = crate::auto_rule::stored(tx, &stored.summary.environment_id)?;
     Ok(rule

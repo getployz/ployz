@@ -592,7 +592,7 @@ fn an_untrusted_pull_request_opens_its_preview_and_deploys_only_once_reviewed() 
     let again = ployz_store::DeploymentId::parse(uuid(91)).unwrap();
     store
         .write_trusted(
-            &Actor::system(OrganizationId::parse("org").unwrap()),
+            &person(&Actor::system(OrganizationId::parse("org").unwrap())),
             &ployz_store::Admit::Retry(ployz_store::Retry {
                 id: again.clone(),
                 deployment,
@@ -600,7 +600,7 @@ fn an_untrusted_pull_request_opens_its_preview_and_deploys_only_once_reviewed() 
                 version: None,
                 accept_volume_loss: Vec::new(),
             }),
-            &trusted(),
+            &member(),
         )
         .unwrap();
     let build = ployz_store::GithubBuildId {
@@ -648,6 +648,22 @@ fn a_review_held_for_ci_rides_with_the_deployment_ci_releases() {
     assert_eq!(store.github_review(&build).unwrap(), Some(review));
 }
 
+/// `who` as a signed-in person, rather than the Store's own automation.
+fn person(who: &Actor) -> Actor {
+    Actor {
+        principal: Some(ployz_store::Principal::parse("nick").unwrap()),
+        ..who.clone()
+    }
+}
+
+/// What the dashboard trusts a member with: every permission.
+fn member() -> Trusted {
+    Trusted {
+        permissions: Some(ployz_store::Permission::ALL.iter().copied().collect()),
+        ..trusted()
+    }
+}
+
 /// An untrusted pull request opened under a preview rule, then approved with a person's
 /// review once a stale one is refused; with `ci`, web waits for CI.
 fn reviewed(
@@ -687,9 +703,11 @@ fn reviewed(
     let mut other = review.opened().unwrap();
     other.commit = CommitSha::parse(&"2".repeat(40)).unwrap();
     let stale = ployz_core::authority::Review::Signed(Signed::sign(&other, &signer).unwrap());
+    // A person approves, as the dashboard does: the Deployment records who admitted it.
+    let person = person(&who);
     let approve = |review: ployz_core::authority::Review| {
         store.write_trusted(
-            &who,
+            &person,
             &ployz_store::ApprovePullRequest {
                 repository_id: backend::repo_id(11),
                 number: backend::pr_number(7),
@@ -699,7 +717,7 @@ fn reviewed(
                     review,
                 }],
             },
-            &trusted(),
+            &member(),
         )
     };
     let refused = approve(stale).unwrap_err();
