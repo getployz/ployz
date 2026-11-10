@@ -6,7 +6,7 @@ use sha2::{Digest as _, Sha256};
 use super::*;
 use crate::authority::keys::Signer;
 use crate::authority::restart::OwnPrompt;
-use crate::authority::rule::CommitSha;
+use crate::authority::rule::{BUILDER_SHA, CommitSha};
 
 const SEALED_A: &str = "QUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQQ==";
 

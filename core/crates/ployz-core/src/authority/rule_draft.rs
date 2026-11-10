@@ -13,8 +13,8 @@ use super::{
     keys::Signed,
     restart::SignerKey,
     rule::{
-        AutoDeployRule, BUILDER_SHA, BuildPolicy, Builder, PolicyCache, PolicyMethod, RuleEvent,
-        RuleId, RuleService, RuleSource, Runner, SealedDigest, template,
+        AutoDeployRule, BuildPolicy, Builder, PolicyCache, PolicyMethod, RuleEvent, RuleId,
+        RuleService, RuleSource, Runner, SealedDigest, template,
     },
 };
 use crate::{
