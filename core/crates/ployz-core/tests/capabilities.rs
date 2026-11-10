@@ -730,7 +730,8 @@ mod coverage {
             "ployz.volume.copy.set.v1",
             &[
                 "a Writer want with a start",
-                "pull, cut, promote, forget",
+                "a pull",
+                "cut, promote, forget",
                 "floor, snapshot",
             ],
         ),

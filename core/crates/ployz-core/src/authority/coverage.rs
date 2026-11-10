@@ -31,7 +31,7 @@ use crate::{
     SET_PRIVATE_ACCESS_CAPABILITY, SET_PUSH_TARGET_CAPABILITY, SET_VOLUME_COPY_CAPABILITY,
     SET_VOLUME_SIZE_CAPABILITY, SHARE_SEALING_KEY_CAPABILITY, TAIL_LOGS_CAPABILITY,
     UPDATE_CONTAINER_LIMITS_CAPABILITY, UPDATE_MACHINE_CAPABILITY, UPGRADE_EXACT_CAPABILITY,
-    WRAP_SEALING_KEY_CAPABILITY,
+    VOLUME_APPROVAL_CAPABILITY, WRAP_SEALING_KEY_CAPABILITY,
 };
 
 /// A statement a trusted key signs that admits an Operator's call.
@@ -469,7 +469,13 @@ pub const CASES: &[Case] = &[
     ),
     case(
         SET_VOLUME_COPY_CAPABILITY,
-        "pull, cut, promote, forget",
+        "a pull",
+        "a SetVolumeCopy pulling the Volume from another Machine, with no approval",
+        Expected::Refused(&[VOLUME_APPROVAL_CAPABILITY]),
+    ),
+    case(
+        SET_VOLUME_COPY_CAPABILITY,
+        "cut, promote, forget",
         "a SetVolumeCopy forgetting a copy",
         Expected::Served,
     ),
