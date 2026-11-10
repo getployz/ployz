@@ -249,6 +249,7 @@ connection under omissions. Either way the command exits 3.
 ### Add a passkey
 
 A passkey lets you approve changes from your browser. Each server trusts it to approve workflows
+and [automatic deploy rules](../deploy/github.md#deploy-on-push-to-servers-that-enforce-device-approval),
 and nothing else: it can't open a connection, run `exec`, or approve a device. You don't need a
 device to add one.
 
