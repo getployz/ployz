@@ -20,11 +20,15 @@ use ployz_core::{
     authority::{
         AuthorityRefusal, BuildClaim, CheckedReview, CommitAuthority, CommitSha, PreviewFacts,
         PreviewKey, PreviewProof, PreviewRule, RestartStep, Timestamp, deploy::Creation,
-        preview::verify_review, rule::verify_signature,
+        rule::verify_signature,
     },
 };
 
 use super::{Error, LocalMachine, restart_approval::pinned, rule_grant::Github};
+
+/// What a refusal names for a reviewed preview build or deploy. No client produces a
+/// review yet, so a Machine admits none: only a trusted push builds and deploys a preview.
+pub(crate) const REVIEWED: &str = "a reviewed preview";
 
 /// Why a Machine refused a preview's build grant or deploy.
 #[derive(Debug, thiserror::Error)]
@@ -248,16 +252,12 @@ impl LocalMachine {
         let (rule, _) = verify_signature(&proof.rule, &trusted, now).map_err(refused)?;
         // An ended generation still supersedes every one below it.
         self.approvals.mark_rule(&rule, superseded(&rule))?;
-        let review = proof
-            .review
-            .as_ref()
-            .map(|review| verify_review(review, &rule, &trusted, now))
-            .transpose()
-            .map_err(|refusal| {
-                tracing::warn!(rule = %rule.rule, %refusal, "refused a preview review");
-                refused(refusal)
-            })?;
         let claim = &proof.claim;
+        if proof.review.is_some() || claim.authority != CommitAuthority::Head {
+            tracing::warn!(rule = %rule.rule, "refused a reviewed preview deploy");
+            return Err(refused(AuthorityRefusal::Mismatch { field: REVIEWED }));
+        }
+        let review: Option<CheckedReview> = None;
         let key = match self
             .approvals
             .accepted_preview(rule.rule, namespace, claim)?
@@ -417,6 +417,9 @@ pub(crate) fn refusal_text(refusal: &AuthorityRefusal) -> String {
         }
         AuthorityRefusal::Mismatch { field: "a branch" } => {
             "A push to the branch previews start from isn't a preview."
+        }
+        AuthorityRefusal::Mismatch { field: REVIEWED } => {
+            "This server builds and deploys a preview only for a trusted account's push. Reviewed previews aren't available yet."
         }
         AuthorityRefusal::Mismatch { field: "a review" } => {
             "This build was made under another review. Review the preview again."

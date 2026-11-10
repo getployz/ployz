@@ -262,54 +262,36 @@ async fn a_push_runs_its_hook_once_in_each_preview() {
     );
 }
 
+/// No client produces a review yet, so a reviewed build deploys nothing, with its review
+/// or without.
 #[tokio::test]
-async fn a_reviewed_build_creates_only_with_the_settings_the_review_signed() {
+async fn a_reviewed_build_deploys_nothing_until_reviews_ship() {
     let deploy = Deploy::new().await;
     let namespace = preview_namespace(deploy.rule.rule, &PreviewKey::Fork(12));
-    let mut body = review(&deploy.fixture, &deploy.rule, commit());
-    let ployz_core::authority::Review::Signed(signed) = &body else {
-        unreachable!("the fixture review is Device-signed");
-    };
-    let mut reviewed: ployz_core::authority::PreviewReview =
-        ployz_core::authority::canonical::from_canonical(&signed.body).unwrap();
-    let mut service = deploy.rule.services[0].clone();
-    service.generated.clear();
-    reviewed.services[0].digest =
-        ployz_core::authority::preview::template(&requested(&spec()), &namespace, &service)
-            .unwrap();
-    body = ployz_core::authority::Review::Signed(
-        Signed::sign(&reviewed, &deploy.fixture.signer).unwrap(),
-    );
+    let body = review(&deploy.fixture, &deploy.rule, commit());
     let claim = deploy.built(CommitAuthority::Review(body.digest()));
-    let proof = PreviewProof {
+    let mut proof = PreviewProof {
         rule: Signed::sign(&deploy.rule, &deploy.fixture.signer).unwrap(),
         review: Some(body),
         token: token(&claim, "reviewed", "workflow_dispatch", "main", ACTOR),
         claim,
         reader: None,
     };
-    deploy
-        .deploy(
-            want(&namespace, "service_container", "k1", &spec()),
-            &proof,
-            commit(),
-            now(),
-        )
-        .await
-        .unwrap();
-    let mut changed = spec();
-    changed["container"]["environment"]["PLAIN"] = json!("two");
-    assert_eq!(
-        refused(
+    let create = |proof: PreviewProof| {
+        let namespace = namespace.clone();
+        let deploy = &deploy;
+        async move {
             deploy
                 .deploy(
-                    want(&namespace, "service_container", "k2", &changed),
+                    want(&namespace, "service_container", "k1", &spec()),
                     &proof,
                     commit(),
                     now(),
                 )
                 .await
-        ),
-        "a payload"
-    );
+        }
+    };
+    assert_eq!(refused(create(proof.clone()).await), REVIEWED);
+    proof.review = None;
+    assert_eq!(refused(create(proof).await), REVIEWED);
 }

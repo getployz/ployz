@@ -12,13 +12,13 @@ use ployz_core::{
     BuildGrantId, PreviewGrant, SealedRecord,
     authority::{
         AuthorityRefusal, BuildClaim, BuildStage, CommitAuthority, PolicyDigest, PreviewKey,
-        Timestamp, preview::verify_review, rule::verify_signature,
+        Timestamp, rule::verify_signature,
     },
 };
 
 use super::{
     Error, LocalMachine,
-    preview_deploy::PreviewRefusal,
+    preview_deploy::{PreviewRefusal, REVIEWED},
     rule_grant::{AdmittedRule, Github},
 };
 
@@ -74,15 +74,10 @@ impl LocalMachine {
             .service(&grant.service)
             .ok_or_else(|| held("a Service"))?;
         let holder = holder.ok_or_else(|| held("a holder"))?;
-        let review = grant
-            .review
-            .as_ref()
-            .map(|review| verify_review(review, &rule, &trusted, now))
-            .transpose()
-            .map_err(|refusal| {
-                tracing::warn!(rule = %rule.rule, %refusal, "refused a preview review");
-                refused(refusal)
-            })?;
+        if grant.review.is_some() || grant.authority != CommitAuthority::Head {
+            return Err(held(REVIEWED));
+        }
+        let review = None;
         let claims = github
             .claims(&rule, grant.proof.as_str(), now)
             .await

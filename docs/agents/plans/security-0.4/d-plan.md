@@ -298,7 +298,7 @@ Outcome. Pushes by trusted GitHub accounts to branches of the repository deploy 
 - [x] Edit `core/crates/ployz-core/src/sealed.rs` so `SealedValue` gains `environment: Option<Uuid>`, which replaces the identity's Environment in the associated data.
 - [x] Edit `core/crates/ployzd/src/sealed_env.rs` to check the override on every Sealed part, template parts and build records included. It opens a value carrying one only when admission handed it the preview rule's `inherit` list for that Environment.
 - [x] Edit `core/crates/ployz-core/src/authority/rule.rs` to add `PreviewRule`, `PreviewReview`, `Authority::Review`, `preview_namespace(rule, key)`, `preview_hostname(label, namespace, domain)` and `PreviewTemplate::of(spec, derived)`. Placeholders replace only strings the Machine derived. Built in `authority/preview.rs`. `preview_hostname` became `preview_prefix(label, namespace)`, giving `<label>-<Namespace>.<domain>` (`d-build-proof.md`, "Hostnames").
-- [x] Edit `core/crates/ployzd/src/management/build_grant.rs` so grant admission accepts a trusted push (`Head` on a non-parent branch, `actor_id` in `trusted`) and `Review(d)`. A review needs its signature, rule, generation and commit, a `workflow_dispatch` run on the parent's branch, and the signer rule of decision 6. All of that is checked before the record opens.
+- [x] Edit `core/crates/ployzd/src/management/build_grant.rs` so grant admission accepts a trusted push (`Head` on a non-parent branch, `actor_id` in `trusted`) and `Review(d)`. A review needs its signature, rule, generation and commit, a `workflow_dispatch` run on the parent's branch, and the signer rule of decision 6. All of that is checked before the record opens. D7 admits only the trusted push. `Review(d)` moved to D7b (below), and until it ships every Machine refuses a reviewed preview build or deploy.
 - [x] Edit `core/crates/ployzd/src/machine/local_machine/deploy_approval.rs`. A preview-rule creation must be in the derived Namespace, with derived hostnames, and Sealed parts inherited or, under a review, sealed for the review's Environment. Thread C's deploy approval and the automatic deploy rule refuse the reserved preview Namespace pattern.
 - [x] Edit `core/crates/ployz-core/src/authority/deploy.rs` to widen `sealed_scope_allows` for reviews only, as `d-build-proof.md` says.
 - [x] Edit `core/crates/ployz-store/src/deployment/mod.rs` (`namespace`, `:1539`) so a PR Environment under a preview rule gets the derived Namespace, and no other Environment ever gets the reserved pattern. Edit the preview lowering to emit derived hostnames.
@@ -332,6 +332,18 @@ Outcome. Pushes by trusted GitHub accounts to branches of the repository deploy 
 **Verify, perf.** Admission per creation within 10 ms of D4.
 
 **Review gate.** The operator reviews the preview rule UI and the derived URLs before merge.
+
+## Reviewed previews (D7b)
+
+Split from D7 by the program's root on 2026-11-10 under the operator's autopilot grant. D7 merges without it.
+
+**Outcome.** A person reviews an untrusted or fork pull request's commit, and exactly that commit builds and deploys its preview.
+
+**Depends on.** D7. D5's passkey-direct helper (#4063) for decision 6.
+
+- [ ] Admit `Review(d)` at grant and creation on the Machine: the checks D7 wrote in `verify_review` and `PreviewRule::preview_key`, which D7 leaves unused. Today the Machine refuses every reviewed preview, naming "a reviewed preview".
+- [ ] The dashboard review prompt on D5's helper, and its session path for previews that inherit nothing.
+- [ ] D7's live lanes 7 to 9.
 
 ## Appendix A. Contract gaps
 

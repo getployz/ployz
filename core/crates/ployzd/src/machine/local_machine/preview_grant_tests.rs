@@ -274,44 +274,31 @@ async fn a_build_record_with_a_value_of_its_own_is_refused() {
     );
 }
 
+/// No client produces a review yet, so every reviewed build is refused before its record
+/// opens, its review checked or not.
 #[tokio::test]
-async fn a_reviewed_dispatch_of_the_reviewed_commit_mints() {
+async fn a_reviewed_build_gets_no_grant_until_reviews_ship() {
     let fixture = fixture().await;
     let record = inherited(&fixture);
     let rule = preview_rule(&fixture, &record);
-    let grant = reviewed(&fixture, &rule, review(&fixture, &rule, commit()), "review");
-    admit(&fixture, &grant, &record).await.unwrap();
-}
-
-#[tokio::test]
-async fn a_review_of_another_commit_is_refused() {
-    let fixture = fixture().await;
-    let record = inherited(&fixture);
-    let rule = preview_rule(&fixture, &record);
+    let reviewed = reviewed(&fixture, &rule, review(&fixture, &rule, commit()), "review");
+    refused(admit(&fixture, &reviewed, &record).await, REVIEWED);
     let other = CommitSha::parse(&"7".repeat(40)).unwrap();
-    let grant = reviewed(&fixture, &rule, review(&fixture, &rule, other), "other");
-    refused(admit(&fixture, &grant, &record).await, "a commit");
-}
-
-#[tokio::test]
-async fn a_review_of_another_rule_is_refused() {
-    let fixture = fixture().await;
-    let record = inherited(&fixture);
-    let rule = preview_rule(&fixture, &record);
-    let mut other = rule.clone();
-    other.rule = RuleId::from_bytes([0x33; 16]);
-    let grant = reviewed(&fixture, &rule, review(&fixture, &other, commit()), "rule");
-    refused(admit(&fixture, &grant, &record).await, "a rule");
-}
-
-#[tokio::test]
-async fn a_reviewed_build_without_its_review_is_refused() {
-    let fixture = fixture().await;
-    let record = inherited(&fixture);
-    let rule = preview_rule(&fixture, &record);
-    let mut grant = reviewed(&fixture, &rule, review(&fixture, &rule, commit()), "bare");
-    grant.review = None;
-    refused(admit(&fixture, &grant, &record).await, "a review");
+    let mut stale = reviewed.clone();
+    stale.review = Some(review(&fixture, &rule, other));
+    refused(admit(&fixture, &stale, &record).await, REVIEWED);
+    let mut bare = reviewed;
+    bare.review = None;
+    refused(admit(&fixture, &bare, &record).await, REVIEWED);
+    // A review beside a trusted push's Head authority is refused too.
+    let claim = claim(&rule, CommitAuthority::Head);
+    let mut pushed = grant(
+        &fixture,
+        &rule,
+        token(&claim, "pushed", "push", "feature", ACTOR),
+    );
+    pushed.review = Some(review(&fixture, &rule, commit()));
+    refused(admit(&fixture, &pushed, &record).await, REVIEWED);
 }
 
 #[tokio::test]
