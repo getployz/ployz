@@ -640,6 +640,11 @@ impl LocalMachine {
             management_clients: record.management_clients().cloned().collect(),
             passkeys: record.passkeys().to_vec(),
             devices: record.devices().collect(),
+            // An unreadable record reports no floor, and a client that needs one refuses.
+            rule_generations: self.approvals.rule_generations().unwrap_or_else(|error| {
+                tracing::warn!(%error, "could not read the automatic deploy rule floors");
+                std::collections::BTreeMap::new()
+            }),
             founding: record.founding(),
             telemetry,
             storage,

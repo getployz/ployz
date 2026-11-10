@@ -316,6 +316,16 @@ async fn a_newer_generation_refuses_every_proof_below_it() {
         ),
         "a generation"
     );
+    // A person's client reads the floor it refused below, to refuse the same rule.
+    let details = fixture
+        .machine
+        .inspect(ployz_core::InspectRequest::default())
+        .await
+        .unwrap();
+    assert_eq!(
+        details.rule_generations,
+        std::collections::BTreeMap::from([(new.rule, 4)])
+    );
 }
 
 /// GitHub that answers the head read only once `release` fires, telling `reached` it

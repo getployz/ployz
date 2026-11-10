@@ -104,6 +104,7 @@ async fn cluster(
                     rtts: Vec::new(),
                     management_clients: Vec::new(),
                     devices: Vec::new(),
+                    rule_generations: Default::default(),
                     passkeys: Vec::new(),
                     storage: None,
                     upgrade: None,
@@ -801,6 +802,7 @@ async fn raced(
                         rtts: Vec::new(),
                         management_clients: Vec::new(),
                         devices: Vec::new(),
+                        rule_generations: Default::default(),
                         passkeys: if listed == Kind::Passkey {
                             vec![ployz_core::authority::TrustedPasskey {
                                 passkey: waiting(passkey_key(1)),

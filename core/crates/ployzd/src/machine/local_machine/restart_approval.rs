@@ -745,6 +745,18 @@ impl ConsumptionLog {
         self.write(&mut guard, updated)
     }
 
+    /// The highest generation of each rule this Machine has marked.
+    pub(crate) fn rule_generations(&self) -> Result<BTreeMap<RuleId, u64>, Error> {
+        let guard = self.loaded()?;
+        Ok(guard
+            .as_ref()
+            .expect("loaded above")
+            .rules
+            .iter()
+            .map(|(rule, mark)| (*rule, mark.generation))
+            .collect())
+    }
+
     /// Record that a validly signed `rule` exists, ended or not, before anything else
     /// decides on it: no generation below it is admitted again. Refuses, through
     /// `refused`, a generation lower than the mark, or one that moves the rule to another

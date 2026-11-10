@@ -238,6 +238,7 @@ async fn deploy_snapshot_waits_out_a_silent_machine_once_not_per_phase() {
                             store_version: Default::default(),
                             rtts: Vec::new(),
                             devices: Vec::new(),
+                            rule_generations: Default::default(),
                             passkeys: Vec::new(),
                             management_clients: Vec::new(),
                             telemetry: Some(TelemetryObservation::BridgeCapacity {
@@ -779,6 +780,7 @@ impl Resealing {
                         store_version: Default::default(),
                         rtts: Vec::new(),
                         devices: Vec::new(),
+                        rule_generations: Default::default(),
                         passkeys: Vec::new(),
                         management_clients: Vec::new(),
                         telemetry: None,

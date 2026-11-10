@@ -733,6 +733,7 @@ impl FakeMachine for DiscoveryService {
                 store_version: Default::default(),
                 rtts: Vec::new(),
                 devices: Vec::new(),
+                rule_generations: Default::default(),
                 passkeys: Vec::new(),
                 management_clients: self.management_clients.lock().unwrap().clone(),
                 telemetry,

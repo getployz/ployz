@@ -1039,6 +1039,7 @@ impl FakeMachine for DeployService {
             store_version: BTreeMap::new(),
             rtts: Vec::new(),
             devices: Vec::new(),
+            rule_generations: Default::default(),
             passkeys: Vec::new(),
             management_clients: Vec::new(),
             telemetry,

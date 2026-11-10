@@ -109,6 +109,7 @@ async fn real_catch_up_client_retries_readiness_and_placement_to_their_budget() 
                                     rtts: Vec::new(),
                                     management_clients: Vec::new(),
                                     devices: Vec::new(),
+                                    rule_generations: Default::default(),
                                     passkeys: Vec::new(),
                                     telemetry: Some(
                                         ployz_core::TelemetryObservation::BridgeCapacity {
@@ -244,6 +245,7 @@ async fn catch_up_uses_primitives_and_never_replaces_a_key_conflict_or_unknown_s
                                 rtts: Vec::new(),
                                 management_clients: Vec::new(),
                                 devices: Vec::new(),
+                                rule_generations: Default::default(),
                                 passkeys: Vec::new(),
                                 telemetry: Some(ployz_core::TelemetryObservation::BridgeCapacity {
                                     bridge: BridgeEndpointCapacity::new(
@@ -462,6 +464,7 @@ async fn top_level_catch_up_uses_fresh_target_eligibility_and_reuses_hidden_full
                             rtts: Vec::new(),
                             management_clients: Vec::new(),
                             devices: Vec::new(),
+                            rule_generations: Default::default(),
                             passkeys: Vec::new(),
                             storage: None,
                             upgrade: None,
@@ -624,6 +627,7 @@ async fn an_ineligible_target_retires_its_own_in_copy() {
                                 rtts: Vec::new(),
                                 management_clients: Vec::new(),
                                 devices: Vec::new(),
+                                rule_generations: Default::default(),
                                 passkeys: Vec::new(),
                                 storage: None,
                                 upgrade: None,
@@ -898,6 +902,7 @@ async fn catch_up_over_matching_copy(rotation: CopyRotation) -> OverMatching {
                         rtts: Vec::new(),
                         management_clients: Vec::new(),
                         devices: Vec::new(),
+                        rule_generations: Default::default(),
                         passkeys: Vec::new(),
                         storage: None,
                         upgrade: None,
@@ -1108,6 +1113,7 @@ async fn provisioned_globals_use_target_storage_and_report_unknown() {
                             rtts: Vec::new(),
                             management_clients: Vec::new(),
                             devices: Vec::new(),
+                            rule_generations: Default::default(),
                             passkeys: Vec::new(),
                             storage,
                             upgrade: None,
@@ -1283,6 +1289,7 @@ async fn catch_up_beside_doors(role: bool) -> BesideDoors {
                         rtts: Vec::new(),
                         management_clients: Vec::new(),
                         devices: Vec::new(),
+                        rule_generations: Default::default(),
                         passkeys: Vec::new(),
                         storage: None,
                         upgrade: None,

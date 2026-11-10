@@ -57,6 +57,13 @@ pub struct MachineDetails {
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     #[ts(optional, as = "Option<Vec<crate::DeviceKey>>")]
     pub devices: Vec<crate::DeviceKey>,
+    /// The highest generation of each automatic deploy rule this Machine has admitted a
+    /// build or deploy under, by rule ID: it refuses the rule below it. A person's client
+    /// checks a rule against it before approving a redeploy. A daemon from before 0.4 omits
+    /// it.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    #[ts(optional, as = "Option<BTreeMap<String, u32>>")]
+    pub rule_generations: BTreeMap<crate::authority::RuleId, u64>,
     /// How this Machine came to its Cluster. A daemon from before 0.3.15 omits it.
     #[serde(default)]
     pub founding: crate::Founding,

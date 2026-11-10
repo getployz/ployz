@@ -665,6 +665,7 @@ impl FakeMachine for JoinDaemon {
             store_version: Default::default(),
             rtts: Vec::new(),
             devices: Vec::new(),
+            rule_generations: Default::default(),
             passkeys: Vec::new(),
             management_clients: self
                 .inner

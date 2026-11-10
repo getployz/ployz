@@ -23,7 +23,10 @@ use serde_json::{Value, json};
 
 use super::super::super::store::{Backend, Store, mint};
 use super::approve::Enforcing;
-use super::{Checked, Facts, KeySet, Redeploy, Refused, TokenRefusal, approvable, check};
+use super::{
+    Checked, ClusterReport, Facts, KeySet, Redeploy, Refused, TokenRefusal, approvable, check,
+    checked_facts,
+};
 
 const BUILDER_SHA: &str = "1234567890abcdef1234567890abcdef12345678";
 const COMMIT: &str = "54dfcf4a46870fa09f5d5d6c965dd705c1a24e5c";
@@ -365,13 +368,21 @@ fn signs(
 
 /// The redeploy this Device approves: `web` at the fixture commit, under the fixture rule.
 fn redeploy() -> Redeploy {
+    redeploy_with(facts())
+}
+
+fn enforcing() -> Enforcing {
+    Enforcing {
+        cluster: cluster(),
+        machines: Vec::new(),
+    }
+}
+
+fn redeploy_with(facts: Facts) -> Redeploy {
     Redeploy {
         signer: Signer::from_seed(&[8; 32]),
-        enforcing: Enforcing {
-            cluster: cluster(),
-            machines: Vec::new(),
-        },
-        facts: facts(),
+        enforcing: enforcing(),
+        facts,
         expected: expected(),
         builds: Vec::new(),
     }
@@ -596,4 +607,104 @@ fn a_service_listed_twice_is_refused() {
     let view = redeployed(json!([build("web", COMMIT, &token)]));
     let refused = signs(&view, vec![spec("web", BUILT_TAG), spec("web", BUILT_TAG)]).unwrap_err();
     assert!(refused.contains("twice"), "{refused}");
+}
+
+// The rule a redeploy is checked against is the generation the Servers hold now.
+
+/// The Device that approved the rule.
+fn approver() -> Signer {
+    Signer::from_seed(&[5; 32])
+}
+
+/// The fixture rule at `generation`, signed by a Device the Servers trust.
+fn signed_rule(generation: u64) -> ployz_core::authority::Signed<AutoDeployRule> {
+    let mut rule = rule("Dockerfile");
+    rule.generation = generation;
+    rule.signer = SignerKey::Device(approver().public().into());
+    ployz_core::authority::Signed::sign(&rule, &approver()).unwrap()
+}
+
+/// What two Servers report: one has admitted the rule up to `floor`, the other not at all.
+fn servers_at(floor: Option<u64>) -> ClusterReport {
+    let mut floors = vec![BTreeMap::new()];
+    if let Some(floor) = floor {
+        floors.push(BTreeMap::from([(RuleId::from_bytes([0x11; 16]), floor)]));
+    }
+    ClusterReport {
+        sealing: cluster(),
+        attest: attest(),
+        trusted: ployz_core::authority::TrustedKeys {
+            devices: vec![ployz_core::DeviceKey::from_bytes(
+                *approver().public().as_bytes(),
+            )],
+            passkeys: Vec::new(),
+        },
+        floors,
+    }
+}
+
+/// The facts for Cloud's signed rule at `generation` against Servers at `floor`, or why
+/// there are none.
+fn facts_from(generation: u64, floor: Option<u64>) -> Result<Facts, String> {
+    checked_facts(
+        Some(signed_rule(generation)),
+        &checked_view(),
+        &enforcing(),
+        servers_at(floor),
+        Ok(keys_with_test_signer()),
+    )
+    .map_err(|error| error.to_string())
+}
+
+/// What the Device signs for the fixture redeploy, with its token and spec, under `facts`.
+fn signs_under(facts: Facts) -> Result<usize, String> {
+    let planned = DeploymentTargetView {
+        namespace: namespace(),
+        target: vec![spec("web", BUILT_TAG)],
+    };
+    let id = DeploymentId::parse("aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa").unwrap();
+    redeploy_with(facts)
+        .signed(&checked_view(), planned, &id)
+        .map(|(_, approved)| approved.len())
+        .map_err(|error| error.to_string())
+}
+
+#[test]
+fn the_generation_the_servers_hold_authorizes_the_redeploy() {
+    let facts = facts_from(GENERATION, Some(GENERATION)).unwrap();
+    assert_eq!(signs_under(facts), Ok(1));
+}
+
+#[test]
+fn a_superseded_rule_with_a_matching_token_and_spec_is_refused_before_signing() {
+    // Generation 3 is validly signed, and the token and spec match it exactly: only the
+    // Servers' floor says a newer generation replaced it.
+    let Err(refused) = facts_from(GENERATION, Some(GENERATION + 1)) else {
+        panic!("a superseded rule gave facts to sign under");
+    };
+    assert!(refused.contains("a newer one replaced"), "{refused}");
+}
+
+#[test]
+fn a_rule_no_server_holds_yet_or_no_floor_at_all_is_refused() {
+    let Err(refused) = facts_from(GENERATION, Some(GENERATION - 1)) else {
+        panic!("a generation no Server admitted gave facts");
+    };
+    assert!(
+        refused.contains("haven't deployed under the latest"),
+        "{refused}"
+    );
+    let Err(refused) = facts_from(GENERATION, None) else {
+        panic!("no floor gave facts");
+    };
+    assert!(
+        refused.contains("None of your servers reports"),
+        "{refused}"
+    );
+}
+
+/// The fixture redeploy: `web` reused at the fixture commit with a token that checks out.
+fn checked_view() -> DeploymentView {
+    let token = Built::default().token(CommitAuthority::Head);
+    redeployed(json!([build("web", COMMIT, &token)]))
 }

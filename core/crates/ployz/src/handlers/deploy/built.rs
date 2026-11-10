@@ -23,10 +23,10 @@ use ployz_core::authority::rule::{RuleEvent, template, verify_signature};
 use ployz_core::authority::{
     ApprovedChange, AttestKey, AuthorityRefusal, AutoDeployRule, BuildApproval, BuildClaim,
     BuildStage, CommitAuthority, CommitSha, DeployApproval, DeployTerms, ImageDigest, PolicyDigest,
-    Signed, Signer, SignerKey, Timestamp, TrustedKeys, deploy::content_addressed, validity,
+    RuleId, Signed, Signer, SignerKey, Timestamp, TrustedKeys, deploy::content_addressed, validity,
 };
 use ployz_core::{
-    DescribeContractRequest, InspectRequest, MachineTarget, Namespace, OperationId,
+    DescribeContractRequest, InspectRequest, MachineId, MachineTarget, Namespace, OperationId,
     RequestedServiceSpec, RpcErrorCode, Sealing, SealingPublicKey, ServiceName, op,
 };
 use ployz_store::{
@@ -292,7 +292,7 @@ fn built_from(build: &BuildView) -> Result<CommitSha, Error> {
 
 /// What the Servers and GitHub report that a token is checked against.
 struct Reported {
-    cluster: Result<(SealingPublicKey, AttestKey, TrustedKeys), Error>,
+    cluster: Result<ClusterReport, Error>,
     github: Result<KeySet, Error>,
 }
 
@@ -310,6 +310,16 @@ impl Reported {
     }
 }
 
+/// What the Servers report over this Device's own connection.
+struct ClusterReport {
+    sealing: SealingPublicKey,
+    attest: AttestKey,
+    /// The keys the Server this CLI enters by trusts.
+    trusted: TrustedKeys,
+    /// Each answering Server's highest admitted generation of each rule.
+    floors: Vec<BTreeMap<RuleId, u64>>,
+}
+
 /// The facts a token is checked against: what the Servers and GitHub `reported`, and the
 /// rule a trusted key signed.
 fn facts(
@@ -322,34 +332,77 @@ fn facts(
         project: Some(view.environment.project.clone()),
         environment: Some(view.environment.name.clone()),
     };
-    let (sealing, attest, trusted) = reported.cluster?;
-    if sealing != enforcing.cluster {
+    let cluster = reported.cluster?;
+    let rules = store.read(&RuleQuery { environment })?;
+    checked_facts(rules.rule, view, enforcing, cluster, reported.github)
+}
+
+/// `signed` as the rule a token is checked against, once a key the Servers trust signed
+/// it for this Cluster and Namespace, and it is the generation the Servers hold now: Cloud
+/// can't hand back a generation a newer one replaced.
+fn checked_facts(
+    signed: Option<Signed<AutoDeployRule>>,
+    view: &DeploymentView,
+    enforcing: &Enforcing,
+    cluster: ClusterReport,
+    github: Result<KeySet, Error>,
+) -> Result<Facts, Error> {
+    let environment = view.environment.name.as_str();
+    if cluster.sealing != enforcing.cluster {
         return Err(Error::coded(
             RpcErrorCode::Conflict,
             "Your servers report two cluster keys. Run ployz status, then redeploy again.",
         ));
     }
-    let rules = store.read(&RuleQuery { environment })?;
-    let Some(signed) = rules.rule else {
-        return Err(no_rule(view.environment.name.as_str()));
+    let Some(signed) = signed else {
+        return Err(no_rule(environment));
     };
-    let (rule, _) = verify_signature(&signed, &trusted, Timestamp::now()).map_err(|_| {
-        Error::coded(
-            RpcErrorCode::Conflict,
-            format!(
-                "No device your servers trust signed {}'s automatic deploy rule. Approve it \
-                 again with ployz github rule approve, then redeploy.",
-                view.environment.name
-            ),
-        )
-    })?;
+    let (rule, _) =
+        verify_signature(&signed, &cluster.trusted, Timestamp::now()).map_err(|_| {
+            Error::coded(
+                RpcErrorCode::Conflict,
+                format!(
+                    "No device your servers trust signed {environment}'s automatic deploy rule. \
+                 Approve it again with ployz github rule approve, then redeploy."
+                ),
+            )
+        })?;
     if rule.cluster != enforcing.cluster || rule.namespace != view.namespace {
-        return Err(no_rule(view.environment.name.as_str()));
+        return Err(no_rule(environment));
+    }
+    let floor = cluster
+        .floors
+        .iter()
+        .filter_map(|floors| floors.get(&rule.rule))
+        .max()
+        .copied();
+    let refused = |why: String| Err(Error::coded(RpcErrorCode::Conflict, why));
+    match floor {
+        Some(floor) if floor == rule.generation => {}
+        Some(floor) if floor > rule.generation => {
+            return refused(format!(
+                "Cloud sent an approval of {environment}'s automatic deploy rule that a newer \
+                 one replaced. Nothing deployed."
+            ));
+        }
+        Some(_) => {
+            return refused(format!(
+                "Your servers haven't deployed under the latest approval of {environment}'s \
+                 automatic deploy rule yet. Push to its branch, then redeploy again."
+            ));
+        }
+        None => {
+            return refused(format!(
+                "None of your servers reports which approval of {environment}'s automatic \
+                 deploy rule is current. Upgrade Ployz on your servers, or push to the rule's \
+                 branch, then redeploy again."
+            ));
+        }
     }
     Ok(Facts {
-        attest,
+        attest: cluster.attest,
         rule,
-        keys: reported.github?,
+        keys: github?,
     })
 }
 
@@ -363,35 +416,58 @@ fn no_rule(environment: &str) -> Error {
     )
 }
 
+/// How long a Server other than the one this CLI enters by may take to report its rule
+/// floors. One that doesn't answer reports none.
+const FLOOR_TIMEOUT: Duration = Duration::from_secs(10);
+
 /// The Cluster's Sealing key, its build attest key and the keys its Servers trust, from
-/// the Server this CLI enters by.
-fn cluster_keys(matches: &ArgMatches) -> Result<(SealingPublicKey, AttestKey, TrustedKeys), Error> {
+/// the Server this CLI enters by, and each Server's rule floors, asked of all at once.
+fn cluster_keys(matches: &ArgMatches) -> Result<ClusterReport, Error> {
     let context = matches
         .try_get_one::<String>("context")
         .ok()
         .flatten()
         .map(String::as_str);
     super::super::runtime()?.block_on(async {
-        let client = server::connect(matches, context).await?;
+        let mut client = server::connect(matches, context).await?;
         let Some(entry) = client.entry_machine() else {
             return Err(unread_cluster());
         };
+        let others: BTreeSet<MachineId> = client
+            .machines()
+            .await?
+            .into_iter()
+            .map(|observed| observed.machine.id)
+            .filter(|machine| *machine != entry)
+            .collect();
+        let client = &client;
         let target = MachineTarget::from(&entry);
-        let about = client
-            .invoke::<op::DescribeContract>(DescribeContractRequest {}, &target, None)
-            .await?;
-        let details = client
-            .invoke::<op::Inspect>(InspectRequest::default(), &target, None)
-            .await?;
+        let floors = others.iter().map(|machine| async move {
+            let target = MachineTarget::from(machine);
+            let inspected = client.invoke::<op::Inspect>(InspectRequest::default(), &target, None);
+            match tokio::time::timeout(FLOOR_TIMEOUT, inspected).await {
+                Ok(Ok(details)) => Some(details.rule_generations),
+                _ => None,
+            }
+        });
+        let (about, details, floors) = tokio::join!(
+            client.invoke::<op::DescribeContract>(DescribeContractRequest {}, &target, None),
+            client.invoke::<op::Inspect>(InspectRequest::default(), &target, None),
+            futures_util::future::join_all(floors),
+        );
+        let (about, details) = (about?, details?);
+        let mut floors: Vec<_> = floors.into_iter().flatten().collect();
+        floors.push(details.rule_generations);
         match (about.sealing, about.attest) {
-            (Some(Sealing::Held { public_key }), Some(attest)) => Ok((
-                public_key,
+            (Some(Sealing::Held { public_key }), Some(attest)) => Ok(ClusterReport {
+                sealing: public_key,
                 attest,
-                TrustedKeys {
+                trusted: TrustedKeys {
                     devices: details.devices,
                     passkeys: details.passkeys,
                 },
-            )),
+                floors,
+            }),
             _ => Err(unread_cluster()),
         }
     })

@@ -765,6 +765,7 @@ impl Fleet {
                         rtts: Vec::new(),
                         management_clients: Vec::new(),
                         devices: Vec::new(),
+                        rule_generations: Default::default(),
                         passkeys: Vec::new(),
                         telemetry: None,
                         storage: None,
