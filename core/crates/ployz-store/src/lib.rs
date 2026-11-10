@@ -51,7 +51,7 @@ use std::collections::BTreeSet;
 
 use ployz_core::RpcError;
 
-pub use auto_rule::{ApproveRule, RuleQuery, RuleSourceView, RuleView};
+pub use auto_rule::{ApproveRule, RuleQuery, RuleView};
 pub use automation::{
     AutoDeployed, Automated, BranchHead, CheckConclusion, CheckStatus, CheckSuite, Skipped,
     SystemEvent,
@@ -91,6 +91,7 @@ pub use github::{
 };
 pub use id::*;
 pub use permission::Permission;
+pub use ployz_core::authority::rule_draft::RuleSourceView;
 /// A Sync view row's id, as Sync, Take, Never sync and Hold name it.
 pub use ployz_core::config::RowId;
 pub use pull_request::{

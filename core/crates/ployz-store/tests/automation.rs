@@ -2117,8 +2117,8 @@ fn a_push_under_a_rule_waits_for_approval_again_once_a_setting_changed() {
     assert_eq!(
         reasons(&automated),
         vec![
-            "Approve the automatic deploy rule again: web changed since it was approved. Run \
-             ployz github rule approve web from an approved device."
+            "web changed since the automatic deploy rule was approved. Approve it again in \
+             the environment's settings, or run ployz github rule approve web."
         ]
     );
     // Approved again over the new settings, the next push deploys.
@@ -2133,8 +2133,8 @@ fn a_push_under_a_rule_waits_for_approval_again_once_a_setting_changed() {
     assert_eq!(
         reasons(&automated),
         vec![
-            "Approve the automatic deploy rule again: web changed since it was approved. Run \
-             ployz github rule approve web from an approved device."
+            "web changed since the automatic deploy rule was approved. Approve it again in \
+             the environment's settings, or run ployz github rule approve web."
         ]
     );
 }

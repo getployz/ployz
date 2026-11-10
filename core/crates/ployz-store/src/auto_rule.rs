@@ -1,11 +1,13 @@
-//! An Environment's automatic deploy rule: a Device's standing approval of every push
-//! to one branch. Cloud keeps the signed rule and relays it with each push's
+//! An Environment's automatic deploy rule: a person's standing approval of every push to
+//! one branch, signed by a Device or a passkey's own prompt. Cloud keeps the signed rule and relays it with each push's
 //! Deployment; every Machine checks it, so nothing here admits a deploy. The Store only
 //! holds a push whose Saved settings the rule no longer approves, so a settings change
 //! waits for a person instead of failing on every Machine.
 
-use ployz_core::authority::{AutoDeployRule, BuildPolicy, Signed, rule::template};
-use ployz_core::config::{SavedEnvironmentIntent, ServiceBuildConfig, ServiceSource};
+use ployz_core::authority::{
+    AutoDeployRule, BuildPolicy, RuleBasis, Signed, rule::template, rule_draft::RuleSourceView,
+};
+use ployz_core::config::{SavedEnvironmentIntent, ServiceSource};
 use ployz_core::{Namespace, RequestedServiceSpec, RpcError, ServiceName};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
@@ -14,7 +16,7 @@ use ts_rs::TS;
 use crate::storage::Tx;
 use crate::{Actor, EnvironmentId, EnvironmentRef, EnvironmentSummary, Trusted, error, scope};
 
-/// Keep the rule a Device signed for an Environment. Cloud checks only that it fits
+/// Keep the rule a Device or passkey signed for an Environment. Cloud checks only that it fits
 /// the Environment; the Machines check the signature.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, TS)]
 #[serde(deny_unknown_fields)]
@@ -38,7 +40,7 @@ pub struct RuleView {
     pub environment: EnvironmentSummary,
     /// The Namespace its Deployments run in.
     pub namespace: Namespace,
-    /// The rule a Device last signed, ended or not.
+    /// The rule a Device or a passkey last signed, ended or not.
     pub rule: Option<Signed<AutoDeployRule>>,
     /// Each Saved Service that builds from a GitHub repository.
     pub sources: Vec<RuleSourceView>,
@@ -49,18 +51,17 @@ pub struct RuleView {
     pub changed: Vec<ServiceName>,
 }
 
-/// Where a Saved Service builds from.
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, TS)]
-pub struct RuleSourceView {
-    pub service: ServiceName,
-    /// `owner/name`.
-    pub repository: String,
-    #[ts(type = "number")]
-    pub repository_id: u64,
-    /// None when its branch is disconnected.
-    pub branch: Option<String>,
-    pub root_dir: String,
-    pub build: ServiceBuildConfig,
+impl RuleView {
+    /// What a rule is drafted from.
+    #[must_use]
+    pub fn basis(&self) -> RuleBasis {
+        RuleBasis {
+            namespace: self.namespace.clone(),
+            rule: self.rule.clone(),
+            sources: self.sources.clone(),
+            target: self.target.clone(),
+        }
+    }
 }
 
 /// The rule an Environment holds, ended or not.
@@ -262,8 +263,8 @@ pub(crate) fn reapprove(changed: &[ServiceName]) -> String {
         .collect::<Vec<_>>()
         .join(" ");
     format!(
-        "Approve the automatic deploy rule again: {} changed since it was approved. Run \
-         ployz github rule approve {names} from an approved device.",
+        "{} changed since the automatic deploy rule was approved. Approve it again in the \
+         environment's settings, or run ployz github rule approve {names}.",
         changed
             .iter()
             .map(ServiceName::as_str)
