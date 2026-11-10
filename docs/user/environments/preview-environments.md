@@ -166,8 +166,10 @@ build workflow, on the branch of the environment previews start from, and the pr
 - **The review covers one commit.** A new push reads **Needs approval** again, and the preview
   keeps running the commit you reviewed.
 - **A review lasts 15 minutes.** The commit must build and start in that time, or the servers
-  refuse it: review it again. Once a server has started the reviewed commit, it restarts it with
-  no new review.
+  refuse it: click **Review again** on its row. With **Wait for CI** on, review once CI has
+  passed. Once a server has started the reviewed commit, it restarts it with no new review.
+- **Each project reviews its own preview.** If two projects preview the same repository, review
+  the pull request in each one's PR panel.
 - **Servers need Ployz 0.4.** An older server refuses every reviewed preview, and the dialog names
   it. Upgrade it first.
 

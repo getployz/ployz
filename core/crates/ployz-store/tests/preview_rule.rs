@@ -569,9 +569,78 @@ fn review_of(
 
 #[test]
 fn an_untrusted_pull_request_opens_its_preview_and_deploys_only_once_reviewed() {
+    let (store, approved, review) = reviewed(false);
+    let deployment = approved
+        .admitted
+        .first()
+        .unwrap_or_else(|| panic!("the reviewed head deploys: {approved:?}"))
+        .deployment
+        .id
+        .clone();
+    let build = ployz_store::GithubBuildId {
+        deployment,
+        service: ServiceName::parse("web").unwrap(),
+    };
+    assert_eq!(store.github_review(&build).unwrap(), Some(review));
+    assert!(matches!(
+        store.github_rule(&build).unwrap(),
+        Some(GithubRule::Preview(_))
+    ));
+}
+
+#[test]
+fn a_review_held_for_ci_rides_with_the_deployment_ci_releases() {
+    let (store, approved, review) = reviewed(true);
+    assert!(
+        approved.admitted.is_empty(),
+        "web waits for CI: {approved:?}"
+    );
+    let Written::Automated(passed) = store
+        .system(
+            &OrganizationId::parse("org").unwrap(),
+            &SystemEvent::CheckSuite(ployz_store::CheckSuite {
+                repository_id: backend::repo_id(11),
+                suite: 1,
+                head: backend::sha(HEAD),
+                status: serde_json::from_value(json!("completed")).unwrap(),
+                conclusion: Some(serde_json::from_value(json!("success")).unwrap()),
+                updated: ployz_store::GithubTimestamp::parse("2026-09-29T10:01:00Z").unwrap(),
+            }),
+            &trusted(),
+        )
+        .unwrap()
+    else {
+        panic!("a check suite's news is automation");
+    };
+    let deployment = passed
+        .admitted
+        .first()
+        .unwrap_or_else(|| panic!("CI releases the reviewed head: {passed:?}"))
+        .deployment
+        .id
+        .clone();
+    let build = ployz_store::GithubBuildId {
+        deployment,
+        service: ServiceName::parse("web").unwrap(),
+    };
+    assert_eq!(store.github_review(&build).unwrap(), Some(review));
+}
+
+/// An untrusted pull request opened under a preview rule, then approved with a person's
+/// review once a stale one is refused; with `ci`, web waits for CI.
+fn reviewed(
+    ci: bool,
+) -> (
+    ConfigStore,
+    ployz_store::Automated,
+    ployz_core::authority::Review,
+) {
     let store = backend::open();
     let who = Actor::system(OrganizationId::parse("org").unwrap());
     production(&store, &who);
+    if ci {
+        set(&store, &who, "web.waitForCi", json!(true));
+    }
     let signer = Signer::from_seed(&[3; 32]);
     let rule = rule_over(&plan(&store, &who), &signer);
     store
@@ -615,20 +684,5 @@ fn an_untrusted_pull_request_opens_its_preview_and_deploys_only_once_reviewed() 
     assert!(refused.message.contains("another commit"), "{refused:?}");
 
     let approved = approve(review.clone()).unwrap();
-    let deployment = approved
-        .admitted
-        .first()
-        .unwrap_or_else(|| panic!("the reviewed head deploys: {approved:?}"))
-        .deployment
-        .id
-        .clone();
-    let build = ployz_store::GithubBuildId {
-        deployment,
-        service: ServiceName::parse("web").unwrap(),
-    };
-    assert_eq!(store.github_review(&build).unwrap(), Some(review));
-    assert!(matches!(
-        store.github_rule(&build).unwrap(),
-        Some(GithubRule::Preview(_))
-    ));
+    (store, approved, review)
 }

@@ -13,7 +13,8 @@ import { useEnvironmentMachines } from "#/providers/runtime-provider";
 /** Approve `head`, with a review of it for each PR Environment that runs under a preview rule. */
 export type Approve = (head: string, reviews?: { environment: string; review: Review }[]) => Promise<void>;
 
-type Props = { organizationSlug: string; project: string; environment: string; number: number; head: string; approve: Approve };
+/** `again`: the head is approved already, so only a new review of it, as after one expired, has anything to do. */
+type Props = { organizationSlug: string; project: string; environment: string; number: number; head: string; approve: Approve; again?: boolean };
 
 /**
  * Approve deploy for a pull request whose PR Environment is open. Under a preview rule, on Servers that enforce device
@@ -21,13 +22,13 @@ type Props = { organizationSlug: string; project: string; environment: string; n
  */
 export function ApproveDeploy(props: Props) {
   return (
-    <Suspense fallback={<Button size="sm" variant="outline" disabled>Approve deploy</Button>}>
+    <Suspense fallback={props.again ? null : <Button size="sm" variant="outline" disabled>Approve deploy</Button>}>
       <Reviewing {...props} />
     </Suspense>
   );
 }
 
-function Reviewing({ organizationSlug, project, environment, number, head, approve }: Props) {
+function Reviewing({ organizationSlug, project, environment, number, head, approve, again = false }: Props) {
   const read = useStoreView(organizationSlug, previewReviewQuery({ project, environment }));
   const view = read.ok ? read.value : null;
   const { machines } = useRuntimeLens(organizationSlug);
@@ -38,11 +39,11 @@ function Reviewing({ organizationSlug, project, environment, number, head, appro
     environmentMachines, machines, REVIEW_CAPABILITIES,
   );
   if (view === null || scope === null || !scope.enforced) {
-    return <Button size="sm" variant="outline" onClick={() => void approve(head)}>Approve deploy</Button>;
+    return again ? null : <Button size="sm" variant="outline" onClick={() => void approve(head)}>Approve deploy</Button>;
   }
   return (
     <>
-      <Button size="sm" variant="outline" onClick={() => setOpen(true)}>Review and approve</Button>
+      <Button size="sm" variant="outline" onClick={() => setOpen(true)}>{again ? "Review again" : "Review and approve"}</Button>
       {open ? <ReviewDialog view={view} scope={scope} number={number} head={head} approve={approve} onClose={() => setOpen(false)} /> : null}
     </>
   );

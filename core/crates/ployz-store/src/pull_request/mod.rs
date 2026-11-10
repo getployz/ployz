@@ -1178,6 +1178,7 @@ pub(crate) fn approve(
             for admitted in automated.admitted.get(before..).unwrap_or_default() {
                 deployment::reviewed(tx, &admitted.deployment.id, review)?;
             }
+            deployment::reviewed_held(tx, environment, event.head.as_str(), review)?;
         }
     }
     automated.checks.push(pr);

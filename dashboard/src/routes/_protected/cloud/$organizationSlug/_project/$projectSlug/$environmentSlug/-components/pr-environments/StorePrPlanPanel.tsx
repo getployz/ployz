@@ -168,7 +168,9 @@ function OpenRow({ params, open, onApprove }: { params: Params; open: OpenPullRe
       </ItemContent>
     </>
   );
-  if (waiting || !open.environment) {
+  // An approved head under a preview rule may need a new review, as when its build outlived the last one.
+  const approved = open.environment && open.standing !== "trusted" && !waiting && head;
+  if (waiting || !open.environment || approved) {
     return (
       <Item variant="outline" size="sm">
         {content}
@@ -177,6 +179,16 @@ function OpenRow({ params, open, onApprove }: { params: Params; open: OpenPullRe
             <ApproveDeploy organizationSlug={params.organizationSlug} project={params.projectSlug} environment={open.environment}
               number={open.number} head={head} approve={onApprove} />
           ) : approvable && head ? <Button size="sm" variant="outline" onClick={() => void onApprove(head)}>Approve deploy</Button> : null}
+          {approved && open.environment && head ? (
+            <ApproveDeploy organizationSlug={params.organizationSlug} project={params.projectSlug} environment={open.environment}
+              number={open.number} head={head} approve={onApprove} again />
+          ) : null}
+          {open.environment && !waiting ? (
+            <Button variant="ghost" size="icon-sm" aria-label={`Open ${open.environment}`} nativeButton={false}
+              render={<Link to={ENVIRONMENT_INDEX_ROUTE_TO} params={{ ...params, environmentSlug: open.environment }} />}>
+              <ChevronRightIcon />
+            </Button>
+          ) : null}
         </ItemActions>
       </Item>
     );

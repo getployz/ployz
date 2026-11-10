@@ -320,6 +320,27 @@ pub(crate) fn reviewed(
     .map(drop)
 }
 
+/// Keep `review` on each of `environment`'s Deployments held for CI at `head`, so the
+/// build CI releases carries it.
+pub(crate) fn reviewed_held(
+    tx: &mut dyn Tx,
+    environment: &EnvironmentId,
+    head: &str,
+    review: &ployz_core::authority::Review,
+) -> Result<(), RpcError> {
+    let review = serde_json::to_string(review).map_err(|_| error::corrupt("Preview review"))?;
+    tx.execute(
+        "UPDATE config_deployment SET preview_review = ?3 WHERE environment_id = ?1 \
+         AND push_head = ?2 AND status = 'waiting_for_ci'",
+        &[
+            environment.as_str().into(),
+            head.into(),
+            review.as_str().into(),
+        ],
+    )
+    .map(drop)
+}
+
 /// The review a person signed for preview Deployment `id`'s commit, if any.
 pub(crate) fn preview_review(
     tx: &mut dyn Tx,
