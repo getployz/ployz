@@ -27,6 +27,9 @@ pub enum Purpose {
     /// Standing authority over every future push, such as an automatic deploy rule. Only a
     /// Device signs one: a session grant covers workflows only.
     Rule,
+    /// One Volume workflow, which can stop a Service, start one elsewhere and send a Volume's
+    /// data to another Machine. Only a Device signs one: a session grant covers none.
+    Volume,
 }
 
 impl Purpose {
@@ -37,6 +40,7 @@ impl Purpose {
             Self::Join => "join",
             Self::Enforce => "enforce",
             Self::Rule => "rule",
+            Self::Volume => "volume",
         }
     }
 }

@@ -20,6 +20,7 @@ pub mod session;
 pub mod starting_set;
 pub mod trusted_key;
 pub mod validity;
+pub mod volume;
 
 pub use canonical::{CanonicalError, Timestamp};
 pub use deploy::{
@@ -42,3 +43,4 @@ pub use trusted_key::{
     Passkey, PasskeyAccount, PasskeyApprover, PasskeyAssertion, PasskeyPublicKey, TrustedKeys,
     TrustedPasskey,
 };
+pub use volume::{VolumeApproval, VolumeApproved, VolumeFacts, VolumeStep, VolumeWorkflow};

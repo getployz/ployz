@@ -25,7 +25,7 @@ pub enum AuthorityRefusal {
     Expired,
     #[error("this Machine holds no Sealing Key, so it cannot tell which Cluster was approved")]
     NoClusterIdentity,
-    #[error("operation {operation} already ran this step; a new restart signs a new approval")]
+    #[error("operation {operation} already ran this step; it needs a new approval")]
     Replayed { operation: OperationId },
     #[error("this GitHub token already minted a Build Grant; a build asks for a new one")]
     ProofReplayed,

@@ -144,7 +144,7 @@ impl RestartApproval {
 
 pub use super::validity::{CLOCK_SKEW_MILLIS, MAX_LIFETIME_MILLIS};
 
-fn ordered_machines<'de, D: serde::Deserializer<'de>>(
+pub(super) fn ordered_machines<'de, D: serde::Deserializer<'de>>(
     deserializer: D,
 ) -> Result<Vec<MachineId>, D::Error> {
     let machines = Vec::<MachineId>::deserialize(deserializer)?;

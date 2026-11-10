@@ -18,6 +18,8 @@ export type {
   SignerKey,
   StepDigest,
   StepKind,
+  VolumeApproval,
+  VolumeWorkflow,
 } from "./generated/payloads";
 
 import type { ApprovedChange, DeployTerms, PlanView } from "./generated/payloads";

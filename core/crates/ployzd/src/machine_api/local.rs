@@ -1288,6 +1288,13 @@ fn local_failure(error: LocalMachineError) -> Result<RpcError, Status> {
                 "next": "ployz device enforce --off from an approved device",
             }),
         )),
+        LocalMachineError::VolumeStepRefused(_) => Err(ployz_core::rpc::hinted_status(
+            tonic::Code::PermissionDenied,
+            &error,
+            serde_json::json!({
+                "next": "approve the Volume change again from an approved device",
+            }),
+        )),
         LocalMachineError::RuleGrantRefused(_)
         | LocalMachineError::RuleProofRefused(_)
         | LocalMachineError::RuleHeadUnread(_) => Err(build_refused(
