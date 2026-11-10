@@ -6,7 +6,7 @@ A route **crosses the bar** when a compromised Cloud can use it, under enforceme
 
 ## Every route
 
-`Signed(…)` lists the statements that admit an Operator's call. `Signed()` with nothing listed means no statement admits it yet, and only a Full caller can call it. The class column is the class F1 writes. A different class later names the slice that moves it.
+`Signed(…)` lists the statements that admit an Operator's call. `Signed()` with nothing listed means no statement admits it yet, and only a Full caller can call it. The class column is the class F1 writes. A different class later names the slice that moves it. A `Bound` row succeeds unsigned by design, so "Live matrix" below, not this table alone, is what the live lanes expect.
 
 ### Reads
 
@@ -57,6 +57,46 @@ Refused at dispatch for any caller but the local socket or a Device's own connec
 | `PublishCertificateMaterial` | `ployz.certificates.publish.v1` | Admitted. Sets the key the Ingress Proxy serves for a hostname. | `Bound("DNS and ACME authority Cloud holds; thread X")` | |
 | `SetIngressDoors` | `ployz.ingress.doors.v1` | Refused (`machine_api/local.rs:1167`) | `Signed()` | `Bound("daemon-pinned images; tunnel token is thread X's")` at F3 |
 | `SetPrivateAccess` | `ployz.private-access.v1` | Refused (`machine_api/local.rs:1179`) | `Signed()` | `Signed(PrivateAccess)` at F3 |
+
+## Live matrix
+
+The attacker harness never assumes an unsigned call is refused. It runs F1's `CASES` (f-plan.md, "Authorization classes"), which give each branch its own expected answer. "Refused" means refused naming the capability with nothing changed. "Bounded" means served with the check holding. "Served" means served. The column is the answer after F7. A `Pending` row is Served until the slice named in "Every route".
+
+Routes that carry several mutations need one case per branch:
+
+| Route | Branch | Expected from Cloud, unsigned, on an enforcing Machine |
+| --- | --- | --- |
+| `Enroll` | Member with no capsule | Refused (F7) |
+| `Enroll` | Member with an approved capsule | Served |
+| `Enroll` | Founder | Refused until its first key arrives over local administration (F7, gap 6) |
+| `EnsureContainer` | Create | Refused. Needs a deploy approval. |
+| `EnsureContainer` | Start, stop, restart | Refused. Needs a restart, deploy, proposal or rule approval. |
+| `EnsureContainer` | `Out`, `Remove` | Refused. Needs a deploy approval, or a teardown from F5. |
+| `RequestMachineUpgrade` | The release the signed channel resolves to | Served (F2) |
+| `RequestMachineUpgrade` | Another channel, an exact version off the channel, or no statement | Refused (F2) |
+| `RequestMachineUpgrade` | A downgrade | Refused |
+| `SetIngressDoors` | The daemon's pinned door image | Bounded (F3) |
+| `SetIngressDoors` | Any other image | Refused (F3) |
+| `SetPrivateAccess` | On | Refused (F3) |
+| `SetPrivateAccess` | Off | Served (F3) |
+| `GenerateSealingKey` | The Cluster publishes no key | Bounded. The key stays on the Machine. |
+| `GenerateSealingKey` | The Cluster already publishes one | Refused |
+| `InstallSealingKey` | Sealed by an accepted Machine's key | Bounded |
+| `InstallSealingKey` | Sealed by any other key | Refused |
+| `SetManagementClient` | From Cloud's own connection | Bounded. Device slots are untouched. |
+| `SetManagementClient` | From the mesh, or naming a Device slot | Refused |
+| `SetVolumeCopy` | A Writer want with a start | Refused (E1) |
+| `SetVolumeCopy` | Pull, cut, promote, forget | Refused from E6 |
+| `SetVolumeCopy` | `Floor`, `Snapshot` | Served. A residual, as "Every route" says. |
+| `SetVolumeSize` | Grow, or a shrink | Refused from E7. A shrink below what the copy holds is refused at any slice. |
+| `MintBuildGrant` | With a rule and its proof | Served |
+| `MintBuildGrant` | Without | Refused |
+| `Leave`, `Forget` | No statement | Refused (F1) |
+| `Leave`, `Forget` | A teardown naming another Machine | Refused (F5) |
+| `PullImage`, `PullImageFromMachine`, `EnsureImageIngest` | Any image | Bounded. A following unsigned `EnsureContainer` create with that image is refused. |
+| `SetDeviceEnforcement` and every other `Full` row | From the mesh | Refused at dispatch |
+
+Every other `Bound` row has one Served case. Every other `Signed` row has one Refused case.
 
 ## Automatic effects
 
