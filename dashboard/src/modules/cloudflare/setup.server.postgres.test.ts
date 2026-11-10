@@ -257,7 +257,7 @@ it("won't open the ports from the unfinished-setup alert once the tunnel is set 
   await priorRow("set_up");
   const { runtime, sets } = cluster();
   await expect(harness.runEffect(openPublicPorts(ORG).pipe(Effect.provideService(OrganizationRuntime, runtime))))
-    .rejects.toMatchObject({ message: expect.stringContaining("Cloudflare Tunnel is set up") });
+    .rejects.toMatchObject({ message: expect.stringContaining("Cloudflare Tunnel is already set up") });
   expect(sets).toEqual([]);
 });
 
@@ -288,7 +288,7 @@ it("won't open the ports once a setup that finished while the fallback connected
   const { runtime } = cluster((doors) => doors, CLOSED_FRAME);
   expect(await setUp("example.com", cloudflare().http, runtime)).toMatchObject({ state: "active" });
   connect();
-  await expect(opening).rejects.toMatchObject({ message: expect.stringContaining("already uses Cloudflare") });
+  await expect(opening).rejects.toMatchObject({ message: expect.stringContaining("already use Cloudflare Tunnel") });
   expect(fallback.sets).toEqual([]);
 });
 
@@ -352,7 +352,7 @@ it("keeps the API token out of every table and the outbox, and the tunnel token 
 it("refuses a subdomain of a zone before touching anything", async () => {
   const { http, calls } = cloudflare();
   const { runtime, sets } = cluster();
-  await expect(setUp("apps.example.com", http, runtime)).rejects.toMatchObject({ message: expect.stringContaining("Addresses go one level below the zone") });
+  await expect(setUp("apps.example.com", http, runtime)).rejects.toMatchObject({ message: expect.stringContaining("Use example.com, the zone apps.example.com belongs to.") });
   expect(calls.filter(({ method }) => method !== "GET")).toEqual([]);
   expect(sets).toEqual([]);
   expect(await setupRows()).toEqual([]);
@@ -361,7 +361,7 @@ it("refuses a subdomain of a zone before touching anything", async () => {
 it("names the missing permission and changes nothing when the token can't edit DNS", async () => {
   const { http, calls, alive } = cloudflare({ dnsStatus: 403 });
   const { runtime, sets } = cluster();
-  await expect(setUp("example.com", http, runtime)).rejects.toMatchObject({ message: expect.stringContaining("Zone: DNS: Edit") });
+  await expect(setUp("example.com", http, runtime)).rejects.toMatchObject({ message: expect.stringContaining("That token is missing DNS Edit.") });
   expect(writesOf(calls)).toEqual([]);
   expect(alive.size).toBe(0);
   expect(sets).toEqual([]);
@@ -482,7 +482,7 @@ it("puts the row back as it was when it fails: a Cluster that left Cloudflare is
   await priorRow("left");
   const { http, alive } = cloudflare();
   const { runtime, sets } = cluster(() => ["public"]);
-  await expect(setUp("example.com", http, runtime)).rejects.toMatchObject({ message: "s1 still has other doors open. Nothing was changed." });
+  await expect(setUp("example.com", http, runtime)).rejects.toMatchObject({ message: "s1 didn't switch. Nothing was changed." });
   expect(alive.size).toBe(0);
   expect(sets.map(({ doors }) => doors)).toEqual([["public", "tunnel"], ["public"]]);
   expect(await setupRows()).toEqual([{ zone: "example.com", tunnel_id: "t0", tunnel_name: "ployz-acme", state: "left" }]);
@@ -492,7 +492,7 @@ it("never says nothing changed while a Server still holds the tunnel door it cou
   const { http, alive } = cloudflare();
   const { runtime, sets } = cluster((doors) => doors.length === 2 ? ["public"] : ["public", "tunnel"]);
   const failure = await setUp("example.com", http, runtime).then(() => null, (error: { message: string }) => error.message);
-  expect(failure).toBe("s1 still has other doors open. Your servers still hold the tunnel door. s1 still has other doors open.");
+  expect(failure).toBe("s1 didn't switch. The tunnel may still be open on your servers. s1 didn't switch.");
   expect(failure).not.toContain("Nothing was changed.");
   expect(sets.map(({ doors }) => doors)).toEqual([["public", "tunnel"], ["public"]]);
   expect(alive.size).toBe(0);
@@ -526,7 +526,7 @@ it("names the record when Cloudflare keeps it after a failed setup, never claimi
 it("stops before creating anything when the zone's wildcard points elsewhere", async () => {
   const { http, calls, records, alive } = cloudflare({ existingRecord: "other.example.net" });
   const { runtime, sets } = cluster();
-  await expect(setUp("example.com", http, runtime)).rejects.toMatchObject({ message: "*.example.com already points somewhere else in Cloudflare. Remove that record or pick another zone. Nothing was changed." });
+  await expect(setUp("example.com", http, runtime)).rejects.toMatchObject({ message: "*.example.com already points somewhere else in Cloudflare. Delete that record or pick another zone. Nothing was changed." });
   expect(writesOf(calls)).toEqual([]);
   expect(sets).toEqual([]);
   expect(records).toEqual([]);
@@ -557,7 +557,7 @@ it("checks a token can set a zone up before any Server exists, creating nothing"
   expect(writesOf(calls)).toEqual([]);
   const taken = cloudflare({ existingRecord: "elsewhere.example.net" });
   await expect(harness.runEffect(checkCloudflareSetup({ token: Redacted.make(API_TOKEN), zone: "example.com" }, taken.http)))
-    .rejects.toMatchObject({ message: expect.stringContaining("*.example.com already exists") });
+    .rejects.toMatchObject({ message: expect.stringContaining("*.example.com already has a DNS record") });
   const weak = cloudflare({ dnsStatus: 403 });
   await expect(harness.runEffect(checkCloudflareSetup({ token: Redacted.make(API_TOKEN), zone: "example.com" }, weak.http)))
     .rejects.toMatchObject({ message: expect.stringContaining("DNS") });

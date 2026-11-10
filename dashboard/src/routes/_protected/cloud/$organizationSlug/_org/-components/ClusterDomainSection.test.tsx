@@ -66,7 +66,7 @@ describe("ClusterDomainSection", () => {
     const component = () => <ClusterDomainSection organizationSlug="acme" domain={domain} onCheck={vi.fn()} />;
     render(<RouterProvider router={createRouter({ routeTree: createRootRoute({ component }), history: createMemoryHistory() })} />);
 
-    expect(await screen.findByText("No server receives traffic.")).toBeTruthy();
+    expect(await screen.findByText("No server takes web traffic.")).toBeTruthy();
     expect(screen.getByText("Needs attention")).toBeTruthy();
   });
 

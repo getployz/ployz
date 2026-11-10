@@ -72,7 +72,7 @@ describe("the two-step door switch", () => {
   it("stops before moving anything when a Server doesn't take both Doors", async () => {
     const log: string[] = [];
     const end = await Effect.runPromise(runSwitch("tunnel", ports(() => answer(["public", "tunnel"], ["public"]), log)));
-    expect(end).toEqual({ ok: false, failure: "s2 still has other doors open." });
+    expect(end).toEqual({ ok: false, failure: "s2 didn't switch." });
     expect(log).toEqual(["at opening", "open public+tunnel"]);
   });
 
@@ -149,7 +149,7 @@ describe("what a switch moves", () => {
     ]);
     const unknown = unknownHostnames(back, "example.com", routes);
     expect(unknown).toEqual([{ hostname: "web-prod.example.com", namespace: "old-prod", service: "web" }]);
-    expect(unknownGap(unknown)).toBe("web-prod.example.com is served by old-prod/web, which Cloud can't match to a deployed domain. Deploy it again or remove it, then switch again.");
+    expect(unknownGap(unknown)).toBe("web-prod.example.com is served by old-prod/web, which Ployz Cloud can't match to a deployment. Deploy it again or remove it, then switch again.");
     expect(unknownGap([])).toBeNull();
     expect(movedHostnames(back, "example.com", "acme.ployz.app", new Map())).toEqual([]);
   });
@@ -283,13 +283,13 @@ describe("when the Cluster can switch", () => {
   it("goes to Cloudflare only once it is set up and not yet in use", () => {
     expect(switchProblem(null, "tunnel")).toBe("Set up Cloudflare first, then switch to it.");
     expect(switchProblem(setup("set_up"), "tunnel")).toBeNull();
-    expect(switchProblem(setup("active"), "tunnel")).toBe("This Cluster already uses Cloudflare.");
+    expect(switchProblem(setup("active"), "tunnel")).toBe("Your servers already use Cloudflare Tunnel.");
     expect(switchProblem(setup("left"), "tunnel")).toBe("Set up Cloudflare again, then switch to it.");
   });
 
   it("goes back to public ports from anywhere but public ports", () => {
     expect(switchProblem(setup("active"), "public")).toBeNull();
-    expect(switchProblem(setup("left"), "public")).toBe("This Cluster already uses public ports.");
+    expect(switchProblem(setup("left"), "public")).toBe("Your servers already use public ports.");
   });
 
   it("refuses both ways while a setup holds the Cluster", () => {
@@ -298,15 +298,15 @@ describe("when the Cluster can switch", () => {
   });
 
   const ended = (want: "tunnel" | "public", state: "failed" | "finished"): LatestDoorsChange => state === "failed"
-    ? { attemptId: "a", want, state, endedAt: "2026-11-08T00:00:00Z", failure: "s1 still has other doors open." }
+    ? { attemptId: "a", want, state, endedAt: "2026-11-08T00:00:00Z", failure: "s1 didn't switch." }
     : { attemptId: "a", want, state, endedAt: "2026-11-08T00:00:00Z" };
 
   it("lets a switch whose source moved but whose last step failed be asked again, and only that one", () => {
     expect(switchProblem(setup("active"), "tunnel", ended("tunnel", "failed"))).toBeNull();
-    expect(switchProblem(setup("active"), "tunnel", ended("tunnel", "finished"))).toBe("This Cluster already uses Cloudflare.");
-    expect(switchProblem(setup("active"), "tunnel", ended("public", "failed"))).toBe("This Cluster already uses Cloudflare.");
+    expect(switchProblem(setup("active"), "tunnel", ended("tunnel", "finished"))).toBe("Your servers already use Cloudflare Tunnel.");
+    expect(switchProblem(setup("active"), "tunnel", ended("public", "failed"))).toBe("Your servers already use Cloudflare Tunnel.");
     expect(switchProblem(setup("left"), "public", ended("public", "failed"))).toBeNull();
-    expect(switchProblem(setup("left"), "public", ended("tunnel", "failed"))).toBe("This Cluster already uses public ports.");
+    expect(switchProblem(setup("left"), "public", ended("tunnel", "failed"))).toBe("Your servers already use public ports.");
   });
 });
 

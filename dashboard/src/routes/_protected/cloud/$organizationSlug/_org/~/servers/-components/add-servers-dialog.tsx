@@ -46,7 +46,7 @@ export function AddServersDialog({ organizationSlug, label = "Add servers", vari
             <>
               <DialogHeader>
                 <DialogTitle>Add your first server</DialogTitle>
-                <DialogDescription>Run this on any Linux server with root. It shows up under Servers in a few seconds.</DialogDescription>
+                <DialogDescription>Run one command as root on any Linux server. It installs Ployz, and Docker if it's missing.</DialogDescription>
               </DialogHeader>
               <FirstServerSetup organizationSlug={organizationSlug} mint={mint} />
             </>

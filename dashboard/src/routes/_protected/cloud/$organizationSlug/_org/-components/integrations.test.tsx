@@ -136,7 +136,7 @@ it("marks a key the approver pasted in an Approval card refused on Integrations,
   fireEvent.change(within(card).getByLabelText("Auth key"), { target: { value: KEY } });
   await act(async () => { fireEvent.click(within(card).getByRole("button", { name: "Connect" })); });
 
-  expect(await screen.findByText("Approved. Integrations shows each router.")).toBeTruthy();
+  expect(await screen.findByText("Approved. Check private access in Integrations.")).toBeTruthy();
   expect(toasted).toHaveBeenCalledWith("Approved. Not every server connected.", {
     description: "Tailscale refused the auth key on fra-1. Tailscale refused the auth key on ams-1. Try another key or turn it off in Integrations.",
   });

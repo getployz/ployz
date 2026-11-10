@@ -66,18 +66,18 @@ export const checkCloudflareSetup = Effect.fn("Cloudflare.check")(function* (
   const zoneTrouble = zoneProblem(input.zone, zones.map((zone) => zone.name));
   if (zoneTrouble !== null) return yield* refuse(zoneTrouble);
   const zone = zones.find((candidate) => candidate.name === normalizeZone(input.zone));
-  if (zone === undefined) return yield* refuse(`${normalizeZone(input.zone)} isn't a zone in this Cloudflare account.`);
+  if (zone === undefined) return yield* refuse(`This token can't see ${normalizeZone(input.zone)}. Pick one of its zones.`);
   yield* checkEditPermissions(http, input.token, zone).pipe(words);
   const name = `*.${zone.name}`;
   const there = yield* findRecords(http, input.token, zone.id, name).pipe(words);
-  if (there.length > 0) return yield* refuse(`${name} already exists in Cloudflare. Remove that record or pick another zone.`);
+  if (there.length > 0) return yield* refuse(`${name} already has a DNS record in Cloudflare. Delete it or pick another zone.`);
   return { zone: zone.name };
 });
 
 /** Why the Cluster can't be set up now: it already uses Cloudflare, another setup holds it, or a switch is moving its Doors. */
 const setupProblem = Effect.fn("Cloudflare.setupProblem")(function* (organizationId: string) {
   const existing = yield* loadCloudflareSetup(organizationId);
-  if (existing?.state === "active") return "This Cluster already uses Cloudflare.";
+  if (existing?.state === "active") return "Your servers already use Cloudflare Tunnel.";
   if (existing?.state === "setting_up") return "Cloudflare is being set up. Wait for it to finish.";
   const switching = yield* activeDoorsAttempt(organizationId);
   return switching === null ? null : "A switch is under way. Wait for it to finish, then set up.";
@@ -98,7 +98,7 @@ export const openPublicPorts = Effect.fn("Cloudflare.openPublic")(function* (org
   return yield* database.transaction(Effect.gen(function* () {
     yield* lockIngressRows(organizationId);
     const setup = yield* loadCloudflareSetup(organizationId);
-    if (setup?.state === "set_up") return yield* new Conflict({ userFacing: true, message: "Cloudflare Tunnel is set up. Switch web traffic in Settings, Network." });
+    if (setup?.state === "set_up") return yield* new Conflict({ userFacing: true, message: "Cloudflare Tunnel is already set up. Switch to it under Organization, Network." });
     const early = yield* setupProblem(organizationId);
     if (early !== null) return yield* new Conflict({ userFacing: true, message: early });
     const answered = yield* opened.connected.setIngressDoors(PUBLIC).pipe(Effect.timeout(OPEN_PUBLIC_LIMIT_MS), Effect.result);
@@ -112,7 +112,7 @@ export const openPublicPorts = Effect.fn("Cloudflare.openPublic")(function* (org
 const restorePublic = Effect.fn("Cloudflare.restorePublic")(function* (session: PloyzSession) {
   const answered = yield* session.setIngressDoors(PUBLIC).pipe(Effect.result);
   const gap = answered._tag === "Failure" ? "Your servers didn't answer." : doorsGap(answered.success, PUBLIC);
-  return gap === null ? null : `Your servers still hold the tunnel door. ${gap}`;
+  return gap === null ? null : `The tunnel may still be open on your servers. ${gap}`;
 });
 
 /**
@@ -138,7 +138,7 @@ export const setUpCloudflare = Effect.fn("Cloudflare.setUp")(function* (
   const zoneTrouble = zoneProblem(input.zone, zones.map((zone) => zone.name));
   if (zoneTrouble !== null) return yield* refuse(zoneTrouble);
   const zone = zones.find((candidate) => candidate.name === normalizeZone(input.zone));
-  if (zone === undefined) return yield* refuse(`${normalizeZone(input.zone)} isn't a zone in this Cloudflare account.`);
+  if (zone === undefined) return yield* refuse(`This token can't see ${normalizeZone(input.zone)}. Pick one of its zones.`);
   yield* checkEditPermissions(http, input.token, zone).pipe(untouched);
   const [org] = yield* drizzle.select({ slug: organization.slug }).from(organization).where(eq(organization.id, organizationId));
   const tunnelName = `ployz-${org?.slug ?? organizationId.slice(0, 8)}`;
@@ -194,7 +194,7 @@ export const setUpCloudflare = Effect.fn("Cloudflare.setUp")(function* (
     return left.join(" ");
   }).pipe(Effect.timeoutOrElse({
     duration: SETUP_RUNNING_LIMIT_MS,
-    orElse: () => Effect.succeed(`Check your servers' doors, and the tunnel ${tunnelName} and ${name} in Cloudflare.`),
+    orElse: () => Effect.succeed(`Check which ports your servers have open, and the tunnel ${tunnelName} and ${name} in Cloudflare.`),
   }));
   const undo = cleanUp.pipe(Effect.tap(() => putBack));
 
@@ -209,14 +209,14 @@ export const setUpCloudflare = Effect.fn("Cloudflare.setUp")(function* (
     const found = yield* findTunnel(http, input.token, zone.accountId, tunnelName);
     const there = yield* findRecords(http, input.token, zone.id, name);
     if (there.some((row) => found === null || row.content !== wildcardRecord(zone.name, found).content)) {
-      return yield* refuse(`${name} already points somewhere else in Cloudflare. Remove that record or pick another zone.`);
+      return yield* refuse(`${name} already points somewhere else in Cloudflare. Delete that record or pick another zone.`);
     }
     const made = found === null ? yield* createTunnel(http, input.token, zone.accountId, tunnelName) : { id: found, token: null };
     tunnel = { id: made.id, made: found === null };
     const token = made.token ?? (yield* tunnelToken(http, input.token, zone.accountId, made.id));
     session = opened.connected;
     const answered = yield* session.setIngressDoors(doors, token).pipe(Effect.result);
-    if (answered._tag === "Failure") return yield* refuse("Your servers didn't take the tunnel.");
+    if (answered._tag === "Failure") return yield* refuse("Your servers couldn't connect to the tunnel.");
     const gap = doorsGap(answered.success, doors);
     if (gap !== null) return yield* refuse(gap);
 

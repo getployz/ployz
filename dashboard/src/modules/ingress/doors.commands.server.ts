@@ -13,7 +13,7 @@ const use = OPERATIONS["ingress.use"];
 const withRuntime = <A, E, R>(effect: Effect.Effect<A, E, R>): Effect.Effect<A, E, R | OrganizationRuntime | CloudStore> => effect;
 
 const Where = Schema.Literals(["public", "cloudflare"]).annotate({
-  description: "public or cloudflare. Cloudflare needs the setup done in Settings.",
+  description: "public or cloudflare. Set up Cloudflare Tunnel in Ployz Cloud first.",
 });
 
 export const webTrafficUse = defineCommand({
@@ -43,7 +43,7 @@ export const webTrafficUse = defineCommand({
       Effect.map(({ change, joined }) => ({
         ok: true,
         output: { to: input.to, state: change.state },
-        message: `${joined ? "Already switching" : "Switching"} to ${wantWords(change.want)}. Progress is in Settings.`,
+        message: `${joined ? "Already switching" : "Switching"} to ${wantWords(change.want)}. Follow it in Ployz Cloud, under Organization, Network.`,
       }) as const),
       Effect.catchTag("Conflict", (conflict) => Effect.succeed(refused("conflict", conflict.message))),
     ),

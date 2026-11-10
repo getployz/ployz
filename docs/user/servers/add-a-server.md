@@ -143,15 +143,16 @@ domain.
 
 - **Cluster name** is the name your services' private addresses end in, like
   `.acme.ployz.internal`. It starts as your organization's slug. Change it here, or later in
-  **Settings → Network**.
+  **Organization → Network**.
 - **Cloudflare Tunnel** serves your apps through your own Cloudflare zone, so your servers never
-  open ports 80 and 443. Turn it on, paste a Cloudflare API token with **Zone: Zone: Read**,
-  **Zone: DNS: Edit** and **Account: Cloudflare Tunnel: Edit**, and click **Find zones**. Pick the
+  open ports 80 and 443. Turn it on, paste a Cloudflare API token with **Zone Read**, **DNS Edit**
+  and **Cloudflare Tunnel Edit**, and click **Find zones**. Pick the
   zone, like `example.com`, and click **Check**. Ployz checks the token can set up the tunnel and
   that `*.example.com` is free, and creates nothing yet. The card says **Ready for example.com**.
 
 **Get install command** waits until Cloudflare is ready. Turn the switch off, or close the
-section before it's ready, and the card says your servers use public ports 80 and 443 instead.
+section before it's ready, and the card says **Without Cloudflare Tunnel, your servers open ports
+80 and 443.**
 
 With Cloudflare ready, the install line starts your first server with ports 80 and 443 closed.
 Keep the tab open while it joins: the tab holds your token, and Ployz never stores it. Once the
@@ -170,7 +171,7 @@ The bottom bar of an environment offers the same card under **Add servers** whil
 server. You can skip it and build your project first.
 
 Once a server has joined, the card is gone. Rename the Cluster and switch between public ports
-and Cloudflare Tunnel in **Settings → Network**; see [Cloudflare Tunnel](../services/cloudflare-tunnel.md).
+and Cloudflare Tunnel in **Organization → Network**; see [Cloudflare Tunnel](../services/cloudflare-tunnel.md).
 
 Once you have a server, or one is waiting, make more tokens with **Add servers**:
 

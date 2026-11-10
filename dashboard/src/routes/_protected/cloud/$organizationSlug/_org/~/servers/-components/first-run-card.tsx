@@ -15,12 +15,10 @@ export function FirstRun({ organizationSlug, arrived }: { organizationSlug: stri
 export function FirstRunCard({ organizationSlug, arrived, cluster }: { organizationSlug: string; arrived: boolean; cluster: ClusterNameControl }) {
   const mint = useMintFleetToken(organizationSlug);
   if (arrived) {
-    return mint.data === undefined ? (
-      <p className="text-sm text-muted-foreground">Add servers to queue more here.</p>
-    ) : (
+    return mint.data === undefined ? null : (
       <div className="flex flex-col gap-3">
         <InstallTabs target={mint.data} />
-        <p className="text-sm text-muted-foreground">Run it on more servers and they queue above.</p>
+        <p className="text-sm text-muted-foreground">Run it on more servers to add them.</p>
       </div>
     );
   }
@@ -28,7 +26,7 @@ export function FirstRunCard({ organizationSlug, arrived, cluster }: { organizat
     <Card>
       <CardHeader>
         <CardTitle>Add your first server</CardTitle>
-        <CardDescription>Run this on any Linux server with root. It shows up below in a few seconds.</CardDescription>
+        <CardDescription>Run one command as root on any Linux server. It installs Ployz, and Docker if it's missing.</CardDescription>
       </CardHeader>
       <CardContent>
         <ClusterSetup organizationSlug={organizationSlug} cluster={cluster} mint={mint} />

@@ -19,9 +19,9 @@ export function zoneProblem(typed: string, zones: readonly string[] | null) {
   if (zones === null || zones.includes(zone)) return null;
   const parent = zones.find((candidate) => zone.endsWith(`.${candidate}`));
   if (parent !== undefined) {
-    return `${zone} is under your zone ${parent}. Use ${parent}. Addresses go one level below the zone.`;
+    return `Use ${parent}, the zone ${zone} belongs to.`;
   }
-  return `${zone} isn't a zone in this Cloudflare account.`;
+  return `This token can't see ${zone}. Pick one of its zones.`;
 }
 
 /** What a CNAME points at to reach the tunnel. */
@@ -36,8 +36,8 @@ export type CloudflareZone = { readonly id: string; readonly name: string; reado
 
 /** The permission a refused Cloudflare call lacked, as the token's creation page names it. */
 export const PERMISSIONS = {
-  zones: "Zone: Zone: Read",
-  dns: "Zone: DNS: Edit",
-  tunnel: "Account: Cloudflare Tunnel: Edit",
+  zones: "Zone Read",
+  dns: "DNS Edit",
+  tunnel: "Cloudflare Tunnel Edit",
 } as const;
 export type PermissionKey = keyof typeof PERMISSIONS;

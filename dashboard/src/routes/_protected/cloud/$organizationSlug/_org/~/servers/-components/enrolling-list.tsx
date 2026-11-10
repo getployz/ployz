@@ -8,7 +8,7 @@ import { ENROLLMENT_STAGES, type EnrollmentStage } from "#/modules/machines/wait
 const BOX_RECT = { width: 0, height: 520 };
 const GRID = "grid grid-cols-[12px_minmax(120px,1fr)_130px_120px_180px_64px] items-center gap-3 px-3";
 export const STAGES = {
-  installing: "Installing", storage: "Setting up ZFS", enrolling: "Enrolling", queued: "In line", joining: "Joining", publishing: "Going live",
+  installing: "Installing", storage: "Setting up storage", enrolling: "Enrolling", queued: "In line", joining: "Joining", publishing: "Going live",
 } satisfies Record<EnrollmentStage, string>;
 
 export function enrollmentStage(row: ServerEnrollmentView) {

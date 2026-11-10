@@ -129,10 +129,10 @@ export function planServerEnrollment(
     // A CLI that doesn't list the option would drop it and open ports 80 and 443.
     const picked = byId.get(pick);
     if (picked?.foundsClosed === true && !input.runs.ingress) {
-      return { kind: "refused", message: "The first server takes the Cloudflare Tunnel, so it must run web traffic. Turn on web traffic, or get an install command without Cloudflare Tunnel." };
+      return { kind: "refused", message: "Cloudflare Tunnel needs the first server to take web traffic. Turn on Web traffic for it, or get an install command without Cloudflare Tunnel." };
     }
     if (picked?.foundsClosed === true && picked.report.enrollOptions?.includes(INGRESS_CLOSED_OPTION) !== true) {
-      return { kind: "refused", message: "The first server's ployz can't start with ports 80 and 443 closed. Update ployz on it, or get an install command without Cloudflare Tunnel." };
+      return { kind: "refused", message: "The first server's ployz is too old for Cloudflare Tunnel. Update ployz on it, or get an install command without Cloudflare Tunnel." };
     }
     founder = pick;
   }

@@ -130,7 +130,7 @@ export const unknownHostnames = (published: readonly PublishedHostname[], from: 
 export function unknownGap(unknown: readonly PublishedHostname[]) {
   const [first] = unknown;
   if (first === undefined) return null;
-  return `${first.hostname} is served by ${first.namespace}/${first.service}, which Cloud can't match to a deployed domain. Deploy it again or remove it, then switch again.`;
+  return `${first.hostname} is served by ${first.namespace}/${first.service}, which Ployz Cloud can't match to a deployment. Deploy it again or remove it, then switch again.`;
 }
 
 /** The label of `hostname` one level under `zone`, where generated names sit, or null. */
@@ -232,7 +232,7 @@ export function doorsGap(answer: DoorsAnswer, wanted: readonly string[]) {
   }
   const off = answer.machines.filter(({ doors }) => doors.length !== wanted.length || !wanted.every((door) => doors.includes(door)));
   if (off.length === 0) return answer.machines.length === 0 ? "No server takes web traffic yet." : null;
-  return `${off.map(({ server }) => server).join(", ")} still ${off.length === 1 ? "has" : "have"} other doors open.`;
+  return `${off.map(({ server }) => server).join(", ")} didn't switch.`;
 }
 
 /**
@@ -245,7 +245,7 @@ export function switchProblem(setup: CloudflareSetup | null, to: DoorsWant, late
   const retrying = latest !== null && latest.state === "failed" && latest.want === to;
   if (to === "tunnel") {
     if (setup.state === "set_up" || (setup.state === "active" && retrying)) return null;
-    return setup.state === "active" ? "This Cluster already uses Cloudflare." : "Set up Cloudflare again, then switch to it.";
+    return setup.state === "active" ? "Your servers already use Cloudflare Tunnel." : "Set up Cloudflare again, then switch to it.";
   }
-  return setup.state === "left" && !retrying ? "This Cluster already uses public ports." : null;
+  return setup.state === "left" && !retrying ? "Your servers already use public ports." : null;
 }

@@ -72,7 +72,7 @@ export function WebTrafficSection({ organizationSlug }: { organizationSlug: stri
       >
         {failure === null ? null : <p role="alert" className="text-sm text-destructive">{failure}</p>}
         {progress === null ? null : (
-          <p role="status" className="flex items-center gap-2 text-sm text-muted-foreground"><Spinner />{progress.label}. Step {progress.step} of 3.</p>
+          <p role="status" className="flex items-center gap-2 text-sm text-muted-foreground"><Spinner />{progress.step === 0 ? `${progress.label}…` : `${progress.label}. Step ${progress.step} of 3.`}</p>
         )}
       </SettingsRow>
       {settingUp && (setup === null || setup.state === "left" || setup.state === "setting_up") ? (
@@ -98,7 +98,7 @@ export function WebTrafficSection({ organizationSlug }: { organizationSlug: stri
               await refresh();
               setReviewing(null);
             } catch (error) {
-              toast.error(toErrorMessage(error, "Could not switch web traffic"));
+              toast.error(toErrorMessage(error, "Couldn't switch web traffic. Try again."));
             }
           }}
         />
@@ -126,7 +126,7 @@ const connectedWords = (setup: CloudflareSetup, observed: ClusterIngressObservat
 function publicHint(setup: CloudflareSetup | null, foundedClosed: boolean, observed: ClusterIngressObservation | null, switching: boolean) {
   if (setup === null && !foundedClosed) return "Ports 80 and 443 open on every server.";
   if (setup === null) return doorWords(observed, "public") ?? "Checking your servers…";
-  if (setup.state === "left" && !switching && tunnelLetGo(observed)) return `Delete the tunnel ${setup.tunnelName} and *.${setup.zone} in Cloudflare.`;
+  if (setup.state === "left" && !switching && tunnelLetGo(observed)) return `Delete the tunnel ${setup.tunnelName} and the *.${setup.zone} record in Cloudflare.`;
   return doorWords(observed, "public") ?? "Checking your servers…";
 }
 
@@ -190,7 +190,7 @@ function CloudflareSetupForm({ organizationSlug, onCancel, onDone }: {
       setToken("");
       onDone();
     } catch (error) {
-      setRefusal(toErrorMessage(error, `Cloudflare setup didn't finish. Check Cloudflare for a tunnel named ployz-${organizationSlug}.`));
+      setRefusal(toErrorMessage(error, "Ployz Cloud didn't answer, so setup may not have finished. Try again."));
     } finally {
       setBusy(null);
     }
@@ -208,7 +208,7 @@ function CloudflareSetupForm({ organizationSlug, onCancel, onDone }: {
     >
       <SettingsRow
         label="Cloudflare API token"
-        hint="Needs Zone: Zone: Read, Zone: DNS: Edit and Account: Cloudflare Tunnel: Edit. Used once, never stored."
+        hint="Needs Zone Read, DNS Edit and Cloudflare Tunnel Edit. Used once, never stored."
         commit="form"
         control={(
           <div className="flex w-full gap-2">
@@ -230,7 +230,7 @@ function CloudflareSetupForm({ organizationSlug, onCancel, onDone }: {
       {zones === null ? null : (
         <SettingsRow
           label="Zone"
-          hint={zones.length === 0 ? "This token can't see any zones." : "Addresses go one level below it, like web-prod.example.com."}
+          hint={zones.length === 0 ? "This token can't see any zones. Give it access to your domain's zone." : "Apps get addresses like web-production.example.com."}
           commit="form"
           control={(
             <div className="flex w-full gap-2">
@@ -277,13 +277,9 @@ function SwitchDialog({ organizationSlug, to, onOpenChange, onConfirm }: {
       title={toCloudflare ? "Switch to Cloudflare Tunnel?" : "Switch back to public ports?"}
       description={(
         <div className="flex flex-col gap-4">
-          <p>
-            {toCloudflare
-              ? "Servers close ports 80 and 443 and take traffic through the tunnel. Expect a short interruption."
-              : "Servers open ports 80 and 443 and the tunnel closes. Expect a short interruption."}
-          </p>
+          <p>{toCloudflare ? "Expect a short interruption." : "This opens ports 80 and 443 on every server. Expect a short interruption."}</p>
           {review.isPending ? <p role="status">Checking addresses…</p> : null}
-          {review.isError ? <p role="alert">Couldn't check the addresses. The switch checks them again before anything moves.</p> : null}
+          {review.isError ? <p role="alert">Couldn't list the addresses that change. The switch checks again before it moves any.</p> : null}
           {review.data?.gap ? <p role="alert">{review.data.gap}</p> : null}
           {moves.length === 0 ? null : (
             <>
