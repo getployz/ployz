@@ -740,6 +740,10 @@ pub enum ReviewDraftError {
     Ended,
     #[error("This preview isn't in the namespace the preview rule gives it.")]
     Namespace,
+    #[error("This review names the environment previews start from, not the preview.")]
+    Parent,
+    #[error("The preview lists {0} twice.")]
+    Duplicate(ServiceName),
     #[error("The preview rule doesn't cover {0}. Approve the preview rule again.")]
     Uncovered(ServiceName),
     #[error("{0} can't be reviewed: {1}")]
@@ -773,9 +777,18 @@ impl PreviewReview {
         if *namespace != preview_namespace(rule.rule, &terms.key) {
             return Err(ReviewDraftError::Namespace);
         }
+        if terms.environment == rule.parent_id {
+            return Err(ReviewDraftError::Parent);
+        }
         let mut specs: Vec<&RequestedServiceSpec> = target.iter().collect();
         specs.sort_by(|left, right| left.name.cmp(&right.name));
-        specs.dedup_by(|left, right| left.name == right.name);
+        if let Some(twice) = specs
+            .iter()
+            .zip(specs.iter().skip(1))
+            .find_map(|(left, right)| (left.name == right.name).then_some(&left.name))
+        {
+            return Err(ReviewDraftError::Duplicate(twice.clone()));
+        }
         let mut services = Vec::with_capacity(specs.len());
         let mut lines = Vec::with_capacity(specs.len());
         let mut secrets = false;
@@ -786,7 +799,7 @@ impl PreviewReview {
             let digest = template(spec, namespace, covered)
                 .map_err(|refusal| ReviewDraftError::Template(spec.name.clone(), refusal))?;
             secrets |= covered.holds_secrets();
-            lines.push(review_line(spec, covered, terms.commit));
+            lines.push(review_line(spec, covered, terms.commit, digest));
             services.push(ReviewedService {
                 name: spec.name.clone(),
                 digest,
@@ -811,14 +824,42 @@ impl PreviewReview {
     }
 }
 
-/// `Review web at 0123456789ab`, then what it reads from the parent and asks of the host.
-fn review_line(spec: &RequestedServiceSpec, service: &PreviewService, commit: CommitSha) -> String {
+/// `Review web at 0123456789ab`, then what it reads from the parent and the preview, how
+/// it departs from the preview rule, and what it asks of the host.
+fn review_line(
+    spec: &RequestedServiceSpec,
+    service: &PreviewService,
+    commit: CommitSha,
+    digest: PayloadDigest,
+) -> String {
     let mut commit = commit.to_string();
     commit.truncate(12);
     let mut notes: Vec<String> = Vec::new();
     if !service.inherit.is_empty() {
         let keys: Vec<&str> = service.inherit.iter().map(String::as_str).collect();
         notes.push(format!("reads {} from the parent", keys.join(", ")));
+    }
+    let hook = spec
+        .pre_deploy
+        .iter()
+        .flat_map(|hook| hook.environment.values());
+    let own: BTreeSet<&str> = spec
+        .container
+        .environment
+        .values()
+        .chain(hook)
+        .flat_map(EnvValue::sealed_parts)
+        .filter(|value| value.environment.is_none())
+        .map(|value| value.key.as_str())
+        .collect();
+    if !own.is_empty() {
+        let keys: Vec<&str> = own.into_iter().collect();
+        notes.push(format!("opens its own {}", keys.join(", ")));
+    }
+    if Some(digest) == service.setup {
+        notes.push("runs setup commands".to_owned());
+    } else if digest != service.template {
+        notes.push("settings differ from the preview rule".to_owned());
     }
     if service.secrets.is_some() {
         notes.push("builds with secrets".to_owned());
@@ -954,6 +995,9 @@ pub fn verify_review(
         ("a rule", body.rule == rule.rule),
         ("a generation", body.generation == rule.generation),
         ("an ended rule", !rule.ended),
+        // The parent's values open in a preview only by the rule's `inherit`, never as
+        // the preview's own.
+        ("an Environment", body.environment != rule.parent_id),
         (
             "a Service",
             body.services

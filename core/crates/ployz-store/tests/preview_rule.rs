@@ -578,14 +578,36 @@ fn an_untrusted_pull_request_opens_its_preview_and_deploys_only_once_reviewed() 
         .id
         .clone();
     let build = ployz_store::GithubBuildId {
-        deployment,
+        deployment: deployment.clone(),
         service: ServiceName::parse("web").unwrap(),
     };
-    assert_eq!(store.github_review(&build).unwrap(), Some(review));
+    assert_eq!(store.github_review(&build).unwrap(), Some(review.clone()));
     assert!(matches!(
         store.github_rule(&build).unwrap(),
         Some(GithubRule::Preview(_))
     ));
+
+    // Redeploying it relays the same review: without it, every Server refuses the build.
+    backend::run(&store, &deployment);
+    let again = ployz_store::DeploymentId::parse(uuid(91)).unwrap();
+    store
+        .write_trusted(
+            &Actor::system(OrganizationId::parse("org").unwrap()),
+            &ployz_store::Admit::Retry(ployz_store::Retry {
+                id: again.clone(),
+                deployment,
+                rolls_back: None,
+                version: None,
+                accept_volume_loss: Vec::new(),
+            }),
+            &trusted(),
+        )
+        .unwrap();
+    let build = ployz_store::GithubBuildId {
+        deployment: again,
+        service: ServiceName::parse("web").unwrap(),
+    };
+    assert_eq!(store.github_review(&build).unwrap(), Some(review));
 }
 
 #[test]

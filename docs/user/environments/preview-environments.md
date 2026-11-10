@@ -157,6 +157,10 @@ lists each service the review covers and what it asks for, like:
 Review web at a1b2c3d4e5f6 (reads DATABASE_URL from the parent, builds with secrets)
 ```
 
+A line also says when the service **opens its own** secrets you set in the preview, when its
+**settings differ from the preview rule** because someone changed them in the preview, and when it
+**runs setup commands** again.
+
 **Approve with passkey** asks your passkey once. Ployz builds that commit with your repository's
 build workflow, on the branch of the environment previews start from, and the preview deploys it.
 

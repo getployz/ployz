@@ -813,10 +813,84 @@ fn a_review_is_not_drafted_outside_the_preview_the_rule_derives() {
         PreviewReview::draft(&rule, &namespace, std::slice::from_ref(&spec), other),
         Err(ReviewDraftError::Cluster)
     ));
+    let parent = ReviewTerms {
+        environment: rule.parent_id,
+        ..terms(&rule)
+    };
+    assert!(matches!(
+        PreviewReview::draft(&rule, &namespace, std::slice::from_ref(&spec), parent),
+        Err(ReviewDraftError::Parent)
+    ));
+    assert!(matches!(
+        PreviewReview::draft(
+            &rule,
+            &namespace,
+            &[spec.clone(), spec.clone()],
+            terms(&rule)
+        ),
+        Err(ReviewDraftError::Duplicate(_))
+    ));
     let mut stray = spec;
     stray.name = ServiceName::parse("worker").unwrap();
     assert!(matches!(
         PreviewReview::draft(&rule, &namespace, &[stray], terms(&rule)),
         Err(ReviewDraftError::Uncovered(_))
     ));
+}
+
+/// The parent's values open in a preview only by the rule's `inherit`: a review naming
+/// the parent as the preview's own Environment would open every other one of them.
+#[test]
+fn a_review_naming_the_parent_as_the_preview_is_refused() {
+    let passkey = Authenticator::es256(4);
+    let rule = rule();
+    let body = PreviewReview {
+        environment: rule.parent_id,
+        ..review_body(&rule)
+    };
+    assert_eq!(
+        verify_review(
+            &passkey_review(&body, &passkey),
+            &rule,
+            &trusting(&passkey),
+            Timestamp::from_millis(2_000).unwrap(),
+        )
+        .map(|_| ()),
+        Err(AuthorityRefusal::Mismatch {
+            field: "an Environment"
+        })
+    );
+}
+
+/// A review line says what the preview opens of its own, and when its settings aren't
+/// the ones the rule approved or run the Setup Commands again.
+#[test]
+fn a_review_line_names_own_secrets_setup_and_changed_settings() {
+    let rule = rule();
+    let namespace = preview_namespace(rule.rule, &PreviewKey::Fork(7));
+    let line = |spec: Value| {
+        PreviewReview::draft(&rule, &namespace, &[requested(spec)], terms(&rule))
+            .unwrap()
+            .lines
+            .remove(0)
+    };
+    let plain = line(preview_json(namespace.as_str(), "zyxwvutsrqponmlk", false));
+    assert!(
+        !plain.contains("setup") && !plain.contains("differ"),
+        "{plain}"
+    );
+    let setup = line(preview_json(namespace.as_str(), "zyxwvutsrqponmlk", true));
+    assert!(setup.contains("runs setup commands"), "{setup}");
+    let mut own = preview_json(namespace.as_str(), "zyxwvutsrqponmlk", false);
+    own["container"]["environment"]["TOKEN"] = serde_json::json!({
+        "sealed": "QUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQQ==",
+        "scope": "shared",
+        "key": "TOKEN",
+    });
+    let own = line(own);
+    assert!(own.contains("opens its own TOKEN"), "{own}");
+    assert!(
+        own.contains("settings differ from the preview rule"),
+        "{own}"
+    );
 }
