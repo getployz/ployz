@@ -176,11 +176,13 @@ it.live(
       expect(yield* provided(planStoreGithubBuilds(plan).pipe(Effect.provideService(OrganizationRuntime, noBuilders))))
         .toMatchObject([{ build: `${serversFirst}.web`, hasNext: false }]);
 
-      // A workflow file other than the one Ployz offers is skipped the same way: GitHub would run what it says.
+      // Cloud dispatches no workflow file but the one Ployz offers: GitHub would run what the file says.
       workflowNow = "edited";
       const edited = "00000000-0000-4000-8000-00000000b1e0";
       yield* write({ command: "admit", admit: "deploy", id: edited, environment: here, services: [], version: null, accept_volume_loss: [] });
       yield* Effect.promise(() => store.pinSources(edited, { web: HEAD }));
+      // The Store would hand GitHub the build to dispatch; Cloud refuses to dispatch that file.
+      vi.spyOn(yield* provided(cloudStore), "githubStart").mockResolvedValueOnce({ kind: "dispatch", runner: "ubuntu-latest", foreign: [] });
       expect(yield* provided(startStoreGithubBuild(ORGANIZATION, { ...target, build: `${edited}.web` }))).toEqual({ kind: "done" });
       expect(yield* Effect.promise(() => store.read(ORGANIZATION, { query: "deployment", id: edited }))).toMatchObject({
         builds: [{ service: "web", status: "pending", message: "acme/web's .github/workflows/ployz-build.yml isn't the one Ployz offers" }],
@@ -528,4 +530,41 @@ it.live("a retry that skips GitHub after its first hand-off commits late follows
     // The skip is refused, since run 9001 holds the build: the retry follows it.
     expect(yield* provided(startStoreGithubBuild(ORGANIZATION, target))).toEqual({ kind: "dispatched", runId: RUN });
     expect(yield* Effect.promise(() => store.githubBuild(BUILD))).toMatchObject({ held: { status: "building", run: { run_id: RUN } } });
+  }), 60_000);
+
+it.live("a rule build follows its push, and an approved build dispatches, under the rule's own workflow file", () =>
+  Effect.gen(function* () {
+    // The rule's branch holds the rule's template, not the one the dashboard offers.
+    const ruleTemplate = { ...activeWorkflow, canonical: false };
+    const authority = fakeGithubAuthority({
+      buildWorkflow: () => Effect.succeed(ruleTemplate),
+      buildRuns: () => Effect.succeed([{ id: RUN, url: dispatchedRun(RUN).runUrl, headSha: HEAD, event: "push", status: "in_progress", conclusion: null }]),
+      dispatchApprovedBuild: () => Effect.succeed({ runId: RUN + 1, runUrl: dispatchedRun(RUN + 1).runUrl }),
+    });
+    const services = yield* storeTestCloud({ github: fakeGithubApi().service, authority: authority.service });
+    const provided = <A, E, R>(program: Effect.Effect<A, E, R>) => program.pipe(Effect.provide(services));
+    yield* provided(seedStoreOrganization(ORGANIZATION));
+    const store = yield* provided(seedStoreGitService(ORGANIZATION, { project: PROJECT, environment: ENVIRONMENT, service: SERVICE }));
+    const cloud = yield* provided(cloudStore);
+    const started = vi.spyOn(cloud, "githubStart");
+    const target = (deployment: string) =>
+      ({ build: `${deployment}.web`, service: "web", repository: "acme/web", repositoryId: 42, installationId: 7, hasNext: true });
+    const admitted = (deployment: string) => Effect.gen(function* () {
+      yield* Effect.promise(() => store.write(ORGANIZATION, {
+        command: "admit", admit: "deploy", id: deployment, environment: here, services: [], version: null, accept_volume_loss: [],
+      }, acmeWeb()));
+      yield* Effect.promise(() => store.pinSources(deployment, { web: HEAD }));
+    });
+
+    yield* admitted(DEPLOYMENT);
+    started.mockResolvedValueOnce({ kind: "follow", workflow: ".github/workflows/ployz-build.yml", workflow_ref: WORKFLOW, commit: HEAD, foreign: [] });
+    expect(yield* provided(startStoreGithubBuild(ORGANIZATION, target(DEPLOYMENT)))).toEqual({ kind: "dispatched", runId: RUN });
+
+    const approved = "00000000-0000-4000-8000-00000000b1e1";
+    yield* admitted(approved);
+    started.mockResolvedValueOnce({ kind: "approved", workflow: ".github/workflows/ployz-build.yml", workflow_ref: WORKFLOW, branch: "main", commit: HEAD, foreign: [] });
+    expect(yield* provided(startStoreGithubBuild(ORGANIZATION, target(approved)))).toEqual({ kind: "dispatched", runId: RUN + 1 });
+    expect(authority.calls.filter((call) => call.operation === "dispatchApprovedBuild").map((call) => call.input))
+      .toEqual([{ installationId: 7, repositoryId: 42, branch: "main", commit: HEAD }]);
+    expect(authority.calls.some((call) => call.operation === "dispatchBuild")).toBe(false);
   }), 60_000);

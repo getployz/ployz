@@ -89,6 +89,15 @@ describe("the App's authority held in Cloud", () => {
     expect(sent.some((request) => request.method === "POST" && request.url.pathname.endsWith("/dispatches"))).toBe(false);
   });
 
+  it("dispatches a commit a person approved on the rule's branch, with a token that can only run Actions there", async () => {
+    // The rule's own template on its branch, which names its Cloud and builder: no digest of Ployz's applies.
+    const sent = acmeWeb("name: Ployz build\non: { push: { branches: [main] } }\n");
+    const run = await local((authority) => authority.dispatchApprovedBuild({ installationId: 7, repositoryId: 42, branch: "main", commit: HEAD }));
+    expect(run).toEqual({ runId: 9001, runUrl: "https://github.com/acme/web/actions/runs/9001" });
+    expect(minted(sent)).toEqual([{ permissions: { actions: "write" }, repository_ids: [42] }]);
+    expect(sent.at(-1)?.body).toEqual({ ref: "refs/heads/main", inputs: { commit: HEAD }, return_run_details: true });
+  });
+
   it("cancels only a run of the build workflow", async () => {
     const sent = acmeWeb(GITHUB_BUILD_WORKFLOW, ".github/workflows/release.yml");
     await expect(local((authority) => authority.cancelBuild({ installationId: 7, repositoryId: 42, runId: 9001 })))
@@ -172,10 +181,12 @@ describe("the App's authority held by the minter", () => {
     await expect(cancel(403, { message: "Forbidden" })).rejects.toMatchObject({ code: "request_failed", retriable: false });
   });
 
-  it("runs no build again", async () => {
+  it("runs no build again, and dispatches no rule's workflow", async () => {
     const sent = serve(() => undefined);
     await expect(viaMinter((authority) => authority.rerunBuild({ installationId: 7, repositoryId: 42, runId: 9001 })))
       .rejects.toMatchObject({ code: "refused", operation: "rerun_run" });
+    await expect(viaMinter((authority) => authority.dispatchApprovedBuild({ installationId: 7, repositoryId: 42, branch: "main", commit: HEAD })))
+      .rejects.toMatchObject({ code: "refused", operation: "dispatch_workflow" });
     expect(sent).toEqual([]);
   });
 });
