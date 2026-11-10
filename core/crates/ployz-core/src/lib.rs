@@ -86,6 +86,20 @@ pub const VOLUME_START_REFUSED_BY_ENFORCEMENT: &str =
 /// `SeedVolume`, as restoring a point into a new volume does.
 pub const SEED_REFUSED_BY_ENFORCEMENT: &str = "This server restores into a new volume only what you approve, so it can't run this restore yet.";
 
+/// What a Machine that enforces Device approval says when an Operator asks it to `Leave`.
+/// Clients compare against it to show the refusal as it is.
+pub const LEAVE_REFUSED_BY_ENFORCEMENT: &str =
+    "This server leaves only when you approve it. Run `ployz server rm` from an approved device.";
+
+/// What a Machine that enforces Device approval says when an Operator asks it to `Forget`
+/// another Machine.
+pub const FORGET_REFUSED_BY_ENFORCEMENT: &str = "This server forgets another server only when you approve it. Run `ployz server forget` from an approved device.";
+
+/// What a Machine that enforces Device approval says when an Operator asks it to set its
+/// Ingress Doors or Private Access, which no statement approves yet.
+pub const INGRESS_REFUSED_BY_ENFORCEMENT: &str =
+    "This server changes its ingress doors and Private Access only from an approved device.";
+
 /// Daemon exit status for an operator-actionable Docker network or WireGuard
 /// interface refusal.
 pub const NETWORK_CONFLICT_EXIT_STATUS: u8 = 78;

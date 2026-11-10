@@ -212,6 +212,14 @@ pub enum Error {
     /// names `capability` in its details.
     #[error("{}", ployz_core::BUILD_REFUSED_BY_ENFORCEMENT)]
     BuildRefused { capability: &'static str },
+    /// Device enforcement refused an Operator's `Leave` or `Forget`, before any Container
+    /// stopped. The refusal names `capability` in its details.
+    #[error("{}", departure_text(.capability))]
+    DepartureRefused { capability: &'static str },
+    /// Device enforcement refused an Operator's `SetIngressDoors` or `SetPrivateAccess`,
+    /// which no statement admits yet. The refusal names `capability` in its details.
+    #[error("{}", ployz_core::INGRESS_REFUSED_BY_ENFORCEMENT)]
+    IngressRefused { capability: &'static str },
     /// Device enforcement refused an Operator's `SetVolumeCopy` that creates a Container,
     /// or its `SeedVolume`. The refusal names `capability` in its details.
     #[error("{}", volume_approval::refusal_text(.capability))]
@@ -1501,6 +1509,14 @@ fn unique_identities<T>(entries: impl IntoIterator<Item = (IpAddr, T)>) -> BTree
     }
     identities.retain(|address, _| !ambiguous.contains(address));
     identities
+}
+
+fn departure_text(capability: &str) -> &'static str {
+    if capability == ployz_core::FORGET_MACHINE_CAPABILITY {
+        ployz_core::FORGET_REFUSED_BY_ENFORCEMENT
+    } else {
+        ployz_core::LEAVE_REFUSED_BY_ENFORCEMENT
+    }
 }
 
 fn leave_response(owner: &RecordOwner, reset_warning: Option<String>) -> Left {

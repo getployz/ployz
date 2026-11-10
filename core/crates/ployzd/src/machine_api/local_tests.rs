@@ -904,8 +904,8 @@ mod ingress_doors {
     use axum::http::Method;
     use ployz_core::{
         ContainerNow, ContainerRefusalReason, DoorChange, EnsuredContainer, IngressDoorsSet,
-        OPERATOR_SCOPE_HEADER, QualifiedService, RESTART_APPROVAL_CAPABILITY, RpcError,
-        SET_INGRESS_DOORS_CAPABILITY, rpc::status_details,
+        OPERATOR_SCOPE_HEADER, QualifiedService, RpcError, SET_INGRESS_DOORS_CAPABILITY,
+        rpc::status_details,
     };
     use serde_json::{Value, json};
     use tonic::Status;
@@ -1345,7 +1345,7 @@ mod ingress_doors {
         );
         assert_eq!(
             status_details(status.details()).unwrap().get("capability"),
-            Some(&json!(RESTART_APPROVAL_CAPABILITY))
+            Some(&json!(SET_INGRESS_DOORS_CAPABILITY))
         );
         assert_eq!(
             docker_calls(&fake),

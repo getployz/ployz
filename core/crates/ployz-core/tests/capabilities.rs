@@ -634,7 +634,10 @@ mod coverage {
             .iter()
             .filter_map(|(name, class)| match class {
                 Authorization::Pending(slice) => Some((*name, *slice)),
-                _ => None,
+                Authorization::Read
+                | Authorization::Full
+                | Authorization::Signed(_)
+                | Authorization::Bound(_) => None,
             })
             .collect();
         assert_eq!(
@@ -659,7 +662,7 @@ mod coverage {
         ),
         (
             "ployz.container.ensure.v1",
-            &["create", "start", "stop", "restart", "out", "remove"],
+            &["create", "start", "stop", "held", "out", "remove"],
         ),
         (
             "ployz.machine.upgrade.request.v1",

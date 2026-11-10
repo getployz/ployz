@@ -83,17 +83,29 @@ impl LocalMachine {
         .await
     }
 
-    /// Under Device enforcement an Operator caller's deploy, which creates or replaces
-    /// Containers, is refused: only a Device-approved restart step passes.
+    /// Under Device enforcement an Operator caller's `SetIngressDoors` or
+    /// `SetPrivateAccess` is refused before anything changes: no statement admits either
+    /// yet. `capability` is the RPC refused.
     ///
     /// # Errors
-    /// Returns [`Error::RestartRefused`] under enforcement.
-    pub(crate) fn admit_operator_deploy(&self) -> Result<(), Error> {
+    /// Returns [`Error::IngressRefused`] naming `capability` under enforcement.
+    pub(crate) fn admit_operator_ingress(&self, capability: &'static str) -> Result<(), Error> {
         if self.record().device_enforcement() {
-            return Err(AuthorityRefusal::Mismatch {
-                field: "a workflow",
-            }
-            .into());
+            return Err(Error::IngressRefused { capability });
+        }
+        Ok(())
+    }
+
+    /// Under Device enforcement an Operator caller's `Leave` or `Forget` is refused before
+    /// any Container stops. Either one resets a Server: `Leave` this one, and `Forget`
+    /// another, which fences itself once its row goes. Neither is Cloud's to start. A Full
+    /// caller and a Machine not enforcing pass untouched.
+    ///
+    /// # Errors
+    /// Returns [`Error::DepartureRefused`] naming `capability` under enforcement.
+    pub(crate) fn admit_operator_departure(&self, capability: &'static str) -> Result<(), Error> {
+        if self.record().device_enforcement() {
+            return Err(Error::DepartureRefused { capability });
         }
         Ok(())
     }

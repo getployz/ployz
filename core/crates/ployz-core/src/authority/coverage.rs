@@ -259,9 +259,9 @@ pub const CASES: &[Case] = &[
     ),
     case(
         ENROLL_FOR_RECOVERY_CAPABILITY,
-        "founder awaiting recovery",
-        "an EnrollForRecovery naming a recovery seed",
-        Expected::Served,
+        "founder",
+        "an EnrollForRecovery founding a Cluster that awaits recovery",
+        Expected::Refused(&[JOIN_APPROVAL_CAPABILITY]),
     ),
     case(
         WRAP_SEALING_KEY_CAPABILITY,
@@ -421,8 +421,8 @@ pub const CASES: &[Case] = &[
     ),
     case(
         ENSURE_CONTAINER_CAPABILITY,
-        "restart",
-        "an EnsureContainer restarting a running Container",
+        "held",
+        "an EnsureContainer holding a routed Container out of routing for a run",
         Expected::Refused(&[RESTART_APPROVAL_CAPABILITY]),
     ),
     case(

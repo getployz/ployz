@@ -861,10 +861,11 @@ impl MachineRpc for MachineService {
         &self,
         request: Request<OpaquePayload>,
     ) -> Result<Response<OpaquePayload>, Status> {
-        finish(
+        sealing_refused(
             self.local
                 .generate_sealing_key(expect::<op::GenerateSealingKey>(request)?)
                 .await,
+            ployz_core::GENERATE_SEALING_KEY_CAPABILITY,
         )
     }
 
@@ -883,10 +884,11 @@ impl MachineRpc for MachineService {
         &self,
         request: Request<OpaquePayload>,
     ) -> Result<Response<OpaquePayload>, Status> {
-        finish(
+        sealing_refused(
             self.local
                 .install_sealing_key(expect::<op::InstallSealingKey>(request)?)
                 .await,
+            ployz_core::INSTALL_SEALING_KEY_CAPABILITY,
         )
     }
 
@@ -917,14 +919,32 @@ impl MachineRpc for MachineService {
         &self,
         request: Request<OpaquePayload>,
     ) -> Result<Response<OpaquePayload>, Status> {
-        finish(self.local.leave(expect::<op::Leave>(request)?).await)
+        let operator = from_operator(&request);
+        let request = expect::<op::Leave>(request)?;
+        if operator
+            && let Err(error) = self
+                .local
+                .admit_operator_departure(ployz_core::LEAVE_MACHINE_CAPABILITY)
+        {
+            return local_error(error);
+        }
+        finish(self.local.leave(request).await)
     }
 
     async fn forget(
         &self,
         request: Request<OpaquePayload>,
     ) -> Result<Response<OpaquePayload>, Status> {
-        finish(self.local.forget(expect::<op::Forget>(request)?).await)
+        let operator = from_operator(&request);
+        let request = expect::<op::Forget>(request)?;
+        if operator
+            && let Err(error) = self
+                .local
+                .admit_operator_departure(ployz_core::FORGET_MACHINE_CAPABILITY)
+        {
+            return local_error(error);
+        }
+        finish(self.local.forget(request).await)
     }
 
     async fn list_images(
@@ -1145,7 +1165,11 @@ impl MachineRpc for MachineService {
     ) -> Result<Response<OpaquePayload>, Status> {
         let operator = from_operator(&request);
         let request = expect::<op::SetIngressDoors>(request)?;
-        if operator && let Err(error) = self.local.admit_operator_deploy() {
+        if operator
+            && let Err(error) = self
+                .local
+                .admit_operator_ingress(ployz_core::SET_INGRESS_DOORS_CAPABILITY)
+        {
             return local_error(error);
         }
         finish(self.local.set_ingress_doors(request).await)
@@ -1157,7 +1181,11 @@ impl MachineRpc for MachineService {
     ) -> Result<Response<OpaquePayload>, Status> {
         let operator = from_operator(&request);
         let request = expect::<op::SetPrivateAccess>(request)?;
-        if operator && let Err(error) = self.local.admit_operator_deploy() {
+        if operator
+            && let Err(error) = self
+                .local
+                .admit_operator_ingress(ployz_core::SET_PRIVATE_ACCESS_CAPABILITY)
+        {
             return local_error(error);
         }
         finish(self.local.set_private_access(request).await)
@@ -1260,6 +1288,19 @@ fn local_failure(error: LocalMachineError) -> Result<RpcError, Status> {
             ))
         }
         LocalMachineError::BuildRefused { capability } => Err(build_refused(&error, capability)),
+        LocalMachineError::DepartureRefused { capability } => Err(ployz_core::rpc::hinted_status(
+            tonic::Code::PermissionDenied,
+            &error,
+            serde_json::json!({
+                "capability": capability,
+                "next": if capability == ployz_core::FORGET_MACHINE_CAPABILITY {
+                    "ployz server forget from an approved device"
+                } else {
+                    "ployz server rm from an approved device"
+                },
+            }),
+        )),
+        LocalMachineError::IngressRefused { capability } => Err(build_refused(&error, capability)),
         LocalMachineError::VolumeRefused { capability } => Err(ployz_core::rpc::hinted_status(
             tonic::Code::PermissionDenied,
             &error,
@@ -1425,6 +1466,34 @@ fn sealing_error(error: SealingError) -> RpcError {
     RpcError::caused(code, &error).with_details(refusal.details())
 }
 
+/// A refusal that keeps a second Sealing Key out of the Cluster also names the route's
+/// capability, as every refusal the coverage table expects does.
+#[expect(
+    clippy::result_large_err,
+    reason = "a handler fails with tonic's Status"
+)]
+fn sealing_refused(
+    result: Result<ployz_core::SealingKeyHeld, LocalMachineError>,
+    capability: &'static str,
+) -> Result<Response<OpaquePayload>, Status> {
+    match result {
+        Err(LocalMachineError::Sealing(
+            error @ (SealingError::Published(_)
+            | SealingError::AwaitsRecovery(_)
+            | SealingError::Unopenable { .. }
+            | SealingError::SealedAnother { .. }),
+        )) => {
+            let refused = sealing_error(error);
+            let mut details = refused.details.clone();
+            if let Some(details) = details.as_object_mut() {
+                details.insert("capability".into(), serde_json::json!(capability));
+            }
+            respond(refused.with_details(details))
+        }
+        result => finish(result),
+    }
+}
+
 /// Refusals name themselves in `details` so the CLI tells a wrong code from a
 /// wrong backup; a key file this Machine cannot use is its own fault.
 fn recovery_error(error: RecoveryError) -> RpcError {
@@ -1580,6 +1649,9 @@ fn internal_response(error: impl std::error::Error + 'static) -> Status {
     ployz_core::rpc::caused_status(tonic::Code::Internal, &error)
 }
 
+#[cfg(test)]
+#[path = "authorization_tests.rs"]
+mod authorization_tests;
 #[cfg(test)]
 #[path = "rotation_fleet_tests.rs"]
 mod rotation_fleet_tests;
