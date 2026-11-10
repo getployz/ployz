@@ -423,8 +423,9 @@ prepares Docker and ZFS meanwhile.
    installs one.
 12. Once you approve the server, the loop enrolls it and the **this server** line walks through
     `Installing`, `Enrolling`, `Queued to join`, `Setting up ZFS`, `Joining` and `Publishing`,
-    the same stages Ployz Cloud shows, where `Queued to join` reads **In line** and `Publishing`
-    reads **Going live**. `Queued to join` means other servers are joining the fleet first. When
+    the same stages Ployz Cloud shows, where `Queued to join` reads **In line**, `Setting up ZFS`
+    reads **Setting up storage** and `Publishing` reads **Going live**. `Queued to join` means
+    other servers are joining the fleet first. When
     it reads `Joined`, the running check-in loop turns itself off and deletes
     `/etc/ployz/fleet-token`, or the file you named with `--token-file`.
 13. `Enroll failed` means a stage failed, and the line after it names the stage and why, for

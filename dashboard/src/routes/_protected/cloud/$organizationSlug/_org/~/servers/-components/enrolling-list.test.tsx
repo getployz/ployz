@@ -76,7 +76,7 @@ it("fills the expanded viewport when a second batch appends to a short list", ()
 it("accounts for every open attempt exactly once, including publishing and an unknown stage", () => {
   const attempts = [attempt(1, { state: "instructed", queued: true }), attempt(2), attempt(3, { stage: "storage" }), attempt(4, { stage: "enrolling" }), attempt(5, { stage: "queued" }), attempt(6, { stage: "joining" }), attempt(7, { stage: "publishing" }), attempt(8, { stage: null })];
   render(<EnrollingList attempts={attempts} onCancel={vi.fn()} />);
-  expect(rows().map((row) => within(row).getAllByRole("cell")[1]?.textContent)).toEqual(["Queued", "Installing", "Setting up ZFS", "Enrolling", "In line", "Joining", "Going live", "Starting"]);
+  expect(rows().map((row) => within(row).getAllByRole("cell")[1]?.textContent)).toEqual(["Queued", "Installing", "Setting up storage", "Enrolling", "In line", "Joining", "Going live", "Starting"]);
 });
 
 it("uses singular copy for exactly one server ahead", () => {

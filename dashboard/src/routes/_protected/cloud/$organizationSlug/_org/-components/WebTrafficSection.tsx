@@ -190,7 +190,7 @@ function CloudflareSetupForm({ organizationSlug, onCancel, onDone }: {
       setToken("");
       onDone();
     } catch (error) {
-      setRefusal(toErrorMessage(error, `Setup didn't finish. If Cloudflare has a tunnel named ployz-${organizationSlug}, delete it and try again.`));
+      setRefusal(toErrorMessage(error, "Ployz Cloud didn't answer, so setup may not have finished. Try again."));
     } finally {
       setBusy(null);
     }
@@ -277,7 +277,7 @@ function SwitchDialog({ organizationSlug, to, onOpenChange, onConfirm }: {
       title={toCloudflare ? "Switch to Cloudflare Tunnel?" : "Switch back to public ports?"}
       description={(
         <div className="flex flex-col gap-4">
-          <p>Expect a short interruption.</p>
+          <p>{toCloudflare ? "Expect a short interruption." : "This opens ports 80 and 443 on every server. Expect a short interruption."}</p>
           {review.isPending ? <p role="status">Checking addresses…</p> : null}
           {review.isError ? <p role="alert">Couldn't list the addresses that change. The switch checks again before it moves any.</p> : null}
           {review.data?.gap ? <p role="alert">{review.data.gap}</p> : null}

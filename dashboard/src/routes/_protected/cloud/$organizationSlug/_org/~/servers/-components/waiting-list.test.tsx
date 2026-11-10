@@ -339,7 +339,7 @@ it.each(["failed", "cancelled"] as const)("keeps the live status primary after a
   const { rerender } = renderList([row]);
   expect(statusOf("returned")).toMatch(/^Offline/);
   expect(statusOf("returned")).toContain(`Last enroll ${state}`);
-  expect(statusOf("returned")).not.toContain("Setting up ZFS");
+  expect(statusOf("returned")).not.toContain("Setting up storage");
   expect(statusOf("returned")).not.toContain("Disk missing");
   rerender([{ ...row, status: "blocked", report: { ...row.report, blockers: [{ code: "docker_stopped", message: "Start Docker" }] } }]);
   expect(statusOf("returned")).toMatch(/^Docker stoppedStart Docker/);
@@ -522,7 +522,7 @@ it("probes a picked row only once a role still loading turns out to be allowed",
   expect(probe.mock.calls[0]?.[0]).toEqual({ data: { organizationSlug: "ada", ids: ["id-one"] } });
 });
 
-it.each([["failed", "Failed at Setting up ZFS"], ["cancelled", "Cancelled"]] as const)("shows how a %s attempt ended and its message in the detail sheet", async (state, reason) => {
+it.each([["failed", "Failed at Setting up storage"], ["cancelled", "Cancelled"]] as const)("shows how a %s attempt ended and its message in the detail sheet", async (state, reason) => {
   const one: WaitingServerView = { ...host("one"), returned: { state, stage: "storage", message: "Disk missing" } };
   vi.spyOn(waitingFunctions, "showWaitingServerServerFn").mockResolvedValue({ ...one, report, probe: null } as never);
   renderList([one]);

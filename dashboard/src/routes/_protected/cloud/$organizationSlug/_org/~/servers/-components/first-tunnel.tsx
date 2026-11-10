@@ -88,7 +88,7 @@ export function FirstTunnelStatus({ organizationSlug }: { organizationSlug: stri
         <Alert role="status">
           <AlertTitle>Cloudflare Tunnel is set up on <span className="font-mono">{state.zone}</span></AlertTitle>
           <AlertDescription className="flex flex-wrap items-center gap-x-2">
-            {state.switched ? null : <span>Apps you already deployed still use public ports. To move them, switch web traffic under Organization, Network.</span>}
+            {state.switched ? null : <span>To move apps you already deployed onto it, switch web traffic under Organization, Network.</span>}
             <Button type="button" variant="link" size="sm" className="h-auto px-0" onClick={() => forgetCloudflare(organizationSlug)}>Dismiss</Button>
           </AlertDescription>
         </Alert>
