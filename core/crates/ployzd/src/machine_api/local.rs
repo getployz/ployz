@@ -1535,13 +1535,9 @@ fn upgrade_error(error: crate::installer::upgrade::Error) -> Result<RpcError, St
         Error::AttemptConflict(_) | Error::Busy | Error::Admission(mutation::Error::Busy) => {
             RpcErrorCode::Conflict
         }
-        // Only a request that never touched Cloud may downgrade, so the refusal names the route.
-        Error::Downgrade { .. } => {
-            return Ok(RpcError::caused(RpcErrorCode::InvalidArgument, &error).with_details(
-                serde_json::json!({ "capability": ployz_core::REQUEST_MACHINE_UPGRADE_CAPABILITY }),
-            ));
+        Error::Resolve(_) | Error::NonstandardPaths(_) | Error::Downgrade { .. } => {
+            RpcErrorCode::InvalidArgument
         }
-        Error::Resolve(_) | Error::NonstandardPaths(_) => RpcErrorCode::InvalidArgument,
         Error::Read(_)
         | Error::Decode(_)
         | Error::Write(_)

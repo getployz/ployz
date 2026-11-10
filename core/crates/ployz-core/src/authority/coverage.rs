@@ -356,8 +356,8 @@ pub const CASES: &[Case] = &[
     case(
         REQUEST_MACHINE_UPGRADE_CAPABILITY,
         "a downgrade",
-        "a RequestMachineUpgrade to a release older than the installed one",
-        Expected::Refused(&[REQUEST_MACHINE_UPGRADE_CAPABILITY]),
+        "a RequestMachineUpgrade to a release older than the installed one, which no channel resolves to",
+        Expected::Refused(&[UPGRADE_EXACT_CAPABILITY]),
     ),
     case(
         GENERATE_SEALING_KEY_CAPABILITY,

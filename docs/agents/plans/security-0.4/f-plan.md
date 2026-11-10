@@ -279,7 +279,7 @@ What users keep. *Amended: the root took this decision on 2026-11-10, under the 
 - [ ] Lane 6. Enforcement on. The dashboard's **Remove server**. Save `f1-dashboard-rm.png`. Pass when it shows the new refusal and nothing stops.
 - [ ] Lane 7. Kill `ployzd` on web-3 while a refused `Leave` is in flight. Save `f1-kill.png`. Pass when the restarted daemon still refuses.
 - [ ] Lane 8. Read the changed `docs/user` page against lanes 5 and 6. Save `f1-docs.png`. Pass when every sentence matches.
-- [ ] Lane 9. Attacker harness, on Machines installed at the system path. `RequestMachineUpgrade` as Cloud naming an exact version no channel resolves to, then a downgrade. Pass when each is refused naming `ployz.machine.upgrade.exact.v1` and `ployz.machine.upgrade.request.v1` respectively, and nothing is installed. A test daemon refuses a non-system install path before either check, so these two cases are proven here only.
+- [ ] Lane 9. Attacker harness, on Machines installed at the system path. `RequestMachineUpgrade` as Cloud naming an exact version no channel resolves to, then a downgrade. Pass when both are refused naming `ployz.machine.upgrade.exact.v1`, and nothing is installed. A channel never resolves below the installed release, so an Operator's downgrade fails the channel check first; only a Full caller over a management connection meets the downgrade refusal itself. A test daemon refuses a non-system install path before either check, so these two cases are proven here only.
 
 **Verify, perf.**
 
