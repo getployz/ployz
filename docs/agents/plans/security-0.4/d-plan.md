@@ -215,25 +215,25 @@ Outcome. With a rule approved once from the CLI, every push to the approved bran
 - [x] `deploy_approval.rs` tests admit a second creation of the same image after the token's `exp` through the accepted-build record, and refuse it once the head moved. They also admit a hook once per commit.
 - [x] `automation.rs` tests hold a push for re-approval when the Saved revision changes a setting, and admit it when only the commit changed. Run `cargo nextest run -p ployz-core authority::rule`, `-p ployzd deploy_approval`, `-p ployz-store automation`.
 
-**Verify, live.** Eleven lanes, all **GitHub**, two Machines, enforcement on, rule approved with `cli --device -- github rule approve web`.
+**Verify, live.** Eleven lanes, all **GitHub**, two Machines, enforcement on, rule approved with `cli --device -- github rule approve web`. Evidence is the terminal output of each lane, kept with the verify run rather than as screenshots.
 
-- [ ] Lane 1. Regression lane against trunk. Enforcement off. A push deploys at trunk and at head. Save `d4-enforce-off.png`.
-- [ ] Lane 2. A push deploys with no prompt. Save `d4-push.png`. Pass when both Machines run the new digest and log `rule <id> gen <n> commit <12 hex>`.
-- [ ] Lane 3. A force push to an older commit deploys. Save `d4-force.png`. Pass when both Machines run that commit's image.
-- [ ] Lane 4. Attacker harness. Replay lane 2's `EnsureContainer` after lane 3. Save `d4-stale.png`. Pass when it is refused naming the commit.
-- [ ] Lane 5. Attacker harness. Lane 2's request with an image Cloud pushed through `EnsureImageIngest`. Save `d4-artifact.png`. Pass when it is refused naming the image.
-- [ ] Lane 6. Attacker harness. Lane 2's request with `privileged: true`, then with a new Sealed variable. Save `d4-settings.png`. Pass when both are refused naming the payload.
-- [ ] Lane 7. Change a plain variable in the dashboard, Save, and push. Save `d4-reapprove.png`. Pass when the push waits as "approve the rule again", and after `github rule approve` the next push deploys at generation n+1.
-- [ ] Lane 8. Attacker harness. Replay a generation n token after lane 7. Save `d4-old-gen.png`. Pass when it is refused naming the generation.
-- [ ] Lane 9. A pre-deploy hook that appends a line. Push once, then replay the hook creation. Save `d4-hook.png`. Pass when the file has one line.
-- [ ] Lane 10. `github rule end`, then push. Save `d4-ended.png`. Pass when nothing deploys and the Machines log the ended rule.
-- [ ] Lane 11. Attacker harness. Deploy D3 lane 11's image, whose token names the harness's attest key. Save `d4-attest.png`. Pass when every Machine refuses naming the attest key.
+- [ ] Lane 1. Regression lane against trunk. Enforcement off. A push deploys at trunk and at head. Save `d4-enforce-off.png`. Ran at head only: a push deployed through a Servers build. Trunk not run.
+- [x] Lane 2. A push deploys with no prompt. Save `d4-push.png`. Pass when both Machines run the new digest and log `rule <id> gen <n> commit <12 hex>`.
+- [x] Lane 3. A force push to an older commit deploys. Save `d4-force.png`. Pass when both Machines run that commit's image.
+- [x] Lane 4. Attacker harness. Replay lane 2's `EnsureContainer` after lane 3. Save `d4-stale.png`. Pass when it is refused naming the commit.
+- [x] Lane 5. Attacker harness. Lane 2's request with an image Cloud pushed through `EnsureImageIngest`. Save `d4-artifact.png`. Pass when it is refused naming the image.
+- [x] Lane 6. Attacker harness. Lane 2's request with `privileged: true`, then with a new Sealed variable. Save `d4-settings.png`. Pass when both are refused naming the payload.
+- [x] Lane 7. Change a plain variable in the dashboard, Save, and push. Save `d4-reapprove.png`. Pass when the push waits as "approve the rule again", and after `github rule approve` the next push deploys at generation n+1.
+- [x] Lane 8. Attacker harness. Replay a generation n token after lane 7. Save `d4-old-gen.png`. Pass when it is refused naming the generation.
+- [x] Lane 9. A pre-deploy hook that appends a line. Push once, then replay the hook creation. Save `d4-hook.png`. Pass when the file has one line.
+- [x] Lane 10. `github rule end`, then push. Save `d4-ended.png`. Pass when nothing deploys and the Machines log the ended rule.
+- [ ] Lane 11. Attacker harness. Deploy D3 lane 11's image, whose token names the harness's attest key. Save `d4-attest.png`. Pass when every Machine refuses naming the attest key. Not run live: D3's attacker endpoint is not kept. With Cloud handing the runner a foreign attest key, the pinned builder refused to build. The Machine refusal is covered by a unit test.
 
 **Verify, perf.**
 
-- [ ] Metric. Push to Deployment success, at D3's head with enforcement off and at D4's head with a rule, five each, interleaved. Rule: within 1.2 times. Admission per creation under 300 ms at the median, which includes one head read.
+- [ ] Metric. Push to Deployment success, at D3's head with enforcement off and at D4's head with a rule, five each, interleaved. Rule: within 1.2 times. Admission per creation under 300 ms at the median, which includes one head read. Admission measured 487 ms median (n=18, 318 to 1169 ms), over the target: the head read costs 50 ms warm and 234 ms cold. Push to applied under a rule: 64 s median (n=8). The D3 baseline was not run.
 
-**Review gate.** The operator reviews the CLI output. Post lanes 2 and 7 with a 30 to 60 second terminal video, saved under `docs/agents/plans/security-0.4/media/d4-review.*`.
+**Review gate.** The operator reviews the CLI output. Post lanes 2 and 7 with a 30 to 60 second terminal video, saved under `docs/agents/plans/security-0.4/media/d4-review.*`. Saved as `d4-review.mp4`, 40 s.
 
 ## Approve rules in the dashboard (D5)
 
