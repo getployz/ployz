@@ -94,7 +94,7 @@ test("a built image, a tag image, a plan read without target, or unknown terms s
 });
 
 // `AutoDeployRule::draft`'s golden fixture in ployz-core's authority/rule_draft_tests.rs, and the digest of its body there.
-const RULE_GOLDEN = "004e199a9600b0c6fa8b432a1de4d098c1f217a4bc8e40f36ffa3af27b2c7b28";
+const RULE_GOLDEN = "9c041c83758d801e0350725886e31596384b655d7edb2f66189bdb542a32ae63";
 const BUILDER_SHA = "5f35eaa8e1372d0d86ff82788adadf308e5f3f97";
 const ruleSpec = (name, plain) => ({
   name,
