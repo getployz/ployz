@@ -318,18 +318,18 @@ Outcome. Pushes by trusted GitHub accounts to branches of the repository deploy 
 
 **Verify, live.** Ten lanes, all **GitHub**, enforcement on, a preview rule approved from `cli --device`.
 
-- [ ] Lane 1. Regression lane against trunk. A trusted preview deploys with enforcement off. Save `d7-enforce-off.png`.
-- [ ] Lane 2. A trusted account's push deploys a preview that reads `DATABASE_URL` (length only) and not `STRIPE_KEY`. Save `d7-trusted.png`. Pass when the Namespace and URL have the derived form.
-- [ ] Lane 3. Adding an untrusted account to Cloud's `member ⋈ account` rows, then pushing as that account. Save `d7-members.png`. Pass when nothing deploys without review.
-- [ ] Lane 4. Attacker harness. Lane 2's proof with the parent's Namespace and a production Volume name. Save `d7-prod-namespace.png`. Pass when it is refused naming the Namespace, and no Container mounts the Volume.
-- [ ] Lane 5. Attacker harness. Lane 2's proof with a production hostname. Save `d7-prod-host.png`. Pass when it is refused naming the payload.
-- [ ] Lane 6. Attacker harness. Relay the parent's `STRIPE_KEY` ciphertext into the preview. Save `d7-uninherited.png`. Pass when it is refused before any open.
-- [ ] Lane 7. A fork PR, reviewed with a passkey prompt. Save `d7-review.png`. Pass when exactly the reviewed commit builds and deploys.
-- [ ] Lane 8. Attacker harness. Dispatch the reviewed build with another commit as `commit`. Save `d7-review-commit.png`. Pass when the grant is refused before any Sealed open.
-- [ ] Lane 9. A session-signed review of a preview that inherits `DATABASE_URL`. Save `d7-session-review.png`. Pass when the Machine refuses naming the signer.
-- [ ] Lane 10. Read the changed `docs/user` pages against lanes 2 and 7. Save `d7-docs.png`.
+- [x] Lane 1. Regression lane against trunk. A trusted preview deploys with enforcement off. Save `d7-enforce-off.png`. Ran at head only, in `Ployz-test/lab-preview`: PR #1 deployed `lab-pr-1` through a Servers build, with no production secret. Trunk not run.
+- [x] Lane 2. A trusted account's push deploys a preview that reads `DATABASE_URL` (length only) and not `STRIPE_KEY`. Save `d7-trusted.png`. Pass when the Namespace and URL have the derived form. `pv-6652ff952822497d-d8ffd8f7a2bd`, served as `web-2-pv-6652ff952822497d-d8ffd8f7a2bd.ada.ployz.test` on both Machines, `DATABASE_URL` length 38. `STRIPE_KEY` lives on `billing`, which the rule doesn't cover, since inherit takes every Not set key of a covered Service.
+- [x] Lane 3. Adding an untrusted account to Cloud's `member ⋈ account` rows, then pushing as that account. Save `d7-members.png`. Pass when nothing deploys without review. Ran as a member's account the rule no longer trusts (approved again with `--trust` naming another ID): the Machine refused the grant naming an account, and the Deployment failed at its build.
+- [x] Lane 4. Attacker harness. Lane 2's proof with the parent's Namespace and a production Volume name. Save `d7-prod-namespace.png`. Pass when it is refused naming the Namespace, and no Container mounts the Volume. The harness rebuilt lane 2's `PreviewProof` from Cloud's rows; the unchanged spec was admitted as the control.
+- [x] Lane 5. Attacker harness. Lane 2's proof with a production hostname. Save `d7-prod-host.png`. Pass when it is refused naming the payload.
+- [x] Lane 6. Attacker harness. Relay the parent's `STRIPE_KEY` ciphertext into the preview. Save `d7-uninherited.png`. Pass when it is refused before any open. Refused at admission naming a Sealed value.
+- [ ] Lane 7. A fork PR, reviewed with a passkey prompt. Save `d7-review.png`. Pass when exactly the reviewed commit builds and deploys. Moved to D7b.
+- [ ] Lane 8. Attacker harness. Dispatch the reviewed build with another commit as `commit`. Save `d7-review-commit.png`. Pass when the grant is refused before any Sealed open. Moved to D7b.
+- [ ] Lane 9. A session-signed review of a preview that inherits `DATABASE_URL`. Save `d7-session-review.png`. Pass when the Machine refuses naming the signer. Moved to D7b.
+- [x] Lane 10. Read the changed `docs/user` pages against lanes 2 and 7. Save `d7-docs.png`. Read against lanes 2 and 3; lane 7 is D7b's. The approve example gained its `host ports` line and the untrusted-account sentence its outcome.
 
-**Verify, perf.** Admission per creation within 10 ms of D4.
+**Verify, perf.** Admission per creation within 10 ms of D4. Medians 185 to 236 µs against D4's 181 to 202 µs (n=300, three runs, release build, head read faked). Live, with the head read: 276 to 664 ms per creation, the head read dominating as in D4.
 
 **Review gate.** The operator reviews the preview rule UI and the derived URLs before merge.
 
