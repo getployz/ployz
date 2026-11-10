@@ -117,15 +117,16 @@ function observationOf(frame: RuntimeWatchView): ClusterIngressObservation {
  * Whether Cloudflare setup may open only the tunnel. The Cluster must keep its Doors closed, by Cloud's record of a closed
  * founding or by a Server holding them closed, and no Server taking web traffic may lack what keeps them closed: it would
  * hand the Public Door back on its next catch-up. Unknown while a Server isn't seen, since it may hold the ports, or while
- * none takes web traffic yet.
+ * none takes web traffic yet. `closing` is a switch that is about to close them: it asks every Server the same, whatever
+ * the Cluster was founded as.
  */
-export const closedFounding = Effect.fn("IngressDoors.closedFounding")(function* (organizationId: string) {
+export const closedFounding = Effect.fn("IngressDoors.closedFounding")(function* (organizationId: string, closing = false) {
   const recorded = new Set<ClusterFeature>((yield* foundedClosed(organizationId)) ? ["closedDoors"] : []);
   const frame = yield* firstRuntimeFrame(organizationId).pipe(Effect.catch(() => Effect.succeed(null)));
   // A Cluster closed without Cloud's knowledge shows only in the Servers, so one that can't be read is unknown.
   if (frame === null) return { kind: "unknown" } as const;
   // What the Cluster was asked for, not what it shows: a Server that lacks the capability may have opened the ports itself.
-  const asked = closedHolderAnywhere(frame) ? new Set<ClusterFeature>([...recorded, "closedDoors"]) : recorded;
+  const asked = closing || closedHolderAnywhere(frame) ? new Set<ClusterFeature>([...recorded, "closedDoors"]) : recorded;
   if (asked.size === 0) return { kind: "open" } as const;
   const seen = observationOf(frame);
   if (seen.partial) return { kind: "unknown" } as const;
@@ -348,7 +349,7 @@ type RedeployServices = Effect.Services<Admission> | Effect.Services<Ending> | E
 const applySwitch = Effect.fn("IngressDoors.apply")(function* (session: PloyzSession, request: DoorsRequest, runId: string, want: DoorsWant) {
   const { drizzle } = yield* Database;
   const owned = and(eq(ingressDoorsAttempt.id, request.attemptId), eq(ingressDoorsAttempt.inngestRunId, runId));
-  const founding = want === "tunnel" ? yield* closedFounding(request.organizationId) : { kind: "open" } as const;
+  const founding = want === "tunnel" ? yield* closedFounding(request.organizationId, true) : { kind: "open" } as const;
   if (founding.kind === "unknown") return { ok: false, failure: "Some servers didn't answer. Switch again once they all do." } as const;
   if (founding.kind === "lacking") return { ok: false, failure: lackingWords(founding.servers, "switch to Cloudflare Tunnel") } as const;
   return yield* runSwitch(want, {
