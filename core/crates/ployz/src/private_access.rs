@@ -167,7 +167,11 @@ pub(crate) fn seal_key(observed: &Access, key: &str) -> Result<Ciphertext, Failu
 #[serde(deny_unknown_fields)]
 pub struct PrivateAccessOn {
     pub sealed_auth_key: Ciphertext,
-    pub approval: Signed<PrivateAccessApproval>,
+    /// Absent when no Server enforces Device approval, so a person with no passkey can
+    /// still turn Private Access on. A Server that enforces refuses the key without it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub approval: Option<Signed<PrivateAccessApproval>>,
 }
 
 /// `signer`'s approval of `sealed`, the auth key sealed to the Cluster whose Sealing Key

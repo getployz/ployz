@@ -1215,7 +1215,7 @@ impl Session {
                         &client,
                         observed.machines,
                         on.sealed_auth_key,
-                        Some(on.approval),
+                        on.approval,
                         cancel,
                     )
                     .await

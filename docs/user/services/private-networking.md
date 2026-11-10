@@ -159,7 +159,7 @@ your services at their private addresses, on any port and protocol.
    ```
 
    The key is sealed to your cluster before it leaves your browser or device, so Ployz Cloud
-   never sees it, and it's never printed. **Connect** asks for your passkey to approve the key.
+   never sees it, and it's never printed.
 3. In the admin console, open **Machines**, then **ployz-router**, then **Edit route settings**,
    and approve the route. Do this once per server, unless your tailnet auto-approves the tag.
    A server keeps its router's identity across restarts and reboots, so the route stays
@@ -169,8 +169,8 @@ your services at their private addresses, on any port and protocol.
 
 **Integrations** lists each server's router. **Approve routes** links to the Tailscale admin
 console, and the Linux command is there to copy. If you ask an agent, or run `ployz cluster private-access on`, it
-waits for an owner or admin to approve. The approver pastes the key in the approval card and
-approves it with their passkey, so neither the agent nor Ployz Cloud sees it. **Connect**
+waits for an owner or admin to approve. The approver pastes the key in the approval card, so
+neither the agent nor Ployz Cloud sees it. **Connect**
 approves it before the key goes out, so it can't be denied afterwards. If Tailscale refuses the key, the approval stays approved: try another key, or turn
 Private Access off, in **Integrations**.
 
@@ -184,10 +184,11 @@ once it's back; the routers already running stay on. A server whose router
 already joined keeps its identity when you run `on` again with another key; to join another
 tailnet, turn Private Access off first.
 
-With [enforcement](../servers/manage-servers.md#require-a-devices-signature-for-restarts-and-joins) on, a server runs a router only for a key
-your passkey or an approved device approved. `ployz private-access on` from a device that
-isn't approved is refused. A server you add then starts no router: `ployz server add` names
-it, and **Connect** starts it. Turning Private Access off needs no approval.
+With [enforcement](../servers/manage-servers.md#require-a-devices-signature-for-restarts-and-joins)
+on, a server runs a router only for a key your passkey or an approved device approved, so
+**Connect** and the approval card ask for your passkey. `ployz private-access on` from a device
+that isn't approved is refused. A server you add then starts no router: `ployz server add`
+names it, and **Connect** starts it. Turning Private Access off needs no approval.
 
 If the router a device uses stops, the device moves to another in about 16 seconds. It stays
 there when the first one returns. Services see the router's private address as the client.

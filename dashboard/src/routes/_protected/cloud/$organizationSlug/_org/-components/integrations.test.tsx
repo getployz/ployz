@@ -24,6 +24,7 @@ let observed: Observed;
 const servers = (fra: "running" | "stopped" | "none", ams: "running" | "stopped" | "none"): Observed => ({
   servers: [{ id: FRA, name: "fra-1", router: fra }, { id: AMS, name: "ams-1", router: ams }],
   partial: false,
+  enforced: true,
 });
 
 let changing: (() => Promise<Changed>) | null = null;
