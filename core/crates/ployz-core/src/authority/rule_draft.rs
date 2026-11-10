@@ -158,21 +158,37 @@ impl RuleBasis {
     }
 
     /// The Services a rule approved in the dashboard deploys: every one that builds from
-    /// the kept rule's branch, or with no rule, every one that builds from GitHub.
+    /// GitHub, when they all build from one branch. When they build from several, those
+    /// on the kept rule's branch, if any still do. Otherwise every one, so drafting names
+    /// the branches that keep them from one rule.
     #[must_use]
     pub fn branch_services(&self) -> Vec<ServiceName> {
-        let kept = self.kept().map(|kept| kept.source);
-        self.sources
+        let all = || self.sources.iter().map(|source| source.service.clone());
+        let mut branches = self
+            .sources
             .iter()
-            .filter(|source| match &kept {
-                Some(kept) => {
-                    source.repository_id == kept.repository_id
-                        && source.branch.as_deref() == Some(kept.branch.as_str())
-                }
-                None => true,
+            .map(|source| (source.repository_id, source.branch.as_deref()));
+        let first = branches.next();
+        if branches.all(|branch| Some(branch) == first) {
+            return all().collect();
+        }
+        let Some(kept) = self.kept().map(|kept| kept.source) else {
+            return all().collect();
+        };
+        let on_kept: Vec<ServiceName> = self
+            .sources
+            .iter()
+            .filter(|source| {
+                source.repository_id == kept.repository_id
+                    && source.branch.as_deref() == Some(kept.branch.as_str())
             })
             .map(|source| source.service.clone())
-            .collect()
+            .collect();
+        if on_kept.is_empty() {
+            all().collect()
+        } else {
+            on_kept
+        }
     }
 
     fn source(&self, name: &ServiceName) -> Result<&RuleSourceView, RuleDraftError> {

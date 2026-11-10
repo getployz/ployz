@@ -91,6 +91,18 @@ describe("draftRule", () => {
     expect(() => draftEnd(view())).toThrow(RuleRefused);
   });
 
+  it("starts a new rule on the branch the Services build from now, even after turning the old one off", () => {
+    newRule();
+    const first = draftRule(view(), scope, 278_111_222, 1_000);
+    const ended = draftEnd(view({ body: first.body, signatures: [] }), 2_000);
+    for (const rule of [first, ended]) {
+      const moved = view({ body: rule.body, signatures: [] });
+      for (const source of moved.sources) source.branch = "release";
+      const next = draftRule(moved, scope, 278_111_222, 3_000);
+      expect(JSON.parse(next.body)).toMatchObject({ generation: 1, source: { branch: "release" } });
+    }
+  });
+
   it("says why a Service can't be in a rule", () => {
     const twoBranches = view();
     const [web] = twoBranches.sources;

@@ -181,16 +181,56 @@ fn another_branch_starts_a_new_rule() {
     let mut view = kept(&first);
     view["sources"][0]["branch"] = json!("release");
     let basis = basis(view);
-    assert!(
-        basis.branch_services().is_empty(),
-        "nothing builds from the kept branch"
-    );
-    let next = AutoDeployRule::draft(&basis, &web(), terms()).unwrap();
+    // What the dashboard drafts with no Service named: the Environment's GitHub Services
+    // where they build now, not where the kept rule pointed.
+    assert_eq!(basis.branch_services(), web());
+    let next = AutoDeployRule::draft(&basis, &basis.branch_services(), terms()).unwrap();
     assert_eq!(
         (next.rule, next.generation),
         (RuleId::from_bytes([0x33; 16]), 1)
     );
     assert_eq!(next.source.branch, "release");
+}
+
+#[test]
+fn an_ended_rule_on_another_branch_turns_on_again_on_the_new_one() {
+    let first: AutoDeployRule = canonical::from_canonical(&golden().body).unwrap();
+    let ended = AutoDeployRule::ending(
+        &basis(kept(&first)),
+        Timestamp::from_millis(5_000).unwrap(),
+        terms().signer,
+    )
+    .unwrap();
+    let mut view = kept(&ended);
+    view["sources"][0]["branch"] = json!("release");
+    let basis = basis(view);
+    let next = AutoDeployRule::draft(&basis, &basis.branch_services(), terms()).unwrap();
+    assert_eq!(
+        (next.source.branch.as_str(), next.ended),
+        ("release", false)
+    );
+}
+
+#[test]
+fn services_split_across_branches_keep_the_kept_rules_branch() {
+    let first: AutoDeployRule = canonical::from_canonical(&golden().body).unwrap();
+    let mut view = kept(&first);
+    view["sources"].as_array_mut().unwrap().push(json!({
+        "service": "cache",
+        "repository": "Ployz-test/lab-service",
+        "repository_id": 1_450_985_696_u64,
+        "branch": "release",
+        "root_dir": ".",
+        "build": {"buildMethod": "railpack"}
+    }));
+    assert_eq!(basis(view.clone()).branch_services(), web());
+    // With no rule to follow, drafting names the split.
+    view["rule"] = Value::Null;
+    let basis = basis(view);
+    assert!(matches!(
+        AutoDeployRule::draft(&basis, &basis.branch_services(), terms()),
+        Err(RuleDraftError::TwoBranches { .. })
+    ));
 }
 
 #[test]
