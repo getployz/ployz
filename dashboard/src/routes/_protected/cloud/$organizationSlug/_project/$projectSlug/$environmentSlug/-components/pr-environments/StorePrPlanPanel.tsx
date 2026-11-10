@@ -168,8 +168,9 @@ function OpenRow({ params, open, onApprove }: { params: Params; open: OpenPullRe
       </ItemContent>
     </>
   );
-  // Under a preview rule that doesn't trust its author, the Servers start a head only once a person reviews it, whatever its standing.
-  const review = open.environment && !waiting && open.needs_review && head;
+  // An approved head may need a new review, as when its build outlived the last one. Under a preview rule that doesn't
+  // trust its author, the Servers start even a trusted head only once a person reviews it.
+  const review = open.environment && !waiting && (open.needs_review || open.standing !== "trusted") && head;
   if (waiting || !open.environment || review) {
     return (
       <Item variant="outline" size="sm">
