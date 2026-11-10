@@ -62,7 +62,7 @@ const dispatchedRunSchema = Schema.Struct({ workflow_run_id: githubIdSchema, htm
  */
 export const dispatchGithubBuildWorkflow = Effect.fn("Github.dispatchBuildWorkflow")(function* (input: {
   access: GithubAccess; fullName: string; branch: string;
-  inputs: { build: string; cloud: string; runner: string } | { cloud: string; commit: string };
+  inputs: { build: string; cloud: string; runner: string } | { commit: string };
   /** The workflow's path in the repository; Ployz's own build workflow when absent. */
   workflow?: string;
 }) {

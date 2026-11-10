@@ -164,10 +164,9 @@ export const startStoreGithubBuild = Effect.fn("StoreGithub.start")(function* (o
     if (start.kind === "approved") {
       // A commit a person approved under an automatic deploy rule builds on the rule's workflow, on its branch, at that
       // commit; the grant Machine checks the commit is on the branch.
-      const config = yield* AppConfig;
+      // The rule's workflow names Cloud's origin itself, and declares only the commit input.
       const run = yield* dispatchGithubBuildWorkflow({
-        access, fullName, branch: start.branch, workflow: start.workflow,
-        inputs: { cloud: config.app.url.origin, commit: start.commit },
+        access, fullName, branch: start.branch, workflow: start.workflow, inputs: { commit: start.commit },
       });
       const cancel = cancelGithubRun({ access, fullName, runId: run.runId }).pipe(Effect.ignore);
       yield* storeTry(() => store.githubDispatched(target.build, {

@@ -458,7 +458,7 @@ it.live("a commit a person approved under an automatic deploy rule builds on the
     const target = { build: BUILD, service: "web", repository: "acme/web", repositoryId: 42, installationId: 7, hasNext: true };
 
     expect(yield* provided(startStoreGithubBuild(ORGANIZATION, target))).toEqual({ kind: "dispatched", runId: RUN });
-    expect(dispatched).toEqual([{ ref: "release", inputs: { cloud: expect.any(String), commit: HEAD }, return_run_details: true }]);
+    expect(dispatched).toEqual([{ ref: "release", inputs: { commit: HEAD }, return_run_details: true }]);
     expect(yield* Effect.promise(() => store.githubBuild(BUILD))).toMatchObject({
       held: { status: "building", run: { run_id: RUN, workflow_ref: workflowRef } },
     });

@@ -136,6 +136,8 @@ function viewRedactions(shows: SupportShows): ViewRedactions {
     deployments: (view) => ({ ...view, deployments: view.deployments.map(redact.summary) }),
     deployment: redact.deployment,
     numbered_deployment: redact.deployment,
+    // Support reads which Deployment a device approves, never the settings it approves.
+    deployment_target: (view) => ({ ...view, target: [] }),
     service: redact.service,
     config: redact.config,
     sync: redact.sync,

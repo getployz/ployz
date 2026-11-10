@@ -32,6 +32,8 @@ const refreshedBy = {
   deployments: ["store_deployment", "store_check_suite"],
   deployment: ["store_deployment", "store_check_suite"],
   numbered_deployment: ["store_deployment", "store_check_suite"],
+  // What a Deployment ships is its Saved revision lowered: the Environment's settings at that revision.
+  deployment_target: ["store_deployment", "store_environment"],
   build_log: ["store_deployment"],
   // Admission fixes an Environment's Namespace.
   namespace: ["store_environment", "store_deployment"],
