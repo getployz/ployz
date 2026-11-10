@@ -14,12 +14,34 @@ use crate::{
     tunnel_service_spec,
 };
 
-const CADDY_INGRESS_COMMAND: [&str; 4] = ["caddy", "run", "-c", "/config/caddy/Caddyfile"];
-const CADDY_INGRESS_ADMIN: &str = "unix//run/ingress/caddy/admin.sock";
+pub const INGRESS_CONFIG_MOUNT: &str = "/config";
+const INGRESS_DATA_MOUNT: &str = "/data";
+pub const INGRESS_RUNTIME_MOUNT: &str = "/run/ingress";
+/// The port of Caddy's loopback listener, which the Tunnel Connector dials.
+pub const INGRESS_LOOPBACK_PORT: u16 = 8480;
+pub const INGRESS_LOOPBACK_BIND: &str = "127.0.0.1";
+pub const INGRESS_LOOPBACK_BIND_V6: &str = "::1";
 /// Environment variable selecting Caddy's administrative endpoint.
 pub const CADDY_ADMIN_ENV: &str = "CADDY_ADMIN";
 const INGRESS_PROXY_DATA_PATH: &str = "/var/lib/ployz/ingress";
 const INGRESS_PROXY_RUNTIME_PATH: &str = "/run/ployz/ingress";
+
+#[must_use]
+pub fn ingress_certs_dir() -> String {
+    format!("{INGRESS_CONFIG_MOUNT}/caddy/certs")
+}
+
+fn caddy_ingress_command() -> Vec<String> {
+    ["caddy", "run", "-c"]
+        .map(str::to_owned)
+        .into_iter()
+        .chain([format!("{INGRESS_CONFIG_MOUNT}/caddy/Caddyfile")])
+        .collect()
+}
+
+fn caddy_ingress_admin() -> String {
+    format!("unix/{INGRESS_RUNTIME_MOUNT}/caddy/admin.sock")
+}
 
 /// The `ip:port` token an Ingress Proxy config names one upstream by.
 #[must_use]
@@ -206,9 +228,9 @@ fn holder_container(image: String) -> ServiceContainerSpec {
 pub(crate) fn caddy_container(image: String) -> ServiceContainerSpec {
     ServiceContainerSpec {
         image,
-        command: CADDY_INGRESS_COMMAND.map(str::to_owned).into(),
+        command: caddy_ingress_command(),
         entrypoint: Vec::new(),
-        environment: BTreeMap::from([(CADDY_ADMIN_ENV.into(), CADDY_INGRESS_ADMIN.into())]),
+        environment: BTreeMap::from([(CADDY_ADMIN_ENV.into(), caddy_ingress_admin().into())]),
         sealed_identity: None,
         labels: Default::default(),
         hostname: None,
@@ -255,9 +277,9 @@ fn caddy_volume_graph() -> ServiceVolumeGraph {
             bind_volume(runtime.clone(), INGRESS_PROXY_RUNTIME_PATH),
         ],
         vec![
-            mount(&data, "/config"),
-            mount(&data, "/data"),
-            mount(&runtime, "/run/ingress"),
+            mount(&data, INGRESS_CONFIG_MOUNT),
+            mount(&data, INGRESS_DATA_MOUNT),
+            mount(&runtime, INGRESS_RUNTIME_MOUNT),
         ],
     )
     .expect("static Caddy Volume graph is valid")
@@ -300,6 +322,21 @@ mod tests {
     };
 
     use super::*;
+
+    #[test]
+    fn the_proxy_paths_and_loopback_port_keep_their_values() {
+        assert_eq!(ingress_certs_dir(), "/config/caddy/certs");
+        assert_eq!(
+            caddy_ingress_command(),
+            ["caddy", "run", "-c", "/config/caddy/Caddyfile"]
+        );
+        assert_eq!(caddy_ingress_admin(), "unix//run/ingress/caddy/admin.sock");
+        assert_eq!(INGRESS_LOOPBACK_PORT, 8480);
+        assert_eq!(INGRESS_LOOPBACK_BIND, "127.0.0.1");
+        assert_eq!(INGRESS_LOOPBACK_BIND_V6, "::1");
+        assert_eq!(INGRESS_PROXY_DATA_PATH, "/var/lib/ployz/ingress");
+        assert_eq!(INGRESS_PROXY_RUNTIME_PATH, "/run/ployz/ingress");
+    }
 
     fn edge() -> BTreeSet<PlacementConstraint> {
         [PlacementConstraint::parse("node.labels.edge==true").unwrap()].into()
