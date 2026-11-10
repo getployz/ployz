@@ -143,10 +143,11 @@ jobs:
       cloud: https://ployz.dev
 ```
 
-- **A saved change waits for you.** After you save a change to a service the rule covers, the next
-  push waits with `Approve the automatic deploy rule again: web changed since it was approved.`
-  Run `ployz github rule approve web` again, then push. A push that changes only the code
-  deploys as before.
+- **A saved change waits for you.** After you save a change to a service the rule covers, its
+  settings or how it builds, pushes don't deploy it until you approve the rule again. Run
+  `ployz github rule approve web`: it names what changed, as
+  `changed     web since the last approval`. A push that changes only the code deploys as
+  before, and so does a new replica count.
 - **A new server waits too.** The rule names the servers it was approved for. Approve it again
   after you [add a server](../servers/add-a-server.md).
 - **Stop it** with `ployz github rule end`. Pushes no longer deploy on those servers.

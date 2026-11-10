@@ -398,6 +398,12 @@ fn show(view: &RuleView, rule: &AutoDeployRule, names: &[ServiceName]) {
         "  servers     {} in the cluster",
         rule.machines.len()
     ));
+    if !view.changed.is_empty() {
+        crate::ui::stream(format_args!(
+            "  changed     {} since the last approval",
+            joined(&view.changed)
+        ));
+    }
     for name in names {
         let Some(approved) = rule.service(name) else {
             continue;
