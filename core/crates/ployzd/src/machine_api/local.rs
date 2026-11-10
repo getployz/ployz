@@ -1025,13 +1025,9 @@ impl MachineRpc for MachineService {
         // build's grant passes enforcement only once every check of its proof passed.
         let admitted = match (&request.rule, &request.preview) {
             (Some(_), Some(_)) => {
-                return respond(RpcError {
-                    code: RpcErrorCode::InvalidArgument,
-                    message: "a Build Grant is under one rule, not a rule and a preview rule"
-                        .into(),
-                    details: Value::Null,
-                    cause: Vec::new(),
-                });
+                return respond(RpcError::invalid_argument(
+                    "a Build Grant is under one rule, not a rule and a preview rule",
+                ));
             }
             (None, Some(grant)) => {
                 let admitted = self.admit_preview_grant(
@@ -1040,12 +1036,9 @@ impl MachineRpc for MachineService {
                     request.sealed.as_ref(),
                 );
                 let Some(admitted) = admitted.await else {
-                    return respond(RpcError {
-                        code: RpcErrorCode::Unavailable,
-                        message: "This Server cannot reach GitHub to check a preview build".into(),
-                        details: Value::Null,
-                        cause: Vec::new(),
-                    });
+                    return respond(RpcError::unavailable(
+                        "This Server cannot reach GitHub to check a preview build",
+                    ));
                 };
                 match admitted {
                     Ok(admitted) => Some(admitted),
