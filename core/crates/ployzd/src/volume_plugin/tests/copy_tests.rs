@@ -4059,7 +4059,7 @@ impl ployzd::volume_send::Recipients for SendsToAll {
         _: std::net::IpAddr,
         _: &ployz_core::DockerVolumeName,
         _: Option<&ployz_core::SnapshotName>,
-    ) -> Result<ployzd::volume_send::Sends, String> {
+    ) -> std::result::Result<ployzd::volume_send::Sends, String> {
         Ok(ployzd::volume_send::Sends::Open)
     }
 }

@@ -1268,4 +1268,32 @@ mod tests {
             sent
         );
     }
+
+    #[test]
+    fn a_forget_without_a_recipient_and_a_request_without_an_approval_keep_their_wire() {
+        let forget = WantedCopy::Forget { recipient: None };
+        assert_eq!(
+            serde_json::to_value(&forget).unwrap(),
+            serde_json::json!({"kind": "forget"})
+        );
+        let named = WantedCopy::Forget {
+            recipient: Some(MachineId::parse("b".repeat(32)).unwrap()),
+        };
+        let wire = serde_json::to_value(&named).unwrap();
+        assert_eq!(
+            wire,
+            serde_json::json!({"kind": "forget", "recipient": "b".repeat(32)})
+        );
+        assert_eq!(serde_json::from_value::<WantedCopy>(wire).unwrap(), named);
+
+        let older = serde_json::json!({
+            "name": "app_data", "expect": {"kind": "writer", "epoch": 1}, "want": {"kind": "forget"},
+        });
+        let request: SetVolumeCopyRequest = serde_json::from_value(older.clone()).unwrap();
+        assert_eq!(request.approval, None);
+        assert_eq!(request.want, forget);
+        let sent = serde_json::to_value(&request).unwrap();
+        assert_eq!(sent.get("approval"), None);
+        assert_eq!(sent.get("want"), older.get("want"));
+    }
 }

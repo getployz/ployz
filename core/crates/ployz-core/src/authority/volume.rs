@@ -273,6 +273,73 @@ impl VolumeWorkflow {
     }
 }
 
+/// What a person approved in a Volume approval, as a client shows it, computed from the
+/// statement it signs. Each Server goes by the name the client knows it by.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum ApprovedVolumeChange {
+    /// `mirror` keeps a copy of `volume` from `writer`, and takes every later sync of it
+    /// without another approval until the Mirror is removed. With `replace` it first
+    /// destroys the copy it holds.
+    Mirror {
+        volume: DockerVolumeName,
+        writer: String,
+        mirror: String,
+        replace: bool,
+    },
+}
+
+impl ApprovedVolumeChange {
+    /// The change `approval` makes, naming each Server with `name`. `None` for a workflow
+    /// no client signs yet.
+    #[must_use]
+    pub fn of(approval: &VolumeApproval, name: impl Fn(&MachineId) -> String) -> Option<Self> {
+        match &approval.workflow {
+            VolumeWorkflow::Mirror {
+                writer,
+                mirror,
+                replace,
+            } => Some(Self::Mirror {
+                volume: approval.volume.clone(),
+                writer: name(writer),
+                mirror: name(mirror),
+                replace: *replace,
+            }),
+            VolumeWorkflow::Move { .. }
+            | VolumeWorkflow::MirrorRemoval { .. }
+            | VolumeWorkflow::Restore { .. }
+            | VolumeWorkflow::Resize { .. }
+            | VolumeWorkflow::Seed { .. } => None,
+        }
+    }
+
+    /// One line a person reads: the Volume by its declared name, both Servers, and that
+    /// later syncs need no approval.
+    #[must_use]
+    pub fn line(&self) -> String {
+        match self {
+            Self::Mirror {
+                volume,
+                writer,
+                mirror,
+                replace,
+            } => {
+                let shown = Namespace::declared_volume_name(volume).unwrap_or(volume.as_str());
+                let change = if *replace {
+                    format!(
+                        "copy {shown} from {writer} to {mirror} again, replacing the copy there"
+                    )
+                } else {
+                    format!("mirror {shown} from {writer} to {mirror}")
+                };
+                format!(
+                    "Approved: {change}. Later syncs run without asking, until the Mirror is removed."
+                )
+            }
+        }
+    }
+}
+
 /// What a Machine knows when it checks a Volume approval against one step.
 #[derive(Clone, Debug)]
 pub struct VolumeFacts<'a> {

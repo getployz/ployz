@@ -583,3 +583,7 @@ fn refusal(refused: SetVolumeCopyRefused, name: &DockerVolumeName) -> LocalMachi
 fn not_routed(message: String) -> RpcError {
     RpcError::conflict(message)
 }
+
+#[cfg(test)]
+#[path = "local_volume_copy_tests.rs"]
+mod tests;

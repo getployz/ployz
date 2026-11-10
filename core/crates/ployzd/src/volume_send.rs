@@ -421,11 +421,13 @@ mod tests {
         }
     }
 
+    type Asks = std::sync::Arc<std::sync::Mutex<Vec<(IpAddr, Option<String>)>>>;
+
     /// Answers each ask from a fixed table, and counts the asks.
     #[derive(Clone)]
     struct Asked {
         answer: fn(IpAddr, Option<&SnapshotName>) -> Result<Sends, String>,
-        asks: std::sync::Arc<std::sync::Mutex<Vec<(IpAddr, Option<String>)>>>,
+        asks: Asks,
     }
 
     impl Recipients for Asked {
@@ -561,12 +563,14 @@ esac
             assert!(!body.contains("stream"), "no bytes of the Volume: {body}");
         }
         assert_eq!(
-            asked.asks.lock().unwrap()[..3],
-            [
-                (GRANTED, Some("w-1-2".to_owned())),
-                (GRANTED, None),
-                (STRANGER, Some("w-1-2".to_owned())),
-            ],
+            asked.asks.lock().unwrap().get(..3),
+            Some(
+                &[
+                    (GRANTED, Some("w-1-2".to_owned())),
+                    (GRANTED, None),
+                    (STRANGER, Some("w-1-2".to_owned())),
+                ][..]
+            ),
             "the stream asks for the snapshot it would send, and the bound for none"
         );
         shutdown.cancel();

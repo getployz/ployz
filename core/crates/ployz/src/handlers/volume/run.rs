@@ -6,6 +6,7 @@
 use std::time::Duration;
 
 use clap::{ArgMatches, Command};
+use ployz_core::authority::{ApprovedVolumeChange, Signed, VolumeApproval};
 use ployz_core::{MachineName, ProvisionedVolumeMaximumBytes, RpcErrorCode};
 use ployz_store::{
     EnvironmentId, EnvironmentName, EnvironmentSummary, ProjectName, VolumeId, VolumeName,
@@ -16,6 +17,7 @@ use serde::{Deserialize, Serialize};
 
 use super::super::store::{self, Backend, Next};
 use super::super::{Error, leaf_matches};
+use super::approve::MirrorOn;
 use crate::approval::{self, Asked, Verb};
 use crate::cli::{approval as approval_arg, positional, switch, value};
 use crate::cloud_account::{self, Credential, StoreCallError};
@@ -166,11 +168,16 @@ pub(crate) struct RunRequest {
 #[derive(Debug, Serialize, PartialEq)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub(crate) enum RunAsk {
+    /// `approval`: this Device's, when a Server enforces Device approval.
     Mirror {
         to: MachineName,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        approval: Option<Signed<VolumeApproval>>,
     },
     Sync {
         full: Full,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        approval: Option<Signed<VolumeApproval>>,
     },
     DeleteMirror {
         slot: MachineName,
@@ -475,9 +482,11 @@ pub(crate) fn mirror(root: &ArgMatches) -> Result<(), Error> {
     let volume = store::volume_name(matches, "volume")?;
     let to = server_name(matches, "to")?;
     let started = format!("Mirror of Volume {volume} onto {to}");
-    request(root, &volume, started, |environment| RunRequest {
-        environment,
-        ask: RunAsk::Mirror { to: to.clone() },
+    approved_mirror(root, &volume, started, MirrorOn::Server(&to), |approval| {
+        RunAsk::Mirror {
+            to: to.clone(),
+            approval,
+        }
     })
 }
 
@@ -488,10 +497,51 @@ pub(crate) fn sync(root: &ArgMatches) -> Result<(), Error> {
         return hand_off(root, &volume);
     }
     let started = format!("full Sync of Volume {volume}'s Mirror");
-    request(root, &volume, started, |environment| RunRequest {
-        environment,
-        ask: RunAsk::Sync { full: Full },
+    // A full Sync destroys the Mirror's copy and copies it again, so it needs an approval
+    // of its own: one admitted before the copy went is withdrawn with it.
+    approved_mirror(root, &volume, started, MirrorOn::Current, |approval| {
+        RunAsk::Sync {
+            full: Full,
+            approval,
+        }
     })
+}
+
+/// Ask Cloud for a Mirror run, carrying this Device's approval of it when a Server
+/// enforces Device approval.
+fn approved_mirror(
+    root: &ArgMatches,
+    volume: &VolumeName,
+    started: String,
+    on: MirrorOn<'_>,
+    ask: impl FnOnce(Option<Signed<VolumeApproval>>) -> RunAsk,
+) -> Result<(), Error> {
+    let store = store::store(root)?;
+    cloud(store.backend())?;
+    let (volume_id, environment) = located(&store, leaf_matches(root), volume)?;
+    let replace = matches!(on, MirrorOn::Current);
+    let approval = super::approve::sign(
+        root,
+        &store,
+        (volume, &volume_id, &environment),
+        on,
+        replace,
+    )?;
+    let (signed, change) = approval.map_or((None, None), |approval| {
+        (Some(approval.signed), Some(approval.change))
+    });
+    request_located(
+        root,
+        &store,
+        volume,
+        &volume_id,
+        environment,
+        (started, change.as_ref()),
+        |environment| RunRequest {
+            environment,
+            ask: ask(signed),
+        },
+    )
 }
 
 /// What `POST volumes/{id}/sync` asks for.
@@ -606,7 +656,7 @@ pub(crate) fn resize(
         volume,
         &view.volume.volume.id,
         view.environment.clone(),
-        started,
+        (started, None),
         |environment| RunRequest {
             environment,
             ask: RunAsk::Resize { maximum_bytes },
@@ -677,16 +727,25 @@ fn request(
     let store = store::store(root)?;
     cloud(store.backend())?;
     let (volume_id, environment) = located(&store, leaf_matches(root), volume)?;
-    request_located(root, &store, volume, &volume_id, environment, started, ask)
+    request_located(
+        root,
+        &store,
+        volume,
+        &volume_id,
+        environment,
+        (started, None),
+        ask,
+    )
 }
 
+/// `started` names the run, with the change this Device approved for it, if any.
 fn request_located(
     root: &ArgMatches,
     store: &store::Store<'_>,
     volume: &VolumeName,
     volume_id: &VolumeId,
     environment: EnvironmentSummary,
-    started: String,
+    (started, change): (String, Option<&ApprovedVolumeChange>),
     ask: impl FnOnce(RunEnvironment) -> RunRequest,
 ) -> Result<(), Error> {
     let matches = leaf_matches(root);
@@ -708,7 +767,13 @@ fn request_located(
     );
     if !matches.get_flag("wait") {
         return crate::ui::finish(
-            &Next::new(&OneRun { run: run.clone() }, Some(follow.clone())),
+            &Next::new(
+                &Started {
+                    run: &run,
+                    approved: change,
+                },
+                Some(follow.clone()),
+            ),
             || {
                 crate::ui::stream(format_args!("Started the {started}: run {}.", run.id));
                 crate::ui::hint(&Hint::Next(follow.clone()));
@@ -722,7 +787,15 @@ fn request_located(
     let run = runtime
         .block_on(settle(credential, run))
         .map_err(|error| store.fail(error))?;
-    ended(&run, &started, follow)
+    ended(&run, &started, follow, change)
+}
+
+/// A run as `ployz volume` prints it, with the change this Device approved for it.
+#[derive(Serialize)]
+struct Started<'a> {
+    run: &'a VolumeRun,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    approved: Option<&'a ApprovedVolumeChange>,
 }
 
 /// Start `asked`, settling an approval Cloud asks for first. Only `approval_required` leaves
@@ -788,9 +861,14 @@ fn approved(
     )
 }
 
-fn ended(run: &VolumeRun, started: &str, follow: String) -> Result<(), Error> {
+fn ended(
+    run: &VolumeRun,
+    started: &str,
+    follow: String,
+    approved: Option<&ApprovedVolumeChange>,
+) -> Result<(), Error> {
     if run.state == MaybeKnown::Known(VolumeRunState::Done) {
-        return crate::ui::finish(&OneRun { run: run.clone() }, || {
+        return crate::ui::finish(&Started { run, approved }, || {
             crate::ui::stream(format_args!("The {started} is done: run {}.", run.id));
             if let Some(message) = &run.message {
                 crate::ui::stream(format_args!("{message}."));

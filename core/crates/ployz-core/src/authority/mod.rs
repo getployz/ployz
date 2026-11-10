@@ -53,4 +53,6 @@ pub use trusted_key::{
     Passkey, PasskeyAccount, PasskeyApprover, PasskeyAssertion, PasskeyPublicKey, TrustedKeys,
     TrustedPasskey,
 };
-pub use volume::{VolumeApproval, VolumeApproved, VolumeFacts, VolumeStep, VolumeWorkflow};
+pub use volume::{
+    ApprovedVolumeChange, VolumeApproval, VolumeApproved, VolumeFacts, VolumeStep, VolumeWorkflow,
+};
