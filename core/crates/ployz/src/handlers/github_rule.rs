@@ -279,7 +279,7 @@ fn drafting(error: RuleDraftError) -> Error {
         | RuleDraftError::TwoBranches { .. }
         | RuleDraftError::Nothing => RpcErrorCode::InvalidArgument,
     };
-    Error::coded(code, error.to_string())
+    Error::caused(code, "Can't draft the automatic deploy rule", error)
 }
 
 /// What the person approves, before it is signed.
