@@ -346,6 +346,18 @@ impl Github for SlowHead {
         self.release.notified().await;
         self.inner.head(repository_id, branch, reader).await
     }
+
+    async fn ancestry(
+        &self,
+        repository_id: u64,
+        commit: CommitSha,
+        branch: &str,
+        reader: Option<&GithubToken>,
+    ) -> Result<crate::github::head::Ancestry, crate::github::head::HeadError> {
+        self.inner
+            .ancestry(repository_id, commit, branch, reader)
+            .await
+    }
 }
 
 #[tokio::test]

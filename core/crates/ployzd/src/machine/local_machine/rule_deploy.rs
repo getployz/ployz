@@ -288,6 +288,9 @@ fn refusal_text(refusal: &AuthorityRefusal) -> String {
         AuthorityRefusal::Mismatch {
             field: "a hook run",
         } => "This push already ran its pre-deploy command here.",
+        AuthorityRefusal::Mismatch {
+            field: "an approved build",
+        } => "A build someone approved deploys only once they approve its image.",
         AuthorityRefusal::Replayed { .. } => "This push already ran its pre-deploy command here.",
         AuthorityRefusal::Mismatch {
             field: "the signer" | "a passkey",

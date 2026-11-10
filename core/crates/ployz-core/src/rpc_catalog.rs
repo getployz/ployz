@@ -132,6 +132,8 @@ macro_rules! rpc_catalog {
                 /// The daemon mints a Build Grant for a holder's own key and returns no grant secret.
                 BUILD_GRANT_HOLDER_CAPABILITY: ("ployz.build.grant.holder.v1", Always),
                 BUILD_GRANT_RULE_CAPABILITY: ("ployz.build.grant.rule.v1", Always),
+                /// A rule build's grant may build a commit that is not the branch head, under a person's build approval naming it, once this Machine reads from GitHub that the commit is on the rule's branch.
+                BUILD_GRANT_APPROVED_CAPABILITY: ("ployz.build.grant.approved.v1", Always),
                 /// `EnsureContainer` takes a Device-signed restart approval and, under Device enforcement, refuses an Operator's restart step without one.
                 RESTART_APPROVAL_CAPABILITY: ("ployz.restart.device-approval.v2", Always),
                 /// A restart or deploy approval may be signed by a browser key under a trusted passkey's session grant that rides in its envelope. The grant names its Environment's ID, and a deploy under it opens only Sealed values sealed for that Environment.

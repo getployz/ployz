@@ -11,14 +11,16 @@ use std::future::Future;
 use ployz_core::{
     BuildGrantId, GithubToken, RuleGrant, SealedRecord,
     authority::{
-        AuthorityRefusal, AutoDeployRule, BuildClaim, BuildStage, CommitAuthority, CommitSha,
-        GithubClaims, PolicyDigest, RecipientKey, SealedDigest, Timestamp, rule::verify_signature,
+        AuthorityRefusal, AutoDeployRule, BuildApprovalFacts, BuildClaim, BuildStage,
+        CommitAuthority, CommitSha, GithubClaims, PolicyDigest, RecipientKey, SealedDigest,
+        StatementDigest, Timestamp,
+        rule::{RuleEvent, verify_build_approval, verify_signature},
     },
 };
 
 use super::{Error, LocalMachine};
 use crate::github::{
-    head::{GithubApi, HeadError},
+    head::{Ancestry, GithubApi, HeadError},
     oidc::{IssuerKeys, ProofRefusal},
 };
 
@@ -40,6 +42,15 @@ pub(crate) trait Github: Sync {
         branch: &str,
         reader: Option<&GithubToken>,
     ) -> impl Future<Output = Result<CommitSha, HeadError>> + Send;
+
+    /// How `branch` of repository `repository_id` stands to `commit` now.
+    fn ancestry(
+        &self,
+        repository_id: u64,
+        commit: CommitSha,
+        branch: &str,
+        reader: Option<&GithubToken>,
+    ) -> impl Future<Output = Result<Ancestry, HeadError>> + Send;
 }
 
 /// GitHub itself: its issuer's keys over TLS, and `api.github.com`.
@@ -85,20 +96,36 @@ impl Github for GithubOnline {
         branch: &str,
         reader: Option<&GithubToken>,
     ) -> Result<CommitSha, HeadError> {
-        let reader =
-            reader.map(|token| crate::github::head::GithubToken::new(token.as_str().into()));
         self.api
-            .branch_head(repository_id, branch, reader.as_ref())
+            .branch_head(repository_id, branch, reader_token(reader).as_ref())
+            .await
+    }
+
+    async fn ancestry(
+        &self,
+        repository_id: u64,
+        commit: CommitSha,
+        branch: &str,
+        reader: Option<&GithubToken>,
+    ) -> Result<Ancestry, HeadError> {
+        self.api
+            .compare(repository_id, commit, branch, reader_token(reader).as_ref())
             .await
     }
 }
 
-/// GitHub as a test fixes it: tokens verify against `keys` at `now`, and every branch
-/// points at `head`.
+fn reader_token(reader: Option<&GithubToken>) -> Option<crate::github::head::GithubToken> {
+    reader.map(|token| crate::github::head::GithubToken::new(token.as_str().into()))
+}
+
+/// GitHub as a test fixes it: tokens verify against `keys` at `now`, every branch
+/// points at `head`, and stands to every commit as `ancestry` says, or reads as
+/// unreadable for `None`.
 #[cfg(test)]
 pub(crate) struct FixedGithub {
     pub(crate) keys: crate::github::oidc::KeySet,
     pub(crate) head: CommitSha,
+    pub(crate) ancestry: Option<Ancestry>,
     pub(crate) now: Timestamp,
 }
 
@@ -132,6 +159,18 @@ impl Github for FixedGithub {
     ) -> Result<CommitSha, HeadError> {
         Ok(self.head)
     }
+
+    async fn ancestry(
+        &self,
+        _repository_id: u64,
+        _commit: CommitSha,
+        branch: &str,
+        _reader: Option<&GithubToken>,
+    ) -> Result<Ancestry, HeadError> {
+        self.ancestry.ok_or_else(|| HeadError::Unreadable {
+            branch: branch.to_owned(),
+        })
+    }
 }
 
 /// A rule grant every check passed, its token spent: what the minted grant remembers and
@@ -150,7 +189,9 @@ pub(crate) struct AdmittedRule {
 impl LocalMachine {
     /// Admit a grant for `holder` under `grant`'s rule, with `sealed` the record Cloud
     /// relays, at `now`. Every check runs before anything opens, in the order
-    /// `d-build-proof.md` lists them, and the token is spent last.
+    /// `d-build-proof.md` lists them, and the token is spent last. A build of a commit
+    /// that is not the head needs a person's build approval naming it, and the commit on
+    /// the rule's branch.
     ///
     /// # Errors
     /// Returns [`Error::RuleGrantRefused`] naming what does not match,
@@ -235,6 +276,38 @@ impl LocalMachine {
                     return Err(refused("a commit"));
                 }
             }
+            CommitAuthority::Approved(digest) => {
+                let approval = grant
+                    .approval
+                    .as_ref()
+                    .ok_or_else(|| refused("an approval"))?;
+                if StatementDigest::of(approval) != digest {
+                    return Err(refused("an approval"));
+                }
+                let (by, _) = verify_build_approval(
+                    approval,
+                    &BuildApprovalFacts {
+                        cluster,
+                        machine: &record.id(),
+                        trusted: &record.trusted_keys(),
+                        rule: &rule,
+                        service: &grant.service,
+                        commit: grant.commit,
+                        now,
+                    },
+                )
+                .map_err(|refusal| {
+                    tracing::warn!(rule = %rule.rule, %refusal, "refused a rule build's approval");
+                    Error::RuleGrantRefused(refusal)
+                })?;
+                // GitHub starts an approved build only when someone asks it to; a push
+                // always builds its own head.
+                if claims.event_name != RuleEvent::WorkflowDispatch.as_str() {
+                    return Err(refused("an event"));
+                }
+                on_branch(github, &rule, grant).await?;
+                tracing::info!(rule = %rule.rule, approver = %by, "a person approved this build");
+            }
         }
         let digest = sealed
             .map(SealedDigest::of)
@@ -260,6 +333,37 @@ impl LocalMachine {
             service: grant.service.clone(),
             commit: grant.commit,
         })
+    }
+}
+
+/// Refuse unless `grant`'s commit is the head of `rule`'s branch or one of its ancestors,
+/// as GitHub answers this Machine now. A commit GitHub cannot find while it can read the
+/// branch is not on it.
+async fn on_branch(
+    github: &impl Github,
+    rule: &AutoDeployRule,
+    grant: &RuleGrant,
+) -> Result<(), Error> {
+    let source = &rule.source;
+    let reader = grant.reader.as_ref();
+    let refused = || {
+        tracing::warn!(rule = %rule.rule, commit = %grant.commit, "refused a commit not on the rule's branch");
+        Error::RuleGrantRefused(AuthorityRefusal::Mismatch { field: "a commit" })
+    };
+    match github
+        .ancestry(source.repository_id, grant.commit, &source.branch, reader)
+        .await
+    {
+        Ok(ancestry) if ancestry.on_branch() => Ok(()),
+        Ok(_) => Err(refused()),
+        Err(HeadError::Unreadable { .. }) => {
+            github
+                .head(source.repository_id, &source.branch, reader)
+                .await
+                .map_err(Error::RuleHeadUnread)?;
+            Err(refused())
+        }
+        Err(error) => Err(Error::RuleHeadUnread(error)),
     }
 }
 

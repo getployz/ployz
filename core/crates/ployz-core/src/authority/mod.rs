@@ -36,9 +36,9 @@ pub use restart::{
     Approved, OwnPrompt, RestartApproval, RestartFacts, RestartStep, SignerKey, WorkflowKind,
 };
 pub use rule::{
-    AttestKey, AutoDeployRule, BuildClaim, BuildPolicy, BuildStage, CommitAuthority, CommitSha,
-    GithubClaims, ImageDigest, PolicyDigest, RecipientKey, RuleFacts, RuleId, RuleProof,
-    RuleService, RuleSource, SealedDigest,
+    AttestKey, AutoDeployRule, BuildApproval, BuildApprovalFacts, BuildClaim, BuildPolicy,
+    BuildStage, CommitAuthority, CommitSha, GithubClaims, ImageDigest, PolicyDigest, RecipientKey,
+    RuleFacts, RuleId, RuleProof, RuleService, RuleSource, SealedDigest, StatementDigest,
 };
 pub use rule_draft::{RuleBasis, RuleDraft, RuleDraftError, RuleSummary, RuleTerms};
 pub use session::{ActionFamily, GrantBody, SessionGrant};

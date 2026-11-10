@@ -20,6 +20,7 @@ use super::{
     keys::{Approver, Purpose, Signed, Statement},
     refusal::{AuthorityRefusal, field, first_mismatch},
     restart::SignerKey,
+    session::{ActionFamily, GrantScope},
     trusted_key::TrustedKeys,
 };
 use crate::{
@@ -463,12 +464,117 @@ pub fn verify_signature(
         })
 }
 
-/// Which authority a build claims for its commit. Only `Head` exists so far: the commit is
-/// the branch head the Machine reads from GitHub itself.
+/// Which authority a build claims for its commit.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
 #[serde(rename_all = "snake_case")]
 pub enum CommitAuthority {
+    /// The commit is the branch head the Machine reads from GitHub itself.
     Head,
+    /// A person's [`BuildApproval`], by its digest, names the commit. It deploys only
+    /// through that person's deploy approval, never through the rule.
+    Approved(StatementDigest),
+}
+
+hex_newtype!(
+    /// SHA-256 of a signed statement's signing input: the purpose and its canonical body.
+    StatementDigest, "statement digest", 32, ""
+);
+
+impl StatementDigest {
+    /// The digest of `statement` as it was signed. Signatures and grants beside it are
+    /// left out, so it names what the person approved, not who carried it.
+    #[must_use]
+    pub fn of<T: Statement>(statement: &Signed<T>) -> Self {
+        Self(Sha256::digest(statement.signing_input()).into())
+    }
+}
+
+/// A person's approval to build one commit of one Service under a rule, when the commit
+/// is not the branch head, such as a rollback. It lets the grant Machine release the
+/// rule's build secrets for that commit, and only for a commit on the approved branch's
+/// history, which the Machine reads from GitHub itself. What the build makes deploys
+/// only once the same person approves its image in a [`super::DeployApproval`].
+///
+/// The same keys may sign it as a deploy approval: a Device, or a browser key under a
+/// session grant for the rule's Environment.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
+#[serde(deny_unknown_fields)]
+pub struct BuildApproval {
+    pub cluster: SealingPublicKey,
+    pub rule: RuleId,
+    pub generation: u64,
+    pub service: ServiceName,
+    pub commit: CommitSha,
+    pub issued_at: Timestamp,
+    pub expires_at: Timestamp,
+    pub signer: SignerKey,
+}
+
+impl Statement for BuildApproval {
+    const PURPOSE: Purpose = Purpose::Workflow;
+}
+
+/// What a Machine knows when it checks a build approval against a grant request.
+#[derive(Clone, Copy, Debug)]
+pub struct BuildApprovalFacts<'a> {
+    /// The Sealing public key this Machine holds.
+    pub cluster: SealingPublicKey,
+    pub machine: &'a MachineId,
+    pub trusted: &'a TrustedKeys,
+    /// The rule the grant builds under, its signature already checked.
+    pub rule: &'a AutoDeployRule,
+    pub service: &'a ServiceName,
+    /// The commit the builder checked out, as its grant token's audience names it.
+    pub commit: CommitSha,
+    pub now: Timestamp,
+}
+
+/// Check that `approval`, signed by a key that may approve a deploy, approves building
+/// `facts.commit` of `facts.service` under this generation of `facts.rule` now. Returns
+/// who approved it and its digest, which the build's audience must name.
+///
+/// # Errors
+/// Returns the envelope's refusal from [`Signed::approvers`], a malformed body,
+/// [`AuthorityRefusal::Mismatch`] naming the first field that does not match or a
+/// session grant that does not cover the rule's Environment and this Machine, and the
+/// window's refusal from [`super::validity::verify`].
+pub fn verify_build_approval(
+    approval: &Signed<BuildApproval>,
+    facts: &BuildApprovalFacts<'_>,
+) -> Result<(Approver, StatementDigest), AuthorityRefusal> {
+    let approvers = approval.approvers(facts.trusted, facts.now)?;
+    let body = approval.open()?;
+    let by = approvers
+        .into_iter()
+        .find(|approver| approver.signs_as(body.signer))
+        .ok_or(AuthorityRefusal::Mismatch {
+            field: "the signer",
+        })?;
+    let checks = [
+        (
+            "a Cluster",
+            body.cluster == facts.cluster && facts.rule.cluster == facts.cluster,
+        ),
+        ("a rule", body.rule == facts.rule.rule),
+        ("a generation", body.generation == facts.rule.generation),
+        ("a Service", &body.service == facts.service),
+        ("a commit", body.commit == facts.commit),
+    ];
+    if let Some((field, _)) = checks.iter().find(|(_, holds)| !holds) {
+        return Err(AuthorityRefusal::Mismatch { field });
+    }
+    if let Approver::Browser { grant, .. } = &by {
+        grant.body.covers(&GrantScope {
+            cluster: facts.cluster,
+            environment: &facts.rule.namespace,
+            machines: std::slice::from_ref(facts.machine),
+            family: ActionFamily::Deploy,
+            issued_at: body.issued_at,
+            expires_at: body.expires_at,
+        })?;
+    }
+    super::validity::verify(body.issued_at, body.expires_at, facts.now)?;
+    Ok((by, StatementDigest::of(approval)))
 }
 
 /// Which token of a build this is: the one that asks for the build secrets, or the one
@@ -606,10 +712,12 @@ impl AutoDeployRule {
             ),
             ("a commit", claim.commit == facts.head),
         ];
-        // Only a build of the head reaches a creation through a rule. D6's approved
-        // builds deploy through a person's deploy approval instead.
-        match claim.authority {
-            CommitAuthority::Head => {}
+        // Only a build of the head reaches a creation through a rule. An approved build
+        // deploys through its approver's deploy approval instead.
+        if let CommitAuthority::Approved(_) = claim.authority {
+            return Err(AuthorityRefusal::Mismatch {
+                field: "an approved build",
+            });
         }
         first_mismatch(checks)
     }
