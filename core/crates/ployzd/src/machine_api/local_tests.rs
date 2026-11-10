@@ -905,7 +905,6 @@ mod ingress_doors {
     use ployz_core::{
         ContainerNow, ContainerRefusalReason, DoorChange, EnsuredContainer, IngressDoorsSet,
         OPERATOR_SCOPE_HEADER, QualifiedService, RpcError, SET_INGRESS_DOORS_CAPABILITY,
-        rpc::status_details,
     };
     use serde_json::{Value, json};
     use tonic::Status;
@@ -1327,30 +1326,31 @@ mod ingress_doors {
     }
 
     #[tokio::test]
-    async fn an_operator_under_enforcement_is_refused_before_docker() {
+    async fn an_operator_under_enforcement_places_the_pinned_doors() {
         let (data_dir, store, service, fake) = fake_docker_service("ployzd-doors-enforced").await;
         store
             .mutate(|store| store.set_device_enforcement(true, Vec::new()).unwrap())
             .await
             .unwrap();
-        let seen = docker_calls(&fake);
-        let status = set_doors(&service, doors_request(), true)
+        let set = set_doors(&service, doors_request(), true)
             .await
-            .unwrap_err();
+            .unwrap()
+            .unwrap();
+        assert!(set.failure.is_none(), "{set:?}");
+        let specs = DoorSpecs::public(proxy_id());
+        assert_eq!(set.proxy.unwrap().now.resolved_spec, specs.proxy);
+        let images: Vec<String> = fake
+            .request_bodies
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|(path, _)| path.ends_with("/containers/create"))
+            .map(|(_, body)| body["Image"].as_str().unwrap_or_default().to_owned())
+            .collect();
         assert_eq!(
-            status.code(),
-            Code::PermissionDenied,
-            "{}",
-            status.message()
-        );
-        assert_eq!(
-            status_details(status.details()).unwrap().get("capability"),
-            Some(&json!(SET_INGRESS_DOORS_CAPABILITY))
-        );
-        assert_eq!(
-            docker_calls(&fake),
-            seen,
-            "no Docker call before the refusal"
+            images,
+            [crate::images::PAUSE, crate::images::CADDY],
+            "the doors run the daemon's pins and nothing else"
         );
         std::fs::remove_dir_all(data_dir).unwrap();
     }

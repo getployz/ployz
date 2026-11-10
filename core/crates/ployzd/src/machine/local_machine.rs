@@ -226,10 +226,10 @@ pub enum Error {
     /// stopped. The refusal names `capability` in its details.
     #[error("{}", departure_text(.capability))]
     DepartureRefused { capability: &'static str },
-    /// Device enforcement refused an Operator's `SetIngressDoors` or `SetPrivateAccess`,
-    /// which no statement admits yet. The refusal names `capability` in its details.
-    #[error("{}", ployz_core::INGRESS_REFUSED_BY_ENFORCEMENT)]
-    IngressRefused { capability: &'static str },
+    /// Device enforcement refused an Operator's `SetPrivateAccess` turning Private Access on
+    /// without an approval of its auth key.
+    #[error("This server joins a tailnet only with your approval: {0}")]
+    PrivateAccessRefused(ployz_core::authority::AuthorityRefusal),
     /// Device enforcement refused an Operator's `SetVolumeCopy` that creates a Container,
     /// or its `SeedVolume`. The refusal names `capability` in its details.
     #[error("{}", volume_approval::refusal_text(.capability))]

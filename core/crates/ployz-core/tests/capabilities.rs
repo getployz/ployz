@@ -269,6 +269,7 @@ fn advertised_capability_groups_match_the_frozen_catalog() {
             "ployz.cluster.name.v1",
             "ployz.runtime.watch.v1",
             "ployz.ingress.tunnel.v1",
+            "ployz.private-access.approval.v1",
         ]
     );
 }
@@ -453,6 +454,10 @@ const ABOVE_FLOOR: &[(&str, &str)] = &[
     (
         "ployz.ingress.tunnel.v1",
         "gated: `ployz ingress use tunnel` checks each Machine's contract first and names a Server whose daemon lacks it as needing an upgrade; an older daemon refuses the Tunnel Door as unsupported",
+    ),
+    (
+        "ployz.private-access.approval.v1",
+        "falls back: an older daemon ignores `approval` on SetPrivateAccess; one not enforcing turns Private Access on as before, and one enforcing refuses an Operator's SetPrivateAccess as it did, naming the route",
     ),
     (
         "ployz.volume.size.set.v1",
