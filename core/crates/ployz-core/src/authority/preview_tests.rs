@@ -802,7 +802,7 @@ fn a_review_is_not_drafted_outside_the_preview_the_rule_derives() {
     let spec = requested(preview_json(namespace.as_str(), "zyxwvutsrqponmlk", false));
     let elsewhere = Namespace::parse("shop-production").unwrap();
     assert!(matches!(
-        PreviewReview::draft(&rule, &elsewhere, &[spec.clone()], terms(&rule)),
+        PreviewReview::draft(&rule, &elsewhere, std::slice::from_ref(&spec), terms(&rule)),
         Err(ReviewDraftError::Namespace)
     ));
     let other = ReviewTerms {
@@ -810,7 +810,7 @@ fn a_review_is_not_drafted_outside_the_preview_the_rule_derives() {
         ..terms(&rule)
     };
     assert!(matches!(
-        PreviewReview::draft(&rule, &namespace, &[spec.clone()], other),
+        PreviewReview::draft(&rule, &namespace, std::slice::from_ref(&spec), other),
         Err(ReviewDraftError::Cluster)
     ));
     let mut stray = spec;

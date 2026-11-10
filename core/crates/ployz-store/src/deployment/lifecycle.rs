@@ -305,6 +305,38 @@ fn device_approval(
         .map_err(|_| error::corrupt("Deploy approval"))
 }
 
+/// Keep `review`, a person's review of preview Deployment `id`'s commit, for its runner
+/// to relay. Cloud checks only that it is readable; every Server checks it.
+pub(crate) fn reviewed(
+    tx: &mut dyn Tx,
+    id: &DeploymentId,
+    review: &ployz_core::authority::Review,
+) -> Result<(), RpcError> {
+    let review = serde_json::to_string(review).map_err(|_| error::corrupt("Preview review"))?;
+    tx.execute(
+        "UPDATE config_deployment SET preview_review = ?2 WHERE id = ?1",
+        &[id.as_str().into(), review.as_str().into()],
+    )
+    .map(drop)
+}
+
+/// The review a person signed for preview Deployment `id`'s commit, if any.
+pub(crate) fn preview_review(
+    tx: &mut dyn Tx,
+    id: &DeploymentId,
+) -> Result<Option<ployz_core::authority::Review>, RpcError> {
+    let rows = tx.query(
+        "SELECT preview_review FROM config_deployment WHERE id = ?1",
+        &[id.as_str().into()],
+    )?;
+    rows.first()
+        .map(|row| row.optional_text(0))
+        .transpose()?
+        .flatten()
+        .map(|text| serde_json::from_str(text).map_err(|_| error::corrupt("Preview review")))
+        .transpose()
+}
+
 /// Who admitted Deployment `id`, by the immutable id Cloud authenticated: none for
 /// Cloud's own automation and for one an older Cloud admitted.
 pub(crate) fn admitter(tx: &mut dyn Tx, id: &DeploymentId) -> Result<Option<String>, RpcError> {
@@ -1419,6 +1451,10 @@ pub(crate) fn claim(
     let ended_runs = ended_runs(tx, &stored.summary)?;
     let approval = device_approval(tx, id)?;
     let preview = crate::preview_rule::of_deployment(tx, &stored)?;
+    let review = match preview {
+        Some(_) => preview_review(tx, id)?,
+        None => None,
+    };
     let rule = match (&stored.summary.admitted_by, &preview) {
         (None, None) => crate::auto_rule::stored(tx, &stored.summary.environment_id)?,
         (Some(_), _) | (None, Some(_)) => None,
@@ -1441,6 +1477,7 @@ pub(crate) fn claim(
         approval,
         rule,
         preview,
+        review,
         image_tokens,
     }))
 }

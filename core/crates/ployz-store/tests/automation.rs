@@ -894,6 +894,7 @@ fn approve(store: &ConfigStore, who: &Actor, head: &str) -> Automated {
                 repository_id: backend::repo_id(11),
                 number: backend::pr_number(5),
                 head: backend::sha(head),
+                reviews: Vec::new(),
             },
         )
         .unwrap()
@@ -959,6 +960,7 @@ fn an_approval_that_made_no_pr_environment_stays_listed_to_approve_again() {
         repository_id: backend::repo_id(11),
         number: backend::pr_number(5),
         head: backend::sha(H2),
+        reviews: Vec::new(),
     };
     let serverless = Trusted {
         servers: Some(0),
@@ -1447,6 +1449,7 @@ fn an_approval_racing_news_of_a_push_refuses_the_head_it_moved_from() {
                     repository_id: backend::repo_id(11),
                     number: backend::pr_number(5),
                     head: backend::sha(H2),
+                    reviews: Vec::new(),
                 },
             )
         });

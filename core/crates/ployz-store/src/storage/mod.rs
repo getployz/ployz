@@ -311,6 +311,13 @@ const MIGRATIONS: &[(&str, Step)] = &[
         "0043_preview_rule",
         Step::Sql(include_str!("migrations/0043_preview_rule.sql")),
     ),
+    (
+        // The review a person signed for a preview Deployment's commit.
+        "0044_deployment_preview_review",
+        Step::Sql(include_str!(
+            "migrations/0044_deployment_preview_review.sql"
+        )),
+    ),
 ];
 
 enum Step {

@@ -672,7 +672,6 @@ impl Statement for PreviewReview {
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
 #[serde(rename_all = "snake_case", deny_unknown_fields)]
 pub enum Review {
-    #[ts(type = "unknown")]
     Signed(Signed<PreviewReview>),
     Passkey {
         body: String,
@@ -686,6 +685,12 @@ impl Review {
             Self::Signed(signed) => &signed.body,
             Self::Passkey { body, .. } => body,
         }
+    }
+
+    /// Its body, read without checking who signed it.
+    #[must_use]
+    pub fn opened(&self) -> Option<PreviewReview> {
+        canonical::from_canonical(self.body()).ok()
     }
 
     /// SHA-256 of the review's signing input: what a build's audience names, and the
@@ -813,7 +818,7 @@ fn review_line(spec: &RequestedServiceSpec, service: &PreviewService, commit: Co
     let mut notes: Vec<String> = Vec::new();
     if !service.inherit.is_empty() {
         let keys: Vec<&str> = service.inherit.iter().map(String::as_str).collect();
-        notes.push(format!("reads {} from production", keys.join(", ")));
+        notes.push(format!("reads {} from the parent", keys.join(", ")));
     }
     if service.secrets.is_some() {
         notes.push("builds with secrets".to_owned());

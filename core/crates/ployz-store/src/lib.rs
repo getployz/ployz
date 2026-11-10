@@ -97,10 +97,10 @@ pub use ployz_core::authority::rule_draft::RuleSourceView;
 pub use ployz_core::config::RowId;
 pub use preview_rule::{ApprovePreviewRule, PlanPreviewRule, PreviewRuleView};
 pub use pull_request::{
-    ApprovePullRequest, MergeRow, OnMerge, OnMergeCheck, OnMergeConclusion, OnMergeInto,
-    OnMergeQuery, OpenPullRequest, PrEnvironment, PrPlan, PrPlansQuery, PrPlansView, PullRequest,
-    PullRequestQuery, PullRequestRef, PullRequestView, Ride, SetMergeValue, SetPrPlan, Standing,
-    Sweep,
+    ApprovePullRequest, EnvironmentReview, MergeRow, OnMerge, OnMergeCheck, OnMergeConclusion,
+    OnMergeInto, OnMergeQuery, OpenPullRequest, PrEnvironment, PrPlan, PrPlansQuery, PrPlansView,
+    PreviewReviewQuery, PreviewReviewView, PullRequest, PullRequestQuery, PullRequestRef,
+    PullRequestView, Ride, SetMergeValue, SetPrPlan, Standing, Sweep,
 };
 pub use query::*;
 pub use removal::{
@@ -550,6 +550,19 @@ impl ConfigStore {
     /// Returns `not_found` for an unknown Deployment, or a storage error.
     pub fn github_rule(&self, id: &GithubBuildId) -> Result<Option<GithubRule>, RpcError> {
         self.storage.read(|tx| build::github_rule(tx, id))
+    }
+
+    /// The review a person signed for GitHub build `id`'s commit, when it builds a
+    /// reviewed preview: Cloud dispatches it on the parent's branch rather than following
+    /// a push.
+    ///
+    /// # Errors
+    /// Returns `not_found` for an unknown Deployment, or a storage error.
+    pub fn github_review(
+        &self,
+        id: &GithubBuildId,
+    ) -> Result<Option<ployz_core::authority::Review>, RpcError> {
+        self.storage.read(|tx| build::github_review(tx, id))
     }
 
     /// The GitHub build run `run_id` holds while it builds, if any.

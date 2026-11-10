@@ -837,8 +837,16 @@ fn admit(
         }
     }
     // Generated domains expand under the Cluster Domain Cloud reserved for the
-    // Environment's last Deploy.
-    let cluster_domain = deployment::cluster_domain(tx, id)?;
+    // Environment's last Deploy. A PR Environment that opened before its first Deploy,
+    // waiting for a review, takes the one its start-from's last Deploy reserved, as its
+    // first Deploy does when it opens and deploys at once.
+    let cluster_domain = match deployment::cluster_domain(tx, id)? {
+        Some(domain) => Some(domain),
+        None => match crate::branch::row(tx, id)? {
+            Some(branch) => deployment::cluster_domain(tx, &branch.parent)?,
+            None => None,
+        },
+    };
     let fresh = DeploymentId::parse(uuid::Uuid::new_v4().to_string())?;
     let admission = match &held {
         Some(hold) => deployment::Admission::Promote(&hold.id),
