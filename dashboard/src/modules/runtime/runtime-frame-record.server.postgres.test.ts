@@ -139,6 +139,45 @@ describe("runtimeFrameRecord", () => {
     expect(await machineName()).toBe("web-1");
   });
 
+  describe("a Server the Cluster stopped listing", () => {
+    const departed = (reported: RuntimeWatchView) => harness.runEffect(runtimeFrameRecords.pipe(
+      Effect.flatMap(([, , record]) => record.write(organizationId, clusterKey, reported)),
+      Effect.provideService(SecretEncryption, encryption),
+      Effect.provideService(InngestClient, inngest),
+    ));
+    const rows = async () => (await harness.pool.query<{ machine_id: string }>(
+      "select machine_id from organization_machine where organization_id = $1 order by machine_id",
+      [organizationId],
+    )).rows.map(({ machine_id }) => machine_id);
+    const joined = (minutesAgo: number) => harness.pool.query(
+      `insert into organization_machine (organization_id, machine_id, cluster_key, encrypted_capability, updated_at)
+       values ($1, $2, $3, $4, now() - $5 * interval '1 minute')`,
+      [organizationId, joiner, clusterKey, encryption.encrypt(`ployz1:cloud:${joiner}`), minutesAgo],
+    );
+
+    it("loses Cloud's row once its grace passed, as after a removal from an approved device", async () => {
+      await joined(10);
+      expect(await departed(frame("web-1", held))).toBe("settled");
+      expect(await rows()).toEqual([server]);
+    });
+
+    it("keeps its row while its grace runs, and asks again later", async () => {
+      await joined(1);
+      expect(await departed(frame("web-1", held))).toBe("asked");
+      expect(await rows()).toEqual([server, joiner]);
+    });
+
+    it("keeps the last Server's row: Cloud lets go of a Cluster only through its own removal", async () => {
+      await harness.pool.query("update organization_machine set updated_at = now() - interval '10 minutes'");
+      expect(await departed(frame("web-1", held, { [joiner]: held }))).toBe("settled");
+      await harness.pool.query("delete from organization_machine where machine_id = $1", [joiner]);
+      expect(await departed(runtimeWatchFrameFixture({ machines: [
+        runtimeWatchMachineObservationFixture({ machine: runtimeWatchMachineFixture(joiner, "joiner") }),
+      ] }))).toBe("settled");
+      expect(await rows()).toEqual([server]);
+    });
+  });
+
   it("digests a Server's Sealing Key state apart from its name, so a rename alone asks nothing", () => {
     expect(runtimeSealingDigest(frame("web-1", held))).not.toBe(runtimeSealingDigest(frame("web-1", awaitsRecovery)));
     expect(runtimeSealingDigest(frame("web-1", held))).toBe(runtimeSealingDigest(frame("web-2", held)));
