@@ -476,7 +476,9 @@ impl BuildClaim {
 }
 
 /// The digest a rule approves for `spec` in `namespace`: its [`PayloadDigest`] with the
-/// image left out, which the image token fills.
+/// image and pull policy left out. The image token fills the image, and a deploy binds
+/// every built image with pull policy `never`, so a Saved spec and the spec a Machine
+/// receives share one template.
 ///
 /// # Errors
 /// Returns a [`CanonicalError`] when the spec has no [`PayloadDigest`] in `namespace`.
@@ -486,6 +488,7 @@ pub fn template(
 ) -> Result<PayloadDigest, CanonicalError> {
     let mut spec = spec.clone();
     spec.container.image = String::new();
+    spec.container.pull_policy = crate::PullPolicy::Never;
     PayloadDigest::of(&spec, namespace)
 }
 

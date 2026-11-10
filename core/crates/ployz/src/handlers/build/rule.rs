@@ -132,6 +132,36 @@ fn derived(input: &BuildInput<'_>, rule: &BuildPolicy) -> BuildPolicy {
     }
 }
 
+/// The policy a rule approves for a Service built from `root_dir` with `settings`, as the
+/// runner derives it from the deployment Cloud relays: [`policy`] then refuses any other.
+pub(in crate::handlers) fn approved_policy(
+    root_dir: &str,
+    settings: &ployz_core::config::ServiceBuildConfig,
+    service: &ployz_core::RequestedServiceSpec,
+    platforms: BTreeSet<String>,
+    cache: PolicyCache,
+) -> BuildPolicy {
+    let pinned = BuildPolicy {
+        method: PolicyMethod::Dockerfile {
+            path: String::new(),
+        },
+        context: String::new(),
+        target: None,
+        args: BTreeMap::new(),
+        secrets: BTreeSet::new(),
+        platforms,
+        cache,
+    };
+    derived(
+        &BuildInput {
+            root_dir,
+            settings,
+            service,
+        },
+        &pinned,
+    )
+}
+
 /// The grant token's claim: this build's keys, at `commit`, under the relayed rule.
 ///
 /// # Errors

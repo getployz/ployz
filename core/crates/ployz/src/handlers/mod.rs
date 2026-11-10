@@ -26,6 +26,7 @@ pub(crate) mod docs;
 pub(crate) mod domain;
 pub(crate) mod env;
 pub(crate) mod github;
+mod github_rule;
 pub(crate) mod ingress;
 pub(crate) mod link;
 pub(crate) mod login;

@@ -482,6 +482,11 @@ commands! {
         needs ProjectEdit
         agent [EnvironmentPr]
         => crate::pull_request::set_plan(tx, who, c);
+    /// Keep the automatic deploy rule a Device signed for an Environment.
+    ApproveRule(crate::ApproveRule) -> Rule(crate::RuleView) as *
+        needs ChangesDeploy
+        agent none "A person's Device signs a rule that deploys every push of a branch."
+        => crate::auto_rule::approve(tx, who, c);
     /// Deploy a pull request's head that needed a member's approval.
     ApprovePullRequest(crate::ApprovePullRequest) -> Automated(crate::Automated)
         needs ChangesDeploy
@@ -696,6 +701,7 @@ impl Written {
             Self::Discarded(discarded) => Some(&discarded.environment.id),
             Self::HistoryStaged(staged) => Some(&staged.environment.id),
             Self::Deployment(deployment) => Some(&deployment.environment_id),
+            Self::Rule(rule) => Some(&rule.environment.id),
             Self::Domain(staged) => Some(&staged.environment.id),
             Self::DomainAdded(added) => Some(&added.written.environment.id),
             Self::Taken(taken) => Some(&taken.into.id),
@@ -771,6 +777,8 @@ pub enum Written {
     Domain(crate::DomainStaged),
     /// What a system event made the Store do.
     Automated(crate::Automated),
+    /// An Environment's automatic deploy rule was kept.
+    Rule(Box<crate::RuleView>),
     /// A Branch was made, given an Own Copy, or kept.
     Branch(crate::Branched),
     /// The Build Order was set; it applies to the next build.

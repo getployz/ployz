@@ -182,6 +182,8 @@ queries! {
         => crate::sealing_targets::targets(tx, who, q);
     /// What a Deploy would ship, from authored state alone.
     Plan(PlanQuery) -> PlanView => crate::deployment::query::plan(tx, who, trusted, q);
+    /// An Environment's automatic deploy rule, and what a Device signs its next approval over.
+    Rule(crate::RuleQuery) -> crate::RuleView as * => crate::auto_rule::view(tx, who, trusted, q);
     /// One page of an Environment's Deployments.
     Deployments(DeploymentsQuery) -> DeploymentsView as *
         => crate::deployment::query::page(tx, who, q);

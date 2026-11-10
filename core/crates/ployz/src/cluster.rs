@@ -263,7 +263,10 @@ impl Client {
     #[must_use]
     pub(crate) fn with_rule_proofs(
         mut self,
-        proofs: std::collections::BTreeMap<ployz_core::ServiceName, ployz_core::authority::RuleProof>,
+        proofs: std::collections::BTreeMap<
+            ployz_core::ServiceName,
+            ployz_core::authority::RuleProof,
+        >,
     ) -> Self {
         Arc::make_mut(&mut self.approvals).rules = proofs;
         self

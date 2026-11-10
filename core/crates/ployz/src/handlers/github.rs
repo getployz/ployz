@@ -281,7 +281,7 @@ fn repository_name(given: &str) -> Result<RepositoryName, Error> {
 
 /// `GET /api/cli/github/<route>` with `query`'s fields as its query string; Cloud's
 /// refusal, such as no readable repository by that name, as the error.
-fn read_repository<T: DeserializeOwned>(
+pub(super) fn read_repository<T: DeserializeOwned>(
     root: &ArgMatches,
     route: &str,
     query: &impl Serialize,

@@ -232,7 +232,7 @@ impl ConfigStore {
         runner: String,
         #[napi(ts_arg_type = "Connection[]")] connections: serde_json::Value,
         #[napi(
-            ts_arg_type = "{ checkouts?: Record<string, string>; upload?: string; failure?: string }"
+            ts_arg_type = "{ checkouts?: Record<string, string>; upload?: string; failure?: string; reader?: string }"
         )]
         sources: Option<serde_json::Value>,
         #[napi(ts_arg_type = "{ sealingPublicKey: string; allowUnverified?: boolean } | null")]
@@ -245,6 +245,7 @@ impl ConfigStore {
             checkouts: BTreeMap<ServiceName, std::path::PathBuf>,
             upload: Option<std::path::PathBuf>,
             failure: Option<String>,
+            reader: Option<String>,
         }
         let who = actor(organization, None)?;
         let (deployment, runner) = ids(deployment, runner)?;
@@ -264,6 +265,7 @@ impl ConfigStore {
             None => Ok(ployz::sdk::Sources {
                 checkouts: sources.checkouts,
                 upload: sources.upload,
+                reader: sources.reader.map(ployz_core::GithubToken::new),
             }),
         };
         // Only a Deployment of this Organization runs here.
@@ -521,7 +523,8 @@ impl ConfigStore {
 #[napi]
 impl ConfigStore {
     /// Start GitHub build `build` (`DEPLOYMENT.SERVICE`): `{kind: "reused"}`,
-    /// `{kind: "dispatch", runner}` or `{kind: "skipped", message}`. `expect` is as
+    /// `{kind: "dispatch", runner}`, `{kind: "skipped", message}`, or under an automatic
+    /// deploy rule `{kind: "follow", workflow, workflow_ref, commit}`. `expect` is as
     /// `runDeployment`'s, here and in `githubCheckIn` and `githubFinish`; `foreign` is
     /// as `observeCopies`', here and in `githubCheckIn`.
     ///
@@ -612,6 +615,88 @@ impl ConfigStore {
                 build,
                 claims,
                 holder,
+                connections,
+                expect,
+            )
+            .await,
+        )
+    }
+
+    /// The GitHub build run `runId` holds while it builds, or null.
+    ///
+    /// # Errors
+    /// Returns a storage error.
+    #[napi(ts_return_type = "Promise<string | null>")]
+    pub async fn github_by_run(&self, run_id: i64) -> Result<serde_json::Value> {
+        let run_id = u64::try_from(run_id).map_err(|_| invalid_argument("Expected a run id"))?;
+        self.run(move |store| {
+            store
+                .github_by_run(run_id)
+                .map(|build| build.map(|build| build.to_string()))
+        })
+        .await
+    }
+
+    /// A rule build's runner checks in on its push's run, with the OIDC `claims` Cloud
+    /// verified and the `commit` it checked out: the rule, the Cluster's keys and the
+    /// one-Service deployment, Sealed values sealed. Changes nothing.
+    ///
+    /// # Errors
+    /// Returns `not_found` while no build holds the run, `unauthenticated` for another
+    /// repository, workflow or run, and `conflict` for another commit, a build that
+    /// checked in, or one under no rule.
+    #[napi(
+        ts_return_type = "Promise<{ build: string; rule: unknown; cluster: string; attest: string; service: string; deployment: unknown; foreign: string[] }>"
+    )]
+    pub async fn github_rule_check_in(
+        &self,
+        #[napi(ts_arg_type = "GithubClaims")] claims: serde_json::Value,
+        commit: String,
+        #[napi(ts_arg_type = "Connection[]")] connections: serde_json::Value,
+        #[napi(ts_arg_type = "{ sealingPublicKey: string; allowUnverified?: boolean } | null")]
+        expect: Option<serde_json::Value>,
+    ) -> Result<serde_json::Value> {
+        let claims = claims_of(claims)?;
+        let connections = crate::parse_connections(connections)?;
+        let expect = crate::parse_expect(expect)?;
+        to_json(
+            ployz::sdk::github_rule_check_in(
+                Arc::clone(&self.store),
+                claims,
+                commit,
+                connections,
+                expect,
+            )
+            .await,
+        )
+    }
+
+    /// Relay a rule build's grant ask to a Machine, with `reader` for its head read.
+    /// Resolves to the Machine's Management Identity in hex.
+    ///
+    /// # Errors
+    /// As `githubRuleCheckIn`, `invalid_argument` for an ask that is not one, and the
+    /// Machine's refusal.
+    #[napi(ts_return_type = "Promise<{ machine: string; foreign: string[] }>")]
+    pub async fn github_rule_grant(
+        &self,
+        #[napi(ts_arg_type = "GithubClaims")] claims: serde_json::Value,
+        #[napi(ts_arg_type = "unknown")] ask: serde_json::Value,
+        #[napi(ts_arg_type = "string | null")] reader: Option<String>,
+        #[napi(ts_arg_type = "Connection[]")] connections: serde_json::Value,
+        #[napi(ts_arg_type = "{ sealingPublicKey: string; allowUnverified?: boolean } | null")]
+        expect: Option<serde_json::Value>,
+    ) -> Result<serde_json::Value> {
+        let claims = claims_of(claims)?;
+        let ask: ployz::sdk::RuleAsk = decode(ask, "Expected a rule build's grant ask")?;
+        let connections = crate::parse_connections(connections)?;
+        let expect = crate::parse_expect(expect)?;
+        to_json(
+            ployz::sdk::github_rule_grant(
+                Arc::clone(&self.store),
+                claims,
+                ask,
+                reader.map(ployz_core::GithubToken::new),
                 connections,
                 expect,
             )

@@ -33,9 +33,9 @@ pub(in crate::handlers) struct DeviceApproval {
 /// The Cluster as this Device sees it: the Sealing key every Server holds and the
 /// Servers, when any of them enforces Device approval.
 #[derive(Debug, PartialEq)]
-struct Enforcing {
-    cluster: SealingPublicKey,
-    machines: Vec<ployz_core::MachineId>,
+pub(in crate::handlers) struct Enforcing {
+    pub(in crate::handlers) cluster: SealingPublicKey,
+    pub(in crate::handlers) machines: Vec<ployz_core::MachineId>,
 }
 
 /// How long `ployz deploy` waits to learn whether a Server enforces Device approval.
@@ -165,7 +165,7 @@ fn pin_tags(
 
 /// What the Servers say about Device approval.
 #[derive(Debug, PartialEq)]
-enum Probe {
+pub(in crate::handlers) enum Probe {
     /// None enforces.
     Off,
     Enforcing(Enforcing),
@@ -175,7 +175,7 @@ enum Probe {
     Unknown,
 }
 
-fn probe(matches: &ArgMatches) -> Probe {
+pub(in crate::handlers) fn probe(matches: &ArgMatches) -> Probe {
     let context = matches
         .try_get_one::<String>("context")
         .ok()

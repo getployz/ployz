@@ -512,15 +512,22 @@ fn changed(path: &[&str], value: Value) -> Value {
 }
 
 #[test]
-fn the_template_leaves_the_image_out() {
+fn the_template_leaves_out_what_the_build_binds() {
     let namespace = Namespace::parse("app").unwrap();
     let other = changed(&["container", "image"], json!("nginx:latest"));
     assert_eq!(
         template(&requested(requested_json()), &namespace).unwrap(),
         template(&requested(other), &namespace).unwrap()
     );
+    // A Saved spec pulls when missing; the deploy binds the built image with `never`.
+    let bound = changed(&["container", "pull_policy"], json!("never"));
+    assert_eq!(
+        template(&requested(requested_json()), &namespace).unwrap(),
+        template(&requested(bound), &namespace).unwrap()
+    );
     let mut plain = requested(requested_json());
     plain.container.image = String::new();
+    plain.container.pull_policy = crate::PullPolicy::Never;
     assert_eq!(
         template(&requested(requested_json()), &namespace).unwrap(),
         PayloadDigest::of(&plain, &namespace).unwrap()
