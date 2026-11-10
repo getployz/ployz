@@ -15,7 +15,7 @@ Seven PRs, in dependency order:
 | F3 | Ingress doors start, and Private Access turns on, under enforcement | Maintenance that today only works with enforcement off. A Cloud-chosen tailnet reaching the mesh. |
 | F4 | Redeploy, rollback, Retry, a Sync's deploy and a new branch's deploy are signed in the browser | The unsigned dashboard deploys B5 left. Each is refused under enforcement today. |
 | F5 | Deleting an Environment, closing a preview and removing a Server run under a signed teardown | Cloud tearing down a Namespace or a Server on its own word |
-| F6 | The 0.4 upgrade ends in one activation per Cluster, which can't be turned off. Each Machine checks the starting set against its own record of its peers. | The trust-on-first-use starting set (#3945), including a key Cloud substitutes behind a Server's connection. A Server too old to enforce in an enforcing Cluster (#3980, and A1's older-admitter window). |
+| F6 | The 0.4 upgrade ends in one activation per Cluster, which can't be turned off. Nothing learned with enforcement off is trusted unless a person verified it, and the Sealing Key rotates to the approved set. | The trust-on-first-use starting set (#3945): a Member or key Cloud planted with enforcement off, or a key it swaps behind a Server's connection. A Server too old to enforce in an enforcing Cluster (#3980, and A1's older-admitter window). |
 | F7 | The switch is gone. A fresh daemon refuses an unapproved join, and a new Cluster enforces from its first Server. | The capsule-less join (A1's residual). Every unsigned path in daemon and Cloud that crosses the bar. |
 
 ## Operator decisions
@@ -90,24 +90,47 @@ The existing data-loss confirmation stays first, and what the person confirmed i
 
 ### Activation
 
-Activation is today's `ployz device enforce` with three changes. Every key in the starting set must match a source Cloud doesn't write, closing #3945. The set refuses any Machine that does not advertise `ployz.machine.enforced.v1`. And there is no `--off`.
+Activation is today's `ployz device enforce` with four changes. It promotes nothing a Machine learned while enforcement was off, unless a person verified it. It refuses any Machine that does not advertise `ployz.machine.enforced.v1`. It rotates the Sealing Key to the approved set. And there is no `--off`.
 
-**Where the starting set's keys come from.** Today `enforce` reads each member through the connections in Cloud's Server Access response (`ployz/src/handlers/server.rs:142`). Cloud picks both the key a connection dials and the Machine that answers. It can put its own key behind a Server's name, answer `Inspect` with a matching member, and advertise `ployz.machine.enforced.v1`. Nothing Cloud returns can pin a key, so F6 takes keys from two sources Cloud doesn't write. The dashboard path can use only the first.
+**Why nothing learned with enforcement off counts.** Today `enforce` reads each member through the connections in Cloud's Server Access response (`ployz/src/handlers/server.rs:142`). Cloud picks both the key a connection dials and the Machine that answers. Worse, with enforcement off, Cloud can enroll a Machine of its own, and the daemon gives any non-local mesh caller Full scope (`ployzd/src/machine_api/mod.rs:185`). So that Machine can also add Device keys to every real Machine's record. A Member or a trusted key that a Machine learned while not enforcing is therefore Cloud's word, and so is a Member from a starting set gathered today (#3945). Activation treats each of these as **legacy**.
 
-1. **Each Machine's own peer snapshot, on every path.** The first time a daemon that advertises `ployz.machine.enforced.v1` starts, it writes the ID and WireGuard public key of every Member its record holds to a local snapshot. After that, the snapshot grows only by a join whose signed `JoinApproval` this Machine verified, so Cloud can't add to it. `SetDeviceEnforcement` refuses a starting set that names a Member outside the snapshot, or a known ID under another key, and names that Member. Each Machine checks only its own snapshot (bet 6). If Cloud pads or swaps a Member in the set, every real Machine refuses it. If Cloud trims the set, that's a drop.
-2. **The signer's own pins, on the CLI path.** The CLI signs nothing until it has pinned every Server's key from one of three places. The first is the Machines this Device approved a join for. `approve_waiting_join` already shows the joiner's key (`ployz/src/handlers/device.rs:282`), and F6 records the ID and key in a known-Machines file beside the Device key. The second is a key read over the person's own SSH from that Server's local socket. The third is a fingerprint the person confirms against `ployz status` run on that Server's console. The Server Access response then supplies only addresses. The CLI reads each member over a connection that dials the pinned key, and refuses to sign while any Server is unpinned, naming it. `--yes` doesn't confirm a fingerprint, so a non-interactive run needs a Device pin or an SSH pin.
-3. **The dashboard-only path.** Cloud serves the page, so nothing the browser shows or builds is independent of Cloud. The passkey signs whatever set the page gives it, so this path rests on source 1 alone. The page lists each Server with its key fingerprint and tells the person to compare it with `ployz status` on the box. That comparison catches a swap, but nothing enforces it.
+**What counts as evidence.** A Member has evidence on a Machine when that Machine verified the Member's signed `JoinApproval` while it enforced. A trusted key has evidence when that Machine verified the statement that enrolled it while it enforced, and the chain ends in a key a person installed over local administration. Everything else is legacy. On its first start, a daemon that advertises `ployz.machine.enforced.v1` does two things. It stops giving Full scope to non-local mesh callers, so no Machine can plant a key after this point. And it writes a **trusted snapshot** that holds only itself and the Members and keys that have evidence. After that, the snapshot grows only by a join whose `JoinApproval` this Machine verified. Each Machine reads only its own snapshot (bet 6).
 
-Source 1 can't see a Machine that Cloud added to the mesh before any Server started F6's daemon, because that Machine is in every snapshot. The CLI path refuses it unless the person pins it. The dashboard path trusts it. That exposure dates from the 0.3 Cluster rather than from activation, and every Server on that path was added through Cloud's install line, which decision 3 already names. A Server that joined without approval after the snapshot is named at activation. The person removes it, or approves its join again first.
+**How each Machine checks a starting set.** `SetDeviceEnforcement` admits a starting set in two cases. One is that every Member and the signer are in this Machine's trusted snapshot. The other is that the set arrives over this Machine's local socket, from the person's own SSH or console. In that case the Machine also records the signer as installed over local administration. Anything else is refused, naming the legacy Member or key. A swapped or added Member fails on every real Machine. A Member Cloud leaves out is a drop, and that Server stays awaiting activation, named.
 
-`ployz.machine.enforced.v1` is a new capability row. A daemon advertises it only when it gates every route the coverage table classes `Signed` at that daemon's version, and when it publishes an approved joiner only after the joiner's confirmation (#4025). Its meaning is fixed at F6's set and never widens. A Server too old for it is named and left out, which closes #3980. It also closes A1's older-admitter window, since an admitting Machine from before #4025 cannot be in an activated Cluster.
+**The CLI path.** This is the path for any Cluster that still has a legacy Member or key, which in practice means every 0.3 Cluster.
 
-For a dashboard-only customer, activation is the last step of the guided 0.4 upgrade. Cloud does not roll a Cluster from 0.3 to 0.4 automatically.
+- The CLI signs nothing until it has pinned every Server's key itself. It takes the pin from the known-Machines file, from the person's own SSH, or from a fingerprint the person confirms.
+  - The known-Machines file holds the Machines this Device approved a join for. `approve_waiting_join` already shows the joiner's key (`ployz/src/handlers/device.rs:282`), and F6 records it.
+  - For SSH, the CLI reads the key from the Server's local socket.
+  - For a fingerprint, the person checks it against `ployz status` on that Server's console.
+- Cloud's Server Access response supplies addresses only. The CLI reads each member over a connection that dials the pinned key.
+- A legacy Member that the person doesn't pin is named and left out. `--yes` doesn't count as confirming a fingerprint.
+- When the Cluster has anything legacy, the CLI delivers the signed set to each Server over SSH to its local socket. A Server it can't reach that way stays awaiting activation, named.
+
+**The dashboard path.** The page offers activation only when every Machine reports that its starting set needs no local socket: every Member and every key has evidence. Otherwise it offers no passkey button, and sends the person to `ployz device enforce` on a Device, naming the legacy Members and keys. Cloud serves the page, so this rule is not what holds. What holds is that the Machines refuse a set the page builds over a legacy Member, whatever the page shows.
+
+**Rotating the Sealing Key at activation.** Under enforcement off, `ShareSealingKey` needs no approval. Any Machine that was ever a Member may hold the Cluster's Sealing Key, including one that has since left. Activation can't revoke a copy. *Recommendation: F6 rotates the key as the last step of activation.*
+
+1. One activated Machine generates a new key and seals it to each Member in the approved set's WireGuard key. The Machine is chosen by the lowest ID, so every resend picks the same one.
+2. The Cluster publishes the new public key. New values seal only to it.
+3. Each activated Machine keeps the old key, but only to open stored values. It re-seals each one to the new key when asked, and it re-seals only to the key the activation statement names, never to one Cloud supplies.
+4. On the CLI path, activation prints a new recovery code, as `ployz recovery rotate` does. The dashboard can't show a code that Cloud doesn't also see, but a dashboard activation is only offered with no legacy anywhere. It still says to run `ployz recovery rotate` from a terminal, because Cloud's backup opens only the old key.
+
+The rotation is keyed by the activation's operation ID, so a resend after a crash converges on the same new key (thread A contract, gap 8). The alternative is to rotate only when activation left a Member out. It was rejected because a past holder may no longer be a Member at all.
+
+**What activation cannot undo.** Values sealed before activation were open to any Machine that held the old key, and Cloud holds their ciphertext. Rotation protects values set after it. Before activation, a Machine Cloud enrolled could also call Full routes, `Exec` among them, on every other Machine. The 0.4 upgrade guide says both plainly. A person who doubts the Cluster's history changes their secrets at the source. Neither is a residual of F, because both happened before any 0.4 promise held.
+
+`ployz.machine.enforced.v1` is a new capability row. A daemon advertises it only when it gates every route the coverage table classes `Signed` at that daemon's version, publishes an approved joiner only after the joiner's confirmation (#4025), and keeps the trusted snapshot above. Its meaning is fixed at F6's set and never widens. A Server too old for it is named and left out, which closes #3980. It also closes A1's older-admitter window, since an admitting Machine from before #4025 cannot be in an activated Cluster.
+
+Cloud does not roll a Cluster from 0.3 to 0.4 automatically. The guided 0.4 upgrade ends in activation from the dashboard only when nothing is legacy. Otherwise it ends by sending the person to the CLI.
 
 ```mermaid
 flowchart LR
   A[0.3 Cluster] -->|guided upgrade, one Server at a time| B[0.4 daemons, awaiting activation]
-  B -->|one approval from a Device or passkey, checked by every Machine against its peer snapshot| C[Activated: enforcing, no off]
+  B -->|legacy Member or key: CLI pins keys, delivers over SSH| C[Activated: enforcing, Sealing Key rotated, no off]
+  B -->|nothing legacy: one Device or passkey approval| C
+  B -.->|dashboard, legacy present| R3[No button: run ployz device enforce]
   D[Fresh 0.4 install] -->|first key over local admin| C
   E[Fresh 0.4 joiner] -->|approved capsule, pinned when CLI-driven| C
   B -.->|Operator mutation| R1[Refused, details.capability]
@@ -143,16 +166,15 @@ Named once in each PR body, then left alone.
 - `PublishCertificateMaterial` and the tunnel token in `SetIngressDoors` are DNS and Cloudflare authority Cloud already holds. Thread X owns them.
 - A Server added from Cloud's install line ran Cloud's script as root before it joined (decision 3). A Cluster founded from that line trusts the first key that line installs (Appendix A gap 6).
 - A teardown a person approved runs in the order and at the time Cloud picks.
-- A dashboard-only activation trusts a Machine that Cloud added to the mesh before any Server started F6's daemon. That Machine is in every peer snapshot, and only the CLI path's pins catch it ("Activation").
 - Cloud can leave a real Server out of the starting set. That's a drop. The Server stays awaiting activation and is named.
 
 ## Program checklist
 
 The program runs the way `c-plan.md` "Program checklist" says, from arming and the audit tick to owners, PR mechanics, verdict and merge. These differences apply.
 
-- [ ] Dependency graph. F1 branches from `main` now. F2 after F1 and Appendix A gaps 1 and 2. F2 merges only after the release-signing protections in the operator's checklist are applied. F3 after F1 and gap 2. F4 after F1 and D6 merged (a built-image rollback is D6's statement). F5 after F1, gaps 3 to 5, and E6 merged (gap 5). F6 after F2 to F5, D4, E8 and gap 7. It is the C4 integration slice. F7 after F6, thread R's findings at C4 resolved or accepted, and gap 6.
+- [ ] Dependency graph. F1 branches from `main` now. F2 after F1 and Appendix A gaps 1 and 2. F2 merges only after the release-signing protections in the operator's checklist are applied. F3 after F1 and gap 2. F4 after F1 and D6 merged (a built-image rollback is D6's statement). F5 after F1, gaps 3 to 5, and E6 merged (gap 5). F6 after F2 to F5, D4, E8 and gaps 7 and 8. It is the C4 integration slice. F7 after F6, thread R's findings at C4 resolved or accepted, and gap 6.
 - [ ] Hotspots. `rpc_catalog.rs` gains one row in F2, F3, F5 and F6 each. `machine_api/local.rs`, `restart_approval.rs` and `dashboard/src/server/schema.ts` are shared with C, D and E. Each F PR adds one row or one `admit_*` call and rebases promptly.
-- [ ] File boundaries. F1 touches `core/crates/ployz-core/src/authority/{coverage,mod}.rs` (new module), `core/crates/ployz-core/tests/capabilities.rs`, `core/crates/ployzd/src/machine_api/{local,authorization_tests}.rs`, `core/crates/ployzd/src/machine/local_machine/restart_approval.rs` (`admit_operator_departure`), `core/crates/ployz/src/handlers/server/` (refusal copy) and `docs/user/servers/manage-servers.md`. F2 adds `core/crates/ployz-core/src/authority/upgrade.rs` and touches `core/crates/ployz-core/src/rpc/upgrade.rs` (one field), `rpc_catalog.rs`, `core/crates/ployzd/src/machine/local_machine/upgrade.rs`, `core/crates/ployzd/src/installer/upgrade.rs` (`ReleaseChoice`), `restart_approval.rs` (one record kind), the `ployz server upgrade-policy` handler, `dashboard/src/modules/server-upgrade/**` and the docs. F3 touches `machine_api/local.rs` (`set_ingress_doors`, `set_private_access`), `core/crates/ployz-core/src/authority/` (`PrivateAccessApproval`), `dashboard/src/modules/{ingress,private-access}/**` and the docs. F4 touches only `dashboard/src/modules/{config-store,approval-session,service-act}/**` and `docs/user/deploy/**`. F5 adds `core/crates/ployz-core/src/authority/teardown.rs` and touches `deploy_approval.rs`, `machine_api/local.rs` (`leave`, `forget`, `remove_volume` hand-off to E6's check), `core/crates/ployz/src/deploy/pipeline.rs` (`destroy_namespace`), `dashboard/src/modules/machines/{namespace-cleanup,machine-removal}*`, and the docs. F6 touches `core/crates/ployz/src/handlers/device.rs` (pins and the known-Machines file), `core/crates/ployzd/src/machine/` (the peer snapshot), `restart_approval.rs` (`set_device_enforcement`), `rpc_catalog.rs`, `dashboard/src/modules/server-upgrade/**`, `dashboard/src/modules/machines/server-policy*` and the docs. F7 touches every file in f-inventory.md "Where the switch lives", `core/DESIGN.md`, `core/crates/ployzd/src/machine/store.rs` (`member`, `founder`) and `docs/user/servers/{add-a-server,manage-servers}.md`.
+- [ ] File boundaries. F1 touches `core/crates/ployz-core/src/authority/{coverage,mod}.rs` (new module), `core/crates/ployz-core/tests/capabilities.rs`, `core/crates/ployzd/src/machine_api/{local,authorization_tests}.rs`, `core/crates/ployzd/src/machine/local_machine/restart_approval.rs` (`admit_operator_departure`), `core/crates/ployz/src/handlers/server/` (refusal copy) and `docs/user/servers/manage-servers.md`. F2 adds `core/crates/ployz-core/src/authority/upgrade.rs` and touches `core/crates/ployz-core/src/rpc/upgrade.rs` (one field), `rpc_catalog.rs`, `core/crates/ployzd/src/machine/local_machine/upgrade.rs`, `core/crates/ployzd/src/installer/upgrade.rs` (`ReleaseChoice`), `restart_approval.rs` (one record kind), the `ployz server upgrade-policy` handler, `dashboard/src/modules/server-upgrade/**` and the docs. F3 touches `machine_api/local.rs` (`set_ingress_doors`, `set_private_access`), `core/crates/ployz-core/src/authority/` (`PrivateAccessApproval`), `dashboard/src/modules/{ingress,private-access}/**` and the docs. F4 touches only `dashboard/src/modules/{config-store,approval-session,service-act}/**` and `docs/user/deploy/**`. F5 adds `core/crates/ployz-core/src/authority/teardown.rs` and touches `deploy_approval.rs`, `machine_api/local.rs` (`leave`, `forget`, `remove_volume` hand-off to E6's check), `core/crates/ployz/src/deploy/pipeline.rs` (`destroy_namespace`), `dashboard/src/modules/machines/{namespace-cleanup,machine-removal}*`, and the docs. F6 touches `core/crates/ployz/src/handlers/device.rs` (pins and the known-Machines file), `core/crates/ployzd/src/machine/` (the trusted snapshot), `machine_api/mod.rs` (mesh scope), `local_machine/sealing.rs` (rotation), `restart_approval.rs` (`set_device_enforcement`), `rpc_catalog.rs`, `dashboard/src/modules/server-upgrade/**`, `dashboard/src/modules/machines/server-policy*` and the docs. F7 touches every file in f-inventory.md "Where the switch lives", `core/DESIGN.md`, `core/crates/ployzd/src/machine/store.rs` (`member`, `founder`) and `docs/user/servers/{add-a-server,manage-servers}.md`.
 - [ ] Bets every F PR names. The stable promise, with the argument above, and from F7 the exception. Bet 8, evidence over claims, because the dashboard calls a Cluster protected only from each Machine's own answer, and refusals name the capability. Bet 6, Machine-local authority, because each Machine checks the channel, the teardown and its own activation, and reads no other Machine's record. Bet 7, Cloud drives and never owns, because Cloud stores statements it cannot make. Bet 3, bounded imperative commands, because a channel statement and a teardown are evidence for one command, not desired state.
 - [ ] Residuals each F PR names once. See "What remains".
 - [ ] Live lanes run per `c-plan.md` "Boot recipe", with `--machines 3` where a lane says so. The attacker harness is C1's `.audit/c-attacker/`. From F1 it takes its route cases from `coverage_cases` at the head under test. It is also extended with `Leave`, `Forget`, `RequestMachineUpgrade`, `SetIngressDoors`, `SetPrivateAccess`, a stripped enroll response and a forged one.
@@ -350,47 +372,90 @@ Outcome. Deleting an Environment, closing a preview and removing a Server keep t
 
 ## Turn enforcement on with the 0.4 upgrade, once per Cluster (F6, checkpoint C4)
 
-Outcome. A 0.3 customer upgrades their Servers to 0.4 from the dashboard or CLI, then approves one activation for the Cluster, from a Device or with one passkey prompt. Each Machine accepts the starting set only when every Member in it is in that Machine's own peer snapshot. The CLI also signs only keys it pinned itself. Activation refuses any Server that cannot enforce, and has no off. The dashboard calls a Cluster protected only when every Server reports activated. Attack path closed. Cloud cannot put its own key into the starting set (#3945). That covers a key swapped behind a Server's name, where Cloud supplies both the connection's identity and an `Inspect` answer to match, and a Member added to the set the passkey signs in the dashboard. A Server too old to enforce cannot sit in an enforcing Cluster (#3980). An admitting Machine from before #4025 cannot publish a joiner under Cloud's Devices (A1's older-admitter window). This slice is the C4 integration run.
+Outcome. A 0.3 customer upgrades their Servers to 0.4 from the dashboard or CLI. They then activate the Cluster once with `ployz device enforce` from a Device, which pins each Server's key and delivers the signed set over SSH. A Cluster with nothing legacy can instead activate with one passkey prompt in the dashboard. Each Machine admits only Members and keys it holds evidence for, or a set that arrives over its own local socket. Activation rotates the Sealing Key to the approved set, refuses any Server that cannot enforce, and has no off. The dashboard calls a Cluster protected only when every Server reports activated.
 
-**Depends on.** F2 to F5. D4 and E8 merged. Appendix A gap 7 (the snapshot and the approval that travels with a Member row).
+Attack path closed. Cloud cannot get a Machine of its own into the activated Cluster, and cannot get its own key trusted there (#3945). That covers four cases:
+
+- a Member or Device key Cloud planted while enforcement was off, including one that was in place before any Server ran F6's daemon;
+- a key swapped behind a Server's name, where Cloud supplies both the connection's identity and an `Inspect` answer to match;
+- a Member added to a set the passkey signs in the dashboard;
+- a past holder of the Sealing Key opening values sealed after activation.
+
+A Server too old to enforce cannot sit in an enforcing Cluster (#3980). An admitting Machine from before #4025 cannot publish a joiner under Cloud's Devices (A1's older-admitter window). This slice is the C4 integration run.
+
+What users lose. A dashboard-only customer on a 0.3 Cluster needs the CLI, a Device and SSH to each Server once, to activate. Once F6's daemon starts, a Device's Full call no longer works through another Machine. It needs a direct connection, as it already does under enforcement. Activation prints a new recovery code, and the old one stops opening anything sealed after activation.
+
+**Depends on.** F2 to F5. D4 and E8 merged. Appendix A gaps 7 (evidence, the trusted snapshot and local-socket activation) and 8 (Sealing Key rotation).
 
 **Files.**
 
-- [ ] Edit `rpc_catalog.rs` to add `ENFORCED_CAPABILITY: ("ployz.machine.enforced.v1", Always)`, advertised only by a daemon that gates every `Signed` route and publishes joiners only after confirmation.
-- [ ] Create the peer snapshot in `core/crates/ployzd/src/machine/` (gap 7). Write it on the first start that advertises `ployz.machine.enforced.v1`, and extend it only on a verified `JoinApproval`. Edit `restart_approval.rs` so `set_device_enforcement` refuses a starting set that names a Member outside it, naming the Member.
-- [ ] Edit `core/crates/ployz/src/handlers/status_servers.rs` so `ployz status` over the local socket prints this Machine's key fingerprint. It prints none today, and the third pin source and the dashboard page both compare against it.
+- [ ] Edit `rpc_catalog.rs` to add `ENFORCED_CAPABILITY: ("ployz.machine.enforced.v1", Always)`, advertised only by a daemon that gates every `Signed` route, publishes joiners only after confirmation, and keeps the trusted snapshot.
+- [ ] Edit `core/crates/ployzd/src/machine_api/mod.rs` (`:185`) so a daemon that advertises `ployz.machine.enforced.v1` never gives a non-local mesh caller Full scope, whether or not it enforces.
+- [ ] Create the trusted snapshot in `core/crates/ployzd/src/machine/` (gap 7). Write it once, on the first start that advertises `ployz.machine.enforced.v1`. It holds only this Machine and the Members and keys with evidence. Extend it only on a `JoinApproval` this Machine verified. Mark each other Member and key legacy.
+- [ ] Edit `restart_approval.rs` so `set_device_enforcement` admits a starting set only when every Member and the signer are in the snapshot, or when it arrives over the local socket. In that case, record the signer as installed over local administration. Refuse anything else, naming each legacy Member or key. Refuse `enforced: false` once activated (`:39`), naming the capability.
+- [ ] Edit `core/crates/ployzd/src/machine/local_machine/sealing.rs` to rotate the Sealing Key as activation's last step (gap 8). The lowest-ID activated Machine generates the key once per activation operation, seals it to each approved Member, and publishes the new public key. Each activated Machine keeps the old key only to open stored values, and re-seals them to the key the activation names.
+- [ ] Edit `core/crates/ployz/src/handlers/status_servers.rs` so `ployz status` over the local socket prints this Machine's key fingerprint. It prints none today, and the fingerprint pin source compares against it.
 - [ ] Add a known-Machines file beside the Device key, next to the `key` module in `core/crates/ployz/src/handlers/device.rs`. `approve_waiting_join` (`device.rs:282`) records the approved joiner's ID and key there.
-- [ ] Edit `core/crates/ployz/src/handlers/device.rs` so `enforce` pins every Server's key first, from the known-Machines file, from an SSH read of the local socket, or from a fingerprint the person confirms. Then it reads each member over a connection that dials the pinned key and uses the Server Access response only for addresses. It refuses an unpinned Server, a member whose key is not the pin, and a Server without `ployz.machine.enforced.v1`, naming each, before it signs. Delete `--off` (`:91`).
-- [ ] Edit `restart_approval.rs` so `set_device_enforcement` (`:39`) refuses `enforced: false` once activated, naming the capability.
-- [ ] Edit `dashboard/src/modules/server-upgrade/**` so automatic upgrades never cross from 0.3 to 0.4, and the 0.4 upgrade is a guided flow that ends in activation. Edit `dashboard/src/modules/machines/server-policy*` to show protection only from each Machine's reported state. The activation page lists every Server with its key fingerprint and how to compare it on the box.
-- [ ] Edit `docs/user/servers/manage-servers.md` and write the 0.4 upgrade guide under `docs/user/servers/`.
+- [ ] Edit `core/crates/ployz/src/handlers/device.rs` so `enforce` works in this order.
+  - Pin every Server's key first, from the known-Machines file, from an SSH read of the local socket, or from a fingerprint the person confirms.
+  - Read each member over a connection that dials the pinned key, using the Server Access response only for addresses.
+  - Name and leave out each legacy Member the person doesn't pin.
+  - Refuse a member whose key is not the pin, and a Server without `ployz.machine.enforced.v1`, naming each, before signing.
+  - When anything is legacy, deliver the set to each Server over SSH to its local socket.
+  - Print the new recovery code.
+  - Delete `--off` (`:91`).
+- [ ] Edit `dashboard/src/modules/server-upgrade/**`.
+  - Automatic upgrades never cross from 0.3 to 0.4.
+  - The 0.4 upgrade is a guided flow. It offers the passkey activation only when every Server reports that nothing is legacy. Otherwise it names the legacy Members and keys and gives the `ployz device enforce` command.
+  - It re-seals stored values through an activated Machine, and sends the person to `ployz recovery rotate`.
+- [ ] Edit `dashboard/src/modules/machines/server-policy*` to show protection only from each Machine's reported state.
+- [ ] Edit `docs/user/servers/manage-servers.md` and `docs/user/servers/recovery-code.md`. Write the 0.4 upgrade guide under `docs/user/servers/`, including "What activation cannot undo".
 
 **Verify, unit.**
 
+- [ ] `ployzd` test `a_member_from_before_the_first_f6_start_is_legacy`. A record holds web-1, web-2 and a harness Member that joined with enforcement off, plus a Device key added from the mesh with enforcement off. Restart it as F6's daemon. Pass when the snapshot holds neither the harness Member nor that key.
+  - A set signed by the passkey and naming the harness Member, sent over a Device connection, is refused naming the Member.
+  - A set signed by the planted key is refused naming the key.
+  - The same set without the harness Member, sent over the local socket, is admitted, and its signer is recorded as installed over local administration.
+- [ ] `ployzd` test `a_starting_set_outside_the_snapshot_is_refused`. A set that adds a Member absent from the snapshot, or names a snapshot ID under another key, is refused over a Device connection, naming it, and the record is unchanged. A join with a verified approval after the snapshot extends it, and a join without one does not.
+- [ ] `ployzd` test `a_mesh_caller_is_never_full_on_an_enforced_v1_daemon`. With enforcement off, a mesh `SetDevice` is refused at dispatch.
+- [ ] `ployzd` tests for rotation.
+  - After activation, a value sealed to the new key opens on every activated Machine.
+  - A harness Machine holding only the old key can't open it.
+  - A resend with the same operation ID yields the same public key.
+  - A kill between generating and sharing converges on resend.
+  - Re-sealing refuses a target key other than the one the activation names.
 - [ ] `device_tests.rs` `enforce_refuses_a_substituted_identity_and_answer`. A fake Server Access response swaps web-2's management identity for a harness key. A harness daemon behind it answers `Inspect` with a member under that key and advertises `ployz.machine.enforced.v1`. Pass when `enforce` exits before signing, naming web-2, with no signature made and no `SetDeviceEnforcement` sent. The same run with web-2's real key in the known-Machines file reaches signing, and its set holds the real key.
-- [ ] `device_tests.rs`. An unpinned Server under `--yes` is refused, naming it. A Server without the capability is named and left out. `--off` is gone from help.
-- [ ] `ployzd` test `a_starting_set_outside_the_snapshot_is_refused`. A validly signed set that adds a Member absent from the snapshot is refused, naming it. So is one that names a snapshot ID under another key. The record is unchanged. A join with a verified approval after the snapshot extends it, and a join without one does not.
+- [ ] `device_tests.rs` `enforce_leaves_out_an_unpinned_legacy_member`. A Cluster has a legacy harness Member the person doesn't pin. Pass when it is named and absent from the signed set. When the person confirms its fingerprint, it is included. Under `--yes`, an unpinned Server is refused, naming it. A Server without the capability is named and left out. `--off` is gone from help.
 - [ ] `ployzd` tests. `enforced: false` after activation is refused, also after a reload. The snapshot survives a restart and is never rewritten from the store.
+- [ ] Vitest for `server-upgrade`. With any Server reporting a legacy Member or key, the activation step renders no passkey button and shows `ployz device enforce`.
 
-**Verify, live.** Eleven lanes, three Machines, starting from a Cluster on the latest 0.3 release.
+**Verify, live.** Thirteen lanes, three Machines, starting from a Cluster on the latest 0.3 release.
 
 - [ ] Lane 1. Regression lane against trunk. Enforcement off on 0.4 trunk. Deploy, restart and upgrade. Save `f6-trunk.png`. Pass when all work.
-- [ ] Lane 2. Upgrade the 0.3 Cluster to the head build from the dashboard, then activate with one passkey prompt. Save `f6-activate.png`. Pass when every Server reports activated and the dashboard shows it.
+- [ ] Lane 2. Upgrade the 0.3 Cluster to the head build from the dashboard. Check that the dashboard sends the person to the CLI, then run `ployz device enforce` from `cli --device` with SSH. Save `f6-activate.png`. Pass when every Server reports activated, a new Sealing public key is published, a new recovery code is printed, and the dashboard shows the Cluster protected.
+- [ ] Lane 2b. A Cluster built at head whose every join was approved under enforcement. Activate it from the dashboard with one passkey prompt. Save `f6-activate-dashboard.png`. Pass when every Server reports activated.
 - [ ] Lane 3. The C4 run. On the activated Cluster, run every customer workflow on the program plan's C4 list. That is dashboard deploy, CLI deploy, start, stop, restart, settings change, GitHub push deploy, force push deploy, preview with inherited secret, Volume copy, Move, restore, join, Device add, upgrade. Save `f6-c4-<workflow>.png`. Pass when each works.
 - [ ] Lane 4. Attacker harness. Run every case `coverage_cases` prints at this head. Save `f6-matrix.png` and the harness's per-case log. Pass when each `Refused` case is refused naming its capability with nothing changed, each `Bounded` case is served and its check holds, and each `Served` case is served. A `Pending` row left at this point fails the lane.
 - [ ] Lane 5. Attacker harness, CLI path. Rewrite the Server Access response so web-2's connection dials a harness Machine, and have it answer `Inspect` with a matching member that advertises `ployz.machine.enforced.v1`. Save `f6-tofu-cli.png`. Pass when `ployz device enforce` refuses before signing, naming web-2, and no Server's record changes.
-- [ ] Lane 5b. Attacker harness, dashboard path. As Cloud, give the activation page a starting set with a harness Member added, then one with web-2's ID under the harness key, and tap the passkey for each. Save `f6-tofu-dashboard.png`. Pass when every real Server refuses both, naming the Member, and none reports activated.
+- [ ] Lane 5b. Attacker harness, dashboard path. On lane 2b's Cluster before activation, as Cloud, give the activation page a starting set with a harness Member added, then one with web-2's ID under the harness key, and tap the passkey for each. Save `f6-tofu-dashboard.png`. Pass when every real Server refuses both, naming the Member, and none reports activated.
+- [ ] Lane 5c. Attacker harness, a Member planted before the first F6 start. While the Cluster runs 0.3 with enforcement off, enroll a harness Machine and add a harness Device key from it. Let the harness Machine receive the Sealing Key. Then upgrade every Server to head. Save `f6-planted-dashboard.png` and `f6-planted-cli.png`. Pass when all of these hold.
+  - The dashboard offers no passkey activation and names the harness Member and key.
+  - A passkey-signed set naming the harness Member, forced through Cloud, is refused by every real Server.
+  - A set signed by the harness key is refused by every real Server.
+  - `ployz device enforce` names the harness Member and leaves it out unless the person confirms its fingerprint.
+  - After activation, a value set afterwards does not open on the harness Machine.
 - [ ] Lane 6. Leave one Server on 0.3 and activate. Save `f6-old-server.png`. Pass when it is named and left out, and the rest activate.
 - [ ] Lane 7. Attacker harness. `SetDeviceEnforcement { enforced: false }` from a Device after activation. Save `f6-no-off.png`. Pass when it is refused.
 - [ ] Lane 8. Automatic upgrades on, a 0.4 release on the test channel. Save `f6-no-auto-cross.png`. Pass when no 0.3 Server moves to 0.4 on its own.
 - [ ] Lane 9. Let maintenance run for a certificate renewal cycle with Cloud stopped. Save `f6-maintenance.png`. Pass when routes serve and Mirrors resume syncing once Cloud returns.
-- [ ] Lane 10. Read the upgrade guide against lanes 2 and 6. Save `f6-docs.png`. Pass when every sentence matches.
+- [ ] Lane 10. Read the upgrade guide and `recovery-code.md` against lanes 2, 2b and 6. Save `f6-docs.png`. Pass when every sentence matches.
 
 **Verify, perf.**
 
-- [ ] Metric. Activation of three Servers, from command to every Server reporting activated. Rule: under 10 s. Deploy press to running on the activated Cluster against the same Cluster before activation, five each. Rule: within 1.2 times.
+- [ ] Metric. Activation of three Servers over SSH, from command to every Server reporting activated, rotation included. Rule: under 15 s. Re-sealing 100 stored values. Rule: under 5 s. Deploy press to running on the activated Cluster against the same Cluster before activation, five each. Rule: within 1.2 times.
 
-**Review gate.** The operator reviews the guided upgrade and activation with screenshots and a video before merge.
+**Review gate.** The operator reviews the guided upgrade, the CLI redirect, activation and the new recovery code with screenshots and a video before merge.
 
 ## Remove the switch (F7, checkpoint C5)
 
@@ -446,7 +511,15 @@ Outcome. Enforcement is the only mode. A fresh daemon refuses a join that carrie
 4. **Preview close under the preview rule (thread D).** F5 tears down a closed preview's derived Namespace under D7's preview rule with no new prompt. D's owner confirms the rule may permit that, or D7 adds it.
 5. **`RemoveVolume` goes to E6 (thread E, E's gap 8).** F decides that E6 owns it. A Volume's removal names a loss, as E6's other approvals do, and E6 already owns `data_loss.rs` and `VolumeApproval`. E6 adds a `Remove` workflow. A Deploy with `--accept-volume-loss` signs it beside the deploy approval, and F5's Namespace teardown names the Volumes it loses through the same check. F's table holds `RemoveVolume` as `Pending("E6")` until then. The E owner agrees, or F5 builds it instead.
 6. **First authority and the join pin (thread A).** F7 needs two things from A1's open follow-up. A founder enrolled with enforcement as the default must take its first key over local administration, for dashboard-only customers too, which is A1's open "first Device for dashboard-only customers" decision. And `JoinApproval` must verify against a pin the enroll request carries. A owns both shapes. F7 blocks on them.
-7. **Where the starting set's keys come from (thread A, #3945).** F6 needs three things from A, since the starting set and `JoinApproval` are A's statements. The first is a local peer snapshot record, written once and extended only by a verified `JoinApproval`, which `SetDeviceEnforcement` checks the set against. The second is a signed `JoinApproval` that travels with a new Member's replicated row, so every Machine, not only the admitter, can verify it before extending its snapshot. The third is the Device's known-Machines file, recorded at `ApproveJoin`. *Recommendation.* Accept the dashboard-only limit in "Activation", for the reason given there. Requiring a direct-administration step for dashboard-only activation is the alternative, and A decides it together with gap 6's first key.
+7. **Evidence, the trusted snapshot and local-socket activation (thread A, #3945).** The starting set, `JoinApproval` and Device enrollment are A's statements, so F6 needs five things from A.
+   - The definition of evidence in "Activation". A Member's `JoinApproval`, or a key's enrolling statement, counts only when this Machine verified it while it enforced, and the chain ends in a key installed over local administration.
+   - The trusted snapshot record. It is written once at the first `ployz.machine.enforced.v1` start, holds only evidence-backed Members and keys, and is extended only by a verified `JoinApproval`.
+   - A signed `JoinApproval` that travels with a new Member's replicated row, so every Machine, not only the admitter, can verify it.
+   - `SetDeviceEnforcement` admitting a set over the local socket and recording its signer as installed over local administration.
+   - The Device's known-Machines file, recorded at `ApproveJoin`.
+
+   A also confirms that ending Full scope for mesh callers at F6's first start breaks no forwarded call that needs it. Today a Device's Full call forwarded between Machines carries no Operator header (`ployzd/src/machine_api/mod.rs:296`).
+8. **Sealing Key rotation at activation (thread A).** F6 rotates the Cluster's Sealing Key to the approved set, as described in "Activation". A owns the Sealing Key's statements, so A agrees to four things: one rotation per activation operation ID, sealing the new key only to Members of the signed set, keeping the old key for opening stored values only, and re-sealing only to the key the activation names. A also agrees how the new public key replaces the old one in the Cluster record. The recovery backup is re-wrapped by the CLI's new code, as `ployz recovery rotate` does today.
 
 E's gap 7 needs nothing from F. F's maintenance list maps onto E's slices. Automatic sync runs under the Mirror's standing approval (E3), the orphan sweep under the approval that orphaned the slot (E6), and "Volume recovery" is a Release under the Move's own approval (E5). F's coverage table records those classes, and F6's lane 9 checks they still run.
 
@@ -458,6 +531,8 @@ E's gap 7 needs nothing from F. F's maintenance list maps onto E's slices. Autom
 - **The Machine checking a release's age.** Cloud's 3-day hold is scheduling. Moving it into the Machine would need a clock and a date source Cloud does not control, to close a delay.
 - **Making `Leave` and `Forget` `Full` in the catalog.** That would break Cloud's removal on Clusters that do not enforce. F1 refuses them only under enforcement, as D1 and E1 did.
 - **A pin in Cloud's install line.** Cloud writes the line and its script runs as root first. Decision 3.
+- **Seeding the snapshot from every Member present at the first F6 start.** Cloud can enroll its own Machine while enforcement is off, so that Machine would be in every snapshot, and a passkey-signed set would promote it. The snapshot takes only Members and keys with evidence.
+- **Rotating the Sealing Key only when activation leaves a Member out.** Any Machine that was ever a Member may hold the key, including one that has already left, so the current membership says nothing about who holds it.
 
 ## Appendix C. What was checked, and what was not
 
@@ -468,6 +543,7 @@ Read on `main` at `02aaa926b5`, not run.
 - **Read.** An Operator upgrade may name `stable`, `beta`, or an exact version equal to either channel's pointer (`installer/upgrade.rs:159` to `:181`). The Organization's channel lives only in Cloud's database (`dashboard/src/modules/server-upgrade/server-upgrade.server.ts:112`).
 - **Read.** `SetIngressDoors` and `SetPrivateAccess` are refused under enforcement by `admit_operator_deploy` (`machine_api/local.rs:1167`, `:1179`). `PruneImages` and `PublishCertificateMaterial` are not gated.
 - **Read.** `ployzd/src/machine_api/mod.rs:185` gives a mesh caller Full scope when enforcement is off. F7 removes that branch with the switch.
+- **Read.** With enforcement off, a non-local mesh caller gets Full scope (`ployzd/src/machine_api/mod.rs:185`), so a Machine Cloud enrolled can call `SetDevice`, `SetDeviceEnforcement` and `Exec` on every other Machine. Under enforcement off, `ShareSealingKey` needs no approval. No route rotates the Sealing Key today, and `ployz recovery rotate` re-wraps the existing key only.
 - **Read.** `ployz device enforce` gathers members through `server::connect_full`, which falls back to the connections in Cloud's Server Access response (`ployz/src/handlers/server.rs:142`). `sign_starting_set` signs whatever members answer (`ployz/src/handlers/device.rs:526`). No Machine checks the set against its own peers.
 
 Unproven until the slice that proves it:
@@ -479,11 +555,11 @@ Unproven until the slice that proves it:
 
 ## Appendix D. Handoffs
 
-- **Thread A.** Gaps 1, 6 and 7.
+- **Thread A.** Gaps 1, 6, 7 and 8.
 - **Thread B.** Gap 2.
 - **Thread C.** Gap 3. F4 reuses C's `DeployApproval` unchanged.
 - **Thread D.** Gap 4. F4 uses D6's `BuildApproval` for a Git rollback. F7 removes the old dispatched-workflow build path, per d-plan's handoff.
 - **Thread E.** Gap 5. F7 removes the unsigned Volume paths, per e-plan's handoff.
 - **Thread X.** `PublishCertificateMaterial` and the tunnel token in `SetIngressDoors` are classed `Bound` with X's report as the reason.
-- **Thread R.** F6 lanes 4 and 5 and F7 lanes 2 to 4 are the starting set. They cover every case in the live matrix, a starting set with a substituted Server, one padded through the dashboard, a stripped capsule, a forged capsule on an install-line join, and a forged capsule on a pinned join.
+- **Thread R.** F6 lanes 4, 5, 5b and 5c and F7 lanes 2 to 4 are the starting set. They cover every case in the live matrix, a starting set with a substituted Server, one padded through the dashboard, a Member and key planted before the first F6 start, a stripped capsule, a forged capsule on an install-line join, and a forged capsule on a pinned join.
 - **Operator, outside code.** F2 merges only after the release-signing protections in the operator's checklist are applied.
