@@ -10,6 +10,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use ployz_core::authority::preview::{PreviewKey, preview_namespace};
+use ployz_core::authority::rule_draft::RuleSourceView;
 use ployz_core::authority::{PreviewRule, RuleId, Signed};
 use ployz_core::config::Generator;
 use ployz_core::{Namespace, RequestedServiceSpec, RpcError, ServiceName};
@@ -17,7 +18,6 @@ use serde::{Deserialize, Serialize};
 use serde_json::json;
 use ts_rs::TS;
 
-use ployz_core::authority::rule_draft::RuleSourceView;
 use crate::storage::Tx;
 use crate::{Actor, EnvironmentId, EnvironmentRef, EnvironmentSummary, Trusted, error, scope};
 

@@ -669,3 +669,72 @@ fn a_review_of_another_rule_or_generation_is_refused() {
         })
     );
 }
+
+/// A preview rule is a rule, so D5's signer rule holds for it: a Device or a passkey's own
+/// prompt signs it, and a browser key under a valid session grant never does.
+#[test]
+fn a_preview_rule_is_signed_by_a_device_or_a_passkeys_own_prompt_never_a_session() {
+    let passkey = Authenticator::es256(4);
+    let now = Timestamp::from_millis(2_000).unwrap();
+    let trusted = TrustedKeys {
+        devices: vec![DeviceKey::from_bytes(*signer().public().as_bytes())],
+        ..trusting(&passkey)
+    };
+    let device = Signed::sign(&rule(), &signer()).unwrap();
+    assert_eq!(
+        super::super::rule::verify_signature(&device, &trusted, now).unwrap(),
+        (rule(), Approver::Device(signer().public()))
+    );
+
+    let own = PreviewRule {
+        signer: SignerKey::Passkey(crate::authority::restart::OwnPrompt::Passkey),
+        ..rule()
+    };
+    let unsigned = Signed::unsigned(&own).unwrap();
+    let assertion = passkey.answer(&Answer {
+        challenge: &unsigned.challenge(),
+        ..HONEST
+    });
+    let answered = unsigned.answered(assertion);
+    assert_eq!(
+        super::super::rule::verify_signature(&answered, &trusted, now)
+            .unwrap()
+            .1,
+        Approver::Passkey(passkey.passkey().code())
+    );
+
+    let browser = Signer::from_seed(&[4; 32]);
+    let grant = GrantBody {
+        browser_key: browser.public(),
+        cluster: SealingPublicKey::from_bytes([9; 32]),
+        environment: Namespace::parse("shop-production").unwrap(),
+        environment_id: Uuid::parse_str(PARENT_ID).unwrap(),
+        machines: vec![machine()],
+        families: vec![ActionFamily::Deploy],
+        issued_at: Timestamp::from_millis(0).unwrap(),
+        expires_at: Timestamp::from_millis(3_000_000).unwrap(),
+        delegation: Delegation::None,
+    };
+    let body = canonical::to_canonical(&grant).unwrap();
+    let assertion = passkey.answer(&Answer {
+        challenge: &GrantBody::challenge(&body),
+        ..HONEST
+    });
+    let session = PreviewRule {
+        signer: SignerKey::Browser {
+            browser: browser.public(),
+        },
+        ..rule()
+    };
+    let signed = Signed::sign_under(&session, &browser, SessionGrant { body, assertion }).unwrap();
+    assert!(
+        signed.approvers(&trusted, now).is_ok(),
+        "the grant itself verifies"
+    );
+    assert_eq!(
+        super::super::rule::verify_signature(&signed, &trusted, now).unwrap_err(),
+        AuthorityRefusal::Mismatch {
+            field: "the signer"
+        }
+    );
+}
