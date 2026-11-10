@@ -25,7 +25,7 @@ impl Client {
         machine_id: MachineId,
         targets: &[ployz_build::Target],
         cancellation: &CancellationToken,
-    ) -> Result<(), remote::InputError> {
+    ) -> Result<(), CapabilityCheckError> {
         let mut admitted = match open_and_admit(
             self,
             Input::Check(targets.to_vec()),
@@ -37,30 +37,40 @@ impl Client {
         .await
         {
             Ok(admitted) => admitted,
-            Err(Outcome::Failed { message, .. } | Outcome::Unknown { message, .. }) => {
-                return Err(message.into());
+            Err(Refused {
+                outcome: Outcome::Failed { message, .. } | Outcome::Unknown { message, .. },
+                by_enforcement,
+            }) => {
+                return Err(if by_enforcement {
+                    CapabilityCheckError::RefusedByEnforcement(message)
+                } else {
+                    remote::InputError::from(message).into()
+                });
             }
-            Err(
-                Outcome::CapabilitiesChecked { .. }
-                | Outcome::Images { .. }
-                | Outcome::Validated { .. }
-                | Outcome::Published { .. },
-            ) => unreachable!("admission returns only terminal failures"),
+            Err(Refused {
+                outcome:
+                    Outcome::CapabilitiesChecked { .. }
+                    | Outcome::Images { .. }
+                    | Outcome::Validated { .. }
+                    | Outcome::Published { .. },
+                ..
+            }) => unreachable!("admission returns only terminal failures"),
         };
         // Keep the admitted sender alive: closing it would cancel the worker check.
         let deadline =
             tokio::time::Instant::now() + admitted.active_timeout + Duration::from_secs(70);
+        let failed = |message: &str| CapabilityCheckError::from(remote::InputError::from(message));
         tokio::select! {
             biased;
-            () = cancellation.cancelled() => Err("Build selection cancelled".into()),
-            () = tokio::time::sleep_until(deadline) => Err("Build capability deadline expired".into()),
+            () = cancellation.cancelled() => Err(failed("Build selection cancelled")),
+            () = tokio::time::sleep_until(deadline) => Err(failed("Build capability deadline expired")),
             response = admitted.responses.message() => {
                 let payload = response.map_err(|error| remote::InputError::from(error.to_string()))?
-                    .ok_or_else(|| remote::InputError::from("Build capability response ended early"))?;
+                    .ok_or_else(|| failed("Build capability response ended early"))?;
                 match remote::decode::<Event>(&payload)? {
                     Event::Finished(Outcome::CapabilitiesChecked { machine_id: actual }) if actual == machine_id => Ok(()),
-                    Event::Finished(Outcome::Failed { message, .. } | Outcome::Unknown { message, .. }) => Err(message.into()),
-                    Event::Admitted { .. } | Event::Progress(_) | Event::Finished(_) => Err("invalid Build capability response".into()),
+                    Event::Finished(Outcome::Failed { message, .. } | Outcome::Unknown { message, .. }) => Err(remote::InputError::from(message).into()),
+                    Event::Admitted { .. } | Event::Progress(_) | Event::Finished(_) => Err(failed("invalid Build capability response")),
                 }
             }
         }
@@ -131,6 +141,31 @@ struct Admitted {
     active_timeout: Duration,
 }
 
+/// An admission that ended in a terminal failure, and whether Device enforcement caused it.
+struct Refused {
+    outcome: Outcome,
+    by_enforcement: bool,
+}
+
+impl From<Outcome> for Refused {
+    fn from(outcome: Outcome) -> Self {
+        Self {
+            outcome,
+            by_enforcement: false,
+        }
+    }
+}
+
+/// Why a Machine's Build capability could not be verified.
+#[derive(Debug, thiserror::Error)]
+pub(crate) enum CapabilityCheckError {
+    /// The Machine enforces Device approval and refused the Build.
+    #[error("{0}")]
+    RefusedByEnforcement(String),
+    #[error(transparent)]
+    Failed(#[from] remote::InputError),
+}
+
 async fn open_and_admit(
     client: &Client,
     request: Input,
@@ -138,11 +173,11 @@ async fn open_and_admit(
     cancellation: &CancellationToken,
     progress: &mut impl FnMut(Progress),
     evidence: &ployz_build::WorkEvidence,
-) -> Result<Admitted, Outcome> {
+) -> Result<Admitted, Refused> {
     let (sender, receiver) = mpsc::channel(2);
     let start = match remote::encode(&request) {
         Ok(start) => start,
-        Err(message) => return Err(failed(Stage::Admission, message.to_string())),
+        Err(message) => return Err(failed(Stage::Admission, message.to_string()).into()),
     };
     sender.send(start).await.expect("request receiver is owned");
     let target = MachineTarget::from(&machine_id);
@@ -156,22 +191,27 @@ async fn open_and_admit(
         Ok(Err(error)) => {
             let refusal = error.to_rpc_error();
             // An enforcing Machine's refusal is a sentence of its own, not a failure to reach it.
-            let message =
-                if crate::connect::refused_by_enforcement(&refusal, ployz_core::BUILD_CAPABILITY) {
-                    refusal.message
-                } else {
-                    format!(
-                        "Machine {machine_id} cannot accept the Build: {}",
-                        crate::ui::row(&error)
-                    )
-                };
-            return Err(failed(Stage::Admission, message));
+            if crate::connect::refused_by_enforcement(&refusal, ployz_core::BUILD_CAPABILITY) {
+                return Err(Refused {
+                    outcome: failed(Stage::Admission, refusal.message),
+                    by_enforcement: true,
+                });
+            }
+            return Err(failed(
+                Stage::Admission,
+                format!(
+                    "Machine {machine_id} cannot accept the Build: {}",
+                    crate::ui::row(&error)
+                ),
+            )
+            .into());
         }
         Err(_) => {
             return Err(failed(
                 Stage::Admission,
                 format!("Machine {machine_id} did not answer; source was not uploaded"),
-            ));
+            )
+            .into());
         }
     };
     let waiting_since = tokio::time::Instant::now();
@@ -183,7 +223,7 @@ async fn open_and_admit(
             () = cancellation.cancelled() => {
                 // No source has left this client. Dropping the stream removes
                 // its connection-scoped waiter, even if admission raced cancellation.
-                return Err(failed(Stage::Queued, "Build cancelled before upload; execution was not attempted").with_work(evidence.clone()));
+                return Err(failed(Stage::Queued, "Build cancelled before upload; execution was not attempted").with_work(evidence.clone()).into());
             }
             result = responses.message() => match result {
                 Ok(Some(payload)) => match remote::decode::<Event>(&payload) {
@@ -195,13 +235,13 @@ async fn open_and_admit(
                         admission_deadline = waiting_since + Duration::from_secs(86410);
                         progress(Progress::Stage(Stage::Queued));
                     }
-                    Ok(Event::Finished(outcome @ (Outcome::Failed { .. } | Outcome::Unknown { .. }))) => return Err(outcome.with_work(evidence.clone())),
-                    _ => return Err(failed(Stage::Admission, "invalid Build admission response; source was not uploaded").with_work(evidence.clone())),
+                    Ok(Event::Finished(outcome @ (Outcome::Failed { .. } | Outcome::Unknown { .. }))) => return Err(outcome.with_work(evidence.clone()).into()),
+                    _ => return Err(failed(Stage::Admission, "invalid Build admission response; source was not uploaded").with_work(evidence.clone()).into()),
                 },
-                Ok(None) => return Err(failed(Stage::Admission, "Build stream ended before admission; source was not uploaded").with_work(evidence.clone())),
-                Err(status) => return Err(failed(Stage::Admission, format!("{}; source was not uploaded", disconnected(status))).with_work(evidence.clone())),
+                Ok(None) => return Err(failed(Stage::Admission, "Build stream ended before admission; source was not uploaded").with_work(evidence.clone()).into()),
+                Err(status) => return Err(failed(Stage::Admission, format!("{}; source was not uploaded", disconnected(status))).with_work(evidence.clone()).into()),
             },
-            () = tokio::time::sleep_until(admission_deadline) => return Err(failed(Stage::Queued, "Build admission deadline expired; source was not uploaded").with_work(evidence.clone())),
+            () = tokio::time::sleep_until(admission_deadline) => return Err(failed(Stage::Queued, "Build admission deadline expired; source was not uploaded").with_work(evidence.clone()).into()),
         }
     };
     Ok(Admitted {
@@ -253,7 +293,7 @@ async fn execute_attempt(
         active_timeout,
     } = match admitted {
         Ok(admitted) => admitted,
-        Err(outcome) => return Completion::Report(outcome),
+        Err(Refused { outcome, .. }) => return Completion::Report(outcome),
     };
     let mut retained = None;
     let outcome = async {
@@ -484,6 +524,31 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn a_build_refused_by_enforcement_is_told_apart_by_its_capability() {
+        let (client, _server) = crate::connect::test_support::rpc_bidi_client(|_| async {
+            Err::<tonic::Response<tokio_stream::Iter<std::vec::IntoIter<Result<_, _>>>>, _>(
+                tonic::Status::with_details(
+                    tonic::Code::PermissionDenied,
+                    ployz_core::BUILD_REFUSED_BY_ENFORCEMENT,
+                    serde_json::json!({ "capability": ployz_core::BUILD_CAPABILITY, "cause": [] })
+                        .to_string()
+                        .into(),
+                ),
+            )
+        })
+        .await;
+        let error = client
+            .check_build_capabilities(MachineId::random(), &[], &CancellationToken::new())
+            .await
+            .unwrap_err();
+        assert!(
+            matches!(&error, CapabilityCheckError::RefusedByEnforcement(message)
+                if message == ployz_core::BUILD_REFUSED_BY_ENFORCEMENT),
+            "{error:?}"
+        );
+    }
+
+    #[tokio::test]
     async fn a_dropped_build_stream_names_its_transport_cause() {
         let (client, _server) = crate::connect::test_support::rpc_bidi_client(|_| async {
             let queued = remote::encode(&Event::Progress(Progress::Stage(Stage::Queued))).unwrap();
@@ -493,7 +558,10 @@ mod tests {
             ])))
         })
         .await;
-        let Err(Outcome::Failed { stage, message, .. }) = open_and_admit(
+        let Err(Refused {
+            outcome: Outcome::Failed { stage, message, .. },
+            ..
+        }) = open_and_admit(
             &client,
             Input::Check(Vec::new()),
             MachineId::random(),
