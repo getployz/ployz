@@ -19,7 +19,7 @@ export function optional<T>(field: Field<T>): Field<T | undefined> {
 export function strict<S extends Shape>(value: unknown, shape: S, name = "body"): Parsed<S> {
   if (!isPlainObject(value)) throw new Refusal(`${name} must be an object`);
   for (const key of Object.keys(value)) {
-    if (!Object.hasOwn(shape, key)) throw new Refusal(`${name} has unknown field ${key}`);
+    if (!Object.hasOwn(shape, key)) throw new Refusal(`${name} has unknown field ${key.slice(0, 64)}`);
   }
   const parsed: Record<string, unknown> = {};
   for (const [key, field] of Object.entries(shape)) {

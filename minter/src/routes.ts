@@ -68,7 +68,7 @@ export const ROUTES: Readonly<Record<string, AnyRoute>> = {
     body: { installation_id: id, repository_ids: optional(ids(100)), permissions: optional(object) },
     async handle(body, { github, facts }) {
       if (body.repository_ids !== undefined) facts.repository_ids = body.repository_ids;
-      if (body.permissions !== undefined) facts.permissions_asked = body.permissions;
+      if (body.permissions !== undefined) facts.permissions_asked = askedForAudit(body.permissions);
       const decided = readTokenPermissions(body.permissions);
       if (!decided.ok) throw new Refusal(decided.reason);
       const minted = await github.mint(body.installation_id, {
@@ -281,6 +281,11 @@ export const ROUTES: Readonly<Record<string, AnyRoute>> = {
     },
   }),
 };
+
+/** What a token request asked for, cut to a size an audit line can hold whatever the caller sent. */
+function askedForAudit(asked: Record<string, unknown>): Record<string, string> {
+  return Object.fromEntries(Object.entries(asked).slice(0, 20).map(([name, level]) => [name.slice(0, 64), String(level).slice(0, 16)]));
+}
 
 function isBuildRun(run: unknown): boolean {
   return isRecord(run) && run["path"] === BUILD_WORKFLOW_PATH;
