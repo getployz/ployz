@@ -10,7 +10,7 @@ use serde::Serialize;
 use serde_json::Value;
 
 use super::os_release::OsRelease;
-use super::storage::ZfsRoute;
+use super::zfs_route::ZfsRoute;
 use super::{Error, InstallPaths, command_exists, run_command, run_host};
 
 const GIB: u64 = 1024 * 1024 * 1024;

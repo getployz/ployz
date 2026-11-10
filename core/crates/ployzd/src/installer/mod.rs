@@ -10,6 +10,7 @@ mod storage;
 #[cfg(test)]
 mod test_support;
 pub mod upgrade;
+mod zfs_route;
 
 pub use self::host::write_units;
 pub use self::prepare::{discard_zfs_build, prepare};
