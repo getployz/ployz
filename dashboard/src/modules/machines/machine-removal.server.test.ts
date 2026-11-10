@@ -43,6 +43,17 @@ describe("asRemoveMachineOutcome", () => {
     ).resolves.toEqual({ kind: "refused", failureCode: "conflict", message });
   });
 
+  it("ends on an enforcing Server's refusal instead of retrying it", async () => {
+    const message = "This server leaves only when you approve it. Run ployz server rm from an approved device.";
+    await expect(
+      Effect.runPromise(
+        asRemoveMachineOutcome(
+          Effect.fail(new PloyzProviderError({ operation: "remove machine", cause: { code: "forbidden", message } })),
+        ),
+      ),
+    ).resolves.toEqual({ kind: "refused", failureCode: "forbidden", message });
+  });
+
   it("ends on a daemon that lacks the step, naming the Server", async () => {
     await expect(
       Effect.runPromise(

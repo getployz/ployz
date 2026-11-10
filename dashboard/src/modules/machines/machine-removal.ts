@@ -191,7 +191,7 @@ export type RemoveMachineOutcome =
   | { kind: "removed"; resetWarning: string | null; departed?: Departed }
   /** The Server reset, and its row is still listed: Forget alone finishes the removal, with the Leave's warning. */
   | { kind: "left"; resetWarning: string | null }
-  | { kind: "refused"; failureCode: "conflict" | "server_lacks"; message: string }
+  | { kind: "refused"; failureCode: "conflict" | "forbidden" | "server_lacks"; message: string }
   | { kind: "missing_identities"; identities: DataLossIdentity[] };
 
 type RemovalServer = { readonly id: string; readonly capabilities: readonly string[] };
