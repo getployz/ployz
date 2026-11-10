@@ -149,8 +149,12 @@ impl LocalMachine {
             // Checked again: a newer generation may have landed while GitHub answered.
             self.approvals.accept(&rule, claim, superseded)?;
             if new.slot.kind == ContainerKind::PreDeployHook {
-                self.approvals
-                    .consume_rule_hook(&rule, claim, &new.slot.creation_key)?;
+                self.approvals.consume_rule_hook(
+                    (rule.rule, None),
+                    claim,
+                    &new.slot.creation_key,
+                    refused,
+                )?;
             }
             tracing::info!(
                 kind = %new.slot.kind,

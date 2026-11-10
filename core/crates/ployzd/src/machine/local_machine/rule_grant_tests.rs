@@ -1,5 +1,6 @@
 #![expect(clippy::indexing_slicing, reason = "JSON fixtures")]
 
+use ployz_core::authority::AutoDeployRule;
 use std::collections::BTreeMap;
 
 use ployz_core::{

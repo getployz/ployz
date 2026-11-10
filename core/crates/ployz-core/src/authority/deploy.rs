@@ -51,13 +51,26 @@ impl PayloadDigest {
             .mount_graph
             .scope_to_namespace(namespace)
             .map_err(|error| CanonicalError::Parse(error.to_string()))?;
-        let mut value = serde_json::to_value(&spec)
-            .map_err(|error| CanonicalError::Parse(error.to_string()))?;
+        Self::of_scoped(&spec, |_| {})
+    }
+
+    /// The digest of `spec` with its Volumes already scoped, after `edit` changed its JSON
+    /// form, such as a preview template's placeholders.
+    ///
+    /// # Errors
+    /// Returns a [`CanonicalError`] when the spec has no canonical form.
+    pub(super) fn of_scoped(
+        spec: &RequestedServiceSpec,
+        edit: impl FnOnce(&mut Value),
+    ) -> Result<Self, CanonicalError> {
+        let mut value =
+            serde_json::to_value(spec).map_err(|error| CanonicalError::Parse(error.to_string()))?;
         if let Value::Object(fields) = &mut value {
             fields.remove("mode");
             fields.remove("update");
         }
         drop_nulls(&mut value);
+        edit(&mut value);
         let body = canonical::to_canonical(&value)?;
         Ok(Self(Sha256::digest(body.as_bytes()).into()))
     }
@@ -544,11 +557,49 @@ pub fn verify(
         })?;
     }
     super::validity::verify(body.issued_at, body.expires_at, facts.now)?;
+    if let Some(creation) = facts.creation {
+        refuse_preview_parts(facts.namespace, creation.spec)?;
+    }
     let digest = facts
         .creation
         .map(|creation| creation_digest(&body, creation))
         .transpose()?;
     Ok(DeployApproved { body, by, digest })
+}
+
+/// Refuse a creation, outside a preview rule, in a reserved preview Namespace or carrying a
+/// parent's value a preview inherits: only a preview rule may admit either, so preview code
+/// shares a Namespace with nothing else and an inherited value opens nowhere else.
+///
+/// # Errors
+/// Returns [`AuthorityRefusal::Mismatch`] naming the Namespace or the Sealed value.
+pub fn refuse_preview_parts(
+    namespace: &Namespace,
+    spec: &ResolvedServiceSpec,
+) -> Result<(), AuthorityRefusal> {
+    if super::preview::is_preview_namespace(namespace) {
+        return Err(AuthorityRefusal::Mismatch {
+            field: "a preview Namespace",
+        });
+    }
+    if sealed_values(spec).any(|value| value.environment.is_some()) {
+        return Err(AuthorityRefusal::Mismatch {
+            field: super::preview::SEALED_VALUE,
+        });
+    }
+    Ok(())
+}
+
+fn sealed_values(spec: &ResolvedServiceSpec) -> impl Iterator<Item = &crate::SealedValue> {
+    let hook = spec
+        .pre_deploy
+        .iter()
+        .flat_map(|hook| hook.environment.values());
+    spec.container
+        .environment
+        .values()
+        .chain(hook)
+        .flat_map(EnvValue::sealed_parts)
 }
 
 /// Whether `by` may approve a Container that opens the Sealed values `spec` carries, in its

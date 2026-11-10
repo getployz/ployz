@@ -13,7 +13,7 @@ use std::{
 
 use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
 use ployz_core::authority::{
-    AuthorityRefusal, AutoDeployRule, GithubClaims, Timestamp,
+    AuthorityRefusal, ClaimRule, GithubClaims, Timestamp,
     validity::{self, CLOCK_SKEW_MILLIS},
 };
 use ring::signature::{RSA_PKCS1_2048_8192_SHA256, RsaPublicKeyComponents};
@@ -286,17 +286,18 @@ impl IssuerKeys {
     /// [`ProofRefusal::Claim`] naming the first claim `rule` does not match.
     pub async fn check(
         &self,
-        rule: &AutoDeployRule,
+        rule: &impl ClaimRule,
         token: &str,
         now: Timestamp,
     ) -> Result<GithubClaims, ProofRefusal> {
+        let id = rule.identity().rule;
         let claims = self.verify(token, now).await.map_err(|refusal| {
-            tracing::warn!(rule = %rule.rule, %refusal, "refused a GitHub token");
+            tracing::warn!(rule = %id, %refusal, "refused a GitHub token");
             ProofRefusal::Token(refusal)
         })?;
         rule.verify_claims(&claims).map_err(|refusal| {
             if let AuthorityRefusal::Mismatch { field } = &refusal {
-                tracing::warn!(rule = %rule.rule, claim = field, "refused a GitHub token's claim");
+                tracing::warn!(rule = %id, claim = field, "refused a GitHub token's claim");
             }
             ProofRefusal::Claim(refusal)
         })?;

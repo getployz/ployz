@@ -11,7 +11,7 @@ use std::future::Future;
 use ployz_core::{
     BuildGrantId, GithubToken, RuleGrant, SealedRecord,
     authority::{
-        AuthorityRefusal, AutoDeployRule, BuildClaim, BuildStage, CommitAuthority, CommitSha,
+        AuthorityRefusal, BuildClaim, BuildStage, ClaimRule, CommitAuthority, CommitSha,
         GithubClaims, PolicyDigest, RecipientKey, SealedDigest, Timestamp, rule::verify_signature,
     },
 };
@@ -28,7 +28,7 @@ pub(crate) trait Github: Sync {
     /// names check out at `now`.
     fn claims(
         &self,
-        rule: &AutoDeployRule,
+        rule: &impl ClaimRule,
         token: &str,
         now: Timestamp,
     ) -> impl Future<Output = Result<GithubClaims, ProofRefusal>> + Send;
@@ -72,7 +72,7 @@ impl GithubOnline {
 impl Github for GithubOnline {
     async fn claims(
         &self,
-        rule: &AutoDeployRule,
+        rule: &impl ClaimRule,
         token: &str,
         now: Timestamp,
     ) -> Result<GithubClaims, ProofRefusal> {
@@ -114,7 +114,7 @@ impl FixedGithub {
 impl Github for FixedGithub {
     async fn claims(
         &self,
-        rule: &AutoDeployRule,
+        rule: &impl ClaimRule,
         token: &str,
         now: Timestamp,
     ) -> Result<GithubClaims, ProofRefusal> {
@@ -219,6 +219,8 @@ impl LocalMachine {
             return Err(refused("an audience"));
         }
         match grant.authority {
+            // A reviewed build is a preview's, which only a preview rule admits.
+            CommitAuthority::Review(_) => return Err(refused("an authority")),
             CommitAuthority::Head => {
                 if grant.commit != claims.sha {
                     return Err(refused("a commit"));
@@ -243,8 +245,13 @@ impl LocalMachine {
         if digest != service.secrets {
             return Err(refused("the Sealed values"));
         }
-        self.approvals
-            .consume_rule_proof(&rule, &claims.jti, claims.exp, now)?;
+        self.approvals.consume_rule_proof(
+            &rule,
+            Error::RuleGrantRefused,
+            &claims.jti,
+            claims.exp,
+            now,
+        )?;
         tracing::info!(
             rule = %rule.rule,
             generation = rule.generation,

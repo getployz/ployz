@@ -642,6 +642,7 @@ mod tests {
 
     fn sealed_record() -> SealedRecord {
         let value = EnvValue::Sealed(SealedValue {
+            environment: None,
             sealed: ployz_core::Ciphertext::from_bytes(vec![7; 48]),
             scope: SealedScope::Shared,
             key: "NPM_TOKEN".into(),

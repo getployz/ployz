@@ -12,6 +12,7 @@ pub mod canonical;
 pub mod deploy;
 pub mod join;
 pub mod keys;
+pub mod preview;
 pub mod proposal;
 pub mod refusal;
 pub mod restart;
@@ -30,15 +31,19 @@ pub use deploy::{
 };
 pub use join::JoinApproval;
 pub use keys::{Approver, KeySignature, Purpose, Signed, Signer, SigningPublicKey, Statement};
+pub use preview::{
+    CheckedReview, PreviewFacts, PreviewKey, PreviewReview, PreviewRule, PreviewService, Review,
+    ReviewSigner, ReviewedService,
+};
 pub use proposal::{ProposalApproval, ProposalRef, ProposalStep, StepDigest, StepKind};
 pub use refusal::AuthorityRefusal;
 pub use restart::{
     Approved, OwnPrompt, RestartApproval, RestartFacts, RestartStep, SignerKey, WorkflowKind,
 };
 pub use rule::{
-    AttestKey, AutoDeployRule, BuildClaim, BuildPolicy, BuildStage, CommitAuthority, CommitSha,
-    GithubClaims, ImageDigest, PolicyDigest, RecipientKey, RuleFacts, RuleId, RuleProof,
-    RuleService, RuleSource, SealedDigest,
+    AttestKey, AutoDeployRule, BuildClaim, BuildPolicy, BuildStage, ClaimRule, CommitAuthority,
+    CommitSha, GithubClaims, ImageDigest, PolicyDigest, RecipientKey, ReviewDigest, RuleFacts,
+    RuleId, RuleIdentity, RuleProof, RuleService, RuleSource, SealedDigest,
 };
 pub use rule_draft::{RuleBasis, RuleDraft, RuleDraftError, RuleSummary, RuleTerms};
 pub use session::{ActionFamily, GrantBody, SessionGrant};

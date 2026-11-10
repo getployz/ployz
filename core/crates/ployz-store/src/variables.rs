@@ -1560,6 +1560,7 @@ mod tests {
     #[test]
     fn a_sealed_value_counts_toward_a_containers_environment_at_its_opened_length() {
         let sealed = |opened: usize| ployz_core::SealedValue {
+            environment: None,
             sealed: ployz_core::Ciphertext::from_bytes(vec![0; opened + 48]),
             scope: SealedScope::Service(uuid::Uuid::from_u128(3)),
             key: "K".into(),
