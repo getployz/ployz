@@ -1301,7 +1301,7 @@ fn a_call_that_lost_its_answer_outlasts_a_retry_that_never_reached_the_target() 
 fn a_closed_session_does_not_outlast_a_later_silence() {
     let closed = || {
         ConnectError::Rpc(TransportError {
-            session_closed: true,
+            origin: Origin::SessionClosed,
             ..TransportError::from(tonic::Status::unavailable("transport error"))
         })
     };
@@ -1393,14 +1393,14 @@ async fn a_call_after_the_stream_closed_is_marked_and_stays_unavailable() {
     request_headers(&mut daemon).await;
     drop(daemon);
     let lost = TransportError::from(in_flight.await.unwrap().unwrap_err());
-    assert!(!lost.session_closed, "{lost:?}");
+    assert!(lost.origin != Origin::SessionClosed, "{lost:?}");
     assert!(
         lost.unanswered,
         "the first call may have reached the daemon"
     );
 
     let closed = TransportError::from(rpc.describe_contract(describe()).await.unwrap_err());
-    assert!(closed.session_closed, "{closed:?}");
+    assert!(closed.origin == Origin::SessionClosed, "{closed:?}");
     assert!(!closed.unanswered, "a call on a closed session never left");
     let connect = ConnectError::Rpc(closed);
     assert_eq!(connect.retry(), Retry::Now, "a redial opens a new stream");
@@ -1422,7 +1422,7 @@ fn a_broken_pipe_is_not_a_closed_session() {
         "stream closed because of a broken pipe",
     )));
     let error = TransportError::from(status);
-    assert!(!error.session_closed, "{error:?}");
+    assert!(error.origin != Origin::SessionClosed, "{error:?}");
     assert!(error.unanswered);
     assert!(!on_closed_session(&error.to_rpc_error()));
 }
@@ -2299,4 +2299,208 @@ async fn a_confirmation_telling_another_key_fails_without_inspect() {
     assert!(
         matches!(*last, ConnectError::ClusterMismatch { machine_id } if Some(&machine_id) == ids.first())
     );
+}
+
+/// The six flags a `TransportError` held before it carried `Origin` and `Routed`, and the
+/// predicates that read them. They are the oracle `ConnectError::facts` is held to.
+#[derive(Clone, Copy, Debug)]
+struct OldFlags {
+    unanswered: bool,
+    local: bool,
+    budget_expired: bool,
+    routed_unanswered: bool,
+    routed_unreached: bool,
+    session_closed: bool,
+}
+
+impl OldFlags {
+    /// The combinations a status can decode to: a closed session is a local failure, and
+    /// an unreached mark rides on an unanswered one and is never read off a local failure.
+    fn producible(self) -> bool {
+        (!self.session_closed || self.local)
+            && (!self.routed_unreached || (self.routed_unanswered && !self.local))
+    }
+
+    fn transport(self, code: tonic::Code) -> TransportError {
+        TransportError {
+            unanswered: self.unanswered,
+            origin: if self.session_closed {
+                Origin::SessionClosed
+            } else if self.local {
+                Origin::Local
+            } else {
+                Origin::Remote
+            },
+            routed: if self.routed_unreached {
+                Some(Routed::Unreached)
+            } else if self.routed_unanswered {
+                Some(Routed::Unanswered)
+            } else {
+                None
+            },
+            budget_expired: self.budget_expired,
+            ..TransportError::from(tonic::Status::new(code, "call failed"))
+        }
+    }
+
+    fn unreplied(self) -> bool {
+        self.unanswered || self.budget_expired || self.routed_unanswered
+    }
+
+    fn facts(self, code: tonic::Code) -> Facts {
+        Facts {
+            retry: match rpc_error_code(code).retry() {
+                ployz_core::Retry::Never if self.unanswered => ployz_core::Retry::AfterRestart,
+                retry @ (ployz_core::Retry::Now
+                | ployz_core::Retry::AfterRestart
+                | ployz_core::Retry::Never) => retry,
+            },
+            unreachable: code == tonic::Code::Unavailable,
+            unreached: self.local || self.budget_expired,
+            routed_by_entry: self.routed_unanswered && !self.local && !self.session_closed,
+            target_unanswered: self.budget_expired || self.routed_unanswered,
+            target_replied: !self.session_closed && !self.unreplied(),
+            unreplied: self.unreplied(),
+            target_unreached: self.routed_unreached,
+        }
+    }
+}
+
+#[test]
+fn a_transport_errors_facts_match_the_flags_they_replaced() {
+    let mut checked = 0;
+    for bits in 0..64_u8 {
+        let flag = |bit: u8| bits & (1 << bit) != 0;
+        let flags = OldFlags {
+            unanswered: flag(0),
+            local: flag(1),
+            budget_expired: flag(2),
+            routed_unanswered: flag(3),
+            routed_unreached: flag(4),
+            session_closed: flag(5),
+        };
+        if !flags.producible() {
+            continue;
+        }
+        for code in [
+            tonic::Code::Unavailable,
+            tonic::Code::Cancelled,
+            tonic::Code::InvalidArgument,
+            tonic::Code::Unimplemented,
+            tonic::Code::DeadlineExceeded,
+        ] {
+            let error = ConnectError::Rpc(flags.transport(code));
+            assert_eq!(error.facts(), flags.facts(code), "{flags:?} {code:?}");
+            checked += 1;
+        }
+    }
+    assert!(checked > 100, "{checked}");
+}
+
+#[test]
+fn a_status_decodes_to_the_origin_and_routing_it_carried() {
+    let marked = |keys: &[&'static str]| {
+        let mut status = tonic::Status::unavailable("target did not answer");
+        for key in keys {
+            status
+                .metadata_mut()
+                .insert(*key, tonic::metadata::MetadataValue::from_static("1"));
+        }
+        TransportError::from(status)
+    };
+    let unanswered = marked(&[ployz_core::rpc::TARGET_UNANSWERED_KEY]);
+    assert_eq!(
+        (unanswered.origin, unanswered.routed),
+        (Origin::Remote, Some(Routed::Unanswered))
+    );
+    let unreached = marked(&[
+        ployz_core::rpc::TARGET_UNANSWERED_KEY,
+        ployz_core::rpc::TARGET_UNREACHED_KEY,
+    ]);
+    assert_eq!(
+        (unreached.origin, unreached.routed),
+        (Origin::Remote, Some(Routed::Unreached))
+    );
+    assert_eq!(marked(&[]).routed, None);
+}
+
+#[test]
+fn every_other_connect_error_keeps_its_facts() {
+    use ployz_core::Retry::{AfterRestart, Never, Now};
+    use std::os::unix::process::ExitStatusExt as _;
+    let ssh = |failure| ConnectError::SshProbe {
+        target: "host".into(),
+        status: std::process::ExitStatus::from_raw(255 << 8),
+        failure,
+        detail: String::new(),
+    };
+    let all_failed = |reached| ConnectError::AllFailed {
+        selection: ConnectionSource::Direct,
+        attempts: 2,
+        server: None,
+        relayed: false,
+        retry: Now,
+        reached,
+        last: None,
+    };
+    for (error, retry, unreachable, unreached) in [
+        (ConnectError::Attempt("x".into()), Now, true, true),
+        (ConnectError::Exhausted("x".into()), Now, true, true),
+        (
+            ConnectError::Io(io::ErrorKind::ConnectionRefused.into()),
+            Now,
+            true,
+            true,
+        ),
+        (
+            ConnectError::Io(io::ErrorKind::InvalidData.into()),
+            Never,
+            true,
+            true,
+        ),
+        (ssh(SshFailure::Network), Now, false, true),
+        (ssh(SshFailure::Auth), Never, false, true),
+        (ConnectError::EntryNotReady, AfterRestart, true, true),
+        (all_failed(false), Now, true, true),
+        (all_failed(true), Now, true, false),
+        (ConnectError::SshClientMissing, Never, false, true),
+        (
+            ConnectError::ProxyUnsupported("x".into()),
+            Never,
+            false,
+            true,
+        ),
+        (
+            ConnectError::UnsupportedNetwork("x".into()),
+            Never,
+            false,
+            true,
+        ),
+        (ConnectError::ClientRefused, Never, false, false),
+        (ConnectError::ClientCleared, Never, false, false),
+        (ConnectError::OlderMachine, Never, false, false),
+        (ConnectError::TunnelNeedsFull, Never, false, false),
+        (ConnectError::MissingMachineDetails, Never, false, false),
+        (
+            ConnectError::Remote(RpcError::internal("x")),
+            Never,
+            false,
+            false,
+        ),
+    ] {
+        assert_eq!(
+            error.facts(),
+            Facts {
+                retry,
+                unreachable,
+                unreached,
+                routed_by_entry: false,
+                target_unanswered: false,
+                target_replied: false,
+                unreplied: false,
+                target_unreached: false,
+            },
+            "{error:?}"
+        );
+    }
 }
