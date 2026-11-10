@@ -311,16 +311,24 @@ struct AcceptedBuild {
     /// The preview the build's token named, for a preview rule's build.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     preview: Option<PreviewKey>,
+    /// The review it was built under, for a reviewed preview's build.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    review: Option<ployz_core::authority::ReviewDigest>,
 }
 
 impl AcceptedBuild {
     fn of(claim: &BuildClaim, preview: Option<&PreviewKey>) -> Option<Self> {
+        let review = match claim.authority {
+            ployz_core::authority::CommitAuthority::Review(digest) => Some(digest),
+            ployz_core::authority::CommitAuthority::Head => None,
+        };
         match claim.stage {
             BuildStage::Built { image, .. } => Some(Self {
                 generation: claim.generation,
                 commit: claim.commit,
                 image,
                 preview: preview.cloned(),
+                review,
             }),
             BuildStage::Grant { .. } => None,
         }

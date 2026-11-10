@@ -738,3 +738,85 @@ fn a_preview_rule_is_signed_by_a_device_or_a_passkeys_own_prompt_never_a_session
         }
     );
 }
+
+fn terms(rule: &PreviewRule) -> ReviewTerms {
+    ReviewTerms {
+        cluster: rule.cluster,
+        key: PreviewKey::Fork(7),
+        commit: CommitSha::parse(HEAD).unwrap(),
+        environment: Uuid::parse_str(PREVIEW_ID).unwrap(),
+        issued_at: Timestamp::from_millis(1_000).unwrap(),
+        expires_at: Timestamp::from_millis(600_000).unwrap(),
+    }
+}
+
+/// What a browser drafts from the plan it read is what a Server admits at creation: the
+/// body's digests are the template every Server takes of the same spec.
+#[test]
+fn a_drafted_review_admits_the_spec_it_was_drafted_from() {
+    let passkey = Authenticator::es256(4);
+    let trusted = trusting(&passkey);
+    let rule = rule();
+    let namespace = preview_namespace(rule.rule, &PreviewKey::Fork(7));
+    let spec = preview_json(namespace.as_str(), "zyxwvutsrqponmlk", false);
+    let drafted =
+        PreviewReview::draft(&rule, &namespace, &[requested(spec.clone())], terms(&rule)).unwrap();
+    assert!(drafted.secrets, "web inherits a parent value");
+    assert_eq!(drafted.lines.len(), 1);
+    assert!(
+        drafted.lines[0].starts_with("Review web at fedcba987654"),
+        "{:?}",
+        drafted.lines
+    );
+    let assertion = passkey.answer(&Answer {
+        challenge: review_digest(&drafted.body).as_bytes(),
+        ..HONEST
+    });
+    let review = Review::Passkey {
+        body: drafted.body,
+        assertion,
+    };
+    let checked = verify_review(
+        &review,
+        &rule,
+        &trusted,
+        Timestamp::from_millis(2_000).unwrap(),
+    )
+    .unwrap();
+    let case = Case {
+        rule: rule.clone(),
+        claim: built(CommitAuthority::Review(review.digest())),
+        key: PreviewKey::Fork(7),
+        namespace,
+        spec,
+        kind: ContainerKind::ServiceContainer,
+        review: Some(checked),
+    };
+    assert_eq!(case.create(), Ok(ImageDigest::from_bytes([0x44; 32])));
+}
+
+#[test]
+fn a_review_is_not_drafted_outside_the_preview_the_rule_derives() {
+    let rule = rule();
+    let namespace = preview_namespace(rule.rule, &PreviewKey::Fork(7));
+    let spec = requested(preview_json(namespace.as_str(), "zyxwvutsrqponmlk", false));
+    let elsewhere = Namespace::parse("shop-production").unwrap();
+    assert!(matches!(
+        PreviewReview::draft(&rule, &elsewhere, &[spec.clone()], terms(&rule)),
+        Err(ReviewDraftError::Namespace)
+    ));
+    let other = ReviewTerms {
+        cluster: SealingPublicKey::from_bytes([1; 32]),
+        ..terms(&rule)
+    };
+    assert!(matches!(
+        PreviewReview::draft(&rule, &namespace, &[spec.clone()], other),
+        Err(ReviewDraftError::Cluster)
+    ));
+    let mut stray = spec;
+    stray.name = ServiceName::parse("worker").unwrap();
+    assert!(matches!(
+        PreviewReview::draft(&rule, &namespace, &[stray], terms(&rule)),
+        Err(ReviewDraftError::Uncovered(_))
+    ));
+}

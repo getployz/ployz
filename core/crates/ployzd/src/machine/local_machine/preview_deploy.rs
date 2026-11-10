@@ -19,16 +19,14 @@ use ployz_core::{
     ServiceName,
     authority::{
         AuthorityRefusal, BuildClaim, CheckedReview, CommitAuthority, CommitSha, PreviewFacts,
-        PreviewKey, PreviewProof, PreviewRule, RestartStep, Timestamp, deploy::Creation,
+        PreviewKey, PreviewProof, PreviewRule, RestartStep, Timestamp,
+        deploy::Creation,
+        preview::{verify_accepted_review, verify_review},
         rule::verify_signature,
     },
 };
 
 use super::{Error, LocalMachine, restart_approval::pinned, rule_grant::Github};
-
-/// What a refusal names for a reviewed preview build or deploy. No client produces a
-/// review yet, so a Machine admits none: only a trusted push builds and deploys a preview.
-pub(crate) const REVIEWED: &str = "a reviewed preview";
 
 /// Why a Machine refused a preview's build grant or deploy.
 #[derive(Debug, thiserror::Error)]
@@ -253,15 +251,29 @@ impl LocalMachine {
         // An ended generation still supersedes every one below it.
         self.approvals.mark_rule(&rule, superseded(&rule))?;
         let claim = &proof.claim;
-        if proof.review.is_some() || claim.authority != CommitAuthority::Head {
-            tracing::warn!(rule = %rule.rule, "refused a reviewed preview deploy");
-            return Err(refused(AuthorityRefusal::Mismatch { field: REVIEWED }));
-        }
-        let review: Option<CheckedReview> = None;
-        let key = match self
+        let accepted = self
             .approvals
-            .accepted_preview(rule.rule, namespace, claim)?
-        {
+            .accepted_preview(rule.rule, namespace, claim)?;
+        // A review's window held when this Machine first admitted its build, which the
+        // accepted-build record names by the review's digest.
+        let review: Option<CheckedReview> = match (claim.authority, &proof.review) {
+            (CommitAuthority::Head, None) => None,
+            (CommitAuthority::Review(_), Some(review)) => Some(
+                match accepted {
+                    Some(_) => verify_accepted_review(review, &rule, &trusted),
+                    None => verify_review(review, &rule, &trusted, now),
+                }
+                .map_err(|refusal| logged(&rule, &claim.service, refusal))?,
+            ),
+            _ => {
+                return Err(logged(
+                    &rule,
+                    &claim.service,
+                    AuthorityRefusal::Mismatch { field: "a review" },
+                ));
+            }
+        };
+        let key = match accepted {
             Some(key) => key,
             None => {
                 let claims = github
@@ -418,11 +430,8 @@ pub(crate) fn refusal_text(refusal: &AuthorityRefusal) -> String {
         AuthorityRefusal::Mismatch { field: "a branch" } => {
             "A push to the branch previews start from isn't a preview."
         }
-        AuthorityRefusal::Mismatch { field: REVIEWED } => {
-            "This server builds and deploys a preview only for a trusted account's push. Reviewed previews aren't available yet."
-        }
         AuthorityRefusal::Mismatch { field: "a review" } => {
-            "This build was made under another review. Review the preview again."
+            "This build wasn't made under the review that came with it. Review the preview again."
         }
         AuthorityRefusal::Mismatch {
             field: "the signer",

@@ -245,7 +245,7 @@ impl ApprovedChange {
 }
 
 /// What `spec` asks of the host beyond an ordinary Container.
-fn host_sensitive(spec: &RequestedServiceSpec) -> Vec<String> {
+pub(super) fn host_sensitive(spec: &RequestedServiceSpec) -> Vec<String> {
     let container = &spec.container;
     let mut host = Vec::new();
     if container.privileged {

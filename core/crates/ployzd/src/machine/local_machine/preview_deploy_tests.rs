@@ -2,13 +2,16 @@
 
 use ployz_core::{
     Namespace,
-    authority::{AttestKey, ImageDigest, PreviewRule, Signed, preview::preview_namespace},
+    authority::{
+        AttestKey, ImageDigest, PreviewReview, PreviewRule, Review, ReviewedService, Signed,
+        preview::preview_namespace,
+    },
 };
 use serde_json::{Value, json};
 
 use super::super::{
-    preview_grant::tests::{ACTOR, claim, inherited, preview_rule, review, token},
-    rule_grant::tests::{Fixture, commit, fixture, github, now},
+    preview_grant::tests::{ACTOR, claim, inherited, preview_rule, token},
+    rule_grant::tests::{Fixture, commit, fixture, github, now, web},
 };
 use super::*;
 
@@ -262,36 +265,184 @@ async fn a_push_runs_its_hook_once_in_each_preview() {
     );
 }
 
-/// No client produces a review yet, so a reviewed build deploys nothing, with its review
-/// or without.
+/// The fork preview a review names.
+fn fork(rule: &PreviewRule) -> Namespace {
+    preview_namespace(rule.rule, &PreviewKey::Fork(12))
+}
+
+impl Deploy {
+    /// A review of the fork preview at the fixture's commit, approving [`spec`] there.
+    fn review_body(&self) -> PreviewReview {
+        let digest = ployz_core::authority::preview::template(
+            &requested(&spec()),
+            &fork(&self.rule),
+            &self.rule.services[0],
+        )
+        .unwrap();
+        PreviewReview {
+            cluster: self.rule.cluster,
+            rule: self.rule.rule,
+            generation: self.rule.generation,
+            key: PreviewKey::Fork(12),
+            commit: commit(),
+            environment: uuid::Uuid::from_u128(1),
+            services: vec![ReviewedService {
+                name: web(),
+                digest,
+            }],
+            issued_at: Timestamp::from_millis(now().as_millis() - 1_000).unwrap(),
+            expires_at: Timestamp::from_millis(now().as_millis() + 600_000).unwrap(),
+        }
+    }
+
+    /// A reviewed build's proof under `review`, its image token spent as `jti`.
+    fn reviewed(&self, review: Review, jti: &str) -> PreviewProof {
+        let claim = self.built(CommitAuthority::Review(review.digest()));
+        PreviewProof {
+            rule: Signed::sign(&self.rule, &self.fixture.signer).unwrap(),
+            review: Some(review),
+            token: token(&claim, jti, "workflow_dispatch", "main", ACTOR),
+            claim,
+            reader: None,
+        }
+    }
+
+    async fn create(
+        &self,
+        namespace: &Namespace,
+        key: &str,
+        spec: &Value,
+        proof: &PreviewProof,
+        at: Timestamp,
+    ) -> Result<ContainerWant, Error> {
+        self.deploy(
+            want(namespace, "service_container", key, spec),
+            proof,
+            commit(),
+            at,
+        )
+        .await
+    }
+}
+
+fn device(deploy: &Deploy, body: &PreviewReview) -> Review {
+    Review::Signed(Signed::sign(body, &deploy.fixture.signer).unwrap())
+}
+
 #[tokio::test]
-async fn a_reviewed_build_deploys_nothing_until_reviews_ship() {
+async fn a_reviewed_build_creates_only_the_reviewed_settings_in_its_preview() {
     let deploy = Deploy::new().await;
-    let namespace = preview_namespace(deploy.rule.rule, &PreviewKey::Fork(12));
-    let body = review(&deploy.fixture, &deploy.rule, commit());
-    let claim = deploy.built(CommitAuthority::Review(body.digest()));
-    let mut proof = PreviewProof {
-        rule: Signed::sign(&deploy.rule, &deploy.fixture.signer).unwrap(),
-        review: Some(body),
-        token: token(&claim, "reviewed", "workflow_dispatch", "main", ACTOR),
-        claim,
-        reader: None,
-    };
-    let create = |proof: PreviewProof| {
-        let namespace = namespace.clone();
-        let deploy = &deploy;
-        async move {
+    let namespace = fork(&deploy.rule);
+    let proof = deploy.reviewed(device(&deploy, &deploy.review_body()), "reviewed");
+    deploy
+        .create(&namespace, "k1", &spec(), &proof, now())
+        .await
+        .unwrap();
+    let mut edited = spec();
+    edited["container"]["environment"]["PLAIN"] = json!("two");
+    assert_eq!(
+        refused(
             deploy
-                .deploy(
-                    want(&namespace, "service_container", "k1", &spec()),
-                    &proof,
-                    commit(),
+                .create(&namespace, "k2", &edited, &proof, now())
+                .await
+        ),
+        "a payload"
+    );
+    assert_eq!(
+        refused(
+            deploy
+                .create(&feature(&deploy.rule), "k3", &spec(), &proof, now())
+                .await
+        ),
+        "a Namespace"
+    );
+}
+
+#[tokio::test]
+async fn a_reviewed_build_without_its_review_deploys_nothing() {
+    let deploy = Deploy::new().await;
+    let namespace = fork(&deploy.rule);
+    let mut proof = deploy.reviewed(device(&deploy, &deploy.review_body()), "bare");
+    proof.review = None;
+    assert_eq!(
+        refused(
+            deploy
+                .create(&namespace, "k1", &spec(), &proof, now())
+                .await
+        ),
+        "a review"
+    );
+    let mut other = deploy.review_body();
+    other.commit = CommitSha::parse(&"7".repeat(40)).unwrap();
+    let mut swapped = deploy.reviewed(device(&deploy, &deploy.review_body()), "swapped");
+    swapped.review = Some(device(&deploy, &other));
+    assert_eq!(
+        refused(
+            deploy
+                .create(&namespace, "k2", &spec(), &swapped, now())
+                .await
+        ),
+        "a review"
+    );
+}
+
+/// A copy made after the review's window, on a Machine that admitted the build while it
+/// held, still runs what was reviewed. One that never admitted it refuses.
+#[tokio::test]
+async fn a_reviewed_preview_starts_again_after_its_review_expires() {
+    let deploy = Deploy::new().await;
+    let namespace = fork(&deploy.rule);
+    let proof = deploy.reviewed(device(&deploy, &deploy.review_body()), "later");
+    assert!(matches!(
+        deploy
+            .create(&namespace, "k1", &spec(), &proof, after_expiry())
+            .await,
+        Err(Error::PreviewDeployRefused(PreviewRefusal::Rule(
+            AuthorityRefusal::Expired
+        )))
+    ));
+    deploy
+        .create(&namespace, "k1", &spec(), &proof, now())
+        .await
+        .unwrap();
+    deploy
+        .create(&namespace, "k2", &spec(), &proof, after_expiry())
+        .await
+        .unwrap();
+}
+
+/// Operator decision 6 at creation: a session reviews only a preview that opens nothing.
+#[tokio::test]
+async fn a_session_review_deploys_only_a_preview_that_opens_no_secret() {
+    let mut deploy = Deploy::new().await;
+    let namespace = fork(&deploy.rule);
+    let session = |deploy: &Deploy| {
+        super::super::preview_grant::tests::session_review(&deploy.rule, &deploy.review_body())
+    };
+    deploy
+        .create(
+            &namespace,
+            "k1",
+            &spec(),
+            &deploy.reviewed(session(&deploy), "open"),
+            now(),
+        )
+        .await
+        .unwrap();
+    deploy.rule.services[0].inherit = ["NPM_TOKEN".to_owned()].into();
+    deploy.rule.generation += 1;
+    assert_eq!(
+        refused(
+            deploy
+                .create(
+                    &namespace,
+                    "k2",
+                    &spec(),
+                    &deploy.reviewed(session(&deploy), "secret"),
                     now(),
                 )
                 .await
-        }
-    };
-    assert_eq!(refused(create(proof.clone()).await), REVIEWED);
-    proof.review = None;
-    assert_eq!(refused(create(proof).await), REVIEWED);
+        ),
+        "the signer"
+    );
 }
