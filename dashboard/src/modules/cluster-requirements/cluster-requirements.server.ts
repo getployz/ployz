@@ -37,15 +37,15 @@ export const foundedClosed = Effect.fn("ClusterRequirements.foundedClosed")(func
   return founder?.closed ?? false;
 });
 
-/** Whether the Cloudflare setup is active and was last written within the current pairing, so a removed Cluster's row says nothing. */
+/** Whether the Cloudflare setup is active and was last written within the current pairing, so a removed Cluster's row says nothing, and so does any row while no Cluster is paired. */
 const tunnelOnly = Effect.fn("ClusterRequirements.tunnelOnly")(function* (organizationId: string) {
   const { drizzle } = yield* Database;
   const [row] = yield* drizzle.select({ active: sql<boolean>`${organizationCloudflareIngress.state} = 'active'` })
     .from(organizationCloudflareIngress)
-    .leftJoin(organizationPairing, eq(organizationPairing.organizationId, organizationCloudflareIngress.organizationId))
+    .innerJoin(organizationPairing, eq(organizationPairing.organizationId, organizationCloudflareIngress.organizationId))
     .where(and(
       eq(organizationCloudflareIngress.organizationId, organizationId),
-      sql`(${organizationPairing.createdAt} is null or ${organizationCloudflareIngress.updatedAt} >= ${organizationPairing.createdAt})`,
+      sql`${organizationCloudflareIngress.updatedAt} >= ${organizationPairing.createdAt}`,
     ));
   return row?.active ?? false;
 });
@@ -76,7 +76,7 @@ export const currentFeatures = Effect.fn("ClusterRequirements.current")(function
  * The gate for a joiner. Refuses one that lacks a capability the Cluster requires, before Cloud registers it. A joiner
  * that lists every Cluster Requirement reads nothing. Otherwise the Servers are read through `frame`, which fails to null.
  * A Cluster whose Servers can't be read fails closed for a joiner that lacks something: it may be closed without Cloud
- * knowing, so the join waits and the CLI retries.
+ * knowing, so the join stops and the operator runs it again.
  */
 export const refuseLackingJoiner = Effect.fn("ClusterRequirements.refuseJoiner")(function* (
   organizationId: string,
@@ -88,5 +88,5 @@ export const refuseLackingJoiner = Effect.fn("ClusterRequirements.refuseJoiner")
   const seen = yield* frame;
   const missing = missingFor(seen === null ? recorded : featuresOf({ recorded, frame: seen }), advertised);
   if (missing !== null) return yield* new Conflict({ message: joinWords(missing), userFacing: true });
-  if (seen === null) return yield* new Unavailable({ message: "Cloud can't read which ports this Cluster keeps closed yet. Retrying.", userFacing: true });
+  if (seen === null) return yield* new Unavailable({ message: "Cloud can't read which ports this Cluster keeps closed yet. Run this again in a minute.", userFacing: true });
 });

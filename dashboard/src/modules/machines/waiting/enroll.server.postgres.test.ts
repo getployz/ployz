@@ -265,6 +265,17 @@ it("ignores a tunnel-only Cloudflare setup left from a Cluster since removed", a
   expect(later.attempts.map((attempt) => attempt.role)).toEqual(["joiner"]);
 });
 
+it("ignores an active Cloudflare setup while no Cluster is paired, as when a removed Cluster's first server is still enrolling", async () => {
+  const [first, older] = await waiting("web-a", "web-old");
+  if (first === undefined || older === undefined) throw new Error("two hosts");
+  await run(enroll([first]));
+  await harness.pool.query(`insert into organization_cloudflare_ingress (organization_id, zone, tunnel_id, tunnel_name, state)
+    values ($1, 'example.com', 't1', 'ployz', 'active')`, [adaOrg]);
+  const later = await run(enroll([older]));
+  expect(later.skipped).toEqual([]);
+  expect(later.attempts.map((attempt) => attempt.role)).toEqual(["joiner"]);
+});
+
 it("skips a host that lists nothing while a Cloudflare setup of this Cluster is active", async () => {
   const [first, older] = await waiting("web-a", "web-old");
   if (first === undefined || older === undefined) throw new Error("two hosts");

@@ -643,9 +643,12 @@ describe("organization enrollment coordinator", () => {
       if (!registered) throw new Error("expected a join");
       fake.cluster.snapshot = { ...snapshot, machines: [{ ...registered, runtime: { ...registered.runtime, daemon_version: "0.9.0" } }] };
       fake.cluster.services = [holderPublishing([])];
-      const rerun = await fake.coordinator.enroll({ token: await issueToken(), identity: identity(1) });
+      const again = await issueToken();
+      const rerun = await fake.coordinator.enroll({ token: again, identity: identity(1) });
       expect(rerun).toMatchObject({ failure: { _tag: "Conflict", message: "This Cluster keeps ports 80 and 443 closed. Update ployz on this server to join it." } });
       expect(fake.registerCalls()).toBe(1);
+      const held = await harness.pool.query<{ claimed_at: Date }>("select claimed_at from machine_enrollment_token where token_hash = $1", [hashEnrollmentToken(again)]);
+      expect(held.rows[0]?.claimed_at.getTime()).toBe(0);
     });
   });
 

@@ -14,6 +14,7 @@ import {
   type ClusterFeature,
   foundingFeatures,
   founderWords,
+  listsEvery,
   missingFor,
   skipWords,
 } from "#/modules/cluster-requirements/cluster-requirements";
@@ -455,10 +456,11 @@ export const startArrivalEnrollment = Effect.fn("ServerEnrollment.startArrival")
   checkinKey: string,
 ) {
   const database = yield* Database;
-  const [glance] = yield* database.drizzle.select({ unavailable: arrivalSpent(token.id), used: usedOf(token.id) })
+  const [glance] = yield* database.drizzle.select({ unavailable: arrivalSpent(token.id), used: usedOf(token.id), report: waitingServer.report })
     .from(waitingServer).where(arrivingHost(token, checkinKey));
   if (glance === undefined || glance.unavailable || glance.used >= token.autoEnrollMax) return false;
-  const features = yield* currentFeatures(token.organizationId);
+  // A host that lists every Cluster Requirement is never refused by one, so a check-in that repeats every few seconds reads no Servers for it.
+  const features = listsEvery(glance.report.capabilities) ? new Set<ClusterFeature>() : yield* currentFeatures(token.organizationId);
   return yield* database.transaction(Effect.gen(function* () {
     const { drizzle } = yield* Database;
     // Every pairing write that matters here holds the exclusive Organization lock, so the shared one keeps the row still.

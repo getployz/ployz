@@ -34,7 +34,11 @@ const inngest = new Inngest({ id: "checkin-test" });
 vi.spyOn(inngest, "send").mockResolvedValue({ ids: [] });
 
 const unreachable = makePloyzLayer({ connect: async () => { throw new Error("Endpoint unavailable"); } });
-const runtime = asTestDouble<OrganizationRuntime["Service"]>()({ cancel: () => Effect.void, open: () => Effect.succeed({ status: "no_connection" as const }) });
+let opened = 0;
+const runtime = asTestDouble<OrganizationRuntime["Service"]>()({
+  cancel: () => Effect.void,
+  open: () => Effect.sync(() => { opened += 1; return { status: "no_connection" as const }; }),
+});
 
 const run = <A, E>(operation: Effect.Effect<A, E, Database | SecretEncryption | InngestClient | OrganizationRuntime | Ployz>) =>
   harness.runEffect(operation.pipe(
@@ -1246,6 +1250,21 @@ it("starts no arrival for a host that lists nothing once the Cluster was founded
   const another = newHost();
   expect(await send(token, another, { ...readyAuto, capabilities: closedDoors })).toEqual(arrivalWait);
   expect(await autoAttempts()).toHaveLength(2);
+});
+
+it("reads no Servers when a host that lists every Cluster Requirement arrives on a Cluster founded closed", async () => {
+  await foundOrganization();
+  const { token } = await autoToken(10);
+  const closedDoors = ["ployz.ingress.closed-doors.v1"];
+  const first = newHost();
+  expect(await send(token, first, { ...readyAuto, capabilities: closedDoors })).toEqual(arrivalWait);
+  await harness.pool.query(`update server_enrollment set role = 'founder', instruction = instruction || '{"ingressClosed": true}'::jsonb`);
+  opened = 0;
+  const capable = newHost();
+  expect(await send(token, capable, { ...readyAuto, capabilities: closedDoors })).toEqual(arrivalWait);
+  expect(opened).toBe(0);
+  expect(await send(token, newHost(), readyAuto)).toEqual(wait);
+  expect(opened).toBeGreaterThan(0);
 });
 
 it("starts an arrival for a host that lists nothing in a Cluster not founded closed", async () => {

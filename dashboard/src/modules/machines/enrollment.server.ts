@@ -543,7 +543,8 @@ const holdJoinSlot = Effect.fn("MachineEnrollment.holdJoinSlot")(function* (toke
   if (!(yield* renewJoinSlot(token))) return yield* new Conflict({ message: "The join slot was given up. Ask again." });
 });
 
-const releaseUnsentJoinSlot = (token: string, machineId: MachineId, organizationId: string, pairing: string) => Effect.gen(function* () {
+/** Hands back the slot a request claimed and never used. `refused` also frees a Machine already assigned, whose rerun was turned away before it sent anything. */
+const releaseUnsentJoinSlot = (token: string, machineId: MachineId, organizationId: string, pairing: string, refused = false) => Effect.gen(function* () {
   const database = yield* Database;
   yield* database.transaction(Effect.gen(function* () {
     const { drizzle } = yield* Database;
@@ -556,7 +557,7 @@ const releaseUnsentJoinSlot = (token: string, machineId: MachineId, organization
         eq(enrollmentAllocation.organizationId, organizationId),
         eq(enrollmentAllocation.clusterKey, hashEnrollmentToken(pairing)),
       ));
-    if (allocation?.assignments.some((saved) => saved.machine.id === machineId)) return;
+    if (!refused && allocation?.assignments.some((saved) => saved.machine.id === machineId)) return;
     yield* drizzle.update(schemaMachineEnrollmentToken)
       .set({ claimedAt: sql`'epoch'::timestamptz`, updatedAt: new Date() })
       .where(and(
@@ -764,7 +765,7 @@ export const enrollMachine = Effect.fn("MachineEnrollment.enrollMachine")(
         token.organizationId,
         input.identity.capabilities,
         session.watchFirstFrame(RUNTIME_FRAME_TIMEOUT_MS).pipe(clusterRead, Effect.catch(() => Effect.succeed(null))),
-      );
+      ).pipe(Effect.tapError(() => releaseUnsentJoinSlot(input.token, input.identity.machineId, token.organizationId, pairing.secret, true)));
       const database = yield* Database;
       const assignment = yield* database.transaction(Effect.gen(function* () {
         const { drizzle } = yield* Database;
