@@ -4089,6 +4089,7 @@ name = "ployz-config-wasm"
 version = "0.3.17"
 dependencies = [
  "ployz-core",
+ "serde",
  "serde_json",
  "wasm-bindgen",
 ]

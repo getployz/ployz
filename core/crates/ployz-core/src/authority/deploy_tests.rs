@@ -865,3 +865,43 @@ fn a_deploy_step_in_a_bundle_no_trusted_key_signed_is_refused() {
         }
     );
 }
+
+#[test]
+fn a_browser_draft_names_the_golden_digest_and_refuses_a_build_or_a_tag() {
+    let signer = signer(1);
+    let fixture = approval(&signer, &requested(requested_json()));
+    let terms = DeployTerms {
+        cluster: fixture.cluster,
+        operation: fixture.operation,
+        machines: fixture.machines,
+        issued_at: fixture.issued_at,
+        expires_at: fixture.expires_at,
+        signer: fixture.signer,
+        proposal: None,
+    };
+    let draft =
+        DeployApproval::browser_draft(terms.clone(), namespace(), &[requested(requested_json())])
+            .unwrap();
+    let body: DeployApproval = canonical::from_canonical(&draft.body).unwrap();
+    assert_eq!(
+        body.digest(&web())
+            .map(|digest| digest.to_string())
+            .as_deref(),
+        Some("cb8d3c6ef656772fbe9764188fc4ff7b7059e682de60a7686263ab386cd4ffa5")
+    );
+    assert_eq!(draft.lines, vec![draft.changes.first().unwrap().line()]);
+
+    let built = requested(with(
+        &["container", "image"],
+        json!(format!("ployz-build/{IMAGE}")),
+    ));
+    assert!(matches!(
+        DeployApproval::browser_draft(terms.clone(), namespace(), &[built]),
+        Err(BrowserDraftError::Built(_))
+    ));
+    let tagged = requested(with(&["container", "image"], json!(TAG)));
+    assert!(matches!(
+        DeployApproval::browser_draft(terms, namespace(), &[tagged]),
+        Err(BrowserDraftError::Tag { .. })
+    ));
+}

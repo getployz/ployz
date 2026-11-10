@@ -305,6 +305,33 @@ impl Statement for DeployApproval {
     const PURPOSE: Purpose = Purpose::Workflow;
 }
 
+/// A Deploy's approval as a browser key signs it, from [`DeployApproval::browser_draft`].
+#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+pub struct BrowserDraft {
+    /// The canonical body to sign as it is.
+    pub body: String,
+    pub changes: Vec<ApprovedChange>,
+    /// `Approved web: nginx@sha256:0123456789ab…`, one per Service.
+    pub lines: Vec<String>,
+}
+
+/// Why a browser can't sign a Deploy.
+#[derive(Debug, thiserror::Error)]
+pub enum BrowserDraftError {
+    #[error(
+        "{0} builds from source, and servers that enforce device approval can't run a build \
+         yet. Deploy it from an image pinned by digest."
+    )]
+    Built(ServiceName),
+    #[error(
+        "The dashboard can't check what {service}'s tag {image} points to. Write the image \
+         by digest, or run ployz deploy, which pins it for you."
+    )]
+    Tag { service: ServiceName, image: String },
+    #[error(transparent)]
+    Canonical(#[from] CanonicalError),
+}
+
 /// What an approver's client sets around the Services a plan ships.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
 #[serde(deny_unknown_fields)]
@@ -373,6 +400,42 @@ impl DeployApproval {
             proposal: terms.proposal,
         };
         Ok((body, changes))
+    }
+
+    /// What a browser key signs for a Deploy of `target` under `terms`: the canonical
+    /// body, what each Service shows the approver, and one line per Service. The browser
+    /// runs this itself on the plan it read, so it signs no digest Cloud computed. It
+    /// can't ask a registry, so a tag is refused rather than pinned.
+    ///
+    /// # Errors
+    /// Refuses a Service built from source, an image named by a tag, and a spec with no
+    /// [`PayloadDigest`] in `namespace`.
+    pub fn browser_draft(
+        terms: DeployTerms,
+        namespace: Namespace,
+        target: &[RequestedServiceSpec],
+    ) -> Result<BrowserDraft, BrowserDraftError> {
+        if let Some(spec) = target
+            .iter()
+            .find(|spec| spec.container.image.starts_with("ployz-build/"))
+        {
+            return Err(BrowserDraftError::Built(spec.name.clone()));
+        }
+        if let Some(spec) = target
+            .iter()
+            .find(|spec| !content_addressed(&spec.container.image))
+        {
+            return Err(BrowserDraftError::Tag {
+                service: spec.name.clone(),
+                image: spec.container.image.clone(),
+            });
+        }
+        let (body, changes) = Self::draft(terms, namespace, target, &BTreeMap::new())?;
+        Ok(BrowserDraft {
+            body: canonical::to_canonical(&body)?,
+            lines: changes.iter().map(ApprovedChange::line).collect(),
+            changes,
+        })
     }
 
     /// What this approval names for `service`.

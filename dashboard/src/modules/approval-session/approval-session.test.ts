@@ -1,11 +1,16 @@
+import type { RequestedServiceSpec } from "@ployz/sdk";
+import type { JsonValue } from "#/db/tables";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   actScope,
   approveAct,
+  approveDeploy,
   approveProposal,
   type ApprovalScope,
   type ApprovalSession,
   canonicalJson,
+  type DeployPlan,
+  deployScope,
   grantBody,
   grantChallenge,
   hex,
@@ -16,7 +21,7 @@ import {
   startSession,
   stepDigest,
 } from "./approval-session";
-import { actApprovals, ensureApproval, proposalApprovals } from "./approval-prompt";
+import { actApprovals, deployApprovalScope, ensureApproval, proposalApprovals } from "./approval-prompt";
 
 const production: ApprovalScope = {
   environmentId: "0f8fad5b-d9cb-469f-a165-70867728950e",
@@ -27,7 +32,7 @@ const production: ApprovalScope = {
 };
 
 const session = (scope: ApprovalScope, expiresAt: number): ApprovalSession =>
-  ({ scope, families: ["restart", "start", "stop"], issuedAt: expiresAt - 3_600_000, expiresAt, keyCode: "abcdefghij" });
+  ({ scope, families: ["deploy", "restart", "start", "stop"], issuedAt: expiresAt - 3_600_000, expiresAt, keyCode: "abcdefghij" });
 
 describe("canonicalJson", () => {
   // The fixtures of `ployz_core::authority::canonical`'s tests.
@@ -57,9 +62,9 @@ describe("grantBody", () => {
     expect(body).toBe(
       `{"browser_key":"${browserKey}","cluster":"${production.cluster}","delegation":"none","environment":"production",`
         + `"environment_id":"${production.environmentId}","expires_at":4600000,`
-        + `"families":["restart","start","stop"],"issued_at":1000000,"machines":["11111111111111111111111111111111","22222222222222222222222222222222"]}`,
+        + `"families":["deploy","restart","start","stop"],"issued_at":1000000,"machines":["11111111111111111111111111111111","22222222222222222222222222222222"]}`,
     );
-    const rustBody = body.replace(`"families":["restart","start","stop"]`, `"families":["restart","stop"]`);
+    const rustBody = body.replace(`"families":["deploy","restart","start","stop"]`, `"families":["restart","stop"]`);
     expect(hex(await grantChallenge(rustBody))).toBe("e02a7c52d5c358134a9af54f1b72df1c0fb5b02a89fefb1be3f260c5fcde15df");
   });
 });
@@ -101,21 +106,21 @@ describe("actScope", () => {
   const held = { kind: "held", public_key: production.cluster };
   const environment = { environmentId: "env-production", environmentName: "production", namespace: "production" };
 
-  it("names the copies' Cluster and the Servers in it that run the Environment, once a host enforces", () => {
+  it("names the copies' Cluster and every Server in it, once a host enforces, so the session covers a deploy too", () => {
     const result = actScope(environment, [{ machineId: "22222222222222222222222222222222" }], [
       { id: "22222222222222222222222222222222", sealing: held, deviceEnforcement: true },
       { id: "11111111111111111111111111111111", sealing: held },
       { id: "33333333333333333333333333333333", sealing: { kind: "held", public_key: "other" } },
       { id: "44444444444444444444444444444444", sealing: held },
-    ], ["11111111111111111111111111111111", "22222222222222222222222222222222", "33333333333333333333333333333333"]);
+    ]);
     expect(result).toEqual({
       enforced: true,
-      scope: { ...environment, cluster: production.cluster, machines: ["11111111111111111111111111111111", "22222222222222222222222222222222"] },
+      scope: { ...environment, cluster: production.cluster, machines: ["11111111111111111111111111111111", "22222222222222222222222222222222", "44444444444444444444444444444444"] },
     });
   });
 
   it("asks nothing of Servers that don't enforce", () => {
-    expect(actScope(environment, [{ machineId: "m" }], [{ id: "m", sealing: held, deviceEnforcement: false }], ["m"]).enforced).toBe(false);
+    expect(actScope(environment, [{ machineId: "m" }], [{ id: "m", sealing: held, deviceEnforcement: false }]).enforced).toBe(false);
   });
 });
 
@@ -146,7 +151,7 @@ describe("approveAct", () => {
       const approvals = await approveAct(verb, production, "web", [copy], now);
       const signed = approvals[copy.container] ?? expect.fail("no approval");
       expect(JSON.parse(signed.body)).toMatchObject({ kind: verb, namespace: "production", machines: [copy.machine], container: copy.container });
-      expect(JSON.parse(signed.grants?.[0]?.body ?? "{}")).toMatchObject({ families: ["restart", "start", "stop"], environment: "production" });
+      expect(JSON.parse(signed.grants?.[0]?.body ?? "{}")).toMatchObject({ families: ["deploy", "restart", "start", "stop"], environment: "production" });
     }
   });
 
@@ -172,9 +177,8 @@ describe("approveAct", () => {
       runtime: "web",
       copies: [{ id: copy.container, machineId: copy.machine, hook: false }],
       machines: [{ id: copy.machine, name: "machine-2", sealing: held, deviceEnforcement: true, capabilities: ["ployz.restart.session-grant.v2"] }],
-      environmentMachines: [copy.machine],
     };
-    const { scope } = actScope(environment, target.copies, target.machines, target.environmentMachines);
+    const { scope } = actScope(environment, target.copies, target.machines);
     expect(promptReason(readSession(), scope ?? expect.fail("no scope"), "stop")).not.toBeNull();
     await expect(actApprovals("stop", target)).rejects.toThrow("machine-2 needs a newer Ployz to stop it.");
     expect(get).not.toHaveBeenCalled();
@@ -258,7 +262,6 @@ describe("approveProposal", () => {
       environment,
       steps: [{ verb: "stop" as const, runtime: "web", copies: [{ id: web.container, machineId: web.machine, hook: false }] }],
       machines: [server(capabilities)],
-      environmentMachines: [web.machine],
     });
     await expect(proposalApprovals(target(["ployz.restart.session-grant.v2", "ployz.restart.start-approval.v1"]))).rejects.toThrow("machine-2 needs a newer Ployz to stop it.");
     await expect(proposalApprovals(target(["ployz.restart.session-grant.v2", "ployz.restart.proposal.v1"]))).rejects.toThrow("machine-2 needs a newer Ployz to stop it.");
@@ -273,5 +276,152 @@ describe("approveProposal", () => {
     const prompted = ensureApproval(production, "proposal");
     void ensureApproval(production, "proposal");
     expect(await prompted).toBe(false);
+  });
+});
+
+describe("deployScope", () => {
+  const held = { kind: "held", public_key: production.cluster } as const;
+  const other = { kind: "held", public_key: "other" } as const;
+  const environment = { environmentId: production.environmentId, environmentName: "production", namespace: "production" };
+  const takes = ["ployz.container.deploy-approval.v1", "ployz.restart.session-grant.v2"];
+  const server = (id: string, sealing: typeof held | typeof other, deviceEnforcement: boolean, capabilities = takes) =>
+    ({ id: id.repeat(32), name: `machine-${id}`, sealing, deviceEnforcement, capabilities });
+
+  it("names every Server of the Cluster that runs the Environment, since a Deploy may place on any of them", () => {
+    const machines = [server("2", held, true), server("1", held, false), server("3", other, true), server("4", held, false)];
+    expect(deployScope(environment, ["2".repeat(32)], machines)).toEqual({
+      enforced: true,
+      scope: { ...environment, cluster: production.cluster, machines: ["1".repeat(32), "2".repeat(32), "4".repeat(32)] },
+      older: null,
+    });
+  });
+
+  it("takes the only Cluster for an Environment that runs nowhere yet, and asks nothing where no Server enforces", () => {
+    expect(deployScope(environment, [], [server("1", held, true)]).scope?.machines).toEqual(["1".repeat(32)]);
+    expect(deployScope(environment, [], [server("1", held, false)]).enforced).toBe(false);
+    expect(deployScope(environment, [], [server("1", held, true), server("3", other, false)]).scope).toBeNull();
+  });
+
+  it("names a Server that enforces but can't take a deploy from a browser, and refuses before any prompt", async () => {
+    const get = vi.fn();
+    vi.stubGlobal("navigator", { credentials: { get } });
+    const older = [server("1", held, true, ["ployz.container.deploy-approval.v1"]), server("2", held, false, [])];
+    expect(deployScope(environment, [], older).older).toBe("machine-1");
+    expect(deployScope(environment, [], [server("2", held, true), server("1", held, false, [])]).older).toBeNull();
+    await expect(deployApprovalScope({ environment, environmentMachines: [], machines: older }))
+      .rejects.toThrow("machine-1 needs a newer Ployz to deploy from the dashboard. Upgrade it, or run ployz deploy.");
+    expect(get).not.toHaveBeenCalled();
+    vi.unstubAllGlobals();
+  });
+});
+
+describe("approveDeploy", () => {
+  afterEach(() => void vi.restoreAllMocks());
+  afterEach(() => void vi.unstubAllGlobals());
+  const bytes = (text: string) => new TextEncoder().encode(text).buffer;
+  const credential = vi.fn(async () => ({
+    rawId: bytes("credential"),
+    response: { authenticatorData: bytes("data"), clientDataJSON: bytes("{}"), signature: bytes("signature") },
+  }));
+  // The namespace of `PayloadDigest`'s golden fixture in ployz-core's authority/deploy_tests.rs.
+  const app: ApprovalScope = { ...production, namespace: "app" };
+  const passkey = async (now: number) => {
+    vi.stubGlobal("location", { hostname: "localhost" });
+    vi.stubGlobal("navigator", { credentials: { get: credential } });
+    await startSession(app, now);
+  };
+  const image = (last: string) => `nginx@sha256:${"0".repeat(63)}${last}`;
+  // That fixture, and its digest there: the browser must reproduce it, as every implementation of `PayloadDigest::of` must.
+  const GOLDEN = "cb8d3c6ef656772fbe9764188fc4ff7b7059e682de60a7686263ab386cd4ffa5";
+  const SEALED = "QUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQQ==";
+  const web = (last: string) => ({
+    name: "web",
+    mode: { mode: "replicated", replicas: 2 },
+    container: {
+      image: image(last),
+      pull_policy: "missing",
+      command: ["nginx", "-g", "daemon off;"],
+      entrypoint: ["/docker-entrypoint.sh"],
+      environment: { PLAIN: "one", SECRET: { sealed: SEALED, scope: "shared", key: "SECRET" } },
+      sealed_identity: {
+        organization: "org",
+        environment: "11111111-1111-1111-1111-111111111111",
+        service: "22222222-2222-2222-2222-222222222222",
+      },
+      cap_add: ["NET_ADMIN"],
+      resources: { devices: [{ machine_path: "/dev/null", container_path: "/dev/null", cgroup_permissions: "rwm" }] },
+      sysctls: { "net.core.somaxconn": "1024" },
+      config_mounts: [{ config_name: "site", target: "/etc/site.conf", mode: 420 }],
+    },
+    ports: [
+      { mode: "host", bind: { kind: "all" }, published_port: 8080, container_port: 80, transport_protocol: "tcp" },
+      { mode: "ingress", hostname: "web.example.com", load_balancer_port: 443, container_port: 80, http_protocol: "http" },
+    ],
+    volumes: [
+      { reference: "host", source: { kind: "bind", machine_path: "/srv/web" } },
+      { reference: "data", source: { kind: "ordinary", name: "data", driver: { name: "local", options: { type: "tmpfs" } } } },
+    ],
+    mounts: [{ volume: "host", target: "/srv" }, { volume: "data", target: "/data" }],
+    configs: [{ name: "site", content: [104, 105] }],
+    pre_deploy: { command: ["migrate"], privileged: false },
+    update: { order: "start_first" },
+  });
+  // SAFETY: the fixture is a spec as the Store writes it on the wire, serde's defaults left out; ployz-core parses it.
+  const plan = (target: readonly object[], namespace = "app", version = "v1"): DeployPlan => ({ version, namespace, target: JSON.parse(JSON.stringify(target)) as RequestedServiceSpec[] });
+  const deployment = "0f8fad5b-d9cb-469f-a165-70867728950e";
+  const verifies = async (signed: { body: string; signatures: { key: string; signature: string }[] }, body: string) => {
+    const { key, signature } = signed.signatures[0] ?? expect.fail("unsigned");
+    const raw = (text: string) => Uint8Array.from(text.match(/../g) ?? [], (pair) => parseInt(pair, 16));
+    const publicKey = await crypto.subtle.importKey("raw", raw(key), { name: "Ed25519" }, false, ["verify"]);
+    return crypto.subtle.verify({ name: "Ed25519" }, publicKey, raw(signature), signingInput(body));
+  };
+
+  it("builds the body itself, naming the digest ployz-core takes of the reviewed spec, and shows what it signed", async () => {
+    const now = Date.now();
+    await passkey(now);
+    const { approval, lines } = await approveDeploy(app, deployment, "v1", plan([web("1")]), now);
+    expect(JSON.parse(approval.body)).toEqual({
+      cluster: app.cluster,
+      namespace: "app",
+      operation: "0f8fad5bd9cb469fa16570867728950e",
+      machines: [...app.machines].sort(),
+      services: [{ name: "web", digest: GOLDEN }],
+      issued_at: now,
+      expires_at: now + 15 * 60_000,
+      signer: { browser: approval.signatures[0]?.key },
+    });
+    expect(canonicalJson(JSON.parse(approval.body) as JsonValue)).toBe(approval.body);
+    expect(JSON.parse(approval.grants?.[0]?.body ?? "{}")).toMatchObject({ families: ["deploy", "restart", "start", "stop"] });
+    expect(lines).toEqual(["Approved web: nginx@sha256:000000000000… (device /dev/null:/dev/null, adds NET_ADMIN, sysctl net.core.somaxconn, host port 8080, binds /srv/web, hook migrate)"]);
+    expect(await verifies(approval, approval.body)).toBe(true);
+  });
+
+  it("signs the reviewed spec A's digest, so its signature never covers a spec B Cloud swaps in after", async () => {
+    const now = Date.now();
+    await passkey(now);
+    const a = await approveDeploy(app, deployment, "v1", plan([web("1")]), now);
+    const b = await approveDeploy(app, deployment, "v1", plan([web("2")]), now);
+    // SAFETY: both bodies are canonical DeployApprovals.
+    const digest = (body: string) => (JSON.parse(body) as { services: { digest: string }[] }).services[0]?.digest;
+    expect(digest(a.approval.body)).toBe(GOLDEN);
+    expect(digest(b.approval.body)).not.toBe(GOLDEN);
+    expect(await verifies(a.approval, b.approval.body)).toBe(false);
+  });
+
+  it("refuses before any prompt or signature a plan of another version or Environment, a tag, or an uncovered scope", async () => {
+    const now = Date.now();
+    await passkey(now);
+    credential.mockClear();
+    const sign = vi.spyOn(crypto.subtle, "sign");
+    await expect(approveDeploy(app, deployment, "v2", plan([web("1")]), now)).rejects.toThrow("The Environment changed after this review.");
+    await expect(approveDeploy(app, deployment, "v1", plan([web("1")], "production"), now)).rejects.toThrow("The Environment changed after this review.");
+    const tagged = { ...web("1"), container: { ...web("1").container, image: "nginx:1.29-alpine" } };
+    await expect(approveDeploy(app, deployment, "v1", plan([tagged]), now))
+      .rejects.toThrow("The dashboard can't check what web's tag nginx:1.29-alpine points to. Write the image by digest, or run ployz deploy, which pins it for you.");
+    await expect(approveDeploy(production, deployment, "v1", plan([web("1")], "production"), now)).rejects.toThrow("Confirm it's you again.");
+    expect(sign).not.toHaveBeenCalled();
+    expect(credential).not.toHaveBeenCalled();
+    // A review the Store refused once, with its loss mark, still names the plan's version.
+    await expect(approveDeploy(app, deployment, "v1:accepted#loss-x", plan([web("1")]), now)).resolves.toBeDefined();
   });
 });

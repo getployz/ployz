@@ -23,8 +23,8 @@ pub mod validity;
 
 pub use canonical::{CanonicalError, Timestamp};
 pub use deploy::{
-    ApprovedChange, ApprovedService, DeployApproval, DeployApproved, DeployFacts, DeployTerms,
-    PayloadDigest,
+    ApprovedChange, ApprovedService, BrowserDraft, BrowserDraftError, DeployApproval,
+    DeployApproved, DeployFacts, DeployTerms, PayloadDigest,
 };
 pub use join::JoinApproval;
 pub use keys::{Approver, KeySignature, Purpose, Signed, Signer, SigningPublicKey, Statement};

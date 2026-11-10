@@ -287,9 +287,8 @@ stays trusted.
 When someone leaves the Organization, run `ployz device rm` on each of their passkeys as well as
 their devices.
 
-A passkey approves restarts, stops and starts from the dashboard on servers with
-[device enforcement](#require-a-devices-signature-for-restarts-and-joins) on. Approving deploys
-with a passkey arrives in a later release.
+A passkey approves deploys, restarts, stops and starts from the dashboard on servers with
+[device enforcement](#require-a-devices-signature-for-restarts-and-joins) on.
 
 ### Require a device's signature for restarts and joins
 
@@ -353,17 +352,18 @@ used for those actions must contain a direct connection to each target. With an 
 `--connect`, `device approve`, `device rm`, and `device enforce` affect that server only.
 To approve the first Device through SSH, repeat the command on each server.
 
-**Restart**, **Stop** and **Start** in the dashboard ask for your passkey the first time you
-press one. Your browser then holds a key that approves them in that Environment, on its servers,
-for 60 minutes.
+**Deploy**, **Restart**, **Stop** and **Start** in the dashboard ask for your passkey the first
+time you press one. Your browser then holds a key that approves them in that Environment, on its
+cluster's servers, for 60 minutes.
 Later presses in that window don't ask again. The key never leaves the browser tab, and closing or reloading
-the tab ends the window. Each press still sends one approval per container, lasting at most
-15 minutes, and the server checks it, the passkey's grant of the browser key and the passkey
-itself before it stops or starts anything. Its log names the passkey that approved it. A grant
+the tab ends the window. Each press still sends its own approval, lasting at most 15 minutes: one
+per container for a restart, stop or start, and one per deployment for a deploy. The server checks
+it, the passkey's grant of the browser key and the passkey itself before it acts. Its log names the passkey that approved it. A grant
 that was changed after the passkey answered, names another Environment or server, or lasts over
-an hour is refused. Ployz Cloud carries the grant but can't make one, so it can't restart, stop
-or start a container on its own. Upgrade a server to 0.4 before the dashboard stops or starts
-services on it. With enforcement on, the dashboard won't stop a service on an older server, since
+an hour is refused. Ployz Cloud carries the grant but can't make one, so it can't deploy, restart,
+stop or start a container on its own. Upgrade a server to 0.4 before the dashboard deploys to it
+or stops or starts services on it. The dashboard names a server that enforces and needs a newer
+Ployz, and deploys nothing there. With enforcement on, the dashboard won't stop a service on an older server, since
 nothing could start it again there, and says which server needs a newer Ployz.
 
 With enforcement on, `service restart`, `service stop` and `service start` from a device that

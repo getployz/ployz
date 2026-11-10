@@ -1,7 +1,8 @@
 "use strict";
 const { test } = require("node:test");
 const assert = require("node:assert/strict");
-const sdk = require("..");
+// The browser entry: ployz-core as WASM, the code the dashboard signs with.
+const authority = import("../authority.mjs");
 
 const IMAGE = "nginx@sha256:0000000000000000000000000000000000000000000000000000000000000001";
 const SEALED = "QUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQQ==";
@@ -56,8 +57,9 @@ const terms = {
   signer: { browser: "07".repeat(32) },
 };
 
-test("the body names the fixture's golden digest, in canonical form", () => {
-  const { body, changes, lines } = sdk.deployApprovalBody(preview([web()]), terms);
+test("the body names the fixture's golden digest, in canonical form", async () => {
+  const { deployApprovalBody } = await authority;
+  const { body, changes, lines } = deployApprovalBody(preview([web()]), terms);
   const parsed = JSON.parse(body);
   assert.deepEqual(parsed.services, [{ name: "web", digest: GOLDEN }]);
   assert.deepEqual(parsed.machines, ["1".repeat(32), "2".repeat(32)]);
@@ -72,22 +74,21 @@ test("the body names the fixture's golden digest, in canonical form", () => {
   ]);
 });
 
-test("a proposal step names its place in the body", () => {
+test("a proposal step names its place in the body", async () => {
+  const { deployApprovalBody } = await authority;
   const proposal = { operation: "e".repeat(32), index: 1 };
-  const { body } = sdk.deployApprovalBody(preview([web()]), { ...terms, proposal });
+  const { body } = deployApprovalBody(preview([web()]), { ...terms, proposal });
   assert.deepEqual(JSON.parse(body).proposal, proposal);
 });
 
-test("a built image, a tag image, a plan read without target, or unknown terms sign nothing", () => {
-  assert.throws(() => sdk.deployApprovalBody(preview([web(`ployz-build/web@${IMAGE.split("@")[1]}`)]), terms), {
-    code: "invalid_argument",
+test("a built image, a tag image, a plan read without target, or unknown terms sign nothing", async () => {
+  const { deployApprovalBody } = await authority;
+  assert.throws(() => deployApprovalBody(preview([web(`ployz-build/web@${IMAGE.split("@")[1]}`)]), terms), {
     message: "web builds from source, and servers that enforce device approval can't run a build yet. Deploy it from an image pinned by digest.",
   });
-  assert.throws(() => sdk.deployApprovalBody(preview([web("nginx:1.29-alpine")]), terms), {
-    name: "RpcError",
-    code: "invalid_argument",
-    message: "Pin web's image by digest to deploy it from the dashboard to servers that enforce device approval. ployz deploy pins a public tag for you.",
+  assert.throws(() => deployApprovalBody(preview([web("nginx:1.29-alpine")]), terms), {
+    message: "The dashboard can't check what web's tag nginx:1.29-alpine points to. Write the image by digest, or run ployz deploy, which pins it for you.",
   });
-  assert.throws(() => sdk.deployApprovalBody(preview(), terms), { code: "invalid_argument" });
-  assert.throws(() => sdk.deployApprovalBody(preview([web()]), { ...terms, extra: 1 }), { code: "invalid_argument" });
+  assert.throws(() => deployApprovalBody(preview(), terms), { message: "Read the plan with target set to sign a deploy." });
+  assert.throws(() => deployApprovalBody(preview([web()]), { ...terms, extra: 1 }), /unknown field `extra`/);
 });

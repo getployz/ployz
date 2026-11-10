@@ -5,6 +5,7 @@ import { Data, Effect } from "effect";
 import { createServiceActRequestedEvent, type ServiceActRequestedEventData } from "#/modules/inngest/events";
 import type { Admission } from "#/modules/operations/keyed.server";
 import { enqueueEvent } from "#/modules/operations/outbox.server";
+import { SESSION_GRANT_CAPABILITY } from "#/modules/approval-session/approval-session";
 import { PROPOSAL_CAPABILITY } from "#/modules/proposals/proposal";
 import { requirements, ServerLacks, serverSupports } from "#/modules/runtime/daemon-compat";
 import { firstRuntimeFrame, OrganizationRuntime } from "#/modules/runtime/organization-runtime.server";
@@ -34,8 +35,6 @@ import {
 import { serviceAct } from "#/modules/service-act/tables";
 import { Database } from "#/server/database.server";
 import { NotFound } from "#/server/public-error";
-
-const SESSION_GRANT_CAPABILITY = "ployz.restart.session-grant.v2";
 
 type ActRow = typeof serviceAct.$inferSelect;
 type ActRequest = ServiceActRequestedEventData;
@@ -207,10 +206,7 @@ export const serviceEnforces = Effect.fn("ServiceAct.enforces")(function* (organ
   return frame !== null && enforcesIn(frame, `${service.namespace}/${service.runtime}`);
 });
 
-/**
- * What a browser needs to approve a restart or stop of the Service: its copies, the Servers, and which of them run the
- * Environment. Null when Cloud can't read the Servers.
- */
+/** What a browser needs to approve a restart or stop of the Service: its copies and the Servers. Null when Cloud can't read the Servers. */
 export const actTarget = Effect.fn("ServiceAct.actTarget")(function* (
   organizationId: string,
   service: { readonly namespace: string; readonly runtime: string },
@@ -227,7 +223,6 @@ export const actTarget = Effect.fn("ServiceAct.actTarget")(function* (
       sealing: machine.runtime.sealing ?? null,
       deviceEnforcement: machine.runtime.device_enforcement ?? null,
     })),
-    environmentMachines: [...new Set(frame.containers.filter((container) => container.namespace === service.namespace).map((container) => container.machine_id))],
   };
 });
 

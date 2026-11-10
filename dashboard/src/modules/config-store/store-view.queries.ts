@@ -1,7 +1,7 @@
 import { infiniteQueryOptions, keepPreviousData, queryOptions, skipToken, useQueries, useQuery, useSuspenseInfiniteQuery, useSuspenseQueries, type Query, type QueryClient } from "@tanstack/react-query";
 import type {
   BranchPlanQuery, BranchPreset, BranchQuery, BuildLogQuery, ConfigItemQuery, ConfigQuery, ConfigsQuery, ConfigView, DeploymentQuery, DeploymentsQuery,
-  DiffQuery, DomainsQuery, EnvironmentQuery, EnvironmentRef, EnvironmentsQuery, NamespaceQuery,
+  DiffQuery, DomainsQuery, EnvironmentQuery, EnvironmentRef, EnvironmentsQuery, NamespaceQuery, PlanQuery,
   ProjectsQuery, RemovalsQuery, ServicesQuery, SyncQuery, VolumesQuery,
 } from "@ployz/sdk";
 import { Schema } from "effect";
@@ -287,6 +287,11 @@ export function namespaceQuery(environment: EnvironmentRef): { query: "namespace
 /** What the next Deploy changes in an Environment: the pink trail on its canvas and drawers. */
 export function diffQuery(environment: EnvironmentRef): { query: "diff" } & DiffQuery {
   return { query: "diff", environment };
+}
+
+/** The plan a Deploy of the whole Environment ships, with each Service's spec as its runner will send it. */
+export function deployPlanQuery(environment: EnvironmentRef): { query: "plan" } & PlanQuery {
+  return { query: "plan", environment, services: [], target: true };
 }
 
 /** An Environment's public domains with their status: the Networking section of every Service drawer. */

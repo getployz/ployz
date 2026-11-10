@@ -50,7 +50,7 @@ export async function approverBundle(organizationSlug: string, proposal: Pick<Pr
   const { namespace, steps } = shownSteps(proposal, fetched);
   // Every signed value is the card's; the Containers and Servers come from Cloud and each Server checks them against its own.
   const environment = { environmentId: proposal.environment_id, environmentName: proposal.environment, namespace };
-  return proposalApprovals({ environment, steps, machines: fetched.machines, environmentMachines: fetched.environmentMachines });
+  return proposalApprovals({ environment, steps, machines: fetched.machines });
 }
 
 /** Approve every step with the bundle this browser made, or deny with a reason. Answers Cloud's refusal as its message. */

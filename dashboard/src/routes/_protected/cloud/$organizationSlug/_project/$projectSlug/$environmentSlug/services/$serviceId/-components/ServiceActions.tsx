@@ -16,7 +16,6 @@ import { refetchApprovals } from "#/components/agent-sidebar/approvals.queries";
 import { actServiceServerFn } from "#/modules/service-act/service-act.functions";
 import { serviceActKeys, useLatestServiceAct } from "#/modules/service-act/service-act.queries";
 import { actApprovals } from "#/modules/approval-session/approval-prompt";
-import { useEnvironmentMachines } from "#/providers/runtime-provider";
 import { useRuntimeLens } from "#/modules/runtime/use-runtime-lens";
 import type { StoreService } from "./StoreServiceDrawer";
 import { useServiceRuntime } from "./useServiceRuntime";
@@ -40,7 +39,6 @@ export type Press = ReturnType<typeof usePress>;
 export function usePress(state: StoreService, namespace: string | null) {
   const runtime = useServiceRuntime(state, namespace);
   const { machines } = useRuntimeLens(state.organizationSlug);
-  const environmentMachines = useEnvironmentMachines(namespace);
   return {
     runtimeService: runtime === null ? null : runtime.identity.slice(runtime.identity.indexOf("/") + 1),
     copies: runtime === null ? [] : [
@@ -48,7 +46,6 @@ export function usePress(state: StoreService, namespace: string | null) {
       ...runtime.hookContainers.map((copy) => ({ ...copy, hook: true })),
     ],
     machines,
-    environmentMachines,
   };
 }
 
@@ -77,7 +74,7 @@ export function useServiceAct(subject: Subject) {
   const approvalsFor = (verb: ServiceVerb, press: Press) => {
     if ((subject.asks && verb !== "start") || subject.namespace === null || press.runtimeService === null) return undefined;
     const environment = { environmentId, environmentName: subject.environmentName, namespace: subject.namespace };
-    return actApprovals(verb, { environment, runtime: press.runtimeService, copies: press.copies, machines: press.machines, environmentMachines: press.environmentMachines });
+    return actApprovals(verb, { environment, runtime: press.runtimeService, copies: press.copies, machines: press.machines });
   };
 
   const act = async (verb: ServiceVerb, press: Press) => {

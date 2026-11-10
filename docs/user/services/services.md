@@ -97,7 +97,7 @@ Open the service and click **⋮** next to its name. A running service offers **
 
 On servers with
 [device enforcement](../servers/manage-servers.md#require-a-devices-signature-for-restarts-and-joins)
-on, your first **Restart**, **Stop** or **Start** in an environment asks for your
+on, your first **Deploy**, **Restart**, **Stop** or **Start** in an environment asks for your
 [passkey](../servers/manage-servers.md#add-a-passkey). Presses in that environment over the next
 60 minutes don't ask again. Another environment, a new tab, or the last 15 minutes of the hour ask
 again. In a Protected environment, the owner or admin who approves a member's restart or stop

@@ -20,7 +20,6 @@ const target = (changes: Partial<{ verb: "restart" | "stop"; environmentId: stri
   runtime: "web",
   copies: [{ id: `${changes.runtime ?? "web"}-container`, machineId: "m1", hook: false }],
   machines: [],
-  environmentMachines: [],
   ...changes,
 });
 
@@ -34,7 +33,6 @@ describe("shownTarget", () => {
           runtime: "web",
           copies: [{ id: "web-container", machineId: "m1", hook: false }],
           machines: [],
-          environmentMachines: [],
         },
       });
     }
