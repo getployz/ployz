@@ -462,7 +462,7 @@ export const OPERATIONS = {
       ui: {
         fn: "setPrivateAccessServerFn",
         input: SetPrivateAccessInput,
-        ungated: "The human pasted the auth key, which the browser sealed, approved it with their passkey and pressed Connect, or pressed Turn off.",
+        ungated: "The human pasted the auth key, which the browser sealed, pressed Connect and, where a Server enforces, approved it with their passkey; or pressed Turn off.",
         options: { to: { via: "to" }, authKey: { via: "on" } },
       },
     },
