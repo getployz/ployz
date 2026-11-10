@@ -21,11 +21,15 @@
 mod checks;
 pub(crate) mod on_merge;
 mod plan;
+mod reviewed;
 pub(crate) use checks::*;
 pub(crate) use on_merge::view as on_merge;
 pub use on_merge::{MergeRow, OnMerge, OnMergeInto, OnMergeQuery, Ride, SetMergeValue};
 pub(crate) use on_merge::{forget_edits, set_merge_value};
 pub(crate) use plan::*;
+pub(crate) use reviewed::preview_review;
+use reviewed::reviews;
+pub use reviewed::{EnvironmentReview, PreviewReviewQuery, PreviewReviewView};
 
 use crate::id::{
     BranchName, CommitSha, GithubUserId, PullRequestNumber, RepositoryId, RepositoryName,
@@ -421,6 +425,12 @@ pub struct ApprovePullRequest {
     pub number: PullRequestNumber,
     /// The head the approver saw: refused once the pull request moved on.
     pub head: CommitSha,
+    /// A person's review of `head` for each PR Environment that runs under a preview
+    /// rule, which their client signed. Cloud keeps each with the Deployment it admits
+    /// there; every Server checks it before anything opens.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    #[ts(optional, as = "Option<Vec<EnvironmentReview>>")]
+    pub reviews: Vec<EnvironmentReview>,
 }
 
 /// A pull request's PR Environments and whether it is ready to merge.
@@ -1141,6 +1151,7 @@ pub(crate) fn approve(
         repository_id,
         number,
     };
+    let reviews = reviews(tx, approval, &current)?;
     let first = !record
         .phase
         .admits(&approval.head, &record.facts, trusted.members.as_deref());
@@ -1156,9 +1167,18 @@ pub(crate) fn approve(
         trusted,
     };
     open(tx, who, &at, &current, &mut automated)?;
-    if first {
-        for (environment, _) in &current {
-            crate::automation::deploy_head(tx, who, environment, &event, trusted, &mut automated)?;
+    for (environment, _) in &current {
+        let review = reviews.get(environment);
+        if !first && review.is_none() {
+            continue;
+        }
+        let before = automated.admitted.len();
+        crate::automation::deploy_head(tx, who, environment, &event, trusted, &mut automated)?;
+        if let Some(review) = review {
+            for admitted in automated.admitted.get(before..).unwrap_or_default() {
+                deployment::reviewed(tx, &admitted.deployment.id, review)?;
+            }
+            deployment::reviewed_held(tx, environment, event.head.as_str(), review)?;
         }
     }
     automated.checks.push(pr);
@@ -1291,6 +1311,20 @@ fn open(
                 environment: start.summary.id.clone(),
                 reason: NEEDS_APPROVAL.to_owned(),
             });
+            // A person reviews the head under a preview rule, and the review names the PR
+            // Environment, so it opens now and deploys nothing.
+            if let Some(rule) =
+                crate::preview_rule::live(tx, &start.summary.id, event.repository_id.get())?
+            {
+                let opened = crate::storage::attempt(tx, |tx| {
+                    make(tx, who, &start, &plan, (event, trusted), Some(rule.rule))
+                });
+                match opened {
+                    Ok(_) => {}
+                    Err(error) if crate::automation::skippable(&error) => {}
+                    Err(error) => return Err(error),
+                }
+            }
             continue;
         }
         if trusted.runnable().is_err() {
@@ -1528,7 +1562,7 @@ fn make(
 
 /// Which preview `event` is: its branch for a pull request from the repository itself,
 /// its number for one from a fork.
-fn preview_key(event: &PullRequest) -> ployz_core::authority::PreviewKey {
+pub(super) fn preview_key(event: &PullRequest) -> ployz_core::authority::PreviewKey {
     if event.head_repository_id == Some(event.repository_id) {
         ployz_core::authority::PreviewKey::Branch(event.head_branch.to_string())
     } else {

@@ -328,15 +328,19 @@ fn shared_mounts(target: &[RequestedServiceSpec]) -> BTreeMap<ServiceName, BTree
 }
 
 /// The preview rule Deployment `deployment` builds and deploys under: the one its
-/// Environment's parent keeps, ended or not, when the Store's automation admitted it
-/// into a Namespace that rule derives. None for any other Deployment.
+/// Environment's parent keeps, ended or not, when the Store's automation admitted it, or
+/// a person admitted it with their review, into a Namespace that rule derives. None for
+/// any other Deployment, such as one a person deploys under their own approval.
 pub(crate) fn of_deployment(
     tx: &mut dyn Tx,
     deployment: &crate::deployment::Stored,
 ) -> Result<Option<Signed<PreviewRule>>, RpcError> {
     let namespace = deployment.namespace();
+    if !ployz_core::authority::preview::is_preview_namespace(namespace) {
+        return Ok(None);
+    }
     if deployment.summary.admitted_by.is_some()
-        || !ployz_core::authority::preview::is_preview_namespace(namespace)
+        && crate::deployment::preview_review(tx, &deployment.summary.id)?.is_none()
     {
         return Ok(None);
     }

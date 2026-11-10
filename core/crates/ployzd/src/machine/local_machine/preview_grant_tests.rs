@@ -16,7 +16,7 @@ use super::*;
 use crate::{
     github::test_support::{TEST_KID, signed_by_test_signer},
     machine::local_machine::rule_grant::tests::{
-        BUILDER_SHA, COMMIT, Fixture, claims, commit, fixture, github, holder, now, policy,
+        BUILDER_SHA, COMMIT, Fixture, answer, claims, commit, fixture, github, holder, now, policy,
         recipient, rule_for, web,
     },
     management::build_grant::Mint,
@@ -274,31 +274,154 @@ async fn a_build_record_with_a_value_of_its_own_is_refused() {
     );
 }
 
-/// No client produces a review yet, so every reviewed build is refused before its record
-/// opens, its review checked or not.
+/// `body` under the fixture's trusted passkey: its own prompt over the review's digest.
+pub(crate) fn passkey_review(body: &PreviewReview) -> Review {
+    let body = ployz_core::authority::canonical::to_canonical(body).unwrap();
+    let assertion = answer(ployz_core::authority::preview::review_digest(&body).as_bytes());
+    Review::Passkey { body, assertion }
+}
+
+/// `body` signed by a browser key under the trusted passkey's session grant, lent for the
+/// reviewed preview's Namespace and Environment.
+pub(crate) fn session_review(rule: &PreviewRule, body: &PreviewReview) -> Review {
+    use ployz_core::authority::{
+        ActionFamily, GrantBody, SessionGrant, Signer, preview::preview_namespace,
+        session::Delegation,
+    };
+    let browser = Signer::from_seed(&[8; 32]);
+    let issued_at = Timestamp::from_millis(body.issued_at.as_millis() - 1_000).unwrap();
+    let grant = GrantBody {
+        browser_key: browser.public(),
+        cluster: rule.cluster,
+        environment: preview_namespace(rule.rule, &body.key),
+        environment_id: body.environment,
+        machines: rule.machines.clone(),
+        families: vec![ActionFamily::Deploy],
+        issued_at,
+        expires_at: issued_at.plus(60 * 60_000),
+        delegation: Delegation::None,
+    };
+    let grant = ployz_core::authority::canonical::to_canonical(&grant).unwrap();
+    let session = SessionGrant {
+        assertion: answer(&GrantBody::challenge(&grant)),
+        body: grant,
+    };
+    Review::Signed(Signed::sign_under(body, &browser, session).unwrap())
+}
+
+fn opened(review: &Review) -> PreviewReview {
+    let body = match review {
+        Review::Signed(signed) => signed.body.clone(),
+        Review::Passkey { body, .. } => body.clone(),
+    };
+    ployz_core::authority::canonical::from_canonical(&body).unwrap()
+}
+
 #[tokio::test]
-async fn a_reviewed_build_gets_no_grant_until_reviews_ship() {
+async fn a_reviewed_build_of_the_reviewed_commit_mints() {
     let fixture = fixture().await;
     let record = inherited(&fixture);
     let rule = preview_rule(&fixture, &record);
-    let reviewed = reviewed(&fixture, &rule, review(&fixture, &rule, commit()), "review");
-    refused(admit(&fixture, &reviewed, &record).await, REVIEWED);
+    let grant = reviewed(&fixture, &rule, review(&fixture, &rule, commit()), "review");
+    let admitted = admit(&fixture, &grant, &record).await.unwrap();
+    let mint = Mint::check_admitted(
+        MintBuildGrantRequest {
+            repository: BuildGrantRepository::parse("ployz-build/web").unwrap(),
+            holder: Some(holder()),
+            sealed: Some(record),
+            rule: None,
+            preview: Some(grant),
+        },
+        Some(&fixture.sealing.dir.0),
+        Some(admitted),
+    );
+    assert!(mint.is_ok(), "{:?}", mint.err());
+}
+
+/// Each check runs in admission, which never opens the record: only a mint of an admitted
+/// grant does.
+#[tokio::test]
+async fn a_reviewed_build_is_refused_before_anything_opens() {
+    let fixture = fixture().await;
+    let record = inherited(&fixture);
+    let rule = preview_rule(&fixture, &record);
     let other = CommitSha::parse(&"7".repeat(40)).unwrap();
-    let mut stale = reviewed.clone();
-    stale.review = Some(review(&fixture, &rule, other));
-    refused(admit(&fixture, &stale, &record).await, REVIEWED);
-    let mut bare = reviewed;
+    let stale = reviewed(&fixture, &rule, review(&fixture, &rule, other), "stale");
+    refused(admit(&fixture, &stale, &record).await, "a commit");
+
+    let mut body = opened(&review(&fixture, &rule, commit()));
+    body.rule = RuleId::from_bytes([0x33; 16]);
+    let foreign = Review::Signed(Signed::sign(&body, &fixture.signer).unwrap());
+    let foreign = reviewed(&fixture, &rule, foreign, "foreign");
+    refused(admit(&fixture, &foreign, &record).await, "a rule");
+
+    let mut body = opened(&review(&fixture, &rule, commit()));
+    body.services.clear();
+    let elsewhere = Review::Signed(Signed::sign(&body, &fixture.signer).unwrap());
+    let elsewhere = reviewed(&fixture, &rule, elsewhere, "elsewhere");
+    refused(admit(&fixture, &elsewhere, &record).await, "a Service");
+
+    let mut bare = reviewed(&fixture, &rule, review(&fixture, &rule, commit()), "bare");
     bare.review = None;
-    refused(admit(&fixture, &bare, &record).await, REVIEWED);
-    // A review beside a trusted push's Head authority is refused too.
-    let claim = claim(&rule, CommitAuthority::Head);
+    refused(admit(&fixture, &bare, &record).await, "a review");
+
+    // A review beside a trusted push's Head authority names no build.
+    let head = claim(&rule, CommitAuthority::Head);
     let mut pushed = grant(
         &fixture,
         &rule,
-        token(&claim, "pushed", "push", "feature", ACTOR),
+        token(&head, "pushed", "push", "feature", ACTOR),
     );
     pushed.review = Some(review(&fixture, &rule, commit()));
-    refused(admit(&fixture, &pushed, &record).await, REVIEWED);
+    refused(admit(&fixture, &pushed, &record).await, "a review");
+
+    // A dispatch on another branch than the parent's is no reviewed build.
+    let review = review(&fixture, &rule, commit());
+    let authority = CommitAuthority::Review(review.digest());
+    let mut branch = grant(
+        &fixture,
+        &rule,
+        token(
+            &claim(&rule, authority),
+            "branch",
+            "workflow_dispatch",
+            "feature",
+            ACTOR,
+        ),
+    );
+    branch.authority = authority;
+    branch.review = Some(review);
+    refused(admit(&fixture, &branch, &record).await, "ref");
+}
+
+/// Operator decision 6: a session reviews only a preview that opens no secret.
+#[tokio::test]
+async fn a_session_may_not_review_a_preview_build_that_opens_secrets() {
+    let fixture = fixture().await;
+    let record = inherited(&fixture);
+    let rule = preview_rule(&fixture, &record);
+    let body = opened(&review(&fixture, &rule, commit()));
+    let session = reviewed(&fixture, &rule, session_review(&rule, &body), "session");
+    refused(admit(&fixture, &session, &record).await, "the signer");
+    let passkey = reviewed(&fixture, &rule, passkey_review(&body), "passkey");
+    let admitted = admit(&fixture, &passkey, &record).await;
+    assert!(admitted.is_ok(), "{:?}", admitted.err());
+}
+
+#[tokio::test]
+async fn a_session_may_review_a_preview_build_that_opens_nothing() {
+    let fixture = fixture().await;
+    let record = inherited(&fixture);
+    let mut rule = preview_rule(&fixture, &record);
+    rule.services[0].secrets = None;
+    rule.services[0].inherit.clear();
+    let body = opened(&review(&fixture, &rule, commit()));
+    let grant = reviewed(&fixture, &rule, session_review(&rule, &body), "open");
+    let admitted = fixture
+        .machine
+        .admit_preview_grant(&grant, Some(&holder()), None, &github(commit()), now())
+        .await;
+    assert!(admitted.is_ok(), "{:?}", admitted.err());
 }
 
 #[tokio::test]

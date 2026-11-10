@@ -1695,6 +1695,12 @@ async fn rule_proofs(
     else {
         return proofs;
     };
+    // A reviewed preview's builds ran under the person's review; the Machine checks it
+    // names this commit and Service.
+    let authority = match &claimed.review {
+        Some(review) if claimed.rule.is_none() => CommitAuthority::Review(review.digest()),
+        _ => CommitAuthority::Head,
+    };
     for (service, token) in &claimed.image_tokens {
         let approved = approved(service);
         let receipt = receipts.get(service);
@@ -1721,7 +1727,7 @@ async fn rule_proofs(
             service: service.clone(),
             policy,
             commit,
-            authority: CommitAuthority::Head,
+            authority,
             stage: BuildStage::Built { image, attest },
         };
         let token = ployz_core::GithubToken::new(token.clone());
@@ -1742,7 +1748,7 @@ async fn rule_proofs(
                     service.clone(),
                     PreviewProof {
                         rule: signed.clone(),
-                        review: None,
+                        review: claimed.review.clone(),
                         token,
                         claim,
                         reader: reader.cloned(),

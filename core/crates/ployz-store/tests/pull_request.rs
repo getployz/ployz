@@ -460,6 +460,7 @@ fn approve(
         repository_id: backend::repo_id(11),
         number: backend::pr_number(5),
         head: backend::sha(head),
+        reviews: Vec::new(),
     };
     store.write(who, &approval)
 }
@@ -1984,6 +1985,7 @@ fn approve_number(store: &ConfigStore, who: &Actor, number: u64, head: &str) -> 
         repository_id: backend::repo_id(11),
         number: backend::pr_number(number),
         head: backend::sha(head),
+        reviews: Vec::new(),
     };
     store.write(who, &approval).unwrap()
 }

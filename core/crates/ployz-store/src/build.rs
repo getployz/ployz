@@ -1083,12 +1083,10 @@ pub(crate) fn github_authorize(
     if claims.run_id != build.run.run_id.to_string() {
         return refused("The token is for another run");
     }
-    // A rule's build runs on the push GitHub started, which Cloud followed. Any other
-    // build runs only on the dispatch Cloud sent.
-    let event = match github_rule(tx, id)? {
-        Some(_) => "push",
-        None => "workflow_dispatch",
-    };
+    // A rule's build of a push runs on the run GitHub started, which Cloud followed. Any
+    // other build, a reviewed preview's included, runs only on the dispatch Cloud sent.
+    let pushed = github_rule(tx, id)?.is_some() && github_review(tx, id)?.is_none();
+    let event = if pushed { "push" } else { "workflow_dispatch" };
     if claims.event_name != event {
         return refused("The run was not dispatched by Ployz");
     }
@@ -1117,23 +1115,24 @@ impl GithubRule {
     }
 }
 
-/// The rule GitHub build `id` builds under, ended or not, when the Store's automation
-/// admitted the Deployment for a push and the rule covers the Service: its
-/// Environment's automatic deploy rule, or, for a preview, the preview rule its
-/// Namespace derives from. Its run is then the push's own, which Cloud follows.
+/// The rule GitHub build `id` builds under, ended or not, when the rule covers the
+/// Service: for a preview, the preview rule its Namespace derives from, when automation
+/// or a person's review admitted it; otherwise its Environment's automatic deploy rule,
+/// when the Store's automation admitted the Deployment for a push. Its run is then the
+/// push's own, which Cloud follows, or for a review the one Cloud dispatches.
 pub(crate) fn github_rule(
     tx: &mut dyn Tx,
     id: &GithubBuildId,
 ) -> Result<Option<GithubRule>, RpcError> {
     let stored = deployment::load(tx, &id.deployment)?;
-    if stored.summary.admitted_by.is_some() {
-        return Ok(None);
-    }
     if let Some(preview) = crate::preview_rule::of_deployment(tx, &stored)? {
         let covers = preview
             .open()
             .is_ok_and(|rule| rule.service(&id.service).is_some());
         return Ok(covers.then_some(GithubRule::Preview(preview)));
+    }
+    if stored.summary.admitted_by.is_some() {
+        return Ok(None);
     }
     let rule = crate::auto_rule::stored(tx, &stored.summary.environment_id)?;
     Ok(rule
@@ -1143,6 +1142,19 @@ pub(crate) fn github_rule(
                 .is_ok_and(|rule| rule.service(&id.service).is_some())
         })
         .map(GithubRule::Auto))
+}
+
+/// The review a person signed for the commit of GitHub build `id`, when it builds a
+/// reviewed preview under its preview rule: Cloud then dispatches the rule's workflow on
+/// the parent's branch with that commit, rather than following a push.
+pub(crate) fn github_review(
+    tx: &mut dyn Tx,
+    id: &GithubBuildId,
+) -> Result<Option<ployz_core::authority::Review>, RpcError> {
+    match github_rule(tx, id)? {
+        Some(GithubRule::Preview(_)) => deployment::preview_review(tx, &id.deployment),
+        Some(GithubRule::Auto(_)) | None => Ok(None),
+    }
 }
 
 /// The GitHub build run `run_id` holds while it builds, if any: a rule build's runner

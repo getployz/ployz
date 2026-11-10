@@ -672,7 +672,6 @@ impl Statement for PreviewReview {
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
 #[serde(rename_all = "snake_case", deny_unknown_fields)]
 pub enum Review {
-    #[ts(type = "unknown")]
     Signed(Signed<PreviewReview>),
     Passkey {
         body: String,
@@ -688,6 +687,12 @@ impl Review {
         }
     }
 
+    /// Its body, read without checking who signed it.
+    #[must_use]
+    pub fn opened(&self) -> Option<PreviewReview> {
+        canonical::from_canonical(self.body()).ok()
+    }
+
     /// SHA-256 of the review's signing input: what a build's audience names, and the
     /// challenge a passkey answers.
     #[must_use]
@@ -700,6 +705,191 @@ impl Review {
 #[must_use]
 pub fn review_digest(body: &str) -> ReviewDigest {
     ReviewDigest::from_bytes(Sha256::digest(signing_input(Purpose::Workflow, body)).into())
+}
+
+/// What a person's client fills in when it drafts a review: the Cluster its Servers
+/// report, and the preview, commit and Environment it reviews.
+#[derive(Clone, Debug, Deserialize, TS)]
+#[serde(deny_unknown_fields)]
+pub struct ReviewTerms {
+    pub cluster: SealingPublicKey,
+    pub key: PreviewKey,
+    pub commit: CommitSha,
+    #[ts(type = "string")]
+    pub environment: Uuid,
+    pub issued_at: Timestamp,
+    pub expires_at: Timestamp,
+}
+
+/// A review a person's client drafted: the canonical body to sign as it is, whether a
+/// reviewed Service opens a secret, and one line per Service.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, TS)]
+pub struct ReviewDraft {
+    pub body: String,
+    /// Only a passkey's own prompt or a Device may sign it (operator decision 6).
+    pub secrets: bool,
+    pub lines: Vec<String>,
+}
+
+/// Why a client can't draft a review.
+#[derive(Debug, thiserror::Error)]
+pub enum ReviewDraftError {
+    #[error("The preview rule is for another cluster. Approve it again.")]
+    Cluster,
+    #[error("The preview rule is off. Turn it on again to review previews.")]
+    Ended,
+    #[error("This preview isn't in the namespace the preview rule gives it.")]
+    Namespace,
+    #[error("This review names the environment previews start from, not the preview.")]
+    Parent,
+    #[error("The preview lists {0} twice.")]
+    Duplicate(ServiceName),
+    #[error("The preview rule doesn't cover {0}. Approve the preview rule again.")]
+    Uncovered(ServiceName),
+    #[error("{0} can't be reviewed: {1}")]
+    Template(ServiceName, AuthorityRefusal),
+    #[error(transparent)]
+    Canonical(#[from] super::CanonicalError),
+}
+
+impl PreviewReview {
+    /// The review a person's client signs for `target`, the preview's specs as a Deploy of
+    /// it lowers them in `namespace`, under `rule` and `terms`. Each Service's digest is
+    /// [`template`], which every Server takes again at creation, so the client signs no
+    /// digest Cloud computed.
+    ///
+    /// # Errors
+    /// Refuses a rule for another Cluster or one that is off, a `namespace` the rule does
+    /// not derive for `terms.key`, a Service the rule does not cover, and a spec with no
+    /// template.
+    pub fn draft(
+        rule: &PreviewRule,
+        namespace: &Namespace,
+        target: &[RequestedServiceSpec],
+        terms: ReviewTerms,
+    ) -> Result<ReviewDraft, ReviewDraftError> {
+        if rule.cluster != terms.cluster {
+            return Err(ReviewDraftError::Cluster);
+        }
+        if rule.ended {
+            return Err(ReviewDraftError::Ended);
+        }
+        if *namespace != preview_namespace(rule.rule, &terms.key) {
+            return Err(ReviewDraftError::Namespace);
+        }
+        if terms.environment == rule.parent_id {
+            return Err(ReviewDraftError::Parent);
+        }
+        let mut specs: Vec<&RequestedServiceSpec> = target.iter().collect();
+        specs.sort_by(|left, right| left.name.cmp(&right.name));
+        if let Some(twice) = specs
+            .iter()
+            .zip(specs.iter().skip(1))
+            .find_map(|(left, right)| (left.name == right.name).then_some(&left.name))
+        {
+            return Err(ReviewDraftError::Duplicate(twice.clone()));
+        }
+        let mut services = Vec::with_capacity(specs.len());
+        let mut lines = Vec::with_capacity(specs.len());
+        let mut secrets = false;
+        for spec in specs {
+            let covered = rule
+                .service(&spec.name)
+                .ok_or_else(|| ReviewDraftError::Uncovered(spec.name.clone()))?;
+            let digest = template(spec, namespace, covered)
+                .map_err(|refusal| ReviewDraftError::Template(spec.name.clone(), refusal))?;
+            secrets |= covered.holds_secrets();
+            lines.push(review_line(spec, covered, terms.commit, digest));
+            services.push(ReviewedService {
+                name: spec.name.clone(),
+                digest,
+            });
+        }
+        let body = Self {
+            cluster: terms.cluster,
+            rule: rule.rule,
+            generation: rule.generation,
+            key: terms.key,
+            commit: terms.commit,
+            environment: terms.environment,
+            services,
+            issued_at: terms.issued_at,
+            expires_at: terms.expires_at,
+        };
+        Ok(ReviewDraft {
+            body: canonical::to_canonical(&body)?,
+            secrets,
+            lines,
+        })
+    }
+}
+
+/// `Review web at 0123456789ab`, then what it reads from the parent and the preview, how
+/// it departs from the preview rule, and what it asks of the host.
+fn review_line(
+    spec: &RequestedServiceSpec,
+    service: &PreviewService,
+    commit: CommitSha,
+    digest: PayloadDigest,
+) -> String {
+    let mut commit = commit.to_string();
+    commit.truncate(12);
+    let mut notes: Vec<String> = Vec::new();
+    if !service.inherit.is_empty() {
+        let keys: Vec<&str> = service.inherit.iter().map(String::as_str).collect();
+        notes.push(format!("reads {} from the parent", keys.join(", ")));
+    }
+    let hook = spec
+        .pre_deploy
+        .iter()
+        .flat_map(|hook| hook.environment.values());
+    let own: BTreeSet<&str> = spec
+        .container
+        .environment
+        .values()
+        .chain(hook)
+        .flat_map(EnvValue::sealed_parts)
+        .filter(|value| value.environment.is_none())
+        .map(|value| value.key.as_str())
+        .collect();
+    if !own.is_empty() {
+        let keys: Vec<&str> = own.into_iter().collect();
+        notes.push(format!("opens its own {}", keys.join(", ")));
+    }
+    if Some(digest) == service.setup {
+        notes.push("runs setup commands".to_owned());
+    } else if digest != service.template {
+        notes.push("settings differ from the preview rule".to_owned());
+    }
+    if service.secrets.is_some() {
+        notes.push("builds with secrets".to_owned());
+    }
+    notes.extend(super::deploy::host_sensitive(spec));
+    let mut line = format!("Review {} at {commit}", spec.name);
+    if !notes.is_empty() {
+        line.push_str(&format!(" ({})", notes.join(", ")));
+    }
+    line
+}
+
+/// [`verify_review`] for a build this Machine already admitted under `review`: every
+/// check but its window, which held when the Machine first admitted the build. So a copy
+/// of a reviewed preview still starts after its review expired, while a revoked key, a
+/// session that couldn't sign it, or another rule or generation still fail.
+///
+/// # Errors
+/// As [`verify_review`], but never [`AuthorityRefusal::Expired`].
+pub fn verify_accepted_review(
+    review: &Review,
+    rule: &PreviewRule,
+    trusted: &TrustedKeys,
+) -> Result<CheckedReview, AuthorityRefusal> {
+    let body: PreviewReview =
+        canonical::from_canonical(review.body()).map_err(|error| AuthorityRefusal::Malformed {
+            purpose: Purpose::Workflow,
+            problem: error.to_string(),
+        })?;
+    verify_review(review, rule, trusted, body.issued_at)
 }
 
 /// Who a Machine found signed a review.
@@ -805,6 +995,9 @@ pub fn verify_review(
         ("a rule", body.rule == rule.rule),
         ("a generation", body.generation == rule.generation),
         ("an ended rule", !rule.ended),
+        // The parent's values open in a preview only by the rule's `inherit`, never as
+        // the preview's own.
+        ("an Environment", body.environment != rule.parent_id),
         (
             "a Service",
             body.services

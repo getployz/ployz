@@ -33,7 +33,7 @@ const hosted = Effect.fn(function* (zone: string | null) {
   return { gathered, system: provided(systemDomainEvidence(ORGANIZATION)) };
 });
 
-it.live("every write and a History preview carry the Cluster Domain Cloud knows now; other reads carry none", () =>
+it.live("every write, a History preview, and a rule's or review's view carry the Cluster Domain Cloud knows now; other reads carry none", () =>
   Effect.gen(function* () {
     const { gathered, system } = yield* hosted(null);
     const named = { cluster_domain: { name: "acme.ployz.test" } };
@@ -42,6 +42,9 @@ it.live("every write and a History preview carry the Cluster Domain Cloud knows 
     expect(yield* gathered(write({ command: "discard", environment: here, path: null, version: null }))).toMatchObject(named);
     expect(yield* gathered(write({ command: "undo_sync", sync: "sync-1" }))).toMatchObject(named);
     expect(yield* gathered(read({ query: "history_preview", environment: here, revision: 1, action: "restore" }))).toMatchObject(named);
+    // A rule's and a review's specs lower generated domains as a Deploy does, or no Server would match them.
+    expect(yield* gathered(read({ query: "rule", environment: here }))).toMatchObject(named);
+    expect(yield* gathered(read({ query: "preview_review", environment: here }))).toMatchObject(named);
     expect(yield* system).toMatchObject(named);
     expect(yield* gathered(read({ query: "environment", environment: here, path: null, all: true }))).toMatchObject({ cluster_domain: null });
   }));

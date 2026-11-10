@@ -611,6 +611,7 @@ fn needs_approval_at_push_holds_nothing() {
                 repository_id: backend::repo_id(11),
                 number: backend::pr_number(5),
                 head: backend::sha(H2),
+                reviews: Vec::new(),
             },
         )
         .unwrap();

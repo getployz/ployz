@@ -524,7 +524,9 @@ impl ConfigStore {
 impl ConfigStore {
     /// Start GitHub build `build` (`DEPLOYMENT.SERVICE`): `{kind: "reused"}`,
     /// `{kind: "dispatch", runner}`, `{kind: "skipped", message}`, or under an automatic
-    /// deploy rule `{kind: "follow", workflow, workflow_ref, commit}`. `expect` is as
+    /// deploy rule `{kind: "follow", workflow, workflow_ref, commit}` for a push, and
+    /// `{kind: "approved", workflow, workflow_ref, branch, commit}` for a commit a person
+    /// reviewed, which Cloud dispatches. `expect` is as
     /// `runDeployment`'s, here and in `githubCheckIn` and `githubFinish`; `foreign` is
     /// as `observeCopies`', here and in `githubCheckIn`.
     ///

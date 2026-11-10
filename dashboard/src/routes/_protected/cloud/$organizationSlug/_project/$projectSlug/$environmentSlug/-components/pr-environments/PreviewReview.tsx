@@ -1,0 +1,115 @@
+import { Suspense, useState } from "react";
+import type { PreviewReviewView, Review } from "@ployz/sdk";
+import { KeyRoundIcon } from "lucide-react";
+import { Button } from "#/components/ui/button";
+import { Dialog, DialogClose, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "#/components/ui/dialog";
+import { Spinner } from "#/components/ui/spinner";
+import { deployScope, type DeployScope } from "#/modules/approval-session/approval-session";
+import { previewReviewQuery, useStoreView } from "#/modules/config-store/store-view.queries";
+import { answerReview, draftReview, REVIEW_CAPABILITIES, ReviewRefused } from "#/modules/github/preview-review";
+import { useRuntimeLens } from "#/modules/runtime/use-runtime-lens";
+import { useEnvironmentMachines } from "#/providers/runtime-provider";
+
+/** Approve `head`, with a review of it for each PR Environment that runs under a preview rule. */
+export type Approve = (head: string, reviews?: { environment: string; review: Review }[]) => Promise<void>;
+
+/** `again`: the head is approved already, so only a new review of it, as after one expired, has anything to do. */
+type Props = { organizationSlug: string; project: string; environment: string; number: number; head: string; approve: Approve; again?: boolean };
+
+/**
+ * Approve deploy for a pull request whose PR Environment is open. Under a preview rule, on Servers that enforce device
+ * approval, the person reviews the commit first and their passkey answers the review.
+ */
+export function ApproveDeploy(props: Props) {
+  return (
+    <Suspense fallback={props.again ? null : <Button size="sm" variant="outline" disabled>Approve deploy</Button>}>
+      <Reviewing {...props} />
+    </Suspense>
+  );
+}
+
+function Reviewing({ organizationSlug, project, environment, number, head, approve, again = false }: Props) {
+  const read = useStoreView(organizationSlug, previewReviewQuery({ project, environment }));
+  const view = read.ok ? read.value : null;
+  const { machines } = useRuntimeLens(organizationSlug);
+  const environmentMachines = useEnvironmentMachines(view?.namespace ?? "");
+  const [open, setOpen] = useState(false);
+  const scope = view === null ? null : deployScope(
+    { environmentId: view.environment.id, environmentName: view.environment.name, namespace: view.namespace },
+    environmentMachines, machines, REVIEW_CAPABILITIES,
+  );
+  if (view === null || scope === null || !scope.enforced) {
+    return again ? null : <Button size="sm" variant="outline" onClick={() => void approve(head)}>Approve deploy</Button>;
+  }
+  return (
+    <>
+      <Button size="sm" variant="outline" onClick={() => setOpen(true)}>{again ? "Review again" : "Review and approve"}</Button>
+      {open ? <ReviewDialog view={view} scope={scope} number={number} head={head} approve={approve} onClose={() => setOpen(false)} /> : null}
+    </>
+  );
+}
+
+/** The review as it would be signed, then one passkey prompt. */
+function ReviewDialog({ view, scope, number, head, approve, onClose }: {
+  view: PreviewReviewView; scope: DeployScope; number: number; head: string; approve: Approve; onClose: () => void;
+}) {
+  const [busy, setBusy] = useState(false);
+  const [failed, setFailed] = useState<string | null>(null);
+  const cluster = scope.scope?.cluster ?? null;
+  // What the dialog shows: the review as it would be signed now. The press drafts it again, at its own moment.
+  let lines: readonly string[] = [];
+  let problem = scope.older !== null ? `${scope.older} needs a newer Ployz to review previews. Upgrade it first.`
+    : cluster === null ? "Cloud couldn't check the servers. Try again."
+    : view.commit !== head ? "This pull request has a newer commit. Review that one."
+    : null;
+  if (problem === null && cluster !== null) {
+    try {
+      lines = draftReview(view, cluster).lines;
+    } catch (error) {
+      problem = error instanceof ReviewRefused ? error.message : "This browser couldn't draft the review. Try again.";
+    }
+  }
+
+  const sign = async () => {
+    if (busy || problem !== null || cluster === null) return;
+    setBusy(true);
+    setFailed(null);
+    try {
+      const review = await answerReview(draftReview(view, cluster));
+      await approve(view.commit, [{ environment: view.environment.id, review }]);
+      onClose();
+    } catch (error) {
+      // The Store's refusal toasts by itself; a passkey's or the draft's shows here.
+      if (error instanceof ReviewRefused) setFailed(error.message);
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <Dialog open onOpenChange={(next) => { if (!next && !busy) onClose(); }}>
+      <DialogContent>
+        <DialogHeader>
+          <DialogTitle>Review #{number} at <span className="font-mono">{view.commit.slice(0, 7)}</span></DialogTitle>
+          <DialogDescription>
+            Read this commit's changes on GitHub first. Your servers build and run only this commit, with these settings,
+            in {view.environment.name}.
+          </DialogDescription>
+        </DialogHeader>
+        {lines.length > 0 ? (
+          <ul className="flex flex-col gap-1 text-sm">
+            {lines.map((line) => <li key={line} className="break-words">{line}</li>)}
+          </ul>
+        ) : null}
+        {problem !== null ? <p role="alert" className="text-sm text-destructive">{problem}</p>
+          : failed !== null ? <p role="alert" className="text-sm text-destructive">{failed}</p> : null}
+        <DialogFooter>
+          <DialogClose render={<Button variant="outline" disabled={busy} />}>Cancel</DialogClose>
+          <Button onClick={() => void sign()} disabled={busy || problem !== null}>
+            {busy ? <Spinner data-icon="inline-start" /> : <KeyRoundIcon data-icon="inline-start" />}Approve with passkey
+          </Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
+  );
+}

@@ -184,6 +184,9 @@ queries! {
     Plan(PlanQuery) -> PlanView => crate::deployment::query::plan(tx, who, trusted, q);
     /// An Environment's automatic deploy rule, and what a Device signs its next approval over.
     Rule(crate::RuleQuery) -> crate::RuleView as * => crate::auto_rule::view(tx, who, trusted, q);
+    /// A PR Environment's preview, and what a person signs a review of its head over.
+    PreviewReview(crate::PreviewReviewQuery) -> crate::PreviewReviewView as *
+        => crate::pull_request::preview_review(tx, who, trusted, q);
     /// One page of an Environment's Deployments.
     Deployments(DeploymentsQuery) -> DeploymentsView as *
         => crate::deployment::query::page(tx, who, q);

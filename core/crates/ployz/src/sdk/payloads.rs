@@ -97,6 +97,8 @@ fn typescript_declarations() -> String {
     declarations.add::<ployz_core::authority::AutoDeployRule>();
     declarations.add::<ployz_core::authority::RuleTerms>();
     declarations.add::<ployz_core::authority::RuleDraft>();
+    declarations.add::<ployz_core::authority::ReviewTerms>();
+    declarations.add::<ployz_core::authority::ReviewDraft>();
     declarations.add::<ployz_core::MachineUpdate>();
     declarations.add::<ployz_core::MachineUpdated>();
     declarations.add::<ployz_core::RequestMachineUpgradeRequest>();

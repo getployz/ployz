@@ -34,7 +34,8 @@ pub use join::JoinApproval;
 pub use keys::{Approver, KeySignature, Purpose, Signed, Signer, SigningPublicKey, Statement};
 pub use preview::{
     CheckedReview, PreviewCreation, PreviewFacts, PreviewKey, PreviewProof, PreviewReview,
-    PreviewRule, PreviewService, Review, ReviewSigner, ReviewedService,
+    PreviewRule, PreviewService, Review, ReviewDraft, ReviewDraftError, ReviewSigner, ReviewTerms,
+    ReviewedService,
 };
 pub use proposal::{ProposalApproval, ProposalRef, ProposalStep, StepDigest, StepKind};
 pub use refusal::AuthorityRefusal;

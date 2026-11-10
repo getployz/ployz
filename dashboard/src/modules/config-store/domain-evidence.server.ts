@@ -26,8 +26,9 @@ const DomainCall = Schema.Union([
   // Only a Deploy or a reapply expands domains: a removal expands none, a retry inherits what its source froze.
   Schema.Struct({ command: Schema.Literal("admit"), admit: Schema.Literals(["deploy", "reapply"]), environment: Schema.optional(EnvironmentRef) }),
   Schema.Struct({ query: Schema.Literals(["domains", "domain"]) }),
-  // A change's views name the generated domains it stages under the Cluster Domain.
-  Schema.Struct({ query: Schema.Literals(["diff", "plan", "service"]) }),
+  // A change's views name the generated domains it stages under the Cluster Domain. A rule's and a review's views
+  // lower the specs a person signs, which Servers compare with the specs a Deploy lowers, generated domains included.
+  Schema.Struct({ query: Schema.Literals(["diff", "plan", "service", "rule", "preview_review"]) }),
 ]);
 
 const AddDomainAnyHostname = Schema.Struct({ command: Schema.Literal("add_domain"), hostname: Schema.optional(Schema.Unknown) });

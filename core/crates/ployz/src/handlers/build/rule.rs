@@ -14,7 +14,8 @@ use ployz_core::{
     BuildGrantId, GithubToken, ServiceName, X25519Secret,
     authority::{
         AttestKey, AutoDeployRule, BuildClaim, BuildPolicy, BuildStage, CommitAuthority, CommitSha,
-        ImageDigest, PolicyDigest, PreviewRule, RecipientKey, RuleId, Signed, rule::PolicyCache,
+        ImageDigest, PolicyDigest, PreviewRule, RecipientKey, Review, RuleId, Signed,
+        rule::PolicyCache,
     },
 };
 use serde::{Deserialize, Serialize};
@@ -40,6 +41,45 @@ pub(super) struct CheckedIn {
     pub(super) service: ServiceName,
     /// The Deployment's lowering input narrowed to the Service, its Sealed values sealed.
     pub(super) deployment: Value,
+    /// A person's review of the commit, for a reviewed preview's build.
+    #[serde(default)]
+    pub(super) review: Option<Review>,
+}
+
+/// The authority this build claims for `commit`: the review Cloud relayed, or the head.
+/// A lie fails on the Machine, which checks either for itself.
+///
+/// # Errors
+/// Refuses a review under an automatic deploy rule, an unreadable one, and one that
+/// names another commit or leaves out the Service, before any token is asked for.
+pub(super) fn authority(
+    checked_in: &CheckedIn,
+    commit: CommitSha,
+) -> Result<CommitAuthority, Error> {
+    let Some(review) = &checked_in.review else {
+        return Ok(CommitAuthority::Head);
+    };
+    if !matches!(checked_in.rule, Relayed::Preview(_)) {
+        return Err(BuildCommandError::Rule(
+            "Cloud relayed a review for a build no preview rule covers",
+        )
+        .into());
+    }
+    let body = review
+        .opened()
+        .ok_or(BuildCommandError::Rule("Cloud relayed no readable review"))?;
+    if body.commit != commit
+        || !body
+            .services
+            .iter()
+            .any(|reviewed| reviewed.name == checked_in.service)
+    {
+        return Err(BuildCommandError::Rule(
+            "the review Cloud relayed names another commit or Service; refusing to build",
+        )
+        .into());
+    }
+    Ok(CommitAuthority::Review(review.digest()))
 }
 
 /// The rule Cloud relays: `rule` for a push to the approved branch, `preview` for a
@@ -154,7 +194,8 @@ fn derived(input: &BuildInput<'_>, rule: &BuildPolicy) -> BuildPolicy {
     )
 }
 
-/// The grant token's claim: this build's keys, at `commit`, under the relayed rule.
+/// The grant token's claim: this build's keys, at `commit` under `authority`, under the
+/// relayed rule.
 ///
 /// # Errors
 /// Only when the policy cannot be hashed.
@@ -162,7 +203,7 @@ pub(super) fn grant_claim(
     checked_in: &CheckedIn,
     rule: &Opened,
     policy: &BuildPolicy,
-    commit: CommitSha,
+    (commit, authority): (CommitSha, CommitAuthority),
     holder: BuildGrantId,
     recipient: RecipientKey,
 ) -> Result<BuildClaim, Error> {
@@ -173,7 +214,7 @@ pub(super) fn grant_claim(
         service: checked_in.service.clone(),
         policy: PolicyDigest::of(policy).map_err(Error::command)?,
         commit,
-        authority: CommitAuthority::Head,
+        authority,
         stage: BuildStage::Grant { holder, recipient },
     })
 }

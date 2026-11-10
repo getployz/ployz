@@ -324,9 +324,9 @@ Outcome. Pushes by trusted GitHub accounts to branches of the repository deploy 
 - [x] Lane 4. Attacker harness. Lane 2's proof with the parent's Namespace and a production Volume name. Save `d7-prod-namespace.png`. Pass when it is refused naming the Namespace, and no Container mounts the Volume. The harness rebuilt lane 2's `PreviewProof` from Cloud's rows; the unchanged spec was admitted as the control.
 - [x] Lane 5. Attacker harness. Lane 2's proof with a production hostname. Save `d7-prod-host.png`. Pass when it is refused naming the payload.
 - [x] Lane 6. Attacker harness. Relay the parent's `STRIPE_KEY` ciphertext into the preview. Save `d7-uninherited.png`. Pass when it is refused before any open. Refused at admission naming a Sealed value.
-- [ ] Lane 7. A fork PR, reviewed with a passkey prompt. Save `d7-review.png`. Pass when exactly the reviewed commit builds and deploys. Moved to D7b.
-- [ ] Lane 8. Attacker harness. Dispatch the reviewed build with another commit as `commit`. Save `d7-review-commit.png`. Pass when the grant is refused before any Sealed open. Moved to D7b.
-- [ ] Lane 9. A session-signed review of a preview that inherits `DATABASE_URL`. Save `d7-session-review.png`. Pass when the Machine refuses naming the signer. Moved to D7b.
+- [x] Lane 7. A fork PR, reviewed with a passkey prompt. Save `d7-review.png`. Pass when exactly the reviewed commit builds and deploys. Run by D7b with an untrusted account's PR from a branch of the lab repository: Appendix B has no second account to fork with. The grant logged `reviewed_by="passkey …"`, and the preview served the PR's page. The lane found two bugs, both fixed: a signed-in approval dropped the review, and the review's view lowered no generated hostname, so its digest never matched (`d7b-review-dialog.png`).
+- [x] Lane 8. Attacker harness. Dispatch the reviewed build with another commit as `commit`. Save `d7-review-commit.png`. Pass when the grant is refused before any Sealed open. Run by D7b. Cloud was patched to dispatch an unreviewed commit and accept its check-in, and the lab builder's CLI skipped its own commit check. The Machine refused the grant naming the commit.
+- [x] Lane 9. A session-signed review of a preview that inherits `DATABASE_URL`. Save `d7-session-review.png`. Pass when the Machine refuses naming the signer. Run by D7b: a browser key under a passkey-answered session grant. Cloud stored it, and the Machine refused the grant naming the signer.
 - [x] Lane 10. Read the changed `docs/user` pages against lanes 2 and 7. Save `d7-docs.png`. Read against lanes 2 and 3; lane 7 is D7b's. The approve example gained its `host ports` line and the untrusted-account sentence its outcome.
 
 **Verify, perf.** Admission per creation within 10 ms of D4. Medians 185 to 236 µs against D4's 181 to 202 µs (n=300, three runs, release build, head read faked). Live, with the head read: 276 to 664 ms per creation, the head read dominating as in D4.
@@ -341,9 +341,9 @@ Split from D7 by the program's root on 2026-11-10 under the operator's autopilot
 
 **Depends on.** D7. D5's passkey-direct helper (#4063) for decision 6.
 
-- [ ] Admit `Review(d)` at grant and creation on the Machine: the checks D7 wrote in `verify_review` and `PreviewRule::preview_key`, which D7 leaves unused. Today the Machine refuses every reviewed preview, naming "a reviewed preview".
-- [ ] The dashboard review prompt on D5's helper, and its session path for previews that inherit nothing.
-- [ ] D7's live lanes 7 to 9.
+- [x] Admit `Review(d)` at grant and creation on the Machine: the checks D7 wrote in `verify_review` and `PreviewRule::preview_key`, which D7 leaves unused. Today the Machine refuses every reviewed preview, naming "a reviewed preview".
+- [x] The dashboard review prompt on D5's helper, and its session path for previews that inherit nothing. The dashboard signs every review with a passkey, one prompt each. Machines still take a session-signed review of a preview that opens no secret, for the CLI or a later UI.
+- [x] D7's live lanes 7 to 9.
 
 ## Appendix A. Contract gaps
 
@@ -389,7 +389,7 @@ Unproven until the slice that proves it:
 - Actions cache isolation by branch. D3 lane 9.
 - A PR Environment's spec differs from its parent's only in fields `PreviewTemplate` derives, and Own Copies keep their logical Volume names. D7's prototype found otherwise on 2026-11-10, and gap 10 redesigned the template.
 - HPKE authenticated mode in `hpke` 0.13 opens on the runner with the attest public key, and refuses a base-mode or wrongly keyed response. D3's unit tests and lane 11.
-- `workflow_dispatch` with a `commit` input can check out a fork pull request's commit from the base repository. D7 lane 7.
+- `workflow_dispatch` with a `commit` input can check out a fork pull request's commit from the base repository. D7b's lane 7 proved it for another branch's commit; a fork's needs a second GitHub account.
 - `GET /repositories/<id>/compare/<base>...<head>` by repository ID reports `ahead` or `identical` when the head descends from the base, and `behind` for an unmerged descendant of the head. Checked read-only during review. D6 lane 2 confirms it on the lab repository.
 - A Boat Cloud runs against a real GitHub App, and runners reach a Boat Machine's grant door. Appendix B.
 

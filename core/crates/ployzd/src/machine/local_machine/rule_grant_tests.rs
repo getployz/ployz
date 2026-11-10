@@ -521,7 +521,7 @@ async fn a_token_for_another_branch_is_refused_naming_ref() {
 }
 
 /// The passkey the fixture Machine trusts: an EdDSA authenticator on `ployz.cloud`.
-fn passkey() -> ployz_core::authority::TrustedPasskey {
+pub(crate) fn passkey() -> ployz_core::authority::TrustedPasskey {
     use ployz_core::authority::{
         Passkey, PasskeyAccount, PasskeyApprover, PasskeyPublicKey, TrustedPasskey,
         trusted_key::{Base64Url, PasskeyAlgorithm, RelyingParty},
@@ -539,7 +539,7 @@ fn passkey() -> ployz_core::authority::TrustedPasskey {
 }
 
 /// The trusted passkey's user-verified answer to `challenge`, as a browser returns it.
-fn answer(challenge: &[u8]) -> ployz_core::authority::PasskeyAssertion {
+pub(crate) fn answer(challenge: &[u8]) -> ployz_core::authority::PasskeyAssertion {
     use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
     use ed25519_dalek::Signer as _;
     use ployz_core::authority::{PasskeyAssertion, trusted_key::Base64Url};

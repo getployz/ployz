@@ -12,13 +12,13 @@ use ployz_core::{
     BuildGrantId, PreviewGrant, SealedRecord,
     authority::{
         AuthorityRefusal, BuildClaim, BuildStage, CommitAuthority, PolicyDigest, PreviewKey,
-        Timestamp, rule::verify_signature,
+        Timestamp, preview::verify_review, rule::verify_signature,
     },
 };
 
 use super::{
     Error, LocalMachine,
-    preview_deploy::{PreviewRefusal, REVIEWED},
+    preview_deploy::PreviewRefusal,
     rule_grant::{AdmittedRule, Github},
 };
 
@@ -74,10 +74,20 @@ impl LocalMachine {
             .service(&grant.service)
             .ok_or_else(|| held("a Service"))?;
         let holder = holder.ok_or_else(|| held("a holder"))?;
-        if grant.review.is_some() || grant.authority != CommitAuthority::Head {
-            return Err(held(REVIEWED));
-        }
-        let review = None;
+        let review = match (grant.authority, &grant.review) {
+            (CommitAuthority::Head, None) => None,
+            (CommitAuthority::Review(_), Some(review)) => {
+                let checked = verify_review(review, &rule, &trusted, now).map_err(|refusal| {
+                    tracing::warn!(rule = %rule.rule, %refusal, "refused a preview build's review");
+                    refused(refusal)
+                })?;
+                if checked.digest_for(&grant.service).is_none() {
+                    return Err(held("a Service"));
+                }
+                Some(checked)
+            }
+            _ => return Err(held("a review")),
+        };
         let claims = github
             .claims(&rule, grant.proof.as_str(), now)
             .await

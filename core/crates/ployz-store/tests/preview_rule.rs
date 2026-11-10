@@ -17,8 +17,9 @@ use ployz_store::{
     Actor, ApprovePreviewRule, AuthorizedRepository, Change, ClusterDomain, ClusterDomainStatus,
     ConfigStore, CreateGitService, CreateProject, CreateVolume, DomainEvidence, Edit,
     EnvironmentId, EnvironmentName, EnvironmentRef, GithubRule, Mount, OrganizationId,
-    PlanPreviewRule, PreviewRuleView, ProjectId, ProjectName, PullRequest, RuleQuery,
-    ServiceLineageId, SetPrPlan, SettingPath, SystemEvent, Trusted, VolumeId, VolumeName, Written,
+    PlanPreviewRule, PreviewReviewQuery, PreviewRuleView, ProjectId, ProjectName, PullRequest,
+    RuleQuery, ServiceLineageId, SetPrPlan, SettingPath, SystemEvent, Trusted, VolumeId,
+    VolumeName, Written,
 };
 use serde_json::{Value, json};
 
@@ -495,4 +496,233 @@ fn two_previews_of_one_rule_differ_only_in_derived_fields() {
         rule_template(&spec, &view.namespace).unwrap()
     };
     assert_ne!(literal("pr-5"), literal("pr-6"));
+}
+
+/// Pull request `number` from `branch` by an account the Organization's members leave out.
+fn open_untrusted(store: &ConfigStore, who: &Actor, number: u64, branch: &str) -> Written {
+    store
+        .system(
+            &who.organization,
+            &SystemEvent::PullRequest(PullRequest {
+                repository_id: backend::repo_id(11),
+                number: backend::pr_number(number),
+                title: "A stranger's change".into(),
+                author: "mallory".into(),
+                author_id: Some(ployz_store::GithubUserId::parse(99).unwrap()),
+                bot: false,
+                head_branch: backend::git_branch(branch),
+                head_repository_id: Some(backend::repo_id(11)),
+                head: backend::sha(HEAD),
+                target_branch: backend::git_branch("main"),
+                commits: 1,
+                open: true,
+                merge_commit: None,
+                target_head: None,
+                updated: ployz_store::GithubTimestamp::parse("2026-09-29T10:00:00Z").unwrap(),
+            }),
+            &trusted(),
+        )
+        .unwrap()
+}
+
+/// A Device's review of pull request 7's head in `environment`, drafted from its plan as
+/// the dashboard drafts one.
+fn review_of(
+    store: &ConfigStore,
+    who: &Actor,
+    rule: &PreviewRule,
+    signer: &Signer,
+    environment: &str,
+) -> (EnvironmentId, ployz_core::authority::Review) {
+    let view = store
+        .read_trusted(
+            who,
+            &PreviewReviewQuery {
+                environment: at(environment),
+            },
+            &trusted(),
+        )
+        .unwrap();
+    assert_eq!(view.rule.open().unwrap(), *rule);
+    assert_eq!(view.key, PreviewKey::Branch("stranger".to_owned()));
+    let drafted = ployz_core::authority::PreviewReview::draft(
+        rule,
+        &view.namespace,
+        &view.target,
+        ployz_core::authority::ReviewTerms {
+            cluster: rule.cluster,
+            key: view.key,
+            commit: CommitSha::parse(view.commit.as_str()).unwrap(),
+            environment: uuid::Uuid::parse_str(view.environment.id.as_str()).unwrap(),
+            issued_at: Timestamp::from_millis(1_000).unwrap(),
+            expires_at: Timestamp::from_millis(600_000).unwrap(),
+        },
+    )
+    .unwrap();
+    let body: ployz_core::authority::PreviewReview =
+        ployz_core::authority::canonical::from_canonical(&drafted.body).unwrap();
+    (
+        view.environment.id.clone(),
+        ployz_core::authority::Review::Signed(Signed::sign(&body, signer).unwrap()),
+    )
+}
+
+#[test]
+fn an_untrusted_pull_request_opens_its_preview_and_deploys_only_once_reviewed() {
+    let (store, approved, review) = reviewed(false);
+    let deployment = approved
+        .admitted
+        .first()
+        .unwrap_or_else(|| panic!("the reviewed head deploys: {approved:?}"))
+        .deployment
+        .id
+        .clone();
+    let build = ployz_store::GithubBuildId {
+        deployment: deployment.clone(),
+        service: ServiceName::parse("web").unwrap(),
+    };
+    assert_eq!(store.github_review(&build).unwrap(), Some(review.clone()));
+    assert!(matches!(
+        store.github_rule(&build).unwrap(),
+        Some(GithubRule::Preview(_))
+    ));
+
+    // Redeploying it relays the same review: without it, every Server refuses the build.
+    backend::run(&store, &deployment);
+    let again = ployz_store::DeploymentId::parse(uuid(91)).unwrap();
+    store
+        .write_trusted(
+            &person(&Actor::system(OrganizationId::parse("org").unwrap())),
+            &ployz_store::Admit::Retry(ployz_store::Retry {
+                id: again.clone(),
+                deployment,
+                rolls_back: None,
+                version: None,
+                accept_volume_loss: Vec::new(),
+            }),
+            &member(),
+        )
+        .unwrap();
+    let build = ployz_store::GithubBuildId {
+        deployment: again,
+        service: ServiceName::parse("web").unwrap(),
+    };
+    assert_eq!(store.github_review(&build).unwrap(), Some(review));
+}
+
+#[test]
+fn a_review_held_for_ci_rides_with_the_deployment_ci_releases() {
+    let (store, approved, review) = reviewed(true);
+    assert!(
+        approved.admitted.is_empty(),
+        "web waits for CI: {approved:?}"
+    );
+    let Written::Automated(passed) = store
+        .system(
+            &OrganizationId::parse("org").unwrap(),
+            &SystemEvent::CheckSuite(ployz_store::CheckSuite {
+                repository_id: backend::repo_id(11),
+                suite: 1,
+                head: backend::sha(HEAD),
+                status: serde_json::from_value(json!("completed")).unwrap(),
+                conclusion: Some(serde_json::from_value(json!("success")).unwrap()),
+                updated: ployz_store::GithubTimestamp::parse("2026-09-29T10:01:00Z").unwrap(),
+            }),
+            &trusted(),
+        )
+        .unwrap()
+    else {
+        panic!("a check suite's news is automation");
+    };
+    let deployment = passed
+        .admitted
+        .first()
+        .unwrap_or_else(|| panic!("CI releases the reviewed head: {passed:?}"))
+        .deployment
+        .id
+        .clone();
+    let build = ployz_store::GithubBuildId {
+        deployment,
+        service: ServiceName::parse("web").unwrap(),
+    };
+    assert_eq!(store.github_review(&build).unwrap(), Some(review));
+}
+
+/// `who` as a signed-in person, rather than the Store's own automation.
+fn person(who: &Actor) -> Actor {
+    Actor {
+        principal: Some(ployz_store::Principal::parse("nick").unwrap()),
+        ..who.clone()
+    }
+}
+
+/// What the dashboard trusts a member with: every permission.
+fn member() -> Trusted {
+    Trusted {
+        permissions: Some(ployz_store::Permission::ALL.iter().copied().collect()),
+        ..trusted()
+    }
+}
+
+/// An untrusted pull request opened under a preview rule, then approved with a person's
+/// review once a stale one is refused; with `ci`, web waits for CI.
+fn reviewed(
+    ci: bool,
+) -> (
+    ConfigStore,
+    ployz_store::Automated,
+    ployz_core::authority::Review,
+) {
+    let store = backend::open();
+    let who = Actor::system(OrganizationId::parse("org").unwrap());
+    production(&store, &who);
+    if ci {
+        set(&store, &who, "web.waitForCi", json!(true));
+    }
+    let signer = Signer::from_seed(&[3; 32]);
+    let rule = rule_over(&plan(&store, &who), &signer);
+    store
+        .write_trusted(
+            &who,
+            &ApprovePreviewRule {
+                environment: at("production"),
+                rule: Box::new(Signed::sign(&rule, &signer).unwrap()),
+            },
+            &trusted(),
+        )
+        .unwrap();
+    let Written::Automated(opened) = open_untrusted(&store, &who, 7, "stranger") else {
+        panic!("a pull request's news is automation");
+    };
+    assert!(
+        opened.admitted.is_empty(),
+        "an untrusted head deploys nothing: {opened:?}"
+    );
+    let (environment, review) = review_of(&store, &who, &rule, &signer, "pr-7");
+
+    let mut other = review.opened().unwrap();
+    other.commit = CommitSha::parse(&"2".repeat(40)).unwrap();
+    let stale = ployz_core::authority::Review::Signed(Signed::sign(&other, &signer).unwrap());
+    // A person approves, as the dashboard does: the Deployment records who admitted it.
+    let person = person(&who);
+    let approve = |review: ployz_core::authority::Review| {
+        store.write_trusted(
+            &person,
+            &ployz_store::ApprovePullRequest {
+                repository_id: backend::repo_id(11),
+                number: backend::pr_number(7),
+                head: backend::sha(HEAD),
+                reviews: vec![ployz_store::EnvironmentReview {
+                    environment: environment.clone(),
+                    review,
+                }],
+            },
+            &member(),
+        )
+    };
+    let refused = approve(stale).unwrap_err();
+    assert!(refused.message.contains("another commit"), "{refused:?}");
+
+    let approved = approve(review.clone()).unwrap();
+    (store, approved, review)
 }

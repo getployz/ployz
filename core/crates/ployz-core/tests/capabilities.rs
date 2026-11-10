@@ -10,8 +10,8 @@ use ployz_core::{
     LEAVE_MACHINE_CAPABILITY, LIST_CONTAINERS_CAPABILITY, LIST_IMAGES_CAPABILITY,
     LIST_MACHINES_CAPABILITY, LIST_VOLUMES_CAPABILITY, LOG_HISTORY_CAPABILITY,
     MACHINE_STORAGE_OBSERVATION_CAPABILITY, MANAGEMENT_SCOPE_CAPABILITY, METRIC_HISTORY_CAPABILITY,
-    MINT_BUILD_GRANT_CAPABILITY, PREPARE_VOLUMES_CAPABILITY, PRUNE_IMAGES_CAPABILITY,
-    PUBLISH_CERTIFICATE_MATERIAL_CAPABILITY, PULL_IMAGE_CAPABILITY,
+    MINT_BUILD_GRANT_CAPABILITY, PREPARE_VOLUMES_CAPABILITY, PREVIEW_REVIEW_CAPABILITY,
+    PRUNE_IMAGES_CAPABILITY, PUBLISH_CERTIFICATE_MATERIAL_CAPABILITY, PULL_IMAGE_CAPABILITY,
     PULL_IMAGE_FROM_MACHINE_CAPABILITY, READ_CLUSTER_NAME_CAPABILITY,
     READ_ROUTED_ADDRESSES_CAPABILITY, READ_ROUTES_CAPABILITY, RECOVER_SEALING_KEY_CAPABILITY,
     REGISTER_MACHINE_CAPABILITY, REMOVE_TRUSTED_KEY_CAPABILITY, REMOVE_VOLUME_CAPABILITY,
@@ -83,6 +83,7 @@ fn catalogued_capabilities_keep_stable_spellings() {
             DEPLOY_PREVIEW_CAPABILITY,
             "ployz.container.deploy-preview.v1",
         ),
+        (PREVIEW_REVIEW_CAPABILITY, "ployz.preview.review.v1"),
         (
             SET_DEVICE_ENFORCEMENT_CAPABILITY,
             "ployz.machine.set-device-enforcement.v2",
@@ -221,6 +222,7 @@ fn advertised_capability_groups_match_the_frozen_catalog() {
             "ployz.container.deploy-rule.v1",
             "ployz.rule.passkey.v1",
             "ployz.container.deploy-preview.v1",
+            "ployz.preview.review.v1",
         ]
     );
     assert_eq!(
@@ -439,6 +441,10 @@ const ABOVE_FLOOR: &[(&str, &str)] = &[
     (
         "ployz.container.deploy-preview.v1",
         "falls back: an older daemon ignores `preview` on EnsureContainer; one not enforcing creates as before, and one enforcing refuses the Operator's creation for want of a deploy approval, so a preview there fails closed",
+    ),
+    (
+        "ployz.preview.review.v1",
+        "gated: Cloud relays a review at grant only to a Machine that advertises it, and the dashboard offers a review only when every enforcing Machine does. An older daemon refuses every reviewed preview build and deploy, naming a reviewed preview, so one there fails closed",
     ),
     (
         "ployz.image.pull.v1",
