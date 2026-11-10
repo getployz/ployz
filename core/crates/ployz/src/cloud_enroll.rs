@@ -1639,8 +1639,9 @@ mod tests {
     #[test]
     fn identity_lists_what_this_release_carries_out_so_cloud_can_refuse_a_cluster_it_cannot_join() {
         let sent = serde_json::to_value(identity()).unwrap();
-        let listed: Vec<&str> = sent["capabilities"]
-            .as_array()
+        let listed: Vec<&str> = sent
+            .get("capabilities")
+            .and_then(serde_json::Value::as_array)
             .unwrap()
             .iter()
             .map(|name| name.as_str().unwrap())
