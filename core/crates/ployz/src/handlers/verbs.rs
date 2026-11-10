@@ -10,8 +10,8 @@ use serde::Serialize;
 use super::debug;
 use super::{
     Handler, account, build, catalog, cloud, cluster, completion, config, config_item, context,
-    deploy, device, docs, domain, env, github, github_rule, ingress, link, login, mcp, metrics,
-    operator, private_access, project, recovery, review, server, service, up, volume,
+    deploy, device, docs, domain, env, github, github_preview, github_rule, ingress, link, login,
+    mcp, metrics, operator, private_access, project, recovery, review, server, service, up, volume,
 };
 use Approval::{Always, Depends, Never};
 
@@ -433,6 +433,20 @@ pub(crate) const GITHUB_DISCONNECT: Verb = Verb::cloud(
 .docs("deploy/github.md");
 pub(crate) const GITHUB_LS: Verb =
     Verb::cloud("github ls", Never, github::list_command, github::list).docs("deploy/github.md");
+pub(crate) const GITHUB_PREVIEW_APPROVE: Verb = Verb::cloud(
+    "github preview approve",
+    Never,
+    github_preview::approve_command,
+    github_preview::approve,
+)
+.docs("environments/preview-environments.md");
+pub(crate) const GITHUB_PREVIEW_END: Verb = Verb::cloud(
+    "github preview end",
+    Never,
+    github_preview::end_command,
+    github_preview::end,
+)
+.docs("environments/preview-environments.md");
 pub(crate) const GITHUB_RULE_APPROVE: Verb = Verb::cloud(
     "github rule approve",
     Never,
@@ -937,6 +951,8 @@ pub(crate) const VERBS: &[Verb] = &[
     GITHUB_CONNECT,
     GITHUB_DISCONNECT,
     GITHUB_LS,
+    GITHUB_PREVIEW_APPROVE,
+    GITHUB_PREVIEW_END,
     GITHUB_RULE_APPROVE,
     GITHUB_RULE_END,
     GITHUB_TREE,
@@ -1054,6 +1070,10 @@ const GROUPS: &[Group] = &[
     Group {
         path: "github",
         command: github::group,
+    },
+    Group {
+        path: "github preview",
+        command: github_preview::group,
     },
     Group {
         path: "github rule",

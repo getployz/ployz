@@ -441,7 +441,8 @@ fn changes(kept: Option<&RuleService>, next: &RuleService) -> Vec<String> {
 
 /// The settings a person reads before approving: each variable, Sealed ones by name only,
 /// and what reaches the host.
-fn settings(spec: &RequestedServiceSpec) -> Vec<String> {
+#[must_use]
+pub fn settings(spec: &RequestedServiceSpec) -> Vec<String> {
     let container = &spec.container;
     let mut lines = Vec::new();
     let variables: Vec<String> = container

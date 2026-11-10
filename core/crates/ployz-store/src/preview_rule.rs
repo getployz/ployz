@@ -17,7 +17,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::json;
 use ts_rs::TS;
 
-use crate::auto_rule::RuleSourceView;
+use ployz_core::authority::rule_draft::RuleSourceView;
 use crate::storage::Tx;
 use crate::{Actor, EnvironmentId, EnvironmentRef, EnvironmentSummary, Trusted, error, scope};
 

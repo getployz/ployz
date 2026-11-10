@@ -391,7 +391,7 @@ pub(crate) fn refusal_text(refusal: &AuthorityRefusal) -> String {
         }
         AuthorityRefusal::Mismatch {
             field: "a Namespace",
-        } => "This isn't the environment the preview rule makes for this branch.",
+        } => "This isn't the namespace the preview rule gives this branch.",
         AuthorityRefusal::Mismatch { field: "a Cluster" } => {
             "The preview rule is for another cluster."
         }
@@ -413,10 +413,10 @@ pub(crate) fn refusal_text(refusal: &AuthorityRefusal) -> String {
         AuthorityRefusal::Mismatch {
             field: "an account",
         } => {
-            "The preview rule doesn't trust the account that pushed this branch. Ask for a review."
+            "The preview rule doesn't trust the account that pushed. Approve it again with --trust and their GitHub ID."
         }
         AuthorityRefusal::Mismatch { field: "a branch" } => {
-            "Pushes to the parent environment's branch deploy there, not to a preview."
+            "A push to the branch previews start from isn't a preview."
         }
         AuthorityRefusal::Mismatch { field: "a review" } => {
             "This build was made under another review. Review the preview again."
