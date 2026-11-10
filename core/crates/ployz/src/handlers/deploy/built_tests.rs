@@ -191,6 +191,17 @@ fn a_token_for_another_commit_is_refused() {
 }
 
 #[test]
+fn an_approved_rebuild_dispatched_at_a_later_head_verifies_the_commit_it_names() {
+    // GitHub signs the head the dispatch ran at; the builder built the commit it was given.
+    let token = Built {
+        sha: BUILDER_SHA,
+        ..Built::default()
+    }
+    .token(approved());
+    assert_eq!(checked(&token), Ok(Checked::Verified(image())));
+}
+
+#[test]
 fn a_token_built_with_other_settings_under_this_generation_is_refused() {
     let token = Built {
         dockerfile: "Dockerfile.other",

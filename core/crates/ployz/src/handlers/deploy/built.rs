@@ -18,8 +18,8 @@ use ployz_core::authority::github_oidc::{self, KeySet, TokenRefusal};
 use ployz_core::authority::rule::{RuleEvent, verify_signature};
 use ployz_core::authority::{
     ApprovedChange, AttestKey, AuthorityRefusal, AutoDeployRule, BuildApproval, BuildClaim,
-    BuildStage, CommitSha, DeployApproval, DeployTerms, ImageDigest, PolicyDigest, Signed, Signer,
-    SignerKey, Timestamp, TrustedKeys, validity,
+    BuildStage, CommitAuthority, CommitSha, DeployApproval, DeployTerms, ImageDigest, PolicyDigest,
+    Signed, Signer, SignerKey, Timestamp, TrustedKeys, validity,
 };
 use ployz_core::{
     DescribeContractRequest, InspectRequest, MachineTarget, OperationId, RpcErrorCode, Sealing,
@@ -595,7 +595,9 @@ fn check(
     }
     let claims =
         github_oidc::signed_claims(&token.token, &facts.keys).map_err(Refused::Signature)?;
-    if claims.sha != commit {
+    // GitHub signs the commit a push ran at. A rebuild a person approved runs at the
+    // branch's head and builds the commit they named, which the audience binds.
+    if token.authority == CommitAuthority::Head && claims.sha != commit {
         return Err(Refused::Commit);
     }
     let rule = &facts.rule;
