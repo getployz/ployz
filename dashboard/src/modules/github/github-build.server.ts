@@ -81,7 +81,9 @@ export const dispatchGithubBuildWorkflow = Effect.fn("Github.dispatchBuildWorkfl
 });
 
 const pushRunsSchema = Schema.Struct({
-  workflow_runs: Schema.Array(Schema.Struct({ id: githubIdSchema, html_url: Schema.String, head_sha: Schema.String, event: Schema.String })),
+  workflow_runs: Schema.Array(Schema.Struct({
+    id: githubIdSchema, html_url: Schema.String, head_sha: Schema.String, event: Schema.String, status: Schema.String,
+  })),
 });
 
 /**
@@ -101,7 +103,7 @@ export const findGithubPushRun = Effect.fn("Github.findPushRun")(function* (inpu
     schema: pushRunsSchema,
   });
   const run = runs.workflow_runs.find((found) => found.head_sha === input.commit && found.event === "push");
-  return run === undefined ? null : { runId: run.id, runUrl: run.html_url };
+  return run === undefined ? null : { runId: run.id, runUrl: run.html_url, completed: run.status === "completed" };
 });
 
 export type GithubRunRef = { access: GithubAccess; fullName: string; runId: number };
@@ -119,6 +121,21 @@ export const cancelGithubRun = Effect.fn("Github.cancelRun")(function* (input: G
 });
 
 const runStatusSchema = Schema.Struct({ status: Schema.String });
+
+/**
+ * Run a completed build run again. Its token keeps the push's commit, event and actor, so a push run that ended before
+ * Cloud followed it, as when its pull request opened later, builds on its next attempt.
+ */
+export const rerunGithubRun = Effect.fn("Github.rerunRun")(function* (input: GithubRunRef) {
+  const api = yield* GithubApi;
+  yield* api.json({
+    access: input.access,
+    path: `/repos/${input.fullName}/actions/runs/${input.runId}/rerun`,
+    operation: "rerun_run",
+    schema: Schema.Unknown,
+    method: "POST",
+  });
+});
 
 /** Whether a build run has completed, whatever its conclusion. */
 export const githubRunCompleted = Effect.fn("Github.runCompleted")(function* (input: GithubRunRef) {

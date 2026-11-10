@@ -305,10 +305,36 @@ pub(crate) fn saved_target(
     (environment, target): (&scope::Environment, &SavedEnvironmentIntent),
     services: &[ServiceName],
 ) -> Result<Vec<RequestedServiceSpec>, RpcError> {
+    saved_target_setup(tx, who, trusted, (environment, target), services, true)
+}
+
+/// Every Service of `target` lowered as [`saved_target`] lowers it, with a Branch's
+/// Setup Commands only when `setup`: a preview rule approves both forms.
+pub(crate) fn saved_target_with(
+    tx: &mut dyn Tx,
+    who: &Actor,
+    trusted: &crate::Trusted,
+    (environment, target): (&scope::Environment, &SavedEnvironmentIntent),
+    setup: bool,
+) -> Result<Vec<RequestedServiceSpec>, RpcError> {
+    saved_target_setup(tx, who, trusted, (environment, target), &[], setup)
+}
+
+fn saved_target_setup(
+    tx: &mut dyn Tx,
+    who: &Actor,
+    trusted: &crate::Trusted,
+    (environment, target): (&scope::Environment, &SavedEnvironmentIntent),
+    services: &[ServiceName],
+    setup: bool,
+) -> Result<Vec<RequestedServiceSpec>, RpcError> {
     let id = &environment.summary.id;
     let mut saved = target.clone();
     crate::volume::size::held(tx, id, &mut saved.volumes)?;
-    let branch = crate::branch::lowering(tx, id, &saved)?;
+    let mut branch = crate::branch::lowering(tx, id, &saved)?;
+    if !setup {
+        branch.setup.clear();
+    }
     let deployed = deployment::deployed_volumes(tx, id, &saved)?;
     let removals = deployment::ServiceRemovals::default();
     let ships = match services.is_empty() {

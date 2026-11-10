@@ -86,6 +86,12 @@ pub struct SealedValue {
     pub sealed: Ciphertext,
     pub scope: SealedScope,
     pub key: String,
+    /// The Environment the value was sealed for, when it is not the Container's own: a
+    /// parent's value a preview inherits, opened in place. A daemon that predates it
+    /// refuses the field, so a preview never starts without the check.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional, type = "string")]
+    pub environment: Option<Uuid>,
 }
 
 /// Where the sealed variable was authored.
@@ -172,13 +178,17 @@ impl From<&str> for EnvValue {
 
 impl SealedValue {
     /// HPKE associated data binding this value to the variable it was authored
-    /// as, in `identity`'s Organization and Environment.
+    /// as, in `identity`'s Organization and in its own Environment: the one it names, or
+    /// else `identity`'s.
     #[must_use]
     pub fn associated_data(&self, identity: &SealedIdentity) -> Vec<u8> {
         let mut aad = Vec::new();
         put(&mut aad, SEALED_VALUE_INFO);
         put(&mut aad, identity.organization.as_bytes());
-        put(&mut aad, identity.environment.as_bytes());
+        put(
+            &mut aad,
+            self.environment.unwrap_or(identity.environment).as_bytes(),
+        );
         match self.scope {
             SealedScope::Shared => put(&mut aad, b"shared"),
             SealedScope::Service(service) => {
@@ -278,6 +288,7 @@ mod sealer {
         let recipient = <Kem as hpke::Kem>::PublicKey::from_bytes(recipient.as_bytes())
             .map_err(|_| SealError::Recipient)?;
         let mut value = SealedValue {
+            environment: None,
             sealed: Ciphertext::from_bytes(Vec::new()),
             scope: SealedScope::Service(identity.service),
             key: key.to_owned(),
@@ -504,6 +515,7 @@ mod sealer {
                 "another Cluster's key does not open it"
             );
             let as_env = SealedValue {
+                environment: None,
                 sealed: sealed.clone(),
                 scope: SealedScope::Shared,
                 key: "TUNNEL_TOKEN".into(),
@@ -540,6 +552,7 @@ mod tests {
 
     fn sealed(key: &str) -> SealedValue {
         SealedValue {
+            environment: None,
             sealed: Ciphertext::from_bytes(vec![7; MIN_CIPHERTEXT_LEN]),
             scope: SealedScope::Service(Uuid::from_u128(2)),
             key: key.into(),
@@ -612,6 +625,7 @@ mod tests {
             ..identity()
         };
         let shared = SealedValue {
+            environment: None,
             scope: SealedScope::Shared,
             ..sealed("TOKEN")
         };
@@ -623,5 +637,35 @@ mod tests {
         ] {
             assert_ne!(other, base);
         }
+    }
+
+    #[test]
+    fn an_inherited_value_binds_the_environment_it_names_in_place_of_its_containers() {
+        let parent = identity();
+        let preview = SealedIdentity {
+            environment: Uuid::from_u128(3),
+            ..identity()
+        };
+        let inherited = SealedValue {
+            environment: Some(parent.environment),
+            ..sealed("TOKEN")
+        };
+        assert_eq!(
+            inherited.associated_data(&preview),
+            sealed("TOKEN").associated_data(&parent)
+        );
+        assert_ne!(
+            inherited.associated_data(&preview),
+            sealed("TOKEN").associated_data(&preview)
+        );
+        let wire = serde_json::to_value(&inherited).unwrap();
+        assert_eq!(
+            wire.get("environment"),
+            Some(&serde_json::json!(parent.environment.to_string()))
+        );
+        assert_eq!(
+            serde_json::from_value::<SealedValue>(wire).unwrap(),
+            inherited
+        );
     }
 }

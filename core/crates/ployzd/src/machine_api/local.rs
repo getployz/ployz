@@ -79,6 +79,32 @@ impl MachineService {
         )
     }
 
+    /// Run every check of a preview build's grant against GitHub, or `None` when this
+    /// daemon cannot reach GitHub at all.
+    async fn admit_preview_grant(
+        &self,
+        grant: &ployz_core::PreviewGrant,
+        holder: Option<&ployz_core::BuildGrantId>,
+        sealed: Option<&ployz_core::SealedRecord>,
+    ) -> Option<Result<crate::machine::local_machine::rule_grant::AdmittedRule, LocalMachineError>>
+    {
+        let now = ployz_core::authority::Timestamp::now();
+        #[cfg(test)]
+        if let Some(github) = &self.github {
+            return Some(
+                self.local
+                    .admit_preview_grant(grant, holder, sealed, github.as_ref(), github.now(now))
+                    .await,
+            );
+        }
+        let github = crate::machine::local_machine::rule_grant::GithubOnline::shared()?;
+        Some(
+            self.local
+                .admit_preview_grant(grant, holder, sealed, github, now)
+                .await,
+        )
+    }
+
     #[must_use]
     pub fn with_cluster(
         owner: RecordOwner,
@@ -570,6 +596,7 @@ impl MachineRpc for MachineService {
                     request.approval.as_ref(),
                     request.deploy.as_ref(),
                     request.rule.as_deref(),
+                    request.preview.as_deref(),
                 )
                 .await
             {
@@ -996,8 +1023,29 @@ impl MachineRpc for MachineService {
         let request = expect::<op::MintBuildGrant>(request)?;
         // Refused before `Mint::check`, which opens the Sealed record to check it. A rule
         // build's grant passes enforcement only once every check of its proof passed.
-        let admitted = match &request.rule {
-            None => {
+        let admitted = match (&request.rule, &request.preview) {
+            (Some(_), Some(_)) => {
+                return respond(RpcError::invalid_argument(
+                    "a Build Grant is under one rule, not a rule and a preview rule",
+                ));
+            }
+            (None, Some(grant)) => {
+                let admitted = self.admit_preview_grant(
+                    grant,
+                    request.holder.as_ref(),
+                    request.sealed.as_ref(),
+                );
+                let Some(admitted) = admitted.await else {
+                    return respond(RpcError::unavailable(
+                        "This Server cannot reach GitHub to check a preview build",
+                    ));
+                };
+                match admitted {
+                    Ok(admitted) => Some(admitted),
+                    Err(error) => return local_error(error),
+                }
+            }
+            (None, None) => {
                 if operator
                     && let Err(error) = self
                         .local
@@ -1007,7 +1055,7 @@ impl MachineRpc for MachineService {
                 }
                 None
             }
-            Some(grant) => {
+            (Some(grant), None) => {
                 let admitted =
                     self.admit_rule_grant(grant, request.holder.as_ref(), request.sealed.as_ref());
                 let Some(admitted) = admitted.await else {
@@ -1259,6 +1307,24 @@ fn local_failure(error: LocalMachineError) -> Result<RpcError, Status> {
                 details,
             ))
         }
+        LocalMachineError::PreviewDeployRefused(ref refusal) => {
+            let details = match refusal.next() {
+                Some(next) => serde_json::json!({
+                    "capability": ployz_core::DEPLOY_PREVIEW_CAPABILITY,
+                    "next": next,
+                }),
+                None => serde_json::json!({ "capability": ployz_core::DEPLOY_PREVIEW_CAPABILITY }),
+            };
+            Err(ployz_core::rpc::hinted_status(
+                tonic::Code::PermissionDenied,
+                &error,
+                details,
+            ))
+        }
+        LocalMachineError::PreviewGrantRefused(_) => Err(build_refused(
+            &error,
+            ployz_core::BUILD_GRANT_PREVIEW_CAPABILITY,
+        )),
         LocalMachineError::BuildRefused { capability } => Err(build_refused(&error, capability)),
         LocalMachineError::VolumeRefused { capability } => Err(ployz_core::rpc::hinted_status(
             tonic::Code::PermissionDenied,

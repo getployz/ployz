@@ -91,6 +91,10 @@ service still gets the real value when it deploys.
   with a [passkey](../servers/manage-servers.md#add-a-passkey) in the dashboard opens only the
   sealed values of the environment you approved it in: each server refuses to create a service
   that carries another environment's sealed values, and names it.
+- On those servers, a [preview](../environments/preview-environments.md#previews-on-servers-that-enforce-device-approval)
+  opens only the sealed values its preview rule names from the environment it starts from, and
+  only those its copy leaves **Not set**. The server refuses any other environment's value,
+  and a value set in the preview itself.
 - Your sealed values open only on your servers. Keep your organization's
   [recovery code](../servers/recovery-code.md): if you lose every server, it's the only way to
   open them again.

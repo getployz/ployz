@@ -105,7 +105,10 @@ pub(crate) fn removed(
                     .map_err(|_| error::corrupt("Volume ID"))?,
                 name: VolumeName::parse(volume.name.as_str())
                     .map_err(|_| error::corrupt("Volume name"))?,
-                docker_volume: docker_volume(namespace, &volume.resource_id)?,
+                docker_volume: docker_volume(
+                    namespace,
+                    named_for(namespace, volume).unwrap_or(&volume.resource_id),
+                )?,
             })
         })
         .collect()
@@ -126,6 +129,17 @@ pub(crate) fn still_removed(
         .filter(|loss| drops(target, loss.volume.id.as_str()))
         .cloned()
         .collect()
+}
+
+/// The ID a Volume's Docker Volume is named for in `namespace` when not its own: in a
+/// preview's derived Namespace, its lineage's, so an Own Copy takes its parent's name
+/// and every preview of a rule names its Volumes alike.
+pub(crate) fn named_for<'a>(
+    namespace: &Namespace,
+    volume: &'a ployz_core::config::SavedVolumeIntent,
+) -> Option<&'a str> {
+    ployz_core::authority::preview::is_preview_namespace(namespace)
+        .then_some(volume.resource_lineage_id.as_str())
 }
 
 /// The Docker Volume a Volume's data lives in: lowering names it `vol-{id}`, and

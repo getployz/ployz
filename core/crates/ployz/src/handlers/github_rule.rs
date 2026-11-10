@@ -183,7 +183,7 @@ pub(super) fn end(root: &ArgMatches) -> Result<(), Error> {
 }
 
 /// This CLI's Device signer. Only a Device signs a rule: it stands for every future push.
-fn signer(root: &ArgMatches) -> Result<Signer, Error> {
+pub(super) fn signer(root: &ArgMatches) -> Result<Signer, Error> {
     let key = super::device::key::path(&super::config_path(root)?);
     match super::device::key::load(&key) {
         Ok(Some(secret)) => Ok(Signer::from_seed(&secret)),
@@ -195,7 +195,7 @@ fn signer(root: &ArgMatches) -> Result<Signer, Error> {
     }
 }
 
-fn builder(matches: &ArgMatches) -> Result<Builder, Error> {
+pub(super) fn builder(matches: &ArgMatches) -> Result<Builder, Error> {
     match (
         matches.get_one::<String>("builder"),
         matches.get_one::<String>("builder-sha"),
@@ -213,7 +213,7 @@ fn builder(matches: &ArgMatches) -> Result<Builder, Error> {
 }
 
 /// The Cluster's key and Servers, from the Servers themselves: Cloud can't name them.
-fn enforcing(root: &ArgMatches) -> Result<approve::Enforcing, Error> {
+pub(super) fn enforcing(root: &ArgMatches) -> Result<approve::Enforcing, Error> {
     match approve::probe(root) {
         approve::Probe::Enforcing(enforcing) => Ok(enforcing),
         approve::Probe::Off => Err(Error::coded(
@@ -241,7 +241,7 @@ struct Repository {
 }
 
 /// The repository owner's GitHub ID, which each GitHub token the rule takes must name.
-fn owner(root: &ArgMatches, repository: &str, repository_id: u64) -> Result<u64, Error> {
+pub(super) fn owner(root: &ArgMatches, repository: &str, repository_id: u64) -> Result<u64, Error> {
     let found: Repository =
         super::github::read_repository(root, "branches", &json!({ "repository": repository }))?;
     if found.repository_id != repository_id {
@@ -324,7 +324,7 @@ fn show(environment: &str, summary: &RuleSummary) {
     }
 }
 
-fn joined(names: &[ServiceName]) -> String {
+pub(super) fn joined(names: &[ServiceName]) -> String {
     names
         .iter()
         .map(ServiceName::as_str)

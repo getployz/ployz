@@ -27,6 +27,34 @@ pub struct MintBuildGrantRequest {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[ts(optional)]
     pub rule: Option<RuleGrant>,
+    /// A build under a preview rule: the signed rule, the GitHub token whose audience names
+    /// this grant, and for a reviewed build the review. Sent only to a daemon advertising
+    /// [`crate::BUILD_GRANT_PREVIEW_CAPABILITY`], which checks them as it checks `rule`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub preview: Option<PreviewGrant>,
+}
+
+/// What a builder under a preview rule asks a grant with. As for [`RuleGrant`], all but
+/// the rule, the token and the review is the builder's own word, which the Machine checks
+/// by recomputing the token's audience from it.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
+#[serde(deny_unknown_fields)]
+pub struct PreviewGrant {
+    #[ts(type = "unknown")]
+    pub rule: crate::authority::Signed<crate::authority::PreviewRule>,
+    /// The review a reviewed build's authority names. `None` for a trusted push.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub review: Option<crate::authority::Review>,
+    pub proof: GithubToken,
+    pub service: crate::ServiceName,
+    pub commit: crate::authority::CommitSha,
+    pub authority: crate::authority::CommitAuthority,
+    pub recipient: crate::authority::RecipientKey,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub reader: Option<GithubToken>,
 }
 
 /// What a builder under a rule asks a grant with. Everything but the rule and the token
@@ -187,6 +215,7 @@ mod tests {
         assert_eq!(
             request,
             MintBuildGrantRequest {
+                preview: None,
                 repository,
                 holder: None,
                 sealed: None,

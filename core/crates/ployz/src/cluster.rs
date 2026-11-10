@@ -90,39 +90,50 @@ struct Approvals {
     restart: Option<ployz_core::authority::Signed<ployz_core::authority::RestartApproval>>,
     /// The approval of the Deploy every Container this client creates or steps belongs to.
     deploy: Option<ployz_core::authority::Signed<ployz_core::authority::DeployApproval>>,
-    /// An automatic deploy rule's proof for each Service it built, when a rule deploys in
-    /// place of a person's approval.
-    rules: std::collections::BTreeMap<ployz_core::ServiceName, ployz_core::authority::RuleProof>,
+    /// A rule's proof for each Service it built, when a rule deploys in place of a
+    /// person's approval.
+    proofs: RuleProofs,
 }
 
-impl Approvals {
-    /// The rule proof a change of `want` carries: its Service's, or for a step on a
-    /// Container named only by ID, any of the Deploy's, since such a step needs only the
-    /// rule's Environment.
-    fn rule_for(&self, want: &ContainerWant) -> Option<Box<ployz_core::authority::RuleProof>> {
-        let service = match want {
-            ContainerWant::Running {
-                container: ployz_core::RunTarget::New(new),
-                ..
-            } => Some(&new.slot.service),
-            ContainerWant::Held { container, .. }
-            | ContainerWant::Out { container, .. }
-            | ContainerWant::Stopped { container, .. }
-            | ContainerWant::Gone { container, .. }
-            | ContainerWant::Running {
-                container: ployz_core::RunTarget::Existing(container),
-                ..
-            } => match container {
-                ployz_core::ContainerLocator::Key(slot) => Some(&slot.service),
-                ployz_core::ContainerLocator::Id(_) => None,
-            },
-        };
-        service
-            .and_then(|service| self.rules.get(service))
-            .or_else(|| self.rules.values().next())
-            .cloned()
-            .map(Box::new)
-    }
+/// The proof each Service a rule built carries to every Server, in place of a person's
+/// deploy approval: an automatic deploy rule's, or a preview rule's.
+#[derive(Clone, Debug, Default)]
+pub struct RuleProofs {
+    pub rules:
+        std::collections::BTreeMap<ployz_core::ServiceName, ployz_core::authority::RuleProof>,
+    pub previews:
+        std::collections::BTreeMap<ployz_core::ServiceName, ployz_core::authority::PreviewProof>,
+}
+
+/// The proof in `proofs` a change of `want` carries: its Service's, or for a step on a
+/// Container named only by ID, any of the Deploy's, since such a step needs only the
+/// rule's Environment.
+fn proof_for<P: Clone>(
+    proofs: &std::collections::BTreeMap<ployz_core::ServiceName, P>,
+    want: &ContainerWant,
+) -> Option<Box<P>> {
+    let service = match want {
+        ContainerWant::Running {
+            container: ployz_core::RunTarget::New(new),
+            ..
+        } => Some(&new.slot.service),
+        ContainerWant::Held { container, .. }
+        | ContainerWant::Out { container, .. }
+        | ContainerWant::Stopped { container, .. }
+        | ContainerWant::Gone { container, .. }
+        | ContainerWant::Running {
+            container: ployz_core::RunTarget::Existing(container),
+            ..
+        } => match container {
+            ployz_core::ContainerLocator::Key(slot) => Some(&slot.service),
+            ployz_core::ContainerLocator::Id(_) => None,
+        },
+    };
+    service
+        .and_then(|service| proofs.get(service))
+        .or_else(|| proofs.values().next())
+        .cloned()
+        .map(Box::new)
 }
 
 /// The entry a redial found in another Cluster, shared by every clone of a client and
@@ -258,17 +269,11 @@ impl Client {
         self
     }
 
-    /// Hand every Server the automatic deploy rule's proof for the Service each change
-    /// belongs to, in place of a person's deploy approval.
+    /// Hand every Server the rule's proof for the Service each change belongs to, in
+    /// place of a person's deploy approval.
     #[must_use]
-    pub(crate) fn with_rule_proofs(
-        mut self,
-        proofs: std::collections::BTreeMap<
-            ployz_core::ServiceName,
-            ployz_core::authority::RuleProof,
-        >,
-    ) -> Self {
-        Arc::make_mut(&mut self.approvals).rules = proofs;
+    pub(crate) fn with_rule_proofs(mut self, proofs: RuleProofs) -> Self {
+        Arc::make_mut(&mut self.approvals).proofs = proofs;
         self
     }
 
@@ -1692,9 +1697,10 @@ impl Client {
     ) -> Result<ployz_core::EnsuredContainer, RpcError> {
         let target = MachineTarget::from(machine_id);
         crate::sealed_compat::admit(self, &target, &want).await?;
-        let want_for_rule = &want;
-        let rule = self.approvals.rule_for(want_for_rule);
+        let rule = proof_for(&self.approvals.proofs.rules, &want);
+        let preview = proof_for(&self.approvals.proofs.previews, &want);
         let payload = op::EnsureContainer::into_request(EnsureContainerRequest {
+            preview,
             want,
             approval: self.approvals.restart.clone(),
             deploy: self.approvals.deploy.clone(),

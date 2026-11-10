@@ -27,7 +27,7 @@ pub(crate) use self::due::{ask_taking_off, due, shut_down};
 use self::mark::{Accepted, Closed, Mark, State};
 pub use self::review::{ConsentedQuery, ConsentedView, RemovedVolume, VolumeLoss, docker_volume};
 pub(crate) use self::review::{
-    consented, covered, held, removed, review, short_digest, still_removed,
+    consented, covered, held, named_for, removed, review, short_digest, still_removed,
 };
 use crate::deployment::{self, DeploymentStatus, DeploymentSummary};
 use crate::error;

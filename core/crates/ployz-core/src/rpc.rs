@@ -629,6 +629,14 @@ pub struct EnsureContainerRequest {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[ts(optional)]
     pub rule: Option<Box<crate::authority::RuleProof>>,
+    /// The preview rule this want is part of, with the pinned builder's image token for its
+    /// Service. A Machine under Device enforcement takes it in place of a deploy approval
+    /// from an Operator caller. Sent only to a daemon advertising
+    /// [`crate::DEPLOY_PREVIEW_CAPABILITY`]; an older daemon ignores it and, enforcing,
+    /// refuses the want as unapproved.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub preview: Option<Box<crate::authority::PreviewProof>>,
 }
 
 /// The state a driver wants one Container in. The Machine converges to it and

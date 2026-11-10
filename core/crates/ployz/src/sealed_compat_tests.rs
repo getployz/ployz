@@ -89,6 +89,7 @@ pub(crate) fn spec(sealed: bool) -> ResolvedServiceSpec {
     let mut spec = requested(ServiceMode::Global);
     let value = if sealed {
         EnvValue::Sealed(SealedValue {
+            environment: None,
             sealed: Ciphertext::from_bytes(vec![7; 48]),
             scope: SealedScope::Shared,
             key: "TOKEN".into(),

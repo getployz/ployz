@@ -62,6 +62,7 @@ const organizationOwnedWithoutChangeLog = {
   config_build_receipt: "Private build evidence only a Deployment's runner reads at claim; no view reads it, so it needs no change log.",
   config_branch: "The GitHub branch heads the Store's automation compares from; no view reads them, so they need no change log.",
   config_auto_deploy_rule: "Each Environment's signed automatic deploy rule, which the Store relays with a push's Deployment for Servers to check; no view reads it, so it needs no change log.",
+  config_preview_rule: "Each Environment's signed preview rule, which the Store relays with a preview's Deployment for Servers to check; no view reads it, so it needs no change log.",
   config_removal_mark: "The Store's record of removals under way, read by its sweep; what a removal does shows in the Environment and Deployment rows it admits or deletes, so it needs no change log.",
   agent_threads: "One member's private sidebar conversation, read only through the agent chat route; no view reads it, so it needs no change log.",
   agent_runs: "A sidebar turn's run record, read only by its own conversation; no view reads it, so it needs no change log.",

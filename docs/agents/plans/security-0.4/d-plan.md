@@ -287,24 +287,25 @@ The semantics are in `d-build-proof.md`, "A person deploys a built image (D6)". 
 
 Outcome. Pushes by trusted GitHub accounts to branches of the repository deploy their PR Environment with no review. The Machine derives each preview's Namespace and hostnames from the signed preview rule and facts it verified, so a preview can land only in a Namespace holding nothing but that preview. A preview inherits only the parent Sealed values the preview rule names, opened in place on the Machine. Untrusted PRs keep the review path. A review is checked before the reviewed build gets any secret, and it is bound to the commit the builder checked out. Attack path closed. Cloud's membership rows and bot flag no longer decide trust. Cloud cannot place preview code in a production Namespace or behind a production hostname. It cannot give a preview a parent secret the rule does not name, or release preview secrets to an unreviewed commit.
 
-**Depends on.** D4. The prototype box below. Appendix A gaps 4, 8 and 9. Operator decisions 6 and 11, and thread B's passkey-direct signing path for decision 6 (gap 2).
+**Depends on.** D4. The prototype box below. Appendix A gaps 4, 8, 9 and 10. Operator decisions 6 and 11, and thread B's passkey-direct signing path for decision 6 (gap 2).
 
 **Prototype first.**
 
-- [ ] Lower a parent Environment and its PR Environment for the same commit, and diff their requested specs. Pass when they differ only in the Namespace (including strings that embed it), preview hostnames and the Sealed identity, and when Own Copies keep their parent's logical Volume names. If Own Copies are renamed, D7 changes the lowering to keep the names. If any other field differs, stop and redesign the template before building.
+- [x] Lower a parent Environment and its PR Environment for the same commit, and diff their requested specs. Pass when they differ only in the Namespace (including strings that embed it), preview hostnames and the Sealed identity, and when Own Copies keep their parent's logical Volume names. If Own Copies are renamed, D7 changes the lowering to keep the names. If any other field differs, stop and redesign the template before building. Ran on 2026-11-10 and stopped at this gate. Beyond the allowed set, Own Copy Volume names, the Service ID label, Generated Values and Setup Commands differed, and so did one replica and Live Node references to the parent's Namespace. Two previews of one rule also differed in the first three. The root redesigned the template as gap 10, and D7's test now checks that two previews of one rule differ only in derived fields.
 
 **Files.**
 
-- [ ] Edit `core/crates/ployz-core/src/sealed.rs` so `SealedValue` gains `environment: Option<Uuid>`, which replaces the identity's Environment in the associated data.
-- [ ] Edit `core/crates/ployzd/src/sealed_env.rs` to check the override on every Sealed part, template parts and build records included. It opens a value carrying one only when admission handed it the preview rule's `inherit` list for that Environment.
-- [ ] Edit `core/crates/ployz-core/src/authority/rule.rs` to add `PreviewRule`, `PreviewReview`, `Authority::Review`, `preview_namespace(rule, key)`, `preview_hostname(label, namespace, domain)` and `PreviewTemplate::of(spec, derived)`. Placeholders replace only strings the Machine derived.
-- [ ] Edit `core/crates/ployzd/src/management/build_grant.rs` so grant admission accepts a trusted push (`Head` on a non-parent branch, `actor_id` in `trusted`) and `Review(d)`. A review needs its signature, rule, generation and commit, a `workflow_dispatch` run on the parent's branch, and the signer rule of decision 6. All of that is checked before the record opens.
-- [ ] Edit `core/crates/ployzd/src/machine/local_machine/deploy_approval.rs`. A preview-rule creation must be in the derived Namespace, with derived hostnames, and Sealed parts inherited or, under a review, sealed for the review's Environment. Thread C's deploy approval and the automatic deploy rule refuse the reserved preview Namespace pattern.
-- [ ] Edit `core/crates/ployz-core/src/authority/deploy.rs` to widen `sealed_scope_allows` for reviews only, as `d-build-proof.md` says.
-- [ ] Edit `core/crates/ployz-store/src/deployment/mod.rs` (`namespace`, `:1539`) so a PR Environment under a preview rule gets the derived Namespace, and no other Environment ever gets the reserved pattern. Edit the preview lowering to emit derived hostnames.
-- [ ] Edit `core/crates/ployz-store/src/pull_request/mod.rs` and `dashboard/src/modules/config-store/store-pull-request.server.ts` so trust comes from the preview rule. The members join stays only as the label shown before a rule exists.
-- [ ] Create the CLI `ployz github preview approve`, which prints the trusted accounts, inherited keys, preview domain, and any Bind Mount or External Volume as "shared with production". It refuses those mounts unless `--share-mounts` is given.
-- [ ] Edit `docs/user/environments/preview-environments.md` and `docs/user/services/variables.md`.
+- [x] Edit `core/crates/ployz-core/src/sealed.rs` so `SealedValue` gains `environment: Option<Uuid>`, which replaces the identity's Environment in the associated data.
+- [x] Edit `core/crates/ployzd/src/sealed_env.rs` to check the override on every Sealed part, template parts and build records included. It opens a value carrying one only when admission handed it the preview rule's `inherit` list for that Environment.
+- [x] Edit `core/crates/ployz-core/src/authority/rule.rs` to add `PreviewRule`, `PreviewReview`, `Authority::Review`, `preview_namespace(rule, key)`, `preview_hostname(label, namespace, domain)` and `PreviewTemplate::of(spec, derived)`. Placeholders replace only strings the Machine derived. Built in `authority/preview.rs`. `preview_hostname` became `preview_prefix(label, namespace)`, giving `<label>-<Namespace>.<domain>` (`d-build-proof.md`, "Hostnames").
+- [x] Edit `core/crates/ployzd/src/management/build_grant.rs` so grant admission accepts a trusted push (`Head` on a non-parent branch, `actor_id` in `trusted`) and `Review(d)`. A review needs its signature, rule, generation and commit, a `workflow_dispatch` run on the parent's branch, and the signer rule of decision 6. All of that is checked before the record opens. D7 admits only the trusted push. `Review(d)` moved to D7b (below), and until it ships every Machine refuses a reviewed preview build or deploy.
+- [x] Edit `core/crates/ployzd/src/machine/local_machine/deploy_approval.rs`. A preview-rule creation must be in the derived Namespace, with derived hostnames, and Sealed parts inherited or, under a review, sealed for the review's Environment. Thread C's deploy approval and the automatic deploy rule refuse the reserved preview Namespace pattern.
+- [x] Edit `core/crates/ployz-core/src/authority/deploy.rs` to widen `sealed_scope_allows` for reviews only, as `d-build-proof.md` says.
+- [x] Edit `core/crates/ployz-store/src/deployment/mod.rs` (`namespace`, `:1539`) so a PR Environment under a preview rule gets the derived Namespace, and no other Environment ever gets the reserved pattern. Edit the preview lowering to emit derived hostnames.
+- [x] Edit `core/crates/ployz-store/src/build.rs`, `core/crates/ployz/src/sdk/github_build.rs`, `sdk/store_runner.rs`, `cluster.rs` and `handlers/build/rule.rs` so a preview's GitHub build follows its push's run, checks in and asks its grant under the preview rule, and the runner attaches a `PreviewProof` to each `EnsureContainer`. A preview build's Actions cache scope also names the rule, so no preview build writes layers a production build reads.
+- [ ] Edit `core/crates/ployz-store/src/pull_request/mod.rs` and `dashboard/src/modules/config-store/store-pull-request.server.ts` so trust comes from the preview rule. The members join stays only as the label shown before a rule exists. Partly: `pull_request` opens a preview under the rule in its derived Namespace, but Cloud still decides with the members join whether a push deploys. Every Machine checks the rule's `trusted` list, so a member the rule doesn't trust gets a refused preview, not a deployed one.
+- [x] Create the CLI `ployz github preview approve`, which prints the trusted accounts, inherited keys, preview domain, and any Bind Mount or External Volume as "shared with production". It refuses those mounts unless `--share-mounts` is given.
+- [x] Edit `docs/user/environments/preview-environments.md` and `docs/user/services/variables.md`.
 
 **Verify, unit.**
 
@@ -317,20 +318,32 @@ Outcome. Pushes by trusted GitHub accounts to branches of the repository deploy 
 
 **Verify, live.** Ten lanes, all **GitHub**, enforcement on, a preview rule approved from `cli --device`.
 
-- [ ] Lane 1. Regression lane against trunk. A trusted preview deploys with enforcement off. Save `d7-enforce-off.png`.
-- [ ] Lane 2. A trusted account's push deploys a preview that reads `DATABASE_URL` (length only) and not `STRIPE_KEY`. Save `d7-trusted.png`. Pass when the Namespace and URL have the derived form.
-- [ ] Lane 3. Adding an untrusted account to Cloud's `member ⋈ account` rows, then pushing as that account. Save `d7-members.png`. Pass when nothing deploys without review.
-- [ ] Lane 4. Attacker harness. Lane 2's proof with the parent's Namespace and a production Volume name. Save `d7-prod-namespace.png`. Pass when it is refused naming the Namespace, and no Container mounts the Volume.
-- [ ] Lane 5. Attacker harness. Lane 2's proof with a production hostname. Save `d7-prod-host.png`. Pass when it is refused naming the payload.
-- [ ] Lane 6. Attacker harness. Relay the parent's `STRIPE_KEY` ciphertext into the preview. Save `d7-uninherited.png`. Pass when it is refused before any open.
-- [ ] Lane 7. A fork PR, reviewed with a passkey prompt. Save `d7-review.png`. Pass when exactly the reviewed commit builds and deploys.
-- [ ] Lane 8. Attacker harness. Dispatch the reviewed build with another commit as `commit`. Save `d7-review-commit.png`. Pass when the grant is refused before any Sealed open.
-- [ ] Lane 9. A session-signed review of a preview that inherits `DATABASE_URL`. Save `d7-session-review.png`. Pass when the Machine refuses naming the signer.
-- [ ] Lane 10. Read the changed `docs/user` pages against lanes 2 and 7. Save `d7-docs.png`.
+- [x] Lane 1. Regression lane against trunk. A trusted preview deploys with enforcement off. Save `d7-enforce-off.png`. Ran at head only, in `Ployz-test/lab-preview`: PR #1 deployed `lab-pr-1` through a Servers build, with no production secret. Trunk not run.
+- [x] Lane 2. A trusted account's push deploys a preview that reads `DATABASE_URL` (length only) and not `STRIPE_KEY`. Save `d7-trusted.png`. Pass when the Namespace and URL have the derived form. `pv-6652ff952822497d-d8ffd8f7a2bd`, served as `web-2-pv-6652ff952822497d-d8ffd8f7a2bd.ada.ployz.test` on both Machines, `DATABASE_URL` length 38. `STRIPE_KEY` lives on `billing`, which the rule doesn't cover, since inherit takes every Not set key of a covered Service.
+- [x] Lane 3. Adding an untrusted account to Cloud's `member ⋈ account` rows, then pushing as that account. Save `d7-members.png`. Pass when nothing deploys without review. Ran as a member's account the rule no longer trusts (approved again with `--trust` naming another ID): the Machine refused the grant naming an account, and the Deployment failed at its build.
+- [x] Lane 4. Attacker harness. Lane 2's proof with the parent's Namespace and a production Volume name. Save `d7-prod-namespace.png`. Pass when it is refused naming the Namespace, and no Container mounts the Volume. The harness rebuilt lane 2's `PreviewProof` from Cloud's rows; the unchanged spec was admitted as the control.
+- [x] Lane 5. Attacker harness. Lane 2's proof with a production hostname. Save `d7-prod-host.png`. Pass when it is refused naming the payload.
+- [x] Lane 6. Attacker harness. Relay the parent's `STRIPE_KEY` ciphertext into the preview. Save `d7-uninherited.png`. Pass when it is refused before any open. Refused at admission naming a Sealed value.
+- [ ] Lane 7. A fork PR, reviewed with a passkey prompt. Save `d7-review.png`. Pass when exactly the reviewed commit builds and deploys. Moved to D7b.
+- [ ] Lane 8. Attacker harness. Dispatch the reviewed build with another commit as `commit`. Save `d7-review-commit.png`. Pass when the grant is refused before any Sealed open. Moved to D7b.
+- [ ] Lane 9. A session-signed review of a preview that inherits `DATABASE_URL`. Save `d7-session-review.png`. Pass when the Machine refuses naming the signer. Moved to D7b.
+- [x] Lane 10. Read the changed `docs/user` pages against lanes 2 and 7. Save `d7-docs.png`. Read against lanes 2 and 3; lane 7 is D7b's. The approve example gained its `host ports` line and the untrusted-account sentence its outcome.
 
-**Verify, perf.** Admission per creation within 10 ms of D4.
+**Verify, perf.** Admission per creation within 10 ms of D4. Medians 185 to 236 µs against D4's 181 to 202 µs (n=300, three runs, release build, head read faked). Live, with the head read: 276 to 664 ms per creation, the head read dominating as in D4.
 
 **Review gate.** The operator reviews the preview rule UI and the derived URLs before merge.
+
+## Reviewed previews (D7b)
+
+Split from D7 by the program's root on 2026-11-10 under the operator's autopilot grant. D7 merges without it.
+
+**Outcome.** A person reviews an untrusted or fork pull request's commit, and exactly that commit builds and deploys its preview.
+
+**Depends on.** D7. D5's passkey-direct helper (#4063) for decision 6.
+
+- [ ] Admit `Review(d)` at grant and creation on the Machine: the checks D7 wrote in `verify_review` and `PreviewRule::preview_key`, which D7 leaves unused. Today the Machine refuses every reviewed preview, naming "a reviewed preview".
+- [ ] The dashboard review prompt on D5's helper, and its session path for previews that inherit nothing.
+- [ ] D7's live lanes 7 to 9.
 
 ## Appendix A. Contract gaps
 
@@ -343,6 +356,12 @@ Outcome. Pushes by trusted GitHub accounts to branches of the repository deploy 
 7. **`BuildApproval` and its grant authority (thread A, with C).** D6 adds a `Workflow` statement that authorizes a grant for a non-head commit on the approved branch's history. It also uses thread C's existing `DeployApproval` with a content-addressed image for the deploy, so C's digest semantics are unchanged. A must agree to the statement. C confirms that a built image's `<repository>@<digest>` passes `content_addressed` (`ployz-core/src/authority/deploy.rs:122`).
 8. **`PreviewReview` grant authority, and the decision 6 signing path (threads A and B).** D7 checks a review at grant, before secrets open, and refuses a session-signed review of a Service that inherits values or has build secrets. A must agree to the statement and to the signer rule. B must provide a passkey-direct assertion over a review body in the dashboard, the same helper as gap 2.
 9. **Reserved preview Namespaces (thread C).** D7 makes thread C's deploy approval refuse the `pv-<16 hex>-<12 hex>` Namespace pattern, and makes Cloud's Namespace allocator never assign it. That is a check inside C's `deploy::verify`, so C's owner reviews it.
+10. **The preview template after D7's prototype (threads A and C).** Taken by the program's root on 2026-11-10 under the operator's autopilot grant, on behalf of threads A and C. `d-build-proof.md`, "Derived fields, checked before hashing", has the detail.
+    1. *Volume names.* An Own Copy Volume is lowered under its parent's logical name, so the derived Namespace alone keeps the data apart. D7 applies this only in a derived preview Namespace, because renaming it in every Branch would leave a Kept Branch on a new, empty Volume.
+    2. *Service ID label.* `cloud.ployz.service.id` is lowered from the lineage ID, which a Branch shares with its Parent. It is bookkeeping, so a wrong label is a mislabel residual.
+    3. *Generated Values.* The template keeps the generator, `secret(LEN, "CHARSET")`. Before hashing, the Machine checks that the real value has exactly that length and charset.
+    4. *Setup Commands.* `PreviewService` signs two digests, with and without the Setup Commands. The Machine accepts the first only for a preview's first creation, when no Service Container of that Service exists in the derived Namespace on this Machine.
+    5. *The test.* It checks that two previews of one rule differ only in derived fields: the Namespace, hostnames, the Sealed identity and the checked Generated Values. The CLI builds the template through the preview lowering, so one replica and Live Node references to the parent's Namespace are part of it.
 
 ## Appendix B. The real GitHub environment
 
@@ -368,7 +387,7 @@ Unproven until the slice that proves it:
 
 - An audience as long as `ployz-build:` plus 64 hex characters is accepted. D3 lane 2.
 - Actions cache isolation by branch. D3 lane 9.
-- A PR Environment's spec differs from its parent's only in fields `PreviewTemplate` derives, and Own Copies keep their logical Volume names. D7's prototype.
+- A PR Environment's spec differs from its parent's only in fields `PreviewTemplate` derives, and Own Copies keep their logical Volume names. D7's prototype found otherwise on 2026-11-10, and gap 10 redesigned the template.
 - HPKE authenticated mode in `hpke` 0.13 opens on the runner with the attest public key, and refuses a base-mode or wrongly keyed response. D3's unit tests and lane 11.
 - `workflow_dispatch` with a `commit` input can check out a fork pull request's commit from the base repository. D7 lane 7.
 - `GET /repositories/<id>/compare/<base>...<head>` by repository ID reports `ahead` or `identical` when the head descends from the base, and `behind` for an unmerged descendant of the head. Checked read-only during review. D6 lane 2 confirms it on the lab repository.
@@ -376,8 +395,8 @@ Unproven until the slice that proves it:
 
 ## Appendix D. Handoffs
 
-- **Thread A.** Gaps 1, 3, 4, 6, 7 and 8 above.
+- **Thread A.** Gaps 1, 3, 4, 6, 7, 8 and 10 above.
 - **Thread B.** Gaps 2 and 8. Decision 6 changes what a session may approve for previews, and the Machine enforces it.
-- **Thread C.** D6 uses C's `DeployApproval` unchanged, with a content-addressed built image. D7 widens `sealed_scope_allows` for reviews, as C4 left it to do, and adds gap 9's reserved Namespace refusal to `deploy::verify`. C's cache decision is applied as `d-build-proof.md` says.
+- **Thread C.** Gap 10. D6 uses C's `DeployApproval` unchanged, with a content-addressed built image. D7 widens `sealed_scope_allows` for reviews, as C4 left it to do, and adds gap 9's reserved Namespace refusal to `deploy::verify`. C's cache decision is applied as `d-build-proof.md` says.
 - **Thread F.** `MintBuildGrant`, `Build` and the two new capability rows join F's coverage table. Removing the old dispatched workflow path belongs to F's cutover.
 - **Operator, outside code.** Y's O1 and O2 on the `getployz` organization and the App, the minter's owner, and Appendix B.

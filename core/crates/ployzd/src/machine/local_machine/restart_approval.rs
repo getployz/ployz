@@ -11,12 +11,12 @@ use std::{
 
 use ployz_core::{
     ContainerId, ContainerLocator, ContainerNow, ContainerWant, DeviceEnforcementSet, DeviceKey,
-    LocalMachinePhase, ManagementScope, OperationId, RunTarget, Sealing, ServiceName,
+    LocalMachinePhase, ManagementScope, Namespace, OperationId, RunTarget, Sealing, ServiceName,
     SetDeviceEnforcementRequest,
     authority::{
-        AuthorityRefusal, AutoDeployRule, BuildClaim, BuildStage, DeployApproval, Purpose,
-        RestartApproval, RestartFacts, RestartStep, RuleId, Signed, StartingSet, Timestamp,
-        restart, starting_set,
+        AuthorityRefusal, AutoDeployRule, BuildClaim, BuildStage, ClaimRule, DeployApproval,
+        PreviewKey, Purpose, RestartApproval, RestartFacts, RestartStep, RuleId, RuleIdentity,
+        Signed, StartingSet, Timestamp, restart, starting_set,
     },
 };
 use serde::{Deserialize, Serialize};
@@ -133,13 +133,20 @@ impl LocalMachine {
         approval: Option<&Signed<RestartApproval>>,
         deploy: Option<&Signed<DeployApproval>>,
         rule: Option<&ployz_core::authority::RuleProof>,
+        preview: Option<&ployz_core::authority::PreviewProof>,
     ) -> Result<ContainerWant, Error> {
         let record = self.record();
         if !record.device_enforcement() {
             return Ok(want);
         }
-        if let (None, None, Some(rule)) = (approval, deploy, rule) {
-            return self.admit_rule_deploy_online(want, rule).await;
+        match (approval, deploy, rule, preview) {
+            (None, None, Some(rule), None) => {
+                return self.admit_rule_deploy_online(want, rule).await;
+            }
+            (None, None, None, Some(preview)) => {
+                return self.admit_preview_deploy_online(want, preview).await;
+            }
+            _ => {}
         }
         let Some((step, locator)) = RestartStep::of(&want) else {
             self.admit_operator_creation(&want, deploy)?;
@@ -252,7 +259,7 @@ struct Consumption {
 impl Consumption {
     /// Refuse `rule` when it is below this Machine's mark for it, or moves it to another
     /// repository, branch or Namespace.
-    fn check_mark(&self, rule: &AutoDeployRule) -> Result<(), AuthorityRefusal> {
+    fn check_mark(&self, rule: RuleIdentity<'_>) -> Result<(), AuthorityRefusal> {
         let refused = |field| Err(AuthorityRefusal::Mismatch { field });
         let Some(mark) = self.rules.get(&rule.rule) else {
             return Ok(());
@@ -260,33 +267,37 @@ impl Consumption {
         if rule.generation < mark.generation {
             return refused("a generation");
         }
-        if rule.source.repository_id != mark.repository_id {
+        if rule.repository_id != mark.repository_id {
             return refused("a repository");
         }
-        if rule.source.branch != mark.branch {
+        if rule.branch != mark.branch {
             return refused("a branch");
         }
-        if rule.namespace != mark.namespace {
+        if rule.namespace != &mark.namespace {
             return refused("a Namespace");
         }
         Ok(())
     }
 
-    fn raise_mark(&mut self, rule: &AutoDeployRule) {
+    fn raise_mark(&mut self, rule: RuleIdentity<'_>) {
         let mark = self.rules.entry(rule.rule).or_insert_with(|| RuleMark {
             generation: rule.generation,
-            repository_id: rule.source.repository_id,
-            branch: rule.source.branch.clone(),
+            repository_id: rule.repository_id,
+            branch: rule.branch.to_owned(),
             namespace: rule.namespace.clone(),
         });
         mark.generation = mark.generation.max(rule.generation);
     }
 }
 
-/// Where a rule's record for one Service is kept: one entry per rule and Service, so the
-/// record grows with rules, not with pushes.
-fn rule_service_key(rule: &AutoDeployRule, service: &ServiceName) -> String {
-    format!("{}/{service}", rule.rule)
+/// Where a rule's record for one Service is kept: one entry per rule and Service, and for
+/// a preview rule per preview Namespace too, so the record grows with rules and previews,
+/// not with pushes.
+fn rule_service_key(rule: RuleId, preview: Option<&Namespace>, service: &ServiceName) -> String {
+    match preview {
+        None => format!("{rule}/{service}"),
+        Some(namespace) => format!("{rule}/{namespace}/{service}"),
+    }
 }
 
 /// The build this Machine last admitted a creation for under a rule's Service. A later
@@ -297,15 +308,19 @@ struct AcceptedBuild {
     generation: u64,
     commit: ployz_core::authority::CommitSha,
     image: ployz_core::authority::ImageDigest,
+    /// The preview the build's token named, for a preview rule's build.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    preview: Option<PreviewKey>,
 }
 
 impl AcceptedBuild {
-    fn of(claim: &BuildClaim) -> Option<Self> {
+    fn of(claim: &BuildClaim, preview: Option<&PreviewKey>) -> Option<Self> {
         match claim.stage {
             BuildStage::Built { image, .. } => Some(Self {
                 generation: claim.generation,
                 commit: claim.commit,
                 image,
+                preview: preview.cloned(),
             }),
             BuildStage::Grant { .. } => None,
         }
@@ -712,7 +727,8 @@ impl ConsumptionLog {
     /// a crash after it costs the builder a new token, never a second grant.
     pub(crate) fn consume_rule_proof(
         &self,
-        rule: &AutoDeployRule,
+        rule: &impl ClaimRule,
+        refused: impl FnOnce(AuthorityRefusal) -> Error,
         jti: &str,
         expires_at: Timestamp,
         now: Timestamp,
@@ -728,12 +744,12 @@ impl ConsumptionLog {
         let now = consumption
             .expiry_time_floor
             .map_or(now, |floor| now.max(floor));
-        consumption
-            .check_mark(rule)
-            .map_err(Error::RuleGrantRefused)?;
+        if let Err(refusal) = consumption.check_mark(rule.identity()) {
+            return Err(refused(refusal));
+        }
         let spent = hex::encode(Sha256::digest(jti.as_bytes()));
         if consumption.proofs.contains_key(&spent) {
-            return Err(Error::RuleGrantRefused(AuthorityRefusal::ProofReplayed));
+            return Err(refused(AuthorityRefusal::ProofReplayed));
         }
         let mut updated = consumption.clone();
         updated.expiry_time_floor = Some(now);
@@ -741,7 +757,7 @@ impl ConsumptionLog {
             expires.plus(ployz_core::authority::validity::CLOCK_SKEW_MILLIS) >= now
         });
         updated.proofs.insert(spent, expires_at);
-        updated.raise_mark(rule);
+        updated.raise_mark(rule.identity());
         self.write(&mut guard, updated)
     }
 
@@ -751,9 +767,10 @@ impl ConsumptionLog {
     /// repository, branch or Namespace. Writes only when the mark rises.
     pub(crate) fn mark_rule(
         &self,
-        rule: &AutoDeployRule,
+        rule: &impl ClaimRule,
         refused: impl FnOnce(AuthorityRefusal) -> Error,
     ) -> Result<(), Error> {
+        let rule = rule.identity();
         let mut guard = self.loaded()?;
         let consumption = guard.as_ref().expect("loaded above");
         consumption.check_mark(rule).map_err(refused)?;
@@ -780,26 +797,54 @@ impl ConsumptionLog {
             .as_ref()
             .expect("loaded above")
             .accepted
-            .get(&rule_service_key(rule, &claim.service));
-        Ok(AcceptedBuild::of(claim).is_some_and(|build| accepted == Some(&build)))
+            .get(&rule_service_key(rule.rule, None, &claim.service));
+        Ok(AcceptedBuild::of(claim, None).is_some_and(|build| accepted == Some(&build)))
+    }
+
+    /// The preview this Machine already admitted a creation of `claim`'s build for under
+    /// `rule` in `namespace`, which only that preview's Namespace derives from.
+    pub(crate) fn accepted_preview(
+        &self,
+        rule: RuleId,
+        namespace: &Namespace,
+        claim: &BuildClaim,
+    ) -> Result<Option<PreviewKey>, Error> {
+        let guard = self.loaded()?;
+        let accepted = guard
+            .as_ref()
+            .expect("loaded above")
+            .accepted
+            .get(&rule_service_key(rule, Some(namespace), &claim.service));
+        Ok(accepted.and_then(|build| {
+            let preview = build.preview.as_ref()?;
+            (AcceptedBuild::of(claim, Some(preview)).as_ref() == Some(build))
+                .then(|| preview.clone())
+        }))
     }
 
     /// Record `claim`'s build as the one `rule`'s Service last created a Container from
-    /// here. Written before the Container is made. Refuses, through `refused`, a `rule`
-    /// a newer generation replaced while its admission waited on GitHub.
+    /// here, in the preview `preview` names for a preview rule. Written before the
+    /// Container is made. Refuses, through `refused`, a `rule` a newer generation replaced
+    /// while its admission waited on GitHub.
     pub(crate) fn accept(
         &self,
-        rule: &AutoDeployRule,
+        rule: &impl ClaimRule,
+        preview: Option<(&Namespace, &PreviewKey)>,
         claim: &BuildClaim,
         refused: impl FnOnce(AuthorityRefusal) -> Error,
     ) -> Result<(), Error> {
         let mut guard = self.loaded()?;
         let consumption = guard.as_ref().expect("loaded above");
+        let rule = rule.identity();
         consumption.check_mark(rule).map_err(refused)?;
-        let Some(build) = AcceptedBuild::of(claim) else {
+        let Some(build) = AcceptedBuild::of(claim, preview.map(|(_, key)| key)) else {
             return Ok(());
         };
-        let key = rule_service_key(rule, &claim.service);
+        let key = rule_service_key(
+            rule.rule,
+            preview.map(|(namespace, _)| namespace),
+            &claim.service,
+        );
         if consumption.accepted.get(&key) == Some(&build) {
             return Ok(());
         }
@@ -812,16 +857,18 @@ impl ConsumptionLog {
     /// refusing one taken for another slot. A request resent for the same slot passes:
     /// the Machine adopts the hook that ran. A later push of the Service replaces the
     /// entry, so a push runs its hook once; a force push back to an earlier commit can
-    /// run that commit's hook again.
+    /// run that commit's hook again. A preview rule keeps one entry per preview, named by
+    /// its Namespace in `preview`.
     pub(crate) fn consume_rule_hook(
         &self,
-        rule: &AutoDeployRule,
+        (rule, preview): (RuleId, Option<&Namespace>),
         claim: &BuildClaim,
         slot: &ployz_core::CreationKey,
+        refused: impl FnOnce(AuthorityRefusal) -> Error,
     ) -> Result<(), Error> {
         let mut guard = self.loaded()?;
         let consumption = guard.as_ref().expect("loaded above");
-        let key = rule_service_key(rule, &claim.service);
+        let key = rule_service_key(rule, preview, &claim.service);
         if let Some(taken) = consumption.rule_hooks.get(&key)
             && taken.generation == claim.generation
             && taken.commit == claim.commit
@@ -829,11 +876,9 @@ impl ConsumptionLog {
             if &taken.slot == slot {
                 return Ok(());
             }
-            return Err(Error::RuleDeployRefused(
-                super::rule_deploy::RuleDeployRefusal::Rule(AuthorityRefusal::Mismatch {
-                    field: "a hook run",
-                }),
-            ));
+            return Err(refused(AuthorityRefusal::Mismatch {
+                field: "a hook run",
+            }));
         }
         let mut updated = consumption.clone();
         updated.rule_hooks.insert(

@@ -24,6 +24,7 @@ mod names;
 mod old_cli;
 mod permission;
 mod policy;
+mod preview_rule;
 mod project;
 mod pull_request;
 mod query;
@@ -68,7 +69,7 @@ pub use branch::{
 pub use build::{
     BuildLogQuery, BuildLogView, BuildReport, BuildStatus, BuildView, GitSource, GithubBuild,
     GithubBuildId, GithubClaims, GithubEnd, GithubGrant, GithubHandOff, GithubInput, GithubReport,
-    GithubRun, RunEnd,
+    GithubRule, GithubRun, RunEnd,
 };
 pub use builders::{BuildOrder, BuildOrderQuery, BuildOrderView, Builder, SetBuildOrder};
 pub use client_sealed::SecretValue;
@@ -94,6 +95,7 @@ pub use permission::Permission;
 pub use ployz_core::authority::rule_draft::RuleSourceView;
 /// A Sync view row's id, as Sync, Take, Never sync and Hold name it.
 pub use ployz_core::config::RowId;
+pub use preview_rule::{ApprovePreviewRule, PlanPreviewRule, PreviewRuleView};
 pub use pull_request::{
     ApprovePullRequest, MergeRow, OnMerge, OnMergeCheck, OnMergeConclusion, OnMergeInto,
     OnMergeQuery, OpenPullRequest, PrEnvironment, PrPlan, PrPlansQuery, PrPlansView, PullRequest,
@@ -541,18 +543,12 @@ impl ConfigStore {
             .read(|tx| build::github_authorize(tx, id, claims))
     }
 
-    /// The automatic deploy rule GitHub build `id` builds under, if any: its run is the
-    /// push's own, which Cloud follows rather than dispatching one.
+    /// The rule GitHub build `id` builds under, automatic deploy or preview, if any: its
+    /// run is the push's own, which Cloud follows rather than dispatching one.
     ///
     /// # Errors
     /// Returns `not_found` for an unknown Deployment, or a storage error.
-    pub fn github_rule(
-        &self,
-        id: &GithubBuildId,
-    ) -> Result<
-        Option<ployz_core::authority::Signed<ployz_core::authority::AutoDeployRule>>,
-        RpcError,
-    > {
+    pub fn github_rule(&self, id: &GithubBuildId) -> Result<Option<GithubRule>, RpcError> {
         self.storage.read(|tx| build::github_rule(tx, id))
     }
 

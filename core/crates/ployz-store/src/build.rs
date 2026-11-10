@@ -1095,24 +1095,54 @@ pub(crate) fn github_authorize(
     Ok(build)
 }
 
-/// The automatic deploy rule GitHub build `id` builds under: its Environment's, ended
-/// or not, when the Store's automation admitted the Deployment for a push and the rule
-/// covers the Service. Its run is then the push's own, which Cloud follows.
+/// The rule a GitHub build builds under, on the run its push started. Cloud relays it;
+/// the builder and the grant Machine check it.
+#[derive(Clone, Debug, PartialEq)]
+pub enum GithubRule {
+    /// A push to the approved branch, under its Environment's automatic deploy rule.
+    Auto(ployz_core::authority::Signed<ployz_core::authority::AutoDeployRule>),
+    /// A push to a preview's branch, under the preview rule of the Environment it
+    /// starts from.
+    Preview(ployz_core::authority::Signed<ployz_core::authority::PreviewRule>),
+}
+
+impl GithubRule {
+    /// The repository, workflow and builder the rule names, once its signature checks.
+    #[must_use]
+    pub fn source(&self) -> Option<ployz_core::authority::RuleSource> {
+        match self {
+            Self::Auto(signed) => signed.open().ok().map(|rule| rule.source),
+            Self::Preview(signed) => signed.open().ok().map(|rule| rule.source),
+        }
+    }
+}
+
+/// The rule GitHub build `id` builds under, ended or not, when the Store's automation
+/// admitted the Deployment for a push and the rule covers the Service: its
+/// Environment's automatic deploy rule, or, for a preview, the preview rule its
+/// Namespace derives from. Its run is then the push's own, which Cloud follows.
 pub(crate) fn github_rule(
     tx: &mut dyn Tx,
     id: &GithubBuildId,
-) -> Result<Option<ployz_core::authority::Signed<ployz_core::authority::AutoDeployRule>>, RpcError>
-{
+) -> Result<Option<GithubRule>, RpcError> {
     let stored = deployment::load(tx, &id.deployment)?;
     if stored.summary.admitted_by.is_some() {
         return Ok(None);
     }
-    let rule = crate::auto_rule::stored(tx, &stored.summary.environment_id)?;
-    Ok(rule.filter(|signed| {
-        signed
+    if let Some(preview) = crate::preview_rule::of_deployment(tx, &stored)? {
+        let covers = preview
             .open()
-            .is_ok_and(|rule| rule.service(&id.service).is_some())
-    }))
+            .is_ok_and(|rule| rule.service(&id.service).is_some());
+        return Ok(covers.then_some(GithubRule::Preview(preview)));
+    }
+    let rule = crate::auto_rule::stored(tx, &stored.summary.environment_id)?;
+    Ok(rule
+        .filter(|signed| {
+            signed
+                .open()
+                .is_ok_and(|rule| rule.service(&id.service).is_some())
+        })
+        .map(GithubRule::Auto))
 }
 
 /// The GitHub build run `run_id` holds while it builds, if any: a rule build's runner

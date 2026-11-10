@@ -638,15 +638,16 @@ impl ConfigStore {
     }
 
     /// A rule build's runner checks in on its push's run, with the OIDC `claims` Cloud
-    /// verified and the `commit` it checked out: the rule, the Cluster's keys and the
-    /// one-Service deployment, Sealed values sealed. Changes nothing.
+    /// verified and the `commit` it checked out: the rule (`rule` for an automatic deploy
+    /// rule, `preview` for a preview rule), the Cluster's keys and the one-Service
+    /// deployment, Sealed values sealed. Changes nothing.
     ///
     /// # Errors
     /// Returns `not_found` while no build holds the run, `unauthenticated` for another
     /// repository, workflow or run, and `conflict` for another commit, a build that
     /// checked in, or one under no rule.
     #[napi(
-        ts_return_type = "Promise<{ build: string; rule: unknown; cluster: string; attest: string; service: string; deployment: unknown; foreign: string[] }>"
+        ts_return_type = "Promise<{ build: string; rule?: unknown; preview?: unknown; cluster: string; attest: string; service: string; deployment: unknown; foreign: string[] }>"
     )]
     pub async fn github_rule_check_in(
         &self,

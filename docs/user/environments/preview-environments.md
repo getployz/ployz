@@ -72,6 +72,71 @@ environments** is on. A bot's pull request from a fork still needs approval.
 `ployz env pr` lists each open pull request with where it stands, like `#142 needs approval
 a1b2c3d` or `#140 deploys`.
 
+## Previews on servers that enforce device approval
+
+Servers with [device enforcement](../servers/manage-servers.md#require-a-devices-signature-for-restarts-and-joins)
+on open a preview only under a preview rule you approve from an approved device. It works like
+[deploy on push](../deploy/github.md#deploy-on-push-to-servers-that-enforce-device-approval):
+approve it once from the environment previews start from, for the services that build from your
+repository:
+
+```bash
+ployz github preview approve web --env production
+```
+
+It prints what every preview will run, then signs it with your device key:
+
+```text
+Approving previews of production:
+  repository  acme/web
+  builder     getployz/build/.github/workflows/build.yml@5f35eaa8e1372d0d86ff82788adadf308e5f3f97
+  urls        <service>-pv-<id>.acme-x7q2.ployz.app
+  trusted     1109914, 2207431
+  servers     2 in the cluster
+  web
+    reads     DATABASE_URL from production
+    setup     runs once, on each preview's first deploy
+    variables DATABASE_URL (sealed), LOG_LEVEL=info
+    host ports [{"mode":"ingress","hostname":"web-pv-<id>.acme-x7q2.ployz.app","load_balancer_port":443,"container_port":80,"http_protocol":"https"}]
+    generated SESSION_SECRET, new in each preview
+Approved. Pull requests to acme/web by the accounts shown now open a preview of web.
+```
+
+From then on a push to a pull request's branch, by an account the rule trusts, deploys its
+preview with no prompt. Each server checks the rule, GitHub's tokens, the branch's head and the
+settings itself, so Ployz Cloud can't put a preview's code into production or hand it a
+production secret the rule doesn't name.
+
+- **Trusted accounts** are your organization's members' GitHub accounts when you approve. To name
+  them yourself, give each account's numeric GitHub ID: `--trust 1109914 --trust 2207431`.
+  Approve again when someone joins or leaves.
+- **Each preview gets its own namespace and address**, which every server works out from the rule
+  and the branch, like `pv-5a5a5a5a5a5a5a5a-3f9c2e1b7d40`. A preview's generated address is
+  `web-pv-5a5a5a5a5a5a5a5a-3f9c2e1b7d40.acme-x7q2.ployz.app`, not `web-pr-142…`. Pull requests
+  already open keep their old address: close and reopen them once the rule exists.
+- **Secrets stay closed unless the rule names them.** A preview reads a sealed value from
+  production, like `DATABASE_URL` above, only if production's value is set and the service's
+  preview copy leaves it **Not set**. A value you set in the preview is the preview's own, and the
+  server refuses it. Every other secret stays out.
+- **Volumes a preview doesn't copy are refused.** If a preview would mount production's volume,
+  approve says so and stops. Copy the volume in the PR plan, or add `--share-mounts` to let every
+  preview read and write it.
+- **A saved change waits for you.** After you change the settings of a service the rule covers,
+  previews stop deploying it until you approve again. So does adding a server.
+- **Stop it** with `ployz github preview end --env production`. The servers refuse every preview
+  build and deploy under the rule from then on.
+
+GitHub builds each preview on the run its push started, and Ployz runs it again if it ended before
+the pull request opened. So your build workflow must run on pushes to every branch, not only `main`:
+
+```yaml
+on:
+  push:
+```
+
+Pull requests from forks, and from accounts the rule doesn't trust, don't preview on these
+servers yet: the preview's deployment fails at its build.
+
 ## What each pull request gets
 
 When a pull request opens, Ployz deploys its preview, named like `pr-142`:

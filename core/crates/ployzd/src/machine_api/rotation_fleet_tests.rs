@@ -817,6 +817,7 @@ fn gone(container: ContainerId) -> ContainerWant {
 
 async fn ensure(node: &Node, want: ContainerWant) -> EnsuredContainer {
     let request = op::EnsureContainer::into_request(EnsureContainerRequest {
+        preview: None,
         want,
         approval: None,
         deploy: None,
@@ -2433,6 +2434,7 @@ fn creation_on_wire(
             rotation: RunRotation::Pending,
         };
         let request = op::EnsureContainer::into_request(EnsureContainerRequest {
+            preview: None,
             want,
             approval: None,
             deploy: None,

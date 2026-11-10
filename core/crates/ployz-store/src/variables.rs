@@ -1102,7 +1102,8 @@ pub(crate) enum LegacyReader {
 /// Every Service's environment and every Config's files, resolved from compiled
 /// Saved State against the frozen producers, for a Deploy of Environment
 /// `environment`. Nothing opens a secret here. One sealed for `environment` reaches
-/// its Service as a Sealed part; one sealed for another Environment, or Legacy, is
+/// its Service as a Sealed part, and so does one sealed for `inherit`, naming it; one
+/// sealed for another Environment, or Legacy, is
 /// Not set, and what a Legacy one reaches is listed. A variable a secret without a
 /// value, or a broken reference, reaches is left out; in a file either is empty.
 ///
@@ -1112,8 +1113,9 @@ pub(crate) enum LegacyReader {
 pub(crate) fn resolve(
     compiled: &CompiledEnvironmentIntent,
     environment: &str,
+    inherit: Option<uuid::Uuid>,
 ) -> Result<Resolved, RpcError> {
-    let mut resolved = resolve_values(compiled, environment)?;
+    let mut resolved = resolve_values(compiled, environment, inherit)?;
     resolved.legacy = legacy_reads(compiled);
     Ok(resolved)
 }
@@ -1121,12 +1123,19 @@ pub(crate) fn resolve(
 fn resolve_values(
     compiled: &CompiledEnvironmentIntent,
     environment: &str,
+    inherit: Option<uuid::Uuid>,
 ) -> Result<Resolved, RpcError> {
     let environment = uuid::Uuid::parse_str(environment).ok();
     let stored = |sealed: Option<&SecretCiphertext>| match sealed {
         Some(SecretCiphertext::ClientSealed(client)) => match environment {
             Some(id) if client.sealed_for == id => Ok(ResolverValue::Sealed {
                 value: client.value.clone(),
+            }),
+            _ if inherit == Some(client.sealed_for) => Ok(ResolverValue::Sealed {
+                value: ployz_core::SealedValue {
+                    environment: Some(client.sealed_for),
+                    ..client.value.clone()
+                },
             }),
             _ => Ok(ResolverValue::NotSet),
         },
@@ -1560,6 +1569,7 @@ mod tests {
     #[test]
     fn a_sealed_value_counts_toward_a_containers_environment_at_its_opened_length() {
         let sealed = |opened: usize| ployz_core::SealedValue {
+            environment: None,
             sealed: ployz_core::Ciphertext::from_bytes(vec![0; opened + 48]),
             scope: SealedScope::Service(uuid::Uuid::from_u128(3)),
             key: "K".into(),
@@ -1621,7 +1631,7 @@ mod tests {
                 },
             }],
         };
-        let error = resolve(&compiled, &environment.to_string())
+        let error = resolve(&compiled, &environment.to_string(), None)
             .map(|_| ())
             .unwrap_err();
         assert_eq!(error.code, ployz_core::RpcErrorCode::InvalidArgument);
@@ -1673,7 +1683,7 @@ mod tests {
                 },
             }],
         };
-        let mut resolved = resolve(&compiled, "env").unwrap();
+        let mut resolved = resolve(&compiled, "env", None).unwrap();
         assert!(
             resolved.legacy.is_empty(),
             "web is no Service here, as a live value"

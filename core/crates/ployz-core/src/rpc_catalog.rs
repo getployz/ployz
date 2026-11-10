@@ -132,6 +132,8 @@ macro_rules! rpc_catalog {
                 /// The daemon mints a Build Grant for a holder's own key and returns no grant secret.
                 BUILD_GRANT_HOLDER_CAPABILITY: ("ployz.build.grant.holder.v1", Always),
                 BUILD_GRANT_RULE_CAPABILITY: ("ployz.build.grant.rule.v1", Always),
+                /// `MintBuildGrant` takes a preview rule with its GitHub token, and a review for a reviewed build, and checks them before it opens anything.
+                BUILD_GRANT_PREVIEW_CAPABILITY: ("ployz.build.grant.preview.v1", Always),
                 /// `EnsureContainer` takes a Device-signed restart approval and, under Device enforcement, refuses an Operator's restart step without one.
                 RESTART_APPROVAL_CAPABILITY: ("ployz.restart.device-approval.v2", Always),
                 /// A restart or deploy approval may be signed by a browser key under a trusted passkey's session grant that rides in its envelope. The grant names its Environment's ID, and a deploy under it opens only Sealed values sealed for that Environment.
@@ -150,6 +152,8 @@ macro_rules! rpc_catalog {
                 DEPLOY_RULE_CAPABILITY: ("ployz.container.deploy-rule.v1", Always),
                 /// An automatic deploy rule may be answered by a trusted passkey's own prompt, which rides in its envelope, in place of a Device's signature.
                 RULE_PASSKEY_CAPABILITY: ("ployz.rule.passkey.v1", Always),
+                /// `EnsureContainer` takes a preview rule with its image token and, under Device enforcement, creates an Operator's Container under it only in the Namespace it derives, with the settings and inherited Sealed values the rule or a review approves. Sealed values carry the Environment they were sealed for.
+                DEPLOY_PREVIEW_CAPABILITY: ("ployz.container.deploy-preview.v1", Always),
             }
         }
     };

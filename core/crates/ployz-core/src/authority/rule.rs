@@ -123,6 +123,11 @@ hex_newtype!(
     RecipientKey, "recipient key", 32, ""
 );
 hex_newtype!(
+    /// SHA-256 of a preview review's signing input, which is also the challenge a passkey
+    /// answers to approve it.
+    ReviewDigest, "review digest", 32, ""
+);
+hex_newtype!(
     /// The X25519 key every Machine of a Cluster derives from its Sealing Key, which seals
     /// build secrets to a builder and which the builder writes into its image token.
     AttestKey, "attest key", 32, ""
@@ -396,44 +401,101 @@ impl AutoDeployRule {
     /// # Errors
     /// Returns [`AuthorityRefusal::Mismatch`] naming the first claim that does not match.
     pub fn verify_claims(&self, claims: &GithubClaims) -> Result<(), AuthorityRefusal> {
-        let source = &self.source;
-        let git_ref = format!("refs/heads/{}", source.branch);
+        self.source
+            .verify_claims(claims, &format!("refs/heads/{}", self.source.branch))
+    }
+}
+
+impl RuleSource {
+    /// Check `claims` came from this repository's workflow at `git_ref`, run by the pinned
+    /// builder on a GitHub-hosted runner for an event this source builds on.
+    ///
+    /// # Errors
+    /// Returns [`AuthorityRefusal::Mismatch`] naming the first claim that does not match.
+    pub fn verify_claims(
+        &self,
+        claims: &GithubClaims,
+        git_ref: &str,
+    ) -> Result<(), AuthorityRefusal> {
         first_mismatch([
-            (
-                "repository_id",
-                claims.repository_id == source.repository_id,
-            ),
+            ("repository_id", claims.repository_id == self.repository_id),
             (
                 "repository_owner_id",
-                claims.repository_owner_id == source.owner_id,
+                claims.repository_owner_id == self.owner_id,
             ),
             ("ref_type", claims.ref_type == "branch"),
             ("ref", claims.git_ref == git_ref),
             (
                 "event_name",
-                source
-                    .events
+                self.events
                     .iter()
                     .any(|event| event.as_str() == claims.event_name),
             ),
             (
                 "workflow_ref",
-                claims.workflow_ref
-                    == format!("{}/{}@{git_ref}", source.repository, source.workflow),
+                claims.workflow_ref == format!("{}/{}@{git_ref}", self.repository, self.workflow),
             ),
             (
                 "job_workflow_sha",
-                claims.job_workflow_sha == source.builder.sha,
+                claims.job_workflow_sha == self.builder.sha,
             ),
             (
                 "job_workflow_ref",
-                claims.job_workflow_ref == source.builder.r#ref,
+                claims.job_workflow_ref == self.builder.r#ref,
             ),
             (
                 "runner_environment",
-                claims.runner_environment == source.runner.as_str(),
+                claims.runner_environment == self.runner.as_str(),
             ),
         ])
+    }
+}
+
+/// A signed rule a GitHub token's claims are checked against, and what a Machine's record
+/// keeps of it.
+pub trait ClaimRule: Sync {
+    fn identity(&self) -> RuleIdentity<'_>;
+
+    /// # Errors
+    /// Returns [`AuthorityRefusal::Mismatch`] naming the first claim that does not match.
+    fn verify_claims(&self, claims: &GithubClaims) -> Result<(), AuthorityRefusal>;
+}
+
+impl ClaimRule for AutoDeployRule {
+    fn identity(&self) -> RuleIdentity<'_> {
+        RuleIdentity {
+            rule: self.rule,
+            generation: self.generation,
+            repository_id: self.source.repository_id,
+            branch: &self.source.branch,
+            namespace: &self.namespace,
+        }
+    }
+
+    fn verify_claims(&self, claims: &GithubClaims) -> Result<(), AuthorityRefusal> {
+        Self::verify_claims(self, claims)
+    }
+}
+
+/// What a Machine records of a rule the first time it sees it, which no later generation
+/// may change, and the generation in hand.
+#[derive(Clone, Copy, Debug)]
+pub struct RuleIdentity<'a> {
+    pub rule: RuleId,
+    pub generation: u64,
+    pub repository_id: u64,
+    pub branch: &'a str,
+    pub namespace: &'a Namespace,
+}
+
+/// A rule statement, which names the Device that signed it.
+pub trait RuleStatement: Statement {
+    fn signer(&self) -> SignerKey;
+}
+
+impl RuleStatement for AutoDeployRule {
+    fn signer(&self) -> SignerKey {
+        self.signer
     }
 }
 
@@ -445,17 +507,17 @@ impl AutoDeployRule {
 /// Returns the envelope's refusal from [`Signed::approvers`], a malformed body, and
 /// [`AuthorityRefusal::Mismatch`] naming the signer when no Device or passkey signed as
 /// the body says.
-pub fn verify_signature(
-    rule: &Signed<AutoDeployRule>,
+pub fn verify_signature<T: RuleStatement>(
+    rule: &Signed<T>,
     trusted: &TrustedKeys,
     now: Timestamp,
-) -> Result<(AutoDeployRule, Approver), AuthorityRefusal> {
+) -> Result<(T, Approver), AuthorityRefusal> {
     let approvers = rule.approvers(trusted, now)?;
     let body = rule.open()?;
     approvers
         .into_iter()
         .find(|approver| {
-            !matches!(approver, Approver::Browser { .. }) && approver.signs_as(body.signer)
+            !matches!(approver, Approver::Browser { .. }) && approver.signs_as(body.signer())
         })
         .map(|approver| (body, approver))
         .ok_or(AuthorityRefusal::Mismatch {
@@ -463,12 +525,14 @@ pub fn verify_signature(
         })
 }
 
-/// Which authority a build claims for its commit. Only `Head` exists so far: the commit is
-/// the branch head the Machine reads from GitHub itself.
+/// Which authority a build claims for its commit.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
 #[serde(rename_all = "snake_case")]
 pub enum CommitAuthority {
+    /// The commit is the branch head the Machine reads from GitHub itself.
     Head,
+    /// A person reviewed the commit for a preview: the review with this digest names it.
+    Review(ReviewDigest),
 }
 
 /// Which token of a build this is: the one that asks for the build secrets, or the one
@@ -607,9 +671,12 @@ impl AutoDeployRule {
             ("a commit", claim.commit == facts.head),
         ];
         // Only a build of the head reaches a creation through a rule. D6's approved
-        // builds deploy through a person's deploy approval instead.
-        match claim.authority {
-            CommitAuthority::Head => {}
+        // builds deploy through a person's deploy approval instead, and a reviewed build
+        // only under a preview rule.
+        if claim.authority != CommitAuthority::Head {
+            return Err(AuthorityRefusal::Mismatch {
+                field: "an authority",
+            });
         }
         first_mismatch(checks)
     }
@@ -632,6 +699,7 @@ impl AutoDeployRule {
             return Err(mismatch("a Service"));
         }
         self.verify_step(claim, facts)?;
+        super::deploy::refuse_preview_parts(facts.namespace, creation.spec)?;
         let (image, attest) = match claim.stage {
             BuildStage::Built { image, attest } => (image, attest),
             BuildStage::Grant { .. } => return Err(mismatch("a stage")),

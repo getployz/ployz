@@ -225,6 +225,7 @@ mod tests {
         ClientSealedValue {
             sealed_for: Uuid::from_u128(sealed_for),
             value: SealedValue {
+                environment: None,
                 sealed: Ciphertext::from_bytes(bytes),
                 scope: SealedScope::Service(Uuid::from_u128(service)),
                 key: key.into(),

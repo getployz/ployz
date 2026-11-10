@@ -5200,6 +5200,7 @@ mod ensure_container {
         ) -> Result<ployz_core::RpcResponse, Status> {
             let holder = hex::encode([3u8; 32]);
             let request = op::MintBuildGrant::into_request(ployz_core::MintBuildGrantRequest {
+                preview: None,
                 repository: ployz_core::BuildGrantRepository::parse("ployz-build/web").unwrap(),
                 holder: Some(ployz_core::BuildGrantId::parse(holder).unwrap()),
                 sealed: Some(foreign_sealed()),
@@ -5277,6 +5278,7 @@ mod ensure_container {
             let signed = rule::rule_for(fixture.cluster, machine, &fixture.signer, record);
             let token = rule::token_for(&rule::claim_for(fixture.cluster, &signed), jti);
             let request = op::MintBuildGrant::into_request(ployz_core::MintBuildGrantRequest {
+                preview: None,
                 repository: ployz_core::BuildGrantRepository::parse("ployz-build/web").unwrap(),
                 holder: Some(rule::holder()),
                 sealed: Some(record.clone()),
@@ -5532,7 +5534,7 @@ mod ensure_container {
             .unwrap();
             let admitted = service
                 .local
-                .admit_operator_restart(want, Some(&signed), None, None)
+                .admit_operator_restart(want, Some(&signed), None, None, None)
                 .await
                 .unwrap();
             ensure(
@@ -6451,6 +6453,7 @@ mod ensure_container {
                     serde_json::from_value(new_want("pre_deploy_hook", "h1", &approved)).unwrap(),
                     None,
                     Some(&signed),
+                    None,
                     None,
                 )
                 .await

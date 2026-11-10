@@ -329,7 +329,7 @@ struct SlowHead {
 impl Github for SlowHead {
     async fn claims(
         &self,
-        rule: &ployz_core::authority::AutoDeployRule,
+        rule: &impl ployz_core::authority::ClaimRule,
         token: &str,
         now: Timestamp,
     ) -> Result<ployz_core::authority::GithubClaims, crate::github::oidc::ProofRefusal> {

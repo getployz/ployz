@@ -165,8 +165,11 @@ fn check_bindings(record: &SealedRecord) -> Result<(), OpenError> {
             return Err(OpenError::BadName(name.clone()));
         }
         if let EnvValue::Sealed(sealed) = value {
+            // A parent's value a preview inherits keeps its parent Service's scope: its
+            // associated data binds that, and admission checked the preview rule names it.
             let scope_matches = match sealed.scope {
                 SealedScope::Shared => true,
+                SealedScope::Service(_) if sealed.environment.is_some() => true,
                 SealedScope::Service(service) => service == record.identity().service,
             };
             if sealed.key != *name || !scope_matches {
@@ -457,8 +460,29 @@ pub(crate) mod test_support {
 
         pub(crate) fn seal(&self, key: &str, scope: SealedScope, plaintext: &str) -> SealedValue {
             let mut value = SealedValue {
+                environment: None,
                 sealed: ployz_core::Ciphertext::from_bytes(vec![0; 48]),
                 scope,
+                key: key.into(),
+            };
+            value.sealed = self
+                .key
+                .seal_value(&value.associated_data(&self.identity), plaintext.as_bytes());
+            value
+        }
+
+        /// A value of `key` sealed for `environment` in place of this Cluster's own, as
+        /// a preview inherits its parent's.
+        pub(crate) fn seal_inherited(
+            &self,
+            key: &str,
+            environment: Uuid,
+            plaintext: &str,
+        ) -> SealedValue {
+            let mut value = SealedValue {
+                environment: Some(environment),
+                sealed: ployz_core::Ciphertext::from_bytes(vec![0; 48]),
+                scope: SealedScope::Shared,
                 key: key.into(),
             };
             value.sealed = self

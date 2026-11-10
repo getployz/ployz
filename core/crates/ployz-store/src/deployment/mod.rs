@@ -604,7 +604,10 @@ pub struct Claimed {
     /// The automatic deploy rule a push's Deployment runs under, which the runner hands
     /// each Server with each Service's image token; none for any other Deployment.
     pub rule: Option<ployz_core::authority::Signed<ployz_core::authority::AutoDeployRule>>,
-    /// The image token each Service's GitHub build under `rule` reported.
+    /// The preview rule a trusted push's preview Deployment runs under, which the runner
+    /// hands each Server like `rule`; none for any other Deployment.
+    pub preview: Option<ployz_core::authority::Signed<ployz_core::authority::PreviewRule>>,
+    /// The image token each Service's GitHub build under `rule` or `preview` reported.
     pub image_tokens: BTreeMap<ServiceName, String>,
 }
 
@@ -1540,6 +1543,37 @@ pub(crate) fn cluster_domain(
     .transpose()
 }
 
+/// Fix `namespace`, a preview's derived one, as Environment `id`'s. Refused when another
+/// Environment holds it: a preview of that branch is open already.
+pub(crate) fn reserve_namespace(
+    tx: &mut dyn Tx,
+    who: &Actor,
+    id: &EnvironmentId,
+    namespace: &Namespace,
+) -> Result<(), RpcError> {
+    let taken = tx.query(
+        "SELECT environment_id FROM config_namespace \
+         WHERE organization_id = ?1 AND namespace = ?2",
+        &[who.organization.as_str().into(), namespace.as_str().into()],
+    )?;
+    if !taken.is_empty() {
+        return Err(error::conflict(
+            "A preview of this branch is open already",
+            json!({ "namespace": namespace }),
+        ));
+    }
+    tx.execute(
+        "INSERT INTO config_namespace (organization_id, namespace, environment_id) \
+         VALUES (?1, ?2, ?3)",
+        &[
+            who.organization.as_str().into(),
+            namespace.as_str().into(),
+            id.as_str().into(),
+        ],
+    )?;
+    Ok(())
+}
+
 /// The Namespace `environment` deploys into: fixed at its first admission, so renames
 /// never move it. `{project}-{environment}` unless another Environment of the
 /// Organization holds that, then suffixed with this Environment's ID. `reserve`
@@ -1578,7 +1612,11 @@ pub(crate) fn namespace(
                 &[who.organization.as_str().into(), namespace.as_str().into()],
             )?
             .is_empty();
-        if namespace.is_reserved() || taken {
+        // A preview's Namespace is only ever one its rule derives.
+        if namespace.is_reserved()
+            || ployz_core::authority::preview::is_preview_namespace(&namespace)
+            || taken
+        {
             continue;
         }
         if reserve {

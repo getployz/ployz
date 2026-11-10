@@ -1,7 +1,7 @@
 import { Effect, Schema } from "effect";
 import { describe, expect, it } from "vitest";
 import { organizationAccess } from "./github-access";
-import { checkGithubBuildWorkflow, findGithubPushRun } from "./github-build.server";
+import { checkGithubBuildWorkflow, findGithubPushRun, rerunGithubRun } from "./github-build.server";
 import { GITHUB_BUILD_WORKFLOW, githubBuildId, githubBuildWorkflowUrl } from "./github-build-workflow";
 import { GithubApi, GithubObservationError, type GithubObservationErrorCode } from "./github-observation.api";
 
@@ -99,17 +99,42 @@ function pushRuns(runs: unknown[]) {
   )).then((run) => ({ run, paths }));
 }
 
-const run = (id: number, headSha: string, event: string) => ({ id, html_url: `https://github.com/acme/api/actions/runs/${id}`, head_sha: headSha, event });
+const run = (id: number, headSha: string, event: string, status = "in_progress") =>
+  ({ id, html_url: `https://github.com/acme/api/actions/runs/${id}`, head_sha: headSha, event, status });
 
 describe("findGithubPushRun", () => {
   it("follows the run the push of the commit started", async () => {
     const found = await pushRuns([run(1, HEAD, "workflow_dispatch"), run(2, "d".repeat(40), "push"), run(3, HEAD, "push")]);
-    expect(found.run).toEqual({ runId: 3, runUrl: "https://github.com/acme/api/actions/runs/3" });
+    expect(found.run).toEqual({ runId: 3, runUrl: "https://github.com/acme/api/actions/runs/3", completed: false });
     expect(found.paths).toEqual([`/repos/acme/api/actions/workflows/ployz-build.yml/runs?head_sha=${HEAD}&event=push&per_page=5`]);
+  });
+
+  it("says when the push run already completed, so Cloud runs it again", async () => {
+    expect((await pushRuns([run(3, HEAD, "push", "completed")])).run).toMatchObject({ runId: 3, completed: true });
   });
 
   it("finds nothing until GitHub lists a push run of the commit", async () => {
     expect((await pushRuns([])).run).toBeNull();
     expect((await pushRuns([run(1, HEAD, "workflow_dispatch")])).run).toBeNull();
+  });
+});
+
+describe("rerunGithubRun", () => {
+  it("asks GitHub to run the run again", async () => {
+    const requests: { path: string; method: string | undefined }[] = [];
+    await Effect.runPromise(rerunGithubRun({ access: organizationAccess("org", 7), fullName: "acme/api", runId: 3 }).pipe(
+      Effect.provideService(GithubApi, {
+        archive: () => Effect.die("unused"),
+        app: () => Effect.die("unused"),
+        installationRepositories: () => Effect.die("unused"),
+        exchangeUserCode: () => Effect.die("unused"),
+        userJson: () => Effect.die("unused"),
+        json: (request) => {
+          requests.push({ path: request.path, method: request.method });
+          return Schema.decodeUnknownEffect(request.schema)({}).pipe(Effect.orDie);
+        },
+      }),
+    ));
+    expect(requests).toEqual([{ path: "/repos/acme/api/actions/runs/3/rerun", method: "POST" }]);
   });
 });

@@ -1,5 +1,6 @@
 #![expect(clippy::indexing_slicing, reason = "JSON fixtures")]
 
+use ployz_core::authority::AutoDeployRule;
 use std::collections::BTreeMap;
 
 use ployz_core::{
@@ -20,8 +21,8 @@ use crate::{
     sealed_env::test_support::Cluster,
 };
 
-const BUILDER_SHA: &str = "1234567890abcdef1234567890abcdef12345678";
-const COMMIT: &str = "54dfcf4a46870fa09f5d5d6c965dd705c1a24e5c";
+pub(crate) const BUILDER_SHA: &str = "1234567890abcdef1234567890abcdef12345678";
+pub(crate) const COMMIT: &str = "54dfcf4a46870fa09f5d5d6c965dd705c1a24e5c";
 const MARKER: &str = "marker-sealed-rule-0123";
 
 pub(crate) struct Fixture {
@@ -29,7 +30,7 @@ pub(crate) struct Fixture {
     pub(crate) signer: Signer,
     pub(crate) cluster: SealingPublicKey,
     /// The Sealing Key the Machine holds, in a directory of its own.
-    sealing: Cluster,
+    pub(crate) sealing: Cluster,
     /// The build's one Sealed record: sealing again would change its digest.
     pub(crate) record: SealedRecord,
     _data_dir: crate::test_dir::TestDir,
@@ -125,7 +126,7 @@ pub(crate) fn holder() -> BuildGrantId {
     BuildGrantId::parse(hex::encode([3u8; 32])).unwrap()
 }
 
-fn recipient() -> RecipientKey {
+pub(crate) fn recipient() -> RecipientKey {
     RecipientKey::from_bytes([4; 32])
 }
 
@@ -303,6 +304,7 @@ async fn a_valid_token_mints_and_its_secrets_open_only_for_the_build() {
     assert_eq!(admitted.commit, commit());
     let mint = Mint::check_admitted(
         MintBuildGrantRequest {
+            preview: None,
             repository: BuildGrantRepository::parse("ployz-build/web").unwrap(),
             holder: Some(holder()),
             sealed: Some(fixture.record()),

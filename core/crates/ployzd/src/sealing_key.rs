@@ -818,6 +818,7 @@ mod tests {
         let service = Uuid::parse_str("7d4e9a12-3c5b-4f6e-8a90-b1c2d3e4f5a6").unwrap();
         let aad = |organization: &str, environment: Uuid, service: Uuid, variable: &str| {
             SealedValue {
+                environment: None,
                 sealed: sealed.clone(),
                 scope: SealedScope::Service(service),
                 key: variable.into(),
