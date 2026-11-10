@@ -45,6 +45,7 @@ there is no automatic reclamation, cross-store synchronization, or subnet repair
 Run Cargo and engine script commands from `core/`.
 
 - `crates/ployz-core`: domain and wire contracts shared by both binaries
+- `crates/ployz-decide`: the decisions a model check calls, pure over plain facts
 - `crates/ployz`: CLI for Linux, macOS, and Windows through WSL
 - `crates/ployz-store`: the Config Store, all authored configuration and its history behind one read/write interface, served to Cloud through `@ployz/sdk`
 - `crates/ployz-build`: BuildKit execution for one captured Build

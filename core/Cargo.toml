@@ -1,6 +1,6 @@
 [workspace]
-members = ["crates/ployz-core", "crates/ployz-build", "crates/ployz", "crates/ployz-sdk", "crates/ployz-config-wasm", "crates/ployz-store", "crates/ployzd", "crates/ployz-testkit", "crates/ployz-verify"]
-default-members = ["crates/ployz-core", "crates/ployz-build", "crates/ployz", "crates/ployz-sdk", "crates/ployz-store", "crates/ployzd"]
+members = ["crates/ployz-core", "crates/ployz-decide", "crates/ployz-build", "crates/ployz", "crates/ployz-sdk", "crates/ployz-config-wasm", "crates/ployz-store", "crates/ployzd", "crates/ployz-testkit", "crates/ployz-verify"]
+default-members = ["crates/ployz-core", "crates/ployz-decide", "crates/ployz-build", "crates/ployz", "crates/ployz-sdk", "crates/ployz-store", "crates/ployzd"]
 resolver = "3"
 
 [workspace.package]
@@ -14,6 +14,7 @@ license = "Apache-2.0"
 inotify = "0.11.5"
 ployz-build = { path = "crates/ployz-build" }
 ployz-core = { path = "crates/ployz-core" }
+ployz-decide = { path = "crates/ployz-decide" }
 ployz-store = { path = "crates/ployz-store" }
 ployz-testkit = { path = "crates/ployz-testkit" }
 ts-rs = { version = "12.0.1", features = ["serde-compat", "serde-json-impl", "no-serde-warnings"] }
@@ -34,6 +35,9 @@ debug = "line-tables-only"
 
 # Model checks explore hundreds of thousands of states; unoptimized they take minutes.
 [profile.dev.package.ployz-verify]
+opt-level = 3
+
+[profile.dev.package.ployz-decide]
 opt-level = 3
 
 [profile.dev.package.stateright]

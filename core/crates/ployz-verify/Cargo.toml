@@ -9,6 +9,7 @@ description = "Model checks of Ployz protocols that tests cannot reach"
 
 [dev-dependencies]
 ployz-core.workspace = true
+ployz-decide.workspace = true
 stateright = "0.31.0"
 
 [lints]
