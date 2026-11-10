@@ -96,6 +96,17 @@ pub enum SealedScope {
     Service(#[ts(type = "string")] Uuid),
 }
 
+/// A Sealed value the browser sealed to one Environment's Sealing Key, bound to
+/// the variable it was authored as. Cloud carries it and never opens it.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ClientSealedValue {
+    /// The Environment whose Sealing Key opens it: in any other it is Not set.
+    #[ts(type = "string")]
+    pub sealed_for: Uuid,
+    pub value: SealedValue,
+}
+
 /// HPKE encapsulated key followed by the ciphertext.
 #[derive(Clone, Eq, PartialEq, Serialize, Deserialize, TS)]
 #[serde(try_from = "String", into = "String")]
@@ -241,8 +252,7 @@ mod sealer {
         Ciphertext, PLATFORM_SEALED_INFO, PlatformPurpose, SEALED_VALUE_INFO, SealedIdentity,
         SealedScope, SealedValue,
     };
-    use crate::SealingPublicKey;
-    use crate::config::ClientSealedValue;
+    use crate::{ClientSealedValue, SealingPublicKey};
 
     type Kem = X25519HkdfSha256;
 
@@ -501,7 +511,7 @@ mod sealer {
             assert_eq!(
                 cluster.open(
                     &authored(),
-                    &crate::config::ClientSealedValue {
+                    &crate::ClientSealedValue {
                         sealed_for: authored().environment,
                         value: as_env,
                     }

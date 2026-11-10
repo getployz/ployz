@@ -19,6 +19,7 @@ mod sync;
 mod validation;
 mod variables;
 
+pub use crate::sealed::ClientSealedValue;
 pub use branch_plan::*;
 pub use change_set::*;
 pub use change_set_types::*;
