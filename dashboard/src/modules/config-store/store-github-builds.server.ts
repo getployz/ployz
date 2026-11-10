@@ -161,10 +161,24 @@ export const startStoreGithubBuild = Effect.fn("StoreGithub.start")(function* (o
       }));
       return { kind: "dispatched", runId: run.runId } satisfies StoreGithubStart;
     }
+    if (start.kind === "approved") {
+      // A commit a person approved under an automatic deploy rule builds on the rule's workflow, on its branch, at that
+      // commit; the grant Machine checks the commit is on the branch.
+      const config = yield* AppConfig;
+      const run = yield* dispatchGithubBuildWorkflow({
+        access, fullName, branch: start.branch, workflow: start.workflow,
+        inputs: { cloud: config.app.url.origin, commit: start.commit },
+      });
+      const cancel = cancelGithubRun({ access, fullName, runId: run.runId }).pipe(Effect.ignore);
+      yield* storeTry(() => store.githubDispatched(target.build, {
+        run_id: run.runId, run_url: run.runUrl, workflow_ref: start.workflow_ref, repository: fullName, installation_id: installationId,
+      })).pipe(Effect.onError(() => cancel));
+      return { kind: "dispatched", runId: run.runId } satisfies StoreGithubStart;
+    }
     if (start.kind !== "dispatch") return done;
     const config = yield* AppConfig;
     const run = yield* dispatchGithubBuildWorkflow({
-      access, fullName, defaultBranch: workflow.defaultBranch,
+      access, fullName, branch: workflow.defaultBranch,
       inputs: { build: target.build, cloud: config.app.url.origin, runner: start.runner },
     });
     // The run must not build untracked: whatever stops Cloud recording it (cancelled or replaced meanwhile, a

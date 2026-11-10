@@ -177,6 +177,12 @@ export const failStoreDeploymentUnrun = Effect.fn("StoreDeployment.failUnrun")(f
   return failed;
 });
 
+/** Whether the queued Deployment waits for a Device to approve the images its builds made, and none has yet. */
+export const storeDeploymentAwaitsApproval = Effect.fn("StoreDeployment.awaitsApproval")(function* (deploymentId: string) {
+  const store = yield* cloudStore;
+  return yield* storeTry(() => store.awaitingApproval(deploymentId));
+});
+
 /** A run is one durable runner: its retried steps claim as the same runner, and a duplicate delivery is another. */
 export const storeDeploymentRunner = (runId: string) => `cloud-${runId}`;
 

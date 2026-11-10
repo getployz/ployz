@@ -427,6 +427,43 @@ it.live("a retried github-start whose first try handed the build to a run follow
     });
   }), 60_000);
 
+it.live("a commit a person approved under an automatic deploy rule builds on the rule's workflow, on its branch, at that commit", () =>
+  Effect.gen(function* () {
+    const dispatched: unknown[] = [];
+    const ruleGithub = fakeGithubApiBy(({ path, body }): JsonValue | undefined => {
+      if (path === "/repositories/42") return { id: 42, full_name: "acme/web", default_branch: "main" };
+      if (path === "/repos/acme/web/actions/workflows/ployz-build.yml") return { path: ".github/workflows/ployz-build.yml", state: "active" };
+      if (path === "/repos/acme/web/actions/workflows/deploy.yml/dispatches") {
+        dispatched.push(body);
+        return { workflow_run_id: RUN, html_url: `https://github.com/acme/web/actions/runs/${RUN}` };
+      }
+      return undefined;
+    });
+    const services = yield* storeTestCloud({ github: ruleGithub.service });
+    const provided = <A, E, R>(program: Effect.Effect<A, E, R>) => program.pipe(
+      Effect.provide(services),
+      Effect.provideService(GithubOidcKeys, { keys: Effect.succeed([jwk]) }),
+    );
+    yield* provided(seedStoreOrganization(ORGANIZATION));
+    const store = yield* provided(seedStoreGitService(ORGANIZATION, { project: PROJECT, environment: ENVIRONMENT, service: SERVICE }));
+    yield* Effect.promise(() => store.write(ORGANIZATION, {
+      command: "admit", admit: "deploy", id: DEPLOYMENT, environment: here, services: [], version: null, accept_volume_loss: [],
+    }, acmeWeb()));
+    yield* Effect.promise(() => store.pinSources(DEPLOYMENT, { web: HEAD }));
+    const cloud = yield* provided(cloudStore);
+    const workflowRef = "acme/web/.github/workflows/deploy.yml@refs/heads/release";
+    vi.spyOn(cloud, "githubStart").mockResolvedValue({
+      kind: "approved", workflow: ".github/workflows/deploy.yml", workflow_ref: workflowRef, branch: "release", commit: HEAD, foreign: [],
+    });
+    const target = { build: BUILD, service: "web", repository: "acme/web", repositoryId: 42, installationId: 7, hasNext: true };
+
+    expect(yield* provided(startStoreGithubBuild(ORGANIZATION, target))).toEqual({ kind: "dispatched", runId: RUN });
+    expect(dispatched).toEqual([{ ref: "release", inputs: { cloud: expect.any(String), commit: HEAD }, return_run_details: true }]);
+    expect(yield* Effect.promise(() => store.githubBuild(BUILD))).toMatchObject({
+      held: { status: "building", run: { run_id: RUN, workflow_ref: workflowRef } },
+    });
+  }), 60_000);
+
 it.live("a retry whose first hand-off commits after its own read follows that run, and cancels its own", () =>
   Effect.gen(function* () {
     let dispatches = 0;

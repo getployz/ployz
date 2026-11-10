@@ -102,7 +102,8 @@ export function marksOf(command: ConfigCommand | BatchCommand): Mark[] {
     case "remove":
     case "cancel_removal":
     case "approve_pull_request":
-    case "approve_rule": return [];
+    case "approve_rule":
+    case "approve_deployment": return [];
     default: return absurd(command);
   }
 }

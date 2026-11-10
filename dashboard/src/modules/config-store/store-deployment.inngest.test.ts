@@ -2,8 +2,9 @@ import { readFileSync } from "node:fs";
 import { InngestTestEngine } from "@inngest/test";
 import { Inngest } from "inngest";
 import { describe, expect, it, vi } from "vitest";
-import { createRunStoreDeployment } from "#/modules/config-store/store-deployment.inngest";
-import { configDeploymentAdmittedEvent } from "#/modules/inngest/events";
+import { asTestDouble } from "#/lib/test-double";
+import { APPROVAL_LOOKS, createRunStoreDeployment, walkApproval } from "#/modules/config-store/store-deployment.inngest";
+import { configDeploymentAdmittedEvent, configDeploymentApprovedEvent } from "#/modules/inngest/events";
 
 const admitted = {
   name: configDeploymentAdmittedEvent,
@@ -21,6 +22,7 @@ async function runOf(ran: Ran) {
   const results = new Map<string, unknown>([
     ["servers-lacking", []],
     ["plan-builds", []],
+    ["approval-0", false],
     ["placement-0", { kind: "stopped" }],
     ["place-volumes", []],
     ["run-deployment", ran],
@@ -78,6 +80,39 @@ describe("a Deployment's failure email", () => {
   it("is never sent for one that applied", async () => {
     expect(await stepsOf(false)).not.toContain("mail-failure");
   });
+});
+
+describe("a redeploy that waits for a device's approval of what it built", () => {
+  async function walk(awaiting: (look: number) => boolean) {
+    const order: string[] = [];
+    const step = {
+      run: async (name: string) => { order.push(name); return awaiting(Number(name.slice("approval-".length))); },
+      waitForEvent: async (name: string, options: { event: string; if: string }) => {
+        order.push(name);
+        expect(options).toMatchObject({ event: configDeploymentApprovedEvent, if: "async.data.deploymentId == 'dep'" });
+        return null;
+      },
+    };
+    const approved = await walkApproval(
+      admitted.data,
+      asTestDouble<Parameters<typeof walkApproval>[1]>()(step),
+      asTestDouble<Parameters<typeof walkApproval>[2]>()(() => undefined),
+    );
+    return { approved, order };
+  }
+
+  it("runs once the approval lands, looking again after each wait", async () => {
+    const { approved, order } = await walk((look) => look < 2);
+    expect(approved).toBe(true);
+    expect(order).toEqual(["approval-0", "approval-wait-0", "approval-1", "approval-wait-1", "approval-2"]);
+  });
+
+  it("gives up once no approval came within the hour", async () => {
+    const { approved, order } = await walk(() => true);
+    expect(approved).toBe(false);
+    expect(order.filter((name) => name.startsWith("approval-wait-"))).toHaveLength(APPROVAL_LOOKS);
+  });
+
 });
 
 const read = (path: string) => readFileSync(new URL(path, import.meta.url), "utf8");
