@@ -11,9 +11,10 @@ use iroh::{
     tls::CaTlsConfig,
 };
 use ployz_core::{
-    DEFAULT_RELAY_URL, DescribeContractRequest, MANAGEMENT_ALPN, MANAGEMENT_PROOF_LABEL,
-    MachineRpcClient, ManagementCapability, ManagementProof, TUNNEL_ALPN, TUNNEL_FAILED,
-    TUNNEL_NEEDS_FULL, TUNNEL_OPEN, op,
+    CLIENT_CLEARED_CLOSE, CLIENT_REFUSED_CLOSE, DEFAULT_RELAY_URL, DescribeContractRequest,
+    MANAGEMENT_ALPN, MANAGEMENT_PROOF_LABEL, MachineRpcClient, ManagementCapability,
+    ManagementProof, SEGMENTATION_OFFLOAD, TUNNEL_ALPN, TUNNEL_FAILED, TUNNEL_NEEDS_FULL,
+    TUNNEL_OPEN, op,
 };
 use std::{
     io,
@@ -27,8 +28,8 @@ use tonic::transport::Channel;
 
 /// Application close codes the daemon refuses an unadmitted key with: never admitted or
 /// rotated away, and confirmed cleared.
-const CLIENT_REFUSED: VarInt = VarInt::from_u32(0x50);
-const CLIENT_CLEARED: VarInt = VarInt::from_u32(0x52);
+const CLIENT_REFUSED: VarInt = VarInt::from_u32(CLIENT_REFUSED_CLOSE);
+const CLIENT_CLEARED: VarInt = VarInt::from_u32(CLIENT_CLEARED_CLOSE);
 const TUNNEL_CLOSE_GRACE: Duration = Duration::from_secs(2);
 
 /// The relay the management transport dials through. Production uses the compiled
@@ -100,11 +101,7 @@ impl Drop for ManagementEndpoint {
 async fn management_endpoint(
     relay: &ManagementRelay,
 ) -> Result<Arc<ManagementEndpoint>, ConnectError> {
-    let mut builder = IrohEndpoint::builder(presets::Minimal)
-        .secret_key(SecretKey::generate())
-        .relay_mode(RelayMode::custom([relay.url.clone()]))
-        .ca_tls_config(relay.tls.clone())
-        .transport_config(transport());
+    let mut builder = endpoint(SecretKey::generate(), relay);
     if relay.relay_only {
         builder = builder.clear_ip_transports();
     }
@@ -118,12 +115,36 @@ async fn management_endpoint(
     }))
 }
 
-/// Sends without segmentation offload, as the daemon does (#3567): a NIC without UDP
-/// checksum offload refuses a segmented send, and the socket only learns that by
-/// dropping one, which on this fresh endpoint is the command's first large request.
+/// The builder every management-side dial binds from: the relay and its trust roots, and
+/// the same send setting the daemon has (#3567).
+pub(super) fn endpoint(secret: SecretKey, relay: &ManagementRelay) -> iroh::endpoint::Builder {
+    IrohEndpoint::builder(presets::Minimal)
+        .secret_key(secret)
+        .relay_mode(RelayMode::custom([relay.url.clone()]))
+        .ca_tls_config(relay.tls.clone())
+        .transport_config(transport())
+}
+
+/// Dial `machine` on `alpn` with only the relay as a hint.
+pub(super) async fn dial(
+    endpoint: &IrohEndpoint,
+    machine: PublicKey,
+    relay: &ManagementRelay,
+    alpn: &[u8],
+) -> Result<iroh::endpoint::Connection, iroh::endpoint::ConnectError> {
+    endpoint
+        .connect(
+            EndpointAddr::new(machine).with_relay_url(relay.url.clone()),
+            alpn,
+        )
+        .await
+}
+
+/// Sends without segmentation offload, as the daemon does: on this fresh endpoint a
+/// segmented send that a NIC refuses is the command's first large request.
 fn transport() -> QuicTransportConfig {
     QuicTransportConfig::builder()
-        .enable_segmentation_offload(false)
+        .enable_segmentation_offload(SEGMENTATION_OFFLOAD)
         .build()
 }
 
@@ -192,11 +213,8 @@ pub(super) async fn connect_management(
     let endpoint = management_endpoint(relay).await;
     stage.finish(&endpoint);
     let endpoint = endpoint?;
-    let address = EndpointAddr::new(machine).with_relay_url(relay.url.clone());
     let mut stage = StageGuard::begin(Stage::IrohConnect);
-    let connection = endpoint
-        .endpoint
-        .connect(address, MANAGEMENT_ALPN)
+    let connection = dial(&endpoint.endpoint, machine, relay, MANAGEMENT_ALPN)
         .await
         .map_err(|error| dial_error("management dial", &error));
     stage.finish(&connection);
@@ -272,12 +290,7 @@ pub(super) async fn dial_tunnel(
     let machine = PublicKey::from_bytes(capability.machine().as_bytes())
         .map_err(|_| ConnectionError::ManagementCapability)?;
     let endpoint = management_endpoint(relay).await?;
-    let connection = endpoint
-        .endpoint
-        .connect(
-            EndpointAddr::new(machine).with_relay_url(relay.url.clone()),
-            TUNNEL_ALPN,
-        )
+    let connection = dial(&endpoint.endpoint, machine, relay, TUNNEL_ALPN)
         .await
         .map_err(|error| dial_error("tunnel dial", &error))?;
     let session = Arc::new(ManagementConnection {

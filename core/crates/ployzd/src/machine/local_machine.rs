@@ -421,7 +421,7 @@ impl LocalMachine {
             return Ok(());
         };
         let label = record.accepted_label(&remote);
-        if label.is_some_and(|label| label.as_str() == "cloud") {
+        if label.is_some_and(ManagementClientLabel::is_cloud) {
             return Ok(());
         }
         tracing::warn!(

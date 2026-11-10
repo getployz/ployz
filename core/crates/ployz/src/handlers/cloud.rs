@@ -928,8 +928,7 @@ async fn set_cloud_management_client(
     let response = client
         .call_repeatable::<op::SetManagementClient>(
             SetManagementClientRequest::Set {
-                label: ManagementClientLabel::parse("cloud")
-                    .expect("`cloud` is a valid Management Client label"),
+                label: ManagementClientLabel::cloud(),
             },
             None,
         )

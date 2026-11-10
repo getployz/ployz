@@ -31,6 +31,23 @@ pub const TUNNEL_OPEN: u8 = 0;
 /// reason says which.
 pub const TUNNEL_FAILED: u32 = 0x53;
 
+/// QUIC application close code a Machine sends a key it does not admit: never admitted, or
+/// rotated away.
+pub const CLIENT_REFUSED_CLOSE: u32 = 0x50;
+
+/// QUIC application close code a Machine sends a live connection whose key no slot holds
+/// any more.
+pub const REVOKED_CLOSE: u32 = 0x51;
+
+/// QUIC application close code a Machine sends to confirm, authenticated, that the dialing
+/// key was cleared: a Cleared tombstone holds it.
+pub const CLIENT_CLEARED_CLOSE: u32 = 0x52;
+
+/// Whether a management-side endpoint sends with UDP segmentation offload. It does not: a
+/// NIC without UDP checksum offload refuses a segmented send, and the socket only learns
+/// that by dropping one, which stalls the first large send on a fresh path (#3567).
+pub const SEGMENTATION_OFFLOAD: bool = false;
+
 /// The [`TUNNEL_FAILED`] close reason for a client below `Full` scope, matched whole. A
 /// v0.3.4 CLI prints it as it is, and knows no other close code, so it names the way on.
 pub const TUNNEL_NEEDS_FULL: &str = "tunnels need Full access: run `ployz device request` (update ployz first if it has no `device` command)";

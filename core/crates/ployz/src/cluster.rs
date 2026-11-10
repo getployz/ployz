@@ -2008,11 +2008,17 @@ pub(crate) async fn refuse_last_managed(
             ))
         })?
         .management_clients;
-    let cloud = holders.iter().any(|label| label.as_str() == "cloud");
+    let cloud = holders
+        .iter()
+        .any(ployz_core::ManagementClientLabel::is_cloud);
     let names: Vec<String> = holders
         .iter()
         .filter(|label| {
-            !cloud || (label.as_str() != "cloud" && !label.as_str().starts_with("cli-"))
+            !cloud
+                || !matches!(
+                    label.kind(),
+                    ployz_core::ManagementClientKind::Cloud | ployz_core::ManagementClientKind::Cli
+                )
         })
         .map(|label| format!("`{label}`"))
         .collect();
