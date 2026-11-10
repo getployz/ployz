@@ -33,6 +33,7 @@ test-keypair = []
 hpke = { version = "0.13.0", default-features = false, features = ["x25519", "alloc"] }
 rand_core = { version = "0.9.5", features = ["os_rng"] }
 reqwest = { version = "0.13.4", default-features = false }
+ring = "0.17.14"
 tonic = { version = "0.13.1", features = ["transport"] }
 
 [target.'cfg(target_arch = "wasm32")'.dependencies]

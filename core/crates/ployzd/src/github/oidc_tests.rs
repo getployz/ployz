@@ -197,7 +197,7 @@ fn shapes_that_are_not_a_jwt_are_refused() {
         "a.b".to_owned(),
         format!("{token}.extra"),
         "!!!.e30.".to_owned(),
-        "x".repeat(MAX_TOKEN_BYTES + 1),
+        "x".repeat(ployz_core::authority::github_oidc::MAX_TOKEN_BYTES + 1),
     ] {
         assert!(verify(&bad, &github_keys(), issued_at()).is_err());
     }

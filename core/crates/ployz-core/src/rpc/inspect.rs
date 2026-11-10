@@ -52,6 +52,11 @@ pub struct MachineDetails {
         deserialize_with = "crate::authority::trusted_key::readable_passkeys"
     )]
     pub passkeys: Vec<crate::authority::TrustedPasskey>,
+    /// The public keys of the Devices this Machine trusts, so a person's client can check a
+    /// statement another Device signed. A daemon from before 0.4 omits it.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    #[ts(optional, as = "Option<Vec<crate::DeviceKey>>")]
+    pub devices: Vec<crate::DeviceKey>,
     /// How this Machine came to its Cluster. A daemon from before 0.3.15 omits it.
     #[serde(default)]
     pub founding: crate::Founding,

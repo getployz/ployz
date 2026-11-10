@@ -10,6 +10,8 @@
 
 pub mod canonical;
 pub mod deploy;
+#[cfg(not(target_arch = "wasm32"))]
+pub mod github_oidc;
 pub mod join;
 pub mod keys;
 pub mod proposal;

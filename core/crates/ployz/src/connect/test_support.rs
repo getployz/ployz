@@ -279,6 +279,7 @@ pub(crate) async fn sealed_channel(
                 advertised_endpoints: Vec::new(),
                 store_version: Default::default(),
                 rtts: Vec::new(),
+                devices: Vec::new(),
                 passkeys: Vec::new(),
                 management_clients: Vec::new(),
                 founding: Default::default(),
