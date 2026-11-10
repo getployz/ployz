@@ -5,9 +5,10 @@ import type { JsonValue, PublishedHostname, RuntimeWatchView } from "@ployz/sdk"
 import { Effect, Schedule, Schema } from "effect";
 import { operationDigest, type OperationAsked } from "#/modules/approvals/approvals.server";
 import { loadClusterDomain } from "#/modules/cluster-domain/cluster-domain.server";
-import { doorsOpenOn, publicSpecifiedAnywhere } from "#/modules/cluster-domain/ingress-running";
+import { closedHolderAnywhere, doorsOpenOn } from "#/modules/cluster-domain/ingress-running";
+import { type ClusterFeature, featuresOf, lackingWords, partialFrame, serversMissing } from "#/modules/cluster-requirements/cluster-requirements";
+import { foundedClosed } from "#/modules/cluster-requirements/cluster-requirements.server";
 import { loadCloudflareSetup } from "#/modules/cloudflare/source.server";
-import { serverEnrollment } from "#/modules/machines/waiting/tables";
 import { callStore, readStore } from "#/modules/config-store/config-store.server";
 import { publishedOf } from "#/modules/config-store/domain-evidence.server";
 import { owners } from "#/modules/config-store/store-lookup.server";
@@ -37,7 +38,6 @@ import { activeDoorsAttempt, lockIngressRows } from "#/modules/ingress/doors.loc
 import { type RedeployPorts, redeployMoved, runSwitch } from "#/modules/ingress/doors.run";
 import { ingressDoorsAttempt, organizationCloudflareIngress } from "#/modules/ingress/tables";
 import { createIngressDoorsRequestedEvent, type IngressDoorsRequestedEventData } from "#/modules/inngest/events";
-import { offlineServers } from "#/modules/machines/server-status";
 import { refusalWords } from "#/modules/machines/server-web-traffic.server";
 import { enqueueEvent } from "#/modules/operations/outbox.server";
 import { firstRuntimeFrame, OrganizationRuntime } from "#/modules/runtime/organization-runtime.server";
@@ -85,21 +85,6 @@ const latestChange = Effect.fn("IngressDoors.latest")(function* (organizationId:
   return latest === undefined ? null : yield* latestChangeOf(latest);
 });
 
-/**
- * Whether the newest founder was told to start the Cluster with every Door closed. Read from the instruction, not the
- * enrollment's end: the Machine founds as told before the enrollment's own run marks it joined, and one that failed
- * late may have founded all the same.
- */
-const foundedClosed = Effect.fn("IngressDoors.foundedClosed")(function* (organizationId: string) {
-  const { drizzle } = yield* Database;
-  const [founder] = yield* drizzle.select({ closed: sql<boolean>`coalesce((${serverEnrollment.instruction}->>'ingressClosed')::boolean, false)` })
-    .from(serverEnrollment)
-    .where(and(eq(serverEnrollment.organizationId, organizationId), eq(serverEnrollment.role, "founder")))
-    .orderBy(desc(serverEnrollment.requestedAt))
-    .limit(1);
-  return founder?.closed ?? false;
-});
-
 /** The Cluster's ingress as the database holds it: its Cloudflare setup, the latest switch and the Hosted name. */
 export const readClusterIngress = Effect.fn("IngressDoors.read")(function* (organizationId: string) {
   const setup = yield* loadCloudflareSetup(organizationId);
@@ -120,28 +105,32 @@ export const observeClusterIngress = Effect.fn("IngressDoors.observe")(function*
 
 function observationOf(frame: RuntimeWatchView): ClusterIngressObservation {
   const open = doorsOpenOn(frame);
-  const offline = offlineServers(frame.machines.map(({ machine, membership }) =>
-    ({ id: machine.id, membership, runningBuilds: machine.runtime.running_builds, unanswered: frame.unanswered.includes(machine.id) })));
   return {
     servers: frame.machines.filter(({ machine }) => machine.accepts_ingress)
       .map(({ machine }) => ({ id: machine.id, name: machine.name, doors: [...(open.get(machine.id) ?? [])].sort() })),
     hostnames: publishedOf(frame),
-    partial: frame.incomplete_ids.machines.length > 0 || frame.incomplete_ids.containers.length > 0 || offline.size > 0,
+    partial: partialFrame(frame),
   };
 }
 
 /**
- * Whether Cloudflare setup may open only the tunnel: the Cluster was founded closed and, seen whole, no Server holds the
- * Public Door, whether or not it takes web traffic now. Unknown while a Server isn't seen, since it may hold the ports,
- * or while none takes web traffic yet.
+ * Whether Cloudflare setup may open only the tunnel. The Cluster must keep its Doors closed, by Cloud's record of a closed
+ * founding or by a Server holding them closed, and no Server taking web traffic may lack what keeps them closed: it would
+ * hand the Public Door back on its next catch-up. Unknown while a Server isn't seen, since it may hold the ports, or while
+ * none takes web traffic yet.
  */
 export const closedFounding = Effect.fn("IngressDoors.closedFounding")(function* (organizationId: string) {
-  if (!(yield* foundedClosed(organizationId))) return { kind: "open" } as const;
+  const recorded = new Set<ClusterFeature>((yield* foundedClosed(organizationId)) ? ["closedDoors"] : []);
   const frame = yield* firstRuntimeFrame(organizationId).pipe(Effect.catch(() => Effect.succeed(null)));
-  if (frame === null) return { kind: "unknown" } as const;
+  if (frame === null) return recorded.size === 0 ? { kind: "open" } as const : { kind: "unknown" } as const;
+  // What the Cluster was asked for, not what it shows: a Server that lacks the capability may have opened the ports itself.
+  const asked = closedHolderAnywhere(frame) ? new Set<ClusterFeature>([...recorded, "closedDoors"]) : recorded;
+  if (asked.size === 0) return { kind: "open" } as const;
   const seen = observationOf(frame);
   if (seen.partial) return { kind: "unknown" } as const;
-  if (publicSpecifiedAnywhere(frame)) return { kind: "open" } as const;
+  const lacking = serversMissing(frame, asked, (machine) => machine.accepts_ingress);
+  if (lacking.length > 0) return { kind: "lacking", servers: lacking } as const;
+  if (!featuresOf({ recorded, frame }).has("closedDoors")) return { kind: "open" } as const;
   // The founder may not show yet; until a Server takes web traffic there is nothing to tell the tunnel to.
   if (seen.servers.length === 0) return { kind: "unknown" } as const;
   return { kind: "closed", hostnames: seen.hostnames } as const;
@@ -360,6 +349,7 @@ const applySwitch = Effect.fn("IngressDoors.apply")(function* (session: PloyzSes
   const owned = and(eq(ingressDoorsAttempt.id, request.attemptId), eq(ingressDoorsAttempt.inngestRunId, runId));
   const founding = want === "tunnel" ? yield* closedFounding(request.organizationId) : { kind: "open" } as const;
   if (founding.kind === "unknown") return { ok: false, failure: "Some servers didn't answer. Switch again once they all do." } as const;
+  if (founding.kind === "lacking") return { ok: false, failure: lackingWords(founding.servers, "switch to Cloudflare Tunnel") } as const;
   return yield* runSwitch(want, {
     open: (doors) => session.setIngressDoors(doors),
     at: (stage) => drizzle.update(ingressDoorsAttempt).set({ stage }).where(owned).pipe(Effect.asVoid),

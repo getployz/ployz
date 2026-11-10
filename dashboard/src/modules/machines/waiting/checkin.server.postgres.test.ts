@@ -1238,16 +1238,20 @@ it("starts no arrival for a host that lists nothing once the Cluster was founded
   await foundOrganization();
   const { token } = await autoToken(10);
   const closedDoors = ["ployz.ingress.closed-doors.v1"];
-  expect(await send(token, newHost(), { ...readyAuto, capabilities: closedDoors })).toMatchObject({ kind: "enroll", role: "joiner" });
+  const capable = newHost();
+  expect(await send(token, capable, { ...readyAuto, capabilities: closedDoors })).toEqual(arrivalWait);
   await harness.pool.query(`update server_enrollment set role = 'founder', instruction = instruction || '{"ingressClosed": true}'::jsonb`);
-  expect(await send(token, newHost(), readyAuto)).toEqual(arrivalWait);
+  expect(await send(token, newHost(), readyAuto)).toEqual(wait);
   expect(await autoAttempts()).toHaveLength(1);
-  expect(await send(token, newHost(), { ...readyAuto, capabilities: closedDoors })).toMatchObject({ kind: "enroll", role: "joiner" });
+  const another = newHost();
+  expect(await send(token, another, { ...readyAuto, capabilities: closedDoors })).toEqual(arrivalWait);
   expect(await autoAttempts()).toHaveLength(2);
 });
 
 it("starts an arrival for a host that lists nothing in a Cluster not founded closed", async () => {
   await foundOrganization();
   const { token } = await autoToken(10);
-  expect(await send(token, newHost(), readyAuto)).toMatchObject({ kind: "enroll", role: "joiner" });
+  const host = newHost();
+  expect(await send(token, host, readyAuto)).toEqual(arrivalWait);
+  expect(await send(token, host, readyAuto)).toMatchObject({ kind: "enroll", role: "joiner" });
 });

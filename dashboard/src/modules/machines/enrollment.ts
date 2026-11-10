@@ -2,6 +2,7 @@ import type { MachineId, MachineRuntime, RegisterRequest } from "@ployz/sdk";
 import { Data, Effect, Schema, SchemaGetter } from "effect";
 import type { JsonValue } from "#/db/tables";
 import { Uuid } from "#/lib/schema";
+import { AdvertisedCapabilities } from "#/modules/cluster-requirements/cluster-requirements";
 import { RecoveryBackup, SealingPublicKey } from "#/modules/machines/sealing-key";
 
 export class JoinApprovalRequired extends Data.TaggedError("JoinApprovalRequired")<{ readonly message: string }> {
@@ -148,6 +149,8 @@ export const enrollmentIdentitySchema = Schema.Struct({
   recoverySupport: Schema.optionalKey(Schema.Literal(1)),
   /** The joiner's proof that it opened its approved capsule. Cloud relays it in Register; it opens nothing. */
   joinConfirmation: Schema.optionalKey(Schema.String.check(Schema.isPattern(/^[0-9a-f]{64}$/u))),
+  /** What the joining ployz carries out; absent from one older than any list, which lacks every capability. Never relayed in Register. */
+  capabilities: Schema.optionalKey(AdvertisedCapabilities),
 });
 
 export type EnrollmentIdentity = typeof enrollmentIdentitySchema.Type;

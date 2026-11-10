@@ -18,6 +18,7 @@ import {
 import { loadCloudflareSetup } from "#/modules/cloudflare/source.server";
 import { normalizeZone, wildcardRecord, zoneProblem } from "#/modules/cloudflare/zone";
 import { doorsGap, SETUP_RUNNING_LIMIT_MS } from "#/modules/ingress/doors";
+import { lackingWords } from "#/modules/cluster-requirements/cluster-requirements";
 import { closedFounding } from "#/modules/ingress/doors.server";
 import { activeDoorsAttempt, lockIngressRows } from "#/modules/ingress/doors.lock.server";
 import { organizationCloudflareIngress } from "#/modules/ingress/tables";
@@ -204,6 +205,7 @@ export const setUpCloudflare = Effect.fn("Cloudflare.setUp")(function* (
     // A Cluster founded closed holds no Public Door to hand over, so only the tunnel opens and the ports stay shut.
     const founding = yield* closedFounding(organizationId);
     if (founding.kind === "unknown") return yield* refuse("Your servers aren't answering yet. Try again once they all do.");
+    if (founding.kind === "lacking") return yield* refuse(lackingWords(founding.servers, "use Cloudflare Tunnel"));
     closed = founding.kind === "closed";
     const doors = closed ? TUNNEL : BOTH;
     const found = yield* findTunnel(http, input.token, zone.accountId, tunnelName);

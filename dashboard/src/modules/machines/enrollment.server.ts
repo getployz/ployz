@@ -16,6 +16,7 @@ import { requireAccess, requireAccessById } from "#/modules/organization/access.
 import { Ployz, type PloyzProviderError, type PloyzSdkError, type PloyzSession, ployzVersion, predatesSealing, RpcError } from "#/modules/runtime/ployz.server";
 import { ClusterOutOfTime, clusterRead, OrganizationRuntime, SESSION_CLOSE_CLUSTER_MS, withClusterBudget } from "#/modules/runtime/organization-runtime.server";
 import { PostHog } from "#/modules/analytics/posthog.server";
+import { refuseLackingJoiner } from "#/modules/cluster-requirements/cluster-requirements.server";
 import {
   JoinApprovalRequired,
   enrollmentExpiry,
@@ -704,6 +705,9 @@ export const observeClusterEnrollment = Effect.fn("MachineEnrollment.observeClus
 }, Effect.catchIf((error) => error instanceof ClusterOutOfTime, () => Effect.succeed({ kind: "unreachable" as const })),
 withClusterBudget(SERVER_REACH_TIMEOUT_MS));
 
+/** How long a joiner waits on the Cluster's Servers for the frame its Cluster Requirements are read from. */
+const JOIN_FRAME_MS = 2_000;
+
 export const enrollMachine = Effect.fn("MachineEnrollment.enrollMachine")(
   function* (input: { token: string; identity: EnrollmentIdentity; joinSlots?: number }) {
     const request = registerRequestFromEnrollmentIdentity(input.identity);
@@ -757,6 +761,16 @@ export const enrollMachine = Effect.fn("MachineEnrollment.enrollMachine")(
       if (joined.kind === "no_connection") return yield* new Conflict({ message: "The enrollment attempt is no longer current." });
       if (joined.kind === "unreachable") return yield* unreachable();
       const { session, snapshot } = joined;
+      // A Machine already listed as joined has had its Doors set, and its rerun registers nothing.
+      const listed = snapshot.machines.some((machine) => machine.id === input.identity.machineId && machine.runtime.daemon_version !== "");
+      // Its catch-up has run by now and opened what its ployz reads as open, so the last safe refusal is before the Register.
+      if (!listed) {
+        yield* refuseLackingJoiner(
+          token.organizationId,
+          input.identity.capabilities,
+          session.watchFirstFrame(JOIN_FRAME_MS).pipe(clusterRead, Effect.catch(() => Effect.succeed(null))),
+        );
+      }
       const database = yield* Database;
       const assignment = yield* database.transaction(Effect.gen(function* () {
         const { drizzle } = yield* Database;

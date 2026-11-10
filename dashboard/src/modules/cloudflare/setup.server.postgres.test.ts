@@ -227,7 +227,7 @@ it("refuses on a Cluster founded closed while a Server taking web traffic can't 
     services: [{ identity: "ployz-system/ingress-holder", containers: [{ machine_id: "m2", runtime: { state: "running" }, resolved_spec: { ports: [{ mode: "host", published_port: 80 }, { mode: "host", published_port: 443 }] } }] }],
   });
   const { runtime, sets } = cluster((doors) => doors, older);
-  await expect(setUp("example.com", http, runtime)).rejects.toMatchObject({ message: "Update ployz on s2 to use Cloudflare Tunnel." });
+  await expect(setUp("example.com", http, runtime)).rejects.toMatchObject({ message: "Update ployz on s2 to use Cloudflare Tunnel. Nothing was changed." });
   expect(sets).toEqual([]);
   expect(writesOf(calls)).toEqual([]);
   expect(await setupRows()).toEqual([]);

@@ -146,6 +146,8 @@ macro_rules! rpc_catalog {
                 DEPLOY_APPROVAL_CAPABILITY: ("ployz.container.deploy-approval.v1", Always),
                 /// A deploy approval may be an unsigned step of a signed proposal bundle that rides in its envelope.
                 DEPLOY_PROPOSAL_CAPABILITY: ("ployz.container.deploy-proposal.v1", Always),
+                /// This release founds a Cluster with every Door closed when told, takes the empty Door set in `SetIngressDoors`, and keeps a Cluster whose Ingress Proxy publishes no port closed through its Global catch-up. Advertised before a Cluster exists, so a joiner can list it.
+                INGRESS_CLOSED_DOORS_CAPABILITY: ("ployz.ingress.closed-doors.v1", Always),
             }
         }
     };

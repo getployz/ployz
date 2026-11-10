@@ -185,7 +185,7 @@ async fn heartbeat(
         protocol_version: wire::PROTOCOL_VERSION,
         checkin_key: key.public_hex(),
         cli_version: env!("CARGO_PKG_VERSION"),
-        enroll_options: wire::ENROLL_OPTIONS,
+        capabilities: crate::cloud_enroll::release_capabilities(),
         report: report.report,
         prep: Some(report.prep),
         attempt: Some(attempt),

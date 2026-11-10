@@ -16,7 +16,6 @@ use crate::cloud_enroll::EnrollStage;
 use super::probe;
 
 pub(super) const PROTOCOL_VERSION: u8 = 1;
-pub(super) const ENROLL_OPTIONS: &[&str] = &["ingressClosed"];
 pub(super) const UNKNOWN_WAIT: Duration = Duration::from_secs(60);
 pub(super) const WAIT_CAP: Duration = Duration::from_secs(60 * 60);
 pub(crate) const DOCKER_INSTALL_FAILED: &str = "docker_install_failed";
@@ -28,9 +27,8 @@ pub(super) struct CheckinRequest<'a> {
     pub(super) protocol_version: u8,
     pub(super) checkin_key: &'a str,
     pub(super) cli_version: &'static str,
-    /// The optional instruction fields this CLI carries out, so Cloud never sends one an
-    /// older CLI would drop.
-    pub(super) enroll_options: &'static [&'static str],
+    /// What this release carries out, so Cloud skips a host a Cluster requires more of.
+    pub(super) capabilities: Vec<String>,
     pub(super) report: &'a HostReport,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub(super) prep: Option<Prep>,
@@ -94,7 +92,7 @@ pub(crate) struct EnrollInstruction {
     #[serde(default, rename = "clusterName")]
     pub(crate) founding_cluster_name: Option<String>,
     /// Found the Cluster with no Door open. Cloud sends it only to a CLI whose check-in
-    /// lists it in `enrollOptions`.
+    /// lists `ployz.ingress.closed-doors.v1`.
     #[serde(default, rename = "ingressClosed")]
     pub(crate) founding_ingress_closed: bool,
 }

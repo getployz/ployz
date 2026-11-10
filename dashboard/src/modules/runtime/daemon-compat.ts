@@ -17,6 +17,7 @@ export const requirements = {
   forget: { capability: "ployz.machine.forget.v1", feature: "Server removal" },
   ensureContainer: { capability: "ployz.container.ensure.v1", feature: "Deploys", plural: true },
   metrics: { capability: "ployz.metrics.history.v1", feature: "Metrics", plural: true },
+  closedDoors: { capability: "ployz.ingress.closed-doors.v1", feature: "Closed ports 80 and 443", plural: true },
 } as const satisfies Record<string, Requirement>;
 
 /**

@@ -20,6 +20,15 @@ export function publicSpecifiedAnywhere(frame: Pick<RuntimeWatchView, "services"
     && service.containers.some((container) => container.resolved_spec.ports.some((port) => port.mode === "host" && PUBLIC_PORTS.has(port.published_port))));
 }
 
+/**
+ * Whether any holder container is specified to publish neither host port 80 nor 443, running or not: the Cluster was
+ * told to keep its Public Door closed, and a Server that joins it must keep it so.
+ */
+export function closedHolderAnywhere(frame: Pick<RuntimeWatchView, "services">): boolean {
+  return frame.services.some((service) => service.identity === INGRESS_HOLDER
+    && service.containers.some((container) => !container.resolved_spec.ports.some((port) => port.mode === "host" && PUBLIC_PORTS.has(port.published_port))));
+}
+
 const AT_REST = new Set(["created", "exited", "dead"]);
 
 function ingressOn(frame: Pick<RuntimeWatchView, "services">, counts: (state: string) => boolean, identity = INGRESS): Set<string> {

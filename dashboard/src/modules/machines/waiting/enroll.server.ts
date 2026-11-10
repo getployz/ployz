@@ -10,11 +10,18 @@ import { machineEnrollmentToken, organizationMachine } from "#/modules/machines/
 import type { StoredReport } from "#/modules/machines/waiting/checkin-wire";
 import { cancelServerEnrollments, openFounderAttempt } from "#/modules/machines/waiting/enrollment-run.server";
 import { foundingClusterName } from "#/modules/cluster-name/cluster-name.server";
+import {
+  type ClusterFeature,
+  foundingFeatures,
+  founderWords,
+  missingFor,
+  skipWords,
+} from "#/modules/cluster-requirements/cluster-requirements";
+import { recordedFeatures } from "#/modules/cluster-requirements/cluster-requirements.server";
 import { machineNameFromHostname } from "#/modules/machines/waiting/names";
 import {
   COMMITTED_STAGES,
   ENROLL_MIN_CLI_VERSION,
-  INGRESS_CLOSED_OPTION,
   type EnrollInput,
   type EnrollInstruction,
   type EnrollmentRole,
@@ -94,6 +101,8 @@ export function planServerEnrollment(
   candidates: ReadonlyArray<EnrollCandidate>,
   organization: {
     readonly hasFirst: boolean;
+    /** What the Cluster has turned on, which every joiner must carry out. A first Server's own founding adds to it. */
+    readonly features: ReadonlySet<ClusterFeature>;
     /** The Cluster Name a founder founds with; read only when there is no first Server yet. */
     readonly clusterName?: string | undefined;
     /** Names the Organization's Servers and open enrollments hold, and per waiting server those its own Machine holds. */
@@ -118,6 +127,7 @@ export function planServerEnrollment(
   }
 
   let founder: string | null = null;
+  let features = organization.features;
   if (!organization.hasFirst) {
     if (input.first !== undefined && !ids.includes(input.first)) {
       return { kind: "refused", message: "The first server must be one of the servers you enroll." };
@@ -126,19 +136,25 @@ export function planServerEnrollment(
     if (pick === undefined) return { kind: "refused", message: "Pick the first server: it sets up the cluster the rest join." };
     const skip = skipped.find((row) => row.id === pick);
     if (skip !== undefined) return { kind: "refused", message: `The first server can't enroll: ${skip.reason}.` };
-    // A CLI that doesn't list the option would drop it and open ports 80 and 443.
     const picked = byId.get(pick);
     if (picked?.foundsClosed === true && !input.runs.ingress) {
       return { kind: "refused", message: "Cloudflare Tunnel needs the first server to take web traffic. Turn on Web traffic for it, or get an install command without Cloudflare Tunnel." };
     }
-    if (picked?.foundsClosed === true && picked.report.enrollOptions?.includes(INGRESS_CLOSED_OPTION) !== true) {
-      return { kind: "refused", message: "The first server's ployz is too old for Cloudflare Tunnel. Update ployz on it, or get an install command without Cloudflare Tunnel." };
-    }
+    // A founder whose ployz can't carry out what its Cluster founds with would drop it and open ports 80 and 443.
+    const lacking = picked === undefined ? null : missingFor(foundingFeatures(picked), picked.report.capabilities);
+    if (lacking !== null) return { kind: "refused", message: founderWords(lacking) };
+    features = foundingFeatures(picked ?? {});
     founder = pick;
   }
+  const joiners = eligible.filter(({ row }) => {
+    if (row.id === founder) return true;
+    const lacking = missingFor(features, row.report.capabilities);
+    if (lacking !== null) skipped.push({ id: row.id, reason: skipWords(lacking) });
+    return lacking === null;
+  });
   const ordered = founder === null
-    ? eligible
-    : [...eligible.filter(({ row }) => row.id === founder), ...eligible.filter(({ row }) => row.id !== founder)];
+    ? joiners
+    : [...joiners.filter(({ row }) => row.id === founder), ...joiners.filter(({ row }) => row.id !== founder)];
 
   const { names } = input;
   if (names.kind === "pattern" && !names.pattern.includes("{n}") && ordered.length > 1) {
@@ -326,7 +342,7 @@ const planEnrollment = Effect.fn("ServerEnrollment.plan")(function* (
   const plan = planServerEnrollment(
     input,
     ids.length === 0 ? [] : yield* candidatesOf(organizationId, ids, mode === "start"),
-    { hasFirst, clusterName: hasFirst ? undefined : yield* foundingClusterName(organizationId), ...yield* takenNames(organizationId, ids) },
+    { hasFirst, features: yield* recordedFeatures(organizationId), clusterName: hasFirst ? undefined : yield* foundingClusterName(organizationId), ...yield* takenNames(organizationId, ids) },
   );
   if (plan.kind === "refused") return yield* new Validation({ message: plan.message, userFacing: true });
   return { ...plan, founded };
@@ -466,7 +482,7 @@ export const startArrivalEnrollment = Effect.fn("ServerEnrollment.startArrival")
     const plan = planServerEnrollment(input, [{
       id: host.id, fleetTokenId: token.id, report, observedIp: host.observedIp,
       rejected: false, enrolling: false, tokenEnded: null,
-    }], { hasFirst: true, ...yield* takenNames(token.organizationId, [host.id]) });
+    }], { hasFirst: true, features: yield* recordedFeatures(token.organizationId), ...yield* takenNames(token.organizationId, [host.id]) });
     if (plan.kind !== "planned" || plan.rows.length === 0) return false;
     // A check-in answers before Inngest hears of the attempt; the outbox sweep sends any delivery that fails.
     yield* startPlannedEnrollment(token.organizationId, live.userId, { ...plan, founded: true }, "detach");

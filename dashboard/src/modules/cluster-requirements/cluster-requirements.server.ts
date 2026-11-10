@@ -1,0 +1,63 @@
+import "@tanstack/react-start/server-only";
+import { and, desc, eq, sql } from "drizzle-orm";
+import type { RuntimeWatchView } from "@ployz/sdk";
+import { Effect } from "effect";
+import { loadCloudflareSetup } from "#/modules/cloudflare/source.server";
+import {
+  type ClusterFeature,
+  featuresOf,
+  joinWords,
+  listsEvery,
+  missingFor,
+} from "#/modules/cluster-requirements/cluster-requirements";
+import { organizationPairing } from "#/modules/runtime/tables";
+import { serverEnrollment } from "#/modules/machines/waiting/tables";
+import { Database } from "#/server/database.server";
+import { Conflict } from "#/server/public-error";
+
+/**
+ * Whether the Cluster's current founder was told to start it with every Door closed. Read from the instruction, not the
+ * enrollment's end: the Machine founds as told before the enrollment's own run marks it joined, and one that failed
+ * late may have founded all the same. A founder that ended before the current pairing began belongs to a Cluster since
+ * replaced, and says nothing about this one.
+ */
+export const foundedClosed = Effect.fn("ClusterRequirements.foundedClosed")(function* (organizationId: string) {
+  const { drizzle } = yield* Database;
+  const [founder] = yield* drizzle.select({ closed: sql<boolean>`coalesce((${serverEnrollment.instruction}->>'ingressClosed')::boolean, false)` })
+    .from(serverEnrollment)
+    .leftJoin(organizationPairing, eq(organizationPairing.organizationId, serverEnrollment.organizationId))
+    .where(and(
+      eq(serverEnrollment.organizationId, organizationId),
+      eq(serverEnrollment.role, "founder"),
+      sql`(${organizationPairing.createdAt} is null or coalesce(${serverEnrollment.endedAt}, now()) >= ${organizationPairing.createdAt})`,
+    ))
+    .orderBy(desc(serverEnrollment.requestedAt))
+    .limit(1);
+  return founder?.closed ?? false;
+});
+
+/**
+ * What Cloud recorded asking the Cluster for: a closed founding, or Cloudflare Tunnel active. Read from the database
+ * alone, so it is safe under an Organization lock. A Cluster can turn a feature on without Cloud, so this is the fallback
+ * evidence, and the Servers' own frame wins over it where it is seen whole.
+ */
+export const recordedFeatures = Effect.fn("ClusterRequirements.recorded")(function* (organizationId: string) {
+  const closed = (yield* foundedClosed(organizationId)) || (yield* loadCloudflareSetup(organizationId))?.state === "active";
+  return new Set<ClusterFeature>(closed ? ["closedDoors"] : []);
+});
+
+/**
+ * The gate for a joiner. Refuses one that lacks a capability the Cluster requires, before Cloud registers it. A joiner
+ * that lists every Cluster Requirement reads nothing. Otherwise the Servers are read through `frame`, which fails to null
+ * and never to a refusal, so a Cluster that can't be read falls back to what Cloud recorded.
+ */
+export const refuseLackingJoiner = Effect.fn("ClusterRequirements.refuseJoiner")(function* (
+  organizationId: string,
+  advertised: readonly string[] | undefined,
+  frame: Effect.Effect<RuntimeWatchView | null>,
+) {
+  if (listsEvery(advertised)) return;
+  const features = featuresOf({ recorded: yield* recordedFeatures(organizationId), frame: yield* frame });
+  const missing = missingFor(features, advertised);
+  if (missing !== null) return yield* new Conflict({ message: joinWords(missing), userFacing: true });
+});

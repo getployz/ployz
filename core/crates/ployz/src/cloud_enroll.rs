@@ -220,6 +220,18 @@ pub(crate) struct EnrollIdentity {
     recovery_support: Option<u8>,
     #[serde(skip_serializing_if = "Option::is_none")]
     join_confirmation: Option<ployz_core::authority::join::JoinConfirmation>,
+    /// What this release carries out. Cloud refuses a join its Cluster requires more of, and an
+    /// older CLI that lists none lacks every capability.
+    capabilities: Vec<String>,
+}
+
+/// The capabilities this release carries out, listed to Cloud before any Cluster exists: its
+/// `Always` advertisement group.
+pub(crate) fn release_capabilities() -> Vec<String> {
+    ployz_core::CapabilityAdvertisement::Always
+        .capabilities()
+        .map(|name| name.as_str().to_owned())
+        .collect()
 }
 
 fn serialize_as_wireguard_base64<S>(
@@ -254,6 +266,7 @@ impl EnrollIdentity {
             disk_available_bytes: token.disk_available_bytes,
             recovery_support: recovery_supported.then_some(RECOVERY_SUPPORT),
             join_confirmation: None,
+            capabilities: release_capabilities(),
         }
     }
 
