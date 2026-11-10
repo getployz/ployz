@@ -24,7 +24,7 @@ use super::{
     layout::{StoreRoot, create_store_dir},
     salts::Salts,
 };
-use crate::{machine::LocalMachineRecord, management::ManagementSecret};
+use crate::{machine::store, management::ManagementSecret};
 
 pub(super) const CAP: usize = 1000;
 const BATCH: usize = 100;
@@ -41,7 +41,6 @@ const RETRY_AFTER_CAP: Duration = Duration::from_secs(60 * 60);
 const UNHEARD_WARN_EVERY: Duration = Duration::from_secs(5 * 60);
 const SALT_REFRESH_EVERY: Duration = Duration::from_secs(5 * 60);
 
-const MACHINE_FILE: &str = "machine.json";
 const SIGNATURE_CONTEXT: &[u8] = b"ployz-push-v1\0";
 const TIMESTAMP_HEADER: &str = "Ployz-Timestamp";
 const SIGNATURE_HEADER: &str = "Ployz-Signature";
@@ -56,12 +55,11 @@ pub struct Pusher {
 /// the target and a Machine reset take effect without a restart. None until
 /// Cloud sets a target, so the outbox only buffers.
 pub fn push_target(data_dir: &Path) -> Option<Pusher> {
-    let bytes = fs::read(data_dir.join(MACHINE_FILE)).ok()?;
-    let record = serde_json::from_slice::<LocalMachineRecord>(&bytes).ok()?;
+    let identity = store::identity(data_dir)?;
     Some(Pusher {
-        url: record.push_target()?.clone(),
-        machine_id: record.id(),
-        secret: record.management_secret().clone(),
+        url: identity.push_target?,
+        machine_id: identity.id,
+        secret: identity.management_secret,
     })
 }
 

@@ -179,3 +179,42 @@ fn resetting_keeps_every_field_but_the_body() {
     assert_eq!(kept_cluster, membership_cluster);
     assert_eq!(kept_enrollment, enrollment);
 }
+
+#[test]
+fn the_record_lives_in_machine_json_under_the_data_directory() {
+    assert_eq!(store::STATE_FILE_NAME, "machine.json");
+    assert_eq!(
+        store::path(Path::new("/var/lib/ployz")),
+        Path::new("/var/lib/ployz/machine.json")
+    );
+}
+
+#[test]
+fn the_identity_reader_learns_the_id_target_and_secret_from_a_written_record() {
+    let dir = tempfile::tempdir().unwrap();
+    fs::write(store::path(dir.path()), golden().to_string()).unwrap();
+
+    let identity = store::identity(dir.path()).unwrap();
+
+    assert_eq!(identity.id, MachineId::parse("a".repeat(32)).unwrap());
+    assert_eq!(
+        identity.push_target.as_ref().map(Url::as_str),
+        Some("https://cloud.example/push")
+    );
+    assert!(identity.management_secret == *populated().management_secret());
+}
+
+#[test]
+fn the_identity_reader_sees_a_record_with_no_push_target_and_none_for_a_missing_or_broken_one() {
+    let dir = tempfile::tempdir().unwrap();
+    assert!(store::identity(dir.path()).is_none());
+
+    fs::write(store::path(dir.path()), b"{").unwrap();
+    assert!(store::identity(dir.path()).is_none());
+
+    let mut row = golden();
+    row.as_object_mut().unwrap().remove("push_target");
+    fs::write(store::path(dir.path()), row.to_string()).unwrap();
+    let identity = store::identity(dir.path()).unwrap();
+    assert!(identity.push_target.is_none());
+}
