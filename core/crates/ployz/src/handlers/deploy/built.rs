@@ -78,7 +78,18 @@ pub(in crate::handlers) fn prepare(
     let Ok(Some(secret)) = super::super::device::key::load(&key) else {
         return Ok(None);
     };
-    let enforcing = match approve::probe(matches) {
+    // The Servers are asked while this reads the source and, for a built Service, what its
+    // token is checked against, so the probe adds no wait of its own.
+    let (probe, view, reported) = std::thread::scope(|scope| {
+        let probe = scope.spawn(|| approve::probe(matches));
+        let view = store.read(&DeploymentQuery { id: source.clone() });
+        let reported = view
+            .as_ref()
+            .is_ok_and(|view| git_builds(view).is_ok_and(|built| !built.is_empty()))
+            .then(|| Reported::read(matches));
+        (probe.join().unwrap_or(Probe::Unknown), view, reported)
+    });
+    let enforcing = match probe {
         Probe::Off => return Ok(None),
         Probe::Unknown => {
             crate::ui::warn(
@@ -97,7 +108,7 @@ pub(in crate::handlers) fn prepare(
         Probe::Enforcing(enforcing) => enforcing,
     };
     let signer = Signer::from_seed(&secret);
-    let view = store.read(&DeploymentQuery { id: source.clone() })?;
+    let view = view?;
     let built = git_builds(&view)?;
     if built.is_empty() {
         return Ok(Some(Redeploy {
@@ -107,7 +118,8 @@ pub(in crate::handlers) fn prepare(
             builds: Vec::new(),
         }));
     }
-    let facts = facts(matches, store, &view, &enforcing)?;
+    let reported = reported.unwrap_or_else(|| Reported::read(matches));
+    let facts = facts(store, &view, &enforcing, reported)?;
     let mut rebuild = Vec::new();
     for (service, commit, token) in built {
         covered(&facts.rule, service)?;
@@ -251,27 +263,39 @@ fn git_builds(view: &DeploymentView) -> Result<Vec<GitBuild<'_>>, Error> {
         .collect()
 }
 
-/// The facts a token is checked against, read from the Servers, the Store and GitHub at
-/// once.
+/// What the Servers and GitHub report that a token is checked against.
+struct Reported {
+    cluster: Result<(SealingPublicKey, AttestKey, TrustedKeys), Error>,
+    github: Result<KeySet, Error>,
+}
+
+impl Reported {
+    /// Ask the Servers and GitHub at once.
+    fn read(matches: &ArgMatches) -> Self {
+        std::thread::scope(|scope| {
+            let github = scope.spawn(github_keys);
+            let cluster = cluster_keys(matches);
+            Self {
+                cluster,
+                github: github.join().unwrap_or_else(|_| Err(unread_keys(None))),
+            }
+        })
+    }
+}
+
+/// The facts a token is checked against: what the Servers and GitHub `reported`, and the
+/// rule a trusted key signed.
 fn facts(
-    matches: &ArgMatches,
     store: &Store,
     view: &DeploymentView,
     enforcing: &Enforcing,
+    reported: Reported,
 ) -> Result<Facts, Error> {
     let environment = ployz_store::EnvironmentRef {
         project: Some(view.environment.project.clone()),
         environment: Some(view.environment.name.clone()),
     };
-    let (cluster, keys) = std::thread::scope(|scope| {
-        let keys = scope.spawn(github_keys);
-        let cluster = cluster_keys(matches);
-        (
-            cluster,
-            keys.join().unwrap_or_else(|_| Err(unread_keys(None))),
-        )
-    });
-    let (sealing, attest, trusted) = cluster?;
+    let (sealing, attest, trusted) = reported.cluster?;
     if sealing != enforcing.cluster {
         return Err(Error::coded(
             RpcErrorCode::Conflict,
@@ -298,7 +322,7 @@ fn facts(
     Ok(Facts {
         attest,
         rule,
-        keys: keys?,
+        keys: reported.github?,
     })
 }
 
