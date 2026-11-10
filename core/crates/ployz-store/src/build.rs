@@ -407,6 +407,10 @@ enum Stage {
 
 /// Who builds a build.
 #[derive(Clone, Debug)]
+#[expect(
+    clippy::large_enum_variant,
+    reason = "a row's stage, decoded one row at a time"
+)]
 enum By {
     /// `server` once they chose one, by name.
     Servers {
@@ -874,8 +878,14 @@ impl From<GithubHold> for GithubRecord {
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
 #[serde(tag = "end", rename_all = "snake_case")]
 pub enum RunEnd {
-    /// It built the image for these platforms.
-    Built { platforms: Vec<String> },
+    /// It built the image for these platforms. A build under an automatic deploy rule
+    /// also reports its image token, which Cloud relays to each Server with the image.
+    Built {
+        platforms: Vec<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        #[ts(optional)]
+        image_token: Option<String>,
+    },
     /// Its build failed.
     Failed,
 }
@@ -1079,10 +1089,86 @@ pub(crate) fn github_authorize(
     if claims.run_id != build.run.run_id.to_string() {
         return refused("The token is for another run");
     }
-    if claims.event_name != "workflow_dispatch" {
+    // A rule's build runs on the push GitHub started, which Cloud followed. Any other
+    // build runs only on the dispatch Cloud sent.
+    let event = match github_rule(tx, id)? {
+        Some(_) => "push",
+        None => "workflow_dispatch",
+    };
+    if claims.event_name != event {
         return refused("The run was not dispatched by Ployz");
     }
     Ok(build)
+}
+
+/// The automatic deploy rule GitHub build `id` builds under: its Environment's, ended
+/// or not, when the Store's automation admitted the Deployment for a push and the rule
+/// covers the Service. Its run is then the push's own, which Cloud follows.
+pub(crate) fn github_rule(
+    tx: &mut dyn Tx,
+    id: &GithubBuildId,
+) -> Result<Option<ployz_core::authority::Signed<ployz_core::authority::AutoDeployRule>>, RpcError>
+{
+    let stored = deployment::load(tx, &id.deployment)?;
+    if stored.summary.admitted_by.is_some() {
+        return Ok(None);
+    }
+    let rule = crate::auto_rule::stored(tx, &stored.summary.environment_id)?;
+    Ok(rule.filter(|signed| {
+        signed
+            .open()
+            .is_ok_and(|rule| rule.service(&id.service).is_some())
+    }))
+}
+
+/// The GitHub build run `run_id` holds while it builds, if any: a rule build's runner
+/// checks in naming only its run.
+pub(crate) fn github_by_run(
+    tx: &mut dyn Tx,
+    run_id: u64,
+) -> Result<Option<GithubBuildId>, RpcError> {
+    // The run's JSON starts with its id, so this matches only that run, and the decode
+    // below confirms it.
+    let pattern = format!("%\"run_id\":{run_id},%");
+    let rows = tx.query(
+        "SELECT deployment_id, service, github FROM config_build \
+         WHERE status = ?1 AND github LIKE ?2",
+        &[
+            name_of(BuildStatus::Building).as_str().into(),
+            pattern.as_str().into(),
+        ],
+    )?;
+    for row in &rows {
+        let Some(github) = row.optional_text(2)? else {
+            continue;
+        };
+        let hold: GithubHold =
+            serde_json::from_str(github).map_err(|_| error::corrupt("GitHub build"))?;
+        if hold.run().run_id == run_id {
+            return Ok(Some(GithubBuildId {
+                deployment: row.parse(0, "build")?,
+                service: row.parse(1, "build")?,
+            }));
+        }
+    }
+    Ok(None)
+}
+
+/// The image token each Service's GitHub build of Deployment `id` reported.
+pub(crate) fn image_tokens(
+    tx: &mut dyn Tx,
+    id: &DeploymentId,
+) -> Result<BTreeMap<ServiceName, String>, RpcError> {
+    Ok(rows(tx, id)?
+        .into_iter()
+        .filter_map(|row| match row.stage.github()?.end()? {
+            RunEnd::Built {
+                image_token: Some(token),
+                ..
+            } => Some((row.service, token.clone())),
+            RunEnd::Built { .. } | RunEnd::Failed => None,
+        })
+        .collect())
 }
 
 /// What a GitHub build builds.

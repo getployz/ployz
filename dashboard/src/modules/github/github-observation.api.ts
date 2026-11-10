@@ -42,6 +42,7 @@ export type GithubApiCheckSuiteConclusion = GithubCheckSuiteConclusion;
 
 export type GithubObservationOperation =
   | "resolve_repository"
+  | "list_push_runs"
   | "resolve_branch_head"
   | "compare_commits"
   | "fetch_check_suite"

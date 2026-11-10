@@ -1,9 +1,10 @@
 import "@tanstack/react-start/server-only";
 import type { GithubFileQuery, GithubFileView, GithubTreeQuery, GithubTreeView } from "@ployz/sdk";
-import { Context, Effect, Layer } from "effect";
+import { Context, Effect, Layer, Schema } from "effect";
 import { stopGithubInstallationBuilds } from "#/modules/config-store/config-store.server";
 import { StoreRefused } from "#/modules/config-store/store.contract";
 import { accessFor } from "#/modules/github/github-access";
+import { githubIdSchema } from "#/modules/github/github-ingestion.contracts";
 import { listGithubRepositoryBranches, listGithubRepositoryFiles, readGithubRepositoryContents } from "#/modules/github/github.api";
 import { GithubApi, isGithubObservationNotFound } from "#/modules/github/github-observation.api";
 import {
@@ -73,14 +74,24 @@ const readableBy = Effect.fn("GithubCli.readableBy")(function* (caller: Caller, 
 /** `ployz github ls OWNER/REPO`: a repository the Organization may read, and its branches. */
 export const githubBranches = Effect.fn("GithubCli.branches")(function* (caller: Caller, repository: string) {
   const readable = yield* readableBy(caller, repository);
-  const branches = yield* listGithubRepositoryBranches(accessFor(readable.organizationId, readable.installationId), readable.fullName);
+  const access = accessFor(readable.organizationId, readable.installationId);
+  const branches = yield* listGithubRepositoryBranches(access, readable.fullName);
+  const api = yield* GithubApi;
+  // The IDs an automatic deploy rule names, which renames and transfers keep.
+  const observed = yield* api.json({
+    access, path: `/repositories/${readable.repositoryId}`, operation: "resolve_repository", schema: RepositoryOwner,
+  });
   return {
     repository: readable.fullName,
+    repository_id: readable.repositoryId,
+    owner_id: observed.owner.id,
     access: readable.installationId === null ? "public" : "connected",
     default_branch: readable.defaultBranch,
     branches: branches.map((branch) => branch.name),
   };
 });
+
+const RepositoryOwner = Schema.Struct({ owner: Schema.Struct({ id: githubIdSchema }) });
 
 /** The most paths `github tree` lists; name a directory or a narrower glob for the rest. */
 export const TREE_PATHS = 500;

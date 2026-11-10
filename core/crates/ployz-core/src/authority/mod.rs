@@ -33,8 +33,8 @@ pub use refusal::AuthorityRefusal;
 pub use restart::{Approved, RestartApproval, RestartFacts, RestartStep, SignerKey, WorkflowKind};
 pub use rule::{
     AttestKey, AutoDeployRule, BuildClaim, BuildPolicy, BuildStage, CommitAuthority, CommitSha,
-    GithubClaims, ImageDigest, PolicyDigest, RecipientKey, RuleId, RuleService, RuleSource,
-    SealedDigest,
+    GithubClaims, ImageDigest, PolicyDigest, RecipientKey, RuleFacts, RuleId, RuleProof,
+    RuleService, RuleSource, SealedDigest,
 };
 pub use session::{ActionFamily, GrantBody, SessionGrant};
 pub use starting_set::{Member, StartingSet};

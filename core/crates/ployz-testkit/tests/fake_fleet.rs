@@ -73,6 +73,7 @@ fn stop(container: &str) -> EnsureContainerRequest {
     EnsureContainerRequest {
         approval: None,
         deploy: None,
+        rule: None,
         want: ContainerWant::Stopped {
             container: ContainerLocator::Id(container_id(container)),
             drain: Drain::NONE,
@@ -270,6 +271,7 @@ async fn an_unmodeled_command_is_recorded_and_answers_unimplemented() {
             EnsureContainerRequest {
                 approval: None,
                 deploy: None,
+                rule: None,
                 want: ContainerWant::Gone {
                     container: ContainerLocator::Id(container_id("app-staging-web-1")),
                     drain: Drain::NONE,
@@ -331,6 +333,7 @@ async fn a_held_copy_leaves_every_live_route_and_only_its_run_brings_it_back() {
                     want,
                     approval: None,
                     deploy: None,
+                    rule: None,
                 },
                 on_web_1.as_ref(),
             )

@@ -819,6 +819,7 @@ fn lines(from: u64, lines: &[&str], platforms: Option<&[&str]>) -> GithubReport 
             [] => ployz_store::RunEnd::Failed,
             platforms => ployz_store::RunEnd::Built {
                 platforms: platforms.iter().map(|p| (*p).to_owned()).collect(),
+                image_token: None,
             },
         }),
     }
@@ -985,7 +986,8 @@ fn a_github_build_checks_in_once_takes_each_log_line_once_and_refuses_late_repor
     assert_eq!(
         held(&store, &id).ended,
         Some(ployz_store::RunEnd::Built {
-            platforms: vec!["linux/amd64".to_owned()]
+            platforms: vec!["linux/amd64".to_owned()],
+            image_token: None,
         })
     );
 

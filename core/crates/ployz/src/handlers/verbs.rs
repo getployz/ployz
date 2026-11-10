@@ -10,8 +10,8 @@ use serde::Serialize;
 use super::debug;
 use super::{
     Handler, account, build, catalog, cloud, cluster, completion, config, config_item, context,
-    deploy, device, docs, domain, env, github, ingress, link, login, mcp, metrics, operator,
-    private_access, project, recovery, review, server, service, up, volume,
+    deploy, device, docs, domain, env, github, github_rule, ingress, link, login, mcp, metrics,
+    operator, private_access, project, recovery, review, server, service, up, volume,
 };
 use Approval::{Always, Depends, Never};
 
@@ -433,6 +433,20 @@ pub(crate) const GITHUB_DISCONNECT: Verb = Verb::cloud(
 .docs("deploy/github.md");
 pub(crate) const GITHUB_LS: Verb =
     Verb::cloud("github ls", Never, github::list_command, github::list).docs("deploy/github.md");
+pub(crate) const GITHUB_RULE_APPROVE: Verb = Verb::cloud(
+    "github rule approve",
+    Never,
+    github_rule::approve_command,
+    github_rule::approve,
+)
+.docs("deploy/github.md");
+pub(crate) const GITHUB_RULE_END: Verb = Verb::cloud(
+    "github rule end",
+    Never,
+    github_rule::end_command,
+    github_rule::end,
+)
+.docs("deploy/github.md");
 pub(crate) const GITHUB_TREE: Verb =
     Verb::cloud("github tree", Never, github::tree_command, github::tree).docs("deploy/github.md");
 pub(crate) const HISTORY: Verb =
@@ -923,6 +937,8 @@ pub(crate) const VERBS: &[Verb] = &[
     GITHUB_CONNECT,
     GITHUB_DISCONNECT,
     GITHUB_LS,
+    GITHUB_RULE_APPROVE,
+    GITHUB_RULE_END,
     GITHUB_TREE,
     HISTORY,
     HISTORY_RESTORE,
@@ -1038,6 +1054,10 @@ const GROUPS: &[Group] = &[
     Group {
         path: "github",
         command: github::group,
+    },
+    Group {
+        path: "github rule",
+        command: github_rule::group,
     },
     Group {
         path: "org",

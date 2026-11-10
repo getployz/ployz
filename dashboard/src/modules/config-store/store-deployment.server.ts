@@ -13,6 +13,7 @@ import { eq } from "drizzle-orm";
 import type { GithubApi } from "#/modules/github/github-observation.api";
 import { GithubDisconnected } from "#/modules/github/github-access";
 import { GithubSourceError, materializeGithubSource, resolveGithubSourceSha } from "#/modules/github/github-source.server";
+import { mintInstallationToken } from "#/modules/github/github-token.server";
 import type { ConfigDeploymentAdmittedEventData } from "#/modules/inngest/events";
 import type { AppConfig } from "#/server/config.server";
 import { Database } from "#/server/database.server";
@@ -80,6 +81,22 @@ const checkoutSources = Effect.fn("StoreDeployment.checkoutSources")(function* (
 });
 
 /**
+ * A token that only reads the contents of the Deployment's GitHub repository, for each Server to read the branch head an
+ * automatic deploy rule builds from before it creates under the rule. None for a public repository, and none when
+ * GitHub can't mint one: a Server then reads a public head or refuses.
+ */
+const headReader = Effect.fn("StoreDeployment.headReader")(function* (store: ConfigStore, deploymentId: string) {
+  const sources = yield* storeTry(() => store.deploymentSources(deploymentId)).pipe(Effect.orElseSucceed(() => []));
+  for (const source of sources) {
+    if (source.access.type === "public") continue;
+    return yield* mintInstallationToken(source.access.installationId, { repositoryId: source.repository_id }).pipe(
+      Effect.catch((error) => Effect.logWarning("Could not mint a head reader for a Deployment.", error).pipe(Effect.as(null))),
+    );
+  }
+  return null;
+});
+
+/**
  * Run an admitted Deployment as `runner` on the Organization's Servers, all inside the Rust SDK, with its Git Services
  * checked out at their pinned commits and its upload, while Cloud holds it, extracted. It claims first: a Deployment
  * without an upload of its own takes the one its Services last ran as it starts. Resolves to the Deployment's
@@ -100,8 +117,10 @@ export const runStoreDeployment = Effect.fn("StoreDeployment.run")(function* (
         Effect.flatMap((owner) => owner === undefined ? Effect.succeed(undefined) : fromGithub(extractUpload(data.organizationId, owner))),
       ),
     }).pipe(Effect.catchTag("SourceUnreadable", (error) => Effect.succeed({ failure: error.message })));
+    const reader = yield* headReader(store, data.deploymentId);
+    const withReader = "failure" in sources || reader === null ? sources : { ...sources, reader };
     return yield* storeTry(async () => ({
-      ran: await store.runDeployment(data.organizationId, data.deploymentId, runner, connections, sources, expect),
+      ran: await store.runDeployment(data.organizationId, data.deploymentId, runner, connections, withReader, expect),
     }));
   }).pipe(
     Effect.scoped,

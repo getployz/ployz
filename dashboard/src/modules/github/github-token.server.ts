@@ -49,14 +49,22 @@ export const githubAppJwt = Effect.fn("GithubTokens.appJwt")(function* () {
   });
 });
 
-export const mintInstallationToken = Effect.fn("GithubTokens.mint")(function* (installationId: number) {
+/**
+ * An installation token. With `readOnly`, one that can only read that repository's contents, such as a branch head: what
+ * Cloud hands a Server that reads the head itself.
+ */
+export const mintInstallationToken = Effect.fn("GithubTokens.mint")(function* (installationId: number, readOnly?: { repositoryId: number }) {
   const { github } = yield* AppConfig;
   const jwt = yield* githubAppJwt();
+  const narrowed = readOnly === undefined
+    ? {}
+    : { body: JSON.stringify({ repository_ids: [readOnly.repositoryId], permissions: { contents: "read" } }) };
   const response = yield* Effect.tryPromise({
     try: (signal) => fetch(`${github.origins.api}/app/installations/${installationId}/access_tokens`, {
       signal,
       method: "POST",
       headers: { Authorization: `Bearer ${jwt}`, Accept: "application/vnd.github+json", "X-GitHub-Api-Version": GITHUB_API_VERSION },
+      ...narrowed,
     }),
     catch: () => mintFailed({ code: "request_failed", retriable: true }),
   });

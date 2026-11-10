@@ -614,6 +614,7 @@ async fn ensure(
                 want,
                 approval: None,
                 deploy: None,
+                rule: None,
             },
             Some(&MachineTarget::from(&machine_id)),
         )

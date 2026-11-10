@@ -448,6 +448,7 @@ fn deploy(
         }
         Ok(Some(Deploy::NoServers)) => crate::trusted::NO_SERVERS.to_owned(),
         Ok(Some(Deploy::NeedsApproval)) => crate::pull_request::NEEDS_APPROVAL.to_owned(),
+        Ok(Some(Deploy::Reapprove(changed))) => crate::auto_rule::reapprove(&changed),
         Ok(Some(Deploy::Idle)) => {
             if let Select::Held(held) = select {
                 deployment::cancel_held(tx, held, IDLE.to_owned())?;
@@ -644,6 +645,9 @@ enum Deploy {
     NoServers,
     /// It would deploy a pull request's head no member approved.
     NeedsApproval,
+    /// It would deploy settings the Environment's automatic deploy rule doesn't
+    /// approve: these Services.
+    Reapprove(Vec<ServiceName>),
 }
 
 fn admit(
@@ -757,6 +761,33 @@ fn admit(
             .collect::<Result<Vec<_>, _>>()
             .map_err(|_| error::corrupt("Service name"))?,
     };
+    // A push of a live rule's branch deploys only the settings the rule approves: any
+    // other Deployment would fail on every Server, so it waits for a person instead.
+    let rule = crate::auto_rule::stored(tx, id)?.and_then(|rule| rule.open().ok());
+    if let Some(rule) = rule.filter(|rule| {
+        !rule.ended
+            && rule.source.repository_id == push.repository_id.get()
+            && rule.source.branch == push.branch.as_str()
+    }) {
+        let target = crate::deployment::query::saved_target(
+            tx,
+            who,
+            trusted,
+            (&environment, &saved.intent),
+            &[],
+        )?;
+        let namespace = deployment::namespace(tx, who, &environment.summary, false)?;
+        let ships: Vec<ServiceName> = selected
+            .iter()
+            .filter(|(_, follows)| *follows)
+            .map(|(service, _)| service.config.private_dns.clone())
+            .collect();
+        let sources = crate::auto_rule::sources(&saved.intent);
+        let changed = crate::auto_rule::changed(&rule, &namespace, &target, &sources, &ships);
+        if !changed.is_empty() {
+            return Ok(Some(Deploy::Reapprove(changed)));
+        }
+    }
     if wait && !passed(tx, who, push.repository_id, &push.head)? {
         let ids: Vec<String> = match shut_down {
             true => Vec::new(),

@@ -1650,6 +1650,7 @@ fn ensure_container_names_the_want_the_observation_and_the_refusal_on_the_wire()
     let running = EnsureContainerRequest {
         approval: None,
         deploy: None,
+        rule: None,
         want: ContainerWant::Running {
             container: RunTarget::New(NewContainer {
                 r#gen: ployz_core::Gen::FIRST,

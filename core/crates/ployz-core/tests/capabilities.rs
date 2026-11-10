@@ -1,6 +1,6 @@
 use ployz_core::{
     BUILD_GRANT_HOLDER_CAPABILITY, BUILD_GRANT_RULE_CAPABILITY, BUILD_SEALED_CAPABILITY,
-    CERTIFICATE_POLICY_CAPABILITY, CapabilityAdvertisement, CapabilityName,
+    CERTIFICATE_POLICY_CAPABILITY, CapabilityAdvertisement, CapabilityName, DEPLOY_RULE_CAPABILITY,
     DESCRIBE_CONTRACT_CAPABILITY, ENROLL_FOR_RECOVERY_CAPABILITY, ENROLL_MACHINE_CAPABILITY,
     ENSURE_CONTAINER_CAPABILITY, ENSURE_IMAGE_INGEST_CAPABILITY, ENV_SEALED_CAPABILITY,
     EXEC_CONTAINER_CAPABILITY, FORGET_MACHINE_CAPABILITY, GENERATE_SEALING_KEY_CAPABILITY,
@@ -71,6 +71,7 @@ fn catalogued_capabilities_keep_stable_spellings() {
         (BUILD_SEALED_CAPABILITY, "ployz.build.sealed.v1"),
         (BUILD_GRANT_HOLDER_CAPABILITY, "ployz.build.grant.holder.v1"),
         (BUILD_GRANT_RULE_CAPABILITY, "ployz.build.grant.rule.v1"),
+        (DEPLOY_RULE_CAPABILITY, "ployz.container.deploy-rule.v1"),
         (
             SET_DEVICE_ENFORCEMENT_CAPABILITY,
             "ployz.machine.set-device-enforcement.v2",
@@ -205,6 +206,7 @@ fn advertised_capability_groups_match_the_frozen_catalog() {
             "ployz.restart.proposal.v1",
             "ployz.container.deploy-approval.v1",
             "ployz.container.deploy-proposal.v1",
+            "ployz.container.deploy-rule.v1",
         ]
     );
     assert_eq!(
@@ -411,6 +413,10 @@ const ABOVE_FLOOR: &[(&str, &str)] = &[
     (
         "ployz.container.deploy-proposal.v1",
         "gated: B5 must have Cloud send a deploy step of a proposal only to a Machine that advertises it, since nothing sends one yet; an older enforcing Machine refuses one, as it refuses any deploy approval it can't verify",
+    ),
+    (
+        "ployz.container.deploy-rule.v1",
+        "gated: Cloud attaches a rule proof only for a Machine that advertises it. An older daemon ignores `rule`, and under Device enforcement it refuses the Operator's creation for want of a deploy approval, so a rule deploy there fails closed",
     ),
     (
         "ployz.image.pull.v1",

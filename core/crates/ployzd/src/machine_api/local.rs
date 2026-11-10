@@ -571,6 +571,7 @@ impl MachineRpc for MachineService {
                     request.want,
                     request.approval.as_ref(),
                     request.deploy.as_ref(),
+                    request.rule.as_deref(),
                 )
                 .await
             {
@@ -1264,6 +1265,20 @@ fn local_failure(error: LocalMachineError) -> Result<RpcError, Status> {
                 "next": "ployz deploy from an approved device",
             }),
         )),
+        LocalMachineError::RuleDeployRefused(ref refusal) => {
+            let details = match refusal.next() {
+                Some(next) => serde_json::json!({
+                    "capability": ployz_core::DEPLOY_RULE_CAPABILITY,
+                    "next": next,
+                }),
+                None => serde_json::json!({ "capability": ployz_core::DEPLOY_RULE_CAPABILITY }),
+            };
+            Err(ployz_core::rpc::hinted_status(
+                tonic::Code::PermissionDenied,
+                &error,
+                details,
+            ))
+        }
         LocalMachineError::BuildRefused { capability } => Err(build_refused(&error, capability)),
         LocalMachineError::VolumeRefused { capability } => Err(ployz_core::rpc::hinted_status(
             tonic::Code::PermissionDenied,
