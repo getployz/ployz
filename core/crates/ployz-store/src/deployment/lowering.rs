@@ -614,12 +614,14 @@ pub(crate) struct Lowered {
 
 /// `saved` compiled, and its variables and Config files resolved as [`lower`]
 /// resolves them. The compiled producers are `saved`'s own: live values order
-/// nothing, since what provides them runs elsewhere.
+/// nothing, since what provides them runs elsewhere. A value sealed for `inherit`
+/// reaches its Service naming that Environment, as a preview inherits its parent's.
 fn resolve(
     environment: &EnvironmentId,
     saved: &SavedEnvironmentIntent,
     cluster_domain: Option<&Hostname>,
     branch: &crate::branch::Lowering,
+    inherit: Option<uuid::Uuid>,
 ) -> Result<
     (
         ployz_core::config::CompiledEnvironmentIntent,
@@ -635,7 +637,7 @@ fn resolve(
     compiled
         .variable_producers
         .extend(branch.live.iter().cloned());
-    let resolved = variables::resolve(&compiled, environment.as_str())?;
+    let resolved = variables::resolve(&compiled, environment.as_str(), inherit)?;
     compiled.variable_producers.truncate(own);
     Ok((compiled, resolved))
 }
@@ -655,7 +657,14 @@ pub(super) fn lower(
     branch: &crate::branch::Lowering,
     organization: &OrganizationId,
 ) -> Result<Lowered, RpcError> {
-    let (compiled, mut resolved) = resolve(environment, saved, cluster_domain, branch)?;
+    // A preview opens its parent's values under the parent's identity; a Machine admits
+    // each only for a key the preview rule lets that Service inherit.
+    let inherit = branch
+        .parent
+        .as_ref()
+        .filter(|_| ployz_core::authority::preview::is_preview_namespace(&namespace))
+        .and_then(|parent| uuid::Uuid::parse_str(parent.as_str()).ok());
+    let (compiled, mut resolved) = resolve(environment, saved, cluster_domain, branch, inherit)?;
     let (narrowed, services, removals, prune): (bool, &[ServiceName], _, _) = match ships {
         Ships::All { removals, prune } => (
             false,
@@ -903,6 +912,9 @@ pub(super) fn lower(
                 volume_resource_id: volume.resource_id.clone(),
                 storage: volume.storage,
                 deployed: deployed.contains(&volume.resource_id),
+                named_for: crate::removal::named_for(&namespace, volume)
+                    .filter(|named| *named != volume.resource_id)
+                    .map(str::to_owned),
             })
             .collect(),
         lineages: lineages.clone(),

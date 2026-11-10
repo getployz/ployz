@@ -125,6 +125,8 @@ pub(crate) struct Lowering {
     pub(crate) setup: BTreeMap<String, Vec<String>>,
     /// The name of each Live Node, by lineage, as [`live_names`] finds it.
     pub(crate) names: BTreeMap<String, String>,
+    /// The Environment it branches from. None for a root.
+    pub(crate) parent: Option<EnvironmentId>,
 }
 
 /// [`Lowering`] for a Deployment of `saved` in Environment `id`, as things stand now.
@@ -155,6 +157,7 @@ pub(crate) fn lowering(
         live: live_producers(tx, &row.parent, &used_live(saved))?,
         setup,
         names: live_names(tx, id, saved)?,
+        parent: Some(row.parent),
     })
 }
 

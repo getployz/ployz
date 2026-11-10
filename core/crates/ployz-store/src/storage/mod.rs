@@ -306,6 +306,11 @@ const MIGRATIONS: &[(&str, Step)] = &[
         "0042_auto_deploy_rule",
         Step::Sql(include_str!("migrations/0042_auto_deploy_rule.sql")),
     ),
+    (
+        // Each Environment's preview rule, signed by a Device.
+        "0043_preview_rule",
+        Step::Sql(include_str!("migrations/0043_preview_rule.sql")),
+    ),
 ];
 
 enum Step {
@@ -448,6 +453,19 @@ fn newer_store(sqlite: &sqlite::Sqlite, failed: sqlite::Failed, verb: &str) -> R
         .chain(failed.cause)
         .collect();
     refused
+}
+
+/// Run `work` inside a savepoint and undo everything it wrote, whatever it returns: a
+/// rehearsal of writes whose only product is what `work` reads back.
+pub(crate) fn rehearse<T>(
+    tx: &mut dyn Tx,
+    work: impl FnOnce(&mut dyn Tx) -> Result<T, RpcError>,
+) -> Result<T, RpcError> {
+    tx.execute("SAVEPOINT rehearsal", &[])?;
+    let result = work(tx);
+    tx.execute("ROLLBACK TO SAVEPOINT rehearsal", &[])?;
+    tx.execute("RELEASE SAVEPOINT rehearsal", &[])?;
+    result
 }
 
 /// Run `work` inside a savepoint: when it fails, everything it wrote is undone and

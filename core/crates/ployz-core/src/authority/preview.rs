@@ -132,10 +132,15 @@ pub fn is_preview_namespace(namespace: &Namespace) -> bool {
         .is_some_and(|(rule, key)| hex(rule, 16) && hex(key, 12))
 }
 
-/// A preview's Ingress hostname: `<label>.<namespace>.<domain>`.
+/// A preview's generated domain prefix: `<label>-<namespace>`, the label cut so the
+/// prefix stays one DNS label. Its hostname is `<prefix>.<domain>`, under the same
+/// Cluster Domain wildcard as every generated domain, and holds the derived Namespace,
+/// which the template puts back.
 #[must_use]
-pub fn preview_hostname(label: &str, namespace: &Namespace, domain: &str) -> String {
-    format!("{label}.{namespace}.{domain}")
+pub fn preview_prefix(label: &str, namespace: &Namespace) -> String {
+    let room = 63usize.saturating_sub(namespace.as_str().len() + 1);
+    let label = label.get(..room).unwrap_or(label).trim_end_matches('-');
+    format!("{label}-{namespace}")
 }
 
 /// One Service a preview rule deploys in each preview.
@@ -529,8 +534,8 @@ pub fn secrets_digest(record: &crate::SealedRecord) -> Result<SealedDigest, supe
 pub const SEALED_VALUE: &str = "a Sealed value";
 
 /// The digest a preview rule or review approves for `spec`, a preview's spec in its
-/// derived `namespace`: its [`PayloadDigest`] with the image, pull policy and Sealed
-/// identity left out, each Generated Value `service` names checked and replaced by its
+/// derived `namespace`: its [`PayloadDigest`] with the image, pull policy, Sealed
+/// identity and [`crate::config::SERVICE_ID_LABEL`] left out, each Generated Value `service` names checked and replaced by its
 /// generator, and every occurrence of `namespace` replaced by [`NAMESPACE_PLACEHOLDER`].
 ///
 /// # Errors
@@ -545,6 +550,12 @@ pub fn template(
     spec.container.image = String::new();
     spec.container.pull_policy = crate::PullPolicy::Never;
     spec.container.sealed_identity = None;
+    // Each preview's Services are its own copies with their own IDs, which only this
+    // bookkeeping label names.
+    let mut labels = spec.container.labels.as_map().clone();
+    labels.remove(crate::config::SERVICE_ID_LABEL);
+    spec.container.labels = crate::ContainerLabels::parse(labels)
+        .map_err(|_| AuthorityRefusal::Mismatch { field: "a payload" })?;
     for (key, generator) in &service.generated {
         let generated =
             |environment: &mut BTreeMap<String, EnvValue>, required: bool| match environment
