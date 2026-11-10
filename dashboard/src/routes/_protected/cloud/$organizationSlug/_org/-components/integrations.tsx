@@ -60,7 +60,7 @@ function TailscaleSection({ organizationSlug, editable }: { organizationSlug: st
     <SettingsSection id="tailscale" title="Tailscale">
       <SettingsRow
         label="Private access"
-        hint={hintOf(query.isPending, observed === null ? null : on && observed.partial)}
+        hint={hintOf(query.isPending, observed === null ? null : { serving, placed: on ? placed : 0, partial: observed.partial })}
         commit="none"
         control={(
           <>
@@ -140,10 +140,12 @@ function stateOf(server: ObservedServer, last: PrivateAccessAnswer | null): RowS
 
 const putRight = (to: PrivateAccessWant, state: RowState | undefined) => to === "on" ? state === "running" : state === "none";
 
-function hintOf(loading: boolean, partial: boolean | null) {
+function hintOf(loading: boolean, routers: { serving: number; placed: number; partial: boolean } | null) {
   if (loading) return "Checking your servers…";
-  if (partial === null) return "Your servers aren't answering.";
-  return partial ? "Some servers didn't answer." : "Reach your services' private addresses from your tailnet.";
+  if (routers === null) return "Your servers aren't answering.";
+  if (routers.placed === 0) return "Reach your services' private addresses from your tailnet.";
+  if (routers.serving === 0) return "No router is running. Try another key.";
+  return routers.partial ? "Some servers didn't answer." : "Reach your services' private addresses from your tailnet.";
 }
 
 function StatusBadge({ serving, servers }: { serving: number; servers: number }) {
