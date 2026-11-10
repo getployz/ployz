@@ -13,6 +13,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::json;
 use ts_rs::TS;
 
+use crate::id::{BranchName, RepositoryId};
 use crate::storage::Tx;
 use crate::{Actor, EnvironmentId, EnvironmentRef, EnvironmentSummary, Trusted, error, scope};
 
@@ -168,8 +169,11 @@ fn view_of(
         )?,
         _ => Vec::new(),
     };
-    let changed = match rule.as_ref().and_then(|rule| rule.open().ok()) {
-        Some(rule) if !target.is_empty() => changed(&rule, &namespace, &target, &sources, &[]),
+    let changed = match (rule.as_ref().and_then(|rule| rule.open().ok()), &saved) {
+        (Some(rule), Some(saved)) if !target.is_empty() => {
+            let ships = following(tx, id, &saved.intent, &rule)?;
+            changed(&rule, &namespace, &target, &sources, &ships)
+        }
         _ => Vec::new(),
     };
     Ok(RuleView {
@@ -180,6 +184,32 @@ fn view_of(
         target,
         changed,
     })
+}
+
+/// The Services a push of `rule`'s branch ships as following it: each Saved Service
+/// that tracks the branch and deploys on push, as a push's hold counts them. A
+/// Service among them the rule doesn't cover holds the push, so the view shows it too.
+fn following(
+    tx: &mut dyn Tx,
+    id: &EnvironmentId,
+    saved: &SavedEnvironmentIntent,
+    rule: &AutoDeployRule,
+) -> Result<Vec<ServiceName>, RpcError> {
+    let (Ok(repository), Ok(branch)) = (
+        RepositoryId::parse(rule.source.repository_id),
+        BranchName::parse(rule.source.branch.as_str()),
+    ) else {
+        return Ok(Vec::new());
+    };
+    let mut ships = Vec::new();
+    for service in &saved.services {
+        if crate::git::tracks(service, repository, &branch)
+            && crate::policy::load(tx, id, &service.id)?.auto_deploy
+        {
+            ships.push(service.config.private_dns.clone());
+        }
+    }
+    Ok(ships)
 }
 
 pub(crate) fn sources(saved: &SavedEnvironmentIntent) -> Vec<RuleSourceView> {

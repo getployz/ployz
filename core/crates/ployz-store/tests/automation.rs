@@ -2140,6 +2140,34 @@ fn a_push_under_a_rule_waits_for_approval_again_once_a_setting_changed() {
 }
 
 #[test]
+fn a_new_service_on_the_rules_branch_holds_the_push_and_shows_in_the_rule_view() {
+    let (store, who) = shop();
+    publish(&store, &who);
+    approve_rule(&store, &who, 1).unwrap();
+    add_git_service(&store, &who, 5, "worker");
+    publish(&store, &who);
+    let automated = system(&store, &push(None, Some(H1), None));
+    assert!(automated.admitted.is_empty());
+    assert_eq!(
+        reasons(&automated),
+        vec![
+            "worker changed since the automatic deploy rule was approved. Approve it again in \
+             the environment's settings, or run ployz github rule approve worker."
+        ]
+    );
+    // The view the dashboard reads names what holds the push, so it can be approved.
+    let view = store
+        .read(
+            &who,
+            &ployz_store::RuleQuery {
+                environment: EnvironmentRef::default(),
+            },
+        )
+        .unwrap();
+    assert_eq!(view.changed, [ServiceName::parse("worker").unwrap()]);
+}
+
+#[test]
 fn a_rule_that_does_not_supersede_the_kept_one_is_refused() {
     let (store, who) = shop();
     publish(&store, &who);

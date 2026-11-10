@@ -109,7 +109,8 @@ approval is its own passkey prompt.
 In the dashboard, open the environment's **Settings** and turn on **Deploy every push** under
 **Automatic deploys**. The dialog shows the repository and branch, the builder, the servers and
 each service's settings. **Approve with passkey** asks your passkey once. The rule covers every
-service that builds from that branch.
+service that builds from GitHub. If they build from different branches, it keeps the services on
+the branch the rule already covers.
 
 From the CLI, approve it for the services that build from one branch:
 
@@ -155,7 +156,8 @@ jobs:
 ```
 
 - **A saved change waits for you.** After you save a change to a service the rule covers, its
-  settings or how it builds, pushes don't deploy it until you approve the rule again. Settings
+  settings or how it builds, or add a service that builds from the rule's branch, pushes don't
+  deploy it until you approve the rule again. Settings
   shows **Pushes to main are on hold** with what changed; **Review and approve** names each
   changed setting and asks your passkey once. From the CLI, `ployz github rule approve web`
   names what changed, as `changed     web since the last approval`. A push that changes only
