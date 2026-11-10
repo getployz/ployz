@@ -44,6 +44,20 @@ export const resolveReadableRepository = Effect.fn("Github.resolveReadableReposi
   } satisfies ReadableRepository;
 });
 
+const RepositoryOwner = Schema.Struct({ owner: Schema.Struct({ id: githubIdSchema }) });
+
+/** The GitHub ID of `repository`'s owner, which an automatic deploy rule names beside the repository's own ID. */
+export const repositoryOwnerId = Effect.fn("Github.repositoryOwnerId")(function* (repository: ReadableRepository) {
+  const api = yield* GithubApi;
+  const observed = yield* api.json({
+    access: accessFor(repository.organizationId, repository.installationId),
+    path: `/repositories/${repository.repositoryId}`,
+    operation: "resolve_repository",
+    schema: RepositoryOwner,
+  });
+  return observed.owner.id;
+});
+
 /** Whether `branch` exists in the repository, read with the repository's own authority. */
 export const githubBranchExists = Effect.fn("Github.branchExists")(function* (repository: ReadableRepository, branch: string) {
   const head = yield* resolveGithubBranchHead(accessFor(repository.organizationId, repository.installationId),

@@ -15,14 +15,15 @@ use ployz_core::{
     READ_ROUTED_ADDRESSES_CAPABILITY, READ_ROUTES_CAPABILITY, RECOVER_SEALING_KEY_CAPABILITY,
     REGISTER_MACHINE_CAPABILITY, REMOVE_TRUSTED_KEY_CAPABILITY, REMOVE_VOLUME_CAPABILITY,
     REQUEST_MACHINE_UPGRADE_CAPABILITY, RESTART_APPROVAL_CAPABILITY,
-    RESTART_SESSION_GRANT_CAPABILITY, RETAINED_ENV_CAPABILITY, RUNTIME_WATCH_CAPABILITY, Rpc,
-    SEED_VOLUME_CAPABILITY, SELECT_ENDPOINT_CAPABILITY, SET_CLUSTER_NAME_CAPABILITY,
-    SET_DEVICE_CAPABILITY, SET_DEVICE_ENFORCEMENT_CAPABILITY, SET_INGRESS_DOORS_CAPABILITY,
-    SET_INGRESS_TUNNEL_CAPABILITY, SET_MANAGEMENT_CLIENT_CAPABILITY, SET_PASSKEY_CAPABILITY,
-    SET_PRIVATE_ACCESS_CAPABILITY, SET_PUSH_TARGET_CAPABILITY, SET_VOLUME_COPY_CAPABILITY,
-    SET_VOLUME_SIZE_CAPABILITY, SHARE_SEALING_KEY_CAPABILITY, TAIL_LOGS_CAPABILITY,
-    UPDATE_CONTAINER_LIMITS_CAPABILITY, UPDATE_MACHINE_CAPABILITY, UPGRADE_EXACT_CAPABILITY,
-    VOLUME_FLOOR_CAPABILITY, VOLUME_SHRINK_CAPABILITY, WRAP_SEALING_KEY_CAPABILITY, op,
+    RESTART_SESSION_GRANT_CAPABILITY, RETAINED_ENV_CAPABILITY, RULE_PASSKEY_CAPABILITY,
+    RUNTIME_WATCH_CAPABILITY, Rpc, SEED_VOLUME_CAPABILITY, SELECT_ENDPOINT_CAPABILITY,
+    SET_CLUSTER_NAME_CAPABILITY, SET_DEVICE_CAPABILITY, SET_DEVICE_ENFORCEMENT_CAPABILITY,
+    SET_INGRESS_DOORS_CAPABILITY, SET_INGRESS_TUNNEL_CAPABILITY, SET_MANAGEMENT_CLIENT_CAPABILITY,
+    SET_PASSKEY_CAPABILITY, SET_PRIVATE_ACCESS_CAPABILITY, SET_PUSH_TARGET_CAPABILITY,
+    SET_VOLUME_COPY_CAPABILITY, SET_VOLUME_SIZE_CAPABILITY, SHARE_SEALING_KEY_CAPABILITY,
+    TAIL_LOGS_CAPABILITY, UPDATE_CONTAINER_LIMITS_CAPABILITY, UPDATE_MACHINE_CAPABILITY,
+    UPGRADE_EXACT_CAPABILITY, VOLUME_FLOOR_CAPABILITY, VOLUME_SHRINK_CAPABILITY,
+    WRAP_SEALING_KEY_CAPABILITY, op,
 };
 
 /// Capability constants are generated from the catalog, so a typo would stay
@@ -72,6 +73,7 @@ fn catalogued_capabilities_keep_stable_spellings() {
         (BUILD_GRANT_HOLDER_CAPABILITY, "ployz.build.grant.holder.v1"),
         (BUILD_GRANT_RULE_CAPABILITY, "ployz.build.grant.rule.v1"),
         (DEPLOY_RULE_CAPABILITY, "ployz.container.deploy-rule.v1"),
+        (RULE_PASSKEY_CAPABILITY, "ployz.rule.passkey.v1"),
         (
             SET_DEVICE_ENFORCEMENT_CAPABILITY,
             "ployz.machine.set-device-enforcement.v2",
@@ -207,6 +209,7 @@ fn advertised_capability_groups_match_the_frozen_catalog() {
             "ployz.container.deploy-approval.v1",
             "ployz.container.deploy-proposal.v1",
             "ployz.container.deploy-rule.v1",
+            "ployz.rule.passkey.v1",
         ]
     );
     assert_eq!(
@@ -417,6 +420,10 @@ const ABOVE_FLOOR: &[(&str, &str)] = &[
     (
         "ployz.container.deploy-rule.v1",
         "gated: Cloud attaches a rule proof only for a Machine that advertises it. An older daemon ignores `rule`, and under Device enforcement it refuses the Operator's creation for want of a deploy approval, so a rule deploy there fails closed",
+    ),
+    (
+        "ployz.rule.passkey.v1",
+        "gated: the dashboard signs a rule with a passkey only when every enforcing Machine advertises it. An older daemon refuses the rule's envelope for its unknown `assertions` field, and its `\"passkey\"` signer, so a rule deploy there fails closed",
     ),
     (
         "ployz.image.pull.v1",

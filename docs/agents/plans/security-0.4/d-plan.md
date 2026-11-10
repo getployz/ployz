@@ -243,12 +243,12 @@ Outcome. A dashboard user turns automatic deploy on for an Environment with one 
 
 **Files.**
 
-- [ ] Edit `core/crates/ployz-sdk/src/lib.rs` to add `autoDeployRuleBody(view, signer)`, which returns the canonical body and the change lines. Export the rule types from `@ployz/sdk/authority`.
-- [ ] Edit `dashboard/src/modules/github/**` and `dashboard/src/modules/approvals/**` for the rule card and its prompt, through B's passkey-direct helper.
+- [x] Edit `core/crates/ployz-sdk/src/lib.rs` to add `autoDeployRuleBody(view, signer)`, which returns the canonical body and the change lines. Export the rule types from `@ployz/sdk/authority`. Shipped as `autoDeployRuleBody(view, terms, services?)` and `autoDeployRuleEndBody`, over drafting in `ployz-core`'s `authority::rule_draft` that the CLI shares.
+- [x] Edit `dashboard/src/modules/github/**` and `dashboard/src/modules/approvals/**` for the rule card and its prompt, through B's passkey-direct helper. B had none, so D5 adds `dashboard/src/modules/approval-session/passkey-statement.ts` for E8 and D7. The card sits in the Environment's settings, since an Approval card is the agent sidebar's.
 
-**Verify.** Unit tests for the body's golden digest and for a session-signed rule refused. Live per `verify-dashboard` with `SERVERS=1`. Record turning a rule on with one prompt, a held push shown as a card, approving it, the next push deploying, and a session-only attempt refused by the Machine. Check light and dark themes and phone width per `dashboard/DESIGN.md`. Perf: the body is built in under 20 ms for 20 Services.
+**Verify.** Unit tests for the body's golden digest and for a session-signed rule refused. Live per `verify-dashboard` with `SERVERS=1`. Record turning a rule on with one prompt, a held push shown as a card, approving it, the next push deploying, and a session-only attempt refused by the Machine. Check light and dark themes and phone width per `dashboard/DESIGN.md`. Perf: the body is built in under 20 ms for 20 Services. Done: `media/d5-review.mp4` and `media/d5-*.png`, 1.31 ms median for 20 Services.
 
-**Review gate.** The operator reviews screenshots and a video before merge.
+**Review gate.** The operator reviews screenshots and a video before merge. Waived under the operator's autopilot grant.
 
 ## Approve a built image deploy (D6)
 
@@ -335,7 +335,7 @@ Outcome. Pushes by trusted GitHub accounts to branches of the repository deploy 
 ## Appendix A. Contract gaps
 
 1. **A `Rule` purpose (thread A).** `Purpose` is `Workflow`, `Join` and `Enforce` (`ployz-core/src/authority/keys.rs:23`). A rule must not be signable by a session grant, which `Workflow` allows. D2 needs `Purpose::Rule`, which `verify_signers` admits for a Device or a passkey's own assertion only.
-2. **Passkey-direct signing in the dashboard (thread B).** D5 needs a passkey assertion over a rule body outside a session. B's enrollment and proposal approval already prompt directly, so the helper may exist. Confirm it with the B owner.
+2. **Passkey-direct signing in the dashboard (thread B).** D5 needs a passkey assertion over a rule body outside a session. B's enrollment and proposal approval already prompt directly, so the helper may exist. Confirm it with the B owner. Closed by D5: B's prompts were session-bound, so D5 adds `passkey-statement.ts`, one prompt over a statement's own challenge, which gap 8 reuses.
 3. **Generation and accepted-build records (thread A).** D4 adds a per-rule high-water mark and an accepted-build entry to the consumption log. Like C1's hook entry, this is "C inside authority", and A must agree to the record kinds.
 4. **`SealedValue.environment` (threads A and C).** D7 changes Sealed associated data. That is a wire change in a type C's digest covers. An older daemon refuses it, which fails closed.
 5. **The GitHub minter.** The root runs it as its own slice after D4 (operator decision 1).

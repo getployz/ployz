@@ -199,7 +199,7 @@ pub struct LocalMachineRecord {
     device_enforcement: bool,
     #[serde(default)]
     trusted_machines: Vec<ployz_core::authority::Member>,
-    /// Passkeys a Full caller approved here. They approve workflows only and hold no slot.
+    /// Passkeys a Full caller approved here. They approve workflows and rules only and hold no slot.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     passkeys: Vec<ployz_core::authority::TrustedPasskey>,
     #[serde(default)]

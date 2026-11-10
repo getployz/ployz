@@ -1,32 +1,25 @@
 //! `ployz github rule`: a Device's standing approval of every push to one branch, so a
 //! Cluster whose Servers enforce device approval deploys each push with no prompt.
 //!
-//! Approve reads the Environment's Saved settings from Cloud, shows the person what the
-//! rule pins, and signs it with this CLI's Device key. Cloud only keeps and relays the
-//! signed rule: each Server checks the signature, the builder's GitHub tokens, the
-//! branch head and the settings before it runs anything.
-
-use std::collections::BTreeSet;
+//! Approve reads the Environment's Saved settings from Cloud, drafts the rule the way
+//! the dashboard does, shows the person what it pins, and signs it with this CLI's Device
+//! key. Cloud only keeps and relays the signed rule: each Server checks the signature,
+//! the builder's GitHub tokens, the branch head and the settings before it runs anything.
 
 use clap::{Arg, ArgAction, ArgMatches, Command};
-use ployz_core::authority::rule::{
-    BUILDER_SHA, Builder, PolicyCache, RuleEvent, RuleService, RuleSource, Runner, template,
-};
+use ployz_core::authority::rule::{BUILDER_SHA, Builder};
+use ployz_core::authority::rule_draft::RuleDraftError;
 use ployz_core::authority::{
-    AutoDeployRule, BuildPolicy, CommitSha, RuleId, SealedDigest, Signed, Signer, SignerKey,
-    Timestamp,
+    AutoDeployRule, CommitSha, RuleId, RuleSummary, RuleTerms, Signed, Signer, SignerKey, Timestamp,
 };
-use ployz_core::{RequestedServiceSpec, RpcErrorCode, SealedRecord, ServiceName};
-use ployz_store::{ApproveRule, RuleQuery, RuleView};
+use ployz_core::{RpcErrorCode, ServiceName};
+use ployz_store::{ApproveRule, RuleQuery};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 
 use super::store::{self, Store};
 use super::{Error, deploy::approve, leaf_matches};
 use crate::cli::value;
-
-/// The caller workflow every rule builds with, as `ployz github` sets it up.
-const WORKFLOW: &str = ".github/workflows/ployz-build.yml";
 
 pub(super) fn group(command: Command) -> Command {
     command.about("Deploy every push of a branch on servers that enforce device approval")
@@ -111,36 +104,22 @@ pub(super) fn approve(root: &ArgMatches) -> Result<(), Error> {
     let view = store.read(&RuleQuery {
         environment: environment.clone(),
     })?;
-    let (repository, branch, repository_id) = one_branch(&view, &names)?;
-    let owner = owner(root, &repository, repository_id)?;
-    let mut services = Vec::new();
-    for name in &names {
-        services.push(rule_service(&view, name, &platform)?);
-    }
-    services.sort_by(|left, right| left.name.cmp(&right.name));
-    let (id, generation) = next(&view);
-    let rule = AutoDeployRule {
+    let basis = view.basis();
+    let terms = RuleTerms {
         cluster: enforcing.cluster,
-        rule: id,
-        generation,
-        namespace: view.namespace.clone(),
         machines: enforcing.machines,
-        source: RuleSource {
-            repository_id,
-            owner_id: owner,
-            repository: repository.clone(),
-            branch: branch.clone(),
-            workflow: WORKFLOW.to_owned(),
-            events: vec![RuleEvent::Push],
-            builder,
-            runner: Runner::GithubHosted,
-        },
-        services,
+        owner_id: 0,
+        builder,
+        platform,
+        new_rule: RuleId::from_bytes(*uuid::Uuid::new_v4().as_bytes()),
         issued_at: Timestamp::now(),
-        ended: false,
         signer: SignerKey::Device(signer.public().into()),
     };
-    show(&view, &rule, &names);
+    let mut rule = AutoDeployRule::draft(&basis, &names, terms).map_err(drafting)?;
+    rule.source.owner_id = owner(root, &rule.source.repository, rule.source.repository_id)?;
+    let repository = rule.source.repository.clone();
+    let branch = rule.source.branch.clone();
+    show(view.environment.name.as_str(), &rule.summary(&basis));
     keep(&store, environment, &rule, &signer)?;
     crate::ui::stream(format_args!(
         "Approved. Every push to {branch} now deploys {} with these settings.",
@@ -166,26 +145,25 @@ pub(super) fn end(root: &ArgMatches) -> Result<(), Error> {
     let view = store.read(&RuleQuery {
         environment: environment.clone(),
     })?;
-    let Some(kept) = view.rule.as_ref().and_then(|rule| rule.open().ok()) else {
-        return Err(Error::coded(
+    let basis = view.basis();
+    if basis.kept().is_some_and(|kept| kept.ended) {
+        crate::ui::stream("Automatic deploys are already off for this environment.");
+        return Ok(());
+    }
+    let rule = AutoDeployRule::ending(
+        &basis,
+        Timestamp::now(),
+        SignerKey::Device(signer.public().into()),
+    )
+    .map_err(|_| {
+        Error::coded(
             RpcErrorCode::NotFound,
             format!(
                 "{} has no automatic deploy rule to end.",
                 view.environment.name
             ),
-        ));
-    };
-    if kept.ended {
-        crate::ui::stream("Automatic deploys are already off for this environment.");
-        return Ok(());
-    }
-    let rule = AutoDeployRule {
-        generation: kept.generation + 1,
-        issued_at: Timestamp::now(),
-        ended: true,
-        signer: SignerKey::Device(signer.public().into()),
-        ..kept
-    };
+        )
+    })?;
     keep(&store, environment, &rule, &signer)?;
     crate::ui::stream(format_args!(
         "Automatic deploys are off. Pushes to {} no longer deploy on servers that enforce \
@@ -256,45 +234,6 @@ fn enforcing(root: &ArgMatches) -> Result<approve::Enforcing, Error> {
     }
 }
 
-/// The one repository and branch every named Service builds from.
-fn one_branch(view: &RuleView, names: &[ServiceName]) -> Result<(String, String, u64), Error> {
-    let mut found: Option<(String, String, u64)> = None;
-    for name in names {
-        let source = view
-            .sources
-            .iter()
-            .find(|source| source.service == *name)
-            .ok_or_else(|| {
-                Error::coded(
-                    RpcErrorCode::InvalidArgument,
-                    format!("{name} doesn't build from GitHub, so a rule can't deploy it."),
-                )
-            })?;
-        let branch = source.branch.clone().ok_or_else(|| {
-            Error::coded(
-                RpcErrorCode::InvalidArgument,
-                format!("{name}'s branch is disconnected. Connect it, then approve again."),
-            )
-        })?;
-        let this = (source.repository.clone(), branch, source.repository_id);
-        match &found {
-            None => found = Some(this),
-            Some(first) if *first == this => {}
-            Some((repository, branch, _)) => {
-                return Err(Error::coded(
-                    RpcErrorCode::InvalidArgument,
-                    format!(
-                        "A rule deploys one branch, and {name} builds from {} at {}, not \
-                         {repository} at {branch}. Approve a rule for each.",
-                        this.0, this.1
-                    ),
-                ));
-            }
-        }
-    }
-    found.ok_or_else(|| Error::usage("Name at least one service"))
-}
-
 #[derive(Deserialize)]
 struct Repository {
     repository_id: u64,
@@ -316,55 +255,6 @@ fn owner(root: &ArgMatches, repository: &str, repository_id: u64) -> Result<u64,
     Ok(found.owner_id)
 }
 
-/// What the rule approves for `name`: its Saved settings less the image, the build
-/// policy the runner must build with, and its build's Sealed values.
-fn rule_service(view: &RuleView, name: &ServiceName, platform: &str) -> Result<RuleService, Error> {
-    let spec = spec(view, name)?;
-    let source = view
-        .sources
-        .iter()
-        .find(|source| source.service == *name)
-        .expect("one_branch found every source");
-    let policy = BuildPolicy::derive(
-        &source.root_dir,
-        &source.build,
-        spec,
-        BTreeSet::from([platform.to_owned()]),
-        PolicyCache::Actions,
-    );
-    let secrets = SealedRecord::of(spec)
-        .map_err(Error::command)?
-        .map(|record| SealedDigest::of(&record))
-        .transpose()
-        .map_err(Error::command)?;
-    Ok(RuleService {
-        name: name.clone(),
-        template: template(spec, &view.namespace).map_err(Error::command)?,
-        policy,
-        secrets,
-    })
-}
-
-fn spec<'a>(view: &'a RuleView, name: &ServiceName) -> Result<&'a RequestedServiceSpec, Error> {
-    view.target
-        .iter()
-        .find(|spec| spec.name == *name)
-        .ok_or_else(|| {
-            Error::coded(
-                RpcErrorCode::NotFound,
-                format!("{name} isn't saved in this environment. Publish it, then approve again."),
-            )
-        })
-}
-
-/// The kept rule's next generation, or a new rule's first.
-fn next(view: &RuleView) -> (RuleId, u64) {
-    match view.rule.as_ref().and_then(|rule| rule.open().ok()) {
-        Some(kept) => (kept.rule, kept.generation + 1),
-        None => (RuleId::from_bytes(*uuid::Uuid::new_v4().as_bytes()), 1),
-    }
-}
-
 fn keep(
     store: &Store<'_>,
     environment: ployz_store::EnvironmentRef,
@@ -379,101 +269,59 @@ fn keep(
     Ok(())
 }
 
+/// Why a rule can't be drafted, as a coded error.
+fn drafting(error: RuleDraftError) -> Error {
+    let code = match error {
+        RuleDraftError::NotSaved(_) | RuleDraftError::NoRule => RpcErrorCode::NotFound,
+        RuleDraftError::Sealed(_) | RuleDraftError::Canonical(_) => return Error::command(error),
+        RuleDraftError::NotGit(_)
+        | RuleDraftError::Disconnected(_)
+        | RuleDraftError::TwoBranches { .. }
+        | RuleDraftError::Nothing => RpcErrorCode::InvalidArgument,
+    };
+    Error::caused(code, "Can't draft the automatic deploy rule", error)
+}
+
 /// What the person approves, before it is signed.
-fn show(view: &RuleView, rule: &AutoDeployRule, names: &[ServiceName]) {
-    let source = &rule.source;
+fn show(environment: &str, summary: &RuleSummary) {
     crate::ui::stream(format_args!(
-        "Approving automatic deploys for {}:",
-        view.environment.name
+        "Approving automatic deploys for {environment}:"
     ));
     crate::ui::stream(format_args!(
         "  repository  {} on {}",
-        source.repository, source.branch
+        summary.repository, summary.branch
     ));
-    crate::ui::stream(format_args!("  workflow    {}, on push", source.workflow));
-    let builder = &source.builder;
-    let sha = builder.sha.to_string();
-    match builder.r#ref.ends_with(&sha) {
-        true => crate::ui::stream(format_args!("  builder     {}", builder.r#ref)),
-        false => crate::ui::stream(format_args!("  builder     {} at {sha}", builder.r#ref)),
-    }
+    crate::ui::stream(format_args!("  workflow    {}, on push", summary.workflow));
+    crate::ui::stream(format_args!("  builder     {}", summary.builder));
     crate::ui::stream(format_args!(
         "  servers     {} in the cluster",
-        rule.machines.len()
+        summary.servers
     ));
-    if !view.changed.is_empty() {
+    let changed: Vec<&str> = summary
+        .services
+        .iter()
+        .filter(|service| !service.changes.is_empty())
+        .map(|service| service.name.as_str())
+        .collect();
+    if !changed.is_empty() {
         crate::ui::stream(format_args!(
             "  changed     {} since the last approval",
-            joined(&view.changed)
+            changed.join(", ")
         ));
     }
-    for name in names {
-        let Some(approved) = rule.service(name) else {
-            continue;
-        };
-        crate::ui::stream(format_args!("  {name}"));
-        let policy = &approved.policy;
-        let method = match &policy.method {
-            ployz_core::authority::rule::PolicyMethod::Dockerfile { path } => path.clone(),
-            ployz_core::authority::rule::PolicyMethod::Railpack { .. } => "Railpack".to_owned(),
-        };
-        crate::ui::stream(format_args!(
-            "    builds    {method} in {}, for {}{}",
-            policy.context,
-            policy
-                .platforms
-                .iter()
-                .cloned()
-                .collect::<Vec<_>>()
-                .join(", "),
-            match policy.cache {
-                PolicyCache::Actions => ", with the Actions cache",
-                PolicyCache::Off => "",
-            }
-        ));
-        if let Ok(spec) = spec(view, name) {
-            for line in settings(spec) {
-                crate::ui::stream(format_args!("    {line}"));
-            }
+    for service in &summary.services {
+        crate::ui::stream(format_args!("  {}", service.name));
+        crate::ui::stream(format_args!("    builds    {}", service.builds));
+        if !service.changes.is_empty() {
+            crate::ui::stream(format_args!("    changed   {}", service.changes.join(", ")));
+        }
+        for line in &service.settings {
+            crate::ui::stream(format_args!("    {line}"));
         }
     }
-    if rule.source.builder.sha.to_string() != BUILDER_SHA {
+    if !summary.pinned {
         crate::ui::note("This rule pins a builder other than Ployz's own release.");
     }
-}
-
-/// The settings a person reads before approving: each variable, Sealed ones by name only,
-/// and what reaches the host.
-fn settings(spec: &RequestedServiceSpec) -> Vec<String> {
-    let container = &spec.container;
-    let mut lines = Vec::new();
-    let variables: Vec<String> = container
-        .environment
-        .iter()
-        .map(|(name, value)| match value.text() {
-            Some(text) => format!("{name}={text}"),
-            None => format!("{name} (sealed)"),
-        })
-        .collect();
-    if !variables.is_empty() {
-        lines.push(format!("variables {}", variables.join(", ")));
-    }
-    if let Some(hook) = &spec.pre_deploy {
-        lines.push(format!(
-            "pre-deploy {}",
-            serde_json::to_string(&hook.command).unwrap_or_default()
-        ));
-    }
-    if !spec.ports.is_empty() {
-        lines.push(format!(
-            "host ports {}",
-            serde_json::to_string(&spec.ports).unwrap_or_default()
-        ));
-    }
-    if container.privileged {
-        lines.push("privileged".to_owned());
-    }
-    lines
 }
 
 fn joined(names: &[ServiceName]) -> String {

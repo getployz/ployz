@@ -6,6 +6,7 @@ import {
   listGithubBranchesServerFn,
   getGithubWebServerFn,
   searchGithubFilesServerFn,
+  githubRepositoryOwnerServerFn,
 } from "#/modules/github/github.functions";
 
 /** A repository as one Organization reads it: through its linked installation, or publicly. */
@@ -70,6 +71,15 @@ export function githubBranchesQueryOptions(input: GithubRepositoryRef) {
     queryKey: githubKeys.branches(input),
     staleTime: 60_000,
     queryFn: () => listGithubBranchesServerFn({ data: input }),
+  });
+}
+
+/** Who owns `repository` on GitHub, which an automatic deploy rule names: read when its dialog opens. */
+export function githubRepositoryOwnerQueryOptions(organizationSlug: string, repository: string) {
+  return queryOptions({
+    queryKey: [...githubKeys.all, "repository-owner", organizationSlug, repository] as const,
+    staleTime: 60_000,
+    queryFn: () => githubRepositoryOwnerServerFn({ data: { organizationSlug, repository } }),
   });
 }
 

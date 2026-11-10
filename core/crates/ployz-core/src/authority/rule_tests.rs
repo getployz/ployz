@@ -1,6 +1,7 @@
 #![expect(clippy::indexing_slicing, reason = "JSON fixtures")]
 
 use serde_json::{Value, json};
+use sha2::Digest as _;
 
 use super::*;
 use crate::authority::deploy::Creation;
@@ -355,7 +356,7 @@ fn a_device_signs_a_rule() {
     let (body, key) =
         verify_signature(&signed, &trusted, Timestamp::from_millis(2_000).unwrap()).unwrap();
     assert_eq!(body, rule());
-    assert_eq!(key, signer().public());
+    assert_eq!(key, Approver::Device(signer().public()));
     assert!(
         signed
             .signing_input()
@@ -400,6 +401,100 @@ fn a_browser_key_under_a_valid_session_grant_cannot_sign_a_rule() {
         AuthorityRefusal::Mismatch {
             field: "the signer"
         }
+    );
+}
+
+fn passkey_rule() -> AutoDeployRule {
+    AutoDeployRule {
+        signer: SignerKey::Passkey(crate::authority::restart::OwnPrompt::Passkey),
+        ..rule()
+    }
+}
+
+/// `rule` answered by `passkey`'s own prompt over its signing input.
+fn answered(rule: &AutoDeployRule, passkey: &Authenticator) -> Signed<AutoDeployRule> {
+    let unsigned = Signed::unsigned(rule).unwrap();
+    let assertion = passkey.answer(&Answer {
+        challenge: &unsigned.challenge(),
+        ..HONEST
+    });
+    unsigned.answered(assertion)
+}
+
+#[test]
+fn a_passkeys_own_prompt_signs_a_rule() {
+    let passkey = Authenticator::es256(4);
+    let signed = answered(&passkey_rule(), &passkey);
+    let now = Timestamp::from_millis(2_000).unwrap();
+    let (body, approver) = verify_signature(&signed, &trusting(&passkey), now).unwrap();
+    assert_eq!(body, passkey_rule());
+    assert_eq!(approver, Approver::Passkey(passkey.passkey().code()));
+    let input = super::super::keys::signing_input(Purpose::Rule, &signed.body);
+    assert_eq!(
+        signed.challenge(),
+        <[u8; 32]>::from(Sha256::digest(input)),
+        "the challenge is the digest of the rule's own signing input"
+    );
+}
+
+#[test]
+fn a_passkey_answer_counts_only_for_the_rule_it_answered_and_a_trusted_passkey() {
+    let passkey = Authenticator::es256(4);
+    let now = Timestamp::from_millis(2_000).unwrap();
+    let mut other = passkey_rule();
+    other.generation += 1;
+    let mut moved = answered(&passkey_rule(), &passkey);
+    moved.body = Signed::unsigned(&other).unwrap().body;
+    assert_eq!(
+        verify_signature(&moved, &trusting(&passkey), now).unwrap_err(),
+        AuthorityRefusal::Mismatch {
+            field: "a challenge"
+        }
+    );
+    let stranger = Authenticator::es256(5);
+    assert_eq!(
+        verify_signature(
+            &answered(&passkey_rule(), &stranger),
+            &trusting(&passkey),
+            now
+        )
+        .unwrap_err(),
+        AuthorityRefusal::UnknownPasskey
+    );
+    assert_eq!(
+        verify_signature(&answered(&rule(), &passkey), &trusting(&passkey), now).unwrap_err(),
+        AuthorityRefusal::Mismatch {
+            field: "the signer"
+        },
+        "a body naming a Device is not a passkey's"
+    );
+}
+
+#[test]
+fn a_passkeys_own_answer_never_signs_a_workflow() {
+    let passkey = Authenticator::es256(4);
+    let grant = GrantBody {
+        browser_key: signer().public(),
+        cluster: SealingPublicKey::from_bytes([9; 32]),
+        environment: Namespace::parse("app").unwrap(),
+        environment_id: uuid::Uuid::from_u128(1),
+        machines: vec![MachineId::parse("1".repeat(32)).unwrap()],
+        families: vec![super::super::session::ActionFamily::Deploy],
+        issued_at: Timestamp::from_millis(0).unwrap(),
+        expires_at: Timestamp::from_millis(3_000_000).unwrap(),
+        delegation: Delegation::None,
+    };
+    let unsigned = Signed::unsigned(&grant).unwrap();
+    let assertion = passkey.answer(&Answer {
+        challenge: &unsigned.challenge(),
+        ..HONEST
+    });
+    assert_eq!(
+        unsigned
+            .answered(assertion)
+            .approvers(&trusting(&passkey), Timestamp::from_millis(2_000).unwrap())
+            .unwrap_err(),
+        AuthorityRefusal::Mismatch { field: "a passkey" }
     );
 }
 

@@ -1,5 +1,5 @@
 //! The keys a Machine trusts: its Devices, which manage it and sign statements, and its
-//! passkeys, which may only approve workflows.
+//! passkeys, which may only approve workflows and automatic deploy rules.
 //!
 //! A passkey is not a Device. It never holds a Management Client slot, so it never opens a
 //! connection, and it never signs a statement's envelope. A Machine records one only when a
@@ -482,13 +482,14 @@ impl TrustedKeys {
     }
 
     /// The trusted passkey that answered `assertion` to `challenge`, when a statement of
-    /// `purpose` may rest on a passkey at all. Only workflows may.
+    /// `purpose` may rest on a passkey at all. Workflows may, through a session grant, and
+    /// rules, through a prompt of their own.
     ///
     /// A credential ID is the authenticator's claim, not a key, so every trusted passkey
     /// under it is tried and only a verifying signature picks one.
     ///
     /// # Errors
-    /// Returns [`AuthorityRefusal::ApproveOnly`] for any purpose but a workflow,
+    /// Returns [`AuthorityRefusal::ApproveOnly`] for a join or enforcement statement,
     /// [`AuthorityRefusal::UnknownPasskey`] when no trusted passkey has the assertion's
     /// credential, and the first candidate's refusal when none verifies.
     pub fn passkey_approval(
@@ -502,7 +503,7 @@ impl TrustedKeys {
             .iter()
             .filter(|trusted| trusted.passkey.credential_id == assertion.credential_id);
         let first = candidates.next().ok_or(AuthorityRefusal::UnknownPasskey)?;
-        if purpose != Purpose::Workflow {
+        if !matches!(purpose, Purpose::Workflow | Purpose::Rule) {
             return Err(AuthorityRefusal::ApproveOnly {
                 code: first.passkey.code(),
                 purpose,

@@ -28,6 +28,7 @@ const SPINNER = /<Spinner\b|Loader2Icon|animate-spin/;
 /** Spinners mean a write is in flight or a runtime process is running, never a read. */
 const SPINNER_FILES = {
   "modules/approval-session/approval-prompt.tsx": "the passkey prompt waits on the browser's passkey sheet",
+  "routes/_protected/cloud/$organizationSlug/_project/$projectSlug/$environmentSlug/-components/store-automatic-deploys.tsx": "a rule's passkey prompt and its save in flight",
   "routes/_protected/cloud/$organizationSlug/_project/$projectSlug/$environmentSlug/resources/$resourceId/-components/StoreVolumeCopies.tsx": "a Volume run under way or a requested Refresh now",
   "routes/_protected/cloud/$organizationSlug/_project/$projectSlug/$environmentSlug/-components/new-branch/StoreNewBranchPanel.tsx": "creating a Branch in the Config Store",
   "routes/_protected/cloud/$organizationSlug/_project/$projectSlug/$environmentSlug/-components/canvas/MirrorNode.tsx": "a copy being made or refreshed",
@@ -101,6 +102,7 @@ const ON_DEMAND_READS = {
   githubFileSearchQueryOptions: "searches as the user types",
   githubRepoAccessQueryOptions: "read when a repository picker opens; installation access changes in GitHub, so each picker rechecks it",
   githubBranchesQueryOptions: "depends on the repository the user just picked",
+  githubRepositoryOwnerQueryOptions: "read when the automatic deploys dialog opens, for the repository the drafted rule names",
   githubBuildRepositoriesQueryOptions: "calls GitHub per repository; Organization Settings › Builds fills it in after hydration",
   volumeMembersQueryOptions: "asks every Server for its copy live, so a slow Server would hold the drawer open; the Placement section waits on it instead",
   strayNamespacesQueryOptions: "asks about the Namespaces the Servers report live, known only once the Runtime Watch answers",
@@ -128,6 +130,7 @@ const HOOK_FILES_NOT_COMMANDS = {
 /** UI that waits for the server, and why. Everything else applies writes optimistically. */
 const COMMAND_FILES = {
   "routes/_protected/cloud/$organizationSlug/_org/-components/passkeys-section.tsx": "adding a passkey waits on the browser's authenticator and on the server, which assigns its code",
+  "routes/_protected/cloud/$organizationSlug/_project/$projectSlug/$environmentSlug/-components/store-automatic-deploys.tsx": "a rule is signed by its own passkey prompt before it can be saved, so nothing shows before it is; the dialog stays open to show a refusal, such as a newer rule another tab approved",
   "routes/_protected/cloud/$organizationSlug/_project/$projectSlug/$environmentSlug/-components/EnvironmentHistory.tsx": "the Store derives a sealed History inverse and exact overwrite review before staging; it cannot be guessed optimistically",
   "components/service-create-command.tsx": "the server assigns a new project's id and slug, and its canvas can't show the new Service before the Store has it",
   "components/stageable/use-commit-hold.ts": "a committed control keeps showing the value it last wrote until that write settles; the save only releases that hold, and nothing waits on it",

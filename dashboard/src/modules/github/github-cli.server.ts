@@ -1,10 +1,9 @@
 import "@tanstack/react-start/server-only";
 import type { GithubFileQuery, GithubFileView, GithubTreeQuery, GithubTreeView } from "@ployz/sdk";
-import { Context, Effect, Layer, Schema } from "effect";
+import { Context, Effect, Layer } from "effect";
 import { stopGithubInstallationBuilds } from "#/modules/config-store/config-store.server";
 import { StoreRefused } from "#/modules/config-store/store.contract";
 import { accessFor } from "#/modules/github/github-access";
-import { githubIdSchema } from "#/modules/github/github-ingestion.contracts";
 import { listGithubRepositoryBranches, listGithubRepositoryFiles, readGithubRepositoryContents } from "#/modules/github/github.api";
 import { GithubApi, isGithubObservationNotFound } from "#/modules/github/github-observation.api";
 import {
@@ -14,7 +13,7 @@ import {
   unlinkGithubInstallation,
 } from "#/modules/github/github.repository";
 import { basicGlob } from "#/modules/github/github.server";
-import { resolveReadableRepository, type ReadableRepository } from "#/modules/github/readable-repository.server";
+import { repositoryOwnerId, resolveReadableRepository, type ReadableRepository } from "#/modules/github/readable-repository.server";
 import type { Actor, Caller } from "#/modules/identity/actor";
 import { requireAccess } from "#/modules/organization/access.server";
 import { AppConfig } from "#/server/config.server";
@@ -76,22 +75,16 @@ export const githubBranches = Effect.fn("GithubCli.branches")(function* (caller:
   const readable = yield* readableBy(caller, repository);
   const access = accessFor(readable.organizationId, readable.installationId);
   const branches = yield* listGithubRepositoryBranches(access, readable.fullName);
-  const api = yield* GithubApi;
-  // The IDs an automatic deploy rule names, which renames and transfers keep.
-  const observed = yield* api.json({
-    access, path: `/repositories/${readable.repositoryId}`, operation: "resolve_repository", schema: RepositoryOwner,
-  });
   return {
     repository: readable.fullName,
+    // The IDs an automatic deploy rule names, which renames and transfers keep.
     repository_id: readable.repositoryId,
-    owner_id: observed.owner.id,
+    owner_id: yield* repositoryOwnerId(readable),
     access: readable.installationId === null ? "public" : "connected",
     default_branch: readable.defaultBranch,
     branches: branches.map((branch) => branch.name),
   };
 });
-
-const RepositoryOwner = Schema.Struct({ owner: Schema.Struct({ id: githubIdSchema }) });
 
 /** The most paths `github tree` lists; name a directory or a narrower glob for the rest. */
 export const TREE_PATHS = 500;

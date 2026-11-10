@@ -4,6 +4,7 @@ use std::{fmt, marker::PhantomData};
 
 use ed25519_dalek::{Signer as _, SigningKey, VerifyingKey};
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
+use sha2::Digest as _;
 use ts_rs::TS;
 
 use super::{
@@ -12,7 +13,7 @@ use super::{
     refusal::AuthorityRefusal,
     restart::SignerKey,
     session::{Grant, SessionGrant},
-    trusted_key::TrustedKeys,
+    trusted_key::{PasskeyAssertion, TrustedKeys},
 };
 use crate::{DeviceCode, DeviceKey};
 
@@ -24,8 +25,9 @@ pub enum Purpose {
     Workflow,
     Join,
     Enforce,
-    /// Standing authority over every future push, such as an automatic deploy rule. Only a
-    /// Device signs one: a session grant covers workflows only.
+    /// Standing authority over every future push, such as an automatic deploy rule. A
+    /// Device signs one, or a passkey answers its own prompt for it: a session grant
+    /// covers workflows only.
     Rule,
     /// One Volume workflow, which can stop a Service, start one elsewhere and send a Volume's
     /// data to another Machine. Only a Device signs one: a session grant covers none.
@@ -234,6 +236,12 @@ pub struct Signed<T> {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[ts(optional)]
     pub proposal: Option<Box<Signed<ProposalApproval>>>,
+    /// Passkeys' own answers to [`Signed::challenge`], each a prompt of its own rather
+    /// than a session. Only a rule takes one. A daemon from before passkey-signed rules
+    /// refuses an envelope that carries one.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    #[ts(optional, as = "Option<Vec<PasskeyAssertion>>")]
+    pub assertions: Vec<PasskeyAssertion>,
     #[serde(skip)]
     #[ts(skip)]
     statement: PhantomData<T>,
@@ -252,6 +260,7 @@ impl<T: Statement> Signed<T> {
             signatures,
             grants: Vec::new(),
             proposal: None,
+            assertions: Vec::new(),
             statement: PhantomData,
         })
     }
@@ -269,6 +278,7 @@ impl<T: Statement> Signed<T> {
             signatures: Vec::new(),
             grants: Vec::new(),
             proposal: Some(Box::new(bundle)),
+            assertions: Vec::new(),
             statement: PhantomData,
         })
     }
@@ -286,6 +296,36 @@ impl<T: Statement> Signed<T> {
         let mut signed = Self::sign(statement, signer)?;
         signed.grants.push(grant);
         Ok(signed)
+    }
+
+    /// Encode `statement` with no signature, for a passkey to answer [`Self::challenge`]
+    /// and [`Self::answered`] to carry the answer.
+    ///
+    /// # Errors
+    /// Returns a [`CanonicalError`] when the statement has no canonical form.
+    pub fn unsigned(statement: &T) -> Result<Self, CanonicalError> {
+        Ok(Self {
+            body: canonical::to_canonical(statement)?,
+            signatures: Vec::new(),
+            grants: Vec::new(),
+            proposal: None,
+            assertions: Vec::new(),
+            statement: PhantomData,
+        })
+    }
+
+    /// Carry a passkey's own answer to [`Self::challenge`].
+    #[must_use]
+    pub fn answered(mut self, assertion: PasskeyAssertion) -> Self {
+        self.assertions.push(assertion);
+        self
+    }
+
+    /// The WebAuthn challenge a passkey answers to sign this statement itself: the
+    /// SHA-256 of its signing input, as a session grant's is.
+    #[must_use]
+    pub fn challenge(&self) -> [u8; 32] {
+        sha2::Sha256::digest(self.signing_input()).into()
     }
 
     /// Parse the body, refusing it unless it is canonical. Checks no signature.
@@ -337,27 +377,30 @@ impl<T: Statement> Signed<T> {
     }
 
     /// Who signed this statement, each checked against `trusted` at `now`: a Device it
-    /// trusts, or a browser key a grant in this envelope vouches for. A grant only says
-    /// what its key may do; the statement's own check decides whether its scope covers
-    /// this statement.
+    /// trusts, a browser key a grant in this envelope vouches for, or, on a rule only, a
+    /// trusted passkey's own answer to [`Self::challenge`]. A grant only says what its key
+    /// may do; the statement's own check decides whether its scope covers this statement.
     ///
     /// # Errors
-    /// Returns [`AuthorityRefusal::Unsigned`] when there is no signature,
+    /// Returns [`AuthorityRefusal::Unsigned`] when nothing signed,
     /// [`AuthorityRefusal::UnknownKey`] when a key is neither a trusted Device nor named
     /// by a grant here, [`AuthorityRefusal::BadSignature`] when a signature does not
-    /// verify, and the grant's refusal from [`SessionGrant::verify`].
+    /// verify, the grant's refusal from [`SessionGrant::verify`], a mismatch naming a
+    /// passkey for an answer to a statement that takes none, and the passkey's refusal
+    /// from [`TrustedKeys::passkey_approval`].
     pub fn approvers(
         &self,
         trusted: &TrustedKeys,
         now: Timestamp,
     ) -> Result<Vec<Approver>, AuthorityRefusal> {
-        if self.signatures.is_empty() {
+        if self.signatures.is_empty() && self.assertions.is_empty() {
             return Err(AuthorityRefusal::Unsigned {
                 purpose: T::PURPOSE,
             });
         }
         let input = self.signing_input();
-        self.signatures
+        let mut approvers = self
+            .signatures
             .iter()
             .map(|signature| {
                 let device = trusted.signing_keys().any(|key| key == signature.key);
@@ -382,7 +425,22 @@ impl<T: Statement> Signed<T> {
                     },
                 })
             })
-            .collect()
+            .collect::<Result<Vec<_>, _>>()?;
+        if self.assertions.is_empty() {
+            return Ok(approvers);
+        }
+        // A workflow rests on a passkey only through a session grant, whose limits the
+        // workflow's own check reads. A passkey's own answer has none, so only a rule,
+        // which no session may sign, takes one.
+        if T::PURPOSE != Purpose::Rule {
+            return Err(AuthorityRefusal::Mismatch { field: "a passkey" });
+        }
+        let challenge = self.challenge();
+        for assertion in &self.assertions {
+            let passkey = trusted.passkey_approval(T::PURPOSE, assertion, &challenge)?;
+            approvers.push(Approver::Passkey(passkey.passkey.code()));
+        }
+        Ok(approvers)
     }
 }
 
@@ -393,26 +451,22 @@ pub enum Approver {
     Device(SigningPublicKey),
     /// A browser key a passkey this Machine trusts lent `grant`.
     Browser { key: SigningPublicKey, grant: Grant },
+    /// A passkey this Machine trusts, answering a prompt of its own for this statement.
+    Passkey(DeviceCode),
 }
 
 impl Approver {
-    #[must_use]
-    pub const fn key(&self) -> SigningPublicKey {
-        match self {
-            Self::Device(key) | Self::Browser { key, .. } => *key,
-        }
-    }
-
-    /// Whether this approver is the key a statement says signed it, vouched for the way
-    /// the statement says: a Device as a Device, a browser key under a grant.
+    /// Whether this approver is the signer a statement names, vouched for the way the
+    /// statement says: a Device as that Device, a browser key under a grant, a passkey by
+    /// its own prompt.
     #[must_use]
     pub fn signs_as(&self, signer: SignerKey) -> bool {
-        self.key() == signer.key()
-            && matches!(
-                (self, signer),
-                (Self::Device(_), SignerKey::Device(_))
-                    | (Self::Browser { .. }, SignerKey::Browser { .. })
-            )
+        match (self, signer) {
+            (Self::Device(key), SignerKey::Device(device)) => *key == device.into(),
+            (Self::Browser { key, .. }, SignerKey::Browser { browser }) => *key == browser,
+            (Self::Passkey(_), SignerKey::Passkey(_)) => true,
+            _ => false,
+        }
     }
 }
 
@@ -426,6 +480,7 @@ impl fmt::Display for Approver {
                 grant.passkey,
                 key.code()
             ),
+            Self::Passkey(code) => write!(formatter, "passkey {code}"),
         }
     }
 }

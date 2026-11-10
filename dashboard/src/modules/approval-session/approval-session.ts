@@ -12,6 +12,9 @@ import { deployApprovalBody } from "@ployz/sdk/authority";
 import type { JsonValue } from "#/db/tables";
 import { asBoolean, asFiniteNumber, asRecord, asString } from "#/lib/json";
 import { storeVersion } from "#/modules/volume-placement/volume-placement";
+import { base64url, passkeyAnswer, PasskeyRefused, signingInput, statementChallenge } from "./passkey-statement";
+
+export { base64url, signingInput };
 
 /** How long one passkey prompt lasts. Servers cap a grant at an hour. */
 export const SESSION_MINUTES = 60;
@@ -96,17 +99,8 @@ export function canonicalJson(value: JsonValue): string {
 
 const encoder = new TextEncoder();
 
-/** The bytes a key signs, and a grant's challenge hashes: `ployz-authority/v1`, the purpose, and the body. */
-export const signingInput = (body: string) => encoder.encode(`ployz-authority/v1\nworkflow\n${body}`);
-
 export const hex = (bytes: ArrayBuffer | Uint8Array) =>
   Array.from(bytes instanceof Uint8Array ? bytes : new Uint8Array(bytes), (byte) => byte.toString(16).padStart(2, "0")).join("");
-
-export const base64url = (bytes: ArrayBuffer | Uint8Array) => {
-  let text = "";
-  for (const byte of bytes instanceof Uint8Array ? bytes : new Uint8Array(bytes)) text += String.fromCharCode(byte);
-  return btoa(text).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
-};
 
 const BASE32 = "abcdefghijklmnopqrstuvwxyz234567";
 
@@ -141,7 +135,7 @@ export function grantBody(scope: ApprovalScope, browserKey: string, issuedAt: nu
   });
 }
 
-export const grantChallenge = async (body: string) => new Uint8Array(await crypto.subtle.digest("SHA-256", signingInput(body)));
+export const grantChallenge = (body: string) => statementChallenge(body, "workflow");
 
 /** Why a session could not start, in words the prompt shows as they are. */
 export class SessionRefused extends Error {}
@@ -164,22 +158,13 @@ export async function startSession(scope: ApprovalScope, now = Date.now()): Prom
   const raw = new Uint8Array(await crypto.subtle.exportKey("raw", key.publicKey));
   const publicKey = hex(raw);
   const body = grantBody(scope, publicKey, now);
-  // SAFETY: a `publicKey` get request answers with a public key credential, or null.
-  const credential = await navigator.credentials.get({
-    publicKey: { challenge: await grantChallenge(body), rpId: location.hostname, userVerification: "required", timeout: 60_000 },
-  }) as PublicKeyCredential | null;
-  if (credential === null) throw new SessionRefused("Your passkey didn't answer. Try again.");
-  // SAFETY: a `publicKey` get request answers with an assertion response.
-  const response = credential.response as AuthenticatorAssertionResponse;
-  const grant: SessionGrant = {
-    body,
-    assertion: {
-      credential_id: base64url(credential.rawId),
-      authenticator_data: base64url(response.authenticatorData),
-      client_data_json: base64url(response.clientDataJSON),
-      signature: base64url(response.signature),
-    },
-  };
+  let assertion;
+  try {
+    assertion = await passkeyAnswer(await grantChallenge(body));
+  } catch (error) {
+    throw error instanceof PasskeyRefused ? new SessionRefused(error.message) : error;
+  }
+  const grant: SessionGrant = { body, assertion };
   const session: ApprovalSession = {
     scope,
     families: SESSION_FAMILIES,
@@ -293,6 +278,8 @@ export async function approveProposal(steps: readonly ProposalStepTarget[], scop
 /** Each Server must take a browser's deploy approval, under a grant naming its Environment, before one goes to it. */
 export const SESSION_GRANT_CAPABILITY = "ployz.restart.session-grant.v2";
 const DEPLOY_CAPABILITIES = ["ployz.container.deploy-approval.v1", SESSION_GRANT_CAPABILITY] as const;
+/** Each Server must take an automatic deploy rule a passkey answered with its own prompt before one goes to it. */
+export const RULE_CAPABILITIES = ["ployz.container.deploy-rule.v1", "ployz.rule.passkey.v1"] as const;
 
 /** A Store plan read with `target`, as the browser signs a Deploy of it. */
 export type DeployPlan = Pick<PlanView, "version" | "namespace" | "target">;
@@ -365,7 +352,8 @@ export function actScope(environment: ScopeEnvironment, copies: readonly { reado
  * Whether a Deploy of the Environment needs an approval, the scope its grant names, and the first Server that enforces
  * but can't take one from a browser. The Cluster is the one the Servers running the Environment hold the Sealing Key of,
  * or the only one; the scope names every Server in it, since a Deploy may place on any of them. An approval goes only
- * when every Server that enforces takes it: one that can't would refuse the Deploy.
+ * when every Server that enforces takes it: one that can't would refuse the Deploy. An automatic deploy rule's scope is
+ * the same, with the rule's `capabilities`.
  */
 export type DeployScope = { readonly enforced: boolean; readonly scope: ApprovalScope | null; readonly older: string | null };
 
@@ -373,6 +361,7 @@ export function deployScope(
   environment: ScopeEnvironment,
   environmentMachines: readonly string[],
   machines: readonly (ScopeMachine & { readonly name: string; readonly capabilities: readonly string[] })[],
+  capabilities: readonly string[] = DEPLOY_CAPABILITIES,
 ): DeployScope {
   const running = new Set(environmentMachines);
   const keys = new Set(machines.map(heldKey).filter((key) => key !== undefined));
@@ -380,7 +369,7 @@ export function deployScope(
     ?? (keys.size === 1 ? [...keys][0] : undefined);
   const members = cluster === undefined ? machines : clusterMachines(cluster, machines);
   const enforcing = members.filter((machine) => machine.deviceEnforcement === true);
-  const older = enforcing.find((machine) => !DEPLOY_CAPABILITIES.every((capability) => machine.capabilities.includes(capability)))?.name ?? null;
+  const older = enforcing.find((machine) => !capabilities.every((capability) => machine.capabilities.includes(capability)))?.name ?? null;
   return {
     enforced: enforcing.length > 0,
     scope: cluster === undefined ? null : { ...environment, cluster, machines: members.map((machine) => machine.id).sort() },

@@ -17,7 +17,7 @@ pub enum AuthorityRefusal {
     BadSignature { key: SigningPublicKey },
     #[error("the passkey is not approved on this Machine")]
     UnknownPasskey,
-    #[error("passkey {code} may approve workflows only, not a {purpose} statement")]
+    #[error("passkey {code} may approve workflows and rules only, not a {purpose} statement")]
     ApproveOnly { code: DeviceCode, purpose: Purpose },
     #[error("the approval names {field} this request does not match")]
     Mismatch { field: &'static str },

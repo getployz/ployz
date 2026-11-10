@@ -298,7 +298,7 @@ pub fn verify(
         .into_iter()
         .find_map(|approver| match approver {
             Approver::Device(key) if approver.signs_as(body.signer) => Some(key),
-            Approver::Device(_) | Approver::Browser { .. } => None,
+            Approver::Device(_) | Approver::Browser { .. } | Approver::Passkey(_) => None,
         })
         .ok_or(AuthorityRefusal::Mismatch {
             field: "the signer",

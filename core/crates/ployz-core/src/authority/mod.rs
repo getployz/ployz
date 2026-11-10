@@ -16,6 +16,7 @@ pub mod proposal;
 pub mod refusal;
 pub mod restart;
 pub mod rule;
+pub mod rule_draft;
 pub mod session;
 pub mod starting_set;
 pub mod trusted_key;
@@ -31,12 +32,15 @@ pub use join::JoinApproval;
 pub use keys::{Approver, KeySignature, Purpose, Signed, Signer, SigningPublicKey, Statement};
 pub use proposal::{ProposalApproval, ProposalRef, ProposalStep, StepDigest, StepKind};
 pub use refusal::AuthorityRefusal;
-pub use restart::{Approved, RestartApproval, RestartFacts, RestartStep, SignerKey, WorkflowKind};
+pub use restart::{
+    Approved, OwnPrompt, RestartApproval, RestartFacts, RestartStep, SignerKey, WorkflowKind,
+};
 pub use rule::{
     AttestKey, AutoDeployRule, BuildClaim, BuildPolicy, BuildStage, CommitAuthority, CommitSha,
     GithubClaims, ImageDigest, PolicyDigest, RecipientKey, RuleFacts, RuleId, RuleProof,
     RuleService, RuleSource, SealedDigest,
 };
+pub use rule_draft::{RuleBasis, RuleDraft, RuleDraftError, RuleSummary, RuleTerms};
 pub use session::{ActionFamily, GrantBody, SessionGrant};
 pub use starting_set::{Member, StartingSet};
 pub use trusted_key::{
