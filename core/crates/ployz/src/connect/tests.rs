@@ -2301,8 +2301,6 @@ async fn a_confirmation_telling_another_key_fails_without_inspect() {
     );
 }
 
-/// The six flags a `TransportError` held before it carried `Origin` and `Routed`, and the
-/// predicates that read them. They are the oracle `ConnectError::facts` is held to.
 #[derive(Clone, Copy, Debug)]
 struct OldFlags {
     unanswered: bool,
@@ -2314,8 +2312,6 @@ struct OldFlags {
 }
 
 impl OldFlags {
-    /// The combinations a status can decode to: a closed session is a local failure, and
-    /// an unreached mark rides on an unanswered one and is never read off a local failure.
     fn producible(self) -> bool {
         (!self.session_closed || self.local)
             && (!self.routed_unreached || (self.routed_unanswered && !self.local))

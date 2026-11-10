@@ -142,7 +142,6 @@ struct Admitted {
     active_timeout: Duration,
 }
 
-/// An admission that ended in a terminal failure, and whether Device enforcement caused it.
 struct Refused {
     outcome: Outcome,
     by_enforcement: bool,
@@ -157,10 +156,8 @@ impl From<Outcome> for Refused {
     }
 }
 
-/// Why a Machine's Build capability could not be verified.
 #[derive(Debug, thiserror::Error)]
 pub(crate) enum CapabilityCheckError {
-    /// The Machine enforces Device approval and refused the Build.
     #[error("{0}")]
     RefusedByEnforcement(String),
     #[error(transparent)]

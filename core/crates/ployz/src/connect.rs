@@ -1816,6 +1816,7 @@ impl From<tonic::Status> for TransportError {
             }
             None => sent.clone().and_then(crate::failure::JoinedChain::of),
         };
+        // Tonic merges the response headers into a local failure's metadata.
         let marked = |key| status.metadata().contains_key(key);
         let routed = if !local && marked(ployz_core::rpc::TARGET_UNREACHED_KEY) {
             Some(Routed::Unreached)

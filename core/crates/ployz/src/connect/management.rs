@@ -115,8 +115,6 @@ async fn management_endpoint(
     }))
 }
 
-/// The builder every management-side dial binds from: the relay and its trust roots, and
-/// the same send setting the daemon has (#3567).
 pub(super) fn endpoint(secret: SecretKey, relay: &ManagementRelay) -> iroh::endpoint::Builder {
     IrohEndpoint::builder(presets::Minimal)
         .secret_key(secret)
@@ -125,7 +123,6 @@ pub(super) fn endpoint(secret: SecretKey, relay: &ManagementRelay) -> iroh::endp
         .transport_config(transport())
 }
 
-/// Dial `machine` on `alpn` with only the relay as a hint.
 pub(super) async fn dial(
     endpoint: &IrohEndpoint,
     machine: PublicKey,
@@ -140,8 +137,6 @@ pub(super) async fn dial(
         .await
 }
 
-/// Sends without segmentation offload, as the daemon does: on this fresh endpoint a
-/// segmented send that a NIC refuses is the command's first large request.
 fn transport() -> QuicTransportConfig {
     QuicTransportConfig::builder()
         .enable_segmentation_offload(SEGMENTATION_OFFLOAD)

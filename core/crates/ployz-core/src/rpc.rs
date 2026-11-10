@@ -2271,14 +2271,12 @@ impl RpcError {
         Self::new(RpcErrorCode::from(APPROVAL_REQUIRED_CODE), message)
     }
 
-    /// `self` with `message` as its sentence.
     #[must_use]
     pub fn with_message(mut self, message: impl Into<String>) -> Self {
         self.message = message.into();
         self
     }
 
-    /// `self` with `details` as its body.
     #[must_use]
     pub fn with_details(mut self, details: Value) -> Self {
         self.details = details;
