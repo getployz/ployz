@@ -10,12 +10,12 @@ use serde::{Deserialize, Serialize};
 use ts_rs::TS;
 
 use super::{
-    canonical::Timestamp,
+    canonical::{self, Timestamp},
     deploy::ApprovedService,
     keys::{Approver, Purpose, Signed, SigningPublicKey, Statement},
     proposal::StepDigest,
-    refusal::AuthorityRefusal,
-    restart::{SignerKey, ordered_machines},
+    refusal::{AuthorityRefusal, field, first_mismatch},
+    restart::SignerKey,
     trusted_key::TrustedKeys,
 };
 use crate::{
@@ -56,7 +56,7 @@ pub enum VolumeWorkflow {
         to: MachineId,
         service: ApprovedService,
         /// Sorted and distinct.
-        #[serde(deserialize_with = "ordered_machines")]
+        #[serde(deserialize_with = "canonical::sorted_distinct")]
         mirrors: Vec<MachineId>,
     },
     /// `mirror` keeps a copy of the Writer on `writer`, and every later sync of it, until
@@ -85,7 +85,7 @@ pub enum VolumeWorkflow {
     /// only when `shrink`.
     Resize {
         /// Sorted and distinct.
-        #[serde(deserialize_with = "ordered_machines")]
+        #[serde(deserialize_with = "canonical::sorted_distinct")]
         machines: Vec<MachineId>,
         maximum_bytes: ProvisionedVolumeMaximumBytes,
         shrink: bool,
@@ -304,19 +304,16 @@ pub fn verify(
             field: "the signer",
         })?;
     let cluster = facts.cluster.ok_or(AuthorityRefusal::NoClusterIdentity)?;
-    let checks = [
-        ("a Cluster", body.cluster == cluster),
+    first_mismatch([
+        (field::CLUSTER, body.cluster == cluster),
         ("a Volume", &body.volume == facts.volume),
-        ("Machines", body.workflow.distinct()),
+        (field::MACHINES, body.workflow.distinct()),
         ("this Server", body.workflow.names(facts.machine)),
         (
             "a Volume step",
             body.workflow.permits(facts.machine, facts.step),
         ),
-    ];
-    if let Some((field, _)) = checks.iter().find(|(_, holds)| !holds) {
-        return Err(AuthorityRefusal::Mismatch { field });
-    }
+    ])?;
     super::validity::verify(body.issued_at, body.expires_at, facts.now)?;
     Ok(VolumeApproved {
         body,

@@ -16,6 +16,7 @@ use super::{
     AuthorityRefusal, Purpose, SigningPublicKey, Statement, Timestamp,
     canonical::{self},
     keys::signing_input,
+    refusal::{field, first_mismatch},
     trusted_key::{PasskeyAssertion, TrustedKeys},
     validity,
 };
@@ -55,10 +56,10 @@ pub struct GrantBody {
     #[ts(type = "string")]
     pub environment_id: Uuid,
     /// Sorted and distinct.
-    #[serde(deserialize_with = "sorted_distinct")]
+    #[serde(deserialize_with = "canonical::sorted_distinct")]
     pub machines: Vec<MachineId>,
     /// Sorted and distinct.
-    #[serde(deserialize_with = "sorted_distinct")]
+    #[serde(deserialize_with = "canonical::sorted_distinct")]
     pub families: Vec<ActionFamily>,
     pub issued_at: Timestamp,
     pub expires_at: Timestamp,
@@ -67,22 +68,6 @@ pub struct GrantBody {
 
 impl Statement for GrantBody {
     const PURPOSE: Purpose = Purpose::Workflow;
-}
-
-fn sorted_distinct<'de, D, T>(deserializer: D) -> Result<Vec<T>, D::Error>
-where
-    D: serde::Deserializer<'de>,
-    T: Deserialize<'de> + Ord,
-{
-    let items = Vec::<T>::deserialize(deserializer)?;
-    if items
-        .iter()
-        .zip(items.iter().skip(1))
-        .any(|(left, right)| left >= right)
-    {
-        return Err(serde::de::Error::custom("must be sorted and distinct"));
-    }
-    Ok(items)
 }
 
 impl GrantBody {
@@ -99,11 +84,11 @@ impl GrantBody {
     /// Returns [`AuthorityRefusal::Mismatch`] naming the first part of `scope` the grant
     /// does not cover.
     pub fn covers(&self, scope: &GrantScope<'_>) -> Result<(), AuthorityRefusal> {
-        let checks = [
-            ("a Cluster", self.cluster == scope.cluster),
-            ("an Environment", &self.environment == scope.environment),
+        first_mismatch([
+            (field::CLUSTER, self.cluster == scope.cluster),
+            (field::ENVIRONMENT, &self.environment == scope.environment),
             (
-                "Machines",
+                field::MACHINES,
                 scope
                     .machines
                     .iter()
@@ -111,14 +96,10 @@ impl GrantBody {
             ),
             ("an action", self.families.contains(&scope.family)),
             (
-                "a window",
+                field::WINDOW,
                 scope.issued_at >= self.issued_at && scope.expires_at <= self.expires_at,
             ),
-        ];
-        match checks.iter().find(|(_, holds)| !holds) {
-            Some((field, _)) => Err(AuthorityRefusal::Mismatch { field }),
-            None => Ok(()),
-        }
+        ])
     }
 }
 

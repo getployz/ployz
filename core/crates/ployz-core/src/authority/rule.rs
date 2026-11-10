@@ -18,7 +18,7 @@ use super::{
     canonical::{self, CanonicalError, Timestamp, hex_bytes, write_hex},
     deploy::{Creation, PayloadDigest, content_addressed, drop_nulls},
     keys::{Approver, Purpose, Signed, SigningPublicKey, Statement},
-    refusal::AuthorityRefusal,
+    refusal::{AuthorityRefusal, field, first_mismatch},
     restart::SignerKey,
     trusted_key::TrustedKeys,
 };
@@ -229,7 +229,7 @@ pub struct RuleSource {
     /// `.github/workflows/ployz-build.yml`.
     pub workflow: String,
     /// Sorted and distinct.
-    #[serde(deserialize_with = "sorted_distinct")]
+    #[serde(deserialize_with = "canonical::sorted_distinct")]
     pub events: Vec<RuleEvent>,
     pub builder: Builder,
     pub runner: Runner,
@@ -365,7 +365,7 @@ pub struct AutoDeployRule {
     pub generation: u64,
     pub namespace: Namespace,
     /// Sorted and distinct.
-    #[serde(deserialize_with = "sorted_distinct")]
+    #[serde(deserialize_with = "canonical::sorted_distinct")]
     pub machines: Vec<MachineId>,
     pub source: RuleSource,
     /// Sorted by name and distinct.
@@ -397,7 +397,7 @@ impl AutoDeployRule {
     pub fn verify_claims(&self, claims: &GithubClaims) -> Result<(), AuthorityRefusal> {
         let source = &self.source;
         let git_ref = format!("refs/heads/{}", source.branch);
-        let checks = [
+        first_mismatch([
             (
                 "repository_id",
                 claims.repository_id == source.repository_id,
@@ -432,11 +432,7 @@ impl AutoDeployRule {
                 "runner_environment",
                 claims.runner_environment == source.runner.as_str(),
             ),
-        ];
-        match checks.into_iter().find(|(_, holds)| !holds) {
-            Some((field, _)) => Err(AuthorityRefusal::Mismatch { field }),
-            None => Ok(()),
-        }
+        ])
     }
 }
 
@@ -591,11 +587,11 @@ impl AutoDeployRule {
             .map(|service| PolicyDigest::of(&service.policy));
         let checks = [
             (
-                "a Cluster",
+                field::CLUSTER,
                 self.cluster == facts.cluster && claim.cluster == facts.cluster,
             ),
             ("a Machine", self.machines.contains(facts.machine)),
-            ("an Environment", &self.namespace == facts.namespace),
+            (field::ENVIRONMENT, &self.namespace == facts.namespace),
             ("an ended rule", !self.ended),
             (
                 "a Service",
@@ -614,10 +610,7 @@ impl AutoDeployRule {
         match claim.authority {
             CommitAuthority::Head => {}
         }
-        match checks.into_iter().find(|(_, holds)| !holds) {
-            Some((field, _)) => Err(AuthorityRefusal::Mismatch { field }),
-            None => Ok(()),
-        }
+        first_mismatch(checks)
     }
 
     /// Check a new Container under this rule: everything [`Self::verify_step`] checks,
@@ -721,30 +714,10 @@ fn decimal<'de, D: Deserializer<'de>>(deserializer: D) -> Result<u64, D::Error> 
         .map_err(|_| serde::de::Error::custom("a GitHub ID is out of range"))
 }
 
-fn sorted_distinct<'de, D, T>(deserializer: D) -> Result<Vec<T>, D::Error>
-where
-    D: Deserializer<'de>,
-    T: Deserialize<'de> + Ord,
-{
-    let items = Vec::<T>::deserialize(deserializer)?;
-    if !items.is_sorted_by(|left, right| left < right) {
-        return Err(serde::de::Error::custom(
-            "a list must be sorted and distinct",
-        ));
-    }
-    Ok(items)
-}
-
 fn services_by_name<'de, D: Deserializer<'de>>(
     deserializer: D,
 ) -> Result<Vec<RuleService>, D::Error> {
-    let services = Vec::<RuleService>::deserialize(deserializer)?;
-    if !services.is_sorted_by(|left, right| left.name < right.name) {
-        return Err(serde::de::Error::custom(
-            "Services must be sorted by name and distinct",
-        ));
-    }
-    Ok(services)
+    canonical::sorted_by(deserializer, |service: &RuleService| &service.name)
 }
 
 #[cfg(test)]

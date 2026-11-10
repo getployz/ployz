@@ -19,7 +19,7 @@ use ts_rs::TS;
 use super::{
     canonical::{Timestamp, hex_bytes, write_hex},
     keys::{Approver, Purpose, Signed, Statement},
-    refusal::AuthorityRefusal,
+    refusal::{AuthorityRefusal, field, first_mismatch},
     restart::{Approved, RestartApproval, RestartFacts, SignerKey, WorkflowKind},
     session::GrantScope,
     trusted_key::TrustedKeys,
@@ -219,7 +219,7 @@ pub(super) fn open_step<T: StepBody>(
         .place()
         .filter(|place| place.operation == plan.operation);
     let listed = place.and_then(|place| plan.steps.get(place.index as usize));
-    let checks = [
+    first_mismatch([
         ("the signer", by.is_some() && body.signer() == plan.signer),
         ("a proposal", place.is_some()),
         (
@@ -228,16 +228,13 @@ pub(super) fn open_step<T: StepBody>(
                 listed.kind == body.kind() && listed.digest == StepDigest::of(&step.body)
             }),
         ),
-        ("a Cluster", plan.cluster == body.cluster()),
-        ("an Environment", &plan.environment == body.namespace()),
+        (field::CLUSTER, plan.cluster == body.cluster()),
+        (field::ENVIRONMENT, &plan.environment == body.namespace()),
         (
-            "a window",
+            field::WINDOW,
             (plan.issued_at, plan.expires_at) == body.window(),
         ),
-    ];
-    if let Some((field, _)) = checks.iter().find(|(_, holds)| !holds) {
-        return Err(AuthorityRefusal::Mismatch { field });
-    }
+    ])?;
     let by = by.expect("the signer check passed");
     Ok((body, by, cluster))
 }
