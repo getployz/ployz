@@ -228,7 +228,7 @@ pub enum Error {
     DepartureRefused { capability: &'static str },
     /// Device enforcement refused an Operator's `SetPrivateAccess` turning Private Access on
     /// without an approval of its auth key.
-    #[error("This server joins a tailnet only with your approval: {0}")]
+    #[error("This Server joins a tailnet only with your approval: {0}")]
     PrivateAccessRefused(ployz_core::authority::AuthorityRefusal),
     /// Device enforcement refused an Operator's `SetVolumeCopy` that creates a Container,
     /// or its `SeedVolume`. The refusal names `capability` in its details.

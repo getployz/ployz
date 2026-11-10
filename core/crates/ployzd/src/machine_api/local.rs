@@ -1359,7 +1359,7 @@ fn local_failure(error: LocalMachineError) -> Result<RpcError, Status> {
             &error,
             serde_json::json!({
                 "capability": ployz_core::PRIVATE_ACCESS_APPROVAL_CAPABILITY,
-                "next": "turn Private Access on from the dashboard with your passkey, or run ployz private-access on from an approved device",
+                "next": "ployz private-access on from an approved device, or Connect in the dashboard with your passkey",
             }),
         )),
         LocalMachineError::VolumeRefused { capability } => Err(ployz_core::rpc::hinted_status(
