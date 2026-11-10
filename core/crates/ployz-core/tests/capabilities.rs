@@ -211,6 +211,7 @@ fn advertised_capability_groups_match_the_frozen_catalog() {
             "ployz.build.sealed.v1",
             "ployz.build.grant.holder.v1",
             "ployz.build.grant.rule.v1",
+            "ployz.build.grant.preview.v1",
             "ployz.restart.device-approval.v2",
             "ployz.restart.session-grant.v2",
             "ployz.restart.start-approval.v1",
@@ -219,6 +220,7 @@ fn advertised_capability_groups_match_the_frozen_catalog() {
             "ployz.container.deploy-proposal.v1",
             "ployz.container.deploy-rule.v1",
             "ployz.rule.passkey.v1",
+            "ployz.container.deploy-preview.v1",
         ]
     );
     assert_eq!(
@@ -435,6 +437,10 @@ const ABOVE_FLOOR: &[(&str, &str)] = &[
         "gated: the dashboard signs a rule with a passkey only when every enforcing Machine advertises it. An older daemon refuses the rule's envelope for its unknown `assertions` field, and its `\"passkey\"` signer, so a rule deploy there fails closed",
     ),
     (
+        "ployz.container.deploy-preview.v1",
+        "falls back: an older daemon ignores `preview` on EnsureContainer; one not enforcing creates as before, and one enforcing refuses the Operator's creation for want of a deploy approval, so a preview there fails closed",
+    ),
+    (
         "ployz.image.pull.v1",
         "falls back: an older daemon pulls when it creates the Container",
     ),
@@ -501,6 +507,10 @@ const ABOVE_FLOOR: &[(&str, &str)] = &[
     (
         "ployz.build.grant.rule.v1",
         "gated: a rule build's grant request carries `rule` only to a Machine advertising it. An older daemon ignores `rule`, and under Device enforcement it refuses the Operator's mint, so a rule build there fails closed",
+    ),
+    (
+        "ployz.build.grant.preview.v1",
+        "gated: a preview build's grant request goes only to a Machine advertising it, and otherwise the build fails with \"Previews under a preview rule need a newer Ployz on your servers\"",
     ),
     (
         "ployz.sealing.generate.v1",
