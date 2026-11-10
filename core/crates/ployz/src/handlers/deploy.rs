@@ -1423,7 +1423,7 @@ pub(super) fn redeploy(root: &ArgMatches) -> Result<(), Error> {
             }
         })?;
     let approved = match device {
-        Some(device) => device.approve(matches, &store, &admitted)?,
+        Some(device) => device.approve(&store, &admitted)?,
         None => Vec::new(),
     };
     ship(matches, &store, &admitted, events, approved)

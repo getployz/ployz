@@ -9,8 +9,12 @@
 //! token's expiry: the person, not freshness, is the authority now. Then it signs an
 //! ordinary deploy approval naming each image by digest, which the Servers check as any
 //! other. The Deployment waits, queued, until that approval lands.
+//!
+//! What the approval covers is this client's choice, not Cloud's: exactly the Services
+//! and commits it checked before admission, each bound to the image a token it checked
+//! names. A redeploy that ships anything else is refused before signing.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::time::Duration;
 
 use clap::ArgMatches;
@@ -19,11 +23,11 @@ use ployz_core::authority::rule::{RuleEvent, verify_signature};
 use ployz_core::authority::{
     ApprovedChange, AttestKey, AuthorityRefusal, AutoDeployRule, BuildApproval, BuildClaim,
     BuildStage, CommitAuthority, CommitSha, DeployApproval, DeployTerms, ImageDigest, PolicyDigest,
-    Signed, Signer, SignerKey, Timestamp, TrustedKeys, validity,
+    Signed, Signer, SignerKey, Timestamp, TrustedKeys, deploy::content_addressed, validity,
 };
 use ployz_core::{
-    DescribeContractRequest, InspectRequest, MachineTarget, OperationId, RpcErrorCode, Sealing,
-    SealingPublicKey, ServiceName, op,
+    DescribeContractRequest, InspectRequest, MachineTarget, OperationId, RequestedServiceSpec,
+    RpcErrorCode, Sealing, SealingPublicKey, ServiceName, op,
 };
 use ployz_store::{
     ApproveDeployment, BuildStatus, BuildView, Cancel, DeploymentId, DeploymentQuery,
@@ -44,9 +48,11 @@ const BUILD_LOOK: Duration = Duration::from_secs(3);
 pub(in crate::handlers) struct Redeploy {
     signer: Signer,
     enforcing: Enforcing,
-    /// The facts each image token is checked against, when the redeploy runs an image
-    /// GitHub built.
-    checking: Option<Facts>,
+    /// The facts each image token is checked against.
+    facts: Facts,
+    /// Each Service the person redeploys and the commit it was built from: all the approval
+    /// may cover.
+    expected: BTreeMap<ServiceName, CommitSha>,
     /// The person's approval to build each commit no checkable image of is left.
     pub(in crate::handlers) builds: Vec<Signed<BuildApproval>>,
 }
@@ -66,9 +72,10 @@ struct Facts {
 /// out.
 ///
 /// # Errors
-/// Refuses before admission when a Service built from an upload or on the Servers, when no
-/// rule a trusted Device signed covers a built Service, when a stored image token doesn't
-/// hold up, and when the Servers or GitHub can't be read.
+/// Refuses before admission when the source built no Service from a commit, when a Service
+/// built from an upload or on the Servers, when no rule a trusted Device signed covers a
+/// built Service, when a stored image token doesn't hold up, and when the Servers or GitHub
+/// can't be read.
 pub(in crate::handlers) fn prepare(
     matches: &ArgMatches,
     store: &Store,
@@ -111,17 +118,24 @@ pub(in crate::handlers) fn prepare(
     let view = view?;
     let built = git_builds(&view)?;
     if built.is_empty() {
-        return Ok(Some(Redeploy {
-            signer,
-            enforcing,
-            checking: None,
-            builds: Vec::new(),
-        }));
+        return Err(Error::coded(
+            RpcErrorCode::Conflict,
+            format!(
+                "{} built no service from a commit. On servers that enforce device approval, \
+                 a redeploy covers only services GitHub built under your automatic deploy \
+                 rule. Deploy with ployz deploy. Nothing deployed.",
+                view.deployment.label()
+            ),
+        ));
     }
     let reported = reported.unwrap_or_else(|| Reported::read(matches));
     let facts = facts(store, &view, &enforcing, reported)?;
     let mut rebuild = Vec::new();
+    let mut expected = BTreeMap::new();
     for (service, commit, token) in built {
+        if expected.insert(service.clone(), commit).is_some() {
+            return Err(twice(service));
+        }
         covered(&facts.rule, service)?;
         let checked = match token {
             Some(token) => check(token, service, commit, &facts, enforcing.cluster)
@@ -155,7 +169,8 @@ pub(in crate::handlers) fn prepare(
     Ok(Some(Redeploy {
         signer,
         enforcing,
-        checking: Some(facts),
+        facts,
+        expected,
         builds,
     }))
 }
@@ -167,15 +182,14 @@ impl Redeploy {
     /// won't come.
     ///
     /// # Errors
-    /// Returns a build that failed, a token that doesn't hold up, a tag that can't be
-    /// pinned, and the Store's refusal.
+    /// Returns a build that failed, a token that doesn't hold up, a plan that ships other
+    /// Services or images than the ones checked, and the Store's refusal.
     pub(in crate::handlers) fn approve(
         self,
-        matches: &ArgMatches,
         store: &Store,
         admitted: &DeploymentSummary,
     ) -> Result<Vec<ApprovedChange>, Error> {
-        let approved = self.approve_or_fail(matches, store, admitted);
+        let approved = self.approve_or_fail(store, admitted);
         if approved.is_err() {
             // A failed cancel leaves Cloud to fail it once its wait for the approval ends.
             let _ = store.try_write(&Cancel {
@@ -187,31 +201,20 @@ impl Redeploy {
 
     fn approve_or_fail(
         self,
-        matches: &ArgMatches,
         store: &Store,
         admitted: &DeploymentSummary,
     ) -> Result<Vec<ApprovedChange>, Error> {
-        let images = match &self.checking {
-            Some(facts) => {
-                let view = ended_builds(store, &admitted.id)?;
-                built_images(&view, facts, self.enforcing.cluster)?
-            }
-            None => BTreeMap::new(),
-        };
+        let view = ended_builds(store, &admitted.id)?;
         let planned = store.read(&DeploymentTargetQuery {
             id: admitted.id.clone(),
         })?;
-        let mut target = planned.target;
-        for spec in &mut target {
-            if let Some(digest) = images.get(&spec.name) {
-                spec.container.image =
-                    ployz_build::digest_reference(&spec.container.image, &digest.to_string())
-                        .map_err(Error::command)?;
-                spec.container.pull_policy = ployz_core::PullPolicy::Never;
-            }
-        }
-        let target = approve::signable(Some(target))?;
-        let pins = approve::pin_tags(matches, &target)?;
+        let target = approvable(
+            &view,
+            planned.target,
+            &self.expected,
+            &self.facts,
+            self.enforcing.cluster,
+        )?;
         let issued_at = Timestamp::now();
         let terms = DeployTerms {
             cluster: self.enforcing.cluster,
@@ -222,8 +225,10 @@ impl Redeploy {
             signer: SignerKey::Device(self.signer.public().into()),
             proposal: None,
         };
-        let (body, approved) = DeployApproval::draft(terms, planned.namespace, &target, &pins)
-            .map_err(Error::command)?;
+        // Every image is pinned by the digest a checked token names, so no tag needs one.
+        let (body, approved) =
+            DeployApproval::draft(terms, planned.namespace, &target, &BTreeMap::new())
+                .map_err(Error::command)?;
         let signed = Signed::sign(&body, &self.signer).map_err(Error::command)?;
         store.write(&ApproveDeployment {
             deployment: admitted.id.clone(),
@@ -244,23 +249,30 @@ type GitBuild<'a> = (&'a ServiceName, CommitSha, Option<&'a ImageToken>);
 fn git_builds(view: &DeploymentView) -> Result<Vec<GitBuild<'_>>, Error> {
     view.builds
         .iter()
-        .map(|build| match &build.commit {
-            Some(commit) => Ok((
+        .map(|build| {
+            Ok((
                 &build.service,
-                git_commit(commit)?,
+                built_from(build)?,
                 build.image_token.as_ref(),
-            )),
-            None => Err(Error::detailed(
-                RpcErrorCode::InvalidArgument,
-                format!(
-                    "{} builds from an upload, and servers that enforce device approval can't \
-                     run a build. Deploy it from an image pinned by digest.",
-                    build.service
-                ),
-                json!({ "service": build.service }),
-            )),
+            ))
         })
         .collect()
+}
+
+/// The commit `build` built from.
+fn built_from(build: &BuildView) -> Result<CommitSha, Error> {
+    match &build.commit {
+        Some(commit) => git_commit(commit),
+        None => Err(Error::detailed(
+            RpcErrorCode::InvalidArgument,
+            format!(
+                "{} builds from an upload, and servers that enforce device approval can't run \
+                 a build. Deploy it from an image pinned by digest.",
+                build.service
+            ),
+            json!({ "service": build.service }),
+        )),
+    }
 }
 
 /// What the Servers and GitHub report that a token is checked against.
@@ -507,19 +519,46 @@ const fn ended(status: BuildStatus) -> bool {
     )
 }
 
-/// Each built Service's image, once its token holds up.
-fn built_images(
+/// What this Device signs of the redeploy `view` ships as `target`: exactly the Services
+/// in `expected`, each run from the image a token it checked names.
+fn approvable(
     view: &DeploymentView,
+    target: Vec<RequestedServiceSpec>,
+    expected: &BTreeMap<ServiceName, CommitSha>,
+    facts: &Facts,
+    cluster: SealingPublicKey,
+) -> Result<Vec<RequestedServiceSpec>, Error> {
+    let images = verified_images(view, expected, facts, cluster)?;
+    approve::signable(Some(bind_target(target, &images)?))
+}
+
+/// The image GitHub built for each Service in `expected`, from its commit there, once its
+/// token holds up. Refuses a build of any other Service or commit, a Service listed twice,
+/// and an expected Service with no build: Cloud's view decides none of what is approved.
+fn verified_images(
+    view: &DeploymentView,
+    expected: &BTreeMap<ServiceName, CommitSha>,
     facts: &Facts,
     cluster: SealingPublicKey,
 ) -> Result<BTreeMap<ServiceName, ImageDigest>, Error> {
     let mut images = BTreeMap::new();
-    for (service, commit, token) in git_builds(view)? {
-        let build = view
-            .builds
-            .iter()
-            .find(|build| &build.service == service)
-            .ok_or_else(|| Error::conflict(format!("{service} has no build")))?;
+    for build in &view.builds {
+        let service = &build.service;
+        let commit = built_from(build)?;
+        let Some(&wanted) = expected.get(service) else {
+            return Err(unchecked(service));
+        };
+        if commit != wanted {
+            return Err(Error::detailed(
+                RpcErrorCode::Conflict,
+                format!(
+                    "Cloud says {service} built {}, but you're redeploying {}. Nothing deployed.",
+                    short(commit),
+                    short(wanted)
+                ),
+                json!({ "service": service, "commit": wanted }),
+            ));
+        }
         if build.status == BuildStatus::Failed {
             return Err(Error::detailed(
                 RpcErrorCode::Conflict,
@@ -535,7 +574,7 @@ fn built_images(
                 json!({ "service": service }),
             ));
         }
-        let Some(token) = token else {
+        let Some(token) = &build.image_token else {
             return Err(Error::detailed(
                 RpcErrorCode::Conflict,
                 format!(
@@ -545,18 +584,93 @@ fn built_images(
                 json!({ "service": service }),
             ));
         };
-        match check(token, service, commit, facts, cluster) {
-            Ok(Checked::Verified(image)) => {
-                images.insert(service.clone(), image);
-            }
+        let image = match check(token, service, commit, facts, cluster) {
+            Ok(Checked::Verified(image)) => image,
             // A build that just ended carries a token GitHub's current keys signed.
-            Ok(Checked::Rebuild) => {
-                return Err(Refused::Stale.error(service, commit));
-            }
+            Ok(Checked::Rebuild) => return Err(Refused::Stale.error(service, commit)),
             Err(refused) => return Err(refused.error(service, commit)),
+        };
+        if images.insert(service.clone(), image).is_some() {
+            return Err(twice(service));
         }
     }
-    Ok(images)
+    match expected
+        .keys()
+        .find(|service| !images.contains_key(*service))
+    {
+        Some(service) => Err(left_out(service)),
+        None => Ok(images),
+    }
+}
+
+/// `target` with each Service run from the image a checked token names for it, by digest
+/// and from the Machine's own store. Refuses a target that leaves out a checked Service,
+/// ships any other, lists one twice, or already names another image by digest.
+fn bind_target(
+    mut target: Vec<RequestedServiceSpec>,
+    images: &BTreeMap<ServiceName, ImageDigest>,
+) -> Result<Vec<RequestedServiceSpec>, Error> {
+    let mut bound = BTreeSet::new();
+    for spec in &mut target {
+        let Some(digest) = images.get(&spec.name) else {
+            return Err(unchecked(&spec.name));
+        };
+        if !bound.insert(spec.name.clone()) {
+            return Err(twice(&spec.name));
+        }
+        let digest = digest.to_string();
+        let image = &spec.container.image;
+        let named = image
+            .rsplit_once('@')
+            .map_or(image.as_str(), |(_, named)| named);
+        if content_addressed(image) && named != digest {
+            return Err(Error::detailed(
+                RpcErrorCode::Conflict,
+                format!(
+                    "Cloud's plan for this redeploy runs {} from another image than the one \
+                     GitHub built. Nothing deployed.",
+                    spec.name
+                ),
+                json!({ "service": spec.name }),
+            ));
+        }
+        spec.container.image =
+            ployz_build::digest_reference(image, &digest).map_err(Error::command)?;
+        spec.container.pull_policy = ployz_core::PullPolicy::Never;
+    }
+    match images.keys().find(|service| !bound.contains(*service)) {
+        Some(service) => Err(left_out(service)),
+        None => Ok(target),
+    }
+}
+
+/// A Service this client didn't check, which it never approves.
+fn unchecked(service: &ServiceName) -> Error {
+    Error::detailed(
+        RpcErrorCode::Conflict,
+        format!(
+            "This redeploy ships {service}, which GitHub didn't build under your automatic \
+             deploy rule, so this device can't approve it. Deploy {service} with ployz deploy. \
+             Nothing deployed."
+        ),
+        json!({ "service": service }),
+    )
+}
+
+fn left_out(service: &ServiceName) -> Error {
+    Error::detailed(
+        RpcErrorCode::Conflict,
+        format!("Cloud's plan for this redeploy leaves out {service}. Nothing deployed."),
+        json!({ "service": service }),
+    )
+}
+
+fn twice(service: &ServiceName) -> Error {
+    Error::detailed(
+        RpcErrorCode::Conflict,
+        format!("Cloud lists {service} twice in this redeploy. Nothing deployed."),
+        json!({ "service": service }),
+    )
 }
 
 /// What a client concludes of one image token.

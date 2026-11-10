@@ -91,13 +91,12 @@ on, redeploy or roll back from an approved device:
 ployz deployment redeploy 4
 ```
 
-Your device approves what the deployment ships, as `ployz deploy` does, and prints one
-`Approved` line per service. A service GitHub built under your
-[automatic deploy rule](github.md#deploy-on-push-to-servers-that-enforce-device-approval) runs
-the image GitHub built for #4's commit. Your device checks GitHub's signature on that image
-itself, and that it was built from #4's commit with your rule's settings for your cluster.
-Ployz Cloud can't swap it. If it doesn't match, your device approves nothing and cancels the
-redeploy:
+Your device approves each service GitHub built for #4 under your
+[automatic deploy rule](github.md#deploy-on-push-to-servers-that-enforce-device-approval), and
+prints one `Approved` line per service. Each runs the image GitHub built for #4's commit. Your
+device checks GitHub's signature on that image itself, and that it was built from #4's commit
+with your rule's settings for your cluster. Ployz Cloud can't swap it. If it doesn't match,
+your device approves nothing and cancels the redeploy:
 
 ```text
 Cloud's image token for web at 3f1c2a9 doesn't check out: it names another commit. Nothing deployed.
@@ -119,5 +118,6 @@ fails cancels the redeploy, and nothing deployed.
   after an hour, and nothing deploys.
 - **A redeploy from the dashboard or by the agent isn't approved.** Servers that enforce refuse
   it. Run `ployz deployment redeploy` on an approved device.
-- **A service built from an upload, or on your servers, can't redeploy here.** Deploy it from
-  an image pinned by digest.
+- **Only services GitHub built under your rule redeploy here.** A redeploy that ships a
+  service run from an image, built from an upload or built on your servers is refused, and
+  nothing deploys. Deploy those with `ployz deploy`.

@@ -142,7 +142,7 @@ pub(super) fn signable(
 
 /// The digest each tag image of `target` has on its registry, asked of the registry
 /// itself, all at once. An image written by digest needs none.
-pub(super) fn pin_tags(
+fn pin_tags(
     matches: &ArgMatches,
     target: &[RequestedServiceSpec],
 ) -> Result<BTreeMap<ServiceName, String>, Error> {

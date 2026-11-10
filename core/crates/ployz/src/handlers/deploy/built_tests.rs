@@ -14,11 +14,11 @@ use ployz_core::authority::{
     ImageDigest, PayloadDigest, PolicyDigest, RuleId, RuleService, SignerKey, StatementDigest,
     Timestamp,
 };
-use ployz_core::{Namespace, SealingPublicKey, ServiceName};
-use ployz_store::ImageToken;
+use ployz_core::{Namespace, PullPolicy, RequestedServiceSpec, SealingPublicKey, ServiceName};
+use ployz_store::{DeploymentView, ImageToken};
 use serde_json::{Value, json};
 
-use super::{Checked, Facts, KeySet, Refused, TokenRefusal, check};
+use super::{Checked, Facts, KeySet, Refused, TokenRefusal, approvable, check};
 
 const BUILDER_SHA: &str = "1234567890abcdef1234567890abcdef12345678";
 const COMMIT: &str = "54dfcf4a46870fa09f5d5d6c965dd705c1a24e5c";
@@ -278,4 +278,139 @@ fn a_token_github_did_not_sign_is_refused() {
         checked(&forged),
         Err(Refused::Signature(TokenRefusal::Signature))
     );
+}
+
+// What the Device signs after the builds: only the Services and commits it checked before
+// admission, whatever Cloud's view and plan say.
+
+const BUILT_TAG: &str = "docker.io/ployz-build/web:latest";
+
+fn attacker_image() -> String {
+    format!("docker.io/attacker/image@sha256:{}", "e".repeat(64))
+}
+
+/// A redeploy's view as Cloud reports it, with `builds`.
+fn redeployed(builds: Value) -> DeploymentView {
+    serde_json::from_value(json!({
+        "id": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa", "environment_id": "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
+        "number": 8, "status": "queued", "saved": 2, "services": [], "remove": false, "admitted_at": 1,
+        "in_flight": true, "outcome": null,
+        "environment": {"id": "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb", "project": "lab", "name": "production", "revision": 2},
+        "namespace": "app", "preview": null, "builds": builds, "runtime_names": {}, "nodes": []
+    }))
+    .unwrap()
+}
+
+/// GitHub's build of `service` at `commit`, reused with `token`.
+fn build(service: &str, commit: &str, token: &ImageToken) -> Value {
+    json!({"service": service, "commit": commit, "status": "reused", "message": null, "image_token": token})
+}
+
+fn spec(name: &str, image: &str) -> RequestedServiceSpec {
+    serde_json::from_value(json!({
+        "name": name,
+        "mode": {"mode": "replicated", "replicas": 1},
+        "container": {"image": image, "pull_policy": "missing"},
+    }))
+    .unwrap()
+}
+
+/// The person redeploys `web` at the fixture commit.
+fn expected() -> BTreeMap<ServiceName, CommitSha> {
+    BTreeMap::from([(web(), commit())])
+}
+
+fn signs(
+    view: &DeploymentView,
+    target: Vec<RequestedServiceSpec>,
+) -> Result<Vec<RequestedServiceSpec>, String> {
+    approvable(view, target, &expected(), &facts(), cluster()).map_err(|error| error.to_string())
+}
+
+#[test]
+fn the_checked_image_is_signed_by_digest_from_the_machines_own_store() {
+    let token = Built::default().token(CommitAuthority::Head);
+    let view = redeployed(json!([build("web", COMMIT, &token)]));
+    let signed = signs(&view, vec![spec("web", BUILT_TAG)]).unwrap();
+    assert_eq!(signed.len(), 1);
+    assert_eq!(
+        signed[0].container.image,
+        format!("docker.io/ployz-build/web@{}", image())
+    );
+    assert_eq!(signed[0].container.pull_policy, PullPolicy::Never);
+}
+
+#[test]
+fn cloud_leaving_out_the_build_and_swapping_the_image_is_refused_before_signing() {
+    let view = redeployed(json!([]));
+    let refused = signs(&view, vec![spec("web", &attacker_image())]).unwrap_err();
+    assert!(refused.contains("leaves out web"), "{refused}");
+}
+
+#[test]
+fn cloud_swapping_the_image_of_a_checked_build_is_refused_before_signing() {
+    let token = Built::default().token(CommitAuthority::Head);
+    let view = redeployed(json!([build("web", COMMIT, &token)]));
+    let refused = signs(&view, vec![spec("web", &attacker_image())]).unwrap_err();
+    assert!(
+        refused.contains("another image than the one GitHub built"),
+        "{refused}"
+    );
+}
+
+#[test]
+fn a_service_the_device_did_not_check_is_refused_before_signing() {
+    let token = Built::default().token(CommitAuthority::Head);
+    let view = redeployed(json!([build("web", COMMIT, &token)]));
+    // An extra Service in the plan, by tag or by digest.
+    for image in [attacker_image(), "redis:7".to_owned()] {
+        let target = vec![spec("web", BUILT_TAG), spec("api", &image)];
+        let refused = signs(&view, target).unwrap_err();
+        assert!(refused.contains("ships api"), "{refused}");
+    }
+    // An extra build in the view, even with a token that checks out for web.
+    let view = redeployed(json!([
+        build("web", COMMIT, &token),
+        build("api", COMMIT, &token)
+    ]));
+    let refused = signs(&view, vec![spec("web", BUILT_TAG)]).unwrap_err();
+    assert!(refused.contains("ships api"), "{refused}");
+}
+
+#[test]
+fn a_plan_leaving_out_a_checked_service_is_refused() {
+    let token = Built::default().token(CommitAuthority::Head);
+    let view = redeployed(json!([build("web", COMMIT, &token)]));
+    let refused = signs(&view, Vec::new()).unwrap_err();
+    assert!(refused.contains("leaves out web"), "{refused}");
+}
+
+#[test]
+fn a_build_of_another_commit_than_the_one_redeployed_is_refused() {
+    let token = Built {
+        sha: BUILDER_SHA,
+        ..Built::default()
+    }
+    .token(CommitAuthority::Head);
+    // The token holds up for its own commit; it isn't the one the person redeploys.
+    let view = redeployed(json!([build("web", BUILDER_SHA, &token)]));
+    let refused = signs(&view, vec![spec("web", BUILT_TAG)]).unwrap_err();
+    assert!(
+        refused.contains("but you're redeploying 54dfcf4"),
+        "{refused}"
+    );
+}
+
+#[test]
+fn a_service_listed_twice_is_refused() {
+    let token = Built::default().token(CommitAuthority::Head);
+    let view = redeployed(json!([
+        build("web", COMMIT, &token),
+        build("web", COMMIT, &token)
+    ]));
+    let refused = signs(&view, vec![spec("web", BUILT_TAG)]).unwrap_err();
+    assert!(refused.contains("twice"), "{refused}");
+    let view = redeployed(json!([build("web", COMMIT, &token)]));
+    let refused = signs(&view, vec![spec("web", BUILT_TAG), spec("web", BUILT_TAG)]).unwrap_err();
+    assert!(refused.contains("twice"), "{refused}");
 }
