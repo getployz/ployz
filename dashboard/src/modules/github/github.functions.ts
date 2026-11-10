@@ -3,6 +3,7 @@ import { setResponseHeader } from "@tanstack/react-start/server";
 import { Schema } from "effect";
 import { githubIdSchema } from "#/modules/github/github-ingestion.contracts";
 import {
+  githubRepositoryOwner,
   resolvePublicGithubRepository,
   getGithubWeb,
   getGithubRepoAccessState,
@@ -80,3 +81,12 @@ export const listGithubBuildRepositoriesServerFn = createServerFn({ method: "GET
   .middleware(authenticated)
   .validator(strictValidator(OrganizationScope))
   .handler(({ context, data }) => runActor(context, listGithubBuildRepositories(context.actor, data)));
+
+/** The GitHub IDs of a repository this Organization reads and its owner, which an automatic deploy rule names. */
+export const githubRepositoryOwnerServerFn = createServerFn({ method: "GET" })
+  .middleware(authenticated)
+  .validator(strictValidator(Schema.Struct({
+    ...OrganizationScope.fields,
+    repository: Schema.NonEmptyString.check(Schema.isMaxLength(500)),
+  })))
+  .handler(({ context, data }) => runActor(context, githubRepositoryOwner(context.actor, data)));

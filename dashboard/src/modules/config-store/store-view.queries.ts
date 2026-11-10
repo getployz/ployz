@@ -2,7 +2,7 @@ import { infiniteQueryOptions, keepPreviousData, queryOptions, skipToken, useQue
 import type {
   BranchPlanQuery, BranchPreset, BranchQuery, BuildLogQuery, ConfigItemQuery, ConfigQuery, ConfigsQuery, ConfigView, DeploymentQuery, DeploymentsQuery,
   DiffQuery, DomainsQuery, EnvironmentQuery, EnvironmentRef, EnvironmentsQuery, NamespaceQuery, PlanQuery,
-  ProjectsQuery, RemovalsQuery, ServicesQuery, SyncQuery, VolumesQuery,
+  ProjectsQuery, RemovalsQuery, RuleQuery, ServicesQuery, SyncQuery, VolumesQuery,
 } from "@ployz/sdk";
 import { Schema } from "effect";
 import type { CollectionScope } from "#/collections/scope";
@@ -23,7 +23,7 @@ const refreshedBy = {
   history: ["store_environment", "store_deployment", "store_check_suite"],
   history_preview: ["store_environment", "store_deployment", "store_check_suite"],
   plan: ["store_environment", "store_deployment"],
-  // The rule a Device signed, beside the Saved State it approves.
+  // The rule a Device or a passkey signed, beside the Saved State it approves.
   rule: ["store_environment"],
   // A Service's lifecycle comes from the review, which compares against what's deployed.
   service: ["store_environment", "store_deployment"],
@@ -294,6 +294,11 @@ export function diffQuery(environment: EnvironmentRef): { query: "diff" } & Diff
 /** The plan a Deploy of the whole Environment ships, with each Service's spec as its runner will send it. */
 export function deployPlanQuery(environment: EnvironmentRef): { query: "plan" } & PlanQuery {
   return { query: "plan", environment, services: [], target: true };
+}
+
+/** An Environment's automatic deploy rule, beside the Saved settings a new approval of it would pin. */
+export function ruleQuery(environment: EnvironmentRef): { query: "rule" } & RuleQuery {
+  return { query: "rule", environment };
 }
 
 /** An Environment's public domains with their status: the Networking section of every Service drawer. */

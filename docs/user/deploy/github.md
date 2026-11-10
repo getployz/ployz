@@ -102,8 +102,16 @@ the data changed since, the push keeps it and your next deploy asks; see
 ### Deploy on push to servers that enforce device approval
 
 Servers with [device enforcement](../servers/manage-servers.md#require-a-devices-signature-for-restarts-and-joins)
-on deploy a push only under an automatic deploy rule you approve from an approved device. Approve
-it once for the services that build from one branch:
+on deploy a push only under an automatic deploy rule you approve with your passkey or an approved
+device. A browser session can't approve one: the rule stands for every future push, so each
+approval is its own passkey prompt.
+
+In the dashboard, open the environment's **Settings** and turn on **Deploy every push** under
+**Automatic deploys**. The dialog shows the repository and branch, the builder, the servers and
+each service's settings. **Approve with passkey** asks your passkey once. The rule covers every
+service that builds from that branch.
+
+From the CLI, approve it for the services that build from one branch:
 
 ```bash
 ployz github rule approve web worker
@@ -147,13 +155,15 @@ jobs:
 ```
 
 - **A saved change waits for you.** After you save a change to a service the rule covers, its
-  settings or how it builds, pushes don't deploy it until you approve the rule again. Run
-  `ployz github rule approve web`: it names what changed, as
-  `changed     web since the last approval`. A push that changes only the code deploys as
-  before, and so does a new replica count.
+  settings or how it builds, pushes don't deploy it until you approve the rule again. Settings
+  shows **Pushes to main are on hold** with what changed; **Review and approve** names each
+  changed setting and asks your passkey once. From the CLI, `ployz github rule approve web`
+  names what changed, as `changed     web since the last approval`. A push that changes only
+  the code deploys as before, and so does a new replica count.
 - **A new server waits too.** The rule names the servers it was approved for. Approve it again
   after you [add a server](../servers/add-a-server.md).
-- **Stop it** with `ployz github rule end`. Pushes no longer deploy on those servers.
+- **Stop it** by turning off **Deploy every push**, or with `ployz github rule end`. Pushes no
+  longer deploy on those servers.
 - **Someone who can push to the branch can deploy.** Ployz Cloud can't swap the commit, the
   image or the settings, but its GitHub App can push a commit to the branch itself. Add a branch
   ruleset on GitHub that blocks direct pushes to the branch.

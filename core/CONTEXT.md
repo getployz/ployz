@@ -659,7 +659,7 @@ A person's computer a Machine admits at Full Scope, named by the code of its man
 _Avoid_: device login, signed-in computer (that is a `cli-<id>` Management Client), user, roster as a replicated table
 
 **Passkey**:
-A person's browser WebAuthn credential a Machine trusts to approve Workflows and nothing else: it opens no connection, signs no envelope, and manages no Device. It is named like a Device, by the code of its public key, and only a Full caller adds or removes it on each Machine, which records who approved it. Cloud files a registered passkey under its code, but that row makes no Machine trust it.
+A person's browser WebAuthn credential a Machine trusts to approve Workflows, and automatic deploy rules through a prompt of its own, and nothing else: it opens no connection, signs no envelope, and manages no Device. A session grant it signed never approves a rule, which stands for every future push. It is named like a Device, by the code of its public key, and only a Full caller adds or removes it on each Machine, which records who approved it. Cloud files a registered passkey under its code, but that row makes no Machine trust it.
 _Avoid_: passkey login, passkey Device, approved row
 
 **Management Proof**:

@@ -19,11 +19,12 @@ import { rememberProjectRename } from "#/modules/config-store/renamed-projects";
 import { dnsLabelError } from "#/modules/config-store/store-services";
 import { useRoleGate } from "#/modules/organization/members.queries";
 import { StoreTeardownSection } from "#/routes/_protected/cloud/$organizationSlug/-components/store-teardown-section";
+import { StoreAutomaticDeploys } from "./store-automatic-deploys";
 import { StorePrEnvironmentsSection } from "./store-pr-environments-section";
 
 type Place = { organizationSlug: string; projectSlug: string; environmentSlug: string };
 
-/** An Environment's settings over the Config Store: its protection, and deleting it once it is neither the Default, Protected, nor a Parent. */
+/** An Environment's settings over the Config Store: its protection, Branch setup, automatic deploys, and deleting it once it is neither the Default, Protected, nor a Parent. */
 export function StoreEnvironmentSettings({ organizationSlug, projectSlug, environmentSlug }: Place) {
   const navigate = useNavigate();
   const listing = useStoreView(organizationSlug, environmentsQuery(projectSlug));
@@ -45,6 +46,7 @@ export function StoreEnvironmentSettings({ organizationSlug, projectSlug, enviro
     ) : null}
     <StoreBranchSetup organizationSlug={organizationSlug} projectSlug={projectSlug} environmentSlug={environmentSlug}
       saved={environment?.branch_setup ?? []} />
+    <StoreAutomaticDeploys organizationSlug={organizationSlug} projectSlug={projectSlug} environmentSlug={environmentSlug} />
     <StoreTeardownSection
       organizationSlug={organizationSlug}
       target={{ project: projectSlug, environment: environmentSlug }}
