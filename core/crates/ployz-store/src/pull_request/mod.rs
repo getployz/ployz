@@ -46,6 +46,7 @@ use crate::deployment::{self, DeploymentSummary};
 use crate::error;
 use crate::id::{EnvironmentId, EnvironmentName, ProjectName};
 use crate::project::ProjectSummary;
+use crate::removal::mark;
 use crate::review::history::NotSetVariable;
 use crate::scope::{self, Environment, EnvironmentRef, EnvironmentSummary};
 use crate::settings::NodeName;
@@ -503,10 +504,13 @@ fn open_in(
     repository_id: RepositoryId,
 ) -> Result<Vec<OpenPullRequest>, RpcError> {
     let rows = tx.query(
-        "SELECT p.number, e.name FROM config_pr_environment p \
-         JOIN config_environment e ON e.id = p.environment_id \
-         JOIN config_environment_branch b ON b.environment_id = p.environment_id \
-         WHERE e.project_id = ?1 AND p.repository_id = ?2 AND NOT EXISTS (SELECT 1 FROM config_removal_mark m WHERE m.environment_id = b.environment_id AND m.state = 'removing') ORDER BY p.number",
+        &format!(
+            "SELECT p.number, e.name FROM config_pr_environment p \
+             JOIN config_environment e ON e.id = p.environment_id \
+             JOIN config_environment_branch b ON b.environment_id = p.environment_id \
+             WHERE e.project_id = ?1 AND p.repository_id = ?2 AND {} ORDER BY p.number",
+            mark::unmarked("b.environment_id")
+        ),
         &[project.as_str().into(), repository_id.into()],
     )?;
     let mut open = Vec::new();
@@ -804,11 +808,14 @@ pub(crate) fn project_checks(
     environment: &EnvironmentId,
 ) -> Result<Vec<PullRequestRef>, RpcError> {
     let rows = tx.query(
-        "SELECT DISTINCT p.repository_id, p.number FROM config_pr_environment p \
-         JOIN config_environment e ON e.id = p.environment_id \
-         JOIN config_environment s ON s.project_id = e.project_id \
-         JOIN config_environment_branch b ON b.environment_id = p.environment_id \
-         WHERE s.id = ?1 AND NOT EXISTS (SELECT 1 FROM config_removal_mark m WHERE m.environment_id = b.environment_id AND m.state = 'removing') ORDER BY p.repository_id, p.number",
+        &format!(
+            "SELECT DISTINCT p.repository_id, p.number FROM config_pr_environment p \
+             JOIN config_environment e ON e.id = p.environment_id \
+             JOIN config_environment s ON s.project_id = e.project_id \
+             JOIN config_environment_branch b ON b.environment_id = p.environment_id \
+             WHERE s.id = ?1 AND {} ORDER BY p.repository_id, p.number",
+            mark::unmarked("b.environment_id")
+        ),
         &[environment.as_str().into()],
     )?;
     rows.iter().map(pull_request_ref).collect()
@@ -1021,10 +1028,7 @@ pub(crate) fn pull_request(
             if !merged.all {
                 kept.insert(environment.clone());
                 // A close that came before the merge is undone: it stays open.
-                tx.execute(
-                    "DELETE FROM config_removal_mark WHERE environment_id = ?1 AND state = 'removing'",
-                    &[environment.as_str().into()],
-                )?;
+                mark::drop_live(tx, environment)?;
             }
         }
         on_merge::record_unlanded(tx, who, &reported, &unlanded)?;
@@ -1210,10 +1214,9 @@ fn current(
     closing: bool,
 ) -> Result<Vec<(EnvironmentId, crate::id::ProjectId)>, RpcError> {
     let open = if closing {
-        ""
+        String::new()
     } else {
-        "AND NOT EXISTS (SELECT 1 FROM config_removal_mark m \
-         WHERE m.environment_id = b.environment_id AND m.state = 'removing')"
+        format!("AND {}", mark::unmarked("b.environment_id"))
     };
     let rows = tx.query(
         &format!(
@@ -1548,15 +1551,18 @@ fn shut_down(
 /// What the idle rule reads of each Branch: `environment_id`, kept, whether a
 /// removal names it (or a cancelled one did), its latest admission (-1 for none),
 /// its Branches and whether it is a Default.
-const IDLE_FACTS: &str = "SELECT b.environment_id, b.kept, \
-     (SELECT COUNT(*) FROM config_removal_mark m WHERE (m.environment_id = b.environment_id AND m.state <> 'removed') \
-      OR (m.state = 'removing' AND m.project_id = (SELECT e.project_id FROM config_environment e WHERE e.id = b.environment_id))), \
-     (SELECT COALESCE(MAX(d.admitted), -1) FROM config_deployment d WHERE d.environment_id = b.environment_id), \
-     (SELECT COUNT(*) FROM config_environment_branch c WHERE c.parent_id = b.environment_id), \
-     (SELECT COUNT(*) FROM config_project p WHERE p.default_environment_id = b.environment_id) \
-     FROM config_environment_branch b";
+fn idle_facts() -> String {
+    format!(
+        "SELECT b.environment_id, b.kept, {}, \
+         (SELECT COALESCE(MAX(d.admitted), -1) FROM config_deployment d WHERE d.environment_id = b.environment_id), \
+         (SELECT COUNT(*) FROM config_environment_branch c WHERE c.parent_id = b.environment_id), \
+         (SELECT COUNT(*) FROM config_project p WHERE p.default_environment_id = b.environment_id) \
+         FROM config_environment_branch b",
+        mark::marks_holding("b.environment_id")
+    )
+}
 
-/// When the sweep closes a Branch for sitting idle, from an [`IDLE_FACTS`] row: a
+/// When the sweep closes a Branch for sitting idle, from an [`idle_facts`] row: a
 /// week after its latest Deployment. Never when it is kept, being removed or its
 /// removal was cancelled, never
 /// deployed, a Parent or the Default Environment.
@@ -1569,7 +1575,7 @@ fn idle_close(row: &crate::storage::Row) -> Result<Option<i64>, RpcError> {
 /// When a Branch closes for sitting idle, in seconds since the Unix epoch.
 pub(crate) fn closes_at(tx: &mut dyn Tx, id: &EnvironmentId) -> Result<Option<i64>, RpcError> {
     let rows = tx.query(
-        &format!("{IDLE_FACTS} WHERE b.environment_id = ?1"),
+        &format!("{} WHERE b.environment_id = ?1", idle_facts()),
         &[id.as_str().into()],
     )?;
     rows.first().map_or(Ok(None), idle_close)
@@ -1578,7 +1584,10 @@ pub(crate) fn closes_at(tx: &mut dyn Tx, id: &EnvironmentId) -> Result<Option<i6
 /// Move every removal on, then close each Branch idle past its deadline.
 pub(crate) fn sweep(tx: &mut dyn Tx, who: &Actor, sweep: &Sweep) -> Result<Automated, RpcError> {
     let rows = tx.query(
-        &format!("{IDLE_FACTS} WHERE b.organization_id = ?1 ORDER BY b.environment_id"),
+        &format!(
+            "{} WHERE b.organization_id = ?1 ORDER BY b.environment_id",
+            idle_facts()
+        ),
         &[who.organization.as_str().into()],
     )?;
     // Closing would lose what it holds for its merge: an idle PR Environment that
@@ -1636,15 +1645,16 @@ pub(crate) fn awaiting_merge(
     branch: &BranchName,
 ) -> Result<Vec<PullRequestNumber>, RpcError> {
     let rows = tx.query(
-        "SELECT DISTINCT p.number, r.facts, r.merged, r.unlanded, r.standing, r.phase \
-         FROM config_pr_environment p \
-         JOIN config_environment_branch b ON b.environment_id = p.environment_id \
-         JOIN config_pull_request r ON r.organization_id = p.organization_id \
-         AND r.repository_id = p.repository_id AND r.number = p.number \
-         WHERE p.organization_id = ?1 AND p.repository_id = ?2 \
-         AND NOT EXISTS (SELECT 1 FROM config_removal_mark m \
-         WHERE m.environment_id = b.environment_id AND m.state = 'removing') \
-         AND r.merged IS NULL ORDER BY p.number",
+        &format!(
+            "SELECT DISTINCT p.number, r.facts, r.merged, r.unlanded, r.standing, r.phase \
+             FROM config_pr_environment p \
+             JOIN config_environment_branch b ON b.environment_id = p.environment_id \
+             JOIN config_pull_request r ON r.organization_id = p.organization_id \
+             AND r.repository_id = p.repository_id AND r.number = p.number \
+             WHERE p.organization_id = ?1 AND p.repository_id = ?2 \
+             AND {} AND r.merged IS NULL ORDER BY p.number",
+            mark::unmarked("b.environment_id")
+        ),
         &[who.organization.as_str().into(), repository_id.into()],
     )?;
     let mut awaiting = Vec::new();

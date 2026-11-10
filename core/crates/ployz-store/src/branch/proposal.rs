@@ -10,6 +10,7 @@ use super::*;
 use crate::Trusted;
 use crate::id::{ProposalId, RepositoryId};
 use crate::pull_request::PullRequestRef;
+use crate::removal::mark;
 use crate::storage::Param;
 
 /// Remove a proposal from a draft: what it still owns there goes back to what the
@@ -903,23 +904,25 @@ pub(crate) fn included(
     environment: &EnvironmentId,
 ) -> Result<Vec<Included>, RpcError> {
     let rows = tx.query(
-        "SELECT p.id, p.source_environment_id, p.source_name, p.source_revision, p.last_sync, \
-         p.repository_id, p.number, \
-         (SELECT COUNT(*) FROM config_sync_arrival a \
-          WHERE a.environment_id = p.environment_id AND a.proposal_id = p.id), \
-         COALESCE(r.name, e.name), COALESCE(r.working_revision, e.working_revision), \
-         r.id \
-         FROM config_proposal p JOIN config_environment d ON d.id = p.environment_id \
-         LEFT JOIN config_environment e ON e.id = p.source_environment_id \
-         LEFT JOIN (SELECT q.environment_id AS id, q.repository_id, q.number, \
-          v.project_id, v.name, v.working_revision \
-          FROM config_pr_environment q JOIN config_environment v ON v.id = q.environment_id \
-          JOIN config_environment_branch b ON b.environment_id = q.environment_id \
-          WHERE NOT EXISTS (SELECT 1 FROM config_removal_mark m \
-          WHERE m.environment_id = b.environment_id AND m.state = 'removing')) r \
-         ON r.id <> p.source_environment_id AND r.repository_id = p.repository_id \
-         AND r.number = p.number AND r.project_id = d.project_id \
-         WHERE p.environment_id = ?1 ORDER BY p.source_name, p.id",
+        &format!(
+            "SELECT p.id, p.source_environment_id, p.source_name, p.source_revision, p.last_sync, \
+             p.repository_id, p.number, \
+             (SELECT COUNT(*) FROM config_sync_arrival a \
+              WHERE a.environment_id = p.environment_id AND a.proposal_id = p.id), \
+             COALESCE(r.name, e.name), COALESCE(r.working_revision, e.working_revision), \
+             r.id \
+             FROM config_proposal p JOIN config_environment d ON d.id = p.environment_id \
+             LEFT JOIN config_environment e ON e.id = p.source_environment_id \
+             LEFT JOIN (SELECT q.environment_id AS id, q.repository_id, q.number, \
+              v.project_id, v.name, v.working_revision \
+              FROM config_pr_environment q JOIN config_environment v ON v.id = q.environment_id \
+              JOIN config_environment_branch b ON b.environment_id = q.environment_id \
+              WHERE {}) r \
+             ON r.id <> p.source_environment_id AND r.repository_id = p.repository_id \
+             AND r.number = p.number AND r.project_id = d.project_id \
+             WHERE p.environment_id = ?1 ORDER BY p.source_name, p.id",
+            mark::unmarked("b.environment_id")
+        ),
         &[environment.as_str().into()],
     )?;
     let mut included = Vec::with_capacity(rows.len());

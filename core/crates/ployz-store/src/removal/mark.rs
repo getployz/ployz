@@ -132,6 +132,36 @@ fn state_text(state: State) -> &'static str {
     }
 }
 
+/// What [`finish`] writes. It is no [`State`]: no query loads it back as a [`Mark`].
+const REMOVED: &str = "removed";
+
+/// A SQL condition that holds when no live removal mark names the Environment whose ID
+/// `environment_column` reads, as its own target. A Project's mark does not count: the
+/// callers that splice this in leave Branches of a removing Project be. Splice it into
+/// a `WHERE` and keep the alias `m` free.
+pub(crate) fn unmarked(environment_column: &str) -> String {
+    format!(
+        "NOT EXISTS (SELECT 1 FROM config_removal_mark m \
+         WHERE m.environment_id = {environment_column} AND m.state = '{}')",
+        state_text(State::Removing)
+    )
+}
+
+/// A SQL scalar counting the marks that hold the Environment whose ID
+/// `environment_column` reads: its own mark in any state but `removed`, a tombstone
+/// included, and the live mark of its Project. The idle rule reads it where
+/// [`unmarked`] would not do, because a tombstone and a Project removal also keep a
+/// Branch from closing for sitting idle. Keep the aliases `m` and `e` free.
+pub(crate) fn marks_holding(environment_column: &str) -> String {
+    format!(
+        "(SELECT COUNT(*) FROM config_removal_mark m \
+         WHERE (m.environment_id = {environment_column} AND m.state <> '{REMOVED}') \
+         OR (m.state = '{removing}' AND m.project_id = \
+          (SELECT e.project_id FROM config_environment e WHERE e.id = {environment_column})))",
+        removing = state_text(State::Removing)
+    )
+}
+
 /// `target`'s live mark or its tombstone.
 pub(crate) fn of(tx: &mut dyn Tx, target: &Target) -> Result<Option<Mark>, RpcError> {
     let (column, id) = match target {
@@ -140,7 +170,7 @@ pub(crate) fn of(tx: &mut dyn Tx, target: &Target) -> Result<Option<Mark>, RpcEr
     };
     tx.query(
         &format!(
-            "SELECT {COLUMNS} FROM config_removal_mark WHERE {column} = ?1 AND state <> 'removed'"
+            "SELECT {COLUMNS} FROM config_removal_mark WHERE {column} = ?1 AND state <> '{REMOVED}'"
         ),
         &[id.into()],
     )?
@@ -156,9 +186,10 @@ pub(crate) fn naming(
 ) -> Result<Option<Mark>, RpcError> {
     tx.query(
         &format!(
-            "SELECT {COLUMNS} FROM config_removal_mark WHERE state = 'removing' AND \
+            "SELECT {COLUMNS} FROM config_removal_mark WHERE state = '{}' AND \
              (environment_id = ?1 OR project_id = \
-              (SELECT project_id FROM config_environment WHERE id = ?1))"
+              (SELECT project_id FROM config_environment WHERE id = ?1))",
+            state_text(State::Removing)
         ),
         &[environment.as_str().into()],
     )?
@@ -172,7 +203,8 @@ pub(crate) fn live(tx: &mut dyn Tx, who: &Actor) -> Result<Vec<Mark>, RpcError> 
     tx.query(
         &format!(
             "SELECT {COLUMNS} FROM config_removal_mark \
-             WHERE organization_id = ?1 AND state = 'removing' ORDER BY at, id"
+             WHERE organization_id = ?1 AND state = '{}' ORDER BY at, id",
+            state_text(State::Removing)
         ),
         &[who.organization.as_str().into()],
     )?
@@ -188,8 +220,10 @@ pub(crate) fn residuals(
     id: &RemovalId,
 ) -> Result<Vec<Residual>, RpcError> {
     tx.query(
-        "SELECT residuals FROM config_removal_mark \
-         WHERE organization_id = ?1 AND id = ?2 AND state = 'removed'",
+        &format!(
+            "SELECT residuals FROM config_removal_mark \
+             WHERE organization_id = ?1 AND id = ?2 AND state = '{REMOVED}'"
+        ),
         &[who.organization.as_str().into(), id.as_str().into()],
     )?
     .first()
@@ -247,8 +281,11 @@ pub(crate) fn finish(
     residuals: &[Residual],
 ) -> Result<Finished, RpcError> {
     let moved = tx.execute(
-        "UPDATE config_removal_mark SET state = 'removed', residuals = ?2 \
-         WHERE id = ?1 AND state = 'removing'",
+        &format!(
+            "UPDATE config_removal_mark SET state = '{REMOVED}', residuals = ?2 \
+             WHERE id = ?1 AND state = '{}'",
+            state_text(State::Removing)
+        ),
         &[id.as_str().into(), text(&residuals).as_str().into()],
     )?;
     Ok(if moved == 0 {
@@ -265,8 +302,24 @@ pub(crate) fn clear_tombstone(tx: &mut dyn Tx, target: &Target) -> Result<(), Rp
         Target::Project(id) => ("project_id", id.as_str()),
     };
     tx.execute(
-        &format!("DELETE FROM config_removal_mark WHERE {column} = ?1 AND state = 'cancelled'"),
+        &format!(
+            "DELETE FROM config_removal_mark WHERE {column} = ?1 AND state = '{}'",
+            state_text(State::Cancelled)
+        ),
         &[id.into()],
+    )?;
+    Ok(())
+}
+
+/// Delete `environment`'s live mark, leaving no tombstone, so a close that came before a
+/// merge is undone.
+pub(crate) fn drop_live(tx: &mut dyn Tx, environment: &EnvironmentId) -> Result<(), RpcError> {
+    tx.execute(
+        &format!(
+            "DELETE FROM config_removal_mark WHERE environment_id = ?1 AND state = '{}'",
+            state_text(State::Removing)
+        ),
+        &[environment.as_str().into()],
     )?;
     Ok(())
 }
