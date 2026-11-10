@@ -3888,6 +3888,316 @@ mod set_volume_copy {
         std::fs::remove_dir_all(data_dir).unwrap();
     }
 
+    mod enforcement {
+        //! Device enforcement on the Volume verbs. An Operator's Writer start, Create or Kept,
+        //! and its Seed are refused before the copy is read. A Full caller, the Operator's
+        //! other wants and a Machine not enforcing are not.
+
+        use ployz_core::{
+            OPERATOR_SCOPE_HEADER, SEED_REFUSED_BY_ENFORCEMENT, SEED_VOLUME_CAPABILITY,
+            SET_VOLUME_COPY_CAPABILITY, VOLUME_START_REFUSED_BY_ENFORCEMENT,
+        };
+        use tonic::Status;
+
+        use super::*;
+
+        async fn enforce(store: &RecordOwner) {
+            store
+                .mutate(|store| store.set_device_enforcement(true, Vec::new()).unwrap())
+                .await
+                .unwrap();
+        }
+
+        fn as_operator<T>(mut request: Request<T>) -> Request<T> {
+            request
+                .metadata_mut()
+                .insert(OPERATOR_SCOPE_HEADER, "1".parse().unwrap());
+            request
+        }
+
+        async fn operator_set_copy(
+            service: &MachineService,
+            request: Value,
+        ) -> Result<RpcResponse, Status> {
+            let request = op::SetVolumeCopy::into_request(serde_json::from_value(request).unwrap())
+                .encode()
+                .unwrap();
+            service
+                .set_volume_copy(as_operator(Request::new(request)))
+                .await
+                .map(|response| response.into_inner().decode_response().unwrap())
+        }
+
+        async fn operator_seed(
+            service: &MachineService,
+            request: Value,
+        ) -> Result<RpcResponse, Status> {
+            let request = op::SeedVolume::into_request(serde_json::from_value(request).unwrap())
+                .encode()
+                .unwrap();
+            service
+                .seed_volume(as_operator(Request::new(request)))
+                .await
+                .map(|response| response.into_inner().decode_response().unwrap())
+        }
+
+        #[expect(clippy::indexing_slicing, reason = "JSON fixture assertions")]
+        fn refused(status: &Status, capability: &str, text: &str) {
+            assert_eq!(
+                status.code(),
+                Code::PermissionDenied,
+                "{}",
+                status.message()
+            );
+            assert_eq!(status.message(), text);
+            let details = ployz_core::rpc::status_details(status.details()).unwrap();
+            assert_eq!(details["capability"], json!(capability));
+        }
+
+        fn docker_writes(fake: &FakeDocker) -> Vec<String> {
+            fake.requests
+                .lock()
+                .unwrap()
+                .iter()
+                .filter(|(method, path)| {
+                    *method == axum::http::Method::POST
+                        && (path.ends_with("/containers/create") || path.ends_with("/start"))
+                })
+                .map(|(_, path)| path.clone())
+                .collect()
+        }
+
+        /// A Mirror the Writer route promotes, as B's copy is at a Move's last step.
+        fn promoting_plugin() -> FakePlugin {
+            let plugin = FakePlugin::default();
+            plugin.reply(INSPECT_ROUTE, slot(Some(snapshot("f-1", 900))));
+            plugin.reply(WRITER_ROUTE, writer_root(1, Some(snapshot("f-1", 900))));
+            let replies = plugin.replies.clone();
+            plugin.on(WRITER_ROUTE, move || {
+                replies.lock().unwrap().insert(
+                    INSPECT_ROUTE.into(),
+                    writer_root(1, Some(snapshot("f-1", 900))),
+                );
+            });
+            plugin
+        }
+
+        fn create_start() -> Value {
+            json!({"name":VOLUME, "expect":{"kind":"mirror", "newest":"900", "slot":"1"},
+            "want":{"kind":"writer", "at":"900", "epoch":1, "start":{
+                "kind":"create", "namespace":"app", "resolved_spec":spec(),
+                "creation_key":"move-1", "gen":1, "rotation":"pending"}}})
+        }
+
+        fn kept_start(container: &ContainerId) -> Value {
+            json!({"name":VOLUME, "expect":{"kind":"mirror", "newest":"900", "slot":"1"},
+            "want":{"kind":"writer", "at":"900", "epoch":1,
+                "start":{"kind":"kept", "container_id":container.to_string()}}})
+        }
+
+        #[tokio::test]
+        async fn an_operator_create_under_enforcement_is_refused_before_the_copy_or_docker() {
+            let (data_dir, store, service, fake) = fake_docker_service("ployzd-gate-create").await;
+            let plugin = promoting_plugin();
+            let (socket, server) = plugin.serve(&data_dir);
+            let service = service.with_volume_plugin(socket);
+            enforce(&store).await;
+
+            let status = operator_set_copy(&service, create_start())
+                .await
+                .expect_err("an Operator's Create must be refused");
+            refused(
+                &status,
+                SET_VOLUME_COPY_CAPABILITY,
+                VOLUME_START_REFUSED_BY_ENFORCEMENT,
+            );
+            assert!(
+                plugin.routes_called().is_empty(),
+                "{:?}",
+                plugin.routes_called()
+            );
+            assert!(
+                docker_writes(&fake).is_empty(),
+                "{:?}",
+                docker_writes(&fake)
+            );
+
+            // The same request from a Full caller promotes the copy and creates the Container,
+            // so the refusal above is what kept both from happening.
+            reply(&set_copy(&service, create_start()).await);
+            assert_eq!(plugin.routes_called(), vec![INSPECT_ROUTE, WRITER_ROUTE]);
+            assert_eq!(holder_status(&fake), vec![json!("running")]);
+            server.abort();
+            std::fs::remove_dir_all(data_dir).unwrap();
+        }
+
+        #[tokio::test]
+        async fn an_operator_kept_start_of_an_unrelated_container_is_refused_under_enforcement() {
+            let (data_dir, store, service, fake) =
+                fake_docker_service("ployzd-gate-unrelated").await;
+            let plugin = promoting_plugin();
+            let (socket, server) = plugin.serve(&data_dir);
+            let service = service.with_volume_plugin(socket);
+            // A stopped Container that mounts nothing of this Volume.
+            let unrelated = stopped_container(&service).await;
+            enforce(&store).await;
+            let before = docker_writes(&fake);
+
+            let status = operator_set_copy(&service, kept_start(&unrelated))
+                .await
+                .expect_err("an Operator's Kept start must be refused");
+            refused(
+                &status,
+                SET_VOLUME_COPY_CAPABILITY,
+                VOLUME_START_REFUSED_BY_ENFORCEMENT,
+            );
+            assert!(
+                plugin.routes_called().is_empty(),
+                "{:?}",
+                plugin.routes_called()
+            );
+            assert_eq!(docker_writes(&fake), before);
+            assert_eq!(holder_status(&fake), vec![json!("created")]);
+            server.abort();
+            std::fs::remove_dir_all(data_dir).unwrap();
+        }
+
+        /// Cloud's attack on an enforcing Machine: cut the Volume, which stops its holder, then
+        /// promote the copy with a Kept start naming a Container made before enforcement.
+        #[tokio::test]
+        async fn an_operator_kept_start_of_a_container_from_before_enforcement_is_refused_after_a_cut()
+         {
+            let (data_dir, store, service, fake) = fake_docker_service("ployzd-gate-kept").await;
+            let plugin = FakePlugin::default();
+            plugin.reply(INSPECT_ROUTE, writer_root(0, None));
+            plugin.reply(CUT_ROUTE, slot(Some(snapshot("f-1", 900))));
+            let replies = plugin.replies.clone();
+            plugin.on(CUT_ROUTE, move || {
+                replies
+                    .lock()
+                    .unwrap()
+                    .insert(INSPECT_ROUTE.into(), slot(Some(snapshot("f-1", 900))));
+            });
+            plugin.reply(WRITER_ROUTE, writer_root(1, Some(snapshot("f-1", 900))));
+            let (socket, server) = plugin.serve(&data_dir);
+            let service = service.with_volume_plugin(socket);
+            let holder = running_holder(&service, &fake).await;
+            enforce(&store).await;
+
+            let cut = operator_set_copy(&service, cut(json!({"kind":"writer", "epoch":0})))
+                .await
+                .expect("a cut starts nothing, so enforcement leaves it to the Operator");
+            reply(&cut);
+            assert_eq!(holder_status(&fake), vec![json!("exited")]);
+            let cut_routes = plugin.routes_called();
+            let before = docker_writes(&fake);
+
+            let status = operator_set_copy(&service, kept_start(&holder))
+                .await
+                .expect_err("an Operator's Kept start must be refused");
+            refused(
+                &status,
+                SET_VOLUME_COPY_CAPABILITY,
+                VOLUME_START_REFUSED_BY_ENFORCEMENT,
+            );
+            assert_eq!(plugin.routes_called(), cut_routes);
+            assert_eq!(docker_writes(&fake), before);
+            assert_eq!(holder_status(&fake), vec![json!("exited")]);
+            server.abort();
+            std::fs::remove_dir_all(data_dir).unwrap();
+        }
+
+        /// A Restore promotes with no start, which enforcement leaves to the Operator.
+        #[tokio::test]
+        #[expect(clippy::indexing_slicing, reason = "JSON fixture assertions")]
+        async fn an_operator_writer_with_no_start_is_admitted_under_enforcement() {
+            let (data_dir, store, service, fake) = fake_docker_service("ployzd-gate-restore").await;
+            let plugin = promoting_plugin();
+            let (socket, server) = plugin.serve(&data_dir);
+            let service = service.with_volume_plugin(socket);
+            enforce(&store).await;
+
+            let restore = json!({"name":VOLUME, "expect":{"kind":"mirror", "newest":"900", "slot":"1"},
+            "want":{"kind":"writer", "at":"900", "epoch":1, "start":null}});
+            let promoted = reply(&operator_set_copy(&service, restore).await.unwrap());
+            assert_eq!(
+                serde_json::to_value(&promoted).unwrap(),
+                json!({"copy": writer_root(1, Some(snapshot("f-1", 900)))["Ok"]})
+            );
+            assert!(
+                docker_writes(&fake).is_empty(),
+                "{:?}",
+                docker_writes(&fake)
+            );
+            server.abort();
+            std::fs::remove_dir_all(data_dir).unwrap();
+        }
+
+        #[tokio::test]
+        async fn an_operator_create_with_enforcement_off_is_admitted() {
+            let (data_dir, _store, service, fake) = fake_docker_service("ployzd-gate-off").await;
+            let plugin = promoting_plugin();
+            let (socket, server) = plugin.serve(&data_dir);
+            let service = service.with_volume_plugin(socket);
+
+            reply(&operator_set_copy(&service, create_start()).await.unwrap());
+            assert_eq!(plugin.routes_called(), vec![INSPECT_ROUTE, WRITER_ROUTE]);
+            assert_eq!(holder_status(&fake), vec![json!("running")]);
+            server.abort();
+            std::fs::remove_dir_all(data_dir).unwrap();
+        }
+
+        fn seed_request() -> Value {
+            json!({"name":"source", "into":VOLUME, "guid":"77"})
+        }
+
+        #[tokio::test]
+        async fn an_operator_seed_under_enforcement_is_refused_before_the_plugin() {
+            let (data_dir, store, service, _fake) = fake_docker_service("ployzd-gate-seed").await;
+            let plugin = pulled_mirror_plugin();
+            let (socket, server) = plugin.serve(&data_dir);
+            let service = service.with_volume_plugin(socket);
+            enforce(&store).await;
+
+            let status = operator_seed(&service, seed_request())
+                .await
+                .expect_err("an Operator's Seed must be refused");
+            refused(&status, SEED_VOLUME_CAPABILITY, SEED_REFUSED_BY_ENFORCEMENT);
+            assert!(
+                plugin.routes_called().is_empty(),
+                "{:?}",
+                plugin.routes_called()
+            );
+
+            // The same Seed from a Full caller reaches the plugin's Seed route.
+            seed(&service, seed_request())
+                .await
+                .decode::<op::SeedVolume>()
+                .unwrap();
+            assert_eq!(plugin.routes_called(), vec![SEED_ROUTE]);
+            server.abort();
+            std::fs::remove_dir_all(data_dir).unwrap();
+        }
+
+        #[tokio::test]
+        async fn an_operator_seed_with_enforcement_off_is_admitted() {
+            let (data_dir, _store, service, _fake) =
+                fake_docker_service("ployzd-gate-seed-off").await;
+            let plugin = pulled_mirror_plugin();
+            let (socket, server) = plugin.serve(&data_dir);
+            let service = service.with_volume_plugin(socket);
+
+            operator_seed(&service, seed_request())
+                .await
+                .unwrap()
+                .decode::<op::SeedVolume>()
+                .unwrap();
+            assert_eq!(plugin.routes_called(), vec![SEED_ROUTE]);
+            server.abort();
+            std::fs::remove_dir_all(data_dir).unwrap();
+        }
+    }
+
     /// Each child re-runs this binary armed through its own fault file, since a kill aborts
     /// the whole process.
     #[cfg(feature = "verify-faults")]

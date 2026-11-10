@@ -12,7 +12,7 @@ use ployz_core::{
     EnvironmentValues, LiveLogTarget, LocalMachinePhase, LogMetadata, LogOrigin, MachineLogService,
     MachineRpc, ManagementScope, OpaquePayload, PROTOCOL_MAJOR, RetainedEnvReply, RoutedAddresses,
     RoutesRead, Rpc, RpcError, RpcErrorCode, RpcRequestBody, RpcResponse, SelectEndpointRequest,
-    op,
+    WantedCopy, op,
 };
 use serde_json::Value;
 use tonic::{Request, Response, Status};
@@ -660,6 +660,17 @@ impl MachineRpc for MachineService {
         &self,
         request: Request<OpaquePayload>,
     ) -> Result<Response<OpaquePayload>, Status> {
+        let operator = from_operator(&request);
+        let request = expect::<op::SetVolumeCopy>(request)?;
+        // Refused before the switch lock, so nothing is planned against the copy. A Kept
+        // start is refused too: nothing on this Machine ties the Container it names to
+        // this Volume or to a stop a person approved.
+        if operator
+            && matches!(request.want, WantedCopy::Writer { start: Some(_), .. })
+            && let Err(error) = self.local.admit_operator_volume_start()
+        {
+            return local_error(error);
+        }
         self.set_copy(request).await
     }
 
@@ -667,6 +678,11 @@ impl MachineRpc for MachineService {
         &self,
         request: Request<OpaquePayload>,
     ) -> Result<Response<OpaquePayload>, Status> {
+        if from_operator(&request)
+            && let Err(error) = self.local.admit_operator_seed()
+        {
+            return local_error(error);
+        }
         let request = expect::<op::SeedVolume>(request)?;
         let _guard = self.switch_mutation.lock().await;
         // Checked under the switch lock, which a mirror pull of `into` takes too: a check
@@ -1249,6 +1265,14 @@ fn local_failure(error: LocalMachineError) -> Result<RpcError, Status> {
             }),
         )),
         LocalMachineError::BuildRefused { capability } => Err(build_refused(&error, capability)),
+        LocalMachineError::VolumeRefused { capability } => Err(ployz_core::rpc::hinted_status(
+            tonic::Code::PermissionDenied,
+            &error,
+            serde_json::json!({
+                "capability": capability,
+                "next": "ployz device enforce --off from an approved device",
+            }),
+        )),
         LocalMachineError::RuleGrantRefused(_)
         | LocalMachineError::RuleProofRefused(_)
         | LocalMachineError::RuleHeadUnread(_) => Err(build_refused(

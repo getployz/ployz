@@ -6,11 +6,11 @@ use ployz_core::{
     ContainerRuntimeObservation, ContainerWant, CopyPlan, CopyRefusal, CopyRotation,
     CopyTransition, DockerVolumeName, EnsuredContainer, HealthVerdict, OpaquePayload, RpcError,
     RpcErrorCode, RunRotation, RunTarget, SetVolumeCopyRefused, SetVolumeCopyReply,
-    SetVolumeCopyRequest, Start, VolumeCopy, VolumeGen, WantedCopy, op,
+    SetVolumeCopyRequest, Start, VolumeCopy, VolumeGen, WantedCopy,
 };
-use tonic::{Request, Response, Status};
+use tonic::{Response, Status};
 
-use super::{MachineService, expect, local_error, respond};
+use super::{MachineService, local_error, respond};
 use crate::{
     docker::FloorTurn,
     faults::{Identity, Want},
@@ -35,9 +35,8 @@ enum StartState {
 impl MachineService {
     pub(super) async fn set_copy(
         &self,
-        request: Request<OpaquePayload>,
+        request: SetVolumeCopyRequest,
     ) -> Result<Response<OpaquePayload>, Status> {
-        let request = expect::<op::SetVolumeCopy>(request)?;
         if request.want == WantedCopy::Floor {
             return match self.floor_copy(&request.name, request.r#gen).await {
                 Ok(copy) => respond(SetVolumeCopyReply { copy }),

@@ -21,7 +21,8 @@ export type RefusalCode =
   | "another_copy"
   | "confirm_required"
   | "role_changed"
-  | "deploying";
+  | "deploying"
+  | "enforced";
 
 /**
  * Where a Move continues from the copies it finds. `rounds` and `cut` start on A's root; `final` pulls the cut's
@@ -110,10 +111,47 @@ export function observedEpoch(members: readonly Member[]): number {
 const isDestination = ({ to, machine }: VolumeRunArgs["move"], member: Member) =>
   machine === undefined ? member.machine.name === to : member.machine.id === machine;
 
-const refuse = (code: RefusalCode, message: string): Planned => ({ ok: false, refusal: { code, message } });
+const refuse = (code: RefusalCode, message: string, next?: string): Planned => ({ ok: false, refusal: { code, message, ...(next !== undefined && { next }) } });
 
-/** Pure: Inngest re-runs it outside any step on every replay, so the same members must plan the same run. */
+/**
+ * Pure: Inngest re-runs it outside any step on every replay, so the same members must plan the same run. A Move or a
+ * seed a Server it starts or writes on would refuse, since that Server enforces device approval, is refused here,
+ * before anything stops.
+ */
 export function planFromCopies(input: PlanInput, observed: readonly Member[]): Planned {
+  const planned = planCopies(input, observed);
+  if (!planned.ok) return planned;
+  const enforcing = gatedOn(planned.phase).find((member) => member.enforces === true);
+  return enforcing === undefined ? planned : refuse("enforced", enforcedMessage(planned.phase.kind === "seed", input.volumeName, enforcing.machine.name), ENFORCEMENT_OFF);
+}
+
+/**
+ * The Servers a phase asks for what an enforcing Server refuses from Ployz Cloud: a Move's start on B, its release
+ * back to A's stopped Container, and a seed.
+ */
+function gatedOn(phase: Extract<Planned, { ok: true }>["phase"]): readonly AnsweredMember[] {
+  switch (phase.kind) {
+    case "move":
+      return [phase.writer, phase.target];
+    case "landed":
+      return [phase.target, ...phase.behind];
+    case "seed":
+      return [phase.source];
+    default:
+      return [];
+  }
+}
+
+export const ENFORCEMENT_OFF = "ployz device enforce --off";
+
+/** Why Ployz Cloud can't run a Move, or with `seed` a restore into a new volume, through `server`, which enforces device approval. */
+export function enforcedMessage(seed: boolean, name: string, server: string) {
+  return seed
+    ? `${server} enforces device approval, so Ployz Cloud can't restore ${name} into a new volume until a later release. To restore it now, turn enforcement off from an approved device.`
+    : `${server} enforces device approval, so Ployz Cloud can't move ${name} until a later release. To move it now, turn enforcement off from an approved device.`;
+}
+
+function planCopies(input: PlanInput, observed: readonly Member[]): Planned {
   const name = input.volumeName;
   const members = observed.filter((member) => member.answered || member.stateless !== true);
   const hidden = observed.flatMap((member) => (!member.answered && member.stateless === true ? [member.machine.name] : []));

@@ -40,6 +40,12 @@ Deploy runs it before your services. Ployz copies the point to the original's se
 new volume, and starts your service on it. The original keeps its data and its mirror; it shows as
 not mounted. Delete it from its **Settings** tab when you no longer need it.
 
+On servers with [device enforcement](../servers/manage-servers.md#require-a-devices-signature-for-restarts-and-joins)
+on, Ployz Cloud can't restore a point into a new volume until a later release. The deploy fails
+before it changes anything and drops the restore, naming the server that enforces. To restore a
+point now, turn enforcement off from an approved device.
+[Restoring a volume in place](#restore-a-volume-in-place) still works.
+
 ## Restore a volume in place
 
 When the server that wrote a volume is gone, make a copy on another server the volume again. In

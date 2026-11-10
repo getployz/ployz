@@ -99,6 +99,8 @@ export type Member =
       readonly floorless?: boolean;
       /** For a resize, the copy's bound in the Runtime Watch frame; null when the frame shows no sized copy here. */
       readonly boundBytes?: number | null;
+      /** The Server reports device enforcement on, so it refuses a Container start or a seed Ployz Cloud sends. */
+      readonly enforces?: boolean;
     }
   | {
       readonly machine: { readonly id: MachineId; readonly name: MachineName };

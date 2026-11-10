@@ -27,7 +27,10 @@
 //!   (`ployzd/src/machine_api/local_volume_copy.rs`), with each lock and floor check
 //!   of the code as its own step, and the transition picked by the real
 //!   [`ployz_core::plan`];
-//! - A's daemon restarting halfway through the cut's flip.
+//! - A's daemon restarting halfway through the cut's flip;
+//! - Device enforcement turning on at any moment of the Move, after which each Machine
+//!   refuses, on arrival, every `SetVolumeCopy` that would start a Container
+//!   (`admit_operator_volume_start` in `ployzd/src/machine_api/local.rs`).
 //!
 //! The whole product is millions of states, so each `Scenario` checks one bounded
 //! slice of it.
@@ -233,6 +236,8 @@ enum Refusal {
     NoCapacity,
     Shrink,
     BelowFloor,
+    /// Device enforcement refused an Operator's Writer start.
+    Enforced,
     Other,
 }
 
@@ -274,6 +279,8 @@ struct Request {
     expect: Expect,
     want: Want,
     progress: Progress,
+    /// Admitted past the enforcement gate while the Machine enforced.
+    enforced: bool,
 }
 
 /// A run's row in Cloud's `volume_run` table.
@@ -393,6 +400,12 @@ struct State {
     moving: Driver<MoveStep>,
     release: Option<Release>,
     crashes: u8,
+    /// Device enforcement is on, on both Machines.
+    enforcing: bool,
+    /// An enforcing Machine refused a Writer start.
+    refused_start: bool,
+    /// A Container started from a request admitted while its Machine enforced.
+    unapproved_start: bool,
 }
 
 impl State {
@@ -453,6 +466,7 @@ impl State {
             expect,
             want,
             progress: Progress::Sent,
+            enforced: false,
         });
         self.requests.len() - 1
     }
@@ -599,6 +613,8 @@ struct Broken {
     shrink_mirror_first: bool,
     /// A shrink refused before any copy changed keeps the size it recorded.
     shrink_keeps_refused_record: bool,
+    /// An enforcing Machine admits an Operator's Writer start.
+    start_gate: bool,
 }
 
 /// One bounded slice of the runs. Each is checked whole; together they cover the resize
@@ -676,6 +692,8 @@ struct VolumeRuns {
     resends: u8,
     /// Daemon restarts during a cut's flip.
     crashes: u8,
+    /// Device enforcement may turn on at any moment after the resize.
+    enforce: bool,
     broken: Broken,
 }
 
@@ -686,6 +704,7 @@ impl Default for VolumeRuns {
             direction: None,
             resends: 1,
             crashes: 1,
+            enforce: false,
             broken: Broken::default(),
         }
     }
@@ -708,6 +727,8 @@ enum Action {
     /// Cloud ends the resize's row: a cancel, a Release taking the Volume, or a failed
     /// step.
     EndResize,
+    /// A Device turns enforcement on.
+    Enforce,
 }
 
 // --- The real planner -------------------------------------------------------------
@@ -866,6 +887,16 @@ impl VolumeRuns {
                     }
                     return;
                 }
+                if matches!(request.want, Want::Writer { start: Some(_), .. }) && state.enforcing {
+                    if !self.broken.start_gate {
+                        state.refused_start = true;
+                        state.reply(index, Reply::Refused(Refusal::Enforced));
+                        return;
+                    }
+                    if let Some(request) = state.requests.get_mut(index) {
+                        request.enforced = true;
+                    }
+                }
                 let host = state.host_mut(to);
                 if request.want == Want::Floor {
                     // `floor_copy`: raise and read under the floor lock; never refuses.
@@ -936,6 +967,7 @@ impl VolumeRuns {
                 state.set_progress(index, Progress::StartRun);
             }
             Progress::StartRun => {
+                state.unapproved_start |= state.request(index).enforced;
                 let host = state.host_mut(to);
                 host.holder = Holder::Running;
                 let copy = host.copy;
@@ -1809,6 +1841,9 @@ impl VolumeRuns {
             },
             release: None,
             crashes: 0,
+            enforcing: false,
+            refused_start: false,
+            unapproved_start: false,
         }
     }
 }
@@ -1862,6 +1897,9 @@ impl Model for VolumeRuns {
         }
         if self.scenario == Scenario::Resize {
             return;
+        }
+        if self.enforce && !state.enforcing && !at_rest_but_enforce(self, state) {
+            actions.push(Action::Enforce);
         }
         // A Move whose row ended stops whenever its step next runs or retries, leaving
         // what it sent in flight.
@@ -1918,6 +1956,7 @@ impl Model for VolumeRuns {
                 state.resize.row = Row::Failed;
                 state.resize.cut_short = true;
             }
+            Action::Enforce => state.enforcing = true,
             Action::Release => self.release_step(&mut state),
             Action::ReleaseResend => {
                 let lost = state
@@ -1959,12 +1998,18 @@ impl Model for VolumeRuns {
             Property::always(DONE_HOLDS, |model: &Self, state: &State| {
                 !at_rest(model, state) || done_holds(state)
             }),
+            // A Release whose start an enforcing Machine refused can't finish until
+            // enforcement is off.
             Property::always(RELEASE_WINS, |model: &Self, state: &State| {
                 !at_rest(model, state)
+                    || state.refused_start
                     || state
                         .release
                         .as_ref()
                         .is_none_or(|release| release.row == Row::Done)
+            }),
+            Property::always(ENFORCED_STARTS_NOTHING, |_, state: &State| {
+                !state.unapproved_start
             }),
             Property::always(STORE_FITS, |_, state: &State| state.store_fits()),
             Property::always(RESIZE_DONE_HOLDS, |_, state: &State| {
@@ -1980,8 +2025,35 @@ impl Model for VolumeRuns {
             }),
         ];
         properties.extend(self.reached());
+        if self.enforce {
+            properties.extend(enforced_reached());
+        }
         properties
     }
+}
+
+/// What turning enforcement on mid-Move must reach: each start a Move or its Release
+/// sends refused, with the Volume's copies left as they were and no Service started.
+fn enforced_reached() -> Vec<Property<VolumeRuns>> {
+    vec![
+        Property::sometimes(
+            "an enforcing Machine refuses a Release back to A after the cut",
+            |_, state: &State| refused_release(state, false),
+        ),
+        Property::sometimes(
+            "an enforcing Machine refuses a committed Move's start and its Release forward",
+            |_, state: &State| refused_release(state, true),
+        ),
+    ]
+}
+
+fn refused_release(state: &State, forward: bool) -> bool {
+    state.refused_start
+        && state.running() == 0
+        && state
+            .release
+            .as_ref()
+            .is_some_and(|release| release.forward == forward && release.row == Row::Failed)
 }
 
 impl VolumeRuns {
@@ -2186,6 +2258,8 @@ const SERVICE_ON_WRITER: &str = "a running Service sits on its Machine's Writer"
 const NOTHING_STUCK: &str = "every run ends";
 const DONE_HOLDS: &str = "a run that finished done still holds at rest";
 const RELEASE_WINS: &str = "a Release finishes whatever the dead Move still sends";
+const ENFORCED_STARTS_NOTHING: &str =
+    "an enforcing Machine starts no Container an Operator's Writer start names";
 const STORE_FITS: &str = "the Store's size fits every copy";
 const RESIZE_DONE_HOLDS: &str = "a resize that finished done recorded its target";
 const REFUSED_RECORDS_NOTHING: &str =
@@ -2215,6 +2289,17 @@ fn at_rest(model: &VolumeRuns, state: &State) -> bool {
     actions.is_empty()
 }
 
+/// Nothing but turning enforcement on is left, so turning it on would change nothing.
+fn at_rest_but_enforce(model: &VolumeRuns, state: &State) -> bool {
+    at_rest(
+        &VolumeRuns {
+            enforce: false,
+            ..*model
+        },
+        state,
+    )
+}
+
 /// The newest run that reported done left its Writer serving on the Machine it named.
 fn done_holds(state: &State) -> bool {
     let serving = |machine: Machine, started: bool| {
@@ -2240,6 +2325,40 @@ mod tests {
 
     fn check(model: VolumeRuns) -> impl Checker<VolumeRuns> {
         model.checker().threads(4).spawn_bfs().join()
+    }
+
+    /// Enforcement turning on at any moment of the Move: no Operator start runs, and the
+    /// refused Release is the only run that may stop short.
+    #[test]
+    fn volume_runs_hold_under_enforcement() {
+        let checker = check(VolumeRuns {
+            enforce: true,
+            ..VolumeRuns::default()
+        });
+        println!("enforced: {} states", checker.unique_state_count());
+        checker.assert_properties();
+    }
+
+    #[test]
+    fn an_enforcing_machine_refuses_every_operator_start() {
+        let checker = VolumeRuns {
+            direction: Some(Direction::Grow),
+            enforce: true,
+            broken: Broken {
+                start_gate: true,
+                ..Broken::default()
+            },
+            ..VolumeRuns::default()
+        }
+        .checker()
+        .threads(4)
+        .finish_when(HasDiscoveries::AllOf(
+            [ENFORCED_STARTS_NOTHING].into_iter().collect(),
+        ))
+        .spawn_bfs()
+        .join();
+        let path = checker.assert_any_discovery(ENFORCED_STARTS_NOTHING);
+        println!("{ENFORCED_STARTS_NOTHING} breaks with the gate out:\n{path}");
     }
 
     /// The code as it is, in every scenario: every property holds, and every `sometimes`

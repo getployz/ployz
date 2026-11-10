@@ -422,6 +422,41 @@ describe("plan_from_copies_table", () => {
   });
 });
 
+describe("plan a run on Servers that enforce device approval", () => {
+  const enforcing = (each: Member): Member => (each.answered ? { ...each, enforces: true } : each);
+  const writer = enforcing(member("a", "writer"));
+
+  it.each<[string, PlanInput, Member[], string]>([
+    ["move onto an enforcing Server", move("b"), [member("a", "writer"), enforcing(member("b", "empty"))], "refuse enforced"],
+    ["move off an enforcing Server", move("b"), [writer, member("b", "mirror")], "refuse enforced"],
+    ["move that lands on an enforcing Server", move("b"), [member("a", "final"), enforcing(member("b", "writer"))], "refuse enforced"],
+    ["move beside an enforcing Server it doesn't touch", move("b"), [member("a", "writer"), member("b", "empty"), enforcing(member("c", "empty"))], "move a->b at rounds"],
+    ["seed on an enforcing Server", seed, [writer, member("b", "mirror")], "refuse enforced"],
+    ["mirror between enforcing Servers", mirror("b"), [writer, enforcing(member("b", "empty"))], "mirror a->b"],
+    ["sync between enforcing Servers", sync(), [writer, enforcing(member("b", "mirror"))], "sync a->b"],
+    ["restore on an enforcing Server", restore("b"), [member("a", "empty"), enforcing(member("b", "mirror"))], "restore b 11"],
+    ["delete a mirror on an enforcing Server", remove("b"), [writer, enforcing(member("b", "mirror"))], "delete b forget a"],
+    ["release a cut on an enforcing Server", release, [enforcing(member("a", "cut")), member("b", "mirror")], "release cut a"],
+  ])("%s", (_, input, members, expected) => {
+    expect(outcome(input, members)).toBe(expected);
+  });
+
+  it("names the Server and the command that turns enforcement off", () => {
+    expect(planFromCopies(move("b"), [member("a", "writer"), enforcing(member("b", "empty"))])).toEqual({
+      ok: false,
+      refusal: {
+        code: "enforced",
+        message: "b enforces device approval, so Ployz Cloud can't move data until a later release. To move it now, turn enforcement off from an approved device.",
+        next: "ployz device enforce --off",
+      },
+    });
+    expect(planFromCopies(seed, [writer, member("b", "mirror")])).toMatchObject({
+      ok: false,
+      refusal: { code: "enforced", message: expect.stringContaining("a enforces device approval, so Ployz Cloud can't restore data into a new volume until a later release.") },
+    });
+  });
+});
+
 describe("plan a resize", () => {
   const copies = [member("fsn-1", "writer"), member("fsn-2", "mirror"), member("fsn-3", "mirror")];
 
@@ -590,7 +625,7 @@ describe("follow every next step a refusal names", () => {
   // twin sets it, and `tied` then sees it.
   type Complete<T> = T extends string | number | bigint | boolean | null | undefined ? T : { [K in keyof T]-?: Complete<T[K]> };
   const twin = (id: string, floorless: boolean, copy: Complete<VolumeCopy>): AnsweredMember => ({
-    machine: { id: id.padEnd(32, "0") as MachineId, name: "twin" }, address: `fdcc::${id}`, answered: true, view: { copy }, floorless, boundBytes: floorless ? GB : null,
+    machine: { id: id.padEnd(32, "0") as MachineId, name: "twin" }, address: `fdcc::${id}`, answered: true, view: { copy }, floorless, boundBytes: floorless ? GB : null, enforces: false,
   } satisfies Required<AnsweredMember>);
   const at = (name: string, each: AnsweredMember): Member => ({ ...each, machine: { ...each.machine, name } });
   const newest = COPIES.mirror.newest;
@@ -616,8 +651,9 @@ describe("follow every next step a refusal names", () => {
   it("pairs twins that tie only where they must", () => {
     // A leaf may tie only if it makes the member a slot or a cut, if the settled rule ranks it ahead of the name, or if
     // only orphan deletes read it, which follow never plans. `machine.name` is the placeholder each row replaces.
-    expect(tied(slotA, slotB)).toEqual(["answered", "machine.name", "view.copy.kind", "view.copy.readonly"]);
-    const cut = ["answered", "machine.name", "view.copy.epoch", "view.copy.kind", "view.copy.newest", "view.copy.readonly", "view.copy.seed"];
+    // `enforces` refuses a run and never picks a Server.
+    expect(tied(slotA, slotB)).toEqual(["answered", "enforces", "machine.name", "view.copy.kind", "view.copy.readonly"]);
+    const cut = ["answered", "enforces", "machine.name", "view.copy.epoch", "view.copy.kind", "view.copy.newest", "view.copy.readonly", "view.copy.seed"];
     expect(tied(bareA, bareB)).toEqual(cut);
     expect(tied(heldA, heldB)).toEqual(cut.filter((leaf) => leaf !== "view.copy.newest"));
   });

@@ -89,6 +89,7 @@ pub(crate) use sealing::Error as SealingError;
 mod sealing_recovery;
 pub(crate) use sealing_recovery::Error as RecoveryError;
 mod upgrade;
+mod volume_approval;
 
 #[derive(Clone)]
 struct ClusterContext {
@@ -205,6 +206,10 @@ pub enum Error {
     /// names `capability` in its details.
     #[error("{}", ployz_core::BUILD_REFUSED_BY_ENFORCEMENT)]
     BuildRefused { capability: &'static str },
+    /// Device enforcement refused an Operator's `SetVolumeCopy` that creates a Container,
+    /// or its `SeedVolume`. The refusal names `capability` in its details.
+    #[error("{}", volume_approval::refusal_text(.capability))]
+    VolumeRefused { capability: &'static str },
     #[error("ployz.machine.join.device-approval.v1 needs a Device-signed join approval: {0}")]
     JoinRefused(ployz_core::authority::AuthorityRefusal),
     #[error("{SET_DEVICE_ENFORCEMENT_CAPABILITY} needs a Device-signed starting set: {0}")]
