@@ -491,7 +491,8 @@ impl MachineService {
 }
 
 /// The step of `want` an enforcing Machine checks against an Operator's Volume approval: a
-/// pull that makes or refreshes a Mirror, and a run snapshot taken or already held.
+/// pull that makes, refreshes or already holds a Mirror, and a run snapshot taken or already
+/// held.
 fn approved_step(want: &WantedCopy, transition: Option<CopyTransition>) -> Option<CopyStep<'_>> {
     match (want, transition) {
         (
@@ -500,6 +501,12 @@ fn approved_step(want: &WantedCopy, transition: Option<CopyTransition>) -> Optio
             },
             Some(transition @ (CopyTransition::NoneToMirror | CopyTransition::MirrorToMirror)),
         ) => Some(CopyStep::Pull { transition, from }),
+        (
+            WantedCopy::Mirror {
+                from: Some(from), ..
+            },
+            None,
+        ) => Some(CopyStep::Held { from }),
         (WantedCopy::Snapshot { .. }, None | Some(CopyTransition::WriterToSnapshot)) => {
             Some(CopyStep::Snapshot)
         }

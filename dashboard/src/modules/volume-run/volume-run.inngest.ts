@@ -302,8 +302,11 @@ async function runRounds(steps: RunSteps, ctx: Approving & { readonly A: Answere
     }, `${A.machine.name} is still busy with ${steps.run.volumeName}`, ctx.approval);
     const target = warmed?.newest ?? null;
     if (target === null) throw new NonRetriableError(`${steps.run.volumeName}'s writer on ${A.machine.name} made no snapshot`);
-    if (pulled(copy, target)) return { rounds: round, copy };
+    // A caught-up Mirror approved again still gets the pull once, so it admits the approval the run keeps for later syncs.
+    const caughtUp = pulled(copy, target);
+    if (caughtUp && (round > 0 || ctx.approval === undefined)) return { rounds: round, copy };
     copy = await pull(steps, prefix, { B, copy, from: A.address, target, approval: ctx.approval });
+    if (caughtUp) return { rounds: round, copy };
   }
   return { rounds: MAX_ROUNDS, copy };
 }

@@ -50,7 +50,10 @@ fn checks_a_pull_that_moves_data_and_every_run_snapshot() {
             Some(CopyStep::Pull { transition: checked, from }) if checked == transition && *from == source
         ));
     }
-    assert!(approved_step(&want, None).is_none());
+    assert!(matches!(
+        approved_step(&want, None),
+        Some(CopyStep::Held { from }) if *from == source
+    ));
     assert!(approved_step(&want, Some(CopyTransition::WriterToMirror)).is_none());
     assert!(approved_step(&pull(None), Some(CopyTransition::NoneToMirror)).is_none());
 

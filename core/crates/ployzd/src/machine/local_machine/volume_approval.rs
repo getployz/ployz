@@ -184,6 +184,14 @@ impl LocalMachine {
                 self.admit_source(approval, from).await?;
                 self.admit_volume_step(approval, volume, &VolumeStep::Copy(transition))?;
             }
+            CopyStep::Held { from } => {
+                let Some(approval) = approval else {
+                    return Ok(());
+                };
+                self.admit_source(approval, from).await?;
+                let step = VolumeStep::Copy(CopyTransition::MirrorToMirror);
+                self.admit_volume_step(approval, volume, &step)?;
+            }
             CopyStep::Snapshot => {
                 let Some(approval) = approval else {
                     return Ok(());
@@ -298,6 +306,10 @@ pub(crate) enum CopyStep<'a> {
         transition: CopyTransition,
         from: &'a ManagementAddress,
     },
+    /// A pull of the snapshot the slot already holds. Checked as a refresh when it carries
+    /// an approval, so a Mirror approved again while caught up admits it; passed without one,
+    /// as before.
+    Held { from: &'a ManagementAddress },
     /// A run snapshot on the Writer, taken or already held.
     Snapshot,
 }

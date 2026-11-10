@@ -2422,6 +2422,27 @@ describe("volume runs", () => {
       expect(await keptApprovals()).toEqual([{ machine_id: idOf("fsn-2"), approval: APPROVAL }]);
     });
 
+    it("mirror: a caught-up mirror approved again still gets one pull, so it admits the approval kept for later syncs", async () => {
+      machines[1] = { name: "fsn-2", pool: true, copy: slotCopy(base) };
+      const run = await requested({ kind: "mirror", args: { to: "fsn-2", approval: APPROVAL } });
+
+      const output = await execute(run.id);
+
+      expect(output.result).toEqual({ runId: run.id, rounds: 0 });
+      expect(verbs).toEqual(["snapshot@fsn-1(w-1-0)", "pull@fsn-2(dep-10)"]);
+      expect(sent.map((request) => request.approval)).toEqual([APPROVAL, APPROVAL]);
+      expect(await keptApprovals()).toEqual([{ machine_id: idOf("fsn-2"), approval: APPROVAL }]);
+    });
+
+    it("mirror: a caught-up mirror with no approval sends no pull, as before", async () => {
+      machines[1] = { name: "fsn-2", pool: true, copy: slotCopy(base) };
+      const run = await requested({ kind: "mirror", args: { to: "fsn-2" } });
+
+      await execute(run.id);
+
+      expect(verbs).toEqual(["snapshot@fsn-1(w-1-0)"]);
+    });
+
     it("sync --full: replaces the kept approval, and sends it with the snapshots and pulls but not the forgets", async () => {
       machines[1] = { name: "fsn-2", pool: true, copy: slotCopy(base) };
       await harness.pool.query(

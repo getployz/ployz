@@ -1112,3 +1112,46 @@ async fn a_pull_needs_an_approval_that_names_this_machine_and_its_source() {
         "a Forget withdrew this Mirror, so its old approval never pulls again"
     );
 }
+
+#[tokio::test]
+async fn a_caught_up_mirror_admits_its_new_approval_and_passes_a_resend_without_one() {
+    let peered = peered().await;
+    let this = peered.machine.record().id();
+    let web2 = peered.web2.management_address();
+    let web3 = peered.web3.management_address();
+    let held = |from| CopyStep::Held { from };
+    peered
+        .machine
+        .admit_operator_copy(None, &data(), held(&web2))
+        .await
+        .expect("a resent pull at the held snapshot, as before");
+    assert!(peered.fixture.records_empty());
+    let approval = peered.fixture.signed(
+        data(),
+        VolumeWorkflow::Mirror {
+            writer: peered.web2.id,
+            mirror: this,
+            replace: false,
+        },
+    );
+    assert_eq!(
+        refused(
+            peered
+                .machine
+                .admit_operator_copy(Some(&approval), &data(), held(&web3))
+                .await
+        ),
+        Some(AuthorityRefusal::Mismatch {
+            field: "the source Server"
+        })
+    );
+    peered
+        .machine
+        .admit_operator_copy(Some(&approval), &data(), held(&web2))
+        .await
+        .unwrap();
+    assert!(
+        !peered.fixture.records_empty(),
+        "the new approval is admitted, so later refreshes pass after its window"
+    );
+}
