@@ -90,13 +90,31 @@ The existing data-loss confirmation stays first, and what the person confirmed i
 
 ### Activation
 
-Activation is today's `ployz device enforce` with four changes. It promotes nothing a Machine learned while enforcement was off, unless a person verified it. It refuses any Machine that does not advertise `ployz.machine.enforced.v1`. It rotates the Sealing Key to the approved set. And there is no `--off`.
+Activation is today's `ployz device enforce` with five changes. It promotes nothing a Machine learned while enforcement was off, unless a person verified it. It retires every Device and passkey key nobody verified. It refuses any Machine that does not advertise `ployz.machine.enforced.v1`. It rotates the Sealing Key to the approved set. And there is no `--off`.
 
 **Why nothing learned with enforcement off counts.** Today `enforce` reads each member through the connections in Cloud's Server Access response (`ployz/src/handlers/server.rs:142`). Cloud picks both the key a connection dials and the Machine that answers. Worse, with enforcement off, Cloud can enroll a Machine of its own, and the daemon gives any non-local mesh caller Full scope (`ployzd/src/machine_api/mod.rs:185`). So that Machine can also add Device keys to every real Machine's record. A Member or a trusted key that a Machine learned while not enforcing is therefore Cloud's word, and so is a Member from a starting set gathered today (#3945). Activation treats each of these as **legacy**.
 
 **What counts as evidence.** A Member has evidence on a Machine when that Machine verified the Member's signed `JoinApproval` while it enforced. A trusted key has evidence when that Machine verified the statement that enrolled it while it enforced, and the chain ends in a key a person installed over local administration. Everything else is legacy. On its first start, a daemon that advertises `ployz.machine.enforced.v1` does two things. It stops giving Full scope to non-local mesh callers, so no Machine can plant a key after this point. And it writes a **trusted snapshot** that holds only itself and the Members and keys that have evidence. After that, the snapshot grows only by a join whose `JoinApproval` this Machine verified. Each Machine reads only its own snapshot (bet 6).
 
 **How each Machine checks a starting set.** `SetDeviceEnforcement` admits a starting set in two cases. One is that every Member and the signer are in this Machine's trusted snapshot. The other is that the set arrives over this Machine's local socket, from the person's own SSH or console. In that case the Machine also records the signer as installed over local administration. Anything else is refused, naming the legacy Member or key. A swapped or added Member fails on every real Machine. A Member Cloud leaves out is a drop, and that Server stays awaiting activation, named.
+
+**Retiring legacy keys.** Refusing a planted key as the signer is not enough. Today `management_scope` gives Full scope to any key that holds a Device slot (`ployzd/src/machine/mod.rs:440`). And `set_device_enforcement` replaces the trusted Members but leaves the Device slots alone (`ployzd/src/machine/store.rs:902`). A planted Device key would still call `Exec`, `WrapSealingKey` or `SetDevice` directly after a legitimate activation. So activation does three things.
+
+- **One atomic write.** The write that records the activated set also retires every Device slot and every trusted passkey whose key isn't in the trusted snapshot. A passkey holds no slot, since it only approves, but statements verify against it. Three kinds of key survive. The first is the activation's signer. The second is a key with evidence. The third is a key the person pinned for this activation: the signed set names it, and the CLI pinned it as described below. Each retired key gets a Cleared tombstone, so a later dial is told it was cleared. Activation never splits into an activated record that still holds legacy slots.
+- **Live connections close.** The daemon already ends every connection whose key no slot holds any more, with `REVOKED` (`ployzd/src/management/mod.rs:180`). Retiring the slot in that write closes a connection opened before activation, and every stream on it ends.
+- **Every later Device check reads the snapshot.** From activation on, `management_scope` gives Full scope only to a slot whose key is in the trusted snapshot. That includes the Device check behind `Exec`, `WrapSealingKey`, `SetDevice`, `SetPasskey` and `RemoveTrustedKey`, and the trusted keys every signed statement verifies against. A slot outside the snapshot is answered as if absent. Later enrollments through `ployz device approve` are checked under enforcement, so they enter the snapshot with evidence. The Management Client slot Cloud holds keeps Operator scope only, as it does today.
+
+The CLI prints what it retired, per Server, before it asks the person to confirm the set. The text goes through the `ui-copy` skill.
+
+```text
+These keys were added while Device enforcement was off. Turning it on removes them:
+  Device "ci-laptop"   key 3f9a…c21e   on web-1, web-2, web-3
+  Passkey "Work Mac"   key 77c1…0b4d   on web-1, web-2, web-3
+To keep a key you recognize, check its fingerprint with `ployz device ls` on that computer and answer y.
+To add one back later, run `ployz device request` on that computer, then `ployz device approve <code>` here.
+```
+
+A person keeps a key only by confirming its fingerprint against `ployz device ls` run on that computer, which F6 makes mark the computer's own key and fingerprint. For a passkey, they check it against the listing `ployz device ls` gives from an already trusted Device. `--yes` keeps none. Once it is retired, the key comes back only through `ployz device request` and `ployz device approve` from an activated Device, which is checked under enforcement and gives it evidence. On the dashboard path nothing is legacy, so nothing is retired.
 
 **The CLI path.** This is the path for any Cluster that still has a legacy Member or key, which in practice means every 0.3 Cluster.
 
@@ -379,11 +397,12 @@ Attack path closed. Cloud cannot get a Machine of its own into the activated Clu
 - a Member or Device key Cloud planted while enforcement was off, including one that was in place before any Server ran F6's daemon;
 - a key swapped behind a Server's name, where Cloud supplies both the connection's identity and an `Inspect` answer to match;
 - a Member added to a set the passkey signs in the dashboard;
+- a planted Device or passkey key calling `Exec`, `WrapSealingKey` or `SetDevice` directly after activation, including over a connection it opened before;
 - a past holder of the Sealing Key opening values sealed after activation.
 
 A Server too old to enforce cannot sit in an enforcing Cluster (#3980). An admitting Machine from before #4025 cannot publish a joiner under Cloud's Devices (A1's older-admitter window). This slice is the C4 integration run.
 
-What users lose. A dashboard-only customer on a 0.3 Cluster needs the CLI, a Device and SSH to each Server once, to activate. Once F6's daemon starts, a Device's Full call no longer works through another Machine. It needs a direct connection, as it already does under enforcement. Activation prints a new recovery code, and the old one stops opening anything sealed after activation.
+What users lose. A dashboard-only customer on a 0.3 Cluster needs the CLI, a Device and SSH to each Server once, to activate. Once F6's daemon starts, a Device's Full call no longer works through another Machine. It needs a direct connection, as it already does under enforcement. Activation prints a new recovery code, and the old one stops opening anything sealed after activation. Each Device or passkey added while enforcement was off is removed unless the person confirms its fingerprint, and comes back through `ployz device request` and `ployz device approve`.
 
 **Depends on.** F2 to F5. D4 and E8 merged. Appendix A gaps 7 (evidence, the trusted snapshot and local-socket activation) and 8 (Sealing Key rotation).
 
@@ -393,6 +412,8 @@ What users lose. A dashboard-only customer on a 0.3 Cluster needs the CLI, a Dev
 - [ ] Edit `core/crates/ployzd/src/machine_api/mod.rs` (`:185`) so a daemon that advertises `ployz.machine.enforced.v1` never gives a non-local mesh caller Full scope, whether or not it enforces.
 - [ ] Create the trusted snapshot in `core/crates/ployzd/src/machine/` (gap 7). Write it once, on the first start that advertises `ployz.machine.enforced.v1`. It holds only this Machine and the Members and keys with evidence. Extend it only on a `JoinApproval` this Machine verified. Mark each other Member and key legacy.
 - [ ] Edit `restart_approval.rs` so `set_device_enforcement` admits a starting set only when every Member and the signer are in the snapshot, or when it arrives over the local socket. In that case, record the signer as installed over local administration. Refuse anything else, naming each legacy Member or key. Refuse `enforced: false` once activated (`:39`), naming the capability.
+- [ ] Edit `core/crates/ployzd/src/machine/store.rs` so `set_device_enforcement` (`:902`) retires every Device slot and trusted passkey whose key isn't the signer, evidenced, or named as pinned in the signed set. It writes each retired Device key a Cleared tombstone in the same save that records the activated set. The existing record watch in `ployzd/src/management/mod.rs` (`revoked`, `:428`) then closes their connections with `REVOKED`.
+- [ ] Edit `core/crates/ployzd/src/machine/mod.rs` so `management_scope` (`:440`) and the trusted-key lookups behind statement verification read only keys in the trusted snapshot once the record is activated. Edit `core/crates/ployz-core/src/authority/starting_set.rs` so `StartingSet` gains an optional `kept_keys` list, the keys the person pinned.
 - [ ] Edit `core/crates/ployzd/src/machine/local_machine/sealing.rs` to rotate the Sealing Key as activation's last step (gap 8). The lowest-ID activated Machine generates the key once per activation operation, seals it to each approved Member, and publishes the new public key. Each activated Machine keeps the old key only to open stored values, and re-seals them to the key the activation names.
 - [ ] Edit `core/crates/ployz/src/handlers/status_servers.rs` so `ployz status` over the local socket prints this Machine's key fingerprint. It prints none today, and the fingerprint pin source compares against it.
 - [ ] Add a known-Machines file beside the Device key, next to the `key` module in `core/crates/ployz/src/handlers/device.rs`. `approve_waiting_join` (`device.rs:282`) records the approved joiner's ID and key there.
@@ -400,6 +421,8 @@ What users lose. A dashboard-only customer on a 0.3 Cluster needs the CLI, a Dev
   - Pin every Server's key first, from the known-Machines file, from an SSH read of the local socket, or from a fingerprint the person confirms.
   - Read each member over a connection that dials the pinned key, using the Server Access response only for addresses.
   - Name and leave out each legacy Member the person doesn't pin.
+  - Mark this computer's own key and fingerprint in `ployz device ls`.
+  - List every legacy Device and passkey key per Server with its fingerprint, keep only the ones the person confirms, and print the retired keys and how to add one back.
   - Refuse a member whose key is not the pin, and a Server without `ployz.machine.enforced.v1`, naming each, before signing.
   - When anything is legacy, deliver the set to each Server over SSH to its local socket.
   - Print the new recovery code.
@@ -417,6 +440,11 @@ What users lose. A dashboard-only customer on a 0.3 Cluster needs the CLI, a Dev
   - A set signed by the passkey and naming the harness Member, sent over a Device connection, is refused naming the Member.
   - A set signed by the planted key is refused naming the key.
   - The same set without the harness Member, sent over the local socket, is admitted, and its signer is recorded as installed over local administration.
+  - After that activation, the planted Device key's slot is gone and holds a Cleared tombstone, in the same saved record that marks the set activated.
+  - The planted key then calls `Exec`, `WrapSealingKey` and `SetDevice` directly, and each is refused.
+  - A connection the planted key opened before activation is closed with `REVOKED`, and a call already streaming on it ends.
+  - A legacy key named in `kept_keys` survives and keeps Full scope.
+  - A crash before the save leaves the record not activated with every slot in place. A crash after it leaves it activated with the slots retired. No state holds one change without the other.
 - [ ] `ployzd` test `a_starting_set_outside_the_snapshot_is_refused`. A set that adds a Member absent from the snapshot, or names a snapshot ID under another key, is refused over a Device connection, naming it, and the record is unchanged. A join with a verified approval after the snapshot extends it, and a join without one does not.
 - [ ] `ployzd` test `a_mesh_caller_is_never_full_on_an_enforced_v1_daemon`. With enforcement off, a mesh `SetDevice` is refused at dispatch.
 - [ ] `ployzd` tests for rotation.
@@ -426,6 +454,7 @@ What users lose. A dashboard-only customer on a 0.3 Cluster needs the CLI, a Dev
   - A kill between generating and sharing converges on resend.
   - Re-sealing refuses a target key other than the one the activation names.
 - [ ] `device_tests.rs` `enforce_refuses_a_substituted_identity_and_answer`. A fake Server Access response swaps web-2's management identity for a harness key. A harness daemon behind it answers `Inspect` with a member under that key and advertises `ployz.machine.enforced.v1`. Pass when `enforce` exits before signing, naming web-2, with no signature made and no `SetDeviceEnforcement` sent. The same run with web-2's real key in the known-Machines file reaches signing, and its set holds the real key.
+- [ ] `device_tests.rs` `enforce_lists_and_retires_legacy_keys`. With two legacy keys, the CLI prints both with fingerprints. Confirming one puts only that one in `kept_keys`. Under `--yes`, `kept_keys` is empty. The printed retirement names every retired key per Server and the re-add commands.
 - [ ] `device_tests.rs` `enforce_leaves_out_an_unpinned_legacy_member`. A Cluster has a legacy harness Member the person doesn't pin. Pass when it is named and absent from the signed set. When the person confirms its fingerprint, it is included. Under `--yes`, an unpinned Server is refused, naming it. A Server without the capability is named and left out. `--off` is gone from help.
 - [ ] `ployzd` tests. `enforced: false` after activation is refused, also after a reload. The snapshot survives a restart and is never rewritten from the store.
 - [ ] Vitest for `server-upgrade`. With any Server reporting a legacy Member or key, the activation step renders no passkey button and shows `ployz device enforce`.
@@ -445,6 +474,9 @@ What users lose. A dashboard-only customer on a 0.3 Cluster needs the CLI, a Dev
   - A set signed by the harness key is refused by every real Server.
   - `ployz device enforce` names the harness Member and leaves it out unless the person confirms its fingerprint.
   - After activation, a value set afterwards does not open on the harness Machine.
+  - The CLI's output lists the harness key as retired on every Server.
+  - Before activation, the harness Device opens a direct connection to web-1. After activation, that connection is closed with `REVOKED`. The harness Device then dials web-1, web-2 and web-3 afresh and calls `Exec`, `WrapSealingKey` and `SetDevice`. Each call is refused, and each dial is told the key was cleared. Save `f6-planted-device.png`.
+  - Re-adding a legitimate retired Device with `ployz device request` and `ployz device approve` restores its Full scope.
 - [ ] Lane 6. Leave one Server on 0.3 and activate. Save `f6-old-server.png`. Pass when it is named and left out, and the rest activate.
 - [ ] Lane 7. Attacker harness. `SetDeviceEnforcement { enforced: false }` from a Device after activation. Save `f6-no-off.png`. Pass when it is refused.
 - [ ] Lane 8. Automatic upgrades on, a 0.4 release on the test channel. Save `f6-no-auto-cross.png`. Pass when no 0.3 Server moves to 0.4 on its own.
@@ -517,6 +549,7 @@ Outcome. Enforcement is the only mode. A fresh daemon refuses a join that carrie
    - A signed `JoinApproval` that travels with a new Member's replicated row, so every Machine, not only the admitter, can verify it.
    - `SetDeviceEnforcement` admitting a set over the local socket and recording its signer as installed over local administration.
    - The Device's known-Machines file, recorded at `ApproveJoin`.
+   - Retiring every Device slot and trusted passkey outside the snapshot, in the same write that records the activated set, with `kept_keys` on `StartingSet`. And `management_scope` and statement verification reading only snapshot keys once the record is activated.
 
    A also confirms that ending Full scope for mesh callers at F6's first start breaks no forwarded call that needs it. Today a Device's Full call forwarded between Machines carries no Operator header (`ployzd/src/machine_api/mod.rs:296`).
 8. **Sealing Key rotation at activation (thread A).** F6 rotates the Cluster's Sealing Key to the approved set, as described in "Activation". A owns the Sealing Key's statements, so A agrees to four things: one rotation per activation operation ID, sealing the new key only to Members of the signed set, keeping the old key for opening stored values only, and re-sealing only to the key the activation names. A also agrees how the new public key replaces the old one in the Cluster record. The recovery backup is re-wrapped by the CLI's new code, as `ployz recovery rotate` does today.
@@ -544,6 +577,7 @@ Read on `main` at `02aaa926b5`, not run.
 - **Read.** `SetIngressDoors` and `SetPrivateAccess` are refused under enforcement by `admit_operator_deploy` (`machine_api/local.rs:1167`, `:1179`). `PruneImages` and `PublishCertificateMaterial` are not gated.
 - **Read.** `ployzd/src/machine_api/mod.rs:185` gives a mesh caller Full scope when enforcement is off. F7 removes that branch with the switch.
 - **Read.** With enforcement off, a non-local mesh caller gets Full scope (`ployzd/src/machine_api/mod.rs:185`), so a Machine Cloud enrolled can call `SetDevice`, `SetDeviceEnforcement` and `Exec` on every other Machine. Under enforcement off, `ShareSealingKey` needs no approval. No route rotates the Sealing Key today, and `ployz recovery rotate` re-wraps the existing key only.
+- **Read.** `management_scope` gives a key the widest scope of any slot that holds it, with no other check (`ployzd/src/machine/mod.rs:440`). `set_device_enforcement` clears and refills `trusted_machines` and leaves `management_clients` untouched (`ployzd/src/machine/store.rs:902`). A record change that removes a key from every slot closes its live connections with `REVOKED` (`ployzd/src/management/mod.rs:180`).
 - **Read.** `ployz device enforce` gathers members through `server::connect_full`, which falls back to the connections in Cloud's Server Access response (`ployz/src/handlers/server.rs:142`). `sign_starting_set` signs whatever members answer (`ployz/src/handlers/device.rs:526`). No Machine checks the set against its own peers.
 
 Unproven until the slice that proves it:
