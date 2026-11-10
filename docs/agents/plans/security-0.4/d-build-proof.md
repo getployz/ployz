@@ -294,9 +294,11 @@ PreviewRule                          purpose: Rule
   services       [PreviewService]
     name         ServiceName
     template     PayloadDigest          the preview's spec with derived fields as placeholders (below)
+    setup        Option<PayloadDigest>  the same with its Setup Commands, for a first creation
     policy       BuildPolicy
     secrets      Option<SealedDigest>
     inherit      [String]               parent Sealed keys this Service may open in a preview
+    generated    {key: Generator}       Generated Values, each `secret(LEN, "CHARSET")`
 ```
 
 **Who is trusted.** The signed list of GitHub account IDs. Cloud's membership rows cannot add to it. For a `push` run, `actor_id` is the account that pushed. For a re-run it stays the original actor, so a re-run cannot change who is trusted. A bot is trusted only if its ID is in the list. Ployz's own App bot is never added by default.
@@ -305,18 +307,24 @@ PreviewRule                          purpose: Rule
 
 ### Derived fields, checked before hashing
 
-A preview's spec differs from its parent's in three fields Cloud used to choose: the Namespace, preview hostnames, and the Sealed identity's Environment. Under a preview rule, the Machine derives each one itself from the signed rule and facts it verified, checks the spec holds exactly that value, and only then hashes.
+A preview's spec differs from its parent's in fields Cloud used to choose: the Namespace, preview hostnames, the Sealed identity's Environment, and Generated Values. Under a preview rule, the Machine derives or checks each one itself from the signed rule and facts it verified, checks the spec holds exactly that value, and only then hashes.
 
 - **Preview key.** For a trusted push, `branch:<name>`, from the verified `ref` claim. For a review, the key the signed review names, `branch:<name>` or `fork:<pull request number>`.
 - **Namespace.** `pv-<first 16 hex of rule>-<first 12 hex of SHA-256(preview key)>`. The rule ID is 128 random bits from the approver's client, so Cloud cannot choose it to collide with another rule's. That pattern is reserved. A Machine refuses any creation in a Namespace of that form unless it is admitted under the preview rule it derives from. It also refuses a preview-rule creation in any other Namespace. Thread C's deploy approval and the automatic deploy rule refuse reserved Namespaces, and Cloud's Namespace allocator never hands one to an ordinary Environment. So preview code can only land in a Namespace that holds nothing but that preview's own Containers and Volumes. A preview's Ordinary and Provisioned Volumes get their physical names from the Namespace (`ScopedVolumeSource::physical_name`, `ployz-core/src/domain/volume.rs:104`). So preview code cannot mount a production Volume of those kinds.
 - **Hostnames.** Each Ingress hostname in a preview spec must be `<label>.<Namespace>.<domain>`. The template holds the label, the rule signs `domain`, and the Namespace is derived. Because the derived Namespace label is reserved, no preview hostname can equal a production hostname.
 - **Sealed identity.** A trusted preview may carry only inherited Sealed values (below), so the Container's own `sealed_identity` opens nothing. The template holds it as a placeholder. For a review, the signed review names the preview's Environment ID, and the identity must equal it.
 
-`PreviewTemplate::of(spec, derived)` replaces the image with the empty string, and replaces every occurrence of the derived Namespace, derived hostnames and checked identity with fixed placeholders. Then it takes `PayloadDigest`. The Machine substitutes only strings it derived itself. A Cloud-chosen production Namespace or hostname anywhere in the spec stays literal and fails the template. The CLI computes the template from the parent's Saved revision through the preview lowering with the same placeholders.
+- **Generated Values.** A Generated Value is a fresh random string per Environment, so no signed template can hold it. The preview rule names each Service's generated keys with their generator, `secret(LEN, "CHARSET")`. Before hashing, the Machine checks that each such value has exactly that length and only characters of that charset, then puts the generator text in its place. Cloud can only choose a random-looking string for a key the person signed. It cannot put a URL or a command there.
 
-**Volume names are not placeholders.** A preview keeps its parent's logical Volume names. The Namespace separates their physical names. A Bind Mount or an External Volume in the parent stays literal in the template, so a preview using one shares it with production. The CLI prints such mounts as "shared with production" and refuses to sign a preview rule that has one unless `--share-mounts` is given.
+`PreviewTemplate::of(spec, derived)` replaces the image with the empty string, and replaces every occurrence of the derived Namespace, derived hostnames, the checked identity and the checked Generated Values with fixed placeholders. Then it takes `PayloadDigest`. The Machine substitutes only strings it derived or checked itself. A Cloud-chosen production Namespace or hostname anywhere in the spec stays literal and fails the template. The CLI computes the template from the parent's Saved revision through the preview lowering with the same placeholders. So what the preview lowering always changes from the parent, one replica per Service and Live Node references to the parent's Namespace, is part of the template, and the Machine checks it like any other setting.
 
-Whether the preview lowering differs from the parent's only in these fields, and keeps logical Volume names, is the riskiest unproven claim in this design. D7 starts with a prototype that checks it. If Own Copies are renamed today, D7 changes the lowering to keep their logical names, rather than adding a placeholder.
+**Setup Commands.** A preview's Own Copy runs its Setup Commands in its pre-deploy hook until it first deploys successfully. So the same preview's spec carries them on its first deploy and not after. Each `PreviewService` signs two template digests, one with the Setup Commands and one without. A Machine accepts the digest with them only for a preview's first creation of that Service: no Service Container of that Service exists in the derived Namespace on this Machine. Otherwise it requires the digest without them.
+
+**Volume names are not placeholders.** A preview keeps its parent's logical Volume names. The Namespace separates their physical names, because `physical_name` is `namespace.volume_name(logical)` (`ployz-core/src/domain/volume.rs:104`). The lowering names an Own Copy Volume after its lineage only in a derived preview Namespace. Renaming it in every Branch would leave a Kept Branch such as staging on a new, empty Volume at its next deploy, while a derived Namespace is always new. A Bind Mount or an External Volume in the parent stays literal in the template, so a preview using one shares it with production. The CLI prints such mounts as "shared with production" and refuses to sign a preview rule that has one unless `--share-mounts` is given.
+
+**Bookkeeping labels.** The `cloud.ployz.service.id` label is lowered from the Service's lineage ID, which a Branch shares with its Parent, so the label is the same in every preview of a rule and needs no placeholder. Cloud reads it only as bookkeeping. A wrong label is a mislabel.
+
+D7's prototype lowered a parent and its PR Environment for one commit (2026-11-10). They differed outside the derived fields in four ways: Own Copy Volume names (a new Volume ID per PR), the Service ID label (a new ID per PR), Generated Values (a new value per Environment) and the Setup Commands. The fixed differences were one replica and Live Node references to the parent's Namespace. The program's root took decisions 1 to 5 of `d-plan.md` gap 10 on 2026-11-10 under the operator's autopilot grant, and the four bullets above are those decisions. D7's test now checks that two previews of one rule differ only in derived fields.
 
 ### Inheriting a Sealed value
 
