@@ -2397,17 +2397,17 @@ describe("volume runs", () => {
       expect(await rows()).toMatchObject([{ state: "done" }]);
     });
 
-    it("sync --full: withdraws the mirror on the writer, forgets the mirror's copy, then pulls from nothing", async () => {
+    it("sync --full: forgets the mirror's copy, then withdraws the mirror on the writer, then pulls from nothing", async () => {
       machines[1] = { name: "fsn-2", pool: true, copy: slotCopy(base) };
       const run = await requested({ kind: "sync", args: { full: true } });
 
       const output = await execute(run.id);
 
       expect(output.result).toEqual({ runId: run.id, rounds: 1 });
-      expect(verbs).toEqual(["forget@fsn-1", "forget@fsn-2", "snapshot@fsn-1(w-1-0)", "pull@fsn-2(dep-10)", "pull@fsn-2(dep-10)", "snapshot@fsn-1(w-1-1)"]);
-      expect(sent[0]).toMatchObject({ expect: { kind: "writer", epoch: 0 }, want: { kind: "forget", recipient: idOf("fsn-2") } });
-      expect(sent[1]).toMatchObject({ expect: { kind: "mirror", newest: "10", slot: "1" }, want: { kind: "forget" } });
-      expect(sent[1]?.want).not.toHaveProperty("recipient");
+      expect(verbs).toEqual(["forget@fsn-2", "forget@fsn-1", "snapshot@fsn-1(w-1-0)", "pull@fsn-2(dep-10)", "pull@fsn-2(dep-10)", "snapshot@fsn-1(w-1-1)"]);
+      expect(sent[0]).toMatchObject({ expect: { kind: "mirror", newest: "10", slot: "1" }, want: { kind: "forget" } });
+      expect(sent[0]?.want).not.toHaveProperty("recipient");
+      expect(sent[1]).toMatchObject({ expect: { kind: "writer", epoch: 0 }, want: { kind: "forget", recipient: idOf("fsn-2") } });
     });
 
     it("mirror: sends the approval with every snapshot and pull, and keeps it with the mirror", async () => {
@@ -2519,29 +2519,29 @@ describe("volume runs", () => {
   });
 
   describe("delete_mirror", () => {
-    it("withdraws the slot's Server on the writer, then forgets the slot", async () => {
+    it("forgets the slot, then withdraws the slot's Server on the writer", async () => {
       machines[1] = { name: "fsn-2", pool: true, copy: slotCopy(base) };
       const run = await requested({ kind: "delete_mirror", args: { slot: "fsn-2", confirmed_name: null, role: "any" } });
 
       const output = await execute(run.id);
 
       expect(output.result).toEqual({ runId: run.id, destroyed: ["fsn-2"] });
-      expect(verbs).toEqual(["forget@fsn-1", "forget@fsn-2"]);
-      expect(sent[0]).toMatchObject({ expect: { kind: "writer", epoch: 0 }, want: { kind: "forget", recipient: idOf("fsn-2") } });
-      expect(sent[1]?.expect).toEqual({ kind: "mirror", newest: base.guid, slot: "1" });
+      expect(verbs).toEqual(["forget@fsn-2", "forget@fsn-1"]);
+      expect(sent[0]?.expect).toEqual({ kind: "mirror", newest: base.guid, slot: "1" });
+      expect(sent[1]).toMatchObject({ expect: { kind: "writer", epoch: 0 }, want: { kind: "forget", recipient: idOf("fsn-2") } });
       expect(machines[1]?.copy).toBeNull();
       expect(await rows()).toMatchObject([{ state: "done", epoch: null }]);
     });
 
-    it("withdraws every slot it deletes on the writer, each in its own step, before any slot goes", async () => {
+    it("withdraws every slot it deleted on the writer, each in its own step, once every slot is gone", async () => {
       machines[1] = { name: "fsn-2", pool: true, copy: slotCopy(base) };
       machines.push({ name: "fsn-3", pool: true, copy: slotCopy(base, null, "2", "old_copy") });
       const run = await requested({ kind: "delete_mirror", args: { slot: null, confirmed_name: null, role: "any" } });
 
       await execute(run.id);
 
-      expect(verbs).toEqual(["forget@fsn-1", "forget@fsn-1", "forget@fsn-2", "forget@fsn-3"]);
-      expect(sent.slice(0, 2).map((request) => request.want)).toEqual([
+      expect(verbs).toEqual(["forget@fsn-2", "forget@fsn-3", "forget@fsn-1", "forget@fsn-1"]);
+      expect(sent.slice(2).map((request) => request.want)).toEqual([
         { kind: "forget", recipient: idOf("fsn-2") },
         { kind: "forget", recipient: idOf("fsn-3") },
       ]);
@@ -2569,7 +2569,7 @@ describe("volume runs", () => {
       await execute(run.id);
 
       expect(sent.at(-1)?.expect).toEqual({ kind: "mirror", newest: base.guid, slot: "7", role: "old_copy" });
-      expect(verbs).toEqual(["forget@fsn-1", "forget@fsn-2"]);
+      expect(verbs).toEqual(["forget@fsn-2"]);
       expect(machines[1]?.copy).toEqual(slotCopy(base, null, "7", "mirror"));
       expect(await rows()).toMatchObject([{ state: "failed", message: "data-fsn-2 is no longer an old copy, so nothing was deleted" }]);
     });

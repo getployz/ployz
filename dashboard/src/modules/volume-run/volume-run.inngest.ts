@@ -312,8 +312,8 @@ async function runRounds(steps: RunSteps, ctx: Approving & { readonly A: Answere
 }
 
 /**
- * The run keeps its approval with the Mirror before its first step, for the syncs after. A full sync withdraws the
- * Mirror's Server on the Writer before it forgets the Mirror's copy, so the Writer's stream never serves a copy that's gone.
+ * The run keeps its approval with the Mirror before its first step, for the syncs after. A full sync forgets the
+ * Mirror's copy, which withdraws it there first, then has the Writer withdraw the Mirror's Server and drop its run snapshots.
  */
 async function mirrorVolume(steps: RunSteps, phase: PhaseOf<"mirror"> | PhaseOf<"sync">, epoch: number) {
   const { step, runEffect, run, runId } = steps;
@@ -325,8 +325,8 @@ async function mirrorVolume(steps: RunSteps, phase: PhaseOf<"mirror"> | PhaseOf<
   try {
     if (approval !== undefined) await step.run("03-keep-approval", () => runEffect(keepApproval(run, runId, B.id, approval)));
     if (phase.kind === "sync") {
-      await mustSet(steps, "03-reset-withdraw", A.machine, { kind: "writer", epoch: epochOf(A) }, { kind: "forget", recipient: B.id }, `${A.machine.name} is still busy with ${run.volumeName}`);
       await mustSet(steps, "03-reset-forget-mirror", B, expectOf(copy), { kind: "forget" }, `${B.name} is still busy with ${run.volumeName}`);
+      await mustSet(steps, "03-reset-forget-writer", A.machine, { kind: "writer", epoch: epochOf(A) }, { kind: "forget", recipient: B.id }, `${A.machine.name} is still busy with ${run.volumeName}`);
       copy = null;
     }
     const { rounds } = await runRounds(steps, { A, B, copy, epoch, approval });
@@ -344,21 +344,13 @@ const deleteExpect = (copy: VolumeCopy | null, role: SlotRole | null): ExpectedC
 };
 
 /**
- * The Writer withdraws each slot's Server before the slot is forgotten, so its stream never serves a copy that's going.
- * The first withdrawal forgets the Writer's run snapshots too. Once the slots are gone, so are their kept approvals.
+ * Each slot's Forget withdraws its Server there before it destroys anything. Only once every slot is gone does the
+ * Writer withdraw each one and drop its run snapshots, so a slot that refuses leaves the Writer as it was. Then the
+ * slots' kept approvals go too.
  */
 async function deleteMirror(steps: RunSteps, phase: PhaseOf<"delete_mirror">) {
   const { step, runEffect, run, runId } = steps;
   try {
-    const writer = phase.forget;
-    if (writer !== null) {
-      for (const slot of phase.destroy) {
-        await mustSet(steps, `03-withdraw-${slot.machine.name}`, writer.machine, { kind: "writer", epoch: epochOf(writer) }, {
-          kind: "forget",
-          recipient: slot.machine.id,
-        }, `${writer.machine.name} is still busy with ${run.volumeName}`);
-      }
-    }
     for (const slot of phase.destroy) {
       const expect = deleteExpect(slot.view.copy, phase.role);
       const answer = await setCopy(steps, `03-forget-${slot.machine.name}`, slot.machine, expect, { kind: "forget" }, `${slot.machine.name} is still busy with ${run.volumeName}`);
@@ -368,6 +360,15 @@ async function deleteMirror(steps: RunSteps, phase: PhaseOf<"delete_mirror">) {
       throw new NonRetriableError(reroled
         ? `${copyName(run.volumeName, slot.machine.name)} is no longer ${ROLE_NOUN[role]}, so nothing was deleted`
         : answer.message);
+    }
+    const writer = phase.forget;
+    if (writer !== null) {
+      for (const slot of phase.destroy) {
+        await mustSet(steps, `04-forget-${slot.machine.name}`, writer.machine, { kind: "writer", epoch: epochOf(writer) }, {
+          kind: "forget",
+          recipient: slot.machine.id,
+        }, `${writer.machine.name} is still busy with ${run.volumeName}`);
+      }
     }
     await step.run("04-drop-approvals", () => runEffect(dropApprovals(run, runId, phase.destroy.map((slot) => slot.machine.id))));
   } catch (error) {
