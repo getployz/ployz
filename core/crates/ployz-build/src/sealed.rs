@@ -63,7 +63,7 @@ impl Staged {
         targets: &[Target],
         opened: &OpenedSealed,
     ) -> Result<Option<PathBuf>, BuildError> {
-        let bytes = match fs::read(root.join("private/sealed-args.json")) {
+        let bytes = match fs::read(crate::capture::sealed_args(root)) {
             Ok(bytes) => bytes,
             Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(None),
             Err(error) => return Err(io_error(error)),

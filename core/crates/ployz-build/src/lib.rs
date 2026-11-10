@@ -11,6 +11,7 @@
 //! bounded attempt, and one image bound to the content that attempt produced.
 
 mod builder;
+pub mod capture;
 mod execution;
 mod fence;
 pub use fence::{CgroupPath, Fence, FenceInstaller};

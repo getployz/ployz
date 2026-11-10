@@ -8,6 +8,7 @@ use std::{
     path::{Path, PathBuf},
 };
 
+use ployz_build::capture;
 use sha2::{Digest as _, Sha256};
 
 use super::{
@@ -62,10 +63,10 @@ impl BuildInputs {
             .mode(0o700)
             .create(&root)
             .map_err(input_error)?;
-        for directory in ["source", "private", "private/docker"] {
+        for directory in capture::directories(&root) {
             fs::DirBuilder::new()
                 .mode(0o700)
-                .create(root.join(directory))
+                .create(directory)
                 .map_err(input_error)?;
         }
         let inputs = Self {
@@ -73,7 +74,7 @@ impl BuildInputs {
             captures: BTreeMap::new(),
         };
         // The Build Machine requires registry configuration; these Builds carry no credentials.
-        inputs.private(&inputs.root.join("private/docker/config.json"), b"{}")?;
+        inputs.private(&capture::docker_config(&inputs.root), b"{}")?;
         Ok(inputs)
     }
 
@@ -133,10 +134,7 @@ impl BuildInputs {
                 "build context contains its capture directory".into(),
             ));
         }
-        let target = self
-            .root
-            .join("source")
-            .join(self.captures.len().to_string());
+        let target = capture::source(&self.root).join(self.captures.len().to_string());
         if !matches!(input, Input::Context { .. })
             && !fs::metadata(source).map_err(input_error)?.is_file()
         {
@@ -204,7 +202,7 @@ impl BuildInputs {
         // The Build Machine reads a list of recipes.
         let bytes =
             serde_json::to_vec(&[recipe]).map_err(|error| input_error(io::Error::other(error)))?;
-        self.private(&self.root.join("private/railpack.json"), &bytes)
+        self.private(&capture::railpack_plan(&self.root), &bytes)
     }
 
     /// Keep the Build's Sealed values, still sealed, in private upload material.
@@ -214,7 +212,7 @@ impl BuildInputs {
     pub(super) fn sealed(&self, record: &ployz_core::SealedRecord) -> Result<(), Error> {
         let bytes =
             serde_json::to_vec(record).map_err(|error| input_error(io::Error::other(error)))?;
-        self.private(&self.root.join("private/sealed.json"), &bytes)
+        self.private(&capture::sealed_record(&self.root), &bytes)
     }
 
     /// Keep only the Sealed ARG names, for the Builder that opens them.
@@ -224,7 +222,7 @@ impl BuildInputs {
     pub(super) fn sealed_args(&self, target: &str, names: &[String]) -> Result<(), Error> {
         let bytes = serde_json::to_vec(&BTreeMap::from([(target, names)]))
             .map_err(|error| input_error(io::Error::other(error)))?;
-        self.private(&self.root.join("private/sealed-args.json"), &bytes)
+        self.private(&capture::sealed_args(&self.root), &bytes)
     }
 
     /// Write the captured Buildx file beside its sources.
@@ -232,7 +230,7 @@ impl BuildInputs {
     /// # Errors
     /// Fails if the private file cannot be written.
     pub(super) fn recipe(&self, yaml: &str) -> Result<(), Error> {
-        self.private(&self.root.join("compose.yaml"), yaml.as_bytes())
+        self.private(&capture::compose(&self.root), yaml.as_bytes())
     }
 
     fn private(&self, path: &Path, content: &[u8]) -> Result<(), Error> {
@@ -906,6 +904,59 @@ mod tests {
         let root = inputs.root().to_owned();
         drop(inputs);
         assert!(!root.exists());
+    }
+
+    #[test]
+    fn a_capture_reads_back_through_the_layout_the_build_machine_uses() {
+        let inputs = BuildInputs::new().unwrap();
+        let root = inputs.root().to_owned();
+        inputs.recipe("services: {}\n").unwrap();
+        inputs
+            .railpack(&ployz_build::Railpack {
+                name: "api".into(),
+                context: PathBuf::from("source/0"),
+                variables: BTreeMap::new(),
+                sealed: BTreeMap::new(),
+                refresh_cache: false,
+            })
+            .unwrap();
+        inputs.sealed_args("api", &["TOKEN".to_owned()]).unwrap();
+        for directory in capture::directories(&root) {
+            assert!(directory.is_dir(), "{directory:?}");
+        }
+        assert_eq!(fs::read(capture::docker_config(&root)).unwrap(), b"{}");
+        assert_eq!(
+            fs::read_to_string(capture::compose(&root)).unwrap(),
+            "services: {}\n"
+        );
+        let plan: serde_json::Value =
+            serde_json::from_slice(&fs::read(capture::railpack_plan(&root)).unwrap()).unwrap();
+        assert_eq!(plan.pointer("/0/name"), Some(&serde_json::json!("api")));
+        let args: serde_json::Value =
+            serde_json::from_slice(&fs::read(capture::sealed_args(&root)).unwrap()).unwrap();
+        assert_eq!(args.pointer("/api/0"), Some(&serde_json::json!("TOKEN")));
+        let mut listing = Vec::new();
+        let mut pending = vec![root.clone()];
+        while let Some(directory) = pending.pop() {
+            for entry in fs::read_dir(directory).unwrap() {
+                let path = entry.unwrap().path();
+                listing.push(path.strip_prefix(&root).unwrap().to_owned());
+                if path.is_dir() {
+                    pending.push(path);
+                }
+            }
+        }
+        listing.sort();
+        let expected = [
+            "compose.yaml",
+            "private",
+            "private/docker",
+            "private/docker/config.json",
+            "private/railpack.json",
+            "private/sealed-args.json",
+            "source",
+        ];
+        assert_eq!(listing, expected.map(PathBuf::from));
     }
 
     #[test]
