@@ -1,4 +1,4 @@
-import { deployApprovalBody } from "@ployz/sdk";
+import type { RequestedServiceSpec } from "@ployz/sdk";
 import type { JsonValue } from "#/db/tables";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
@@ -8,8 +8,8 @@ import {
   approveProposal,
   type ApprovalScope,
   type ApprovalSession,
-  type BrowserDeployTerms,
   canonicalJson,
+  type DeployPlan,
   deployScope,
   grantBody,
   grantChallenge,
@@ -316,27 +316,59 @@ describe("deployScope", () => {
 });
 
 describe("approveDeploy", () => {
+  afterEach(() => void vi.restoreAllMocks());
   afterEach(() => void vi.unstubAllGlobals());
   const bytes = (text: string) => new TextEncoder().encode(text).buffer;
+  const credential = vi.fn(async () => ({
+    rawId: bytes("credential"),
+    response: { authenticatorData: bytes("data"), clientDataJSON: bytes("{}"), signature: bytes("signature") },
+  }));
+  // The namespace of `PayloadDigest`'s golden fixture in ployz-core's authority/deploy_tests.rs.
+  const app: ApprovalScope = { ...production, namespace: "app" };
   const passkey = async (now: number) => {
     vi.stubGlobal("location", { hostname: "localhost" });
-    vi.stubGlobal("navigator", { credentials: { get: async () => ({
-      rawId: bytes("credential"),
-      response: { authenticatorData: bytes("data"), clientDataJSON: bytes("{}"), signature: bytes("signature") },
-    }) } });
-    await startSession(production, now);
+    vi.stubGlobal("navigator", { credentials: { get: credential } });
+    await startSession(app, now);
   };
   const image = (last: string) => `nginx@sha256:${"0".repeat(63)}${last}`;
-  const plan = (last: string) => ({
-    environment: { id: production.environmentId, project: "shop", name: "production", revision: 1 },
-    version: "v1",
-    namespace: "production",
-    changes: [],
-    unresolved: [],
-    target: [{ name: "web", mode: { mode: "replicated", replicas: 1 }, container: { image: image(last), pull_policy: "missing" } }],
+  // That fixture, and its digest there: the browser must reproduce it, as every implementation of `PayloadDigest::of` must.
+  const GOLDEN = "cb8d3c6ef656772fbe9764188fc4ff7b7059e682de60a7686263ab386cd4ffa5";
+  const SEALED = "QUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQQ==";
+  const web = (last: string) => ({
+    name: "web",
+    mode: { mode: "replicated", replicas: 2 },
+    container: {
+      image: image(last),
+      pull_policy: "missing",
+      command: ["nginx", "-g", "daemon off;"],
+      entrypoint: ["/docker-entrypoint.sh"],
+      environment: { PLAIN: "one", SECRET: { sealed: SEALED, scope: "shared", key: "SECRET" } },
+      sealed_identity: {
+        organization: "org",
+        environment: "11111111-1111-1111-1111-111111111111",
+        service: "22222222-2222-2222-2222-222222222222",
+      },
+      cap_add: ["NET_ADMIN"],
+      resources: { devices: [{ machine_path: "/dev/null", container_path: "/dev/null", cgroup_permissions: "rwm" }] },
+      sysctls: { "net.core.somaxconn": "1024" },
+      config_mounts: [{ config_name: "site", target: "/etc/site.conf", mode: 420 }],
+    },
+    ports: [
+      { mode: "host", bind: { kind: "all" }, published_port: 8080, container_port: 80, transport_protocol: "tcp" },
+      { mode: "ingress", hostname: "web.example.com", load_balancer_port: 443, container_port: 80, http_protocol: "http" },
+    ],
+    volumes: [
+      { reference: "host", source: { kind: "bind", machine_path: "/srv/web" } },
+      { reference: "data", source: { kind: "ordinary", name: "data", driver: { name: "local", options: { type: "tmpfs" } } } },
+    ],
+    mounts: [{ volume: "host", target: "/srv" }, { volume: "data", target: "/data" }],
+    configs: [{ name: "site", content: [104, 105] }],
+    pre_deploy: { command: ["migrate"], privileged: false },
+    update: { order: "start_first" },
   });
-  // SAFETY: the fixtures are a PlanView as the Store answers it and terms as the browser sets them; `deployApprovalBody` parses both.
-  const drafted = (last: string) => (terms: BrowserDeployTerms) => Promise.resolve(deployApprovalBody(plan(last) as never, terms as never).body);
+  // SAFETY: the fixture is a spec as the Store writes it on the wire, serde's defaults left out; ployz-core parses it.
+  const plan = (target: readonly object[], namespace = "app", version = "v1"): DeployPlan => ({ version, namespace, target: JSON.parse(JSON.stringify(target)) as RequestedServiceSpec[] });
+  const deployment = "0f8fad5b-d9cb-469f-a165-70867728950e";
   const verifies = async (signed: { body: string; signatures: { key: string; signature: string }[] }, body: string) => {
     const { key, signature } = signed.signatures[0] ?? expect.fail("unsigned");
     const raw = (text: string) => Uint8Array.from(text.match(/../g) ?? [], (pair) => parseInt(pair, 16));
@@ -344,42 +376,52 @@ describe("approveDeploy", () => {
     return crypto.subtle.verify({ name: "Ed25519" }, publicKey, raw(signature), signingInput(body));
   };
 
-  it("signs the body the native SDK drafts for delta A, which does not verify for delta B", async () => {
+  it("builds the body itself, naming the digest ployz-core takes of the reviewed spec, and shows what it signed", async () => {
     const now = Date.now();
     await passkey(now);
-    const deployment = "0f8fad5b-d9cb-469f-a165-70867728950e";
-    const signed = await approveDeploy(production, deployment, drafted("1"), now);
-    expect(JSON.parse(signed.body)).toMatchObject({
-      cluster: production.cluster,
-      namespace: "production",
+    const { approval, lines } = await approveDeploy(app, deployment, "v1", plan([web("1")]), now);
+    expect(JSON.parse(approval.body)).toEqual({
+      cluster: app.cluster,
+      namespace: "app",
       operation: "0f8fad5bd9cb469fa16570867728950e",
-      machines: [...production.machines].sort(),
+      machines: [...app.machines].sort(),
+      services: [{ name: "web", digest: GOLDEN }],
       issued_at: now,
       expires_at: now + 15 * 60_000,
+      signer: { browser: approval.signatures[0]?.key },
     });
-    expect(JSON.parse(signed.grants?.[0]?.body ?? "{}")).toMatchObject({ families: ["deploy", "restart", "start", "stop"] });
-    // SAFETY: the body holds the terms the browser set, beside the namespace and Services.
-    const { namespace: _, services: __, ...terms } = JSON.parse(signed.body) as BrowserDeployTerms & { namespace: string; services: JsonValue };
-    const other = await drafted("2")(terms);
-    expect(other).not.toBe(signed.body);
-    expect(await verifies(signed, signed.body)).toBe(true);
-    expect(await verifies(signed, other)).toBe(false);
+    expect(canonicalJson(JSON.parse(approval.body) as JsonValue)).toBe(approval.body);
+    expect(JSON.parse(approval.grants?.[0]?.body ?? "{}")).toMatchObject({ families: ["deploy", "restart", "start", "stop"] });
+    expect(lines).toEqual(["Approved web: nginx@sha256:000000000000… (device /dev/null:/dev/null, adds NET_ADMIN, sysctl net.core.somaxconn, host port 8080, binds /srv/web, hook migrate)"]);
+    expect(await verifies(approval, approval.body)).toBe(true);
   });
 
-  it("signs nothing when Cloud's body changes a field the browser set, or the session doesn't cover the scope", async () => {
+  it("signs the reviewed spec A's digest, so its signature never covers a spec B Cloud swaps in after", async () => {
     const now = Date.now();
     await passkey(now);
-    const deployment = "0f8fad5b-d9cb-469f-a165-70867728950e";
-    const swap = (field: string, value: JsonValue) => async (terms: BrowserDeployTerms) => {
-      // SAFETY: the native SDK answers canonical JSON of a record.
-      const body = JSON.parse(await drafted("1")(terms)) as { readonly [key: string]: JsonValue };
-      return canonicalJson({ ...body, [field]: value });
-    };
-    const swaps: [string, JsonValue][] = [["namespace", "fix-api"], ["operation", "f".repeat(32)], ["machines", ["3".repeat(32)]], ["expires_at", now + 16 * 60_000]];
-    for (const [field, value] of swaps) {
-      await expect(approveDeploy(production, deployment, swap(field, value), now)).rejects.toThrow("Cloud sent back a different deploy");
-    }
-    await expect(approveDeploy(production, deployment, async (terms) => ` ${await drafted("1")(terms)}`, now)).rejects.toThrow("Cloud sent back a different deploy");
-    await expect(approveDeploy({ ...production, namespace: "fix-api" }, deployment, drafted("1"), now)).rejects.toThrow("Confirm it's you again.");
+    const a = await approveDeploy(app, deployment, "v1", plan([web("1")]), now);
+    const b = await approveDeploy(app, deployment, "v1", plan([web("2")]), now);
+    // SAFETY: both bodies are canonical DeployApprovals.
+    const digest = (body: string) => (JSON.parse(body) as { services: { digest: string }[] }).services[0]?.digest;
+    expect(digest(a.approval.body)).toBe(GOLDEN);
+    expect(digest(b.approval.body)).not.toBe(GOLDEN);
+    expect(await verifies(a.approval, b.approval.body)).toBe(false);
+  });
+
+  it("refuses before any prompt or signature a plan of another version or Environment, a tag, or an uncovered scope", async () => {
+    const now = Date.now();
+    await passkey(now);
+    credential.mockClear();
+    const sign = vi.spyOn(crypto.subtle, "sign");
+    await expect(approveDeploy(app, deployment, "v2", plan([web("1")]), now)).rejects.toThrow("The Environment changed after this review.");
+    await expect(approveDeploy(app, deployment, "v1", plan([web("1")], "production"), now)).rejects.toThrow("The Environment changed after this review.");
+    const tagged = { ...web("1"), container: { ...web("1").container, image: "nginx:1.29-alpine" } };
+    await expect(approveDeploy(app, deployment, "v1", plan([tagged]), now))
+      .rejects.toThrow("The dashboard can't check what web's tag nginx:1.29-alpine points to. Write the image by digest, or run ployz deploy, which pins it for you.");
+    await expect(approveDeploy(production, deployment, "v1", plan([web("1")], "production"), now)).rejects.toThrow("Confirm it's you again.");
+    expect(sign).not.toHaveBeenCalled();
+    expect(credential).not.toHaveBeenCalled();
+    // A review the Store refused once, with its loss mark, still names the plan's version.
+    await expect(approveDeploy(app, deployment, "v1:accepted#loss-x", plan([web("1")]), now)).resolves.toBeDefined();
   });
 });

@@ -7,9 +7,11 @@
  * The shapes and bytes follow `ployz_core::authority`: canonical JSON, the `ployz-authority/v1` signing input, and the
  * grant challenge `SHA-256(signing input of the grant body)`.
  */
-import type { ActionFamily, ServiceVerb, SessionGrant, Signed } from "@ployz/sdk";
+import type { ActionFamily, DeployTerms, PlanView, ServiceVerb, SessionGrant, Signed } from "@ployz/sdk";
+import { deployApprovalBody } from "@ployz/sdk/authority";
 import type { JsonValue } from "#/db/tables";
 import { asBoolean, asFiniteNumber, asRecord, asString } from "#/lib/json";
+import { storeVersion } from "#/modules/volume-placement/volume-placement";
 
 /** How long one passkey prompt lasts. Servers cap a grant at an hour. */
 export const SESSION_MINUTES = 60;
@@ -292,25 +294,25 @@ export async function approveProposal(steps: readonly ProposalStepTarget[], scop
 export const SESSION_GRANT_CAPABILITY = "ployz.restart.session-grant.v2";
 const DEPLOY_CAPABILITIES = ["ployz.container.deploy-approval.v1", SESSION_GRANT_CAPABILITY] as const;
 
-/** `DeployTerms` as a browser key sets them. */
-export type BrowserDeployTerms = {
-  readonly cluster: string;
-  readonly operation: string;
-  readonly machines: readonly string[];
-  readonly issued_at: number;
-  readonly expires_at: number;
-  readonly signer: { readonly browser: string };
-};
+/** A Store plan read with `target`, as the browser signs a Deploy of it. */
+export type DeployPlan = Pick<PlanView, "version" | "namespace" | "target">;
+
+/** What a Deploy's approval holds, and what it shows the person: one `Approved web: nginx@sha256:…` line per Service. */
+export type DeployApproved = { readonly approval: Signed; readonly lines: readonly string[] };
 
 /**
  * Deployment `deployment`'s approval in `scope`, signed by the session's browser key and lasting its full 15 minutes.
- * `draft` asks Cloud for the body under the terms this browser sets: the digest of each Service's spec is taken by the
- * code the CLI and the Servers run, so the browser never hashes a spec. The key signs only a body whose every other
- * field reads back as this browser set it, so Cloud picks the specs it proposes and nothing more.
+ * The browser builds the body itself from `plan`, the plan it read at `version`, the version of the review the person
+ * pressed Deploy on: each Service's digest is taken by the ployz-core code the CLI and the Servers run, so Cloud
+ * computes nothing the key signs. Refused, before anything is signed, for a plan of another version or Environment.
  */
-export async function approveDeploy(scope: ApprovalScope, deployment: string, draft: (terms: BrowserDeployTerms) => Promise<string>, now = Date.now()): Promise<Signed> {
+export async function approveDeploy(scope: ApprovalScope, deployment: string, version: string, plan: DeployPlan, now = Date.now()): Promise<DeployApproved> {
   const { grant, publicKey, key } = signer(scope, ["deploy"], [], now);
-  const terms: BrowserDeployTerms = {
+  const sent = storeVersion(version);
+  if (plan.namespace !== scope.namespace || (sent !== plan.version && !sent.startsWith(`${plan.version}:`))) {
+    throw new SessionRefused("The Environment changed after this review. Review the latest changes and try again.");
+  }
+  const terms = {
     cluster: scope.cluster,
     operation: deployment.replaceAll("-", ""),
     machines: [...new Set(scope.machines)].sort(),
@@ -318,23 +320,15 @@ export async function approveDeploy(scope: ApprovalScope, deployment: string, dr
     expires_at: now + APPROVAL_MS,
     signer: { browser: publicKey },
   };
-  const body = await draft(terms);
-  if (!draftedUnder(body, terms, scope.namespace)) throw new SessionRefused("Cloud sent back a different deploy, so nothing was approved. Try again.");
-  const signature = hex(await crypto.subtle.sign({ name: "Ed25519" }, key.privateKey, signingInput(body)));
-  return { body, signatures: [{ key: publicKey, signature }], grants: [grant] };
-}
-
-/** Whether `body` is canonical and holds `terms` in `namespace`, plus the Services Cloud lists. */
-function draftedUnder(body: string, terms: BrowserDeployTerms, namespace: string) {
+  let drafted;
   try {
-    // SAFETY: JSON.parse answers JSON, and canonicalJson refuses what a signed body can't hold.
-    const parsed = JSON.parse(body) as JsonValue;
-    const { services, ...rest } = asRecord(parsed) ?? {};
-    const expected = canonicalJson({ ...terms, machines: [...terms.machines], namespace });
-    return canonicalJson(parsed) === body && Array.isArray(services) && canonicalJson(rest) === expected;
-  } catch {
-    return false;
+    // SAFETY: the terms are the browser's own, and `deployApprovalBody` parses them as ployz-core's `DeployTerms`.
+    drafted = deployApprovalBody(plan, terms as DeployTerms);
+  } catch (error) {
+    throw new SessionRefused(error instanceof Error ? error.message : "This browser couldn't approve the deploy. Try again.");
   }
+  const signature = hex(await crypto.subtle.sign({ name: "Ed25519" }, key.privateKey, signingInput(drafted.body)));
+  return { approval: { body: drafted.body, signatures: [{ key: publicKey, signature }], grants: [grant] }, lines: drafted.lines };
 }
 
 type ScopeMachine = {

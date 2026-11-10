@@ -189,7 +189,8 @@ without signing, and servers that enforce refuse it.
 **Deploy** at the bottom of an environment asks for your
 [passkey](../servers/manage-servers.md#add-a-passkey) the first time you press it, then not again
 in that environment for 60 minutes. Your browser approves the deployment as `ployz deploy` does,
-and each server checks every container against it. Its log names the passkey and the browser key,
+then lists what it approved, such as `Approved web: nginx@sha256:65645c7bb6a0…`. Each server
+checks every container against that approval. Its log names the passkey and the browser key,
 such as `deploy 0f8fad5b… approved by passkey q3x7mfk2pa via browser key 72asyextvn for web
 digest=cb8d3c6ef656`. If the settings change after you press **Deploy**, the server refuses the
 deployment, and the deployment page shows why.

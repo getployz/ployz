@@ -39,7 +39,7 @@ type Outcome = { status: "done" } | { status: "failed" } | { status: "asks"; los
  * and the next press ships exactly that.
  *
  * On Servers that enforce Device approval, a Deploy asks for a passkey session first, unless one covers it, and carries
- * this browser's approval of the plan it ships; Saved State changes reach a Server only through it.
+ * this browser's approval of the plan it ships, which it then lists; Saved State changes reach a Server only through it.
  */
 export function useStoreChangeActions(organizationSlug: string, environment: EnvironmentRef,
   /** The version of the review the user sees: every action acts on exactly it, and a newer one is refused. */
@@ -96,8 +96,15 @@ export function useStoreChangeActions(organizationSlug: string, environment: Env
     // A Store from before no_prune refuses a Deploy carrying it, so only a Deploy that keeps other services sends it.
     if (command.command === "admit" && command.admit === "deploy" && choice.noPrune) command.no_prune = true;
     try {
-      const approved = scope === undefined ? undefined : async () => ({ ...command, approval: await approval.approve(scope, id, version) });
+      // What this browser signed, shown as `ployz deploy` prints it.
+      let lines: readonly string[] = [];
+      const approved = scope === undefined ? undefined : async () => {
+        const signed = await approval.approve(scope, id, version);
+        lines = signed.lines;
+        return { ...command, approval: signed.approval };
+      };
       await writer.commit(command, ["confirmation_required"], approved);
+      if (lines.length > 0) toast.success("Deploy approved", { description: <div className="font-mono">{lines.map((line) => <div key={line}>{line}</div>)}</div> });
       if (action === "deploy") onAdmitted(id);
       return { status: "done" };
     } catch (error) {

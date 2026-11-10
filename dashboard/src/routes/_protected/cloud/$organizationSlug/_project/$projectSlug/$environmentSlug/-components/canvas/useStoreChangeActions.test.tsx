@@ -430,26 +430,29 @@ it("reports an earlier Save as not saved when a later one asks again", async () 
 describe("on Servers that enforce Device approval", () => {
   const scope = { environmentId: "env", environmentName: "production", namespace: "shop-production", cluster: "key", machines: ["m1"] };
   const signed = { body: "{}", signatures: [{ key: "k", signature: "s" }] };
+  const approved = { approval: signed, lines: ["Approved web: nginx@sha256:65645c7bb6a0…"] };
 
-  it("asks for a passkey session before a Deploy, then admits it carrying the approval of the review it ships", async () => {
-    const approve = vi.fn<Gate["approve"]>(async () => signed);
+  it("asks for a passkey session before a Deploy, then admits it carrying the approval of the review it ships, and shows it", async () => {
+    const success = vi.spyOn(toast, "success").mockImplementation(() => "toast");
+    const approve = vi.fn<Gate["approve"]>(async () => approved);
     const test = setup(NO_LOSS, { scope: async () => scope, approve });
     test.write.mockResolvedValueOnce(admitted);
     press("Deploy now");
     await waitFor(() => expect(admittedIds).toHaveLength(1));
     expect(approve).toHaveBeenCalledWith(scope, admittedIds[0], "2:1:0");
     expect(test.admits()).toMatchObject([{ command: "admit", id: admittedIds[0], version: "2:1:0", approval: signed }]);
+    expect(success).toHaveBeenCalledWith("Deploy approved", expect.anything());
   });
 
   it("admits nothing when the person cancels the prompt, or a Server can't take the approval, saying why", async () => {
-    const test = setup(NO_LOSS, { scope: async () => null, approve: async () => signed });
+    const test = setup(NO_LOSS, { scope: async () => null, approve: async () => approved });
     press("Deploy now");
     await act(() => Promise.resolve());
     expect(test.admits()).toEqual([]);
     expect(toast.error).not.toHaveBeenCalled();
     cleanup();
 
-    const older = setup(NO_LOSS, { scope: () => Promise.reject(new Error("machine-2 needs a newer Ployz to deploy from the dashboard.")), approve: async () => signed });
+    const older = setup(NO_LOSS, { scope: () => Promise.reject(new Error("machine-2 needs a newer Ployz to deploy from the dashboard.")), approve: async () => approved });
     press("Deploy now");
     await waitFor(() => expect(toast.error).toHaveBeenCalledWith("machine-2 needs a newer Ployz to deploy from the dashboard."));
     expect(older.admits()).toEqual([]);
@@ -464,7 +467,7 @@ describe("on Servers that enforce Device approval", () => {
   });
 
   it("asks nothing for an edit or a Save only: Saved State reaches a Server only through a Deploy", async () => {
-    const gate = { scope: vi.fn<Gate["scope"]>(async () => scope), approve: vi.fn<Gate["approve"]>(async () => signed) };
+    const gate = { scope: vi.fn<Gate["scope"]>(async () => scope), approve: vi.fn<Gate["approve"]>(async () => approved) };
     const test = setup(NO_LOSS, gate);
     test.write.mockResolvedValueOnce(edited).mockResolvedValueOnce({ ok: true, value: { written: "published" } } as never);
     press("Stage replicas");
