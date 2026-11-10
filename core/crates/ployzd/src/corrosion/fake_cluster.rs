@@ -520,6 +520,7 @@ fn query(kv: &Mutex<ClusterKv>, statement: Statement) -> Result<Bytes, StatusCod
         "SELECT hostname, body FROM certificates ORDER BY hostname" => {
             events(&["hostname", "body"], Vec::new())
         }
+        "SELECT body FROM certificates WHERE hostname = ?" => events(&["body"], None::<Vec<Value>>),
         super::store::VERSION_QUERY => events(&["site_id", "db_version"], Vec::new()),
         query => panic!("unexpected query {query}"),
     })
@@ -565,6 +566,8 @@ fn execute(kv: &Mutex<ClusterKv>, statements: Vec<Statement>) -> Bytes {
                     kv.sealing_awaits_recovery = Some(text_param(&statement.params, 0).to_owned());
                 }
             }
+            // The fake keeps no tombstones; a forget here only removes the rows below.
+            query if query.starts_with("INSERT INTO cluster (key, value) SELECT 'forgotten") => {}
             query if query.starts_with("INSERT INTO volumes (machine_id, name, volume)") => {
                 kv.volumes.insert(
                     (
@@ -646,6 +649,7 @@ fn execute(kv: &Mutex<ClusterKv>, statements: Vec<Statement>) -> Bytes {
                 kv.containers.retain(|_, (owner, _)| owner != machine_id);
                 let _ = kv.container_changes.send(());
             }
+            "DELETE FROM certificates WHERE hostname = ?" => {}
             "DELETE FROM machines WHERE id = ?" => {
                 if kv
                     .machines

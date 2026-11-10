@@ -245,7 +245,7 @@ The program runs the way `c-plan.md` "Program checklist" says, from arming and t
 
 Outcome. `ployz_core::authority::coverage` holds one authorization class per catalog route, and two tests keep it honest. On a Machine with enforcement on, an Operator `Leave` or `Forget` is refused before any Container stops, naming the capability. A person's Device over a direct connection, and the local socket, still remove and forget Servers. Attack path closed. A new route can no longer reach `main` without a class. Cloud can no longer remove every Container on an enforcing Server, demote its Volumes and reset it to a fresh, unenforced daemon, either directly with `Leave` or through another Machine with `Forget`, which makes the forgotten Machine fence itself (`forgotten_fence.rs:238`).
 
-What users lose until F5. On an enforcing Cluster, the dashboard's **Remove server** and `ployz server rm` through Cloud are refused. The refusal says to run `ployz server rm` from an approved Device. Clusters that do not enforce are unchanged.
+What users keep. *Amended: the root took this decision on 2026-11-10, under the operator's autopilot grant.* On an enforcing Cluster, `ployz server rm` and `ployz server forget` from an approved Device, or over SSH on a Server, still remove and forget Servers. The CLI drives the removal itself instead of Cloud's removal workflow. It dials `Leave` straight to the target, and sends `Forget` to the entry it connected through, as Full routes are dialled. With no Full path to a Machine that would refuse, it refuses up front with the capability-naming copy and sends nothing. Cloud learns of the removal from Machine truth: a frame record beside the existing ones drops the row of a Server the Cluster no longer lists, once every listed Server reads up and the row is past a grace window. The dashboard's **Remove server** and **Forget server** are refused on an enforcing Cluster until F5, and so is removing the last Server of a Cloud-managed enforcing Cluster. Clusters that do not enforce are unchanged.
 
 **Depends on.** `main`. Nothing else.
 
@@ -257,6 +257,9 @@ What users lose until F5. On an enforcing Cluster, the dashboard's **Remove serv
 - [ ] Edit `core/crates/ployzd/src/machine_api/local.rs` so `leave` (`:917`) and `forget` (`:924`) call it when `from_operator`, before `depart` or `forget_machine` runs.
 - [ ] Create `core/crates/ployzd/src/machine_api/authorization_tests.rs`. For each entry in `CASES`, it builds the case's request with no statement, sends it as an Operator through `MachineApi` on an enforcing Machine, and checks the expected answer: refused with nothing changed, served with the check holding, or served. `sample_request` is a `match` on the case, so a case with no sample fails the test.
 - [ ] Extend C1's attacker harness in `.audit/c-attacker/` to read the `coverage_cases` output instead of a hand list.
+- [ ] Edit `core/crates/ployz/src/cluster.rs` so a call whose capability `needs_full_caller` dials its target directly, as a Full route does, and add `Client::reaches_full`. Edit `core/crates/ployz/src/handlers/server{.rs,/remove.rs}` so `server rm` and `server forget` on an enforcing Cluster connect as the Device (`connect_full_avoiding`), skip Cloud's removal workflow, and refuse up front without a Full path.
+- [ ] Add `dashboard/src/modules/machines/departed-servers{,.server}.ts` and register it in `runtime-frame-record.server.ts`. Move `dropRemovedServer` and the enrollment lock to `pairing-release.server.ts`, so the frame records do not import the Organization Runtime back.
+- [ ] Keep a frozen list of cases the behaviour test can't send, each with what proves it: `LIVE_ONLY` (the two `RequestMachineUpgrade` cases, lane 9) and `UNIT_ONLY` (`SetManagementClient` over Cloud's own connection, and `MintBuildGrant` with a rule, each proven by a named unit test).
 - [ ] Map the refusal in `core/crates/ployz/src/handlers/server/` and the dashboard's removal error to "This server leaves only when you approve it. Run `ployz server rm` from an approved device." Run it through the `ui-copy` skill.
 - [ ] Edit `docs/user/servers/manage-servers.md` ("Remove a server", "Forget a server that is gone", the enforcement section).
 
@@ -266,16 +269,17 @@ What users lose until F5. On an enforcing Cluster, the dashboard's **Remove serv
 - [ ] `ployzd` tests. An Operator `Leave` under enforcement is refused, and the Machine is still Participating with its Containers and Volume roots unchanged. An Operator `Forget` naming another Machine is refused, and that Machine's row is still in the store. A Full caller is admitted for both, and so is an Operator with enforcement off.
 - [ ] `cargo nextest run -p ployzd authorization_tests departure` passes. Every refusal names the route's capability or the statement capability its class lists. Every `Bounded` case's check holds, and every `Served` case is served.
 
-**Verify, live.** Eight lanes, three Machines, per the boot recipe.
+**Verify, live.** Nine lanes, three Machines, per the boot recipe.
 
 - [ ] Lane 1. Regression lane against trunk. Enforcement off. `ployz server rm web-3` through Cloud at trunk and head. Save `f1-enforce-off.png`. Pass when both remove it.
 - [ ] Lane 2. Attacker harness. Enforcement on. `Leave` to web-3 as Cloud. Save `f1-leave-refused.png`. Pass when it is refused naming `ployz.machine.leave.v1`, `docker ps` on web-3 is unchanged, and `ployz status` there says Participating.
 - [ ] Lane 3. Attacker harness. `Forget` web-3 sent to web-1 as Cloud. Save `f1-forget-refused.png`. Pass when it is refused, web-3's row is in every Machine's store, and web-3's journal shows no fence.
 - [ ] Lane 4. On trunk, run lane 2's request. Save `f1-trunk-leave.png`. Pass when trunk resets web-3. This records the hole the slice closes.
-- [ ] Lane 5. Enforcement on. `ployz server rm web-3` from `cli --device` with a direct connection. Save `f1-device-rm.png`. Pass when web-3 leaves.
+- [ ] Lane 5. Enforcement on, on a Cloud-managed Cluster. `ployz server rm web-3` from `cli --device` with a direct connection. Save `f1-device-rm.png`. Pass when web-3 leaves without a Cloud removal run, and Cloud's row for web-3 clears once the dashboard next reads the Cluster.
 - [ ] Lane 6. Enforcement on. The dashboard's **Remove server**. Save `f1-dashboard-rm.png`. Pass when it shows the new refusal and nothing stops.
 - [ ] Lane 7. Kill `ployzd` on web-3 while a refused `Leave` is in flight. Save `f1-kill.png`. Pass when the restarted daemon still refuses.
 - [ ] Lane 8. Read the changed `docs/user` page against lanes 5 and 6. Save `f1-docs.png`. Pass when every sentence matches.
+- [ ] Lane 9. Attacker harness, on Machines installed at the system path. `RequestMachineUpgrade` as Cloud naming an exact version no channel resolves to, then a downgrade. Pass when both are refused naming `ployz.machine.upgrade.exact.v1`, and nothing is installed. A channel never resolves below the installed release, so an Operator's downgrade fails the channel check first; only a Full caller over a management connection meets the downgrade refusal itself. A test daemon refuses a non-system install path before either check, so these two cases are proven here only.
 
 **Verify, perf.**
 

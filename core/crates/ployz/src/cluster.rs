@@ -223,6 +223,31 @@ impl Client {
             .collect()
     }
 
+    /// Whether this client reaches `machine` with Full scope: over SSH or the local
+    /// socket, or over a Management connection dialled as a Device when `device` says one
+    /// is held. Only a client [`Self::with_full_connections`] built can.
+    pub(crate) fn reaches_full(&self, machine: &MachineId, device: bool) -> bool {
+        let full = |connection: &Connection| match connection.transport() {
+            crate::context::Transport::Ssh { .. } | crate::context::Transport::Unix(_) => true,
+            crate::context::Transport::Management(_) => device,
+            crate::context::Transport::Tcp(_) => false,
+        };
+        if self.full_connections.is_empty() {
+            return false;
+        }
+        if self.entry.as_ref() == Some(machine) {
+            return full(&self.connection);
+        }
+        self.full_connections
+            .iter()
+            .any(|connection| connection.machine_id() == Some(machine) && full(connection))
+    }
+
+    /// The connections a Full call may dial, as [`Self::with_full_connections`] set them.
+    pub(crate) fn full_connections(&self) -> &[Connection] {
+        &self.full_connections
+    }
+
     async fn full_client(&self, target: &MachineTarget) -> Result<Option<Self>, ConnectError> {
         self.ended()?;
         if self.full_connections.is_empty()
@@ -978,7 +1003,7 @@ impl Client {
         payload: OpaquePayload,
         target: Option<&MachineTarget>,
     ) -> Result<T::Response, ConnectError> {
-        let direct = if ployz_core::scope_of(T::PATH) == Some(ployz_core::ManagementScope::Full) {
+        let direct = if dials_direct(T::PATH) {
             match target {
                 Some(target) => self.full_client(target).await?,
                 None => None,
@@ -2272,6 +2297,15 @@ pub(crate) async fn evict_machine(
         .require(confirm_data_loss)
         .map_err(UnconfirmedDataLoss::into_rpc_error)?;
     depart(client, selected, current).await
+}
+
+/// Whether a call on `path` to a named target goes to that target itself when a Full
+/// connection reaches it: a Full route, or one an enforcing Machine refuses every Operator,
+/// such as Leave. A call forwarded over the mesh arrives as an Operator's.
+fn dials_direct(path: &str) -> bool {
+    ployz_core::scope_of(path) == Some(ployz_core::ManagementScope::Full)
+        || ployz_core::capability_of(path)
+            .is_some_and(ployz_core::authority::coverage::needs_full_caller)
 }
 
 /// Leave on `machine`, then Forget its row through the entry unless it is the entry. Both

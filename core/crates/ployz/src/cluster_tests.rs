@@ -1318,3 +1318,51 @@ fn an_unanswered_listing_keeps_whether_the_router_could_dial_the_target() {
         "{undialed:?}"
     );
 }
+
+#[test]
+fn a_leave_goes_to_its_target_itself_as_full_routes_do() {
+    assert!(dials_direct(op::Leave::PATH));
+    assert!(dials_direct(op::SetDeviceEnforcement::PATH));
+    assert!(!dials_direct(op::ListMachines::PATH));
+    assert!(!dials_direct(op::EnsureContainer::PATH));
+}
+
+#[tokio::test]
+async fn a_client_reaches_a_machine_with_full_scope_only_over_ssh_the_socket_or_a_device() {
+    let (client, server) = crate::connect::test_support::rpc_client(|_| async {
+        Err(tonic::Status::unimplemented(""))
+    })
+    .await;
+    let target = machine_id('b');
+    assert!(
+        !client.reaches_full(&target, true),
+        "a client without Full connections"
+    );
+    let management = ployz_core::ManagementCapability::new(
+        ployz_core::ManagementIdentity::from_bytes([1; 32]),
+        [2; 32],
+    );
+    let over = |connection: Connection| {
+        client
+            .clone()
+            .with_full_connections(vec![connection.with_machine_id(target)])
+    };
+    let socket = over(Connection::unix("/run/ployz/ployzd.sock").unwrap());
+    assert!(socket.reaches_full(&target, false));
+    let management = over(Connection::management(management.to_secret_string()).unwrap());
+    assert!(
+        !management.reaches_full(&target, false),
+        "Cloud's key is an Operator's"
+    );
+    assert!(
+        management.reaches_full(&target, true),
+        "a Device's key is Full"
+    );
+    let tcp = over(Connection::tcp("127.0.0.1:7569".parse().unwrap()));
+    assert!(!tcp.reaches_full(&target, true));
+    assert!(
+        !socket.reaches_full(&machine_id('c'), true),
+        "no connection names it"
+    );
+    server.abort();
+}

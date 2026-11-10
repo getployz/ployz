@@ -68,13 +68,14 @@ export function asRemoveMachineOutcome<R>(
         identities: cause.identities,
       } satisfies RemoveMachineOutcome),
     ),
-    // A refusal changed nothing and says why; retrying it only delays the same answer.
+    // A refusal changed nothing and says why; retrying it only delays the same answer. An enforcing Server refuses
+    // Cloud's removal as forbidden until an approved device asks.
     Effect.catchIf(
-      (cause) => rpcErrorCode(cause) === "conflict",
+      (cause) => rpcErrorCode(cause) === "conflict" || rpcErrorCode(cause) === "forbidden",
       (cause) =>
         Effect.succeed({
           kind: "refused" as const,
-          failureCode: "conflict",
+          failureCode: rpcErrorCode(cause) === "forbidden" ? "forbidden" : "conflict",
           message: rpcErrorMessage(cause) ?? "The Server refused its removal.",
         } satisfies RemoveMachineOutcome),
     ),

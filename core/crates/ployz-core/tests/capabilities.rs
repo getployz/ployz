@@ -588,3 +588,209 @@ fn every_capability_above_the_field_floor_says_how_older_machines_are_handled() 
         .collect();
     assert!(stale.is_empty(), "{stale:?} are no longer catalogued");
 }
+
+macro_rules! catalog_routes {
+    (
+        package $package:literal
+        unary { $($unary_variant:ident: ($unary_method:ident, $unary_route:literal, $unary_request:ty, $unary_command:literal, $unary_response:ty, $unary_capability:ident, $unary_capability_name:literal, $unary_advertisement:ident, $unary_scope:ident),)+ }
+        server_streaming { $($stream_variant:ident: ($stream_method:ident, $stream_route:literal, $stream_request:ty, $stream_command:literal, $stream_capability:ident, $stream_capability_name:literal, $stream_advertisement:ident, $stream_scope:ident),)+ }
+        bidi_streaming { $($bidi_variant:ident: ($bidi_method:ident, $bidi_route:literal, $bidi_command:literal, $bidi_capability:ident, $bidi_capability_name:literal, $bidi_advertisement:ident, $bidi_scope:ident),)+ }
+        capabilities { $($(#[$extra_meta:meta])* $extra_capability:ident: ($extra_capability_name:literal, $extra_advertisement:ident),)+ }
+    ) => {
+        [
+            $(($unary_capability_name, stringify!($unary_scope)),)+
+            $(($stream_capability_name, stringify!($stream_scope)),)+
+            $(($bidi_capability_name, stringify!($bidi_scope)),)+
+        ]
+    };
+}
+
+mod coverage {
+    use std::collections::BTreeSet;
+
+    use ployz_core::authority::coverage::{AUTHORIZATION, Authorization, CASES, Expected};
+
+    fn routes() -> Vec<(&'static str, &'static str)> {
+        ployz_core::rpc_catalog!(catalog_routes).to_vec()
+    }
+
+    fn catalogued(name: &str) -> bool {
+        ployz_core::served_capabilities().contains(name)
+    }
+
+    #[test]
+    fn every_route_has_one_authorization_class() {
+        let routes = routes();
+        for (capability, _) in &routes {
+            let classes = AUTHORIZATION
+                .iter()
+                .filter(|(name, _)| name == capability)
+                .count();
+            assert_eq!(
+                classes, 1,
+                "{capability} has {classes} authorization classes, not one"
+            );
+        }
+        for (name, _) in AUTHORIZATION {
+            assert!(
+                routes.iter().any(|(capability, _)| capability == name),
+                "{name} is classed but is not a catalog route"
+            );
+        }
+    }
+
+    #[test]
+    fn full_class_matches_catalog_scope() {
+        for (capability, scope) in routes() {
+            let class = ployz_core::authority::coverage::authorization(capability)
+                .unwrap_or_else(|| panic!("{capability} has no class"));
+            assert_eq!(
+                class == Authorization::Full,
+                scope == "Full",
+                "{capability} is classed {class:?} but its catalog scope is {scope}"
+            );
+        }
+    }
+
+    /// `Pending` is a migration state: each entry names the slice that gates it, and a new
+    /// route cannot join this list without an edit here.
+    #[test]
+    fn pending_routes_are_the_frozen_list() {
+        let pending: Vec<(&str, &str)> = AUTHORIZATION
+            .iter()
+            .filter_map(|(name, class)| match class {
+                Authorization::Pending(slice) => Some((*name, *slice)),
+                Authorization::Read
+                | Authorization::Full
+                | Authorization::Signed(_)
+                | Authorization::Bound(_) => None,
+            })
+            .collect();
+        assert_eq!(
+            pending,
+            [
+                ("ployz.machine.enroll.v1", "F7"),
+                ("ployz.machine.enroll-for-recovery.v1", "F7"),
+                ("ployz.volume.remove.v1", "E6"),
+                ("ployz.volume.copy.set.v1", "E3 to E6"),
+                ("ployz.volume.size.set.v1", "E7"),
+            ]
+        );
+    }
+
+    /// The branches the security plan's live matrix lists for a route with several
+    /// mutations, as they exist at this slice. A later slice that gives a route a new
+    /// branch adds it here and to `CASES`.
+    const BRANCHES: &[(&str, &[&str])] = &[
+        (
+            "ployz.machine.enroll.v1",
+            &["member, no capsule", "member, approved capsule", "founder"],
+        ),
+        (
+            "ployz.container.ensure.v1",
+            &["create", "start", "stop", "held", "out", "remove"],
+        ),
+        (
+            "ployz.machine.upgrade.request.v1",
+            &[
+                "a release channel",
+                "an exact version no channel resolves to",
+                "a downgrade",
+            ],
+        ),
+        ("ployz.private-access.v1", &["on", "off"]),
+        (
+            "ployz.sealing.generate.v1",
+            &[
+                "the Cluster publishes no key",
+                "the Cluster already publishes one",
+            ],
+        ),
+        (
+            "ployz.sealing.install.v1",
+            &[
+                "sealed by an accepted Machine's key",
+                "sealed by any other key",
+            ],
+        ),
+        (
+            "ployz.machine.set-management-client.v1",
+            &[
+                "from Cloud's own connection",
+                "from the mesh, or naming a Device slot",
+            ],
+        ),
+        (
+            "ployz.volume.copy.set.v1",
+            &[
+                "a Writer want with a start",
+                "pull, cut, promote, forget",
+                "floor, snapshot",
+            ],
+        ),
+        (
+            "ployz.build.grant.mint.v1",
+            &["with a rule and its proof", "without"],
+        ),
+    ];
+
+    #[test]
+    fn every_signed_and_bound_route_has_its_cases() {
+        let mut seen = BTreeSet::new();
+        for case in CASES {
+            let class = ployz_core::authority::coverage::authorization(case.capability)
+                .unwrap_or_else(|| panic!("case {case:?} names no catalog route"));
+            assert!(
+                seen.insert((case.capability, case.branch)),
+                "{} has two cases for branch {:?}",
+                case.capability,
+                case.branch
+            );
+            assert_ne!(
+                class,
+                Authorization::Read,
+                "{} is a read and needs no case",
+                case.capability
+            );
+            if let Expected::Refused(names) = case.expected {
+                assert!(!names.is_empty(), "{case:?} names no capability");
+                for name in names {
+                    assert!(catalogued(name), "{case:?} names uncatalogued {name}");
+                }
+                if let Authorization::Signed(statements) = class {
+                    for name in names {
+                        assert!(
+                            *name == case.capability
+                                || statements
+                                    .iter()
+                                    .any(|statement| statement.capabilities().contains(name)),
+                            "{case:?} names {name}, which neither the route nor its statements are"
+                        );
+                    }
+                }
+            }
+            if class == Authorization::Full || matches!(class, Authorization::Signed(&[])) {
+                assert!(
+                    matches!(case.expected, Expected::Refused(_)),
+                    "{case:?} must be refused: no statement admits an Operator"
+                );
+            }
+        }
+        for (capability, class) in AUTHORIZATION {
+            if *class != Authorization::Read {
+                assert!(
+                    CASES.iter().any(|case| case.capability == *capability),
+                    "{capability} is classed {class:?} and has no case"
+                );
+            }
+        }
+        for (capability, branches) in BRANCHES {
+            for branch in *branches {
+                assert!(
+                    seen.contains(&(*capability, *branch)),
+                    "{capability} has no case for branch {branch:?}"
+                );
+            }
+        }
+    }
+}
