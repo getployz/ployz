@@ -390,11 +390,9 @@ fn verify_system(install_only: bool) -> Result<(), Error> {
 }
 
 pub(super) fn daemon_archive() -> Result<&'static str, Error> {
-    match std::env::consts::ARCH {
-        "x86_64" => Ok("ployzd_linux_amd64.tar.gz"),
-        "aarch64" => Ok("ployzd_linux_arm64.tar.gz"),
-        architecture => Err(Error::UnsupportedArchitecture(architecture.into())),
-    }
+    let architecture = std::env::consts::ARCH;
+    ployz_core::daemon_archive(architecture)
+        .ok_or_else(|| Error::UnsupportedArchitecture(architecture.into()))
 }
 
 fn sudo_user() -> Option<String> {

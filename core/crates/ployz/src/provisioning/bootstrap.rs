@@ -298,13 +298,8 @@ fn read_from_start(file: &mut File) -> io::Result<Vec<u8>> {
 }
 
 pub(super) fn daemon_archive(architecture: &str) -> Result<&'static str, ProvisionError> {
-    match architecture {
-        "x86_64" => Ok("ployzd_linux_amd64.tar.gz"),
-        "aarch64" => Ok("ployzd_linux_arm64.tar.gz"),
-        architecture => Err(ProvisionError::UnsupportedArchitecture(
-            architecture.to_owned(),
-        )),
-    }
+    ployz_core::daemon_archive(architecture)
+        .ok_or_else(|| ProvisionError::UnsupportedArchitecture(architecture.to_owned()))
 }
 
 #[cfg(test)]
