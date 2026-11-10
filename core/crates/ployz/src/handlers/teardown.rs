@@ -372,16 +372,14 @@ fn bound(
     if let Some((shown, listed)) = &prompted {
         let since = shown.changes(&listed().map_err(unbound)?);
         if !since.is_empty() {
-            return Err(unbound(StoreCallError::Refused(ployz_core::RpcError {
-                code: RpcErrorCode::ConfirmationRequired,
-                message: format!(
+            return Err(unbound(StoreCallError::Refused(
+                ployz_core::RpcError::confirmation_required(format!(
                     "What this removes changed since you confirmed: {}. Nothing was \
                          removed. Run it again to go ahead",
                     since.join(", ")
-                ),
-                details: json!({}),
-                cause: Vec::new(),
-            })));
+                ))
+                .with_details(json!({})),
+            )));
         }
     }
     if request.version.is_some() {

@@ -18,9 +18,6 @@ use crate::failure::Failure;
 
 const POLL: Duration = Duration::from_secs(1);
 
-/// The code of Cloud's refusal that waits for a person to approve the call.
-pub(crate) const APPROVAL_REQUIRED: &str = "approval_required";
-
 #[derive(Debug, Deserialize)]
 pub(crate) struct Asked {
     #[serde(rename = "approval_id")]
@@ -212,7 +209,7 @@ impl Verb {
 
 impl Asked {
     pub(crate) fn of(error: &RpcError) -> Option<Self> {
-        if error.code.as_str() != APPROVAL_REQUIRED {
+        if error.code.as_str() != ployz_core::APPROVAL_REQUIRED_CODE {
             return None;
         }
         let asked: Self = serde_json::from_value(error.details.clone()).ok()?;

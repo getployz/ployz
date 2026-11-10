@@ -13,7 +13,7 @@ use tokio::sync::Mutex;
 use tokio_util::sync::CancellationToken;
 use ts_rs::TS;
 
-use super::{Session, invalid_argument};
+use super::Session;
 use crate::connect::{Client, ConnectError};
 use ployz_core::{InspectContainerRequest, RetainedEnvRequest};
 use ployz_store::tools::{LineCap, LogExcerpt, LogText, SealedValues, Withheld};
@@ -124,7 +124,7 @@ impl Session {
         input: ContainerLogInput,
     ) -> Result<ContainerLogStream, RpcError> {
         if !(-1..=1000).contains(&input.tail) {
-            return Err(invalid_argument("tail must be -1..1000".into()));
+            return Err(RpcError::invalid_argument("tail must be -1..1000"));
         }
         let client = self.client()?;
         let target = MachineTarget::from(&input.machine_id);
@@ -169,7 +169,7 @@ impl Session {
             limit: input.limit,
             cursor: input.cursor,
         };
-        request.validate().map_err(invalid_argument)?;
+        request.validate().map_err(RpcError::invalid_argument)?;
         let payload = op::LogHistory::into_request(request)
             .encode()
             .map_err(|error| crate::ui::rpc_error(RpcErrorCode::InvalidArgument, &error))?;
@@ -212,12 +212,7 @@ impl LogHistoryStream {
             let payload = tokio::select! {
                 () = self.cancel.cancelled() => return Ok(None),
                 payload = tokio::time::timeout(ROW_DEADLINE, stream.message()) => payload
-                    .map_err(|_| RpcError {
-                        code: RpcErrorCode::Unavailable,
-                        message: "the Server's Log Store stopped answering".into(),
-                        details: serde_json::Value::Null,
-                        cause: Vec::new(),
-                    })?
+                    .map_err(|_| RpcError::unavailable("the Server's Log Store stopped answering"))?
                     .map_err(|error| RpcError::from(ConnectError::from(error)))?,
             };
             let Some(payload) = payload else {
@@ -247,9 +242,9 @@ impl Drop for LogHistoryStream {
 fn nanos(value: Option<&str>, field: &str) -> Result<Option<i64>, RpcError> {
     value
         .map(|value| {
-            value
-                .parse()
-                .map_err(|_| invalid_argument(format!("{field} must be a decimal integer")))
+            value.parse().map_err(|_| {
+                RpcError::invalid_argument(format!("{field} must be a decimal integer"))
+            })
         })
         .transpose()
 }
@@ -259,12 +254,7 @@ fn history_row(payload: &OpaquePayload) -> Result<Option<HistoryRow>, RpcError> 
         .map_err(|error| crate::ui::rpc_error(RpcErrorCode::InvalidArgument, &error))?
     {
         HistoryRow::Heartbeat => Ok(None),
-        HistoryRow::Error(message) => Err(RpcError {
-            code: RpcErrorCode::Unavailable,
-            message,
-            details: serde_json::Value::Null,
-            cause: Vec::new(),
-        }),
+        HistoryRow::Error(message) => Err(RpcError::unavailable(message)),
         row @ (HistoryRow::Container(_)
         | HistoryRow::Line { .. }
         | HistoryRow::Gap { .. }
@@ -604,7 +594,7 @@ pub(crate) async fn process_tail(
                 LogBody::Stdout(bytes) | LogBody::Stderr(bytes) => {
                     frames.push(String::from_utf8_lossy(&bytes).into_owned());
                 }
-                LogBody::Error(message) => return Err(unavailable(message)),
+                LogBody::Error(message) => return Err(RpcError::unavailable(message)),
                 LogBody::Heartbeat => {}
             }
         }
@@ -622,20 +612,11 @@ async fn in_time<T>(
     tokio::time::timeout(SERVICE_TAIL_READ, read)
         .await
         .map_err(|_| {
-            unavailable(format!(
+            RpcError::unavailable(format!(
                 "{what} did not answer within {}s",
                 SERVICE_TAIL_READ.as_secs()
             ))
         })?
-}
-
-fn unavailable(message: String) -> RpcError {
-    RpcError {
-        code: RpcErrorCode::Unavailable,
-        message,
-        details: serde_json::Value::Null,
-        cause: Vec::new(),
-    }
 }
 
 /// The env that scrubs a Container's lines: Docker's, or the one its Machine's
@@ -711,12 +692,7 @@ async fn newest_lines(
                 } => newest.push((container_id, text)),
                 HistoryRow::End { next } => cursor = next,
                 HistoryRow::Error(message) => {
-                    return Err(RpcError {
-                        code: RpcErrorCode::Unavailable,
-                        message,
-                        details: serde_json::Value::Null,
-                        cause: Vec::new(),
-                    });
+                    return Err(RpcError::unavailable(message));
                 }
                 HistoryRow::Exit { exit_code, .. } => match &mut exit {
                     None => {

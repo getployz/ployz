@@ -3,7 +3,7 @@
 //! Caddy answers the page itself. Facts known at render time reach it as snippet arguments;
 //! everything about the request stays a Caddy placeholder, so a request never reloads Caddy.
 
-use ployz_core::MachineId;
+use ployz_core::{INGRESS_LOOPBACK_BIND, INGRESS_LOOPBACK_PORT, MachineId};
 use std::fmt::Write as _;
 
 use crate::ingress::{IngressEndpoint, PublicationTrace};
@@ -54,15 +54,12 @@ pub(super) fn servers_options() -> String {
     }
     let _ = write!(
         output,
-        "\tservers {LOOPBACK_BIND}:{LOOPBACK_PORT} {{\n\t\ttrusted_proxies static {LOOPBACK_RANGES}\n\t\tclient_ip_headers CF-Connecting-IP X-Forwarded-For\n\t}}\n"
+        "\tservers {INGRESS_LOOPBACK_BIND}:{INGRESS_LOOPBACK_PORT} {{\n\t\ttrusted_proxies static {LOOPBACK_RANGES}\n\t\tclient_ip_headers CF-Connecting-IP X-Forwarded-For\n\t}}\n"
     );
     output
 }
 
 /// Where the loopback site listens: the Tunnel door dials it on the Machine itself.
-pub(super) const LOOPBACK_PORT: u16 = 8480;
-pub(super) const LOOPBACK_BIND: &str = "127.0.0.1";
-pub(super) const LOOPBACK_BIND_V6: &str = "::1";
 const LOOPBACK_RANGES: &str = "127.0.0.1/32 ::1/128";
 
 /// One line of the page. Keys are only ever appended, so readers can rely on the order.

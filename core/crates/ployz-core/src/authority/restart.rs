@@ -5,10 +5,10 @@ use serde::{Deserialize, Serialize};
 use ts_rs::TS;
 
 use super::{
-    canonical::Timestamp,
+    canonical::{self, Timestamp},
     keys::{Approver, Purpose, Signed, SigningPublicKey, Statement},
     proposal::ProposalRef,
-    refusal::AuthorityRefusal,
+    refusal::{AuthorityRefusal, field, first_mismatch},
     session::{ActionFamily, GrantScope},
     trusted_key::TrustedKeys,
 };
@@ -100,7 +100,7 @@ pub struct RestartApproval {
     pub namespace: Namespace,
     pub service: ServiceName,
     /// Sorted and distinct.
-    #[serde(deserialize_with = "ordered_machines")]
+    #[serde(deserialize_with = "canonical::sorted_distinct")]
     pub machines: Vec<MachineId>,
     pub container: ContainerId,
     pub issued_at: Timestamp,
@@ -124,41 +124,21 @@ impl RestartApproval {
         cluster: SealingPublicKey,
         facts: &RestartFacts<'_>,
     ) -> Result<(), AuthorityRefusal> {
-        let checks = [
-            ("a Cluster", self.cluster == cluster),
+        first_mismatch([
+            (field::CLUSTER, self.cluster == cluster),
             (
                 "a workflow",
                 self.kind.permits(facts.step) && self.kind.reaches(facts.kind),
             ),
-            ("an Environment", &self.namespace == facts.namespace),
+            (field::ENVIRONMENT, &self.namespace == facts.namespace),
             ("a Service", &self.service == facts.service),
-            ("Machines", self.machines.contains(facts.machine)),
+            (field::MACHINES, self.machines.contains(facts.machine)),
             ("a Container", &self.container == facts.container),
-        ];
-        match checks.iter().find(|(_, holds)| !holds) {
-            Some((field, _)) => Err(AuthorityRefusal::Mismatch { field }),
-            None => Ok(()),
-        }
+        ])
     }
 }
 
 pub use super::validity::{CLOCK_SKEW_MILLIS, MAX_LIFETIME_MILLIS};
-
-fn ordered_machines<'de, D: serde::Deserializer<'de>>(
-    deserializer: D,
-) -> Result<Vec<MachineId>, D::Error> {
-    let machines = Vec::<MachineId>::deserialize(deserializer)?;
-    if machines
-        .iter()
-        .zip(machines.iter().skip(1))
-        .any(|(left, right)| left >= right)
-    {
-        return Err(serde::de::Error::custom(
-            "Machines must be sorted and distinct",
-        ));
-    }
-    Ok(machines)
-}
 
 impl Statement for RestartApproval {
     const PURPOSE: Purpose = Purpose::Workflow;

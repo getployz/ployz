@@ -103,12 +103,8 @@ impl SetVolumeSizeRefused {
             | SizeRefusal::Shrink
             | SizeRefusal::BelowFloor => RpcErrorCode::Conflict,
         };
-        RpcError {
-            code,
-            message: message.into(),
-            details: serde_json::to_value(self).expect("a size refusal is JSON serializable"),
-            cause: Vec::new(),
-        }
+        RpcError::new(code, message)
+            .with_details(serde_json::to_value(self).expect("a size refusal is JSON serializable"))
     }
 }
 

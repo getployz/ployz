@@ -878,16 +878,11 @@ async fn follow_operation_until<T: DeserializeOwned>(
     follow_run(credential, path, doing, Some(deadline))
         .await?
         .ok_or_else(|| {
-            StoreCallError::Refused(RpcError {
-                code: ployz_core::RpcErrorCode::Unavailable,
-                message: format!(
-                    "Stopped waiting after {} minutes. {doing} keeps running in Ployz Cloud and \
+            StoreCallError::Refused(RpcError::unavailable(format!(
+                "Stopped waiting after {} minutes. {doing} keeps running in Ployz Cloud and \
                      finishes on its own; this command no longer reports it.",
-                    crate::handlers::mcp::CALL_DEADLINE.as_secs() / 60
-                ),
-                details: serde_json::Value::Null,
-                cause: Vec::new(),
-            })
+                crate::handlers::mcp::CALL_DEADLINE.as_secs() / 60
+            )))
         })
 }
 
@@ -1171,15 +1166,14 @@ pub(crate) async fn follow_removal(
         {
             // Any step after the reset was sent may be the one that ran out: the Server may
             // have reset and Cloud dropped it, or neither.
-            Err(StoreCallError::Refused(RpcError {
-                code: ployz_core::RpcErrorCode::Unavailable,
-                message: format!(
+            Err(StoreCallError::Refused(
+                RpcError::unavailable(format!(
                     "Cloud's removal of Server {name} didn't finish: it ran out of retries. If \
                      the Server is gone but `ployz server ls` still lists it, forget it."
-                ),
-                details: serde_json::json!({ "next": "ployz server ls" }),
-                cause: vec![refused.message],
-            }))
+                ))
+                .with_details(serde_json::json!({ "next": "ployz server ls" }))
+                .with_causes(vec![refused.message]),
+            ))
         }
         Err(error) => Err(error),
     }
@@ -1205,16 +1199,11 @@ async fn removal_progress(verb: &str, name: &MachineName, mut say: impl FnMut(St
 /// Stopped watching a removal that is still running. It may yet fail unfinished, as
 /// [`follow_removal`] says when it does. No `next`: nothing is to run while it runs.
 fn removal_unsettled(name: &MachineName) -> RpcError {
-    RpcError {
-        code: ployz_core::RpcErrorCode::Unavailable,
-        message: format!(
-            "Cloud is still removing Server {name}; it finishes on its own. \
+    RpcError::unavailable(format!(
+        "Cloud is still removing Server {name}; it finishes on its own. \
              The dashboard's Servers page shows when it's done. If it fails and the Server \
              is gone but `ployz server ls` still lists it, forget it."
-        ),
-        details: serde_json::Value::Null,
-        cause: Vec::new(),
-    }
+    ))
 }
 
 /// Call `/api/cli/<path>`, answered as its reply or as Cloud's refusal, verbatim.
@@ -1316,14 +1305,9 @@ pub(crate) async fn upload(
 
 /// The refusal of a source too large to upload: `why`, then how to deploy it anyway.
 fn too_big(why: &str) -> RpcError {
-    RpcError {
-        code: ployz_core::RpcErrorCode::InvalidArgument,
-        message: format!(
-            "{why} Deploy from GitHub instead, or remove large files from the directory. In a Git checkout, ployz up leaves out files Git ignores, so add ones such as node_modules to .gitignore."
-        ),
-        details: serde_json::Value::Null,
-        cause: Vec::new(),
-    }
+    RpcError::invalid_argument(format!(
+        "{why} Deploy from GitHub instead, or remove large files from the directory. In a Git checkout, ployz up leaves out files Git ignores, so add ones such as node_modules to .gitignore."
+    ))
 }
 
 /// Call `/api/cli/<path>`. A 404 on a read means Cloud doesn't offer the CLI surface,
@@ -1454,12 +1438,7 @@ pub(crate) fn public_error(body: &[u8]) -> Option<RpcError> {
         "RATE_LIMITED" => ployz_core::RpcErrorCode::Unavailable,
         _ => ployz_core::RpcErrorCode::Internal,
     };
-    Some(RpcError {
-        code,
-        message,
-        details: serde_json::Value::Null,
-        cause: Vec::new(),
-    })
+    Some(RpcError::new(code, message))
 }
 
 async fn send(

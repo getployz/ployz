@@ -13,7 +13,9 @@ use tokio::time::timeout;
 use tonic::transport::Endpoint;
 
 use crate::filesystem::{MACHINE_API_SOCKET_MODE, PLOYZ_DIR_MODE, atomic_write};
-use ployz_core::{DescribeContractRequest, MachineRpcClient, MachineVersion, op};
+use ployz_core::{
+    DescribeContractRequest, MachineRpcClient, MachineVersion, NETWORK_CONFLICT_EXIT_STATUS, op,
+};
 
 use super::assess::{docker_blocker, read_docker};
 use super::os_release::OsRelease;
@@ -282,7 +284,7 @@ EnvironmentFile=-/etc/default/ployz
 TimeoutStartSec=20
 TimeoutStopSec=15
 Restart=always
-RestartPreventExitStatus=78
+RestartPreventExitStatus={NETWORK_CONFLICT_EXIT_STATUS}
 RestartSec=2
 NoNewPrivileges=true
 ProtectSystem=full
@@ -632,6 +634,13 @@ mod tests {
             .find_map(|line| line.strip_prefix("ListenStream="))
             .unwrap();
         assert_eq!(listen, super::super::DEFAULT_SOCKET_PATH);
+    }
+
+    #[test]
+    fn daemon_unit_does_not_restart_after_a_network_conflict_refusal() {
+        let unit = machine_daemon_service_unit(Path::new("/usr/local/bin"));
+        assert!(unit.contains("\nRestartPreventExitStatus=78\n"));
+        assert_eq!(NETWORK_CONFLICT_EXIT_STATUS, 78);
     }
 
     #[test]

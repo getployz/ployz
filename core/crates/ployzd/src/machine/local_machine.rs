@@ -216,6 +216,9 @@ pub enum Error {
     /// or its `SeedVolume`. The refusal names `capability` in its details.
     #[error("{}", volume_approval::refusal_text(.capability))]
     VolumeRefused { capability: &'static str },
+    /// A Volume step that no Volume approval admits on this Machine.
+    #[error("This Server refused the Volume step: {0}")]
+    VolumeStepRefused(ployz_core::authority::AuthorityRefusal),
     #[error("ployz.machine.join.device-approval.v1 needs a Device-signed join approval: {0}")]
     JoinRefused(ployz_core::authority::AuthorityRefusal),
     #[error("{SET_DEVICE_ENFORCEMENT_CAPABILITY} needs a Device-signed starting set: {0}")]
@@ -418,7 +421,7 @@ impl LocalMachine {
             return Ok(());
         };
         let label = record.accepted_label(&remote);
-        if label.is_some_and(|label| label.as_str() == "cloud") {
+        if label.is_some_and(ManagementClientLabel::is_cloud) {
             return Ok(());
         }
         tracing::warn!(
@@ -843,12 +846,7 @@ impl LocalMachine {
                 .await;
                 if !leftovers.is_empty() {
                     return Ok(Enrolled::Refused {
-                        error: RpcError {
-                            code: RpcErrorCode::Conflict,
-                            message: leftovers_refusal(&leftovers),
-                            details: serde_json::Value::Null,
-                            cause: Vec::new(),
-                        },
+                        error: RpcError::conflict(leftovers_refusal(&leftovers)),
                         now: self.record().now(),
                     });
                 }
@@ -859,12 +857,7 @@ impl LocalMachine {
             EnrollPlan::Replay(machine) => machine,
             EnrollPlan::Conflict(now) => {
                 return Ok(Enrolled::Refused {
-                    error: RpcError {
-                        code: RpcErrorCode::Conflict,
-                        message: enroll_conflict(&now.phase).into(),
-                        details: serde_json::Value::Null,
-                        cause: Vec::new(),
-                    },
+                    error: RpcError::conflict(enroll_conflict(&now.phase)),
                     now,
                 });
             }
@@ -1519,12 +1512,7 @@ fn leave_response(owner: &RecordOwner, reset_warning: Option<String>) -> Left {
 }
 
 fn refusal(code: RpcErrorCode, message: &str) -> RpcError {
-    RpcError {
-        code,
-        message: message.into(),
-        details: serde_json::Value::Null,
-        cause: Vec::new(),
-    }
+    RpcError::new(code, message)
 }
 
 #[cfg(test)]

@@ -12,7 +12,6 @@ use ployz_core::{
     ContainerId, ExecRequestFrame, ExecResponseFrame, LogMetadata, LogOrigin, LogsOptions,
     MachineId, MachineName, OpaquePayload, RpcError, RpcErrorCode,
 };
-use serde_json::Value;
 use tokio::{io::AsyncWriteExt, sync::mpsc};
 use tonic::{Status, Streaming};
 
@@ -380,12 +379,7 @@ async fn send_exec_error(
 ) -> Result<(), Status> {
     send_exec(
         sender,
-        ExecResponseFrame::Error(RpcError {
-            code: RpcErrorCode::Internal,
-            message: error.to_string(),
-            details: Value::Null,
-            cause: Vec::new(),
-        }),
+        ExecResponseFrame::Error(RpcError::internal(error.to_string())),
     )
     .await
 }

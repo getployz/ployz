@@ -349,12 +349,9 @@ impl Failure {
                 .expect("error details object")
                 .extend(self.added.clone());
         }
-        RpcError {
-            code,
-            message: self.to_string(),
-            details,
-            cause: self.causes(),
-        }
+        RpcError::new(code, self.to_string())
+            .with_details(details)
+            .with_causes(self.causes())
     }
 
     pub(crate) fn json(&self) -> Value {
@@ -702,12 +699,7 @@ fn provision_code(error: &ProvisionError) -> RpcErrorCode {
 
 /// A failed image copy as the SDK reports it.
 pub(crate) fn push_rpc_error(error: PushError) -> RpcError {
-    RpcError {
-        code: push_code(&error),
-        message: error.to_string(),
-        details: Value::Null,
-        cause: Vec::new(),
-    }
+    RpcError::new(push_code(&error), error.to_string())
 }
 
 fn push_code(error: &PushError) -> RpcErrorCode {

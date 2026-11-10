@@ -348,6 +348,86 @@ async fn dependency_gate_uses_short_unhealthy_and_healthcheck_starting_deadlines
     }
 }
 
+#[tokio::test(start_paused = true)]
+async fn dependency_gate_deadline_follows_the_healthcheck_kind() {
+    let dependency = QualifiedService::parse("app/api").unwrap();
+    let http = |timeout_seconds| {
+        Some(ployz_core::HealthcheckSpec::Http(
+            ployz_core::HttpHealthcheck {
+                path: "/".into(),
+                port: std::num::NonZeroU16::new(80).unwrap(),
+                timeout_seconds,
+            },
+        ))
+    };
+    for (spec, runtime, seconds, expected) in [
+        (
+            http(3),
+            ContainerRuntimeObservation::Restarting,
+            3,
+            "runtime",
+        ),
+        (http(3), unhealthy(), 3, "timed_out"),
+        (None, ContainerRuntimeObservation::Restarting, 5, "runtime"),
+        (None, running(), 185, "timed_out"),
+        (
+            Some(ployz_core::HealthcheckSpec::Disabled),
+            running(),
+            185,
+            "timed_out",
+        ),
+    ] {
+        let mut observed = routed(&machine('1'), &container('a'), runtime);
+        observed
+            .try_update(|parts| parts.resolved_spec.container.healthcheck = spec)
+            .unwrap();
+        let plan = vec![DeployOperation::WaitHealthy {
+            machine_id: machine('1'),
+            dependent: QualifiedService::parse("app/web").unwrap(),
+            dependency: dependency.clone(),
+        }];
+        let client = Scripted {
+            observations: Some(vec![observed]),
+            cancel_on_prepare: None,
+            ..Scripted::new(Vec::new())
+        };
+
+        let started = tokio::time::Instant::now();
+        let outcome = tokio::time::timeout(
+            std::time::Duration::from_secs(seconds + 1),
+            execute_with(&plan, &client, &CancellationToken::new()),
+        )
+        .await
+        .expect("dependency health must finish by its deadline");
+        assert_eq!(started.elapsed(), std::time::Duration::from_secs(seconds));
+
+        let DeployOutcome::Failed {
+            failed:
+                FailedOperation::Operation {
+                    error:
+                        ExecutionError::DependencyHealth {
+                            failure: DependencyHealthFailure::Container { failure, .. },
+                            ..
+                        },
+                    ..
+                },
+            ..
+        } = outcome
+        else {
+            panic!("unexpected outcome: {outcome:?}");
+        };
+        assert_eq!(
+            match failure {
+                HealthFailure::TimedOut { .. } => "timed_out",
+                HealthFailure::Runtime { .. } => "runtime",
+                HealthFailure::Cancelled => "cancelled",
+            },
+            expected
+        );
+        client.assert_done();
+    }
+}
+
 #[tokio::test]
 async fn a_failed_verdict_fails_the_start_naming_the_container_without_polling_it() {
     let machine = machine('1');

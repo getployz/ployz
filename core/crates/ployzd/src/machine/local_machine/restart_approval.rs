@@ -22,7 +22,7 @@ use ployz_core::{
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
-use super::{Error, LocalMachine};
+use super::{Error, LocalMachine, volume_approval::VolumeRecords};
 
 const FILE_NAME: &str = "restart-approvals.json";
 
@@ -242,6 +242,9 @@ struct Consumption {
     /// The hook each rule's Service last ran here, one per push.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     rule_hooks: BTreeMap<String, RuleHook>,
+    /// Volume operations, grants and withdrawals, none ever pruned.
+    #[serde(default, skip_serializing_if = "VolumeRecords::is_empty")]
+    volumes: VolumeRecords,
     #[serde(flatten)]
     operations: BTreeMap<OperationId, Operation>,
 }
@@ -854,6 +857,37 @@ impl ConsumptionLog {
             *guard = Some(self.load().map_err(Error::ApprovalRecord)?);
         }
         Ok(guard)
+    }
+
+    /// Apply `change` to this Machine's Volume records at `now`, raised to the log's time
+    /// floor, and keep the result, synced, before returning its answer. A refusal keeps the
+    /// records as they were, and an unchanged record is not written.
+    pub(super) fn change_volumes<R>(
+        &self,
+        now: Timestamp,
+        change: impl FnOnce(&mut VolumeRecords, Timestamp) -> Result<R, Error>,
+    ) -> Result<R, Error> {
+        let mut guard = self.loaded()?;
+        let consumption = guard.as_ref().expect("loaded above");
+        let now = consumption
+            .expiry_time_floor
+            .map_or(now, |floor| now.max(floor));
+        let mut updated = consumption.clone();
+        let answer = change(&mut updated.volumes, now)?;
+        if updated.volumes == consumption.volumes {
+            return Ok(answer);
+        }
+        updated.expiry_time_floor = Some(now);
+        self.write(&mut guard, updated)?;
+        Ok(answer)
+    }
+
+    pub(super) fn read_volumes<R>(
+        &self,
+        read: impl FnOnce(&VolumeRecords) -> R,
+    ) -> Result<R, Error> {
+        let guard = self.loaded()?;
+        Ok(read(&guard.as_ref().expect("loaded above").volumes))
     }
 
     fn write(

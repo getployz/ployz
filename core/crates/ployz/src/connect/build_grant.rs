@@ -4,8 +4,8 @@
 use std::{io, net::SocketAddr};
 
 use iroh::{
-    Endpoint, EndpointAddr, PublicKey, RelayMode, SecretKey,
-    endpoint::{Connection, ConnectionError, VarInt, presets},
+    Endpoint, PublicKey, SecretKey,
+    endpoint::{Connection, ConnectionError, VarInt},
 };
 use ployz_core::{
     BUILD_GRANT_ALPN, BUILD_GRANT_ENDED, BUILD_GRANT_REFUSED, BuildGrant, OpenedSealed,
@@ -13,7 +13,7 @@ use ployz_core::{
 };
 use tokio::net::TcpListener;
 
-use super::ManagementRelay;
+use super::{ManagementRelay, management};
 
 /// A loopback registry address forwarding each TCP connection to the grant transport.
 /// Dropping it stops forwarding and closes the connection.
@@ -121,18 +121,11 @@ pub async fn open_grant_registry(
 ) -> io::Result<GrantRegistry> {
     let machine = PublicKey::from_bytes(grant.machine().as_bytes())
         .map_err(|_| io::Error::other("the Build Grant names an invalid Machine identity"))?;
-    let endpoint = Endpoint::builder(presets::Minimal)
-        .secret_key(SecretKey::from_bytes(grant.secret()))
-        .relay_mode(RelayMode::custom([relay.url.clone()]))
-        .ca_tls_config(relay.tls.clone())
+    let endpoint = management::endpoint(SecretKey::from_bytes(grant.secret()), relay)
         .bind()
         .await
         .map_err(io::Error::other)?;
-    let connection = endpoint
-        .connect(
-            EndpointAddr::new(machine).with_relay_url(relay.url.clone()),
-            BUILD_GRANT_ALPN,
-        )
+    let connection = management::dial(&endpoint, machine, relay, BUILD_GRANT_ALPN)
         .await
         .map_err(io::Error::other)?;
     let listener = TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, 0)).await?;

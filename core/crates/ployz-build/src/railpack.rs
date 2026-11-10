@@ -96,7 +96,7 @@ pub(crate) fn prepare(
             }
         }
     }
-    let directory = request.working_dir.join("private/railpack");
+    let directory = crate::capture::railpack_scratch(request.working_dir);
     fs::DirBuilder::new()
         .mode(0o700)
         .create(&directory)

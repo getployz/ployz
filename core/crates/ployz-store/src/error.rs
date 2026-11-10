@@ -4,12 +4,7 @@ use ployz_core::{RpcError, RpcErrorCode};
 use serde_json::Value;
 
 fn error(code: RpcErrorCode, message: impl Into<String>, details: Value) -> RpcError {
-    RpcError {
-        code,
-        message: message.into(),
-        details,
-        cause: Vec::new(),
-    }
+    RpcError::new(code, message).with_details(details)
 }
 
 pub(crate) fn invalid(message: impl Into<String>, details: Value) -> RpcError {
@@ -115,11 +110,19 @@ pub(crate) fn confirmation_required(message: impl Into<String>, details: Value) 
 }
 
 pub(crate) fn approval_required(message: impl Into<String>, details: Value) -> RpcError {
-    error(RpcErrorCode::from("approval_required"), message, details)
+    error(
+        RpcErrorCode::from(ployz_core::APPROVAL_REQUIRED_CODE),
+        message,
+        details,
+    )
 }
 
 pub(crate) fn forbidden(message: impl Into<String>, details: Value) -> RpcError {
-    error(RpcErrorCode::from("forbidden"), message, details)
+    error(
+        RpcErrorCode::from(ployz_core::FORBIDDEN_CODE),
+        message,
+        details,
+    )
 }
 
 /// Evidence a write needs is missing or incomplete, so it refuses rather than guess.

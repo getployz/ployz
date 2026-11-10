@@ -6,7 +6,10 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use ts_rs::TS;
 
-use super::{AuthorityRefusal, Purpose, Signed, SigningPublicKey, Statement, Timestamp};
+use super::{
+    AuthorityRefusal, Purpose, Signed, SigningPublicKey, Statement, Timestamp,
+    refusal::{field, first_mismatch},
+};
 use crate::{DeviceKey, Machine, MachineId, SealingPublicKey, WireGuardPublicKey};
 
 /// The immutable enrollment allocation. Runtime observations confer no authority.
@@ -158,8 +161,8 @@ pub fn verify(
     now: Timestamp,
 ) -> Result<JoinApproval, AuthorityRefusal> {
     let body = verify_signature(signed, devices, now)?;
-    for (field, matches) in [
-        ("a Cluster", body.cluster == cluster),
+    first_mismatch([
+        (field::CLUSTER, body.cluster == cluster),
         (
             "approved Devices",
             body.devices.contains(&body.signer)
@@ -177,11 +180,7 @@ pub fn verify(
             "a sealing recipient",
             body.sealing_recipient == machine.public_key,
         ),
-    ] {
-        if !matches {
-            return Err(AuthorityRefusal::Mismatch { field });
-        }
-    }
+    ])?;
     Ok(body)
 }
 

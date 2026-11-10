@@ -14,7 +14,6 @@ use ployz_core::{
     RoutesRead, Rpc, RpcError, RpcErrorCode, RpcRequestBody, RpcResponse, SelectEndpointRequest,
     WantedCopy, op,
 };
-use serde_json::Value;
 use tonic::{Request, Response, Status};
 
 use crate::{
@@ -185,12 +184,12 @@ impl MachineService {
     fn replicated(&self) -> Result<&ReplicatedStore, RpcError> {
         self.local
             .replicated()
-            .map_err(|_| unavailable("Cluster store is not available"))
+            .map_err(|_| RpcError::unavailable("Cluster store is not available"))
     }
 
     fn ready_replicated(&self) -> Result<&ReplicatedStore, RpcError> {
         if self.local_record().phase() != LocalMachinePhase::Participating {
-            return Err(unavailable("Machine is not participating"));
+            return Err(RpcError::unavailable("Machine is not participating"));
         }
         self.replicated()
     }
@@ -200,17 +199,14 @@ impl MachineService {
     async fn select(&self, request: SelectEndpointRequest) -> Result<EndpointSelected, RpcError> {
         let SelectEndpointRequest { peer, endpoint } = request;
         if peer == self.local_record().id() {
-            return Err(RpcError {
-                code: RpcErrorCode::InvalidArgument,
-                message: "a Server does not choose an endpoint for itself".into(),
-                details: Value::Null,
-                cause: Vec::new(),
-            });
+            return Err(RpcError::invalid_argument(
+                "a Server does not choose an endpoint for itself",
+            ));
         }
         let chooser = self
             .endpoint_chooser
             .as_ref()
-            .ok_or_else(|| unavailable("WireGuard is not running on this Server"))?;
+            .ok_or_else(|| RpcError::unavailable("WireGuard is not running on this Server"))?;
         let (applied, outcome) = tokio::sync::oneshot::channel();
         chooser
             .send(EndpointChoice {
@@ -219,7 +215,7 @@ impl MachineService {
                 applied,
             })
             .await
-            .map_err(|_| unavailable("WireGuard is not running on this Server"))?;
+            .map_err(|_| RpcError::unavailable("WireGuard is not running on this Server"))?;
         match outcome.await {
             Ok(Ok(())) => Ok(EndpointSelected { peer, endpoint }),
             Ok(Err(refused @ ChoiceRefused::UnknownPeer(_))) => {
@@ -228,7 +224,9 @@ impl MachineService {
             Ok(Err(refused @ ChoiceRefused::WireGuard)) => {
                 Err(RpcError::caused(RpcErrorCode::Internal, &refused))
             }
-            Err(_) => Err(unavailable("WireGuard is not running on this Server")),
+            Err(_) => Err(RpcError::unavailable(
+                "WireGuard is not running on this Server",
+            )),
         }
     }
 
@@ -256,7 +254,7 @@ impl MachineService {
     fn containers(&self) -> Result<&ContainerRuntime, RpcError> {
         self.local
             .containers()
-            .ok_or_else(|| unavailable("Docker is not available"))
+            .ok_or_else(|| RpcError::unavailable("Docker is not available"))
     }
 
     fn require_joined(&self) -> Result<(), RpcError> {
@@ -265,7 +263,7 @@ impl MachineService {
             LocalMachinePhase::Uninitialized
             | LocalMachinePhase::Resetting
             | LocalMachinePhase::Unrecognized(_) => {
-                Err(unavailable("Machine is not participating"))
+                Err(RpcError::unavailable("Machine is not participating"))
             }
         }
     }
@@ -974,12 +972,7 @@ impl MachineRpc for MachineService {
     ) -> Result<Response<OpaquePayload>, Status> {
         let request = expect::<op::PullImage>(request)?;
         if request.image.is_empty() {
-            return respond(RpcError {
-                code: RpcErrorCode::InvalidArgument,
-                message: "image is required".into(),
-                details: Value::Null,
-                cause: Vec::new(),
-            });
+            return respond(RpcError::invalid_argument("image is required"));
         }
         finish(self.local.pull_image(request).await)
     }
@@ -990,12 +983,7 @@ impl MachineRpc for MachineService {
     ) -> Result<Response<OpaquePayload>, Status> {
         let request = expect::<op::PullImageFromMachine>(request)?;
         if request.pull.image().is_empty() {
-            return respond(RpcError {
-                code: RpcErrorCode::InvalidArgument,
-                message: "image is required".into(),
-                details: Value::Null,
-                cause: Vec::new(),
-            });
+            return respond(RpcError::invalid_argument("image is required"));
         }
         finish(self.local.pull_image_from_machine(request).await)
     }
@@ -1023,12 +1011,9 @@ impl MachineRpc for MachineService {
                 let admitted =
                     self.admit_rule_grant(grant, request.holder.as_ref(), request.sealed.as_ref());
                 let Some(admitted) = admitted.await else {
-                    return respond(RpcError {
-                        code: RpcErrorCode::Unavailable,
-                        message: "This Server cannot reach GitHub to check a rule build".into(),
-                        details: Value::Null,
-                        cause: Vec::new(),
-                    });
+                    return respond(RpcError::unavailable(
+                        "This Server cannot reach GitHub to check a rule build",
+                    ));
                 };
                 match admitted {
                     Ok(admitted) => Some(admitted),
@@ -1096,15 +1081,10 @@ impl MachineRpc for MachineService {
                 let material = match material {
                     Ok(material) => material,
                     Err(error) => {
-                        return respond(RpcError {
-                            code: RpcErrorCode::InvalidArgument,
-                            message: format!(
-                                "refused Certificate Material for {hostname}: {error}",
-                                error = ployz_core::error_chain::inline(&error),
-                            ),
-                            details: Value::Null,
-                            cause: Vec::new(),
-                        });
+                        return respond(RpcError::invalid_argument(format!(
+                            "refused Certificate Material for {hostname}: {error}",
+                            error = ployz_core::error_chain::inline(&error),
+                        )));
                     }
                 };
                 replicated
@@ -1288,6 +1268,13 @@ fn local_failure(error: LocalMachineError) -> Result<RpcError, Status> {
                 "next": "ployz device enforce --off from an approved device",
             }),
         )),
+        LocalMachineError::VolumeStepRefused(_) => Err(ployz_core::rpc::hinted_status(
+            tonic::Code::PermissionDenied,
+            &error,
+            serde_json::json!({
+                "next": "approve the Volume change again from an approved device",
+            }),
+        )),
         LocalMachineError::RuleGrantRefused(_)
         | LocalMachineError::RuleProofRefused(_)
         | LocalMachineError::RuleHeadUnread(_) => Err(build_refused(
@@ -1322,17 +1309,21 @@ fn local_failure(error: LocalMachineError) -> Result<RpcError, Status> {
         LocalMachineError::Store(error) => Ok(store_error(error)),
         LocalMachineError::JoinRecord(_) => Err(internal_response(error)),
         LocalMachineError::ApprovalRecord(_) => Err(internal_response(error)),
-        LocalMachineError::NotParticipating => Ok(unavailable("Machine is not participating")),
+        LocalMachineError::NotParticipating => {
+            Ok(RpcError::unavailable("Machine is not participating"))
+        }
         LocalMachineError::ClusterStoreUnavailable => {
-            Ok(unavailable("Cluster store is not available"))
+            Ok(RpcError::unavailable("Cluster store is not available"))
         }
         LocalMachineError::ClusterNetworkUnpublished | LocalMachineError::ClusterStoreEmpty => {
-            Ok(unavailable(&error.to_string()))
+            Ok(RpcError::unavailable(error.to_string()))
         }
         LocalMachineError::ClusterUnavailable => {
             Err(Status::unavailable("Cluster is not available"))
         }
-        LocalMachineError::DockerUnavailable => Ok(unavailable("Docker is not available")),
+        LocalMachineError::DockerUnavailable => {
+            Ok(RpcError::unavailable("Docker is not available"))
+        }
         LocalMachineError::PasskeyIsDevice(_)
         | LocalMachineError::DeviceIsPasskey(_)
         | LocalMachineError::CredentialHeld { .. } => {
@@ -1345,12 +1336,9 @@ fn local_failure(error: LocalMachineError) -> Result<RpcError, Status> {
         LocalMachineError::Enrollment(error) => {
             Ok(RpcError::caused(RpcErrorCode::Conflict, &error))
         }
-        LocalMachineError::EmptyUpdate => Ok(RpcError {
-            code: RpcErrorCode::InvalidArgument,
-            message: "at least one Machine update is required".into(),
-            details: Value::Null,
-            cause: Vec::new(),
-        }),
+        LocalMachineError::EmptyUpdate => Ok(RpcError::invalid_argument(
+            "at least one Machine update is required",
+        )),
         LocalMachineError::RecordOwner(error) => Err(ployz_core::rpc::caused_status(
             tonic::Code::Internal,
             &error,
@@ -1367,19 +1355,13 @@ fn local_failure(error: LocalMachineError) -> Result<RpcError, Status> {
             Ok(RpcError::caused(RpcErrorCode::InvalidArgument, &error))
         }
         LocalMachineError::PrivateAccessRouterSpec | LocalMachineError::PrivateAccessKey(_) => {
-            Ok(RpcError {
-                code: RpcErrorCode::InvalidArgument,
-                message: error.to_string(),
-                details: Value::Null,
-                cause: Vec::new(),
-            })
+            Ok(RpcError::invalid_argument(error.to_string()))
         }
-        LocalMachineError::PrivateAccessKeyMissing => Ok(RpcError {
-            code: RpcErrorCode::InvalidArgument,
-            message: error.to_string(),
-            details: serde_json::json!({ "capability": ployz_core::SET_PRIVATE_ACCESS_CAPABILITY }),
-            cause: Vec::new(),
-        }),
+        LocalMachineError::PrivateAccessKeyMissing => {
+            Ok(RpcError::invalid_argument(error.to_string()).with_details(
+                serde_json::json!({ "capability": ployz_core::SET_PRIVATE_ACCESS_CAPABILITY }),
+            ))
+        }
         LocalMachineError::PrivateAccessKeyFile(_)
         | LocalMachineError::PrivateAccessState(_)
         | LocalMachineError::PrivateAccessRouterStays { .. } => {
@@ -1392,25 +1374,15 @@ fn local_failure(error: LocalMachineError) -> Result<RpcError, Status> {
         // Both ask the caller for the doors route, so its capability is named.
         LocalMachineError::UnsupportedDoors
         | LocalMachineError::Docker(crate::docker::Error::IngressHolderNotRunning) => {
-            Ok(RpcError {
-                code: RpcErrorCode::InvalidArgument,
-                message: error.to_string(),
-                details: serde_json::json!({ "capability": ployz_core::SET_INGRESS_DOORS_CAPABILITY }),
-                cause: Vec::new(),
-            })
+            Ok(RpcError::invalid_argument(error.to_string()).with_details(
+                serde_json::json!({ "capability": ployz_core::SET_INGRESS_DOORS_CAPABILITY }),
+            ))
         }
-        LocalMachineError::TunnelTokenMissing => Ok(RpcError {
-            code: RpcErrorCode::InvalidArgument,
-            message: error.to_string(),
-            details: serde_json::json!({ "capability": ployz_core::SET_INGRESS_TUNNEL_CAPABILITY }),
-            cause: Vec::new(),
-        }),
-        LocalMachineError::TunnelToken(_) => Ok(RpcError {
-            code: RpcErrorCode::InvalidArgument,
-            message: error.to_string(),
-            details: Value::Null,
-            cause: Vec::new(),
-        }),
+        LocalMachineError::TunnelTokenMissing => Ok(RpcError::invalid_argument(error.to_string())
+            .with_details(
+                serde_json::json!({ "capability": ployz_core::SET_INGRESS_TUNNEL_CAPABILITY }),
+            )),
+        LocalMachineError::TunnelToken(_) => Ok(RpcError::invalid_argument(error.to_string())),
         LocalMachineError::DoorNotRunning { .. } | LocalMachineError::TunnelTokenFile(_) => {
             Ok(RpcError::caused(RpcErrorCode::Internal, &error))
         }
@@ -1418,18 +1390,10 @@ fn local_failure(error: LocalMachineError) -> Result<RpcError, Status> {
         LocalMachineError::StoragePreparation(error) | LocalMachineError::FenceRefused(error) => {
             Ok(error)
         }
-        LocalMachineError::Cleanup(message) => Ok(RpcError {
-            code: RpcErrorCode::Internal,
-            message,
-            details: Value::Null,
-            cause: Vec::new(),
-        }),
-        LocalMachineError::Admission(crate::mutation::Error::Busy) => Ok(RpcError {
-            code: RpcErrorCode::Conflict,
-            message: "a Ployz installation or upgrade is active".into(),
-            details: Value::Null,
-            cause: Vec::new(),
-        }),
+        LocalMachineError::Cleanup(message) => Ok(RpcError::internal(message)),
+        LocalMachineError::Admission(crate::mutation::Error::Busy) => Ok(RpcError::conflict(
+            "a Ployz installation or upgrade is active",
+        )),
         LocalMachineError::Admission(crate::mutation::Error::Io(error)) => Err(
             ployz_core::rpc::caused_status(tonic::Code::Internal, &error),
         ),
@@ -1458,10 +1422,7 @@ fn sealing_error(error: SealingError) -> RpcError {
             (RpcErrorCode::InvalidArgument, Refusal::SealedAnother)
         }
     };
-    RpcError {
-        details: refusal.details(),
-        ..RpcError::caused(code, &error)
-    }
+    RpcError::caused(code, &error).with_details(refusal.details())
 }
 
 /// Refusals name themselves in `details` so the CLI tells a wrong code from a
@@ -1481,10 +1442,7 @@ fn recovery_error(error: RecoveryError) -> RpcError {
         RecoveryError::WrongCode => (RpcErrorCode::InvalidArgument, Refusal::WrongCode),
         RecoveryError::HeldAnother { .. } => (RpcErrorCode::Conflict, Refusal::HeldAnother),
     };
-    RpcError {
-        details: refusal.details(),
-        ..RpcError::caused(code, &error)
-    }
+    RpcError::caused(code, &error).with_details(refusal.details())
 }
 
 #[expect(
@@ -1535,18 +1493,9 @@ fn finish(
     }
 }
 
-fn unavailable(message: &str) -> RpcError {
-    RpcError {
-        code: RpcErrorCode::Unavailable,
-        message: message.into(),
-        details: Value::Null,
-        cause: Vec::new(),
-    }
-}
-
 fn store_error(error: StoreError) -> RpcError {
     let code = match error {
-        StoreError::JoinRefused(_) => RpcErrorCode::from("forbidden"),
+        StoreError::JoinRefused(_) => RpcErrorCode::from(ployz_core::FORBIDDEN_CODE),
         StoreError::AlreadyResetting
         | StoreError::AlreadyInitialized
         | StoreError::NotParticipating

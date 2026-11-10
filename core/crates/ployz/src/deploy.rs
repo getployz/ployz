@@ -7,8 +7,8 @@ use ployz_core::{
     BridgeEndpointCapacity, ContainerObservation, ContainerRuntimeObservation, DockerVolume,
     DockerVolumeId, DockerVolumeName, IngressHost, MachineFailure, MachineId, MachineName,
     MachineObservation, MembershipObservation, Namespace, PartialResult, PlacementConstraint,
-    ProvisionedVolumeMaximumBytes, QualifiedService, RowStanding, RpcError, RpcErrorCode,
-    ServiceName, ServiceObservation, VolumeInventory, VolumeObservationFailure, derive_services,
+    ProvisionedVolumeMaximumBytes, QualifiedService, RowStanding, RpcError, ServiceName,
+    ServiceObservation, VolumeInventory, VolumeObservationFailure, derive_services,
 };
 use thiserror::Error;
 
@@ -88,11 +88,12 @@ impl VolumeSnapshot {
             named_failures.extend(success.value.failures);
         }
         Self::try_from_parts(observations, named_failures, machine_failures, omissions).map_err(
-            |error| RpcError {
-                code: RpcErrorCode::Internal,
-                message: format!("invalid Docker Volume snapshot: {}", crate::ui::row(&error)),
-                details: error.details,
-                cause: Vec::new(),
+            |error| {
+                RpcError::internal(format!(
+                    "invalid Docker Volume snapshot: {}",
+                    crate::ui::row(&error)
+                ))
+                .with_details(error.details)
             },
         )
     }
@@ -135,12 +136,7 @@ impl VolumeSnapshot {
     }
 
     fn validate(&self) -> Result<(), RpcError> {
-        let invalid = |message| RpcError {
-            code: RpcErrorCode::InvalidArgument,
-            message,
-            details: serde_json::Value::Null,
-            cause: Vec::new(),
-        };
+        let invalid = |message| RpcError::invalid_argument(message);
         let mut ids = BTreeSet::new();
         for volume in &self.observations {
             if !ids.insert(&volume.id) {
@@ -993,18 +989,13 @@ impl PlanError {
             error @ Self::NoWriter { .. } => {
                 ployz_core::SwitchError::NoWriter.rpc_error(error.to_string())
             }
-            error @ Self::VolumeServerTakesNoServices { .. } => RpcError {
-                code: RpcErrorCode::Conflict,
-                message: error.to_string(),
-                details: serde_json::json!({ "reason": "volume_server_takes_no_services" }),
-                cause: Vec::new(),
-            },
-            error @ (Self::CopiesUnknown { .. } | Self::VolumeHolderUnknown { .. }) => RpcError {
-                code: RpcErrorCode::Unavailable,
-                message: error.to_string(),
-                details: serde_json::Value::Null,
-                cause: Vec::new(),
-            },
+            error @ Self::VolumeServerTakesNoServices { .. } => RpcError::conflict(
+                error.to_string(),
+            )
+            .with_details(serde_json::json!({ "reason": "volume_server_takes_no_services" })),
+            error @ (Self::CopiesUnknown { .. } | Self::VolumeHolderUnknown { .. }) => {
+                RpcError::unavailable(error.to_string())
+            }
             error @ (Self::ConflictingHostPublications { .. }
             | Self::HostPortConflict { .. }
             | Self::CapacityUnknown
@@ -1023,16 +1014,13 @@ impl PlanError {
             | Self::HostnameConflict { .. }
             | Self::RemovalInTarget { .. }
             | Self::RemovalNotSelected { .. }
-            | Self::RemovalInReservedNamespace { .. }) => RpcError {
-                code: RpcErrorCode::InvalidArgument,
-                message: error.to_string(),
-                details: if error.same_again() {
+            | Self::RemovalInReservedNamespace { .. }) => {
+                RpcError::invalid_argument(error.to_string()).with_details(if error.same_again() {
                     serde_json::json!({"same_again": true})
                 } else {
                     serde_json::Value::Null
-                },
-                cause: Vec::new(),
-            },
+                })
+            }
         }
     }
 

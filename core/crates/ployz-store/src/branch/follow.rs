@@ -5,6 +5,7 @@
 
 use super::*;
 use crate::Trusted;
+use crate::removal::mark;
 use ployz_core::RpcErrorCode;
 
 /// A Parent's deployed value that followed into its Branch but isn't staged there:
@@ -52,9 +53,11 @@ pub(crate) fn follow(
 ) -> Result<(), RpcError> {
     let trusted = &Trusted::default();
     let branches = tx.query(
-        "SELECT environment_id, organization_id FROM config_environment_branch b \
-         WHERE parent_id = ?1 AND NOT EXISTS (SELECT 1 FROM config_removal_mark m \
-         WHERE m.environment_id = b.environment_id AND m.state = 'removing') ORDER BY environment_id",
+        &format!(
+            "SELECT environment_id, organization_id FROM config_environment_branch b \
+             WHERE parent_id = ?1 AND {} ORDER BY environment_id",
+            mark::unmarked("b.environment_id")
+        ),
         &[parent.as_str().into()],
     )?;
     if branches.is_empty() || lineages.is_empty() {

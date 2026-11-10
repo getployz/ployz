@@ -12,12 +12,10 @@ use futures_util::future::join_all;
 use ployz_core::{
     DescribeContractRequest, GENERATE_SEALING_KEY_CAPABILITY, GenerateSealingKeyRequest,
     INSTALL_SEALING_KEY_CAPABILITY, InspectRequest, InstallSealingKeyRequest, LocalMachinePhase,
-    MachineId, MachineTarget, RpcError, RpcErrorCode, SHARE_SEALING_KEY_CAPABILITY,
-    SealedSealingKey, Sealing, SealingPublicKey, SealingRefusal, ShareSealingKeyRequest,
-    WireGuardPublicKey, op,
+    MachineId, MachineTarget, RpcError, SHARE_SEALING_KEY_CAPABILITY, SealedSealingKey, Sealing,
+    SealingPublicKey, SealingRefusal, ShareSealingKeyRequest, WireGuardPublicKey, op,
 };
 use serde::{Deserialize, Serialize};
-use serde_json::Value;
 use ts_rs::TS;
 
 use crate::connect::{Client, rpc_error};
@@ -358,12 +356,7 @@ async fn carry<C: BackfillClient>(
     wireguard_key: WireGuardPublicKey,
     public_key: SealingPublicKey,
 ) -> MachineOutcome {
-    let mut last = RpcError {
-        code: RpcErrorCode::Unsupported,
-        message: "no Machine that holds the Sealing Key can share it".into(),
-        details: Value::Null,
-        cause: Vec::new(),
-    };
+    let mut last = RpcError::unsupported("no Machine that holds the Sealing Key can share it");
     for &source in sources {
         let sealed = match client.share(source, recipient, wireguard_key).await {
             Ok(sealed) => sealed,

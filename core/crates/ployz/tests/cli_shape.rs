@@ -333,6 +333,9 @@ fn no_failure_message_flattens_a_cause() {
             let source = std::fs::read_to_string(&path).unwrap();
             for constructor in CONSTRUCTORS {
                 for (start, _) in source.match_indices(constructor) {
+                    if source[..start].ends_with("RpcError") {
+                        continue;
+                    }
                     let rest = &source[start + constructor.len()..];
                     let mut depth = 1;
                     let end = rest

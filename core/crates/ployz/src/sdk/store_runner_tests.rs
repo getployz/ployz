@@ -643,7 +643,7 @@ async fn a_queued_build_says_so_in_its_log_while_it_waits() {
                 ployz_build::Progress::Stage(ployz_build::Stage::Queued),
             ));
             let _ = released.await;
-            Err(internal("released"))
+            Err(RpcError::internal("released"))
         });
     let log = || {
         run.store
@@ -720,7 +720,7 @@ async fn a_build_reports_the_server_it_runs_on_by_name() {
                     rejections: Vec::new(),
                 },
             )));
-            Err(internal("the build failed"))
+            Err(RpcError::internal("the build failed"))
         });
     assert!(run.follow(&target, &running).await.unwrap().is_err());
     let build = run

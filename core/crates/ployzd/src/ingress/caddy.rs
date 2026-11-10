@@ -2,7 +2,9 @@
 
 use chrono::{SecondsFormat, Utc};
 use ployz_core::{
-    HOSTNAME_VERIFY_PATH, HttpProtocol, INGRESS_VERIFY_PATH, Machine, MachineId, ingress_upstream,
+    HOSTNAME_VERIFY_PATH, HttpProtocol, INGRESS_LOOPBACK_BIND, INGRESS_LOOPBACK_BIND_V6,
+    INGRESS_LOOPBACK_PORT, INGRESS_RUNTIME_MOUNT, INGRESS_VERIFY_PATH, Machine, MachineId,
+    ingress_certs_dir, ingress_upstream,
 };
 use reqwest::{Client, StatusCode, header};
 use serde_json::Value;
@@ -27,8 +29,6 @@ use crate::{
 mod trace;
 
 pub const CONFIG_FILE: &str = "Caddyfile";
-const CONTAINER_CERTS_DIR: &str = "/config/caddy/certs";
-const CONTAINER_RUNTIME_DIR: &str = "/run/ingress";
 /// Request fields that name the visitor. Every header goes, since any of them can carry an address.
 const VISITOR_FIELDS: [&str; 3] = ["request>remote_ip", "request>client_ip", "request>headers"];
 /// Fields Caddy's debug logs put the client address in outside any request, as TLS handshakes do.
@@ -148,7 +148,7 @@ impl CaddyAdmin for AdminClient {
             Err(Error::Admin(_)) => return Ok(BTreeSet::new()),
             Err(error) => return Err(error),
         };
-        let prefix = format!("{CONTAINER_CERTS_DIR}/");
+        let prefix = format!("{}/", ingress_certs_dir());
         Ok(serde_json::from_str::<Option<Vec<Value>>>(&files)?
             .unwrap_or_default()
             .iter()
@@ -322,8 +322,7 @@ https:// {{\n\
 \timport common_proxy\n\
 \theader_up X-Forwarded-Proto {{header.X-Forwarded-Proto}}\n\
 }}\n",
-        trace::LOOPBACK_BIND,
-        trace::LOOPBACK_BIND_V6,
+        INGRESS_LOOPBACK_BIND, INGRESS_LOOPBACK_BIND_V6,
     );
     write_loopback_sites(&mut output, projection, &unpublished, &hostname_verify);
     if projection.sites.iter().any(|site| {
@@ -378,8 +377,8 @@ https:// {{\n\
             continue;
         };
         let stem = super::certificate_file_stem(&site.hostname, material);
-        let tls =
-            format!("\ttls {CONTAINER_CERTS_DIR}/{stem}.crt {CONTAINER_CERTS_DIR}/{stem}.key\n");
+        let certs = ingress_certs_dir();
+        let tls = format!("\ttls {certs}/{stem}.crt {certs}/{stem}.key\n");
         // Pinned material with no HTTPS route left answers like the HTTP catch-all.
         let (trace, answer) = match https {
             Some((_, route)) => (published(route), proxy(route)),
@@ -412,7 +411,7 @@ fn write_loopback_sites(
     hostname_verify: &str,
 ) {
     let local_machine = &projection.machine.id;
-    let port = trace::LOOPBACK_PORT;
+    let port = INGRESS_LOOPBACK_PORT;
     let loopback = format!("\timport loopback_site {local_machine}\n");
     let _ = write!(
         output,
@@ -491,7 +490,7 @@ fn write_log_snippets(output: &mut String) {
 \tlog_append namespace {{args[0]}}\n\
 \tlog_append service {{args[1]}}\n\
 \tlog ployz_requests {{\n\
-\t\toutput file {CONTAINER_RUNTIME_DIR}/{} {{\n\
+\t\toutput file {INGRESS_RUNTIME_MOUNT}/{} {{\n\
 \t\t\troll_size 10MiB\n\
 \t\t\troll_keep 1\n\
 \t\t\troll_uncompressed\n\

@@ -35,7 +35,7 @@ use ployz_core::{
     MembershipObservation, NAMESPACE_LABEL, Namespace, OpaquePayload, PROTOCOL_MAJOR,
     PrivateAccessSet, ProvisionedCopy, ProvisionedVolumeMaximumBytes, QualifiedService,
     RUNTIME_WATCH_MESSAGE_SIZE_LIMIT, ResolvedServiceSpec, RotationEdge, RoutedAddresses,
-    RoutesRead, RoutingRequest, RpcError, RpcErrorCode, RpcRequestBody, RpcResponse, RunTarget,
+    RoutesRead, RoutingRequest, RpcError, RpcRequestBody, RpcResponse, RunTarget,
     RuntimeWatchFrame, ServiceId, ServiceName, SetPrivateAccessRequest, SlotId, SlotRole,
     StorageBacking, StorageCapacity, VolumeCopy, VolumeCopyView, VolumeInventory,
     WireGuardPublicKey, WriterEpoch, encode_runtime_watch_frame,
@@ -1453,13 +1453,7 @@ fn physical(place: &VolumePlace) -> DockerVolumeName {
 }
 
 fn not_found(container_id: &ContainerId) -> RpcResponse {
-    RpcError {
-        code: RpcErrorCode::NotFound,
-        message: format!("no Container {container_id}"),
-        details: Value::Null,
-        cause: Vec::new(),
-    }
-    .into()
+    RpcError::not_found(format!("no Container {container_id}")).into()
 }
 
 fn unimplemented(command: &str) -> Status {

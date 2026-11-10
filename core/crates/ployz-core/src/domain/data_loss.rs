@@ -115,12 +115,8 @@ impl UnconfirmedDataLoss {
     /// Refusal when execute-time Data Loss is not covered by the confirmation.
     #[must_use]
     pub fn into_rpc_error(self) -> RpcError {
-        RpcError {
-            code: RpcErrorCode::InvalidArgument,
-            message: self.to_string(),
-            details: serde_json::to_value(&self).expect("UnconfirmedDataLoss is JSON"),
-            cause: Vec::new(),
-        }
+        RpcError::invalid_argument(self.to_string())
+            .with_details(serde_json::to_value(&self).expect("UnconfirmedDataLoss is JSON"))
     }
 
     /// Execute-time refusal payload, when `error` carries one.

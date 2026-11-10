@@ -15,10 +15,11 @@ use super::assess::{assess, read_facts};
 use super::host::{install_docker, verify_docker};
 use super::os_release::OsRelease;
 use super::storage::{
-    self, BuildFailure, OPENZFS_BUILD_DEPENDENCIES, OPENZFS_SHA256, ZfsRoute,
-    debian_contrib_source, debian_kernel_flavour_step, download_openzfs, enable_debian_contrib,
-    kernel_devel, make_openzfs_rpms, require_kernel_devel, uname, zfs_installed, zfs_preflight,
+    self, BuildFailure, OPENZFS_BUILD_DEPENDENCIES, OPENZFS_SHA256, debian_contrib_source,
+    debian_kernel_flavour_step, download_openzfs, enable_debian_contrib, kernel_devel,
+    make_openzfs_rpms, require_kernel_devel, uname, zfs_installed, zfs_preflight,
 };
+use super::zfs_route::ZfsRoute;
 use super::{
     DEFAULT_RUN_DIR, Error, InstallPaths, apt_get, command_exists, refuse, require_root, run_apt,
     run_command, run_host,

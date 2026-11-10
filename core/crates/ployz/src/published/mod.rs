@@ -148,7 +148,7 @@ impl PublishError {
             }
             Self::Gone { .. } => RpcErrorCode::NotFound,
             Self::NeedsTerminal { .. } => RpcErrorCode::ConfirmationRequired,
-            Self::AgentRefused { .. } => RpcErrorCode::from("forbidden"),
+            Self::AgentRefused { .. } => RpcErrorCode::from(ployz_core::FORBIDDEN_CODE),
             Self::OtherCloud { .. } => RpcErrorCode::Conflict,
             Self::Slow { .. } => RpcErrorCode::Unavailable,
         }
@@ -185,7 +185,7 @@ impl Setup {
             cloud: named.unwrap_or_else(|| crate::cloud_enroll::cloud_origin(DEFAULT_CLOUD)),
             configured,
             config: config.to_path_buf(),
-            dir: config.with_file_name("published"),
+            dir: crate::config_dir::ConfigDir::new(config).published(),
         }
     }
 

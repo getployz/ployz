@@ -26,7 +26,7 @@ use serde_json::Value;
 use super::build::OutsideBuild;
 use super::preparation::{BuildReceipt, OutsideBuildInput};
 use super::store_call;
-use super::store_runner::{internal, log_line, only};
+use super::store_runner::{log_line, only};
 use super::{Dialed, Session};
 use crate::connect::{ClusterExpectation, ConnectError, SystemConnector};
 use crate::context::Connection;
@@ -223,7 +223,7 @@ pub async fn github_check_in(
     })
     .await?;
     if build.status != BuildStatus::Building || build.grant.is_some() {
-        return Err(conflict(
+        return Err(RpcError::conflict(
             "This build already checked in or is no longer wanted",
         ));
     }
@@ -240,7 +240,7 @@ pub async fn github_check_in(
         BTreeMap::from([(id.service.clone(), commit.to_string())]),
     )?
     .remove(&id.service)
-    .ok_or_else(|| internal("The build has no fingerprint"))?;
+    .ok_or_else(|| RpcError::internal("The build has no fingerprint"))?;
     let sealed = sealed_record(&deployment, &id.service)?;
     let session = session(connections, expect).await?;
     let foreign = session.foreign();
@@ -257,7 +257,7 @@ pub async fn github_check_in(
                 move |store| store.github_end(&id, Some(run_id), &end)
             })
             .await?;
-            return Err(conflict(OLD_MINT_SKIPS));
+            return Err(RpcError::conflict(OLD_MINT_SKIPS));
         }
         Err(error) => {
             session.close().await;
@@ -354,7 +354,7 @@ pub async fn github_rule_check_in(
     let (Some(ployz_core::Sealing::Held { public_key }), Some(attest)) =
         (contract.sealing, contract.attest)
     else {
-        return Err(conflict(
+        return Err(ployz_core::RpcError::conflict(
             "GitHub builds under an automatic deploy rule need a newer Ployz on your servers",
         ));
     };
@@ -407,7 +407,7 @@ pub async fn github_rule_grant(
 ) -> Result<Dialed<RuleGranted>, RpcError> {
     let (id, rule, built) = rule_build(&store, &claims, &ask.commit.to_string()).await?;
     if ask.service != id.service {
-        return Err(conflict(
+        return Err(ployz_core::RpcError::conflict(
             "The grant asks for another Service than its build's",
         ));
     }
@@ -417,7 +417,7 @@ pub async fn github_rule_grant(
         BTreeMap::from([(id.service.clone(), built.commit.to_string())]),
     )?
     .remove(&id.service)
-    .ok_or_else(|| internal("The build has no fingerprint"))?;
+    .ok_or_else(|| ployz_core::RpcError::internal("The build has no fingerprint"))?;
     let sealed = sealed_record(&deployment, &id.service)?;
     let session = session(connections, expect).await?;
     let foreign = session.foreign();
@@ -430,7 +430,7 @@ pub async fn github_rule_grant(
                 .contains(ployz_core::BUILD_GRANT_RULE_CAPABILITY)
         });
         if !advertises {
-            return Err(conflict(
+            return Err(ployz_core::RpcError::conflict(
                 "GitHub builds under an automatic deploy rule need a newer Ployz on your servers",
             ));
         }
@@ -456,7 +456,7 @@ pub async fn github_rule_grant(
     session.close().await;
     let (machine, minted) = minted?;
     let MintedKey::Holder { machine: identity } = minted.key else {
-        return Err(internal(
+        return Err(ployz_core::RpcError::internal(
             "The Machine returned a grant secret for a held grant",
         ));
     };
@@ -505,16 +505,16 @@ async fn rule_build(
         })?;
         let build = store.github_authorize(&id, &claims)?;
         if build.status != BuildStatus::Building || build.grant.is_some() {
-            return Err(conflict(
+            return Err(ployz_core::RpcError::conflict(
                 "This build already checked in or is no longer wanted",
             ));
         }
-        let rule = store
-            .github_rule(&id)?
-            .ok_or_else(|| conflict("This build runs under no automatic deploy rule"))?;
+        let rule = store.github_rule(&id)?.ok_or_else(|| {
+            ployz_core::RpcError::conflict("This build runs under no automatic deploy rule")
+        })?;
         let built = store.github_input(&id)?;
         if built.commit.as_str() != commit {
-            return Err(conflict(
+            return Err(ployz_core::RpcError::conflict(
                 "This run checked out another commit than the one this build pins",
             ));
         }
@@ -548,7 +548,7 @@ fn sealed_record(
         .map(SealedRecord::of)
         .transpose()
         .map(Option::flatten)
-        .map_err(|error| internal(&error.to_string()))
+        .map_err(|error| RpcError::internal(error.to_string()))
 }
 
 /// Mint on the session's Machine, or `None` when GitHub can't take this build.
@@ -603,7 +603,7 @@ fn minting(holder: Option<BuildGrantId>, capabilities: &BTreeSet<String>, sealed
 /// The one repository a runner's Build Grant may push into.
 fn repository(id: &GithubBuildId) -> Result<BuildGrantRepository, RpcError> {
     BuildGrantRepository::parse(format!("ployz-build/{}", id.service))
-        .map_err(|_| internal("The Service has no Build Grant repository"))
+        .map_err(|_| RpcError::internal("The Service has no Build Grant repository"))
 }
 
 /// One batch of a runner's `ployz build --events` lines, from line `from`, and once
@@ -650,12 +650,8 @@ pub async fn github_report(
     claims: GithubClaims,
     report: Value,
 ) -> Result<GithubReported, RpcError> {
-    let report: StepsReport = serde_json::from_value(report).map_err(|_| RpcError {
-        code: RpcErrorCode::InvalidArgument,
-        message: "The report is not Build Steps".to_owned(),
-        details: Value::Null,
-        cause: Vec::new(),
-    })?;
+    let report: StepsReport = serde_json::from_value(report)
+        .map_err(|_| RpcError::invalid_argument("The report is not Build Steps"))?;
     let mut lines: Vec<String> = report
         .events
         .iter()
@@ -663,12 +659,9 @@ pub async fn github_report(
         .collect();
     let run_end = match (report.install_failed, report.platforms) {
         (Some(_), Some(_)) => {
-            return Err(RpcError {
-                code: RpcErrorCode::InvalidArgument,
-                message: "A report ends a build or says ployz didn't install, not both".to_owned(),
-                details: Value::Null,
-                cause: Vec::new(),
-            });
+            return Err(RpcError::invalid_argument(
+                "A report ends a build or says ployz didn't install, not both",
+            ));
         }
         // No final report: GitHub failed it, so the next Builder takes it.
         (Some(version), None) => {
@@ -938,23 +931,11 @@ async fn session(
     expect: Option<ClusterExpectation>,
 ) -> Result<Session, RpcError> {
     if connections.is_empty() {
-        return Err(RpcError {
-            code: RpcErrorCode::Unavailable,
-            message: "No Server is enrolled in this Organization".to_owned(),
-            details: Value::Null,
-            cause: Vec::new(),
-        });
+        return Err(RpcError::unavailable(
+            "No Server is enrolled in this Organization",
+        ));
     }
     Ok(super::dial(connections, Arc::new(SystemConnector::default()), expect).await?)
-}
-
-fn conflict(message: &str) -> RpcError {
-    RpcError {
-        code: RpcErrorCode::Conflict,
-        message: message.to_owned(),
-        details: Value::Null,
-        cause: Vec::new(),
-    }
 }
 
 #[cfg(test)]
@@ -1079,9 +1060,9 @@ mod tests {
         };
         let mint = ployz_core::MINT_BUILD_GRANT_CAPABILITY;
         let refused = |error| crate::connect::refused_by_enforcement(&error, mint);
-        assert!(refused(refusal(crate::connect::FORBIDDEN, mint)));
+        assert!(refused(refusal(ployz_core::FORBIDDEN_CODE, mint)));
         assert!(!refused(refusal(
-            crate::connect::FORBIDDEN,
+            ployz_core::FORBIDDEN_CODE,
             ployz_core::BUILD_CAPABILITY
         )));
         assert!(!refused(refusal("conflict", mint)));

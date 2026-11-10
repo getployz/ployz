@@ -1092,7 +1092,7 @@ pub(crate) mod key {
     }
 
     pub(crate) fn path(config: &Path) -> PathBuf {
-        config.with_file_name("device.key")
+        crate::config_dir::ConfigDir::new(config).device_key()
     }
 
     pub(crate) fn public(secret: &[u8; 32]) -> DeviceKey {

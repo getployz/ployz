@@ -1,0 +1,14 @@
+disallowed-methods = [
+    { path = "std::time::Instant::now", reason = "a decision takes its time as a Duration or SystemTime parameter, so a model can pass any clock" },
+    { path = "std::time::SystemTime::now", reason = "a decision takes its time as a Duration or SystemTime parameter, so a model can pass any clock" },
+    { path = "std::fs::read", reason = "a decision is pure over plain facts; the caller reads the file and passes what it holds" },
+    { path = "std::fs::read_to_string", reason = "a decision is pure over plain facts; the caller reads the file and passes what it holds" },
+    { path = "std::fs::read_dir", reason = "a decision is pure over plain facts; the caller lists the directory and passes what it holds" },
+    { path = "std::fs::metadata", reason = "a decision is pure over plain facts; the caller asks the filesystem and passes the answer" },
+    { path = "std::fs::write", reason = "a decision is pure over plain facts; the caller performs the write" },
+    { path = "std::fs::rename", reason = "a decision is pure over plain facts; the caller performs the rename" },
+    { path = "std::fs::remove_file", reason = "a decision is pure over plain facts; the caller performs the removal" },
+    { path = "std::fs::create_dir_all", reason = "a decision is pure over plain facts; the caller creates the directory" },
+    { path = "std::fs::File::open", reason = "a decision is pure over plain facts; the caller opens the file" },
+    { path = "std::fs::File::create", reason = "a decision is pure over plain facts; the caller creates the file" },
+]

@@ -457,12 +457,8 @@ impl SwitchError {
     /// An RPC error that carries this reason in `details`.
     #[must_use]
     pub fn rpc_error(self, message: impl Into<String>) -> RpcError {
-        RpcError {
-            code: self.rpc_code(),
-            message: message.into(),
-            details: serde_json::to_value(self).expect("a switch reason is JSON serializable"),
-            cause: Vec::new(),
-        }
+        RpcError::new(self.rpc_code(), message)
+            .with_details(serde_json::to_value(self).expect("a switch reason is JSON serializable"))
     }
 
     const fn rpc_code(self) -> RpcErrorCode {

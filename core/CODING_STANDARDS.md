@@ -66,6 +66,10 @@ Drop a `std::sync` lock before `.await`. Use `tokio::sync::Mutex` when the guard
 
 Generics (`T: Trait` / `impl Trait`) until a mixed collection or object-safe trait needs `dyn`. Prefer `&dyn Trait` when the callee does not need ownership. Own the `Box`/`Arc` at that boundary, not inside the module.
 
+## Decisions
+
+A decision a model checks lives in `ployz-decide` as a pure function; the model calls it, never re-states it. Statement order across processes (the upgrade receipt and marker, the credential temp file and rename, pool ownership, removal marks, volume marks, Cloud's TypeScript walks) stays a model and links to the code by symbol path.
+
 ## Macros
 
 Reuse the existing newtype and RPC macros for repeated mechanical shapes. A one-off stays a function or generic.

@@ -46,11 +46,11 @@ pub use build_grant::{BuildGrants, Mint};
 pub use forgotten::Roster;
 
 /// Application close code sent when the remote key is not admitted and no tombstone holds it.
-pub const CLIENT_REFUSED: VarInt = VarInt::from_u32(0x50);
+pub const CLIENT_REFUSED: VarInt = VarInt::from_u32(ployz_core::CLIENT_REFUSED_CLOSE);
 /// Application close code sent to a live connection whose key no slot holds any more.
-pub const REVOKED: VarInt = VarInt::from_u32(0x51);
+pub const REVOKED: VarInt = VarInt::from_u32(ployz_core::REVOKED_CLOSE);
 /// Authenticated confirmation that the dialing key was cleared: a Cleared tombstone holds it.
-pub const CLIENT_CLEARED: VarInt = VarInt::from_u32(0x52);
+pub const CLIENT_CLEARED: VarInt = VarInt::from_u32(ployz_core::CLIENT_CLEARED_CLOSE);
 
 const MAX_CONCURRENT_HANDSHAKES: usize = 64;
 const IDLE_TIMEOUT: Duration = Duration::from_secs(60);
@@ -158,7 +158,7 @@ fn transport() -> QuicTransportConfig {
         .max_idle_timeout(Some(
             IdleTimeout::try_from(IDLE_TIMEOUT).expect("60s is within the idle timeout bounds"),
         ))
-        .enable_segmentation_offload(false)
+        .enable_segmentation_offload(ployz_core::SEGMENTATION_OFFLOAD)
         .build()
 }
 

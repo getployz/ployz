@@ -212,9 +212,76 @@ pub(super) fn write_hex(bytes: &[u8], formatter: &mut fmt::Formatter<'_>) -> fmt
         .try_for_each(|byte| write!(formatter, "{byte:02x}"))
 }
 
+/// `deserialize_with` for a list a signed body keeps strictly ascending, so a set of
+/// elements has one encoding and one signature input.
+///
+/// # Errors
+/// Returns a deserialize error when the list is not sorted and distinct.
+pub(super) fn sorted_distinct<'de, D, T>(deserializer: D) -> Result<Vec<T>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+    T: Deserialize<'de> + Ord,
+{
+    sorted_by(deserializer, |item: &T| item)
+}
+
+/// [`sorted_distinct`] for elements ordered by one field of theirs, such as a Service's name.
+///
+/// # Errors
+/// Returns a deserialize error when the keys are not strictly ascending.
+pub(super) fn sorted_by<'de, D, T, K>(
+    deserializer: D,
+    key: fn(&T) -> &K,
+) -> Result<Vec<T>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+    T: Deserialize<'de>,
+    K: Ord + ?Sized,
+{
+    let items = Vec::<T>::deserialize(deserializer)?;
+    if !items.is_sorted_by(|left, right| key(left) < key(right)) {
+        return Err(serde::de::Error::custom("must be sorted and distinct"));
+    }
+    Ok(items)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[derive(Debug, Deserialize)]
+    struct Lists {
+        #[serde(deserialize_with = "sorted_distinct")]
+        plain: Vec<u8>,
+        #[serde(deserialize_with = "by_first")]
+        pairs: Vec<(u8, u8)>,
+    }
+
+    fn by_first<'de, D: serde::Deserializer<'de>>(
+        deserializer: D,
+    ) -> Result<Vec<(u8, u8)>, D::Error> {
+        sorted_by(deserializer, |pair: &(u8, u8)| &pair.0)
+    }
+
+    #[test]
+    fn a_list_must_be_sorted_and_distinct() {
+        let parse = |text: &str| serde_json::from_str::<Lists>(text);
+        let lists = parse(r#"{"plain":[1,2],"pairs":[[1,9],[2,0]]}"#).unwrap();
+        assert_eq!(
+            (lists.plain, lists.pairs),
+            (vec![1, 2], vec![(1, 9), (2, 0)])
+        );
+        assert!(parse(r#"{"plain":[],"pairs":[]}"#).is_ok());
+        for text in [
+            r#"{"plain":[2,1],"pairs":[]}"#,
+            r#"{"plain":[1,1],"pairs":[]}"#,
+            r#"{"plain":[],"pairs":[[2,0],[1,0]]}"#,
+            r#"{"plain":[],"pairs":[[1,0],[1,9]]}"#,
+        ] {
+            let error = parse(text).unwrap_err().to_string();
+            assert!(error.starts_with("must be sorted and distinct"), "{error}");
+        }
+    }
 
     #[test]
     fn sorts_keys_and_drops_whitespace() {

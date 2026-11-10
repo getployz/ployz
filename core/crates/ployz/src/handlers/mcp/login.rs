@@ -38,7 +38,7 @@ impl Stored {
 }
 
 fn path(config: &Path) -> PathBuf {
-    config.with_file_name("mcp.json")
+    crate::config_dir::ConfigDir::new(config).mcp_token()
 }
 
 fn failed(path: PathBuf, source: io::Error) -> LoginError {

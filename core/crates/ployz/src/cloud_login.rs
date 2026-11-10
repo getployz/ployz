@@ -183,7 +183,7 @@ pub(crate) struct CredentialStore {
 impl CredentialStore {
     pub(crate) fn beside(config: &Path) -> Self {
         Self {
-            path: config.with_file_name("cloud.json"),
+            path: crate::config_dir::ConfigDir::new(config).cloud(),
         }
     }
 

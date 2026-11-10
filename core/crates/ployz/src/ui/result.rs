@@ -353,7 +353,7 @@ impl Gaps {
             return (refusal.naming(name).to_string(), None);
         }
         // It answered, refusing the caller's access: its reason, never "did not answer".
-        if failure.error.code.as_str() == crate::connect::FORBIDDEN {
+        if failure.error.code.as_str() == ployz_core::FORBIDDEN_CODE {
             let next = failure
                 .error
                 .details

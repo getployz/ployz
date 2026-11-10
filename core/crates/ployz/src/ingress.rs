@@ -367,12 +367,7 @@ pub(crate) fn unsupported(server: &MachineName, capability: &str) -> RpcError {
     });
     let refusal = ployz_core::CapabilityRefusal::new(&RpcErrorCode::Unsupported, details.clone())
         .expect("the details name a target and a capability");
-    RpcError {
-        code: RpcErrorCode::Unsupported,
-        message: refusal.to_string(),
-        details,
-        cause: Vec::new(),
-    }
+    RpcError::unsupported(refusal.to_string()).with_details(details)
 }
 
 /// One Server's Ingress Proxy after [`follow_roles`] set it.
@@ -529,16 +524,11 @@ pub(crate) async fn use_doors(
                     }
                     Some(failure) => failures.push(MachineFailure {
                         machine_id: machine.id,
-                        error: RpcError {
-                            code: RpcErrorCode::Unavailable,
-                            message: format!(
-                                "The Ingress Proxy on {} isn't running: {}",
-                                machine.name,
-                                failure.cause()
-                            ),
-                            details: serde_json::Value::Null,
-                            cause: Vec::new(),
-                        },
+                        error: RpcError::unavailable(format!(
+                            "The Ingress Proxy on {} isn't running: {}",
+                            machine.name,
+                            failure.cause()
+                        )),
                     }),
                 },
                 Answer::Refused(error) => failures.push(MachineFailure {
@@ -547,15 +537,10 @@ pub(crate) async fn use_doors(
                 }),
                 Answer::Cancelled => failures.push(MachineFailure {
                     machine_id: machine.id,
-                    error: RpcError {
-                        code: RpcErrorCode::Unavailable,
-                        message: format!(
-                            "{} was still setting its Doors when the command was cancelled",
-                            machine.name
-                        ),
-                        details: serde_json::Value::Null,
-                        cause: Vec::new(),
-                    },
+                    error: RpcError::unavailable(format!(
+                        "{} was still setting its Doors when the command was cancelled",
+                        machine.name
+                    )),
                 }),
             }
         }

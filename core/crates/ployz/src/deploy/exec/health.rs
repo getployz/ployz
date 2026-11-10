@@ -1,17 +1,13 @@
 use ployz_core::{
-    ContainerObservation, ContainerRuntimeObservation, CopyRotation, DependencyHealthFailure,
-    DeploymentLogId, ExecutionError, HEALTH_POLL_INTERVAL, HealthExpectation, HealthObservation,
-    HealthPoll, HealthcheckSpec, OperationPhase, QualifiedService, classify_health,
-    health_deadline_for, healthcheck_deadline, observed_health,
+    ContainerObservation, CopyRotation, DependencyHealthFailure, DeploymentLogId, ExecutionError,
+    HEALTH_POLL_INTERVAL, HEALTHCHECK_RUNTIME_GRACE, HealthExpectation, HealthPoll, OperationPhase,
+    QualifiedService, Unconfigured, classify_health, health_deadline_for, monitor_deadline,
+    observed_health,
 };
 use tokio::time::Instant;
 use tokio_util::sync::CancellationToken;
 
 use super::{MachineOperations, Progress};
-
-/// A dependency reading unhealthy or restarting can recover, so the dependent's Deploy
-/// waits this long before it fails.
-const RUNTIME_FAILURE_GRACE: std::time::Duration = std::time::Duration::from_secs(5);
 
 pub(super) async fn wait_healthy<C: MachineOperations>(
     client: &C,
@@ -71,33 +67,14 @@ pub(super) async fn wait_healthy<C: MachineOperations>(
         let elapsed = started.elapsed();
         let mut pending = None;
         for observed in &containers {
-            let health_deadline = health_deadline_for(
-                observed.resolved_spec.container.healthcheck.as_ref(),
-                observed,
-            )
-            .or_else(|| {
-                matches!(
-                    &observed.runtime,
-                    ContainerRuntimeObservation::Running {
-                        health: HealthObservation::Starting
-                            | HealthObservation::NotConfigured
-                            | HealthObservation::Unrecognized(_),
-                    }
-                )
-                .then(|| healthcheck_deadline(None))
-            });
+            let healthcheck = observed.resolved_spec.container.healthcheck.as_ref();
+            let health_deadline =
+                health_deadline_for(healthcheck, observed, Unconfigured::UseDeadline);
             let deadline = match classify_health(
                 &observed.runtime,
                 None,
                 elapsed,
-                if matches!(
-                    observed.resolved_spec.container.healthcheck,
-                    Some(HealthcheckSpec::Http(_))
-                ) {
-                    health_deadline.unwrap_or(RUNTIME_FAILURE_GRACE)
-                } else {
-                    RUNTIME_FAILURE_GRACE
-                },
+                monitor_deadline(healthcheck, health_deadline, HEALTHCHECK_RUNTIME_GRACE),
                 health_deadline,
                 HealthExpectation::Healthy,
             ) {

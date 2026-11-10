@@ -25,8 +25,29 @@ pub enum AuthorityRefusal {
     Expired,
     #[error("this Machine holds no Sealing Key, so it cannot tell which Cluster was approved")]
     NoClusterIdentity,
-    #[error("operation {operation} already ran this step; a new restart signs a new approval")]
+    #[error("operation {operation} already ran this step; it needs a new approval")]
     Replayed { operation: OperationId },
     #[error("this GitHub token already minted a Build Grant; a build asks for a new one")]
     ProofReplayed,
+}
+
+/// The first of `checks` that does not hold, as a [`AuthorityRefusal::Mismatch`] naming its field.
+///
+/// # Errors
+/// Returns [`AuthorityRefusal::Mismatch`] for the first `false` check, in order.
+pub(super) fn first_mismatch<const N: usize>(
+    checks: [(&'static str, bool); N],
+) -> Result<(), AuthorityRefusal> {
+    match checks.into_iter().find(|(_, holds)| !holds) {
+        Some((field, _)) => Err(AuthorityRefusal::Mismatch { field }),
+        None => Ok(()),
+    }
+}
+
+/// The names `Mismatch` gives the parts of a request that more than one statement checks.
+pub(super) mod field {
+    pub const CLUSTER: &str = "a Cluster";
+    pub const ENVIRONMENT: &str = "an Environment";
+    pub const MACHINES: &str = "Machines";
+    pub const WINDOW: &str = "a window";
 }

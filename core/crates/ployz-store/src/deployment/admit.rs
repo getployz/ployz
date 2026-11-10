@@ -6,7 +6,7 @@
 use ployz_core::authority::{DeployApproval, Signed};
 use ployz_core::config::canonicalize_environment_intent;
 use ployz_core::config::{SavedEnvironmentIntent, SavedServiceIntent};
-use ployz_core::{Namespace, RpcError, RpcErrorCode, ServiceName};
+use ployz_core::{Namespace, RpcError, ServiceName};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 use ts_rs::TS;
@@ -355,17 +355,13 @@ fn needs_cluster_domain(
         })
         .collect::<Vec<_>>()
         .join(" && ");
-    Err(RpcError {
-        code: RpcErrorCode::Unsupported,
-        message: format!(
-            "{} has generated domains ({}), which need the Cluster Domain Ployz Cloud \
+    Err(RpcError::unsupported(format!(
+        "{} has generated domains ({}), which need the Cluster Domain Ployz Cloud \
              reserves at a Deploy: deploy through Ployz Cloud, or remove them",
-            summary.name,
-            prefixes.join(", ")
-        ),
-        details: json!({ "domains": prefixes, "next": remove }),
-        cause: Vec::new(),
-    })
+        summary.name,
+        prefixes.join(", ")
+    ))
+    .with_details(json!({ "domains": prefixes, "next": remove })))
 }
 
 fn deploy(
