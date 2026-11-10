@@ -306,7 +306,9 @@ impl AutoDeployRule {
                 repository,
                 branch,
                 workflow: WORKFLOW.to_owned(),
-                events: vec![RuleEvent::Push],
+                // A push builds its head; a person's approved rebuild of an older commit runs
+                // on a dispatch.
+                events: vec![RuleEvent::Push, RuleEvent::WorkflowDispatch],
                 builder: terms.builder,
                 runner: Runner::GithubHosted,
             },

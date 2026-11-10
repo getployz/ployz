@@ -306,6 +306,12 @@ const MIGRATIONS: &[(&str, Step)] = &[
         "0042_auto_deploy_rule",
         Step::Sql(include_str!("migrations/0042_auto_deploy_rule.sql")),
     ),
+    (
+        // A build's receipt, image token and person's approval, and a Deployment a
+        // Device approves once its builds end.
+        "0043_approved_builds",
+        Step::Sql(include_str!("migrations/0043_approved_builds.sql")),
+    ),
 ];
 
 enum Step {

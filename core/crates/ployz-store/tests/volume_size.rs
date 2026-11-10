@@ -395,6 +395,8 @@ fn redeploy(store: &ConfigStore, who: &Actor, source: u8, n: u8) -> Result<(), R
                 rolls_back: Some(rolls_back),
                 version: None,
                 accept_volume_loss: Vec::new(),
+                builds: Vec::new(),
+                awaits_approval: false,
             }),
             &Trusted::default(),
         )

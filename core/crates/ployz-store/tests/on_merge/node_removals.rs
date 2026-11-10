@@ -1210,6 +1210,8 @@ fn retry(
             rolls_back: None,
             version: None,
             accept_volume_loss: Vec::new(),
+            builds: Vec::new(),
+            awaits_approval: false,
         }),
         &Trusted::default(),
     )?;

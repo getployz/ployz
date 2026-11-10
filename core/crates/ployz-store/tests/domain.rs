@@ -823,6 +823,8 @@ fn a_retry_ships_the_cluster_domain_its_source_froze() {
                 rolls_back: None,
                 version: None,
                 accept_volume_loss: Vec::new(),
+                builds: Vec::new(),
+                awaits_approval: false,
             })),
             &Trusted::default(),
         )

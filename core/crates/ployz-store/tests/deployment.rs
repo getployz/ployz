@@ -3134,6 +3134,8 @@ fn retry(
             rolls_back: None,
             version: None,
             accept_volume_loss: Vec::new(),
+            builds: Vec::new(),
+            awaits_approval: false,
         }),
         &ployz_store::Trusted::default(),
     )
@@ -3340,6 +3342,8 @@ fn rollback(
             rolls_back: Some(confirmed.to_vec()),
             version: None,
             accept_volume_loss: Vec::new(),
+            builds: Vec::new(),
+            awaits_approval: false,
         }),
         &ployz_store::Trusted::default(),
     )
@@ -4914,6 +4918,8 @@ fn a_deploy_message_shows_on_the_deployment_and_its_retry() {
                 rolls_back: None,
                 version: None,
                 accept_volume_loss: Vec::new(),
+                builds: Vec::new(),
+                awaits_approval: false,
             }),
         )
         .unwrap();
@@ -5712,6 +5718,8 @@ fn a_deploy_token_cant_redeploy_a_prune_that_removes_what_runs_now() {
                 rolls_back: None,
                 version: None,
                 accept_volume_loss: Vec::new(),
+                builds: Vec::new(),
+                awaits_approval: false,
             }),
             &Trusted {
                 running,
@@ -5754,6 +5762,8 @@ fn an_approval_given_while_every_server_answered_doesnt_admit_an_unseen_prune() 
                 rolls_back: None,
                 version: None,
                 accept_volume_loss: Vec::new(),
+                builds: Vec::new(),
+                awaits_approval: false,
             }),
             &agent(approval, running),
         )
@@ -5851,6 +5861,8 @@ fn deploying_or_retrying_saved_state_asks_nothing_again() {
                 rolls_back: None,
                 version: None,
                 accept_volume_loss: Vec::new(),
+                builds: Vec::new(),
+                awaits_approval: false,
             }),
             &Trusted {
                 approval: Approval::Required,
@@ -6008,6 +6020,8 @@ fn agent_retries(
             rolls_back: None,
             version: None,
             accept_volume_loss: Vec::new(),
+            builds: Vec::new(),
+            awaits_approval: false,
         }),
         &Trusted {
             approval,
@@ -6041,6 +6055,8 @@ fn a_token_outside_its_environments_is_refused_before_a_human_is_asked() {
                 rolls_back: None,
                 version: None,
                 accept_volume_loss: Vec::new(),
+                builds: Vec::new(),
+                awaits_approval: false,
             }),
             &staging,
         )
@@ -6197,6 +6213,8 @@ fn a_queued_retry_keeps_a_running_deployments_creates_deployed() {
                 rolls_back: None,
                 version: None,
                 accept_volume_loss: Vec::new(),
+                builds: Vec::new(),
+                awaits_approval: false,
             }),
         )
         .unwrap();
@@ -6494,6 +6512,8 @@ fn a_retry_into_a_protected_environment_asks_an_admin() {
                 rolls_back: None,
                 version: None,
                 accept_volume_loss: Vec::new(),
+                builds: Vec::new(),
+                awaits_approval: false,
             }),
             &unprotecting(approval),
         )
@@ -6576,6 +6596,8 @@ fn retry_as(
             rolls_back: None,
             version: None,
             accept_volume_loss: Vec::new(),
+            builds: Vec::new(),
+            awaits_approval: false,
         }),
         trusted,
     )
@@ -7554,6 +7576,8 @@ fn a_rollback_that_takes_a_service_off_asks_and_names_it() {
                 rolls_back: None,
                 version: None,
                 accept_volume_loss: Vec::new(),
+                builds: Vec::new(),
+                awaits_approval: false,
             }),
             trusted,
         )
@@ -7600,6 +7624,8 @@ fn a_retry_that_takes_nothing_off_still_asks_nothing() {
                 rolls_back: None,
                 version: None,
                 accept_volume_loss: Vec::new(),
+                builds: Vec::new(),
+                awaits_approval: false,
             }),
             &protector(Approval::Required, Asks::Destroys),
         )
@@ -7775,6 +7801,8 @@ fn a_rollback_asks_about_a_service_a_deployment_of_unknown_outcome_may_have_star
                 rolls_back: None,
                 version: None,
                 accept_volume_loss: Vec::new(),
+                builds: Vec::new(),
+                awaits_approval: false,
             }),
             &protector(Approval::Required, Asks::Destroys),
         )
@@ -7872,6 +7900,8 @@ fn rollback_to(
             rolls_back: None,
             version: None,
             accept_volume_loss: Vec::new(),
+            builds: Vec::new(),
+            awaits_approval: false,
         }),
         &protector(Approval::Required, Asks::Destroys),
     )

@@ -3,7 +3,7 @@
 //! an ended Deployment froze. Starting hands a queued one to a runner again, and
 //! cancelling stops one.
 
-use ployz_core::authority::{DeployApproval, Signed};
+use ployz_core::authority::{BuildApproval, DeployApproval, Signed};
 use ployz_core::config::canonicalize_environment_intent;
 use ployz_core::config::{SavedEnvironmentIntent, SavedServiceIntent};
 use ployz_core::{Namespace, RpcError, ServiceName};
@@ -130,6 +130,27 @@ pub struct Retry {
     #[serde(default)]
     #[ts(as = "Option<Vec<VolumeName>>", optional)]
     pub accept_volume_loss: Vec<VolumeName>,
+    /// A person's approval of each build whose commit is not its branch's head, which
+    /// the grant Machine checks before it releases the automatic deploy rule's build
+    /// secrets for it.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    #[ts(optional, as = "Option<Vec<Signed<BuildApproval>>>")]
+    pub builds: Vec<Signed<BuildApproval>>,
+    /// A Device approves it with [`ApproveDeployment`] once its builds ended: until then it
+    /// doesn't run.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    #[ts(optional, as = "Option<bool>")]
+    pub awaits_approval: bool,
+}
+
+/// Keep the deploy approval a Device signed for a queued Deployment that waits for one,
+/// after its builds ended, so it signs the images they built.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
+#[serde(deny_unknown_fields)]
+pub struct ApproveDeployment {
+    pub deployment: DeploymentId,
+    #[ts(as = "Signed<DeployApproval>")]
+    pub approval: Box<Signed<DeployApproval>>,
 }
 
 /// Take an Environment off the Servers under the `remove` that marked it, or its

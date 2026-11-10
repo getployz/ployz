@@ -337,6 +337,8 @@ fn a_rollback_reads_back_the_services_it_ships_as_admitted() {
                 rolls_back: None,
                 version: None,
                 accept_volume_loss: Vec::new(),
+                builds: Vec::new(),
+                awaits_approval: false,
             }),
         )
         .unwrap();

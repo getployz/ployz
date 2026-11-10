@@ -2714,6 +2714,8 @@ fn store_retry(
                 rolls_back: None,
                 version: confirmed["version"].as_str().map(str::to_owned),
                 accept_volume_loss: serde_json::from_value(accept.clone()).unwrap(),
+                builds: Vec::new(),
+                awaits_approval: false,
             }),
             trusted,
         )

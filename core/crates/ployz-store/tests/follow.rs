@@ -3395,6 +3395,8 @@ fn roll_back(store: &ConfigStore, who: &Actor, n: u8) -> ployz_store::Deployment
                 rolls_back: None,
                 version: None,
                 accept_volume_loss: Vec::new(),
+                builds: Vec::new(),
+                awaits_approval: false,
             }),
             &Trusted::default(),
         )

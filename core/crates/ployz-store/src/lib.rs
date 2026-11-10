@@ -68,7 +68,7 @@ pub use branch::{
 pub use build::{
     BuildLogQuery, BuildLogView, BuildReport, BuildStatus, BuildView, GitSource, GithubBuild,
     GithubBuildId, GithubClaims, GithubEnd, GithubGrant, GithubHandOff, GithubInput, GithubReport,
-    GithubRun, RunEnd,
+    GithubRun, ImageToken, RunEnd,
 };
 pub use builders::{BuildOrder, BuildOrderQuery, BuildOrderView, Builder, SetBuildOrder};
 pub use client_sealed::SecretValue;
@@ -541,8 +541,9 @@ impl ConfigStore {
             .read(|tx| build::github_authorize(tx, id, claims))
     }
 
-    /// The automatic deploy rule GitHub build `id` builds under, if any: its run is the
-    /// push's own, which Cloud follows rather than dispatching one.
+    /// The automatic deploy rule GitHub build `id` builds under, if any: for a push, its
+    /// run is the push's own, which Cloud follows rather than dispatching one; for a
+    /// commit a person approved, Cloud dispatches the rule's workflow at that commit.
     ///
     /// # Errors
     /// Returns `not_found` for an unknown Deployment, or a storage error.
@@ -554,6 +555,28 @@ impl ConfigStore {
         RpcError,
     > {
         self.storage.read(|tx| build::github_rule(tx, id))
+    }
+
+    /// The approval a person signed for GitHub build `id`'s commit, if any.
+    ///
+    /// # Errors
+    /// Returns `not_found` for an unknown build, or a storage error.
+    pub fn github_approval(
+        &self,
+        id: &GithubBuildId,
+    ) -> Result<Option<ployz_core::authority::Signed<ployz_core::authority::BuildApproval>>, RpcError>
+    {
+        self.storage.read(|tx| build::github_approval(tx, id))
+    }
+
+    /// Whether Deployment `id` waits for a Device to approve it after its builds, and
+    /// none has yet: Cloud holds it until one does.
+    ///
+    /// # Errors
+    /// Returns `not_found` for an unknown Deployment, or a storage error.
+    pub fn awaiting_approval(&self, id: &DeploymentId) -> Result<bool, RpcError> {
+        self.storage
+            .read(|tx| deployment::awaiting_approval(tx, id))
     }
 
     /// The GitHub build run `run_id` holds while it builds, if any.

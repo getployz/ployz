@@ -283,6 +283,59 @@ pub(crate) fn approved_by_device(
     .map(drop)
 }
 
+/// Keep the deploy approval a Device signed for queued Deployment `approve.deployment`,
+/// admitted to wait for one until its builds ended.
+///
+/// # Errors
+/// `conflict` for a Deployment that doesn't wait for one or no longer queues, and
+/// `invalid_argument` for an approval naming another Deployment.
+pub(crate) fn approve_built(
+    tx: &mut dyn Tx,
+    who: &Actor,
+    approve: &crate::ApproveDeployment,
+) -> Result<DeploymentSummary, RpcError> {
+    let id = &approve.deployment;
+    owned(tx, who, id)?;
+    let stored = locked(tx, id)?;
+    if !awaits(tx, id)? {
+        return Err(error::conflict(
+            format!(
+                "Deployment {} doesn't wait for a device's approval",
+                stored.summary.label()
+            ),
+            json!({ "deployment": id }),
+        ));
+    }
+    if stored.summary.status != DeploymentStatus::Queued {
+        return Err(error::conflict(
+            format!(
+                "Deployment {} already started or ended, so it can't take an approval now",
+                stored.summary.label()
+            ),
+            json!({ "deployment": id }),
+        ));
+    }
+    approved_by_device(tx, id, &approve.approval)?;
+    Ok(stored.summary)
+}
+
+/// Whether Deployment `id` waits for a Device to approve it after admission, and none
+/// has yet.
+pub(crate) fn awaiting_approval(tx: &mut dyn Tx, id: &DeploymentId) -> Result<bool, RpcError> {
+    Ok(awaits(tx, id)? && device_approval(tx, id)?.is_none())
+}
+
+fn awaits(tx: &mut dyn Tx, id: &DeploymentId) -> Result<bool, RpcError> {
+    let rows = tx.query(
+        "SELECT awaits_approval FROM config_deployment WHERE id = ?1",
+        &[id.as_str().into()],
+    )?;
+    rows.first()
+        .ok_or_else(|| missing(id))?
+        .int(0)
+        .map(|awaits| awaits != 0)
+}
+
 /// The deploy approval a Device signed for Deployment `id`, if any.
 fn device_approval(
     tx: &mut dyn Tx,
@@ -869,10 +922,10 @@ pub(crate) fn retry(
             "INSERT INTO config_deployment \
              (id, organization_id, environment_id, number, status, saved_revision, services, \
               nodes, namespace, run, credentials, upload, cluster_domain, admitted, admitted_by, \
-              message, listed, service_uploads) \
+              message, listed, service_uploads, awaits_approval) \
              SELECT ?1, organization_id, environment_id, ?2, 'queued', saved_revision, ?7, \
               ?8, namespace, ?3, credentials, upload, cluster_domain, ?5, ?6, message, ?9, \
-              ?10 \
+              ?10, ?11 \
              FROM config_deployment WHERE id = ?4",
             &[
                 id.as_str().into(),
@@ -892,17 +945,24 @@ pub(crate) fn retry(
                 json_text(&nodes).as_str().into(),
                 listed.into(),
                 retried_uploads.as_deref().into(),
+                i64::from(retry.awaits_approval).into(),
             ],
         )?;
-        // A retry builds the commits its source pinned.
+        // A retry builds the commits its source pinned, and may reuse the image its
+        // source built, with that image's token.
         tx.execute(
             "INSERT INTO config_build \
-             (deployment_id, service, organization_id, commit_sha, status, message, log) \
-             SELECT ?1, service, organization_id, commit_sha, 'pending', NULL, '' \
+             (deployment_id, service, organization_id, commit_sha, status, message, log, \
+              receipt, image_token) \
+             SELECT ?1, service, organization_id, commit_sha, 'pending', NULL, '', receipt, \
+              image_token \
              FROM config_build WHERE deployment_id = ?2",
             &[id.as_str().into(), source.as_str().into()],
-        )
-        .map(|_| ())
+        )?;
+        for approval in &retry.builds {
+            build::approve_build(tx, id, approval)?;
+        }
+        Ok(())
     })?;
     let summary = DeploymentSummary {
         id: id.clone(),
@@ -1322,6 +1382,25 @@ pub(crate) fn claim(
             true
         }
     };
+    if starting && awaiting_approval(tx, id)? {
+        let refused = error::conflict(
+            "No device approved the images this redeploy built, so it didn't run. Redeploy \
+             it again from an approved device.",
+            json!({ "deployment": id }),
+        );
+        finish(
+            tx,
+            stored,
+            Outcome::NotExecuted {
+                reason: refused.message.clone(),
+                cause: Vec::new(),
+                needs_upload: Vec::new(),
+                same_again: false,
+            },
+            End::Failed,
+        )?;
+        return Ok(Err(refused));
+    }
     let saved = held_revision(tx, &stored)?;
     // An earlier run may have fixed a Volume's storage since this one was admitted.
     if let Err(refused) = crate::volume::check_admitted(tx, &stored.summary.environment_id, &saved)

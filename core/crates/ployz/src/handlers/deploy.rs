@@ -1404,6 +1404,8 @@ pub(super) fn redeploy(root: &ArgMatches) -> Result<(), Error> {
             rolls_back,
             version: matches.get_one::<String>("expect-version").cloned(),
             accept_volume_loss: super::teardown::accepted(matches)?,
+            builds: Vec::new(),
+            awaits_approval: false,
         }))
         .map_err(|error| {
             let asks = matches!(&error, StoreCallError::Refused(refusal)

@@ -233,6 +233,8 @@ fn a_new_secret_applies_at_once_and_admission_freezes_what_a_deployment_pulls_wi
                 rolls_back: None,
                 version: None,
                 accept_volume_loss: Vec::new(),
+                builds: Vec::new(),
+                awaits_approval: false,
             }),
             &ployz_store::Trusted::default(),
         )
