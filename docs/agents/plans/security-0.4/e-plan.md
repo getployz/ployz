@@ -10,7 +10,7 @@ Eight PRs, in dependency order:
 | --- | --- | --- |
 | E1 | Enforcing Machines refuse every Container start Cloud asks for through `SetVolumeCopy`, and `SeedVolume` | #4041, today's bar crossing |
 | E2 | The Volume approval, its verifier and the Machine's operation records exist | Nothing yet. It is the verifier. |
-| E3 | A Mirror lives only on a Machine a person approved, and the send stream serves only approved recipients | Mesh access reaching a bulk Volume stream. Cloud choosing where copies go. |
+| E3 | A Mirror lives only on a Machine a person approved, the send stream serves only approved recipients, and a removed Mirror stays removed | Mesh access reaching a bulk Volume stream. Cloud choosing where copies go. A removed recipient brought back by a replayed approval. |
 | E4 | A Move runs under one approval from a Device | Cloud choosing the target, the Service B starts, or a Volume to cut |
 | E5 | The source Machine decides the Move. B promotes only with A's receipt. | Cloud holding the commit. A driver getting both outcomes from one Move. |
 | E6 | Restore, Mirror removal and cleanup run under an approval that names the loss | Cloud promoting or destroying a copy on its own word |
@@ -46,8 +46,8 @@ It binds the Cluster, an operation ID, the Namespace, the Docker Volume name, an
 | Workflow | Names | Permits |
 | --- | --- | --- |
 | Move | A, B, the Service B starts (thread C's `ApprovedService`: name, payload digest, pin), the Mirrors that keep following | Snapshots on A before the cut. Pulls on B from A. One cut on A. A's handoff, or A's resume of the Containers its cut stopped. B's promotion at the cut's snapshot with A's receipt. B's start of that Service. Removal of A's stopped Container after the handoff. |
-| Mirror | The Writer's Machine, the Mirror's Machine. Standing. | Snapshots on the Writer. Pulls on the Mirror from the Writer. |
-| Mirror removal | The Mirror's Machine, the Writer's Machine, the slot's role, whether it is the last copy | A withdrawal on both Machines. Destroying that slot and the run snapshots it kept. |
+| Mirror | The Writer's Machine, the Mirror's Machine, whether it replaces the copy already there. Standing. | Snapshots on the Writer. Pulls on the Mirror from the Writer. When it replaces, destroying the old slot first. |
+| Mirror removal | The Mirror's Machine, the Writer's Machine, the slot's role, whether it is the last copy | Destroying that slot and the run snapshots it kept. The withdrawal on each Machine needs no approval. |
 | Restore | The Machine, the snapshot, the time after which writes are lost | Promoting that copy with no receipt and no start. Demoting an older Writer that returns. |
 | Resize | The Machines, the size, grow or shrink | `SetVolumeSize` to that size on those Machines |
 | Seed | The Machine, the source Volume, the snapshot, the new Volume | One `SeedVolume` |
@@ -63,7 +63,7 @@ All records are local to one Machine. None is replicated, and none is read by an
 - **Cut record**, `cut(operation, Volume, snapshot, the Containers it stopped)`. Written by A before its cut stops anything. These are the only Containers a `Start::Kept` under that operation may name.
 - **Decision**, `decision(operation)`, either `Handed { to, at }` or `Resumed`. Written by A after its cut, once, and synced to disk before the receipt leaves or the resume's Writer route runs.
 - **Promotion**, `promoted(operation, snapshot, epoch)`. Written by B. B also stores the receipt it promoted on.
-- **Withdrawal**, `withdrawn(Volume, Machine, at)`. Written on the Mirror's Machine and on the Writer's when each admits a Mirror removal, and synced before a slot is destroyed. `at` is the removal approval's `issued_at`. It is never pruned.
+- **Withdrawal**, `withdrawn(Volume, Machine)`. One synced write that ends every Mirror operation and every standing grant this Machine holds for that Volume and that Machine. A Machine writes it before it destroys a Mirror's slot, whoever asked and whether or not an approval came with the request. A Writer writes it when a `Forget` names a recipient. It only narrows what a driver can do, so it needs no approval. It is never pruned.
 
 ### When an operation ends
 
@@ -78,11 +78,11 @@ An operation record bypasses expiry, so it must not outlive the work the person 
 
 Three rules make the end hold against a replayed approval.
 
-- **A withdrawal outranks every older approval.** A Machine holding `withdrawn(V, M, at)` refuses any approval that names M as a Mirror of V and was issued at or before `at`. That covers an approval this Machine never saw, which an operation record cannot. The comparison uses the two signed `issued_at` values and never the Machine's clock. A person who wants the Mirror back approves it again, and the new approval is newer than the withdrawal. A Device whose clock runs behind the removal's gets a refusal that says to approve again.
+- **A withdrawal ends everything the Machine has admitted.** After `withdrawn(V, M)`, every Mirror approval this Machine admitted for V and M is ended, and an ended record is refused for good. A Machine cannot destroy a Mirror's slot without writing it first, so no removal that reaches the Mirror leaves its old approval usable. A person who wants the Mirror back approves it again. The withdrawal reads no clock and compares no times. It does not cover an approval this Machine never admitted, which is still new work while its window lasts ("What remains").
 - **One operation owns a copy.** An operation owns the copy on a Machine where it changes that copy's role or destroys it: a Move on A and on B, a Restore on its Machine, a Mirror and its removal on the Mirror's Machine. A Machine holds at most one open owner for a Volume. Admitting the first step of another ends the earlier one in the same synced write, before any effect. Ending a Move on A before its decision records `Resumed`, so no receipt can follow. A crash between a step's effect and its outcome record leaves that operation open, and this rule ends it when the next one arrives.
 - **A grant is as wide as its operation and no wider.** After `Resumed` a Move's grant serves nothing. After `Handed` it serves the cut's snapshot to B and nothing else. A never takes a snapshot under a Move after its cut. When the Writer hands a Volume off, its standing grants end. At its promotion the new Writer writes standing grants for the Mirrors the Move's approval lists. Those outlive the Move, and a withdrawal ends them as it ends any Mirror's.
 
-A removal reaches two Machines, and Cloud can drop either step. The Mirror's own withdrawal is the one that stops data: an honest Mirror with a withdrawal never pulls under an older approval, whatever the Writer still grants. The removal's output names each Machine that recorded the withdrawal.
+A removal reaches two Machines, and Cloud can drop either step. The Mirror's own withdrawal is the one that stops data: the Mirror writes it in the same step that destroys its slot, and after it the Mirror never pulls under an approval it had admitted, whatever the Writer still grants. The removal's output names each Machine that recorded the withdrawal.
 
 ### The Move
 
@@ -122,7 +122,7 @@ The other branch is one step. Cloud asks A to resume, A records `Resumed` and st
 | B's start must hash to the approved Service payload | Cloud starting its own Container |
 | A's resume starts only the Containers its cut record names | Cloud starting a stopped Container of its choosing |
 | The stream serves a snapshot only under a live grant whose scope covers it | Any other mesh peer pulling it. B pulling later snapshots under a finished Move. |
-| An ended operation is refused, and a withdrawal refuses every older approval | An old approval replayed to restart a removed Mirror or a finished Move |
+| An ended operation is refused, and destroying a Mirror's slot ends every Mirror approval that Machine admitted | An old approval replayed to restart a removed Mirror or a finished Move |
 | A removes its kept Container only when `Handed` | Cloud removing the way back before the handoff |
 
 ### Admission expires, completion does not
@@ -139,7 +139,7 @@ No Machine waits on a clock for safety. A Machine reads its own clock once, at a
 
 Bet 6 flags a Machine acting on another Machine's records. The receipt is A's statement about A's own transition, that A gave up being the Writer. It reaches B the way the customer's approval does, carried by the driver and checked by B with a key B already holds. B then makes its own transition on its own copy. B never reads A's record, and no replicated row is involved. With the receipt stored, B decides the same with every other Machine unreachable, which is bet 6's test. Without the receipt B does nothing, which leaves a Volume with no Writer and never two. A's decision reads only A's record. There is no lease, no barrier and no clock.
 
-The ending rules stay inside the same line. An operation record, a grant, a cut record and a withdrawal are each written by the Machine that reads them, from an approval it verified itself. A removal's withdrawal exists on two Machines because the approval reached both, and neither reads the other's. The withdrawal compares two signed `issued_at` values and waits on no clock.
+The ending rules stay inside the same line. An operation record, a grant, a cut record and a withdrawal are each written by the Machine that reads them. The first three come from an approval it verified itself, and a withdrawal from a request to forget. A removal's withdrawal exists on two Machines because each was asked to forget, and neither reads the other's. A withdrawal reads no clock.
 
 ### What remains
 
@@ -147,6 +147,7 @@ Named once in each PR body, then left alone.
 
 - Cloud can stall a Move after the cut or after the handoff and leave a Volume with no Writer. It can end a run early, send permitted steps in any order, pick lane gens, epochs, drains and warm rounds, and show a state no Machine holds.
 - Recipients the customer approved receive data. A Mirror's Machine receives every later snapshot until the Mirror is removed. Cloud can drop a removal's step on the Writer, which leaves the Writer's grant standing while the Mirror itself refuses to pull.
+- Cloud can delay one Device's Mirror approval past another Device's removal and reinstate that approved recipient. The same holds for any Mirror approval that a Machine had not admitted when the removal reached it. A person did approve mirroring to that Machine, and the approval's window of at most 15 minutes bounds the delay. Machines order nothing by signed times, and there is no generation scheme.
 - A Machine of the Cluster could forge a receipt (operator decision 2).
 - A person who approves a Restore while the old Writer still runs gets two Writers until Cloud demotes one. Bet 6 accepts that window.
 
@@ -156,7 +157,7 @@ The program runs the way `c-plan.md` "Program checklist" says: arming, the audit
 
 - [ ] Dependency graph. E1 branches from `main` now. E2 after E1, Appendix A gaps 1 and 3, and D4 merged. E3 after E2 and decision 3. E4 after E3 and gap 5. E5 after E4, gap 2 and decision 2. E6 after E5 and decision 5. E7 after E2, in any order with E3 to E6. E8 after E4 to E7, B5 merged and gap 6.
 - [ ] D4 and B5 are in flight and edit `core/crates/ployzd/src/machine/local_machine/{deploy_approval,restart_approval}.rs` and the dashboard approval session. Neither had a PR or a branch on origin when this plan was written. E1 stays out of both files by adding `local_machine/volume_approval.rs`. E2 adds record kinds to the consumption log in `restart_approval.rs`, so it rebases onto D4, which adds its own. E4 calls thread C's digest check in `deploy_approval.rs` and changes nothing in it. E8 builds on `dashboard/src/modules/approval-session/` after B5.
-- [ ] File boundaries. E1 touches `core/crates/ployzd/src/machine/local_machine/volume_approval.rs` (new), `core/crates/ployzd/src/machine_api/local.rs`, `dashboard/src/modules/volume-run/volume-run.server.ts` and `docs/user/`. E2 adds `core/crates/ployz-core/src/authority/volume.rs` and touches `core/crates/ployz-core/src/{volume_copy,volume_size,volume_switch,rpc_catalog}.rs`, `volume_approval.rs`, `restart_approval.rs` (record kinds) and `core/crates/ployz-sdk/`. E3 touches `core/crates/ployzd/src/{volume_send,daemon}.rs`, `core/crates/ployzd/src/machine_api/local_volume_copy.rs`, `core/crates/ployz/src/handlers/volume/run.rs`, `dashboard/src/modules/volume-run/**` and `dashboard/src/modules/volume-placement/mirror-sync.server.ts`. E4 touches `local_volume_copy.rs`, `volume_approval.rs`, `core/crates/ployzd/src/machine/local_machine/container.rs` (the cut), `handlers/volume/run.rs` and `dashboard/src/modules/volume-run/**`. E5 touches `authority/volume.rs`, `volume_copy.rs`, `rpc_catalog.rs`, `local_volume_copy.rs`, `core/crates/ployzd/src/sealing_key.rs`, `volume_send.rs`, `core/crates/ployz-verify/src/volume_runs.rs`, `.claude/skills/verify-volume-runs/SKILL.md` and `dashboard/src/modules/volume-run/**`. E6 touches `local_volume_copy.rs`, `handlers/volume/{run,restore}.rs`, `core/crates/ployz/src/handlers/data_loss.rs` and `dashboard/src/modules/volume-run/**`. E7 touches `machine_api/local.rs`, `volume_size.rs` and `dashboard/src/modules/volume-run/{resize,volume-size.server}.ts`. E8 touches `dashboard/src/modules/{volume-run,volume-copies,volume-placement,approval-session,approvals}/**` and `dashboard/CONTEXT.md`.
+- [ ] File boundaries. E1 touches `core/crates/ployzd/src/machine/local_machine/volume_approval.rs` (new), `core/crates/ployzd/src/machine_api/local.rs`, `dashboard/src/modules/volume-run/volume-run.server.ts` and `docs/user/`. E2 adds `core/crates/ployz-core/src/authority/volume.rs` and touches `core/crates/ployz-core/src/{volume_copy,volume_size,volume_switch,rpc_catalog}.rs`, `volume_approval.rs`, `restart_approval.rs` (record kinds) and `core/crates/ployz-sdk/`. E3 touches `core/crates/ployzd/src/{volume_send,daemon}.rs`, `core/crates/ployzd/src/machine_api/local_volume_copy.rs`, `core/crates/ployz-core/src/volume_copy.rs`, `core/crates/ployz-verify/src/volume_runs.rs`, `core/crates/ployz/src/handlers/volume/run.rs`, `dashboard/src/modules/volume-run/**` and `dashboard/src/modules/volume-placement/mirror-sync.server.ts`. E4 touches `local_volume_copy.rs`, `volume_approval.rs`, `core/crates/ployzd/src/machine/local_machine/container.rs` (the cut), `handlers/volume/run.rs` and `dashboard/src/modules/volume-run/**`. E5 touches `authority/volume.rs`, `volume_copy.rs`, `rpc_catalog.rs`, `local_volume_copy.rs`, `core/crates/ployzd/src/sealing_key.rs`, `volume_send.rs`, `core/crates/ployz-verify/src/volume_runs.rs`, `.claude/skills/verify-volume-runs/SKILL.md` and `dashboard/src/modules/volume-run/**`. E6 touches `local_volume_copy.rs`, `handlers/volume/{run,restore}.rs`, `core/crates/ployz/src/handlers/data_loss.rs` and `dashboard/src/modules/volume-run/**`. E7 touches `machine_api/local.rs`, `volume_size.rs` and `dashboard/src/modules/volume-run/{resize,volume-size.server}.ts`. E8 touches `dashboard/src/modules/{volume-run,volume-copies,volume-placement,approval-session,approvals}/**` and `dashboard/CONTEXT.md`.
 - [ ] Bets every E PR names. Bet 6, Machine-local authority, with the argument above. Bet 7, Cloud drives and never owns, because the Move's commit leaves Postgres. Bet 3, bounded imperative commands, because a Volume Run stays a fixed list of steps and a stored receipt is acted on only when a driver asks. Bet 4, partial results, because a Move that stops after the handoff reports a Volume with no Writer and where it finishes. Bet 9, proven primitives, because the stream trusts WireGuard's key-bound source address and adds no TLS. Bet 10, client first, because the client plans and signs and the daemon only verifies. The stable promise, because of optional request fields, new capability rows and one new want behind a capability.
 - [ ] Residuals each E PR names once. See "What remains".
 - [ ] Live lanes run per `c-plan.md` "Boot recipe", with `--machines 3` and a managed pool on each Machine, driven through `verify-server`. The attacker harness is C1's `.audit/c-attacker/`, extended with `SetVolumeCopy`, `SeedVolume`, `SetVolumeSize` and a raw read of the send stream from a Machine's shell.
@@ -221,7 +222,7 @@ Outcome. `ployz_core::authority` has `VolumeApproval`, `VolumeWorkflow`, `Approv
 - [ ] Edit `core/crates/ployz-core/src/authority/mod.rs` to export them, and `core/crates/ployz-sdk/` to generate the TypeScript.
 - [ ] Edit `core/crates/ployz-core/src/volume_copy.rs`, `volume_switch.rs` and `volume_size.rs` so `SetVolumeCopyRequest`, `SeedVolumeRequest` and `SetVolumeSizeRequest` gain `approval: Option<Signed<VolumeApproval>>`, optional and skipped when absent.
 - [ ] Edit `core/crates/ployz-core/src/rpc_catalog.rs` to add `VOLUME_APPROVAL_CAPABILITY: ("ployz.volume.approval.v1", Container)`.
-- [ ] Edit `volume_approval.rs` to add `admit_volume_step`. It checks in this order. A withdrawal that outranks the approval refuses `Replayed`. An ended operation record refuses `Replayed`. An open record passes without the expiry check. With no record, the approval must verify inside its window, and the Machine writes the record as `open` before the effect. Every step also passes through `permits`.
+- [ ] Edit `volume_approval.rs` to add `admit_volume_step`. It checks in this order. An ended operation record refuses `Replayed`. An open record passes without the expiry check. With no record, the approval must verify inside its window, and the Machine writes the record as `open` before the effect. Every step also passes through `permits`.
 - [ ] Add `end_operation`, `grant`, `withdraw` and the owner rule from "When an operation ends" to the same file. Admitting a new owner of a copy ends the earlier one in the same synced write.
 - [ ] Edit the consumption log in `restart_approval.rs` to hold operation records, grants and withdrawals. Each is synced before the effect it guards. They survive a restart and a clock rollback, as the log's other entries do. Ended records and withdrawals are never pruned.
 
@@ -231,7 +232,7 @@ Outcome. `ployz_core::authority` has `VolumeApproval`, `VolumeWorkflow`, `Approv
 - [ ] `volume::verify` refuses a changed Volume, a changed Machine, a Machine not named, a transition outside the graph, a session-signed statement, an unknown key and a bad signature, each with its `AuthorityRefusal`.
 - [ ] Expiry. An expired approval with no operation record is `Expired`. The same approval with an open record passes. A record written before a clock rollback still passes.
 - [ ] Ending. An ended operation is refused `Replayed`, inside its window and after it, and still after the records are reloaded from disk. Its grant no longer reads as live.
-- [ ] Withdrawal. `withdrawn(V, M, at)` refuses a Mirror approval for V and M issued at or before `at`, both when this Machine holds a record for it and when it never saw it. An approval issued after `at` is admitted. Both hold after a reload.
+- [ ] Withdrawal. `withdraw(V, M)` ends every Mirror operation and standing grant this Machine holds for V and M in one synced write, and leaves those for another Volume or another Machine alone. Each ended approval is then refused `Replayed`. A Mirror approval this Machine never admitted, inside its window, is admitted. All three hold after a reload.
 - [ ] Ownership. Admitting a Restore on a Machine with an open Move ends the Move, and on A records `Resumed` when no decision exists. The ended Move is then refused.
 - [ ] An older daemon ignores the new field. A request without it decodes as before. Run `cargo nextest run -p ployz-core authority::volume` and `-p ployzd volume_approval`.
 
@@ -248,9 +249,9 @@ Outcome. `ployz_core::authority` has `VolumeApproval`, `VolumeWorkflow`, `Approv
 
 ## Mirror and sync to approved recipients (E3)
 
-Outcome. With enforcement on, `ployz volume mirror` from a person's Device makes a Mirror with no prompt, and the CLI prints the change it approved. Automatic and requested syncs then run with no further approval. A Machine pulls a Volume only under an approval that names it, from the Machine that approval names. The send stream serves a snapshot only under a live recipient grant whose scope covers it. Attack path closed. Cloud cannot make any Machine pull a Volume. A mesh peer the customer did not approve for that Volume gets nothing from the stream.
+Outcome. With enforcement on, `ployz volume mirror` from a person's Device makes a Mirror with no prompt, and the CLI prints the change it approved. Automatic syncs then run with no further approval. A full Sync destroys the Mirror's copy and copies it again, so the CLI signs a new Mirror approval for it. A Machine pulls a Volume only under an approval that names it, from the Machine that approval names. The send stream serves a snapshot only under a live recipient grant whose scope covers it. A Mirror that is removed stays removed: any `Forget` of a Mirror's slot, approved or not, first writes the withdrawal. Attack path closed. Cloud cannot make any Machine pull a Volume. A mesh peer the customer did not approve for that Volume gets nothing from the stream. Cloud cannot let a removal finish and then replay the Mirror's standing approval to send new data to the removed Machine.
 
-Left open until E6. Removing a Mirror through Cloud is still an unapproved `Forget`, and it writes no withdrawal. Until E6 Cloud can replay the Mirror's approval after such a removal and the Mirror pulls again. E3 ships the withdrawal checks, and E6 writes the withdrawal.
+The destruction itself is not under approval until E6. Until then Cloud can still destroy a Mirror's copy, which loses a copy and takes no data off a Server.
 
 **Depends on.** E2. Operator decision 3.
 
@@ -260,7 +261,11 @@ Left open until E6. Removing a Mirror through Cloud is still an unapproved `Forg
 - [ ] Edit `core/crates/ployzd/src/daemon.rs` (`:284`) to serve with connection info.
 - [ ] Edit `core/crates/ployzd/src/machine_api/local_volume_copy.rs` so an Operator's pull (`NoneToMirror`, `MirrorToMirror`) under enforcement calls `admit_volume_step`. The request's `from` must equal the management address of the approval's source Machine in this Machine's own peer record. Otherwise it is `Mismatch { field: "the source Server" }`.
 - [ ] Edit the same file so a `Snapshot` want that carries a Mirror approval writes that operation's grant on the Writer, with a scope of every snapshot of the Volume. A `Snapshot` without an approval still runs and records nothing.
-- [ ] Edit `core/crates/ployz/src/handlers/volume/run.rs` so `ployz volume mirror` signs a Mirror approval with the Device key and prints `ApprovedVolumeChange`.
+- [ ] Edit the same file so `MirrorToForget` writes `withdrawn(Volume, this Machine)` and syncs it before the plugin destroys anything. It does so for every caller, with or without an approval, and with enforcement on or off whenever this Machine holds a Mirror operation for that Volume.
+- [ ] Edit `core/crates/ployz-core/src/volume_copy.rs` so `WantedCopy::Forget` gains an optional `recipient`. A Writer that receives it writes `withdrawn(Volume, recipient)`, which ends its grant to that Machine, and destroys nothing more than the same `Forget` does today. An older daemon ignores the field.
+- [ ] Edit `deleteMirror` and the reset in `mirrorVolume` (`dashboard/src/modules/volume-run/volume-run.inngest.ts:332`, `:313`) to send the Writer its `Forget` with the recipient first, then the Mirror's `Forget`.
+- [ ] Edit `volume_runs.rs` for a removal followed by a replayed Mirror approval, with `Broken::RemovalNoWithdrawal` and its `breaks` test.
+- [ ] Edit `core/crates/ployz/src/handlers/volume/run.rs` so `ployz volume mirror` signs a Mirror approval with the Device key and prints `ApprovedVolumeChange`. `ployz volume sync --full` signs a new one.
 - [ ] Edit `dashboard/src/modules/volume-run/{volume-run.server,volume-run.inngest,tables}.ts` and `dashboard/src/modules/volume-placement/mirror-sync.server.ts` to store the signed approval with the Mirror and send it with every snapshot and pull.
 - [ ] Edit `docs/user/services/mirror-a-volume.md`.
 
@@ -269,11 +274,13 @@ Left open until E6. Removing a Mirror through Cloud is still an unapproved `Forg
 - [ ] `volume_send` tests. The approved peer is served. Another mesh address is refused with no bytes. An address outside the accepted rows is refused. Enforcement off serves as before.
 - [ ] `volume_send` tests for scope. A grant bound to named snapshots serves those and refuses any other `target`. A grant whose operation ended serves nothing.
 - [ ] `local_volume_copy` tests. A pull with no approval, with an approval naming another Machine, and with a `from` other than the approved source is refused. A resent pull under the same approval passes.
-- [ ] Replay after removal. Write a withdrawal for the Mirror through E2's `withdraw`, on the Mirror and on the Writer. The Mirror's old approval is then refused at the Mirror's pull, and the Writer's stream answers `403` to that Machine. A Mirror approval issued after the withdrawal is admitted and served. Reload the records from disk and repeat all three.
+- [ ] Replay after an unapproved removal. An Operator's `Forget` of the Mirror's slot, with no approval, destroys the slot. The Mirror's old approval is then refused `Replayed` at that Machine's pull. A `Forget` with the recipient at the Writer makes its stream answer `403` to that Machine and refuses the old approval's snapshot step. A new Mirror approval is admitted and served. Restart the daemon, reload the records from disk and repeat all four.
+- [ ] Order. Stop the daemon between the withdrawal's write and the slot's destruction. After the restart the slot still exists, the withdrawal is in force and the old approval is refused. A resent `Forget` then destroys the slot.
+- [ ] Scope. A `Forget` of one Mirror leaves another Mirror of the same Volume, and its grant, working.
 - [ ] CLI test. The printed change names the Volume, both Machines and that syncs continue.
 - [ ] `pnpm exec vitest run src/modules/volume-run src/modules/volume-placement`.
 
-**Verify, live.** Eleven lanes, three Machines.
+**Verify, live.** Thirteen lanes, three Machines.
 
 - [ ] Lane 1. Regression lane against trunk. Enforcement off. Mirror and sync a 10 GiB Volume at trunk and head. Save `e3-enforce-off.png`. Pass when both finish within the perf rule.
 - [ ] Lane 2. Enforcement on. `ployz volume mirror data --to web-2` from `cli --device`. Save `e3-mirror.png`. Pass when the Mirror lands and both Machines log the approving Device.
@@ -285,11 +292,13 @@ Left open until E6. Removing a Mirror through Cloud is still an unapproved `Forg
 - [ ] Lane 8. Kill `ployzd` on web-1 during a stream, then on web-2 during a pull. Save `e3-kill.png`. Pass when a resend finishes the pull and web-1's grant survived the restart.
 - [ ] Lane 9. Sync one hour after the approval. Save `e3-standing.png`. Pass when it pulls.
 - [ ] Lane 10. Edit the Boat Cloud's row so the stored approval names web-3. Save `e3-row-edited.png`. Pass when both Machines refuse on the signature.
-- [ ] Lane 11. Read the changed `docs/user` page against lanes 2 and 3. Save `e3-docs.png`. Pass when every sentence matches.
+- [ ] Lane 11. Attacker harness. Mirror the Volume to web-2 from `cli --device` and sync. Remove the Mirror through Cloud with no approval. Write new files to the Volume. Replay the Mirror's approval: a snapshot at web-1 and a pull at web-2. Then read web-1's stream from web-2's shell. Save `e3-replay-removed.png`. Pass when web-2 refuses the pull and holds no slot, web-1 answers `403` with zero bytes, and neither journal shows the new files' snapshot leaving. Restart `ployzd` on both Machines and repeat. Then mirror again from `cli --device`. Pass when the new Mirror lands.
+- [ ] Lane 12. Attacker harness. Repeat lane 11 with the Writer's `Forget` dropped. Save `e3-replay-dropped.png`. Pass when web-2 still refuses the pull across a restart of `ployzd`.
+- [ ] Lane 13. Read the changed `docs/user` page against lanes 2, 3 and 11. Save `e3-docs.png`. Pass when every sentence matches.
 
 **Verify, perf.**
 
-- [ ] Metric. Throughput of a full pull of a 10 GiB Volume, trunk and head, three each, interleaved. Rule: within 5 percent. Sync of an unchanged Volume. Rule: within 1.1 times.
+- [ ] Metric. Throughput of a full pull of a 10 GiB Volume, trunk and head, three each, interleaved. Rule: within 5 percent. Sync of an unchanged Volume. Rule: within 1.1 times. Removing a Mirror, which adds one synced write. Rule: within 1.1 times.
 
 **Review gate.** None.
 
@@ -393,24 +402,24 @@ Outcome. One approved Move ends on one side, whatever the driver sends. After it
 
 ## Restore, Mirror removal and cleanup under approval (E6)
 
-Outcome. A Restore, a Mirror removal, a requested sync's reset and the cleanup of abandoned slots run only under an approval that names the Machine and what is lost. The existing loss confirmations stay, and what the person confirmed is now inside what they signed. A Mirror removal also writes a withdrawal on the Mirror's Machine and on the Writer's, so the Mirror stays removed. Attack path closed. Only a Restore approval promotes a copy without a receipt, so Cloud cannot make a second Writer on its own word. Cloud cannot destroy a copy. Cloud cannot bring a removed Mirror back by replaying its approval. A confirmation is no longer a flag Cloud says it saw.
+Outcome. A Restore, a Mirror removal, a requested sync's reset and the cleanup of abandoned slots run only under an approval that names the Machine and what is lost. The existing loss confirmations stay, and what the person confirmed is now inside what they signed. E3 already keeps a removed Mirror removed. E6 puts the destruction itself under approval. Attack path closed. Only a Restore approval promotes a copy without a receipt, so Cloud cannot make a second Writer on its own word. Cloud cannot destroy a copy. A confirmation is no longer a flag Cloud says it saw.
 
 **Depends on.** E5. Operator decision 5.
 
 **Files.**
 
 - [ ] Edit `local_volume_copy.rs` so an Operator's promote with no receipt, and every `Forget` and destroy, call `admit_volume_step` under enforcement. A Restore approval that names A admits A's promotion over a `Handed` decision and records it.
-- [ ] Edit the same file so a Mirror removal writes `withdrawn(Volume, Mirror's Machine, the approval's issued_at)` and syncs it before it destroys anything. The Mirror's Machine writes it with the `Forget` of its slot. The Writer's Machine writes it with the `Forget` of the run snapshots it kept, and its grant for that Machine ends. A requested sync's reset is not a removal and writes no withdrawal.
+- [ ] Edit the same file so a `Forget` of a Mirror's slot is admitted under a Mirror removal approval, or under a new Mirror approval that says it replaces the copy. E3's withdrawal still comes first. A replacing approval admits the `Forget` only as the step that opens its operation on that Machine. The withdrawal then ends every other Mirror operation for that Machine. An approval already on record admits no `Forget`, so Cloud cannot attach a standing approval to a removal and have it survive.
 - [ ] Edit `core/crates/ployz/src/handlers/volume/run.rs` and `core/crates/ployz/src/handlers/data_loss.rs` so a Restore or removal through Cloud signs the approval after the existing confirmation, with the loss in it. The cloudless Restore in `handlers/volume/restore.rs` is a Full caller and is unchanged.
 - [ ] Edit `dashboard/src/modules/volume-run/volume-run.inngest.ts` (`restoreVolume`, `deleteMirror`, `demoteVolume`, the reset in `mirrorVolume`, `sweepOrphans`) to send the approval that covers each step. The sweep destroys a slot only under the removal or Move approval that orphaned it.
-- [ ] Edit `volume_runs.rs` for the Restore that overrides a handoff and for a removal followed by a replayed Mirror approval, with `Broken::RestoreUnapproved` and `Broken::RemovalNoWithdrawal` and a `breaks` test for each.
+- [ ] Edit `volume_runs.rs` for the Restore that overrides a handoff, with `Broken::RestoreUnapproved` and its `breaks` test.
 - [ ] Edit the removal's CLI output and Cloud's run row to name each Machine that recorded the withdrawal.
 - [ ] Edit `docs/user/services/restore-a-volume.md`, `mirror-a-volume.md` and `docs/user/troubleshooting/volumes.md`.
 
 **Verify, unit.**
 
 - [ ] `ployzd` tests. A promote with no receipt is refused under a Move or Mirror approval and admitted under a Restore approval for that Machine and snapshot. A `Forget` is refused without a removal approval and when the slot's role differs from the approved one.
-- [ ] Replay after removal. After an approved removal, the Mirror's old approval is refused on the Mirror and on the Writer, a Mirror approval that was signed before the removal and never sent is refused on both, and one signed after it is admitted. A crash between the withdrawal's write and the slot's destruction leaves the withdrawal in force. Reload the records from disk and repeat.
+- [ ] Replay after an approved removal. The Mirror's old approval is refused on the Mirror and on the Writer, and a new one is admitted. A full Sync under a replacing approval ends the old Mirror operation and keeps the new one. Reload the records from disk and repeat.
 - [ ] Replay after Restore. A Restore's approval replayed after a later Move took the copy is refused `Replayed`, including when the daemon stopped before the Restore's outcome was recorded.
 - [ ] CLI tests. The loss the person confirmed equals the loss in the signed statement.
 - [ ] `cargo test -p ployz-verify` and vitest for the changed steps.
@@ -425,7 +434,7 @@ Outcome. A Restore, a Mirror removal, a requested sync's reset and the cleanup o
 - [ ] Lane 6. Continue E5 lane 9. Restore web-1's copy from `cli --device`. Save `e6-after-handoff.png`. Pass when web-1 writes again. Then power web-2 on. Pass when the next sync demotes the older copy.
 - [ ] Lane 7. Abandon a slot with a failed Mirror and wait for the sweep. Save `e6-sweep.png`. Pass when the sweep removes it under the Mirror's approval and touches no other slot.
 - [ ] Lane 8. Attacker harness. Mirror the Volume to web-2, sync, then remove the Mirror from `cli --device`. Replay the Mirror's approval: a snapshot at web-1 and a pull at web-2. Then read web-1's stream from web-2's shell. Save `e6-replay-removed.png`. Pass when web-2 refuses the pull and holds no slot, web-1 answers `403` with zero bytes, and both journals name the withdrawal. Restart `ployzd` on both Machines and repeat. Then mirror again from `cli --device`. Pass when the new Mirror lands.
-- [ ] Lane 9. Attacker harness. Repeat lane 8 with the removal's step on web-1 dropped. Save `e6-replay-dropped.png`. Pass when web-2 still refuses the pull, and the removal's output names web-1 as not yet recorded.
+- [ ] Lane 9. Repeat lane 8 with the removal's step on web-1 dropped. Then run `ployz volume sync --full` from `cli --device` for a Mirror on web-3. Save `e6-replay-dropped.png`. Pass when web-2 still refuses the pull, the removal's output names web-1 as not yet recorded, and the full Sync lands under its new approval.
 - [ ] Lane 10. Read the changed `docs/user` pages against lanes 2, 5 and 6. Save `e6-docs.png`. Pass when every sentence matches.
 
 **Verify, perf.**
@@ -510,7 +519,7 @@ Outcome. A dashboard Move, Mirror, Restore, Mirror removal or resize shows the b
 
 1. **`VolumeApproval` and its signer rule (thread A).** A Volume approval must not be signable under a session grant. `Purpose::Workflow` allows that. Either E reuses the signer rule of `Purpose::Rule` (`ployz-core/src/authority/keys.rs:29`) under a new purpose, or `Workflow` gains a check that no `GrantBody.families` covers it. A decides.
 2. **Machine-issued receipts (thread A).** E5 has every Machine derive a receipt key from the Sealing Key and sign a statement no person signed. That is a new use of the Sealing Key, as thread D's gap 6 was, and a new envelope beside `Signed<T>`. A owns the derivation, the envelope and the key ID field.
-3. **Record kinds (thread A).** Operation records with a state, recipient grants, cut records, decisions, promotions and withdrawals. Unlike the log's other entries they are not consumed once. Each must be synced before the effect it guards, and ended records and withdrawals are never pruned. A also decides where they live: in the approvals log, or as a ZFS mark on the copy so the record travels with the dataset. A withdrawal must outlive the slot it removes, so it cannot be a mark on that slot. If marks, `verify-volume-marks` applies.
+3. **Record kinds (thread A).** Operation records with a state, recipient grants, cut records, decisions, promotions and withdrawals. Unlike the log's other entries they are not consumed once. Each must be synced before the effect it guards, and ended records and withdrawals are never pruned. A withdrawal is written with no approval, from any caller's `Forget`. A also decides where they live: in the approvals log, or as a ZFS mark on the copy so the record travels with the dataset. A withdrawal must outlive the slot it removes, so it cannot be a mark on that slot. If marks, `verify-volume-marks` applies.
 4. **The peer record under enforcement (satisfied on `main`).** E3 maps a mesh source address to a Machine ID through this Machine's own peers. `LocalMachineRecord::accepts_machine` (`ployzd/src/machine/mod.rs:322`) already gives that binding. Under enforcement a Machine accepts a Machine row only when it pins that Machine itself, or when the row's join approval verifies against this Machine's own Devices and names that Machine, its key and this Cluster. E3 resolves a recipient only through rows that pass it. Nothing is owed by thread A. The Volume approval carries no WireGuard keys.
 5. **The start payload (thread C).** E4 reuses `deploy::verify`'s `Creation` check for `Start::Create`. C confirms it accepts a Move's start, and says which fields may differ from the approved payload. Today Cloud sets `pull_policy: "never"` and rewrites `maximum_bytes` from its own row.
 6. **Passkey-direct signing and the Approval card (thread B).** E8 needs a passkey assertion over a statement outside a session, the same helper as thread D's gap 2, and an Approval card for a Volume workflow an agent proposes. Proposals cover restarts, stops and starts today.
@@ -532,6 +541,7 @@ Read on `main` at `00859a3dd4`, not run.
 
 - **Read.** `start_volume_holder` (`ployzd/src/machine/local_machine/container.rs:284`) passes a `Start::Create` spec to `create_container_admitted`. `admit_operator_creation` is called only from `admit_operator_restart` (`restart_approval.rs:139`). The six Volume handlers in `machine_api/local.rs` (`:614` to `:694`) call no `admit_operator_*`.
 - **Read.** A `Start::Kept` is checked only for a Container that exists and that this Machine manages (`machine_api/local_volume_copy.rs:352`), and `start_volume_holder` starts it. `cut_volume_copy` (`container.rs:570`) stops every holder of the Volume and records none of them.
+- **Read.** Cloud removes a Mirror with a `Forget` on each slot and then on the Writer (`deleteMirror`, `volume-run.inngest.ts:332`). A full Sync sends the same two before it copies again (`:314`). Neither carries anything the Machine can check.
 - **Read.** `volume_send.rs` reads nothing about its caller. `management_policy` (`network/firewall.rs:488`) accepts the send port from the mesh prefix on the WireGuard interface. A Machine's management address is derived from its WireGuard public key (`ployz-core/src/domain/machine.rs:151`).
 - **Read.** A Deploy that places a Volume sends `Floor` to every copy, so a blanket refusal of `SetVolumeCopy` would stop those Deploys. E1 is narrower for that reason.
 - **Read.** The E0 scratch model covers the Move alone. Lane gens, Busy retries, holders, resizes, Mirror sets and two operations at once are untested against the handoff until E5 extends the real model.
