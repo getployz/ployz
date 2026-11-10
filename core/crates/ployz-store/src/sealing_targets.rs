@@ -133,14 +133,11 @@ pub(crate) fn targets(
                 .working
                 .services
                 .iter()
-                .map(|service| {
-                    Ok(SealingService {
-                        name: ServiceName::parse(service.slug.as_str())
-                            .map_err(|_| error::corrupt("Service name"))?,
-                        service: Uuid::parse_str(&service.id).ok(),
-                    })
+                .map(|service| SealingService {
+                    name: service.slug.clone(),
+                    service: Uuid::parse_str(&service.id).ok(),
                 })
-                .collect::<Result<_, RpcError>>()?;
+                .collect();
             Ok(SealingTargetsView::Edit {
                 organization,
                 environment: environment.summary,

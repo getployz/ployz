@@ -90,7 +90,7 @@ pub(crate) fn create_branch(
             .into_iter()
             .filter(|setup| {
                 working.services.iter().any(|service| {
-                    service.slug == setup.service.as_str() && own.contains(&service.lineage_id)
+                    service.slug == setup.service && own.contains(&service.lineage_id)
                 })
             })
             .collect(),
@@ -104,7 +104,7 @@ pub(crate) fn create_branch(
             let service = working
                 .services
                 .iter()
-                .find(|service| service.slug == setup.service.as_str())
+                .find(|service| service.slug == setup.service)
                 .filter(|service| own.contains(&service.lineage_id))
                 .ok_or_else(|| {
                     error::invalid(
@@ -232,7 +232,7 @@ pub(crate) fn create_branch(
     Ok(Branched {
         branch: view(tx, &branch)?,
         staged,
-        not_set: not_set(&branch.working)?,
+        not_set: not_set(&branch.working),
     })
 }
 
@@ -353,7 +353,7 @@ pub(crate) fn copy_node(
     Ok(Branched {
         branch: view(tx, &branch)?,
         staged,
-        not_set: not_set(&branch.working)?,
+        not_set: not_set(&branch.working),
     })
 }
 
@@ -399,7 +399,7 @@ pub(crate) fn keep_branch(
     Ok(Branched {
         branch: view(tx, &branch)?,
         staged: Vec::new(),
-        not_set: not_set(&branch.working)?,
+        not_set: not_set(&branch.working),
     })
 }
 

@@ -162,7 +162,7 @@ pub(crate) fn set(
         .working
         .services
         .iter()
-        .filter(|other| other.slug != service.as_str())
+        .filter(|other| other.slug != *service)
         .collect();
     let current = environment
         .service(service)?
@@ -411,7 +411,7 @@ pub(crate) fn rename(
         ));
     }
     for referrer in &mut environment.working.services {
-        let own = referrer.slug == service.as_str();
+        let own = referrer.slug == *service;
         for variable in &mut referrer.variables {
             let VariableValue::Plain {
                 text: PlainText::Template(parts),
@@ -464,7 +464,7 @@ fn referrers(
 ) -> Result<Vec<(ServiceName, VariableKey)>, RpcError> {
     let mut found = Vec::new();
     for referrer in &environment.working.services {
-        let own = referrer.slug == service.as_str();
+        let own = referrer.slug == *service;
         for variable in sorted(referrer) {
             let parts = variable.value.parts();
             let uses = parts.iter().any(|part| {
@@ -472,9 +472,7 @@ fn referrers(
                     if wanted == key.as_str() && references(owner, own, lineage))
             });
             if uses {
-                let name = ServiceName::parse(&referrer.slug)
-                    .map_err(|_| error::corrupt("Service name"))?;
-                found.push((name, VariableKey::parse(&variable.key)?));
+                found.push((referrer.slug.clone(), VariableKey::parse(&variable.key)?));
             }
         }
     }

@@ -355,8 +355,7 @@ pub(crate) fn remove_volume(
             .volume_attachments
             .retain(|mount| mount.volume_resource_id != volume.id.as_str());
         if service.volume_attachments.len() != before {
-            let name =
-                ServiceName::parse(service.slug.as_str()).map_err(|_| error::corrupt("Service"))?;
+            let name = service.slug.clone();
             staged.push(SettingPath::at(&name, Target::Mount(volume.name.clone())));
         }
     }
@@ -499,7 +498,7 @@ fn broken(intent: &SavedEnvironmentIntent) -> Vec<Found> {
     for (key, (node, volume, mount)) in mounts(intent) {
         let service = node.lineage_id.clone();
         let at = key.2.clone();
-        if let Some(refused) = kernel_refusal(&node.slug, &volume.name, mount) {
+        if let Some(refused) = kernel_refusal(node.slug.as_str(), &volume.name, mount) {
             let rule = Broken::Kernel {
                 service: service.clone(),
                 at: at.clone(),

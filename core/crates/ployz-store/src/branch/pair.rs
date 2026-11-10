@@ -440,7 +440,7 @@ pub(crate) fn named(intents: &[&SavedEnvironmentIntent], row: &RowId) -> Option<
         let (node, at) = ployz_core::config::name_of(intent, row)?;
         let (node, kind) = match node {
             NodeRef::Service(service) => (
-                NodeName::Service(ServiceName::parse(service.slug.as_str()).ok()?),
+                NodeName::Service(service.slug.clone()),
                 EnvironmentNodeType::Service,
             ),
             NodeRef::Volume(volume) => (
@@ -2293,10 +2293,7 @@ pub(crate) fn land(
         if old == Some(service) {
             continue;
         }
-        staged.push(NodeName::Service(
-            ServiceName::parse(service.slug.as_str())
-                .map_err(|_| error::corrupt("Service name"))?,
-        ));
+        staged.push(NodeName::Service(service.slug.clone()));
         if old.is_some() {
             continue;
         }
@@ -2355,10 +2352,7 @@ pub(crate) fn land(
     // back by ID.
     for service in &before.services {
         if !branch.working.services.iter().any(|s| s.id == service.id) {
-            staged.push(NodeName::Service(
-                ServiceName::parse(service.slug.as_str())
-                    .map_err(|_| error::corrupt("Service name"))?,
-            ));
+            staged.push(NodeName::Service(service.slug.clone()));
         }
     }
     for config in &before.configs {

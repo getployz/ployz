@@ -598,10 +598,8 @@ fn reapply(
     }
     let services = running
         .iter()
-        .map(|service| {
-            ServiceName::parse(service.slug.as_str()).map_err(|_| error::corrupt("Service name"))
-        })
-        .collect::<Result<Vec<_>, _>>()?;
+        .map(|service| service.slug.clone())
+        .collect::<Vec<_>>();
     let namespace = deployment::namespace(tx, who, &environment.summary, true)?;
     let cluster_domain = trusted
         .domains

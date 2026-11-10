@@ -264,8 +264,7 @@ pub(crate) fn put_file(
                 .any(|mount| mount.config_resource_id == id)
         });
         for node in mounting {
-            let service =
-                ServiceName::parse(node.slug.as_str()).map_err(|_| error::corrupt("Service"))?;
+            let service = node.slug.clone();
             if let Some(error) = collision(&service, node, configs)
                 .or_else(|| oversized(&service, node, configs, &names))
             {
@@ -334,8 +333,7 @@ pub(crate) fn delete_config(
             .config_attachments
             .retain(|mount| mount.config_resource_id != config.id.as_str());
         if service.config_attachments.len() != before {
-            let name =
-                ServiceName::parse(service.slug.as_str()).map_err(|_| error::corrupt("Service"))?;
+            let name = service.slug.clone();
             staged.push(SettingPath::at(
                 &name,
                 Target::ConfigMount(config.name.clone().into()),
@@ -684,7 +682,7 @@ pub(crate) fn names_in(intents: &[&SavedEnvironmentIntent]) -> BTreeMap<String, 
         .iter()
         .rev()
         .flat_map(|intent| &intent.services)
-        .map(|service| (service.lineage_id.clone(), service.slug.clone()))
+        .map(|service| (service.lineage_id.clone(), service.slug.to_string()))
         .collect()
 }
 

@@ -382,22 +382,21 @@ pub(crate) fn namespace(
     let services = applied
         .services
         .iter()
-        .filter_map(|applied| {
+        .map(|applied| {
             let now = environment
                 .working
                 .services
                 .iter()
                 .find(|service| service.id == applied.id)
                 .unwrap_or(applied);
-            let name = ServiceName::parse(now.slug.as_str()).ok()?;
-            Some((name, applied.config.private_dns.clone()))
+            (now.slug.clone(), applied.config.private_dns.clone())
         })
         .collect();
     let authored = environment
         .working
         .services
         .iter()
-        .filter_map(|service| ServiceName::parse(service.slug.as_str()).ok())
+        .map(|service| service.slug.clone())
         .collect::<std::collections::BTreeSet<_>>();
     let mut routes = Vec::new();
     for service in &applied.services {

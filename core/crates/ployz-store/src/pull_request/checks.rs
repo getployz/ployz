@@ -27,7 +27,7 @@ pub(crate) fn view(
                     rows: landing.rows,
                 })
                 .collect(),
-            not_set: crate::branch::not_set(&environment.working)?,
+            not_set: crate::branch::not_set(&environment.working),
         });
     }
     let unlanded = match record.map(|record| record.phase) {

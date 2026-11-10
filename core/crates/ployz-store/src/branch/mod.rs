@@ -499,22 +499,19 @@ pub struct Branched {
 }
 
 /// The sealed variables `working` holds without a value.
-pub(crate) fn not_set(
-    working: &SavedEnvironmentIntent,
-) -> Result<Vec<review::history::NotSetVariable>, RpcError> {
+pub(crate) fn not_set(working: &SavedEnvironmentIntent) -> Vec<review::history::NotSetVariable> {
     let mut not_set = Vec::new();
     for service in &working.services {
         for variable in &service.variables {
             if variable.value == VariableValue::NotSet {
                 not_set.push(review::history::NotSetVariable {
-                    service: ServiceName::parse(&service.slug)
-                        .map_err(|_| error::corrupt("Service name"))?,
+                    service: service.slug.clone(),
                     key: variable.key.clone(),
                 });
             }
         }
     }
-    Ok(not_set)
+    not_set
 }
 
 /// A Branch's row.
@@ -618,7 +615,7 @@ pub(crate) fn lineage_named(
         NodeName::Service(name) => intent
             .services
             .iter()
-            .find(|service| service.slug == name.as_str())
+            .find(|service| service.slug == *name)
             .map(|service| service.lineage_id.clone()),
         NodeName::Volume(name) => intent
             .volumes
@@ -645,7 +642,7 @@ fn names(intent: &SavedEnvironmentIntent) -> Vec<String> {
     intent
         .services
         .iter()
-        .map(|service| service.slug.clone())
+        .map(|service| service.slug.to_string())
         .chain(
             intent
                 .volumes
@@ -667,7 +664,7 @@ pub(crate) fn name_of(intent: &SavedEnvironmentIntent, lineage: &str) -> Option<
         .services
         .iter()
         .find(|service| service.lineage_id == lineage)
-        .map(|service| service.slug.clone())
+        .map(|service| service.slug.to_string())
         .or_else(|| {
             intent
                 .volumes
@@ -690,8 +687,7 @@ pub(crate) fn node_of(intent: &SavedEnvironmentIntent, lineage: &str) -> Option<
         .services
         .iter()
         .find(|service| service.lineage_id == lineage)
-        .and_then(|service| ServiceName::parse(service.slug.as_str()).ok())
-        .map(NodeName::Service);
+        .map(|service| NodeName::Service(service.slug.clone()));
     service.or_else(|| {
         intent
             .volumes

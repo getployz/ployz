@@ -236,3 +236,10 @@ fn configs_refuse_bare_references_and_colliding_mounts() {
         assert!(parse_environment_intent(value).is_err(), "{mode}");
     }
 }
+
+#[test]
+fn a_service_slug_that_is_not_a_service_name_is_refused_when_the_document_is_read() {
+    let mut document = intent();
+    *document.pointer_mut("/services/0/slug").unwrap() = json!("Not A Name");
+    assert!(parse_environment_intent(document).is_err());
+}

@@ -1222,7 +1222,7 @@ mod tests {
             let db = working
                 .services
                 .iter_mut()
-                .find(|service| service.slug == "db")
+                .find(|service| service.slug.as_str() == "db")
                 .unwrap();
             db.variables
                 .push(secret("PASSWORD", legacy(&store.sealing, "hunter2")));
@@ -1238,7 +1238,7 @@ mod tests {
         let db = working(&store)
             .services
             .iter()
-            .find(|service| service.slug == "db")
+            .find(|service| service.slug.as_str() == "db")
             .unwrap()
             .lineage_id
             .clone();
@@ -1306,13 +1306,13 @@ mod tests {
         let auth = working(&store)
             .services
             .iter()
-            .find(|service| service.slug == "auth")
+            .find(|service| service.slug.as_str() == "auth")
             .unwrap()
             .lineage_id
             .clone();
         crate::rules::tests::seed(&store, &who, |working| {
             for service in &mut working.services {
-                if service.slug == "auth" {
+                if service.slug.as_str() == "auth" {
                     service
                         .variables
                         .push(secret("TOKEN", legacy(&store.sealing, "hunter2")));
@@ -1352,7 +1352,7 @@ mod tests {
             let auth = working
                 .services
                 .iter_mut()
-                .find(|service| service.slug == "auth")
+                .find(|service| service.slug.as_str() == "auth")
                 .unwrap();
             let lineage = auth.lineage_id.clone();
             auth.variables
@@ -1381,7 +1381,7 @@ mod tests {
         let auth = working(&store)
             .services
             .iter()
-            .find(|service| service.slug == "auth")
+            .find(|service| service.slug.as_str() == "auth")
             .unwrap()
             .lineage_id
             .clone();

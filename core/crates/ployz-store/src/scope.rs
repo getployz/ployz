@@ -225,7 +225,7 @@ impl Environment {
             self.working
                 .services
                 .iter()
-                .map(|service| (service.lineage_id.clone(), service.slug.clone())),
+                .map(|service| (service.lineage_id.clone(), service.slug.to_string())),
         );
         names
     }
@@ -269,7 +269,7 @@ impl Environment {
         let services = &self.working.services;
         services
             .iter()
-            .find(|service| service.slug == name.as_str())
+            .find(|service| service.slug == *name)
             .ok_or_else(|| no_service(name, &self.summary.name, &self.working))
     }
 
@@ -282,7 +282,7 @@ impl Environment {
             .working
             .services
             .iter()
-            .position(|service| service.slug == name.as_str())
+            .position(|service| service.slug == *name)
             .ok_or_else(|| no_service(name, &self.summary.name, &self.working))?;
         Ok(self
             .working
@@ -816,7 +816,7 @@ pub(crate) fn persist_working(
         if !stays(&service.lineage_id) {
             removed.record_beside(
                 &service.lineage_id,
-                Some(&service.slug),
+                Some(service.slug.as_str()),
                 &environment.inherited,
             );
         }
@@ -935,7 +935,7 @@ pub(crate) fn validate_and_refresh_working_from(
         if read.contains(&service.lineage_id) {
             environment
                 .removed
-                .record(&service.lineage_id, Some(&service.slug));
+                .record(&service.lineage_id, Some(service.slug.as_str()));
         }
     }
     environment.inherited = inherited(
