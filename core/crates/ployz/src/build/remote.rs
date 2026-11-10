@@ -59,18 +59,19 @@ impl Client {
         // Keep the admitted sender alive: closing it would cancel the worker check.
         let deadline =
             tokio::time::Instant::now() + admitted.active_timeout + Duration::from_secs(70);
-        let failed = |message: &str| CapabilityCheckError::from(remote::InputError::from(message));
+        let unusable =
+            |message: &str| CapabilityCheckError::from(remote::InputError::from(message));
         tokio::select! {
             biased;
-            () = cancellation.cancelled() => Err(failed("Build selection cancelled")),
-            () = tokio::time::sleep_until(deadline) => Err(failed("Build capability deadline expired")),
+            () = cancellation.cancelled() => Err(unusable("Build selection cancelled")),
+            () = tokio::time::sleep_until(deadline) => Err(unusable("Build capability deadline expired")),
             response = admitted.responses.message() => {
                 let payload = response.map_err(|error| remote::InputError::from(error.to_string()))?
-                    .ok_or_else(|| failed("Build capability response ended early"))?;
+                    .ok_or_else(|| unusable("Build capability response ended early"))?;
                 match remote::decode::<Event>(&payload)? {
                     Event::Finished(Outcome::CapabilitiesChecked { machine_id: actual }) if actual == machine_id => Ok(()),
                     Event::Finished(Outcome::Failed { message, .. } | Outcome::Unknown { message, .. }) => Err(remote::InputError::from(message).into()),
-                    Event::Admitted { .. } | Event::Progress(_) | Event::Finished(_) => Err(failed("invalid Build capability response")),
+                    Event::Admitted { .. } | Event::Progress(_) | Event::Finished(_) => Err(unusable("invalid Build capability response")),
                 }
             }
         }
