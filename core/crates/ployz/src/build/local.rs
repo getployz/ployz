@@ -2,7 +2,9 @@
 
 use std::{collections::BTreeMap, path::Path};
 
-use ployz_build::{BuildError, BuiltImage, Output, OutputScrub, Staged, remote::Definition};
+use ployz_build::{
+    BuildError, BuiltImage, Output, OutputScrub, Staged, capture, remote::Definition,
+};
 
 use super::{CapturedBuild, CapturedTarget, Error, invalid};
 
@@ -118,11 +120,8 @@ impl CapturedBuild {
                 "PATH".to_owned(),
                 std::env::var("PATH").unwrap_or_else(|_| "/usr/local/bin:/usr/bin:/bin".into()),
             ),
-            ("HOME".to_owned(), path(&root.join("private"))),
-            (
-                "DOCKER_CONFIG".to_owned(),
-                path(&root.join("private/docker")),
-            ),
+            ("HOME".to_owned(), path(&capture::private(root))),
+            ("DOCKER_CONFIG".to_owned(), path(&capture::docker(root))),
         ]);
         let (cache, cache_scope) = match &self.local_cache {
             super::LocalCache::Runner => (true, None),
@@ -143,7 +142,7 @@ impl CapturedBuild {
         let scrub = self.opened.as_ref().map(OutputScrub::new);
         let request = ployz_build::Request {
             image_contexts: &definition.image_contexts,
-            compose_file: Path::new("compose.yaml"),
+            compose_file: Path::new(capture::COMPOSE),
             sealed_override,
             working_dir: root,
             environment: &environment,

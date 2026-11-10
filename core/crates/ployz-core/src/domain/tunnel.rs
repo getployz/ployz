@@ -4,9 +4,10 @@
 use std::collections::BTreeMap;
 
 use crate::{
-    Ciphertext, ContainerLabels, ContainerPath, MachinePath, QualifiedService, RawVolumeSource,
-    RequestedServiceSpec, ServiceMode, ServiceMount, ServiceMountGraph, ServiceNetwork,
-    ServiceVolume, ServiceVolumeGraph, ServiceVolumeReference, UpdateConfig, caddy_container,
+    Ciphertext, ContainerLabels, ContainerPath, INGRESS_LOOPBACK_BIND, INGRESS_LOOPBACK_PORT,
+    MachinePath, QualifiedService, RawVolumeSource, RequestedServiceSpec, ServiceMode,
+    ServiceMount, ServiceMountGraph, ServiceNetwork, ServiceVolume, ServiceVolumeGraph,
+    ServiceVolumeReference, UpdateConfig, caddy_container,
 };
 
 /// The label on the Tunnel Connector's spec that carries the sealed tunnel token, so
@@ -22,7 +23,10 @@ const TUNNEL_TOKEN_MOUNT: &str = "/run/tunnel";
 /// The uid the pinned cloudflared image runs as. The token file is owned by it.
 pub const TUNNEL_USER_ID: u32 = 65532;
 /// Caddy's loopback listener the connector proxies every request to.
-pub const TUNNEL_ORIGIN: &str = "http://127.0.0.1:8480";
+#[must_use]
+pub fn tunnel_origin() -> String {
+    format!("http://{INGRESS_LOOPBACK_BIND}:{INGRESS_LOOPBACK_PORT}")
+}
 /// Why a Machine orders no certificate while every Server uses the Tunnel Door. The
 /// daemon records it on each wanted hostname, and a domain's status reads it back.
 pub const TUNNEL_SERVES_CERTIFICATE: &str =
@@ -42,7 +46,7 @@ pub fn tunnel_service_spec(image: &str, sealed_token: &Ciphertext) -> RequestedS
         "--no-autoupdate",
         "run",
         "--url",
-        TUNNEL_ORIGIN,
+        &tunnel_origin(),
         "--token-file",
         &format!("{TUNNEL_TOKEN_MOUNT}/{TUNNEL_TOKEN_FILE}"),
     ]
@@ -113,6 +117,11 @@ mod tests {
     }
 
     #[test]
+    fn the_origin_is_the_loopback_listener() {
+        assert_eq!(tunnel_origin(), "http://127.0.0.1:8480");
+    }
+
+    #[test]
     fn the_connector_joins_the_holder_and_carries_its_sealed_token_as_a_label() {
         let spec = tunnel_service_spec("cloudflared:2026", &sealed());
         assert_eq!(spec.container.network, Some(ServiceNetwork::IngressHolder));
@@ -122,7 +131,7 @@ mod tests {
             spec.container
                 .command
                 .join(" ")
-                .contains(&format!("--url {TUNNEL_ORIGIN}"))
+                .contains("--url http://127.0.0.1:8480")
         );
         let [mount] = spec.mount_graph.volume_graph().mounts() else {
             panic!("the connector has one mount");

@@ -11,6 +11,7 @@ use tokio::{process::Command, sync::watch};
 use tokio_util::sync::CancellationToken;
 
 use super::{
+    ABDICATED,
     process::{InstalledExe, identity_of},
     spec::{DnsSpec, SpecFile},
 };
@@ -191,8 +192,8 @@ ExecStart={exe} --socket {socket} dns
 EnvironmentFile=-/etc/default/ployz
 Restart=always
 RestartSec=1
-RestartPreventExitStatus=78
-SuccessExitStatus=78
+RestartPreventExitStatus={abdicated}
+SuccessExitStatus={abdicated}
 FileDescriptorStoreMax=4
 TimeoutStopSec=10
 NoNewPrivileges=true
@@ -207,6 +208,7 @@ CapabilityBoundingSet=CAP_NET_BIND_SERVICE CAP_DAC_OVERRIDE
 ",
         exe = exe.display(),
         socket = socket.display(),
+        abdicated = ABDICATED,
     )
 }
 

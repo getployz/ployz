@@ -17,6 +17,7 @@ use super::assess::{
     root_reserve_blocker, secure_boot_blocker, virtualization_blocker, zfs_os_route,
 };
 use super::os_release::OsRelease;
+use super::zfs_route::ZfsRoute;
 use super::{Error, InstallPaths, command_exists, refuse, run_apt, run_command, run_host};
 use super::{
     host::write_file_atomically,
@@ -290,83 +291,34 @@ fn partition_of(partition: &Path, disk: &Path) -> bool {
 
 pub(super) const STAGE: &str = "prepare ZFS storage";
 
-/// How the ZFS kernel module becomes loadable on the Machine's distro.
-#[derive(Clone, Copy)]
-pub(super) enum ZfsRoute {
-    /// Canonical's prebuilt module package for the running kernel.
-    Ubuntu,
-    /// Debian's `zfs-dkms` from `contrib`, built on the Machine and rebuilt by DKMS for new
-    /// kernels. `keyring` is the path the release's own images name: apt refuses a source whose
-    /// Signed-By differs from another entry for the same suite.
-    Debian {
-        codename: &'static str,
-        keyring: &'static str,
-    },
-    /// The pinned [`OPENZFS_VERSION`] built on the Machine into DKMS and userspace RPMs.
-    AmazonLinux,
-}
-
-impl ZfsRoute {
-    pub(super) fn for_os(os: &OsRelease) -> Option<Self> {
-        match (os.id.as_str(), os.version_id.as_deref()) {
-            ("ubuntu", _) => Some(Self::Ubuntu),
-            ("debian", Some("12")) => Some(Self::Debian {
-                codename: "bookworm",
-                keyring: "debian-archive-keyring.gpg",
-            }),
-            ("debian", Some("13")) => Some(Self::Debian {
-                codename: "trixie",
-                keyring: "debian-archive-keyring.pgp",
-            }),
-            (_, Some("2023")) if os.is_amazon_linux() => Some(Self::AmazonLinux),
-            _ => None,
-        }
-    }
-
-    /// Whether the Machine builds the module itself, unsigned, rather than installing Ubuntu's.
-    pub(super) fn builds_module(self) -> bool {
-        !matches!(self, Self::Ubuntu)
-    }
-
-    pub(super) fn prepare_minutes(self) -> u32 {
-        match self {
-            Self::Ubuntu => 1,
-            Self::Debian { .. } => 10,
-            Self::AmazonLinux => 20,
-        }
-    }
-
-    pub(super) fn package_manager(self) -> &'static str {
-        match self {
-            Self::Ubuntu | Self::Debian { .. } => "apt-get",
-            Self::AmazonLinux => "dnf",
-        }
-    }
-
-    fn install(self, paths: &InstallPaths, os: &OsRelease, kernel: &str) -> Result<(), Error> {
-        super::prepare::install_waiting_for_preparation(
-            paths,
-            self.package_manager(),
-            || match self {
-                Self::Ubuntu => install_zfs_packages(kernel),
-                Self::Debian { codename, keyring } => prepare_debian_zfs(
-                    &paths.apt_dir,
-                    os,
-                    codename,
-                    keyring,
-                    kernel,
-                    super::prepare::prepared_dkms_build(paths, kernel),
-                ),
-                Self::AmazonLinux => prepare_amazon_zfs(
-                    &super::prepare::prepare_dir(paths).join("zfs"),
-                    &paths.modules_load_dir,
-                    os,
-                    kernel,
-                    OPENZFS_SHA256,
-                ),
-            },
-        )
-    }
+fn install_route(
+    route: ZfsRoute,
+    paths: &InstallPaths,
+    os: &OsRelease,
+    kernel: &str,
+) -> Result<(), Error> {
+    super::prepare::install_waiting_for_preparation(
+        paths,
+        route.package_manager(),
+        || match route {
+            ZfsRoute::Ubuntu => install_zfs_packages(kernel),
+            ZfsRoute::Debian { codename, keyring } => prepare_debian_zfs(
+                &paths.apt_dir,
+                os,
+                codename,
+                keyring,
+                kernel,
+                super::prepare::prepared_dkms_build(paths, kernel),
+            ),
+            ZfsRoute::AmazonLinux => prepare_amazon_zfs(
+                &super::prepare::prepare_dir(paths).join("zfs"),
+                &paths.modules_load_dir,
+                os,
+                kernel,
+                OPENZFS_SHA256,
+            ),
+        },
+    )
 }
 
 fn prepare_zfs(paths: &InstallPaths) -> Result<(), Error> {
@@ -381,7 +333,7 @@ fn prepare_zfs(paths: &InstallPaths) -> Result<(), Error> {
     require_host_root_reserve()?;
     let cap = zfs_arc_max()?;
     if install {
-        route.install(paths, &os, &kernel)?;
+        install_route(route, paths, &os, &kernel)?;
     }
     // Written only once ZFS is in place, so every refusal above leaves the host untouched.
     persist_zfs_arc_max(paths, cap)?;

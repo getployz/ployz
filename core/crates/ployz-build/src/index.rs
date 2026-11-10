@@ -51,8 +51,10 @@ pub(crate) fn build(
             let mut refs = Vec::new();
             let mut tags = Vec::new();
             for (number, platform) in target.target.platforms.iter().enumerate() {
-                let archive = request.working_dir.join("private/railpack/variant.tar");
-                let metadata = request.working_dir.join("private/railpack/variant.json");
+                let archive =
+                    crate::capture::railpack_scratch(request.working_dir).join("variant.tar");
+                let metadata =
+                    crate::capture::railpack_scratch(request.working_dir).join("variant.json");
                 let mut args = bake_arguments(
                     request,
                     crate::Produce::Output(crate::Output::Load),
@@ -145,7 +147,8 @@ pub(crate) fn build(
                     tag,
                 ],
             )?;
-            let archive = request.working_dir.join("private/railpack/complete.tar");
+            let archive =
+                crate::capture::railpack_scratch(request.working_dir).join("complete.tar");
             output(
                 "copy assembled Railpack image",
                 &[

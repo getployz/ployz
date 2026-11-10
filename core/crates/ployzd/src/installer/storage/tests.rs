@@ -579,10 +579,7 @@ fn zfs_install_takes_over_a_prepared_build_contract() {
         let root = contract_root();
         let paths = InstallPaths::at(&root);
         let os = OsRelease::read(&paths.os_release).unwrap();
-        ZfsRoute::for_os(&os)
-            .unwrap()
-            .install(&paths, &os, KERNEL)
-            .unwrap();
+        install_route(ZfsRoute::for_os(&os).unwrap(), &paths, &os, KERNEL).unwrap();
         if name == "no-build" {
             discard_at(&paths).unwrap();
         }
