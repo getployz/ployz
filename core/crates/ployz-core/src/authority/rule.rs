@@ -17,7 +17,7 @@ use ts_rs::TS;
 use super::{
     canonical::{self, CanonicalError, Timestamp, hex_bytes, write_hex},
     deploy::{Creation, PayloadDigest, content_addressed, drop_nulls},
-    keys::{Approver, Purpose, Signed, SigningPublicKey, Statement},
+    keys::{Approver, Purpose, Signed, Statement},
     refusal::{AuthorityRefusal, field, first_mismatch},
     restart::SignerKey,
     trusted_key::TrustedKeys,
@@ -192,6 +192,7 @@ impl Runner {
 /// The reusable workflow that builds, pinned by commit.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
 #[serde(deny_unknown_fields)]
+#[ts(rename = "RuleBuilder")]
 pub struct Builder {
     /// `job_workflow_ref` as GitHub writes it:
     /// `<owner>/<repository>/<path>@<ref>`.
@@ -353,8 +354,8 @@ pub struct RuleService {
 
 /// A person's standing approval of every push to one branch: built by one pinned builder,
 /// deployed with the settings it names, into one Environment on the Machines it names.
-/// Signed by a Device; a browser key under a session grant cannot sign it, because it
-/// authorizes every future push.
+/// Signed by a Device, or answered by a passkey's own prompt; a browser key under a
+/// session grant cannot sign it, because it authorizes every future push.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
 #[serde(deny_unknown_fields)]
 pub struct AutoDeployRule {
@@ -436,27 +437,27 @@ impl AutoDeployRule {
     }
 }
 
-/// Open a rule signed by a Device this Machine trusts, the one its body names. A browser
-/// key is refused even under a valid session grant.
+/// Open a rule signed by a Device this Machine trusts, or answered by a trusted passkey's
+/// own prompt, as its body says. A browser key is refused even under a valid session
+/// grant: a rule stands for every future push.
 ///
 /// # Errors
 /// Returns the envelope's refusal from [`Signed::approvers`], a malformed body, and
-/// [`AuthorityRefusal::Mismatch`] naming the signer when no trusted Device signed as the
-/// body says.
+/// [`AuthorityRefusal::Mismatch`] naming the signer when no Device or passkey signed as
+/// the body says.
 pub fn verify_signature(
     rule: &Signed<AutoDeployRule>,
     trusted: &TrustedKeys,
     now: Timestamp,
-) -> Result<(AutoDeployRule, SigningPublicKey), AuthorityRefusal> {
+) -> Result<(AutoDeployRule, Approver), AuthorityRefusal> {
     let approvers = rule.approvers(trusted, now)?;
     let body = rule.open()?;
     approvers
         .into_iter()
-        .find_map(|approver| match approver {
-            Approver::Device(key) if approver.signs_as(body.signer) => Some(key),
-            Approver::Device(_) | Approver::Browser { .. } => None,
+        .find(|approver| {
+            !matches!(approver, Approver::Browser { .. }) && approver.signs_as(body.signer)
         })
-        .map(|key| (body, key))
+        .map(|approver| (body, approver))
         .ok_or(AuthorityRefusal::Mismatch {
             field: "the signer",
         })

@@ -70,22 +70,22 @@ impl std::fmt::Display for WorkflowKind {
 
 /// The key a statement says signed it. A Device's key is written bare, as before browser
 /// keys existed, so a Device's approval keeps the bytes an older daemon reads. A browser
-/// key is written as `{"browser": key}`, which an older daemon refuses to parse.
+/// key is written as `{"browser": key}`, which an older daemon refuses to parse. A rule a
+/// passkey answers for itself says `"passkey"`: the browser writes the body before the
+/// person picks which passkey answers, and the answer names it.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
 #[serde(untagged)]
 pub enum SignerKey {
     Device(DeviceKey),
     Browser { browser: SigningPublicKey },
+    Passkey(OwnPrompt),
 }
 
-impl SignerKey {
-    #[must_use]
-    pub fn key(self) -> SigningPublicKey {
-        match self {
-            Self::Device(key) => key.into(),
-            Self::Browser { browser } => browser,
-        }
-    }
+/// The one value [`SignerKey::Passkey`] takes.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
+pub enum OwnPrompt {
+    #[serde(rename = "passkey")]
+    Passkey,
 }
 
 /// A Device, or a browser key under a session grant, approves one Container's lifecycle

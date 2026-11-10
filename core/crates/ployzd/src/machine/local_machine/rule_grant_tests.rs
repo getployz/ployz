@@ -67,6 +67,7 @@ pub(crate) async fn fixture() -> Fixture {
     owner
         .mutate(move |store| {
             store.approve_device(device).unwrap();
+            store.approve_passkey(passkey()).unwrap();
             store.set_device_enforcement(true, Vec::new()).unwrap();
         })
         .await
@@ -515,4 +516,104 @@ async fn a_token_for_another_branch_is_refused_naming_ref() {
         ),
         "{result:?}"
     );
+}
+
+/// The passkey the fixture Machine trusts: an EdDSA authenticator on `ployz.cloud`.
+fn passkey() -> ployz_core::authority::TrustedPasskey {
+    use ployz_core::authority::{
+        Passkey, PasskeyAccount, PasskeyApprover, PasskeyPublicKey, TrustedPasskey,
+        trusted_key::{Base64Url, PasskeyAlgorithm, RelyingParty},
+    };
+    let key = ed25519_dalek::SigningKey::from_bytes(&[5; 32]).verifying_key();
+    TrustedPasskey {
+        passkey: Passkey {
+            credential_id: Base64Url::new(vec![5, 1, 2, 3]).try_into().unwrap(),
+            public_key: PasskeyPublicKey::parse(PasskeyAlgorithm::Eddsa, key.as_bytes()).unwrap(),
+            account: PasskeyAccount::parse("ada@example.com").unwrap(),
+            relying_party: RelyingParty::of(&"https://ployz.cloud".parse().unwrap()).unwrap(),
+        },
+        approved_by: PasskeyApprover::Server,
+    }
+}
+
+/// The trusted passkey's user-verified answer to `challenge`, as a browser returns it.
+fn answer(challenge: &[u8]) -> ployz_core::authority::PasskeyAssertion {
+    use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
+    use ed25519_dalek::Signer as _;
+    use ployz_core::authority::{PasskeyAssertion, trusted_key::Base64Url};
+    use sha2::{Digest as _, Sha256};
+
+    let client_data = json!({
+        "type": "webauthn.get",
+        "challenge": URL_SAFE_NO_PAD.encode(challenge),
+        "origin": "https://ployz.cloud",
+    })
+    .to_string()
+    .into_bytes();
+    let mut authenticator_data = Sha256::digest(b"ployz.cloud").to_vec();
+    authenticator_data.extend_from_slice(&[0x05, 0, 0, 0, 1]);
+    let mut answered = authenticator_data.clone();
+    answered.extend_from_slice(&Sha256::digest(&client_data));
+    let authenticator = ed25519_dalek::SigningKey::from_bytes(&[5; 32]);
+    PasskeyAssertion {
+        credential_id: Base64Url::new(vec![5, 1, 2, 3]).try_into().unwrap(),
+        authenticator_data: Base64Url::new(authenticator_data),
+        client_data_json: Base64Url::new(client_data),
+        signature: Base64Url::new(authenticator.sign(&answered).to_bytes().to_vec()),
+    }
+}
+
+#[tokio::test]
+async fn a_rule_a_passkey_answered_with_its_own_prompt_mints() {
+    let fixture = fixture().await;
+    let rule = AutoDeployRule {
+        signer: SignerKey::Passkey(ployz_core::authority::OwnPrompt::Passkey),
+        ..fixture.rule()
+    };
+    let claim = fixture.claim(&rule);
+    let mut grant = fixture.grant(&rule, fixture.token(&claim, "passkey"));
+    let unsigned = Signed::unsigned(&rule).unwrap();
+    let assertion = answer(&unsigned.challenge());
+    grant.rule = unsigned.answered(assertion);
+    let admitted = fixture
+        .admit(&grant, &holder(), Some(&fixture.record()), commit())
+        .await;
+    assert!(admitted.is_ok(), "{:?}", admitted.err());
+}
+
+#[tokio::test]
+async fn a_rule_signed_under_a_browser_session_is_refused_before_anything_opens() {
+    use ployz_core::authority::{ActionFamily, GrantBody, SessionGrant, session::Delegation};
+
+    let fixture = fixture().await;
+    let browser = Signer::from_seed(&[8; 32]);
+    let rule = AutoDeployRule {
+        signer: SignerKey::Browser {
+            browser: browser.public(),
+        },
+        ..fixture.rule()
+    };
+    let grant_body = GrantBody {
+        browser_key: browser.public(),
+        cluster: fixture.cluster,
+        environment: rule.namespace.clone(),
+        environment_id: uuid::Uuid::nil(),
+        machines: rule.machines.clone(),
+        families: vec![ActionFamily::Deploy],
+        issued_at: rule.issued_at,
+        expires_at: rule.issued_at.plus(60 * 60_000),
+        delegation: Delegation::None,
+    };
+    let body = ployz_core::authority::canonical::to_canonical(&grant_body).unwrap();
+    let session = SessionGrant {
+        assertion: answer(&GrantBody::challenge(&body)),
+        body,
+    };
+    let claim = fixture.claim(&rule);
+    let mut grant = fixture.grant(&rule, fixture.token(&claim, "session"));
+    grant.rule = Signed::sign_under(&rule, &browser, session).unwrap();
+    let result = fixture
+        .admit(&grant, &holder(), Some(&fixture.record()), commit())
+        .await;
+    refused(result, "the signer");
 }

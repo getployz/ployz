@@ -289,6 +289,12 @@ fn refusal_text(refusal: &AuthorityRefusal) -> String {
             field: "a hook run",
         } => "This push already ran its pre-deploy command here.",
         AuthorityRefusal::Replayed { .. } => "This push already ran its pre-deploy command here.",
+        AuthorityRefusal::Mismatch {
+            field: "the signer" | "a passkey",
+        } => {
+            "An automatic deploy rule needs your passkey or an approved device, not a browser \
+             session. Approve it again."
+        }
         AuthorityRefusal::UnknownKey { .. } | AuthorityRefusal::UnknownPasskey => {
             "This server doesn't trust the device that approved the automatic deploy rule."
         }
