@@ -56,16 +56,16 @@ pub(super) fn sign(
         Probe::Off => return Ok(None),
         Probe::Unknown => {
             crate::ui::warn(
-                "Couldn't ask your servers whether they enforce device approval, so this \
-                 device didn't approve the mirror. Servers that enforce will refuse to copy it.",
+                "Couldn't ask your Servers whether they enforce device approval, so this \
+                 device didn't approve the Mirror. Servers that enforce will refuse it.",
             );
             return Ok(None);
         }
         Probe::NoClusterKey => {
             return Err(Error::coded(
                 RpcErrorCode::Unavailable,
-                "Your servers enforce device approval, but none reported the cluster's key, \
-                 so this device can't approve the mirror. Run ployz status, then try again.",
+                "Your Servers enforce device approval, but none reported the Cluster's key, \
+                 so this device can't approve the Mirror. Run ployz status, then try again.",
             ));
         }
         Probe::Enforcing(enforcing) => enforcing,
@@ -137,7 +137,7 @@ fn parties<'seen>(
                 RpcErrorCode::Unavailable,
                 format!(
                     "No Server reports a writer of {volume}, so this device can't approve a \
-                     mirror of it. Run ployz status, then try again."
+                     Mirror of it. Run ployz status, then try again."
                 ),
             ));
         }
@@ -156,7 +156,7 @@ fn parties<'seen>(
         MirrorOn::Server(name) => seen
             .iter()
             .find(|seen| seen.name == name.as_str())
-            .ok_or_else(|| Error::not_found(format!("No Server named {name} is in this cluster.")))?,
+            .ok_or_else(|| Error::not_found(format!("No Server named {name} is in this Cluster.")))?,
         MirrorOn::Current => seen
             .iter()
             .find(|seen| {
@@ -164,13 +164,13 @@ fn parties<'seen>(
                     matches!(copy, VolumeCopy::Slot { role, .. } if *role != Some(SlotRole::OldCopy))
                 })
             })
-            .ok_or_else(|| Error::not_found(format!("{volume} has no mirror to copy again.")))?,
+            .ok_or_else(|| Error::not_found(format!("{volume} has no Mirror to copy again.")))?,
     };
     if mirror.id == writer.id {
         return Err(Error::coded(
             RpcErrorCode::InvalidArgument,
             format!(
-                "{} writes {volume}, so it can't also keep its mirror. Pick another server.",
+                "{} writes {volume}, so it can't also keep its Mirror. Pick another Server.",
                 mirror.name
             ),
         ));

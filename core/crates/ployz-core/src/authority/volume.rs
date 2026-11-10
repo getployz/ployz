@@ -333,7 +333,7 @@ impl ApprovedVolumeChange {
                     format!("mirror {shown} from {writer} to {mirror}")
                 };
                 format!(
-                    "Approved: {change}. Later syncs run without asking, until the Mirror is removed."
+                    "Approved: {change}. Later syncs run without asking until you remove the Mirror."
                 )
             }
         }

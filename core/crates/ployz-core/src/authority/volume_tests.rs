@@ -523,7 +523,7 @@ fn a_mirror_approval_shows_the_volume_both_servers_and_that_syncs_continue() {
     let change = ApprovedVolumeChange::of(&mirror(false), name).unwrap();
     assert_eq!(
         change.line(),
-        "Approved: mirror data from web-1 to web-2. Later syncs run without asking, until the Mirror is removed."
+        "Approved: mirror data from web-1 to web-2. Later syncs run without asking until you remove the Mirror."
     );
     assert_eq!(
         serde_json::to_value(&change).unwrap(),
@@ -539,7 +539,7 @@ fn a_mirror_approval_shows_the_volume_both_servers_and_that_syncs_continue() {
         ApprovedVolumeChange::of(&mirror(true), name)
             .unwrap()
             .line(),
-        "Approved: copy data from web-1 to web-2 again, replacing the copy there. Later syncs run without asking, until the Mirror is removed."
+        "Approved: copy data from web-1 to web-2 again, replacing the copy there. Later syncs run without asking until you remove the Mirror."
     );
     assert_eq!(ApprovedVolumeChange::of(&approval(moving()), name), None);
 }

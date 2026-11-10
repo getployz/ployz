@@ -88,7 +88,7 @@ fn a_full_sync_names_the_current_mirror_and_never_an_old_copy() {
         seen("web-1", Some(root(false))),
         seen("web-2", Some(slot(Some(SlotRole::OldCopy)))),
     ];
-    assert!(refused(parties(&volume(), &only_old, MirrorOn::Current)).contains("no mirror"));
+    assert!(refused(parties(&volume(), &only_old, MirrorOn::Current)).contains("no Mirror"));
 }
 
 #[test]
