@@ -62,6 +62,7 @@ const origin = "http://localhost:3000";
 /** GitHub: the private acme/web (through installation 7) has branches main and dev, a Dockerfile and a src directory. */
 const github = fakeGithubApi({
   "/repos/acme/web/branches?per_page=100&page=1": [{ name: "main" }, { name: "dev" }],
+  "/repositories/11": { owner: { id: 5001 } },
   "/repos/acme/web/commits/main": { commit: { tree: { sha: "a".repeat(40) } } },
   [`/repos/acme/web/git/trees/${"a".repeat(40)}?recursive=1`]: {
     truncated: false,
@@ -1824,7 +1825,7 @@ it.live(
         );
 
         const branches = yield* cli("GET", "github/branches?repository=ACME/web", alice);
-        assert.deepInclude(branches.json, { access: "connected", branches: ["dev", "main"] });
+        assert.deepInclude(branches.json, { access: "connected", branches: ["dev", "main"], repository_id: 11, owner_id: 5001 });
         assert.strictEqual((yield* cli("GET", "github/branches?repository=acme/secret", alice)).status, 404);
 
         const tree = yield* cli("GET", "github/tree?repository=acme%2Fweb&path=src", alice);
