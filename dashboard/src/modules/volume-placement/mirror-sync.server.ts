@@ -233,6 +233,12 @@ const syncOnce = Effect.fn("MirrorSync.sync")(function* (organizationId: string,
     if (lane !== undefined) return yield* answer(reported, { kind: "covered", run: lane });
     const claim = yield* deployClaim(organizationId, placement);
     if (claim !== null) return yield* answer(reported, { kind: "deploying", message: claim.message });
+    // Read after the lane check, not with the statuses: a run that ended before it already narrowed these, and one that
+    // starts after it carries a gen above `gen`, so its Mirror refuses this sync's pull as stale. A list read earlier
+    // could carry an approval a run since dropped, which the Mirror would admit in place of the one it holds.
+    const approvals = mirrors.length === 0 ? [] : yield* drizzle.select({ machineId: volumeMirrorStatus.machineId, approvals: volumeMirrorStatus.approvals })
+      .from(volumeMirrorStatus)
+      .where(and(eq(volumeMirrorStatus.volumeId, volume.volumeId), inArray(volumeMirrorStatus.machineId, mirrors.map((member) => member.machine.id))));
 
     const unheard = unheardOf(members);
     if (unheard.lacks.length > 0) return yield* answer(reported, { kind: "lacks", lacks: unheard.lacks });
@@ -276,7 +282,7 @@ const syncOnce = Effect.fn("MirrorSync.sync")(function* (organizationId: string,
     // Mirror.
     const pull = (member: SlotMember, copy: Slot, target: string) => Effect.gen(function* () {
       const want: WantedCopy = { kind: "mirror", from: writer.address, target, drain: DRAIN_MS };
-      const kept = statuses.find((row) => row.machineId === member.machine.id)?.approvals ?? [];
+      const kept = approvals.find((row) => row.machineId === member.machine.id)?.approvals ?? [];
       const refused: Signed[] = [];
       let answer: MirrorAnswer | undefined;
       for (const approval of kept) {

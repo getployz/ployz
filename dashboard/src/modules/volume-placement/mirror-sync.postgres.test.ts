@@ -186,6 +186,29 @@ describe("the mirror sync", () => {
     expect(await keptNow()).toEqual([{ approvals: kept }]);
   });
 
+  it("reads a mirror's kept approvals only after it finds no lane open", async () => {
+    const stale: Signed = { body: "stale", signatures: [] };
+    const narrowed: Signed = { body: "narrowed", signatures: [] };
+    await harness.pool.query(
+      "insert into volume_mirror_status (organization_id, volume_id, machine_id, approvals) values ($1, $2, $3, $4)",
+      [organizationId, volumeId, web("web-2"), JSON.stringify([stale])]);
+    // A run that ended before the lane check narrowed the list; a list read before then would still carry `stale`. The
+    // Deploy check, which reads the Store only for a placement a Deploy claimed, runs after the lane check.
+    await harness.pool.query(`update volume_placement set deployment_id = 'dep-1'`);
+    onDeployment = async () => {
+      await harness.pool.query("update volume_mirror_status set approvals = $1 where machine_id = $2", [JSON.stringify([narrowed]), web("web-2")]);
+    };
+    const carried: string[] = [];
+    const carrying: CopyAsk = (asker, machine, expected, want, sent) => {
+      if (want.kind === "mirror") carried.push(sent?.body ?? "none");
+      return ask(asker, machine, expected, want);
+    };
+
+    await run(syncMirrors(organizationId, volume, () => Effect.succeed(members), carrying));
+
+    expect(carried).toEqual(["narrowed"]);
+  });
+
   it("says a mirror refused the pull for its approval", async () => {
     const refused = new RpcError({
       code: "permission_denied",

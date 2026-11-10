@@ -2674,7 +2674,7 @@ describe("volume runs", () => {
       machines[1] = { name: "fsn-2", pool: true, copy: slotCopy(base) };
       await harness.pool.query(
         "insert into volume_mirror_status (organization_id, volume_id, machine_id, approvals) values ($1, $2, $3, $4)",
-        [organizationId, volumeId, idOf("fsn-2"), JSON.stringify(APPROVAL)]);
+        [organizationId, volumeId, idOf("fsn-2"), JSON.stringify([APPROVAL])]);
       const run = await requested({ kind: "delete_mirror", args: { slot: "fsn-2", confirmed_name: null, role: "any" } });
 
       await execute(run.id);
