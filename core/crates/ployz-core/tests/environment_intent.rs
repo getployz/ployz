@@ -238,8 +238,11 @@ fn configs_refuse_bare_references_and_colliding_mounts() {
 }
 
 #[test]
-fn a_service_slug_that_is_not_a_service_name_is_refused_when_the_document_is_read() {
-    let mut document = intent();
-    *document.pointer_mut("/services/0/slug").unwrap() = json!("Not A Name");
-    assert!(parse_environment_intent(document).is_err());
+fn a_stored_service_slug_that_is_not_a_service_name_still_decodes() {
+    for slug in ["Web", "web_app", "web-", &"a".repeat(64)] {
+        let mut value = intent();
+        *value.pointer_mut("/services/0/slug").unwrap() = json!(slug);
+        let parsed = parse_environment_intent(value).unwrap();
+        assert_eq!(parsed.services.first().unwrap().slug, slug);
+    }
 }

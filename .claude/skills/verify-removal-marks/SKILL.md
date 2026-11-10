@@ -74,7 +74,7 @@ Out of scope: a Project-target mark and its member Environments, two sweeps side
 Each model step is a copy of code at the sync commit. Reread these when a diff touches them:
 
 - `core/crates/ployz-store/src/removal/due.rs`: `sweep`, `settle`, `finish`, `close` and its `Cancelled` early return.
-- `core/crates/ployz-store/src/removal/mark.rs`: `live`, `of`, `save` and its `ON CONFLICT` update, `finish` and its `WHERE state = 'removing'`, and the SQL other modules splice in: `unmarked`, `marks_holding`, `drop_live`.
+- `core/crates/ployz-store/src/removal/mark.rs`: `live`, `of`, `save` and its `ON CONFLICT` update, `finish` and its `WHERE state = 'removing'`, and the helpers other modules call: `unmarked` and `marks_holding`, which return SQL they splice in, and `drop_live`, which deletes the live mark.
 - `core/crates/ployz-store/src/removal/mod.rs`: `cancel_removal`, `stop`, `lock_project`, `on_servers`, `ran`, `purge`.
 - `core/crates/ployz-store/src/scope.rs`: `environment`, `lock`, `lock_all`, `lock_id`, `owned`, `load_by_id`.
 - `core/crates/ployz-store/src/deployment/lifecycle.rs`: `cancel`, `record` and its `Applied`/`Failed` choice, `end` and its `(Cancelling, Failed)` to `Cancelled` mapping.

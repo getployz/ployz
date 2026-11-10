@@ -33,7 +33,7 @@ pub(super) fn row(
     let id = working
         .services
         .iter()
-        .find(|service: &&SavedServiceIntent| service.slug == domain.service)
+        .find(|service: &&SavedServiceIntent| service.slug == domain.service.as_str())
         .map(|service| service.id.clone())
         .unwrap_or_default();
     let deployed = if holds(&head.applied, &id, &domain) {

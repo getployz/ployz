@@ -46,8 +46,7 @@ fn refuse_taken_among(
             refuse_reserved(name)?;
             let taken = working.services.iter().any(|service| {
                 other(&service.id)
-                    && (service.slug.as_str() == name
-                        || service.config.private_dns.as_str() == name)
+                    && (service.slug == name || service.config.private_dns.as_str() == name)
             });
             ("Service", name, taken)
         }
@@ -159,7 +158,7 @@ pub(crate) fn refuse_new_reserved(
             .iter()
             .any(|held| held.id == service.id && held.slug == service.slug)
         {
-            refuse_reserved(service.slug.as_str())?;
+            refuse_reserved(&service.slug)?;
         }
     }
     Ok(())
@@ -177,9 +176,8 @@ pub(crate) fn refuse_new_taken(
     for service in &target.services {
         let held = now.services.iter().find(|held| held.id == service.id);
         for name in [service.slug.as_str(), service.config.private_dns.as_str()] {
-            if held.is_none_or(|held| {
-                held.slug.as_str() != name && held.config.private_dns.as_str() != name
-            }) {
+            if held.is_none_or(|held| held.slug != name && held.config.private_dns.as_str() != name)
+            {
                 claims.push((&service.id, Name::Service(name)));
             }
         }
@@ -238,9 +236,11 @@ pub(crate) fn refuse_new_taken(
             |error| match name {
                 Name::Service(name)
                     if error.code == ployz_core::RpcErrorCode::Conflict
-                        && !target.working.services.iter().any(|service| {
-                            service.id != owner && service.slug.as_str() == name
-                        }) =>
+                        && !target
+                            .working
+                            .services
+                            .iter()
+                            .any(|service| service.id != owner && service.slug == name) =>
                 {
                     error::conflict(
                         format!("{name} is another Service's private DNS name. Change it first."),

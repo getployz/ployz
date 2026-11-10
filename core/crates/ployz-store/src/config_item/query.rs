@@ -169,7 +169,7 @@ fn listed(
         .map(|node| {
             let listing = ConfigListing {
                 config: summary(&node, &names)?,
-                mounts: mounts(working, &node.resource_id),
+                mounts: mounts(working, &node.resource_id)?,
                 deployed: review
                     .head
                     .applied
@@ -182,7 +182,7 @@ fn listed(
                     .iter()
                     .find(|change| change.node.id == node.resource_id)
                     .map(|change| change.lifecycle),
-                mount_changes: mount_changes(working, &review.head.intent, &node.resource_id),
+                mount_changes: mount_changes(working, &review.head.intent, &node.resource_id)?,
             };
             Ok((listing, node))
         })
@@ -197,7 +197,7 @@ fn mount_changes(
     working: &SavedEnvironmentIntent,
     head: &SavedEnvironmentIntent,
     config: &str,
-) -> Vec<ConfigMountChange> {
+) -> Result<Vec<ConfigMountChange>, RpcError> {
     let mut seen = BTreeSet::new();
     let mut changes = Vec::new();
     for service in working.services.iter().chain(&head.services) {
@@ -217,18 +217,19 @@ fn mount_changes(
         let (before, after) = (dir(head), dir(working));
         if before != after {
             changes.push(ConfigMountChange {
-                service: service.slug.clone(),
+                service: ServiceName::parse(service.slug.as_str())
+                    .map_err(|_| error::corrupt("Service name"))?,
                 before,
                 after,
             });
         }
     }
     changes.sort_by(|a, b| a.service.cmp(&b.service));
-    changes
+    Ok(changes)
 }
 
-fn mounts(working: &SavedEnvironmentIntent, config: &str) -> Vec<ConfigMountAt> {
-    let mut mounts: Vec<ConfigMountAt> = working
+fn mounts(working: &SavedEnvironmentIntent, config: &str) -> Result<Vec<ConfigMountAt>, RpcError> {
+    let mut mounts = working
         .services
         .iter()
         .flat_map(|service| {
@@ -236,12 +237,15 @@ fn mounts(working: &SavedEnvironmentIntent, config: &str) -> Vec<ConfigMountAt> 
                 .config_attachments
                 .iter()
                 .filter(|mount| mount.config_resource_id == config)
-                .map(move |mount| ConfigMountAt {
-                    service: service.slug.clone(),
-                    dir: mount.mount_dir.to_string(),
+                .map(move |mount| {
+                    Ok(ConfigMountAt {
+                        service: ServiceName::parse(service.slug.as_str())
+                            .map_err(|_| error::corrupt("Service name"))?,
+                        dir: mount.mount_dir.to_string(),
+                    })
                 })
         })
-        .collect();
+        .collect::<Result<Vec<_>, RpcError>>()?;
     mounts.sort_by(|a, b| a.service.cmp(&b.service));
-    mounts
+    Ok(mounts)
 }

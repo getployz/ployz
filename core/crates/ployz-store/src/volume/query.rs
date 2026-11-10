@@ -6,7 +6,7 @@
 use ployz_core::config::{
     ReviewLifecycleKind, SavedEnvironmentIntent, SavedVolumeIntent, VolumeKind,
 };
-use ployz_core::{Namespace, ProvisionedVolumeMaximumBytes, RpcError};
+use ployz_core::{Namespace, ProvisionedVolumeMaximumBytes, RpcError, ServiceName};
 use serde::{Deserialize, Serialize};
 use ts_rs::TS;
 
@@ -229,7 +229,7 @@ fn listed(
                     Some(VolumeKind::Provisioned { maximum_bytes }) => Some(*maximum_bytes),
                     Some(VolumeKind::Docker {}) | None => None,
                 },
-                mounts: mounts(working, &node.resource_id),
+                mounts: mounts(working, &node.resource_id)?,
                 deployed: review
                     .head
                     .applied
@@ -250,8 +250,8 @@ fn listed(
     Ok(listed)
 }
 
-fn mounts(working: &SavedEnvironmentIntent, volume: &str) -> Vec<Mount> {
-    let mut mounts: Vec<Mount> = working
+fn mounts(working: &SavedEnvironmentIntent, volume: &str) -> Result<Vec<Mount>, RpcError> {
+    let mut mounts = working
         .services
         .iter()
         .flat_map(|service| {
@@ -259,12 +259,15 @@ fn mounts(working: &SavedEnvironmentIntent, volume: &str) -> Vec<Mount> {
                 .volume_attachments
                 .iter()
                 .filter(|mount| mount.volume_resource_id == volume)
-                .map(move |mount| Mount {
-                    service: service.slug.clone(),
-                    path: mount.mount_path.clone(),
+                .map(move |mount| {
+                    Ok(Mount {
+                        service: ServiceName::parse(service.slug.as_str())
+                            .map_err(|_| error::corrupt("Service name"))?,
+                        path: mount.mount_path.clone(),
+                    })
                 })
         })
-        .collect();
+        .collect::<Result<Vec<_>, RpcError>>()?;
     mounts.sort_by(|a, b| a.service.cmp(&b.service));
-    mounts
+    Ok(mounts)
 }

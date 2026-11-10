@@ -321,7 +321,7 @@ fn applied(store: &ConfigStore, who: &Actor) -> Vec<String> {
         .unwrap()
         .services
         .into_iter()
-        .map(|service| service.slug.to_string())
+        .map(|service| service.slug)
         .collect()
 }
 

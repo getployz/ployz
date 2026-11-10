@@ -5,7 +5,7 @@
 //! `{"secret": true}`: no read shows a secret.
 
 use ployz_core::config::{RowId, SavedEnvironmentIntent, SavedServiceIntent};
-use ployz_core::{ConfigName, RpcError};
+use ployz_core::{ConfigName, RpcError, ServiceName};
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value, json};
 use ts_rs::TS;
@@ -101,7 +101,8 @@ pub(crate) fn environment(
     };
     let mut settings = Vec::new();
     for service in services {
-        let name = service.slug.clone();
+        let name = ServiceName::parse(service.slug.as_str())
+            .map_err(|_| crate::error::corrupt("Service name"))?;
         let mut row = |target: Target, value: Value, default: Value, apply: Apply| {
             if only.is_none_or(|only| *only == target) && !(whole && value == default) {
                 let (row, note) = match &target {

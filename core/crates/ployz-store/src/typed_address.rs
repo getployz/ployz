@@ -15,6 +15,7 @@ use regex::Regex;
 use serde::{Deserialize, Serialize};
 use ts_rs::TS;
 
+use crate::error;
 use crate::variables::VariableKey;
 
 /// What to set instead of a value with Typed Addresses.
@@ -62,7 +63,7 @@ pub(crate) fn in_plain(
         })
         .collect();
     let hosts = hosts(&text, key, others);
-    let Some(services) = services(&hosts) else {
+    let Some(services) = services(&hosts)? else {
         return Ok(None);
     };
     let mut refs = parts
@@ -130,14 +131,18 @@ fn hosts<'env>(
 }
 
 /// The Services `hosts` belong to, each once; none when there are none.
-fn services(hosts: &[(Range<usize>, &SavedServiceIntent)]) -> Option<Vec<ServiceName>> {
+fn services(
+    hosts: &[(Range<usize>, &SavedServiceIntent)],
+) -> Result<Option<Vec<ServiceName>>, RpcError> {
     let mut services = Vec::new();
     for (_, other) in hosts {
-        if !services.contains(&other.slug) {
-            services.push(other.slug.clone());
+        let name =
+            ServiceName::parse(other.slug.as_str()).map_err(|_| error::corrupt("Service name"))?;
+        if !services.contains(&name) {
+            services.push(name);
         }
     }
-    (!services.is_empty()).then_some(services)
+    Ok((!services.is_empty()).then_some(services))
 }
 
 /// `text` as parts, each NUL in it the next of `refs` again.

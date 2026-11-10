@@ -1247,7 +1247,9 @@ fn generated(prefix: String, trusted: &Trusted) -> DomainName {
 fn domains_of(intent: &SavedEnvironmentIntent, trusted: &Trusted) -> Vec<Domain> {
     let mut domains = Vec::new();
     for service in &intent.services {
-        let name = &service.slug;
+        let Ok(name) = ServiceName::parse(service.slug.as_str()) else {
+            continue;
+        };
         for route in &service.config.routes {
             if let Ok(hostname) = Hostname::parse(route.hostname.as_str()) {
                 domains.push(Domain {

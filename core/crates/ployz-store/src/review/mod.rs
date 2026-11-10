@@ -443,7 +443,7 @@ fn compare(
             .into_iter()
             .flat_map(|intent| &intent.services)
             .find(|service| service.id == node.id)
-            .map(|service| service.slug.to_string());
+            .map(|service| service.slug.clone());
         services
             .or_else(|| volume_name(&intents, &node.id))
             .or_else(|| config_name(&intents, &node.id))
@@ -543,7 +543,7 @@ fn compare(
                 let data =
                     data_effect(&group.node, group.lifecycle, deployed, &environment.working);
                 let restarts =
-                    restarts(&group.node, group.lifecycle, &environment.working, deployed);
+                    restarts(&group.node, group.lifecycle, &environment.working, deployed)?;
                 Ok(NodeChange {
                     node: group.node,
                     name,
@@ -684,14 +684,11 @@ fn sources(view: &mut DiffView, working: &SavedEnvironmentIntent) {
         else {
             continue;
         };
-        let rows: Vec<_> = introduced_source(
-            service.slug.as_str(),
-            &service.lineage_id,
-            &service.config.source,
-        )
-        .into_iter()
-        .filter(|row| !change.settings.iter().any(|shown| shown.row == row.row))
-        .collect();
+        let rows: Vec<_> =
+            introduced_source(&service.slug, &service.lineage_id, &service.config.source)
+                .into_iter()
+                .filter(|row| !change.settings.iter().any(|shown| shown.row == row.row))
+                .collect();
         view.total_count += rows.len();
         change.settings.splice(0..0, rows);
     }
@@ -778,7 +775,7 @@ fn renames(view: &mut DiffView, working: &SavedEnvironmentIntent, head: &SavedEn
                     node_type: EnvironmentNodeType::Service,
                     id: service.id.clone(),
                 },
-                name: service.slug.to_string(),
+                name: service.slug.clone(),
                 row: RowId::node(&service.lineage_id),
                 lifecycle: ReviewLifecycleKind::Update,
                 comparison: Some(ReviewComparisonRole::Head),
@@ -836,9 +833,9 @@ fn restarts(
     lifecycle: ReviewLifecycleKind,
     working: &SavedEnvironmentIntent,
     deployed: &SavedEnvironmentIntent,
-) -> Vec<ployz_core::ServiceName> {
+) -> Result<Vec<ployz_core::ServiceName>, RpcError> {
     if node.node_type != EnvironmentNodeType::Config || lifecycle != ReviewLifecycleKind::Update {
-        return Vec::new();
+        return Ok(Vec::new());
     }
     working
         .services
@@ -850,7 +847,10 @@ fn restarts(
                 .any(|mount| mount.config_resource_id == node.id)
                 && deployed.services.iter().any(|old| old.id == service.id)
         })
-        .map(|service| service.slug.clone())
+        .map(|service| {
+            ployz_core::ServiceName::parse(service.slug.as_str())
+                .map_err(|_| error::corrupt("Service name"))
+        })
         .collect()
 }
 

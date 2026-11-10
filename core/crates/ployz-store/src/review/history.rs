@@ -450,7 +450,7 @@ fn deleted_since(
                 .services
                 .iter()
                 .find(|service| service.id == id)
-                .and_then(|service| named(service.slug.to_string())),
+                .and_then(|service| named(service.slug.clone())),
             "variable" => {
                 let variables = variables(intent, id)?;
                 variables

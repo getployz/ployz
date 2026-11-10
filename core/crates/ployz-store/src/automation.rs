@@ -757,8 +757,9 @@ fn admit(
         true => Vec::new(),
         false => selected
             .iter()
-            .map(|(service, _)| service.slug.clone())
-            .collect(),
+            .map(|(service, _)| ServiceName::parse(service.slug.as_str()))
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(|_| error::corrupt("Service name"))?,
     };
     // A push of a live rule's branch deploys only the settings the rule approves: any
     // other Deployment would fail on every Server, so it waits for a person instead.

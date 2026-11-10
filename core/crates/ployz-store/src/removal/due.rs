@@ -164,7 +164,7 @@ pub(super) fn go_on(
             }
         };
         left.push(Left {
-            services: services(&environment),
+            services: services(&environment)?,
             environment: environment.summary,
             deployment,
             status,
@@ -183,12 +183,14 @@ pub(super) fn go_on(
     })
 }
 
-fn services(environment: &Environment) -> Vec<ServiceName> {
+fn services(environment: &Environment) -> Result<Vec<ServiceName>, RpcError> {
     environment
         .working
         .services
         .iter()
-        .map(|service| service.slug.clone())
+        .map(|service| {
+            ServiceName::parse(service.slug.as_str()).map_err(|_| error::corrupt("Service name"))
+        })
         .collect()
 }
 
@@ -211,7 +213,7 @@ fn finish(tx: &mut dyn Tx, mark: &mut Mark) -> Result<Option<Vec<EnvironmentSumm
         if forgotten {
             residuals.push(Residual {
                 environment: environment.summary.name.clone(),
-                services: services(environment),
+                services: services(environment)?,
             });
         }
     }

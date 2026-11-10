@@ -118,7 +118,10 @@ fn ran_as(
         .iter()
         .find(|service| service.id == id.as_str())
     {
-        name = Some(service.slug.clone());
+        name = Some(
+            ServiceName::parse(service.slug.as_str())
+                .map_err(|_| error::corrupt("Service name"))?,
+        );
         runtimes.extend([service.config.private_dns.clone()]);
     }
     let rows = tx.query(
@@ -193,7 +196,8 @@ fn renamed(
         if !runtimes.is_empty() {
             retire.push(Retire {
                 id,
-                name: service.slug.clone(),
+                name: ServiceName::parse(service.slug.as_str())
+                    .map_err(|_| error::corrupt("Service name"))?,
                 runtimes,
             });
         }
@@ -338,7 +342,8 @@ pub(crate) fn freeze(
     let mut named = services.to_vec();
     if every_saved {
         for service in saved.services.iter().filter(|service| changed(service)) {
-            let name = service.slug.clone();
+            let name = ServiceName::parse(service.slug.as_str())
+                .map_err(|_| error::corrupt("Service name"))?;
             if !named.contains(&name) {
                 named.push(name);
             }
@@ -407,14 +412,14 @@ pub(crate) fn freeze(
                 saved
                     .services
                     .iter()
-                    .find(|service| service.slug == *name)
+                    .find(|service| service.slug == name.as_str())
                     .map(TargetNode::service)
                     .transpose()?
                     .ok_or_else(|| {
                         let staged = dropped
                             .services
                             .iter()
-                            .any(|service| service.slug == *name);
+                            .any(|service| service.slug == name.as_str());
                         error::not_found(
                             if staged {
                                 format!("Service {name} is staged for removal; a full Deploy removes it")
@@ -549,7 +554,7 @@ pub(crate) fn freeze(
             matches!(service.config.source, ServiceSource::Empty { .. })
                 && nodes.iter().any(|node| node.id() == service.id)
         })
-        .map(|service| service.slug.to_string())
+        .map(|service| service.slug.clone())
         .collect();
     Ok(Frozen {
         nodes,
@@ -674,7 +679,7 @@ pub(super) fn lower(
     let targeted: Vec<&str> = saved
         .services
         .iter()
-        .filter(|service| services.contains(&service.slug))
+        .filter(|service| services.iter().any(|name| name.as_str() == service.slug))
         .map(|service| service.id.as_str())
         .collect();
     // Only the Services this Deployment starts must fit a Container's environment.
@@ -716,7 +721,7 @@ pub(super) fn lower(
         saved
             .services
             .iter()
-            .filter(|service| services.contains(&service.slug))
+            .filter(|service| services.iter().any(|name| name.as_str() == service.slug))
             .map(|service| service.config.private_dns.clone())
             .chain(removals.iter().cloned())
             .map(|name| ServiceAttempt { name })
@@ -738,7 +743,7 @@ pub(super) fn lower(
                 .services
                 .iter()
                 .find(|service| service.id == id)
-                .map(|service| service.slug.clone())
+                .and_then(|service| ServiceName::parse(service.slug.as_str()).ok())
                 .unwrap_or_else(|| config.settings.private_dns.clone());
             let not_set = resolved.not_set.remove(id).unwrap_or_default();
             let broken = resolved.broken.remove(id).unwrap_or_default();
@@ -882,7 +887,8 @@ pub(super) fn lower(
             .map(|file| file.content.len())
             .sum();
         let names: Vec<&ConfigName> = mounted.iter().map(|config| &config.name).collect();
-        let name = service.slug.clone();
+        let name =
+            ServiceName::parse(service.slug.as_str()).map_err(|_| error::corrupt("Service"))?;
         if let Some(error) = crate::config_item::mounts_too_much(&name, &names, bytes) {
             return Err(error);
         }
