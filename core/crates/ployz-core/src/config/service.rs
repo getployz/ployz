@@ -4,9 +4,8 @@ use std::collections::BTreeMap;
 
 use serde::{Deserialize, Serialize};
 use ts_rs::TS;
-use uuid::Uuid;
 
-use crate::{RestartPolicy, SealedValue, ServiceName, UpdateOrder};
+use crate::{ClientSealedValue, RestartPolicy, ServiceName, UpdateOrder};
 
 /// Authored Cloud settings. Runtime specs are compiled from this configuration;
 /// they cannot reconstruct repository authority, build policy, or credentials.
@@ -325,17 +324,6 @@ pub struct EncryptedSecretValue {
     pub ciphertext: String,
 }
 
-/// A Sealed value the browser sealed to one Environment's Sealing Key, bound to
-/// the variable it was authored as. Cloud carries it and never opens it.
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub struct ClientSealedValue {
-    /// The Environment whose Sealing Key opens it: in any other it is Not set.
-    #[ts(type = "string")]
-    pub sealed_for: Uuid,
-    pub value: SealedValue,
-}
-
 /// A secret's value sealed with the Store's own key: the envelope registry
 /// credentials use.
 pub type LegacyCiphertext = EncryptedSecretValue;
@@ -395,6 +383,7 @@ pub enum ServiceEnvValue {
 #[cfg(test)]
 mod tests {
     use serde_json::{Value, json};
+    use uuid::Uuid;
 
     use super::*;
     use crate::config::{SavedVariableIntent, VariableValue};

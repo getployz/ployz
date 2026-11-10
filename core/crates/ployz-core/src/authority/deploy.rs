@@ -19,7 +19,7 @@ use super::{
     canonical::{self, CanonicalError, Timestamp, hex_bytes, write_hex},
     keys::{Approver, Purpose, Signed, Statement},
     proposal::{self, ProposalRef, StepBody, StepKind},
-    refusal::AuthorityRefusal,
+    refusal::{AuthorityRefusal, field, first_mismatch},
     restart::SignerKey,
     session::{ActionFamily, GrantScope},
     trusted_key::TrustedKeys,
@@ -285,7 +285,7 @@ pub struct DeployApproval {
     pub operation: OperationId,
     pub namespace: Namespace,
     /// Sorted and distinct.
-    #[serde(deserialize_with = "sorted_distinct")]
+    #[serde(deserialize_with = "canonical::sorted_distinct")]
     pub machines: Vec<MachineId>,
     /// Sorted by name and distinct.
     #[serde(deserialize_with = "services_by_name")]
@@ -466,28 +466,10 @@ impl DeployApproval {
     }
 }
 
-fn sorted_distinct<'de, D: serde::Deserializer<'de>>(
-    deserializer: D,
-) -> Result<Vec<MachineId>, D::Error> {
-    let machines = Vec::<MachineId>::deserialize(deserializer)?;
-    if !machines.is_sorted_by(|left, right| left < right) {
-        return Err(serde::de::Error::custom(
-            "Machines must be sorted and distinct",
-        ));
-    }
-    Ok(machines)
-}
-
 fn services_by_name<'de, D: serde::Deserializer<'de>>(
     deserializer: D,
 ) -> Result<Vec<ApprovedService>, D::Error> {
-    let services = Vec::<ApprovedService>::deserialize(deserializer)?;
-    if !services.is_sorted_by(|left, right| left.name < right.name) {
-        return Err(serde::de::Error::custom(
-            "Services must be sorted by name and distinct",
-        ));
-    }
-    Ok(services)
+    canonical::sorted_by(deserializer, |service: &ApprovedService| &service.name)
 }
 
 /// A Container this Machine is asked to create.
@@ -543,17 +525,14 @@ pub fn verify(
         }
         None => open_signed(approval, facts)?,
     };
-    let checks = [
-        ("a Cluster", body.cluster == cluster),
+    first_mismatch([
+        (field::CLUSTER, body.cluster == cluster),
         (
-            "Machines",
+            field::MACHINES,
             body.machines.binary_search(facts.machine).is_ok(),
         ),
-        ("an Environment", &body.namespace == facts.namespace),
-    ];
-    if let Some((field, _)) = checks.iter().find(|(_, holds)| !holds) {
-        return Err(AuthorityRefusal::Mismatch { field });
-    }
+        (field::ENVIRONMENT, &body.namespace == facts.namespace),
+    ])?;
     if let Approver::Browser { grant, .. } = &by {
         grant.body.covers(&GrantScope {
             cluster,

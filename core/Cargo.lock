@@ -4126,6 +4126,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "ployz-decide"
+version = "0.3.17"
+dependencies = [
+ "ployz-core",
+ "serde",
+]
+
+[[package]]
 name = "ployz-sdk"
 version = "0.3.17"
 dependencies = [
@@ -4197,6 +4205,7 @@ name = "ployz-verify"
 version = "0.3.17"
 dependencies = [
  "ployz-core",
+ "ployz-decide",
  "stateright",
 ]
 

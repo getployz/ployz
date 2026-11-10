@@ -30,3 +30,24 @@ pub enum AuthorityRefusal {
     #[error("this GitHub token already minted a Build Grant; a build asks for a new one")]
     ProofReplayed,
 }
+
+/// The first of `checks` that does not hold, as a [`AuthorityRefusal::Mismatch`] naming its field.
+///
+/// # Errors
+/// Returns [`AuthorityRefusal::Mismatch`] for the first `false` check, in order.
+pub(super) fn first_mismatch<const N: usize>(
+    checks: [(&'static str, bool); N],
+) -> Result<(), AuthorityRefusal> {
+    match checks.into_iter().find(|(_, holds)| !holds) {
+        Some((field, _)) => Err(AuthorityRefusal::Mismatch { field }),
+        None => Ok(()),
+    }
+}
+
+/// The names `Mismatch` gives the parts of a request that more than one statement checks.
+pub(super) mod field {
+    pub const CLUSTER: &str = "a Cluster";
+    pub const ENVIRONMENT: &str = "an Environment";
+    pub const MACHINES: &str = "Machines";
+    pub const WINDOW: &str = "a window";
+}
