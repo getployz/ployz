@@ -21,6 +21,14 @@ export const ForgetServers = Schema.Struct({ organization: Schema.String });
 const RunEnvironment = Schema.Struct({ project: Schema.String, environment: Schema.String });
 const Destination = Schema.String.check(Schema.isNonEmpty());
 
+const hexOf = (digits: number) => Schema.String.check(Schema.isPattern(new RegExp(`^[0-9a-f]{${digits}}$`)));
+
+/** A Device's `Signed<VolumeApproval>` as the CLI sends it. Servers check every byte; Cloud only bounds its size. */
+const VolumeApproval = Schema.Struct({
+  body: Schema.String.check(Schema.isMaxLength(4096)),
+  signatures: Schema.mutable(Schema.Array(Schema.Struct({ key: hexOf(64), signature: hexOf(128) }))).check(Schema.isMaxLength(4)),
+});
+
 /** A byte count the CLI sends: a positive whole number JSON carries exactly. */
 export const MaximumBytes = Schema.Number.check(Schema.isInt(), Schema.isGreaterThan(0), Schema.isLessThanOrEqualTo(Number.MAX_SAFE_INTEGER));
 
@@ -30,8 +38,8 @@ export const MaximumBytes = Schema.Number.check(Schema.isInt(), Schema.isGreater
  * to compile here until it says whether the CLI may ask for it.
  */
 export const VOLUME_RUN_BODIES = {
-  mirror: Schema.Struct({ environment: RunEnvironment, kind: Schema.Literal("mirror"), to: Destination }),
-  sync: Schema.Struct({ environment: RunEnvironment, kind: Schema.Literal("sync"), full: Schema.Literal(true) }),
+  mirror: Schema.Struct({ environment: RunEnvironment, kind: Schema.Literal("mirror"), to: Destination, approval: Schema.optional(VolumeApproval) }),
+  sync: Schema.Struct({ environment: RunEnvironment, kind: Schema.Literal("sync"), full: Schema.Literal(true), approval: Schema.optional(VolumeApproval) }),
   /**
    * `mirror rm --if-old-copy` sends `delete_old_copy`: the slot is deleted only while it is still an old copy. It is a
    * kind of its own so a Cloud from before it refuses the body instead of dropping the restriction.
@@ -54,9 +62,9 @@ export const NewVolumeRun = Schema.Union(Object.values(VOLUME_RUN_BODIES));
 export function volumeRunInput(body: typeof NewVolumeRun.Type): VolumeRunInput {
   switch (body.kind) {
     case "mirror":
-      return { kind: "mirror", args: { to: body.to } };
+      return { kind: "mirror", args: { to: body.to, ...(body.approval && { approval: body.approval }) } };
     case "sync":
-      return { kind: "sync", args: { full: true } };
+      return { kind: "sync", args: { full: true, ...(body.approval && { approval: body.approval }) } };
     case "delete_mirror":
     case "delete_old_copy":
       return { kind: "delete_mirror", args: { slot: body.slot ?? null, confirmed_name: body.confirm ?? null, role: body.kind === "delete_old_copy" ? "old_copy" : "any" } };

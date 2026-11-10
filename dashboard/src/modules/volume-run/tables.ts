@@ -1,4 +1,4 @@
-import type { MachineId } from "@ployz/sdk";
+import type { MachineId, Signed } from "@ployz/sdk";
 import { sql } from "drizzle-orm";
 import {
   bigint,
@@ -99,6 +99,8 @@ export const volumeMirrorStatus = pgTable(
     failedAt: timestamp("failed_at", { mode: "date", withTimezone: true }),
     failedSnapshot: text("failed_snapshot"),
     failure: text("failure"),
+    /** The Device-signed approval this Mirror was made or last fully synced under; each sync's pull carries it. */
+    approval: jsonb("approval").$type<Signed>(),
     updatedAt,
   },
   (table) => [primaryKey({ columns: [table.volumeId, table.machineId] })],

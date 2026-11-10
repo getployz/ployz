@@ -1,4 +1,4 @@
-import type { ConfigStore, MachineId, WantedCopy } from "@ployz/sdk";
+import type { ConfigStore, MachineId, Signed, WantedCopy } from "@ployz/sdk";
 import { Effect } from "effect";
 import { Inngest } from "inngest";
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
@@ -31,7 +31,7 @@ const DRAINING = new RpcError({ code: "unavailable", message: "web-2 is draining
 const UNDIALED = new RpcError({ code: "unavailable", message: "tcp connect error", details: null, targetUnreached: true });
 
 /** The real askCopy, over a session whose SetVolumeCopy rejects with `rejection` as the SDK does. */
-const askRejected = (rejection: InstanceType<typeof RpcError>): CopyAsk => (asker, machine, expected, want) => askCopy(asker, machine, expected, want).pipe(
+const askRejected = (rejection: InstanceType<typeof RpcError>): CopyAsk => (asker, machine, expected, want, approval) => askCopy(asker, machine, expected, want, approval).pipe(
   Effect.provideService(OrganizationRuntime, {
     cancel: () => Effect.void,
     open: () => Effect.succeed({ status: "connected" as const, connected: asTestDouble<PloyzSession>()({
@@ -121,6 +121,37 @@ describe("the mirror sync", () => {
     expect((await sync()).lines).toEqual(["db-web-2 is pulling w-1-5"]);
     expect(asked).toEqual(["snapshot web-1", "mirror web-2"]);
     expect(await runs()).toEqual([]);
+  });
+
+  it("sends each mirror's pull the approval kept with it, and the writer's snapshot none", async () => {
+    const approval: Signed = { body: '{"volume":"shop-production_vol-vol1"}', signatures: [{ key: "a".repeat(64), signature: "b".repeat(128) }] };
+    members = [member("web-1", "writer"), member("web-2", "mirror"), member("web-3", "mirror")];
+    await harness.pool.query(
+      "insert into volume_mirror_status (organization_id, volume_id, machine_id, approval) values ($1, $2, $3, $4)",
+      [organizationId, volumeId, web("web-2"), JSON.stringify(approval)]);
+    const carried: string[] = [];
+    const carrying: CopyAsk = (asker, machine, expected, want, sent) => {
+      carried.push(`${want.kind} ${machine.name} ${sent === undefined ? "none" : sent.body}`);
+      return ask(asker, machine, expected, want);
+    };
+
+    await run(syncMirrors(organizationId, volume, () => Effect.succeed(members), carrying));
+
+    expect(carried).toEqual(["snapshot web-1 none", `mirror web-2 ${approval.body}`, "mirror web-3 none"]);
+  });
+
+  it("says a mirror refused the pull for its approval", async () => {
+    const refused = new RpcError({
+      code: "permission_denied",
+      message: "This Server refused the Volume step: the approval names the source Server this request does not match",
+      details: { capability: "ployz.volume.approval.v1", next: "approve the Volume change again from an approved device" },
+    });
+    const asking: CopyAsk = (asker, machine, expected, want, approval) =>
+      want.kind === "snapshot" ? ask(asker, machine, expected, want) : askRejected(refused)(asker, machine, expected, want, approval);
+
+    const synced = await run(syncMirrors(organizationId, volume, () => Effect.succeed(members), asking));
+
+    expect(synced.lines).toEqual(["db-web-2 refused the pull: web-2 didn't accept the approval from your device for db. Approve the change again from an approved device."]);
   });
 
   it("names each sync's snapshot apart from one taken the same millisecond, above any lane run's round", async () => {

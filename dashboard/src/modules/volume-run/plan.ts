@@ -1,4 +1,5 @@
-import type { ExpectedCopy, MachineName, SlotRole, Snapshot, SnapshotGuid, VolumeCopy } from "@ployz/sdk";
+import type { ExpectedCopy, MachineId, MachineName, Signed, SlotRole, Snapshot, SnapshotGuid, VolumeCopy } from "@ployz/sdk";
+import { Option, Schema } from "effect";
 import { type DeploymentsSeen, planResize, planUnheld, type ResizePhase } from "#/modules/volume-run/resize";
 import { type AnsweredMember, copyName, heardFrom, type Member, type ReleasePlan, type VolumeRunArgs, type VolumeRunInput } from "#/modules/volume-run/volume-run";
 
@@ -116,20 +117,24 @@ const refuse = (code: RefusalCode, message: string, next?: string): Planned => (
 /**
  * Pure: Inngest re-runs it outside any step on every replay, so the same members must plan the same run. A Move or a
  * seed a Server it starts or writes on would refuse, since that Server enforces device approval, is refused here,
- * before anything stops.
+ * before anything stops. So is a Mirror or a full Sync that carries no approval: a full Sync would otherwise forget
+ * the Mirror's copy before its pull met the refusal.
  */
 export function planFromCopies(input: PlanInput, observed: readonly Member[]): Planned {
   const planned = planCopies(input, observed);
   if (!planned.ok) return planned;
-  const enforcing = gatedOn(planned.phase).find((member) => member.enforces === true);
-  return enforcing === undefined ? planned : refuse("enforced", enforcedMessage(planned.phase.kind === "seed", input.volumeName, enforcing.machine.name), ENFORCEMENT_OFF);
+  const unapproved = (input.kind === "mirror" || input.kind === "sync") && input.args.approval === undefined;
+  const enforcing = gatedOn(planned.phase, unapproved).find((member) => member.enforces === true);
+  return enforcing === undefined ? planned : enforcedRefusal(planned.phase, input.volumeName, enforcing.machine.name);
 }
+
+type PlannedPhase = Extract<Planned, { ok: true }>["phase"];
 
 /**
  * The Servers a phase asks for what an enforcing Server refuses from Ployz Cloud: a Move's start on B, its release
- * back to A's stopped Container, and a seed.
+ * back to A's stopped Container, a seed, and an `unapproved` Mirror's snapshot and pull.
  */
-function gatedOn(phase: Extract<Planned, { ok: true }>["phase"]): readonly AnsweredMember[] {
+function gatedOn(phase: PlannedPhase, unapproved: boolean): readonly AnsweredMember[] {
   switch (phase.kind) {
     case "move":
       return [phase.writer, phase.target];
@@ -137,10 +142,47 @@ function gatedOn(phase: Extract<Planned, { ok: true }>["phase"]): readonly Answe
       return [phase.target, ...phase.behind];
     case "seed":
       return [phase.source];
+    case "mirror":
+      return unapproved ? [phase.writer, phase.target] : [];
+    case "sync":
+      return unapproved && phase.full ? [phase.writer, phase.mirror] : [];
     default:
       return [];
   }
 }
+
+function enforcedRefusal(phase: PlannedPhase, name: string, server: string): Planned {
+  const own = `${server} enforces device approval, so Ployz Cloud can't`;
+  switch (phase.kind) {
+    case "mirror":
+      return refuse("enforced", `${own} mirror ${name} on its own. Run ployz volume mirror ${name} --to ${phase.target.machine.name} from an approved device.`);
+    case "sync":
+      return refuse("enforced", `${own} sync ${name} in full on its own. Run ployz volume sync ${name} --full from an approved device.`);
+    default:
+      return refuse("enforced", enforcedMessage(phase.kind === "seed", name, server), ENFORCEMENT_OFF);
+  }
+}
+
+const MirrorApproval = Schema.fromJsonString(Schema.Struct({
+  volume: Schema.String,
+  workflow: Schema.Struct({ kind: Schema.Literal("mirror"), mirror: Schema.String }),
+}));
+
+/**
+ * Whether `approval` approves mirroring Docker Volume `volume` to `mirror`. Cloud reads it only to refuse a mistake
+ * before the run starts; the Servers check the signature.
+ */
+export function approvesMirror(approval: Signed, volume: string, mirror: MachineId) {
+  const body = Schema.decodeUnknownOption(MirrorApproval)(approval.body);
+  return Option.isSome(body) && body.value.volume === volume && body.value.workflow.mirror === mirror;
+}
+
+export const otherApprovalMessage = (name: string, server: string) =>
+  `The approval from your device is for another change, not mirroring ${name} to ${server}.`;
+
+/** Why `server` refused a step under the Mirror approval a run or a sync sent it. */
+export const approvalRefusedMessage = (name: string, server: string) =>
+  `${server} didn't accept the approval from your device for ${name}. Approve the change again from an approved device.`;
 
 export const ENFORCEMENT_OFF = "ployz device enforce --off";
 

@@ -1,5 +1,5 @@
 import "@tanstack/react-start/server-only";
-import type { EnvironmentRef, ExpectedCopy, MachineId, Snapshot, VolumeCopy, WantedCopy } from "@ployz/sdk";
+import type { EnvironmentRef, ExpectedCopy, MachineId, Signed, Snapshot, VolumeCopy, WantedCopy } from "@ployz/sdk";
 import { and, eq, inArray, max, sql } from "drizzle-orm";
 import { Effect, Option, Semaphore } from "effect";
 import { ClusterOutOfTime } from "#/modules/runtime/organization-runtime.server";
@@ -254,7 +254,7 @@ const syncOnce = Effect.fn("MirrorSync.sync")(function* (organizationId: string,
     const asker = { organizationId, dockerVolume: volume.dockerVolume, volumeName: volume.name, gen };
     const steps: MirrorStep[] = [];
     const named = (member: Member) => copyName(volume.name, member.machine.name);
-    const setCopy = (machine: MachineRef, expect: ExpectedCopy, want: WantedCopy) => ask(asker, machine, expect, want).pipe(
+    const setCopy = (machine: MachineRef, expect: ExpectedCopy, want: WantedCopy, approval?: Signed) => ask(asker, machine, expect, want, approval).pipe(
       Effect.catchIf(
         (error) => error instanceof ClusterOutOfTime,
         (error) => Effect.succeed<MirrorAnswer>({ ok: false, reason: error.inFlight ? "unanswered" : "unasked", copy: null, message: "the sync ran out of time" }),
@@ -269,8 +269,11 @@ const syncOnce = Effect.fn("MirrorSync.sync")(function* (organizationId: string,
         Effect.as<MirrorAnswer>({ ok: false, reason: "unasked", copy: null, message: "Cloud couldn't reach the Cluster" }),
       )),
     );
+    // Each pull carries the approval its Mirror was made under. The writer's snapshot carries none: the Mirror's own run
+    // granted it the writer's later snapshots, and one snapshot serves every Mirror.
     const pull = (member: SlotMember, copy: Slot, target: string) =>
-      setCopy(member.machine, expectOf(copy), { kind: "mirror", from: writer.address, target, drain: DRAIN_MS });
+      setCopy(member.machine, expectOf(copy), { kind: "mirror", from: writer.address, target, drain: DRAIN_MS },
+        statuses.find((row) => row.machineId === member.machine.id)?.approval ?? undefined);
 
     // The Machine finishes a landed pull only when asked for it again, so resend each pull before calling it busy.
     const busy: MirrorStep[] = [];

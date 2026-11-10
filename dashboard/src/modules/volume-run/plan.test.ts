@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
-import type { MachineId, VolumeCopy } from "@ployz/sdk";
-import { expectOf, observedEpoch, type PlanInput, planForwardRelease, planFromCopies, restoreSource, type Role, roleOf } from "#/modules/volume-run/plan";
+import type { MachineId, Signed, VolumeApproval, VolumeCopy } from "@ployz/sdk";
+import { approvesMirror, expectOf, observedEpoch, type PlanInput, planForwardRelease, planFromCopies, restoreSource, type Role, roleOf } from "#/modules/volume-run/plan";
 import type { AnsweredMember, Member } from "#/modules/volume-run/volume-run";
 import type { DeploymentsSeen } from "#/modules/volume-run/resize";
 import { COPIES, type Copy, member } from "#/modules/volume-run/volume-run.test-fixture";
@@ -9,6 +9,13 @@ const GB = 1_000_000_000;
 const data = { volumeName: "data", orphan: false } as const;
 const mirror = (to: string): PlanInput => ({ kind: "mirror", args: { to }, ...data });
 const sync = (full = false): PlanInput => ({ kind: "sync", args: { full }, ...data });
+/** The planner reads only that an approval came; the Servers check what it says. */
+const approved = (input: PlanInput): PlanInput => {
+  const approval: Signed = { body: "{}", signatures: [] };
+  if (input.kind === "mirror") return { ...input, args: { ...input.args, approval } };
+  if (input.kind === "sync") return { ...input, args: { ...input.args, approval } };
+  return input;
+};
 const remove = (slot: string | null, confirmed: string | null = null): PlanInput =>
   ({ kind: "delete_mirror", args: { slot, confirmed_name: confirmed, role: "any" }, ...data });
 const move = (to: string): PlanInput => ({ kind: "move", args: { to }, ...data });
@@ -432,7 +439,12 @@ describe("plan a run on Servers that enforce device approval", () => {
     ["move that lands on an enforcing Server", move("b"), [member("a", "final"), enforcing(member("b", "writer"))], "refuse enforced"],
     ["move beside an enforcing Server it doesn't touch", move("b"), [member("a", "writer"), member("b", "empty"), enforcing(member("c", "empty"))], "move a->b at rounds"],
     ["seed on an enforcing Server", seed, [writer, member("b", "mirror")], "refuse enforced"],
-    ["mirror between enforcing Servers", mirror("b"), [writer, enforcing(member("b", "empty"))], "mirror a->b"],
+    ["mirror onto an enforcing Server with no approval", mirror("b"), [member("a", "writer"), enforcing(member("b", "empty"))], "refuse enforced"],
+    ["mirror off an enforcing Server with no approval", mirror("b"), [writer, member("b", "empty")], "refuse enforced"],
+    ["mirror beside an enforcing Server it doesn't touch", mirror("b"), [member("a", "writer"), member("b", "empty"), enforcing(member("c", "empty"))], "mirror a->b"],
+    ["approved mirror between enforcing Servers", approved(mirror("b")), [writer, enforcing(member("b", "empty"))], "mirror a->b"],
+    ["full sync between enforcing Servers with no approval", sync(true), [writer, enforcing(member("b", "mirror"))], "refuse enforced"],
+    ["approved full sync between enforcing Servers", approved(sync(true)), [writer, enforcing(member("b", "mirror"))], "sync a->b full"],
     ["sync between enforcing Servers", sync(), [writer, enforcing(member("b", "mirror"))], "sync a->b"],
     ["restore on an enforcing Server", restore("b"), [member("a", "empty"), enforcing(member("b", "mirror"))], "restore b 11"],
     ["delete a mirror on an enforcing Server", remove("b"), [writer, enforcing(member("b", "mirror"))], "delete b forget a"],
@@ -454,6 +466,40 @@ describe("plan a run on Servers that enforce device approval", () => {
       ok: false,
       refusal: { code: "enforced", message: expect.stringContaining("a enforces device approval, so Ployz Cloud can't restore data into a new volume until a later release.") },
     });
+  });
+
+  it("names the command that mirrors or syncs from an approved device", () => {
+    expect(planFromCopies(mirror("b"), [member("a", "writer"), enforcing(member("b", "empty"))])).toEqual({
+      ok: false,
+      refusal: {
+        code: "enforced",
+        message: "b enforces device approval, so Ployz Cloud can't mirror data on its own. Run ployz volume mirror data --to b from an approved device.",
+      },
+    });
+    expect(planFromCopies(sync(true), [writer, member("b", "mirror")])).toEqual({
+      ok: false,
+      refusal: {
+        code: "enforced",
+        message: "a enforces device approval, so Ployz Cloud can't sync data in full on its own. Run ployz volume sync data --full from an approved device.",
+      },
+    });
+  });
+});
+
+describe("read a Mirror approval", () => {
+  const id = (name: string) => name.padEnd(32, "0") as MachineId;
+  const [a, b, c] = [id("a"), id("b"), id("c")];
+  const signed = (body: Pick<VolumeApproval, "volume" | "workflow">): Signed => ({ body: JSON.stringify(body), signatures: [] });
+  const mirrorTo = (mirror: MachineId, volume = "shop_data") => signed({ volume, workflow: { kind: "mirror", writer: a, mirror, replace: false } });
+
+  it.each<[string, Signed, boolean]>([
+    ["the Mirror and Volume asked for", mirrorTo(b), true],
+    ["another Mirror", mirrorTo(c), false],
+    ["another Volume", mirrorTo(b, "shop_logs"), false],
+    ["another workflow", signed({ volume: "shop_data", workflow: { kind: "mirror_removal", mirror: b, writer: a, role: "mirror", last_copy: false } }), false],
+    ["a body that isn't JSON", { body: "{", signatures: [] }, false],
+  ])("approves %s", (_, approval, approves) => {
+    expect(approvesMirror(approval, "shop_data", b)).toBe(approves);
   });
 });
 

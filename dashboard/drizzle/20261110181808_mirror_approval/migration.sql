@@ -1,0 +1,1 @@
+ALTER TABLE "volume_mirror_status" ADD COLUMN "approval" jsonb;
