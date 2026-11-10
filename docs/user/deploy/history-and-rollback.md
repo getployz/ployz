@@ -81,3 +81,43 @@ An accepted deployment and its redeploys keep their original snapshot while you 
   and says to add one, as a deploy does.
 
 [The agent](../account/agent-sidebar.md) can do the same, and its redeploys wait for you to approve.
+
+## Roll back on servers that enforce device approval
+
+With [device enforcement](../servers/manage-servers.md#require-a-devices-signature-for-restarts-and-joins)
+on, redeploy or roll back from an approved device:
+
+```bash
+ployz deployment redeploy 4
+```
+
+Your device approves what the deployment ships, as `ployz deploy` does, and prints one
+`Approved` line per service. A service GitHub built under your
+[automatic deploy rule](github.md#deploy-on-push-to-servers-that-enforce-device-approval) runs
+the image GitHub built for #4's commit. Your device checks GitHub's signature on that image
+itself, and that it was built from #4's commit with your rule's settings for your cluster.
+Ployz Cloud can't swap it. If it doesn't match, your device approves nothing and cancels the
+redeploy:
+
+```text
+Cloud's image token for web at 3f1c2a9 doesn't check out: it names another commit. Nothing deployed.
+```
+
+GitHub builds the commit again when no image of it can be checked any more, for example when
+GitHub has since rotated the key that signed its record, or the rule's settings changed since.
+Your device approves that build first. GitHub builds it on the rule's branch, and your servers
+release the build's secrets only for a commit on that branch's history. The redeploy waits,
+printing `Building web at 3f1c2a9 on GitHub`, then your device approves the new image. The
+approval's 15 minutes start after the build, so a long build doesn't use them up. A build that
+fails cancels the redeploy, and nothing deployed.
+
+- **The rule's workflow runs the rebuild.** It needs the `workflow_dispatch` trigger with a
+  `commit` input, shown in [the workflow](github.md#deploy-on-push-to-servers-that-enforce-device-approval).
+  A rule approved before Ployz 0.4 doesn't cover it: approve the rule again, then redeploy.
+- **Keep the CLI running.** The redeploy waits for your device's approval. If you stop the CLI
+  while it waits, it cancels the redeploy. If the CLI can't cancel it, Ployz Cloud fails it
+  after an hour, and nothing deploys.
+- **A redeploy from the dashboard or by the agent isn't approved.** Servers that enforce refuse
+  it. Run `ployz deployment redeploy` on an approved device.
+- **A service built from an upload, or on your servers, can't redeploy here.** Deploy it from
+  an image pinned by digest.

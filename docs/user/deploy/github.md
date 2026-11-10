@@ -123,7 +123,7 @@ It prints what you approve, then signs it with your device key:
 ```text
 Approving automatic deploys for production:
   repository  acme/web on main
-  workflow    .github/workflows/ployz-build.yml, on push
+  workflow    .github/workflows/ployz-build.yml, on push and on rebuilds you approve
   builder     getployz/build/.github/workflows/build.yml@5f35eaa8e1372d0d86ff82788adadf308e5f3f97
   servers     2 in the cluster
   web
@@ -138,13 +138,19 @@ and `--builder-sha <sha>`.
 From then on every push to that branch deploys with no prompt, force pushes included. GitHub
 Actions builds it with Ployz's pinned builder, and each server checks that the image is the one
 built for the branch's current head, under these settings. The repository needs
-`.github/workflows/ployz-build.yml` on that branch, run on push:
+`.github/workflows/ployz-build.yml` on that branch, run on push, and on a dispatch with a
+`commit` for a [rollback that builds again](history-and-rollback.md#roll-back-on-servers-that-enforce-device-approval):
 
 ```yaml
 name: Ployz build
 on:
   push:
     branches: [main]
+  workflow_dispatch:
+    inputs:
+      commit:
+        required: false
+        type: string
 permissions:
   contents: read
   id-token: write
@@ -153,6 +159,7 @@ jobs:
     uses: getployz/build/.github/workflows/build.yml@5f35eaa8e1372d0d86ff82788adadf308e5f3f97
     with:
       cloud: https://ployz.dev
+      commit: ${{ inputs.commit }}
 ```
 
 - **A saved change waits for you.** After you save a change to a service the rule covers, its
@@ -166,6 +173,11 @@ jobs:
   after you [add a server](../servers/add-a-server.md).
 - **Stop it** by turning off **Deploy every push**, or with `ployz github rule end`. Pushes no
   longer deploy on those servers.
+- **Roll back from your device.** A rule deploys only the branch's head. To ship an older
+  commit, redeploy it with `ployz deployment redeploy`; see
+  [Roll back on servers that enforce device approval](history-and-rollback.md#roll-back-on-servers-that-enforce-device-approval).
+  A rule approved before Ployz 0.4 runs only on push. Approve it again before a rollback that
+  needs a rebuild.
 - **Someone who can push to the branch can deploy.** Ployz Cloud can't swap the commit, the
   image or the settings, but its GitHub App can push a commit to the branch itself. Add a branch
   ruleset on GitHub that blocks direct pushes to the branch.

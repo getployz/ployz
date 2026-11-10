@@ -309,7 +309,7 @@ pub(crate) fn approve_built(
     if stored.summary.status != DeploymentStatus::Queued {
         return Err(error::conflict(
             format!(
-                "Deployment {} already started or ended, so it can't take an approval now",
+                "Deployment {} already started or ended",
                 stored.summary.label()
             ),
             json!({ "deployment": id }),
@@ -1386,8 +1386,8 @@ pub(crate) fn claim(
     };
     if starting && awaits(tx, id)? && device_approval(tx, id)?.is_none() {
         let refused = error::conflict(
-            "No device approved the images this redeploy built, so it didn't run. Redeploy \
-             it again from an approved device.",
+            "No device approved this redeploy, so it didn't run. Run ployz deployment \
+             redeploy from an approved device.",
             json!({ "deployment": id }),
         );
         finish(

@@ -65,7 +65,7 @@ export const createRunStoreDeployment = (inngest: PloyzInngest, runEffect: Store
         return step.run("github-failed", () => runEffect(failStoreDeploymentUnrun(event.data.organizationId, event.data.environmentId, event.data.deploymentId, runId, disconnected)));
       }
       if (!(await walkApproval(event.data, step, runEffect))) {
-        const failure = "No device approved the images this redeploy built within an hour. Redeploy it again from an approved device.";
+        const failure = "No device approved this redeploy within an hour. Run ployz deployment redeploy from an approved device.";
         return step.run("approval-failed", () => runEffect(failStoreDeploymentUnrun(event.data.organizationId, event.data.environmentId, event.data.deploymentId, runId, failure)));
       }
       const storage = await walkPlacement(event.data, step, runEffect);

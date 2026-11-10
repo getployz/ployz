@@ -178,7 +178,7 @@ function RuleSummaryList({ summary }: { summary: RuleDraft["summary"] }) {
       </div>
       <div className="flex flex-col gap-1">
         <dt className="text-muted-foreground">Workflow</dt>
-        <dd><span className="font-mono">{summary.workflow}</span>, on push</dd>
+        <dd><span className="font-mono">{summary.workflow}</span>, on push and on rebuilds you approve</dd>
       </div>
       <div className="flex flex-col gap-1">
         <dt className="text-muted-foreground">Builder</dt>

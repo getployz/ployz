@@ -206,8 +206,10 @@ A server that enforces and runs a Ployz from before 0.4 can't take an approval f
 dashboard. **Deploy** names it and deploys nothing: upgrade it, or run `ployz deploy`.
 
 Servers that enforce refuse a deploy nobody approved: a Git push, an organization token,
-`ployz up`, a redeploy, a rollback, a restore, or a deploy the dashboard starts from a Sync or a
-new branch. Each server's part of that deployment
+`ployz up`, a restore, a redeploy or rollback started anywhere but `ployz deployment redeploy` on
+an approved device, or a deploy the dashboard starts from a Sync or a new branch. To redeploy or
+roll back, see
+[Roll back on servers that enforce device approval](history-and-rollback.md#roll-back-on-servers-that-enforce-device-approval). Each server's part of that deployment
 fails with `This server runs only deploys an approved device signed.`, and nothing new starts
 there. A server added after you signed isn't covered by that approval; run `ployz deploy` again.
 A container already stopped starts again only if its settings are ones you approved. Running

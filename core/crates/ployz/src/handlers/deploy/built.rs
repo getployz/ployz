@@ -275,8 +275,7 @@ fn facts(
     if sealing != enforcing.cluster {
         return Err(Error::coded(
             RpcErrorCode::Conflict,
-            "Your servers report two cluster keys, so this device can't tell which to approve \
-             for. Run ployz status, then redeploy again.",
+            "Your servers report two cluster keys. Run ployz status, then redeploy again.",
         ));
     }
     let rules = store.read(&RuleQuery { environment })?;
@@ -287,9 +286,8 @@ fn facts(
         Error::coded(
             RpcErrorCode::Conflict,
             format!(
-                "No device your servers trust signed the automatic deploy rule Cloud holds for \
-                 {}, so this device won't check images against it. Approve the rule again with \
-                 ployz github rule approve.",
+                "No device your servers trust signed {}'s automatic deploy rule. Approve it \
+                 again with ployz github rule approve, then redeploy.",
                 view.environment.name
             ),
         )
@@ -308,8 +306,8 @@ fn no_rule(environment: &str) -> Error {
     Error::coded(
         RpcErrorCode::Conflict,
         format!(
-            "{environment} has no automatic deploy rule, and servers that enforce device approval \
-             run only images GitHub built under one. Approve one with ployz github rule approve."
+            "{environment} has no automatic deploy rule. Approve one with ployz github rule \
+             approve, then redeploy."
         ),
     )
 }
@@ -351,8 +349,8 @@ fn cluster_keys(matches: &ArgMatches) -> Result<(SealingPublicKey, AttestKey, Tr
 fn unread_cluster() -> Error {
     Error::coded(
         RpcErrorCode::Conflict,
-        "The server this device reaches doesn't report the cluster's build key, so this device \
-         can't check images GitHub built. Upgrade Ployz on your servers, then redeploy again.",
+        "Your server doesn't report the cluster's build key. Upgrade Ployz on your servers, \
+         then redeploy again.",
     )
 }
 
@@ -380,8 +378,7 @@ fn github_keys() -> Result<KeySet, Error> {
 fn unread_keys(error: Option<reqwest::Error>) -> Error {
     Error::detailed_caused(
         RpcErrorCode::Unavailable,
-        "Couldn't read GitHub's token keys, so this device can't check the images GitHub built. \
-         Try again.",
+        "Couldn't read GitHub's signing keys. Try again.",
         json!({}),
         error,
     )
@@ -394,9 +391,8 @@ fn covered(rule: &AutoDeployRule, service: &ServiceName) -> Result<(), Error> {
         None => Err(Error::detailed(
             RpcErrorCode::Conflict,
             format!(
-                "The automatic deploy rule doesn't cover {service}, and servers that enforce \
-                 device approval run only images GitHub built under it. Approve the rule for \
-                 {service} with ployz github rule approve."
+                "The automatic deploy rule doesn't cover {service}. Approve it for {service} \
+                 with ployz github rule approve, then redeploy."
             ),
             json!({ "service": service }),
         )),
@@ -519,8 +515,7 @@ fn built_images(
             return Err(Error::detailed(
                 RpcErrorCode::Conflict,
                 format!(
-                    "GitHub reported no image token for {}, so this device can't check its \
-                     image. Nothing deployed.",
+                    "GitHub reported no image token for {}. Nothing deployed.",
                     building(build)
                 ),
                 json!({ "service": service }),
@@ -576,8 +571,8 @@ impl Refused {
         Error::detailed(
             RpcErrorCode::Conflict,
             format!(
-                "The image token Cloud holds for {service} at {} doesn't hold up: {why}. This \
-                 device approved nothing, and nothing deployed.",
+                "Cloud's image token for {service} at {} doesn't check out: {why}. Nothing \
+                 deployed.",
                 short(commit)
             ),
             json!({ "service": service, "commit": commit }),
