@@ -231,7 +231,7 @@ Outcome. With a rule approved once from the CLI, every push to the approved bran
 
 **Verify, perf.**
 
-- [x] Metric. Push to Deployment success, at D3's head with enforcement off and at D4's head with a rule, five each, interleaved. Rule: within 1.2 times. Admission per creation under 500 ms at the median, including one head read. Admission measured 487 ms median (n=18, 318 to 1169 ms), accepted by the operator: the head read is the check, 50 ms warm and 234 ms cold. Push to applied under a rule: 64 s median (n=8). The D3 baseline comparison was not run.
+- [ ] Metric. Push to Deployment success, at D3's head with enforcement off and at D4's head with a rule, five each, interleaved. Rule: within 1.2 times. Admission per creation under 500 ms at the median, including one head read. Admission measured 487 ms median (n=18, 318 to 1169 ms), accepted by the operator: the head read is the check, 50 ms warm and 234 ms cold. Push to applied under a rule: 64 s median (n=8). The D3 baseline comparison was not run.
 
 **Review gate.** The operator reviews the CLI output. Post lanes 2 and 7 with a 30 to 60 second terminal video, saved under `docs/agents/plans/security-0.4/media/d4-review.*`. Saved as `d4-review.mp4`, 40 s.
 
