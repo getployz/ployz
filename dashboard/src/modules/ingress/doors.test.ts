@@ -55,6 +55,13 @@ describe("the two-step door switch", () => {
     expect(log).toEqual(["at opening", "open public+tunnel", "at moving", "moving", "flip", "redeploy web-prod.example.com", "at closing", "open tunnel"]);
   });
 
+  it("opens only the tunnel on a Cluster founded closed, so ports 80 and 443 never open on the way", async () => {
+    const log: string[] = [];
+    const end = await Effect.runPromise(runSwitch("tunnel", ports((doors) => answer(doors, doors), log), true));
+    expect(end).toEqual({ ok: true });
+    expect(log).toEqual(["at opening", "open tunnel", "at moving", "moving", "flip", "redeploy web-prod.example.com", "at closing", "open tunnel"]);
+  });
+
   it("goes back the same way, ending on public ports", async () => {
     const log: string[] = [];
     await Effect.runPromise(runSwitch("public", ports((doors) => answer(doors), log)));

@@ -11,6 +11,15 @@ export const INGRESS_HOLDER = "ployz-system/ingress-holder";
 
 const PUBLIC_PORTS = new Set([80, 443]);
 
+/**
+ * Whether any holder or proxy container is specified to publish host port 80 or 443, running or not: one restarting,
+ * just created or stopped still owns the ports the moment it runs.
+ */
+export function publicSpecifiedAnywhere(frame: Pick<RuntimeWatchView, "services">): boolean {
+  return frame.services.some((service) => (service.identity === INGRESS || service.identity === INGRESS_HOLDER)
+    && service.containers.some((container) => container.resolved_spec.ports.some((port) => port.mode === "host" && PUBLIC_PORTS.has(port.published_port))));
+}
+
 const AT_REST = new Set(["created", "exited", "dead"]);
 
 function ingressOn(frame: Pick<RuntimeWatchView, "services">, counts: (state: string) => boolean, identity = INGRESS): Set<string> {

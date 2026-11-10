@@ -67,7 +67,11 @@ export type ClusterIngressView = {
   readonly change: LatestDoorsChange | null;
   /** The Hosted DNS name generated names sit under on Public. Null before one is reserved. */
   readonly hostedName: string | null;
+  /** Cloud told the first Server to found the Cluster with every Door closed. What the Servers hold now is observed apart. */
+  readonly foundedClosed: boolean;
 };
+
+export const CheckCloudflareInput = SetUpCloudflareInput;
 
 /** A Door by name, as the Engine reports the ones a Server holds open. */
 export type DoorName = "public" | "tunnel";

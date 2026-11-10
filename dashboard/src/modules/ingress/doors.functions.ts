@@ -1,7 +1,7 @@
 import { createServerFn } from "@tanstack/react-start";
 import { Effect, Redacted, Schema } from "effect";
-import { listCloudflareZoneNames, setUpCloudflare } from "#/modules/cloudflare/setup.server";
-import { ListCloudflareZonesInput, SetUpCloudflareInput, SwitchDoorsInput } from "#/modules/ingress/doors";
+import { checkCloudflareSetup, listCloudflareZoneNames, openPublicPorts, setUpCloudflare } from "#/modules/cloudflare/setup.server";
+import { CheckCloudflareInput, ListCloudflareZonesInput, SetUpCloudflareInput, SwitchDoorsInput } from "#/modules/ingress/doors";
 import { observeClusterIngress, readClusterIngress, requestDoorsSwitch, reviewSwitch } from "#/modules/ingress/doors.server";
 import { requireOperator } from "#/modules/ingress/doors.access.server";
 import { requireAccess } from "#/modules/organization/access.server";
@@ -52,6 +52,24 @@ export const setUpCloudflareServerFn = createServerFn({ method: "POST" })
   .handler(({ context, data }) => runActor(context, Effect.gen(function* () {
     const { organization } = yield* requireOperator(context.actor, data.organizationSlug);
     return yield* setUpCloudflare(organization.id, { token: Redacted.make(data.token), zone: data.zone });
+  })));
+
+/** Whether the pasted token can set Cloudflare up on the zone, asked before the first Server joins. Nothing changes. */
+export const checkCloudflareServerFn = createServerFn({ method: "POST" })
+  .middleware([publicErrorMiddleware, actorMiddleware])
+  .validator(strictValidator(CheckCloudflareInput))
+  .handler(({ context, data }) => runActor(context, Effect.gen(function* () {
+    yield* requireOperator(context.actor, data.organizationSlug);
+    return yield* checkCloudflareSetup({ token: Redacted.make(data.token), zone: data.zone });
+  })));
+
+/** Open ports 80 and 443 on a Cluster founded closed whose Cloudflare setup never finished. */
+export const openPublicPortsServerFn = createServerFn({ method: "POST" })
+  .middleware([publicErrorMiddleware, actorMiddleware])
+  .validator(strictValidator(Slug))
+  .handler(({ context, data }) => runActor(context, Effect.gen(function* () {
+    const { organization } = yield* requireOperator(context.actor, data.organizationSlug);
+    return yield* openPublicPorts(organization.id);
   })));
 
 /** Switch the Cluster's web traffic. The human confirmed the review the page showed. */

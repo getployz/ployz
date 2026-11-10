@@ -76,6 +76,10 @@ pub(crate) fn command(command: Command) -> Command {
             .value_name("NAME")
             .help("Name the new Cluster, when this Server starts one"),
     )
+    .arg(switch("ingress-closed", None).help(
+        "Start the new Cluster with ports 80 and 443 closed, when this Server starts one; \
+         open a Door after with ployz ingress use",
+    ))
     .arg(switch("reset", None).help("Reset an initialized Server before enrollment"))
     .arg(
         switch("show-recovery-code", None)
@@ -141,7 +145,7 @@ pub(crate) fn add(root: &ArgMatches) -> Result<(), Error> {
 }
 
 /// `server add` switches and values that shape the Server, which a pasted line repeats.
-const SHAPING_SWITCHES: [&str; 2] = ["reset", "yes"];
+const SHAPING_SWITCHES: [&str; 3] = ["reset", "yes", "ingress-closed"];
 const SHAPING_VALUES: [&str; 12] = [
     "name",
     "storage",
@@ -442,6 +446,9 @@ fn standalone(root: &ArgMatches) -> Result<(), Error> {
         if founding_cluster_name(leaf_matches(root))?.is_some() {
             joined_unnamed();
         }
+        if leaf_matches(root).get_flag("ingress-closed") {
+            joined_open();
+        }
         super::add(root)
     } else {
         super::init(root)
@@ -455,6 +462,12 @@ pub(in crate::handlers) fn founding_cluster_name(
         .get_one::<String>("cluster-name")
         .map(|name| crate::handlers::cluster::parse(name))
         .transpose()
+}
+
+pub(in crate::handlers) fn joined_open() {
+    crate::ui::warn(
+        "--ingress-closed is ignored when joining a Cluster. The Server opens the Cluster's Doors.",
+    );
 }
 
 pub(in crate::handlers) fn joined_unnamed() {
@@ -564,6 +577,7 @@ mod tests {
             "0.3.0",
             "--reset",
             "--yes",
+            "--ingress-closed",
         ];
         let original =
             add_matches(&[["ployz", "server", "add", "--command"].as_slice(), &given].concat());

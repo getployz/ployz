@@ -58,6 +58,8 @@ export const CheckinRequest = Schema.Struct({
   protocolVersion: Schema.Literal(CHECKIN_PROTOCOL_VERSION),
   checkinKey: CheckinKey,
   cliVersion: Schema.String,
+  /** The optional instruction fields this CLI carries out; absent from a CLI older than any. */
+  enrollOptions: Schema.optionalKey(Schema.Array(Schema.String)),
   report: HostReport,
   attempt: Schema.optionalKey(Schema.Struct({
     attemptId: Schema.String,
@@ -73,7 +75,7 @@ export const CheckinRequest = Schema.Struct({
 });
 export type CheckinRequest = typeof CheckinRequest.Type;
 
-export type StoredReport = HostReport & { readonly prep?: Prep; readonly cliVersion?: string };
+export type StoredReport = HostReport & { readonly prep?: Prep; readonly cliVersion?: string; readonly enrollOptions?: readonly string[] };
 
 export type CheckinStopReason = "rejected" | "token_expired" | "token_revoked";
 

@@ -42,7 +42,12 @@ export type EnrollInstruction = {
   readonly policy: EnrollPolicy;
   /** The founder's only: the Cluster Name it founds with, its `--cluster-name`. */
   readonly clusterName?: string;
+  /** The founder's only: found with every Door closed, its `--ingress-closed`. */
+  readonly ingressClosed?: true;
 };
+
+/** The instruction field a CLI lists in its check-in's `enrollOptions` when it founds closed. */
+export const INGRESS_CLOSED_OPTION = "ingressClosed";
 
 export type EnrollmentFailure = { readonly stage: EnrollmentStage | null; readonly message: string };
 

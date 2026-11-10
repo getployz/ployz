@@ -1073,6 +1073,44 @@ mod ingress_doors {
     }
 
     #[tokio::test]
+    async fn no_door_places_a_holder_with_no_port_and_no_connector() {
+        let (data_dir, _store, service, _fake, runtime) =
+            fake_docker_service_keeping_runtime("ployzd-doors-closed").await;
+        let set = set_doors(
+            &service,
+            json!({"doors": [], "proxy_service": proxy_id()}),
+            false,
+        )
+        .await
+        .unwrap()
+        .unwrap();
+        assert_eq!(set.failure, None, "{set:?}");
+        let holder = set.holder.unwrap();
+        assert!(
+            holder.now.resolved_spec.ports.is_empty(),
+            "a closed holder publishes no port: {:?}",
+            holder.now.resolved_spec.ports
+        );
+        assert_eq!(
+            holder.now.resolved_spec,
+            DoorSpecs::new(proxy_id(), ployz_core::IngressPorts::Closed, None).holder
+        );
+        assert_eq!(set.proxy.unwrap().change, DoorChange::Created);
+        assert!(set.tunnel.is_none(), "{:?}", set.tunnel);
+        let inventory = runtime
+            .door_inventory(&service.local.record().id())
+            .await
+            .unwrap();
+        assert!(
+            inventory
+                .iter()
+                .all(|entry| entry.facts.door != crate::docker::Door::Tunnel),
+            "no connector runs on a closed Machine"
+        );
+        std::fs::remove_dir_all(data_dir).unwrap();
+    }
+
+    #[tokio::test]
     async fn an_unknown_door_is_refused_naming_the_doors_capability() {
         let (data_dir, _store, service, fake) = fake_docker_service("ployzd-doors-unknown").await;
         let seen = docker_calls(&fake);

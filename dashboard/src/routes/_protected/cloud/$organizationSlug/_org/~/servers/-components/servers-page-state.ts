@@ -1,4 +1,6 @@
+import type { CloudflareSetup, ClusterIngressObservation } from "#/modules/ingress/doors";
 import type { ServerListState } from "#/modules/machines/server-status";
+import type { HeldCloudflare } from "./first-cloudflare";
 
 /**
  * What the Servers page shows. The intake tray (servers waiting or enrolling) comes from Cloud, not the Runtime, so it
@@ -38,3 +40,57 @@ export function foundingFirstServer(status: {
   if (status === undefined || status.founded) return false;
   return status.attempts.some((attempt) => attempt.role === "founder" && attempt.endedAt === null);
 }
+
+/**
+ * Where a Cloudflare Tunnel chosen on the first-run card stands. `waiting` until the first Server joins, then the setup
+ * this tab runs with the token it holds. `unfinished` once a first Server founded the Cluster closed and no Server holds a
+ * Door, with no token left to set the tunnel up, as after a reload: nothing reaches its apps until the user acts.
+ */
+export type FirstTunnelState =
+  | { readonly kind: "none" }
+  | { readonly kind: "waiting" | "setting-up"; readonly zone: string }
+  | { readonly kind: "done"; readonly zone: string; readonly switched: boolean }
+  | { readonly kind: "failed"; readonly zone: string; readonly message: string }
+  | { readonly kind: "unfinished" };
+
+export function firstTunnelState({ held, foundedClosed, setup, observed }: {
+  held: HeldCloudflare | undefined;
+  /** Cloud told the first Server to found with every Door closed. */
+  foundedClosed: boolean;
+  setup: CloudflareSetup | null;
+  /** The Servers seen and the Doors each holds; null before a look, or when none answered. */
+  observed: ClusterIngressObservation | null;
+}): FirstTunnelState {
+  if (held !== undefined) {
+    if (held.kind === "failed") return { kind: "failed", zone: held.zone, message: held.message };
+    return held.kind === "done" ? held : { kind: held.kind, zone: held.zone };
+  }
+  if (!foundedClosed || setup !== null || observed === null || observed.partial || observed.servers.length === 0) return { kind: "none" };
+  return observed.servers.every((server) => server.doors.length === 0) ? { kind: "unfinished" } : { kind: "none" };
+}
+
+/** The first-run card's Cloudflare Tunnel choice, one step at a time. `off` remembers a setup left half way. */
+export type CardCloudflare =
+  | { readonly at: "off"; readonly abandoned: boolean }
+  | { readonly at: "token" }
+  | { readonly at: "zone"; readonly zones: readonly string[] }
+  | { readonly at: "ready"; readonly zone: string };
+
+/** Whether Get install command may run for the card's choice, what the card says about it, and whether the line founds closed. */
+export type InstallGate = { readonly allowed: boolean; readonly note: string | null; readonly foundsClosed: boolean };
+
+export function installGate(choice: CardCloudflare): InstallGate {
+  switch (choice.at) {
+    case "off":
+      return { allowed: true, note: choice.abandoned ? "Cloudflare Tunnel isn't set up, so your servers use public ports 80 and 443." : null, foundsClosed: false };
+    case "token":
+    case "zone":
+      return { allowed: false, note: "Finish Cloudflare setup, or turn it off to use public ports.", foundsClosed: false };
+    case "ready":
+      return { allowed: true, note: null, foundsClosed: true };
+  }
+}
+
+/** Turning Cloudflare off, or closing the section mid-setup, falls back to public ports and says so. */
+export const abandonCloudflare = (choice: CardCloudflare): CardCloudflare =>
+  choice.at === "off" ? choice : { at: "off", abandoned: true };

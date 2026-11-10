@@ -39,12 +39,12 @@ export function WebTrafficSection({ organizationSlug }: { organizationSlug: stri
   const { access } = organizationRoute.useLoaderData();
   const gate = useRoleGate(organizationSlug, "servers:operate");
   const editable = access !== "support" && gate.allowed;
-  const { setup, change } = view;
+  const { setup, change, foundedClosed } = view;
   const switching = change !== null && (change.state === "pending" || change.state === "running");
   const failure = change !== null && change.state === "failed" ? change.failure : null;
   const observed = useQuery({
     ...clusterIngressObservationQueryOptions(organizationSlug, switching || failure !== null || setup?.state === "active"),
-    enabled: setup !== null,
+    enabled: setup !== null || foundedClosed,
   }).data ?? null;
   const [settingUp, setSettingUp] = useState(false);
   const [reviewing, setReviewing] = useState<DoorsWant | null>(null);
@@ -52,16 +52,17 @@ export function WebTrafficSection({ organizationSlug }: { organizationSlug: stri
   const refresh = () => queryClient.invalidateQueries({ queryKey: clusterIngressKeys.all });
   const onCloudflare = setup?.state === "active";
   const canSwitchBack = setup !== null && switchProblem(setup, "public", change) === null && (onCloudflare || change?.state === "failed");
+  const publicInUse = !foundedClosed || (observed !== null && holdingCount(observed.servers, "public") > 0);
 
   return (
     <SettingsSection id="web-traffic" title="Web traffic">
       <SettingsRow
         label="Public ports"
-        hint={publicHint(setup, observed, switching)}
+        hint={publicHint(setup, foundedClosed, observed, switching)}
         commit="none"
         control={canSwitchBack ? (
           editable ? <Button type="button" variant="outline" size="sm" disabled={switching} onClick={() => setReviewing("public")}>Switch back</Button> : null
-        ) : onCloudflare || switching ? null : <Badge variant="info">In use</Badge>}
+        ) : onCloudflare || switching || !publicInUse ? null : <Badge variant="info">In use</Badge>}
       />
       <SettingsRow
         label="Cloudflare Tunnel"
@@ -122,8 +123,9 @@ const connectedWords = (setup: CloudflareSetup, observed: ClusterIngressObservat
  * What the Servers show of their ports, once seen. A switch under way or one that failed reads as the Doors stand, not
  * as it was meant to end, and the tunnel is left for the user to delete only once no Server holds it.
  */
-function publicHint(setup: CloudflareSetup | null, observed: ClusterIngressObservation | null, switching: boolean) {
-  if (setup === null) return "Ports 80 and 443 open on every server.";
+function publicHint(setup: CloudflareSetup | null, foundedClosed: boolean, observed: ClusterIngressObservation | null, switching: boolean) {
+  if (setup === null && !foundedClosed) return "Ports 80 and 443 open on every server.";
+  if (setup === null) return doorWords(observed, "public") ?? "Checking your servers…";
   if (setup.state === "left" && !switching && tunnelLetGo(observed)) return `Delete the tunnel ${setup.tunnelName} and *.${setup.zone} in Cloudflare.`;
   return doorWords(observed, "public") ?? "Checking your servers…";
 }

@@ -226,7 +226,7 @@ export function BottomBar({
       <Button ref={triggerRef} variant="outline" aria-expanded={open} onClick={openReview}>Details</Button>
       {/* Deploying behind a running or queued attempt queues. */}
       {noServers ? (
-        <AddServersDialog organizationSlug={params.organizationSlug} label="Add servers" variant="intent" />
+        <AddServersDialog organizationSlug={params.organizationSlug} label="Add servers" variant="intent" firstServer />
       ) : <Tooltip>
         <TooltipTrigger render={<Button variant="intent" disabled={savesOnly ? !saveable : !deployable || admitting} aria-keyshortcuts="Shift+Enter"
           onClick={(event) => { if (!savesOnly && !event.altKey) deploy(); else if (saveable) save(); }} />}>

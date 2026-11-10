@@ -102,7 +102,7 @@ A Cloud-owned bearer (`PLOYZ_TOKEN`) made by a member with `ployz token new`. It
 _Avoid_: API key, personal access token, CLI token
 
 **Fleet Token**:
-A `pflt_` secret a signed-in member makes for one Organization so many hosts can carry it and ask to join; an Organization Token can't make or revoke one. It has a two-word name such as `amber-falcon`, unique among the Organization's unrevoked tokens, and lasts 1, 7 or 30 days or until revoked. Only its hash is stored; the secret is shown once. It is not membership: a host carrying it is not a Server until it enrolls.
+A `pflt_` secret a signed-in member makes for one Organization so many hosts can carry it and ask to join; an Organization Token can't make or revoke one. It has a two-word name such as `amber-falcon`, unique among the Organization's unrevoked tokens, and lasts 1, 7 or 30 days or until revoked. Only its hash is stored; the secret is shown once. It is not membership: a host carrying it is not a Server until it enrolls. One made on the first-run card with Cloudflare Tunnel chosen founds closed: the first Server it enrolls starts the Cluster with every Door shut, and Cloud sends that only to a host whose `ployz` lists it in its check-in. The tab that chose it holds the Cloudflare API token, never Cloud, and sets the tunnel up once that Server joins.
 _Avoid_: Enrollment token, join token, bootstrap token
 
 **Waiting Server**:

@@ -1624,6 +1624,13 @@ impl IngressDoors {
         Self(BTreeSet::from([IngressDoor::Tunnel]))
     }
 
+    /// No Door: the holder publishes no port and no connector runs, so nothing reaches
+    /// the Machine's Caddy until a Door opens.
+    #[must_use]
+    pub fn closed() -> Self {
+        Self(BTreeSet::new())
+    }
+
     /// Both Doors, which a switch holds open while the other side catches up.
     #[must_use]
     pub fn both() -> Self {
@@ -1640,10 +1647,10 @@ impl IngressDoors {
         self.0.contains(&door)
     }
 
-    /// Whether every Door is one this release knows, and at least one is asked for.
+    /// Whether every Door is one this release knows. None at all is known: it closes the Machine.
     #[must_use]
     pub fn is_known(&self) -> bool {
-        !self.0.is_empty() && !self.has(IngressDoor::Unrecognized)
+        !self.has(IngressDoor::Unrecognized)
     }
 
     /// The Doors as `ployz ingress` lists them.

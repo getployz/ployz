@@ -185,6 +185,7 @@ async fn heartbeat(
         protocol_version: wire::PROTOCOL_VERSION,
         checkin_key: key.public_hex(),
         cli_version: env!("CARGO_PKG_VERSION"),
+        enroll_options: wire::ENROLL_OPTIONS,
         report: report.report,
         prep: Some(report.prep),
         attempt: Some(attempt),
@@ -317,6 +318,9 @@ pub(super) fn add_arguments(
     }
     if let Some(cluster_name) = &instruction.founding_cluster_name {
         arguments.extend(["--cluster-name".to_owned(), cluster_name.clone()]);
+    }
+    if instruction.founding_ingress_closed {
+        arguments.push("--ingress-closed".to_owned());
     }
     arguments.extend([
         format!("--accepts-builds={}", policy.accepts_builds),

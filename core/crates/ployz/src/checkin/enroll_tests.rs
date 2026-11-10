@@ -643,6 +643,7 @@ fn the_add_arguments_carry_the_whole_instruction_and_a_root_config_without_home(
             accepts_ingress: true,
         },
         founding_cluster_name: None,
+        founding_ingress_closed: false,
     };
 
     let arguments = add_arguments(&instruction, "https://cloud.example", false);
@@ -1135,6 +1136,35 @@ fn a_founder_founds_the_cluster_with_the_name_cloud_sends() {
         !add_arguments(&joiner, "https://cloud.example", true)
             .contains(&"--cluster-name".to_owned()),
         "an instruction without clusterName, as an older Cloud sends, founds with no name"
+    );
+}
+
+#[test]
+fn a_founder_cloud_sends_closed_founds_with_no_door_open() {
+    let founder = instruction("none").replace(
+        r#""name":"web-1""#,
+        r#""name":"web-1","ingressClosed":true"#,
+    );
+    let Some(Answer::Enroll(founder)) = wire::answer(founder.as_bytes()) else {
+        panic!("enroll instruction");
+    };
+    let arguments = add_arguments(&founder, "https://cloud.example", true);
+    let root = crate::cli::command()
+        .try_get_matches_from(&arguments)
+        .unwrap();
+    let add = root
+        .subcommand_matches("server")
+        .and_then(|server| server.subcommand_matches("add"))
+        .unwrap();
+    assert!(add.get_flag("ingress-closed"));
+
+    let Some(Answer::Enroll(open)) = wire::answer(instruction("none").as_bytes()) else {
+        panic!("enroll instruction");
+    };
+    assert!(
+        !add_arguments(&open, "https://cloud.example", true)
+            .contains(&"--ingress-closed".to_owned()),
+        "an instruction without ingressClosed, as an older Cloud sends, founds with the Public Door"
     );
 }
 

@@ -1,12 +1,13 @@
 import "@tanstack/react-start/server-only";
 import { randomUUID } from "node:crypto";
 import { and, desc, eq, inArray, isNull, lt, or, sql } from "drizzle-orm";
-import type { JsonValue, PublishedHostname } from "@ployz/sdk";
+import type { JsonValue, PublishedHostname, RuntimeWatchView } from "@ployz/sdk";
 import { Effect, Schedule, Schema } from "effect";
 import { operationDigest, type OperationAsked } from "#/modules/approvals/approvals.server";
 import { loadClusterDomain } from "#/modules/cluster-domain/cluster-domain.server";
-import { doorsOpenOn } from "#/modules/cluster-domain/ingress-running";
+import { doorsOpenOn, publicSpecifiedAnywhere } from "#/modules/cluster-domain/ingress-running";
 import { loadCloudflareSetup } from "#/modules/cloudflare/source.server";
+import { serverEnrollment } from "#/modules/machines/waiting/tables";
 import { callStore, readStore } from "#/modules/config-store/config-store.server";
 import { publishedOf } from "#/modules/config-store/domain-evidence.server";
 import { owners } from "#/modules/config-store/store-lookup.server";
@@ -84,12 +85,27 @@ const latestChange = Effect.fn("IngressDoors.latest")(function* (organizationId:
   return latest === undefined ? null : yield* latestChangeOf(latest);
 });
 
+/**
+ * Whether the newest founder was told to start the Cluster with every Door closed. Read from the instruction, not the
+ * enrollment's end: the Machine founds as told before the enrollment's own run marks it joined, and one that failed
+ * late may have founded all the same.
+ */
+const foundedClosed = Effect.fn("IngressDoors.foundedClosed")(function* (organizationId: string) {
+  const { drizzle } = yield* Database;
+  const [founder] = yield* drizzle.select({ closed: sql<boolean>`coalesce((${serverEnrollment.instruction}->>'ingressClosed')::boolean, false)` })
+    .from(serverEnrollment)
+    .where(and(eq(serverEnrollment.organizationId, organizationId), eq(serverEnrollment.role, "founder")))
+    .orderBy(desc(serverEnrollment.requestedAt))
+    .limit(1);
+  return founder?.closed ?? false;
+});
+
 /** The Cluster's ingress as the database holds it: its Cloudflare setup, the latest switch and the Hosted name. */
 export const readClusterIngress = Effect.fn("IngressDoors.read")(function* (organizationId: string) {
   const setup = yield* loadCloudflareSetup(organizationId);
   const change = yield* latestChange(organizationId);
   const hosted = yield* loadClusterDomain(organizationId);
-  return { setup, change, hostedName: hosted?.name ?? null } satisfies ClusterIngressView;
+  return { setup, change, hostedName: hosted?.name ?? null, foundedClosed: yield* foundedClosed(organizationId) } satisfies ClusterIngressView;
 });
 
 /**
@@ -99,7 +115,10 @@ export const readClusterIngress = Effect.fn("IngressDoors.read")(function* (orga
  */
 export const observeClusterIngress = Effect.fn("IngressDoors.observe")(function* (organizationId: string) {
   const frame = yield* firstRuntimeFrame(organizationId).pipe(Effect.catch(() => Effect.succeed(null)));
-  if (frame === null) return null;
+  return frame === null ? null : observationOf(frame);
+});
+
+function observationOf(frame: RuntimeWatchView): ClusterIngressObservation {
   const open = doorsOpenOn(frame);
   const offline = offlineServers(frame.machines.map(({ machine, membership }) =>
     ({ id: machine.id, membership, runningBuilds: machine.runtime.running_builds, unanswered: frame.unanswered.includes(machine.id) })));
@@ -108,7 +127,24 @@ export const observeClusterIngress = Effect.fn("IngressDoors.observe")(function*
       .map(({ machine }) => ({ id: machine.id, name: machine.name, doors: [...(open.get(machine.id) ?? [])].sort() })),
     hostnames: publishedOf(frame),
     partial: frame.incomplete_ids.machines.length > 0 || frame.incomplete_ids.containers.length > 0 || offline.size > 0,
-  } satisfies ClusterIngressObservation;
+  };
+}
+
+/**
+ * Whether Cloudflare setup may open only the tunnel: the Cluster was founded closed and, seen whole, no Server holds the
+ * Public Door, whether or not it takes web traffic now. Unknown while a Server isn't seen, since it may hold the ports,
+ * or while none takes web traffic yet.
+ */
+export const closedFounding = Effect.fn("IngressDoors.closedFounding")(function* (organizationId: string) {
+  if (!(yield* foundedClosed(organizationId))) return { kind: "open" } as const;
+  const frame = yield* firstRuntimeFrame(organizationId).pipe(Effect.catch(() => Effect.succeed(null)));
+  if (frame === null) return { kind: "unknown" } as const;
+  const seen = observationOf(frame);
+  if (seen.partial) return { kind: "unknown" } as const;
+  if (publicSpecifiedAnywhere(frame)) return { kind: "open" } as const;
+  // The founder may not show yet; until a Server takes web traffic there is nothing to tell the tunnel to.
+  if (seen.servers.length === 0) return { kind: "unknown" } as const;
+  return { kind: "closed", hostnames: seen.hostnames } as const;
 });
 
 /** Where a switch to `to` takes generated names from, and to. Nothing before Cloudflare is set up or the Hosted name exists. */
@@ -322,6 +358,8 @@ type RedeployServices = Effect.Services<Admission> | Effect.Services<Ending> | E
 const applySwitch = Effect.fn("IngressDoors.apply")(function* (session: PloyzSession, request: DoorsRequest, runId: string, want: DoorsWant) {
   const { drizzle } = yield* Database;
   const owned = and(eq(ingressDoorsAttempt.id, request.attemptId), eq(ingressDoorsAttempt.inngestRunId, runId));
+  const founding = want === "tunnel" ? yield* closedFounding(request.organizationId) : { kind: "open" } as const;
+  if (founding.kind === "unknown") return { ok: false, failure: "Some servers didn't answer. Switch again once they all do." } as const;
   return yield* runSwitch(want, {
     open: (doors) => session.setIngressDoors(doors),
     at: (stage) => drizzle.update(ingressDoorsAttempt).set({ stage }).where(owned).pipe(Effect.asVoid),
@@ -329,7 +367,7 @@ const applySwitch = Effect.fn("IngressDoors.apply")(function* (session: PloyzSes
       .where(eq(organizationCloudflareIngress.organizationId, request.organizationId)).pipe(Effect.asVoid),
     moving: () => movingNow(request.organizationId, want),
     redeploy: (moves) => redeployMoving(request.organizationId, moves),
-  });
+  }, founding.kind === "closed");
 });
 
 /**

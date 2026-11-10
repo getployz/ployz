@@ -559,10 +559,11 @@ async fn the_ingress_proxy_is_set_once_through_its_doors() {
         Placement::default(),
         held,
     );
-    let holder = global_service(
+    let holder = grouped(
         QualifiedService::system_ingress_holder(),
-        'b',
-        Placement::default(),
+        ployz_core::holder_service_spec("pause:1", ployz_core::IngressPorts::Public)
+            .to_resolved(service_id('b'), ResolvedUpdateConfig::default())
+            .expect("volume graph is scoped"),
         running_on(&founder, 'b'),
     );
     let mut client = fake(&joiner, vec![caddy, holder]);
@@ -662,6 +663,38 @@ async fn a_joiner_that_can_open_the_tunnel_door_is_asked() {
         };
         assert!(asked.doors.has(ployz_core::IngressDoor::Tunnel));
     }
+}
+
+// Catches a joiner opening ports 80 and 443 on a Cluster founded closed, whose tunnel has
+// not opened yet.
+#[tokio::test(start_paused = true)]
+async fn a_joiner_on_a_cluster_founded_closed_opens_no_door() {
+    let founder = machine('f', "founder");
+    let joiner = machine('1', "joiner");
+    let holder = ployz_core::holder_service_spec("pause:1", ployz_core::IngressPorts::Closed)
+        .to_resolved(service_id('d'), ResolvedUpdateConfig::default())
+        .expect("volume graph is scoped");
+    let cluster = vec![
+        global_service(
+            QualifiedService::system_ingress(),
+            'a',
+            Placement::default(),
+            running_on(&founder, 'a'),
+        ),
+        grouped(
+            QualifiedService::system_ingress_holder(),
+            holder,
+            running_on(&founder, 'e'),
+        ),
+    ];
+    let mut client = fake(&joiner, cluster);
+
+    catch_up(&mut client, &joiner).await.unwrap();
+
+    let [(_, asked)] = client.door_calls.as_slice() else {
+        panic!("one call sets the doors: {:?}", client.door_calls);
+    };
+    assert_eq!(asked.doors, ployz_core::IngressDoors::closed());
 }
 
 // Catches catch-up calling a Caddy that crashes after the daemon set it caught up.

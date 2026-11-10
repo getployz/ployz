@@ -7,6 +7,8 @@ import { organizationEnrollmentStatus } from "#/modules/machines/enrollment";
 import { clusterNameView } from "./cluster-name";
 import { renameClusterServerFn } from "./cluster-name.functions";
 
+export type ClusterNameControl = ReturnType<typeof useClusterName>;
+
 /** The Organization's Cluster Name. A rename shows at once, saves in the background, and rolls back with a toast. */
 export function useClusterName(organizationSlug: string) {
   const scope = useCollectionScope();

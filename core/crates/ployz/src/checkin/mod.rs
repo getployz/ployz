@@ -953,6 +953,7 @@ async fn check_in<H: Host>(
         protocol_version: wire::PROTOCOL_VERSION,
         checkin_key: key.public_hex(),
         cli_version: env!("CARGO_PKG_VERSION"),
+        enroll_options: wire::ENROLL_OPTIONS,
         report: &report,
         prep: Some(prep),
         attempt: status.attempt.as_ref(),

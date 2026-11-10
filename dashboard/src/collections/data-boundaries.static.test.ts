@@ -65,7 +65,8 @@ const SPINNER_FILES = {
   "routes/claim/$secret.tsx": "keeping the Organization in flight",
   "routes/_protected/cloud/$organizationSlug/_org/~/billing.tsx": "portal opening",
   "routes/_protected/cloud/$organizationSlug/_org/~/servers/-components/add-servers-dialog.tsx": "token mint in flight, then listening for the first server",
-  "routes/_protected/cloud/$organizationSlug/_org/~/servers/-components/first-run-card.tsx": "token mint in flight, then listening for the first server",
+  "routes/_protected/cloud/$organizationSlug/_org/~/servers/-components/cluster-setup.tsx": "token mint in flight, then listening for the first server; Find zones and Check in flight",
+  "routes/_protected/cloud/$organizationSlug/_org/~/servers/-components/first-tunnel.tsx": "the tunnel setting up on the first server",
   "routes/_protected/cloud/$organizationSlug/_org/~/servers/-components/server-services-section.tsx": "the Drain running on the Server",
   "routes/_protected/cloud/$organizationSlug/_org/~/servers/-components/server-web-traffic-section.tsx": "the web server starting or stopping on the Server",
   "routes/_public/-components/LoginPanel.tsx": "sign-in in flight",
@@ -78,6 +79,7 @@ const SERVER_FN_FILE = /[.-]functions\.ts$|\.server\.ts$/;
 /** Reads that are one step of a user command (preview, evidence, wait for completion), not page state. */
 const COMMAND_READ_FILES = {
   "components/service-source-selector.tsx": "resolve a pasted public repository before connecting it",
+  "routes/_protected/cloud/$organizationSlug/_org/~/servers/-components/cluster-setup.tsx": "find the zones a pasted Cloudflare token reaches before founding closed; the token stays in the tab and is never stored",
   "routes/_protected/cloud/$organizationSlug/_org/~/servers/-components/remove-server-section.tsx": "gather data-loss evidence, then wait for the confirmed removal",
   "routes/_protected/cloud/$organizationSlug/_org/~/servers/-components/stray-namespaces.tsx": "gather a Namespace's data-loss evidence before the user confirms its removal",
   "routes/_protected/cloud/$organizationSlug/_org/-components/forget-servers-dialog.tsx": "try every Server and list what goes before the user confirms forgetting them",
@@ -142,6 +144,8 @@ const COMMAND_FILES = {
   "routes/connect.tsx": "the answer sends the browser to the agent's callback, a URL only the server builds",
   "routes/_protected/cloud/$organizationSlug/_project/$projectSlug/$environmentSlug/-components/store-settings.tsx": "renaming a Project changes its URLs: the page opens the new one once the Store has it",
   "routes/_protected/cloud/$organizationSlug/_project/$projectSlug/$environmentSlug/-components/create-environment-dialog.tsx": "over the Store the dialog stays open until the name is accepted, then opens the new environment",
+  "routes/_protected/cloud/$organizationSlug/_org/~/servers/-components/cluster-setup.tsx": "checking a Cloudflare zone reaches Cloudflare with a token used once, and the install line waits for the founding choices to be accepted",
+  "routes/_protected/cloud/$organizationSlug/_org/~/servers/-components/first-tunnel.tsx": "setting up the tunnel creates it in Cloudflare and runs on the first Server, so the card waits for the result",
   "routes/_protected/cloud/$organizationSlug/_org/~/servers/-components/remove-server-section.tsx": "removing a server is destructive and waits on the runtime",
   "routes/_protected/cloud/$organizationSlug/_org/~/servers/-components/stray-namespaces.tsx": "removing a Namespace no Project owns deletes its Volumes' data: it reads what goes before the user confirms, then waits on the Servers",
   "routes/_protected/cloud/$organizationSlug/-components/store-teardown-section.tsx": "deleting an Environment or Project is destructive: it reads what goes before the user confirms, then shows what the Store still has to take off",

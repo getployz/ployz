@@ -1,5 +1,5 @@
 import { expect, test } from "vitest";
-import { foundingFirstServer, serversPageState } from "./servers-page-state";
+import { abandonCloudflare, firstTunnelState, foundingFirstServer, installGate, serversPageState } from "./servers-page-state";
 
 test("zero servers with nothing waiting is first run without the intake tray", () => {
   expect(serversPageState({ list: "live", servers: 0, waiting: 0, enrolling: 0 })).toEqual({ kind: "first-run", intake: false });
@@ -41,4 +41,42 @@ test("only an open first-server enrollment before the cluster is founded counts 
   expect(foundingFirstServer({ founded: false, attempts: [{ role: "founder", endedAt: "2026-10-23T05:00:00.000Z" }] })).toBe(false);
   expect(foundingFirstServer({ founded: false, attempts: [{ role: "joiner", endedAt: null }] })).toBe(false);
   expect(foundingFirstServer(undefined)).toBe(false);
+});
+
+const servers = (doors: ReadonlyArray<readonly ("public" | "tunnel")[]>, partial = false) => ({
+  servers: doors.map((held, index) => ({ id: `m${index}`, name: `web-${index}`, doors: [...held] })),
+  hostnames: [],
+  partial,
+});
+
+test("a Cloudflare choice the tab holds reads as its own step until it ends", () => {
+  const base = { foundedClosed: false, setup: null, observed: null };
+  expect(firstTunnelState({ ...base, held: { kind: "waiting", token: "t", zone: "zenploy.dev" } })).toEqual({ kind: "waiting", zone: "zenploy.dev" });
+  expect(firstTunnelState({ ...base, held: { kind: "setting-up", token: "t", zone: "zenploy.dev" } })).toEqual({ kind: "setting-up", zone: "zenploy.dev" });
+  expect(firstTunnelState({ ...base, held: { kind: "failed", token: "t", zone: "zenploy.dev", message: "No." } }))
+    .toEqual({ kind: "failed", zone: "zenploy.dev", message: "No." });
+  expect(firstTunnelState({ ...base, held: { kind: "done", zone: "zenploy.dev", switched: true } })).toEqual({ kind: "done", zone: "zenploy.dev", switched: true });
+});
+
+test("a Cluster founded closed that no tab is setting up is unfinished only while its Servers are seen holding no Door", () => {
+  const closed = { held: undefined, foundedClosed: true, setup: null };
+  expect(firstTunnelState({ ...closed, observed: servers([[]]) })).toEqual({ kind: "unfinished" });
+  expect(firstTunnelState({ ...closed, observed: null })).toEqual({ kind: "none" });
+  expect(firstTunnelState({ ...closed, observed: servers([[]], true) })).toEqual({ kind: "none" });
+  expect(firstTunnelState({ ...closed, observed: servers([["public"]]) })).toEqual({ kind: "none" });
+  expect(firstTunnelState({ ...closed, observed: servers([["tunnel"]]) })).toEqual({ kind: "none" });
+  expect(firstTunnelState({ held: undefined, foundedClosed: false, setup: null, observed: servers([[]]) })).toEqual({ kind: "none" });
+  expect(firstTunnelState({ ...closed, setup: { zone: "zenploy.dev", tunnelName: "ployz-ada", tunnelId: null, state: "setting_up" }, observed: servers([[]]) }))
+    .toEqual({ kind: "none" });
+});
+
+test("Get install command waits for Cloudflare, and a setup left half way falls back to public ports and says so", () => {
+  expect(installGate({ at: "off", abandoned: false })).toEqual({ allowed: true, note: null, foundsClosed: false });
+  expect(installGate({ at: "token" }).allowed).toBe(false);
+  expect(installGate({ at: "zone", zones: ["zenploy.dev"] }).allowed).toBe(false);
+  expect(installGate({ at: "ready", zone: "zenploy.dev" })).toEqual({ allowed: true, note: null, foundsClosed: true });
+  const abandoned = abandonCloudflare({ at: "zone", zones: ["zenploy.dev"] });
+  expect(abandoned).toEqual({ at: "off", abandoned: true });
+  expect(installGate(abandoned)).toMatchObject({ allowed: true, foundsClosed: false, note: expect.stringContaining("public ports") });
+  expect(abandonCloudflare({ at: "off", abandoned: false })).toEqual({ at: "off", abandoned: false });
 });
