@@ -9,6 +9,7 @@
 //! such statements once, and each step travels unsigned with the bundle in its envelope.
 
 pub mod canonical;
+pub mod coverage;
 pub mod deploy;
 pub mod join;
 pub mod keys;
