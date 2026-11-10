@@ -2512,6 +2512,22 @@ describe("volume runs", () => {
       expect(await keptApprovals()).toEqual([{ machine_id: idOf("fsn-2"), approval: admitted }]);
     });
 
+    it("sync --full that fails after its first pull keeps the approval the mirror admitted under it", async () => {
+      machines[1] = { name: "fsn-2", pool: true, copy: slotCopy(base) };
+      first(machines).writes = 5;
+      await harness.pool.query(
+        "insert into volume_mirror_status (organization_id, volume_id, machine_id, approval) values ($1, $2, $3, $4)",
+        [organizationId, volumeId, idOf("fsn-2"), JSON.stringify({ body: "withdrawn", signatures: [] })]);
+      beforeSet.set("pull@fsn-2", () => { failNext.set("snapshot@fsn-1", "no_capacity"); });
+      const run = await requested({ kind: "sync", args: { full: true, approval: APPROVAL } });
+
+      await execute(run.id);
+
+      expect(await rows()).toMatchObject([{ state: "failed" }]);
+      expect(verbs.filter((verb) => verb.startsWith("pull@")).length).toBeGreaterThan(0);
+      expect(await keptApprovals()).toEqual([{ machine_id: idOf("fsn-2"), approval: APPROVAL }]);
+    });
+
     it("a refusal ends the run with its message", async () => {
       failNext.set("snapshot@fsn-1", "no_capacity");
       const run = await requested({ kind: "mirror", args: { to: "fsn-2" } });

@@ -303,21 +303,27 @@ async function runRounds(steps: RunSteps, ctx: Approving & { readonly A: Answere
     const target = warmed?.newest ?? null;
     if (target === null) throw new NonRetriableError(`${steps.run.volumeName}'s writer on ${A.machine.name} made no snapshot`);
     // A caught-up Mirror approved again still gets the pull once, so it admits the approval the run keeps for later syncs.
+    const { approval } = ctx;
     const caughtUp = pulled(copy, target);
-    if (caughtUp && (round > 0 || ctx.approval === undefined)) return { rounds: round, copy };
-    copy = await pull(steps, prefix, { B, copy, from: A.address, target, approval: ctx.approval });
+    if (caughtUp && (round > 0 || approval === undefined)) return { rounds: round, copy };
+    copy = await pull(steps, prefix, { B, copy, from: A.address, target, approval });
+    if (round === 0 && approval !== undefined) {
+      const { step, runEffect, run, runId } = steps;
+      await step.run("03-keep-approval", () => runEffect(keepApproval(run, runId, B.id, approval)));
+    }
     if (caughtUp) return { rounds: round, copy };
   }
   return { rounds: MAX_ROUNDS, copy };
 }
 
 /**
- * Once the Mirror has pulled under the run's approval, the run keeps it with the Mirror for the syncs after, so a run
- * that fails first leaves the approval the Mirror already admitted. A full sync forgets the
+ * Once the Mirror's first pull under the run's approval lands, the run keeps that approval with the Mirror for the
+ * syncs after, so a run that fails earlier leaves the approval the Mirror already admitted, and one that fails later
+ * leaves the one it admitted instead. A full sync forgets the
  * Mirror's copy, which withdraws it there first, then has the Writer withdraw the Mirror's Server and drop its run snapshots.
  */
 async function mirrorVolume(steps: RunSteps, phase: PhaseOf<"mirror"> | PhaseOf<"sync">, epoch: number) {
-  const { step, runEffect, run, runId } = steps;
+  const { run } = steps;
   const A = phase.writer;
   const target = phase.kind === "mirror" ? phase.target : phase.mirror;
   const B = target.machine;
@@ -330,7 +336,6 @@ async function mirrorVolume(steps: RunSteps, phase: PhaseOf<"mirror"> | PhaseOf<
       copy = null;
     }
     const { rounds } = await runRounds(steps, { A, B, copy, epoch, approval });
-    if (approval !== undefined) await step.run("04-keep-approval", () => runEffect(keepApproval(run, runId, B.id, approval)));
     await finish(steps, "05-finish");
     return { runId: run.id, rounds };
   } catch (error) {
