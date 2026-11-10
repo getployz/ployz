@@ -40,6 +40,56 @@ pub(in crate::handlers) fn remove(root: &ArgMatches) -> Result<(), Error> {
     leave(root, Removal::Reset)
 }
 
+fn enforces(observation: &ployz_core::MachineObservation) -> bool {
+    observation.machine.runtime.device_enforcement == Some(true)
+}
+
+/// Refuse, before anything is asked or sent, a removal an enforcing Server would refuse:
+/// the Leave goes to the leaving Server and the Forget to the entry, and each needs this
+/// CLI there as an approved Device, over SSH, or on the local socket.
+fn refuse_without_device(
+    client: &Client,
+    machines: &[ployz_core::MachineObservation],
+    selected: &Machine,
+    entry: MachineId,
+    removal: Removal,
+    matches: &ArgMatches,
+) -> Result<(), Error> {
+    let device = super::holds_device_key(matches)?;
+    let leave = (removal == Removal::Reset).then_some(selected.id);
+    let forget = (entry != selected.id).then_some(entry);
+    let Some(unreached) = leave
+        .into_iter()
+        .chain(forget)
+        .filter_map(|id| machines.iter().find(|observed| observed.machine.id == id))
+        .find(|observed| enforces(observed) && !client.reaches_full(&observed.machine.id, device))
+    else {
+        return Ok(());
+    };
+    let (capability, verb, command) = match removal {
+        Removal::Reset => (ployz_core::LEAVE_MACHINE_CAPABILITY, "Removing", "rm"),
+        Removal::Forget => (
+            ployz_core::FORGET_MACHINE_CAPABILITY,
+            "Forgetting",
+            "forget",
+        ),
+    };
+    Err(Error::detailed(
+        RpcErrorCode::from(ployz_core::FORBIDDEN_CODE),
+        format!(
+            "{verb} Server {} needs an approved device: Server {} acts on it only for one. \
+             Run ployz server {command} {} from a device you approved, or over SSH on a Server. \
+             No changes made.",
+            selected.name, unreached.machine.name, selected.name
+        ),
+        json!({
+            "capability": capability,
+            "server": { "id": selected.id, "name": selected.name },
+            "needs_device_on": unreached.machine.name,
+        }),
+    ))
+}
+
 /// A reset needs its Server to answer. Servers that didn't answer may be gone, and one that
 /// is gone is forgotten instead; a Cloud that couldn't hand out the connections is retried.
 /// A Server's own refusal says what is wrong with it.
@@ -88,7 +138,7 @@ fn leave(root: &ArgMatches, removal: Removal) -> Result<(), Error> {
         }
     };
     // Before anything is listed or confirmed: a removal that can't happen asks nothing.
-    let (machines, selected, current, hold, held) = runtime.block_on(async {
+    let (machines, selected, current, hold, held, by_device) = runtime.block_on(async {
         let machines = client.machines().await?;
         let observation = crate::cluster::visible_machine(&machine_target, &machines)?;
         let selected = observation.machine.clone();
@@ -96,8 +146,15 @@ fn leave(root: &ArgMatches, removal: Removal) -> Result<(), Error> {
             .call::<op::DescribeContract>(DescribeContractRequest {}, None)
             .await?
             .machine_id;
-        let switched = selected.id == current && machines.len() > 1;
-        if switched {
+        // An enforcing Server leaves, and forgets another, only for a Full caller, so the
+        // CLI drives the removal itself as a Device. The last Server waits on teardown.
+        let by_device = machines.len() > 1 && machines.iter().any(enforces);
+        let mut switched = selected.id == current && machines.len() > 1;
+        if by_device {
+            (client, current, switched) =
+                super::connect_full_avoiding(matches, options.context(), Some(&selected)).await?;
+            refuse_without_device(&client, &machines, &selected, current, removal, matches)?;
+        } else if switched {
             (client, current) =
                 super::connect_avoiding(matches, options.context(), &selected).await?;
         }
@@ -111,7 +168,7 @@ fn leave(root: &ArgMatches, removal: Removal) -> Result<(), Error> {
             },
             Removal::Reset => None,
         };
-        Ok::<_, Error>((machines, selected, current, hold, held))
+        Ok::<_, Error>((machines, selected, current, hold, held, by_device))
     })?;
     if let Some(HeldCopies::Gone(_)) = &held {
         crate::ui::stream(format_args!(
@@ -149,7 +206,9 @@ fn leave(root: &ArgMatches, removal: Removal) -> Result<(), Error> {
                 || current.to_string(),
                 |observed| observed.machine.name.to_string(),
             );
-        let cloud = if hold == CloudHold::Last || cloud_manages(&client, current, &entry).await? {
+        let cloud = if by_device {
+            None
+        } else if hold == CloudHold::Last || cloud_manages(&client, current, &entry).await? {
             Some(cloud_removal(matches, &selected, hold, removal).await?)
         } else {
             None

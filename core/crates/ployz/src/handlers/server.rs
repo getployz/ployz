@@ -278,6 +278,61 @@ pub(super) async fn connect_avoiding(
     )))
 }
 
+/// [`connect_full`], entered through a Server other than `leaving` while another one is
+/// listed, so the entry can carry the removal. The client keeps every connection, the
+/// leaving Server's too, so a Leave still dials it directly. Also returns the entry and
+/// whether `leaving` had to be avoided.
+pub(super) async fn connect_full_avoiding(
+    matches: &ArgMatches,
+    context: Option<&str>,
+    leaving: Option<&Machine>,
+) -> Result<(Client, ployz_core::MachineId, bool), Error> {
+    let mut client = connect_full(matches, context).await?;
+    let entry = client
+        .call::<op::DescribeContract>(ployz_core::DescribeContractRequest {}, None)
+        .await?
+        .machine_id;
+    let Some(leaving) = leaving.filter(|leaving| leaving.id == entry) else {
+        return Ok((client, entry, false));
+    };
+    let every = client.full_connections().to_vec();
+    let others: Vec<Connection> = every
+        .iter()
+        .filter(|connection| connection.machine_id().is_some_and(|id| *id != leaving.id))
+        .cloned()
+        .collect();
+    let via = client.connection_source().clone();
+    if !others.is_empty() {
+        let connector =
+            SystemConnector::default().with_ssh_timeout(crate::cli::ssh_timeout(matches));
+        let selected = SelectedConnections {
+            source: via.clone(),
+            connections: others,
+        };
+        let mut client = crate::connect::connect_selected_with(selected, Arc::new(connector))
+            .await?
+            .with_full_connections(every);
+        let entry = client
+            .call::<op::DescribeContract>(ployz_core::DescribeContractRequest {}, None)
+            .await?
+            .machine_id;
+        if entry != leaving.id {
+            return Ok((client, entry, true));
+        }
+    }
+    Err(Error::conflict(format!(
+        "Server {} is the only Server reachable through {via}, so it cannot carry its own removal. \
+         Connect through another Server, then retry. No changes made.",
+        leaving.name
+    )))
+}
+
+/// Whether this CLI holds a Device key, so its Management connections dial as that Device.
+pub(super) fn holds_device_key(matches: &ArgMatches) -> Result<bool, Error> {
+    let key = super::device::key::path(&super::config_path(matches)?);
+    Ok(super::device::key::load(&key)?.is_some())
+}
+
 /// [`connect`] through `machine` alone, or `None` when no connection names it, as with a
 /// local daemon socket or a context that lists only other Servers. `held` are the
 /// connections Cloud already handed over, so it isn't asked again.
