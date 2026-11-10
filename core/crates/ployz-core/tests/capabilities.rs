@@ -206,6 +206,7 @@ fn advertised_capability_groups_match_the_frozen_catalog() {
             "ployz.build.sealed.v1",
             "ployz.build.grant.holder.v1",
             "ployz.build.grant.rule.v1",
+            "ployz.build.grant.approved.v1",
             "ployz.restart.device-approval.v2",
             "ployz.restart.session-grant.v2",
             "ployz.restart.start-approval.v1",
@@ -496,6 +497,10 @@ const ABOVE_FLOOR: &[(&str, &str)] = &[
     (
         "ployz.build.grant.rule.v1",
         "gated: a rule build's grant request carries `rule` only to a Machine advertising it. An older daemon ignores `rule`, and under Device enforcement it refuses the Operator's mint, so a rule build there fails closed",
+    ),
+    (
+        "ployz.build.grant.approved.v1",
+        "gated: a grant request carrying a person's build approval goes only to a Machine advertising it; otherwise it is refused, saying the servers need a newer Ployz, so an approved rebuild there fails closed",
     ),
     (
         "ployz.sealing.generate.v1",
