@@ -123,6 +123,18 @@ pub struct CapturedBuild {
     targets: Vec<CapturedTarget>,
     /// The Sealed values a runner fetched for this Build, held for every solve.
     opened: Option<OpenedSealed>,
+    /// The GitHub Actions cache a local Build uses.
+    local_cache: LocalCache,
+}
+
+/// The GitHub Actions cache a local Build may read and write.
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub(crate) enum LocalCache {
+    /// Whatever the runner exposes, each target in a scope of its own name.
+    #[default]
+    Runner,
+    /// A rule's: off, or one scope its policy names.
+    Pinned(Option<String>),
 }
 
 struct CapturedTarget {
@@ -163,7 +175,11 @@ pub fn capture(
             capture_target(service, spec, opened.as_ref())
         })
         .collect::<Result<_, _>>()?;
-    Ok(CapturedBuild { targets, opened })
+    Ok(CapturedBuild {
+        targets,
+        opened,
+        local_cache: LocalCache::Runner,
+    })
 }
 
 fn capture_target(
@@ -299,6 +315,15 @@ struct CapturedRecipe {
 }
 
 impl CapturedBuild {
+    /// Build every target for exactly `platforms`, with the Actions cache in `scope` or
+    /// off without one: a rule's policy, not the runner's environment, decides both.
+    pub(crate) fn pin_local(&mut self, platforms: Vec<String>, scope: Option<String>) {
+        for target in &mut self.targets {
+            target.target.platforms.clone_from(&platforms);
+        }
+        self.local_cache = LocalCache::Pinned(scope);
+    }
+
     /// Images still to produce, with the platforms each must carry.
     pub fn targets(&self) -> impl Iterator<Item = &ployz_build::Target> {
         self.targets.iter().map(|captured| &captured.target)

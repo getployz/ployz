@@ -1994,6 +1994,7 @@ fn fake_daemon(socket: &std::path::Path, discovery: Discovery) {
                 Discovery::Cancelled => return Err(Status::cancelled("the daemon is stopping")),
             };
             let description = ContractDescription {
+                attest: None,
                 machine_id: "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb".parse().unwrap(),
                 protocol_major,
                 daemon_version: "cli-shape".into(),

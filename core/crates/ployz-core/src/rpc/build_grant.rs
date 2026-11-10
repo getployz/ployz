@@ -19,6 +19,61 @@ pub struct MintBuildGrantRequest {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[ts(optional)]
     pub sealed: Option<crate::SealedRecord>,
+    /// A build under an automatic deploy rule: the signed rule and the GitHub token
+    /// whose audience names this grant. Sent only to a daemon advertising
+    /// [`crate::BUILD_GRANT_RULE_CAPABILITY`]. Such a daemon checks the token and the
+    /// commit's authority before it opens `sealed`, and serves the opened values sealed
+    /// to the build's recipient key only.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub rule: Option<RuleGrant>,
+}
+
+/// What a builder under a rule asks a grant with. Everything but the rule and the token
+/// is the builder's own word, which the Machine checks by recomputing the token's
+/// audience from it.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
+#[serde(deny_unknown_fields)]
+pub struct RuleGrant {
+    #[ts(type = "unknown")]
+    pub rule: crate::authority::Signed<crate::authority::AutoDeployRule>,
+    /// The raw GitHub Actions OIDC token.
+    pub proof: GithubToken,
+    pub service: crate::ServiceName,
+    /// The commit the builder checked out.
+    pub commit: crate::authority::CommitSha,
+    pub authority: crate::authority::CommitAuthority,
+    /// The key the build secrets are sealed to.
+    pub recipient: crate::authority::RecipientKey,
+    /// A token that may read the repository's branch head, such as an installation
+    /// token narrowed to `contents: read`. `None` reads a public repository.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub reader: Option<GithubToken>,
+}
+
+/// A GitHub token. Its Debug never prints it.
+#[derive(Clone, Eq, PartialEq, Serialize, Deserialize, TS)]
+#[serde(transparent)]
+#[ts(type = "string")]
+pub struct GithubToken(String);
+
+impl GithubToken {
+    #[must_use]
+    pub const fn new(token: String) -> Self {
+        Self(token)
+    }
+
+    #[must_use]
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+impl std::fmt::Debug for GithubToken {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str("GithubToken(..)")
+    }
 }
 
 /// A minted grant. The Machine keeps it in memory only; a restart ends it.
@@ -135,6 +190,7 @@ mod tests {
                 repository,
                 holder: None,
                 sealed: None,
+                rule: None,
             }
         );
         assert_eq!(

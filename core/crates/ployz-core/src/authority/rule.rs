@@ -196,6 +196,21 @@ pub struct Builder {
     pub sha: CommitSha,
 }
 
+/// The commit of `getployz/build` whose reusable workflow a rule approved from the CLI
+/// pins by default.
+pub const BUILDER_SHA: &str = "5f35eaa8e1372d0d86ff82788adadf308e5f3f97";
+
+impl Builder {
+    /// `getployz/build`'s reusable workflow at [`BUILDER_SHA`].
+    #[must_use]
+    pub fn pinned() -> Self {
+        Self {
+            r#ref: format!("getployz/build/.github/workflows/build.yml@{BUILDER_SHA}"),
+            sha: CommitSha::parse(BUILDER_SHA).expect("the pinned builder is a commit"),
+        }
+    }
+}
+
 /// The repository, branch and workflow a rule builds from.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
 #[serde(deny_unknown_fields)]
@@ -317,6 +332,12 @@ impl Statement for AutoDeployRule {
 }
 
 impl AutoDeployRule {
+    /// What the rule approves for `name`, or `None` when it names no such Service.
+    #[must_use]
+    pub fn service(&self, name: &ServiceName) -> Option<&RuleService> {
+        self.services.iter().find(|service| service.name == *name)
+    }
+
     /// Check a verified GitHub token's claims against this rule, in the order
     /// `d-build-proof.md` lists them. The audience is the caller's: it depends on the
     /// holder, recipient or image in hand.
@@ -350,12 +371,12 @@ impl AutoDeployRule {
                     == format!("{}/{}@{git_ref}", source.repository, source.workflow),
             ),
             (
-                "job_workflow_ref",
-                claims.job_workflow_ref == source.builder.r#ref,
-            ),
-            (
                 "job_workflow_sha",
                 claims.job_workflow_sha == source.builder.sha,
+            ),
+            (
+                "job_workflow_ref",
+                claims.job_workflow_ref == source.builder.r#ref,
             ),
             (
                 "runner_environment",

@@ -1596,6 +1596,7 @@ async fn enforcement_contract() {
             repository: ployz_core::BuildGrantRepository::parse("ployz-build/web").unwrap(),
             holder: Some(id),
             sealed: None,
+            rule: None,
         };
         let minted = machine
             .grants
@@ -1772,6 +1773,7 @@ impl GrantMachine {
             repository: ployz_core::BuildGrantRepository::parse("ployz-build/web").unwrap(),
             holder,
             sealed: None,
+            rule: None,
         };
         self.grants
             .mint(

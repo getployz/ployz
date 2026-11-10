@@ -918,6 +918,7 @@ impl FakeMachine for DeployService {
             );
         }
         encoded(RpcResponse::from(ContractDescription {
+            attest: None,
             machine_id: machine_from_metadata(&request)
                 .ok()
                 .or_else(|| self.machines.first().map(|machine| machine.machine.id))

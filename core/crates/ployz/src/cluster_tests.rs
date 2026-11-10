@@ -212,6 +212,7 @@ async fn deploy_snapshot_waits_out_a_silent_machine_once_not_per_phase() {
                 let response = match body {
                     RpcRequestBody::DescribeContract(_) => {
                         RpcResponse::from(ployz_core::ContractDescription {
+                            attest: None,
                             machine_id: answering.id,
                             protocol_major: ployz_core::PROTOCOL_MAJOR,
                             daemon_version: "fixture".into(),
@@ -578,6 +579,7 @@ async fn a_redial_that_reaches_another_machine_is_refused_and_keeps_the_old_chan
     .await;
     let (other, _new) = crate::connect::test_support::rpc_client(|_| async {
         let described = ployz_core::RpcResponse::from(ployz_core::ContractDescription {
+            attest: None,
             machine_id: machine_id('b'),
             protocol_major: ployz_core::PROTOCOL_MAJOR,
             daemon_version: "test".into(),
@@ -646,6 +648,7 @@ async fn a_retry_redial_that_reaches_another_machine_moves_only_that_client() {
     .await;
     let (other, _new) = crate::connect::test_support::rpc_client(|_| async {
         let described = ployz_core::RpcResponse::from(ployz_core::ContractDescription {
+            attest: None,
             machine_id: machine_id('b'),
             protocol_major: ployz_core::PROTOCOL_MAJOR,
             daemon_version: "test".into(),
@@ -752,6 +755,7 @@ impl Resealing {
                         held.notified().await;
                     }
                     ployz_core::RpcResponse::from(ployz_core::ContractDescription {
+                        attest: None,
                         machine_id: machine_id('a'),
                         protocol_major: ployz_core::PROTOCOL_MAJOR,
                         daemon_version: "test".into(),

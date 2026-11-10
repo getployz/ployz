@@ -202,6 +202,7 @@ pub(crate) async fn confirming_channel() -> Channel {
             panic!("connect asks only for confirmation")
         };
         let response = RpcResponse::from(ployz_core::ContractDescription {
+            attest: None,
             machine_id: ployz_core::MachineId::random(),
             protocol_major: ployz_core::PROTOCOL_MAJOR,
             daemon_version: "fixture".into(),
@@ -246,6 +247,7 @@ pub(crate) async fn sealed_channel(
         let body = request.into_inner().decode_request().unwrap().body;
         let response = if let RpcRequestBody::DescribeContract(_) = body {
             RpcResponse::from(ployz_core::ContractDescription {
+                attest: None,
                 machine_id: id,
                 protocol_major: ployz_core::PROTOCOL_MAJOR,
                 daemon_version: "fixture".into(),
@@ -413,6 +415,7 @@ where
     Fut: Future<Output = Result<ployz_core::RpcResponse, Status>> + Send + 'static,
 {
     let contract = ployz_core::ContractDescription {
+        attest: None,
         machine_id: ployz_core::MachineId::random(),
         protocol_major: ployz_core::PROTOCOL_MAJOR,
         daemon_version: "fixture".into(),

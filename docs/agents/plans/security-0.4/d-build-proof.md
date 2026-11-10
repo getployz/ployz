@@ -232,7 +232,7 @@ This is thread C's decision (`c-decisions.md`) applied to D.
 
 - **BuildKit on a GitHub-hosted runner** starts empty in each job. Nothing to trust.
 - **Registry caches** (`cache_from` and `cache_to` of type `registry` or `inline`). Not allowed in a rule's policy, because Cloud can write them through Registry Credentials.
-- **The GitHub Actions cache** (`type=gha`). Allowed only with `scope` set to the policy digest. A run on another branch cannot write the approved branch's scope (GitHub's cache isolation, documented, not yet proven here). A run on the approved branch is either a person's push or a Cloud dispatch of the same builder on the same head. A run whose policy differs writes another scope. This stays unproven until slice D3's live lane. If that lane fails, rule policies turn the cache off (operator decision 7).
+- **The GitHub Actions cache** (`type=gha`). Allowed only with `scope` set to SHA-256 of a fixed label, the policy digest and the attest key the build secrets opened with. The runner learns that key from Cloud, but it only proceeds once the key authenticates the Machine's HPKE seal, and Machines seal (even an empty set) only after admitting the grant. So a run fed another key, which Cloud could give attacker-chosen secret values, writes a scope no honest build reads. A run on another branch cannot write the approved branch's scope: slice D3's lane 9 showed it. A run whose policy differs writes another scope.
 - **BuildKit on Machines** (the Servers builder). It is outside this proof. Under enforcement, Cloud cannot start a `Build` (slice D1).
 
 ## Head evidence for private repositories

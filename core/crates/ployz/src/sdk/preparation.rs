@@ -166,9 +166,33 @@ pub(crate) fn capture(input: PreparationInput) -> Result<CapturedPreparation, Rp
 
 /// [`capture`] for a runner that already holds the Build's Sealed values `opened`.
 pub(crate) fn capture_opened(
-    mut input: PreparationInput,
+    input: PreparationInput,
     opened: Option<ployz_core::OpenedSealed>,
 ) -> Result<CapturedPreparation, RpcError> {
+    prepare(input)?.capture(opened)
+}
+
+/// A deployment frozen for capture, with what capture still needs from its input. What
+/// [`Prepared::input_of`] reads is exactly what [`Prepared::capture`] builds.
+pub(crate) struct Prepared {
+    input: PreparationInput,
+    frozen: Frozen,
+}
+
+/// What one Service builds from: its root directory and build settings, and the
+/// lowered Service whose environment the build reads.
+pub(crate) struct BuildInput<'a> {
+    pub(crate) root_dir: &'a str,
+    pub(crate) settings: &'a ServiceBuildConfig,
+    pub(crate) service: &'a ployz_core::RequestedServiceSpec,
+}
+
+/// Check `input`'s receipts and freeze its deployment.
+///
+/// # Errors
+/// Returns `invalid_argument` for a receipt naming mutable content, and whatever
+/// freezing refuses, a Service in more than one snapshot included.
+pub(crate) fn prepare(mut input: PreparationInput) -> Result<Prepared, RpcError> {
     for receipt in input.build_receipts.values().flatten() {
         if !ployz_core::is_lower_hex(&receipt.fingerprint, 64)
             || !receipt
@@ -183,10 +207,49 @@ pub(crate) fn capture_opened(
         }
     }
     let frozen = freeze(
-        input.deployment,
+        std::mem::take(&mut input.deployment),
         &mut input.source_commits,
         &mut input.uploads,
     )?;
+    Ok(Prepared { input, frozen })
+}
+
+impl Prepared {
+    /// What `service` builds from, when it builds from a checkout.
+    pub(crate) fn input_of(&self, service: &ServiceName) -> Option<BuildInput<'_>> {
+        let (root_dir, settings) = self.frozen.checkouts.get(service)?;
+        let service = self
+            .frozen
+            .intent
+            .target
+            .iter()
+            .find(|spec| spec.name == *service)?;
+        Some(BuildInput {
+            root_dir,
+            settings,
+            service,
+        })
+    }
+
+    /// Capture the frozen checkouts as Builds, with the Sealed values `opened`.
+    ///
+    /// # Errors
+    /// Returns `invalid_argument` for a missing or escaping checkout, or `not_found`
+    /// when an uploaded Service needs a new upload.
+    pub(crate) fn capture(
+        self,
+        opened: Option<ployz_core::OpenedSealed>,
+    ) -> Result<CapturedPreparation, RpcError> {
+        let Self { mut input, frozen } = self;
+        capture_frozen(&mut input, frozen, opened)
+    }
+}
+
+fn capture_frozen(
+    input: &mut PreparationInput,
+    frozen: Frozen,
+    opened: Option<ployz_core::OpenedSealed>,
+) -> Result<CapturedPreparation, RpcError> {
     let mut builds = BTreeMap::new();
     let mut variables = BTreeMap::new();
     let mut sourceless = Vec::new();
@@ -384,10 +447,15 @@ fn freeze(
     let mut checkouts = BTreeMap::new();
     let mut identities = BTreeMap::new();
     let mut uploaded = BTreeMap::new();
+    let mut seen = BTreeSet::new();
     for snapshot in snapshots {
         let config = ployz_core::config::parse_service_config(snapshot["config"].clone())
             .map_err(invalid)?;
         let name = &config.settings.private_dns;
+        // Each Service is built and checked from one snapshot, never a choice of two.
+        if !seen.insert(name.clone()) {
+            return Err(invalid(format!("{name} is in more than one snapshot")));
+        }
         let (root_dir, repository_id) = match &config.settings.source {
             ServiceSource::Git {
                 repository_id,

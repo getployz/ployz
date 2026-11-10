@@ -67,6 +67,7 @@ async fn cluster(
                     .into(),
             }),
             RpcRequestBody::DescribeContract(_) => RpcResponse::from(ContractDescription {
+                attest: None,
                 machine_id: target.unwrap(),
                 protocol_major: PROTOCOL_MAJOR,
                 daemon_version: "fixture".into(),
@@ -774,6 +775,7 @@ async fn raced(
                     )],
                 }),
                 RpcRequestBody::DescribeContract(_) => RpcResponse::from(ContractDescription {
+                    attest: None,
                     machine_id: id('1'),
                     protocol_major: PROTOCOL_MAJOR,
                     daemon_version: "fixture".into(),

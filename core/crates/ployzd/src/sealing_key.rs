@@ -20,6 +20,9 @@ use crate::network::WireGuardPrivateKey;
 const FILE_NAME: &str = "sealing.key";
 const INFO: &[u8] = b"ployz-sealing-key-v1";
 const SHARE_INFO: &[u8] = b"ployz-sealing-key-share-v1";
+/// Distinct from every other label this key is expanded or sealed under, such as the join
+/// confirmation's and the Sealed values' associated data.
+const ATTEST_INFO: &[u8] = b"ployz build-secrets attest v1";
 const ENCAPPED_KEY_LEN: usize = 32;
 
 type Kem = X25519HkdfSha256;
@@ -109,6 +112,17 @@ impl SealingKey {
 
     pub(crate) fn public_key(&self) -> SealingPublicKey {
         SealingPublicKey::from_bytes(Kem::sk_to_pk(&self.private()).to_bytes().into())
+    }
+
+    /// The Cluster's build attest key pair. Every Machine holding this Sealing Key derives
+    /// the same one, and nothing without the Sealing Key can. It seals build secrets to a
+    /// rule build, which writes its public half into the image token.
+    pub(crate) fn attest(&self) -> ployz_core::X25519Secret {
+        let mut key = Zeroizing::new([0; 32]);
+        hkdf::Hkdf::<sha2_0_10::Sha256>::new(None, &self.0)
+            .expand(ATTEST_INFO, key.as_mut())
+            .expect("32 bytes is a valid HKDF-SHA256 output length");
+        ployz_core::X25519Secret::from_bytes(*key)
     }
 
     /// Classifies `<data_dir>/sealing.key`: 32 bytes are the key, no file is
@@ -687,6 +701,21 @@ mod tests {
                 "{part} byte {index}"
             );
         }
+    }
+
+    #[test]
+    fn every_holder_of_a_sealing_key_derives_the_same_attest_key_and_no_other_key_does() {
+        let key = SealingKey([7; 32]);
+        let attest = key.attest().attest();
+        assert_eq!(SealingKey([7; 32]).attest().attest(), attest);
+        assert_ne!(SealingKey([8; 32]).attest().attest(), attest);
+        assert_ne!(attest.as_bytes(), key.public_key().as_bytes());
+        // Computed apart from this code, with Python's hmac and cryptography: HKDF-SHA256
+        // with no salt, then X25519. A change strands every image token minted before it.
+        assert_eq!(
+            attest.to_string(),
+            "f68dfa2222a3be1f41768b8b1e5ddc3baeaa6b05b4462501fa74f583068ee215"
+        );
     }
 
     #[test]

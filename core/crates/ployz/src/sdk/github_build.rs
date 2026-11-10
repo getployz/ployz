@@ -331,6 +331,7 @@ async fn mint(
             repository: repository(id)?,
             holder,
             sealed,
+            rule: None,
         })
         .await?;
     Ok(Some((details.id, minted)))

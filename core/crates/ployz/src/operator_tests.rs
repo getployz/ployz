@@ -247,6 +247,7 @@ async fn refused_on_redial() -> (
                 panic!("only a redial's confirmation is asked")
             };
             let confirmed = RpcResponse::from(ployz_core::ContractDescription {
+                attest: None,
                 machine_id: machine_id('a'),
                 protocol_major: ployz_core::PROTOCOL_MAJOR,
                 daemon_version: "test".into(),

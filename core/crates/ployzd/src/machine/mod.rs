@@ -28,7 +28,7 @@ mod record_wire;
 use record_wire::LocalMachineRecordWire;
 
 mod ingress;
-mod local_machine;
+pub(crate) mod local_machine;
 mod record_owner;
 mod store;
 
