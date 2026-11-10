@@ -576,11 +576,11 @@ describe("volume runs", () => {
       "select 1 from pg_stat_activity where datname = current_database() and wait_event_type = 'Lock'");
     if (waiting.length === 0) throw new Error("nothing waited on the held row lock");
   }, { timeout: 5_000, interval: 25 });
-  const settled = ["05-cut", "07-start", "03-start", "04-resume", "05-resume", "03-restore", "03-demote", "03-reset-forget-mirror", "03-reset-forget-writer", "04-forget"];
+  const settled = ["05-cut", "07-start", "03-start", "04-resume", "05-resume", "03-restore", "03-demote", "03-reset-withdraw", "03-reset-forget-mirror"];
   const sleeps = [
     ...["03-r0", "03-r1", "03-r2", "06-final"].flatMap((prefix) => Array.from({ length: 9 }, (_, poll) => `${prefix}-backoff-${poll}`)),
     ...[...settled, ...["03-r0", "03-r1", "03-r2"].flatMap((round) => [`${round}-snapshot`, `${round}-pull`]), "06-final-pull",
-      ...["fsn-2", "fsn-3"].flatMap((server) => [`04-forget-${server}`, `03-forget-${server}`])]
+      ...["fsn-2", "fsn-3"].flatMap((server) => [`04-forget-${server}`, `03-withdraw-${server}`, `03-forget-${server}`])]
       .flatMap((id) => Array.from({ length: 6 }, (_, check) => `${id}-wait-${check + 1}`)),
     ...Array.from({ length: 8 }, (_, check) => `01-wait-${check}`),
   ].map((id) => ({ id, handler: () => undefined }));
@@ -2397,16 +2397,17 @@ describe("volume runs", () => {
       expect(await rows()).toMatchObject([{ state: "done" }]);
     });
 
-    it("sync --full: forgets both copies' shared snapshots, then pulls from nothing", async () => {
+    it("sync --full: withdraws the mirror on the writer, forgets the mirror's copy, then pulls from nothing", async () => {
       machines[1] = { name: "fsn-2", pool: true, copy: slotCopy(base) };
       const run = await requested({ kind: "sync", args: { full: true } });
 
       const output = await execute(run.id);
 
       expect(output.result).toEqual({ runId: run.id, rounds: 1 });
-      expect(verbs).toEqual(["forget@fsn-2", "forget@fsn-1", "snapshot@fsn-1(w-1-0)", "pull@fsn-2(dep-10)", "pull@fsn-2(dep-10)", "snapshot@fsn-1(w-1-1)"]);
-      expect(sent[0]?.expect).toEqual({ kind: "mirror", newest: "10", slot: "1" });
-      expect(sent[1]?.expect).toEqual({ kind: "writer", epoch: 0 });
+      expect(verbs).toEqual(["forget@fsn-1", "forget@fsn-2", "snapshot@fsn-1(w-1-0)", "pull@fsn-2(dep-10)", "pull@fsn-2(dep-10)", "snapshot@fsn-1(w-1-1)"]);
+      expect(sent[0]).toMatchObject({ expect: { kind: "writer", epoch: 0 }, want: { kind: "forget", recipient: idOf("fsn-2") } });
+      expect(sent[1]).toMatchObject({ expect: { kind: "mirror", newest: "10", slot: "1" }, want: { kind: "forget" } });
+      expect(sent[1]?.want).not.toHaveProperty("recipient");
     });
 
     it("mirror: sends the approval with every snapshot and pull, and keeps it with the mirror", async () => {
@@ -2497,17 +2498,33 @@ describe("volume runs", () => {
   });
 
   describe("delete_mirror", () => {
-    it("forgets the slot, then the writer's snapshots shared with it", async () => {
+    it("withdraws the slot's Server on the writer, then forgets the slot", async () => {
       machines[1] = { name: "fsn-2", pool: true, copy: slotCopy(base) };
       const run = await requested({ kind: "delete_mirror", args: { slot: "fsn-2", confirmed_name: null, role: "any" } });
 
       const output = await execute(run.id);
 
       expect(output.result).toEqual({ runId: run.id, destroyed: ["fsn-2"] });
-      expect(verbs).toEqual(["forget@fsn-2", "forget@fsn-1"]);
-      expect(sent[0]?.expect).toEqual({ kind: "mirror", newest: base.guid, slot: "1" });
+      expect(verbs).toEqual(["forget@fsn-1", "forget@fsn-2"]);
+      expect(sent[0]).toMatchObject({ expect: { kind: "writer", epoch: 0 }, want: { kind: "forget", recipient: idOf("fsn-2") } });
+      expect(sent[1]?.expect).toEqual({ kind: "mirror", newest: base.guid, slot: "1" });
       expect(machines[1]?.copy).toBeNull();
       expect(await rows()).toMatchObject([{ state: "done", epoch: null }]);
+    });
+
+    it("withdraws every slot it deletes on the writer, each in its own step, before any slot goes", async () => {
+      machines[1] = { name: "fsn-2", pool: true, copy: slotCopy(base) };
+      machines.push({ name: "fsn-3", pool: true, copy: slotCopy(base, null, "2", "old_copy") });
+      const run = await requested({ kind: "delete_mirror", args: { slot: null, confirmed_name: null, role: "any" } });
+
+      await execute(run.id);
+
+      expect(verbs).toEqual(["forget@fsn-1", "forget@fsn-1", "forget@fsn-2", "forget@fsn-3"]);
+      expect(sent.slice(0, 2).map((request) => request.want)).toEqual([
+        { kind: "forget", recipient: idOf("fsn-2") },
+        { kind: "forget", recipient: idOf("fsn-3") },
+      ]);
+      expect(await rows()).toMatchObject([{ state: "done" }]);
     });
 
     it("drops the approval kept with the mirror it deletes", async () => {
@@ -2531,7 +2548,7 @@ describe("volume runs", () => {
       await execute(run.id);
 
       expect(sent.at(-1)?.expect).toEqual({ kind: "mirror", newest: base.guid, slot: "7", role: "old_copy" });
-      expect(verbs).toEqual(["forget@fsn-2"]);
+      expect(verbs).toEqual(["forget@fsn-1", "forget@fsn-2"]);
       expect(machines[1]?.copy).toEqual(slotCopy(base, null, "7", "mirror"));
       expect(await rows()).toMatchObject([{ state: "failed", message: "data-fsn-2 is no longer an old copy, so nothing was deleted" }]);
     });
