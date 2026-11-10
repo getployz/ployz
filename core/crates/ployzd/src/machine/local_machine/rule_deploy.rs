@@ -34,6 +34,23 @@ pub enum RuleDeployRefusal {
     Head(#[source] crate::github::head::HeadError),
 }
 
+impl RuleDeployRefusal {
+    /// What a person runs next, when approving the rule again is what fixes it: a stale,
+    /// swapped or replayed proof is Cloud's to fix, not theirs.
+    pub(crate) fn next(&self) -> Option<&'static str> {
+        match self {
+            Self::Rule(
+                AuthorityRefusal::Mismatch {
+                    field: "a payload" | "a Service" | "a Machine" | "an Environment" | "a Cluster",
+                }
+                | AuthorityRefusal::UnknownKey { .. }
+                | AuthorityRefusal::UnknownPasskey,
+            ) => Some("ployz github rule approve from an approved device"),
+            Self::Rule(_) | Self::Proof(_) | Self::Head(_) => None,
+        }
+    }
+}
+
 impl LocalMachine {
     /// Admit an Operator's Container change under Device enforcement on `proof`, at
     /// `now`. A creation records the accepted build, and a hook takes its place once per
@@ -232,6 +249,9 @@ fn refusal_text(refusal: &AuthorityRefusal) -> String {
         AuthorityRefusal::Mismatch { field: "an image" } => {
             "This server runs only the image GitHub built for this commit under the rule."
         }
+        AuthorityRefusal::Mismatch {
+            field: "an audience",
+        } => "This push was built under another approval of the automatic deploy rule. Push again.",
         AuthorityRefusal::Mismatch { field: "a commit" } => {
             "This commit is no longer the head of its branch."
         }

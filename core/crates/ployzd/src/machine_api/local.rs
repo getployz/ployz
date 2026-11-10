@@ -1249,14 +1249,20 @@ fn local_failure(error: LocalMachineError) -> Result<RpcError, Status> {
                 "next": "ployz deploy from an approved device",
             }),
         )),
-        LocalMachineError::RuleDeployRefused(_) => Err(ployz_core::rpc::hinted_status(
-            tonic::Code::PermissionDenied,
-            &error,
-            serde_json::json!({
-                "capability": ployz_core::DEPLOY_RULE_CAPABILITY,
-                "next": "ployz github rule approve from an approved device",
-            }),
-        )),
+        LocalMachineError::RuleDeployRefused(ref refusal) => {
+            let details = match refusal.next() {
+                Some(next) => serde_json::json!({
+                    "capability": ployz_core::DEPLOY_RULE_CAPABILITY,
+                    "next": next,
+                }),
+                None => serde_json::json!({ "capability": ployz_core::DEPLOY_RULE_CAPABILITY }),
+            };
+            Err(ployz_core::rpc::hinted_status(
+                tonic::Code::PermissionDenied,
+                &error,
+                details,
+            ))
+        }
         LocalMachineError::BuildRefused { capability } => Err(build_refused(&error, capability)),
         LocalMachineError::RuleGrantRefused(_)
         | LocalMachineError::RuleProofRefused(_)
