@@ -161,6 +161,7 @@ async fn session(
 
 fn description() -> ployz_core::ContractDescription {
     ployz_core::ContractDescription {
+        attest: None,
         machine_id: MachineId::parse("0123456789abcdef0123456789abcdef").unwrap(),
         protocol_major: ployz_core::PROTOCOL_MAJOR,
         daemon_version: "test".into(),

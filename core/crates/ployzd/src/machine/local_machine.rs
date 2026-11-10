@@ -83,6 +83,7 @@ mod join_approval;
 mod management_client;
 mod push_target;
 pub(super) mod restart_approval;
+pub(crate) mod rule_grant;
 mod sealing;
 pub(crate) use sealing::Error as SealingError;
 mod sealing_recovery;
@@ -190,6 +191,16 @@ pub enum Error {
     /// approval. The refusal names [`ployz_core::DEPLOY_APPROVAL_CAPABILITY`] in its details.
     #[error("{}", deploy_approval::refusal_text(.0))]
     DeployRefused(ployz_core::authority::AuthorityRefusal),
+    /// A rule build's grant failed a check before anything opened. The refusal names
+    /// [`ployz_core::BUILD_GRANT_RULE_CAPABILITY`] in its details.
+    #[error("This Server refused the rule build's grant: {0}")]
+    RuleGrantRefused(ployz_core::authority::AuthorityRefusal),
+    /// GitHub did not prove a rule build: its token failed to verify or match the rule.
+    #[error("This Server refused the rule build's GitHub token: {0}")]
+    RuleProofRefused(crate::github::oidc::ProofRefusal),
+    /// This Server could not read the approved branch's head from GitHub.
+    #[error("This Server could not read the approved branch's head from GitHub")]
+    RuleHeadUnread(#[source] crate::github::head::HeadError),
     /// Device enforcement refused an Operator's `Build` or `MintBuildGrant`. The refusal
     /// names `capability` in its details.
     #[error("{}", ployz_core::BUILD_REFUSED_BY_ENFORCEMENT)]
@@ -636,6 +647,24 @@ impl LocalMachine {
         SealingKey::observe(self.owner.data_dir())
             .and_then(KeyFile::held)
             .map(|public_key| ployz_core::Sealing::Held { public_key })
+    }
+
+    /// The build attest key this Machine derives from the Sealing Key its file holds, on
+    /// the phases [`Self::held_sealing`] reports one.
+    pub(crate) fn held_attest(
+        &self,
+        phase: LocalMachinePhase,
+    ) -> Option<ployz_core::authority::AttestKey> {
+        if !matches!(
+            phase,
+            LocalMachinePhase::Joining | LocalMachinePhase::Participating
+        ) {
+            return None;
+        }
+        SealingKey::load(self.owner.data_dir())
+            .ok()
+            .flatten()
+            .map(|key| key.attest().attest())
     }
 
     /// The key this Machine's file holds, or, when it holds none, the key a recovery

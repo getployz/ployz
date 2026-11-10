@@ -1709,6 +1709,7 @@ pub(super) fn confirmation(data_loss: impl IntoIterator<Item = DataLoss>) -> Dat
 
 pub(super) fn test_description() -> ContractDescription {
     ContractDescription {
+        attest: None,
         machine_id: MachineId::parse("0123456789abcdef0123456789abcdef").unwrap(),
         protocol_major: PROTOCOL_MAJOR,
         daemon_version: "test".into(),

@@ -79,6 +79,7 @@ async fn enrolling_machine(
             match request.into_inner().decode_request().unwrap().body {
                 RpcRequestBody::DescribeContract(_) => Ok(Response::new(
                     RpcResponse::from(ployz_core::ContractDescription {
+                        attest: None,
                         machine_id: MachineId::random(),
                         protocol_major: ployz_core::PROTOCOL_MAJOR,
                         daemon_version: "fixture".into(),
@@ -301,6 +302,7 @@ async fn restarting_cluster_store(
             let response = match request.into_inner().decode_request().unwrap().body {
                 RpcRequestBody::DescribeContract(_) => {
                     RpcResponse::from(ployz_core::ContractDescription {
+                        attest: None,
                         machine_id: machine.id,
                         protocol_major: ployz_core::PROTOCOL_MAJOR,
                         daemon_version: "fixture".into(),

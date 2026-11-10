@@ -2132,6 +2132,12 @@ pub struct ContractDescription {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[ts(optional = nullable)]
     pub sealing: Option<crate::Sealing>,
+    /// The build attest key the Machine derives from that Sealing Key, which seals build
+    /// secrets to a rule build's recipient. Absent like `sealing`, and from a daemon that
+    /// predates rule builds.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional = nullable)]
+    pub attest: Option<crate::authority::AttestKey>,
 }
 
 impl ContractDescription {

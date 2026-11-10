@@ -410,6 +410,14 @@ pub(crate) fn open_private_access_key(
         .ok_or(OpenError::PrivateAccessKey)
 }
 
+/// The Cluster's build attest key pair, derived from the Sealing Key in `key_dir`.
+///
+/// # Errors
+/// Returns [`OpenError::KeyMissing`] or [`OpenError::KeyUnreadable`] as opening does.
+pub(crate) fn attest_key(key_dir: Option<&Path>) -> Result<ployz_core::X25519Secret, OpenError> {
+    Ok(load(key_dir)?.attest())
+}
+
 fn load(key_dir: Option<&Path>) -> Result<SealingKey, OpenError> {
     let dir = key_dir.ok_or(OpenError::KeyMissing)?;
     SealingKey::load(dir)

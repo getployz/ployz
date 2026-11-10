@@ -132,6 +132,8 @@ pub struct Request<'a> {
     pub pull: bool,
     /// Hide unreadable progress lines when this Build reads Sealed values.
     pub sealed: bool,
+    /// The GitHub Actions cache scope, in place of each target's own name.
+    pub cache_scope: Option<&'a str>,
 }
 
 /// One image to produce, named by the caller.
@@ -707,11 +709,12 @@ fn bake_arguments(
     // cache export writes to it, so uploading cache never delays the image.
     if github_cache(request) {
         let bake = &planned.bake;
+        let scope = request.cache_scope.unwrap_or(bake);
         arguments.push("--set".to_owned());
-        arguments.push(format!("{bake}.cache-from=type=gha,scope={bake}"));
+        arguments.push(format!("{bake}.cache-from=type=gha,scope={scope}"));
         if produce == Produce::Cache {
             arguments.push("--set".to_owned());
-            arguments.push(format!("{bake}.cache-to=type=gha,scope={bake},mode=max"));
+            arguments.push(format!("{bake}.cache-to=type=gha,scope={scope},mode=max"));
         }
     }
     // Platforms travel in the captured Compose file, which upstream reads.

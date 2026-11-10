@@ -381,6 +381,7 @@ impl CompletedUpload {
                 no_cache: definition.no_cache,
                 pull: definition.pull,
                 sealed: !opened.is_empty(),
+                cache_scope: None,
             },
             admission,
             progress,

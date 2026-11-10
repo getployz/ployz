@@ -4893,6 +4893,7 @@ mod ensure_container {
                 repository: ployz_core::BuildGrantRepository::parse("ployz-build/web").unwrap(),
                 holder: Some(ployz_core::BuildGrantId::parse(holder).unwrap()),
                 sealed: Some(foreign_sealed()),
+                rule: None,
             })
             .encode()
             .unwrap();
@@ -4953,6 +4954,70 @@ mod ensure_container {
             opened_and_failed(&mint(&service, true).await.unwrap());
             opened_and_failed(&mint(&service, false).await.unwrap());
             std::fs::remove_dir_all(data_dir).unwrap();
+        }
+
+        /// An Operator's mint under a rule: the rule's checks run before the record opens.
+        async fn mint_under_rule(
+            fixture: &Enforced,
+            record: &ployz_core::SealedRecord,
+            jti: &str,
+        ) -> Result<ployz_core::RpcResponse, Status> {
+            use crate::machine::local_machine::rule_grant::tests as rule;
+            let machine = fixture.service.local.record().id();
+            let signed = rule::rule_for(fixture.cluster, machine, &fixture.signer, record);
+            let token = rule::token_for(&rule::claim_for(fixture.cluster, &signed), jti);
+            let request = op::MintBuildGrant::into_request(ployz_core::MintBuildGrantRequest {
+                repository: ployz_core::BuildGrantRepository::parse("ployz-build/web").unwrap(),
+                holder: Some(rule::holder()),
+                sealed: Some(record.clone()),
+                rule: Some(rule::grant_for(&signed, &fixture.signer, token)),
+            })
+            .encode()
+            .unwrap();
+            Ok(fixture
+                .service
+                .mint_build_grant(as_operator(Request::new(request), true))
+                .await?
+                .into_inner()
+                .decode_response()
+                .unwrap())
+        }
+
+        #[tokio::test]
+        #[expect(clippy::indexing_slicing, reason = "JSON fixture assertions")]
+        async fn a_rule_mint_refuses_a_moved_head_before_the_sealed_record_opens() {
+            use crate::machine::local_machine::rule_grant::tests as rule;
+            let mut fixture = enforced_sealing("ployzd-enforce-rule-mint").await;
+            let record = foreign_sealed();
+
+            fixture.service.github = Some(Arc::new(rule::github(
+                ployz_core::authority::CommitSha::from_bytes([9; 20]),
+            )));
+            let status = mint_under_rule(&fixture, &record, "moved")
+                .await
+                .expect_err("a head that moved must be refused");
+            assert_eq!(
+                status.code(),
+                Code::PermissionDenied,
+                "{}",
+                status.message()
+            );
+            assert!(
+                status.message().contains("a commit"),
+                "{}",
+                status.message()
+            );
+            let details = status_details(status.details()).unwrap();
+            assert_eq!(
+                details["capability"],
+                json!(ployz_core::BUILD_GRANT_RULE_CAPABILITY)
+            );
+
+            // With the head where the token says, every check passes, the Operator's mint
+            // gets through enforcement, and only then does the record fail to open.
+            fixture.service.github = Some(Arc::new(rule::github(rule::commit())));
+            opened_and_failed(&mint_under_rule(&fixture, &record, "at-head").await.unwrap());
+            std::fs::remove_dir_all(&fixture.data_dir).unwrap();
         }
 
         #[tokio::test]

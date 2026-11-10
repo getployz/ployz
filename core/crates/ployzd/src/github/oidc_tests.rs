@@ -13,21 +13,15 @@ use ployz_core::{
         rule::{Builder, RuleEvent, RuleSource, Runner},
     },
 };
-use ring::{
-    hmac,
-    rand::SystemRandom,
-    signature::{RSA_PKCS1_SHA256, RsaKeyPair},
-};
+use ring::hmac;
 use serde_json::{Value, json};
 
 use super::*;
+use crate::github::test_support::{TEST_KID, encode, keys_with_test_signer, signed_by_test_signer};
 
 const TOKEN: &str = include_str!("fixtures/token.jwt");
 const JWKS: &[u8] = include_bytes!("fixtures/jwks.json");
 const CLAIMS: &str = include_str!("fixtures/claims.json");
-/// An RSA key made with `openssl genpkey` for these tests. It signs nothing outside them.
-const TEST_SIGNER: &[u8] = include_bytes!("fixtures/test-signer.pk8");
-const TEST_KID: &str = "test-signer";
 
 fn token() -> &'static str {
     TOKEN.trim()
@@ -60,48 +54,6 @@ fn parts(token: &str) -> Vec<String> {
 fn header_of(token: &str) -> Value {
     let header = parts(token).into_iter().next().unwrap();
     serde_json::from_slice(&URL_SAFE_NO_PAD.decode(header).unwrap()).unwrap()
-}
-
-fn encode(value: &Value) -> String {
-    URL_SAFE_NO_PAD.encode(serde_json::to_vec(value).unwrap())
-}
-
-fn test_signer() -> RsaKeyPair {
-    RsaKeyPair::from_pkcs8(TEST_SIGNER).unwrap()
-}
-
-/// GitHub's keys with the test signer's added under [`TEST_KID`].
-fn keys_with_test_signer() -> KeySet {
-    let public = RsaPublicKeyComponents::<Vec<u8>>::from(test_signer().public());
-    let mut jwks: Value = serde_json::from_slice(JWKS).unwrap();
-    jwks["keys"].as_array_mut().unwrap().push(json!({
-        "kty": "RSA",
-        "alg": "RS256",
-        "kid": TEST_KID,
-        "n": URL_SAFE_NO_PAD.encode(&public.n),
-        "e": URL_SAFE_NO_PAD.encode(&public.e),
-    }));
-    KeySet::parse(&serde_json::to_vec(&jwks).unwrap()).unwrap()
-}
-
-/// A token over `claims`, RS256-signed by the test signer and naming `kid`.
-fn signed_by_test_signer(kid: &str, claims: &Value) -> String {
-    let signer = test_signer();
-    let signed = format!(
-        "{}.{}",
-        encode(&json!({"alg": "RS256", "kid": kid, "typ": "JWT"})),
-        encode(claims)
-    );
-    let mut signature = vec![0; signer.public().modulus_len()];
-    signer
-        .sign(
-            &RSA_PKCS1_SHA256,
-            &SystemRandom::new(),
-            signed.as_bytes(),
-            &mut signature,
-        )
-        .unwrap();
-    format!("{signed}.{}", URL_SAFE_NO_PAD.encode(signature))
 }
 
 #[test]

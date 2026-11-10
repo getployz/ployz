@@ -579,6 +579,7 @@ impl FakeMachine for JoinDaemon {
             capabilities.extend([ENROLL_FOR_RECOVERY_CAPABILITY, WRAP_SEALING_KEY_CAPABILITY]);
         }
         rpc_ok(ContractDescription {
+            attest: None,
             machine_id: self.inner.registration.assigned_machine.id,
             protocol_major: PROTOCOL_MAJOR,
             daemon_version: self.inner.daemon_version.lock().unwrap().clone(),

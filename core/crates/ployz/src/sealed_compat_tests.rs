@@ -51,6 +51,7 @@ async fn listing(machines: Vec<MachineObservation>) -> Fleet {
                 let response = match rpc.into_inner().decode_request().unwrap().body {
                     RpcRequestBody::DescribeContract(_) => {
                         RpcResponse::from(ployz_core::ContractDescription {
+                            attest: None,
                             machine_id: id,
                             protocol_major: ployz_core::PROTOCOL_MAJOR,
                             daemon_version: "fixture".into(),

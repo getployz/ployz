@@ -460,6 +460,7 @@ async fn node_configs_round_trip_through_the_store() {
 
 pub(super) fn advertised_description() -> ContractDescription {
     ContractDescription {
+        attest: None,
         machine_id: MachineId::parse("0123456789abcdef0123456789abcdef").unwrap(),
         protocol_major: PROTOCOL_MAJOR,
         daemon_version: "do-not-branch-on-me".into(),
