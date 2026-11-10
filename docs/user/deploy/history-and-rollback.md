@@ -118,6 +118,10 @@ fails cancels the redeploy, and nothing deployed.
   after an hour, and nothing deploys.
 - **A redeploy from the dashboard or by the agent isn't approved.** Servers that enforce refuse
   it. Run `ployz deployment redeploy` on an approved device.
+- **A rollback keeps your rule's settings.** Your device approves each service only with the
+  settings your rule approves now: its command, environment, ports, mounts, health check and
+  pre-deploy command. A redeploy of a deployment saved with other settings is refused, and
+  nothing deploys. To roll those back, change the settings back and approve the rule again.
 - **Only services GitHub built under your rule redeploy here.** A redeploy that ships a
   service run from an image, built from an upload or built on your servers is refused, and
   nothing deploys. Deploy those with `ployz deploy`.

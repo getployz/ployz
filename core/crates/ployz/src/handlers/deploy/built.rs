@@ -19,19 +19,20 @@ use std::time::Duration;
 
 use clap::ArgMatches;
 use ployz_core::authority::github_oidc::{self, KeySet, TokenRefusal};
-use ployz_core::authority::rule::{RuleEvent, verify_signature};
+use ployz_core::authority::rule::{RuleEvent, template, verify_signature};
 use ployz_core::authority::{
     ApprovedChange, AttestKey, AuthorityRefusal, AutoDeployRule, BuildApproval, BuildClaim,
     BuildStage, CommitAuthority, CommitSha, DeployApproval, DeployTerms, ImageDigest, PolicyDigest,
     Signed, Signer, SignerKey, Timestamp, TrustedKeys, deploy::content_addressed, validity,
 };
 use ployz_core::{
-    DescribeContractRequest, InspectRequest, MachineTarget, OperationId, RequestedServiceSpec,
-    RpcErrorCode, Sealing, SealingPublicKey, ServiceName, op,
+    DescribeContractRequest, InspectRequest, MachineTarget, Namespace, OperationId,
+    RequestedServiceSpec, RpcErrorCode, Sealing, SealingPublicKey, ServiceName, op,
 };
 use ployz_store::{
     ApproveDeployment, BuildStatus, BuildView, Cancel, DeploymentId, DeploymentQuery,
-    DeploymentSummary, DeploymentTargetQuery, DeploymentView, ImageToken, RuleQuery,
+    DeploymentSummary, DeploymentTargetQuery, DeploymentTargetView, DeploymentView, ImageToken,
+    RuleQuery,
 };
 use serde_json::json;
 
@@ -208,9 +209,30 @@ impl Redeploy {
         let planned = store.read(&DeploymentTargetQuery {
             id: admitted.id.clone(),
         })?;
+        let (signed, approved) = self.signed(&view, planned, &admitted.id)?;
+        store.write(&ApproveDeployment {
+            deployment: admitted.id.clone(),
+            approval: Box::new(signed),
+        })?;
+        for approved in &approved {
+            crate::ui::stream(format_args!("{}", approved.line()));
+        }
+        Ok(approved)
+    }
+
+    /// The deploy approval of redeploy `id`, which `view` built and `planned` ships, with
+    /// what it approves. Refuses, signing nothing, unless the plan is exactly what
+    /// [`approvable`] allows.
+    fn signed(
+        &self,
+        view: &DeploymentView,
+        planned: DeploymentTargetView,
+        id: &DeploymentId,
+    ) -> Result<(Signed<DeployApproval>, Vec<ApprovedChange>), Error> {
         let target = approvable(
-            &view,
+            view,
             planned.target,
+            &planned.namespace,
             &self.expected,
             &self.facts,
             self.enforcing.cluster,
@@ -218,8 +240,8 @@ impl Redeploy {
         let issued_at = Timestamp::now();
         let terms = DeployTerms {
             cluster: self.enforcing.cluster,
-            operation: OperationId::from_uuid(admitted.id.as_str()).map_err(Error::command)?,
-            machines: self.enforcing.machines,
+            operation: OperationId::from_uuid(id.as_str()).map_err(Error::command)?,
+            machines: self.enforcing.machines.clone(),
             issued_at,
             expires_at: issued_at.plus(validity::MAX_LIFETIME_MILLIS),
             signer: SignerKey::Device(self.signer.public().into()),
@@ -230,14 +252,7 @@ impl Redeploy {
             DeployApproval::draft(terms, planned.namespace, &target, &BTreeMap::new())
                 .map_err(Error::command)?;
         let signed = Signed::sign(&body, &self.signer).map_err(Error::command)?;
-        store.write(&ApproveDeployment {
-            deployment: admitted.id.clone(),
-            approval: Box::new(signed),
-        })?;
-        for approved in &approved {
-            crate::ui::stream(format_args!("{}", approved.line()));
-        }
-        Ok(approved)
+        Ok((signed, approved))
     }
 }
 
@@ -519,17 +534,50 @@ const fn ended(status: BuildStatus) -> bool {
     )
 }
 
-/// What this Device signs of the redeploy `view` ships as `target`: exactly the Services
-/// in `expected`, each run from the image a token it checked names.
+/// What this Device signs of the redeploy `view` ships as `target` in `namespace`: exactly
+/// the Services in `expected`, each run from the image a token it checked names, with every
+/// other setting the one the rule approves for it.
 fn approvable(
     view: &DeploymentView,
     target: Vec<RequestedServiceSpec>,
+    namespace: &Namespace,
     expected: &BTreeMap<ServiceName, CommitSha>,
     facts: &Facts,
     cluster: SealingPublicKey,
 ) -> Result<Vec<RequestedServiceSpec>, Error> {
     let images = verified_images(view, expected, facts, cluster)?;
-    approve::signable(Some(bind_target(target, &images)?))
+    let target = approve::signable(Some(bind_target(target, &images)?))?;
+    if *namespace != facts.rule.namespace {
+        return Err(Error::coded(
+            RpcErrorCode::Conflict,
+            "Cloud's plan for this redeploy runs in another namespace than your automatic \
+             deploy rule's. Nothing deployed.",
+        ));
+    }
+    for spec in &target {
+        approved_settings(&facts.rule, spec)?;
+    }
+    Ok(target)
+}
+
+/// Refuse `spec` unless, with its image left out, it is the template `rule` approves for
+/// it: the same check a Server makes of a deploy under the rule. A redeploy keeps the
+/// settings the rule approves now, so one whose settings changed since can't roll back.
+fn approved_settings(rule: &AutoDeployRule, spec: &RequestedServiceSpec) -> Result<(), Error> {
+    let approved = rule.service(&spec.name).map(|service| service.template);
+    let running = template(spec, &rule.namespace).ok();
+    if approved.is_some() && running == approved {
+        return Ok(());
+    }
+    Err(Error::detailed(
+        RpcErrorCode::Conflict,
+        format!(
+            "This redeploy runs {} with other settings than your automatic deploy rule \
+             approves, so this device can't approve it. Nothing deployed.",
+            spec.name
+        ),
+        json!({ "service": spec.name }),
+    ))
 }
 
 /// The image GitHub built for each Service in `expected`, from its commit there, once its
