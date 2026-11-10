@@ -1,4 +1,4 @@
-import type { MachineId } from "@ployz/sdk";
+import type { ContainerId, MachineId } from "@ployz/sdk";
 import { Effect } from "effect";
 import { describe, expect, it } from "vitest";
 import { asTestDouble } from "#/lib/test-double";
@@ -17,9 +17,9 @@ const refusal = (capability: string) => new RpcError({
 });
 
 /** The real askCopy, over a session whose SetVolumeCopy rejects with `rejection` as the SDK does. */
-const ask = (rejection: InstanceType<typeof RpcError>) =>
-  Effect.runPromise(askCopy(asker, server, { kind: "mirror", newest: "12", slot: "1" }, {
-    kind: "writer", at: "12", epoch: 2, start: { kind: "kept", container_id: "c".repeat(64) },
+const asking = (rejection: InstanceType<typeof RpcError>) =>
+  askCopy(asker, server, { kind: "mirror", newest: "12", slot: "1" }, {
+    kind: "writer", at: "12", epoch: 2, start: { kind: "kept", container_id: "c".repeat(64) as ContainerId },
   }).pipe(
     Effect.provideService(OrganizationRuntime, {
       cancel: () => Effect.void,
@@ -27,8 +27,9 @@ const ask = (rejection: InstanceType<typeof RpcError>) =>
         volumeSwitch: () => Effect.fail(new PloyzProviderError({ operation: "volume switch", cause: rejection })),
       }) }),
     }),
-    Effect.result,
-  ));
+  );
+
+const ask = (rejection: InstanceType<typeof RpcError>) => Effect.runPromise(asking(rejection).pipe(Effect.result));
 
 describe("a Server that enforces device approval", () => {
   it("answers a refused start as a refusal the run ends on, not a failure it retries", async () => {
@@ -45,9 +46,8 @@ describe("a Server that enforces device approval", () => {
   });
 
   it("leaves another Server refusal a failure the step retries", async () => {
-    const answer = await ask(refusal("ployz.restart.device-approval.v2"));
-    expect(answer._tag).toBe("Failure");
-    expect(answer._tag === "Failure" && answer.failure).toBeInstanceOf(SwitchAttemptError);
+    const failure = await Effect.runPromise(Effect.flip(asking(refusal("ployz.restart.device-approval.v2"))));
+    expect(failure).toBeInstanceOf(SwitchAttemptError);
   });
 
   it("names a refused seed as the Server's enforcement", () => {
