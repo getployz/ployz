@@ -86,7 +86,7 @@ test("a built image, a tag image, a plan read without target, or unknown terms s
   assert.throws(() => sdk.deployApprovalBody(preview([web("nginx:1.29-alpine")]), terms), {
     name: "RpcError",
     code: "invalid_argument",
-    message: "Pin web's image by digest to deploy it from the dashboard to servers that enforce device approval. ployz deploy pins a public tag for you.",
+    message: "The dashboard can't check what web's tag nginx:1.29-alpine points to. Write the image by digest, or run ployz deploy, which pins it for you.",
   });
   assert.throws(() => sdk.deployApprovalBody(preview(), terms), { code: "invalid_argument" });
   assert.throws(() => sdk.deployApprovalBody(preview([web()]), { ...terms, extra: 1 }), { code: "invalid_argument" });

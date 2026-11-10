@@ -14,6 +14,7 @@ import {
   type ApprovalSession,
   approveAct,
   approveProposal,
+  deployScope,
   type PromptReason,
   type ProposalStepTarget,
   promptReason,
@@ -57,7 +58,6 @@ export type ActTarget = {
   readonly runtime: string;
   readonly copies: readonly { readonly id: string; readonly machineId: string; readonly hook: boolean }[];
   readonly machines: readonly (Parameters<typeof actScope>[2][number] & Parameters<typeof strandedByStop>[1][number])[];
-  readonly environmentMachines: readonly string[];
 };
 
 /**
@@ -68,7 +68,7 @@ export type ActTarget = {
 export async function actApprovals(verb: ServiceVerb, target: ActTarget) {
   const stranded = verb === "stop" ? strandedByStop(target.copies, target.machines) : null;
   if (stranded !== null) throw new Error(needsNewerPloyz(stranded, "stop"));
-  const { enforced, scope } = actScope(target.environment, target.copies, target.machines, target.environmentMachines);
+  const { enforced, scope } = actScope(target.environment, target.copies, target.machines);
   if (!enforced || scope === null) return undefined;
   if (!(await ensureApproval(scope, verb))) return null;
   return approveAct(verb, scope, target.runtime, target.copies.map((copy) => ({ machine: copy.machineId, container: copy.id, hook: copy.hook })));
@@ -79,7 +79,6 @@ export type ProposalTarget = {
   readonly environment: ActTarget["environment"];
   readonly steps: readonly { readonly verb: ServiceVerb; readonly runtime: string; readonly copies: ActTarget["copies"] }[];
   readonly machines: ActTarget["machines"];
-  readonly environmentMachines: ActTarget["environmentMachines"];
 };
 
 /**
@@ -94,7 +93,7 @@ export async function proposalApprovals(target: ProposalTarget) {
     if (stranded !== null) throw new Error(needsNewerPloyz(stranded, "stop"));
   }
   const copies = target.steps.flatMap((step) => step.copies);
-  const { scope } = actScope(target.environment, copies, target.machines, target.environmentMachines);
+  const { scope } = actScope(target.environment, copies, target.machines);
   if (scope === null) throw new Error("Cloud couldn't check the servers. Try again.");
   if (!(await ensureApproval(scope, "proposal"))) return null;
   const steps: ProposalStepTarget[] = target.steps.map((step) => ({
@@ -103,6 +102,27 @@ export async function proposalApprovals(target: ProposalTarget) {
     copies: step.copies.map((copy) => ({ machine: copy.machineId, container: copy.id, hook: copy.hook })),
   }));
   return approveProposal(steps, scope);
+}
+
+/** A Deploy as the browser approves it: the Environment, the Servers running it, and every Server. */
+export type DeployTarget = {
+  readonly environment: ActTarget["environment"];
+  readonly environmentMachines: readonly string[];
+  readonly machines: Parameters<typeof deployScope>[2];
+};
+
+/**
+ * The scope a Deploy's approval names, after one prompt when the session doesn't cover it. Undefined when no Server
+ * enforces, so the Deploy goes as before; null when the person cancels. Throws, before any prompt, when a Server that
+ * enforces can't take an approval from a browser, or Cloud can't tell which Cluster the Deploy goes to: either way the
+ * Deploy would only be refused there.
+ */
+export async function deployApprovalScope(target: DeployTarget): Promise<ApprovalScope | null | undefined> {
+  const { enforced, scope, older } = deployScope(target.environment, target.environmentMachines, target.machines);
+  if (!enforced) return undefined;
+  if (older !== null) throw new Error(`${older} needs a newer Ployz to deploy from the dashboard. Upgrade it, or run ployz deploy.`);
+  if (scope === null) throw new Error("Cloud couldn't check the servers. Try again.");
+  return (await ensureApproval(scope, "deploy")) ? scope : null;
 }
 
 export function ApprovalPrompt() {

@@ -1354,9 +1354,9 @@ pub fn deploy_approval_body(
         .find(|spec| !content_addressed(&spec.container.image))
     {
         return Err(invalid_argument(format_args!(
-            "Pin {}'s image by digest to deploy it from the dashboard to servers that \
-             enforce device approval. ployz deploy pins a public tag for you.",
-            spec.name
+            "The dashboard can't check what {}'s tag {} points to. Write the image by \
+             digest, or run ployz deploy, which pins it for you.",
+            spec.name, spec.container.image
         )));
     }
     let (body, changes) = DeployApproval::draft(

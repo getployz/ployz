@@ -8,11 +8,13 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import * as scopes from "#/collections/use-collection-scope";
 import * as functions from "#/modules/config-store/store.functions";
 import { useStoreWriter } from "#/modules/config-store/store-write";
+import { StoreRefused } from "#/modules/config-store/store.contract";
 import * as lens from "#/modules/runtime/use-runtime-lens";
 import type { PlacementLoss, PlacementRow } from "#/modules/volume-placement/volume-placement";
 import * as placements from "#/modules/volume-placement/volume-placement.functions";
 import { useStagedPlacements } from "#/modules/volume-placement/volume-placement.hooks";
 import * as runs from "#/modules/volume-run/volume-run.functions";
+import * as deployApproval from "./useDeployApproval";
 import { useStoreChangeActions } from "./useStoreChangeActions";
 
 afterEach(() => {
@@ -49,8 +51,12 @@ function Deploy({ placementLoss, version = "2:1:0" }: { placementLoss: Placement
   </>;
 }
 
-function setup(placementLoss = NO_LOSS) {
+type Gate = ReturnType<typeof deployApproval.useDeployApproval>;
+const NO_ENFORCEMENT: Gate = { scope: async () => undefined, approve: async () => expect.fail("approved where nothing enforces") };
+
+function setup(placementLoss = NO_LOSS, gate = NO_ENFORCEMENT) {
   const queryClient = new QueryClient();
+  vi.spyOn(deployApproval, "useDeployApproval").mockReturnValue(gate);
   vi.spyOn(scopes, "useCollectionScope").mockReturnValue({ queryClient, sessionId: "session", userId: "user" });
   vi.spyOn(toast, "error").mockImplementation(() => "toast");
   // SAFETY: the hook reads only the Servers' ids and names.
@@ -419,4 +425,53 @@ it("reports an earlier Save as not saved when a later one asks again", async () 
   await screen.findByText("pg-data");
   fireEvent.click(screen.getByText("Save now"));
   await waitFor(() => expect(saves).toEqual([false]));
+});
+
+describe("on Servers that enforce Device approval", () => {
+  const scope = { environmentId: "env", environmentName: "production", namespace: "shop-production", cluster: "key", machines: ["m1"] };
+  const signed = { body: "{}", signatures: [{ key: "k", signature: "s" }] };
+
+  it("asks for a passkey session before a Deploy, then admits it carrying the approval of the review it ships", async () => {
+    const approve = vi.fn<Gate["approve"]>(async () => signed);
+    const test = setup(NO_LOSS, { scope: async () => scope, approve });
+    test.write.mockResolvedValueOnce(admitted);
+    press("Deploy now");
+    await waitFor(() => expect(admittedIds).toHaveLength(1));
+    expect(approve).toHaveBeenCalledWith(scope, admittedIds[0], "2:1:0");
+    expect(test.admits()).toMatchObject([{ command: "admit", id: admittedIds[0], version: "2:1:0", approval: signed }]);
+  });
+
+  it("admits nothing when the person cancels the prompt, or a Server can't take the approval, saying why", async () => {
+    const test = setup(NO_LOSS, { scope: async () => null, approve: async () => signed });
+    press("Deploy now");
+    await act(() => Promise.resolve());
+    expect(test.admits()).toEqual([]);
+    expect(toast.error).not.toHaveBeenCalled();
+    cleanup();
+
+    const older = setup(NO_LOSS, { scope: () => Promise.reject(new Error("machine-2 needs a newer Ployz to deploy from the dashboard.")), approve: async () => signed });
+    press("Deploy now");
+    await waitFor(() => expect(toast.error).toHaveBeenCalledWith("machine-2 needs a newer Ployz to deploy from the dashboard."));
+    expect(older.admits()).toEqual([]);
+  });
+
+  it("shows the refusal of an approval that couldn't be made, and admits nothing", async () => {
+    const approve = vi.fn<Gate["approve"]>(() => Promise.reject(new StoreRefused({ code: "invalid_argument", message: "Pin web's image by digest.", details: null })));
+    const test = setup(NO_LOSS, { scope: async () => scope, approve });
+    press("Deploy now");
+    await waitFor(() => expect(toast.error).toHaveBeenCalledWith("Pin web's image by digest."));
+    expect(test.admits()).toEqual([]);
+  });
+
+  it("asks nothing for an edit or a Save only: Saved State reaches a Server only through a Deploy", async () => {
+    const gate = { scope: vi.fn<Gate["scope"]>(async () => scope), approve: vi.fn<Gate["approve"]>(async () => signed) };
+    const test = setup(NO_LOSS, gate);
+    test.write.mockResolvedValueOnce(edited).mockResolvedValueOnce({ ok: true, value: { written: "published" } } as never);
+    press("Stage replicas");
+    await waitFor(() => expect(test.queryClient.isMutating()).toBe(0));
+    press("Save now");
+    await waitFor(() => expect(saves).toEqual([true]));
+    expect(gate.scope).not.toHaveBeenCalled();
+    expect(gate.approve).not.toHaveBeenCalled();
+  });
 });

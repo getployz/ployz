@@ -1,12 +1,15 @@
 import { useEffect, useRef, useState } from "react";
 import type { ConfigCommand, DiscardTarget, EnvironmentRef, RowId } from "@ployz/sdk";
+import { toast } from "sonner";
 import { useCollectionScope } from "#/collections/use-collection-scope";
 import { DeletionDialog } from "#/components/deletion-dialog";
+import { toErrorMessage } from "#/lib/error-message";
 import { reviewMoving, useStoreBusy, writeMark } from "#/modules/config-store/store-pending";
 import { useStoreWriter } from "#/modules/config-store/store-write";
 import { StoreRefused } from "#/modules/config-store/store.contract";
 import { useVolumeLossCheck, type VolumeLossCheck } from "#/modules/config-store/use-volume-loss-check";
 import type { PlacementLoss } from "#/modules/volume-placement/volume-placement";
+import { useDeployApproval } from "./useDeployApproval";
 type Action = "deploy" | "publish";
 const NO_PLACEMENT_LOSS: PlacementLoss = { items: [], losesWrites: false, accept: [], version: (version) => version };
 /** A Deploy's own words: what it ships (optional; the Store trims it). */
@@ -34,6 +37,9 @@ type Outcome = { status: "done" } | { status: "failed" } | { status: "asks"; los
  * even when the draft saved before the click: the review the user read as they pressed doesn't include it. Nor does
  * a press while any other write that moves the review still saves. The bar then shows the draft, pink and counted,
  * and the next press ships exactly that.
+ *
+ * On Servers that enforce Device approval, a Deploy asks for a passkey session first, unless one covers it, and carries
+ * this browser's approval of the plan it ships; Saved State changes reach a Server only through it.
  */
 export function useStoreChangeActions(organizationSlug: string, environment: EnvironmentRef,
   /** The version of the review the user sees: every action acts on exactly it, and a newer one is refused. */
@@ -41,6 +47,7 @@ export function useStoreChangeActions(organizationSlug: string, environment: Env
   const writer = useStoreWriter(organizationSlug);
   const { queryClient } = useCollectionScope();
   const lossOf = useVolumeLossCheck(organizationSlug);
+  const approval = useDeployApproval(organizationSlug, environment);
   // What the user types to confirm: where the data goes from.
   const place = `${environment.project ?? ""}/${environment.environment ?? ""}`;
   const [loss, setLoss] = useState<Loss | null>(null);
@@ -73,6 +80,14 @@ export function useStoreChangeActions(organizationSlug: string, environment: Env
     // Each press is judged once: a later one with no pointer or key before it (assistive tech) starts from here.
     gesture.current = { mark: writeMark(queryClient), saving: false };
     if (saving || reviewMoving(queryClient, organizationSlug, environment, mark)) return { status: "staging" };
+    let scope;
+    try {
+      scope = action === "deploy" ? await approval.scope() : undefined;
+    } catch (error) {
+      toast.error(toErrorMessage(error, "Couldn't approve the deploy"));
+      return { status: "failed" };
+    }
+    if (scope === null) return { status: "failed" };
     const id = crypto.randomUUID();
     const words = message?.trim() || null;
     const command: ConfigCommand = action === "deploy"
@@ -81,7 +96,8 @@ export function useStoreChangeActions(organizationSlug: string, environment: Env
     // A Store from before no_prune refuses a Deploy carrying it, so only a Deploy that keeps other services sends it.
     if (command.command === "admit" && command.admit === "deploy" && choice.noPrune) command.no_prune = true;
     try {
-      await writer.commit(command, ["confirmation_required"]);
+      const approved = scope === undefined ? undefined : async () => ({ ...command, approval: await approval.approve(scope, id, version) });
+      await writer.commit(command, ["confirmation_required"], approved);
       if (action === "deploy") onAdmitted(id);
       return { status: "done" };
     } catch (error) {

@@ -79,7 +79,7 @@ export function shownTarget(approval: Pick<ApprovalView, "command" | "review">, 
     && approval.review.effects.every((effect) => effect.name === shown.service);
   if (!matches) throw new Error(MISMATCHED_ACT);
   // What gets signed comes from the card. Containers and Servers come from Cloud; each Server checks them against its own.
-  const { environmentName, copies, machines, environmentMachines } = target;
+  const { environmentName, copies, machines } = target;
   return {
     verb: shown.verb,
     target: {
@@ -87,7 +87,6 @@ export function shownTarget(approval: Pick<ApprovalView, "command" | "review">, 
       runtime: shown.runtime,
       copies,
       machines,
-      environmentMachines,
     } satisfies ActTarget,
   };
 }

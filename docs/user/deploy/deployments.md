@@ -184,8 +184,29 @@ servers refuse the build with `This server runs only builds an approved device s
 If `ployz deploy` can't reach your servers to ask whether they enforce, it warns and deploys
 without signing, and servers that enforce refuse it.
 
-Servers that enforce refuse a deploy nobody approved: one from the dashboard, a Git push, an
-organization token, `ployz up`, a rollback or a restore. Each server's part of that deployment
+### Deploy from the dashboard
+
+**Deploy** at the bottom of an environment asks for your
+[passkey](../servers/manage-servers.md#add-a-passkey) the first time you press it, then not again
+in that environment for 60 minutes. Your browser approves the deployment as `ployz deploy` does,
+and each server checks every container against it. Its log names the passkey and the browser key,
+such as `deploy 0f8fad5b… approved by passkey q3x7mfk2pa via browser key 72asyextvn for web
+digest=cb8d3c6ef656`. If the settings change after you press **Deploy**, the server refuses the
+deployment, and the deployment page shows why.
+
+The dashboard can't pin a tag, since only Ployz Cloud could ask the registry for it. Write the
+image by digest, or run `ployz deploy`, which pins a public tag for you:
+
+```text
+The dashboard can't check what web's tag nginx:1.29-alpine points to. Write the image by digest, or run ployz deploy, which pins it for you.
+```
+
+A server that enforces and runs a Ployz from before 0.4 can't take an approval from the
+dashboard. **Deploy** names it and deploys nothing: upgrade it, or run `ployz deploy`.
+
+Servers that enforce refuse a deploy nobody approved: a Git push, an organization token,
+`ployz up`, a redeploy, a rollback, a restore, or a deploy the dashboard starts from a Sync or a
+new branch. Each server's part of that deployment
 fails with `This server runs only deploys an approved device signed.`, and nothing new starts
 there. A server added after you signed isn't covered by that approval; run `ployz deploy` again.
 A container already stopped starts again only if its settings are ones you approved. Running

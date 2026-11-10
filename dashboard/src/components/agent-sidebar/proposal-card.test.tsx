@@ -38,7 +38,7 @@ const copies = [{ id: "c".repeat(64), machineId: m1, hook: false }];
 const machines = [{ id: m1, name: "fra-1", capabilities: [], sealing: null, deviceEnforcement: false }];
 const fetched = (steps: typeof proposal.steps) => ({
   environmentId: "e1", project: "shop", environmentName: "production", namespace: "shop-prod-a1b2",
-  steps: steps.map(({ verb, service, runtime }) => ({ verb, service, runtime, copies })), machines, environmentMachines: [m1],
+  steps: steps.map(({ verb, service, runtime }) => ({ verb, service, runtime, copies })), machines,
 });
 const signed = { bundle: { body: "{}", signatures: [] }, approvals: {} };
 

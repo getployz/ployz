@@ -1,6 +1,6 @@
 /**
- * A browser approval session. One passkey prompt lends a short-lived browser key the right to approve restarts, stops
- * and starts in one Environment for an hour. Each press then carries one approval per container, signed by that key,
+ * A browser approval session. One passkey prompt lends a short-lived browser key the right to approve deploys,
+ * restarts, stops and starts in one Environment for an hour. Each press then carries approvals signed by that key,
  * beside the passkey's grant of it. Servers check the chain against the passkeys they trust; Cloud only carries it and
  * never holds the key.
  *
@@ -19,8 +19,11 @@ export const SESSION_MINUTES = 60;
  */
 const APPROVAL_MS = 15 * 60_000;
 
-/** Sorted, as Servers parse them. Each `ServiceVerb` is the family of the same name. */
-export const SESSION_FAMILIES = ["restart", "start", "stop"] as const satisfies readonly (ActionFamily & ServiceVerb)[];
+/**
+ * Sorted, as Servers parse them. Each `ServiceVerb` is the family of the same name. No `settings`: a settings change
+ * reaches a Server only through a Deploy, which the deploy approval covers.
+ */
+export const SESSION_FAMILIES = ["deploy", "restart", "start", "stop"] as const satisfies readonly ActionFamily[];
 
 /** Where a press acts: the Environment, and the Cluster and Servers its grant must name. */
 export type ApprovalScope = {
@@ -192,9 +195,9 @@ export type ActCopy = { readonly machine: string; readonly container: string; re
 
 const operationId = () => hex(crypto.getRandomValues(new Uint8Array(16)));
 
-/** A session's live key and grant, once it covers `scope`, every `verb` and every copy's Server; else the prompt asks again. */
-function signer(scope: ApprovalScope, verbs: readonly ServiceVerb[], copies: readonly ActCopy[], now: number) {
-  const refused = current === null || verbs.some((verb) => promptReason(current?.session ?? null, scope, verb, now) !== null)
+/** A session's live key and grant, once it covers `scope`, every family and every copy's Server; else the prompt asks again. */
+function signer(scope: ApprovalScope, families: readonly ActionFamily[], copies: readonly ActCopy[], now: number) {
+  const refused = current === null || families.some((family) => promptReason(current?.session ?? null, scope, family, now) !== null)
     || copies.some(({ machine }) => !scope.machines.includes(machine));
   if (refused || current === null) throw new SessionRefused("Confirm it's you again.");
   return current;
@@ -285,33 +288,108 @@ export async function approveProposal(steps: readonly ProposalStepTarget[], scop
   return { bundle, approvals };
 }
 
+/** Each Server must take a browser's deploy approval, under a grant naming its Environment, before one goes to it. */
+export const SESSION_GRANT_CAPABILITY = "ployz.restart.session-grant.v2";
+const DEPLOY_CAPABILITIES = ["ployz.container.deploy-approval.v1", SESSION_GRANT_CAPABILITY] as const;
+
+/** `DeployTerms` as a browser key sets them. */
+export type BrowserDeployTerms = {
+  readonly cluster: string;
+  readonly operation: string;
+  readonly machines: readonly string[];
+  readonly issued_at: number;
+  readonly expires_at: number;
+  readonly signer: { readonly browser: string };
+};
+
+/**
+ * Deployment `deployment`'s approval in `scope`, signed by the session's browser key and lasting its full 15 minutes.
+ * `draft` asks Cloud for the body under the terms this browser sets: the digest of each Service's spec is taken by the
+ * code the CLI and the Servers run, so the browser never hashes a spec. The key signs only a body whose every other
+ * field reads back as this browser set it, so Cloud picks the specs it proposes and nothing more.
+ */
+export async function approveDeploy(scope: ApprovalScope, deployment: string, draft: (terms: BrowserDeployTerms) => Promise<string>, now = Date.now()): Promise<Signed> {
+  const { grant, publicKey, key } = signer(scope, ["deploy"], [], now);
+  const terms: BrowserDeployTerms = {
+    cluster: scope.cluster,
+    operation: deployment.replaceAll("-", ""),
+    machines: [...new Set(scope.machines)].sort(),
+    issued_at: now,
+    expires_at: now + APPROVAL_MS,
+    signer: { browser: publicKey },
+  };
+  const body = await draft(terms);
+  if (!draftedUnder(body, terms, scope.namespace)) throw new SessionRefused("Cloud sent back a different deploy, so nothing was approved. Try again.");
+  const signature = hex(await crypto.subtle.sign({ name: "Ed25519" }, key.privateKey, signingInput(body)));
+  return { body, signatures: [{ key: publicKey, signature }], grants: [grant] };
+}
+
+/** Whether `body` is canonical and holds `terms` in `namespace`, plus the Services Cloud lists. */
+function draftedUnder(body: string, terms: BrowserDeployTerms, namespace: string) {
+  try {
+    // SAFETY: JSON.parse answers JSON, and canonicalJson refuses what a signed body can't hold.
+    const parsed = JSON.parse(body) as JsonValue;
+    const { services, ...rest } = asRecord(parsed) ?? {};
+    const expected = canonicalJson({ ...terms, machines: [...terms.machines], namespace });
+    return canonicalJson(parsed) === body && Array.isArray(services) && canonicalJson(rest) === expected;
+  } catch {
+    return false;
+  }
+}
+
 type ScopeMachine = {
   readonly id: string;
   readonly sealing: { readonly kind: string; readonly public_key?: string } | null;
   readonly deviceEnforcement?: boolean | null;
 };
 
+const heldKey = (machine: ScopeMachine) => machine.sealing?.kind === "held" && machine.sealing.public_key ? machine.sealing.public_key : undefined;
+
+/** Every Server holding `cluster`'s Sealing Key. */
+const clusterMachines = <M extends ScopeMachine>(cluster: string, machines: readonly M[]) => machines.filter((machine) => heldKey(machine) === cluster);
+
 /**
  * Whether a press on these copies needs an approval, and the scope its grant names: the Cluster the copies' Servers hold
- * the Sealing Key of, and the Servers in that Cluster that run the Environment. A Server that never reported enforcement
- * asks nothing, since its own check is the one that counts.
+ * the Sealing Key of, and every Server in it, so the session also covers a deploy, which may place on any of them. A
+ * Server that never reported enforcement asks nothing, since its own check is the one that counts.
  */
 export type ActScope = { readonly enforced: boolean; readonly scope: ApprovalScope | null };
 
-export function actScope(
-  environment: { readonly environmentId: string; readonly environmentName: string; readonly namespace: string },
-  copies: readonly { readonly machineId: string }[],
-  machines: readonly ScopeMachine[],
-  environmentMachines: readonly string[],
-): ActScope {
+type ScopeEnvironment = { readonly environmentId: string; readonly environmentName: string; readonly namespace: string };
+
+export function actScope(environment: ScopeEnvironment, copies: readonly { readonly machineId: string }[], machines: readonly ScopeMachine[]): ActScope {
   const hosting = new Set(copies.map((copy) => copy.machineId));
   const hosts = machines.filter((machine) => hosting.has(machine.id));
   const enforced = hosts.some((machine) => machine.deviceEnforcement === true);
-  const cluster = hosts.flatMap((machine) => machine.sealing?.kind === "held" && machine.sealing.public_key ? [machine.sealing.public_key] : [])[0];
+  const cluster = hosts.map(heldKey).find((key) => key !== undefined);
   if (cluster === undefined) return { enforced, scope: null };
-  const running = new Set(environmentMachines);
-  const members = machines
-    .filter((machine) => running.has(machine.id) && machine.sealing?.kind === "held" && machine.sealing.public_key === cluster)
-    .map((machine) => machine.id);
+  const members = clusterMachines(cluster, machines).map((machine) => machine.id);
   return { enforced, scope: { ...environment, cluster, machines: [...new Set([...members, ...hosting])].sort() } };
+}
+
+/**
+ * Whether a Deploy of the Environment needs an approval, the scope its grant names, and the first Server that enforces
+ * but can't take one from a browser. The Cluster is the one the Servers running the Environment hold the Sealing Key of,
+ * or the only one; the scope names every Server in it, since a Deploy may place on any of them. An approval goes only
+ * when every Server that enforces takes it: one that can't would refuse the Deploy.
+ */
+export type DeployScope = { readonly enforced: boolean; readonly scope: ApprovalScope | null; readonly older: string | null };
+
+export function deployScope(
+  environment: ScopeEnvironment,
+  environmentMachines: readonly string[],
+  machines: readonly (ScopeMachine & { readonly name: string; readonly capabilities: readonly string[] })[],
+): DeployScope {
+  const running = new Set(environmentMachines);
+  const keys = new Set(machines.map(heldKey).filter((key) => key !== undefined));
+  const cluster = machines.filter((machine) => running.has(machine.id)).map(heldKey).find((key) => key !== undefined)
+    ?? (keys.size === 1 ? [...keys][0] : undefined);
+  const members = cluster === undefined ? machines : clusterMachines(cluster, machines);
+  const enforcing = members.filter((machine) => machine.deviceEnforcement === true);
+  const older = enforcing.find((machine) => !DEPLOY_CAPABILITIES.every((capability) => machine.capabilities.includes(capability)))?.name ?? null;
+  return {
+    enforced: enforcing.length > 0,
+    scope: cluster === undefined ? null : { ...environment, cluster, machines: members.map((machine) => machine.id).sort() },
+    older,
+  };
 }

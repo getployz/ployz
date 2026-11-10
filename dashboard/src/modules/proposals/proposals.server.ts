@@ -259,7 +259,6 @@ export const proposalTarget = Effect.fn("Proposals.target")(function* (organizat
     namespace: known.namespace,
     steps,
     machines: servers.machines,
-    environmentMachines: servers.environmentMachines,
   };
 });
 
