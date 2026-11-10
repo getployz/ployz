@@ -187,8 +187,7 @@ tailnet, turn Private Access off first.
 With [enforcement](../servers/manage-servers.md#require-a-devices-signature-for-restarts-and-joins)
 on, a server runs a router only for a key your passkey or an approved device approved, so
 **Connect** and the approval card ask for your passkey. `ployz private-access on` from a device
-that isn't approved is refused. A server you add then starts no router: `ployz server add`
-names it, and **Connect** starts it. Turning Private Access off needs no approval.
+that isn't approved is refused. Turning Private Access off needs no approval.
 
 If the router a device uses stops, the device moves to another in about 16 seconds. It stays
 there when the first one returns. Services see the router's private address as the client.
