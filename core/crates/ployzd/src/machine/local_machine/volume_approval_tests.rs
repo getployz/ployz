@@ -135,26 +135,18 @@ impl Records<'_> {
     }
 
     fn withdraw(&self, volume: &DockerVolumeName, recipient: char) {
-        self.withdraw_replacing(volume, recipient, None);
-    }
-
-    fn withdraw_replacing(
-        &self,
-        volume: &DockerVolumeName,
-        recipient: char,
-        replacing: Option<char>,
-    ) {
         self.log()
             .change_volumes(at(5_000), |records, _| {
-                records.withdraw(
-                    &self.machine,
-                    volume,
-                    &id(recipient),
-                    replacing.map(operation),
-                );
+                records.withdraw(&self.machine, volume, &id(recipient));
                 Ok(())
             })
             .unwrap();
+    }
+
+    fn withdrawals(&self) -> Vec<Withdrawal> {
+        self.log()
+            .read_volumes(|records| records.withdrawals.clone())
+            .unwrap()
     }
 
     fn end(&self, op: char) {
@@ -559,6 +551,88 @@ impl Enforcing {
         };
         Signed::sign(&body, signer).unwrap()
     }
+
+    /// `workflow` on `volume`, signed now by this Machine's Device.
+    fn signed(&self, volume: DockerVolumeName, workflow: VolumeWorkflow) -> Signed<VolumeApproval> {
+        let issued_at = Timestamp::now();
+        let body = VolumeApproval {
+            cluster: self.cluster,
+            operation: operation('1'),
+            namespace: Namespace::parse("app").unwrap(),
+            volume,
+            workflow,
+            issued_at,
+            expires_at: issued_at.plus(MAX_LIFETIME_MILLIS),
+            signer: SignerKey::Device(DeviceKey::from(self.signer.public())),
+        };
+        Signed::sign(&body, &self.signer).unwrap()
+    }
+
+    fn records_empty(&self) -> bool {
+        ConsumptionLog::new(&self.data_dir.0)
+            .read_volumes(VolumeRecords::is_empty)
+            .unwrap()
+    }
+}
+
+#[tokio::test]
+async fn only_a_replacing_mirror_of_this_volume_and_machine_withdraws_with_its_forget() {
+    let fixture = enforcing().await;
+    let here = fixture.machine.record().id();
+    let mirror_here = |replace| VolumeWorkflow::Mirror {
+        writer: id('a'),
+        mirror: here,
+        replace,
+    };
+    let refused = |volume: DockerVolumeName, workflow: VolumeWorkflow| match fixture
+        .machine
+        .admit_volume_step(&fixture.signed(volume, workflow), &data(), &forget())
+    {
+        Err(Error::VolumeStepRefused(AuthorityRefusal::Mismatch { field })) => Some(field),
+        _ => None,
+    };
+
+    assert_eq!(refused(data(), mirror_here(false)), Some("a Volume step"));
+    assert_eq!(
+        refused(
+            data(),
+            VolumeWorkflow::Move {
+                from: id('a'),
+                to: id('b'),
+                service: ApprovedService {
+                    name: ServiceName::parse("db").unwrap(),
+                    digest: PayloadDigest::parse(&"d".repeat(64)).unwrap(),
+                    image: None,
+                },
+                mirrors: vec![here],
+            }
+        ),
+        Some("a Volume step")
+    );
+    assert_eq!(refused(data(), replacing('a', 'c')), Some("this Server"));
+    assert_eq!(refused(other_volume(), mirror_here(true)), Some("a Volume"));
+    assert!(fixture.records_empty(), "a refused Forget writes nothing");
+
+    let replacement = fixture.signed(data(), mirror_here(true));
+    fixture
+        .machine
+        .admit_volume_step(&replacement, &data(), &forget())
+        .unwrap();
+    fixture
+        .machine
+        .admit_volume_step(&replacement, &data(), &forget())
+        .unwrap();
+    let withdrawals = ConsumptionLog::new(&fixture.data_dir.0)
+        .read_volumes(|records| records.withdrawals.clone())
+        .unwrap();
+    assert_eq!(
+        withdrawals,
+        vec![Withdrawal {
+            volume: data(),
+            recipient: here,
+            at: 1,
+        }]
+    );
 }
 
 #[tokio::test]
@@ -657,10 +731,7 @@ async fn a_withdrawal_by_this_machine_survives_a_reload() {
         .machine
         .admit_volume_step(&approval, &data(), &snapshot())
         .unwrap();
-    fixture
-        .machine
-        .withdraw_volume(&data(), &id('b'), None)
-        .unwrap();
+    fixture.machine.withdraw_volume(&data(), &id('b')).unwrap();
     assert!(matches!(
         fixture.machine.grant_volume(
             operation('1'),
@@ -679,7 +750,6 @@ async fn a_withdrawal_by_this_machine_survives_a_reload() {
             volume: data(),
             recipient: id('b'),
             at: 2,
-            replacing: None,
         }]
     );
 }
@@ -698,59 +768,83 @@ fn a_later_owner_of_a_following_mirrors_copy_ends_the_move_there() {
     follower.admit_late('2', &pull()).unwrap();
 }
 
+fn replacing(writer: char, mirror: char) -> VolumeWorkflow {
+    VolumeWorkflow::Mirror {
+        writer: id(writer),
+        mirror: id(mirror),
+        replace: true,
+    }
+}
+
+fn forget() -> VolumeStep {
+    VolumeStep::Copy(CopyTransition::MirrorToForget)
+}
+
 #[test]
-fn a_replacing_mirror_survives_the_withdrawal_its_own_forget_writes() {
+fn a_replacing_mirrors_opening_forget_withdraws_every_other_mirror_here_and_keeps_itself() {
     let dir = tempfile::tempdir().unwrap();
     let replaced = Records {
         dir: dir.path(),
         machine: id('b'),
     };
-    let replacing = VolumeWorkflow::Mirror {
-        writer: id('a'),
-        mirror: id('b'),
-        replace: true,
-    };
     replaced.admit_new('1', mirror('a', 'b'), &pull());
-    replaced.admit_new(
-        '2',
-        replacing.clone(),
-        &VolumeStep::Copy(CopyTransition::MirrorToForget),
-    );
-    replaced.withdraw_replacing(&data(), 'b', Some('2'));
+    replaced
+        .admit('3', '3', &other_volume(), &pull(), Ok(mirror('a', 'b')))
+        .unwrap();
 
+    replaced.admit_new('2', replacing('a', 'b'), &forget());
+
+    assert_eq!(
+        replaced.withdrawals(),
+        vec![Withdrawal {
+            volume: data(),
+            recipient: id('b'),
+            at: 3,
+        }]
+    );
     assert!(replayed(replaced.admit_late('1', &pull()), '1'));
     replaced
         .admit_late('2', &VolumeStep::Copy(CopyTransition::NoneToMirror))
         .unwrap();
-
-    let writer_dir = tempfile::tempdir().unwrap();
-    let writer = Records {
-        dir: writer_dir.path(),
-        machine: id('a'),
-    };
-    writer.admit_new('1', mirror('a', 'b'), &snapshot());
-    writer.grant('1', 'b', GrantScope::Standing).unwrap();
-    writer.admit_new('2', replacing, &snapshot());
-    writer.grant('2', 'b', GrantScope::Standing).unwrap();
-    writer.withdraw_replacing(&data(), 'b', Some('2'));
-    assert!(replayed(writer.admit_late('1', &snapshot()), '1'));
-    assert!(replayed(writer.grant('1', 'b', GrantScope::Standing), '1'));
-    writer.admit_late('2', &snapshot()).unwrap();
-    assert!(writer.live(&data(), 'b', "w-1-1"));
-    writer.grant('2', 'b', GrantScope::Standing).unwrap();
+    replaced
+        .admit(
+            '3',
+            '3',
+            &other_volume(),
+            &pull(),
+            Err(AuthorityRefusal::Expired),
+        )
+        .unwrap();
 }
 
 #[test]
-fn a_replacement_spares_its_operation_only_from_its_own_withdrawal() {
+fn a_replacement_withdraws_once_and_a_later_withdrawal_ends_it() {
     let dir = tempfile::tempdir().unwrap();
-    let source = Records {
+    let replaced = Records {
         dir: dir.path(),
-        machine: id('a'),
+        machine: id('b'),
     };
-    source.admit_new('1', moving('a', 'b', &['c', 'e']), &snapshot());
-    source.withdraw(&data(), 'c');
-    source.withdraw_replacing(&data(), 'e', Some('1'));
+    replaced.admit_new('2', replacing('a', 'b'), &forget());
+    replaced.admit_late('2', &forget()).unwrap();
+    assert_eq!(
+        replaced.withdrawals().len(),
+        1,
+        "a resent Forget withdraws nothing"
+    );
+    replaced.admit_late('2', &pull()).unwrap();
 
-    assert!(replayed(source.grant('1', 'c', GrantScope::Standing), '1'));
-    source.grant('1', 'e', GrantScope::Standing).unwrap();
+    replaced.withdraw(&data(), 'b');
+    assert!(replayed(replaced.admit_late('2', &pull()), '2'));
+}
+
+#[test]
+fn a_replacement_opened_by_a_pull_withdraws_nothing() {
+    let dir = tempfile::tempdir().unwrap();
+    let mirror_machine = Records {
+        dir: dir.path(),
+        machine: id('b'),
+    };
+    mirror_machine.admit_new('2', replacing('a', 'b'), &pull());
+    assert!(mirror_machine.withdrawals().is_empty());
+    mirror_machine.admit_late('2', &pull()).unwrap();
 }

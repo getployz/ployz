@@ -9,8 +9,9 @@
 use std::collections::BTreeMap;
 
 use ployz_core::{
-    DockerVolumeName, MachineId, OperationId, SEED_REFUSED_BY_ENFORCEMENT, SEED_VOLUME_CAPABILITY,
-    SET_VOLUME_COPY_CAPABILITY, Sealing, SnapshotName, VOLUME_START_REFUSED_BY_ENFORCEMENT,
+    CopyTransition, DockerVolumeName, MachineId, OperationId, SEED_REFUSED_BY_ENFORCEMENT,
+    SEED_VOLUME_CAPABILITY, SET_VOLUME_COPY_CAPABILITY, Sealing, SnapshotName,
+    VOLUME_START_REFUSED_BY_ENFORCEMENT,
     authority::{
         AuthorityRefusal, Signed, StepDigest, Timestamp, VolumeApproval, VolumeFacts, VolumeStep,
         VolumeWorkflow, volume,
@@ -26,6 +27,10 @@ impl LocalMachine {
     /// step its workflow permits this Machine. Otherwise the approval must verify inside its
     /// window, and the operation is recorded open, synced, before this returns. Admitting
     /// an operation that owns this Machine's copy ends the one that owned it before.
+    /// Admitting a replacing Mirror's opening `MirrorToForget` also withdraws this Machine
+    /// from the Volume in that same write, just before the replacement opens, so the
+    /// withdrawal ends every other Mirror operation here and none of the replacement's. The
+    /// caller writes no other withdrawal for that `Forget`.
     ///
     /// # Errors
     /// Returns [`Error::VolumeStepRefused`] naming what the approval lacks, an operation
@@ -115,9 +120,7 @@ impl LocalMachine {
     /// Withdraw `recipient` from `volume` here, before anything is destroyed: every Mirror
     /// operation this Machine admitted for it ends, and so does every grant to it. It needs
     /// no approval, because it only narrows what a driver can do. An approval this Machine
-    /// never admitted is still new work while its window lasts. `replacing` names the
-    /// Mirror operation whose own `Forget` writes this withdrawal: it stays open, and this
-    /// withdrawal does not outrank its grants.
+    /// never admitted is still new work while its window lasts.
     ///
     /// # Errors
     /// Returns [`Error::ApprovalRecord`] when the record cannot be read or written.
@@ -125,15 +128,15 @@ impl LocalMachine {
         &self,
         volume: &DockerVolumeName,
         recipient: &MachineId,
-        replacing: Option<OperationId>,
     ) -> Result<(), Error> {
         let machine = self.record().id();
         self.approvals
             .change_volumes(Timestamp::now(), |records, _| {
-                records.withdraw(&machine, volume, recipient, replacing);
+                records.withdraw(&machine, volume, recipient);
                 Ok(())
             })
     }
+
     /// Under Device enforcement an Operator's `SetVolumeCopy` that starts the Writer's
     /// Container is refused before the switch lock. A Create runs a spec the caller
     /// chose. A Kept start names a stopped Container that nothing on this Machine ties
@@ -226,9 +229,6 @@ struct Withdrawal {
     volume: DockerVolumeName,
     recipient: MachineId,
     at: u64,
-    /// The replacing Mirror operation this withdrawal leaves open.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    replacing: Option<OperationId>,
 }
 
 impl VolumeRecords {
@@ -282,6 +282,13 @@ impl VolumeRecords {
             for owner in owners {
                 self.end_owner(owner, machine);
             }
+        }
+        let replaces_here = matches!(
+            &workflow,
+            VolumeWorkflow::Mirror { mirror, replace: true, .. } if mirror == machine
+        ) && *step == VolumeStep::Copy(CopyTransition::MirrorToForget);
+        if replaces_here {
+            self.withdraw(machine, volume, machine);
         }
         self.sequence += 1;
         self.operations.insert(
@@ -345,7 +352,6 @@ impl VolumeRecords {
             withdrawal.volume == record.volume
                 && withdrawal.recipient == recipient
                 && withdrawal.at > record.admitted
-                && withdrawal.replacing != Some(operation)
         });
         if outranked {
             return refused(AuthorityRefusal::Replayed { operation });
@@ -394,28 +400,19 @@ impl VolumeRecords {
 
     /// End every open operation here that mirrors `volume` to `recipient`: a Mirror's own,
     /// on either Machine, and a Move's following on the recipient itself. A Move between
-    /// two other Machines goes on, but can no longer grant `recipient` anything. The
-    /// `replacing` operation, and its grants, stay.
-    fn withdraw(
-        &mut self,
-        machine: &MachineId,
-        volume: &DockerVolumeName,
-        recipient: &MachineId,
-        replacing: Option<OperationId>,
-    ) {
+    /// two other Machines goes on, but can no longer grant `recipient` anything.
+    fn withdraw(&mut self, machine: &MachineId, volume: &DockerVolumeName, recipient: &MachineId) {
         self.sequence += 1;
         self.withdrawals.push(Withdrawal {
             volume: volume.clone(),
             recipient: *recipient,
             at: self.sequence,
-            replacing,
         });
         let mirrored: Vec<OperationId> = self
             .operations
             .iter()
-            .filter(|(operation, record)| {
-                Some(**operation) != replacing
-                    && record.state == OperationState::Open
+            .filter(|(_, record)| {
+                record.state == OperationState::Open
                     && record.volume == *volume
                     && record.workflow.mirrors_to(recipient)
                     && (matches!(record.workflow, VolumeWorkflow::Mirror { .. })
@@ -426,10 +423,8 @@ impl VolumeRecords {
         for operation in mirrored {
             self.end(operation);
         }
-        self.grants.retain(|grant| {
-            Some(grant.operation) == replacing
-                || !(grant.volume == *volume && grant.recipient == *recipient)
-        });
+        self.grants
+            .retain(|grant| !(grant.volume == *volume && grant.recipient == *recipient));
     }
 }
 
