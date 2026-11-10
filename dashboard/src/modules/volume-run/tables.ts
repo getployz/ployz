@@ -99,8 +99,11 @@ export const volumeMirrorStatus = pgTable(
     failedAt: timestamp("failed_at", { mode: "date", withTimezone: true }),
     failedSnapshot: text("failed_snapshot"),
     failure: text("failure"),
-    /** The Device-signed approval this Mirror was made or last fully synced under; each sync's pull carries it. */
-    approval: jsonb("approval").$type<Signed>(),
+    /**
+     * The Device-signed Mirror approvals Cloud has sent toward this Mirror since it last accepted one, newest first. The
+     * one the Mirror admitted is always among them: see mirror-approvals.server.ts.
+     */
+    approvals: jsonb("approvals").$type<Signed[]>(),
     updatedAt,
   },
   (table) => [primaryKey({ columns: [table.volumeId, table.machineId] })],

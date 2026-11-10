@@ -50,7 +50,8 @@ import {
 import { type DeploymentsSeen, deployingMessage, gb, resizeRequirements, sizeDirection } from "#/modules/volume-run/resize";
 import { isBehind, isCurrent, releaseLine } from "#/modules/server-upgrade/server-upgrade";
 import { channelRelease, organizationReleaseChannel } from "#/modules/server-upgrade/server-upgrade.server";
-import { volumeMirrorStatus, volumeRun } from "#/modules/volume-run/tables";
+import { acceptApproval, dropApprovals, offerApproval } from "#/modules/volume-run/mirror-approvals.server";
+import { volumeRun } from "#/modules/volume-run/tables";
 import {
   ACTIVE_VOLUME_RUN_STATES,
   type AnsweredMember,
@@ -1238,7 +1239,7 @@ export const sendSwitch = <R extends SwitchRequest>(ctx: RunContext, inngestRunI
 /** Plain JSON, since a step returns it: the copy the Machine holds now, after the step or after its refusal. */
 export type CopyAnswer =
   | { readonly ok: true; readonly copy: VolumeCopy | null }
-  | { readonly ok: false; readonly reason: CopyRefusal | "enforced"; readonly copy: VolumeCopy | null; readonly message: string };
+  | { readonly ok: false; readonly reason: CopyRefusal | "enforced" | "unapproved"; readonly copy: VolumeCopy | null; readonly message: string };
 
 /**
  * Who a SetVolumeCopy is for: a run, a Deploy following another run's lane without owning its row, or the rowless
@@ -1269,7 +1270,7 @@ export const askCopy = Effect.fn("VolumeRun.askCopy")(function* (asker: CopyAske
       }
       // Refused before the step changed anything, so the copy is as the caller last saw it too.
       if (refusedApproval(error)) {
-        return Effect.succeed<CopyAnswer>({ ok: false, reason: "enforced", copy: null, message: approvalRefusedMessage(asker.volumeName, machine.name) });
+        return Effect.succeed<CopyAnswer>({ ok: false, reason: "unapproved", copy: null, message: approvalRefusedMessage(asker.volumeName, machine.name) });
       }
       const refused = setVolumeCopyRefusal("cause" in error ? error.cause : undefined);
       if (refused === null) {
@@ -1295,23 +1296,22 @@ export const setVolumeCopy = Effect.fn("VolumeRun.setVolumeCopy")(function* (
   return yield* askCopy(ctx, machine, expect, want, approval);
 });
 
-/** Keeps `approval` with the Mirror on `mirror`, in place of any it held, for the syncs that follow. */
+/** Keeps the run's `approval` with the Mirror on `mirror`, newest, before any of the run's steps carries it. */
+export const offerRunApproval = Effect.fn("VolumeRun.offerRunApproval")(function* (ctx: RunContext, inngestRunId: string, mirror: MachineId, approval: Signed) {
+  yield* requireOwner(ctx.id, inngestRunId);
+  yield* offerApproval(ctx.organizationId, ctx.volumeId, mirror, approval);
+});
+
+/** The Mirror on `mirror` accepted a pull carrying the run's `approval`, so it is the one later syncs carry. */
 export const keepApproval = Effect.fn("VolumeRun.keepApproval")(function* (ctx: RunContext, inngestRunId: string, mirror: MachineId, approval: Signed) {
   yield* requireOwner(ctx.id, inngestRunId);
-  const { drizzle } = yield* Database;
-  const now = new Date();
-  yield* drizzle.insert(volumeMirrorStatus)
-    .values({ organizationId: ctx.organizationId, volumeId: ctx.volumeId, machineId: mirror, approval, updatedAt: now })
-    .onConflictDoUpdate({ target: [volumeMirrorStatus.volumeId, volumeMirrorStatus.machineId], set: { approval, updatedAt: now } });
+  yield* acceptApproval(ctx.volumeId, mirror, approval);
 });
 
 /** Drops the approvals kept with the Mirrors on `machines`, once their copies are gone. */
-export const dropApprovals = Effect.fn("VolumeRun.dropApprovals")(function* (ctx: RunContext, inngestRunId: string, machines: readonly MachineId[]) {
+export const dropRunApprovals = Effect.fn("VolumeRun.dropRunApprovals")(function* (ctx: RunContext, inngestRunId: string, machines: readonly MachineId[]) {
   yield* requireOwner(ctx.id, inngestRunId);
-  const { drizzle } = yield* Database;
-  yield* drizzle.update(volumeMirrorStatus)
-    .set({ approval: null, updatedAt: new Date() })
-    .where(and(eq(volumeMirrorStatus.volumeId, ctx.volumeId), inArray(volumeMirrorStatus.machineId, [...machines])));
+  yield* dropApprovals(ctx.volumeId, machines);
 });
 
 export const inspectCopy = (ctx: RunContext, inngestRunId: string, machine: MachineRef) =>

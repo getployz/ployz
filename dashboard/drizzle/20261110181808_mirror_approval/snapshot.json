@@ -7387,7 +7387,7 @@
       "default": null,
       "generated": null,
       "identity": null,
-      "name": "approval",
+      "name": "approvals",
       "entityType": "columns",
       "schema": "public",
       "table": "volume_mirror_status"

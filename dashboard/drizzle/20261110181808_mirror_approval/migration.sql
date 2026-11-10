@@ -1,1 +1,1 @@
-ALTER TABLE "volume_mirror_status" ADD COLUMN "approval" jsonb;
+ALTER TABLE "volume_mirror_status" ADD COLUMN "approvals" jsonb;
