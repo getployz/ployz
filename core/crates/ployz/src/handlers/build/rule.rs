@@ -13,8 +13,9 @@
 use ployz_core::{
     BuildGrantId, GithubToken, ServiceName, X25519Secret,
     authority::{
-        AttestKey, AutoDeployRule, BuildClaim, BuildPolicy, BuildStage, CommitAuthority, CommitSha,
-        ImageDigest, PolicyDigest, RecipientKey, Signed, rule::PolicyCache,
+        AttestKey, AutoDeployRule, BuildApproval, BuildClaim, BuildPolicy, BuildStage,
+        CommitAuthority, CommitSha, ImageDigest, PolicyDigest, RecipientKey, Signed,
+        StatementDigest, rule::PolicyCache,
     },
 };
 use serde::{Deserialize, Serialize};
@@ -39,6 +40,34 @@ pub(super) struct CheckedIn {
     pub(super) service: ServiceName,
     /// The Deployment's lowering input narrowed to the Service, its Sealed values sealed.
     pub(super) deployment: Value,
+    /// A person's approval to build this commit, when it is not the branch head.
+    #[serde(default)]
+    pub(super) approval: Option<Signed<BuildApproval>>,
+}
+
+/// The authority this build claims for `commit`: the person's approval Cloud relayed, or
+/// the head. A lie fails on the Machine, which checks either for itself.
+///
+/// # Errors
+/// Refuses an approval that is unreadable or names another commit or Service, before any
+/// token is asked for.
+pub(super) fn authority(
+    checked_in: &CheckedIn,
+    commit: CommitSha,
+) -> Result<CommitAuthority, Error> {
+    let Some(approval) = &checked_in.approval else {
+        return Ok(CommitAuthority::Head);
+    };
+    let body = approval
+        .open()
+        .map_err(|_| BuildCommandError::Rule("Cloud relayed no readable build approval"))?;
+    if body.commit != commit || body.service != checked_in.service {
+        return Err(BuildCommandError::Rule(
+            "the build approval Cloud relayed names another commit or Service; refusing to build",
+        )
+        .into());
+    }
+    Ok(CommitAuthority::Approved(StatementDigest::of(approval)))
 }
 
 /// What the runner asks Cloud to relay to the grant Machine. Its own word, which the
@@ -103,7 +132,8 @@ fn derived(input: &BuildInput<'_>, rule: &BuildPolicy) -> BuildPolicy {
     )
 }
 
-/// The grant token's claim: this build's keys, at `commit`, under the relayed rule.
+/// The grant token's claim: this build's keys, at `commit` under `authority`, under the
+/// relayed rule.
 ///
 /// # Errors
 /// Only when the policy cannot be hashed.
@@ -111,7 +141,7 @@ pub(super) fn grant_claim(
     checked_in: &CheckedIn,
     rule: &AutoDeployRule,
     policy: &BuildPolicy,
-    commit: CommitSha,
+    (commit, authority): (CommitSha, CommitAuthority),
     holder: BuildGrantId,
     recipient: RecipientKey,
 ) -> Result<BuildClaim, Error> {
@@ -122,7 +152,7 @@ pub(super) fn grant_claim(
         service: checked_in.service.clone(),
         policy: PolicyDigest::of(policy).map_err(Error::command)?,
         commit,
-        authority: CommitAuthority::Head,
+        authority,
         stage: BuildStage::Grant { holder, recipient },
     })
 }

@@ -66,6 +66,7 @@ fn checked_in(rule: &AutoDeployRule, deployment: Value) -> CheckedIn {
         attest: AttestKey::from_bytes([0x55; 32]),
         service: web(),
         deployment,
+        approval: None,
     }
 }
 
@@ -134,7 +135,10 @@ fn the_grant_and_image_audiences_are_d2s_golden_bytes() {
         &checked_in,
         &rule,
         &golden_policy(),
-        CommitSha::parse("fedcba9876543210fedcba9876543210fedcba98").unwrap(),
+        (
+            CommitSha::parse("fedcba9876543210fedcba9876543210fedcba98").unwrap(),
+            CommitAuthority::Head,
+        ),
         BuildGrantId::parse("22".repeat(32)).unwrap(),
         RecipientKey::from_bytes([0x33; 32]),
     )
@@ -167,7 +171,7 @@ fn the_image_token_names_the_attest_key_the_secrets_opened_with() {
         &checked_in,
         &rule,
         &lab_policy(&[]),
-        CommitSha::from_bytes([1; 20]),
+        (CommitSha::from_bytes([1; 20]), CommitAuthority::Head),
         keys.holder(),
         keys.recipient.recipient(),
     )
@@ -295,5 +299,53 @@ fn cloud_takes_only_an_origin() {
         "https://user@ployz.dev",
     ] {
         assert!(Cloud::new(bad).is_err(), "{bad}");
+    }
+}
+
+/// A person's approval to build `commit` of `service` under `rule`.
+fn approval(rule: &AutoDeployRule, service: &str, commit: CommitSha) -> Signed<BuildApproval> {
+    let signer = Signer::from_seed(&[7; 32]);
+    Signed::sign(
+        &BuildApproval {
+            cluster: rule.cluster,
+            rule: rule.rule,
+            generation: rule.generation,
+            service: ServiceName::parse(service).unwrap(),
+            commit,
+            issued_at: Timestamp::from_millis(1_800_000_000_000).unwrap(),
+            expires_at: Timestamp::from_millis(1_800_000_600_000).unwrap(),
+            signer: SignerKey::Device(signer.public().into()),
+        },
+        &signer,
+    )
+    .unwrap()
+}
+
+#[test]
+fn a_build_claims_the_approval_cloud_relays_only_for_its_own_commit_and_service() {
+    let rule = rule(lab_policy(&[]));
+    let commit = CommitSha::from_bytes([1; 20]);
+    assert_eq!(
+        authority(&checked_in(&rule, json!({})), commit).unwrap(),
+        CommitAuthority::Head
+    );
+    let approved = approval(&rule, "web", commit);
+    let relayed = CheckedIn {
+        approval: Some(approved.clone()),
+        ..checked_in(&rule, json!({}))
+    };
+    assert_eq!(
+        authority(&relayed, commit).unwrap(),
+        CommitAuthority::Approved(StatementDigest::of(&approved))
+    );
+    for other in [
+        approval(&rule, "web", CommitSha::from_bytes([2; 20])),
+        approval(&rule, "api", commit),
+    ] {
+        let relayed = CheckedIn {
+            approval: Some(other),
+            ..checked_in(&rule, json!({}))
+        };
+        assert!(authority(&relayed, commit).is_err());
     }
 }

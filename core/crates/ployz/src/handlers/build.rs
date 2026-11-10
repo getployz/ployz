@@ -234,12 +234,13 @@ fn built_under_rule(
         ..PreparationInput::default()
     })?;
     let policy = rule::policy(&relayed, &service, &prepared)?.clone();
+    let authority = rule::authority(checked_in, commit)?;
     let keys = rule::Keys::generate();
     let grant_claim = rule::grant_claim(
         checked_in,
         &relayed,
         &policy,
-        commit,
+        (commit, authority),
         keys.holder(),
         keys.recipient.recipient(),
     )?;
@@ -256,7 +257,7 @@ fn built_under_rule(
                     holder: keys.holder(),
                     recipient: keys.recipient.recipient(),
                     commit,
-                    authority: ployz_core::authority::CommitAuthority::Head,
+                    authority,
                 },
             )
             .await?;
