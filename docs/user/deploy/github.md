@@ -123,6 +123,9 @@ Approving automatic deploys for production:
 Approved. Every push to main now deploys web, worker with these settings.
 ```
 
+To pin your own fork of the builder, add `--builder <owner>/build/.github/workflows/build.yml@<sha>`
+and `--builder-sha <sha>`.
+
 From then on every push to that branch deploys with no prompt, force pushes included. GitHub
 Actions builds it with Ployz's pinned builder, and each server checks that the image is the one
 built for the branch's current head, under these settings. The repository needs

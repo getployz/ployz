@@ -48,15 +48,18 @@ pub(super) fn approve_command(command: Command) -> Command {
                 .value_name("SERVICE")
                 .help("A service that builds from GitHub"),
         )
-        .arg(value("builder", None).value_name("WORKFLOW@REF").help(
-            "The builder's reusable workflow, as GitHub names it in job_workflow_ref \
-             [default: getployz/build's pinned release]",
-        ))
         .arg(
-            value("builder-sha", None)
-                .value_name("SHA")
-                .help("The builder's commit, with --builder"),
+            value("builder", None)
+                .value_name("WORKFLOW@REF")
+                .help(format!(
+                    "Another builder's reusable workflow, as GitHub names it in job_workflow_ref \
+             [default: {}]",
+                    Builder::pinned().r#ref
+                )),
         )
+        .arg(value("builder-sha", None).value_name("SHA").help(format!(
+            "That builder's commit. Give it with --builder [default: {BUILDER_SHA}]"
+        )))
         .arg(
             value("platform", None)
                 .value_name("PLATFORM")
