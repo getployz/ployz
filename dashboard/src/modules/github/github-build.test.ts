@@ -1,9 +1,11 @@
-import { Effect, Schema } from "effect";
+import { Effect } from "effect";
 import { describe, expect, it } from "vitest";
 import { organizationAccess } from "./github-access";
-import { checkGithubBuildWorkflow, findGithubPushRun, rerunGithubRun } from "./github-build.server";
+import { cancelGithubRun, checkGithubBuildWorkflow, findGithubPushRun, rerunGithubRun } from "./github-build.server";
+import { GithubAuthority, type GithubAuthorityService, type GithubBuildRun } from "./github-authority.server";
 import { GITHUB_BUILD_WORKFLOW, githubBuildId, githubBuildWorkflowUrl } from "./github-build-workflow";
 import { GithubApi, GithubObservationError, type GithubObservationErrorCode } from "./github-observation.api";
+import { fakeGithubApi, fakeGithubAuthority } from "#/test/fake-github";
 
 describe("GitHub build workflow", () => {
   it("calls getployz/build@v1 with every input Cloud dispatches", () => {
@@ -29,112 +31,86 @@ describe("GitHub build workflow", () => {
   });
 });
 
-type Reply = { body: unknown } | { error: GithubObservationErrorCode; status: number; retriable?: boolean };
+const failure = (code: GithubObservationErrorCode, status: number, retriable = false) =>
+  new GithubObservationError({ code, operation: "fetch_workflow", status, retriable, message: "failed" });
 
-function check(replies: { repository: Reply; workflow?: Reply }) {
-  const urls: string[] = [];
-  return Effect.runPromise(checkGithubBuildWorkflow(organizationAccess("org", 7), 42).pipe(
-    Effect.provideService(GithubApi, {
-      archive: () => Effect.die("unused"),
-      app: () => Effect.die("unused"),
-      installationRepositories: () => Effect.die("unused"),
-      exchangeUserCode: () => Effect.die("unused"),
-      userJson: () => Effect.die("unused"),
-      json: (request) => {
-        urls.push(request.path);
-        const reply = request.path.endsWith("/repositories/42") ? replies.repository : replies.workflow;
-        if (!reply) return Effect.die(`unexpected ${request.path}`);
-        if ("error" in reply) {
-          return Effect.fail(new GithubObservationError({
-            code: reply.error, operation: request.operation, status: reply.status, retriable: reply.retriable ?? false, message: "failed",
-          }));
-        }
-        return Schema.decodeUnknownEffect(request.schema)(reply.body).pipe(Effect.orDie);
-      },
-    }),
-  )).then((result) => ({ ...result, urls }));
+/** Run `effect` with `acme/api` (42) in installation 7, the authority answering as `answers` says. */
+function withGithub<A, E>(effect: Effect.Effect<A, E, GithubApi | GithubAuthority>, answers: Partial<GithubAuthorityService>) {
+  const authority = fakeGithubAuthority(answers);
+  const api = fakeGithubApi({ "/repos/acme/api": { id: 42, full_name: "acme/api" } });
+  return Effect.runPromise(effect.pipe(
+    Effect.provideService(GithubApi, api.service),
+    Effect.provideService(GithubAuthority, authority.service),
+  )).then((value) => ({ value, calls: authority.calls }));
 }
 
-const repository = { body: { id: 42, full_name: "acme/api", default_branch: "main" } };
-const workflow = (state: string) => ({ body: { path: ".github/workflows/ployz-build.yml", state } });
+const access = organizationAccess("org", 7);
+const workflowFile = (state: string, canonical = true) => ({ fullName: "acme/api", defaultBranch: "main", state, canonical });
+
+function check(workflow: ReturnType<typeof workflowFile> | GithubObservationError) {
+  return withGithub(checkGithubBuildWorkflow(access, 42), {
+    buildWorkflow: () => workflow instanceof GithubObservationError ? Effect.fail(workflow) : Effect.succeed(workflow),
+  });
+}
 
 describe("checkGithubBuildWorkflow", () => {
-  it("is ready only when the workflow is active on the default branch", async () => {
-    const ready = await check({ repository, workflow: workflow("active") });
-    expect(ready).toMatchObject({ fullName: "acme/api", defaultBranch: "main", readiness: "ready" });
-    expect(ready.urls[1]).toBe("/repos/acme/api/actions/workflows/ployz-build.yml");
-    expect((await check({ repository, workflow: workflow("disabled_manually") })).readiness).toBe("setup_needed");
-    expect((await check({ repository, workflow: workflow("deleted") })).readiness).toBe("setup_needed");
-    expect((await check({ repository, workflow: { error: "not_found", status: 404 } })).readiness).toBe("setup_needed");
+  it("is ready only when the workflow is active on the default branch, and says whether the file is Ployz's", async () => {
+    const ready = await check(workflowFile("active"));
+    expect(ready.value).toEqual({ fullName: "acme/api", defaultBranch: "main", readiness: "ready", canonical: true });
+    expect(ready.calls).toEqual([{ operation: "buildWorkflow", input: { installationId: 7, repositoryId: 42 } }]);
+    expect((await check(workflowFile("active", false))).value).toMatchObject({ readiness: "ready", canonical: false });
+    expect((await check(workflowFile("disabled_manually"))).value.readiness).toBe("setup_needed");
+    expect((await check(workflowFile("deleted"))).value.readiness).toBe("setup_needed");
   });
 
   it("reports an installation without Actions access or without the repository as lacking permission", async () => {
-    expect((await check({ repository, workflow: { error: "request_failed", status: 403 } })).readiness).toBe("no_permission");
-    expect(await check({ repository: { error: "not_found", status: 404 } })).toMatchObject({ fullName: null, readiness: "no_permission" });
+    expect((await check(failure("request_failed", 403))).value.readiness).toBe("no_permission");
+    expect((await check(failure("not_found", 404))).value).toMatchObject({ fullName: null, readiness: "no_permission", canonical: false });
   });
 
   it("fails on a rate limit instead of guessing", async () => {
-    await expect(check({ repository, workflow: { error: "request_failed", status: 403, retriable: true } })).rejects.toThrow();
+    await expect(check(failure("request_failed", 403, true))).rejects.toThrow();
   });
 });
 
 const HEAD = "c".repeat(40);
 
-function pushRuns(runs: unknown[]) {
-  const paths: string[] = [];
-  return Effect.runPromise(findGithubPushRun({
-    access: organizationAccess("org", 7), fullName: "acme/api", workflow: ".github/workflows/ployz-build.yml", commit: HEAD,
-  }).pipe(
-    Effect.provideService(GithubApi, {
-      archive: () => Effect.die("unused"),
-      app: () => Effect.die("unused"),
-      installationRepositories: () => Effect.die("unused"),
-      exchangeUserCode: () => Effect.die("unused"),
-      userJson: () => Effect.die("unused"),
-      json: (request) => {
-        paths.push(request.path);
-        return Schema.decodeUnknownEffect(request.schema)({ workflow_runs: runs }).pipe(Effect.orDie);
-      },
-    }),
-  )).then((run) => ({ run, paths }));
+function pushRuns(runs: GithubBuildRun[], workflow = ".github/workflows/ployz-build.yml") {
+  return withGithub(findGithubPushRun({ access, repositoryId: 42, workflow, commit: HEAD }), { buildRuns: () => Effect.succeed(runs) });
 }
 
-const run = (id: number, headSha: string, event: string, status = "in_progress") =>
-  ({ id, html_url: `https://github.com/acme/api/actions/runs/${id}`, head_sha: headSha, event, status });
+const run = (id: number, headSha: string, event: string, status = "in_progress"): GithubBuildRun =>
+  ({ id, url: `https://github.com/acme/api/actions/runs/${id}`, headSha, event, status, conclusion: null });
 
 describe("findGithubPushRun", () => {
   it("follows the run the push of the commit started", async () => {
     const found = await pushRuns([run(1, HEAD, "workflow_dispatch"), run(2, "d".repeat(40), "push"), run(3, HEAD, "push")]);
-    expect(found.run).toEqual({ runId: 3, runUrl: "https://github.com/acme/api/actions/runs/3", completed: false });
-    expect(found.paths).toEqual([`/repos/acme/api/actions/workflows/ployz-build.yml/runs?head_sha=${HEAD}&event=push&per_page=5`]);
+    expect(found.value).toEqual({ runId: 3, runUrl: "https://github.com/acme/api/actions/runs/3", completed: false });
+    expect(found.calls).toEqual([{ operation: "buildRuns", input: { installationId: 7, repositoryId: 42, headSha: HEAD, event: "push" } }]);
   });
 
   it("says when the push run already completed, so Cloud runs it again", async () => {
-    expect((await pushRuns([run(3, HEAD, "push", "completed")])).run).toMatchObject({ runId: 3, completed: true });
+    expect((await pushRuns([run(3, HEAD, "push", "completed")])).value).toMatchObject({ runId: 3, completed: true });
   });
 
   it("finds nothing until GitHub lists a push run of the commit", async () => {
-    expect((await pushRuns([])).run).toBeNull();
-    expect((await pushRuns([run(1, HEAD, "workflow_dispatch")])).run).toBeNull();
+    expect((await pushRuns([])).value).toBeNull();
+    expect((await pushRuns([run(1, HEAD, "workflow_dispatch")])).value).toBeNull();
+  });
+
+  it("follows no workflow but Ployz's build workflow", async () => {
+    await expect(pushRuns([run(3, HEAD, "push")], ".github/workflows/release.yml")).rejects.toThrow(/ployz-build.yml/);
   });
 });
 
-describe("rerunGithubRun", () => {
-  it("asks GitHub to run the run again", async () => {
-    const requests: { path: string; method: string | undefined }[] = [];
-    await Effect.runPromise(rerunGithubRun({ access: organizationAccess("org", 7), fullName: "acme/api", runId: 3 }).pipe(
-      Effect.provideService(GithubApi, {
-        archive: () => Effect.die("unused"),
-        app: () => Effect.die("unused"),
-        installationRepositories: () => Effect.die("unused"),
-        exchangeUserCode: () => Effect.die("unused"),
-        userJson: () => Effect.die("unused"),
-        json: (request) => {
-          requests.push({ path: request.path, method: request.method });
-          return Schema.decodeUnknownEffect(request.schema)({}).pipe(Effect.orDie);
-        },
-      }),
-    ));
-    expect(requests).toEqual([{ path: "/repos/acme/api/actions/runs/3/rerun", method: "POST" }]);
+describe("a build run Cloud acts on", () => {
+  it("is run again through the authority", async () => {
+    const rerun = await withGithub(rerunGithubRun({ access, repositoryId: 42, runId: 3 }), { rerunBuild: () => Effect.void });
+    expect(rerun.calls).toEqual([{ operation: "rerunBuild", input: { installationId: 7, repositoryId: 42, runId: 3 } }]);
+  });
+
+  it("is cancelled in the repository its recorded name resolves to", async () => {
+    const cancel = await withGithub(cancelGithubRun({ access, fullName: "acme/api", runId: 3 }), { cancelBuild: () => Effect.void });
+    expect(cancel.calls).toEqual([{ operation: "cancelBuild", input: { installationId: 7, repositoryId: 42, runId: 3 } }]);
   });
 });

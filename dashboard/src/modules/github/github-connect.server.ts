@@ -9,7 +9,7 @@ import {
   upsertGithubInstallation,
 } from "#/modules/github/github.repository";
 import { MAX_OFFERED_INSTALLATIONS, type ConnectNotice } from "#/modules/github/github-connect";
-import { GithubApi } from "#/modules/github/github-observation.api";
+import { GithubAuthority } from "#/modules/github/github-authority.server";
 import { getGithubAppInstallUrl } from "#/modules/github/github.server";
 import { githubIdSchema } from "#/modules/github/github-ingestion.contracts";
 import type { Actor } from "#/modules/identity/actor";
@@ -97,54 +97,6 @@ const linkChosen = Effect.fn("GithubConnect.linkChosen")(function* (input: {
   );
 });
 
-const nonEmptyString = Schema.String.check(Schema.isMinLength(1));
-const githubUserSchema = Schema.Struct({ login: nonEmptyString });
-const userInstallationsSchema = Schema.Struct({
-  installations: Schema.Array(Schema.Struct({
-    id: githubIdSchema,
-    account: Schema.Struct({ login: nonEmptyString, type: nonEmptyString, avatar_url: Schema.NullOr(Schema.String) }),
-    suspended_at: Schema.NullOr(Schema.String),
-  })),
-});
-const membershipSchema = Schema.Struct({ state: Schema.String, role: Schema.String });
-type UserInstallation = typeof userInstallationsSchema.Type["installations"][number];
-const INSTALLATIONS_PAGE_SIZE = 100;
-const MAX_INSTALLATION_PAGES = 10;
-
-/**
- * Reads, as the person who just authorized the App, who they are and which installations they reach.
- * Reaching an installation is not owning it: a collaborator on one repository reaches it too, so linking asks `administers`.
- * The user token lives only in this closure and dies with the callback.
- */
-const authorizedGithubUser = Effect.fn("GithubConnect.authorizedUser")(function* (code: string) {
-  const api = yield* GithubApi;
-  const token = yield* api.exchangeUserCode(code);
-  const { login } = yield* api.userJson({ token, path: "/user", operation: "list_user_installations", schema: githubUserSchema });
-  const installations: UserInstallation[] = [];
-  for (let page = 1; page <= MAX_INSTALLATION_PAGES; page++) {
-    const listed = yield* api.userJson({
-      token,
-      path: `/user/installations?per_page=${INSTALLATIONS_PAGE_SIZE}&page=${page}`,
-      operation: "list_user_installations",
-      schema: userInstallationsSchema,
-    });
-    installations.push(...listed.installations);
-    if (listed.installations.length < INSTALLATIONS_PAGE_SIZE) break;
-  }
-  const administers = (account: UserInstallation["account"]) => account.type === "Organization"
-    ? api.userJson({
-      token,
-      path: `/user/memberships/orgs/${encodeURIComponent(account.login)}`,
-      operation: "read_user_membership",
-      schema: membershipSchema,
-    }).pipe(
-      Effect.map((membership) => membership.state === "active" && membership.role === "admin"),
-      Effect.catchIf((error) => error.code === "not_found", () => Effect.succeed(false)),
-    )
-    : Effect.succeed(account.type === "User" && account.login.toLowerCase() === login.toLowerCase());
-  return { login, installations, administers };
-});
-
 export const completeGithubConnect = Effect.fn("GithubConnect.complete")(function* (actor: Actor, params: URLSearchParams) {
   const state = yield* verify(STATE, params.get("state") ?? "");
   if (state === null || state.userId !== actor.userId) {
@@ -158,32 +110,28 @@ export const completeGithubConnect = Effect.fn("GithubConnect.complete")(functio
   const requestedInstallationId = params.get("installation_id");
   if (code === null || (!state.existing && requestedInstallationId === null)) return land({ connect: "failed" });
 
-  const authorized = yield* authorizedGithubUser(code).pipe(
+  // The user token stays with the authority: Cloud learns who they are and what they reach, never the token.
+  const authorized = yield* (yield* GithubAuthority).connect(code).pipe(
     Effect.tapError((error) => Effect.logWarning("GitHub did not complete a connect.", error)),
     Effect.orElseSucceed(() => null),
   );
   if (authorized === null) return land({ connect: "failed" });
-  const reachable = authorized.installations.filter((installation) => installation.suspended_at === null);
+  const reachable = authorized.installations.filter((installation) => installation.suspendedAt === null);
   const chosen = state.existing ? reachable : reachable.filter((installation) => String(installation.id) === requestedInstallationId);
   if (!state.existing && chosen.length === 0) return land({ connect: "not-yours" });
 
   const linked = new Set((yield* listGithubInstallationsForOrganization(organization.id)).map((row) => row.installationId));
   if (!state.existing && linked.has(Number(requestedInstallationId))) return land({ connect: "linked" });
   const unlinked = chosen.filter((installation) => !linked.has(installation.id));
-  const owned = yield* Effect.forEach(unlinked, (installation) => authorized.administers(installation.account), { concurrency: 8 }).pipe(
-    Effect.tapError((error) => Effect.logWarning("GitHub did not say who owns an account during a connect.", error)),
-    Effect.orElseSucceed(() => null),
-  );
-  if (owned === null) return land({ connect: "failed" });
   // Past the bound, the next connect offers the rest: linked accounts drop out of `unlinked`.
-  const candidates = unlinked.filter((_, index) => owned[index]).slice(0, MAX_OFFERED_INSTALLATIONS);
+  const candidates = unlinked.filter((installation) => installation.administers).slice(0, MAX_OFFERED_INSTALLATIONS);
   if (candidates.length === 0) return land({ connect: unlinked.length > 0 ? "not-admin" : "none" });
   for (const installation of candidates) {
     yield* upsertGithubInstallation({
       installationId: installation.id,
       accountLogin: installation.account.login,
       accountType: installation.account.type,
-      accountAvatarUrl: installation.account.avatar_url,
+      accountAvatarUrl: installation.account.avatarUrl,
     });
   }
   const base = { organizationId: organization.id, userId: actor.userId, githubLogin: authorized.login };

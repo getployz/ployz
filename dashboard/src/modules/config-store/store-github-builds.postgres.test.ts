@@ -1,6 +1,6 @@
 import crypto from "node:crypto";
 import { it } from "@effect/vitest";
-import type { ConfigCommand, JsonValue } from "@ployz/sdk";
+import type { ConfigCommand } from "@ployz/sdk";
 import { sql } from "drizzle-orm";
 import { Effect } from "effect";
 import type { StoreCall } from "./store.contract";
@@ -18,7 +18,8 @@ import { unlinkGithubInstallation } from "#/modules/github/github.repository";
 import { type ConnectedRuntimeClient, OrganizationRuntime, type OrganizationRuntimeService } from "#/modules/runtime/organization-runtime.server";
 import { RpcError } from "#/modules/runtime/ployz.server";
 import { Database } from "#/server/database.server";
-import { fakeGithubApiBy } from "#/test/fake-github";
+import { fakeGithubApi, fakeGithubAuthority } from "#/test/fake-github";
+import type { GithubBuildWorkflowFile, GithubDispatchedBuild } from "#/modules/github/github-authority.server";
 import { machineId } from "#/test/ids";
 import { logged } from "#/test/logged";
 import {
@@ -50,21 +51,39 @@ function oidcToken(claims: Partial<RunnerClaims> = {}, key: crypto.KeyObject = s
   return `${body}.${crypto.sign("RSA-SHA256", Buffer.from(body), key).toString("base64url")}`;
 }
 
-/** GitHub with `acme/web` through installation 7; its build workflow appears once `workflowReady` is set. */
-let workflowReady = false;
-const github = fakeGithubApiBy(({ path }): JsonValue | undefined => {
-  if (path === "/repositories/42") return { id: 42, full_name: "acme/web", default_branch: "main" };
-  if (workflowReady && path === "/repos/acme/web/actions/workflows/ployz-build.yml") {
-    return { path: ".github/workflows/ployz-build.yml", state: "active" };
-  }
-  return undefined;
+const activeWorkflow: GithubBuildWorkflowFile = { fullName: "acme/web", defaultBranch: "main", state: "active", canonical: true };
+const noWorkflow: GithubBuildWorkflowFile = { fullName: "acme/web", defaultBranch: "main", state: null, canonical: false };
+const dispatchedRun = (runId: number): GithubDispatchedBuild =>
+  ({ runId, runUrl: `https://github.com/acme/web/actions/runs/${runId}`, headSha: HEAD, workflowRef: WORKFLOW });
+
+/**
+ * GitHub with `acme/web` (42) through installation 7: its build workflow as `workflow` says on each look, and each
+ * dispatch starting the run `dispatch` names. Every run is in progress and takes a cancel.
+ */
+function acmeGithub(answers: { workflow: () => GithubBuildWorkflowFile; dispatch?: () => number }) {
+  const { dispatch } = answers;
+  const api = fakeGithubApi({ "/repos/acme/web": { id: 42, full_name: "acme/web" } });
+  const authority = fakeGithubAuthority({
+    buildWorkflow: () => Effect.sync(answers.workflow),
+    dispatchBuild: () => dispatch === undefined ? Effect.die("no dispatch in this test") : Effect.sync(() => dispatchedRun(dispatch())),
+    buildRun: ({ runId }) => Effect.succeed({ id: runId, url: dispatchedRun(runId).runUrl, headSha: HEAD, event: "workflow_dispatch", status: "in_progress", conclusion: null }),
+    cancelBuild: () => Effect.void,
+  });
+  const cancelsOf = (runId: number) => authority.calls.filter((call) => call.operation === "cancelBuild" && call.input.runId === runId).length;
+  return { cancelsOf, services: { github: api.service, authority: authority.service } };
+}
+
+/** `acme/web`, whose build workflow is missing, then edited away from Ployz's, then Ployz's own, as `workflowNow` says. */
+let workflowNow: "missing" | "edited" | "ready" = "missing";
+const github = acmeGithub({
+  workflow: () => workflowNow === "ready" ? activeWorkflow : workflowNow === "edited" ? { ...activeWorkflow, canonical: false } : noWorkflow,
 });
 
 it.live(
   "a Store build goes to GitHub first; its check-in must come from the dispatched repository, workflow and run; a cancel ends it",
   () =>
     Effect.gen(function* () {
-      const services = yield* storeTestCloud({ github: github.service });
+      const services = yield* storeTestCloud(github.services);
       const provided = <A, E, R>(program: Effect.Effect<A, E, R>) => program.pipe(
         Effect.provide(services),
         Effect.provideService(GithubOidcKeys, { keys: Effect.succeed([jwk]) }),
@@ -91,6 +110,7 @@ it.live(
       });
       // A skipped build is no longer GitHub's to plan.
       expect(yield* provided(planStoreGithubBuilds(data))).toEqual([]);
+
 
       // A build GitHub holds: only its dispatched run's token checks in.
       yield* write({ command: "admit", admit: "deploy", id: "00000000-0000-4000-8000-00000000b102", environment: here, services: [], version: null, accept_volume_loss: [] });
@@ -131,12 +151,12 @@ it.live(
       expect(steps).toMatchObject({ _tag: "Conflict", message: "This build has not checked in" });
 
       // Cancelling the Deployment ends the build GitHub holds; a late check-in is refused.
-      const calledBefore = github.calls.length;
+      const cancelledBefore = github.cancelsOf(9001);
       const cancelled = yield* provided(callStore(ORGANIZATION, "00000000-0000-4000-8000-00000000b0ff", {
         operation: "write", command: { command: "cancel", deployment: "00000000-0000-4000-8000-00000000b102" },
       }, { source: "dashboard" }, { approval: "not_required", permissions: permissionsOf("owner") }));
       expect(cancelled).toMatchObject({ ok: true });
-      expect(github.calls.slice(calledBefore).map((call) => call.path)).toContain("/repos/acme/web/actions/runs/9001/cancel");
+      expect(github.cancelsOf(9001)).toBeGreaterThan(cancelledBefore);
       expect(yield* Effect.promise(() => store.githubBuild(next))).toMatchObject({ held: { status: "failed" } });
       expect(yield* rejection(oidcToken())).toMatchObject({ _tag: "Conflict" });
 
@@ -156,8 +176,18 @@ it.live(
       expect(yield* provided(planStoreGithubBuilds(plan).pipe(Effect.provideService(OrganizationRuntime, noBuilders))))
         .toMatchObject([{ build: `${serversFirst}.web`, hasNext: false }]);
 
+      // A workflow file other than the one Ployz offers is skipped the same way: GitHub would run what it says.
+      workflowNow = "edited";
+      const edited = "00000000-0000-4000-8000-00000000b1e0";
+      yield* write({ command: "admit", admit: "deploy", id: edited, environment: here, services: [], version: null, accept_volume_loss: [] });
+      yield* Effect.promise(() => store.pinSources(edited, { web: HEAD }));
+      expect(yield* provided(startStoreGithubBuild(ORGANIZATION, { ...target, build: `${edited}.web` }))).toEqual({ kind: "done" });
+      expect(yield* Effect.promise(() => store.read(ORGANIZATION, { query: "deployment", id: edited }))).toMatchObject({
+        builds: [{ service: "web", status: "pending", message: "acme/web's .github/workflows/ployz-build.yml isn't the one Ployz offers" }],
+      });
+
       // A Server whose record says it can't read a Build Grant back sends the build to its next Builder, by name.
-      workflowReady = true;
+      workflowNow = "ready";
       const oldServer = "00000000-0000-4000-8000-00000000b104";
       yield* write({ command: "admit", admit: "deploy", id: oldServer, environment: here, services: [], version: null, accept_volume_loss: [] });
       yield* Effect.promise(() => store.pinSources(oldServer, { web: HEAD }));
@@ -207,7 +237,7 @@ it.live(
 
 it.live("a build that checked in reports its steps until its Organization disconnects GitHub, then is refused", () =>
   Effect.gen(function* () {
-    const services = yield* storeTestCloud({ github: github.service });
+    const services = yield* storeTestCloud(github.services);
     const provided = <A, E, R>(program: Effect.Effect<A, E, R>) => program.pipe(
       Effect.provide(services),
       Effect.provideService(GithubOidcKeys, { keys: Effect.succeed([jwk]) }),
@@ -236,7 +266,7 @@ it.live("a build that checked in reports its steps until its Organization discon
 
 it.live("a Store build's start, check-in and finish reach a Server of the pairing's Cluster once its Sealing Key is known, as a Deploy does, and log one they left", () =>
   Effect.gen(function* () {
-    const services = yield* storeTestCloud({ github: github.service });
+    const services = yield* storeTestCloud(github.services);
     const provided = <A, E, R>(program: Effect.Effect<A, E, R>) => program.pipe(
       Effect.provide(services),
       Effect.provideService(GithubOidcKeys, { keys: Effect.succeed([jwk]) }),
@@ -292,7 +322,7 @@ it.live("a Store build's start, check-in and finish reach a Server of the pairin
 
 it.live("a build GitHub passed on before its run checked in is no longer GitHub's, even once the next Builder claims it", () =>
   Effect.gen(function* () {
-    const services = yield* storeTestCloud({ github: github.service });
+    const services = yield* storeTestCloud(github.services);
     const provided = <A, E, R>(program: Effect.Effect<A, E, R>) => program.pipe(
       Effect.provide(services),
       Effect.provideService(GithubOidcKeys, { keys: Effect.succeed([jwk]) }),
@@ -337,7 +367,7 @@ it.live("a build GitHub passed on before its run checked in is no longer GitHub'
 
 it.live("the start limit keeps a run whose check-in commits while it looks, and does not cancel it", () =>
   Effect.gen(function* () {
-    const services = yield* storeTestCloud({ github: github.service });
+    const services = yield* storeTestCloud(github.services);
     const provided = <A, E, R>(program: Effect.Effect<A, E, R>) => program.pipe(
       Effect.provide(services),
       Effect.provideService(GithubOidcKeys, { keys: Effect.succeed([jwk]) }),
@@ -367,29 +397,18 @@ it.live("the start limit keeps a run whose check-in commits while it looks, and 
       return finish(...args);
     });
     const target = { build: BUILD, service: "web", repository: "acme/web", repositoryId: 42, installationId: 7, hasNext: true };
-    const calledBefore = github.calls.length;
+    const cancelledBefore = github.cancelsOf(RUN);
 
     expect(yield* provided(checkStoreGithubBuild(ORGANIZATION, target, { ended: false, startLimit: true }))).toBe("waiting");
-    expect(github.calls.slice(calledBefore).map((call) => call.path)).not.toContain(`/repos/acme/web/actions/runs/${RUN}/cancel`);
+    expect(github.cancelsOf(RUN)).toBe(cancelledBefore);
     expect(yield* Effect.promise(() => store.githubBuild(BUILD))).toMatchObject({ held: { status: "building", grant } });
   }), 60_000);
 
 it.live("a retried github-start whose first try handed the build to a run follows that run, and the start limit passes it on", () =>
   Effect.gen(function* () {
     let dispatches = 0;
-    const retryGithub = fakeGithubApiBy(({ path }): JsonValue | undefined => {
-      if (path === "/repositories/42") return { id: 42, full_name: "acme/web", default_branch: "main" };
-      if (path === "/repos/acme/web/actions/workflows/ployz-build.yml") return { path: ".github/workflows/ployz-build.yml", state: "active" };
-      if (path === "/repos/acme/web/actions/workflows/ployz-build.yml/dispatches") {
-        dispatches += 1;
-        const runId = RUN + dispatches - 1;
-        return { workflow_run_id: runId, html_url: `https://github.com/acme/web/actions/runs/${runId}` };
-      }
-      if (path === `/repos/acme/web/actions/runs/${RUN}`) return { status: "in_progress" };
-      if (path === `/repos/acme/web/actions/runs/${RUN}/cancel`) return {};
-      return undefined;
-    });
-    const services = yield* storeTestCloud({ github: retryGithub.service });
+    const retryGithub = acmeGithub({ workflow: () => activeWorkflow, dispatch: () => RUN + dispatches++ });
+    const services = yield* storeTestCloud(retryGithub.services);
     const provided = <A, E, R>(program: Effect.Effect<A, E, R>) => program.pipe(
       Effect.provide(services),
       Effect.provideService(GithubOidcKeys, { keys: Effect.succeed([jwk]) }),
@@ -409,7 +428,7 @@ it.live("a retried github-start whose first try handed the build to a run follow
       throw new RpcError({ code: "unavailable", message: "The Config Store did not answer in time; the outcome is unknown", details: null });
     });
     const target = { build: BUILD, service: "web", repository: "acme/web", repositoryId: 42, installationId: 7, hasNext: true };
-    const cancels = () => retryGithub.calls.filter((call) => call.path === `/repos/acme/web/actions/runs/${RUN}/cancel`).length;
+    const cancels = () => retryGithub.cancelsOf(RUN);
 
     expect(yield* provided(Effect.flip(startStoreGithubBuild(ORGANIZATION, target)))).toMatchObject({ code: "unavailable" });
     expect(cancels()).toBe(1);
@@ -430,19 +449,8 @@ it.live("a retried github-start whose first try handed the build to a run follow
 it.live("a retry whose first hand-off commits after its own read follows that run, and cancels its own", () =>
   Effect.gen(function* () {
     let dispatches = 0;
-    const retryGithub = fakeGithubApiBy(({ path }): JsonValue | undefined => {
-      if (path === "/repositories/42") return { id: 42, full_name: "acme/web", default_branch: "main" };
-      if (path === "/repos/acme/web/actions/workflows/ployz-build.yml") return { path: ".github/workflows/ployz-build.yml", state: "active" };
-      if (path === "/repos/acme/web/actions/workflows/ployz-build.yml/dispatches") {
-        dispatches += 1;
-        const runId = RUN + dispatches - 1;
-        return { workflow_run_id: runId, html_url: `https://github.com/acme/web/actions/runs/${runId}` };
-      }
-      if (path === `/repos/acme/web/actions/runs/${RUN}`) return { status: "in_progress" };
-      if (path === `/repos/acme/web/actions/runs/${RUN}/cancel` || path === `/repos/acme/web/actions/runs/${RUN + 1}/cancel`) return {};
-      return undefined;
-    });
-    const services = yield* storeTestCloud({ github: retryGithub.service });
+    const retryGithub = acmeGithub({ workflow: () => activeWorkflow, dispatch: () => RUN + dispatches++ });
+    const services = yield* storeTestCloud(retryGithub.services);
     const provided = <A, E, R>(program: Effect.Effect<A, E, R>) => program.pipe(
       Effect.provide(services),
       Effect.provideService(GithubOidcKeys, { keys: Effect.succeed([jwk]) }),
@@ -468,7 +476,7 @@ it.live("a retry whose first hand-off commits after its own read follows that ru
       return dispatched(...args);
     });
     const target = { build: BUILD, service: "web", repository: "acme/web", repositoryId: 42, installationId: 7, hasNext: true };
-    const cancelsOf = (runId: number) => retryGithub.calls.filter((call) => call.path === `/repos/acme/web/actions/runs/${runId}/cancel`).length;
+    const { cancelsOf } = retryGithub;
 
     expect(yield* provided(Effect.flip(startStoreGithubBuild(ORGANIZATION, target)))).toMatchObject({ code: "unavailable" });
     yield* Effect.promise(() => expect(store.githubBuild(BUILD)).rejects.toMatchObject({ code: "not_found" }));
@@ -486,20 +494,9 @@ it.live("a retry whose first hand-off commits after its own read follows that ru
 it.live("a retry that skips GitHub after its first hand-off commits late follows that run", () =>
   Effect.gen(function* () {
     let workflowChecks = 0;
-    const retryGithub = fakeGithubApiBy(({ path }): JsonValue | undefined => {
-      if (path === "/repositories/42") return { id: 42, full_name: "acme/web", default_branch: "main" };
-      // The workflow is gone by the retry.
-      if (path === "/repos/acme/web/actions/workflows/ployz-build.yml") {
-        workflowChecks += 1;
-        return workflowChecks === 1 ? { path: ".github/workflows/ployz-build.yml", state: "active" } : undefined;
-      }
-      if (path === "/repos/acme/web/actions/workflows/ployz-build.yml/dispatches") {
-        return { workflow_run_id: RUN, html_url: `https://github.com/acme/web/actions/runs/${RUN}` };
-      }
-      if (path === `/repos/acme/web/actions/runs/${RUN}/cancel`) return {};
-      return undefined;
-    });
-    const services = yield* storeTestCloud({ github: retryGithub.service });
+    // The workflow is gone by the retry.
+    const retryGithub = acmeGithub({ workflow: () => workflowChecks++ === 0 ? activeWorkflow : noWorkflow, dispatch: () => RUN });
+    const services = yield* storeTestCloud(retryGithub.services);
     const provided = <A, E, R>(program: Effect.Effect<A, E, R>) => program.pipe(
       Effect.provide(services),
       Effect.provideService(GithubOidcKeys, { keys: Effect.succeed([jwk]) }),

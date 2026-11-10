@@ -11,14 +11,14 @@ import { executeProcessGithubInstallationReceived } from "#/modules/github/innge
 import type { Caller } from "#/modules/identity/actor";
 import type { PloyzStepTools } from "#/modules/inngest/client";
 import { githubBuildRunCompletedEvent, githubInstallationReceivedEvent } from "#/modules/inngest/events";
-import { fakeGithubApiBy } from "#/test/fake-github";
+import { fakeGithubApi, fakeGithubAuthority } from "#/test/fake-github";
 import { acmeWeb, seedStoreGitService, seedStoreOrganization, storeTestCloud } from "#/test/store-cloud";
 
 const ORGANIZATION = "00000000-0000-4000-8000-00000000c001";
 const DEPLOYMENT = "00000000-0000-4000-8000-00000000c101";
 const BUILD = `${DEPLOYMENT}.web`;
 const RUN = 9301;
-const CANCEL = `/repos/acme/web/actions/runs/${RUN}/cancel`;
+const CANCEL = { operation: "cancelBuild", input: { installationId: 7, repositoryId: 42, runId: RUN } };
 const here = { project: null, environment: null };
 
 const step: Pick<PloyzStepTools, "run" | "sendEvent"> = {
@@ -46,10 +46,11 @@ const cases = [
 for (const { stop, failed } of cases) {
   it.live(`a ${stop} cancels the building run as Cloud and wakes its walk, which fails the build at once`, () =>
     Effect.gen(function* () {
-      const github = fakeGithubApiBy(({ path }) => path === CANCEL ? {} : undefined);
+      const github = fakeGithubApi({ "/repos/acme/web": { id: 42, full_name: "acme/web" } });
+      const authority = fakeGithubAuthority({ cancelBuild: () => Effect.void });
       const inngest = new Inngest({ id: "store-github-stop" });
       const sent = vi.spyOn(inngest, "send").mockResolvedValue({ ids: [] });
-      const services = yield* storeTestCloud({ github: github.service, inngest });
+      const services = yield* storeTestCloud({ github: github.service, authority: authority.service, inngest });
       const provided = <A, E, R>(program: Effect.Effect<A, E, R>) => program.pipe(Effect.provide(services));
       const run: StoreEffectRunner = (program) => Effect.runPromise(provided(program));
       const userId = yield* provided(seedStoreOrganization(ORGANIZATION));
@@ -72,16 +73,17 @@ for (const { stop, failed } of cases) {
         yield* Effect.promise(() => executeProcessGithubInstallationReceived({ event: webhook(stop), step }, run, run));
       }
 
-      const cancels = () => github.calls.filter((call) => call.path === CANCEL);
-      expect(cancels()).toEqual([{ path: CANCEL, access: { type: "installation", installationId: 7 } }]);
+      const cancels = () => authority.calls.filter((call) => call.operation === "cancelBuild");
+      expect(cancels()).toEqual([CANCEL]);
       expect(sent.mock.calls).toEqual([[{ id: `stopped-${BUILD}`, name: githubBuildRunCompletedEvent, data: { runId: RUN } }]]);
 
       const target = { build: BUILD, service: "web", repository: "acme/web", repositoryId: 42, installationId: 7, hasNext: true };
       expect(yield* provided(checkStoreGithubBuild(ORGANIZATION, target, { ended: true, startLimit: false }))).toEqual({ failed });
       expect(yield* Effect.promise(() => store.githubBuild(BUILD))).toMatchObject({ held: { status: "failed" } });
-      expect(cancels()).toEqual([
-        { path: CANCEL, access: { type: "installation", installationId: 7 } },
-        { path: CANCEL, access: { type: "installation", installationId: 7 } },
+      expect(cancels()).toEqual([CANCEL, CANCEL]);
+      expect(github.calls.map((call) => call.access)).toEqual([
+        { type: "installation", installationId: 7 },
+        { type: "installation", installationId: 7 },
       ]);
     }), 60_000);
 }

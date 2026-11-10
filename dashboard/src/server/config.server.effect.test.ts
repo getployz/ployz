@@ -33,6 +33,15 @@ const postShibaMail = {
   MAIL_FROM: "Ployz <noreply@example.com>",
 };
 
+/** The App's key and client secret, which Cloud needs only while it holds the App's authority itself. */
+const localAuthority = ["GITHUB_APP_PRIVATE_KEY", "GITHUB_APP_CLIENT_SECRET"];
+
+const minter = {
+  GITHUB_MINTER_URL: "https://abc123.lambda-url.eu-central-1.on.aws",
+  GITHUB_MINTER_ACCESS_KEY_ID: "AKIAEXAMPLE",
+  GITHUB_MINTER_SECRET_ACCESS_KEY: "minter-secret-access-key",
+};
+
 const without = (environment: Record<string, string>, name: string) =>
   Object.fromEntries(Object.entries(environment).filter(([key]) => key !== name));
 
@@ -64,7 +73,8 @@ describe("AppConfig", () => {
     Effect.gen(function* () {
       for (const name of Object.keys(requiredEnvironment)) {
         const failure = yield* Effect.flip(load(without(requiredEnvironment, name)));
-        assert.instanceOf(failure, Config.ConfigError);
+        if (localAuthority.includes(name)) assert.instanceOf(failure, InvalidConfiguration);
+        else assert.instanceOf(failure, Config.ConfigError);
         assert.include(String(failure), name);
       }
     }),
@@ -74,9 +84,69 @@ describe("AppConfig", () => {
     Effect.gen(function* () {
       const failure = yield* Effect.flip(load({}));
       assert.instanceOf(failure, Config.ConfigError);
-      for (const name of Object.keys(requiredEnvironment)) {
+      for (const name of Object.keys(requiredEnvironment).filter((name) => !localAuthority.includes(name))) {
         assert.include(failure.message, name);
       }
+    }),
+  );
+
+  it.effect("holds the App's key and client secret itself unless a minter holds them", () =>
+    Effect.gen(function* () {
+      const local = (yield* load(requiredEnvironment)).github.authority;
+      assert.strictEqual(local.mode, "local");
+      if (local.mode === "local") {
+        assert.strictEqual(String(local.appPrivateKey), "<redacted>");
+        assert.strictEqual(Redacted.value(local.appClientSecret), "github-app-client-secret");
+      }
+
+      const config = yield* load({ ...without(without(requiredEnvironment, "GITHUB_APP_PRIVATE_KEY"), "GITHUB_APP_CLIENT_SECRET"), ...minter });
+      assert.deepStrictEqual(Object.keys(config.github).sort(), ["appClientId", "appId", "appSlug", "appWebhookSecret", "authority", "clientId", "clientSecret", "origins"]);
+      assert.strictEqual(config.github.authority.mode, "minter");
+      if (config.github.authority.mode !== "minter") return;
+      assert.strictEqual(config.github.authority.url.origin, minter.GITHUB_MINTER_URL);
+      assert.notProperty(config.github.authority, "appPrivateKey");
+      assert.notProperty(config.github.authority, "appClientSecret");
+      const auth = config.github.authority.auth;
+      assert.strictEqual(auth.kind, "sigv4");
+      if (auth.kind === "sigv4") {
+        assert.strictEqual(auth.region, "eu-central-1");
+        assert.strictEqual(String(auth.secretAccessKey), "<redacted>");
+      }
+    }),
+  );
+
+  it.effect("refuses to hold the App's authority twice, or not at all", () =>
+    Effect.gen(function* () {
+      const keyless = without(without(requiredEnvironment, "GITHUB_APP_PRIVATE_KEY"), "GITHUB_APP_CLIENT_SECRET");
+      const refused = (environment: Record<string, string>) => Effect.flip(load(environment)).pipe(Effect.map((failure) => {
+        assert.instanceOf(failure, InvalidConfiguration);
+        return failure.message;
+      }));
+      assert.include(yield* refused(keyless), "GITHUB_APP_PRIVATE_KEY");
+      assert.include(yield* refused({ ...requiredEnvironment, ...minter }), "must be unset");
+      assert.include(yield* refused({ ...keyless, GITHUB_APP_PRIVATE_KEY: "key", ...minter }), "must be unset");
+      assert.include(yield* refused({ ...keyless, ...without(minter, "GITHUB_MINTER_URL") }), "need GITHUB_MINTER_URL");
+      assert.include(yield* refused({ ...keyless, ...without(minter, "GITHUB_MINTER_SECRET_ACCESS_KEY") }), "needs GITHUB_MINTER_ACCESS_KEY_ID");
+      for (const url of ["http://abc123.lambda-url.eu-central-1.on.aws", "https://minter.example.com", "https://abc123.lambda-url.eu-central-1.on.aws.example.com"]) {
+        assert.include(yield* refused({ ...keyless, ...minter, GITHUB_MINTER_URL: url }), "Lambda Function URL");
+      }
+      for (const url of [`${minter.GITHUB_MINTER_URL}/v1`, `${minter.GITHUB_MINTER_URL}/?x=1`]) {
+        assert.include(yield* refused({ ...keyless, ...minter, GITHUB_MINTER_URL: url }), "origin");
+      }
+    }),
+  );
+
+  it.effect("lets a verify lab reach a local minter with a bearer, outside production only", () =>
+    Effect.gen(function* () {
+      const keyless = without(without(requiredEnvironment, "GITHUB_APP_PRIVATE_KEY"), "GITHUB_APP_CLIENT_SECRET");
+      const lab = { ...keyless, NODE_ENV: "development", GITHUB_MINTER_URL: "http://127.0.0.1:8787", PLOYZ_VERIFY_GITHUB_MINTER_BEARER: "lab-bearer" };
+      const config = yield* load(lab);
+      assert.deepStrictEqual(config.github.authority.mode === "minter" && config.github.authority.auth.kind, "bearer");
+      const production = yield* Effect.flip(load({ ...lab, NODE_ENV: "production" }));
+      assert.instanceOf(production, InvalidConfiguration);
+      assert.include(production.message, "NODE_ENV is production");
+      const both = yield* Effect.flip(load({ ...lab, GITHUB_MINTER_ACCESS_KEY_ID: "AKIAEXAMPLE", GITHUB_MINTER_SECRET_ACCESS_KEY: "secret" }));
+      assert.instanceOf(both, InvalidConfiguration);
     }),
   );
 

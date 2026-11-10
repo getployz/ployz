@@ -275,15 +275,17 @@ const storeAnswer = <C extends StoreCall>(caller: AgentCaller, call: C, source?:
   return secret !== null ? Effect.succeed(answered({ ok: false, refusal: secret })) : callStore(caller.organization.id, caller.userId, call, source, { approval: "not_required", permissions: callerPermissions(caller), environments: callerEnvironments(caller) }).pipe(Effect.map((result) => answered(shownTo(caller, call, result))));
 };
 
-const agentRead = (caller: AgentCaller) => (ask: Ask) =>
-  ask.at === "store"
-    ? storeAnswer(caller, { operation: "read", query: ask.ask })
-    : callCloud(caller, { ask: ask.ask }).pipe(Effect.map(answered));
+const agentRead = (caller: AgentCaller) => (ask: Ask) => Effect.gen(function* () {
+  return ask.at === "store"
+    ? yield* storeAnswer(caller, { operation: "read", query: ask.ask })
+    : answered(yield* callCloud(caller, { ask: ask.ask }));
+});
 
-const agentWrite = (caller: AgentCaller) => (write: Write) =>
-  write.at === "store"
-    ? storeAnswer(caller, { operation: "write", command: write.write }, AGENT)
-    : callCloud(caller, { act: write.write }).pipe(Effect.map(answered));
+const agentWrite = (caller: AgentCaller) => (write: Write) => Effect.gen(function* () {
+  return write.at === "store"
+    ? yield* storeAnswer(caller, { operation: "write", command: write.write }, AGENT)
+    : answered(yield* callCloud(caller, { act: write.write }));
+});
 
 const done = (outcome: ToolOutcome): AgentResult => ({ outcome });
 
