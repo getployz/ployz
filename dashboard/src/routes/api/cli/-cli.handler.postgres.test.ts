@@ -1825,7 +1825,8 @@ it.live(
         );
 
         const branches = yield* cli("GET", "github/branches?repository=ACME/web", alice);
-        assert.deepInclude(branches.json, { access: "connected", branches: ["dev", "main"], repository_id: 11, owner_id: 5001 });
+        assert.deepInclude(branches.json, { access: "connected", branches: ["dev", "main"] });
+        assert.deepInclude(branches.json as Record<string, unknown>, { repository_id: 11, owner_id: 5001 });
         assert.strictEqual((yield* cli("GET", "github/branches?repository=acme/secret", alice)).status, 404);
 
         const tree = yield* cli("GET", "github/tree?repository=acme%2Fweb&path=src", alice);
