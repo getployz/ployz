@@ -13,8 +13,8 @@ use ployz_core::{
     SEED_REFUSED_BY_ENFORCEMENT, SEED_VOLUME_CAPABILITY, SET_VOLUME_COPY_CAPABILITY, Sealing,
     SnapshotName, VOLUME_START_REFUSED_BY_ENFORCEMENT,
     authority::{
-        AuthorityRefusal, Purpose, Signed, StepDigest, Timestamp, VolumeApproval, VolumeFacts,
-        VolumeStep, VolumeWorkflow, volume,
+        Approver, AuthorityRefusal, Purpose, Signed, StepDigest, Timestamp, VolumeApproval,
+        VolumeFacts, VolumeStep, VolumeWorkflow, volume,
     },
 };
 pub(crate) use ployz_decide::volume_records::{GrantScope, VolumeRecords};
@@ -52,6 +52,7 @@ impl LocalMachine {
         };
         let operation = approval.open().map_err(Error::VolumeStepRefused)?.operation;
         let digest = StepDigest::of(&approval.body);
+        let mut by = None;
         self.approvals
             .change_volumes(Timestamp::now(), |records, now| {
                 records
@@ -67,11 +68,17 @@ impl LocalMachine {
                                 now,
                             },
                         )
-                        .map(|approved| approved.body.workflow)
+                        .map(|approved| {
+                            by = Some(Approver::Device(approved.by).to_string());
+                            approved.body.workflow
+                        })
                     })
                     .map_err(Error::VolumeStepRefused)
-            })
-            .inspect(|()| tracing::info!(%operation, %volume, ?step, "Volume step admitted"))?;
+            })?;
+        match by {
+            Some(by) => tracing::info!(?step, "Volume {operation} approved by {by} for {volume}"),
+            None => tracing::info!(%operation, %volume, ?step, "Volume step admitted"),
+        }
         Ok(operation)
     }
 
