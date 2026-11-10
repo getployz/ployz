@@ -16,13 +16,16 @@ use ts_rs::TS;
 
 use super::{
     canonical::{self, CanonicalError, Timestamp, hex_bytes, write_hex},
-    deploy::{PayloadDigest, drop_nulls},
+    deploy::{Creation, PayloadDigest, content_addressed, drop_nulls},
     keys::{Approver, Purpose, Signed, SigningPublicKey, Statement},
     refusal::AuthorityRefusal,
     restart::SignerKey,
     trusted_key::TrustedKeys,
 };
-use crate::{BuildGrantId, MachineId, Namespace, SealedRecord, SealingPublicKey, ServiceName};
+use crate::{
+    BuildGrantId, ContainerKind, GithubToken, MachineId, Namespace, RequestedServiceSpec,
+    SealedRecord, SealingPublicKey, ServiceName,
+};
 
 /// What prefixes every build audience, so a token minted for a Ployz build names no other
 /// relying party's audience.
@@ -469,6 +472,149 @@ impl BuildClaim {
             write!(audience, "{byte:02x}").expect("writing to a String cannot fail");
         }
         Ok(audience)
+    }
+}
+
+/// The digest a rule approves for `spec` in `namespace`: its [`PayloadDigest`] with the
+/// image left out, which the image token fills.
+///
+/// # Errors
+/// Returns a [`CanonicalError`] when the spec has no [`PayloadDigest`] in `namespace`.
+pub fn template(
+    spec: &RequestedServiceSpec,
+    namespace: &Namespace,
+) -> Result<PayloadDigest, CanonicalError> {
+    let mut spec = spec.clone();
+    spec.container.image = String::new();
+    PayloadDigest::of(&spec, namespace)
+}
+
+/// What a creation under a rule carries in place of a deploy approval: the signed rule,
+/// the pinned builder's image token, and the claim whose audience it names. Cloud relays
+/// all of it; a Machine trusts the claim only once the token's audience is its hash.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
+#[serde(deny_unknown_fields)]
+pub struct RuleProof {
+    #[ts(type = "unknown")]
+    pub rule: Signed<AutoDeployRule>,
+    /// The raw GitHub Actions OIDC token whose audience is `claim`'s.
+    pub token: GithubToken,
+    pub claim: BuildClaim,
+    /// A token that may read the repository's branch head, such as an installation
+    /// token narrowed to `contents: read`. `None` reads a public repository.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub reader: Option<GithubToken>,
+}
+
+/// What a Machine knows when it checks a rule against a deploy request: its own facts and
+/// the branch head it read from GitHub just now.
+#[derive(Clone, Copy, Debug)]
+pub struct RuleFacts<'a> {
+    /// The Sealing public key this Machine holds.
+    pub cluster: SealingPublicKey,
+    /// The attest key this Machine derives from it.
+    pub attest: AttestKey,
+    pub machine: &'a MachineId,
+    /// The Namespace of the Container the request creates or acts on.
+    pub namespace: &'a Namespace,
+    /// The Service the request creates or acts on.
+    pub service: &'a ServiceName,
+    pub head: CommitSha,
+}
+
+impl AutoDeployRule {
+    /// Check a step on an existing Container under this rule: the rule's Cluster,
+    /// Machines, Environment and Service, a live generation, and `claim` naming this
+    /// rule's build of the head. `claim` must already be authentic: its audience is a
+    /// GitHub token's, or this Machine accepted it before.
+    ///
+    /// # Errors
+    /// Returns [`AuthorityRefusal::Mismatch`] naming the first fact that does not hold.
+    pub fn verify_step(
+        &self,
+        claim: &BuildClaim,
+        facts: &RuleFacts<'_>,
+    ) -> Result<(), AuthorityRefusal> {
+        let policy = self
+            .service(facts.service)
+            .map(|service| PolicyDigest::of(&service.policy));
+        let checks = [
+            (
+                "a Cluster",
+                self.cluster == facts.cluster && claim.cluster == facts.cluster,
+            ),
+            ("a Machine", self.machines.contains(facts.machine)),
+            ("an Environment", &self.namespace == facts.namespace),
+            ("an ended rule", !self.ended),
+            (
+                "a Service",
+                policy.is_some() && &claim.service == facts.service,
+            ),
+            ("a rule", claim.rule == self.rule),
+            ("a generation", claim.generation == self.generation),
+            (
+                "a policy",
+                policy.is_some_and(|policy| policy.ok() == Some(claim.policy)),
+            ),
+            ("a commit", claim.commit == facts.head),
+        ];
+        // Only a build of the head reaches a creation through a rule. D6's approved
+        // builds deploy through a person's deploy approval instead.
+        match claim.authority {
+            CommitAuthority::Head => {}
+        }
+        match checks.into_iter().find(|(_, holds)| !holds) {
+            Some((field, _)) => Err(AuthorityRefusal::Mismatch { field }),
+            None => Ok(()),
+        }
+    }
+
+    /// Check a new Container under this rule: everything [`Self::verify_step`] checks,
+    /// then that `claim` reports an image built with secrets sealed from this Machine's
+    /// attest key, that the spec runs exactly that image, and that the spec with its
+    /// image left out is the template the rule approves. Returns the image.
+    ///
+    /// # Errors
+    /// Returns [`AuthorityRefusal::Mismatch`] naming the first fact that does not hold.
+    pub fn verify_creation(
+        &self,
+        claim: &BuildClaim,
+        facts: &RuleFacts<'_>,
+        creation: Creation<'_>,
+    ) -> Result<ImageDigest, AuthorityRefusal> {
+        let mismatch = |field| AuthorityRefusal::Mismatch { field };
+        if creation.service != facts.service || &creation.spec.name != facts.service {
+            return Err(mismatch("a Service"));
+        }
+        self.verify_step(claim, facts)?;
+        let (image, attest) = match claim.stage {
+            BuildStage::Built { image, attest } => (image, attest),
+            BuildStage::Grant { .. } => return Err(mismatch("a stage")),
+        };
+        if attest != facts.attest {
+            return Err(mismatch("the attest key"));
+        }
+        let running = &creation.spec.container.image;
+        let digest = running
+            .rsplit_once('@')
+            .map_or(running.as_str(), |(_, digest)| digest);
+        if !content_addressed(running) || ImageDigest::parse(digest) != Ok(image) {
+            return Err(mismatch("an image"));
+        }
+        if creation.kind == ContainerKind::PreDeployHook && creation.spec.pre_deploy.is_none() {
+            return Err(mismatch("a hook"));
+        }
+        let approved = self
+            .service(facts.service)
+            .map(|service| service.template)
+            .ok_or_else(|| mismatch("a Service"))?;
+        let template = template(&creation.spec.to_requested(), facts.namespace)
+            .map_err(|_| mismatch("a payload"))?;
+        if template != approved {
+            return Err(mismatch("a payload"));
+        }
+        Ok(image)
     }
 }
 

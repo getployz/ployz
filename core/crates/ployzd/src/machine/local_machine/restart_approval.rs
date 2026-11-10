@@ -14,8 +14,9 @@ use ployz_core::{
     LocalMachinePhase, ManagementScope, OperationId, RunTarget, Sealing, ServiceName,
     SetDeviceEnforcementRequest,
     authority::{
-        AuthorityRefusal, AutoDeployRule, DeployApproval, Purpose, RestartApproval, RestartFacts,
-        RestartStep, RuleId, Signed, StartingSet, Timestamp, restart, starting_set,
+        AuthorityRefusal, AutoDeployRule, BuildClaim, BuildStage, DeployApproval, Purpose,
+        RestartApproval, RestartFacts, RestartStep, RuleId, Signed, StartingSet, Timestamp,
+        restart, starting_set,
     },
 };
 use serde::{Deserialize, Serialize};
@@ -117,12 +118,13 @@ impl LocalMachine {
     /// trusted passkey's session grant that covers it, and record the step so the
     /// same approval never runs it again. A new creation, adoption included, needs a deploy
     /// approval of its spec, and a step that carries only a deploy approval is checked
-    /// against it. Returns a want pinned to the verified Container ID. An absent target is
-    /// refused. A Machine not enforcing passes untouched.
+    /// against it. A change carrying only an automatic deploy rule's proof is checked
+    /// against the rule. Returns a want pinned to the verified Container ID. An absent
+    /// target is refused. A Machine not enforcing passes untouched.
     ///
     /// # Errors
-    /// Returns [`Error::RestartRefused`] or [`Error::DeployRefused`] naming what the
-    /// approval lacks, [`Error::ApprovalRecord`] when the record of taken steps cannot be
+    /// Returns [`Error::RestartRefused`], [`Error::DeployRefused`] or
+    /// [`Error::RuleDeployRefused`] naming what the approval lacks, [`Error::ApprovalRecord`] when the record of taken steps cannot be
     /// read or written, and [`Error::DockerUnavailable`] or [`Error::Docker`] when the
     /// Container cannot be read.
     pub async fn admit_operator_restart(
@@ -130,10 +132,14 @@ impl LocalMachine {
         want: ContainerWant,
         approval: Option<&Signed<RestartApproval>>,
         deploy: Option<&Signed<DeployApproval>>,
+        rule: Option<&ployz_core::authority::RuleProof>,
     ) -> Result<ContainerWant, Error> {
         let record = self.record();
         if !record.device_enforcement() {
             return Ok(want);
+        }
+        if let (None, None, Some(rule)) = (approval, deploy, rule) {
+            return self.admit_rule_deploy_online(want, rule).await;
         }
         let Some((step, locator)) = RestartStep::of(&want) else {
             self.admit_operator_creation(&want, deploy)?;
@@ -230,6 +236,12 @@ struct Consumption {
     /// expire.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     proofs: BTreeMap<String, Timestamp>,
+    /// The build each rule's Service last created a Container from here.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    accepted: BTreeMap<String, AcceptedBuild>,
+    /// The hook each rule's Service last ran here, one per push.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    rule_hooks: BTreeMap<String, RuleHook>,
     #[serde(flatten)]
     operations: BTreeMap<OperationId, Operation>,
 }
@@ -237,12 +249,8 @@ struct Consumption {
 impl Consumption {
     /// Refuse `rule` when it is below this Machine's mark for it, or moves it to another
     /// repository, branch or Namespace.
-    fn check_mark(&self, rule: &AutoDeployRule) -> Result<(), Error> {
-        let refused = |field| {
-            Err(Error::RuleGrantRefused(AuthorityRefusal::Mismatch {
-                field,
-            }))
-        };
+    fn check_mark(&self, rule: &AutoDeployRule) -> Result<(), AuthorityRefusal> {
+        let refused = |field| Err(AuthorityRefusal::Mismatch { field });
         let Some(mark) = self.rules.get(&rule.rule) else {
             return Ok(());
         };
@@ -270,6 +278,45 @@ impl Consumption {
         });
         mark.generation = mark.generation.max(rule.generation);
     }
+}
+
+/// Where a rule's record for one Service is kept: one entry per rule and Service, so the
+/// record grows with rules, not with pushes.
+fn rule_service_key(rule: &AutoDeployRule, service: &ServiceName) -> String {
+    format!("{}/{service}", rule.rule)
+}
+
+/// The build this Machine last admitted a creation for under a rule's Service. A later
+/// creation of the same build may rely on it in place of an unexpired token; it still
+/// needs the commit to be the head.
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+struct AcceptedBuild {
+    generation: u64,
+    commit: ployz_core::authority::CommitSha,
+    image: ployz_core::authority::ImageDigest,
+}
+
+impl AcceptedBuild {
+    fn of(claim: &BuildClaim) -> Option<Self> {
+        match claim.stage {
+            BuildStage::Built { image, .. } => Some(Self {
+                generation: claim.generation,
+                commit: claim.commit,
+                image,
+            }),
+            BuildStage::Grant { .. } => None,
+        }
+    }
+}
+
+/// The hook one push ran for a rule's Service: its build and the slot it was made in.
+#[derive(Clone, Debug, Deserialize, Serialize)]
+struct RuleHook {
+    generation: u64,
+    commit: ployz_core::authority::CommitSha,
+    slot: ployz_core::CreationKey,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    made: bool,
 }
 
 /// A rule's identity as this Machine first saw it, which no later generation may change,
@@ -484,9 +531,14 @@ impl ConsumptionLog {
             *guard = Some(self.load().map_err(Error::ApprovalRecord)?);
         }
         let consumption = guard.as_ref().expect("loaded above");
-        Ok(consumption.operations.values().any(|taken| {
-            taken.hook_made && taken.hook.as_ref().is_some_and(|hook| hook.as_str() == key)
-        }))
+        let rule_hook = consumption
+            .rule_hooks
+            .values()
+            .any(|taken| taken.made && taken.slot.as_str() == key);
+        Ok(rule_hook
+            || consumption.operations.values().any(|taken| {
+                taken.hook_made && taken.hook.as_ref().is_some_and(|hook| hook.as_str() == key)
+            }))
     }
 
     /// Record that a deploy's hook is about to start in the slot `key` names, so no
@@ -509,6 +561,12 @@ impl ConsumptionLog {
         for taken in updated.operations.values_mut() {
             if !taken.hook_made && taken.hook.as_ref().is_some_and(|hook| hook.as_str() == key) {
                 taken.hook_made = true;
+                marked = true;
+            }
+        }
+        for taken in updated.rule_hooks.values_mut() {
+            if !taken.made && taken.slot.as_str() == key {
+                taken.made = true;
                 marked = true;
             }
         }
@@ -667,7 +725,9 @@ impl ConsumptionLog {
         let now = consumption
             .expiry_time_floor
             .map_or(now, |floor| now.max(floor));
-        consumption.check_mark(rule)?;
+        consumption
+            .check_mark(rule)
+            .map_err(Error::RuleGrantRefused)?;
         let spent = hex::encode(Sha256::digest(jti.as_bytes()));
         if consumption.proofs.contains_key(&spent) {
             return Err(Error::RuleGrantRefused(AuthorityRefusal::ProofReplayed));
@@ -683,19 +743,17 @@ impl ConsumptionLog {
     }
 
     /// Record that a validly signed `rule` exists, ended or not, before anything else
-    /// decides on it: no generation below it is admitted again. Refuses a generation
-    /// lower than the mark, or one that moves the rule to another repository, branch or
-    /// Namespace. Writes only when the mark rises.
-    pub(crate) fn mark_rule(&self, rule: &AutoDeployRule) -> Result<(), Error> {
-        let mut guard = self
-            .operations
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
-        if guard.is_none() {
-            *guard = Some(self.load().map_err(Error::ApprovalRecord)?);
-        }
+    /// decides on it: no generation below it is admitted again. Refuses, through
+    /// `refused`, a generation lower than the mark, or one that moves the rule to another
+    /// repository, branch or Namespace. Writes only when the mark rises.
+    pub(crate) fn mark_rule(
+        &self,
+        rule: &AutoDeployRule,
+        refused: impl FnOnce(AuthorityRefusal) -> Error,
+    ) -> Result<(), Error> {
+        let mut guard = self.loaded()?;
         let consumption = guard.as_ref().expect("loaded above");
-        consumption.check_mark(rule)?;
+        consumption.check_mark(rule).map_err(refused)?;
         if consumption
             .rules
             .get(&rule.rule)
@@ -706,6 +764,88 @@ impl ConsumptionLog {
         let mut updated = consumption.clone();
         updated.raise_mark(rule);
         self.write(&mut guard, updated)
+    }
+
+    /// Whether this Machine already admitted a creation of `claim`'s build under `rule`.
+    pub(crate) fn accepted(
+        &self,
+        rule: &AutoDeployRule,
+        claim: &BuildClaim,
+    ) -> Result<bool, Error> {
+        let guard = self.loaded()?;
+        let accepted = guard
+            .as_ref()
+            .expect("loaded above")
+            .accepted
+            .get(&rule_service_key(rule, &claim.service));
+        Ok(AcceptedBuild::of(claim).is_some_and(|build| accepted == Some(&build)))
+    }
+
+    /// Record `claim`'s build as the one `rule`'s Service last created a Container from
+    /// here. Written before the Container is made.
+    pub(crate) fn accept(&self, rule: &AutoDeployRule, claim: &BuildClaim) -> Result<(), Error> {
+        let Some(build) = AcceptedBuild::of(claim) else {
+            return Ok(());
+        };
+        let mut guard = self.loaded()?;
+        let consumption = guard.as_ref().expect("loaded above");
+        let key = rule_service_key(rule, &claim.service);
+        if consumption.accepted.get(&key) == Some(&build) {
+            return Ok(());
+        }
+        let mut updated = consumption.clone();
+        updated.accepted.insert(key, build);
+        self.write(&mut guard, updated)
+    }
+
+    /// Take the hook place of `claim`'s push under `rule` for the slot named `slot`,
+    /// refusing one taken for another slot. A request resent for the same slot passes:
+    /// the Machine adopts the hook that ran. A later push of the Service replaces the
+    /// entry, so each push runs its hook once.
+    pub(crate) fn consume_rule_hook(
+        &self,
+        rule: &AutoDeployRule,
+        claim: &BuildClaim,
+        slot: &ployz_core::CreationKey,
+    ) -> Result<(), Error> {
+        let mut guard = self.loaded()?;
+        let consumption = guard.as_ref().expect("loaded above");
+        let key = rule_service_key(rule, &claim.service);
+        if let Some(taken) = consumption.rule_hooks.get(&key)
+            && taken.generation == claim.generation
+            && taken.commit == claim.commit
+        {
+            if &taken.slot == slot {
+                return Ok(());
+            }
+            return Err(Error::RuleDeployRefused(
+                super::rule_deploy::RuleDeployRefusal::Rule(AuthorityRefusal::Mismatch {
+                    field: "a hook run",
+                }),
+            ));
+        }
+        let mut updated = consumption.clone();
+        updated.rule_hooks.insert(
+            key,
+            RuleHook {
+                generation: claim.generation,
+                commit: claim.commit,
+                slot: slot.clone(),
+                made: false,
+            },
+        );
+        self.write(&mut guard, updated)
+    }
+
+    fn loaded(&self) -> Result<std::sync::MutexGuard<'_, Option<Consumption>>, Error> {
+        let mut guard = self
+            .operations
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        if guard.is_none() {
+            *guard = Some(self.load().map_err(Error::ApprovalRecord)?);
+        }
+        Ok(guard)
     }
 
     fn write(

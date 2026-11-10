@@ -5222,7 +5222,7 @@ mod ensure_container {
             .unwrap();
             let admitted = service
                 .local
-                .admit_operator_restart(want, Some(&signed), None)
+                .admit_operator_restart(want, Some(&signed), None, None)
                 .await
                 .unwrap();
             ensure(
@@ -6141,6 +6141,7 @@ mod ensure_container {
                     serde_json::from_value(new_want("pre_deploy_hook", "h1", &approved)).unwrap(),
                     None,
                     Some(&signed),
+                    None,
                 )
                 .await
                 .unwrap();

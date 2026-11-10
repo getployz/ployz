@@ -3,12 +3,13 @@
 use serde_json::{Value, json};
 
 use super::*;
-use crate::DeviceKey;
+use crate::authority::deploy::Creation;
 use crate::authority::{
     keys::Signer,
     session::{Delegation, GrantBody, SessionGrant},
     trusted_key::tests::{Answer, Authenticator, HONEST, trusting},
 };
+use crate::{ContainerKind, DeviceKey};
 
 const BUILDER: &str =
     "Ployz-test/build/.github/workflows/build.yml@0123456789abcdef0123456789abcdef01234567";
@@ -399,5 +400,352 @@ fn a_browser_key_under_a_valid_session_grant_cannot_sign_a_rule() {
         AuthorityRefusal::Mismatch {
             field: "the signer"
         }
+    );
+}
+
+const BUILT: &str =
+    "ployz-build/web@sha256:4444444444444444444444444444444444444444444444444444444444444444";
+const SEALED_A: &str = "QUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQQ==";
+
+/// A built Service with a plain value, a Sealed value, a Bind Mount, a host port and a hook.
+fn requested_json() -> Value {
+    json!({
+        "name": "web",
+        "mode": {"mode": "replicated", "replicas": 2},
+        "container": {
+            "image": BUILT,
+            "pull_policy": "missing",
+            "environment": {
+                "PLAIN": "one",
+                "SECRET": {"sealed": SEALED_A, "scope": "shared", "key": "SECRET"}
+            },
+            "sealed_identity": {
+                "organization": "org",
+                "environment": "11111111-1111-1111-1111-111111111111",
+                "service": "22222222-2222-2222-2222-222222222222"
+            }
+        },
+        "ports": [{"mode": "host", "bind": {"kind": "all"}, "published_port": 8080,
+                   "container_port": 80, "transport_protocol": "tcp"}],
+        "volumes": [{"reference": "host", "source": {"kind": "bind", "machine_path": "/srv/web"}}],
+        "mounts": [{"volume": "host", "target": "/srv"}],
+        "pre_deploy": {"command": ["migrate"]}
+    })
+}
+
+fn requested(value: Value) -> crate::RequestedServiceSpec {
+    serde_json::from_value(value).unwrap()
+}
+
+fn resolved(spec: &crate::RequestedServiceSpec) -> crate::ResolvedServiceSpec {
+    let mut spec = spec.clone();
+    spec.mount_graph = spec
+        .mount_graph
+        .scope_to_namespace(&Namespace::parse("app").unwrap())
+        .unwrap();
+    spec.to_resolved(
+        crate::ServiceId::parse("c".repeat(32)).unwrap(),
+        crate::ResolvedUpdateConfig::default(),
+    )
+    .unwrap()
+}
+
+fn approved_rule() -> AutoDeployRule {
+    let mut rule = rule();
+    rule.services[0].template = template(
+        &requested(requested_json()),
+        &Namespace::parse("app").unwrap(),
+    )
+    .unwrap();
+    rule
+}
+
+fn built() -> BuildClaim {
+    claim(BuildStage::Built {
+        image: ImageDigest::from_bytes([0x44; 32]),
+        attest: AttestKey::from_bytes([0x55; 32]),
+    })
+}
+
+/// Check a creation of `spec` under `rule` with `claim`, on a Machine whose head is the
+/// claim's commit.
+fn create(
+    rule: &AutoDeployRule,
+    claim: &BuildClaim,
+    spec: Value,
+    kind: ContainerKind,
+) -> Result<ImageDigest, AuthorityRefusal> {
+    let spec = resolved(&requested(spec));
+    let machine = MachineId::parse("1".repeat(32)).unwrap();
+    let namespace = Namespace::parse("app").unwrap();
+    let facts = RuleFacts {
+        cluster: SealingPublicKey::from_bytes([9; 32]),
+        attest: AttestKey::from_bytes([0x55; 32]),
+        machine: &machine,
+        namespace: &namespace,
+        service: &spec.name,
+        head: CommitSha::parse("fedcba9876543210fedcba9876543210fedcba98").unwrap(),
+    };
+    rule.verify_creation(
+        claim,
+        &facts,
+        Creation {
+            service: &spec.name,
+            kind,
+            spec: &spec,
+        },
+    )
+}
+
+fn changed(path: &[&str], value: Value) -> Value {
+    let mut spec = requested_json();
+    let mut at = &mut spec;
+    for key in path {
+        at = if let Ok(index) = key.parse::<usize>() {
+            &mut at[index]
+        } else {
+            &mut at[*key]
+        };
+    }
+    *at = value;
+    spec
+}
+
+#[test]
+fn the_template_leaves_the_image_out() {
+    let namespace = Namespace::parse("app").unwrap();
+    let other = changed(&["container", "image"], json!("nginx:latest"));
+    assert_eq!(
+        template(&requested(requested_json()), &namespace).unwrap(),
+        template(&requested(other), &namespace).unwrap()
+    );
+    let mut plain = requested(requested_json());
+    plain.container.image = String::new();
+    assert_eq!(
+        template(&requested(requested_json()), &namespace).unwrap(),
+        PayloadDigest::of(&plain, &namespace).unwrap()
+    );
+}
+
+#[test]
+fn a_rule_admits_the_heads_image_with_the_settings_it_approves() {
+    let rule = approved_rule();
+    assert_eq!(
+        create(
+            &rule,
+            &built(),
+            requested_json(),
+            ContainerKind::ServiceContainer
+        ),
+        Ok(ImageDigest::from_bytes([0x44; 32]))
+    );
+    assert_eq!(
+        create(
+            &rule,
+            &built(),
+            requested_json(),
+            ContainerKind::PreDeployHook
+        ),
+        Ok(ImageDigest::from_bytes([0x44; 32]))
+    );
+}
+
+#[test]
+fn each_change_to_an_approved_creation_is_refused_by_name() {
+    let rule = approved_rule();
+    let other_image =
+        "ployz-build/web@sha256:6666666666666666666666666666666666666666666666666666666666666666";
+    let spec_cases: Vec<(&str, Value, &str)> = vec![
+        (
+            "image digest",
+            changed(&["container", "image"], json!(other_image)),
+            "an image",
+        ),
+        (
+            "image tag",
+            changed(&["container", "image"], json!("ployz-build/web:latest")),
+            "an image",
+        ),
+        (
+            "plain value",
+            changed(&["container", "environment", "PLAIN"], json!("two")),
+            "a payload",
+        ),
+        (
+            "Sealed ciphertext",
+            changed(
+                &["container", "environment", "SECRET", "sealed"],
+                json!("QkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQg=="),
+            ),
+            "a payload",
+        ),
+        (
+            "privileged",
+            changed(&["container", "privileged"], json!(true)),
+            "a payload",
+        ),
+        (
+            "Bind Mount",
+            changed(&["volumes", "0", "source", "machine_path"], json!("/")),
+            "a payload",
+        ),
+        (
+            "host port",
+            changed(&["ports", "0", "published_port"], json!(22)),
+            "a payload",
+        ),
+        (
+            "hook command",
+            changed(&["pre_deploy", "command"], json!(["sh", "-c", "curl evil"])),
+            "a payload",
+        ),
+    ];
+    for (case, spec, field) in spec_cases {
+        assert_eq!(
+            create(&rule, &built(), spec, ContainerKind::ServiceContainer),
+            Err(AuthorityRefusal::Mismatch { field }),
+            "{case}"
+        );
+    }
+    let claim_cases: Vec<(&str, BuildClaim, &str)> = vec![
+        (
+            "lower generation",
+            BuildClaim {
+                generation: 2,
+                ..built()
+            },
+            "a generation",
+        ),
+        (
+            "commit not the head",
+            BuildClaim {
+                commit: CommitSha::parse(&"0".repeat(40)).unwrap(),
+                ..built()
+            },
+            "a commit",
+        ),
+        (
+            "aud naming another image",
+            claim(BuildStage::Built {
+                image: ImageDigest::from_bytes([0x66; 32]),
+                attest: AttestKey::from_bytes([0x55; 32]),
+            }),
+            "an image",
+        ),
+        (
+            "attest naming another key",
+            claim(BuildStage::Built {
+                image: ImageDigest::from_bytes([0x44; 32]),
+                attest: AttestKey::from_bytes([0x77; 32]),
+            }),
+            "the attest key",
+        ),
+        ("the grant token", claim(grant()), "a stage"),
+        (
+            "another rule",
+            BuildClaim {
+                rule: RuleId::from_bytes([0x12; 16]),
+                ..built()
+            },
+            "a rule",
+        ),
+        (
+            "another policy",
+            BuildClaim {
+                policy: PolicyDigest::from_bytes([1; 32]),
+                ..built()
+            },
+            "a policy",
+        ),
+        (
+            "another Cluster",
+            BuildClaim {
+                cluster: SealingPublicKey::from_bytes([8; 32]),
+                ..built()
+            },
+            "a Cluster",
+        ),
+    ];
+    for (case, claim, field) in claim_cases {
+        assert_eq!(
+            create(
+                &rule,
+                &claim,
+                requested_json(),
+                ContainerKind::ServiceContainer
+            ),
+            Err(AuthorityRefusal::Mismatch { field }),
+            "{case}"
+        );
+    }
+}
+
+#[test]
+fn a_rule_refuses_outside_its_environment_machines_and_live_generations() {
+    let ended = AutoDeployRule {
+        ended: true,
+        ..approved_rule()
+    };
+    assert_eq!(
+        create(
+            &ended,
+            &built(),
+            requested_json(),
+            ContainerKind::ServiceContainer
+        ),
+        Err(AuthorityRefusal::Mismatch {
+            field: "an ended rule"
+        })
+    );
+    let elsewhere = AutoDeployRule {
+        machines: vec![MachineId::parse("2".repeat(32)).unwrap()],
+        ..approved_rule()
+    };
+    assert_eq!(
+        create(
+            &elsewhere,
+            &built(),
+            requested_json(),
+            ContainerKind::ServiceContainer
+        ),
+        Err(AuthorityRefusal::Mismatch { field: "a Machine" })
+    );
+    let other = AutoDeployRule {
+        namespace: Namespace::parse("other").unwrap(),
+        ..approved_rule()
+    };
+    assert_eq!(
+        create(
+            &other,
+            &built(),
+            requested_json(),
+            ContainerKind::ServiceContainer
+        ),
+        Err(AuthorityRefusal::Mismatch {
+            field: "an Environment"
+        })
+    );
+    let api = changed(&["name"], json!("api"));
+    assert_eq!(
+        create(
+            &approved_rule(),
+            &built(),
+            api,
+            ContainerKind::ServiceContainer
+        ),
+        Err(AuthorityRefusal::Mismatch { field: "a Service" })
+    );
+}
+
+#[test]
+fn a_hook_creation_needs_a_hook_in_the_spec() {
+    let mut spec = requested_json();
+    spec.as_object_mut().unwrap().remove("pre_deploy");
+    let mut rule = approved_rule();
+    rule.services[0].template =
+        template(&requested(spec.clone()), &Namespace::parse("app").unwrap()).unwrap();
+    assert_eq!(
+        create(&rule, &built(), spec, ContainerKind::PreDeployHook),
+        Err(AuthorityRefusal::Mismatch { field: "a hook" })
     );
 }

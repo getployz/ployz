@@ -90,6 +90,39 @@ struct Approvals {
     restart: Option<ployz_core::authority::Signed<ployz_core::authority::RestartApproval>>,
     /// The approval of the Deploy every Container this client creates or steps belongs to.
     deploy: Option<ployz_core::authority::Signed<ployz_core::authority::DeployApproval>>,
+    /// An automatic deploy rule's proof for each Service it built, when a rule deploys in
+    /// place of a person's approval.
+    rules: std::collections::BTreeMap<ployz_core::ServiceName, ployz_core::authority::RuleProof>,
+}
+
+impl Approvals {
+    /// The rule proof a change of `want` carries: its Service's, or for a step on a
+    /// Container named only by ID, any of the Deploy's, since such a step needs only the
+    /// rule's Environment.
+    fn rule_for(&self, want: &ContainerWant) -> Option<Box<ployz_core::authority::RuleProof>> {
+        let service = match want {
+            ContainerWant::Running {
+                container: ployz_core::RunTarget::New(new),
+                ..
+            } => Some(&new.slot.service),
+            ContainerWant::Held { container, .. }
+            | ContainerWant::Out { container, .. }
+            | ContainerWant::Stopped { container, .. }
+            | ContainerWant::Gone { container, .. }
+            | ContainerWant::Running {
+                container: ployz_core::RunTarget::Existing(container),
+                ..
+            } => match container {
+                ployz_core::ContainerLocator::Key(slot) => Some(&slot.service),
+                ployz_core::ContainerLocator::Id(_) => None,
+            },
+        };
+        service
+            .and_then(|service| self.rules.get(service))
+            .or_else(|| self.rules.values().next())
+            .cloned()
+            .map(Box::new)
+    }
 }
 
 /// The entry a redial found in another Cluster, shared by every clone of a client and
@@ -222,6 +255,17 @@ impl Client {
         approval: Option<ployz_core::authority::Signed<ployz_core::authority::DeployApproval>>,
     ) -> Self {
         Arc::make_mut(&mut self.approvals).deploy = approval;
+        self
+    }
+
+    /// Hand every Server the automatic deploy rule's proof for the Service each change
+    /// belongs to, in place of a person's deploy approval.
+    #[must_use]
+    pub(crate) fn with_rule_proofs(
+        mut self,
+        proofs: std::collections::BTreeMap<ployz_core::ServiceName, ployz_core::authority::RuleProof>,
+    ) -> Self {
+        Arc::make_mut(&mut self.approvals).rules = proofs;
         self
     }
 
@@ -1657,10 +1701,13 @@ impl Client {
     ) -> Result<ployz_core::EnsuredContainer, RpcError> {
         let target = MachineTarget::from(machine_id);
         crate::sealed_compat::admit(self, &target, &want).await?;
+        let want_for_rule = &want;
+        let rule = self.approvals.rule_for(want_for_rule);
         let payload = op::EnsureContainer::into_request(EnsureContainerRequest {
             want,
             approval: self.approvals.restart.clone(),
             deploy: self.approvals.deploy.clone(),
+            rule,
         })
         .encode()
         .map_err(|error| rpc_error(ConnectError::Codec(error)))?;

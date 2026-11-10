@@ -146,6 +146,8 @@ macro_rules! rpc_catalog {
                 DEPLOY_APPROVAL_CAPABILITY: ("ployz.container.deploy-approval.v1", Always),
                 /// A deploy approval may be an unsigned step of a signed proposal bundle that rides in its envelope.
                 DEPLOY_PROPOSAL_CAPABILITY: ("ployz.container.deploy-proposal.v1", Always),
+                /// `EnsureContainer` takes an automatic deploy rule with its image token and, under Device enforcement, creates an Operator's Container under it only for the head's image built under the rule.
+                DEPLOY_RULE_CAPABILITY: ("ployz.container.deploy-rule.v1", Always),
             }
         }
     };
