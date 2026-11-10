@@ -13,7 +13,8 @@ use ployz_core::authority::rule::{
     BUILDER_SHA, Builder, PolicyCache, RuleEvent, RuleService, RuleSource, Runner, template,
 };
 use ployz_core::authority::{
-    AutoDeployRule, CommitSha, RuleId, SealedDigest, Signed, Signer, SignerKey, Timestamp,
+    AutoDeployRule, BuildPolicy, CommitSha, RuleId, SealedDigest, Signed, Signer, SignerKey,
+    Timestamp,
 };
 use ployz_core::{RequestedServiceSpec, RpcErrorCode, SealedRecord, ServiceName};
 use ployz_store::{ApproveRule, RuleQuery, RuleView};
@@ -321,7 +322,7 @@ fn rule_service(view: &RuleView, name: &ServiceName, platform: &str) -> Result<R
         .iter()
         .find(|source| source.service == *name)
         .expect("one_branch found every source");
-    let policy = super::build::rule_policy(
+    let policy = BuildPolicy::derive(
         &source.root_dir,
         &source.build,
         spec,

@@ -4,7 +4,7 @@
 //! holds a push whose Saved settings the rule no longer approves, so a settings change
 //! waits for a person instead of failing on every Machine.
 
-use ployz_core::authority::{AutoDeployRule, Signed, rule::template};
+use ployz_core::authority::{AutoDeployRule, BuildPolicy, Signed, rule::template};
 use ployz_core::config::{SavedEnvironmentIntent, ServiceBuildConfig, ServiceSource};
 use ployz_core::{Namespace, RequestedServiceSpec, RpcError, ServiceName};
 use serde::{Deserialize, Serialize};
@@ -168,7 +168,7 @@ fn view_of(
         _ => Vec::new(),
     };
     let changed = match rule.as_ref().and_then(|rule| rule.open().ok()) {
-        Some(rule) if !target.is_empty() => changed(&rule, &namespace, &target, &[]),
+        Some(rule) if !target.is_empty() => changed(&rule, &namespace, &target, &sources, &[]),
         _ => Vec::new(),
     };
     Ok(RuleView {
@@ -181,7 +181,7 @@ fn view_of(
     })
 }
 
-fn sources(saved: &SavedEnvironmentIntent) -> Vec<RuleSourceView> {
+pub(crate) fn sources(saved: &SavedEnvironmentIntent) -> Vec<RuleSourceView> {
     saved
         .services
         .iter()
@@ -209,26 +209,40 @@ fn sources(saved: &SavedEnvironmentIntent) -> Vec<RuleSourceView> {
 }
 
 /// The Services a push of `rule`'s branch would deploy that the rule doesn't approve:
-/// each it covers whose template `target` changed, and each of `ships` it doesn't
-/// cover. All of them when the Environment moved to another Namespace.
+/// each it covers whose template in `target`, or whose build policy from `sources`,
+/// changed, and each of `ships` it doesn't cover. All of them when the Environment
+/// moved to another Namespace.
 pub(crate) fn changed(
     rule: &AutoDeployRule,
     namespace: &Namespace,
     target: &[RequestedServiceSpec],
+    sources: &[RuleSourceView],
     ships: &[ServiceName],
 ) -> Vec<ServiceName> {
+    let approves = |approved: &ployz_core::authority::RuleService| {
+        let Some(spec) = target.iter().find(|spec| spec.name == approved.name) else {
+            return false;
+        };
+        let Some(source) = sources
+            .iter()
+            .find(|source| source.service == approved.name)
+        else {
+            return false;
+        };
+        let policy = BuildPolicy::derive(
+            &source.root_dir,
+            &source.build,
+            spec,
+            approved.policy.platforms.clone(),
+            approved.policy.cache,
+        );
+        template(spec, namespace).ok().as_ref() == Some(&approved.template)
+            && policy == approved.policy
+    };
     let mut changed: Vec<ServiceName> = rule
         .services
         .iter()
-        .filter(|approved| {
-            rule.namespace != *namespace
-                || target
-                    .iter()
-                    .find(|spec| spec.name == approved.name)
-                    .is_none_or(|spec| {
-                        template(spec, namespace).ok().as_ref() != Some(&approved.template)
-                    })
-        })
+        .filter(|approved| rule.namespace != *namespace || !approves(approved))
         .map(|approved| approved.name.clone())
         .collect();
     for service in ships {

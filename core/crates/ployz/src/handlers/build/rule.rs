@@ -10,15 +10,12 @@
 //!   check-in ─▶ grant token (holder K, recipient R) ─▶ grant ─▶ secrets opened with A
 //!     ─▶ build with the rule's policy ─▶ push ─▶ image token (image, A)
 
-use std::collections::{BTreeMap, BTreeSet};
-
 use ployz_core::{
     BuildGrantId, GithubToken, ServiceName, X25519Secret,
     authority::{
         AttestKey, AutoDeployRule, BuildClaim, BuildPolicy, BuildStage, CommitAuthority, CommitSha,
-        ImageDigest, PolicyDigest, RecipientKey, Signed, rule::PolicyCache, rule::PolicyMethod,
+        ImageDigest, PolicyDigest, RecipientKey, Signed, rule::PolicyCache,
     },
-    config::BuildMethod,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -97,68 +94,12 @@ pub(super) fn policy<'rule>(
 /// The policy `input` builds with. Platforms and cache are the rule's own: the build
 /// takes them from the policy, not from Cloud.
 fn derived(input: &BuildInput<'_>, rule: &BuildPolicy) -> BuildPolicy {
-    let build = input.settings;
-    let method = match build.build_method {
-        BuildMethod::Dockerfile => PolicyMethod::Dockerfile {
-            path: build
-                .dockerfile_path
-                .clone()
-                .unwrap_or_else(|| "Dockerfile".to_owned()),
-        },
-        BuildMethod::Railpack => PolicyMethod::Railpack {
-            command: build.command.clone(),
-        },
-    };
-    let mut args = BTreeMap::new();
-    let mut secrets = BTreeSet::new();
-    for (name, value) in &input.service.container.environment {
-        match value.text() {
-            Some(text) => {
-                args.insert(name.clone(), text.to_owned());
-            }
-            None => {
-                secrets.insert(name.clone());
-            }
-        }
-    }
-    BuildPolicy {
-        method,
-        context: input.root_dir.to_owned(),
-        target: None,
-        args,
-        secrets,
-        platforms: rule.platforms.clone(),
-        cache: rule.cache,
-    }
-}
-
-/// The policy a rule approves for a Service built from `root_dir` with `settings`, as the
-/// runner derives it from the deployment Cloud relays: [`policy`] then refuses any other.
-pub(in crate::handlers) fn approved_policy(
-    root_dir: &str,
-    settings: &ployz_core::config::ServiceBuildConfig,
-    service: &ployz_core::RequestedServiceSpec,
-    platforms: BTreeSet<String>,
-    cache: PolicyCache,
-) -> BuildPolicy {
-    let pinned = BuildPolicy {
-        method: PolicyMethod::Dockerfile {
-            path: String::new(),
-        },
-        context: String::new(),
-        target: None,
-        args: BTreeMap::new(),
-        secrets: BTreeSet::new(),
-        platforms,
-        cache,
-    };
-    derived(
-        &BuildInput {
-            root_dir,
-            settings,
-            service,
-        },
-        &pinned,
+    BuildPolicy::derive(
+        input.root_dir,
+        input.settings,
+        input.service,
+        rule.platforms.clone(),
+        rule.cache,
     )
 }
 

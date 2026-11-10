@@ -287,6 +287,53 @@ pub struct BuildPolicy {
     pub cache: PolicyCache,
 }
 
+impl BuildPolicy {
+    /// The policy a Service built from `root_dir` with `settings` builds with: its
+    /// method, context, and its plain and Sealed variables as build args and secrets.
+    /// `platforms` and `cache` come from the rule, not from the Service.
+    #[must_use]
+    pub fn derive(
+        root_dir: &str,
+        settings: &crate::config::ServiceBuildConfig,
+        service: &RequestedServiceSpec,
+        platforms: BTreeSet<String>,
+        cache: PolicyCache,
+    ) -> Self {
+        let method = match settings.build_method {
+            crate::config::BuildMethod::Dockerfile => PolicyMethod::Dockerfile {
+                path: settings
+                    .dockerfile_path
+                    .clone()
+                    .unwrap_or_else(|| "Dockerfile".to_owned()),
+            },
+            crate::config::BuildMethod::Railpack => PolicyMethod::Railpack {
+                command: settings.command.clone(),
+            },
+        };
+        let mut args = BTreeMap::new();
+        let mut secrets = BTreeSet::new();
+        for (name, value) in &service.container.environment {
+            match value.text() {
+                Some(text) => {
+                    args.insert(name.clone(), text.to_owned());
+                }
+                None => {
+                    secrets.insert(name.clone());
+                }
+            }
+        }
+        Self {
+            method,
+            context: root_dir.to_owned(),
+            target: None,
+            args,
+            secrets,
+            platforms,
+            cache,
+        }
+    }
+}
+
 /// One Service a rule deploys on every push.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
 #[serde(deny_unknown_fields)]

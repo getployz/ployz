@@ -782,7 +782,8 @@ fn admit(
             .filter(|(_, follows)| *follows)
             .map(|(service, _)| service.config.private_dns.clone())
             .collect();
-        let changed = crate::auto_rule::changed(&rule, &namespace, &target, &ships);
+        let sources = crate::auto_rule::sources(&saved.intent);
+        let changed = crate::auto_rule::changed(&rule, &namespace, &target, &sources, &ships);
         if !changed.is_empty() {
             return Ok(Some(Deploy::Reapprove(changed)));
         }

@@ -7,8 +7,6 @@ use std::{collections::BTreeMap, path::Path, process::Command, sync::Arc};
 
 mod rule;
 
-pub(super) use rule::approved_policy as rule_policy;
-
 use clap::{ArgMatches, ValueHint};
 use tokio_util::sync::CancellationToken;
 

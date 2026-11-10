@@ -2,7 +2,7 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use ployz_core::{
     Namespace, OpenedSealed, SealingPublicKey,
-    authority::rule::{Builder, RuleEvent, RuleSource, Runner},
+    authority::rule::{Builder, PolicyMethod, RuleEvent, RuleSource, Runner},
     authority::{PayloadDigest, RuleId, RuleService, Signer, SignerKey, Timestamp},
 };
 use serde_json::json;

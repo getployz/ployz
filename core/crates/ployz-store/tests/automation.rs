@@ -2003,8 +2003,7 @@ fn approve_rule(
     generation: u64,
 ) -> Result<ployz_store::RuleView, ployz_core::RpcError> {
     use ployz_core::authority::rule::{
-        BuildPolicy, Builder, PolicyCache, PolicyMethod, RuleEvent, RuleService, RuleSource,
-        Runner, template,
+        BuildPolicy, Builder, PolicyCache, RuleEvent, RuleService, RuleSource, Runner, template,
     };
     use ployz_core::authority::{AutoDeployRule, RuleId, Signed, Signer, SignerKey, Timestamp};
     let view = store
@@ -2027,16 +2026,19 @@ fn approve_rule(
             RuleService {
                 name: spec.name.clone(),
                 template: template(spec, &view.namespace).unwrap(),
-                policy: BuildPolicy {
-                    method: PolicyMethod::Dockerfile {
-                        path: "Dockerfile".into(),
-                    },
-                    context: String::new(),
-                    target: None,
-                    args: std::collections::BTreeMap::new(),
-                    secrets: std::collections::BTreeSet::new(),
-                    platforms: ["linux/amd64".to_owned()].into(),
-                    cache: PolicyCache::Off,
+                policy: {
+                    let source = view
+                        .sources
+                        .iter()
+                        .find(|source| source.service == spec.name)
+                        .unwrap();
+                    BuildPolicy::derive(
+                        &source.root_dir,
+                        &source.build,
+                        spec,
+                        ["linux/amd64".to_owned()].into(),
+                        PolicyCache::Off,
+                    )
                 },
                 secrets: None,
             }
@@ -2123,6 +2125,18 @@ fn a_push_under_a_rule_waits_for_approval_again_once_a_setting_changed() {
     approve_rule(&store, &who, 2).unwrap();
     let automated = system(&store, &push(Some(H1), Some(H2), None));
     assert_eq!(automated.admitted.len(), 1);
+    // A build setting is in the rule's policy rather than its template, and holds too.
+    set(&store, &who, "web.buildMethod", json!("dockerfile"));
+    publish(&store, &who);
+    let automated = system(&store, &push(Some(H2), Some(H3), None));
+    assert!(automated.admitted.is_empty());
+    assert_eq!(
+        reasons(&automated),
+        vec![
+            "Approve the automatic deploy rule again: web changed since it was approved. Run \
+             ployz github rule approve web from an approved device."
+        ]
+    );
 }
 
 #[test]
