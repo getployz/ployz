@@ -386,8 +386,7 @@ unsigned and still work where enforcement is off.
 With enforcement on, `ployz server rm` and `ployz server forget <server>` work only from an
 approved device or over SSH on a server. Elsewhere they stop before changing anything and name the
 server that needs an approved device. The dashboard's **Remove server** and **Forget server** are
-refused with `This server leaves only when you approve it. Run ployz server rm from an approved
-device.` Ployz Cloud drops a server you removed from the CLI once the Cluster no longer lists it,
+refused, and the message names the command to run from an approved device. Ployz Cloud drops a server you removed from the CLI once the Cluster no longer lists it,
 within minutes. To remove the last server of a Cluster Ployz Cloud manages, turn enforcement off
 first. Ingress doors and Private Access can't be changed from the dashboard either. Over
 `--connect ssh://` to that server, they change as before.
