@@ -19,7 +19,7 @@ Eight PRs, in dependency order:
 
 ## Operator decisions
 
-Five. None blocks E1.
+Five. None blocks E1. The operator accepted all five recommendations on 2026-11-10.
 
 1. **Who may sign a Volume approval.** The decision record says a Volume workflow needs its own approval of the reviewed workflow, outside any session. *Recommendation.* A Device, or a passkey through its own prompt. A browser key under a session grant may not. The CLI on a trusted Device shows no prompt. The dashboard shows one passkey prompt for each Volume workflow.
 2. **The key that signs a handoff receipt.** B must verify that A gave the Volume up, from something B already holds. A Machine has no signing key today. Its WireGuard key cannot sign, and its Management Identity is a transport key. *Recommendation.* Derive one receipt key for the Cluster from the Sealing Key, the way thread D derives its attest key. Every Machine holds the Sealing Key and Cloud does not. The cost is that any Machine of the Cluster could forge a receipt from any other. That stays under the bar, because a Machine holding the Sealing Key can already open every Sealed value. The receipt carries a key ID, so a key for each Machine can replace it if thread A ships one.
