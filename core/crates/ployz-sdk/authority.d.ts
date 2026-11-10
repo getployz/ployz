@@ -11,6 +11,8 @@ export type {
   DeployTerms,
   GrantBody,
   PayloadDigest,
+  PrivateAccessApproval,
+  PrivateAccessTerms,
   ProposalApproval,
   ProposalRef,
   ProposalStep,
@@ -32,7 +34,7 @@ export type {
   VolumeWorkflow,
 } from "./generated/payloads";
 
-import type { ApprovedChange, DeployTerms, PlanView, PreviewReviewView, ReviewDraft, ReviewTerms, RuleDraft, RuleTerms, RuleView } from "./generated/payloads";
+import type { ApprovedChange, DeployTerms, PlanView, PreviewReviewView, PrivateAccessTerms, ReviewDraft, ReviewTerms, RuleDraft, RuleTerms, RuleView } from "./generated/payloads";
 
 /**
  * The deploy approval a browser key signs for `plan`, a Store plan read with `target`, under `terms`: the canonical body
@@ -53,6 +55,12 @@ export function autoDeployRuleBody(view: RuleView, terms: RuleTerms, services?: 
 
 /** The generation that turns `view`'s kept rule off, signed as `terms.signer` at `terms.issued_at`. Throws when no rule is on. */
 export function autoDeployRuleEndBody(view: RuleView, terms: Pick<RuleTerms, "issued_at" | "signer">): RuleDraft;
+
+/**
+ * The Private Access approval a passkey answers for `terms`, in canonical form: the auth key sealed to the Cluster in
+ * this browser, bound by its digest, which ployz-core takes here as the Servers do. Throws an Error for malformed terms.
+ */
+export function privateAccessApprovalBody(terms: PrivateAccessTerms): string;
 
 /**
  * The review a person signs of `view`, the Store's view of a PR Environment's preview, for its head under `terms`: the

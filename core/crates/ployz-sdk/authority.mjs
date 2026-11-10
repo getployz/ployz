@@ -1,4 +1,4 @@
-import { auto_deploy_rule_body, auto_deploy_rule_end_body, deploy_approval_body, preview_review_body } from './generated/config-wasm.mjs';
+import { auto_deploy_rule_body, auto_deploy_rule_end_body, deploy_approval_body, preview_review_body, private_access_approval_body } from './generated/config-wasm.mjs';
 
 export function deployApprovalBody(plan, terms) {
   if (plan.target === undefined) throw new Error('Read the plan with target set to sign a deploy.');
@@ -11,6 +11,10 @@ export function autoDeployRuleBody(view, terms, services) {
 
 export function autoDeployRuleEndBody(view, terms) {
   return JSON.parse(auto_deploy_rule_end_body(JSON.stringify({ view, issued_at: terms.issued_at, signer: terms.signer })));
+}
+
+export function privateAccessApprovalBody(terms) {
+  return private_access_approval_body(JSON.stringify(terms));
 }
 
 export function previewReviewBody(view, terms) {

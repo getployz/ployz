@@ -1,9 +1,9 @@
 //! The SDK's WASM ABI for Node and the browser: config rules, the deploy approval a
-//! browser key signs, the automatic deploy rule a passkey answers, and the review of a
-//! preview a person signs. All policy lives in ployz-core.
+//! browser key signs, the automatic deploy rule and Private Access approval a passkey
+//! answers, and the review of a preview a person signs. All policy lives in ployz-core.
 use ployz_core::authority::{
-    AutoDeployRule, DeployApproval, DeployTerms, PreviewReview, PreviewRule, ReviewTerms,
-    RuleBasis, RuleTerms, Signed, SignerKey, Timestamp,
+    AutoDeployRule, DeployApproval, DeployTerms, PreviewReview, PreviewRule, PrivateAccessApproval,
+    PrivateAccessTerms, ReviewTerms, RuleBasis, RuleTerms, Signed, SignerKey, Timestamp,
 };
 use ployz_core::{Namespace, RequestedServiceSpec, ServiceName};
 use wasm_bindgen::prelude::*;
@@ -101,6 +101,19 @@ pub fn auto_deploy_rule_end_body(input: &str) -> Result<String, JsError> {
         .drafted(&input.view)
         .map_err(|error| JsError::new(&error.to_string()))?;
     serde_json::to_string(&draft).map_err(|error| JsError::new(&error.to_string()))
+}
+
+/// The Private Access approval a passkey answers for `terms`, in canonical form, with the
+/// digest of the sealed key taken here, by the ployz-core code the Servers run.
+///
+/// # Errors
+/// Rejects malformed terms.
+#[wasm_bindgen]
+pub fn private_access_approval_body(input: &str) -> Result<String, JsError> {
+    let terms: PrivateAccessTerms =
+        serde_json::from_str(input).map_err(|error| JsError::new(&error.to_string()))?;
+    ployz_core::authority::canonical::to_canonical(&PrivateAccessApproval::drafted(&terms))
+        .map_err(|error| JsError::new(&error.to_string()))
 }
 
 #[derive(serde::Deserialize)]

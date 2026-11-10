@@ -41,7 +41,7 @@ async fn on_runs_one_router_per_machine_and_off_removes_them_all() {
     assert_eq!(observed.machines.len(), 2);
     assert!(observed.running.is_empty());
 
-    let on = turn_on(&client, observed.machines.clone(), sealed(), &cancel).await;
+    let on = turn_on(&client, observed.machines.clone(), sealed(), None, &cancel).await;
     assert!(on.failures.is_empty(), "{:?}", on.failures);
     assert_eq!(on.machines.len(), 2);
     assert!(on.machines.iter().all(|machine| machine.router));
@@ -74,7 +74,7 @@ async fn a_daemon_that_predates_the_route_is_named_on_on_and_has_nothing_to_remo
     old.supported = false;
     let old = old.clone();
 
-    let on = turn_on(&client, machines.clone(), sealed(), &cancel).await;
+    let on = turn_on(&client, machines.clone(), sealed(), None, &cancel).await;
     assert_eq!(on.machines.len(), 1);
     let [failure] = on.failures.as_slice() else {
         panic!("one Machine is named: {:?}", on.failures);
