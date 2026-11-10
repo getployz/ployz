@@ -216,6 +216,9 @@ pub enum Error {
     /// or its `SeedVolume`. The refusal names `capability` in its details.
     #[error("{}", volume_approval::refusal_text(.capability))]
     VolumeRefused { capability: &'static str },
+    /// A Volume step that no Volume approval admits on this Machine.
+    #[error("This Server refused the Volume step: {0}")]
+    VolumeStepRefused(ployz_core::authority::AuthorityRefusal),
     #[error("ployz.machine.join.device-approval.v1 needs a Device-signed join approval: {0}")]
     JoinRefused(ployz_core::authority::AuthorityRefusal),
     #[error("{SET_DEVICE_ENFORCEMENT_CAPABILITY} needs a Device-signed starting set: {0}")]

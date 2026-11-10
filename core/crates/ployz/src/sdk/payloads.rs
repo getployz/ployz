@@ -93,6 +93,7 @@ fn typescript_declarations() -> String {
     declarations.add::<ployz_core::authority::ApprovedChange>();
     declarations.add::<ployz_core::authority::DeployTerms>();
     declarations.add::<ployz_core::authority::GrantBody>();
+    declarations.add::<ployz_core::authority::VolumeApproval>();
     declarations.add::<ployz_core::MachineUpdate>();
     declarations.add::<ployz_core::MachineUpdated>();
     declarations.add::<ployz_core::RequestMachineUpgradeRequest>();
