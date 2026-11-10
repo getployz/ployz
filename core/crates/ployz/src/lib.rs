@@ -11,6 +11,7 @@ mod cloud_enroll;
 mod cloud_login;
 mod cluster;
 mod cluster_teardown;
+mod config_dir;
 pub mod connect;
 pub mod context;
 pub mod deploy;

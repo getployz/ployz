@@ -263,7 +263,7 @@ struct Link {
 }
 
 fn links_path(config: &Path) -> PathBuf {
-    config.with_file_name("links.json")
+    crate::config_dir::ConfigDir::new(config).links()
 }
 
 /// Every link, by canonical directory.

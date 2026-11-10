@@ -812,7 +812,7 @@ pub(crate) fn backend_at(config: &Path) -> Result<Option<Backend>, Error> {
             .filter(|path| *path != ":memory:")
         {
             Some(path) => format!("{path}.key").into(),
-            None => config.with_file_name("store.key"),
+            None => crate::config_dir::ConfigDir::new(config).store_key(),
         };
         let key = SealingKey::from_file(&key)?;
         let store = ConfigStore::open(url, key)?;

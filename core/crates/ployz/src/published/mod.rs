@@ -185,7 +185,7 @@ impl Setup {
             cloud: named.unwrap_or_else(|| crate::cloud_enroll::cloud_origin(DEFAULT_CLOUD)),
             configured,
             config: config.to_path_buf(),
-            dir: config.with_file_name("published"),
+            dir: crate::config_dir::ConfigDir::new(config).published(),
         }
     }
 
