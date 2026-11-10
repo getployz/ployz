@@ -154,7 +154,7 @@ function fakeSession(database: PostgresTestHarness["database"]) {
       runtime: {
         watch: async function* () {
           for (const machines of cluster.frames) {
-            yield asTestDouble<RuntimeWatchView>()({ machines: machines.map(([id, name]) => ({ machine: { id, name, runtime: {} } })) });
+            yield asTestDouble<RuntimeWatchView>()({ machines: machines.map(([id, name]) => ({ machine: { id, name, runtime: {} } })), incomplete_ids: { machines: [] } });
           }
         },
       },
