@@ -1623,6 +1623,25 @@ mod tests {
         )
     }
 
+    #[test]
+    fn identity_lists_what_this_release_carries_out_so_cloud_can_refuse_a_cluster_it_cannot_join() {
+        let sent = serde_json::to_value(identity()).unwrap();
+        let listed: Vec<&str> = sent["capabilities"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|name| name.as_str().unwrap())
+            .collect();
+        assert!(listed.contains(&ployz_core::INGRESS_CLOSED_DOORS_CAPABILITY));
+        assert_eq!(
+            listed,
+            release_capabilities()
+                .iter()
+                .map(String::as_str)
+                .collect::<Vec<_>>()
+        );
+    }
+
     const ACCEPTED: &[u8] = br#"{"machineId":"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"}"#;
 
     fn join_body() -> Vec<u8> {

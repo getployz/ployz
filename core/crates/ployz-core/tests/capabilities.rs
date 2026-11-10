@@ -3,7 +3,7 @@ use ployz_core::{
     CERTIFICATE_POLICY_CAPABILITY, CapabilityAdvertisement, CapabilityName,
     DESCRIBE_CONTRACT_CAPABILITY, ENROLL_FOR_RECOVERY_CAPABILITY, ENROLL_MACHINE_CAPABILITY,
     ENSURE_CONTAINER_CAPABILITY, ENSURE_IMAGE_INGEST_CAPABILITY, ENV_SEALED_CAPABILITY,
-    EXEC_CONTAINER_CAPABILITY, FORGET_MACHINE_CAPABILITY, GENERATE_SEALING_KEY_CAPABILITY,
+    EXEC_CONTAINER_CAPABILITY, FORGET_MACHINE_CAPABILITY, GENERATE_SEALING_KEY_CAPABILITY, INGRESS_CLOSED_DOORS_CAPABILITY,
     INSPECT_BUILD_GRANT_CAPABILITY, INSPECT_CONTAINER_CAPABILITY, INSPECT_MACHINE_CAPABILITY,
     INSPECT_STORAGE_CAPABILITY, INSPECT_VOLUME_COPY_CAPABILITY, INSTALL_SEALING_KEY_CAPABILITY,
     LEAVE_MACHINE_CAPABILITY, LIST_CONTAINERS_CAPABILITY, LIST_IMAGES_CAPABILITY,
@@ -129,6 +129,10 @@ fn catalogued_capabilities_keep_stable_spellings() {
         ),
         (SET_INGRESS_DOORS_CAPABILITY, "ployz.ingress.doors.v1"),
         (SET_INGRESS_TUNNEL_CAPABILITY, "ployz.ingress.tunnel.v1"),
+        (
+            INGRESS_CLOSED_DOORS_CAPABILITY,
+            "ployz.ingress.closed-doors.v1",
+        ),
         (READ_CLUSTER_NAME_CAPABILITY, "ployz.cluster.name.read.v1"),
         (SET_CLUSTER_NAME_CAPABILITY, "ployz.cluster.name.v1"),
         (SET_PRIVATE_ACCESS_CAPABILITY, "ployz.private-access.v1"),
@@ -205,6 +209,7 @@ fn advertised_capability_groups_match_the_frozen_catalog() {
             "ployz.restart.proposal.v1",
             "ployz.container.deploy-approval.v1",
             "ployz.container.deploy-proposal.v1",
+            "ployz.ingress.closed-doors.v1",
         ]
     );
     assert_eq!(
@@ -415,6 +420,10 @@ const ABOVE_FLOOR: &[(&str, &str)] = &[
     (
         "ployz.image.pull.v1",
         "falls back: an older daemon pulls when it creates the Container",
+    ),
+    (
+        "ployz.ingress.closed-doors.v1",
+        "gated: Cloud refuses a joiner that doesn't list it while its Cluster keeps ports 80 and 443 closed, and Cloudflare setup names a Server taking web traffic that doesn't list it; claims nothing: an older Machine in a Cluster that doesn't keep them closed behaves as before",
     ),
     (
         "ployz.ingress.tunnel.v1",
