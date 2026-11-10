@@ -7,20 +7,14 @@ DIST=${1:-${DIST:-"$ROOT/dist"}}
 
 # shellcheck source=scripts/homebrew-formula.sh
 source "$ROOT/scripts/homebrew-formula.sh"
+# shellcheck source=scripts/release-archives.sh
+source "$ROOT/scripts/release-archives.sh"
 
 fail() { echo "release packing failed: $1" >&2; exit 1; }
 
-cli_archives=$(printf '%s\n' \
-    ployz_linux_amd64.tar.gz \
-    ployz_linux_arm64.tar.gz \
-    ployz_macos_amd64.tar.gz \
-    ployz_macos_arm64.tar.gz)
-daemon_archives=$(printf '%s\n' \
-    ployzd_linux_amd64.tar.gz \
-    ployzd_linux_arm64.tar.gz)
-all_archives=$(printf '%s\n' \
-    "$cli_archives" \
-    "$daemon_archives")
+cli_archives=$(release_archives ployz)
+daemon_archives=$(release_archives ployzd)
+all_archives=$(release_archives)
 
 for archive in $all_archives; do
     [ -f "$DIST/$archive" ] || fail "missing $archive"

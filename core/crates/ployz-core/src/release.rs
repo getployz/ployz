@@ -344,6 +344,35 @@ mod tests {
     }
 
     #[test]
+    fn goreleaser_builds_exactly_the_manifest_platforms() {
+        let goreleaser = std::fs::read_to_string(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../.goreleaser.yaml"
+        ))
+        .unwrap();
+        let built: std::collections::BTreeSet<_> = goreleaser
+            .lines()
+            .filter_map(|line| line.trim().strip_prefix("- id: "))
+            .filter(|id| id.contains("-linux-") || id.contains("-darwin-"))
+            .collect();
+        let listed: std::collections::BTreeSet<_> = release_archives()
+            .map(|archive| {
+                let os = if archive.os == "macos" {
+                    "darwin"
+                } else {
+                    archive.os
+                };
+                format!("{}-{os}-{}", archive.product, archive.arch)
+            })
+            .collect();
+        assert_eq!(
+            built,
+            listed.iter().map(String::as_str).collect(),
+            ".goreleaser.yaml builds and release-archives.txt must name the same platforms"
+        );
+    }
+
+    #[test]
     fn daemon_archive_maps_rust_architectures_to_todays_names() {
         assert_eq!(daemon_archive("x86_64"), Some("ployzd_linux_amd64.tar.gz"));
         assert_eq!(daemon_archive("aarch64"), Some("ployzd_linux_arm64.tar.gz"));

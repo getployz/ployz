@@ -21,6 +21,17 @@ import time
 from pathlib import Path
 
 SOURCE = Path(sys.argv[1]).read_bytes()
+RELEASE_ARCHIVES = Path(__file__).resolve().parent.parent / 'crates/ployz-core/release-archives.txt'
+
+
+def release_archive(product, os_name, arch):
+    for line in RELEASE_ARCHIVES.read_text().splitlines():
+        fields = line.split()
+        if len(fields) == 5 and fields[0] == product and fields[1:3] == [os_name, arch]:
+            return fields[3]
+    raise SystemExit(f'{RELEASE_ARCHIVES} has no {product} archive for {os_name} {arch}')
+
+
 TOKEN = 'pflt_' + 'a' * 43
 ARGS = ['-s', '--', '1.2.3', '--enroll']
 PROMPT = b'Fleet Token (from Servers in Ployz Cloud): '
@@ -248,7 +259,7 @@ printf '%s\\n' "$*" > "$PROBE_ARGV"
 cat > "$PROBE_STDIN"
 echo 'Waiting for approval'
 ''')
-    archive = root / 'release/ployz_linux_amd64.tar.gz'
+    archive = root / 'release' / release_archive('ployz', 'linux', 'amd64')
     with tarfile.open(archive, 'w:gz') as tar:
         tar.add(binary, arcname='ployz')
     digest = hashlib.sha256(archive.read_bytes()).hexdigest()
