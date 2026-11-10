@@ -6,6 +6,7 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, expect, it, vi } from "vitest";
 import { draftRule } from "#/modules/github/auto-deploy-rule";
+import { githubRepositoryOwnerQueryOptions } from "#/modules/github/github.queries";
 import { RuleDialog } from "./store-automatic-deploys";
 
 const SEALED = "QUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQQ==";
@@ -83,7 +84,8 @@ function open(first: RuleView, commit: (rule: Signed, refresh: (next: RuleView) 
     return (
       <RuleDialog organizationSlug="acme" view={shown} ending={false} onClose={onClose}
         scope={{ enforced: true, older: null, scope: SCOPE }}
-        commit={(rule) => commit(rule, setShown)} readOwner={async () => OWNER} />
+        commit={(rule) => commit(rule, setShown)}
+        ownerQuery={(organization, repository) => ({ ...githubRepositoryOwnerQueryOptions(organization, repository), queryFn: async () => OWNER })} />
     );
   }
   render(<QueryClientProvider client={new QueryClient()}><Dialog /></QueryClientProvider>);

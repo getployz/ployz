@@ -14,7 +14,7 @@ import { deployScope, RULE_CAPABILITIES } from "#/modules/approval-session/appro
 import { ruleQuery, useStoreView } from "#/modules/config-store/store-view.queries";
 import { useStoreWriter } from "#/modules/config-store/store-write";
 import { answerRule, draftEnd, draftRule, keptRule, RuleRefused, ruleOn } from "#/modules/github/auto-deploy-rule";
-import { githubRepositoryOwnerServerFn } from "#/modules/github/github.functions";
+import { githubRepositoryOwnerQueryOptions } from "#/modules/github/github.queries";
 import { useRuntimeLens } from "#/modules/runtime/use-runtime-lens";
 import { useEnvironmentMachines } from "#/providers/runtime-provider";
 import { ENVIRONMENT_ROUTE_FROM } from "./environment-route-paths";
@@ -80,7 +80,7 @@ export function StoreAutomaticDeploys({ organizationSlug, projectSlug, environme
         <RuleDialog organizationSlug={organizationSlug} view={view} scope={rule} ending={open === "end"}
           onClose={() => setOpen(null)}
           commit={async (signed) => { await writer.commit({ command: "approve_rule", environment, rule: signed }); }}
-          readOwner={(repository) => githubRepositoryOwnerServerFn({ data: { organizationSlug, repository } })} />
+          ownerQuery={githubRepositoryOwnerQueryOptions} />
       )}
     </SettingsSection>
   );
@@ -88,16 +88,16 @@ export function StoreAutomaticDeploys({ organizationSlug, projectSlug, environme
 
 /**
  * What turning a rule on, approving it again or turning it off asks: the rule as it would be signed, then one passkey
- * prompt. `commit` keeps the signed rule in the Store; `readOwner` reads who owns the repository on GitHub.
+ * prompt. `commit` keeps the signed rule in the Store; `ownerQuery` reads who owns the repository on GitHub.
  */
-export function RuleDialog({ organizationSlug, view, scope, ending, onClose, commit, readOwner }: {
+export function RuleDialog({ organizationSlug, view, scope, ending, onClose, commit, ownerQuery }: {
   organizationSlug: string;
   view: RuleView;
   scope: ReturnType<typeof deployScope>;
   ending: boolean;
   onClose: () => void;
   commit: (rule: Signed) => Promise<void>;
-  readOwner: (repository: string) => Promise<{ repositoryId: number; ownerId: number }>;
+  ownerQuery: typeof githubRepositoryOwnerQueryOptions;
 }) {
   const [busy, setBusy] = useState(false);
   const [failed, setFailed] = useState<string | null>(null);
@@ -115,12 +115,8 @@ export function RuleDialog({ organizationSlug, view, scope, ending, onClose, com
     unready = error instanceof RuleRefused ? error.message : "This browser couldn't draft the rule. Try again.";
   }
   const repository = ending ? null : preview?.summary.repository ?? null;
-  const owner = useQuery({
-    queryKey: ["github-repository-owner", organizationSlug, repository],
-    queryFn: () => readOwner(repository ?? ""),
-    enabled: repository !== null,
-    staleTime: 60_000,
-  });
+  // The button waits, disabled, until GitHub answers: a read shows nothing in flight.
+  const owner = useQuery({ ...ownerQuery(organizationSlug, repository ?? ""), enabled: repository !== null });
   const ownerProblem = repository === null || owner.isPending ? null
     : owner.isError ? `Cloud couldn't read ${repository} on GitHub. Try again.`
     : owner.data.repositoryId !== view.sources.find((source) => source.repository === repository)?.repository_id
@@ -163,7 +159,7 @@ export function RuleDialog({ organizationSlug, view, scope, ending, onClose, com
         <DialogFooter>
           <DialogClose render={<Button variant="outline" disabled={busy} />}>Cancel</DialogClose>
           <Button disabled={busy || !ready} onClick={() => void approve()}>
-            {busy || (!ending && owner.isFetching) ? <Spinner data-icon="inline-start" /> : <KeyRoundIcon data-icon="inline-start" />}
+            {busy ? <Spinner data-icon="inline-start" /> : <KeyRoundIcon data-icon="inline-start" />}
             {ending ? "Turn off with passkey" : "Approve with passkey"}
           </Button>
         </DialogFooter>
