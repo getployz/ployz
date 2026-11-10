@@ -86,15 +86,16 @@ impl LocalMachine {
         };
         record.machine().ok_or(Error::NotParticipating)?;
         let machine = record.id();
-        // An ended generation still supersedes every one below it.
-        self.approvals.mark_rule(&rule, |refusal| {
+        let superseded = |refusal| {
             tracing::warn!(
                 rule = %rule.rule,
                 generation = rule.generation,
                 "refused a deploy under a rule: {refusal}"
             );
             refused(refusal)
-        })?;
+        };
+        // An ended generation still supersedes every one below it.
+        self.approvals.mark_rule(&rule, superseded)?;
         let claim = &proof.claim;
         if !self.approvals.accepted(&rule, claim)? {
             let claims = github
@@ -145,7 +146,8 @@ impl LocalMachine {
                 },
             )
             .map_err(|refusal| logged(&rule, &new.slot.service, refusal))?;
-            self.approvals.accept(&rule, claim)?;
+            // Checked again: a newer generation may have landed while GitHub answered.
+            self.approvals.accept(&rule, claim, superseded)?;
             if new.slot.kind == ContainerKind::PreDeployHook {
                 self.approvals
                     .consume_rule_hook(&rule, claim, &new.slot.creation_key)?;

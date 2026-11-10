@@ -212,7 +212,7 @@ Outcome. With a rule approved once from the CLI, every push to the approved bran
 **Verify, unit.**
 
 - [x] `rule.rs` tests take one approved spec and token, and change one thing per case, each refused naming it. The cases are the image digest, a plain value, a Sealed ciphertext, `privileged`, a Bind Mount, a host port, the hook command, the generation (lower), the commit (not the head), `aud` naming another image, `attest` naming another key, and authority `Approved` (a rule never admits it at creation).
-- [x] `deploy_approval.rs` tests admit a second creation of the same image after the token's `exp` through the accepted-build record, and refuse it once the head moved. They also admit a hook once per commit.
+- [x] `deploy_approval.rs` tests admit a second creation of the same image after the token's `exp` through the accepted-build record, and refuse it once the head moved. They also admit a hook once per push. A force push back to an earlier commit can run that commit's hook again. A concurrent test refuses a generation replaced while its creation waited on GitHub.
 - [x] `automation.rs` tests hold a push for re-approval when the Saved revision changes a setting, and admit it when only the commit changed. Run `cargo nextest run -p ployz-core authority::rule`, `-p ployzd deploy_approval`, `-p ployz-store automation`.
 
 **Verify, live.** Eleven lanes, all **GitHub**, two Machines, enforcement on, rule approved with `cli --device -- github rule approve web`. Evidence is the terminal output of each lane, kept with the verify run rather than as screenshots.

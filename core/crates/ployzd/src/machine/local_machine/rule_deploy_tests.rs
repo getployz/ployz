@@ -318,6 +318,74 @@ async fn a_newer_generation_refuses_every_proof_below_it() {
     );
 }
 
+/// GitHub that answers the head read only once `release` fires, telling `reached` it
+/// was asked.
+struct SlowHead {
+    inner: super::super::rule_grant::FixedGithub,
+    reached: tokio::sync::Notify,
+    release: tokio::sync::Notify,
+}
+
+impl Github for SlowHead {
+    async fn claims(
+        &self,
+        rule: &ployz_core::authority::AutoDeployRule,
+        token: &str,
+        now: Timestamp,
+    ) -> Result<ployz_core::authority::GithubClaims, crate::github::oidc::ProofRefusal> {
+        self.inner.claims(rule, token, now).await
+    }
+
+    async fn head(
+        &self,
+        repository_id: u64,
+        branch: &str,
+        reader: Option<&GithubToken>,
+    ) -> Result<CommitSha, crate::github::head::HeadError> {
+        self.reached.notify_one();
+        self.release.notified().await;
+        self.inner.head(repository_id, branch, reader).await
+    }
+}
+
+#[tokio::test]
+async fn a_newer_generation_landing_during_the_head_read_refuses_the_older_one() {
+    let fixture = fixture().await;
+    let old = fixture.deploy_rule(3);
+    let claim = fixture.built(&old, fixture.attest());
+    let stale = fixture.proof(&old, &claim, token_for(&claim, "old"));
+    let new = fixture.deploy_rule(4);
+    let claim4 = fixture.built(&new, fixture.attest());
+    let current = fixture.proof(&new, &claim4, token_for(&claim4, "new"));
+    let slow = SlowHead {
+        inner: github(commit()),
+        reached: tokio::sync::Notify::new(),
+        release: tokio::sync::Notify::new(),
+    };
+    let (in_flight, ()) = tokio::join!(
+        fixture.machine.admit_rule_deploy(
+            want("service_container", "k1", &spec()),
+            &stale,
+            &slow,
+            now()
+        ),
+        async {
+            slow.reached.notified().await;
+            fixture
+                .deploy(
+                    want("service_container", "k2", &spec()),
+                    &current,
+                    commit(),
+                    now(),
+                )
+                .await
+                .unwrap();
+            slow.release.notify_one();
+        }
+    );
+    assert_eq!(refused(in_flight), "a generation");
+}
+
 #[tokio::test]
 async fn an_ended_rule_deploys_nothing() {
     let fixture = fixture().await;

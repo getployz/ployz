@@ -782,13 +782,20 @@ impl ConsumptionLog {
     }
 
     /// Record `claim`'s build as the one `rule`'s Service last created a Container from
-    /// here. Written before the Container is made.
-    pub(crate) fn accept(&self, rule: &AutoDeployRule, claim: &BuildClaim) -> Result<(), Error> {
+    /// here. Written before the Container is made. Refuses, through `refused`, a `rule`
+    /// a newer generation replaced while its admission waited on GitHub.
+    pub(crate) fn accept(
+        &self,
+        rule: &AutoDeployRule,
+        claim: &BuildClaim,
+        refused: impl FnOnce(AuthorityRefusal) -> Error,
+    ) -> Result<(), Error> {
+        let mut guard = self.loaded()?;
+        let consumption = guard.as_ref().expect("loaded above");
+        consumption.check_mark(rule).map_err(refused)?;
         let Some(build) = AcceptedBuild::of(claim) else {
             return Ok(());
         };
-        let mut guard = self.loaded()?;
-        let consumption = guard.as_ref().expect("loaded above");
         let key = rule_service_key(rule, &claim.service);
         if consumption.accepted.get(&key) == Some(&build) {
             return Ok(());
@@ -801,7 +808,8 @@ impl ConsumptionLog {
     /// Take the hook place of `claim`'s push under `rule` for the slot named `slot`,
     /// refusing one taken for another slot. A request resent for the same slot passes:
     /// the Machine adopts the hook that ran. A later push of the Service replaces the
-    /// entry, so each push runs its hook once.
+    /// entry, so a push runs its hook once; a force push back to an earlier commit can
+    /// run that commit's hook again.
     pub(crate) fn consume_rule_hook(
         &self,
         rule: &AutoDeployRule,
