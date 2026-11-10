@@ -2,6 +2,7 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use ployz_core::{
     Namespace, OpenedSealed, SealingPublicKey,
+    authority::preview::{PreviewKey, PreviewReview, PreviewService, ReviewedService},
     authority::rule::{Builder, PolicyMethod, RuleEvent, RuleSource, Runner},
     authority::{PayloadDigest, RuleId, RuleService, Signer, SignerKey, Timestamp},
 };
@@ -73,6 +74,7 @@ fn checked_in(rule: &AutoDeployRule, deployment: Value) -> CheckedIn {
         attest: AttestKey::from_bytes([0x55; 32]),
         service: web(),
         deployment,
+        review: None,
     }
 }
 
@@ -141,7 +143,10 @@ fn the_grant_and_image_audiences_are_d2s_golden_bytes() {
         &checked_in,
         &opened(&rule),
         &golden_policy(),
-        CommitSha::parse("fedcba9876543210fedcba9876543210fedcba98").unwrap(),
+        (
+            CommitSha::parse("fedcba9876543210fedcba9876543210fedcba98").unwrap(),
+            CommitAuthority::Head,
+        ),
         BuildGrantId::parse("22".repeat(32)).unwrap(),
         RecipientKey::from_bytes([0x33; 32]),
     )
@@ -174,7 +179,7 @@ fn the_image_token_names_the_attest_key_the_secrets_opened_with() {
         &checked_in,
         &opened(&rule),
         &lab_policy(&[]),
-        CommitSha::from_bytes([1; 20]),
+        (CommitSha::from_bytes([1; 20]), CommitAuthority::Head),
         keys.holder(),
         keys.recipient.recipient(),
     )
@@ -358,5 +363,101 @@ fn cloud_takes_only_an_origin() {
         "https://user@ployz.dev",
     ] {
         assert!(Cloud::new(bad).is_err(), "{bad}");
+    }
+}
+
+/// A build checked in under a preview rule over `rule`'s source, with `review` relayed.
+fn reviewed(rule: &AutoDeployRule, review: Option<Review>) -> CheckedIn {
+    let preview = PreviewRule {
+        cluster: rule.cluster,
+        rule: rule.rule,
+        generation: rule.generation,
+        machines: Vec::new(),
+        parent: rule.namespace.clone(),
+        parent_id: uuid::Uuid::from_bytes([5; 16]),
+        domain: "preview.example.com".to_owned(),
+        source: rule.source.clone(),
+        trusted: Vec::new(),
+        services: vec![PreviewService {
+            name: web(),
+            template: PayloadDigest::parse(&"ab".repeat(32)).unwrap(),
+            setup: None,
+            policy: lab_policy(&[]),
+            secrets: None,
+            inherit: BTreeSet::new(),
+            generated: BTreeMap::new(),
+        }],
+        issued_at: rule.issued_at,
+        ended: false,
+        signer: rule.signer,
+    };
+    CheckedIn {
+        rule: Relayed::Preview(Signed::sign(&preview, &Signer::from_seed(&[7; 32])).unwrap()),
+        review,
+        ..checked_in(rule, json!({}))
+    }
+}
+
+/// A review of `service` at `commit`, signed by the rule's Device.
+fn review_of(service: ServiceName, commit: CommitSha) -> Review {
+    let issued_at = Timestamp::from_millis(1_800_000_000_000).unwrap();
+    Review::Signed(
+        Signed::sign(
+            &PreviewReview {
+                cluster: SealingPublicKey::from_bytes([9; 32]),
+                rule: RuleId::from_bytes([0x11; 16]),
+                generation: 3,
+                key: PreviewKey::Fork(42),
+                commit,
+                environment: uuid::Uuid::from_bytes([6; 16]),
+                services: vec![ReviewedService {
+                    name: service,
+                    digest: PayloadDigest::parse(&"cd".repeat(32)).unwrap(),
+                }],
+                issued_at,
+                expires_at: Timestamp::from_millis(1_800_000_900_000).unwrap(),
+            },
+            &Signer::from_seed(&[7; 32]),
+        )
+        .unwrap(),
+    )
+}
+
+#[test]
+fn a_build_claims_the_review_cloud_relayed_for_its_commit() {
+    let rule = rule(lab_policy(&[]));
+    let commit = CommitSha::from_bytes([1; 20]);
+    assert_eq!(
+        authority(&checked_in(&rule, json!({})), commit).unwrap(),
+        CommitAuthority::Head
+    );
+    assert_eq!(
+        authority(&reviewed(&rule, None), commit).unwrap(),
+        CommitAuthority::Head
+    );
+    let review = review_of(web(), commit);
+    assert_eq!(
+        authority(&reviewed(&rule, Some(review.clone())), commit).unwrap(),
+        CommitAuthority::Review(review.digest())
+    );
+}
+
+#[test]
+fn a_build_refuses_a_review_of_another_commit_or_service_or_rule() {
+    let rule = rule(lab_policy(&[]));
+    let commit = CommitSha::from_bytes([1; 20]);
+    let other = CommitSha::from_bytes([2; 20]);
+    for checked_in in [
+        reviewed(&rule, Some(review_of(web(), other))),
+        reviewed(
+            &rule,
+            Some(review_of(ServiceName::parse("worker").unwrap(), commit)),
+        ),
+        CheckedIn {
+            review: Some(review_of(web(), commit)),
+            ..checked_in(&rule, json!({}))
+        },
+    ] {
+        assert!(authority(&checked_in, commit).is_err());
     }
 }

@@ -1,8 +1,9 @@
 //! The SDK's WASM ABI for Node and the browser: config rules, the deploy approval a
-//! browser key signs, and the automatic deploy rule a passkey answers. All policy lives in
-//! ployz-core.
+//! browser key signs, the automatic deploy rule a passkey answers, and the review of a
+//! preview a person signs. All policy lives in ployz-core.
 use ployz_core::authority::{
-    AutoDeployRule, DeployApproval, DeployTerms, RuleBasis, RuleTerms, SignerKey, Timestamp,
+    AutoDeployRule, DeployApproval, DeployTerms, PreviewReview, PreviewRule, ReviewTerms,
+    RuleBasis, RuleTerms, Signed, SignerKey, Timestamp,
 };
 use ployz_core::{Namespace, RequestedServiceSpec, ServiceName};
 use wasm_bindgen::prelude::*;
@@ -98,6 +99,34 @@ pub fn auto_deploy_rule_end_body(input: &str) -> Result<String, JsError> {
     let draft = AutoDeployRule::ending(&input.view, input.issued_at, input.signer)
         .map_err(|error| JsError::new(&error.to_string()))?
         .drafted(&input.view)
+        .map_err(|error| JsError::new(&error.to_string()))?;
+    serde_json::to_string(&draft).map_err(|error| JsError::new(&error.to_string()))
+}
+
+#[derive(serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ReviewInput {
+    rule: Signed<PreviewRule>,
+    namespace: Namespace,
+    target: Vec<RequestedServiceSpec>,
+    terms: ReviewTerms,
+}
+
+/// The review a person signs of a preview's `target` in `namespace` under `rule` and
+/// `terms`, as [`PreviewReview::draft`] builds it, so the browser hashes each spec with
+/// the code the Servers run. The rule's signature isn't checked here: every Server does.
+///
+/// # Errors
+/// Rejects malformed input, an unreadable rule, and whatever `draft` refuses.
+#[wasm_bindgen]
+pub fn preview_review_body(input: &str) -> Result<String, JsError> {
+    let input: ReviewInput =
+        serde_json::from_str(input).map_err(|error| JsError::new(&error.to_string()))?;
+    let rule = input
+        .rule
+        .open()
+        .map_err(|_| JsError::new("The preview rule isn't readable. Approve it again."))?;
+    let draft = PreviewReview::draft(&rule, &input.namespace, &input.target, input.terms)
         .map_err(|error| JsError::new(&error.to_string()))?;
     serde_json::to_string(&draft).map_err(|error| JsError::new(&error.to_string()))
 }
