@@ -11,4 +11,4 @@ ALTER TABLE config_build ADD COLUMN image_token TEXT;
 ALTER TABLE config_build ADD COLUMN build_approval TEXT;
 -- 1 when a Device signs this Deployment's deploy approval only after it was admitted,
 -- once its builds ended: it waits for that approval before it runs.
-ALTER TABLE config_deployment ADD COLUMN awaits_approval INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE config_deployment ADD COLUMN awaits_approval BIGINT NOT NULL DEFAULT 0;

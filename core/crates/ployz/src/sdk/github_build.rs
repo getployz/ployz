@@ -49,6 +49,15 @@ pub enum GithubStart {
         /// The pushed commit the build pins.
         commit: String,
     },
+    /// It builds a commit a person approved under an automatic deploy rule: dispatch
+    /// `workflow` on `branch` with `commit` as its input. Its builder job's OIDC token
+    /// names `workflow_ref`.
+    Approved {
+        workflow: String,
+        workflow_ref: String,
+        branch: String,
+        commit: String,
+    },
 }
 
 /// Decide how GitHub build `id` starts: reuse the Service's latest image when a
@@ -66,10 +75,11 @@ pub async fn github_start(
     expect: Option<ClusterExpectation>,
 ) -> Result<Dialed<GithubStart>, RpcError> {
     // A push under a rule already started its own run; an older image has no image
-    // token, so it isn't reused.
-    let rule = store_call(&store, {
+    // token, so it isn't reused. A person approved building a commit because no image
+    // of it they could check was left, so that builds too.
+    let (rule, approval) = store_call(&store, {
         let id = id.clone();
-        move |store| store.github_rule(&id)
+        move |store| Ok((store.github_rule(&id)?, store.github_approval(&id)?))
     })
     .await?;
     let built = store_call(&store, {
@@ -78,12 +88,23 @@ pub async fn github_start(
     })
     .await?;
     if let Some(rule) = rule.as_ref().and_then(|rule| rule.open().ok()) {
-        return Ok(Dialed {
-            outcome: GithubStart::Follow {
-                workflow: rule.source.workflow,
-                workflow_ref: rule.source.builder.r#ref,
-                commit: built.commit.to_string(),
+        let source = rule.source;
+        let commit = built.commit.to_string();
+        let outcome = match approval {
+            Some(_) => GithubStart::Approved {
+                workflow: source.workflow,
+                workflow_ref: source.builder.r#ref,
+                branch: source.branch,
+                commit,
             },
+            None => GithubStart::Follow {
+                workflow: source.workflow,
+                workflow_ref: source.builder.r#ref,
+                commit,
+            },
+        };
+        return Ok(Dialed {
+            outcome,
             foreign: Vec::new(),
         });
     }
@@ -328,6 +349,9 @@ pub struct RuleCheckIn {
     pub service: ServiceName,
     /// The Deployment's lowering input narrowed to the Service, its Sealed values sealed.
     pub deployment: Value,
+    /// A person's approval to build this commit, when it is not the branch head.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub approval: Option<ployz_core::authority::Signed<ployz_core::authority::BuildApproval>>,
 }
 
 /// A rule build's runner checks in, on the run of the push it builds, with the OIDC
@@ -345,7 +369,7 @@ pub async fn github_rule_check_in(
     connections: Vec<Connection>,
     expect: Option<ClusterExpectation>,
 ) -> Result<Dialed<RuleCheckIn>, RpcError> {
-    let (id, rule, built) = rule_build(&store, &claims, &commit).await?;
+    let (id, RuleBuild { rule, approval }, built) = rule_build(&store, &claims, &commit).await?;
     let session = session(connections, expect).await?;
     let foreign = session.foreign();
     let contract = session.about().await;
@@ -366,6 +390,7 @@ pub async fn github_rule_check_in(
             cluster: public_key,
             attest,
             service: id.service,
+            approval,
         },
         foreign,
     })
@@ -405,7 +430,8 @@ pub async fn github_rule_grant(
     connections: Vec<Connection>,
     expect: Option<ClusterExpectation>,
 ) -> Result<Dialed<RuleGranted>, RpcError> {
-    let (id, rule, built) = rule_build(&store, &claims, &ask.commit.to_string()).await?;
+    let (id, RuleBuild { rule, approval }, built) =
+        rule_build(&store, &claims, &ask.commit.to_string()).await?;
     if ask.service != id.service {
         return Err(ployz_core::RpcError::conflict(
             "The grant asks for another Service than its build's",
@@ -423,15 +449,22 @@ pub async fn github_rule_grant(
     let foreign = session.foreign();
     let minted = async {
         let details = session.inspect().await?;
-        let advertises = details.machine.is_some_and(|machine| {
-            machine
-                .runtime
-                .capabilities
-                .contains(ployz_core::BUILD_GRANT_RULE_CAPABILITY)
-        });
-        if !advertises {
+        let advertises = |capability| {
+            details
+                .machine
+                .as_ref()
+                .is_some_and(|machine| machine.runtime.capabilities.contains(capability))
+        };
+        if !advertises(ployz_core::BUILD_GRANT_RULE_CAPABILITY) {
             return Err(ployz_core::RpcError::conflict(
                 "GitHub builds under an automatic deploy rule need a newer Ployz on your servers",
+            ));
+        }
+        // An older Machine refuses the approval's field outright; this says why first.
+        if approval.is_some() && !advertises(ployz_core::BUILD_GRANT_APPROVED_CAPABILITY) {
+            return Err(ployz_core::RpcError::conflict(
+                "Rebuilding an older commit under an automatic deploy rule needs a newer Ployz \
+                 on your servers",
             ));
         }
         let minted = session
@@ -445,7 +478,7 @@ pub async fn github_rule_grant(
                     service: ask.service,
                     commit: ask.commit,
                     authority: ask.authority,
-                    approval: None,
+                    approval,
                     recipient: ask.recipient,
                     reader,
                 }),
@@ -480,20 +513,19 @@ pub async fn github_rule_grant(
     })
 }
 
+/// The rule a build runs under, and the approval of its commit when a person gave one.
+struct RuleBuild {
+    rule: ployz_core::authority::Signed<ployz_core::authority::AutoDeployRule>,
+    approval: Option<ployz_core::authority::Signed<ployz_core::authority::BuildApproval>>,
+}
+
 /// The build run `claims` names holds, authorized, with its rule and inputs, once it
 /// pins `commit` and has no grant yet.
 async fn rule_build(
     store: &Arc<ConfigStore>,
     claims: &GithubClaims,
     commit: &str,
-) -> Result<
-    (
-        GithubBuildId,
-        ployz_core::authority::Signed<ployz_core::authority::AutoDeployRule>,
-        ployz_store::GithubInput,
-    ),
-    RpcError,
-> {
+) -> Result<(GithubBuildId, RuleBuild, ployz_store::GithubInput), RpcError> {
     let run_id = claims_run(claims)?;
     let claims = claims.clone();
     let commit = commit.to_owned();
@@ -513,13 +545,14 @@ async fn rule_build(
         let rule = store.github_rule(&id)?.ok_or_else(|| {
             ployz_core::RpcError::conflict("This build runs under no automatic deploy rule")
         })?;
+        let approval = store.github_approval(&id)?;
         let built = store.github_input(&id)?;
         if built.commit.as_str() != commit {
             return Err(ployz_core::RpcError::conflict(
                 "This run checked out another commit than the one this build pins",
             ));
         }
-        Ok((id, rule, built))
+        Ok((id, RuleBuild { rule, approval }, built))
     })
     .await
 }

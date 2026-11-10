@@ -319,7 +319,7 @@ export interface ConfigStore extends Omit<native.ConfigStore, "read"> {
   /** The view of the same name as the query. */
   read<Q extends ConfigQuery>(organization: string, query: Q, trusted?: ConfigTrusted): Promise<Extract<ConfigView, { view: Q["query"] }>>;
 }
-export type GithubStart = { kind: "reused" } | { kind: "dispatch"; runner: string } | { kind: "skipped"; message: string } | { kind: "follow"; workflow: string; workflow_ref: string; commit: string };
+export type GithubStart = { kind: "reused" } | { kind: "dispatch"; runner: string } | { kind: "skipped"; message: string } | { kind: "follow"; workflow: string; workflow_ref: string; commit: string } | { kind: "approved"; workflow: string; workflow_ref: string; branch: string; commit: string };
 export type GithubCheckIn = ({ grant: string } | { machine: string }) & { commit: string; fingerprint: string; ployzVersion: string; deployment: PreparationInput["deployment"] };
 export type GithubFinish = "waiting" | { ended: BuildStatus };
 /** Calls run off the JavaScript thread, a few at once; a slow or queued call rejects `unavailable`. */

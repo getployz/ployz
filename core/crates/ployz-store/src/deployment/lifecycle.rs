@@ -319,10 +319,12 @@ pub(crate) fn approve_built(
     Ok(stored.summary)
 }
 
-/// Whether Deployment `id` waits for a Device to approve it after admission, and none
-/// has yet.
+/// Whether queued Deployment `id` waits for a Device to approve it after admission, and
+/// none has yet. One cancelled or replaced meanwhile waits for nothing.
 pub(crate) fn awaiting_approval(tx: &mut dyn Tx, id: &DeploymentId) -> Result<bool, RpcError> {
-    Ok(awaits(tx, id)? && device_approval(tx, id)?.is_none())
+    Ok(load(tx, id)?.summary.status == DeploymentStatus::Queued
+        && awaits(tx, id)?
+        && device_approval(tx, id)?.is_none())
 }
 
 fn awaits(tx: &mut dyn Tx, id: &DeploymentId) -> Result<bool, RpcError> {
@@ -1382,7 +1384,7 @@ pub(crate) fn claim(
             true
         }
     };
-    if starting && awaiting_approval(tx, id)? {
+    if starting && awaits(tx, id)? && device_approval(tx, id)?.is_none() {
         let refused = error::conflict(
             "No device approved the images this redeploy built, so it didn't run. Redeploy \
              it again from an approved device.",

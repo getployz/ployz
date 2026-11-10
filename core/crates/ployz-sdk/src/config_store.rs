@@ -186,6 +186,18 @@ impl ConfigStore {
         self.run(move |store| store.sources(&deployment)).await
     }
 
+    /// Whether Deployment `deployment` waits for a Device to approve the images its builds
+    /// made, and none has yet. Cloud holds it before it runs until one does.
+    ///
+    /// # Errors
+    /// Returns `not_found` for an unknown Deployment, or a storage error.
+    #[napi(ts_return_type = "Promise<boolean>")]
+    pub async fn awaiting_approval(&self, deployment: String) -> Result<serde_json::Value> {
+        let deployment = DeploymentId::parse(deployment).map_err(rpc_to_napi)?;
+        self.run(move |store| store.awaiting_approval(&deployment))
+            .await
+    }
+
     /// Pin the commits Cloud resolved (`{runtime Service name: commit}`) for
     /// Deployment `deployment`'s Git Services; a pinned commit never changes. Resolves
     /// to every source with its pin. `trusted` carries the Organization's members as
@@ -524,7 +536,9 @@ impl ConfigStore {
 impl ConfigStore {
     /// Start GitHub build `build` (`DEPLOYMENT.SERVICE`): `{kind: "reused"}`,
     /// `{kind: "dispatch", runner}`, `{kind: "skipped", message}`, or under an automatic
-    /// deploy rule `{kind: "follow", workflow, workflow_ref, commit}`. `expect` is as
+    /// deploy rule `{kind: "follow", workflow, workflow_ref, commit}` for a push, and
+    /// `{kind: "approved", workflow, workflow_ref, branch, commit}` for a commit a person
+    /// approved, which Cloud dispatches. `expect` is as
     /// `runDeployment`'s, here and in `githubCheckIn` and `githubFinish`; `foreign` is
     /// as `observeCopies`', here and in `githubCheckIn`.
     ///

@@ -52,6 +52,40 @@ pub struct PlanView {
     pub target: Option<Vec<RequestedServiceSpec>>,
 }
 
+/// The spec each Service of a queued Deployment runs, as its runner will ask a Server to
+/// run it, for a Device to approve after admission. Needs write access to its
+/// Environment.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
+#[serde(deny_unknown_fields)]
+pub struct DeploymentTargetQuery {
+    pub id: DeploymentId,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, TS)]
+pub struct DeploymentTargetView {
+    pub namespace: ployz_core::Namespace,
+    /// A Service built from source names its image placeholder: its build fills it.
+    pub target: Vec<RequestedServiceSpec>,
+}
+
+/// Deployment `query.id` lowered as its claim will lower it.
+pub(crate) fn target(
+    tx: &mut dyn Tx,
+    who: &Actor,
+    trusted: &crate::Trusted,
+    query: &DeploymentTargetQuery,
+) -> Result<DeploymentTargetView, RpcError> {
+    let stored = deployment::owned(tx, who, &query.id)?;
+    let environment = scope::load_by_id(tx, &stored.summary.environment_id)?;
+    trusted.writes(&environment.summary.name)?;
+    let saved = deployment::held_revision(tx, &stored)?;
+    let lowered = deployment::lowered(tx, &stored, &saved)?;
+    Ok(DeploymentTargetView {
+        namespace: stored.namespace,
+        target: lowered.intent.target,
+    })
+}
+
 /// Where an Environment runs on the Servers.
 #[derive(Clone, Debug, Default, Eq, PartialEq, Serialize, Deserialize, TS)]
 #[serde(deny_unknown_fields)]

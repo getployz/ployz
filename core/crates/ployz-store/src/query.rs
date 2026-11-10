@@ -10,9 +10,9 @@ pub use crate::config_item::query::{
     ConfigItemQuery, ConfigItemView, ConfigListing, ConfigMountChange, ConfigsQuery, ConfigsView,
 };
 pub use crate::deployment::query::{
-    AppliedRoute, DeploymentQuery, DeploymentsQuery, DeploymentsView, NamespaceQuery,
-    NamespaceView, NamespacesQuery, NamespacesView, NumberedDeploymentQuery, OwnedNamespace,
-    PlanQuery, PlanView, RouteKind,
+    AppliedRoute, DeploymentQuery, DeploymentTargetQuery, DeploymentTargetView, DeploymentsQuery,
+    DeploymentsView, NamespaceQuery, NamespaceView, NamespacesQuery, NamespacesView,
+    NumberedDeploymentQuery, OwnedNamespace, PlanQuery, PlanView, RouteKind,
 };
 pub use crate::deployment::uploads::{HeldUpload, UploadsQuery, UploadsView};
 pub use crate::review::diff::DiffQuery;
@@ -189,6 +189,9 @@ queries! {
         => crate::deployment::query::page(tx, who, q);
     Deployment(DeploymentQuery) -> crate::DeploymentView as *
         => crate::deployment::view(tx, who, &q.id);
+    /// What a queued Deployment's runner will ask the Servers to run, for a Device to approve.
+    DeploymentTarget(DeploymentTargetQuery) -> DeploymentTargetView
+        => crate::deployment::query::target(tx, who, trusted, q);
     /// One Deployment, by its number in an Environment.
     NumberedDeployment(NumberedDeploymentQuery) -> crate::DeploymentView as *
         => crate::deployment::query::numbered(tx, who, q);
