@@ -1,5 +1,5 @@
 import { useState } from "react";
-import type { EnvironmentRef, RuleDraft, RuleView } from "@ployz/sdk";
+import type { RuleDraft, RuleView, Signed } from "@ployz/sdk";
 import { useQuery } from "@tanstack/react-query";
 import { useLoaderData } from "@tanstack/react-router";
 import { KeyRoundIcon, TriangleAlertIcon } from "lucide-react";
@@ -43,6 +43,7 @@ export function StoreAutomaticDeploys({ organizationSlug, projectSlug, environme
   const view = read.ok ? read.value : null;
   const rule = useRuleScope(organizationSlug, { environmentName: environmentSlug, namespace: view?.namespace ?? "" });
   const [open, setOpen] = useState<"approve" | "end" | null>(null);
+  const writer = useStoreWriter(organizationSlug);
   if (view === null) return null;
   const kept = keptRule(view);
   const on = ruleOn(view);
@@ -76,22 +77,28 @@ export function StoreAutomaticDeploys({ organizationSlug, projectSlug, environme
         />
       )}
       {open === null ? null : (
-        <RuleDialog organizationSlug={organizationSlug} environment={environment} view={view} scope={rule}
-          ending={open === "end"} onClose={() => setOpen(null)} />
+        <RuleDialog organizationSlug={organizationSlug} view={view} scope={rule} ending={open === "end"}
+          onClose={() => setOpen(null)}
+          commit={async (signed) => { await writer.commit({ command: "approve_rule", environment, rule: signed }); }}
+          readOwner={(repository) => githubRepositoryOwnerServerFn({ data: { organizationSlug, repository } })} />
       )}
     </SettingsSection>
   );
 }
 
-function RuleDialog({ organizationSlug, environment, view, scope, ending, onClose }: {
+/**
+ * What turning a rule on, approving it again or turning it off asks: the rule as it would be signed, then one passkey
+ * prompt. `commit` keeps the signed rule in the Store; `readOwner` reads who owns the repository on GitHub.
+ */
+export function RuleDialog({ organizationSlug, view, scope, ending, onClose, commit, readOwner }: {
   organizationSlug: string;
-  environment: EnvironmentRef;
   view: RuleView;
   scope: ReturnType<typeof deployScope>;
   ending: boolean;
   onClose: () => void;
+  commit: (rule: Signed) => Promise<void>;
+  readOwner: (repository: string) => Promise<{ repositoryId: number; ownerId: number }>;
 }) {
-  const writer = useStoreWriter(organizationSlug);
   const [busy, setBusy] = useState(false);
   const [failed, setFailed] = useState<string | null>(null);
   const blocked = ending ? null
@@ -110,7 +117,7 @@ function RuleDialog({ organizationSlug, environment, view, scope, ending, onClos
   const repository = ending ? null : preview?.summary.repository ?? null;
   const owner = useQuery({
     queryKey: ["github-repository-owner", organizationSlug, repository],
-    queryFn: () => githubRepositoryOwnerServerFn({ data: { organizationSlug, repository: repository ?? "" } }),
+    queryFn: () => readOwner(repository ?? ""),
     enabled: repository !== null,
     staleTime: 60_000,
   });
@@ -128,7 +135,7 @@ function RuleDialog({ organizationSlug, environment, view, scope, ending, onClos
     try {
       const draft = ending || target === null ? draftEnd(view) : draftRule(view, target, owner.data?.ownerId ?? 0);
       const rule = await answerRule(draft);
-      await writer.commit({ command: "approve_rule", environment, rule });
+      await commit(rule);
       onClose();
     } catch (error) {
       // The Store's refusal toasts by itself; a passkey's or the draft's shows here.
