@@ -188,13 +188,13 @@ it("founds closed for Cloudflare only on a Fleet Token that asks it, and only on
   const older = host("web-old");
   await checkin(older);
   const refused = await failure(enroll([older]));
-  expect(refused).toMatchObject({ message: expect.stringContaining("can't start with ports 80 and 443 closed") });
+  expect(refused).toMatchObject({ message: expect.stringContaining("is too old for Cloudflare Tunnel") });
   expect(await attempts()).toEqual([]);
 
   const current = host("web-new");
   await checkin(current, { enrollOptions: ["ingressClosed"] });
   const dark = await failure(enroll([current], { runs: { services: true, ingress: false, builds: false } }));
-  expect(dark).toMatchObject({ message: expect.stringContaining("must run web traffic") });
+  expect(dark).toMatchObject({ message: expect.stringContaining("needs the first server to take web traffic") });
   expect(await attempts()).toEqual([]);
   const joiner = host("web-two");
   await checkin(joiner, { enrollOptions: ["ingressClosed"] });

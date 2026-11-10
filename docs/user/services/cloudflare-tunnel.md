@@ -8,24 +8,25 @@ answer through Cloudflare instead, and the ports stay closed. Choose it when you
 open ports to the internet, when something else already holds port 80, or when you want
 Cloudflare in front of every request.
 
-Both doors work with the same services and domains. Ployz runs the tunnel on every server that
+Both ways work with the same services and domains. Ployz runs the tunnel on every server that
 takes web traffic, so a request reaches your app whichever server Cloudflare picks.
 
 A new organization can choose Cloudflare Tunnel before its first server, on the card that
 gives the install line; see
 [Choose a name and Cloudflare Tunnel first](../servers/add-a-server.md#choose-a-name-and-cloudflare-tunnel-first).
 
-## Switch from Settings
+## Switch from the dashboard
 
-Open **Settings → Network**. **Web traffic** lists the two ways your servers answer. **Public
+Open **Organization → Network**. **Web traffic** lists the two ways your servers answer. **Public
 ports** is in use until you switch.
 
-1. Create an API token in your Cloudflare profile with **Zone: Zone: Read**,
-   **Zone: DNS: Edit** and **Account: Cloudflare Tunnel: Edit**.
+1. Create an API token in your Cloudflare profile with **Zone Read**, **DNS Edit** and
+   **Cloudflare Tunnel Edit**. Cloudflare lists them as Zone → Zone → Read, Zone → DNS → Edit and
+   Account → Cloudflare Tunnel → Edit.
 2. Next to **Cloudflare Tunnel**, click **Set up**, paste the token and click **Find zones**.
 3. Pick the zone and click **Set up**. Use the zone itself, like `example.com`, not a
-   subdomain of it. Your apps get names one level below it, like `web-prod.example.com`, which
-   Cloudflare's free certificate covers.
+   subdomain of it. Your apps get addresses like `web-prod.example.com`, which Cloudflare's free
+   certificate covers.
 
 Ployz uses the token for this one step and doesn't keep it. A token missing a permission names
 it, and nothing changes. Setup is refused while a switch runs or while someone else sets
@@ -40,22 +41,22 @@ stay where they are until you switch.
 Click **Review and switch**. The review lists every address that moves, like
 `web-prod.acme.ployz.app → web-prod.example.com`. The old ones stop working. Click **Switch**
 and follow **Step 1 of 3** to **Step 3 of 3**. Expect a short interruption. The switch redeploys
-only the services on that list, as they run now, and closes the old door only once your servers
+only the services on that list, as they run now, and closes the old way in only once your servers
 serve every new address. A service that isn't running stays stopped. Changes you haven't deployed
 stay staged, so `ployz diff` still shows them. Services you deployed separately may redeploy one at
 a time. The switch stops if one of those environments is still deploying. Wait for that deployment
 to finish, then switch again.
 
-While a switch runs, each door's row shows what your servers hold right now. A second switch the
+While a switch runs, each row shows what your servers use right now. A second switch the
 same way joins the running one. One the other way is refused until it finishes.
 
-If a step fails, both doors stay open on your servers and the section says what stopped it, such
-as an environment that didn't redeploy. Each door's row shows how many servers hold it. Fix the
-cause, then click **Review and switch** again to finish.
+If a step fails, the ports and the tunnel both stay open on your servers and the section says
+what stopped it, such as an environment that didn't redeploy. Each row shows how many servers use
+it. Fix the cause, then click **Review and switch** again to finish.
 
-The switch needs every server to answer. When a server is down, the switch stops with both doors
+The switch needs every server to answer. When a server is down, the switch stops with both
 open and says so, since Ployz can't see which addresses that server moves. The review and each
-door's row say when some servers didn't answer. Bring the server back, or remove it, then switch
+row say when some servers didn't answer. Bring the server back, or remove it, then switch
 again. The same goes for an address under the domain the switch leaves that no deployment
 put there, since Ployz can't tell whether it moves. The review names it. Deploy that
 environment again, or remove the address, then switch again.

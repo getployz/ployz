@@ -27,7 +27,7 @@ export function Integrations({ organizationSlug, editable }: { organizationSlug:
     <div className="flex flex-col gap-6">
       <TailscaleSection organizationSlug={organizationSlug} editable={editable} />
       <SettingsSection id="cloudflare" title="Cloudflare">
-        <SettingsRow label="Cloudflare Tunnel" hint="Serve web traffic through Cloudflare." commit="none"
+        <SettingsRow label="Cloudflare Tunnel" hint="Serve through Cloudflare with no open ports." commit="none"
           control={<Button variant="outline" size="sm" nativeButton={false} render={<Link to="/cloud/$organizationSlug/~/settings" params={{ organizationSlug }} search={{ section: "network" }} />}>Open Network</Button>} />
       </SettingsSection>
       <SettingsSection id="github" title="GitHub">
@@ -60,7 +60,7 @@ function TailscaleSection({ organizationSlug, editable }: { organizationSlug: st
     <SettingsSection id="tailscale" title="Tailscale">
       <SettingsRow
         label="Private access"
-        hint={hintOf(query.isPending, observed === null ? null : { serving, placed: on ? placed : 0, partial: observed.partial })}
+        hint={hintOf(query.isPending, observed === null ? null : { serving, placed: on ? placed : 0, servers: rows.length, partial: observed.partial })}
         commit="none"
         control={(
           <>
@@ -93,9 +93,9 @@ function TailscaleSection({ organizationSlug, editable }: { organizationSlug: st
       {on ? <Routers rows={rows} /> : null}
       {on && serving > 0 ? (
         <>
-          <SettingsRow label="Approve the route" hint={<>Once per server, unless your tailnet auto-approves <span className="font-mono">tag:ployz</span>.</>} commit="none"
+          <SettingsRow label="Approve routes" hint={<>In Tailscale, approve the subnet route of each <span className="font-mono">ployz-router</span> machine. Your tailnet can't reach your services until you do.</>} commit="none"
             control={<Button variant="outline" size="sm" nativeButton={false} render={<a href={TAILSCALE_MACHINES_URL} target="_blank" rel="noreferrer" />}>Open Tailscale<ExternalLinkIcon aria-hidden /></Button>} />
-          <SettingsRow label="Linux" hint={<span className="font-mono break-all">{LINUX}</span>} commit="none"
+          <SettingsRow label="On Linux devices, run" hint={<span className="font-mono break-all">{LINUX}</span>} commit="none"
             control={<CopyButton value={LINUX} label="Copy command" size="icon-xs" />} />
         </>
       ) : null}
@@ -103,7 +103,7 @@ function TailscaleSection({ organizationSlug, editable }: { organizationSlug: st
         open={turningOff}
         onOpenChange={setTurningOff}
         title="Turn off private access?"
-        description={`Removes ${placed} ${placed === 1 ? "router" : "routers"} from your tailnet. Turning it on again needs new route approvals.`}
+        description="Your tailnet can no longer reach your services. Turning it on again needs a key and new route approvals."
         actionLabel="Turn off"
         pendingLabel="Turning off…"
         variant="destructive"
@@ -140,13 +140,13 @@ function stateOf(server: ObservedServer, last: PrivateAccessAnswer | null): RowS
 
 const putRight = (to: PrivateAccessWant, state: RowState | undefined) => to === "on" ? state === "running" : state === "none";
 
-function hintOf(loading: boolean, routers: { serving: number; placed: number; partial: boolean } | null) {
+function hintOf(loading: boolean, routers: { serving: number; placed: number; servers: number; partial: boolean } | null) {
   if (loading) return "Checking your servers…";
   if (routers === null) return "Your servers aren't answering.";
-  if (routers.placed === 0) return "Reach your servers from your tailnet.";
+  if (routers.placed === 0) return "Reach your services' private addresses from your tailnet.";
   if (routers.serving === 0) return "No router is running. Try another key, or turn it off.";
-  const shown = `${routers.serving} ${routers.serving === 1 ? "router" : "routers"}`;
-  return routers.partial ? `${shown} · some servers didn't answer` : shown;
+  const shown = `A Tailscale router runs on ${routers.serving} of ${routers.servers} servers.`;
+  return routers.partial ? `${shown} Some servers didn't answer.` : shown;
 }
 
 function StatusBadge({ serving, servers }: { serving: number; servers: number }) {

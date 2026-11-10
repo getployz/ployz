@@ -21,9 +21,9 @@ import { abandonCloudflare, type CardCloudflare, installGate } from "./servers-p
 import { ADD_SERVERS_REFUSED, type useMintFleetToken } from "./use-waiting";
 
 const STEPS = [
-  { title: "Run the line", description: "Installs the agent. Docker too, if missing." },
-  { title: "Review", description: "See its size, disks and blockers before it joins." },
-  { title: "Enroll", description: "Sets up storage and networking, then it's ready for deploys." },
+  { title: "Run the command", description: "Installs Ployz, and Docker if it's missing." },
+  { title: "Review", description: "Check its size and disks before it joins." },
+  { title: "Enroll", description: "It joins, ready for your first deploy." },
 ] as const;
 
 /**
@@ -94,8 +94,8 @@ export function ClusterSetup({ organizationSlug, cluster, mint, steps = true }: 
       </div>
       {cloudflare.at === "ready" ? (
         <p className="text-sm text-muted-foreground">
-          Your first server starts with ports 80 and 443 closed. Once it joins, Ployz sets up the tunnel on{" "}
-          <span className="font-mono">{cloudflare.zone}</span>. Keep this tab open until then.
+          Keep this tab open until your server joins. Cloudflare Tunnel on{" "}
+          <span className="font-mono">{cloudflare.zone}</span> is set up then.
         </p>
       ) : null}
     </div>
@@ -237,7 +237,7 @@ export function CloudflareChoice({ organizationSlug, choice, token, onToken, onC
         <FieldContent>
           <FieldLabel htmlFor={switchId}>Cloudflare Tunnel</FieldLabel>
           <FieldDescription>
-            {operate.allowed ? "Your servers open no ports. Visitors arrive through a zone in your own Cloudflare account." : operate.reason}
+            {operate.allowed ? "Serve through Cloudflare with no open ports." : operate.reason}
           </FieldDescription>
         </FieldContent>
       </Field>
@@ -251,8 +251,8 @@ export function CloudflareChoice({ organizationSlug, choice, token, onToken, onC
               <Button type="submit" variant="outline" disabled={busy || token.trim() === ""}>{busy ? <Spinner /> : null}Find zones</Button>
             </div>
             <FieldDescription>
-              Needs Zone: Zone: Read, Zone: DNS: Edit and Account: Cloudflare Tunnel: Edit. This tab keeps it until your first
-              server joins and sets up the tunnel with it. Ployz never stores it.
+              Create one in your Cloudflare profile with Zone Read, DNS Edit and Cloudflare Tunnel Edit. Kept in this tab
+              until your server joins, never stored.
             </FieldDescription>
           </Field>
         </form>
@@ -269,8 +269,8 @@ export function CloudflareChoice({ organizationSlug, choice, token, onToken, onC
             </div>
             <FieldDescription className={problem === null ? undefined : "text-destructive"}>
               {problem ?? (choice.zones.length === 0
-                ? "This token can't see any zones."
-                : <>Apps get names one level below it, like <span className="font-mono break-all">web-production.{zone === "" ? "example.com" : normalizeZone(zone)}</span>.</>)}
+                ? "This token can't see any zones. Give it access to your domain's zone."
+                : <>Apps get addresses like <span className="font-mono break-all">web-production.{zone === "" ? "example.com" : normalizeZone(zone)}</span>.</>)}
             </FieldDescription>
           </Field>
           <Button type="button" variant="ghost" size="sm" className="w-fit" disabled={busy} onClick={() => onChoice({ at: "token" })}>Back</Button>
@@ -282,8 +282,8 @@ export function CloudflareChoice({ organizationSlug, choice, token, onToken, onC
           <ItemContent className="min-w-0">
             <ItemTitle className="break-all">Ready for <span className="font-mono">{choice.zone}</span></ItemTitle>
             <ItemDescription>
-              Your token can set it up. Once your first server joins, Ployz creates the tunnel and{" "}
-              <span className="font-mono break-all">*.{choice.zone}</span>, then forgets the token.
+              Nothing is created until your first server joins. Then apps get{" "}
+              <span className="font-mono break-all">*.{choice.zone}</span> addresses.
             </ItemDescription>
           </ItemContent>
           <ItemActions>

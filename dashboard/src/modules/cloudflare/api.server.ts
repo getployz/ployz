@@ -194,9 +194,9 @@ export const deleteRecord = (http: CloudflareHttp, token: Redacted.Redacted<stri
 export const refusalWords = (error: CloudflareError) => {
   switch (error.kind) {
     case "token_rejected": return "Cloudflare didn't accept that token. Copy it again from your Cloudflare profile.";
-    case "missing_permission": return `That token can't do this. Add the "${PERMISSIONS[error.permission ?? "zones"]}" permission and paste it again.`;
+    case "missing_permission": return `That token is missing ${PERMISSIONS[error.permission ?? "zones"]}. Add the permission and paste the token again.`;
     case "unreachable": return "Cloudflare didn't answer. Try again in a moment.";
-    case "refused": return `Cloudflare refused the ${error.operation}${error.detail ? `: ${error.detail}` : ""}.`;
-    case "unusable_answer": return `Cloudflare's answer to the ${error.operation} wasn't one Ployz can use. Try again in a moment.`;
+    case "refused": return `Cloudflare refused a request (${error.operation})${error.detail ? `: ${error.detail}` : ""}.`;
+    case "unusable_answer": return "Cloudflare sent an answer Ployz couldn't read. Try again in a moment.";
   }
 };

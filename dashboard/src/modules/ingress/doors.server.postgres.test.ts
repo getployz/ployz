@@ -139,14 +139,14 @@ it("opens both doors, flips to Cloudflare, closes the public door, and ends fini
 it("finishes a switch whose last step failed when asked again, and refuses one already made", async () => {
   await setup("active");
   await harness.pool.query(
-    "insert into ingress_doors_attempt (id, organization_id, want, state, stage, failure, requested_at, ended_at) values (gen_random_uuid(), $1, 'tunnel', 'failed', 'closing', 's1 still has other doors open.', now() - interval '1 minute', now())",
+    "insert into ingress_doors_attempt (id, organization_id, want, state, stage, failure, requested_at, ended_at) values (gen_random_uuid(), $1, 'tunnel', 'failed', 'closing', 's1 didn''t switch.', now() - interval '1 minute', now())",
     [ORG],
   );
   const request = await asked("tunnel");
   expect(await run(executeDoorsOnce(request, RUN))).toMatchObject({ state: "finished" });
   expect(sets).toEqual([["public", "tunnel"], ["tunnel"]]);
   expect(await stateNow()).toBe("active");
-  await expect(run(requestDoorsSwitch({ organizationId: ORG, userId: ADA, to: "tunnel" }))).rejects.toMatchObject({ message: "This Cluster already uses Cloudflare." });
+  await expect(run(requestDoorsSwitch({ organizationId: ORG, userId: ADA, to: "tunnel" }))).rejects.toMatchObject({ message: "Your servers already use Cloudflare Tunnel." });
 });
 
 it("goes back to public ports the same way and leaves the tunnel as the user's to delete", async () => {
@@ -202,7 +202,7 @@ it("stops before the source moves on a name under the zone that no Deployment ac
   await hosted();
   session = answering((doors) => doors, Effect.succeed({ ...EMPTY_FRAME, containers: [serving("stray.example.com")] }));
   storeViews = owning([]);
-  const gap = "stray.example.com is served by shop-prod/shop, which Cloud can't match to a deployed domain. Deploy it again or remove it, then switch again.";
+  const gap = "stray.example.com is served by shop-prod/shop, which Ployz Cloud can't match to a deployment. Deploy it again or remove it, then switch again.";
   expect(await run(reviewSwitch(ORG, "public"))).toEqual({ moves: [], kept: [], zone: "example.com", hostedName: "acme.ployz.test", gap });
   const request = await asked("public");
   expect(await run(executeDoorsOnce(request, RUN))).toMatchObject({ state: "failed" });
@@ -218,7 +218,7 @@ it("moves nothing when a Server doesn't take both doors, and says so", async () 
   expect(await run(executeDoorsOnce(request, RUN))).toMatchObject({ state: "failed" });
   expect(sets).toEqual([["public", "tunnel"]]);
   expect(await stateNow()).toBe("set_up");
-  expect(await attempts()).toMatchObject([{ state: "failed", failure: "s1 still has other doors open." }]);
+  expect(await attempts()).toMatchObject([{ state: "failed", failure: "s1 didn't switch." }]);
 });
 
 it("stops with both doors open, before the source moves, when the Servers show no frame", async () => {
@@ -275,7 +275,7 @@ it("closes a retry that finds the switch running without asking the Cluster agai
   await harness.pool.query("update ingress_doors_attempt set state = 'running', started_at = now()");
   expect(await run(executeDoorsOnce(request, RUN))).toMatchObject({ state: "failed" });
   expect(sets).toEqual([]);
-  expect(await attempts()).toMatchObject([{ failure: "Cloud lost track of the switch. Check the section and switch again." }]);
+  expect(await attempts()).toMatchObject([{ failure: "The switch stopped partway. Switch again to finish it." }]);
 });
 
 it("ends a switch whose run failed or was cancelled, once", async () => {

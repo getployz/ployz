@@ -35,12 +35,12 @@ describe("the zone rule", () => {
 
   it("refuses a subdomain of a listed zone and explains the one-level rule", () => {
     expect(zoneProblem("apps.example.com", ZONES)).toBe(
-      "apps.example.com is under your zone example.com. Use example.com. Addresses go one level below the zone.",
+      "Use example.com, the zone apps.example.com belongs to.",
     );
   });
 
   it("refuses what isn't a zone of this account or isn't a domain at all", () => {
-    expect(zoneProblem("other.org", ZONES)).toBe("other.org isn't a zone in this Cloudflare account.");
+    expect(zoneProblem("other.org", ZONES)).toBe("This token can't see other.org. Pick one of its zones.");
     expect(zoneProblem("localhost", ZONES)).toBe("Use a domain name such as example.com.");
     expect(zoneProblem("", ZONES)).toBe("Pick one of your Cloudflare zones.");
   });
@@ -84,7 +84,7 @@ describe("the Cloudflare API calls", () => {
     const { http, seen } = cloudflare({ "POST /zones/z1/dns_records": { status: 403 } });
     const failure = await Effect.runPromise(checkEditPermissions(http, token, zone).pipe(Effect.flip));
     expect(failure).toBeInstanceOf(CloudflareError);
-    expect(refusalWords(failure)).toBe('That token can\'t do this. Add the "Zone: DNS: Edit" permission and paste it again.');
+    expect(refusalWords(failure)).toBe("That token is missing DNS Edit. Add the permission and paste the token again.");
     expect(seen.every(({ body }) => JSON.stringify(body) === "{}")).toBe(true);
   });
 
@@ -119,7 +119,7 @@ describe("the Cloudflare API calls", () => {
     expect(await Effect.runPromise(createTunnel(http, token, "a1", "ployz-acme"))).toEqual({ id: "t1", token: null });
     const read = await Effect.runPromise(tunnelToken(http, token, "a1", "t1").pipe(Effect.flip));
     expect(read.kind).toBe("unusable_answer");
-    expect(refusalWords(read)).toBe("Cloudflare's answer to the read tunnel token wasn't one Ployz can use. Try again in a moment.");
+    expect(refusalWords(read)).toBe("Cloudflare sent an answer Ployz couldn't read. Try again in a moment.");
   });
 
   it("says whether a deleted tunnel is gone, and that one already gone is", async () => {

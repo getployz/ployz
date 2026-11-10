@@ -48,7 +48,7 @@ export function ApprovalCard({ organizationSlug, id, seed, onSettled }: {
 
 function approvedLine(approval: ApprovalView) {
   if (approval.command === "publish") return "Saves without deploying.";
-  if (approval.command === "set_private_access") return asksForAuthKey(approval.review) ? "Integrations shows each router." : "Private access turns off.";
+  if (approval.command === "set_private_access") return asksForAuthKey(approval.review) ? "Integrations shows each server's router." : "Private access turns off.";
   return `${approvalSubject(approval.command, approval.review).verb} goes ahead.`;
 }
 

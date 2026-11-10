@@ -33,7 +33,7 @@ async function runFirstSetup(organizationSlug: string, queryClient: QueryClient)
       toast.success(`Cloudflare Tunnel is set up on ${zone}.`);
       break;
     } catch (error) {
-      const message = toErrorMessage(error, "Cloudflare setup didn't finish.");
+      const message = toErrorMessage(error, "Try again, or use public ports instead.");
       if (message.startsWith(NOT_ANSWERING) && tried < ANSWER_TRIES) {
         await new Promise((resolve) => setTimeout(resolve, ANSWER_WAIT_MS));
         continue;
@@ -80,17 +80,17 @@ export function FirstTunnelStatus({ organizationSlug }: { organizationSlug: stri
         <Alert role="status">
           <Spinner />
           <AlertTitle>Setting up Cloudflare Tunnel on <span className="font-mono">{state.zone}</span>…</AlertTitle>
-          <AlertDescription>Your first server joined with ports 80 and 443 closed. Keep this tab open until setup ends.</AlertDescription>
+          <AlertDescription>Keep this tab open until it finishes.</AlertDescription>
         </Alert>
       );
     case "done":
       return (
         <Alert role="status">
-          <AlertTitle>Cloudflare Tunnel is set up on <span className="font-mono">{state.zone}</span></AlertTitle>
+          <AlertTitle>Cloudflare Tunnel is ready</AlertTitle>
           <AlertDescription className="flex flex-wrap items-center gap-x-2">
             {state.switched
-              ? "Apps you deploy get addresses under it. Settings, Network shows how many servers are connected."
-              : "To serve apps you deployed under it, switch web traffic to Cloudflare in Settings, Network."}
+              ? <span>Apps you deploy get addresses like <span className="font-mono break-all">web-production.{state.zone}</span>.</span>
+              : <span>Apps you already deployed keep their addresses. To move them to <span className="font-mono break-all">{state.zone}</span>, switch web traffic in your organization's Network settings.</span>}
             <Button type="button" variant="link" size="sm" className="h-auto px-0" onClick={() => forgetCloudflare(organizationSlug)}>Dismiss</Button>
           </AlertDescription>
         </Alert>
@@ -98,7 +98,7 @@ export function FirstTunnelStatus({ organizationSlug }: { organizationSlug: stri
     case "failed":
       return (
         <Alert variant="destructive">
-          <AlertTitle>Cloudflare setup didn't finish</AlertTitle>
+          <AlertTitle>Cloudflare Tunnel setup didn't finish</AlertTitle>
           <AlertDescription className="flex flex-col gap-2">
             <p>{state.message}</p>
             <div className="flex flex-wrap gap-2">
@@ -122,7 +122,7 @@ function Unfinished({ organizationSlug }: { organizationSlug: string }) {
     <Alert>
       <AlertTitle>Your apps aren't reachable yet</AlertTitle>
       <AlertDescription className="flex min-w-0 flex-col gap-3">
-        <p>Your first server started with ports 80 and 443 closed for Cloudflare Tunnel, and the tunnel isn't set up. Paste the token again to set it up.</p>
+        <p>Cloudflare Tunnel setup didn't finish, and ports 80 and 443 are closed. Paste your Cloudflare API token to finish, or use public ports.</p>
         <CloudflareChoice
           organizationSlug={organizationSlug}
           choice={choice}
@@ -159,7 +159,7 @@ function OpenPublicPorts({ organizationSlug }: { organizationSlug: string }) {
         try {
           await openPublicPortsServerFn({ data: { organizationSlug } });
           forgetCloudflare(organizationSlug);
-          toast.success("Your servers take web traffic on ports 80 and 443.");
+          toast.success("Your servers now take web traffic on ports 80 and 443.");
           await queryClient.invalidateQueries({ queryKey: clusterIngressKeys.all });
         } catch (error) {
           toast.error(toErrorMessage(error, "Couldn't open ports 80 and 443."));

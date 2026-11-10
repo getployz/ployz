@@ -34,7 +34,7 @@ describe("setPrivateAccess gating", () => {
     expect(asksForAuthKey(reviewOf("on"))).toBe(true);
     expect(asksForAuthKey(reviewOf("off"))).toBe(false);
     expect(approvalSubject("set_private_access", reviewOf("on"))).toEqual({ verb: "Turn private access", name: "on", project: null });
-    expect(approvalBadge("set_private_access", reviewOf("on"))).toBe("Joins a tailnet");
-    expect(approvalBadge("set_private_access", reviewOf("off"))).toBe("Removes routers");
+    expect(approvalBadge("set_private_access", reviewOf("on"))).toBe("Joins your tailnet");
+    expect(approvalBadge("set_private_access", reviewOf("off"))).toBe("Leaves your tailnet");
   });
 });

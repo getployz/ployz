@@ -166,8 +166,8 @@ your services at their private addresses, on any port and protocol.
 4. On a Linux device, run `tailscale up --accept-routes`. Other systems accept the route on
    their own.
 
-**Integrations** lists each server's router, links to the Tailscale admin console, and has
-the Linux command to copy. If you ask an agent, or run `ployz cluster private-access on`, it
+**Integrations** lists each server's router. **Approve routes** links to the Tailscale admin
+console, and the Linux command is there to copy. If you ask an agent, or run `ployz cluster private-access on`, it
 waits for an owner or admin to approve. The approver pastes the key in the approval card, so
 the agent never sees it. **Connect** approves it before the key goes out, so it can't be denied
 afterwards. If Tailscale refuses the key, the approval stays approved: try another key, or turn

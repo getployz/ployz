@@ -82,10 +82,10 @@ export type InstallGate = { readonly allowed: boolean; readonly note: string | n
 export function installGate(choice: CardCloudflare): InstallGate {
   switch (choice.at) {
     case "off":
-      return { allowed: true, note: choice.abandoned ? "Cloudflare Tunnel isn't set up, so your servers use public ports 80 and 443." : null, foundsClosed: false };
+      return { allowed: true, note: choice.abandoned ? "Cloudflare Tunnel is off. Your servers will open ports 80 and 443." : null, foundsClosed: false };
     case "token":
     case "zone":
-      return { allowed: false, note: "Finish Cloudflare setup, or turn it off to use public ports.", foundsClosed: false };
+      return { allowed: false, note: "Finish Cloudflare Tunnel setup, or turn it off to use public ports.", foundsClosed: false };
     case "ready":
       return { allowed: true, note: null, foundsClosed: true };
   }

@@ -334,7 +334,7 @@ const redeployMoving = Effect.fn("IngressDoors.redeploy")(function* (organizatio
   });
   const { environments, left } = redeployScope(moving, owned, new Map(named.filter((entry) => entry !== null)));
   const [orphan] = left;
-  if (orphan !== undefined) return `${orphan.from} is served by ${orphan.namespace}/${orphan.service}, which isn't a Service Cloud can redeploy. Remove it, then switch again.`;
+  if (orphan !== undefined) return `${orphan.from} is served by ${orphan.namespace}/${orphan.service}, which Ployz Cloud can't redeploy. Remove it, then switch again.`;
   const ports: RedeployPorts<RedeployError, RedeployServices> = {
     reapply: ({ project, environment, services }) => Effect.gen(function* () {
       const id = randomUUID();
@@ -380,7 +380,7 @@ export const executeDoorsOnce = Effect.fn("IngressDoors.execute")(function* (req
   const owned = and(eq(ingressDoorsAttempt.id, request.attemptId), eq(ingressDoorsAttempt.inngestRunId, runId));
   const current = yield* stateOf(request.attemptId);
   if (current.state === "running") {
-    yield* drizzle.update(ingressDoorsAttempt).set(failed("Cloud lost track of the switch. Check the section and switch again."))
+    yield* drizzle.update(ingressDoorsAttempt).set(failed("The switch stopped partway. Switch again to finish it."))
       .where(and(owned, eq(ingressDoorsAttempt.state, "running")));
     return yield* stateOf(request.attemptId);
   }
@@ -396,8 +396,8 @@ export const executeDoorsOnce = Effect.fn("IngressDoors.execute")(function* (req
     : yield* applySwitch(session, request, runId, row.want).pipe(
       Effect.map((ended) => ended.ok ? finished() : failed(ended.failure)),
       Effect.catch((error) => Effect.succeed(failed(failureWords(error)))),
-      Effect.catchDefect((defect) => Effect.as(Effect.logError("Door switch died", defect), failed("Cloud lost track of the switch. Check the section and switch again."))),
-      Effect.timeoutOrElse({ duration: DOORS_RUNNING_LIMIT_MS, orElse: () => Effect.succeed(failed("Your servers didn't answer in time. Check the section and switch again.")) }),
+      Effect.catchDefect((defect) => Effect.as(Effect.logError("Door switch died", defect), failed("The switch stopped partway. Switch again to finish it."))),
+      Effect.timeoutOrElse({ duration: DOORS_RUNNING_LIMIT_MS, orElse: () => Effect.succeed(failed("Your servers didn't answer in time. Switch again to finish.")) }),
     );
   const [written] = yield* drizzle.update(ingressDoorsAttempt).set(end)
     .where(and(owned, eq(ingressDoorsAttempt.state, "running"))).returning({ state: ingressDoorsAttempt.state })
@@ -406,8 +406,8 @@ export const executeDoorsOnce = Effect.fn("IngressDoors.execute")(function* (req
 }, Effect.scoped);
 
 const RUN_ENDS = {
-  failure: { pending: "The switch never started. Try again.", running: "Cloud lost track of the switch. Check the section and switch again." },
-  cancellation: { pending: "The switch was cancelled before it started.", running: "The switch was cancelled while it ran. Check the section and switch again." },
+  failure: { pending: "The switch never started. Try again.", running: "The switch stopped partway. Switch again to finish it." },
+  cancellation: { pending: "The switch was cancelled before it started.", running: "The switch was cancelled partway. Switch again to finish it." },
 } as const satisfies Record<string, Record<"pending" | "running", string>>;
 
 /** A run that failed for good or was cancelled must not leave its row active. How many rows this call ended. */

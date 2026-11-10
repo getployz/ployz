@@ -187,7 +187,7 @@ export function approvalBadge(command: string, review: ApprovalReview) {
   if (command === "restore") return "Restores volume";
   if (command === "resize") return "Resizes volume";
   if (command === "set_cluster_name") return "Renames cluster";
-  if (command === "set_private_access") return asksForAuthKey(review) ? "Joins a tailnet" : "Removes routers";
+  if (command === "set_private_access") return asksForAuthKey(review) ? "Joins your tailnet" : "Leaves your tailnet";
   if (command === "set_ingress_doors") return effects.length === 0 ? "Switches web traffic" : `Moves ${effects.length} ${effects.length === 1 ? "address" : "addresses"}`;
   if (command === "release" && effects.length === 0) return "Releases volume";
   if (effects.length === 0) return prunes(review) ? "Removes other services" : "Deploys";

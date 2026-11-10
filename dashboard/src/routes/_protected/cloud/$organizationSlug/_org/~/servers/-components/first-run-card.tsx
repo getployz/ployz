@@ -16,11 +16,11 @@ export function FirstRunCard({ organizationSlug, arrived, cluster }: { organizat
   const mint = useMintFleetToken(organizationSlug);
   if (arrived) {
     return mint.data === undefined ? (
-      <p className="text-sm text-muted-foreground">Add servers to queue more here.</p>
+      <p className="text-sm text-muted-foreground">To add more, click Add servers.</p>
     ) : (
       <div className="flex flex-col gap-3">
         <InstallTabs target={mint.data} />
-        <p className="text-sm text-muted-foreground">Run it on more servers and they queue above.</p>
+        <p className="text-sm text-muted-foreground">Run it on more servers. They show up above.</p>
       </div>
     );
   }
@@ -28,7 +28,7 @@ export function FirstRunCard({ organizationSlug, arrived, cluster }: { organizat
     <Card>
       <CardHeader>
         <CardTitle>Add your first server</CardTitle>
-        <CardDescription>Run this on any Linux server with root. It shows up below in a few seconds.</CardDescription>
+        <CardDescription>Run one command as root on any Linux server. It shows up here in a few seconds.</CardDescription>
       </CardHeader>
       <CardContent>
         <ClusterSetup organizationSlug={organizationSlug} cluster={cluster} mint={mint} />
