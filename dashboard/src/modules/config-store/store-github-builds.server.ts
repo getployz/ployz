@@ -6,10 +6,10 @@ import { cloudStore, refusedWith, storeTry } from "#/modules/config-store/store-
 import type { StoreRefused } from "#/modules/config-store/store.contract";
 import { pinStoreSources } from "#/modules/config-store/store-deployment.server";
 import { organizationAccess } from "#/modules/github/github-access";
-import { cancelGithubRun, checkGithubBuildWorkflow, dispatchGithubBuildWorkflow, githubRunCompleted } from "#/modules/github/github-build.server";
+import { cancelGithubRun, checkGithubBuildWorkflow, dispatchGithubBuildWorkflow, findGithubPushRun, githubRunCompleted } from "#/modules/github/github-build.server";
 import { githubBuildId } from "#/modules/github/github-build-workflow";
 import { verifyGithubOidcToken } from "#/modules/github/github-oidc.server";
-import { installationRefusal } from "#/modules/github/github-token.server";
+import { installationRefusal, mintInstallationToken } from "#/modules/github/github-token.server";
 import { logForeignServers } from "#/modules/machines/connections.server";
 import { sendInngestEvent } from "#/modules/inngest/client";
 import { createGithubBuildRunCompletedEvent, type ConfigDeploymentAdmittedEventData } from "#/modules/inngest/events";
@@ -151,9 +151,18 @@ export const startStoreGithubBuild = Effect.fn("StoreGithub.start")(function* (o
     const start = yield* storeTry(() => store.githubStart(target.build, connections, expect)).pipe(
       Effect.tap(({ foreign }) => logForeignServers(organizationId, foreign)),
     );
+    const fullName = workflow.fullName;
+    if (start.kind === "follow") {
+      // A push under an automatic deploy rule started its own run: follow it rather than dispatch one.
+      const run = yield* followPushRun({ access, fullName, workflow: start.workflow, commit: start.commit });
+      if (run === null) return yield* skip(`GitHub started no run of ${start.workflow} for this push`);
+      yield* storeTry(() => store.githubDispatched(target.build, {
+        run_id: run.runId, run_url: run.runUrl, workflow_ref: start.workflow_ref, repository: fullName, installation_id: installationId,
+      }));
+      return { kind: "dispatched", runId: run.runId } satisfies StoreGithubStart;
+    }
     if (start.kind !== "dispatch") return done;
     const config = yield* AppConfig;
-    const fullName = workflow.fullName;
     const run = yield* dispatchGithubBuildWorkflow({
       access, fullName, defaultBranch: workflow.defaultBranch,
       inputs: { build: target.build, cloud: config.app.url.origin, runner: start.runner },
@@ -171,6 +180,19 @@ export const startStoreGithubBuild = Effect.fn("StoreGithub.start")(function* (o
     Effect.catchTag("GithubDisconnected", (error) => skip(error.message)),
     Effect.catchIf(refusedWith("conflict"), () => refused),
   );
+});
+
+/** How long Cloud waits for GitHub to list the run a push started, and how often it looks. */
+const PUSH_RUN_WAIT_MS = 90_000;
+const PUSH_RUN_LOOK = "3 seconds";
+
+const followPushRun = Effect.fn("StoreGithub.followPushRun")(function* (input: Parameters<typeof findGithubPushRun>[0]) {
+  const deadline = Date.now() + PUSH_RUN_WAIT_MS;
+  for (;;) {
+    const run = yield* findGithubPushRun(input);
+    if (run !== null || Date.now() >= deadline) return run;
+    yield* Effect.sleep(PUSH_RUN_LOOK);
+  }
 });
 
 /** Whether GitHub says the run completed; GitHub unreachable reads as still running. */
@@ -317,5 +339,77 @@ export const recordStoreGithubBuildSteps = Effect.fn("StoreGithub.steps")(functi
       );
     }
     return { received: reported.received };
+  }).pipe(Effect.catchTag("StoreRefused", (error) => Effect.fail(refused(error))));
+});
+
+/** How long a rule build's check-in waits for Cloud to follow its run: the push's webhook and the run race. */
+const RULE_CHECK_IN_WAIT_MS = 60_000;
+const RULE_CHECK_IN_LOOK = "2 seconds";
+
+const RuleCheckInBody = Schema.fromJsonString(Schema.Struct({ commit: Schema.String.check(Schema.isPattern(/^[0-9a-f]{40}$/)) }));
+
+/** The build the runner's run holds, once Cloud follows that run. */
+const ruleBuildOf = Effect.fn("StoreGithub.ruleBuild")(function* (claims: GithubClaims) {
+  const runId = Number(claims.run_id);
+  if (!Number.isSafeInteger(runId)) return yield* new Unauthorized();
+  const store = yield* cloudStore;
+  const deadline = Date.now() + RULE_CHECK_IN_WAIT_MS;
+  for (;;) {
+    const id = yield* storeTry(() => store.githubByRun(runId));
+    if (id !== null) {
+      const build = yield* heldGithubBuild(id);
+      if (build !== null) return { id, build };
+    }
+    if (Date.now() >= deadline) return yield* new NotFound({ message: "No build follows this run." });
+    yield* Effect.sleep(RULE_CHECK_IN_LOOK);
+  }
+});
+
+/**
+ * A rule build's check-in, on the run its push started: the rule, the Cluster's keys and its one-Service deployment,
+ * Sealed values sealed. Cloud relays them; the runner and the grant Machine check each.
+ */
+export const checkInRuleBuild = Effect.fn("StoreGithub.ruleCheckIn")(function* (request: Request, text: string) {
+  const claims = yield* runnerClaims(request);
+  if (text.length > MAX_CHECK_IN_BYTES) return yield* new Validation({ message: "The check-in is not a commit." });
+  const { commit } = yield* Schema.decodeUnknownEffect(RuleCheckInBody)(text).pipe(
+    Effect.mapError(() => new Validation({ message: "The check-in is not a commit." })),
+  );
+  const store = yield* cloudStore;
+  return yield* Effect.gen(function* () {
+    const { build } = yield* ruleBuildOf(claims);
+    const refusal = yield* installationRefusal(build.organization, build.run.installation_id);
+    if (refusal !== null) return yield* new Forbidden({ message: refusal.message });
+    const { connections, expect } = yield* deployDialOf(build.organization);
+    const { foreign, ...checkIn } = yield* storeTry(() => store.githubRuleCheckIn(claims, commit, connections, expect));
+    yield* logForeignServers(build.organization, foreign);
+    return checkIn;
+  }).pipe(Effect.catchTag("StoreRefused", (error) => Effect.fail(refused(error))));
+});
+
+const MAX_GRANT_ASK_BYTES = 16 * 1024;
+
+/**
+ * A rule build's grant: Cloud relays the runner's ask to a Machine with the build's Sealed values, still sealed, and a
+ * token that only reads the repository, for the Machine's own read of the branch head.
+ */
+export const grantRuleBuild = Effect.fn("StoreGithub.ruleGrant")(function* (request: Request, buildId: string, text: string) {
+  const claims = yield* runnerClaims(request);
+  if (text.length > MAX_GRANT_ASK_BYTES) return yield* new Validation({ message: "The grant ask is too large." });
+  const ask: unknown = yield* Effect.try({ try: () => JSON.parse(text), catch: () => new Validation({ message: "The grant ask is not JSON." }) });
+  const store = yield* cloudStore;
+  return yield* Effect.gen(function* () {
+    const build = yield* heldGithubBuild(buildId);
+    if (build === null) return yield* passedOn();
+    const refusal = yield* installationRefusal(build.organization, build.run.installation_id);
+    if (refusal !== null) return yield* new Forbidden({ message: refusal.message });
+    const repositoryId = Number(claims.repository_id);
+    const reader = yield* mintInstallationToken(build.run.installation_id, { repositoryId }).pipe(
+      Effect.catch((error) => Effect.logWarning("Could not mint a head reader for a rule build.", error).pipe(Effect.as(null))),
+    );
+    const { connections, expect } = yield* deployDialOf(build.organization);
+    const { foreign, machine } = yield* storeTry(() => store.githubRuleGrant(claims, ask, reader, connections, expect));
+    yield* logForeignServers(build.organization, foreign);
+    return { machine };
   }).pipe(Effect.catchTag("StoreRefused", (error) => Effect.fail(refused(error))));
 });

@@ -189,7 +189,7 @@ impl LocalMachine {
             return Err(refused("a Machine"));
         }
         // An ended generation still supersedes every one below it.
-        self.approvals.mark_rule(&rule)?;
+        self.approvals.mark_rule(&rule, Error::RuleGrantRefused)?;
         if rule.ended {
             return Err(refused("an ended rule"));
         }

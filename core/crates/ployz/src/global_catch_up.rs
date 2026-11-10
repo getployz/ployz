@@ -400,6 +400,7 @@ async fn ensure_retried(
                 want,
                 approval: None,
                 deploy: None,
+                rule: None,
             },
             Some(target),
         )

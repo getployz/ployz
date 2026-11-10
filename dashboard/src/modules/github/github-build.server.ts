@@ -80,6 +80,30 @@ export const dispatchGithubBuildWorkflow = Effect.fn("Github.dispatchBuildWorkfl
   };
 });
 
+const pushRunsSchema = Schema.Struct({
+  workflow_runs: Schema.Array(Schema.Struct({ id: githubIdSchema, html_url: Schema.String, head_sha: Schema.String, event: Schema.String })),
+});
+
+/**
+ * The run a push of `commit` started of the workflow at `workflow` (its path in the repository), if GitHub has started
+ * it: a build under an automatic deploy rule runs there, not on a run Cloud dispatches.
+ */
+export const findGithubPushRun = Effect.fn("Github.findPushRun")(function* (input: {
+  access: GithubAccess; fullName: string; workflow: string; commit: string;
+}) {
+  const api = yield* GithubApi;
+  const file = input.workflow.split("/").pop() ?? input.workflow;
+  const query = new URLSearchParams({ head_sha: input.commit, event: "push", per_page: "5" });
+  const runs = yield* api.json({
+    access: input.access,
+    path: `/repos/${input.fullName}/actions/workflows/${encodeURIComponent(file)}/runs?${query.toString()}`,
+    operation: "list_push_runs",
+    schema: pushRunsSchema,
+  });
+  const run = runs.workflow_runs.find((found) => found.head_sha === input.commit && found.event === "push");
+  return run === undefined ? null : { runId: run.id, runUrl: run.html_url };
+});
+
 export type GithubRunRef = { access: GithubAccess; fullName: string; runId: number };
 
 /** Cancel a build run. A run that already finished can't be cancelled; that's fine. */

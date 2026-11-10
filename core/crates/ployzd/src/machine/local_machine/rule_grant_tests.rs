@@ -24,18 +24,18 @@ const BUILDER_SHA: &str = "1234567890abcdef1234567890abcdef12345678";
 const COMMIT: &str = "54dfcf4a46870fa09f5d5d6c965dd705c1a24e5c";
 const MARKER: &str = "marker-sealed-rule-0123";
 
-struct Fixture {
-    machine: LocalMachine,
-    signer: Signer,
-    cluster: SealingPublicKey,
+pub(crate) struct Fixture {
+    pub(crate) machine: LocalMachine,
+    pub(crate) signer: Signer,
+    pub(crate) cluster: SealingPublicKey,
     /// The Sealing Key the Machine holds, in a directory of its own.
     sealing: Cluster,
     /// The build's one Sealed record: sealing again would change its digest.
-    record: SealedRecord,
+    pub(crate) record: SealedRecord,
     _data_dir: crate::test_dir::TestDir,
 }
 
-async fn fixture() -> Fixture {
+pub(crate) async fn fixture() -> Fixture {
     let sealing = Cluster::new();
     let data_dir = crate::test_dir::TestDir::new("rule-grant");
     let mut store = LocalMachineStore::open(&data_dir.0).unwrap();
@@ -90,11 +90,11 @@ async fn fixture() -> Fixture {
     }
 }
 
-fn claims() -> Value {
+pub(crate) fn claims() -> Value {
     serde_json::from_str(CLAIMS).unwrap()
 }
 
-fn now() -> Timestamp {
+pub(crate) fn now() -> Timestamp {
     Timestamp::from_millis(claims()["iat"].as_u64().unwrap() * 1000).unwrap()
 }
 
@@ -106,7 +106,7 @@ pub(crate) fn commit() -> CommitSha {
     CommitSha::parse(COMMIT).unwrap()
 }
 
-fn policy() -> BuildPolicy {
+pub(crate) fn policy() -> BuildPolicy {
     BuildPolicy {
         method: PolicyMethod::Dockerfile {
             path: "Dockerfile".to_owned(),

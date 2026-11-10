@@ -601,6 +601,11 @@ pub struct Claimed {
     /// The approval a Device signed for this Deployment, which the runner hands to each
     /// Server; none when a token or automation admitted it.
     pub approval: Option<ployz_core::authority::Signed<ployz_core::authority::DeployApproval>>,
+    /// The automatic deploy rule a push's Deployment runs under, which the runner hands
+    /// each Server with each Service's image token; none for any other Deployment.
+    pub rule: Option<ployz_core::authority::Signed<ployz_core::authority::AutoDeployRule>>,
+    /// The image token each Service's GitHub build under `rule` reported.
+    pub image_tokens: BTreeMap<ServiceName, String>,
 }
 
 /// One node a Deployment targets, as frozen at admission.

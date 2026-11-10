@@ -2968,6 +2968,24 @@ fn checkin_help_names_install_and_the_token_file() {
 }
 
 #[test]
+fn github_rule_approve_defaults_to_the_pinned_builder() {
+    let output = ProcessCommand::new(env!("CARGO_BIN_EXE_ployz"))
+        .args(["github", "rule", "approve", "--help"])
+        .output()
+        .unwrap();
+    let stdout = String::from_utf8(output.stdout).unwrap();
+    assert_eq!(output.status.code(), Some(0), "{stdout}");
+    let sha = ployz_core::authority::rule::BUILDER_SHA;
+    for needle in [
+        "Usage: ployz github rule approve [OPTIONS] <SERVICE>...".to_owned(),
+        format!("[default: getployz/build/.github/workflows/build.yml@{sha}]"),
+        format!("[default: {sha}]"),
+    ] {
+        assert!(stdout.contains(&needle), "{needle}: {stdout}");
+    }
+}
+
+#[test]
 fn server_token_verbs_need_a_sign_in() {
     for args in [
         &["server", "token", "create", "--json"][..],

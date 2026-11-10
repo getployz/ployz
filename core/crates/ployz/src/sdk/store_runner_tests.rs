@@ -76,6 +76,7 @@ fn admitted(upload: Option<ployz_store::UploadedSource>) -> (Run, ployz_store::A
             deployment,
             runner,
             over: OnceLock::new(),
+            reader: None,
         },
         actor,
     )
@@ -150,6 +151,7 @@ async fn a_runner_plans_with_the_runs_its_claim_reports_ended() {
         deployment: DeploymentId::parse("00000000-0000-4000-8000-000000000004").unwrap(),
         runner: RunnerId::parse("other").unwrap(),
         over: OnceLock::new(),
+        reader: None,
     };
 
     let claimed = run.claim(Operator::Cloud).await.unwrap();
@@ -1140,6 +1142,7 @@ fn a_build_with_no_server_in_its_walk_fails_with_the_reason_github_gave() {
         Sources {
             checkouts: BTreeMap::new(),
             upload: Some(PathBuf::from("/extracted")),
+            reader: None,
         },
     ) else {
         panic!("a build no Server takes fails");
@@ -1160,6 +1163,7 @@ fn a_full_deploy_builds_each_uploaded_service_from_its_own_upload() {
         Sources {
             checkouts: BTreeMap::new(),
             upload: Some(extracted.clone()),
+            reader: None,
         },
     ) {
         Ok(targets) => targets,

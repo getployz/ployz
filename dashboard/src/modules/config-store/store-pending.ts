@@ -101,7 +101,8 @@ export function marksOf(command: ConfigCommand | BatchCommand): Mark[] {
     case "set_environment_protected":
     case "remove":
     case "cancel_removal":
-    case "approve_pull_request": return [];
+    case "approve_pull_request":
+    case "approve_rule": return [];
     default: return absurd(command);
   }
 }

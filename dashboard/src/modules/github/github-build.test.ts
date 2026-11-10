@@ -1,7 +1,7 @@
 import { Effect, Schema } from "effect";
 import { describe, expect, it } from "vitest";
 import { organizationAccess } from "./github-access";
-import { checkGithubBuildWorkflow } from "./github-build.server";
+import { checkGithubBuildWorkflow, findGithubPushRun } from "./github-build.server";
 import { GITHUB_BUILD_WORKFLOW, githubBuildId, githubBuildWorkflowUrl } from "./github-build-workflow";
 import { GithubApi, GithubObservationError, type GithubObservationErrorCode } from "./github-observation.api";
 
@@ -75,5 +75,41 @@ describe("checkGithubBuildWorkflow", () => {
 
   it("fails on a rate limit instead of guessing", async () => {
     await expect(check({ repository, workflow: { error: "request_failed", status: 403, retriable: true } })).rejects.toThrow();
+  });
+});
+
+const HEAD = "c".repeat(40);
+
+function pushRuns(runs: unknown[]) {
+  const paths: string[] = [];
+  return Effect.runPromise(findGithubPushRun({
+    access: organizationAccess("org", 7), fullName: "acme/api", workflow: ".github/workflows/ployz-build.yml", commit: HEAD,
+  }).pipe(
+    Effect.provideService(GithubApi, {
+      archive: () => Effect.die("unused"),
+      app: () => Effect.die("unused"),
+      installationRepositories: () => Effect.die("unused"),
+      exchangeUserCode: () => Effect.die("unused"),
+      userJson: () => Effect.die("unused"),
+      json: (request) => {
+        paths.push(request.path);
+        return Schema.decodeUnknownEffect(request.schema)({ workflow_runs: runs }).pipe(Effect.orDie);
+      },
+    }),
+  )).then((run) => ({ run, paths }));
+}
+
+const run = (id: number, headSha: string, event: string) => ({ id, html_url: `https://github.com/acme/api/actions/runs/${id}`, head_sha: headSha, event });
+
+describe("findGithubPushRun", () => {
+  it("follows the run the push of the commit started", async () => {
+    const found = await pushRuns([run(1, HEAD, "workflow_dispatch"), run(2, "d".repeat(40), "push"), run(3, HEAD, "push")]);
+    expect(found.run).toEqual({ runId: 3, runUrl: "https://github.com/acme/api/actions/runs/3" });
+    expect(found.paths).toEqual([`/repos/acme/api/actions/workflows/ployz-build.yml/runs?head_sha=${HEAD}&event=push&per_page=5`]);
+  });
+
+  it("finds nothing until GitHub lists a push run of the commit", async () => {
+    expect((await pushRuns([])).run).toBeNull();
+    expect((await pushRuns([run(1, HEAD, "workflow_dispatch")])).run).toBeNull();
   });
 });

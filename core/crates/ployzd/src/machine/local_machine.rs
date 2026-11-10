@@ -83,6 +83,7 @@ mod join_approval;
 mod management_client;
 mod push_target;
 pub(super) mod restart_approval;
+pub(crate) mod rule_deploy;
 pub(crate) mod rule_grant;
 mod sealing;
 pub(crate) use sealing::Error as SealingError;
@@ -196,6 +197,11 @@ pub enum Error {
     /// [`ployz_core::BUILD_GRANT_RULE_CAPABILITY`] in its details.
     #[error("This Server refused the rule build's grant: {0}")]
     RuleGrantRefused(ployz_core::authority::AuthorityRefusal),
+    /// Device enforcement refused an Operator's Container change under an automatic
+    /// deploy rule. The refusal names [`ployz_core::DEPLOY_RULE_CAPABILITY`] in its
+    /// details.
+    #[error("{0}")]
+    RuleDeployRefused(rule_deploy::RuleDeployRefusal),
     /// GitHub did not prove a rule build: its token failed to verify or match the rule.
     #[error("This Server refused the rule build's GitHub token: {0}")]
     RuleProofRefused(crate::github::oidc::ProofRefusal),

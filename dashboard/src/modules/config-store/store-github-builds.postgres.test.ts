@@ -9,7 +9,7 @@ import { asTestDouble } from "#/lib/test-double";
 import { callStore, gatherTrusted } from "#/modules/config-store/config-store.server";
 import { permissionsOf } from "#/modules/organization/permissions";
 import {
-  checkInStoreGithubBuild, checkStoreGithubBuild, planStoreGithubBuilds, recordStoreGithubBuildSteps, startStoreGithubBuild,
+  checkInRuleBuild, checkInStoreGithubBuild, checkStoreGithubBuild, grantRuleBuild, planStoreGithubBuilds, recordStoreGithubBuildSteps, startStoreGithubBuild,
   storeGithubBuildOpen,
 } from "#/modules/config-store/store-github-builds.server";
 import { cloudStore } from "#/modules/config-store/store-sdk.server";
@@ -119,6 +119,13 @@ it.live(
       for (const body of [JSON.stringify({ holder: "D".repeat(64) }), JSON.stringify({ holder: "d".repeat(63) }), "[]", "not json"]) {
         expect(yield* holding(body)).toMatchObject({ _tag: "Validation" });
       }
+      // A rule build's check-in names its commit; a build Cloud dispatched has no rule to grant under.
+      for (const body of ["", "{}", JSON.stringify({ commit: HEAD.toUpperCase() })]) {
+        expect(yield* provided(Effect.flip(checkInRuleBuild(request(oidcToken({ event_name: "push" })), body))))
+          .toMatchObject({ _tag: "Validation", message: "The check-in is not a commit." });
+      }
+      const ruleGrant = yield* provided(Effect.flip(grantRuleBuild(request(oidcToken()), next, "{}")));
+      expect(ruleGrant).toMatchObject({ _tag: "Validation" });
       // Build Steps before the check-in are refused.
       const steps = yield* provided(Effect.flip(recordStoreGithubBuildSteps(request(oidcToken()), next, JSON.stringify({ from: 0, events: [] }))));
       expect(steps).toMatchObject({ _tag: "Conflict", message: "This build has not checked in" });

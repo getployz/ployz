@@ -109,7 +109,15 @@ const observeBranchFor = Effect.fn("StoreGithub.observeBranchFor")(function* (
       Effect.map((written) => ({ written })),
       Effect.catchIf(refusedWith("conflict"), () => Effect.succeed(null)),
     );
-    if (written !== null) return [...merged, ...admittedEvents(organizationId, written.written, "github")];
+    if (written !== null) {
+      if (written.written.written === "automated") {
+        // A push the Store didn't deploy, such as one waiting for its automatic deploy rule's next approval.
+        for (const skipped of written.written.skipped) {
+          yield* Effect.logWarning("The Config Store skipped an Environment.", { organizationId, ...skipped });
+        }
+      }
+      return [...merged, ...admittedEvents(organizationId, written.written, "github")];
+    }
   }
   return yield* new StoreGithubFailure({ message: "The branch's head kept moving while Cloud compared it." });
 });

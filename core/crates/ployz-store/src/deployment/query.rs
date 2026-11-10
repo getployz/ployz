@@ -293,19 +293,31 @@ fn lowered_target(
     query: &PlanQuery,
 ) -> Result<Vec<RequestedServiceSpec>, RpcError> {
     trusted.writes(&environment.summary.name)?;
+    saved_target(tx, who, trusted, (environment, target), &query.services)
+}
+
+/// `target` lowered as a claim of a Deploy of it would, narrowed to `services` unless
+/// that is empty. An automatic deploy rule approves these specs, less their images.
+pub(crate) fn saved_target(
+    tx: &mut dyn Tx,
+    who: &Actor,
+    trusted: &crate::Trusted,
+    (environment, target): (&scope::Environment, &SavedEnvironmentIntent),
+    services: &[ServiceName],
+) -> Result<Vec<RequestedServiceSpec>, RpcError> {
     let id = &environment.summary.id;
     let mut saved = target.clone();
     crate::volume::size::held(tx, id, &mut saved.volumes)?;
     let branch = crate::branch::lowering(tx, id, &saved)?;
     let deployed = deployment::deployed_volumes(tx, id, &saved)?;
     let removals = deployment::ServiceRemovals::default();
-    let ships = match query.services.is_empty() {
+    let ships = match services.is_empty() {
         true => deployment::Ships::All {
             removals,
             prune: false,
         },
         false => deployment::Ships::Named {
-            services: query.services.clone(),
+            services: services.to_vec(),
             removals,
         },
     };
@@ -327,7 +339,7 @@ fn lowered_target(
     .map(|lowered| {
         let mut target = lowered.intent.target;
         // A narrowed Deploy creates only what it ships; the rest ride along unchanged.
-        if !query.services.is_empty() {
+        if !services.is_empty() {
             target.retain(|spec| lowered.shipped.contains(&spec.name));
         }
         target

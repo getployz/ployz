@@ -4,6 +4,7 @@
 //! for its typed answer. Runners, GitHub builds and automation have methods of
 //! their own. Storage is its only I/O.
 
+mod auto_rule;
 mod automation;
 mod branch;
 mod build;
@@ -50,6 +51,7 @@ use std::collections::BTreeSet;
 
 use ployz_core::RpcError;
 
+pub use auto_rule::{ApproveRule, RuleQuery, RuleSourceView, RuleView};
 pub use automation::{
     AutoDeployed, Automated, BranchHead, CheckConclusion, CheckStatus, CheckSuite, Skipped,
     SystemEvent,
@@ -536,6 +538,29 @@ impl ConfigStore {
     ) -> Result<GithubBuild, RpcError> {
         self.storage
             .read(|tx| build::github_authorize(tx, id, claims))
+    }
+
+    /// The automatic deploy rule GitHub build `id` builds under, if any: its run is the
+    /// push's own, which Cloud follows rather than dispatching one.
+    ///
+    /// # Errors
+    /// Returns `not_found` for an unknown Deployment, or a storage error.
+    pub fn github_rule(
+        &self,
+        id: &GithubBuildId,
+    ) -> Result<
+        Option<ployz_core::authority::Signed<ployz_core::authority::AutoDeployRule>>,
+        RpcError,
+    > {
+        self.storage.read(|tx| build::github_rule(tx, id))
+    }
+
+    /// The GitHub build run `run_id` holds while it builds, if any.
+    ///
+    /// # Errors
+    /// Returns a storage error.
+    pub fn github_by_run(&self, run_id: u64) -> Result<Option<GithubBuildId>, RpcError> {
+        self.storage.read(|tx| build::github_by_run(tx, run_id))
     }
 
     /// What GitHub build `id` builds. In-process only: only the authorized runner

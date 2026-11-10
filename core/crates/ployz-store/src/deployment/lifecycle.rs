@@ -1418,6 +1418,14 @@ pub(crate) fn claim(
     let sealed_names = crate::review::sealed::names(tx, stored.summary.environment_id.as_str())?;
     let ended_runs = ended_runs(tx, &stored.summary)?;
     let approval = device_approval(tx, id)?;
+    let rule = match stored.summary.admitted_by {
+        Some(_) => None,
+        None => crate::auto_rule::stored(tx, &stored.summary.environment_id)?,
+    };
+    let image_tokens = match rule {
+        Some(_) => build::image_tokens(tx, id)?,
+        None => BTreeMap::new(),
+    };
     Ok(Ok(Claimed {
         deployment: stored.summary,
         intent,
@@ -1430,6 +1438,8 @@ pub(crate) fn claim(
         build_order,
         ended_runs,
         approval,
+        rule,
+        image_tokens,
     }))
 }
 

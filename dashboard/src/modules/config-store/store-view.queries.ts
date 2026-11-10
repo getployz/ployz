@@ -23,6 +23,8 @@ const refreshedBy = {
   history: ["store_environment", "store_deployment", "store_check_suite"],
   history_preview: ["store_environment", "store_deployment", "store_check_suite"],
   plan: ["store_environment", "store_deployment"],
+  // The rule a Device signed, beside the Saved State it approves.
+  rule: ["store_environment"],
   // A Service's lifecycle comes from the review, which compares against what's deployed.
   service: ["store_environment", "store_deployment"],
   services: ["store_environment", "store_deployment"],

@@ -498,6 +498,7 @@ async fn cloud_s_runner_builds_git_services_and_a_retry_rebuilds_only_what_faile
                 Ok(ployz::sdk::Sources {
                     checkouts,
                     upload: None,
+                    reader: None,
                 }),
             )
             .await
@@ -683,6 +684,7 @@ async fn cloud_s_runner_builds_an_upload_then_reuses_it_or_asks_for_a_new_one() 
                 Ok(ployz::sdk::Sources {
                     checkouts: std::collections::BTreeMap::new(),
                     upload: dir,
+                    reader: None,
                 }),
             )
             .await

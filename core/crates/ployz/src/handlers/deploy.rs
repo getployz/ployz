@@ -4,7 +4,7 @@
 //! hidden in-process Store this CLI is the Deployment's runner: it claims it,
 //! prepares and confirms it on the Cluster, and records what happened.
 
-mod approve;
+pub(super) mod approve;
 #[cfg(test)]
 mod follow_tests;
 mod progress;
@@ -621,6 +621,7 @@ fn run_here(
     let sources = crate::sdk::Sources {
         checkouts: BTreeMap::new(),
         upload: source.map(Path::to_path_buf),
+        reader: None,
     };
     let (local, id) = (std::sync::Arc::clone(local), admitted.id.clone());
     let runtime = runtime()?;

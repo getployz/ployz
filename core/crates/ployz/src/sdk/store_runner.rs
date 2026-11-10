@@ -55,6 +55,10 @@ pub struct Sources {
     /// The Deployment's uploaded directory. Without it, uploaded Services reuse
     /// their latest usable image or need a new upload.
     pub upload: Option<PathBuf>,
+    /// A token that reads the branch head of the repository an automatic deploy rule
+    /// builds, which each Server reads before it creates under the rule. None reads a
+    /// public repository.
+    pub reader: Option<ployz_core::GithubToken>,
 }
 
 /// Why a Deployment's builds didn't all succeed.
@@ -174,6 +178,10 @@ pub async fn run_deployment_expecting(
         deployment,
         runner,
         over: OnceLock::new(),
+        reader: checkouts
+            .as_ref()
+            .ok()
+            .and_then(|sources| sources.reader.clone()),
     };
     let claimed = run.claim(operator).await?;
     let (targets, built) = match checkouts
@@ -703,6 +711,8 @@ struct Run {
     /// What the first read that found the store no longer holding the run said. The
     /// store never takes a run back from Unknown or an end, so no later read changes it.
     over: OnceLock<Over>,
+    /// Handed to each Server with a rule's proof.
+    reader: Option<ployz_core::GithubToken>,
 }
 
 /// What one read of the Deployment says this run may do.
@@ -794,6 +804,7 @@ impl Run {
         pin_approved(&mut claimed.intent.target, approval.as_ref());
         let scrub = Scrub::new(&claimed);
         let earlier = earlier(&targets);
+        let mut rules = BTreeMap::new();
         let prepared = if targets.is_empty() && built.is_empty() {
             self.renewing(session.plan(claimed.intent), || {
                 session.inner.cancel.cancel()
@@ -803,6 +814,7 @@ impl Run {
             match self.build(session, &claimed, &targets).await? {
                 Ok(mut receipts) => {
                     receipts.extend(built);
+                    rules = rule_proofs(session, &claimed, &receipts, self.reader.as_ref()).await;
                     self.prepare(session, claimed, targets, receipts).await
                 }
                 Err(unbuilt) => return self.unbuilt(unbuilt).await,
@@ -825,7 +837,7 @@ impl Run {
             Standing::Over(_) | Standing::Unread => return recorded,
         }
         let log_id = self.deployment.as_str().parse().ok();
-        let running = match prepared.confirm_approved(log_id, ImageCleanup::Auto, approval) {
+        let running = match prepared.confirm_approved(log_id, ImageCleanup::Auto, approval, rules) {
             Ok(running) => running,
             Err(error) => return self.not_executed(Failure::from(&error)).await,
         };
@@ -1639,6 +1651,82 @@ fn targets(
         })
     }));
     Ok((targets, built))
+}
+
+/// The proof each Service built under `claimed`'s automatic deploy rule creates with:
+/// the rule, its image token, and the claim the token's audience names, rebuilt from
+/// the rule, the pinned commit, the image the Machine received and the Cluster's keys.
+/// A Service without all of them gets none, and an enforcing Server refuses it.
+async fn rule_proofs(
+    session: &Session,
+    claimed: &Claimed,
+    receipts: &BTreeMap<ServiceName, BuildReceipt>,
+    reader: Option<&ployz_core::GithubToken>,
+) -> BTreeMap<ServiceName, ployz_core::authority::RuleProof> {
+    use ployz_core::authority::{
+        BuildClaim, BuildStage, CommitAuthority, CommitSha, ImageDigest, PolicyDigest, RuleProof,
+    };
+    let mut proofs = BTreeMap::new();
+    let Some(signed) = &claimed.rule else {
+        return proofs;
+    };
+    let Ok(rule) = signed.open() else {
+        return proofs;
+    };
+    if claimed.image_tokens.is_empty() {
+        return proofs;
+    }
+    let contract = match session.about().await {
+        Ok(contract) => contract,
+        Err(error) => {
+            tracing::warn!(%error, "could not read the Cluster's keys for a rule's proof");
+            return proofs;
+        }
+    };
+    let (Some(ployz_core::Sealing::Held { public_key }), Some(attest)) =
+        (contract.sealing, contract.attest)
+    else {
+        return proofs;
+    };
+    for (service, token) in &claimed.image_tokens {
+        let approved = rule.service(service);
+        let receipt = receipts.get(service);
+        let commit = claimed
+            .sources
+            .iter()
+            .find(|source| source.service == *service)
+            .and_then(|source| source.commit.as_ref())
+            .and_then(|commit| CommitSha::parse(commit.as_str()).ok());
+        let (Some(approved), Some(receipt), Some(commit)) = (approved, receipt, commit) else {
+            continue;
+        };
+        let (Ok(image), Ok(policy)) = (
+            ImageDigest::parse(&receipt.image.reference),
+            PolicyDigest::of(&approved.policy),
+        ) else {
+            continue;
+        };
+        let claim = BuildClaim {
+            cluster: public_key,
+            rule: rule.rule,
+            generation: rule.generation,
+            service: service.clone(),
+            policy,
+            commit,
+            authority: CommitAuthority::Head,
+            stage: BuildStage::Built { image, attest },
+        };
+        proofs.insert(
+            service.clone(),
+            RuleProof {
+                rule: signed.clone(),
+                token: ployz_core::GithubToken::new(token.clone()),
+                claim,
+                reader: reader.cloned(),
+            },
+        );
+    }
+    proofs
 }
 
 /// Write the image each Service's approval pinned into its spec, so the Servers are asked
