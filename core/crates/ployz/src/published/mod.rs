@@ -148,7 +148,7 @@ impl PublishError {
             }
             Self::Gone { .. } => RpcErrorCode::NotFound,
             Self::NeedsTerminal { .. } => RpcErrorCode::ConfirmationRequired,
-            Self::AgentRefused { .. } => RpcErrorCode::from("forbidden"),
+            Self::AgentRefused { .. } => RpcErrorCode::from(ployz_core::FORBIDDEN_CODE),
             Self::OtherCloud { .. } => RpcErrorCode::Conflict,
             Self::Slow { .. } => RpcErrorCode::Unavailable,
         }

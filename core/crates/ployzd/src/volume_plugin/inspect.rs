@@ -2,8 +2,8 @@
 
 use axum::{Json, extract::State};
 use ployz_core::{
-    InspectVolumeCopyRequest, Pull, PullState, RootMark, RpcError, RpcErrorCode, SlotId, SlotRole,
-    Snapshot, SnapshotGuid, SnapshotName, VolumeCopy, VolumeCopyView, WriterEpoch,
+    InspectVolumeCopyRequest, Pull, PullState, RootMark, RpcError, SlotId, SlotRole, Snapshot,
+    SnapshotGuid, SnapshotName, VolumeCopy, VolumeCopyView, WriterEpoch,
 };
 use ployzd::machine_pool::MachinePool;
 
@@ -109,12 +109,7 @@ pub(super) fn answering(mut copy: Option<VolumeCopy>, failure: String) -> Option
 pub(super) fn internal(error: VolumeError) -> RpcError {
     match error {
         VolumeError::Capacity(error) => error.into_rpc_error(),
-        VolumeError::Message(message) => RpcError {
-            code: RpcErrorCode::Internal,
-            message,
-            details: serde_json::Value::Null,
-            cause: Vec::new(),
-        },
+        VolumeError::Message(message) => RpcError::internal(message),
     }
 }
 

@@ -2217,28 +2217,102 @@ pub struct RpcError {
     pub cause: Vec<String>,
 }
 
+/// The code of a refusal on the caller's access, such as a Server refusing a scope.
+pub const FORBIDDEN_CODE: &str = "forbidden";
+
+/// The code of a refusal that waits on a person's approval.
+pub const APPROVAL_REQUIRED_CODE: &str = "approval_required";
+
+macro_rules! named_constructors {
+    ($($(#[$meta:meta])* $name:ident => $code:ident,)*) => {
+        $(
+            $(#[$meta])*
+            #[must_use]
+            pub fn $name(message: impl Into<String>) -> Self {
+                Self::new(RpcErrorCode::$code, message)
+            }
+        )*
+    };
+}
+
 impl RpcError {
+    /// An error with no details and no causes.
+    #[must_use]
+    pub fn new(code: RpcErrorCode, message: impl Into<String>) -> Self {
+        Self {
+            code,
+            message: message.into(),
+            details: Value::Null,
+            cause: Vec::new(),
+        }
+    }
+
+    named_constructors! {
+        invalid_argument => InvalidArgument,
+        not_found => NotFound,
+        ambiguous => Ambiguous,
+        unsupported => Unsupported,
+        unavailable => Unavailable,
+        conflict => Conflict,
+        internal => Internal,
+        unauthenticated => Unauthenticated,
+        confirmation_required => ConfirmationRequired,
+    }
+
+    /// A refusal on the caller's access, coded [`FORBIDDEN_CODE`].
+    #[must_use]
+    pub fn forbidden(message: impl Into<String>) -> Self {
+        Self::new(RpcErrorCode::from(FORBIDDEN_CODE), message)
+    }
+
+    /// A refusal that waits on a person's approval, coded [`APPROVAL_REQUIRED_CODE`].
+    #[must_use]
+    pub fn approval_required(message: impl Into<String>) -> Self {
+        Self::new(RpcErrorCode::from(APPROVAL_REQUIRED_CODE), message)
+    }
+
+    /// `self` with `message` as its sentence.
+    #[must_use]
+    pub fn with_message(mut self, message: impl Into<String>) -> Self {
+        self.message = message.into();
+        self
+    }
+
+    /// `self` with `details` as its body.
+    #[must_use]
+    pub fn with_details(mut self, details: Value) -> Self {
+        self.details = details;
+        self
+    }
+
+    /// `self` with `error`'s own sentence and every source below it as its causes.
+    #[must_use]
+    pub fn with_cause(mut self, error: &(dyn std::error::Error + 'static)) -> Self {
+        self.cause = std::iter::once(error.to_string())
+            .chain(crate::error_chain::causes(error))
+            .collect();
+        self
+    }
+
+    /// `self` with `cause` as its causes, outermost first.
+    #[must_use]
+    pub fn with_causes(mut self, cause: Vec<String>) -> Self {
+        self.cause = cause;
+        self
+    }
+
     /// `error`'s own sentence as the message, and every source below it as a cause.
     #[must_use]
     pub fn caused(code: RpcErrorCode, error: &(dyn std::error::Error + 'static)) -> Self {
-        Self {
-            code,
-            message: error.to_string(),
-            details: Value::Null,
-            cause: crate::error_chain::causes(error),
-        }
+        Self::new(code, error.to_string()).with_causes(crate::error_chain::causes(error))
     }
 
     /// An error the caller made because its target Machine didn't answer: the target
     /// sent nothing, so it may answer later. Read back by [`Self::target_unanswered`].
     #[must_use]
     pub fn unanswered_target(code: RpcErrorCode, message: String) -> Self {
-        Self {
-            code,
-            message,
-            details: serde_json::json!({ "reason": TARGET_UNANSWERED_REASON }),
-            cause: Vec::new(),
-        }
+        Self::new(code, message)
+            .with_details(serde_json::json!({ "reason": TARGET_UNANSWERED_REASON }))
     }
 
     /// `self` from a call that failed while a Leave was removing `server`, so its copy
@@ -2656,6 +2730,82 @@ pub fn status_causes(details: &[u8]) -> Option<Vec<String>> {
 mod rpc_error_wire {
     use super::*;
     use serde_json::json;
+
+    #[test]
+    fn constructors_serialize_like_the_literals_they_replace() {
+        let literal = |code: RpcErrorCode, details: Value, cause: Vec<String>| RpcError {
+            code,
+            message: "m".into(),
+            details,
+            cause,
+        };
+        let wire = |error: &RpcError| serde_json::to_string(error).unwrap();
+        for (built, code) in [
+            (
+                RpcError::invalid_argument("m"),
+                RpcErrorCode::InvalidArgument,
+            ),
+            (RpcError::not_found("m"), RpcErrorCode::NotFound),
+            (RpcError::ambiguous("m"), RpcErrorCode::Ambiguous),
+            (RpcError::unsupported("m"), RpcErrorCode::Unsupported),
+            (RpcError::unavailable("m"), RpcErrorCode::Unavailable),
+            (RpcError::conflict("m"), RpcErrorCode::Conflict),
+            (RpcError::internal("m"), RpcErrorCode::Internal),
+            (
+                RpcError::unauthenticated("m"),
+                RpcErrorCode::Unauthenticated,
+            ),
+            (
+                RpcError::confirmation_required("m"),
+                RpcErrorCode::ConfirmationRequired,
+            ),
+            (RpcError::forbidden("m"), RpcErrorCode::from("forbidden")),
+            (
+                RpcError::approval_required("m"),
+                RpcErrorCode::from("approval_required"),
+            ),
+            (
+                RpcError::new(RpcErrorCode::Conflict, "m"),
+                RpcErrorCode::Conflict,
+            ),
+        ] {
+            let expected = literal(code, Value::Null, Vec::new());
+            assert_eq!(built, expected);
+            assert_eq!(wire(&built), wire(&expected));
+        }
+        assert_eq!(
+            wire(&RpcError::forbidden("m")),
+            r#"{"code":"forbidden","message":"m","details":null}"#
+        );
+
+        let detailed = RpcError::conflict("m")
+            .with_details(json!({ "k": 1 }))
+            .with_causes(vec!["a".into(), "b".into()]);
+        assert_eq!(
+            wire(&detailed),
+            wire(&literal(
+                RpcErrorCode::Conflict,
+                json!({ "k": 1 }),
+                vec!["a".into(), "b".into()]
+            ))
+        );
+        assert_eq!(
+            RpcError::conflict("m").with_message("n"),
+            RpcError {
+                message: "n".into(),
+                ..literal(RpcErrorCode::Conflict, Value::Null, Vec::new())
+            }
+        );
+    }
+
+    #[test]
+    fn with_cause_lists_the_error_then_its_sources() {
+        let inner = std::io::Error::other("disk");
+        let outer = RpcError::caused(RpcErrorCode::Internal, &inner);
+        assert_eq!(outer.cause, Vec::<String>::new());
+        let chained = RpcError::internal("m").with_cause(&inner);
+        assert_eq!(chained.cause, vec!["disk".to_owned()]);
+    }
 
     #[test]
     fn rpc_error_round_trips_cause() {

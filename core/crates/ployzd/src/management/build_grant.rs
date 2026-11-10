@@ -169,31 +169,31 @@ impl Mint {
                     .and_then(|bytes| <[u8; 32]>::try_from(bytes).ok())
                     .and_then(|bytes| PublicKey::from_bytes(&bytes).ok())
                     .ok_or_else(|| {
-                        refused(
+                        RpcError::new(
                             RpcErrorCode::InvalidArgument,
-                            "the Build Grant holder is not a public key".into(),
+                            "the Build Grant holder is not a public key",
                         )
                     })?,
             ),
         };
         if matches!(key, Key::Made(_)) && (request.sealed.is_some() || admitted.is_some()) {
-            return Err(refused(
+            return Err(RpcError::new(
                 RpcErrorCode::InvalidArgument,
-                "a Build Grant carrying Sealed values needs a holder".into(),
+                "a Build Grant carrying Sealed values needs a holder",
             ));
         }
         let key_dir = || {
             key_dir.ok_or_else(|| {
-                refused(
+                RpcError::new(
                     RpcErrorCode::Conflict,
-                    "this Machine has no Sealing Key to open the Build's Sealed values".into(),
+                    "this Machine has no Sealing Key to open the Build's Sealed values",
                 )
             })
         };
         if let Some(record) = &request.sealed {
             record
                 .open_for_build(Some(key_dir()?))
-                .map_err(|error| refused(RpcErrorCode::Conflict, error.to_string()))?;
+                .map_err(|error| RpcError::new(RpcErrorCode::Conflict, error.to_string()))?;
         }
         let (release, minted_by) = match (admitted, request.sealed) {
             (None, None) => (None, Minter::Operator),
@@ -269,9 +269,9 @@ impl BuildGrants {
         let mut grants = self.grants.lock().expect("grant registry lock");
         grants.retain(|_, grant| grant.expires > Instant::now());
         if grants.contains_key(&id) {
-            return Err(refused(
+            return Err(RpcError::new(
                 RpcErrorCode::Conflict,
-                "this holder already holds a live Build Grant".into(),
+                "this holder already holds a live Build Grant",
             ));
         }
         grants.insert(id, grant);
@@ -293,14 +293,7 @@ impl BuildGrants {
                 .expect("grant registry lock")
                 .get(id)
                 .filter(|grant| grant.expires > Instant::now())
-                .ok_or_else(|| RpcError {
-                    code: RpcErrorCode::NotFound,
-                    message:
-                        "this Machine holds no such Build Grant; it expired or the daemon restarted"
-                            .into(),
-                    details: serde_json::Value::Null,
-                    cause: Vec::new(),
-                })?,
+                .ok_or_else(|| RpcError::not_found("this Machine holds no such Build Grant; it expired or the daemon restarted"))?,
         );
         let pushed = match &*grant.push.lock().expect("grant push lock") {
             Push::Pushed(digest) => Some(digest.clone()),
@@ -343,15 +336,6 @@ pub(crate) async fn mint_for(
         mint,
         SocketAddr::from((opened.management_address.0, opened.port)),
     ))
-}
-
-const fn refused(code: RpcErrorCode, message: String) -> RpcError {
-    RpcError {
-        code,
-        message,
-        details: serde_json::Value::Null,
-        cause: Vec::new(),
-    }
 }
 
 fn grant_id(key: &[u8; 32]) -> BuildGrantId {

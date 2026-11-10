@@ -539,13 +539,7 @@ fn superseded(
             command(&[&["deployment", "ls"][..], &scope].concat()),
         ),
     };
-    Failure::from(RpcError {
-        code: RpcErrorCode::Internal,
-        message,
-        cause: Vec::new(),
-        details: serde_json::Value::Null,
-    })
-    .hint(Hint::Inspect(inspect))
+    Failure::from(RpcError::internal(message)).hint(Hint::Inspect(inspect))
 }
 
 /// The Deployment among `candidates` that took `view`'s Environment over: the first
@@ -774,16 +768,17 @@ fn failure(view: &DeploymentView, named: &[&str], command: impl Fn(&[&str]) -> S
         // failure the inspect hint above reads.
         bad_image |= pulled && !build_failed && built.is_none();
     }
-    let mut failure = Failure::from(RpcError {
-        code: if lost_to_newer {
-            RpcErrorCode::Conflict
-        } else {
-            RpcErrorCode::Internal
-        },
-        message: crate::ui::sentence(reason),
-        cause,
-        details: serde_json::Value::Null,
-    })
+    let mut failure = Failure::from(
+        RpcError::new(
+            if lost_to_newer {
+                RpcErrorCode::Conflict
+            } else {
+                RpcErrorCode::Internal
+            },
+            crate::ui::sentence(reason),
+        )
+        .with_causes(cause),
+    )
     .with_diagnostic(diagnostic);
     for hint in hints {
         failure = failure.hint(hint);

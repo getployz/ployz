@@ -221,15 +221,10 @@ impl CatchUpClient for Client {
         // creation key's name, so an Out copy must go before a new one is made.
         let existing = match existing {
             Some(existing) if matches!(existing.rotation(), CopyRotation::Held(_)) => {
-                return Err(RpcError {
-                    code: ployz_core::RpcErrorCode::Conflict,
-                    message: format!(
-                        "copy {} is stopped on this Machine by a user; start or remove it there first",
-                        existing.container_id.as_str()
-                    ),
-                    details: serde_json::Value::Null,
-                    cause: Vec::new(),
-                });
+                return Err(RpcError::conflict(format!(
+                    "copy {} is stopped on this Machine by a user; start or remove it there first",
+                    existing.container_id.as_str()
+                )));
             }
             Some(existing) if *existing.rotation() == CopyRotation::Out => {
                 step_error(self.retire_copy(&Copy::observed(&existing), cancel).await?)?;
@@ -254,12 +249,7 @@ impl CatchUpClient for Client {
             .await
             .map_err(|error| crate::ui::rpc_error(ployz_core::RpcErrorCode::Unavailable, &error))?;
         if let Some(error) = endpoint_capacity_error(1, capacity.as_ref()) {
-            return Err(RpcError {
-                code: ployz_core::RpcErrorCode::Conflict,
-                message: error.to_string(),
-                details: serde_json::Value::Null,
-                cause: Vec::new(),
-            });
+            return Err(RpcError::conflict(error.to_string()));
         }
         let now = ensure_retried(self, &target, RunTarget::New(new)).await?;
         Ok(now.present().map(Copy::observed))
@@ -351,32 +341,22 @@ async fn takes_ingress(client: &mut Client, machine_id: &MachineId) -> Result<bo
                 && details.phase == ployz_core::LocalMachinePhase::Participating
         })
         .map(|machine| machine.accepts_ingress)
-        .ok_or_else(|| RpcError {
-            code: ployz_core::RpcErrorCode::Conflict,
-            message: "the Server does not observe itself participating".into(),
-            details: serde_json::Value::Null,
-            cause: Vec::new(),
-        })
+        .ok_or_else(|| RpcError::conflict("the Server does not observe itself participating"))
 }
 
 fn step_error(step: Step) -> Result<(), RpcError> {
     match step {
         Step::Done => Ok(()),
         Step::Refused(refusal) => Err(refusal.into_error()),
-        Step::NotConfirmed(machines) => Err(RpcError {
-            code: ployz_core::RpcErrorCode::Unavailable,
-            message: format!(
-                "{} did not confirm the copy left its routes",
-                machines
-                    .machines
-                    .iter()
-                    .map(MachineId::to_string)
-                    .collect::<Vec<_>>()
-                    .join(", ")
-            ),
-            details: serde_json::Value::Null,
-            cause: Vec::new(),
-        }),
+        Step::NotConfirmed(machines) => Err(RpcError::unavailable(format!(
+            "{} did not confirm the copy left its routes",
+            machines
+                .machines
+                .iter()
+                .map(MachineId::to_string)
+                .collect::<Vec<_>>()
+                .join(", ")
+        ))),
         Step::Cancelled => Err(crate::ui::rpc_error(
             ployz_core::RpcErrorCode::Internal,
             &Failure::cancelled(),

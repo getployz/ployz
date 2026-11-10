@@ -770,43 +770,26 @@ pub(crate) fn rpc_error(error: ConnectError) -> RpcError {
         {
             rpc_error(*error)
         }
-        ConnectError::ClientCleared => RpcError {
-            code: RpcErrorCode::Unauthenticated,
-            message: "Machine confirmed this Management Client was cleared".into(),
-            details: json!({ "management_client": "cleared" }),
-            cause: Vec::new(),
-        },
+        ConnectError::ClientCleared => {
+            RpcError::unauthenticated("Machine confirmed this Management Client was cleared")
+                .with_details(json!({ "management_client": "cleared" }))
+        }
         ConnectError::Remote(error) => error,
         ConnectError::Rpc(error) => error.to_rpc_error(),
-        error @ ConnectError::OlderMachine => RpcError {
-            code: RpcErrorCode::Unsupported,
-            message: error.to_string(),
-            details: json!({ "management_protocol": "older" }),
-            cause: Vec::new(),
-        },
+        error @ ConnectError::OlderMachine => RpcError::unsupported(error.to_string())
+            .with_details(json!({ "management_protocol": "older" })),
         // A refused entry: the call never went out, whatever answered the dial.
         error @ (ConnectError::IdentityMismatch { .. } | ConnectError::ClusterMismatch { .. }) => {
-            RpcError {
-                code: RpcErrorCode::Unauthenticated,
-                message: error.to_string(),
-                details: Value::Null,
-                cause: Vec::new(),
-            }
-            .unreached()
+            RpcError::unauthenticated(error.to_string()).unreached()
         }
         error @ (ConnectError::ClusterUnverified { .. }
         | ConnectError::PredatesSealing { .. }
         | ConnectError::ClientRefused
-        | ConnectError::TunnelNeedsFull) => RpcError {
-            code: RpcErrorCode::Unauthenticated,
-            message: error.to_string(),
-            details: Value::Null,
-            cause: Vec::new(),
-        },
-        error @ ConnectError::Codec(CodecError::DecodeJson(_)) => RpcError {
-            details: json!({ "answer": UNREADABLE_ANSWER }),
-            ..crate::ui::rpc_error(RpcErrorCode::Internal, &error)
-        },
+        | ConnectError::TunnelNeedsFull) => RpcError::unauthenticated(error.to_string()),
+        error @ ConnectError::Codec(CodecError::DecodeJson(_)) => {
+            crate::ui::rpc_error(RpcErrorCode::Internal, &error)
+                .with_details(json!({ "answer": UNREADABLE_ANSWER }))
+        }
         error @ (ConnectError::Attempt(_)
         | ConnectError::Exhausted(_)
         | ConnectError::EntryNotReady
@@ -1743,16 +1726,13 @@ impl TransportError {
 
     #[must_use]
     pub fn to_rpc_error(&self) -> RpcError {
-        RpcError {
-            code: rpc_error_code(self.code),
-            message: self.message.clone(),
-            details: if self.session_closed {
+        RpcError::new(rpc_error_code(self.code), self.message.clone())
+            .with_details(if self.session_closed {
                 json!({ "reason": SESSION_CLOSED_REASON })
             } else {
                 self.details.clone()
-            },
-            cause: ployz_core::error_chain::causes(self),
-        }
+            })
+            .with_causes(ployz_core::error_chain::causes(self))
     }
 }
 
@@ -1868,13 +1848,10 @@ impl SshFailure {
     }
 }
 
-/// The code of a refusal on the caller's access, such as a Server refusing a scope.
-pub(crate) const FORBIDDEN: &str = "forbidden";
-
 /// Whether a Machine refused `capability` because Device enforcement is on, as it
 /// refuses an Operator's `Build` and `MintBuildGrant`.
 pub(crate) fn refused_by_enforcement(error: &RpcError, capability: &str) -> bool {
-    error.code.as_str() == FORBIDDEN
+    error.code.as_str() == ployz_core::FORBIDDEN_CODE
         && error.details.get("capability").and_then(Value::as_str) == Some(capability)
 }
 
@@ -1887,7 +1864,7 @@ fn rpc_error_code(code: tonic::Code) -> RpcErrorCode {
         tonic::Code::Unimplemented => RpcErrorCode::Unsupported,
         tonic::Code::Unauthenticated => RpcErrorCode::Unauthenticated,
         // The spelling Cloud's refusals already use; a reader that doesn't know it keeps it.
-        tonic::Code::PermissionDenied => RpcErrorCode::from(FORBIDDEN),
+        tonic::Code::PermissionDenied => RpcErrorCode::from(ployz_core::FORBIDDEN_CODE),
         tonic::Code::Ok
         | tonic::Code::Cancelled
         | tonic::Code::Unknown

@@ -3,7 +3,7 @@
 
 use ployz_core::{
     AnonymousVolumes, EnvironmentValues, LiveServices, Machine, MachineId, MachineName,
-    ObservedGlobalSlotSpec, QualifiedService, RpcError, RpcErrorCode, ServicePlacementEligibility,
+    ObservedGlobalSlotSpec, QualifiedService, RpcError, ServicePlacementEligibility,
 };
 use tokio_util::sync::CancellationToken;
 
@@ -73,12 +73,9 @@ impl RetireClient for Client {
             ServicePlacementEligibility::Ineligible(_) => {
                 retire_copies(self, machine_id, identity, names, cancellation).await
             }
-            ServicePlacementEligibility::Eligible => Err(RpcError {
-                code: RpcErrorCode::Conflict,
-                message: "the Server accepts it again".into(),
-                details: serde_json::Value::Null,
-                cause: Vec::new(),
-            }),
+            ServicePlacementEligibility::Eligible => {
+                Err(RpcError::conflict("the Server accepts it again"))
+            }
             ServicePlacementEligibility::Unknown(reason) => Err(unknown_eligibility(reason)),
         }
     }
@@ -185,32 +182,22 @@ fn ended(step: Step, names: &Names) -> Result<(), RpcError> {
     match step {
         Step::Done => Ok(()),
         Step::Refused(refusal) => Err(refusal.into_error()),
-        Step::NotConfirmed(machines) => Err(RpcError {
-            code: RpcErrorCode::Unavailable,
-            message: format!(
-                "not unlisted after {} s; the proxies on {} did not confirm",
-                ACK_WAIT.as_secs(),
-                machines
-                    .machines
-                    .iter()
-                    .map(|id| server_name(names, id))
-                    .collect::<Vec<_>>()
-                    .join(", ")
-            ),
-            details: serde_json::Value::Null,
-            cause: Vec::new(),
-        }),
+        Step::NotConfirmed(machines) => Err(RpcError::unavailable(format!(
+            "not unlisted after {} s; the proxies on {} did not confirm",
+            ACK_WAIT.as_secs(),
+            machines
+                .machines
+                .iter()
+                .map(|id| server_name(names, id))
+                .collect::<Vec<_>>()
+                .join(", ")
+        ))),
         Step::Cancelled => Err(cancelled()),
     }
 }
 
 fn cancelled() -> RpcError {
-    RpcError {
-        code: RpcErrorCode::Unavailable,
-        message: "the drain was cancelled while it retired".into(),
-        details: serde_json::Value::Null,
-        cause: Vec::new(),
-    }
+    RpcError::unavailable("the drain was cancelled while it retired")
 }
 
 /// Retire `globals` on `server` only: each is stopped and removed there when fresh evidence

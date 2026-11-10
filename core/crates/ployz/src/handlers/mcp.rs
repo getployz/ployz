@@ -323,15 +323,11 @@ fn written(answer: Result<Value, StoreCallError>) -> Result<Value, RpcError> {
 
 /// A write ployz mcp stopped waiting for after sending it.
 fn cut_off(tool: &str, deadline: Duration) -> RpcError {
-    RpcError {
-        code: RpcErrorCode::Unavailable,
-        message: format!(
-            "Stopped waiting for `{tool}` after {}; Ployz Cloud may still take what it sent",
-            span(deadline)
-        ),
-        details: json!({ "writes": "unknown" }),
-        cause: Vec::new(),
-    }
+    RpcError::unavailable(format!(
+        "Stopped waiting for `{tool}` after {}; Ployz Cloud may still take what it sent",
+        span(deadline)
+    ))
+    .with_details(json!({ "writes": "unknown" }))
 }
 
 /// Whether Cloud may have acted on a request that failed this way.
@@ -364,12 +360,10 @@ fn may_have_landed(error: &LoginError) -> bool {
 
 /// The registry refuses Cloud tools on a local Store before asking; this guards the rest.
 fn not_here() -> RpcError {
-    RpcError {
-        code: RpcErrorCode::from("not_here"),
-        message: "This needs Ployz Cloud; a local Config Store cannot answer it".to_owned(),
-        details: Value::Null,
-        cause: Vec::new(),
-    }
+    RpcError::new(
+        RpcErrorCode::from("not_here"),
+        "This needs Ployz Cloud; a local Config Store cannot answer it",
+    )
 }
 
 /// The Project and Environment a call acts on, read when the call starts.
@@ -628,7 +622,7 @@ impl Server {
                     self.forget(tool, context).await;
                 }
                 match error.details.get("approval_id").and_then(Value::as_str) {
-                    Some(id) if error.code.as_str() == approval::APPROVAL_REQUIRED => {
+                    Some(id) if error.code.as_str() == ployz_core::APPROVAL_REQUIRED_CODE => {
                         let url = waiting_on_you(&credential).await;
                         let text = format!(
                             "{message} Nothing ran; the approval stays pending. Ask a human to \

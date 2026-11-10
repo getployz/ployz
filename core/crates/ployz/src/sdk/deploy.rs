@@ -1,8 +1,7 @@
 //! Prepared deployment execution and its owned progress stream.
-use super::{PreparedDeploy, RunningDeploy, Session, closed, invalid_argument};
+use super::{PreparedDeploy, RunningDeploy, Session, closed};
 use crate::deploy::DeployPreview;
-use ployz_core::{DeployEvent, DeployOutcome, ExecutionError, RpcError, RpcErrorCode};
-use serde_json::Value;
+use ployz_core::{DeployEvent, DeployOutcome, ExecutionError, RpcError};
 use std::{ops::Deref, sync::atomic::Ordering};
 use tokio::sync::{Mutex, mpsc};
 
@@ -23,7 +22,7 @@ impl std::str::FromStr for ImageCleanup {
         match value {
             "auto" => Ok(Self::Auto),
             "manual" => Ok(Self::Manual),
-            other => Err(invalid_argument(format!(
+            other => Err(RpcError::invalid_argument(format!(
                 "imageCleanup must be \"auto\" or \"manual\", not {other:?}"
             ))),
         }
@@ -131,8 +130,8 @@ impl PreparedDeploy {
         }
         let mut retained = self.retained.lock().expect("retained build lock");
         if self.confirmed.swap(true, Ordering::SeqCst) {
-            return Err(invalid_argument(
-                "this Deploy Preview already confirmed".into(),
+            return Err(RpcError::invalid_argument(
+                "this Deploy Preview already confirmed",
             ));
         }
         let cancel = session.inner.cancel.child_token();
@@ -155,11 +154,7 @@ impl PreparedDeploy {
             let events = tx.clone();
             let outcome = tokio::select! {
                 biased;
-                () = session_cancel.cancelled() => return Err(RpcError {
-                    code: RpcErrorCode::Unavailable,
-                    message: "session closed; in-flight Deploy outcome may be uncertain".into(),
-                    details: Value::Null, cause: Vec::new(),
-                }),
+                () = session_cancel.cancelled() => return Err(RpcError::unavailable("session closed; in-flight Deploy outcome may be uncertain")),
                 outcome = client.confirm(&preview, &token, Some(tx)) => outcome,
             };
             if !token.is_cancelled() {
@@ -226,13 +221,10 @@ impl RunningDeploy {
             .lock()
             .await
             .take()
-            .ok_or_else(|| invalid_argument("Deploy outcome already awaited".into()))?;
-        let outcome = handle.await.map_err(|_| RpcError {
-            code: RpcErrorCode::Internal,
-            message: "Deploy task failed".into(),
-            details: Value::Null,
-            cause: Vec::new(),
-        })?;
+            .ok_or_else(|| RpcError::invalid_argument("Deploy outcome already awaited"))?;
+        let outcome = handle
+            .await
+            .map_err(|_| RpcError::internal("Deploy task failed"))?;
         while self.next().await.is_some() {}
         outcome
     }
@@ -241,6 +233,7 @@ impl RunningDeploy {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use ployz_core::RpcErrorCode;
 
     #[tokio::test]
     async fn a_second_finished_is_a_typed_error() {

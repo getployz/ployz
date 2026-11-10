@@ -6,7 +6,7 @@ use ployz_core::{
     },
 };
 
-use super::{MetricHistory, merge, unavailable};
+use super::{MetricHistory, merge};
 
 const SINCE: i64 = 1_000_000_000_000;
 const MIN: i64 = 60_000_000_000;
@@ -62,7 +62,7 @@ fn a_machine_that_times_out_is_named_and_the_rest_still_sum() {
     let fast = answered(MIN, vec![point(0, 2.0, 100, Some(1_000))]);
     let timeout = MachineFailure {
         machine_id: slow,
-        error: unavailable("deadline exceeded"),
+        error: ployz_core::RpcError::unavailable("deadline exceeded"),
     };
 
     let history = merge(&request(), vec![fast.clone()], vec![timeout]);

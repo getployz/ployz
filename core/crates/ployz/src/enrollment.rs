@@ -3,8 +3,7 @@ pub mod local;
 
 use crate::connect::{Client, ConnectError};
 use ployz_core::{
-    EnrollmentAssignment, EnrollmentSnapshot, ListMachinesRequest, Registered, RpcError,
-    RpcErrorCode, op,
+    EnrollmentAssignment, EnrollmentSnapshot, ListMachinesRequest, Registered, RpcError, op,
 };
 
 /// Observe the Entry Machine's enrollment facts before taking an operator lock.
@@ -16,12 +15,7 @@ pub async fn observe_enrollment(entry: &mut Client) -> Result<EnrollmentSnapshot
         .call::<op::ListMachines>(ListMachinesRequest {}, None)
         .await?
         .enrollment
-        .ok_or_else(|| RpcError {
-            code: RpcErrorCode::Unavailable,
-            message: "Entry Machine returned no enrollment snapshot".into(),
-            details: serde_json::Value::Null,
-            cause: Vec::new(),
-        })
+        .ok_or_else(|| RpcError::unavailable("Entry Machine returned no enrollment snapshot"))
 }
 
 /// Publish a durably saved assignment before bootstrapping the joining Machine.
@@ -38,12 +32,7 @@ pub async fn publish_enrollment(
         &snapshot,
         std::slice::from_ref(assignment),
     )
-    .map_err(|error| RpcError {
-        code: RpcErrorCode::Conflict,
-        message: error.to_string(),
-        details: serde_json::Value::Null,
-        cause: Vec::new(),
-    })?;
+    .map_err(|error| RpcError::conflict(error.to_string()))?;
     let mut request = assignment.request.clone();
     request.assigned_subnet = Some(assignment.machine.subnet);
     request.runtime.clone_from(&assignment.machine.runtime);

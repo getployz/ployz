@@ -8,12 +8,11 @@ use ployz_core::{
     ResolvedServiceSpec, RoutesRead, RpcError, RpcErrorCode, RunRotation, RunTarget, StopOptions,
     Unacked,
 };
-use serde_json::Value;
 use tokio::time::Instant;
 use tokio_util::sync::CancellationToken;
 
 use super::MachineOperations;
-use crate::connect::{FORBIDDEN, TARGET_RPC_TIMEOUT, in_rpc_timeout, stop_rpc_timeout};
+use crate::connect::{TARGET_RPC_TIMEOUT, in_rpc_timeout, stop_rpc_timeout};
 use crate::ui::{then_sentence, with_reason};
 
 pub(crate) const ACK_POLL: Duration = Duration::from_millis(200);
@@ -441,7 +440,7 @@ pub(crate) async fn user_stop<C: MachineOperations>(
         let step = hold(client, &copy, run.clone(), cancellation).await;
         if copy.rotation == CopyRotation::In {
             let failed = match step {
-                Ok(Step::Cancelled) => Some(unavailable(
+                Ok(Step::Cancelled) => Some(RpcError::unavailable(
                     "the wait for its proxies was cancelled".to_owned(),
                 )),
                 // The ask may have landed, so the copy is restored as if Held.
@@ -525,32 +524,30 @@ pub(crate) async fn user_restart<C: MachineOperations>(
     let stopped = match hold(client, &copy, run.clone(), cancellation).await {
         Ok(Step::Refused(refusal)) => return Err(refusal.into_error()),
         Ok(Step::Done) => stopped(client, &held, spec, stop, queued).await,
-        Ok(Step::NotConfirmed(unconfirmed)) => Err(unavailable(format!(
+        Ok(Step::NotConfirmed(unconfirmed)) => Err(RpcError::unavailable(format!(
             "Container {} was not restarted: the proxies on {} did not confirm they stopped routing it.",
             copy.container_id,
             listed(&unconfirmed.machines)
         ))),
-        Ok(Step::Cancelled) => Err(unavailable(format!(
+        Ok(Step::Cancelled) => Err(RpcError::unavailable(format!(
             "Container {} was not restarted: the wait for its proxies was cancelled.",
             copy.container_id
         ))),
-        Err(error) if error.code.as_str() == FORBIDDEN => {
-            return Err(RpcError {
-                message: with_reason(
-                    format_args!("Container {} was not restarted", copy.container_id),
-                    &error.message,
-                ),
-                ..error
-            });
-        }
-        // The ask may have landed, so the copy is restored as if Held.
-        Err(error) => Err(RpcError {
-            message: with_reason(
+        Err(error) if error.code.as_str() == ployz_core::FORBIDDEN_CODE => {
+            let message = with_reason(
                 format_args!("Container {} was not restarted", copy.container_id),
                 &error.message,
-            ),
-            ..error
-        }),
+            );
+            return Err(error.with_message(message));
+        }
+        // The ask may have landed, so the copy is restored as if Held.
+        Err(error) => {
+            let message = with_reason(
+                format_args!("Container {} was not restarted", copy.container_id),
+                &error.message,
+            );
+            Err(error.with_message(message))
+        }
     };
     let brought = bring_in(client, &held, spec, Some(run)).await;
     if let Err(mut error) = stopped {
@@ -595,16 +592,11 @@ pub(crate) async fn user_remove<C: MachineOperations>(
 /// The inspect saw Docker answer for `container_id` while its Machine holds no Resolved
 /// Service Spec under that ID. The remove asks for nothing, so the Container stays.
 fn kept_without_spec(container_id: &ContainerId, inspected: RpcError) -> RpcError {
-    RpcError {
-        code: RpcErrorCode::Conflict,
-        message: format!(
+    RpcError::conflict(format!(
             "Container {container_id} was not removed: Docker on its Server has it, and the Server holds no Resolved Service Spec under its ID."
-        ),
-        details: serde_json::json!({ "reason": ContainerNotFoundReason::NoResolvedSpec }),
-        cause: std::iter::once(inspected.message)
+        )).with_details(serde_json::json!({ "reason": ContainerNotFoundReason::NoResolvedSpec })).with_causes(std::iter::once(inspected.message)
             .chain(inspected.cause)
-            .collect(),
-    }
+            .collect())
 }
 
 async fn observe<C: MachineOperations>(
@@ -631,16 +623,11 @@ fn never_in(observed: &ContainerObservation) -> bool {
 }
 
 fn not_admitted(copy: &Copy) -> RpcError {
-    RpcError {
-        code: RpcErrorCode::Conflict,
-        message: format!(
-            "Container {} is left {} and not routed: no Deploy brought it In. Deploy the Service again to route it.",
-            copy.container_id,
-            rotation_name(&copy.rotation)
-        ),
-        details: Value::Null,
-        cause: Vec::new(),
-    }
+    RpcError::conflict(format!(
+        "Container {} is left {} and not routed: no Deploy brought it In. Deploy the Service again to route it.",
+        copy.container_id,
+        rotation_name(&copy.rotation)
+    ))
 }
 
 /// Hooks stay Pending for life, and neither Ingress door is ever routed.
@@ -757,7 +744,7 @@ async fn not_stopped<C: MachineOperations>(
         format_args!("Container {} was not stopped", copy.container_id),
         &error.message,
     );
-    if error.code.as_str() == FORBIDDEN {
+    if error.code.as_str() == ployz_core::FORBIDDEN_CODE {
         return error;
     }
     let held = Copy {
@@ -778,12 +765,12 @@ fn left_running(copy: &Copy, rotation: &str, step: Step) -> Result<(), RpcError>
     match step {
         Step::Done => Ok(()),
         Step::Refused(refusal) => Err(refusal.into_error()),
-        Step::NotConfirmed(unconfirmed) => Err(unavailable(format!(
+        Step::NotConfirmed(unconfirmed) => Err(RpcError::unavailable(format!(
             "Container {} is left running and {rotation}: the proxies on {} did not confirm they stopped routing it.",
             copy.container_id,
             listed(&unconfirmed.machines)
         ))),
-        Step::Cancelled => Err(unavailable(format!(
+        Step::Cancelled => Err(RpcError::unavailable(format!(
             "Container {} is left running and {rotation}: the wait for its proxies was cancelled.",
             copy.container_id
         ))),
@@ -791,24 +778,10 @@ fn left_running(copy: &Copy, rotation: &str, step: Step) -> Result<(), RpcError>
 }
 
 fn deploy_again(copy: &Copy) -> RpcError {
-    RpcError {
-        code: RpcErrorCode::Conflict,
-        message: format!(
-            "Container {} is out of rotation and cannot start again. Deploy the Service again.",
-            copy.container_id
-        ),
-        details: Value::Null,
-        cause: Vec::new(),
-    }
-}
-
-fn unavailable(message: String) -> RpcError {
-    RpcError {
-        code: RpcErrorCode::Unavailable,
-        message,
-        details: Value::Null,
-        cause: Vec::new(),
-    }
+    RpcError::conflict(format!(
+        "Container {} is out of rotation and cannot start again. Deploy the Service again.",
+        copy.container_id
+    ))
 }
 
 fn listed(machines: &[MachineId]) -> String {

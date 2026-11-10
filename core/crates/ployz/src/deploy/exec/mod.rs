@@ -345,12 +345,9 @@ impl MachineOperations for Client {
                     .map(|machine| &machine.membership),
             )
         }) {
-            return Err(RpcError {
-                code: RpcErrorCode::Unavailable,
-                message: format!("container observation omitted {machine_id}"),
-                details: serde_json::Value::Null,
-                cause: Vec::new(),
-            });
+            return Err(RpcError::unavailable(format!(
+                "container observation omitted {machine_id}"
+            )));
         }
         let copies = listed
             .successes
@@ -1106,7 +1103,7 @@ pub(super) async fn execute_operation_sequence<C: MachineOperations>(
                             last,
                             machine_error(
                                 MachineAction::ReadRoutes,
-                                unavailable(rows.not_confirmed(&machines)),
+                                RpcError::unavailable(rows.not_confirmed(&machines)),
                             ),
                             Event::PublishUnconfirmed(group),
                         );
@@ -1682,7 +1679,7 @@ async fn publish_group<C: MachineOperations>(
             Ok(cleanup::Wait::TimedOut(machines) | cleanup::Wait::Gapped(machines)) => {
                 let error = machine_error(
                     MachineAction::ReadRoutes,
-                    unavailable(rows.not_confirmed(&machines)),
+                    RpcError::unavailable(rows.not_confirmed(&machines)),
                 );
                 (Some(Left::NotConfirmed(machines)), Some(error))
             }
@@ -2273,7 +2270,7 @@ impl<'a> Rows<'a> {
                 Ok(cleanup::Step::NotConfirmed(machines)) => {
                     let error = machine_error(
                         MachineAction::StopContainer,
-                        unavailable(self.not_confirmed(&machines)),
+                        RpcError::unavailable(self.not_confirmed(&machines)),
                     );
                     (Some(Left::NotConfirmed(machines)), Some(error))
                 }
@@ -2527,12 +2524,7 @@ impl<'a> Rows<'a> {
                             wait = ?STORED_GENS_WAIT,
                             "the entry Machine's store didn't answer in time; new gens follow the live answers only"
                         );
-                        return Ok(Err(RpcError {
-                            code: RpcErrorCode::Unavailable,
-                            message: format!("the store didn't answer in {STORED_GENS_WAIT:?}"),
-                            details: serde_json::Value::Null,
-                            cause: Vec::new(),
-                        }));
+                        return Ok(Err(RpcError::unavailable(format!("the store didn't answer in {STORED_GENS_WAIT:?}"))));
                     }
                 };
                 Ok(Ok(containers
@@ -2557,7 +2549,7 @@ impl<'a> Rows<'a> {
             Ok(cleanup::Step::Refused(refusal)) => Err(machine_error(action, refusal.into_error())),
             Ok(cleanup::Step::NotConfirmed(machines)) => Err(machine_error(
                 action,
-                unavailable(self.not_confirmed(&machines)),
+                RpcError::unavailable(self.not_confirmed(&machines)),
             )),
             Ok(cleanup::Step::Cancelled) => Err(ExecutionError::Cancelled),
             Err(error) => Err(machine_error(action, error)),
@@ -3302,7 +3294,7 @@ async fn run_new<C: MachineOperations>(
         // whatever the slot holds.
         AnswerWhen::Settled => tokio::select! {
             answered = ensured => answered,
-            () = cancellation.cancelled() => return Err(unavailable(format!(
+            () = cancellation.cancelled() => return Err(RpcError::unavailable(format!(
                 "the Deploy was cancelled while Machine {machine_id} waited on health"
             ))),
         },
@@ -3312,24 +3304,10 @@ async fn run_new<C: MachineOperations>(
             progress.set_display_name(index, observed.display_name.clone());
             Ok((observed.container_id, health))
         }
-        (ContainerNow::Absent { .. }, _) => Err(RpcError {
-            code: RpcErrorCode::Internal,
-            message: format!(
-                "the Machine started no Container for slot {}",
-                slot.creation_key.as_str()
-            ),
-            details: serde_json::Value::Null,
-            cause: Vec::new(),
-        }),
-    }
-}
-
-fn unavailable(message: String) -> RpcError {
-    RpcError {
-        code: RpcErrorCode::Unavailable,
-        message,
-        details: serde_json::Value::Null,
-        cause: Vec::new(),
+        (ContainerNow::Absent { .. }, _) => Err(RpcError::internal(format!(
+            "the Machine started no Container for slot {}",
+            slot.creation_key.as_str()
+        ))),
     }
 }
 
@@ -3626,7 +3604,7 @@ async fn remove_container<C: MachineOperations>(
         Ok(cleanup::Step::NotConfirmed(machines)) => {
             let error = machine_error(
                 MachineAction::RemoveContainer,
-                unavailable(rows.not_confirmed(&machines)),
+                RpcError::unavailable(rows.not_confirmed(&machines)),
             );
             rows.leave_running(progress, &copy, Left::NotConfirmed(machines));
             Err(error.into())
@@ -3678,7 +3656,7 @@ async fn stop_old_copy<C: MachineOperations>(
             Ok(cleanup::Step::NotConfirmed(machines)) => {
                 let error = machine_error(
                     MachineAction::StopContainer,
-                    unavailable(rows.not_confirmed(&machines)),
+                    RpcError::unavailable(rows.not_confirmed(&machines)),
                 );
                 (Left::NotConfirmed(machines), error)
             }
@@ -4083,18 +4061,16 @@ struct Numbered {
 
 /// A new copy cannot start while `silent` may run copies the store could not number.
 fn unfloored(silent: &Unanswered, unread: &RpcError) -> ExecutionError {
-    let error = RpcError {
-        code: RpcErrorCode::Unavailable,
-        message: format!(
-            "Machine '{}' did not answer and the entry Machine's store could not be read, \
+    let error = RpcError::unavailable(format!(
+        "Machine '{}' did not answer and the entry Machine's store could not be read, \
              so a new copy might not replace that Machine's copies",
-            silent.name
-        ),
-        details: serde_json::Value::Null,
-        cause: std::iter::once(unread.message.clone())
+        silent.name
+    ))
+    .with_causes(
+        std::iter::once(unread.message.clone())
             .chain(unread.cause.iter().cloned())
             .collect(),
-    };
+    );
     machine_error(
         MachineAction::ListContainers,
         naming_machine(error, &silent.failure.machine_id),

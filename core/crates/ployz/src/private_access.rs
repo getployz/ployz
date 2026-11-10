@@ -234,15 +234,10 @@ pub(crate) async fn turn_on<C: MachineOperations>(
             }),
             Answer::Cancelled => changed.failures.push(MachineFailure {
                 machine_id: machine.id,
-                error: RpcError {
-                    code: RpcErrorCode::Unavailable,
-                    message: format!(
-                        "{} was still starting its router when the command was cancelled",
-                        machine.name
-                    ),
-                    details: serde_json::Value::Null,
-                    cause: Vec::new(),
-                },
+                error: RpcError::unavailable(format!(
+                    "{} was still starting its router when the command was cancelled",
+                    machine.name
+                )),
             }),
         }
     }
@@ -284,15 +279,10 @@ pub(crate) async fn turn_off<C: MachineOperations>(
             }),
             Answer::Cancelled => changed.failures.push(MachineFailure {
                 machine_id: machine.id,
-                error: RpcError {
-                    code: RpcErrorCode::Unavailable,
-                    message: format!(
-                        "{} was still removing its router when the command was cancelled",
-                        machine.name
-                    ),
-                    details: serde_json::Value::Null,
-                    cause: Vec::new(),
-                },
+                error: RpcError::unavailable(format!(
+                    "{} was still removing its router when the command was cancelled",
+                    machine.name
+                )),
             }),
         }
     }
@@ -310,16 +300,13 @@ fn not_serving(server: &MachineName, problem: PrivateAccessProblem, detail: Stri
             format!("The Tailscale router on {server} isn't running.")
         }
     };
-    RpcError {
-        code: RpcErrorCode::Unavailable,
-        message,
-        details: serde_json::json!({ "problem": problem }),
-        cause: if detail.is_empty() {
+    RpcError::unavailable(message)
+        .with_details(serde_json::json!({ "problem": problem }))
+        .with_causes(if detail.is_empty() {
             Vec::new()
         } else {
             vec![detail]
-        },
-    }
+        })
 }
 
 /// Whether `error` is a Machine's answer that its router isn't serving, not a Machine

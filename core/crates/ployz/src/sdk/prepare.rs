@@ -214,12 +214,9 @@ pub async fn select_build_machine(
     }
     let message = format!("no eligible Build Machine: {}", reasons.join("; "));
     let details = serde_json::json!({"rejections": rejected, "reasons": shown});
-    Err(ConnectError::Remote(RpcError {
-        code: RpcErrorCode::Unsupported,
-        message,
-        details,
-        cause: Vec::new(),
-    }))
+    Err(ConnectError::Remote(
+        RpcError::unsupported(message).with_details(details),
+    ))
 }
 
 use crate::{

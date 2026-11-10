@@ -2,7 +2,7 @@
 
 use ployz_core::{
     InspectRequest, MachineId, MachineTarget, Namespace, ResolvedServiceSpec, RpcError,
-    RpcErrorCode, ServicePlacementEligibility, ServicePlacementUnknownReason, op,
+    ServicePlacementEligibility, ServicePlacementUnknownReason, op,
 };
 
 use crate::connect::Client;
@@ -33,12 +33,7 @@ pub(crate) async fn slot_eligibility(
             machine.id == *machine_id
                 && details.phase == ployz_core::LocalMachinePhase::Participating
         })
-        .ok_or_else(|| RpcError {
-            code: RpcErrorCode::Conflict,
-            message: "the Server does not observe itself participating".into(),
-            details: serde_json::Value::Null,
-            cause: Vec::new(),
-        })?;
+        .ok_or_else(|| RpcError::conflict("the Server does not observe itself participating"))?;
     Ok(spec.placement_eligibility_in_namespace(namespace, &machine, details.storage.as_ref()))
 }
 
@@ -49,10 +44,5 @@ pub(crate) fn unknown_eligibility(reason: ServicePlacementUnknownReason) -> RpcE
             "its storage support was not observed"
         }
     };
-    RpcError {
-        code: RpcErrorCode::Conflict,
-        message: format!("eligibility on the Server is unknown: {why}"),
-        details: serde_json::Value::Null,
-        cause: Vec::new(),
-    }
+    RpcError::conflict(format!("eligibility on the Server is unknown: {why}"))
 }

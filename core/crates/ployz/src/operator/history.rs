@@ -286,9 +286,9 @@ async fn read_page(
     loop {
         let message = tokio::time::timeout(ROW_DEADLINE, stream.message())
             .await
-            .map_err(|_| unavailable("the Server's Log Store stopped answering"))?
+            .map_err(|_| RpcError::unavailable("the Server's Log Store stopped answering"))?
             .map_err(|status| RpcError::from(ConnectError::from(status)))?
-            .ok_or_else(|| unavailable("the Server's Log Store ended a page early"))?;
+            .ok_or_else(|| RpcError::unavailable("the Server's Log Store ended a page early"))?;
         let row = HistoryRow::decode(&message)
             .map_err(|error| crate::ui::rpc_error(RpcErrorCode::Internal, &error))?;
         let (container_id, event) = match row {
@@ -300,7 +300,7 @@ async fn read_page(
             }
             HistoryRow::Heartbeat => continue,
             HistoryRow::End { next } => return Ok(next),
-            HistoryRow::Error(message) => return Err(unavailable(&message)),
+            HistoryRow::Error(message) => return Err(RpcError::unavailable(&message)),
             HistoryRow::Line {
                 container_id,
                 ts,
@@ -349,14 +349,5 @@ fn undescribed(container_id: ContainerId) -> HistoryContainer {
         deployment: None,
         replica: String::new(),
         kind: HistoryContainerKind::Service,
-    }
-}
-
-fn unavailable(message: &str) -> RpcError {
-    RpcError {
-        code: RpcErrorCode::Unavailable,
-        message: message.to_owned(),
-        details: serde_json::Value::Null,
-        cause: Vec::new(),
     }
 }

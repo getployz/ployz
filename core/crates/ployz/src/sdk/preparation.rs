@@ -7,7 +7,7 @@ use std::{
 use super::prepare::BuildPreference;
 use crate::build::{BuildSpec, BuiltService, CapturedBuild, Recipe};
 use ployz_core::{
-    DeployIntent, RpcError, RpcErrorCode, ServiceName,
+    DeployIntent, RpcError, ServiceName,
     config::{BuildMethod, ServiceBuildConfig, ServiceSource},
 };
 use serde::{Deserialize, Serialize};
@@ -151,12 +151,7 @@ pub(crate) fn receipts(
 }
 
 fn invalid(message: impl ToString) -> RpcError {
-    RpcError {
-        code: RpcErrorCode::InvalidArgument,
-        message: message.to_string(),
-        details: Value::Null,
-        cause: Vec::new(),
-    }
+    RpcError::invalid_argument(message.to_string())
 }
 
 /// Capture authorized checkouts as Builds.
@@ -406,15 +401,11 @@ pub(crate) fn upload_needed(services: &[ServiceName]) -> RpcError {
         .map(ServiceName::as_str)
         .collect::<Vec<_>>()
         .join(", ");
-    RpcError {
-        code: RpcErrorCode::NotFound,
-        message: format!(
-            "No upload or usable image for {names}: its image is gone, or its build inputs \
+    RpcError::not_found(format!(
+        "No upload or usable image for {names}: its image is gone, or its build inputs \
              changed. Upload its source again"
-        ),
-        details: json!({"preparation": Needed::UploadNeeded { services: services.to_vec() }}),
-        cause: Vec::new(),
-    }
+    ))
+    .with_details(json!({"preparation": Needed::UploadNeeded { services: services.to_vec() }}))
 }
 
 /// The uploaded Services `error` says need a new upload, if that's what it says.
@@ -610,6 +601,7 @@ mod flow_tests;
 #[cfg(test)]
 mod tests {
     use super::*;
+    use ployz_core::RpcErrorCode;
     #[test]
     fn capture_orders_by_cloud_references() {
         let deployment = json!({

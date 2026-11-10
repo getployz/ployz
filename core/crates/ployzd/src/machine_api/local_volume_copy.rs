@@ -5,8 +5,8 @@ use ployz_core::{
     ContainerKind, ContainerLocator, ContainerNow, ContainerObservation, ContainerRefusalReason,
     ContainerRuntimeObservation, ContainerWant, CopyPlan, CopyRefusal, CopyRotation,
     CopyTransition, DockerVolumeName, EnsuredContainer, HealthVerdict, OpaquePayload, RpcError,
-    RpcErrorCode, RunRotation, RunTarget, SetVolumeCopyRefused, SetVolumeCopyReply,
-    SetVolumeCopyRequest, Start, VolumeCopy, VolumeGen, WantedCopy,
+    RunRotation, RunTarget, SetVolumeCopyRefused, SetVolumeCopyReply, SetVolumeCopyRequest, Start,
+    VolumeCopy, VolumeGen, WantedCopy,
 };
 use tonic::{Response, Status};
 
@@ -520,10 +520,5 @@ fn refusal(refused: SetVolumeCopyRefused, name: &DockerVolumeName) -> LocalMachi
 }
 
 fn not_routed(message: String) -> RpcError {
-    RpcError {
-        code: RpcErrorCode::Conflict,
-        message,
-        details: serde_json::Value::Null,
-        cause: Vec::new(),
-    }
+    RpcError::conflict(message)
 }

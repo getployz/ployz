@@ -9,7 +9,7 @@ use std::net::IpAddr;
 
 use ployz_core::{
     DataLossConfirmation, DeploymentLogId, IngressHost, MachineId, MachineObservation, Namespace,
-    ObservedDataLoss, PortPublication, RpcError, RpcErrorCode, UnconfirmedDataLoss,
+    ObservedDataLoss, PortPublication, RpcError, UnconfirmedDataLoss,
 };
 use thiserror::Error;
 use tokio_util::sync::CancellationToken;
@@ -169,7 +169,7 @@ impl Client {
             .require(confirm_data_loss)
             .map_err(UnconfirmedDataLoss::into_rpc_error)?;
         if let Some(reason) = preview.prune_refusal {
-            return Err(invalid_argument(format!(
+            return Err(RpcError::invalid_argument(format!(
                 "{reason}: {}",
                 preview
                     .warnings
@@ -228,7 +228,7 @@ fn observed_destroy_loss(
     if volumes == super::VolumeFate::Destroy
         && let Some(reason) = preview.prune_refusal
     {
-        return Err(invalid_argument(format!(
+        return Err(RpcError::invalid_argument(format!(
             "{reason}: {}",
             preview
                 .warnings
@@ -243,15 +243,10 @@ fn observed_destroy_loss(
 
 fn require_namespace_present(preview: &DeployPreview) -> Result<(), RpcError> {
     if namespace_not_found(preview) {
-        return Err(RpcError {
-            code: RpcErrorCode::NotFound,
-            message: format!(
-                "Namespace '{}' was not found in this Cluster observation. No changes made.",
-                preview.namespace
-            ),
-            details: serde_json::Value::Null,
-            cause: Vec::new(),
-        });
+        return Err(RpcError::not_found(format!(
+            "Namespace '{}' was not found in this Cluster observation. No changes made.",
+            preview.namespace
+        )));
     }
     Ok(())
 }
@@ -283,17 +278,8 @@ impl From<DeployError> for RpcError {
         match error {
             DeployError::Connect(error) => error.into(),
             DeployError::Plan(error) => error.into_rpc_error(),
-            DeployError::Namespace(error) => invalid_argument(error.to_string()),
+            DeployError::Namespace(error) => RpcError::invalid_argument(error.to_string()),
         }
-    }
-}
-
-fn invalid_argument(message: String) -> RpcError {
-    RpcError {
-        code: RpcErrorCode::InvalidArgument,
-        message,
-        details: serde_json::Value::Null,
-        cause: Vec::new(),
     }
 }
 
