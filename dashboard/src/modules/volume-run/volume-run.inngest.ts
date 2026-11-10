@@ -312,7 +312,8 @@ async function runRounds(steps: RunSteps, ctx: Approving & { readonly A: Answere
 }
 
 /**
- * The run keeps its approval with the Mirror before its first step, for the syncs after. A full sync forgets the
+ * Once the Mirror has pulled under the run's approval, the run keeps it with the Mirror for the syncs after, so a run
+ * that fails first leaves the approval the Mirror already admitted. A full sync forgets the
  * Mirror's copy, which withdraws it there first, then has the Writer withdraw the Mirror's Server and drop its run snapshots.
  */
 async function mirrorVolume(steps: RunSteps, phase: PhaseOf<"mirror"> | PhaseOf<"sync">, epoch: number) {
@@ -323,13 +324,13 @@ async function mirrorVolume(steps: RunSteps, phase: PhaseOf<"mirror"> | PhaseOf<
   const approval = run.kind === "mirror" || run.kind === "sync" ? run.args.approval : undefined;
   let copy = target.view.copy;
   try {
-    if (approval !== undefined) await step.run("03-keep-approval", () => runEffect(keepApproval(run, runId, B.id, approval)));
     if (phase.kind === "sync") {
       await mustSet(steps, "03-reset-forget-mirror", B, expectOf(copy), { kind: "forget" }, `${B.name} is still busy with ${run.volumeName}`);
       await mustSet(steps, "03-reset-forget-writer", A.machine, { kind: "writer", epoch: epochOf(A) }, { kind: "forget", recipient: B.id }, `${A.machine.name} is still busy with ${run.volumeName}`);
       copy = null;
     }
     const { rounds } = await runRounds(steps, { A, B, copy, epoch, approval });
+    if (approval !== undefined) await step.run("04-keep-approval", () => runEffect(keepApproval(run, runId, B.id, approval)));
     await finish(steps, "05-finish");
     return { runId: run.id, rounds };
   } catch (error) {

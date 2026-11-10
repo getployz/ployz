@@ -2497,6 +2497,21 @@ describe("volume runs", () => {
       expect(await rows()).toMatchObject([{ state: "failed", message: "fsn-2 didn't accept the approval from your device for data. Approve the change again from an approved device." }]);
     });
 
+    it("a run that fails before its pull lands keeps the approval the mirror already admitted", async () => {
+      machines[1] = { name: "fsn-2", pool: true, copy: slotCopy(base) };
+      const admitted = { body: "admitted", signatures: [] };
+      await harness.pool.query(
+        "insert into volume_mirror_status (organization_id, volume_id, machine_id, approval) values ($1, $2, $3, $4)",
+        [organizationId, volumeId, idOf("fsn-2"), JSON.stringify(admitted)]);
+      failNext.set("snapshot@fsn-1", "no_capacity");
+      const run = await requested({ kind: "mirror", args: { to: "fsn-2", approval: APPROVAL } });
+
+      await execute(run.id);
+
+      expect(await rows()).toMatchObject([{ state: "failed" }]);
+      expect(await keptApprovals()).toEqual([{ machine_id: idOf("fsn-2"), approval: admitted }]);
+    });
+
     it("a refusal ends the run with its message", async () => {
       failNext.set("snapshot@fsn-1", "no_capacity");
       const run = await requested({ kind: "mirror", args: { to: "fsn-2" } });
