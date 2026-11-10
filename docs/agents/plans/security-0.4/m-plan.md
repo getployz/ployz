@@ -12,7 +12,7 @@ Six slices, in dependency order:
 | M2 | The minter exists as code, with its policy, the canonical workflow digests, its audit log and a local signer for tests and lab lanes | Agent |
 | M3 | Cloud reaches GitHub's App authority and Actions data only through one service, with a local mode for Self-hosted Cloud and a minter mode for hosted Cloud | Agent |
 | M4 | The dashboard generates a `ployz-build.yml` that pins the builder by commit and declares least permissions, and flags repositories whose file differs | Agent, then customers |
-| M5 | Hosted Cloud runs on the minter, user tokens are revoked, the old key and client secret are deleted on GitHub, and Cloud's env holds neither | Operator, infra |
+| M5 | Hosted Cloud runs on the minter, the old client secret and key are deleted on GitHub, then user tokens are revoked, and Cloud's env holds neither | Operator, infra |
 | M6 | `docs/user` says what Cloud can and cannot do in a customer's GitHub, and drops the "except a pushed commit" caveat | Agent, after M5 |
 
 ```mermaid
@@ -84,7 +84,7 @@ The program runs the way `c-plan.md` "Program checklist" says. These differences
 - [ ] File boundaries. M2 adds `minter/**` and one line in `AGENTS.md` (the workspace list). M3 touches `dashboard/src/modules/github/{github-token.server,github-observation.api,github-build.server,github-connect.server,github-token.static.test}.ts`, a new `dashboard/src/modules/github/github-authority.server.ts`, `dashboard/src/modules/config-store/{store-github-builds,store-deployment,store-pull-request,store-pr-grants,config-store}.server.ts`, `dashboard/src/server/config.server.ts`, `dashboard/src/test/fake-github.ts` and `docs/user/self-hosting.md`. M4 touches `dashboard/src/modules/github/{github-build-workflow,github.queries}.ts`, `dashboard/src/routes/_protected/cloud/$organizationSlug/_org/-components/builds-settings.tsx`, `minter/src/canonical-workflows.json`, `docs/user/deploy/github.md` (the workflow file) and, outside this repository, `getployz/build`. M6 touches `docs/user/deploy/github.md`, `docs/user/self-hosting.md` and `docs/agents/plans/security-0.4/d-build-proof.md` (the "until the minter is live" lines).
 - [ ] M3 shares `store-github-builds.server.ts` and `store-deployment.server.ts` with D5 to D7, and M4 shares `github-build-workflow.ts` with D3. Each owner rebases on whatever D has merged, and changes only the lines this plan names there.
 - [ ] Bets every M PR names. Bet 7, Cloud drives and never owns, because Cloud keeps driving GitHub reads and builds but no longer owns the App's authority. Bet 9, lean on proven primitives, because the key sits in KMS, the caller authenticates with IAM, GitHub's own token narrowing (`permissions`, `repository_ids`) enforces the read set, and the workflow's own `permissions` block limits the run's token. The stable promise, because Self-hosted Cloud's env keeps working unchanged (local mode).
-- [ ] Residuals each M PR names once, without review rounds. Cloud reads the code, metadata, pull requests and checks of every repository the App can read. Cloud can dispatch a canonical `ployz-build.yml` on any branch, build a commit of its choosing with it, cancel its runs, and post a false Ployz check. Cloud can link an installation to the wrong Organization. Installation tokens minted before the key deletion live up to one hour. User tokens a compromised Cloud captured before M5 live until M5's revoke step. If GitHub offers no way to revoke them all, they live until they expire, and a token issued while the App's tokens did not expire never does.
+- [ ] Residuals each M PR names once, without review rounds. Cloud reads the code, metadata, pull requests and checks of every repository the App can read. Cloud can dispatch a canonical `ployz-build.yml` on any branch, build a commit of its choosing with it, cancel its runs, and post a false Ployz check. Cloud can link an installation to the wrong Organization. Installation tokens minted before the key deletion live up to one hour. Until M5 deletes the old key and client secret, a Cloud that copied them can still mint installation tokens and exchange connect codes, as it can today. M5 keeps that window to the length of its checks. User tokens a compromised Cloud captured before the deletions live until M5's revoke step. If GitHub offers no way to revoke them all, they live until they expire, and a token issued while the App's tokens did not expire never does.
 - [ ] Live lanes run per `c-plan.md` "Boot recipe", with a Boat Cloud against the lab App and lab repository from `d-plan.md` Appendix B. The minter runs on the lane host as a process (`node minter/dist/local.js`) with the local signer. The lab App's key and client secret reach it as files at mode 600 through `request_secret`, and the lane deletes them when it ends. The attacker harness holds Cloud's minter credential and sends hand-built minter requests.
 
 ## Drop the App permissions nothing uses (M1)
@@ -258,9 +258,17 @@ Outcome. The dashboard's "Add workflow" offers a `ployz-build.yml` that calls th
 
 ## Cut over, revoke and rotate (M5)
 
-Outcome. Hosted Cloud runs in minter mode. User tokens the App issued before the cutover are revoked. The App's private key and client secret that Cloud held are deleted on GitHub. Cloud's env holds neither. Attack path closed. A compromised Cloud cannot get a token with any write permission or `actions` access, cannot dispatch a workflow file other than a canonical one, cannot exchange a user code, and cannot sign an App JWT, including with the old key it may have copied.
+Outcome. Hosted Cloud runs in minter mode. The App's private key and client secret that Cloud held are deleted on GitHub, and then every user token the App issued is revoked. Cloud's env holds neither credential. Attack path closed. A compromised Cloud cannot get a token with any write permission or `actions` access, cannot dispatch a workflow file other than a canonical one, cannot exchange a user code, and cannot sign an App JWT, including with the old key and secret it may have copied.
 
-This slice is the operator's. An agent writes the runbook in `getployz/ops` and the checks below, and runs no step. The steps run in this order.
+This slice is the operator's. An agent writes the runbook in `getployz/ops` and the checks below, and runs no step. The steps run in this order, and the switch, the checks, both deletions and the revoke run in one sitting.
+
+**Why this order.** Until GitHub deletes them, the old client secret and the old private key are both live credentials that a compromised Cloud may hold.
+
+- With the old client secret, Cloud receives every connect callback, because the authorize URL sends the person back to Cloud (`github-connect.server.ts:79` to `:81`). It can exchange the code itself (`github-observation.api.ts:669`). It then holds a fresh user token, valid for eight hours if tokens expire, carrying the App's permissions where the person has access, `actions: write` included. That token can dispatch any workflow and skips the minter's canonical-file check. So the old secret goes before the revoke. A revoke run while Cloud can still exchange codes leaves a window that the revoke does not close.
+- With the old private key, Cloud can sign an App JWT and mint an installation token with every permission the installation accepted. That means `actions: write` and `checks: write` at least, and Contents and Workflows write too unless M1 dropped them. Each such token lives one hour. So the old key gets the same treatment. It is deleted right after the functional checks, together with the old secret, behind one pause.
+- Until the deletions, this exposure is the same as today's. The plan only keeps it to the length of the checks.
+
+Deleting the old secret before the revoke breaks no step in between. The minter already uses the new secret for connect. The App settings' revoke-all control needs no client secret. GitHub's per-grant API, if used for a token the operator holds, works with the new secret. The one thing that breaks is one-app sign-in, which signs in with the App's client secret. So that case moves first (below).
 
 **Depends on.** M3 and M4 deployed to hosted Cloud in local mode. Decisions 4 to 7 and 10. Y's O1.
 
@@ -268,34 +276,37 @@ This slice is the operator's. An agent writes the runbook in `getployz/ops` and 
 
 - [ ] Rehearse every step below on the lab App with a lab AWS account first. Record each output, and whether GitHub offers a revoke-all control for a GitHub App's user tokens.
 - [ ] Read the App's "Expire user authorization tokens" setting and record it. If it is off, every user token issued at connect, and at sign-in if decision 7 finds one-app sign-in, never expires [G]. Today's code cannot tell, because `exchangeUserCode` reads only `access_token` (`github-observation.api.ts:677`).
+- [ ] If decision 7 found one-app sign-in, move sign-in to a separate OAuth App now, and redeploy Cloud with its client ID and secret in `GITHUB_CLIENT_ID` and `GITHUB_CLIENT_SECRET`. Otherwise Cloud's sign-in config keeps a copy of the App's client secret, and deleting the old secret later breaks sign-in. Better Auth matches accounts by GitHub user ID, so existing users keep signing in. The rehearsal confirms that.
 - [ ] Count the linked repositories whose `ployz-build.yml` is not canonical, through the minter's workflow route from the rehearsal. Take decision 10 with that count.
 - [ ] Create the dedicated AWS account, the KMS key, the Lambda from a reviewed `minter/` commit, its Function URL with `AWS_IAM`, the log group with 400-day retention, and alarms on any refusal and on dispatch volume.
-- [ ] Generate a new private key and a new client secret on the `getployz` App. Import the key into KMS and store the client secret in the minter's secret store. Destroy the local copies. The old key and secret still work, so nothing changes yet.
+- [ ] Generate a new private key and a new client secret on the `getployz` App. Import the key into KMS and store the client secret in the minter's secret store, so the minter signs and exchanges with the new pair only. Destroy the local copies. The old key and secret still work on GitHub, so nothing changes yet.
 - [ ] If the App's "Expire user authorization tokens" setting is off, turn it on.
 
-**Switch Cloud to the new key.**
+**Switch Cloud to the minter.**
 
-- [ ] Copy the old private key to a file at mode 600 on the operator's machine. It exists only for the 401 check later.
+- [ ] Copy the old private key and the old client secret to files at mode 600 on the operator's machine. They exist only for the checks after deletion.
 - [ ] Set `GITHUB_MINTER_URL` and the two access-key values in Cloud's per-service env files, remove `GITHUB_APP_PRIVATE_KEY` and `GITHUB_APP_CLIENT_SECRET` from them, and redeploy Cloud web and worker.
 
-**Check with the new key, before deleting anything.**
+**Check with the new pair, then delete the old one.**
 
-- [ ] The production checks from M3's lanes 2 to 5 pass on a Ployz-owned test Organization, through the minter.
+- [ ] The production checks from M3's lanes 2 to 5 pass on a Ployz-owned test Organization, through the minter. Lane 3's connect proves the minter exchanges codes with the new secret.
 - [ ] The minter's audit log shows those requests, signed with the new key, and no refusals.
 - [ ] Warm Lambda latency for a token request, median of ten, is under 300 ms. Cold starts are recorded, not gated.
-- [ ] If any check fails, roll back. Restore the two old values in the env files and unset `GITHUB_MINTER_URL`. This works only until the old key is deleted. After that, rollback means generating a fresh key for Cloud, which reopens the hole, so fix forward instead.
+- [ ] If any check fails, roll back. Restore the two old values in the env files and unset `GITHUB_MINTER_URL`. This is the last point where rollback is possible. After the next box, rollback means generating a fresh key and secret for Cloud, which reopens the hole, so fix forward instead.
+- [ ] Pause and confirm with the operator. The next two boxes cannot be undone.
+- [ ] Delete the old client secret on the App.
+- [ ] Delete the old private key on the App, straight after.
 
-**Revoke user tokens.**
+**Revoke user tokens, after Cloud can no longer mint them.**
 
-- [ ] Revoke every user token the App has issued, with the App settings' revoke-all control. A person connecting or signing in afterwards authorizes the App again, and nothing else changes, because Cloud keeps no user token.
-- [ ] If the rehearsal found no revoke-all control, record that. GitHub's per-grant API (`DELETE /applications/{client_id}/grant`) needs each token in hand and the client ID and secret, and Ployz holds no user token since `cd334b8362`. So it cannot reach tokens a compromised Cloud captured. Those tokens stay valid until they expire, which for a non-expiring token is never. Decide with that record whether to ask customers to revoke the App's authorization in their GitHub settings.
+- [ ] Revoke every user token the App has issued, with the App settings' revoke-all control. No credential Cloud held can now exchange a code or refresh a token, so no new user token reaches Cloud after this. A person connecting or signing in afterwards authorizes the App again, through the minter, and nothing else changes, because Cloud keeps no user token.
+- [ ] If the rehearsal found no revoke-all control, record that. GitHub's per-grant API (`DELETE /applications/{client_id}/grant`) needs each token in hand, and Ployz holds no user token since `cd334b8362`, so it cannot reach tokens a compromised Cloud captured. Those tokens stay valid until they expire, which for a non-expiring token is never. Decide with that record whether to ask customers to revoke the App's authorization in their GitHub settings.
 
-**Delete the old credentials.**
+**Confirm nothing Cloud held still works.**
 
-- [ ] Pause and confirm with the operator. The next step cannot be undone.
-- [ ] Delete the old private key and the old client secret on the App.
-- [ ] Sign an App JWT with the copied old key and call `GET /app`. Pass when GitHub returns 401. Then destroy the copy.
-- [ ] Wait one hour, the lifetime of an installation token minted before the deletion.
+- [ ] Sign an App JWT with the copied old key and call `GET /app`. Pass when GitHub returns 401.
+- [ ] Call `POST /applications/{client_id}/token` with Basic auth from the client ID and the copied old secret, and any token value. Pass when GitHub refuses the credentials. Then destroy both copies.
+- [ ] Wait one hour, the lifetime of an installation token minted before the key's deletion.
 - [ ] Read the minter's audit log for the first 24 hours. Pass when it shows Cloud's requests and every refusal is explained. Then declare the rotation done.
 
 **Review gate.** The operator runs it.
