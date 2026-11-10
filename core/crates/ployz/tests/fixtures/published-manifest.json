@@ -1,6 +1,6 @@
 {
   "format": 1,
-  "revision": "2c17de515e40",
+  "revision": "84b9221c9993",
   "permissions": [
     "org:read",
     "org:settings",
@@ -221,7 +221,7 @@
               "public",
               "cloudflare"
             ],
-            "description": "public or cloudflare. Cloudflare needs the setup done in Settings."
+            "description": "public or cloudflare. Set up Cloudflare Tunnel in Ployz Cloud first."
           }
         },
         "required": [
@@ -238,7 +238,7 @@
               "public",
               "cloudflare"
             ],
-            "description": "public or cloudflare. Cloudflare needs the setup done in Settings."
+            "description": "public or cloudflare. Set up Cloudflare Tunnel in Ployz Cloud first."
           },
           "state": {
             "type": "string"

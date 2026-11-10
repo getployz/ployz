@@ -4,7 +4,7 @@ import { Button } from "#/components/ui/button";
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "#/components/ui/collapsible";
 import { Field, FieldContent, FieldDescription, FieldLabel } from "#/components/ui/field";
 import { Input } from "#/components/ui/input";
-import { Item, ItemActions, ItemContent, ItemDescription, ItemGroup, ItemMedia, ItemTitle } from "#/components/ui/item";
+import { Item, ItemActions, ItemContent, ItemGroup, ItemMedia, ItemTitle } from "#/components/ui/item";
 import { Separator } from "#/components/ui/separator";
 import { Spinner } from "#/components/ui/spinner";
 import { Switch } from "#/components/ui/switch";
@@ -20,11 +20,7 @@ import { holdCloudflare } from "./first-cloudflare";
 import { abandonCloudflare, type CardCloudflare, installGate } from "./servers-page-state";
 import { ADD_SERVERS_REFUSED, type useMintFleetToken } from "./use-waiting";
 
-const STEPS = [
-  { title: "Run the command", description: "Installs Ployz, and Docker if it's missing." },
-  { title: "Review", description: "Check its size and disks before it joins." },
-  { title: "Enroll", description: "It joins, ready for your first deploy." },
-] as const;
+const STEPS = ["Run the command", "Review", "Enroll"] as const;
 
 /**
  * The first server's install line, with the Cluster's choices tucked under it: its name, and Cloudflare Tunnel instead
@@ -93,10 +89,7 @@ export function ClusterSetup({ organizationSlug, cluster, mint, steps = true }: 
         Listening for servers…
       </div>
       {cloudflare.at === "ready" ? (
-        <p className="text-sm text-muted-foreground">
-          Keep this tab open until your server joins. Cloudflare Tunnel on{" "}
-          <span className="font-mono">{cloudflare.zone}</span> is set up then.
-        </p>
+        <p className="text-sm text-muted-foreground">Keep this tab open until your server joins. Cloudflare Tunnel is set up then.</p>
       ) : null}
     </div>
   );
@@ -134,12 +127,11 @@ export function ClusterSetup({ organizationSlug, cluster, mint, steps = true }: 
         <>
           <Separator />
           <ItemGroup className="grid gap-2 sm:grid-cols-3">
-            {STEPS.map((row, index) => (
-              <Item key={row.title} size="sm">
+            {STEPS.map((title, index) => (
+              <Item key={title} size="sm">
                 <ItemMedia variant="icon">{index + 1}</ItemMedia>
                 <ItemContent>
-                  <ItemTitle>{row.title}</ItemTitle>
-                  <ItemDescription>{row.description}</ItemDescription>
+                  <ItemTitle>{title}</ItemTitle>
                 </ItemContent>
               </Item>
             ))}
@@ -236,9 +228,7 @@ export function CloudflareChoice({ organizationSlug, choice, token, onToken, onC
         />
         <FieldContent>
           <FieldLabel htmlFor={switchId}>Cloudflare Tunnel</FieldLabel>
-          <FieldDescription>
-            {operate.allowed ? "Serve through Cloudflare with no open ports." : operate.reason}
-          </FieldDescription>
+          {operate.allowed ? null : <FieldDescription>{operate.reason}</FieldDescription>}
         </FieldContent>
       </Field>
       {choice.at === "token" ? (
@@ -251,8 +241,7 @@ export function CloudflareChoice({ organizationSlug, choice, token, onToken, onC
               <Button type="submit" variant="outline" disabled={busy || token.trim() === ""}>{busy ? <Spinner /> : null}Find zones</Button>
             </div>
             <FieldDescription>
-              Create one in your Cloudflare profile with Zone Read, DNS Edit and Cloudflare Tunnel Edit. Kept in this tab
-              until your server joins, never stored.
+              Needs Zone Read, DNS Edit and Cloudflare Tunnel Edit. Never stored.
             </FieldDescription>
           </Field>
         </form>
@@ -281,10 +270,6 @@ export function CloudflareChoice({ organizationSlug, choice, token, onToken, onC
           <ItemMedia variant="icon"><CheckIcon className="text-success" /></ItemMedia>
           <ItemContent className="min-w-0">
             <ItemTitle className="break-all">Ready for <span className="font-mono">{choice.zone}</span></ItemTitle>
-            <ItemDescription>
-              Nothing is created until your first server joins. Then apps get{" "}
-              <span className="font-mono break-all">*.{choice.zone}</span> addresses.
-            </ItemDescription>
           </ItemContent>
           <ItemActions>
             <Button type="button" size="sm" variant="ghost" onClick={() => onChoice({ at: "zone", zones: [choice.zone] })}>Change</Button>

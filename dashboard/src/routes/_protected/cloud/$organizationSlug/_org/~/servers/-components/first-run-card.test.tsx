@@ -98,7 +98,7 @@ it("waits on Cloudflare before the install command, and falls back to public por
   await screen.findByLabelText("Zone");
   fireEvent.click(screen.getByRole("button", { name: "Use Cloudflare Tunnel instead of public ports" }));
   expect(screen.getByRole("button", { name: "Get install command" })).toHaveProperty("disabled", false);
-  expect(screen.getByRole("status").textContent).toContain("Cloudflare Tunnel is off. Your servers will open ports 80 and 443.");
+  expect(screen.getByRole("status").textContent).toContain("Without Cloudflare Tunnel, your servers open ports 80 and 443.");
 });
 
 it("founds closed once Cloudflare checks out, holding the token in the tab only after the line exists, with the edited name saved", async () => {
@@ -113,7 +113,7 @@ it("founds closed once Cloudflare checks out, holding the token in the tab only 
   fireEvent.click(screen.getByRole("button", { name: "Find zones" }));
   await screen.findByLabelText("Zone");
   fireEvent.click(screen.getByRole("button", { name: "Check" }));
-  await screen.findByText(/Nothing is created until your first server joins/u);
+  await screen.findByText(/Ready for/u);
   expect(check).toHaveBeenCalledWith({ data: { organizationSlug: "ada", token: "cf-token", zone: "zenploy.dev" } });
   expect(readHeldCloudflare("ada")).toBeUndefined();
   fireEvent.click(screen.getByRole("button", { name: "Get install command" }));

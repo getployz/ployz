@@ -60,7 +60,7 @@ function TailscaleSection({ organizationSlug, editable }: { organizationSlug: st
     <SettingsSection id="tailscale" title="Tailscale">
       <SettingsRow
         label="Private access"
-        hint={hintOf(query.isPending, observed === null ? null : { serving, placed: on ? placed : 0, servers: rows.length, partial: observed.partial })}
+        hint={hintOf(query.isPending, observed === null ? null : on && observed.partial)}
         commit="none"
         control={(
           <>
@@ -93,7 +93,7 @@ function TailscaleSection({ organizationSlug, editable }: { organizationSlug: st
       {on ? <Routers rows={rows} /> : null}
       {on && serving > 0 ? (
         <>
-          <SettingsRow label="Approve routes" hint={<>In Tailscale, approve the subnet route of each <span className="font-mono">ployz-router</span> machine. Your tailnet can't reach your services until you do.</>} commit="none"
+          <SettingsRow label="Approve routes" hint={<>Approve each <span className="font-mono">ployz-router</span> machine's subnet route, or your tailnet can't reach your services.</>} commit="none"
             control={<Button variant="outline" size="sm" nativeButton={false} render={<a href={TAILSCALE_MACHINES_URL} target="_blank" rel="noreferrer" />}>Open Tailscale<ExternalLinkIcon aria-hidden /></Button>} />
           <SettingsRow label="On Linux devices, run" hint={<span className="font-mono break-all">{LINUX}</span>} commit="none"
             control={<CopyButton value={LINUX} label="Copy command" size="icon-xs" />} />
@@ -103,7 +103,7 @@ function TailscaleSection({ organizationSlug, editable }: { organizationSlug: st
         open={turningOff}
         onOpenChange={setTurningOff}
         title="Turn off private access?"
-        description="Your tailnet can no longer reach your services. Turning it on again needs a key and new route approvals."
+        description="Turning it on again needs a key and new route approvals."
         actionLabel="Turn off"
         pendingLabel="Turning off…"
         variant="destructive"
@@ -140,13 +140,10 @@ function stateOf(server: ObservedServer, last: PrivateAccessAnswer | null): RowS
 
 const putRight = (to: PrivateAccessWant, state: RowState | undefined) => to === "on" ? state === "running" : state === "none";
 
-function hintOf(loading: boolean, routers: { serving: number; placed: number; servers: number; partial: boolean } | null) {
+function hintOf(loading: boolean, partial: boolean | null) {
   if (loading) return "Checking your servers…";
-  if (routers === null) return "Your servers aren't answering.";
-  if (routers.placed === 0) return "Reach your services' private addresses from your tailnet.";
-  if (routers.serving === 0) return "No router is running. Try another key, or turn it off.";
-  const shown = `A Tailscale router runs on ${routers.serving} of ${routers.servers} servers.`;
-  return routers.partial ? `${shown} Some servers didn't answer.` : shown;
+  if (partial === null) return "Your servers aren't answering.";
+  return partial ? "Some servers didn't answer." : "Reach your services' private addresses from your tailnet.";
 }
 
 function StatusBadge({ serving, servers }: { serving: number; servers: number }) {

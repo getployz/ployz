@@ -33,7 +33,7 @@ async function runFirstSetup(organizationSlug: string, queryClient: QueryClient)
       toast.success(`Cloudflare Tunnel is set up on ${zone}.`);
       break;
     } catch (error) {
-      const message = toErrorMessage(error, "Try again, or use public ports instead.");
+      const message = toErrorMessage(error, "Ployz Cloud didn't answer.");
       if (message.startsWith(NOT_ANSWERING) && tried < ANSWER_TRIES) {
         await new Promise((resolve) => setTimeout(resolve, ANSWER_WAIT_MS));
         continue;
@@ -86,11 +86,9 @@ export function FirstTunnelStatus({ organizationSlug }: { organizationSlug: stri
     case "done":
       return (
         <Alert role="status">
-          <AlertTitle>Cloudflare Tunnel is ready</AlertTitle>
+          <AlertTitle>Cloudflare Tunnel is set up on <span className="font-mono">{state.zone}</span></AlertTitle>
           <AlertDescription className="flex flex-wrap items-center gap-x-2">
-            {state.switched
-              ? <span>Apps you deploy get addresses like <span className="font-mono break-all">web-production.{state.zone}</span>.</span>
-              : <span>Apps you already deployed keep their addresses. To move them to <span className="font-mono break-all">{state.zone}</span>, switch web traffic in your organization's Network settings.</span>}
+            {state.switched ? null : <span>Apps you already deployed still use public ports. To move them, switch web traffic under Organization, Network.</span>}
             <Button type="button" variant="link" size="sm" className="h-auto px-0" onClick={() => forgetCloudflare(organizationSlug)}>Dismiss</Button>
           </AlertDescription>
         </Alert>
@@ -122,7 +120,7 @@ function Unfinished({ organizationSlug }: { organizationSlug: string }) {
     <Alert>
       <AlertTitle>Your apps aren't reachable yet</AlertTitle>
       <AlertDescription className="flex min-w-0 flex-col gap-3">
-        <p>Cloudflare Tunnel setup didn't finish, and ports 80 and 443 are closed. Paste your Cloudflare API token to finish, or use public ports.</p>
+        <p>Cloudflare Tunnel setup didn't finish, and ports 80 and 443 are closed.</p>
         <CloudflareChoice
           organizationSlug={organizationSlug}
           choice={choice}
@@ -159,7 +157,7 @@ function OpenPublicPorts({ organizationSlug }: { organizationSlug: string }) {
         try {
           await openPublicPortsServerFn({ data: { organizationSlug } });
           forgetCloudflare(organizationSlug);
-          toast.success("Your servers now take web traffic on ports 80 and 443.");
+          toast.success("Your servers take web traffic on ports 80 and 443.");
           await queryClient.invalidateQueries({ queryKey: clusterIngressKeys.all });
         } catch (error) {
           toast.error(toErrorMessage(error, "Couldn't open ports 80 and 443."));

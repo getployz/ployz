@@ -126,7 +126,7 @@ const connectedWords = (setup: CloudflareSetup, observed: ClusterIngressObservat
 function publicHint(setup: CloudflareSetup | null, foundedClosed: boolean, observed: ClusterIngressObservation | null, switching: boolean) {
   if (setup === null && !foundedClosed) return "Ports 80 and 443 open on every server.";
   if (setup === null) return doorWords(observed, "public") ?? "Checking your servers…";
-  if (setup.state === "left" && !switching && tunnelLetGo(observed)) return `You can now delete the tunnel ${setup.tunnelName} and the *.${setup.zone} record in Cloudflare.`;
+  if (setup.state === "left" && !switching && tunnelLetGo(observed)) return `Delete the tunnel ${setup.tunnelName} and the *.${setup.zone} record in Cloudflare.`;
   return doorWords(observed, "public") ?? "Checking your servers…";
 }
 
@@ -136,7 +136,7 @@ function cloudflareHint(setup: CloudflareSetup | null, observed: ClusterIngressO
   if (setup.state === "setting_up") return `Setting up on ${setup.zone}…`;
   if (switching || setup.state === "active" || tunnelHeld(observed)) return connectedWords(setup, observed);
   if (setup.state === "left") return "Serve through Cloudflare with no open ports.";
-  return `Ready on ${setup.zone}. Your apps still use public ports.`;
+  return `Tunnel ready on ${setup.zone}`;
 }
 
 function cloudflareControl({ setup, change, switching, editable, settingUp, onSetUp, onSwitch }: {
@@ -208,7 +208,7 @@ function CloudflareSetupForm({ organizationSlug, onCancel, onDone }: {
     >
       <SettingsRow
         label="Cloudflare API token"
-        hint="Create one in your Cloudflare profile with Zone Read, DNS Edit and Cloudflare Tunnel Edit. Used once, never stored."
+        hint="Needs Zone Read, DNS Edit and Cloudflare Tunnel Edit. Used once, never stored."
         commit="form"
         control={(
           <div className="flex w-full gap-2">
@@ -277,11 +277,7 @@ function SwitchDialog({ organizationSlug, to, onOpenChange, onConfirm }: {
       title={toCloudflare ? "Switch to Cloudflare Tunnel?" : "Switch back to public ports?"}
       description={(
         <div className="flex flex-col gap-4">
-          <p>
-            {toCloudflare
-              ? "Your apps are served through Cloudflare, and ports 80 and 443 close. Expect a short interruption."
-              : "Your apps are served on ports 80 and 443 again, and the tunnel closes. Expect a short interruption."}
-          </p>
+          <p>Expect a short interruption.</p>
           {review.isPending ? <p role="status">Checking addresses…</p> : null}
           {review.isError ? <p role="alert">Couldn't list the addresses that change. The switch checks again before it moves any.</p> : null}
           {review.data?.gap ? <p role="alert">{review.data.gap}</p> : null}

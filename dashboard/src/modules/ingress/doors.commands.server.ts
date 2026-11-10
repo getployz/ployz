@@ -13,7 +13,7 @@ const use = OPERATIONS["ingress.use"];
 const withRuntime = <A, E, R>(effect: Effect.Effect<A, E, R>): Effect.Effect<A, E, R | OrganizationRuntime | CloudStore> => effect;
 
 const Where = Schema.Literals(["public", "cloudflare"]).annotate({
-  description: "public or cloudflare. Set Cloudflare Tunnel up in Ployz Cloud first, under Organization, Network.",
+  description: "public or cloudflare. Set up Cloudflare Tunnel in Ployz Cloud first.",
 });
 
 export const webTrafficUse = defineCommand({

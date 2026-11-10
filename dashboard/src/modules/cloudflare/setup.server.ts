@@ -98,7 +98,7 @@ export const openPublicPorts = Effect.fn("Cloudflare.openPublic")(function* (org
   return yield* database.transaction(Effect.gen(function* () {
     yield* lockIngressRows(organizationId);
     const setup = yield* loadCloudflareSetup(organizationId);
-    if (setup?.state === "set_up") return yield* new Conflict({ userFacing: true, message: "Cloudflare Tunnel is already set up. Switch to it in your organization's Network settings." });
+    if (setup?.state === "set_up") return yield* new Conflict({ userFacing: true, message: "Cloudflare Tunnel is already set up. Switch to it under Organization, Network." });
     const early = yield* setupProblem(organizationId);
     if (early !== null) return yield* new Conflict({ userFacing: true, message: early });
     const answered = yield* opened.connected.setIngressDoors(PUBLIC).pipe(Effect.timeout(OPEN_PUBLIC_LIMIT_MS), Effect.result);
