@@ -96,7 +96,8 @@ Approving previews of production:
   web
     reads     DATABASE_URL from production
     setup     runs once, on each preview's first deploy
-    variables LOG_LEVEL=info, DATABASE_URL (sealed)
+    variables DATABASE_URL (sealed), LOG_LEVEL=info
+    host ports [{"mode":"ingress","hostname":"web-pv-<id>.acme-x7q2.ployz.app","load_balancer_port":443,"container_port":80,"http_protocol":"https"}]
     generated SESSION_SECRET, new in each preview
 Approved. Pull requests to acme/web by the accounts shown now open a preview of web.
 ```
@@ -133,8 +134,8 @@ on:
   push:
 ```
 
-Pull requests from forks, and from accounts the rule doesn't trust, don't open a preview on these
-servers yet.
+Pull requests from forks, and from accounts the rule doesn't trust, don't preview on these
+servers yet: the preview's deployment fails at its build.
 
 ## What each pull request gets
 

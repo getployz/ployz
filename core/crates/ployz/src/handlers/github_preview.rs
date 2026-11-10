@@ -465,7 +465,9 @@ fn show(view: &PreviewRuleView, rule: &PreviewRule, names: &[ServiceName]) {
                 .container
                 .environment
                 .retain(|key, _| !approved.generated.contains_key(key));
+            // The rehearsal's Namespace is no preview's, so its hostnames show the derived part as `<id>`.
             for line in settings(&shown) {
+                let line = line.replace(view.sample.as_str(), "pv-<id>");
                 crate::ui::stream(format_args!("    {line}"));
             }
         }
