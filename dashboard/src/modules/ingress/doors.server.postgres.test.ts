@@ -231,6 +231,25 @@ it("stops before opening any door when the Servers show no frame, since a Cluste
   expect(await attempts()).toMatchObject([{ state: "failed", failure: "Some servers didn't answer. Switch again once they all do." }]);
 });
 
+it("stops before opening any door when a Server that takes web traffic can't keep the doors closed, though nothing closed the Cluster before", async () => {
+  await setup("set_up");
+  session = answering((doors) => doors, Effect.succeed({ ...EMPTY_FRAME, machines: [server("m1", "up")] }));
+  const request = await asked("tunnel");
+  expect(await run(executeDoorsOnce(request, RUN))).toMatchObject({ state: "failed" });
+  expect(sets).toEqual([]);
+  expect(await stateNow()).toBe("set_up");
+  expect(await attempts()).toMatchObject([{ state: "failed", failure: "Update ployz on m1 to switch to Cloudflare Tunnel." }]);
+});
+
+it("switches to Cloudflare when every Server that takes web traffic keeps the doors closed", async () => {
+  await setup("set_up");
+  const capable = { ...server("m1", "up"), machine: { ...server("m1", "up").machine, runtime: { running_builds: 0, capabilities: ["ployz.ingress.closed-doors.v1"] } } };
+  session = answering((doors) => doors, Effect.succeed({ ...EMPTY_FRAME, machines: [capable] }));
+  const request = await asked("tunnel");
+  expect(await run(executeDoorsOnce(request, RUN))).toMatchObject({ state: "finished" });
+  expect(sets).toEqual([["public", "tunnel"], ["tunnel"]]);
+});
+
 it("stops the same way when the frame missed a Server, since it may publish an address that would be left behind", async () => {
   await setup("active");
   session = answering((doors) => doors, Effect.succeed(PARTIAL_FRAME));
