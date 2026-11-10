@@ -209,6 +209,25 @@ describe("the mirror sync", () => {
     expect(carried).toEqual(["narrowed"]);
   });
 
+  it("puts an approval the mirror accepted back on the front when a run dropped it meanwhile", async () => {
+    const sent: Signed = { body: "sent", signatures: [] };
+    const overlapping: Signed = { body: "overlapping", signatures: [] };
+    await harness.pool.query(
+      "insert into volume_mirror_status (organization_id, volume_id, machine_id, approvals) values ($1, $2, $3, $4)",
+      [organizationId, volumeId, web("web-2"), JSON.stringify([sent, { body: "older", signatures: [] }])]);
+    // An overlapping run narrows the list to its own approval while this sync's pull is in flight; the Mirror then
+    // accepts this sync's pull, so the approval it carried is the one the Mirror holds.
+    const asking: CopyAsk = (asker, machine, expected, want, approval) =>
+      want.kind !== "mirror" ? ask(asker, machine, expected, want) : Effect.promise(() => harness.pool.query(
+        "update volume_mirror_status set approvals = $1 where machine_id = $2", [JSON.stringify([overlapping]), web("web-2")])).pipe(
+        Effect.andThen(ask(asker, machine, expected, want, approval)));
+
+    await run(syncMirrors(organizationId, volume, () => Effect.succeed(members), asking));
+
+    expect((await harness.pool.query("select approvals from volume_mirror_status where machine_id = $1", [web("web-2")])).rows)
+      .toEqual([{ approvals: [sent, overlapping] }]);
+  });
+
   it("says a mirror refused the pull for its approval", async () => {
     const refused = new RpcError({
       code: "permission_denied",

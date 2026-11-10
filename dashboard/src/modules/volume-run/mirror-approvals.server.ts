@@ -20,6 +20,10 @@ import { volumeMirrorStatus } from "#/modules/volume-run/tables";
  *
  * Nothing else drops an approval, so the one the Mirror admitted is always kept, whatever step failed or went
  * unanswered.
+ *
+ * The narrowing assumes one sender pulls to a Mirror at a time: a run holds the Volume's lane, and a sync reads this
+ * list only after it finds no lane open and carries a gen below any run admitted after that. Should two senders still
+ * overlap, an accepted approval the list no longer holds goes back on the front, since the Mirror holds it now.
  */
 export const sameApproval = (a: Signed, b: Signed) => a.body === b.body;
 
@@ -45,18 +49,18 @@ export const offerApproval = Effect.fn("MirrorApprovals.offer")(function* (organ
 });
 
 /**
- * The Mirror on `mirror` accepted a pull carrying `approval` after refusing `refused`. An approval no longer kept, as
- * after the Mirror's deletion, stays dropped.
+ * The Mirror on `mirror` accepted a pull carrying `approval` after refusing `refused`. A Mirror whose approvals were
+ * dropped with its deletion keeps none.
  */
 export const acceptApproval = Effect.fn("MirrorApprovals.accept")(function* (volumeId: string, mirror: MachineId, approval: Signed, refused: readonly Signed[] = []) {
   const database = yield* Database;
   yield* database.transaction(Effect.gen(function* () {
-    const kept = (yield* keptFor(volumeId, mirror))?.approvals ?? [];
+    const kept = (yield* keptFor(volumeId, mirror))?.approvals ?? null;
+    if (kept === null) return;
+    const unrefused = (entries: readonly Signed[]) => entries.filter((entry) => !refused.some((no) => sameApproval(no, entry)));
     const at = kept.findIndex((entry) => sameApproval(entry, approval));
-    if (at < 0) return;
-    const newer = kept.slice(0, at).filter((entry) => !refused.some((no) => sameApproval(no, entry)));
-    const approvals = [...newer, approval];
-    if (approvals.length === kept.length) return;
+    const approvals = at < 0 ? [approval, ...unrefused(kept)] : [...unrefused(kept.slice(0, at)), approval];
+    if (approvals.length === kept.length && at >= 0) return;
     yield* database.drizzle.update(volumeMirrorStatus).set({ approvals, updatedAt: new Date() })
       .where(and(eq(volumeMirrorStatus.volumeId, volumeId), eq(volumeMirrorStatus.machineId, mirror)));
   }));
