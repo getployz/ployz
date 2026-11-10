@@ -390,6 +390,7 @@ async fn the_start_limit_keeps_a_run_whose_check_in_committed_before_it_settled(
         lines: Vec::new(),
         ended: Some(RunEnd::Built {
             platforms: vec!["linux/amd64".into()],
+            image_token: None,
         }),
     };
 

@@ -71,7 +71,7 @@ impl LocalMachine {
         let machine = record.id();
         // An ended generation still supersedes every one below it.
         self.approvals
-            .mark_rule(&rule, |refusal| refused(refusal))?;
+            .mark_rule(&rule, refused)?;
         let claim = &proof.claim;
         if !self.approvals.accepted(&rule, claim)? {
             let claims = github

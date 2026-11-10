@@ -1994,3 +1994,142 @@ fn a_status_or_conclusion_github_adds_later_reads_other() {
         serde_json::from_value(json!("brand_new")).unwrap();
     assert_eq!(conclusion, ployz_store::CheckConclusion::Other);
 }
+
+/// Sign `generation` of an automatic deploy rule over web's and api's Saved settings, as
+/// `ployz github rule approve web api` does, and keep it.
+fn approve_rule(
+    store: &ConfigStore,
+    who: &Actor,
+    generation: u64,
+) -> Result<ployz_store::RuleView, ployz_core::RpcError> {
+    use ployz_core::authority::rule::{
+        BuildPolicy, Builder, PolicyCache, PolicyMethod, RuleEvent, RuleService, RuleSource,
+        Runner, template,
+    };
+    use ployz_core::authority::{AutoDeployRule, RuleId, Signed, Signer, SignerKey, Timestamp};
+    let view = store
+        .read(
+            who,
+            &ployz_store::RuleQuery {
+                environment: EnvironmentRef::default(),
+            },
+        )
+        .unwrap();
+    let signer = Signer::from_seed(&[7; 32]);
+    let services = ["api", "web"]
+        .into_iter()
+        .map(|name| {
+            let spec = view
+                .target
+                .iter()
+                .find(|spec| spec.name.as_str() == name)
+                .unwrap();
+            RuleService {
+                name: spec.name.clone(),
+                template: template(spec, &view.namespace).unwrap(),
+                policy: BuildPolicy {
+                    method: PolicyMethod::Dockerfile {
+                        path: "Dockerfile".into(),
+                    },
+                    context: String::new(),
+                    target: None,
+                    args: std::collections::BTreeMap::new(),
+                    secrets: std::collections::BTreeSet::new(),
+                    platforms: ["linux/amd64".to_owned()].into(),
+                    cache: PolicyCache::Off,
+                },
+                secrets: None,
+            }
+        })
+        .collect();
+    let rule = AutoDeployRule {
+        cluster: ployz_core::SealingPublicKey::from_bytes([3; 32]),
+        rule: RuleId::from_bytes([9; 16]),
+        generation,
+        namespace: view.namespace,
+        machines: Vec::new(),
+        source: RuleSource {
+            repository_id: 11,
+            owner_id: 1,
+            repository: "acme/web".into(),
+            branch: "main".into(),
+            workflow: ".github/workflows/ployz-build.yml".into(),
+            events: vec![RuleEvent::Push],
+            builder: Builder::pinned(),
+            runner: Runner::GithubHosted,
+        },
+        services,
+        issued_at: Timestamp::from_millis(1_800_000_000_000).unwrap(),
+        ended: false,
+        signer: SignerKey::Device(ployz_core::DeviceKey::from_bytes(
+            *signer.public().as_bytes(),
+        )),
+    };
+    store.write(
+        who,
+        &ployz_store::ApproveRule {
+            environment: EnvironmentRef::default(),
+            rule: Box::new(Signed::sign(&rule, &signer).unwrap()),
+        },
+    )
+}
+
+#[test]
+fn a_push_under_a_rule_deploys_when_only_the_commit_changed() {
+    let (store, who) = shop();
+    publish(&store, &who);
+    approve_rule(&store, &who, 1).unwrap();
+    let automated = system(&store, &push(None, Some(H1), None));
+    assert_eq!(automated.skipped, Vec::new());
+    assert_eq!(automated.admitted.len(), 1);
+    let claimed = store
+        .claim(
+            &automated.admitted[0].deployment.id,
+            &ployz_store::RunnerId::parse("runner").unwrap(),
+        )
+        .unwrap();
+    assert!(claimed.rule.is_some(), "the runner relays the rule");
+    // A policy setting no Server reads changes nothing the rule approves.
+    set(&store, &who, "web.waitForCi", json!(false));
+    publish(&store, &who);
+    let automated = system(&store, &push(Some(H1), Some(H2), None));
+    assert_eq!(automated.skipped, Vec::new());
+}
+
+#[test]
+fn a_push_under_a_rule_waits_for_approval_again_once_a_setting_changed() {
+    let (store, who) = shop();
+    publish(&store, &who);
+    approve_rule(&store, &who, 1).unwrap();
+    // A replica count isn't part of any one Container's settings, so it changes nothing.
+    set(&store, &who, "web.replicas", json!(3));
+    publish(&store, &who);
+    assert_eq!(
+        system(&store, &push(None, Some(H3), None)).admitted.len(),
+        1
+    );
+    set(&store, &who, "web.env.NEW", json!("1"));
+    publish(&store, &who);
+    let automated = system(&store, &push(Some(H3), Some(H1), None));
+    assert!(automated.admitted.is_empty());
+    assert_eq!(
+        reasons(&automated),
+        vec![
+            "Approve the automatic deploy rule again: web changed since it was approved. Run \
+             ployz github rule approve web from an approved device."
+        ]
+    );
+    // Approved again over the new settings, the next push deploys.
+    approve_rule(&store, &who, 2).unwrap();
+    let automated = system(&store, &push(Some(H1), Some(H2), None));
+    assert_eq!(automated.admitted.len(), 1);
+}
+
+#[test]
+fn a_rule_that_does_not_supersede_the_kept_one_is_refused() {
+    let (store, who) = shop();
+    publish(&store, &who);
+    approve_rule(&store, &who, 2).unwrap();
+    let refused = approve_rule(&store, &who, 2).unwrap_err();
+    assert_eq!(refused.code, RpcErrorCode::Conflict);
+}

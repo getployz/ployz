@@ -407,6 +407,10 @@ enum Stage {
 
 /// Who builds a build.
 #[derive(Clone, Debug)]
+#[expect(
+    clippy::large_enum_variant,
+    reason = "a row's stage, decoded one row at a time"
+)]
 enum By {
     /// `server` once they chose one, by name.
     Servers {
@@ -1085,8 +1089,13 @@ pub(crate) fn github_authorize(
     if claims.run_id != build.run.run_id.to_string() {
         return refused("The token is for another run");
     }
-    // A rule's build runs on the push GitHub started; Cloud followed that run.
-    if claims.event_name != "workflow_dispatch" && claims.event_name != "push" {
+    // A rule's build runs on the push GitHub started, which Cloud followed. Any other
+    // build runs only on the dispatch Cloud sent.
+    let event = match github_rule(tx, id)? {
+        Some(_) => "push",
+        None => "workflow_dispatch",
+    };
+    if claims.event_name != event {
         return refused("The run was not dispatched by Ployz");
     }
     Ok(build)
