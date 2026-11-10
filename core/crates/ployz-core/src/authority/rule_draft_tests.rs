@@ -271,6 +271,20 @@ fn the_builder_a_person_reads_names_its_commit() {
     );
 }
 
+#[test]
+fn a_fork_at_the_pinned_commit_is_not_ployzs_release() {
+    let mut terms = terms();
+    terms.builder = Builder {
+        r#ref: format!("Ployz-test/build/.github/workflows/build.yml@{BUILDER_SHA}"),
+        sha: CommitSha::parse(BUILDER_SHA).unwrap(),
+    };
+    let basis = basis(view_json());
+    let summary = AutoDeployRule::draft(&basis, &web(), terms)
+        .unwrap()
+        .summary(&basis);
+    assert!(!summary.pinned, "GitHub names the fork in job_workflow_ref");
+}
+
 fn hex(bytes: &[u8]) -> String {
     bytes.iter().map(|byte| format!("{byte:02x}")).collect()
 }

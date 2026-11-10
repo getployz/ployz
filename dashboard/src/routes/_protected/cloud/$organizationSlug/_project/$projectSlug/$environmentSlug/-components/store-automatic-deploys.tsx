@@ -143,7 +143,7 @@ function RuleDialog({ organizationSlug, environment, view, scope, ending, onClos
     <Dialog open onOpenChange={(next) => { if (!next && !busy) onClose(); }}>
       <DialogContent>
         <DialogHeader>
-          <DialogTitle>{ending ? "Turn off automatic deploys?" : summary && summary.generation > 1 ? "Approve automatic deploys again" : "Turn on automatic deploys"}</DialogTitle>
+          <DialogTitle>{ending ? "Turn off automatic deploys?" : ruleOn(view) ? "Approve automatic deploys again" : "Turn on automatic deploys"}</DialogTitle>
           <DialogDescription>
             {ending
               ? `Pushes to ${summary?.branch ?? "the branch"} stop deploying.`

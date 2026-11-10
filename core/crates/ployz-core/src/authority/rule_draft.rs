@@ -351,7 +351,7 @@ impl AutoDeployRule {
                 true => builder.r#ref.clone(),
                 false => format!("{} at {sha}", builder.r#ref),
             },
-            pinned: sha == BUILDER_SHA,
+            pinned: *builder == Builder::pinned(),
             servers: self.machines.len(),
             generation: self.generation,
             ended: self.ended,
