@@ -184,6 +184,9 @@ describe("everything support reads, with every switch off", () => {
     asTestDouble<ConfigWritten>()({ written: "branch_setup", environments: [{ removal: { kind: "deployment", ...summary } }] }),
     asTestDouble<ConfigWritten>()({ written: "removal", removal: "removing", left: [{ deployment: summary }], waiting_on: [] }),
     asTestDouble<ConfigWritten>()({ written: "automated", admitted: [{ environment: "e1", deployment: summary }] }),
+    asTestDouble<ConfigWritten>()({
+      written: "preview_rule", target: [{ container: { environment: { LOG_LEVEL: VARIABLE } } }], setup: [{ pre_deploy: { command: [VARIABLE] } }],
+    }),
   ];
   const leaked = (shown: ConfigView | ConfigWritten | StoreRefusal) => MARKERS.filter((marker) => JSON.stringify(shown).includes(marker));
 
