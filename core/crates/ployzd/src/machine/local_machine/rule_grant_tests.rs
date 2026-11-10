@@ -2,6 +2,9 @@
 
 use std::collections::BTreeMap;
 
+use ployz_core::authority::github_oidc::test_support::{
+    CLAIMS, TEST_KID, keys_with_test_signer, signed_by_test_signer,
+};
 use ployz_core::{
     BuildGrantRepository, DeviceKey, EnvValue, MachineName, MintBuildGrantRequest, Namespace,
     SealedScope, SealingPublicKey, ServiceName,
@@ -14,7 +17,6 @@ use serde_json::{Value, json};
 
 use super::*;
 use crate::{
-    github::test_support::{CLAIMS, TEST_KID, keys_with_test_signer, signed_by_test_signer},
     machine::{LocalMachineStore, RecordOwner},
     management::build_grant::Mint,
     sealed_env::test_support::Cluster,

@@ -116,7 +116,9 @@ pub(in crate::handlers) fn sign(
 }
 
 /// The plan's target when a Device can sign every spec it ships, once its tags are pinned.
-fn signable(target: Option<Vec<RequestedServiceSpec>>) -> Result<Vec<RequestedServiceSpec>, Error> {
+pub(super) fn signable(
+    target: Option<Vec<RequestedServiceSpec>>,
+) -> Result<Vec<RequestedServiceSpec>, Error> {
     let Some(target) = target else {
         return Err(Error::coded(
             RpcErrorCode::Unsupported,
@@ -140,7 +142,7 @@ fn signable(target: Option<Vec<RequestedServiceSpec>>) -> Result<Vec<RequestedSe
 
 /// The digest each tag image of `target` has on its registry, asked of the registry
 /// itself, all at once. An image written by digest needs none.
-fn pin_tags(
+pub(super) fn pin_tags(
     matches: &ArgMatches,
     target: &[RequestedServiceSpec],
 ) -> Result<BTreeMap<ServiceName, String>, Error> {

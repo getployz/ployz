@@ -5,6 +5,7 @@
 //! prepares and confirms it on the Cluster, and records what happened.
 
 pub(super) mod approve;
+mod built;
 #[cfg(test)]
 mod follow_tests;
 mod progress;
@@ -371,8 +372,10 @@ fn ship(
     store: &Store,
     admitted: &DeploymentSummary,
     events: Option<std::io::BufWriter<std::fs::File>>,
+    approved: Vec<ployz_core::authority::ApprovedChange>,
 ) -> Result<(), Error> {
-    let shipped = execute(matches, store, admitted, None, events)?;
+    let mut shipped = execute(matches, store, admitted, None, events)?;
+    shipped.approved = approved;
     let again = progress::removal_retry(&shipped.view, |words| super::rerun(matches, words));
     shipped.finish().map_err(|error| match again {
         Some(again) => error.hint(again),
@@ -1397,6 +1400,7 @@ pub(super) fn redeploy(root: &ArgMatches) -> Result<(), Error> {
         false => Some(confirm_rollback(&store, &source)?),
     };
     let events = open_events(matches)?;
+    let mut device = built::prepare(matches, &store, &source)?;
     let admitted = store
         .admit(&Admit::Retry(ployz_store::Retry {
             id: DeploymentId::parse(mint())?,
@@ -1404,8 +1408,11 @@ pub(super) fn redeploy(root: &ArgMatches) -> Result<(), Error> {
             rolls_back,
             version: matches.get_one::<String>("expect-version").cloned(),
             accept_volume_loss: super::teardown::accepted(matches)?,
-            builds: Vec::new(),
-            awaits_approval: false,
+            builds: device
+                .as_mut()
+                .map(|device| std::mem::take(&mut device.builds))
+                .unwrap_or_default(),
+            awaits_approval: device.is_some(),
         }))
         .map_err(|error| {
             let asks = matches!(&error, StoreCallError::Refused(refusal)
@@ -1415,7 +1422,11 @@ pub(super) fn redeploy(root: &ArgMatches) -> Result<(), Error> {
                 false => refused(matches, &store, &source)(error),
             }
         })?;
-    ship(matches, &store, &admitted, events)
+    let approved = match device {
+        Some(device) => device.approve(matches, &store, &admitted)?,
+        None => Vec::new(),
+    };
+    ship(matches, &store, &admitted, events, approved)
 }
 
 /// Ask before redeploying `source` rolls back the Deployments that ran after it.
@@ -1492,7 +1503,7 @@ pub(super) fn start(root: &ArgMatches) -> Result<(), Error> {
             &["deployment", "ls"],
         )
         .map_err(refused(matches, &store, &id))?;
-    ship(matches, &store, &queued, events)
+    ship(matches, &store, &queued, events, Vec::new())
 }
 
 pub(super) fn cancel(root: &ArgMatches) -> Result<(), Error> {

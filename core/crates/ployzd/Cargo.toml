@@ -69,6 +69,7 @@ zeroize = "1.9.0"
 verify-faults = []
 
 [dev-dependencies]
+ployz-core = { workspace = true, features = ["test-signer"] }
 axum = { version = "0.8.9", default-features = false, features = ["http2"] }
 ed25519-dalek = "3.0.0"
 iroh = { version = "1.2", default-features = false, features = ["tls-ring", "test-utils"] }

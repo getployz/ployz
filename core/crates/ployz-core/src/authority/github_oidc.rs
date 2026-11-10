@@ -6,6 +6,9 @@
 //! Only RS256 is accepted: the algorithm is never read from the key set or trusted from
 //! the token. No error carries the token.
 
+#[cfg(any(test, feature = "test-signer"))]
+pub mod test_support;
+
 use std::collections::BTreeMap;
 
 use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};

@@ -17,11 +17,9 @@ use ring::hmac;
 use serde_json::{Value, json};
 
 use super::*;
-use crate::github::test_support::{TEST_KID, encode, keys_with_test_signer, signed_by_test_signer};
-
-const TOKEN: &str = include_str!("fixtures/token.jwt");
-const JWKS: &[u8] = include_bytes!("fixtures/jwks.json");
-const CLAIMS: &str = include_str!("fixtures/claims.json");
+use ployz_core::authority::github_oidc::test_support::{
+    CLAIMS, JWKS, TEST_KID, TOKEN, encode, keys_with_test_signer, signed_by_test_signer,
+};
 
 fn token() -> &'static str {
     TOKEN.trim()

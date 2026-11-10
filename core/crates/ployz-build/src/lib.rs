@@ -213,16 +213,25 @@ impl BuiltImage {
     /// # Errors
     /// Rejects malformed repository references.
     pub fn repository_reference(&self, image: &str) -> Result<String, BuildError> {
-        let reference = image
-            .parse::<oci_client::Reference>()
-            .map_err(|error| BuildError::Result(error.to_string()))?;
-        Ok(format!(
-            "{}/{}@{}",
-            reference.registry(),
-            reference.repository(),
-            self.reference
-        ))
+        digest_reference(image, &self.reference)
     }
+}
+
+/// `image`'s repository, fully qualified, at `digest`: `docker.io/ployz-build/web@sha256:…`
+/// of `ployz-build/web:latest`. A deploy runs a built image by this name, and a Device
+/// approves it by the same.
+///
+/// # Errors
+/// Rejects a malformed repository reference.
+pub fn digest_reference(image: &str, digest: &str) -> Result<String, BuildError> {
+    let reference = image
+        .parse::<oci_client::Reference>()
+        .map_err(|error| BuildError::Result(error.to_string()))?;
+    Ok(format!(
+        "{}/{}@{digest}",
+        reference.registry(),
+        reference.repository(),
+    ))
 }
 
 /// An immutable named image context, delivered by the existing Machine image

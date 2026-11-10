@@ -1117,10 +1117,11 @@ impl Run {
         let running: Running<PreparedDeploy, Unprepared> = session.prepare_with(
             input,
             claimed.intent.registry_auth,
-            Some((
-                claimed.intent.options.operator,
-                claimed.intent.options.ended_runs,
-            )),
+            Some(super::StoreRun {
+                operator: claimed.intent.options.operator,
+                ended_runs: claimed.intent.options.ended_runs,
+                approval: claimed.approval,
+            }),
         )?;
         self.renewing(running.finished(), || running.abort()).await
     }

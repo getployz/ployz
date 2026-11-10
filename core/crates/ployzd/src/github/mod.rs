@@ -3,6 +3,3 @@
 
 pub mod head;
 pub mod oidc;
-
-#[cfg(test)]
-pub(crate) mod test_support;
