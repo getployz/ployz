@@ -77,6 +77,15 @@ pub const MACHINE_START_WAIT: std::time::Duration = std::time::Duration::from_se
 pub const BUILD_REFUSED_BY_ENFORCEMENT: &str =
     "This server runs only builds an approved device starts.";
 
+/// What a Machine that enforces Device approval says when an Operator's `SetVolumeCopy`
+/// would start a Container, as a Move's last step or its release back does.
+pub const VOLUME_START_REFUSED_BY_ENFORCEMENT: &str =
+    "This server starts only services you approve, so it can't finish a volume move yet.";
+
+/// What a Machine that enforces Device approval says when an Operator asks it to
+/// `SeedVolume`, as restoring a point into a new volume does.
+pub const SEED_REFUSED_BY_ENFORCEMENT: &str = "This server restores into a new volume only what you approve, so it can't run this restore yet.";
+
 /// Daemon exit status for an operator-actionable Docker network or WireGuard
 /// interface refusal.
 pub const NETWORK_CONFLICT_EXIT_STATUS: u8 = 78;

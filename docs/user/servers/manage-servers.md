@@ -339,6 +339,12 @@ or push again once you turn enforcement on, though a request already in progress
 enforcement off to build through Ployz Cloud again. See
 [Builds on servers that enforce device approval](../builds/where-builds-run.md#builds-on-servers-that-enforce-device-approval).
 
+Enforcement also stops volume moves until a later release. Ployz Cloud can't move a volume or
+restore a point into a new volume on servers that enforce, and refuses before your service stops.
+Mirrors, syncs, restoring a volume in place, resizes and deploys keep working. To move a volume,
+turn enforcement off first. See
+[Servers that enforce device approval](../services/move-a-volume.md#servers-that-enforce-device-approval).
+
 Enforcement also requires an approved Device to authorize a new server's identity, keys,
 allocation, and initial Devices. See [Approve a join](add-a-server.md#approve-a-join-when-device-enforcement-is-on).
 A joining server inherits enforcement. Approvals name one existing server that may admit the

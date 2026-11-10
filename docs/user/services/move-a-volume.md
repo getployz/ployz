@@ -115,6 +115,20 @@ Adding a mirror and syncing don't ask.
 If a move stops partway or a command is refused, see
 [Troubleshooting volumes](../troubleshooting/volumes.md).
 
+## Servers that enforce device approval
+
+On servers with [device enforcement](../servers/manage-servers.md#require-a-devices-signature-for-restarts-and-joins)
+on, Ployz Cloud can't move a volume until a later release. A move from the CLI, a **Make primary**
+deploy and Drain's moves are refused before your service stops:
+
+```
+web-2 enforces device approval, so Ployz Cloud can't move data until a later release. To move it now, turn enforcement off from an approved device.
+```
+
+To move a volume now, run `ployz device enforce --off` on an approved device, move the volume,
+then run `ployz device enforce` again. Mirrors, syncs, restoring a volume in place, resizes and
+deploys keep working with enforcement on.
+
 ## Good to know
 
 - **A server must answer for its volume to move.** If the volume's server is down, neither a

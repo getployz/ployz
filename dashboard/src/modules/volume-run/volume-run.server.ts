@@ -43,7 +43,7 @@ import { RuntimeConnectionFailure } from "#/modules/runtime/runtime-connection-e
 import { movedRouting, type Requirement, requirementFor, requirements, serverSupports } from "#/modules/runtime/daemon-compat";
 import { observeVolumeCopies, type PloyzSdkError, RpcError, sdkFailureMessage, setVolumeCopyRefusal } from "#/modules/runtime/ployz.server";
 import {
-  alreadyOn, newestGuid, type PlanInput, type Planned, planForwardRelease, planFromCopies, type Refusal, type RefusalCode, type ReleaseFrom, restoreSource,
+  alreadyOn, enforcedMessage, newestGuid, type PlanInput, type Planned, planForwardRelease, planFromCopies, type Refusal, type RefusalCode, type ReleaseFrom, restoreSource,
   roleOf, writerRemovedMessage,
 } from "#/modules/volume-run/plan";
 import { type DeploymentsSeen, deployingMessage, gb, resizeRequirements, sizeDirection } from "#/modules/volume-run/resize";
@@ -409,6 +409,7 @@ const refusalCode = {
   role_changed: "conflict",
   deploying: "conflict",
   server_lacks: "unsupported",
+  enforced: "unsupported",
 } satisfies Record<RefusalCode, string>;
 
 /** A plan's refusal as the Store hears it; a call whose outcome already holds is settled, so the Store offers no retry. */
@@ -1135,6 +1136,12 @@ const SWITCH_REASONS = [
 const SwitchErrorDetails = Schema.Struct({ details: Schema.Struct({ reason: Schema.Literals(SWITCH_REASONS) }) });
 const decodeSwitchError = Schema.decodeUnknownOption(SwitchErrorDetails);
 
+const REFUSED_BY_ENFORCEMENT = ["ployz.volume.copy.set.v1", "ployz.volume.seed.v1"] as const;
+const EnforcementRefusal = Schema.Struct({ details: Schema.Struct({ capability: Schema.Literals(REFUSED_BY_ENFORCEMENT) }) });
+
+/** Whether the Server enforces device approval and refused a Container start or a seed from Ployz Cloud. */
+export const refusedByEnforcement = (error: PloyzSdkError) => Schema.is(EnforcementRefusal)("cause" in error ? error.cause : undefined);
+
 export function switchErrorOf(error: PloyzSdkError): SwitchReason | null {
   const decoded = decodeSwitchError("cause" in error ? error.cause : undefined);
   return Option.isSome(decoded) ? decoded.value.details.reason : null;
@@ -1207,6 +1214,7 @@ export const sendSwitch = <R extends SwitchRequest>(ctx: RunContext, inngestRunI
     const session = yield* openSession(ctx.organizationId);
     return yield* session.volumeSwitch(machine.id, request).pipe(
       Effect.catch((error): Effect.Effect<never, Error, Database> => {
+        if (refusedByEnforcement(error)) return failRun(ctx, inngestRunId, enforcedMessage(true, ctx.volumeName, machine.name));
         const reason = switchErrorOf(error);
         const message = reason === null ? undefined : switchFailureMessage(reason, ctx, machine, fenced);
         if (message !== undefined) return failRun(ctx, inngestRunId, message);
@@ -1219,7 +1227,7 @@ export const sendSwitch = <R extends SwitchRequest>(ctx: RunContext, inngestRunI
 /** Plain JSON, since a step returns it: the copy the Machine holds now, after the step or after its refusal. */
 export type CopyAnswer =
   | { readonly ok: true; readonly copy: VolumeCopy | null }
-  | { readonly ok: false; readonly reason: CopyRefusal; readonly copy: VolumeCopy | null; readonly message: string };
+  | { readonly ok: false; readonly reason: CopyRefusal | "enforced"; readonly copy: VolumeCopy | null; readonly message: string };
 
 /**
  * Who a SetVolumeCopy is for: a run, a Deploy following another run's lane without owning its row, or the rowless
@@ -1243,6 +1251,10 @@ export const askCopy = Effect.fn("VolumeRun.askCopy")(function* (asker: CopyAske
     Effect.map((reply): CopyAnswer => ({ ok: true, copy: reply.copy })),
     Effect.catch((error): Effect.Effect<CopyAnswer, ClusterOutOfTime | SwitchAttemptError> => {
       if (error instanceof ClusterOutOfTime) return Effect.fail(error);
+      // Refused before the Server read its copy, so the copy is as the caller last saw it.
+      if (refusedByEnforcement(error)) {
+        return Effect.succeed<CopyAnswer>({ ok: false, reason: "enforced", copy: null, message: enforcedMessage(false, asker.volumeName, machine.name) });
+      }
       const refused = setVolumeCopyRefusal("cause" in error ? error.cause : undefined);
       if (refused === null) {
         const message = `set_volume_copy on ${machine.name}: ${sdkFailureMessage(error, [machine])}`;
@@ -1536,6 +1548,7 @@ export const observeVolumeMembers = Effect.fn("VolumeRun.observeMembers")(functi
           view,
           floorless,
           ...sized,
+          enforces: machine.runtime.device_enforcement === true,
         })),
       Effect.catchTag("ServerLacks", (lack) => lacks(lack.capability, run?.kind)),
       Effect.orElseSucceed((): Member => ({ machine: ref, answered: false })),
