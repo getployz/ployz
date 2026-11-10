@@ -311,8 +311,8 @@ pub(crate) fn clear_tombstone(tx: &mut dyn Tx, target: &Target) -> Result<(), Rp
     Ok(())
 }
 
-/// Delete `environment`'s live mark, leaving no tombstone: a close that came before a
-/// merge is undone and the Environment stays open. A mark the sweep finished stays.
+/// Delete `environment`'s live mark, leaving no tombstone, so a close that came before a
+/// merge is undone.
 pub(crate) fn drop_live(tx: &mut dyn Tx, environment: &EnvironmentId) -> Result<(), RpcError> {
     tx.execute(
         &format!(
