@@ -3,7 +3,7 @@ import type { MachineId } from "@ployz/sdk";
 import {
   runtimeWatchFrameFixture, runtimeWatchMachineFixture, runtimeWatchMachineObservationFixture,
 } from "#/modules/runtime/runtime-watch-frame.test-fixture";
-import { DEPARTED_GRACE_MS, departedServers } from "./departed-servers";
+import { DEPARTED_GRACE_MS, departedServers, runtimeMembershipDigest } from "./departed-servers";
 
 const id = (hex: string) => hex.repeat(32) as MachineId;
 const now = new Date("2026-11-10T12:00:00Z");
@@ -29,5 +29,12 @@ describe("departedServers", () => {
     const rows = [{ machineId: id("b"), updatedAt: old }];
     expect(departedServers(rows, frame(["a", "up"], ["c", "suspect"]), now, new Set())).toEqual({ departed: [], held: [] });
     expect(departedServers(rows, frame(), now, new Set())).toEqual({ departed: [], held: [] });
+  });
+
+  it("drops nothing while a Server's row is incomplete, and reads it again once the frame changes", () => {
+    const rows = [{ machineId: id("a"), updatedAt: old }, { machineId: id("b"), updatedAt: old }];
+    const partial = { ...frame(["a", "up"]), incomplete_ids: { ...frame().incomplete_ids, machines: [id("b")] } };
+    expect(departedServers(rows, partial, now, new Set())).toEqual({ departed: [], held: [] });
+    expect(runtimeMembershipDigest(partial)).not.toEqual(runtimeMembershipDigest(frame(["a", "up"])));
   });
 });

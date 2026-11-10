@@ -16,7 +16,7 @@ import { Database } from "#/server/database.server";
 export const recordDepartedServers = Effect.fn("Machines.recordDeparted")(function* (
   organizationId: string,
   generation: string,
-  frame: Pick<RuntimeWatchView, "machines">,
+  frame: Pick<RuntimeWatchView, "machines" | "incomplete_ids">,
 ) {
   const { drizzle } = yield* Database;
   const rows = yield* drizzle.select({ machineId: organizationMachine.machineId, updatedAt: organizationMachine.updatedAt })
