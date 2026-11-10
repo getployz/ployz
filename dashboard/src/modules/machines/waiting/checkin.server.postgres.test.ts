@@ -34,7 +34,7 @@ const inngest = new Inngest({ id: "checkin-test" });
 vi.spyOn(inngest, "send").mockResolvedValue({ ids: [] });
 
 const unreachable = makePloyzLayer({ connect: async () => { throw new Error("Endpoint unavailable"); } });
-const runtime = asTestDouble<OrganizationRuntime["Service"]>()({ cancel: () => Effect.void });
+const runtime = asTestDouble<OrganizationRuntime["Service"]>()({ cancel: () => Effect.void, open: () => Effect.succeed({ status: "no_connection" as const }) });
 
 const run = <A, E>(operation: Effect.Effect<A, E, Database | SecretEncryption | InngestClient | OrganizationRuntime | Ployz>) =>
   harness.runEffect(operation.pipe(
@@ -131,7 +131,7 @@ const request = (token: string, host: Host, options: Send = {}) => {
 
 const send = (token: string, host: Host, options?: Send) => run(checkIn(request(token, host, options)));
 
-const failure = async <A, E>(operation: Effect.Effect<A, E, Database | SecretEncryption | InngestClient>) => {
+const failure = async <A, E>(operation: Effect.Effect<A, E, Database | SecretEncryption | InngestClient | OrganizationRuntime>) => {
   const exit = await run(Effect.exit(operation));
   return Exit.isFailure(exit) ? Cause.squash(exit.cause) : null;
 };

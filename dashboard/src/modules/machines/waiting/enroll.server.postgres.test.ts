@@ -45,7 +45,15 @@ const inngest = new Inngest({ id: "enroll-test" });
 const sent = vi.spyOn(inngest, "send").mockResolvedValue({ ids: [] });
 
 const unreachable = makePloyzLayer({ connect: async () => { throw new Error("Endpoint unavailable"); } });
-const runtime = asTestDouble<OrganizationRuntime["Service"]>()({ cancel: () => Effect.void });
+/** What the Cluster's Servers show when asked, or null when nothing answers. */
+const publicHolders = { services: [{ identity: "ployz-system/ingress-holder", containers: [{ machine_id: "m1", runtime: { state: "running" }, resolved_spec: { ports: [80, 443].map((port) => ({ mode: "host", published_port: port })) } }] }], machines: [], incomplete_ids: { machines: [], containers: [] }, unanswered: [] };
+let shown: typeof publicHolders | null = null;
+const runtime = asTestDouble<OrganizationRuntime["Service"]>()({
+  cancel: () => Effect.void,
+  open: () => Effect.succeed(shown === null
+    ? { status: "no_connection" as const }
+    : { status: "connected" as const, connected: { watchFirstFrame: () => Effect.succeed(shown) } }),
+});
 const config = AppConfig.layer.pipe(Layer.provide(ConfigProvider.layer(ConfigProvider.fromEnv({ env: { ...testConfigEnvironment(), DATABASE_URL: "postgres://unused@localhost/unused" } }))));
 type Needs = Database | SecretEncryption | InngestClient | OrganizationRuntime | Ployz | AppConfig;
 
@@ -74,6 +82,7 @@ let fleet: string;
 
 beforeEach(async () => {
   sent.mockClear();
+  shown = null;
   await harness.pool.query(`
     truncate table operation_outbox, server_enrollment, machine_enrollment_token, organization_pairing,
       checkin_rate_limit, waiting_server, fleet_token, "user", organization cascade;
@@ -228,6 +237,44 @@ it("skips a host that lists nothing once the Cluster was founded closed", async 
   const later = await run(enroll([older]));
   expect(later.skipped).toEqual([{ id: older.id, reason: expect.stringContaining("closed ports 80 and 443") }]);
   expect(later.attempts).toEqual([]);
+});
+
+it("enrolls a host that lists nothing once the Servers show the ports open again, whatever the founding asked", async () => {
+  await harness.pool.query("update fleet_token set founds_closed = true");
+  const first = host("web-new");
+  await checkin(first, { capabilities: CLOSED_DOORS });
+  await run(enroll([first]));
+  shown = publicHolders;
+  const older = host("web-old");
+  await checkin(older);
+  const later = await run(enroll([older]));
+  expect(later.skipped).toEqual([]);
+  expect(later.attempts.map((attempt) => attempt.role)).toEqual(["joiner"]);
+});
+
+it("ignores a tunnel-only Cloudflare setup left from a Cluster since removed", async () => {
+  const [first, older] = await waiting("web-a", "web-old");
+  if (first === undefined || older === undefined) throw new Error("two hosts");
+  await run(enroll([first]));
+  await harness.pool.query(`insert into organization_cloudflare_ingress (organization_id, zone, tunnel_id, tunnel_name, state, updated_at)
+    values ($1, 'example.com', 't1', 'ployz', 'active', now() - interval '1 day')`, [adaOrg]);
+  await harness.pool.query(`insert into organization_pairing (organization_id, encrypted_pairing_secret, founder_public_key, founder_machine_id, founder_claim_machine_id)
+    values ($1, '{}', 'k', repeat('a', 32), repeat('a', 32))`, [adaOrg]);
+  const later = await run(enroll([older]));
+  expect(later.skipped).toEqual([]);
+  expect(later.attempts.map((attempt) => attempt.role)).toEqual(["joiner"]);
+});
+
+it("skips a host that lists nothing while a Cloudflare setup of this Cluster is active", async () => {
+  const [first, older] = await waiting("web-a", "web-old");
+  if (first === undefined || older === undefined) throw new Error("two hosts");
+  await run(enroll([first]));
+  await harness.pool.query(`insert into organization_pairing (organization_id, encrypted_pairing_secret, founder_public_key, founder_machine_id, founder_claim_machine_id)
+    values ($1, '{}', 'k', repeat('a', 32), repeat('a', 32))`, [adaOrg]);
+  await harness.pool.query(`insert into organization_cloudflare_ingress (organization_id, zone, tunnel_id, tunnel_name, state)
+    values ($1, 'example.com', 't1', 'ployz', 'active')`, [adaOrg]);
+  const later = await run(enroll([older]));
+  expect(later.skipped).toEqual([{ id: older.id, reason: expect.stringContaining("closed ports 80 and 443") }]);
 });
 
 it("enrolls a host that lists nothing in a Cluster not founded closed", async () => {

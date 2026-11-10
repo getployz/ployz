@@ -221,14 +221,14 @@ it("moves nothing when a Server doesn't take both doors, and says so", async () 
   expect(await attempts()).toMatchObject([{ state: "failed", failure: "s1 didn't switch." }]);
 });
 
-it("stops with both doors open, before the source moves, when the Servers show no frame", async () => {
+it("stops before opening any door when the Servers show no frame, since a Cluster closed without Cloud's knowledge shows only there", async () => {
   await setup("set_up");
   session = answering((doors) => doors, Effect.fail(new Error("no frame in time")));
   const request = await asked("tunnel");
   expect(await run(executeDoorsOnce(request, RUN))).toMatchObject({ state: "failed" });
-  expect(sets).toEqual([["public", "tunnel"]]);
+  expect(sets).toEqual([]);
   expect(await stateNow()).toBe("set_up");
-  expect(await attempts()).toMatchObject([{ state: "failed", stage: "moving", failure: "Your servers didn't answer. Try again once they do." }]);
+  expect(await attempts()).toMatchObject([{ state: "failed", failure: "Some servers didn't answer. Switch again once they all do." }]);
 });
 
 it("stops the same way when the frame missed a Server, since it may publish an address that would be left behind", async () => {

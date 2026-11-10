@@ -17,7 +17,7 @@ import {
   missingFor,
   skipWords,
 } from "#/modules/cluster-requirements/cluster-requirements";
-import { recordedFeatures } from "#/modules/cluster-requirements/cluster-requirements.server";
+import { currentFeatures } from "#/modules/cluster-requirements/cluster-requirements.server";
 import { machineNameFromHostname } from "#/modules/machines/waiting/names";
 import {
   COMMITTED_STAGES,
@@ -327,6 +327,7 @@ const planEnrollment = Effect.fn("ServerEnrollment.plan")(function* (
   organizationId: string,
   input: EnrollInput,
   mode: "start" | "preview",
+  features: ReadonlySet<ClusterFeature>,
 ) {
   const { pairing, founded, hasFirst } = yield* enrollmentAuthority(organizationId, mode);
   if (pairing !== undefined && pairing.removalEndpoints !== null) {
@@ -342,7 +343,7 @@ const planEnrollment = Effect.fn("ServerEnrollment.plan")(function* (
   const plan = planServerEnrollment(
     input,
     ids.length === 0 ? [] : yield* candidatesOf(organizationId, ids, mode === "start"),
-    { hasFirst, features: yield* recordedFeatures(organizationId), clusterName: hasFirst ? undefined : yield* foundingClusterName(organizationId), ...yield* takenNames(organizationId, ids) },
+    { hasFirst, features, clusterName: hasFirst ? undefined : yield* foundingClusterName(organizationId), ...yield* takenNames(organizationId, ids) },
   );
   if (plan.kind === "refused") return yield* new Validation({ message: plan.message, userFacing: true });
   return { ...plan, founded };
@@ -353,7 +354,8 @@ export const previewServerEnrollment = Effect.fn("ServerEnrollment.preview")(fun
   input: { readonly organizationSlug: string } & EnrollInput,
 ) {
   const { organization } = yield* requireAccess(actor, input.organizationSlug, "servers:add");
-  const { rows, skipped, spread } = yield* planEnrollment(organization.id, input, "preview");
+  const features = yield* currentFeatures(organization.id);
+  const { rows, skipped, spread } = yield* planEnrollment(organization.id, input, "preview", features);
   return { rows, skipped, spread, serversOffline: serversOffline(yield* serverContacts(organization.id), yield* Clock.currentTimeMillis) };
 });
 
@@ -381,9 +383,10 @@ export const startServerEnrollment = Effect.fn("ServerEnrollment.start")(functio
   const { organization } = yield* requireAccess(actor, input.organizationSlug, "servers:add");
   const database = yield* Database;
   yield* releaseDeadClaim(organization.id, input);
+  const features = yield* currentFeatures(organization.id);
   return yield* database.transaction(Effect.gen(function* () {
     yield* lockOrganizationEnrollment(organization.id);
-    const plan = yield* planEnrollment(organization.id, input, "start");
+    const plan = yield* planEnrollment(organization.id, input, "start", features);
     return yield* startPlannedEnrollment(organization.id, actor.userId, plan);
   })).pipe(
     Effect.catchIf(isUniqueViolation, () =>
@@ -455,6 +458,7 @@ export const startArrivalEnrollment = Effect.fn("ServerEnrollment.startArrival")
   const [glance] = yield* database.drizzle.select({ unavailable: arrivalSpent(token.id), used: usedOf(token.id) })
     .from(waitingServer).where(arrivingHost(token, checkinKey));
   if (glance === undefined || glance.unavailable || glance.used >= token.autoEnrollMax) return false;
+  const features = yield* currentFeatures(token.organizationId);
   return yield* database.transaction(Effect.gen(function* () {
     const { drizzle } = yield* Database;
     // Every pairing write that matters here holds the exclusive Organization lock, so the shared one keeps the row still.
@@ -482,7 +486,7 @@ export const startArrivalEnrollment = Effect.fn("ServerEnrollment.startArrival")
     const plan = planServerEnrollment(input, [{
       id: host.id, fleetTokenId: token.id, report, observedIp: host.observedIp,
       rejected: false, enrolling: false, tokenEnded: null,
-    }], { hasFirst: true, features: yield* recordedFeatures(token.organizationId), ...yield* takenNames(token.organizationId, [host.id]) });
+    }], { hasFirst: true, features, ...yield* takenNames(token.organizationId, [host.id]) });
     if (plan.kind !== "planned" || plan.rows.length === 0) return false;
     // A check-in answers before Inngest hears of the attempt; the outbox sweep sends any delivery that fails.
     yield* startPlannedEnrollment(token.organizationId, live.userId, { ...plan, founded: true }, "detach");

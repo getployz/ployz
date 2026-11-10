@@ -113,7 +113,7 @@ function fakeSession(database: PostgresTestHarness["database"]) {
   };
   /** The Machines each Runtime Watch frame reports, as `[id, name]`. */
   /** With `joins`, every Machine registered through the fake is then listed running in the Cluster it joined. */
-  const cluster = { frames: [] as Array<Array<[string, string]>>, services: [] as unknown[], snapshot, joins: false, managementClients: ["cloud"], revocable: false, inspectedId: undefined as string | undefined, accepted: undefined as string | undefined };
+  const cluster = { frames: [[]] as Array<Array<[string, string]>>, services: [] as unknown[], snapshot, joins: false, managementClients: ["cloud"], revocable: false, inspectedId: undefined as string | undefined, accepted: undefined as string | undefined };
   const coordinator = enrollmentTestClient(database, async (options) => {
     connected.push(options);
     aborts.watch(options.signal);
@@ -622,11 +622,30 @@ describe("organization enrollment coordinator", () => {
       expect(await fake.coordinator.enroll({ token: await issueToken(), identity: identity(1) })).toMatchObject({ success: { kind: "join" } });
     });
 
-    it("joins when the Cluster can't be read and nothing recorded a closed founding", async () => {
+    it("waits, registering nothing, when the Cluster can't be read and the joiner lists nothing", async () => {
       const fake = fakeSession(harness.database);
       await readyFounder(fake);
       fake.cluster.frames = [];
+      const token = await issueToken();
+      expect(await fake.coordinator.enroll({ token, identity: identity(1) })).toMatchObject({ failure: { _tag: "Unavailable", userFacing: true } });
+      expect(fake.registerCalls()).toBe(0);
+      expect(await fake.coordinator.enroll({ token, identity: { ...identity(1), capabilities: [CLOSED_DOORS] } })).toMatchObject({ success: { kind: "join" } });
+    });
+
+    it("refuses a joined Machine's rerun on a closed Cluster when its ployz lists nothing, since its catch-up runs again", async () => {
+      const fake = fakeSession(harness.database);
+      const founder = await pendingFounder(fake);
+      await fake.coordinator.publish({ ...founder, capability });
+      await fake.coordinator.completeFounding(founder);
+      fake.cluster.frames = [[]];
       expect(await fake.coordinator.enroll({ token: await issueToken(), identity: identity(1) })).toMatchObject({ success: { kind: "join" } });
+      const registered = fake.published[0]?.machine;
+      if (!registered) throw new Error("expected a join");
+      fake.cluster.snapshot = { ...snapshot, machines: [{ ...registered, runtime: { ...registered.runtime, daemon_version: "0.9.0" } }] };
+      fake.cluster.services = [holderPublishing([])];
+      const rerun = await fake.coordinator.enroll({ token: await issueToken(), identity: identity(1) });
+      expect(rerun).toMatchObject({ failure: { _tag: "Conflict", message: "This Cluster keeps ports 80 and 443 closed. Update ployz on this server to join it." } });
+      expect(fake.registerCalls()).toBe(1);
     });
   });
 

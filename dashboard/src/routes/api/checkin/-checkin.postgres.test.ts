@@ -2,7 +2,9 @@ import { generateKeyPairSync, sign } from "node:crypto";
 import { Effect } from "effect";
 import { Inngest } from "inngest";
 import { afterAll, beforeAll, beforeEach, expect, it, vi } from "vitest";
+import { asTestDouble } from "#/lib/test-double";
 import { InngestClient } from "#/modules/inngest/client";
+import { OrganizationRuntime } from "#/modules/runtime/organization-runtime.server";
 import { checkinMessage } from "#/modules/machines/waiting/checkin.server";
 import { createFleetToken } from "#/modules/machines/waiting/fleet-token.server";
 import { handleCheckin, observedIp } from "#/routes/api/checkin/-handler";
@@ -37,10 +39,13 @@ beforeEach(async () => {
 });
 
 const post = (body: Buffer, headers: Record<string, string>) =>
-  harness.runEffect(Effect.provideService(handleCheckin(
+  harness.runEffect(handleCheckin(
     new Request("http://cloud.test/api/checkin", { method: "POST", body: body.toString("latin1"), headers }),
     "203.0.113.7",
-  ), InngestClient, inngest));
+  ).pipe(
+    Effect.provideService(InngestClient, inngest),
+    Effect.provideService(OrganizationRuntime, asTestDouble<OrganizationRuntime["Service"]>()({ open: () => Effect.succeed({ status: "no_connection" as const }) })),
+  ));
 
 const signed = (bearer: string, body: Uint8Array) => {
   const { publicKey, privateKey } = generateKeyPairSync("ed25519");

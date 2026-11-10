@@ -2,7 +2,6 @@ import "@tanstack/react-start/server-only";
 import { and, desc, eq, sql } from "drizzle-orm";
 import type { RuntimeWatchView } from "@ployz/sdk";
 import { Effect } from "effect";
-import { loadCloudflareSetup } from "#/modules/cloudflare/source.server";
 import {
   type ClusterFeature,
   featuresOf,
@@ -10,10 +9,12 @@ import {
   listsEvery,
   missingFor,
 } from "#/modules/cluster-requirements/cluster-requirements";
+import { organizationCloudflareIngress } from "#/modules/ingress/tables";
+import { firstRuntimeFrame } from "#/modules/runtime/organization-runtime.server";
 import { organizationPairing } from "#/modules/runtime/tables";
 import { serverEnrollment } from "#/modules/machines/waiting/tables";
 import { Database } from "#/server/database.server";
-import { Conflict } from "#/server/public-error";
+import { Conflict, Unavailable } from "#/server/public-error";
 
 /**
  * Whether the Cluster's current founder was told to start it with every Door closed. Read from the instruction, not the
@@ -36,20 +37,46 @@ export const foundedClosed = Effect.fn("ClusterRequirements.foundedClosed")(func
   return founder?.closed ?? false;
 });
 
+/** Whether the Cloudflare setup is active and was last written within the current pairing, so a removed Cluster's row says nothing. */
+const tunnelOnly = Effect.fn("ClusterRequirements.tunnelOnly")(function* (organizationId: string) {
+  const { drizzle } = yield* Database;
+  const [row] = yield* drizzle.select({ active: sql<boolean>`${organizationCloudflareIngress.state} = 'active'` })
+    .from(organizationCloudflareIngress)
+    .leftJoin(organizationPairing, eq(organizationPairing.organizationId, organizationCloudflareIngress.organizationId))
+    .where(and(
+      eq(organizationCloudflareIngress.organizationId, organizationId),
+      sql`(${organizationPairing.createdAt} is null or ${organizationCloudflareIngress.updatedAt} >= ${organizationPairing.createdAt})`,
+    ));
+  return row?.active ?? false;
+});
+
 /**
- * What Cloud recorded asking the Cluster for: a closed founding, or Cloudflare Tunnel active. Read from the database
- * alone, so it is safe under an Organization lock. A Cluster can turn a feature on without Cloud, so this is the fallback
- * evidence, and the Servers' own frame wins over it where it is seen whole.
+ * What Cloud recorded asking the Cluster for: a closed founding, or Cloudflare Tunnel active, both within the current
+ * pairing. Read from the database alone, so it is safe under an Organization lock. A Cluster can turn a feature on without
+ * Cloud, so this is the fallback evidence, and the Servers' own frame wins over it where it is seen whole.
  */
 export const recordedFeatures = Effect.fn("ClusterRequirements.recorded")(function* (organizationId: string) {
-  const closed = (yield* foundedClosed(organizationId)) || (yield* loadCloudflareSetup(organizationId))?.state === "active";
+  const closed = (yield* foundedClosed(organizationId)) || (yield* tunnelOnly(organizationId));
   return new Set<ClusterFeature>(closed ? ["closedDoors"] : []);
 });
 
 /**
+ * What the Cluster requires, for the planner's early skip. With nothing recorded there is nothing to read; otherwise the
+ * Servers are read once, outside any Organization lock, so a record that went stale (ports opened again) doesn't skip a
+ * host that `enrollMachine` would admit. A frame that can't be read keeps the record.
+ */
+export const currentFeatures = Effect.fn("ClusterRequirements.current")(function* (organizationId: string) {
+  const recorded = yield* recordedFeatures(organizationId);
+  if (recorded.size === 0) return recorded;
+  const frame = yield* firstRuntimeFrame(organizationId).pipe(Effect.catch(() => Effect.succeed(null)));
+  return featuresOf({ recorded, frame });
+});
+
+/**
  * The gate for a joiner. Refuses one that lacks a capability the Cluster requires, before Cloud registers it. A joiner
- * that lists every Cluster Requirement reads nothing. Otherwise the Servers are read through `frame`, which fails to null
- * and never to a refusal, so a Cluster that can't be read falls back to what Cloud recorded.
+ * that lists every Cluster Requirement reads nothing. Otherwise the Servers are read through `frame`, which fails to null.
+ * A Cluster whose Servers can't be read fails closed for a joiner that lacks something: it may be closed without Cloud
+ * knowing, so the join waits and the CLI retries.
  */
 export const refuseLackingJoiner = Effect.fn("ClusterRequirements.refuseJoiner")(function* (
   organizationId: string,
@@ -57,7 +84,9 @@ export const refuseLackingJoiner = Effect.fn("ClusterRequirements.refuseJoiner")
   frame: Effect.Effect<RuntimeWatchView | null>,
 ) {
   if (listsEvery(advertised)) return;
-  const features = featuresOf({ recorded: yield* recordedFeatures(organizationId), frame: yield* frame });
-  const missing = missingFor(features, advertised);
+  const recorded = yield* recordedFeatures(organizationId);
+  const seen = yield* frame;
+  const missing = missingFor(seen === null ? recorded : featuresOf({ recorded, frame: seen }), advertised);
   if (missing !== null) return yield* new Conflict({ message: joinWords(missing), userFacing: true });
+  if (seen === null) return yield* new Unavailable({ message: "Cloud can't read which ports this Cluster keeps closed yet. Retrying.", userFacing: true });
 });

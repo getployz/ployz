@@ -170,8 +170,10 @@ ports. A server whose `ployz` predates this can't start closed, and enrolling it
 A Cluster that keeps ports 80 and 443 closed refuses a server whose `ployz` is too old to keep
 them closed, whichever way it joins. `ployz server add` stops before the server joins and says
 `This Cluster keeps ports 80 and 443 closed. Update ployz on this server to join it.` Update
-`ployz` there and rerun the command. A Cluster that keeps its ports open still takes any `ployz`
-the install line names.
+`ployz` there and rerun the command. A server that already joined is checked again when you
+rerun the command, because its join runs again. If Cloud can't read which ports the Cluster
+keeps closed, the command waits and retries instead of joining a server whose `ployz` lists no
+newer release. A Cluster that keeps its ports open still takes any `ployz` the install line names.
 
 The bottom bar of an environment offers the same card under **Add servers** while you have no
 server. You can skip it and build your project first.

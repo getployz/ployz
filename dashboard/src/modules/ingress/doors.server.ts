@@ -122,7 +122,8 @@ function observationOf(frame: RuntimeWatchView): ClusterIngressObservation {
 export const closedFounding = Effect.fn("IngressDoors.closedFounding")(function* (organizationId: string) {
   const recorded = new Set<ClusterFeature>((yield* foundedClosed(organizationId)) ? ["closedDoors"] : []);
   const frame = yield* firstRuntimeFrame(organizationId).pipe(Effect.catch(() => Effect.succeed(null)));
-  if (frame === null) return recorded.size === 0 ? { kind: "open" } as const : { kind: "unknown" } as const;
+  // A Cluster closed without Cloud's knowledge shows only in the Servers, so one that can't be read is unknown.
+  if (frame === null) return { kind: "unknown" } as const;
   // What the Cluster was asked for, not what it shows: a Server that lacks the capability may have opened the ports itself.
   const asked = closedHolderAnywhere(frame) ? new Set<ClusterFeature>([...recorded, "closedDoors"]) : recorded;
   if (asked.size === 0) return { kind: "open" } as const;
