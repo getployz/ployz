@@ -103,13 +103,14 @@ impl PreparedDeploy {
             deployment_id,
             cleanup,
             None,
-            std::collections::BTreeMap::new(),
+            crate::cluster::RuleProofs::default(),
         )
     }
 
     /// As [`Self::confirm_with_log_id`], handing every Server the deploy approval a
     /// Device signed for this Deploy, or each Service's proof under an automatic deploy
-    /// rule. A Server that enforces Device approval creates nothing without one.
+    /// rule or a preview rule. A Server that enforces Device approval creates nothing
+    /// without one.
     /// # Errors
     /// Returns the same admission and session errors as confirm.
     pub fn confirm_approved(
@@ -117,10 +118,7 @@ impl PreparedDeploy {
         deployment_id: Option<ployz_core::DeploymentLogId>,
         cleanup: ImageCleanup,
         approval: Option<ployz_core::authority::Signed<ployz_core::authority::DeployApproval>>,
-        rules: std::collections::BTreeMap<
-            ployz_core::ServiceName,
-            ployz_core::authority::RuleProof,
-        >,
+        rules: crate::cluster::RuleProofs,
     ) -> Result<RunningDeploy, RpcError> {
         let session = Session {
             inner: self.session.upgrade().ok_or_else(closed)?,

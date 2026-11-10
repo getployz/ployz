@@ -800,7 +800,7 @@ impl Run {
         pin_approved(&mut claimed.intent.target, approval.as_ref());
         let scrub = Scrub::new(&claimed);
         let earlier = earlier(&targets);
-        let mut rules = BTreeMap::new();
+        let mut rules = crate::cluster::RuleProofs::default();
         let prepared = if targets.is_empty() && built.is_empty() {
             self.renewing(session.plan(claimed.intent), || {
                 session.inner.cancel.cancel()
@@ -1649,27 +1649,38 @@ fn targets(
     Ok((targets, built))
 }
 
-/// The proof each Service built under `claimed`'s automatic deploy rule creates with:
-/// the rule, its image token, and the claim the token's audience names, rebuilt from
-/// the rule, the pinned commit, the image the Machine received and the Cluster's keys.
-/// A Service without all of them gets none, and an enforcing Server refuses it.
+/// The proof each Service built under `claimed`'s automatic deploy rule or preview rule
+/// creates with: the rule, its image token, and the claim the token's audience names,
+/// rebuilt from the rule, the pinned commit, the image the Machine received and the
+/// Cluster's keys. A Service without all of them gets none, and an enforcing Server
+/// refuses it.
 async fn rule_proofs(
     session: &Session,
     claimed: &Claimed,
     receipts: &BTreeMap<ServiceName, BuildReceipt>,
     reader: Option<&ployz_core::GithubToken>,
-) -> BTreeMap<ServiceName, ployz_core::authority::RuleProof> {
+) -> crate::cluster::RuleProofs {
     use ployz_core::authority::{
-        BuildClaim, BuildStage, CommitAuthority, CommitSha, ImageDigest, PolicyDigest, RuleProof,
+        BuildClaim, BuildStage, CommitAuthority, CommitSha, ImageDigest, PolicyDigest,
+        PreviewProof, RuleProof,
     };
-    let mut proofs = BTreeMap::new();
-    let Some(signed) = &claimed.rule else {
-        return proofs;
+    let mut proofs = crate::cluster::RuleProofs::default();
+    // Each rule's ID, generation and the policy it approves for a Service.
+    let rule = claimed.rule.as_ref().and_then(|signed| signed.open().ok());
+    let preview = claimed
+        .preview
+        .as_ref()
+        .and_then(|signed| signed.open().ok());
+    let approved = |service: &ServiceName| match (&rule, &preview) {
+        (Some(rule), _) => rule
+            .service(service)
+            .map(|approved| (rule.rule, rule.generation, &approved.policy)),
+        (None, Some(preview)) => preview
+            .service(service)
+            .map(|approved| (preview.rule, preview.generation, &approved.policy)),
+        (None, None) => None,
     };
-    let Ok(rule) = signed.open() else {
-        return proofs;
-    };
-    if claimed.image_tokens.is_empty() {
+    if (rule.is_none() && preview.is_none()) || claimed.image_tokens.is_empty() {
         return proofs;
     }
     let contract = match session.about().await {
@@ -1685,7 +1696,7 @@ async fn rule_proofs(
         return proofs;
     };
     for (service, token) in &claimed.image_tokens {
-        let approved = rule.service(service);
+        let approved = approved(service);
         let receipt = receipts.get(service);
         let commit = claimed
             .sources
@@ -1696,31 +1707,50 @@ async fn rule_proofs(
         let (Some(approved), Some(receipt), Some(commit)) = (approved, receipt, commit) else {
             continue;
         };
+        let (id, generation, approved) = approved;
         let (Ok(image), Ok(policy)) = (
             ImageDigest::parse(&receipt.image.reference),
-            PolicyDigest::of(&approved.policy),
+            PolicyDigest::of(approved),
         ) else {
             continue;
         };
         let claim = BuildClaim {
             cluster: public_key,
-            rule: rule.rule,
-            generation: rule.generation,
+            rule: id,
+            generation,
             service: service.clone(),
             policy,
             commit,
             authority: CommitAuthority::Head,
             stage: BuildStage::Built { image, attest },
         };
-        proofs.insert(
-            service.clone(),
-            RuleProof {
-                rule: signed.clone(),
-                token: ployz_core::GithubToken::new(token.clone()),
-                claim,
-                reader: reader.cloned(),
-            },
-        );
+        let token = ployz_core::GithubToken::new(token.clone());
+        match (&claimed.rule, &claimed.preview) {
+            (Some(signed), _) => {
+                proofs.rules.insert(
+                    service.clone(),
+                    RuleProof {
+                        rule: signed.clone(),
+                        token,
+                        claim,
+                        reader: reader.cloned(),
+                    },
+                );
+            }
+            (None, Some(signed)) => {
+                proofs.previews.insert(
+                    service.clone(),
+                    PreviewProof {
+                        rule: signed.clone(),
+                        review: None,
+                        token,
+                        claim,
+                        reader: reader.cloned(),
+                    },
+                );
+            }
+            (None, None) => {}
+        }
     }
     proofs
 }

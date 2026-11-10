@@ -16,9 +16,9 @@ use ployz_core::config::ServiceGitAccess;
 use ployz_store::{
     Actor, ApprovePreviewRule, AuthorizedRepository, Change, ClusterDomain, ClusterDomainStatus,
     ConfigStore, CreateGitService, CreateProject, CreateVolume, DomainEvidence, Edit,
-    EnvironmentId, EnvironmentName, EnvironmentRef, Mount, OrganizationId, PlanPreviewRule,
-    PreviewRuleView, ProjectId, ProjectName, PullRequest, RuleQuery, ServiceLineageId, SetPrPlan,
-    SettingPath, SystemEvent, Trusted, VolumeId, VolumeName, Written,
+    EnvironmentId, EnvironmentName, EnvironmentRef, GithubRule, Mount, OrganizationId,
+    PlanPreviewRule, PreviewRuleView, ProjectId, ProjectName, PullRequest, RuleQuery,
+    ServiceLineageId, SetPrPlan, SettingPath, SystemEvent, Trusted, VolumeId, VolumeName, Written,
 };
 use serde_json::{Value, json};
 
@@ -335,7 +335,13 @@ fn rule_over(view: &PreviewRuleView, signer: &Signer) -> PreviewRule {
     }
 }
 
-fn open_pull_request(store: &ConfigStore, who: &Actor, number: u64, branch: &str) {
+/// Open pull request `number` from `branch`, and return the Deployment it admitted.
+fn open_pull_request(
+    store: &ConfigStore,
+    who: &Actor,
+    number: u64,
+    branch: &str,
+) -> ployz_store::DeploymentId {
     let written = store
         .system(
             &who.organization,
@@ -359,10 +365,16 @@ fn open_pull_request(store: &ConfigStore, who: &Actor, number: u64, branch: &str
             &trusted(),
         )
         .unwrap();
-    assert!(
-        matches!(&written, Written::Automated(automated) if !automated.admitted.is_empty()),
-        "{written:?}"
-    );
+    let Written::Automated(automated) = &written else {
+        panic!("{written:?}");
+    };
+    automated
+        .admitted
+        .first()
+        .unwrap_or_else(|| panic!("{written:?}"))
+        .deployment
+        .id
+        .clone()
 }
 
 /// Each rule Service's template in Environment `environment`, a preview of `branch`.
@@ -435,8 +447,22 @@ fn two_previews_of_one_rule_differ_only_in_derived_fields() {
             &trusted(),
         )
         .unwrap();
-    open_pull_request(&store, &who, 5, "search");
+    let opened = open_pull_request(&store, &who, 5, "search");
     open_pull_request(&store, &who, 6, "billing");
+    // The preview's GitHub build runs under the rule, on the run its push started.
+    let build = |deployment: &ployz_store::DeploymentId| {
+        store
+            .github_rule(&ployz_store::GithubBuildId {
+                deployment: deployment.clone(),
+                service: ServiceName::parse("web").unwrap(),
+            })
+            .unwrap()
+    };
+    assert!(
+        matches!(build(&opened), Some(GithubRule::Preview(signed)) if signed.open().unwrap() == rule),
+        "{:?}",
+        build(&opened)
+    );
     let five = templates(&store, &who, &rule, "pr-5", "search");
     let six = templates(&store, &who, &rule, "pr-6", "billing");
     assert_eq!(five, six, "two previews of one rule share every template");

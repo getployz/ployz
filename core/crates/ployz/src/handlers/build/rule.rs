@@ -1,5 +1,5 @@
-//! `ployz build --cloud`: a build under an automatic deploy rule, on the GitHub run the
-//! rule's workflow started.
+//! `ployz build --cloud`: a build under an automatic deploy rule or a preview rule, on
+//! the GitHub run the rule's workflow started.
 //!
 //! The runner checks out the commit GitHub ran, never one Cloud names. Everything Cloud
 //! relays at check-in (the rule, the Cluster key, the attest key, the deployment) goes
@@ -14,7 +14,7 @@ use ployz_core::{
     BuildGrantId, GithubToken, ServiceName, X25519Secret,
     authority::{
         AttestKey, AutoDeployRule, BuildClaim, BuildPolicy, BuildStage, CommitAuthority, CommitSha,
-        ImageDigest, PolicyDigest, RecipientKey, Signed, rule::PolicyCache,
+        ImageDigest, PolicyDigest, PreviewRule, RecipientKey, RuleId, Signed, rule::PolicyCache,
     },
 };
 use serde::{Deserialize, Serialize};
@@ -33,12 +33,66 @@ use crate::sdk::preparation::{BuildInput, Prepared};
 pub(super) struct CheckedIn {
     /// Cloud's handle for this build, which its reports name.
     pub(super) build: String,
-    pub(super) rule: Signed<AutoDeployRule>,
+    #[serde(flatten)]
+    pub(super) rule: Relayed,
     pub(super) cluster: ployz_core::SealingPublicKey,
     pub(super) attest: AttestKey,
     pub(super) service: ServiceName,
     /// The Deployment's lowering input narrowed to the Service, its Sealed values sealed.
     pub(super) deployment: Value,
+}
+
+/// The rule Cloud relays: `rule` for a push to the approved branch, `preview` for a
+/// push to a preview's branch.
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(super) enum Relayed {
+    Rule(Signed<AutoDeployRule>),
+    Preview(Signed<PreviewRule>),
+}
+
+/// What a build takes from the relayed rule, once its signature checks.
+pub(super) struct Opened {
+    pub(super) rule: RuleId,
+    pub(super) generation: u64,
+    /// The policy it approves for the built Service; `None` when it names no such Service.
+    policy: Option<BuildPolicy>,
+    /// Whether it is a preview rule, whose builds keep their own cache.
+    preview: bool,
+}
+
+impl Relayed {
+    /// Check the rule's signature and take what the build needs for `service`.
+    ///
+    /// # Errors
+    /// Refuses a rule whose signature does not check.
+    pub(super) fn open(&self, service: &ServiceName) -> Result<Opened, Error> {
+        let unreadable = || BuildCommandError::Rule("Cloud relayed no readable rule");
+        Ok(match self {
+            Self::Rule(signed) => {
+                let rule = signed.open().map_err(|_| unreadable())?;
+                Opened {
+                    rule: rule.rule,
+                    generation: rule.generation,
+                    policy: rule
+                        .service(service)
+                        .map(|approved| approved.policy.clone()),
+                    preview: false,
+                }
+            }
+            Self::Preview(signed) => {
+                let rule = signed.open().map_err(|_| unreadable())?;
+                Opened {
+                    rule: rule.rule,
+                    generation: rule.generation,
+                    policy: rule
+                        .service(service)
+                        .map(|approved| approved.policy.clone()),
+                    preview: true,
+                }
+            }
+        })
+    }
 }
 
 /// What the runner asks Cloud to relay to the grant Machine. Its own word, which the
@@ -69,16 +123,13 @@ pub(super) struct Granted {
 /// checkout, and one whose build inputs differ from the policy in any field, before any
 /// token is asked for.
 pub(super) fn policy<'rule>(
-    rule: &'rule AutoDeployRule,
+    rule: &'rule Opened,
     service: &ServiceName,
     prepared: &Prepared,
 ) -> Result<&'rule BuildPolicy, Error> {
-    let policy = &rule
-        .service(service)
-        .ok_or(BuildCommandError::Rule(
-            "the rule does not build this Service",
-        ))?
-        .policy;
+    let policy = rule.policy.as_ref().ok_or(BuildCommandError::Rule(
+        "the rule does not build this Service",
+    ))?;
     let input = prepared.input_of(service).ok_or(BuildCommandError::Rule(
         "the deployment does not build the Service from Git",
     ))?;
@@ -109,7 +160,7 @@ fn derived(input: &BuildInput<'_>, rule: &BuildPolicy) -> BuildPolicy {
 /// Only when the policy cannot be hashed.
 pub(super) fn grant_claim(
     checked_in: &CheckedIn,
-    rule: &AutoDeployRule,
+    rule: &Opened,
     policy: &BuildPolicy,
     commit: CommitSha,
     holder: BuildGrantId,
@@ -137,7 +188,8 @@ pub(super) fn built_claim(grant: &BuildClaim, image: ImageDigest, attest: Attest
 }
 
 /// The Actions cache scope of a rule build: a digest of its policy and of `attest`, the
-/// attest key its secrets opened with. `None` keeps the cache off.
+/// attest key its secrets opened with, and for a preview the rule's ID too, so no
+/// preview build writes layers a production build reads. `None` keeps the cache off.
 ///
 /// BuildKit leaves secret values out of its cache keys, so a scope shared with a build
 /// that opened values from another key would let that build's layers into honest
@@ -147,6 +199,7 @@ pub(super) fn built_claim(grant: &BuildClaim, image: ImageDigest, attest: Attest
 /// admitted, built with the Cluster's own values, and a build fed another key writes a
 /// scope no honest build reads.
 pub(super) fn cache_scope(
+    rule: &Opened,
     policy: &BuildPolicy,
     attest: &AttestKey,
 ) -> Result<Option<String>, Error> {
@@ -154,11 +207,15 @@ pub(super) fn cache_scope(
         PolicyCache::Off => Ok(None),
         PolicyCache::Actions => {
             let policy = PolicyDigest::of(policy).map_err(Error::command)?;
-            let scope = Sha256::new()
+            let mut scope = Sha256::new()
                 .chain_update(b"ployz build cache v1\0")
                 .chain_update(policy.to_string().as_bytes())
-                .chain_update(attest.as_bytes())
-                .finalize();
+                .chain_update(attest.as_bytes());
+            if rule.preview {
+                scope.update(b"\0preview\0");
+                scope.update(rule.rule.to_string().as_bytes());
+            }
+            let scope = scope.finalize();
             Ok(Some(hex::encode(scope)))
         }
     }

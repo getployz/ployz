@@ -604,7 +604,10 @@ pub struct Claimed {
     /// The automatic deploy rule a push's Deployment runs under, which the runner hands
     /// each Server with each Service's image token; none for any other Deployment.
     pub rule: Option<ployz_core::authority::Signed<ployz_core::authority::AutoDeployRule>>,
-    /// The image token each Service's GitHub build under `rule` reported.
+    /// The preview rule a trusted push's preview Deployment runs under, which the runner
+    /// hands each Server like `rule`; none for any other Deployment.
+    pub preview: Option<ployz_core::authority::Signed<ployz_core::authority::PreviewRule>>,
+    /// The image token each Service's GitHub build under `rule` or `preview` reported.
     pub image_tokens: BTreeMap<ServiceName, String>,
 }
 

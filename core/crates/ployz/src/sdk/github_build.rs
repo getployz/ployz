@@ -18,7 +18,7 @@ use ployz_core::{
 };
 use ployz_store::{
     BuildStatus, ConfigStore, GithubBuildId, GithubClaims, GithubEnd, GithubGrant, GithubHandOff,
-    GithubReport, RunEnd,
+    GithubReport, GithubRule, RunEnd,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -77,11 +77,11 @@ pub async fn github_start(
         move |store| store.github_input(&id)
     })
     .await?;
-    if let Some(rule) = rule.as_ref().and_then(|rule| rule.open().ok()) {
+    if let Some(source) = rule.as_ref().and_then(GithubRule::source) {
         return Ok(Dialed {
             outcome: GithubStart::Follow {
-                workflow: rule.source.workflow,
-                workflow_ref: rule.source.builder.r#ref,
+                workflow: source.workflow,
+                workflow_ref: source.builder.r#ref,
                 commit: built.commit.to_string(),
             },
             foreign: Vec::new(),
@@ -322,12 +322,31 @@ pub async fn github_check_in(
 pub struct RuleCheckIn {
     /// The build's id, which its grant and reports name.
     pub build: GithubBuildId,
-    pub rule: ployz_core::authority::Signed<ployz_core::authority::AutoDeployRule>,
+    #[serde(flatten)]
+    pub rule: Relayed,
     pub cluster: ployz_core::SealingPublicKey,
     pub attest: ployz_core::authority::AttestKey,
     pub service: ServiceName,
     /// The Deployment's lowering input narrowed to the Service, its Sealed values sealed.
     pub deployment: Value,
+}
+
+/// The rule a build runs under, as the runner reads it: `rule` for an automatic deploy
+/// rule, `preview` for a preview rule.
+#[derive(Clone, Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub enum Relayed {
+    Rule(ployz_core::authority::Signed<ployz_core::authority::AutoDeployRule>),
+    Preview(ployz_core::authority::Signed<ployz_core::authority::PreviewRule>),
+}
+
+impl From<GithubRule> for Relayed {
+    fn from(rule: GithubRule) -> Self {
+        match rule {
+            GithubRule::Auto(rule) => Self::Rule(rule),
+            GithubRule::Preview(rule) => Self::Preview(rule),
+        }
+    }
 }
 
 /// A rule build's runner checks in, on the run of the push it builds, with the OIDC
@@ -362,7 +381,7 @@ pub async fn github_rule_check_in(
         outcome: RuleCheckIn {
             deployment: only(&built.input, &id.service),
             build: id.clone(),
-            rule,
+            rule: rule.into(),
             cluster: public_key,
             attest,
             service: id.service,
@@ -423,24 +442,25 @@ pub async fn github_rule_grant(
     let foreign = session.foreign();
     let minted = async {
         let details = session.inspect().await?;
-        let advertises = details.machine.is_some_and(|machine| {
-            machine
-                .runtime
-                .capabilities
-                .contains(ployz_core::BUILD_GRANT_RULE_CAPABILITY)
-        });
-        if !advertises {
-            return Err(ployz_core::RpcError::conflict(
+        let (capability, newer) = match rule {
+            GithubRule::Auto(_) => (
+                ployz_core::BUILD_GRANT_RULE_CAPABILITY,
                 "GitHub builds under an automatic deploy rule need a newer Ployz on your servers",
-            ));
+            ),
+            GithubRule::Preview(_) => (
+                ployz_core::BUILD_GRANT_PREVIEW_CAPABILITY,
+                "Previews under a preview rule need a newer Ployz on your servers",
+            ),
+        };
+        let advertises = details
+            .machine
+            .is_some_and(|machine| machine.runtime.capabilities.contains(capability));
+        if !advertises {
+            return Err(ployz_core::RpcError::conflict(newer));
         }
-        let minted = session
-            .mint_build_grant(MintBuildGrantRequest {
-                preview: None,
-                repository: repository(&id)?,
-                holder: Some(ask.holder),
-                sealed,
-                rule: Some(ployz_core::RuleGrant {
+        let (rule, preview) = match rule {
+            GithubRule::Auto(rule) => (
+                Some(ployz_core::RuleGrant {
                     rule,
                     proof: ask.proof,
                     service: ask.service,
@@ -449,6 +469,29 @@ pub async fn github_rule_grant(
                     recipient: ask.recipient,
                     reader,
                 }),
+                None,
+            ),
+            GithubRule::Preview(rule) => (
+                None,
+                Some(ployz_core::PreviewGrant {
+                    rule,
+                    review: None,
+                    proof: ask.proof,
+                    service: ask.service,
+                    commit: ask.commit,
+                    authority: ask.authority,
+                    recipient: ask.recipient,
+                    reader,
+                }),
+            ),
+        };
+        let minted = session
+            .mint_build_grant(MintBuildGrantRequest {
+                repository: repository(&id)?,
+                holder: Some(ask.holder),
+                sealed,
+                rule,
+                preview,
             })
             .await?;
         Ok::<_, RpcError>((details.id, minted))
@@ -486,14 +529,7 @@ async fn rule_build(
     store: &Arc<ConfigStore>,
     claims: &GithubClaims,
     commit: &str,
-) -> Result<
-    (
-        GithubBuildId,
-        ployz_core::authority::Signed<ployz_core::authority::AutoDeployRule>,
-        ployz_store::GithubInput,
-    ),
-    RpcError,
-> {
+) -> Result<(GithubBuildId, GithubRule, ployz_store::GithubInput), RpcError> {
     let run_id = claims_run(claims)?;
     let claims = claims.clone();
     let commit = commit.to_owned();
