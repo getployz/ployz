@@ -126,8 +126,8 @@ production secret the rule doesn't name.
 - **Stop it** with `ployz github preview end --env production`. The servers refuse every preview
   build and deploy under the rule from then on.
 
-GitHub builds each preview on the run its push started, so your build workflow must run on pushes
-to every branch, not only `main`:
+GitHub builds each preview on the run its push started, and Ployz runs it again if it ended before
+the pull request opened. So your build workflow must run on pushes to every branch, not only `main`:
 
 ```yaml
 on:

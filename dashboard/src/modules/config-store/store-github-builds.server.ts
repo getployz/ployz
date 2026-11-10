@@ -6,7 +6,7 @@ import { cloudStore, refusedWith, storeTry } from "#/modules/config-store/store-
 import type { StoreRefused } from "#/modules/config-store/store.contract";
 import { pinStoreSources } from "#/modules/config-store/store-deployment.server";
 import { organizationAccess } from "#/modules/github/github-access";
-import { cancelGithubRun, checkGithubBuildWorkflow, dispatchGithubBuildWorkflow, findGithubPushRun, githubRunCompleted } from "#/modules/github/github-build.server";
+import { cancelGithubRun, checkGithubBuildWorkflow, dispatchGithubBuildWorkflow, findGithubPushRun, githubRunCompleted, rerunGithubRun } from "#/modules/github/github-build.server";
 import { githubBuildId } from "#/modules/github/github-build-workflow";
 import { verifyGithubOidcToken } from "#/modules/github/github-oidc.server";
 import { installationRefusal, mintInstallationToken } from "#/modules/github/github-token.server";
@@ -156,6 +156,8 @@ export const startStoreGithubBuild = Effect.fn("StoreGithub.start")(function* (o
       // A push under an automatic deploy rule started its own run: follow it rather than dispatch one.
       const run = yield* followPushRun({ access, fullName, workflow: start.workflow, commit: start.commit });
       if (run === null) return yield* skip(`GitHub started no run of ${start.workflow} for this push`);
+      // A run that ended before Cloud followed it gave up waiting at its check-in: run it again.
+      if (run.completed) yield* rerunGithubRun({ access, fullName, runId: run.runId });
       yield* storeTry(() => store.githubDispatched(target.build, {
         run_id: run.runId, run_url: run.runUrl, workflow_ref: start.workflow_ref, repository: fullName, installation_id: installationId,
       }));

@@ -56,6 +56,7 @@ export type GithubObservationOperation =
   | "fetch_workflow"
   | "dispatch_workflow"
   | "cancel_run"
+  | "rerun_run"
   | "fetch_run"
   | "fetch_installation"
   | "fetch_pull_request"
