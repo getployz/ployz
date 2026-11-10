@@ -1,7 +1,7 @@
 import { infiniteQueryOptions, keepPreviousData, queryOptions, skipToken, useQueries, useQuery, useSuspenseInfiniteQuery, useSuspenseQueries, type Query, type QueryClient } from "@tanstack/react-query";
 import type {
   BranchPlanQuery, BranchPreset, BranchQuery, BuildLogQuery, ConfigItemQuery, ConfigQuery, ConfigsQuery, ConfigView, DeploymentQuery, DeploymentsQuery,
-  DiffQuery, DomainsQuery, EnvironmentQuery, EnvironmentRef, EnvironmentsQuery, NamespaceQuery, PlanQuery,
+  DiffQuery, DomainsQuery, EnvironmentQuery, EnvironmentRef, EnvironmentsQuery, NamespaceQuery, PlanQuery, PreviewReviewQuery,
   ProjectsQuery, RemovalsQuery, RuleQuery, ServicesQuery, SyncQuery, VolumesQuery,
 } from "@ployz/sdk";
 import { Schema } from "effect";
@@ -25,6 +25,7 @@ const refreshedBy = {
   plan: ["store_environment", "store_deployment"],
   // The rule a Device or a passkey signed, beside the Saved State it approves.
   rule: ["store_environment"],
+  preview_review: ["store_environment", "store_pull_request"],
   // A Service's lifecycle comes from the review, which compares against what's deployed.
   service: ["store_environment", "store_deployment"],
   services: ["store_environment", "store_deployment"],
@@ -299,6 +300,11 @@ export function deployPlanQuery(environment: EnvironmentRef): { query: "plan" } 
 /** An Environment's automatic deploy rule, beside the Saved settings a new approval of it would pin. */
 export function ruleQuery(environment: EnvironmentRef): { query: "rule" } & RuleQuery {
   return { query: "rule", environment };
+}
+
+/** A PR Environment's preview under its start-from's preview rule, and what a person signs a review of its head over. */
+export function previewReviewQuery(environment: EnvironmentRef): { query: "preview_review" } & PreviewReviewQuery {
+  return { query: "preview_review", environment };
 }
 
 /** An Environment's public domains with their status: the Networking section of every Service drawer. */

@@ -133,6 +133,7 @@ function viewRedactions(shows: SupportShows): ViewRedactions {
     plan: redact.changes,
     // Support reads which rule an Environment holds, never the settings its target carries.
     rule: (view) => ({ ...view, target: [] }),
+    preview_review: (view) => ({ ...view, target: [] }),
     deployments: (view) => ({ ...view, deployments: view.deployments.map(redact.summary) }),
     deployment: redact.deployment,
     numbered_deployment: redact.deployment,

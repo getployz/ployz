@@ -61,22 +61,25 @@ const dispatchedRunSchema = Schema.Struct({ workflow_run_id: githubIdSchema, htm
  * GitHub, so they never carry secrets: the runner fetches those at check-in.
  */
 export const dispatchGithubBuildWorkflow = Effect.fn("Github.dispatchBuildWorkflow")(function* (input: {
-  access: GithubAccess; fullName: string; defaultBranch: string;
-  inputs: { build: string; cloud: string; runner: string };
+  access: GithubAccess; fullName: string; branch: string;
+  inputs: { build: string; cloud: string; runner: string } | { commit: string };
+  /** The workflow's path in the repository; Ployz's own build workflow when absent. */
+  workflow?: string;
 }) {
   const api = yield* GithubApi;
+  const file = input.workflow?.split("/").pop() ?? GITHUB_BUILD_WORKFLOW_FILE;
   const run = yield* api.json({
     access: input.access,
-    path: `/repos/${input.fullName}/actions/workflows/${GITHUB_BUILD_WORKFLOW_FILE}/dispatches`,
+    path: `/repos/${input.fullName}/actions/workflows/${encodeURIComponent(file)}/dispatches`,
     operation: "dispatch_workflow",
     schema: dispatchedRunSchema,
     method: "POST",
-    body: { ref: input.defaultBranch, inputs: input.inputs, return_run_details: true },
+    body: { ref: input.branch, inputs: input.inputs, return_run_details: true },
   });
   return {
     runId: run.workflow_run_id,
     runUrl: run.html_url,
-    workflowRef: `${input.fullName}/.github/workflows/${GITHUB_BUILD_WORKFLOW_FILE}@refs/heads/${input.defaultBranch}`,
+    workflowRef: `${input.fullName}/.github/workflows/${file}@refs/heads/${input.branch}`,
   };
 });
 

@@ -127,15 +127,49 @@ production secret the rule doesn't name.
   build and deploy under the rule from then on.
 
 GitHub builds each preview on the run its push started, and Ployz runs it again if it ended before
-the pull request opened. So your build workflow must run on pushes to every branch, not only `main`:
+the pull request opened. So your build workflow must run on pushes to every branch, not only `main`,
+and on a dispatch with a `commit` for [reviewed previews](#review-a-preview-from-a-fork):
 
 ```yaml
 on:
   push:
+  workflow_dispatch:
+    inputs:
+      commit:
+        required: false
+        type: string
+jobs:
+  build:
+    uses: getployz/build/.github/workflows/build.yml@5f35eaa8e1372d0d86ff82788adadf308e5f3f97
+    with:
+      cloud: https://ployz.dev
+      commit: ${{ inputs.commit }}
 ```
 
-Pull requests from forks, and from accounts the rule doesn't trust, don't preview on these
-servers yet: the preview's deployment fails at its build.
+### Review a preview from a fork
+
+A pull request from a fork, or from an account the rule doesn't trust, opens its preview but deploys
+nothing until you review its commit. In the PR panel its row reads **Needs approval** with the
+commit. Read the pull request's changes on GitHub, then click **Review and approve**. The dialog
+lists each service the review covers and what it asks for, like:
+
+```text
+Review web at a1b2c3d4e5f6 (reads DATABASE_URL from the parent, builds with secrets)
+```
+
+**Approve with passkey** asks your passkey once. Ployz builds that commit with your repository's
+build workflow, on the branch of the environment previews start from, and the preview deploys it.
+
+- **Each server checks the review itself**: your passkey's answer, the commit, the preview rule,
+  and each service's settings. Ployz Cloud can't build or run another commit under it, or open a
+  secret the rule doesn't name.
+- **The review covers one commit.** A new push reads **Needs approval** again, and the preview
+  keeps running the commit you reviewed.
+- **A review lasts 15 minutes.** The commit must build and start in that time, or the servers
+  refuse it: review it again. Once a server has started the reviewed commit, it restarts it with
+  no new review.
+- **Servers need Ployz 0.4.** An older server refuses every reviewed preview, and the dialog names
+  it. Upgrade it first.
 
 ## What each pull request gets
 

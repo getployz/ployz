@@ -4,8 +4,8 @@
  * and nothing else. No browser key is lent and nothing outlives the prompt.
  *
  * Servers take such an answer only where a session grant may not sign: an automatic deploy rule, which stands for every
- * future push. A workflow answered this way is refused. Every passkey prompt in the dashboard, a session's included,
- * goes through `passkeyAnswer`.
+ * future push, and a review of a preview that may open a secret. Any other workflow answered this way is refused. Every
+ * passkey prompt in the dashboard, a session's included, goes through `passkeyAnswer`.
  */
 import type { PasskeyAssertion, Signed } from "@ployz/sdk";
 

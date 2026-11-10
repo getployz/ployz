@@ -1,6 +1,6 @@
 import type { ReactNode } from "react";
 import { Link, useLoaderData, useNavigate, useParams } from "@tanstack/react-router";
-import type { OpenPullRequest, PrPlan } from "@ployz/sdk";
+import type { OpenPullRequest, PrPlan, Review } from "@ployz/sdk";
 import { ChevronRightIcon, GitPullRequestIcon, TriangleAlertIcon } from "lucide-react";
 import { Badge } from "#/components/ui/badge";
 import { Button } from "#/components/ui/button";
@@ -22,6 +22,7 @@ import { PickingViewProvider, usePickingView, type PickingView } from "../new-br
 import { ServicesSection } from "../new-branch/ServicesSection";
 import { useSavedSetupCommands } from "../new-branch/SetupCommandsField";
 import { SetupSection } from "../new-branch/SetupSection";
+import { ApproveDeploy, type Approve } from "./PreviewReview";
 
 /**
  * A repository's PR Environments plan over the Config Store, over its start-from Environment's canvas. Every change
@@ -55,8 +56,8 @@ function usePlanWrite(organizationSlug: string, project: string, saved: PrPlan) 
       remove_on_close: null, include_bots: null, ...change,
     });
   }
-  function approve(open: OpenPullRequest & { head: string }) {
-    return writer.commit({ command: "approve_pull_request", repository_id: saved.repository_id, number: open.number, head: open.head });
+  function approve(open: OpenPullRequest & { head: string }, reviews?: { environment: string; review: Review }[]) {
+    return writer.commit({ command: "approve_pull_request", repository_id: saved.repository_id, number: open.number, head: open.head, reviews });
   }
   return { plan: { ...saved, ...pending }, set, approve };
 }
@@ -118,7 +119,7 @@ function Plan({ params, saved, prEnvironments }: { params: Params; saved: PrPlan
               <FieldLegend>Open now</FieldLegend>
               <ItemGroup className="gap-2">
                 {plan.open.map((open) => (
-                  <OpenRow key={open.number} params={params} open={open} onApprove={(head) => void approveDeploy({ ...open, head })} />
+                  <OpenRow key={open.number} params={params} open={open} onApprove={async (head, reviews) => { await approveDeploy({ ...open, head }, reviews); }} />
                 ))}
               </ItemGroup>
             </FieldSet>
@@ -149,7 +150,7 @@ function Plan({ params, saved, prEnvironments }: { params: Params; saved: PrPlan
  * An open pull request: its PR Environment, or, when its author isn't a member or its code comes from a fork, the
  * commit that waits for a member to approve it, or that they approved before it could make one.
  */
-function OpenRow({ params, open, onApprove }: { params: Params; open: OpenPullRequest; onApprove: (head: string) => void }) {
+function OpenRow({ params, open, onApprove }: { params: Params; open: OpenPullRequest; onApprove: Approve }) {
   const waiting = open.standing === "needs_approval";
   const head = open.head;
   // An approval that made no PR Environment yet makes it when approved again.
@@ -172,7 +173,10 @@ function OpenRow({ params, open, onApprove }: { params: Params; open: OpenPullRe
       <Item variant="outline" size="sm">
         {content}
         <ItemActions>
-          {approvable && head ? <Button size="sm" variant="outline" onClick={() => onApprove(head)}>Approve deploy</Button> : null}
+          {approvable && head && open.environment ? (
+            <ApproveDeploy organizationSlug={params.organizationSlug} project={params.projectSlug} environment={open.environment}
+              number={open.number} head={head} approve={onApprove} />
+          ) : approvable && head ? <Button size="sm" variant="outline" onClick={() => void onApprove(head)}>Approve deploy</Button> : null}
         </ItemActions>
       </Item>
     );
