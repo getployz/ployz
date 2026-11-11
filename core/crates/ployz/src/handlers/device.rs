@@ -32,6 +32,10 @@ use crate::cloud_login::{CredentialStore, LoginError};
 use crate::connect::Client;
 use crate::ui::{self, Cell, Gaps, Hint, Table, Tone};
 
+mod pin;
+pub(super) use pin::seal_to;
+pub(crate) use pin::{pin, pin_command};
+
 pub(crate) fn group(command: Command) -> Command {
     command.about("Approve the devices that can exec and port-forward")
 }

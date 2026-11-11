@@ -98,13 +98,16 @@ pub(crate) fn on(root: &ArgMatches) -> Result<(), Error> {
     } else {
         ask_key()?
     };
-    let device_key = super::device::key::path(&super::config_path(root)?);
+    let config = super::config_path(root)?;
+    let device_key = super::device::key::path(&config);
     with_client(root, |client| {
         Box::pin(async move {
+            let seal_to = super::device::seal_to(&config, client).await?;
             let observed = observe_access(client).await?;
-            let sealed = seal_key(&observed, &key)?;
-            let approval = match (super::device::key::load(&device_key), observed.sealing) {
-                (Ok(Some(secret)), Some(cluster)) => Some(device_approval(
+            let cluster = seal_to.key(client, observed.sealing).await?;
+            let sealed = seal_key(&cluster, &key)?;
+            let approval = match super::device::key::load(&device_key) {
+                Ok(Some(secret)) => Some(device_approval(
                     &Signer::from_seed(&secret),
                     cluster,
                     &sealed,
