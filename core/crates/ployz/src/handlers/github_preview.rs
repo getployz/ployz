@@ -638,7 +638,8 @@ fn show(view: &PreviewRuleView, rule: &PreviewRule, names: &[ServiceName], trust
                 view.environment.name
             ));
         }
-        // A Generated Value shows by name: the rehearsal's value is no preview's. The
+        // A Generated Value shows by name, and the Service ID label not at all: neither
+        // rehearsal value is a preview's, and the template leaves the label out. The
         // rehearsal's Namespace is no preview's either, so its hostnames show the derived
         // part as `<id>`.
         let lines = |spec: &RequestedServiceSpec| {
@@ -647,6 +648,11 @@ fn show(view: &PreviewRuleView, rule: &PreviewRule, names: &[ServiceName], trust
                 .container
                 .environment
                 .retain(|key, _| !approved.generated.contains_key(key));
+            let mut labels = shown.container.labels.as_map().clone();
+            labels.remove(ployz_core::config::SERVICE_ID_LABEL);
+            if let Ok(labels) = ployz_core::ContainerLabels::parse(labels) {
+                shown.container.labels = labels;
+            }
             settings(&shown)
                 .into_iter()
                 .map(|line| line.replace(view.sample.as_str(), "pv-<id>"))
