@@ -111,10 +111,10 @@ struct Host {
     /// (installer/mod.rs:301-304, installer/host.rs:261-274).
     release: bool,
     /// The root-backed `ployz` Pool exists on `/var/lib/ployz-machine-pool`, imported
-    /// (`MachineLayout::machine_pool_file`, machine_layout.rs:102-106).
+    /// (`MachineLayout::machine_pool_file`, machine_layout.rs:112-116).
     root: bool,
     /// `/var/lib/ployz-machine-pool.device` holds CONFIRMED (`MachineLayout::device_pool_marker`,
-    /// machine_layout.rs:108-112; machine_pool.rs `CONFIRMED_DEVICE_POOL_MARKER`).
+    /// machine_layout.rs:118-122; machine_pool.rs `CONFIRMED_DEVICE_POOL_MARKER`).
     marker: bool,
     /// The fix's intent file names the disk. Nothing in the code as it is writes one.
     intent: bool,
