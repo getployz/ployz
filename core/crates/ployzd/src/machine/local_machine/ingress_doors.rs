@@ -287,12 +287,16 @@ impl Joined<'_> {
 
 /// The doors a legacy Deploy keeps: it asks for a Caddy and knows no other Door, so
 /// the holder's ports and the connector stay as this Machine has them.
-fn doors_as_found(inventory: &[DoorEntry], proxy: ServiceId) -> DoorSpecs {
+fn doors_as_found(inventory: &[DoorEntry], proxy: ServiceId, tunnel_closed: bool) -> DoorSpecs {
     let newest_of = |door: Door| {
         newest(
             &inventory
                 .iter()
-                .filter(|entry| entry.facts.door == door && usable(entry))
+                .filter(|entry| {
+                    entry.facts.door == door
+                        && usable(entry)
+                        && !(tunnel_closed && door == Door::Tunnel)
+                })
                 .collect::<Vec<_>>(),
         )
     };
@@ -314,13 +318,18 @@ struct DoorsHeld {
 
 /// The doors the inventory shows, or `None` when this Machine held no holder with a
 /// Caddy joined to it, or its newest connector carries no readable token. Planning
-/// without the connector would retire it.
-fn doors_held(inventory: &[DoorEntry]) -> Option<DoorsHeld> {
+/// without the connector would retire it. A connector left from a closed Tunnel Door
+/// is not held: the Machine was told to close it, so planning retires it.
+fn doors_held(inventory: &[DoorEntry], tunnel_closed: bool) -> Option<DoorsHeld> {
     let newest_of = |door: Door| {
         newest(
             &inventory
                 .iter()
-                .filter(|entry| entry.facts.door == door && usable(entry))
+                .filter(|entry| {
+                    entry.facts.door == door
+                        && usable(entry)
+                        && !(tunnel_closed && door == Door::Tunnel)
+                })
                 .collect::<Vec<_>>(),
         )
     };
@@ -431,7 +440,8 @@ impl LocalMachine {
     /// daemon is up to write it again, so its start fails and Docker never retries.
     /// This opens the connector's sealed token, writes it, then starts whichever door
     /// is at rest. A door that runs stays as it is, so a daemon restart changes nothing,
-    /// and a Machine with no doors places none.
+    /// and a Machine with no doors places none. A connector left from a closed Tunnel
+    /// Door, which Docker refused to remove, is retired again instead of started.
     ///
     /// # Errors
     ///
@@ -446,7 +456,7 @@ impl LocalMachine {
             let _doors = containers.door_lifecycle().await;
             local.door_effect()?;
             let inventory = containers.door_inventory(&local.record().id()).await?;
-            let Some(held) = doors_held(&inventory) else {
+            let Some(held) = doors_held(&inventory, containers.tunnel_door_closed()) else {
                 return Ok(None);
             };
             if let Some(sealed) = &held.sealed {
@@ -486,7 +496,11 @@ impl LocalMachine {
             let machine_id = local.record().id();
             let inventory = containers.door_inventory(&machine_id).await?;
             let specs = match legacy {
-                Legacy::Caddy => doors_as_found(&inventory, specs.proxy.service_id),
+                Legacy::Caddy => doors_as_found(
+                    &inventory,
+                    specs.proxy.service_id,
+                    containers.tunnel_door_closed(),
+                ),
                 Legacy::No => specs,
             };
             for spec in [
@@ -566,17 +580,35 @@ impl LocalMachine {
             set.failure = Some(stage_failure(stage, &error));
             return Ok(set);
         }
+        if specs.tunnel.is_some() {
+            containers
+                .clear_tunnel_door_closed()
+                .map_err(Error::TunnelDoorMarker)?;
+        } else if !plan.retire_tunnels.is_empty() {
+            containers
+                .mark_tunnel_door_closed()
+                .map_err(Error::TunnelDoorMarker)?;
+        }
+        let mut connector_stays = false;
         for retiree in plan.retirees() {
             match containers.remove(&retiree.id, true, true).await {
                 Ok(()) => set.retired.push(retiree.id),
                 Err(crate::docker::Error::ContainerNotFound(_)) => {}
                 // Stopped and held, it serves nothing, and the next call retires it.
-                Err(error) => tracing::warn!(
-                    container = %retiree.id,
-                    error = %ployz_core::error_chain::inline(&error),
-                    "could not remove a replaced Ingress door"
-                ),
+                Err(error) => {
+                    connector_stays |= plan.retire_tunnels.contains(retiree);
+                    tracing::warn!(
+                        container = %retiree.id,
+                        error = %ployz_core::error_chain::inline(&error),
+                        "could not remove a replaced Ingress door"
+                    );
+                }
             }
+        }
+        if specs.tunnel.is_none() && !connector_stays {
+            containers
+                .clear_tunnel_door_closed()
+                .map_err(Error::TunnelDoorMarker)?;
         }
         Ok(set)
     }
@@ -1015,9 +1047,13 @@ mod tests {
     #[test]
     fn the_doors_found_are_the_newest_holders_ports_and_the_connectors_token() {
         let proxy = ServiceId::parse("c".repeat(32)).unwrap();
-        assert_eq!(doors_as_found(&[], proxy), DoorSpecs::public(proxy));
+        assert_eq!(doors_as_found(&[], proxy, false), DoorSpecs::public(proxy));
         assert_eq!(
-            doors_as_found(&[holder('a', running()), caddy('b', 'a', running())], proxy),
+            doors_as_found(
+                &[holder('a', running()), caddy('b', 'a', running())],
+                proxy,
+                false
+            ),
             DoorSpecs::public(proxy)
         );
         assert_eq!(
@@ -1027,17 +1063,44 @@ mod tests {
                     caddy('b', 'a', running()),
                     tunnel('c', 'a', running())
                 ],
-                proxy
+                proxy,
+                false
             ),
             tunnel_specs()
         );
         assert_eq!(
             doors_as_found(
                 &[closed_holder('a', running()), legacy_caddy('d', running())],
-                proxy
+                proxy,
+                false
             ),
             DoorSpecs::new(proxy, IngressPorts::Closed, None),
             "a closed holder with no connector stays closed until a command opens a Door"
+        );
+        assert_eq!(
+            doors_as_found(
+                &[
+                    closed_holder('a', running()),
+                    caddy('b', 'a', running()),
+                    tunnel('c', 'a', created())
+                ],
+                proxy,
+                true
+            ),
+            DoorSpecs::new(proxy, IngressPorts::Closed, None),
+            "a connector left from a closed Tunnel Door is not found"
+        );
+        assert!(
+            doors_held(
+                &[
+                    closed_holder('a', running()),
+                    caddy('b', 'a', running()),
+                    tunnel('c', 'a', created())
+                ],
+                true
+            )
+            .is_some_and(|held| held.specs.tunnel.is_none() && held.sealed.is_none()),
+            "and the doors held leave it out"
         );
     }
 
