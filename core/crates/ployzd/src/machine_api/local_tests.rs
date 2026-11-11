@@ -7508,4 +7508,57 @@ mod resize_and_seed_under_approval {
         );
         assert_eq!(machine.calls(INSPECT_ROUTE), 1);
     }
+
+    #[tokio::test]
+    async fn a_resend_queued_behind_the_resize_that_lands_writes_nothing() {
+        use std::future::Future;
+        let machine = enforced("ployzd-resize-queued", true).await;
+        let (calls, replies) = (machine.plugin.calls.clone(), machine.plugin.replies.clone());
+        let applied = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let seen = applied.clone();
+        // Answer each SetVolumeSize with the bound it asked for, and keep the order.
+        machine.plugin.on(SIZE_ROUTE, move || {
+            let wanted = calls
+                .lock()
+                .unwrap()
+                .last()
+                .unwrap()
+                .1
+                .get("maximum_bytes")
+                .unwrap()
+                .as_u64()
+                .unwrap();
+            seen.lock().unwrap().push(wanted / GB);
+            replies.lock().unwrap().insert(
+                SIZE_ROUTE.to_owned(),
+                json!({"Ok": {"bound_bytes": wanted}}),
+            );
+        });
+        let shrink = machine.resize(vec![machine.this()], 10, true);
+        let grow = machine.resize(vec![machine.this()], 20, false);
+
+        // Queue the shrink, a later grow, and a resend of the shrink behind one switch.
+        let held = machine.service.switch_mutation.lock().await;
+        let first = machine.set_size(size_request(10, true, Some(shrink.clone())));
+        let later = machine.set_size(size_request(20, false, Some(grow)));
+        let resend = machine.set_size(size_request(10, true, Some(shrink)));
+        tokio::pin!(first, later, resend);
+        std::future::poll_fn(|cx| {
+            assert!(first.as_mut().poll(cx).is_pending());
+            assert!(later.as_mut().poll(cx).is_pending());
+            assert!(resend.as_mut().poll(cx).is_pending());
+            std::task::Poll::Ready(())
+        })
+        .await;
+        drop(held);
+        let (first, later, resend) = tokio::join!(first, later, resend);
+        for reply in [first, later, resend] {
+            reply.unwrap().decode::<op::SetVolumeSize>().unwrap();
+        }
+        assert_eq!(
+            *applied.lock().unwrap(),
+            vec![10, 20],
+            "the queued resend shrank again after its operation ended"
+        );
+    }
 }

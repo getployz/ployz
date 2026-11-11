@@ -723,7 +723,9 @@ impl MachineRpc for MachineService {
     ) -> Result<Response<OpaquePayload>, Status> {
         let operator = from_operator(&request);
         let request = expect::<op::SeedVolume>(request)?;
-        // Admitted before the switch lock, so a refused seed asks the plugin for nothing.
+        // Admitted under the switch lock, so a resend queued behind the seed that lands
+        // finds its operation ended and only reads.
+        let _guard = self.switch_mutation.lock().await;
         let landing = if operator {
             match self.local.admit_operator_seed(&request) {
                 Ok(landing) => landing,
@@ -744,7 +746,6 @@ impl MachineRpc for MachineService {
                 )
                 .await;
         };
-        let _guard = self.switch_mutation.lock().await;
         // Checked under the switch lock, which a mirror pull of `into` takes too: a check
         // before it would let a Seed admitted at the old floor run after a later run
         // raised the floor and pulled a Mirror of `into` here, and replace that Mirror.
@@ -769,6 +770,9 @@ impl MachineRpc for MachineService {
     ) -> Result<Response<OpaquePayload>, Status> {
         let operator = from_operator(&request);
         let request = expect::<op::SetVolumeSize>(request)?;
+        // Admitted under the switch lock, so a resend queued behind the resize that lands
+        // finds its operation ended and writes nothing.
+        let _guard = self.switch_mutation.lock().await;
         let landing = if operator {
             match self.local.admit_operator_resize(&request) {
                 Ok(landing) => landing,
@@ -784,7 +788,6 @@ impl MachineRpc for MachineService {
                 bound_bytes: request.maximum_bytes,
             });
         };
-        let _guard = self.switch_mutation.lock().await;
         self.landing_verb::<ployz_core::SetVolumeSizeReply>(
             ("SetVolumeSize", "Volume.Size.Set"),
             &request,
