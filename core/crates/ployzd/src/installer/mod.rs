@@ -496,6 +496,34 @@ mod tests {
     use super::test_support::{fixture, run_contract_child_with_environment, write_script};
     use super::*;
 
+    #[test]
+    fn machine_files_stay_where_installed_machines_keep_them() {
+        let paths = InstallPaths::system(crate::machine::DEFAULT_DATA_DIR, DEFAULT_RUN_DIR);
+        assert_eq!(paths.data_dir, Path::new("/var/lib/ployz"));
+        assert_eq!(paths.run_dir, Path::new("/run/ployz"));
+        assert_eq!(DEFAULT_SOCKET_PATH, "/run/ployz/ployz.sock");
+        assert_eq!(
+            paths.run_dir.join("ployz.sock"),
+            Path::new(DEFAULT_SOCKET_PATH)
+        );
+        assert_eq!(
+            crate::machine_pool::BACKING_FILE,
+            "/var/lib/ployz-machine-pool"
+        );
+        assert_eq!(
+            paths.device_pool_marker,
+            Path::new("/var/lib/ployz-machine-pool.device")
+        );
+        assert_eq!(
+            prepare::prepare_dir(&paths),
+            Path::new("/var/lib/ployz/prepare")
+        );
+        assert_eq!(
+            prepare::state_path(&paths),
+            Path::new("/var/lib/ployz/prepare/state.json")
+        );
+    }
+
     #[tokio::test]
     async fn system_install_rejects_nonstandard_machine_paths_before_mutation() {
         let fixture = fixture("nonstandard-paths");

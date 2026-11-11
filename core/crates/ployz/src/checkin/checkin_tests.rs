@@ -3368,6 +3368,25 @@ fn ago_reads_in_the_largest_whole_unit() {
 }
 
 #[test]
+fn check_in_files_stay_where_installed_machines_keep_them() {
+    let paths = Paths::system(PathBuf::from(Paths::TOKEN_FILE));
+    assert_eq!(paths.checkin_dir, Path::new("/var/lib/ployz-checkin"));
+    assert_eq!(paths.token_file, Path::new("/etc/ployz/fleet-token"));
+    assert_eq!(
+        paths.prepare_state,
+        Path::new("/var/lib/ployz/prepare/state.json")
+    );
+    assert_eq!(
+        paths.prepare_lock(),
+        Path::new("/var/lib/ployz/prepare/lock")
+    );
+    assert_eq!(
+        crate::connect::DEFAULT_LOCAL_SOCKET,
+        "/run/ployz/ployz.sock"
+    );
+}
+
+#[test]
 fn checkin_state_stays_out_of_the_daemon_data_dir() {
     let paths = Paths::system(PathBuf::from(Paths::TOKEN_FILE));
     for path in [paths.key(), paths.status(), paths.checkin_dir] {

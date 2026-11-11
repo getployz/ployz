@@ -637,6 +637,17 @@ mod tests {
     }
 
     #[test]
+    fn volume_plugin_socket_unit_listens_where_the_plugin_serves() {
+        assert_eq!(
+            crate::VOLUME_PLUGIN_SOCKET,
+            "/run/docker/plugins/ployz.sock"
+        );
+        assert!(
+            volume_plugin_socket_unit().contains("\nListenStream=/run/docker/plugins/ployz.sock\n")
+        );
+    }
+
+    #[test]
     fn daemon_unit_does_not_restart_after_a_network_conflict_refusal() {
         let unit = machine_daemon_service_unit(Path::new("/usr/local/bin"));
         assert!(unit.contains("\nRestartPreventExitStatus=78\n"));
