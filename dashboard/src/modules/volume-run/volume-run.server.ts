@@ -1154,6 +1154,20 @@ const ApprovalRefusal = Schema.Struct({ details: Schema.Struct({ capability: Sch
 /** Whether the Server refused a step for the Volume approval it carried, or lacked. */
 const refusedApproval = (error: PloyzSdkError) => Schema.is(ApprovalRefusal)("cause" in error ? error.cause : undefined);
 
+const RefusalMessage = Schema.Struct({ message: Schema.String });
+/** The Server's words for an approval that ended there, or that expired before the Server ever admitted it. */
+const SPENT = /: the approval expired\b|already ran this step\b/;
+
+/**
+ * Whether the Server refused the approval as spent there: it already ran and ended, or it expired before the Server
+ * admitted it, since a Server checks an approval's expiry only on first admission. Either way it isn't open there and
+ * never will be. Read from the refusal's words, so a Server that words it otherwise only keeps the approval longer.
+ */
+const spentApproval = (error: PloyzSdkError) => {
+  const refusal = Schema.decodeUnknownOption(RefusalMessage)("cause" in error ? error.cause : undefined);
+  return Option.isSome(refusal) && SPENT.test(refusal.value.message);
+};
+
 export function switchErrorOf(error: PloyzSdkError): SwitchReason | null {
   const decoded = decodeSwitchError("cause" in error ? error.cause : undefined);
   return Option.isSome(decoded) ? decoded.value.details.reason : null;
@@ -1239,7 +1253,11 @@ export const sendSwitch = <R extends SwitchRequest>(ctx: RunContext, inngestRunI
 /** Plain JSON, since a step returns it: the copy the Machine holds now, after the step or after its refusal. */
 export type CopyAnswer =
   | { readonly ok: true; readonly copy: VolumeCopy | null }
-  | { readonly ok: false; readonly reason: CopyRefusal | "enforced" | "unapproved"; readonly copy: VolumeCopy | null; readonly message: string };
+  | {
+    readonly ok: false; readonly reason: CopyRefusal | "enforced" | "unapproved"; readonly copy: VolumeCopy | null; readonly message: string;
+    /** Set on `unapproved` when the Server refused the approval as spent: it isn't open there and never will be. */
+    readonly spent?: boolean;
+  };
 
 /**
  * Who a SetVolumeCopy is for: a run, a Deploy following another run's lane without owning its row, or the rowless
@@ -1270,7 +1288,9 @@ export const askCopy = Effect.fn("VolumeRun.askCopy")(function* (asker: CopyAske
       }
       // Refused before the step changed anything, so the copy is as the caller last saw it too.
       if (refusedApproval(error)) {
-        return Effect.succeed<CopyAnswer>({ ok: false, reason: "unapproved", copy: null, message: approvalRefusedMessage(asker.volumeName, machine.name) });
+        return Effect.succeed<CopyAnswer>({
+          ok: false, reason: "unapproved", copy: null, message: approvalRefusedMessage(asker.volumeName, machine.name), spent: spentApproval(error),
+        });
       }
       const refused = setVolumeCopyRefusal("cause" in error ? error.cause : undefined);
       if (refused === null) {

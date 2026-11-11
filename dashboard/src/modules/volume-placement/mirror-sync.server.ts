@@ -1,13 +1,13 @@
 import "@tanstack/react-start/server-only";
 import type { EnvironmentRef, ExpectedCopy, MachineId, Signed, Snapshot, VolumeCopy, WantedCopy } from "@ployz/sdk";
 import { and, eq, inArray, max, sql } from "drizzle-orm";
-import { Clock, Effect, Option, Semaphore } from "effect";
+import { Effect, Option, Semaphore } from "effect";
 import { ClusterOutOfTime } from "#/modules/runtime/organization-runtime.server";
 import { volumePlacement } from "#/modules/volume-placement/tables";
 import { slotRole } from "#/modules/volume-placement/volume-placement";
 import { deployClaim } from "#/modules/volume-placement/volume-placement.server";
 import { expectOf, roleOf } from "#/modules/volume-run/plan";
-import { settleApprovals, settledBefore } from "#/modules/volume-run/mirror-approvals.server";
+import { dropSpent } from "#/modules/volume-run/mirror-approvals.server";
 import { volumeMirrorStatus, volumeRun } from "#/modules/volume-run/tables";
 import { ACTIVE_VOLUME_RUN_STATES, type AnsweredMember, copyName, type Member, unheardOf } from "#/modules/volume-run/volume-run";
 import { askCopy, type CopyAnswer, DRAIN_MS, type MachineRef, observeVolumeMembers, requestVolumeRun, SwitchAttemptError } from "#/modules/volume-run/volume-run.server";
@@ -233,9 +233,8 @@ const syncOnce = Effect.fn("MirrorSync.sync")(function* (organizationId: string,
     if (lane !== undefined) return yield* answer(reported, { kind: "covered", run: lane });
     const claim = yield* deployClaim(organizationId, placement);
     if (claim !== null) return yield* answer(reported, { kind: "deploying", message: claim.message });
-    // Read after the lane check, not with the statuses: a run that ended before it already narrowed these, and one that
-    // starts after it carries a gen above `gen`, so its Mirror refuses this sync's pull as stale. A list read earlier
-    // could carry an approval a run since dropped, which the Mirror would admit in place of the one it holds.
+    // Read after the lane check, not with the statuses, so it holds the approval of any run that ended before the check:
+    // a list read earlier could lack the one the Mirror holds open now.
     const approvals = mirrors.length === 0 ? [] : yield* drizzle.select({ machineId: volumeMirrorStatus.machineId, approvals: volumeMirrorStatus.approvals })
       .from(volumeMirrorStatus)
       .where(and(eq(volumeMirrorStatus.volumeId, volume.volumeId), inArray(volumeMirrorStatus.machineId, mirrors.map((member) => member.machine.id))));
@@ -277,23 +276,20 @@ const syncOnce = Effect.fn("MirrorSync.sync")(function* (organizationId: string,
       )),
     );
     // Each pull carries an approval kept with its Mirror, newest first, past any the Mirror refuses for the approval:
-    // the one it admitted is always kept, and an accepted pull settles the rest (mirror-approvals.server.ts). The
-    // writer's snapshot carries none: the Mirror's own run granted it the writer's later snapshots, and one snapshot
-    // serves every Mirror.
+    // the one it holds open is always kept, and one it refuses as spent goes (mirror-approvals.server.ts). The writer's
+    // snapshot carries none: the Mirror's own run granted it the writer's later snapshots, and one snapshot serves every
+    // Mirror.
     const pull = (member: SlotMember, copy: Slot, target: string) => Effect.gen(function* () {
       const want: WantedCopy = { kind: "mirror", from: writer.address, target, drain: DRAIN_MS };
       const kept = approvals.find((row) => row.machineId === member.machine.id)?.approvals ?? [];
+      const spent: Signed[] = [];
       let answer: MirrorAnswer | undefined;
       for (const approval of kept) {
-        const sentAt = yield* Clock.currentTimeMillis;
         answer = yield* setCopy(member.machine, expectOf(copy), want, approval);
-        if (answer.ok || answer.reason !== "unapproved") {
-          if (answer.ok && kept.some((other) => other !== approval && settledBefore(other, sentAt))) {
-            yield* settleApprovals(volume.volumeId, member.machine.id, approval, sentAt);
-          }
-          return answer;
-        }
+        if (answer.ok || answer.reason !== "unapproved") break;
+        if (answer.spent === true) spent.push(approval);
       }
+      if (spent.length > 0) yield* dropSpent(volume.volumeId, member.machine.id, spent);
       return answer ?? (yield* setCopy(member.machine, expectOf(copy), want));
     });
 

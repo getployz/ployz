@@ -165,13 +165,12 @@ const slotCopy = (newest: Snapshot | null, pull: { target: string; failure: stri
 const idOf = (name: string) => name.padEnd(32, "0") as MachineId;
 /** A Device's Mirror approval as the CLI sends it; the fake Servers don't check it. */
 const APPROVAL: Signed = { body: '{"volume":"vol"}', signatures: [{ key: "a".repeat(64), signature: "b".repeat(128) }] };
-/** An approval whose expiry passed long ago: the Mirror admits it no more, though it may still hold it open. */
-const LAPSED = '{"expires_at":1}';
-const APPROVAL_REFUSED = new RawFault({
+const approvalRefused = (why: string) => new RawFault({
   code: "permission_denied",
-  message: "This Server refused the Volume step: operation already ran this step; it needs a new approval",
+  message: `This Server refused the Volume step: ${why}`,
   details: { capability: "ployz.volume.approval.v1", next: "approve the Volume change again from an approved device" },
 });
+const APPROVAL_REFUSED = approvalRefused("operation 0123 already ran this step; it needs a new approval");
 const first = <T>(items: readonly T[]): T => {
   const item = items[0];
   if (item === undefined) throw new Error("expected at least one item");
@@ -360,17 +359,22 @@ describe("volume runs", () => {
     }
   };
 
-  /** Whether `fake` admits the approval a pull carries, as `FakeMachine.approvals` says; admitting a new one ends the last. */
-  const admits = (fake: FakeMachine, want: WantedCopy, approval: Signed | undefined) => {
+  /**
+   * How `fake` refuses the approval a pull carries, as `FakeMachine.approvals` says, or null when it admits it; admitting
+   * a new one ends the last.
+   */
+  const refusesApproval = (fake: FakeMachine, want: WantedCopy, approval: Signed | undefined) => {
     const checked = fake.approvals;
-    if (checked === undefined || want.kind !== "mirror" || want.from === null) return true;
+    if (checked === undefined || want.kind !== "mirror" || want.from === null) return null;
     const carried = approval?.body;
-    if (carried === undefined || checked.ended.includes(carried) || checked.expired?.includes(carried) === true) return false;
+    if (carried === undefined) return approvalRefused("the volume approval carries no signature");
+    if (checked.ended.includes(carried)) return APPROVAL_REFUSED;
+    if (carried !== checked.admitted && checked.expired?.includes(carried) === true) return approvalRefused("the approval expired");
     if (carried !== checked.admitted) {
       if (checked.admitted !== null) checked.ended.push(checked.admitted);
       checked.admitted = carried;
     }
-    return true;
+    return null;
   };
 
   const failure = (fault: Fault, copy: VolumeCopy | null) => {
@@ -517,7 +521,7 @@ describe("volume runs", () => {
         const fault = failNext.get(key);
         failNext.delete(key);
         if (fault === "lost") {
-          if (admits(fake, want, request.payload.approval)) transition(fake, expected, want);
+          if (refusesApproval(fake, want, request.payload.approval) === null) transition(fake, expected, want);
           return unanswered;
         }
         if (fault === "held") {
@@ -528,7 +532,8 @@ describe("volume runs", () => {
         const gen = request.payload.gen ?? 0;
         if (gen < (fake.floor ?? 0)) return fail("stale");
         fake.floor = Math.max(fake.floor ?? 0, gen);
-        if (!admits(fake, want, request.payload.approval)) return fail(APPROVAL_REFUSED);
+        const refusal = refusesApproval(fake, want, request.payload.approval);
+        if (refusal !== null) return fail(refusal);
         if (want.kind === "mirror") {
           receive(fake);
           fake.stopped = false;
@@ -2539,10 +2544,10 @@ describe("volume runs", () => {
       expect(await keptApprovals()).toEqual([{ machine_id: idOf("fsn-2"), approvals: [APPROVAL, admitted] }]);
     });
 
-    it("a run whose pull goes unanswered keeps both, and the next sync settles the one the mirror ended", async () => {
-      const before = { body: LAPSED, signatures: [] };
+    it("a run whose pull goes unanswered keeps both, and the next sync pulls under the one the mirror admitted", async () => {
+      const before = { body: "before", signatures: [] };
       first(machines).writes = 2;
-      machines[1] = { name: "fsn-2", pool: true, copy: slotCopy(base), approvals: { admitted: LAPSED, ended: [] } };
+      machines[1] = { name: "fsn-2", pool: true, copy: slotCopy(base), approvals: { admitted: "before", ended: [] } };
       await harness.pool.query(
         "insert into volume_mirror_status (organization_id, volume_id, machine_id, approvals) values ($1, $2, $3, $4)",
         [organizationId, volumeId, idOf("fsn-2"), JSON.stringify([before])]);
@@ -2557,19 +2562,21 @@ describe("volume runs", () => {
       await execute(run.id, "run-1", undefined, volumeId, undefined, 1);
 
       expect(await rows()).toMatchObject([{ state: "failed" }]);
-      expect(machines[1]?.approvals).toEqual({ admitted: APPROVAL.body, ended: [LAPSED] });
+      expect(machines[1]?.approvals).toEqual({ admitted: APPROVAL.body, ended: ["before"] });
       expect(await keptApprovals()).toEqual([{ machine_id: idOf("fsn-2"), approvals: [APPROVAL, before] }]);
 
+      sent.length = 0;
       await runEffect(syncMirrors(organizationId, { volumeId, name: "data", dockerVolume, environment }));
 
-      expect(await keptApprovals()).toEqual([{ machine_id: idOf("fsn-2"), approvals: [APPROVAL] }]);
+      expect(new Set(sent.filter((request) => request.want.kind === "mirror").map((request) => request.approval))).toEqual(new Set([APPROVAL]));
+      expect(await keptApprovals()).toEqual([{ machine_id: idOf("fsn-2"), approvals: [APPROVAL, before] }]);
     });
 
     it("a mirror that admits a new approval and then fails its receive syncs under that approval after", async () => {
-      const before = { body: LAPSED, signatures: [] };
+      const before = { body: "before", signatures: [] };
       first(machines).writes = 2;
       machines[1] = {
-        name: "fsn-2", pool: true, copy: slotCopy(base), approvals: { admitted: LAPSED, ended: [] }, pullFault: { target: "w-1-0", kind: "fail" },
+        name: "fsn-2", pool: true, copy: slotCopy(base), approvals: { admitted: "before", ended: [] }, pullFault: { target: "w-1-0", kind: "fail" },
       };
       await harness.pool.query(
         "insert into volume_mirror_status (organization_id, volume_id, machine_id, approvals) values ($1, $2, $3, $4)",
@@ -2579,7 +2586,7 @@ describe("volume runs", () => {
       await execute(run.id);
 
       expect(await rows()).toMatchObject([{ state: "failed" }]);
-      expect(machines[1]?.approvals).toEqual({ admitted: APPROVAL.body, ended: [LAPSED] });
+      expect(machines[1]?.approvals).toEqual({ admitted: APPROVAL.body, ended: ["before"] });
       expect(await keptApprovals()).toEqual([{ machine_id: idOf("fsn-2"), approvals: [APPROVAL, before] }]);
       sent.length = 0;
 
@@ -2588,14 +2595,14 @@ describe("volume runs", () => {
       expect(synced.lines).toEqual(["data-fsn-2 could not receive w-1-0: disk full", expect.stringMatching(/^data-fsn-2 is pulling /)]);
       expect(sent.filter((request) => request.want.kind === "mirror").map((request) => request.approval)).toEqual([APPROVAL]);
       expect(machines[1]?.approvals?.admitted).toBe(APPROVAL.body);
-      expect(await keptApprovals()).toEqual([{ machine_id: idOf("fsn-2"), approvals: [APPROVAL] }]);
+      expect(await keptApprovals()).toEqual([{ machine_id: idOf("fsn-2"), approvals: [APPROVAL, before] }]);
     });
 
-    it("a sync moves past an approval the mirror never admitted to the one it did, and settles the lapsed one", async () => {
-      const lapsed = { body: '{"volume":"vol","expires_at":1}', signatures: [] };
+    it("a sync moves past approvals the mirror refused as spent to the one it holds, and drops them", async () => {
+      const lapsed = { body: "lapsed", signatures: [] };
       const before = { body: "before", signatures: [] };
       first(machines).writes = 1;
-      machines[1] = { name: "fsn-2", pool: true, copy: slotCopy(base), approvals: { admitted: "before", ended: [], expired: [lapsed.body, APPROVAL.body] } };
+      machines[1] = { name: "fsn-2", pool: true, copy: slotCopy(base), approvals: { admitted: "before", ended: [APPROVAL.body], expired: [lapsed.body] } };
       await harness.pool.query(
         "insert into volume_mirror_status (organization_id, volume_id, machine_id, approvals) values ($1, $2, $3, $4)",
         [organizationId, volumeId, idOf("fsn-2"), JSON.stringify([APPROVAL, lapsed, before])]);
@@ -2604,8 +2611,7 @@ describe("volume runs", () => {
 
       expect(synced.lines).toEqual([expect.stringMatching(/^data-fsn-2 is pulling /)]);
       expect(sent.filter((request) => request.want.kind === "mirror").map((request) => request.approval)).toEqual([APPROVAL, lapsed, before]);
-      // APPROVAL carries no expiry Cloud can read, so it stays; the lapsed one can never be admitted again.
-      expect(await keptApprovals()).toEqual([{ machine_id: idOf("fsn-2"), approvals: [APPROVAL, before] }]);
+      expect(await keptApprovals()).toEqual([{ machine_id: idOf("fsn-2"), approvals: [before] }]);
     });
 
     it("sync --full that fails after its first pull keeps the approval the mirror admitted under it", async () => {

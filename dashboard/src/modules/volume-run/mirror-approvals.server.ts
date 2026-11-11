@@ -1,7 +1,7 @@
 import "@tanstack/react-start/server-only";
 import type { MachineId, Signed } from "@ployz/sdk";
 import { and, eq, inArray } from "drizzle-orm";
-import { Effect, Option, Schema } from "effect";
+import { Effect } from "effect";
 import { Database } from "#/server/database.server";
 import { volumeMirrorStatus } from "#/modules/volume-run/tables";
 
@@ -10,30 +10,21 @@ import { volumeMirrorStatus } from "#/modules/volume-run/tables";
  *
  * A Mirror admits an approval when a pull carrying it passes admission, before the pull receives anything, and
  * admitting one ends the approval that was open there, for good. So one approval works at the Mirror, and only the
- * Mirror knows which: an answer can be lost or come late, a pull can fail after admission, and a run and a sync can
- * overlap. Cloud never infers it from which step succeeded or in what order answers came. It keeps every approval it
- * sent toward the Mirror and drops one only when no order of events lets it be the open one:
+ * Mirror knows which: an answer can be lost or come late, a pull can fail after admission, a run and a sync can
+ * overlap, and a Mirror that doesn't enforce accepts any pull without admitting anything. Cloud never infers which from
+ * an accepted pull or from the order answers came in. It drops an approval only on the Mirror's word that the approval
+ * isn't open there and never will be:
  *
  * - `offerApproval` adds an approval before any step carries it.
- * - `settleApprovals` runs when the Mirror accepted a pull carrying X that Cloud sent at `sentAt`. X was the open
- *   approval when the Mirror accepted it, so any other was not, and one whose expiry passed well before `sentAt` can
- *   never be admitted again. Those go.
+ * - `dropSpent` drops the approvals a Mirror refused as spent: one that already ran and ended there, or one that
+ *   expired before the Mirror ever admitted it (see `CopyAnswer.spent`). Cloud never sends them again.
  * - Deleting the Mirror drops them all.
  *
- * A sync tries the kept approvals newest first and moves on only past a refusal for the approval.
+ * A sync tries the kept approvals newest first and moves on only past a refusal for the approval. An ended approval
+ * behind the open one is never tried, so it stays: the list grows by one for each time a Device approves the Mirror
+ * again.
  */
 export const sameApproval = (a: Signed, b: Signed) => a.body === b.body;
-
-/** Past its expiry, how long before an approval may go: well beyond any clock skew between Cloud and a Mirror. */
-export const SETTLED_AFTER_MS = 60 * 60 * 1000;
-
-const ApprovalWindow = Schema.fromJsonString(Schema.Struct({ expires_at: Schema.Number }));
-
-/** Whether `approval` expired too long before `sentAt` for any Mirror to admit it then or later. An unreadable one stays. */
-export const settledBefore = (approval: Signed, sentAt: number) => {
-  const window = Schema.decodeUnknownOption(ApprovalWindow)(approval.body);
-  return Option.isSome(window) && window.value.expires_at + SETTLED_AFTER_MS < sentAt;
-};
 
 const keptFor = (volumeId: string, mirror: MachineId) => Effect.gen(function* () {
   const { drizzle } = yield* Database;
@@ -56,13 +47,13 @@ export const offerApproval = Effect.fn("MirrorApprovals.offer")(function* (organ
   }));
 });
 
-/** The Mirror on `mirror` accepted a pull carrying `accepted` that Cloud sent at `sentAt`: drops what it settled. */
-export const settleApprovals = Effect.fn("MirrorApprovals.settle")(function* (volumeId: string, mirror: MachineId, accepted: Signed, sentAt: number) {
+/** Drops the approvals the Mirror on `mirror` refused as `spent`. */
+export const dropSpent = Effect.fn("MirrorApprovals.dropSpent")(function* (volumeId: string, mirror: MachineId, spent: readonly Signed[]) {
   const database = yield* Database;
   yield* database.transaction(Effect.gen(function* () {
     const kept = (yield* keptFor(volumeId, mirror))?.approvals ?? null;
     if (kept === null) return;
-    const approvals = kept.filter((entry) => sameApproval(entry, accepted) || !settledBefore(entry, sentAt));
+    const approvals = kept.filter((entry) => !spent.some((gone) => sameApproval(gone, entry)));
     if (approvals.length === kept.length) return;
     yield* database.drizzle.update(volumeMirrorStatus).set({ approvals, updatedAt: new Date() })
       .where(and(eq(volumeMirrorStatus.volumeId, volumeId), eq(volumeMirrorStatus.machineId, mirror)));
