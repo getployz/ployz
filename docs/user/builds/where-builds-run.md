@@ -47,6 +47,11 @@ through the Ployz GitHub App.
 The repository shows **Waiting for commit**, then a check mark. If it shows **Installation
 lacks permission**, approve **Actions: Read and write** for the Ployz GitHub App in GitHub.
 
+A repository that shows **Uses an older workflow** has a different file, such as one that calls
+`getployz/build@v1`. Click **Update workflow**, copy the file, then **Open in GitHub ↗** and replace
+yours with it. The new file runs the builder at a fixed commit, so a change to the builder can't
+reach your builds until Ployz offers a new file.
+
 <details>
 <summary>The workflow file</summary>
 

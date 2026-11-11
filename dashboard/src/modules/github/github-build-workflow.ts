@@ -76,7 +76,7 @@ export function githubBuildWorkflowUrl(input: GithubBuildWorkflowPage) {
   return `${repositoryPage(input, "new")}?${params.toString()}`;
 }
 
-/** GitHub's editor on the repository's existing workflow file. It takes no content, so the person pastes the new file. */
+/** GitHub's editor on the repository's existing workflow file. The person pastes the new file there. */
 export function githubBuildWorkflowEditUrl(input: GithubBuildWorkflowPage) {
   return `${repositoryPage(input, "edit")}/.github/workflows/${GITHUB_BUILD_WORKFLOW_FILE}`;
 }

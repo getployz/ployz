@@ -159,7 +159,7 @@ function GithubActions({ organizationSlug }: { organizationSlug: string }) {
   );
 }
 
-/** GitHub's editor takes no content for an existing file, so the new file is copied from here. */
+/** The new file to copy, and GitHub's editor on the old one: Cloud never writes to the repository. */
 function UpdateWorkflowDialog({ editUrl, defaultBranch, onOpened, onClose }: {
   editUrl: string; defaultBranch: string; onOpened: () => void; onClose: () => void;
 }) {
