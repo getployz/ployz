@@ -33,7 +33,7 @@ the release, it deletes nothing, leaves your service stopped, and asks you to re
 ## A move says the server enforces device approval
 
 ```
-web-2 enforces device approval, so Ployz Cloud can't move data on its own. Run ployz volume move data --to web-2 from an approved device.
+web-1 enforces device approval, so Ployz Cloud can't move data on its own. Run ployz volume move data --to web-2 from an approved device.
 ```
 
 With [device enforcement](../servers/manage-servers.md#require-a-devices-signature-for-restarts-and-joins)
@@ -42,7 +42,7 @@ stopped, and nothing changed. Run the command it prints on an approved device. S
 [Servers that enforce device approval](../services/move-a-volume.md#servers-that-enforce-device-approval).
 
 ```
-web-2 didn't accept the approval from your device for data. Approve the change again from an approved device.
+web-1 didn't accept the approval from your device for data. Approve the change again from an approved device.
 ```
 
 A server refused the approval itself: the move didn't start within 15 minutes of it, or the

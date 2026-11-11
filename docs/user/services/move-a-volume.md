@@ -154,7 +154,7 @@ deploy, Drain's moves, a move from a computer without an approved device key, an
 asks for again after a deploy took it over:
 
 ```
-web-2 enforces device approval, so Ployz Cloud can't move data on its own. Run ployz volume move data --to web-2 from an approved device.
+web-1 enforces device approval, so Ployz Cloud can't move data on its own. Run ployz volume move data --to web-2 from an approved device.
 ```
 
 ## Good to know
