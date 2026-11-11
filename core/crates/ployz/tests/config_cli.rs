@@ -8810,3 +8810,114 @@ fn a_patch_s_secret_beside_other_fields_is_refused_as_the_store_does_and_never_s
     assert_eq!(written, 0);
     cloud_never_saw(&cloud, "malformed-s3cr3t");
 }
+
+/// What `set PATH=VALUE` refuses before the Store sees it, and what it sends on: the
+/// same words for every spelling of a path.
+#[test]
+fn set_refuses_a_secret_on_the_command_line_and_sends_the_rest_as_typed() {
+    let secret = r#"{"secret":"FAKE-4001"}"#;
+    let on_command_line = |path: &str| {
+        json!(format!(
+            "A new secret never goes on the command line: pipe it in with printf %s \"$VALUE\" | ployz set {path} --secret"
+        ))
+    };
+    for store in &targets() {
+        shop_with_web(store);
+        let refused = |assignments: &[&str]| error(store, &[&["set"], assignments].concat());
+
+        let missing = refused(&["web.replicas"]);
+        assert_eq!(missing["code"], "invalid_argument", "{missing}");
+        assert_eq!(
+            missing["message"],
+            "Expected PATH=VALUE, for example web.replicas=3"
+        );
+
+        for path in [
+            "web.env.KEY",
+            "WEB.env.KEY",
+            "web.registryCredential",
+            "bad name.env.KEY",
+            "web.env.bad key",
+        ] {
+            let sealed = refused(&[&format!("{path}={secret}")]);
+            assert_eq!(sealed["code"], "invalid_argument", "{path}: {sealed}");
+            assert_eq!(sealed["message"], on_command_line(path), "{path}");
+            assert_eq!(sealed["details"], Value::Null, "{path}");
+        }
+        let sealing = format!("web.env.KEY={secret}");
+        for assignments in [
+            ["web.replicas=3", &sealing],
+            ["nope.replicas=3", &sealing],
+            [&sealing, "nope.replicas=3"],
+        ] {
+            let sealed = refused(&assignments);
+            assert_eq!(sealed["message"], on_command_line("web.env.KEY"));
+        }
+
+        let kept = refused(&[r#"web.registryCredential={"secret":true}"#]);
+        assert_eq!(
+            kept["message"],
+            "registryCredential: it holds no credential to keep: set one with --secret"
+        );
+        let exported = refused(&[&format!("web.env.KEY.exported={secret}")]);
+        assert_eq!(exported["message"], "KEY: exported is true or false");
+        let description = refused(&[&format!("web.env.KEY.description={secret}")]);
+        assert_eq!(
+            description["message"],
+            "Variable descriptions are template metadata; use Discard to restore a description"
+        );
+        let replicas = refused(&[&format!("web.replicas={secret}")]);
+        assert_eq!(
+            replicas["message"],
+            "replicas: Expected a whole number of replicas from 1–50"
+        );
+        let setup = refused(&[&format!("setup.web={secret}")]);
+        assert_eq!(setup["message"], "production is not a Branch");
+        let unknown = error(store, &["set", "nope.replicas=3"]);
+        assert_eq!(unknown["code"], "not_found");
+        assert_eq!(
+            unknown["message"],
+            "No Service named nope in Environment production"
+        );
+
+        let empty = ok(store, &["set", r#"web.env.KEY={"secret":""}"#]);
+        assert_eq!(empty["staged"], json!(["web.env.KEY"]));
+        assert_eq!(empty["immediate"], json!([]));
+    }
+}
+
+/// A Preferred Builder is looked up among the Servers Cloud keeps, by any spelling of
+/// the path; the local Store, with no Servers, takes the value as typed.
+#[test]
+fn set_names_a_preferred_builder_to_the_servers_that_cloud_keeps() {
+    for store in &targets() {
+        shop_with_web(store);
+        let cloud = matches!(store, Target::Cloud { .. });
+        for path in ["web.preferredBuilder", "WEB.preferredBuilder"] {
+            let named = error(store, &["set", &format!("{path}=machine-1")]);
+            if cloud {
+                assert_eq!(named["code"], "not_found", "{named}");
+                assert_eq!(named["message"], "Server machine-1 was not found");
+            } else {
+                assert_eq!(named["code"], "invalid_argument", "{named}");
+                assert_eq!(
+                    named["message"],
+                    "preferredBuilder: expected \"github\" or a Server's Machine ID"
+                );
+            }
+        }
+        let github = error(store, &["set", "web.preferredBuilder=github"]);
+        assert_ne!(github["code"], "not_found", "{github}");
+        let volume = error(store, &["set", "volumes.preferredBuilder=machine-1"]);
+        assert_eq!(
+            volume["message"],
+            "Expected a Volume name: up to 63 lowercase letters, digits and -, starting and ending with a letter or digit"
+        );
+        let setup = error(store, &["set", "setup.preferredBuilder=pnpm seed"]);
+        if cloud {
+            assert_eq!(setup["message"], "Server pnpm seed was not found");
+        } else {
+            assert_eq!(setup["message"], "production is not a Branch");
+        }
+    }
+}
