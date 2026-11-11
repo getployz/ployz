@@ -2716,6 +2716,7 @@ fn store_retry(
                 accept_volume_loss: serde_json::from_value(accept.clone()).unwrap(),
                 approvals: Vec::new(),
                 awaits_approval: false,
+                approval: None,
             }),
             trusted,
         )

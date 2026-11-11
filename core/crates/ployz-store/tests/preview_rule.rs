@@ -630,6 +630,7 @@ fn an_untrusted_pull_request_opens_its_preview_and_deploys_only_once_reviewed() 
                 accept_volume_loss: Vec::new(),
                 approvals: Vec::new(),
                 awaits_approval: false,
+                approval: None,
             }),
             &member(),
         )

@@ -825,6 +825,7 @@ fn a_retry_ships_the_cluster_domain_its_source_froze() {
                 accept_volume_loss: Vec::new(),
                 approvals: Vec::new(),
                 awaits_approval: false,
+                approval: None,
             })),
             &Trusted::default(),
         )

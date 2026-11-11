@@ -142,6 +142,12 @@ pub struct Retry {
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     #[ts(optional, as = "Option<bool>")]
     pub awaits_approval: bool,
+    /// As [`Deploy::approval`], for the specs this redeploy ships: its source's
+    /// frozen revision as a plan of it with `deployment` lowers it. Servers that
+    /// enforce Device approval run none of an image's Services without one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional, as = "Option<Signed<DeployApproval>>")]
+    pub approval: Option<Box<Signed<DeployApproval>>>,
 }
 
 /// Approve again the commits of a queued Deployment that waited for its builds, so the
@@ -232,6 +238,9 @@ pub(crate) fn admit(
             let pruning = retry_pruning(tx, &retried, trusted)?;
             pruning.admit(trusted, Some(rollback.number))?;
             deployment::admitted_by_user(tx, &retried.id, trusted)?;
+            if let Some(approval) = &retry.approval {
+                deployment::approved_by_device(tx, &retried.id, approval)?;
+            }
             let forget = match retried.remove {
                 true => deployment::forgettable(tx, &retried.environment_id, trusted)?,
                 false => None,

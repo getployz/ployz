@@ -71,6 +71,7 @@ pub(in crate::handlers) fn sign(
             environment: environment.clone(),
             services: services.to_vec(),
             target: true,
+            deployment: None,
         });
         (probe.join().unwrap_or(Probe::Unknown), plan)
     });
