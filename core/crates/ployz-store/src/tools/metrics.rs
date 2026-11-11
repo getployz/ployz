@@ -11,7 +11,7 @@ use serde_json::{Map, Value, json};
 
 use super::act::{resolve, roster, servers};
 use super::cloud::{MetricEvent, MetricsAnswer};
-use super::machine::{Cx, Effect, Stop, Tool, at, store};
+use super::machine::{Cx, Effect, Stop, Tool, at, place_of, store};
 use super::refusal::{Call, Refusal};
 use super::step::{
     Ask, CloudQuery, MetricsQuery, MetricsSince, MetricsSubject, ServerName, Timestamp,
@@ -157,10 +157,7 @@ impl Tool for ServiceMetrics {
                             .with_valid(names())
                             .with_next(Call::new(
                                 "environment_show",
-                                json!({
-                                    "project": namespace.environment.project,
-                                    "environment": namespace.environment.name,
-                                }),
+                                place_of(&namespace.environment),
                             )),
                     )
                 })?,

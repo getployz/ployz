@@ -1,4 +1,37 @@
+use super::super::{INSTRUCTIONS, WAIT_CAP_SECONDS, catalog};
 use super::*;
+
+#[test]
+fn the_limits_read_the_same_in_every_place_that_states_them() {
+    let (min, max) = (RequestKey::MIN, RequestKey::MAX);
+    assert_eq!(
+        RequestKey::PATTERN,
+        format!("^[A-Za-z0-9_-]{{{min},{max}}}$")
+    );
+    let refusal = RequestKey::parse("short").unwrap_err();
+    assert!(
+        refusal.contains(&format!("{min} to {max} letters")),
+        "{refusal}"
+    );
+    assert!(INSTRUCTIONS.contains(&format!("any {min} to {max} letters")));
+    assert!(INSTRUCTIONS.contains(&format!("(max {WAIT_CAP_SECONDS})")));
+
+    let (mut keyed, mut waited) = (0, 0);
+    for tool in catalog() {
+        let properties = tool.input_schema.pointer("/properties");
+        if let Some(key) = properties.and_then(|found| found.get("request_key")) {
+            keyed += 1;
+            let pattern = format!("\"pattern\":\"{}\"", RequestKey::PATTERN);
+            assert!(key.to_string().contains(&pattern), "{}: {key}", tool.name);
+        }
+        if let Some(wait) = properties.and_then(|found| found.get("wait_seconds")) {
+            waited += 1;
+            let cap = wait.get("maximum").and_then(Value::as_f64);
+            assert_eq!(cap, Some(f64::from(WAIT_CAP_SECONDS)), "{}", tool.name);
+        }
+    }
+    assert!(keyed > 0 && waited > 0, "{keyed} keyed, {waited} waiting");
+}
 
 #[test]
 fn a_request_key_is_8_to_64_safe_characters() {

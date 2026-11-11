@@ -608,12 +608,7 @@ impl Tool for ServiceRemove {
         let services = cx.one(&ServicesQuery {
             environment: scope.clone(),
         })?;
-        if self
-            .expect_revision
-            .is_some_and(|expect| services.environment.revision.0 != expect)
-        {
-            return Err(super::machine::stale(cx.call()));
-        }
+        cx.fresh(&services.environment, self.expect_revision)?;
         // A Service never deployed goes without asking anyone.
         let asks_approval = services
             .services

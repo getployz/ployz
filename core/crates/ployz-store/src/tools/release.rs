@@ -19,8 +19,6 @@ use crate::{
     Written,
 };
 
-const REQUEST_KEY: &str = "^[A-Za-z0-9_-]{8,64}$";
-
 /// The longest value a review line shows before it cuts.
 const VALUE_CHARS: usize = 80;
 
@@ -34,14 +32,6 @@ pub(crate) fn version_for_loss(
         version.cloned(),
     )
     .map(drop)
-}
-
-/// `project` and `environment` as the input named them, for a `next` call.
-pub(crate) fn place(call: &Call) -> serde_json::Map<String, Value> {
-    ["project", "environment"]
-        .into_iter()
-        .filter_map(|key| Some((key.to_owned(), call.input.get(key)?.clone())))
-        .collect()
 }
 
 #[derive(Deserialize, JsonSchema)]
@@ -284,7 +274,7 @@ pub(crate) struct DeployInput {
     accept_volume_loss: Vec<VolumeName>,
     /// Any id you choose. A call that repeats a key gets the first call's result, not a second deploy.
     #[serde(default)]
-    #[schemars(with = "Option<String>", pattern(REQUEST_KEY))]
+    #[schemars(with = "Option<String>", pattern(RequestKey::PATTERN))]
     request_key: Option<RequestKey>,
     /// Save everything staged for the next deploy instead of deploying it.
     #[serde(default)]
@@ -353,7 +343,7 @@ impl Tool for DeployInput {
             no_prune: self.no_prune,
             approval: None,
         }))?;
-        let mut next = place(cx.call());
+        let mut next = cx.place_args();
         next.insert("deployment".into(), deployment.number.into());
         next.insert("wait_seconds".into(), 120.into());
         Ok(json!({
