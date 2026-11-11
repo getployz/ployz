@@ -203,8 +203,22 @@ pub(crate) fn warn_cause(what: impl std::fmt::Display, error: Chain<'_>) {
     super::warn(format!("{what}: {}", inline(error)));
 }
 
-pub(crate) fn retrying(operation: &str, error: Chain<'_>, seconds: u64) {
-    super::note(retrying_line(operation, error, seconds));
+/// Prints a wait's notice on stderr.
+pub(crate) struct WaitNotices;
+
+impl crate::setup_retry::Observer for WaitNotices {
+    fn waiting(&self, notice: &crate::setup_retry::Notice<'_>) {
+        match *notice {
+            crate::setup_retry::Notice::Expected(crate::setup_retry::Expected(text)) => {
+                super::note(text);
+            }
+            crate::setup_retry::Notice::Retrying {
+                operation,
+                error,
+                seconds_left,
+            } => super::note(retrying_line(operation, error, seconds_left)),
+        }
+    }
 }
 
 fn retrying_line(operation: &str, error: Chain<'_>, seconds: u64) -> String {

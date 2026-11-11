@@ -1715,6 +1715,7 @@ async fn an_ssh_session_that_fails_names_what_it_said_on_stderr() {
     assert_ne!(refused.retry(), Retry::Never, "{text}");
     let waited = crate::setup_retry::run(
         &mut (),
+        &crate::ui::WaitNotices,
         "Waiting for the participating phase",
         Duration::from_secs(5),
         ConnectError::is_start_retryable,

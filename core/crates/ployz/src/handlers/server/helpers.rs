@@ -186,6 +186,7 @@ pub(super) async fn reconnect_direct(
 ) -> Result<Client, Error> {
     crate::setup_retry::run(
         &mut (),
+        &crate::ui::WaitNotices,
         &format!("Reconnecting to {connection}"),
         crate::setup_retry::WAIT,
         ConnectError::is_setup_retryable,
@@ -208,6 +209,7 @@ pub(super) async fn wait_direct_participating(
     let mut joining = Joining::default();
     crate::setup_retry::run_expecting(
         &mut joining,
+        &crate::ui::WaitNotices,
         &format!("Waiting for {connection} to participate"),
         Some(STARTING),
         MACHINE_START_WAIT,

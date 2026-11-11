@@ -1114,6 +1114,7 @@ fn retry_local_connect(error: &ConnectError) -> bool {
 async fn wait_client(matches: &ArgMatches) -> Result<Client, Error> {
     crate::setup_retry::run(
         &mut (),
+        &crate::ui::WaitNotices,
         "Waiting for local daemon",
         crate::setup_retry::WAIT,
         retry_local_connect,
@@ -1184,6 +1185,7 @@ async fn wait_phase(
     let mut joining = crate::handlers::server::Joining::default();
     crate::setup_retry::run_expecting(
         &mut joining,
+        &crate::ui::WaitNotices,
         &format!("Waiting for the {} phase", phase.as_str()),
         expected,
         wait,
