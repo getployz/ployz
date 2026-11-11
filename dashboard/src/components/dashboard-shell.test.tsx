@@ -50,6 +50,7 @@ failOnMountedStore("Better Auth session", () => authClient.$store.atoms["session
 failOnRenderAfterTest();
 afterEach(() => {
   cleanup();
+  for (const spy of stripSpies.splice(0)) spy.mockRestore();
   cleanStores(authClient.$store.atoms["session"]);
   document.cookie = "theme=; path=/; max-age=0";
   document.documentElement.classList.remove("light", "dark", "system");
@@ -218,15 +219,18 @@ it("lists Settings' sections under it in the rail, and on phones under the top b
 });
 
 /** A phone strip 100px wide holding 300px of sections, the last one starting at 250px. */
+const stripSpies: { mockRestore(): void }[] = [];
 function stubPhoneStrip() {
   const scroller = (el: Element) => el.parentElement?.tagName === "NAV" && el.parentElement.getAttribute("aria-label")?.endsWith("sections");
-  vi.spyOn(HTMLElement.prototype, "clientWidth", "get").mockImplementation(function (this: HTMLElement) { return scroller(this) ? 100 : 0; });
-  vi.spyOn(HTMLElement.prototype, "scrollWidth", "get").mockImplementation(function (this: HTMLElement) { return scroller(this) ? 300 : 0; });
-  vi.spyOn(HTMLElement.prototype, "getBoundingClientRect").mockImplementation(function (this: HTMLElement) {
+  stripSpies.push(
+    vi.spyOn(HTMLElement.prototype, "clientWidth", "get").mockImplementation(function (this: HTMLElement) { return scroller(this) ? 100 : 0; }),
+    vi.spyOn(HTMLElement.prototype, "scrollWidth", "get").mockImplementation(function (this: HTMLElement) { return scroller(this) ? 300 : 0; }),
+    vi.spyOn(HTMLElement.prototype, "getBoundingClientRect").mockImplementation(function (this: HTMLElement) {
     const offset = scroller(this) ? 0 : this.textContent === "Project" ? 250 - (this.parentElement?.scrollLeft ?? 0) : 0 - (this.parentElement?.scrollLeft ?? 0);
     const width = scroller(this) ? 100 : 50;
     return { left: offset, right: offset + width, width, top: 0, bottom: 0, height: 0, x: offset, y: 0, toJSON() {} };
-  });
+    }),
+  );
 }
 
 it("signals on a phone that the sections run past the strip's end", async () => {
