@@ -846,12 +846,11 @@ pub(crate) fn retry(
     let environment = scope::load_by_id(tx, &stored.summary.environment_id)?;
     let head = head(tx, &environment)?;
     let running = crate::review::approval::may_hold(&head);
-    let cluster_domains = match crate::domain::has_generated(&running) {
-        true => cluster_domains(tx, &stored.summary.environment_id, &head)?,
-        false => BTreeMap::new(),
-    };
-    let dropped =
-        crate::review::approval::destructive_effects(&running, &revision, &cluster_domains);
+    let dropped = crate::review::approval::effects_of(
+        tx,
+        (&stored.summary.environment_id, &head),
+        (&running, &revision),
+    )?;
     // A Service teardown it queues destroys nothing once an applied Deployment took
     // the Service off and Cloud saw every Server without it. A Volume delete always
     // counts: a failed Deployment may have left its data where Head can't see.

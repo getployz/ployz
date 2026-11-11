@@ -671,13 +671,8 @@ pub(crate) fn ask_taking_off(
 ) -> Result<(), RpcError> {
     let id = &environment.summary.id;
     let deployed = approval::deployed(&review.head);
-    let cluster_domains = if crate::domain::has_generated(&deployed) {
-        deployment::cluster_domains(tx, id, &review.head)?
-    } else {
-        Default::default()
-    };
     let empty = scope::empty(&environment.working.environment_slug);
-    let effects = approval::destructive_effects(&deployed, &empty, &cluster_domains);
+    let effects = approval::effects_of(tx, (id, &review.head), (&deployed, &empty))?;
     let gate = approval::Gate::new(tx, id, trusted)?;
     approval::approve_shut_down(who, taking_off, review, &effects, &gate)
 }

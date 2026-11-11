@@ -291,12 +291,7 @@ pub(crate) fn review(tx: &mut dyn Tx, environment: &Environment) -> Result<Revie
     let before = Before::of(tx, environment, saved.as_ref(), &head)?;
     let deployed = approval::deployed(&head);
     let mut view = compare(environment, saved.as_ref(), &head, &deployed, &before)?;
-    let cluster_domains = if crate::domain::has_generated(&deployed) {
-        crate::deployment::cluster_domains(tx, id, &head)?
-    } else {
-        std::collections::BTreeMap::new()
-    };
-    view.effects = approval::destructive_effects(&deployed, &environment.working, &cluster_domains);
+    view.effects = approval::effects_of(tx, (id, &head), (&deployed, &environment.working))?;
     let saved_intent = saved.as_ref().map(|saved| &saved.intent);
     let names = crate::config_item::names_in(
         &[&environment.working, &head.intent, &head.applied]

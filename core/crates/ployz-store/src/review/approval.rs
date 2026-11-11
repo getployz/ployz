@@ -197,9 +197,24 @@ pub(crate) fn detached<'a>(
         })
 }
 
+/// What publishing `target` destroys of what is `running` in `environment`, whose
+/// `head` it reads the Cluster Domains of generated domains from.
+pub(crate) fn effects_of(
+    tx: &mut dyn Tx,
+    (environment, head): (&EnvironmentId, &Head),
+    (running, target): (&SavedEnvironmentIntent, &SavedEnvironmentIntent),
+) -> Result<BTreeSet<DestructiveEffect>, RpcError> {
+    let cluster_domains = if crate::domain::has_generated(running) {
+        crate::deployment::cluster_domains(tx, environment, head)?
+    } else {
+        BTreeMap::new()
+    };
+    Ok(destructive_effects(running, target, &cluster_domains))
+}
+
 /// What publishing `target` destroys of what is `running`, naming each generated domain
 /// under its Cluster Domain in `cluster_domains`, by node ID and prefix.
-pub(crate) fn destructive_effects(
+fn destructive_effects(
     running: &SavedEnvironmentIntent,
     target: &SavedEnvironmentIntent,
     cluster_domains: &BTreeMap<(String, String), Hostname>,

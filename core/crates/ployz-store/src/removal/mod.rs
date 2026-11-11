@@ -491,12 +491,7 @@ fn review_member(
     let namespace = deployment::namespace(tx, who, &environment.summary, true)?;
     let empty = scope::empty(&environment.working.environment_slug);
     let deployed = approval::deployed(&review.head);
-    let cluster_domains = if crate::domain::has_generated(&deployed) {
-        deployment::cluster_domains(tx, id, &review.head)?
-    } else {
-        BTreeMap::new()
-    };
-    let effects = approval::destructive_effects(&deployed, &empty, &cluster_domains);
+    let effects = approval::effects_of(tx, (id, &review.head), (&deployed, &empty))?;
     let removed = removed(&review.head.applied, &empty, &namespace)?;
     let names: Vec<&VolumeName> = removed.iter().map(|volume| &volume.name).collect();
     if let Some(unknown) = accept
