@@ -287,15 +287,6 @@ impl LocalMachine {
         self.admit_operator_volume(SET_VOLUME_COPY_CAPABILITY)
     }
 
-    /// Under Device enforcement an Operator's `SeedVolume` is refused before the switch
-    /// lock. It writes a copy's data into a Volume name the caller picks.
-    ///
-    /// # Errors
-    /// Returns [`Error::VolumeRefused`] naming `SeedVolume` under enforcement.
-    pub(crate) fn admit_operator_seed(&self) -> Result<(), Error> {
-        self.admit_operator_volume(SEED_VOLUME_CAPABILITY)
-    }
-
     fn admit_operator_volume(&self, capability: &'static str) -> Result<(), Error> {
         if self.record().device_enforcement() {
             return Err(Error::VolumeRefused { capability });

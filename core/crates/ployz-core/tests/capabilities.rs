@@ -702,7 +702,6 @@ mod coverage {
                 ("ployz.machine.enroll-for-recovery.v1", "F7"),
                 ("ployz.volume.remove.v1", "E6"),
                 ("ployz.volume.copy.set.v1", "E3 to E6"),
-                ("ployz.volume.size.set.v1", "E7"),
             ]
         );
     }

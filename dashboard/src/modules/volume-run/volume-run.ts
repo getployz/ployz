@@ -23,8 +23,9 @@ export const RUN_FEATURES = {
 type Destination = { readonly to: MachineName; readonly machine?: MachineId };
 
 /**
- * The Device-signed Mirror approval the CLI sends. The run sends it with every snapshot and pull, and the Mirror keeps
- * it for the syncs after. An enforcing Server refuses a pull without one; others ignore it.
+ * The Device-signed approval the CLI sends. A Mirror run sends it with every snapshot and pull, and the Mirror keeps it
+ * for the syncs after. A resize sends it with each Server's new size. An enforcing Server refuses those steps without
+ * one; others ignore it.
  */
 type Approved = { readonly approval?: Signed };
 
@@ -62,7 +63,7 @@ export type VolumeRunArgs = {
    * The size every copy is asked to hold, in whole bytes, as `SetVolumeSizeRequest` names it. The size it moves from
    * is the row's `recordedBytes`, read from the Store when the run was requested.
    */
-  resize: { readonly maximum_bytes: number };
+  resize: { readonly maximum_bytes: number } & Approved;
   /**
    * A Deploy's own lane while its Services run; `resume` is the move it took over, requested again once it ends. `hold`
    * marks a lane on a Volume no run held: it took nothing, so it is never fenced and leaves no row when the Deploy ends.

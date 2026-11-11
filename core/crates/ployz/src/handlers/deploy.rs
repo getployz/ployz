@@ -1051,6 +1051,7 @@ fn plan(
         environment: environment(matches)?,
         services,
         target: false,
+        deployment: None,
     })?;
     let hint = store.again(&["--expect-version", plan.version.as_str()]);
     let (ingress, ingress_unchecked) = match ingress_check(matches) {
@@ -1418,6 +1419,7 @@ pub(super) fn redeploy(root: &ArgMatches) -> Result<(), Error> {
                 .map(|device| std::mem::take(&mut device.approvals))
                 .unwrap_or_default(),
             awaits_approval: device.is_some(),
+            approval: None,
         }))
         .map_err(|error| {
             let asks = matches!(&error, StoreCallError::Refused(refusal)

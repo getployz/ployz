@@ -4097,8 +4097,7 @@ mod set_volume_copy {
         //! other wants and a Machine not enforcing are not.
 
         use ployz_core::{
-            OPERATOR_SCOPE_HEADER, SEED_REFUSED_BY_ENFORCEMENT, SEED_VOLUME_CAPABILITY,
-            SET_VOLUME_COPY_CAPABILITY, VOLUME_START_REFUSED_BY_ENFORCEMENT,
+            OPERATOR_SCOPE_HEADER, SET_VOLUME_COPY_CAPABILITY, VOLUME_START_REFUSED_BY_ENFORCEMENT,
         };
         use tonic::Status;
 
@@ -4365,7 +4364,11 @@ mod set_volume_copy {
             let status = operator_seed(&service, seed_request())
                 .await
                 .expect_err("an Operator's Seed must be refused");
-            refused(&status, SEED_VOLUME_CAPABILITY, SEED_REFUSED_BY_ENFORCEMENT);
+            refused(
+                &status,
+                ployz_core::VOLUME_APPROVAL_CAPABILITY,
+                "This Server refused the Volume step: the volume approval carries no signature",
+            );
             assert!(
                 plugin.routes_called().is_empty(),
                 "{:?}",
@@ -7298,5 +7301,409 @@ mod cluster_doors {
         assert_eq!(service.local.declared_doors().await, None);
         task.abort();
         std::fs::remove_dir_all(dir).ok();
+    }
+}
+
+mod resize_and_seed_under_approval {
+    //! An enforcing Machine runs an Operator's resize or seed only under a Device's approval
+    //! naming exactly what it asks, runs a resend while the step has not landed, and answers
+    //! a resend after it landed without running it again.
+
+    use ployz_core::{
+        DeviceKey, DockerVolumeName, MachineId, Namespace, OPERATOR_SCOPE_HEADER, OperationId,
+        ProvisionedVolumeMaximumBytes, RpcResponse, SealingPublicKey, SnapshotGuid,
+        VOLUME_APPROVAL_CAPABILITY,
+        authority::{Signed, Signer, SignerKey, Timestamp, VolumeApproval, VolumeWorkflow},
+        rpc::status_details,
+    };
+    use serde_json::{Value, json};
+    use tonic::Status;
+
+    use super::*;
+    use crate::storage::test_support::FakePlugin;
+
+    const SIZE_ROUTE: &str = "Volume.Size.Set";
+    const SEED_ROUTE: &str = "Volume.Seed";
+    const INSPECT_ROUTE: &str = "Volume.Inspect";
+    const GB: u64 = 1_000_000_000;
+
+    struct Enforced {
+        data_dir: std::path::PathBuf,
+        service: MachineService,
+        plugin: FakePlugin,
+        server: tokio::task::JoinHandle<()>,
+        signer: Signer,
+        cluster: SealingPublicKey,
+    }
+
+    impl Drop for Enforced {
+        fn drop(&mut self) {
+            self.server.abort();
+            let _ = std::fs::remove_dir_all(&self.data_dir);
+        }
+    }
+
+    async fn enforced(prefix: &str, enforcing: bool) -> Enforced {
+        let (data_dir, store, service, _fake) = fake_docker_service(prefix).await;
+        let signer = Signer::from_seed(&[7; 32]);
+        let device = DeviceKey::from(signer.public());
+        store
+            .mutate(move |store| {
+                store.approve_device(device).unwrap();
+                store.set_device_enforcement(enforcing, Vec::new()).unwrap();
+            })
+            .await
+            .unwrap();
+        let cluster = crate::sealing_key::SealingKey::load(&data_dir)
+            .unwrap()
+            .unwrap()
+            .public_key();
+        let plugin = FakePlugin::default();
+        let (socket, server) = plugin.serve(&data_dir);
+        Enforced {
+            service: service.with_volume_plugin(socket),
+            data_dir,
+            plugin,
+            server,
+            signer,
+            cluster,
+        }
+    }
+
+    fn bytes(gb: u64) -> ProvisionedVolumeMaximumBytes {
+        ProvisionedVolumeMaximumBytes::new(std::num::NonZeroU64::new(gb * GB).unwrap())
+    }
+
+    fn name(name: &str) -> DockerVolumeName {
+        DockerVolumeName::parse(name).unwrap()
+    }
+
+    impl Enforced {
+        fn this(&self) -> MachineId {
+            self.service.local.record().id()
+        }
+
+        fn sign(&self, volume: &str, workflow: VolumeWorkflow) -> Value {
+            let body = VolumeApproval {
+                cluster: self.cluster,
+                operation: OperationId::random(),
+                namespace: Namespace::parse("app").unwrap(),
+                volume: name(volume),
+                workflow,
+                issued_at: Timestamp::now(),
+                expires_at: Timestamp::now().plus(60_000),
+                signer: SignerKey::Device(DeviceKey::from(self.signer.public())),
+            };
+            serde_json::to_value(Signed::sign(&body, &self.signer).unwrap()).unwrap()
+        }
+
+        fn resize(&self, machines: Vec<MachineId>, gb: u64, shrink: bool) -> Value {
+            self.sign(
+                "app_data",
+                VolumeWorkflow::Resize {
+                    machines,
+                    maximum_bytes: bytes(gb),
+                    shrink,
+                },
+            )
+        }
+
+        fn seed(&self, into: &str, guid: u64) -> Value {
+            self.sign(
+                into,
+                VolumeWorkflow::Seed {
+                    machine: self.this(),
+                    source: name("app_source"),
+                    at: SnapshotGuid::new(guid),
+                },
+            )
+        }
+
+        async fn set_size(&self, request: Value) -> Result<RpcResponse, Status> {
+            let request = op::SetVolumeSize::into_request(serde_json::from_value(request).unwrap())
+                .encode()
+                .unwrap();
+            self.service
+                .set_volume_size(as_operator(Request::new(request)))
+                .await
+                .map(|response| response.into_inner().decode_response().unwrap())
+        }
+
+        async fn seed_volume(&self, request: Value) -> Result<RpcResponse, Status> {
+            let request = op::SeedVolume::into_request(serde_json::from_value(request).unwrap())
+                .encode()
+                .unwrap();
+            self.service
+                .seed_volume(as_operator(Request::new(request)))
+                .await
+                .map(|response| response.into_inner().decode_response().unwrap())
+        }
+
+        fn calls(&self, route: &str) -> usize {
+            self.plugin
+                .routes_called()
+                .iter()
+                .filter(|called| *called == route)
+                .count()
+        }
+    }
+
+    fn as_operator<T>(mut request: Request<T>) -> Request<T> {
+        request
+            .metadata_mut()
+            .insert(OPERATOR_SCOPE_HEADER, "1".parse().unwrap());
+        request
+    }
+
+    #[expect(clippy::indexing_slicing, reason = "JSON fixture assertions")]
+    fn refused(outcome: Result<RpcResponse, Status>, why: &str) {
+        let status = outcome.expect_err("the step must be refused");
+        assert_eq!(
+            status.code(),
+            Code::PermissionDenied,
+            "{}",
+            status.message()
+        );
+        assert!(status.message().contains(why), "{}", status.message());
+        let details = status_details(status.details()).unwrap();
+        assert_eq!(details["capability"], json!(VOLUME_APPROVAL_CAPABILITY));
+    }
+
+    fn size_request(gb: u64, allow_shrink: bool, approval: Option<Value>) -> Value {
+        json!({
+            "name": "app_data",
+            "maximum_bytes": gb * GB,
+            "allow_shrink": allow_shrink,
+            "approval": approval,
+        })
+    }
+
+    fn bound(gb: u64) -> Value {
+        json!({"Ok": {"bound_bytes": gb * GB}})
+    }
+
+    #[tokio::test]
+    async fn a_resize_runs_only_at_the_size_direction_and_servers_its_approval_names() {
+        let machine = enforced("ployzd-resize-gate", true).await;
+        machine.plugin.reply(SIZE_ROUTE, bound(20));
+        let other = MachineId::random();
+
+        refused(
+            machine.set_size(size_request(20, false, None)).await,
+            "carries no signature",
+        );
+        let grow = machine.resize(vec![machine.this()], 20, false);
+        for (request, why) in [
+            (size_request(30, false, Some(grow.clone())), "a Volume step"),
+            (size_request(20, true, Some(grow.clone())), "a Volume step"),
+            (
+                size_request(20, false, Some(machine.resize(vec![other], 20, false))),
+                "this Server",
+            ),
+            (
+                size_request(
+                    20,
+                    false,
+                    Some(machine.resize(vec![machine.this()], 20, true)),
+                ),
+                "a Volume step",
+            ),
+        ] {
+            refused(machine.set_size(request).await, why);
+        }
+        assert_eq!(machine.calls(SIZE_ROUTE), 0, "a refused resize reached ZFS");
+
+        let held = machine
+            .set_size(size_request(20, false, Some(grow)))
+            .await
+            .unwrap()
+            .decode::<op::SetVolumeSize>()
+            .unwrap();
+        assert_eq!(held.bound_bytes, bytes(20));
+        assert_eq!(machine.calls(SIZE_ROUTE), 1);
+    }
+
+    #[tokio::test]
+    async fn a_resend_runs_until_the_bound_lands_then_answers_it_without_a_write() {
+        let machine = enforced("ployzd-resize-resend", true).await;
+        let shrink = machine.resize(vec![machine.this()], 10, true);
+        machine.plugin.reply(
+            SIZE_ROUTE,
+            json!({"Err": {"code":"conflict", "message":"switching",
+                "details": {"reason":"switching", "bound_bytes": 20 * GB}}}),
+        );
+        let switching = machine
+            .set_size(size_request(10, true, Some(shrink.clone())))
+            .await
+            .unwrap();
+        assert!(switching.decode::<op::SetVolumeSize>().is_err());
+
+        machine.plugin.reply(SIZE_ROUTE, bound(10));
+        for _ in 0..2 {
+            let held = machine
+                .set_size(size_request(10, true, Some(shrink.clone())))
+                .await
+                .unwrap()
+                .decode::<op::SetVolumeSize>()
+                .unwrap();
+            assert_eq!(held.bound_bytes, bytes(10));
+        }
+        assert_eq!(
+            machine.calls(SIZE_ROUTE),
+            2,
+            "a resend after the bound landed wrote again"
+        );
+
+        refused(
+            machine.set_size(size_request(12, true, Some(shrink))).await,
+            "already",
+        );
+    }
+
+    #[tokio::test]
+    async fn a_resize_from_an_operator_needs_no_approval_on_a_machine_that_does_not_enforce() {
+        let machine = enforced("ployzd-resize-off", false).await;
+        machine.plugin.reply(SIZE_ROUTE, bound(20));
+        machine
+            .set_size(size_request(20, false, None))
+            .await
+            .unwrap()
+            .decode::<op::SetVolumeSize>()
+            .unwrap();
+        assert_eq!(machine.calls(SIZE_ROUTE), 1);
+    }
+
+    fn seed_request(into: &str, guid: u64, approval: Option<Value>) -> Value {
+        json!({"name": "app_source", "into": into, "guid": guid.to_string(), "approval": approval})
+    }
+
+    fn copying() -> Value {
+        json!({"Ok": {"copy": {"kind":"slot", "slot":"1", "readonly":true, "newest":null,
+            "resume_token":null, "pull":null, "role":"mirror"}}})
+    }
+
+    fn landed() -> Value {
+        json!({"Ok": {"copy": {"kind":"root", "readonly":true, "newest":null, "epoch":0,
+            "seed":true}}})
+    }
+
+    #[tokio::test]
+    async fn a_seed_runs_only_into_the_volume_from_the_snapshot_its_approval_names() {
+        let machine = enforced("ployzd-seed-gate", true).await;
+        machine.plugin.reply(SEED_ROUTE, copying());
+        let approval = machine.seed("app_restored", 77);
+
+        refused(
+            machine
+                .seed_volume(seed_request("app_restored", 77, None))
+                .await,
+            "carries no signature",
+        );
+        refused(
+            machine
+                .seed_volume(seed_request("app_other", 77, Some(approval.clone())))
+                .await,
+            "a Volume",
+        );
+        refused(
+            machine
+                .seed_volume(seed_request("app_restored", 78, Some(approval.clone())))
+                .await,
+            "a Volume step",
+        );
+        assert_eq!(machine.calls(SEED_ROUTE), 0, "a refused seed reached ZFS");
+
+        machine
+            .seed_volume(seed_request("app_restored", 77, Some(approval)))
+            .await
+            .unwrap()
+            .decode::<op::SeedVolume>()
+            .unwrap();
+        assert_eq!(machine.calls(SEED_ROUTE), 1);
+    }
+
+    #[tokio::test]
+    async fn a_seed_is_resent_while_it_copies_and_once_landed_is_only_read() {
+        let machine = enforced("ployzd-seed-resend", true).await;
+        let approval = machine.seed("app_restored", 77);
+        let request = seed_request("app_restored", 77, Some(approval));
+        machine.plugin.reply(SEED_ROUTE, copying());
+        for _ in 0..2 {
+            machine.seed_volume(request.clone()).await.unwrap();
+        }
+        machine.plugin.reply(SEED_ROUTE, landed());
+        machine.seed_volume(request.clone()).await.unwrap();
+        assert_eq!(machine.calls(SEED_ROUTE), 3);
+
+        machine.plugin.reply(INSPECT_ROUTE, landed());
+        let view = machine
+            .seed_volume(request)
+            .await
+            .unwrap()
+            .decode::<op::SeedVolume>()
+            .unwrap();
+        assert!(
+            matches!(view.copy, Some(ployz_core::VolumeCopy::Root { .. })),
+            "{view:?}"
+        );
+        assert_eq!(
+            machine.calls(SEED_ROUTE),
+            3,
+            "a resend after the seed landed copied again"
+        );
+        assert_eq!(machine.calls(INSPECT_ROUTE), 1);
+    }
+
+    #[tokio::test]
+    async fn a_resend_queued_behind_the_resize_that_lands_writes_nothing() {
+        use std::future::Future;
+        let machine = enforced("ployzd-resize-queued", true).await;
+        let (calls, replies) = (machine.plugin.calls.clone(), machine.plugin.replies.clone());
+        let applied = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let seen = applied.clone();
+        // Answer each SetVolumeSize with the bound it asked for, and keep the order.
+        machine.plugin.on(SIZE_ROUTE, move || {
+            let wanted = calls
+                .lock()
+                .unwrap()
+                .last()
+                .unwrap()
+                .1
+                .get("maximum_bytes")
+                .unwrap()
+                .as_u64()
+                .unwrap();
+            seen.lock().unwrap().push(wanted / GB);
+            replies.lock().unwrap().insert(
+                SIZE_ROUTE.to_owned(),
+                json!({"Ok": {"bound_bytes": wanted}}),
+            );
+        });
+        let shrink = machine.resize(vec![machine.this()], 10, true);
+        let grow = machine.resize(vec![machine.this()], 20, false);
+
+        // Queue the shrink, a later grow, and a resend of the shrink behind one switch.
+        let held = machine.service.switch_mutation.lock().await;
+        let first = machine.set_size(size_request(10, true, Some(shrink.clone())));
+        let later = machine.set_size(size_request(20, false, Some(grow)));
+        let resend = machine.set_size(size_request(10, true, Some(shrink)));
+        tokio::pin!(first, later, resend);
+        std::future::poll_fn(|cx| {
+            assert!(first.as_mut().poll(cx).is_pending());
+            assert!(later.as_mut().poll(cx).is_pending());
+            assert!(resend.as_mut().poll(cx).is_pending());
+            std::task::Poll::Ready(())
+        })
+        .await;
+        drop(held);
+        let (first, later, resend) = tokio::join!(first, later, resend);
+        for reply in [first, later, resend] {
+            reply.unwrap().decode::<op::SetVolumeSize>().unwrap();
+        }
+        assert_eq!(
+            *applied.lock().unwrap(),
+            vec![10, 20],
+            "the queued resend shrank again after its operation ended"
+        );
     }
 }

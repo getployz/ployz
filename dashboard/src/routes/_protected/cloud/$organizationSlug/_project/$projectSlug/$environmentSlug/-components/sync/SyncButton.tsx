@@ -1,7 +1,7 @@
 import { Suspense, useState } from "react";
 import { useLoaderData, useNavigate, useParams } from "@tanstack/react-router";
 import { toast } from "sonner";
-import type { BranchView, EnvironmentListing, EnvironmentRef, Synced } from "@ployz/sdk";
+import type { BranchView, ConfigCommand, EnvironmentListing, EnvironmentRef, Synced } from "@ployz/sdk";
 import { ChevronDownIcon, GitBranchIcon } from "lucide-react";
 import { getDashboardDestination } from "#/components/dashboard-navigation-model";
 import { DeletionDialog, type DeletionItem } from "#/components/deletion-dialog";
@@ -23,6 +23,8 @@ import {
 } from "#/modules/config-store/store-view.queries";
 import { removalDeployment, storeEnvironmentTree } from "#/modules/config-store/store-workspace";
 import { useStoreWriter } from "#/modules/config-store/store-write";
+import { useDeployApprovals } from "#/modules/config-store/use-deploy-approvals";
+import { toErrorMessage } from "#/lib/error-message";
 import { ENVIRONMENT_ROUTE_FROM, type EnvironmentRouteParams } from "../environment-route-paths";
 import { useStoreBranchClose } from "./branch-close";
 import { SyncDialog } from "./SyncDialog";
@@ -97,6 +99,7 @@ function BranchSync({ params, store, branch, environments }: {
   const closed = deployment?.in_flight === true;
   // Its main half syncs into the Parent.
   const state = syncButtonState(branch, removal);
+  const approvals = useDeployApprovals(params.organizationSlug);
   // Warm the main half's dialog.
   useCachedStoreView(params.organizationSlug, syncQuery(store, state.into));
   // The Store closes a Branch only once its own Branches are gone.
@@ -105,6 +108,22 @@ function BranchSync({ params, store, branch, environments }: {
   const synced = useSynced(params, name);
   const [kept, holdKept] = useCommitHold(branch.kept);
   const syncing = useStoreBusy(params.organizationSlug, store).has("syncing");
+
+  /** On Servers that enforce Device approval the person approves what it ships first; a cancel deploys nothing. */
+  async function deployAgain() {
+    const id = crypto.randomUUID();
+    let approved;
+    try {
+      approved = await approvals.deploy(store, id, { project: store.project, environment: state.into });
+    } catch (error) {
+      toast.error(toErrorMessage(error, "Couldn't approve the deploy"));
+      return;
+    }
+    if (approved === null) return;
+    const command: ConfigCommand = { command: "admit", admit: "deploy", id, environment: store, services: [], version: approved?.version ?? null, accept_volume_loss: [] };
+    if (approved !== undefined) command.approval = approved.approval;
+    writer.commit(command);
+  }
 
   return (
     <>
@@ -131,9 +150,7 @@ function BranchSync({ params, store, branch, environments }: {
               </DropdownMenuCheckboxItem>
               {/* Off until the next push; one shut down comes back with a Deploy before that. */}
               {shuttable && deployment?.status === "applied" && !deployment.in_flight ? (
-                <DropdownMenuItem onClick={() => {
-                  writer.commit({ command: "admit", admit: "deploy", id: crypto.randomUUID(), environment: store, services: [], version: null, accept_volume_loss: [] });
-                }}>Deploy {name}</DropdownMenuItem>
+                <DropdownMenuItem onClick={() => void deployAgain()}>Deploy {name}</DropdownMenuItem>
               ) : shuttable ? (
                 <DropdownMenuItem disabled={closed} onClick={() => void closing.start(true)}>
                   Shut down until the next push

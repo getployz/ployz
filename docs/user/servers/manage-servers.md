@@ -365,7 +365,8 @@ A rule names the servers it was approved for, so after you add a server, approve
 
 Enforcement also stops volume moves until a later release. Ployz Cloud can't move a volume or
 restore a point into a new volume on servers that enforce, and refuses before your service stops.
-Mirrors, syncs, restoring a volume in place, resizes and deploys keep working. To move a volume,
+Mirrors, syncs, restoring a volume in place and deploys keep working. A resize runs only under
+an approved device's approval, which `ployz volume set --size` signs. To move a volume,
 turn enforcement off first. See
 [Servers that enforce device approval](../services/move-a-volume.md#servers-that-enforce-device-approval).
 

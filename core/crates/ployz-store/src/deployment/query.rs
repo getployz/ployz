@@ -30,6 +30,12 @@ pub struct PlanQuery {
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     #[ts(optional, as = "Option<bool>")]
     pub target: bool,
+    /// Plan a redeploy of this ended Deployment of the Environment instead: what it
+    /// froze, lowered as its redeploy's runner will lower it, for a Device to approve.
+    /// It names no Services and lists no changes.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub deployment: Option<DeploymentId>,
 }
 
 /// The authored review of a Deploy. What only the Servers can decide is `unresolved`.
@@ -215,6 +221,9 @@ pub(crate) fn plan(
     query: &PlanQuery,
 ) -> Result<PlanView, RpcError> {
     let environment = scope::environment(tx, who, &query.environment)?;
+    if let Some(id) = &query.deployment {
+        return redeploy_plan(tx, who, trusted, (environment, id), query);
+    }
     let mut review = review::review(tx, &environment)?;
     let rows = review::service_rows(&mut review.view.changes);
     crate::domain::name_generated(tx, &environment, &review.head, trusted, rows)?;
@@ -280,6 +289,55 @@ pub(crate) fn plan(
         changes,
         unresolved,
         target: lowered,
+    })
+}
+
+/// A redeploy of Deployment `id` of `environment`, which ships its source's frozen
+/// revision, Namespace and Cluster Domain whatever was saved since. With `target`, the
+/// specs its runner will lower at claim, by the same lowering, for a Device to approve
+/// before it admits the redeploy.
+fn redeploy_plan(
+    tx: &mut dyn Tx,
+    who: &Actor,
+    trusted: &crate::Trusted,
+    (environment, id): (scope::Environment, &DeploymentId),
+    query: &PlanQuery,
+) -> Result<PlanView, RpcError> {
+    if !query.services.is_empty() {
+        return Err(error::invalid(
+            "A redeploy ships what its Deployment shipped: name no Services",
+            json!({ "deployment": id, "services": query.services }),
+        ));
+    }
+    let stored = deployment::owned(tx, who, id)?;
+    if stored.summary.environment_id != environment.summary.id {
+        return Err(error::not_found(
+            format!("{} has no such Deployment", environment.summary.name),
+            json!({ "deployment": id }),
+        ));
+    }
+    let target = match query.target {
+        true => {
+            trusted.writes(&environment.summary.name)?;
+            let saved = deployment::held_revision(tx, &stored)?;
+            let lowered = deployment::lowered(tx, &stored, &saved)?;
+            let mut target = lowered.intent.target;
+            // A narrowed Deployment creates only what it ships, as a narrowed Deploy does.
+            if !stored.summary.services.is_empty() {
+                target.retain(|spec| lowered.shipped.contains(&spec.name));
+            }
+            Some(target)
+        }
+        false => None,
+    };
+    let version = review::review(tx, &environment)?.view.version;
+    Ok(PlanView {
+        namespace: stored.namespace().clone(),
+        environment: environment.summary,
+        version,
+        changes: Vec::new(),
+        unresolved: vec!["operations".to_owned()],
+        target,
     })
 }
 

@@ -448,6 +448,7 @@ impl Tool for DeploymentRetry {
             accept_volume_loss: self.accept_volume_loss,
             approvals: Vec::new(),
             awaits_approval: false,
+            approval: None,
         });
         let summary = cx.write(&retry)?;
         let retries = source.deployment.number;

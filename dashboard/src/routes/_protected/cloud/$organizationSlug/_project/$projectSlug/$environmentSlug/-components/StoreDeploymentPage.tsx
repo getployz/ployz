@@ -24,6 +24,8 @@ import { useStoreCancelling } from "#/modules/config-store/store-pending";
 import { useStoreWriter } from "#/modules/config-store/store-write";
 import { StoreRefused } from "#/modules/config-store/store.contract";
 import { useVolumeLossCheck, type VolumeLossCheck } from "#/modules/config-store/use-volume-loss-check";
+import { useDeployApprovals } from "#/modules/config-store/use-deploy-approvals";
+import { toErrorMessage } from "#/lib/error-message";
 import { useCopiesWait, useStorageSteps } from "#/modules/volume-placement/volume-placement.hooks";
 import { useDeploymentCleanup } from "#/modules/config-store/retire-old.queries";
 import { formatDuration } from "#/utils/relative-time";
@@ -224,20 +226,32 @@ function StoreDeploymentActions({ deployment, storage, noServers, search, onCanc
   const rollsBack = fresh ?? deployment.rolls_back;
   const rollback = rollbackConfirm({ number: deployment.number, rolls_back: [...rollsBack] });
   const copiesWait = useCopiesWait(params.organizationSlug, useLoaderData({ from: ENVIRONMENT_ROUTE_FROM }).environmentId);
+  const approvals = useDeployApprovals(params.organizationSlug);
 
   /**
    * This modal is the person's consent to roll back exactly what it named, so no Approval asks again; the Store refuses
-   * when that changed, and the modal asks again. Deleting data a newer Deployment brought back asks by name. Resolves
+   * when that changed, and the modal asks again. Deleting data a newer Deployment brought back asks by name. On Servers
+   * that enforce Device approval, the person approves what it ships first, and nothing goes when they cancel. Resolves
    * with the Volume loss to ask about, if any.
    */
   async function redeploy(acceptance: Acceptance = { accept: [], version: null }): Promise<VolumeLossCheck | null> {
     const id = crypto.randomUUID();
     setRedeploying(true);
     try {
+      let approved;
+      try {
+        approved = await approvals.redeploy(deployment, id);
+      } catch (error) {
+        toast.error(toErrorMessage(error, "Couldn't approve the redeploy"));
+        return null;
+      }
+      if (approved === null) return null;
       await writer.commit({
         command: "admit", admit: "retry", id, deployment: deployment.id, rolls_back: [...rollsBack],
         version: acceptance.version, accept_volume_loss: [...acceptance.accept],
+        ...approved?.fields,
       }, ["confirmation_required"]);
+      if (approved?.again) approvals.follow(id, approved.again);
       void navigate(deploymentDestination(params, id, { job: search.job, origin: search.origin }));
       return null;
     } catch (error) {
