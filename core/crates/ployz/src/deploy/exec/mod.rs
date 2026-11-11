@@ -716,7 +716,7 @@ where
     let deadline = Instant::now() + RESTART_WAIT;
     // What earlier attempts showed of the Machine. A real answer clears the other two, and
     // a lost reply and a silence each clear the other. A Machine that answered was not
-    // silent throughout: its answer stands in for a later silence, as `call_retried` keeps it.
+    // silent throughout: its answer stands in for a later silence, as `Client::repeat` keeps it.
     let mut answer: Option<RpcError> = None;
     // A send whose answer was lost: the Machine may have done it.
     let mut lost: Option<RpcError> = None;

@@ -1318,7 +1318,7 @@ fn a_closed_session_does_not_outlast_a_later_silence() {
     };
     let machine = MachineId::parse("b".repeat(32)).unwrap();
     for silence in [budget_spent(), routed_silence()] {
-        // As `call_retried`: the closed session first, then the redialled target is silent.
+        // As `Client::repeat`: the closed session first, then the redialled target is silent.
         let mut reply = None;
         let error = keep_target_reply(&mut reply, closed());
         assert!(!error.target_replied(), "no daemon sent it");
