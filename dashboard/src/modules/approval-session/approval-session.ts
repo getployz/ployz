@@ -9,8 +9,10 @@
  */
 import type { ActionFamily, DeployTerms, PlanView, ServiceVerb, SessionGrant, Signed } from "@ployz/sdk";
 import { deployApprovalBody } from "@ployz/sdk/authority";
+import { Schema } from "effect";
 import type { JsonValue } from "#/db/tables";
 import { asBoolean, asFiniteNumber, asRecord, asString } from "#/lib/json";
+import { shownText } from "#/modules/github/preview-review";
 import { storeVersion } from "#/modules/volume-placement/volume-placement";
 import { base64url, passkeyAnswer, PasskeyRefused, signingInput, statementChallenge } from "./passkey-statement";
 
@@ -280,23 +282,68 @@ export const SESSION_GRANT_CAPABILITY = "ployz.restart.session-grant.v2";
 const DEPLOY_CAPABILITIES = ["ployz.container.deploy-approval.v1", SESSION_GRANT_CAPABILITY] as const;
 /** Each Server must take an automatic deploy rule a passkey answered with its own prompt before one goes to it. */
 export const RULE_CAPABILITIES = ["ployz.container.deploy-rule.v1", "ployz.rule.passkey.v1"] as const;
+/** Each Server must take a browser's approval of a redeploy's commits, in place of its branch head, before one goes to it. */
+export const COMMIT_CAPABILITIES = ["ployz.rule.commit-approval.v1", SESSION_GRANT_CAPABILITY] as const;
 
 /** A Store plan read with `target`, as the browser signs a Deploy of it. */
 export type DeployPlan = Pick<PlanView, "version" | "namespace" | "target">;
 
-/** What a Deploy's approval holds, and what it shows the person: an `Approved web: nginx@sha256:…` line per Service, then each setting it signs, indented. */
+/**
+ * What a Deploy's approval holds, and what it shows the person: an `Approved web: nginx@sha256:…` line per Service, then
+ * each setting it signs, indented, then the terms it signs them under.
+ */
 export type DeployApproved = { readonly approval: Signed; readonly lines: readonly string[] };
 
 /**
- * Deployment `deployment`'s approval in `scope`, signed by the session's browser key and lasting its full 15 minutes.
- * The browser builds the body itself from `plan`, the plan it read at `version`, the version of the review the person
- * pressed Deploy on: each Service's digest is taken by the ployz-core code the CLI and the Servers run, so Cloud
- * computes nothing the key signs. Refused, before anything is signed, for a plan of another version or Environment.
+ * Approvals this browser drafted under the session, before it signs them: the exact bodies it will sign, every term they
+ * hold as the person reads it, and the session key and window they name.
  */
-export async function approveDeploy(scope: ApprovalScope, deployment: string, version: string, plan: DeployPlan, now = Date.now()): Promise<DeployApproved> {
-  const { grant, publicKey, key } = signer(scope, ["deploy"], [], now);
-  const sent = storeVersion(version);
-  if (plan.namespace !== scope.namespace || (sent !== plan.version && !sent.startsWith(`${plan.version}:`))) {
+export type Drafted = { readonly bodies: readonly string[]; readonly lines: readonly string[]; readonly signer: string; readonly expiresAt: number };
+
+const fromHex = (text: string) => new Uint8Array((text.match(/../g) ?? []).map((pair) => Number.parseInt(pair, 16)));
+
+/** `2026-11-11T03:19:09Z`: a time a body signs, in UTC, as the CLI prints it. */
+const utc = (at: number) => new Date(at).toISOString().replace(/\.\d{3}Z$/, "Z");
+
+/** The terms every body of one draft shares, as this browser wrote them: the Cluster, the signer and the window. */
+const SharedTerms = Schema.fromJsonString(Schema.Struct({
+  cluster: Schema.String,
+  issued_at: Schema.Number,
+  expires_at: Schema.Number,
+  signer: Schema.Struct({ browser: Schema.String }),
+}));
+const DeployBodyTerms = Schema.fromJsonString(Schema.Struct({ operation: Schema.String, namespace: Schema.String, machines: Schema.Array(Schema.String) }));
+const CommitBody = Schema.fromJsonString(Schema.Struct({ service: Schema.String, commit: Schema.String, rule: Schema.String, generation: Schema.Number }));
+
+/** The terms a body shares with every body of its draft, read back from its own bytes. */
+async function sharedLines(body: string): Promise<string[]> {
+  const terms = Schema.decodeUnknownSync(SharedTerms)(body);
+  return [
+    `  cluster ${shownText(terms.cluster)}`,
+    `  signer browser key ${shownText(await keyCode(fromHex(terms.signer.browser)))}`,
+    `  valid ${shownText(utc(terms.issued_at))} to ${shownText(utc(terms.expires_at))}`,
+  ];
+}
+
+/** A deploy approval's terms besides its Services, from its own bytes: the Deployment, the Servers, then the shared ones. */
+async function deployTermLines(body: string): Promise<string[]> {
+  const terms = Schema.decodeUnknownSync(DeployBodyTerms)(body);
+  return [
+    `  deployment ${shownText(terms.operation)}`,
+    `  namespace ${shownText(terms.namespace)}`,
+    `  servers ${terms.machines.map(shownText).join(", ")}`,
+    ...(await sharedLines(body)),
+  ];
+}
+
+/**
+ * Deployment `deployment`'s approval in `scope` as this browser would sign it now, under the session's browser key for
+ * its full 15 minutes, before it signs: the body built from `plan` by the ployz-core code the CLI and the Servers run,
+ * so Cloud computes nothing the key signs, and every term it holds. Refused for a plan of another Environment.
+ */
+export async function draftDeploy(scope: ApprovalScope, deployment: string, plan: DeployPlan, now = Date.now()): Promise<Drafted> {
+  const { publicKey } = signer(scope, ["deploy"], [], now);
+  if (plan.namespace !== scope.namespace) {
     throw new SessionRefused("The Environment changed after this review. Review the latest changes and try again.");
   }
   const terms = {
@@ -314,8 +361,72 @@ export async function approveDeploy(scope: ApprovalScope, deployment: string, ve
   } catch (error) {
     throw new SessionRefused(error instanceof Error ? error.message : "This browser couldn't approve the deploy. Try again.");
   }
-  const signature = hex(await crypto.subtle.sign({ name: "Ed25519" }, key.privateKey, signingInput(drafted.body)));
-  return { approval: { body: drafted.body, signatures: [{ key: publicKey, signature }], grants: [grant] }, lines: drafted.lines };
+  return { bodies: [drafted.body], lines: [...drafted.lines, ...(await deployTermLines(drafted.body))], signer: publicKey, expiresAt: terms.expires_at };
+}
+
+/** A redeploy's approval of each Service's commit, under the Environment's automatic deploy rule as Cloud relays it. */
+export type CommitTerms = {
+  readonly rule: string;
+  readonly generation: number;
+  readonly commits: readonly { readonly service: string; readonly commit: string }[];
+};
+
+/**
+ * A `CommitApproval` per Service of a redeploy in `scope`, as this browser would sign it now under the session's browser
+ * key for its full 15 minutes, before it signs, and every term the bodies hold, read back from them as `ployz deployment
+ * redeploy` prints its own. The rule and generation are Cloud's, echoed for each Server to compare with its own.
+ */
+export async function draftCommits(scope: ApprovalScope, terms: CommitTerms, now = Date.now()): Promise<Drafted> {
+  const { publicKey } = signer(scope, ["deploy"], [], now);
+  const bodies = terms.commits.map(({ service, commit }) => canonicalJson({
+    cluster: scope.cluster,
+    commit,
+    expires_at: now + APPROVAL_MS,
+    generation: terms.generation,
+    issued_at: now,
+    rule: terms.rule,
+    service,
+    signer: { browser: publicKey },
+  }));
+  const opened = bodies.map((body) => Schema.decodeUnknownSync(CommitBody)(body));
+  const [first] = opened;
+  if (first === undefined || bodies[0] === undefined) throw new SessionRefused("This redeploy built nothing from a commit. Nothing deployed.");
+  const lines = [
+    "Approving commits for this redeploy:",
+    ...opened.map((body) => `  ${shownText(body.service)} at ${shownText(body.commit)}`),
+    `  rule ${shownText(first.rule)}, generation ${shownText(String(first.generation))}`,
+    ...(await sharedLines(bodies[0])),
+  ];
+  return { bodies, lines, signer: publicKey, expiresAt: now + APPROVAL_MS };
+}
+
+/**
+ * Exactly `drafted`'s bodies, each signed by the session's browser key with its grant beside it. Refused once the
+ * session holds another key, or once the approval expired, as when the person answered late: nothing is signed then.
+ */
+export async function signDrafted(drafted: Drafted, now = Date.now()): Promise<Signed[]> {
+  const live = current;
+  if (live === null || live.publicKey !== drafted.signer) throw new SessionRefused("Confirm it's you again.");
+  if (now >= drafted.expiresAt) throw new SessionRefused("Your approval expired before you answered. Nothing deployed.");
+  return Promise.all(drafted.bodies.map(async (body) => {
+    const signature = hex(await crypto.subtle.sign({ name: "Ed25519" }, live.key.privateKey, signingInput(body)));
+    return { body, signatures: [{ key: live.publicKey, signature }], grants: [live.grant] } satisfies Signed;
+  }));
+}
+
+/**
+ * Deployment `deployment`'s approval in `scope`, drafted from `plan` and signed at once: Deploy's own, after the review
+ * the person pressed it on. Refused, before anything is signed, for a plan of another version or Environment.
+ */
+export async function approveDeploy(scope: ApprovalScope, deployment: string, version: string, plan: DeployPlan, now = Date.now()): Promise<DeployApproved> {
+  const sent = storeVersion(version);
+  if (sent !== plan.version && !sent.startsWith(`${plan.version}:`)) {
+    throw new SessionRefused("The Environment changed after this review. Review the latest changes and try again.");
+  }
+  const drafted = await draftDeploy(scope, deployment, plan, now);
+  const [approval] = await signDrafted(drafted, now);
+  if (approval === undefined) throw new SessionRefused("This browser couldn't approve the deploy. Try again.");
+  return { approval, lines: drafted.lines };
 }
 
 type ScopeMachine = {

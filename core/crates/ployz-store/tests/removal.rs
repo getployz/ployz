@@ -1142,6 +1142,7 @@ fn shutting_down_what_never_ran_applies_at_once() {
             accept_volume_loss: Vec::new(),
             approvals: Vec::new(),
             awaits_approval: false,
+            approval: None,
         }),
         &Trusted::default(),
     );
@@ -1703,6 +1704,7 @@ fn retrying_a_failed_shutdown_asks_again() {
                 accept_volume_loss: Vec::new(),
                 approvals: Vec::new(),
                 awaits_approval: false,
+                approval: None,
             }),
             trusted,
         )
@@ -1742,6 +1744,7 @@ fn an_agent_retrying_a_shutdown_with_no_server_left_still_asks_a_human() {
                 accept_volume_loss: Vec::new(),
                 approvals: Vec::new(),
                 awaits_approval: false,
+                approval: None,
             }),
             trusted,
         )

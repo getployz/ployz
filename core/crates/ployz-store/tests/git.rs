@@ -600,6 +600,7 @@ fn a_git_build_pins_its_commit_once_and_records_progress_log_and_receipt() {
                 accept_volume_loss: Vec::new(),
                 approvals: Vec::new(),
                 awaits_approval: false,
+                approval: None,
             }),
             &ployz_store::Trusted::default(),
         )
@@ -678,6 +679,7 @@ fn redeploying_an_older_applied_deployment_builds_the_commit_it_pinned() {
                 accept_volume_loss: Vec::new(),
                 approvals: Vec::new(),
                 awaits_approval: false,
+                approval: None,
             }),
             &ployz_store::Trusted::default(),
         )

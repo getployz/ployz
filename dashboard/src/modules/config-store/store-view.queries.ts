@@ -297,6 +297,11 @@ export function deployPlanQuery(environment: EnvironmentRef): { query: "plan" } 
   return { query: "plan", environment, services: [], target: true };
 }
 
+/** A redeploy of Deployment `deployment`, lowered as its runner will lower it, for this browser to approve. */
+export function redeployPlanQuery(environment: EnvironmentRef, deployment: string): { query: "plan" } & PlanQuery {
+  return { query: "plan", environment, services: [], target: true, deployment };
+}
+
 /** An Environment's automatic deploy rule, beside the Saved settings a new approval of it would pin. */
 export function ruleQuery(environment: EnvironmentRef): { query: "rule" } & RuleQuery {
   return { query: "rule", environment };

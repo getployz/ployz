@@ -821,6 +821,7 @@ fn cancelled_hold_cannot_be_retried() {
                 accept_volume_loss: Vec::new(),
                 approvals: Vec::new(),
                 awaits_approval: false,
+                approval: None,
             }),
             &Trusted::default(),
         )

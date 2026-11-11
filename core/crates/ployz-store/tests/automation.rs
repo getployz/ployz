@@ -2310,6 +2310,7 @@ fn redeploy(
         accept_volume_loss: Vec::new(),
         approvals,
         awaits_approval: true,
+        approval: None,
     }
 }
 
@@ -2495,6 +2496,7 @@ fn a_redeploys_approved_build_walks_only_github_whatever_builder_it_prefers() {
     // Without one it walks the Build Order, as any redeploy does.
     let plain = ployz_store::Retry {
         awaits_approval: false,
+        approval: None,
         ..redeploy(5, &pushed, Vec::new())
     };
     store

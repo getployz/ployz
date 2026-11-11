@@ -1,6 +1,6 @@
 import { createContext, use, useState, type ReactNode } from "react";
 import { useLoaderData, useNavigate, useParams } from "@tanstack/react-router";
-import type { BranchPreset } from "@ployz/sdk";
+import type { BranchPreset, ConfigCommand } from "@ployz/sdk";
 import { getDashboardDestination } from "#/components/dashboard-navigation-model";
 import { Button } from "#/components/ui/button";
 import { Empty, EmptyDescription } from "#/components/ui/empty";
@@ -14,6 +14,9 @@ import { dnsLabelError, uniqueName } from "#/modules/config-store/store-services
 import { prPlansQuery } from "#/modules/config-store/store-pull-requests";
 import { branchPlanQuery, environmentsQuery, useBranchPlan, useCachedStoreView, useStoreView } from "#/modules/config-store/store-view.queries";
 import { useStoreWriter } from "#/modules/config-store/store-write";
+import { useDeployApprovals } from "#/modules/config-store/use-deploy-approvals";
+import { toErrorMessage } from "#/lib/error-message";
+import { toast } from "sonner";
 import { useRuntimeLens } from "#/modules/runtime/use-runtime-lens";
 import { AddServersDialog } from "#/routes/_protected/cloud/$organizationSlug/_org/~/servers/-components/add-servers-dialog";
 import type { SetupCommand } from "#/modules/config-store/branch-picks";
@@ -83,6 +86,7 @@ export function StoreNewBranchPanel({ focus, fix }: { focus: string | null; fix:
   const picking = usePickingView();
   const refusal = use(PlanRefusalContext);
   const writer = useStoreWriter(params.organizationSlug);
+  const approvals = useDeployApprovals(params.organizationSlug);
   const navigate = useNavigate();
   const listing = useStoreView(params.organizationSlug, environmentsQuery(params.projectSlug));
   const taken = new Set(listing.ok ? listing.value.environments.map((environment) => environment.name) : []);
@@ -124,8 +128,20 @@ export function StoreNewBranchPanel({ focus, fix }: { focus: string | null; fix:
         setup: branchSetupCommands(plan, setupCommands).map((setup) => ({ service: setup.lineageId, command: setup.command })),
         fix,
       });
-      // The writer toasts a refused Deploy; the Branch is made either way.
-      if (deployNow) writer.commit({ command: "admit", admit: "deploy", id: crypto.randomUUID(), environment: branch, services: [], version: null, accept_volume_loss: [] });
+      // The writer toasts a refused Deploy; the Branch is made either way. On Servers that enforce Device approval the
+      // person approves what it ships first, and a cancel leaves the Branch undeployed.
+      if (deployNow) {
+        const id = crypto.randomUUID();
+        const approved = await approvals.deploy(branch, id, store).catch((error: Error) => {
+          toast.error(toErrorMessage(error, "Couldn't approve the deploy"));
+          return null;
+        });
+        if (approved !== null) {
+          const command: ConfigCommand = { command: "admit", admit: "deploy", id, environment: branch, services: [], version: approved?.version ?? null, accept_volume_loss: [] };
+          if (approved !== undefined) command.approval = approved.approval;
+          writer.commit(command);
+        }
+      }
       await navigate(getDashboardDestination({
         kind: "environment", organizationSlug: params.organizationSlug, projectSlug: params.projectSlug, environmentSlug: branch.environment,
       }, "architecture"));
