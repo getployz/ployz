@@ -284,6 +284,7 @@ it("won't open the ports from the unfinished-setup alert once the tunnel is set 
 
 it.each(["set_up", "active"] as const)("lets a Cluster founded after a removal open its ports and set Cloudflare up, though the removed one held a %s row", async (was) => {
   await priorRow(was);
+  await switching();
   await harness.runEffect(Effect.gen(function* () {
     const database = yield* Database;
     yield* database.transaction(endClusterIngress(ORG));
