@@ -4,8 +4,8 @@
 
 use futures_util::{StreamExt, stream};
 use ployz_core::{
-    Ciphertext, ContainerRuntimeObservation, EnvironmentValues, Machine, MachineFailure, MachineId,
-    MachineName, MachineObservation, PartialResult, PlatformPurpose, PrivateAccessProblem,
+    Ciphertext, ContainerRuntimeObservation, EnvironmentValues, HealthObservation, Machine,
+    MachineFailure, MachineId, MachineName, MachineObservation, PartialResult, PlatformPurpose, PrivateAccessProblem,
     PrivateAccessSet, QualifiedService, RowStanding, RpcError, RpcErrorCode,
     SET_PRIVATE_ACCESS_CAPABILITY, Sealing, SealingPublicKey, ServiceObservation,
     SetPrivateAccessRequest,
@@ -86,13 +86,22 @@ pub(crate) fn cluster_sealed_key(services: &[ServiceObservation]) -> Option<Ciph
         .and_then(|router| private_access_sealed_key(&router.resolved_spec.container.labels))
 }
 
-/// The Machines whose router runs now.
+/// The Machines whose router has joined the tailnet. A running container isn't enough:
+/// one Tailscale refused the key for runs between restarts. A router with no probe is
+/// from a daemon that predates it, so it says nothing against its container running.
 fn running(services: &[ServiceObservation]) -> std::collections::BTreeSet<MachineId> {
     services
         .iter()
         .filter(|service| service.identity == QualifiedService::system_tailscale())
         .flat_map(|service| service.containers.iter().map(|copy| copy.as_observation()))
-        .filter(|copy| matches!(copy.runtime, ContainerRuntimeObservation::Running { .. }))
+        .filter(|copy| {
+            matches!(
+                copy.runtime,
+                ContainerRuntimeObservation::Running {
+                    health: HealthObservation::Healthy | HealthObservation::NotConfigured
+                }
+            )
+        })
         .map(|copy| copy.machine_id)
         .collect()
 }

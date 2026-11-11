@@ -20,7 +20,7 @@ const frame = (...routers: (readonly [string, ContainerObservation["runtime"]])[
 
 it("calls a router Tailscale gave up on stopped rather than running, so the card never shows it Connected", () => {
   const routers = routersOn(frame(
-    ["m1", { state: "running", health: "none" }],
+    ["m1", { state: "running", health: "healthy" }],
     ["m2", { state: "exited", code: 0 }],
     ["m3", { state: "restarting" }],
     ["m4", { state: "removing" }],
@@ -40,8 +40,8 @@ it("calls a router stopped until its node joined the tailnet, since Docker keeps
 });
 
 it("calls a Server running if any of its routers runs, whatever order they are listed in", () => {
-  expect(routersOn(frame(["m1", { state: "running", health: "none" }], ["m1", { state: "exited", code: 1 }])).get("m1")).toBe("running");
-  expect(routersOn(frame(["m1", { state: "exited", code: 1 }], ["m1", { state: "running", health: "none" }])).get("m1")).toBe("running");
+  expect(routersOn(frame(["m1", { state: "running", health: "healthy" }], ["m1", { state: "exited", code: 1 }])).get("m1")).toBe("running");
+  expect(routersOn(frame(["m1", { state: "exited", code: 1 }], ["m1", { state: "running", health: "healthy" }])).get("m1")).toBe("running");
 });
 
 it("reads Private Access as enforced once any Server enforces Device approval, so Connect asks the passkey", () => {
