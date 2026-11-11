@@ -30,6 +30,19 @@ fn registration(assignment: &EnrollmentAssignment) -> RegisterRequest {
     request
 }
 
+/// The Register request for an assignment, once the Cluster's snapshot still agrees with the
+/// identity it saved. The saved assignment never holds a claim, so the check compares without it.
+fn checked_registration(
+    assignment: &EnrollmentAssignment,
+    snapshot: &ployz_core::EnrollmentSnapshot,
+) -> Result<RegisterRequest, RpcError> {
+    let mut saved = assignment.clone();
+    saved.request.capabilities = Vec::new();
+    ployz_core::allocate_enrollment(&saved.request, snapshot, std::slice::from_ref(&saved))
+        .map_err(|error| RpcError::conflict(error.to_string()))?;
+    Ok(registration(assignment))
+}
+
 /// Publish a durably saved assignment before bootstrapping the joining Machine.
 ///
 /// # Errors
@@ -39,13 +52,7 @@ pub async fn publish_enrollment(
     assignment: &EnrollmentAssignment,
 ) -> Result<Registered, RpcError> {
     let snapshot = observe_enrollment(entry).await?;
-    ployz_core::allocate_enrollment(
-        &assignment.request,
-        &snapshot,
-        std::slice::from_ref(assignment),
-    )
-    .map_err(|error| RpcError::conflict(error.to_string()))?;
-    let request = registration(assignment);
+    let request = checked_registration(assignment, &snapshot)?;
     entry
         .call_shared::<op::Register>(
             request,
@@ -90,7 +97,9 @@ mod tests {
                 storage: ployz_core::StorageChoice::None,
                 public_key,
                 public_ip: None,
-                advertised_endpoints: Vec::new(),
+                advertised_endpoints: vec![ployz_core::AdvertisedEndpoint(
+                    "192.0.2.2:51820".parse().unwrap(),
+                )],
                 runtime: Default::default(),
                 capabilities,
             },
@@ -105,7 +114,9 @@ mod tests {
                 subnet: "10.210.1.0/24".parse().unwrap(),
                 public_key,
                 public_ip: None,
-                advertised_endpoints: Vec::new(),
+                advertised_endpoints: vec![ployz_core::AdvertisedEndpoint(
+                    "192.0.2.2:51820".parse().unwrap(),
+                )],
                 runtime: Default::default(),
                 join_approval: None,
                 build_concurrency: None,
@@ -120,5 +131,25 @@ mod tests {
         assert_eq!(claimed.capabilities, [SET_CLUSTER_DOORS_CAPABILITY]);
         let silent = super::registration(&assignment(Vec::new()));
         assert!(silent.capabilities.is_empty(), "{silent:?}");
+    }
+
+    #[test]
+    fn the_claim_survives_allocation_and_the_identity_check() {
+        let snapshot = ployz_core::EnrollmentSnapshot {
+            network: "10.210.0.0/16".parse().unwrap(),
+            machines: Vec::new(),
+            target_versions: Default::default(),
+            doors: None,
+        };
+        let request = assignment(Vec::new()).request;
+        let mut saved = ployz_core::allocate_enrollment(&request, &snapshot, &[]).unwrap();
+        assert!(
+            saved.request.capabilities.is_empty(),
+            "allocation saves no claim"
+        );
+        saved.request.capabilities = vec![SET_CLUSTER_DOORS_CAPABILITY.to_owned()];
+        let registered = super::checked_registration(&saved, &snapshot).unwrap();
+        assert_eq!(registered.capabilities, [SET_CLUSTER_DOORS_CAPABILITY]);
+        assert_eq!(registered.assigned_subnet, Some(saved.machine.subnet));
     }
 }
