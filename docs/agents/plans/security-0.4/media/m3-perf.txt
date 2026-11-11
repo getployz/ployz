@@ -1,0 +1,21 @@
+Perf: ten pushes to Ployz-test/lab-service main under the automatic deploy rule, interleaved, Cloud at the PR head.
+'local' keeps the App key in Cloud (trunk's path, but with M3's narrowed tokens); 'minter' sends everything through the loopback minter.
+Trunk itself was not run. Each round restarts Cloud to switch modes, so every push starts with cold token caches in both modes.
+check_in_ms: webhook delivered -> Cloud accepts the runner's check-in. applied_ms: webhook delivered -> Deployment applied on both Machines.
+
+round	mode	commit	check_in_ms	applied_ms	minter_tokens	minter_calls
+1	local	ffd10a9	13292	149388	0	0
+1	minter	f2cd673	13511	142248	3	5
+2	local	81a014f	9518	142563	0	0
+2	minter	72aae75	12275	116016	3	5
+3	local	a305414	11250	155040	0	0
+3	minter	1880de7	10653	117515	3	5
+4	local	236dd37	10164	117782	0	0
+4	minter	370f1e7	10676	136153	3	5
+5	local	cc8ea9a	10281	146467	0	0
+5	minter	be7a355	11778	154443	3	5
+
+median check_in_ms: local 10281, minter 11778, minter/local 1.15
+median applied_ms: local 146467, minter 136153, minter/local 0.93
+
+Per minter push, the audit shows 5 calls: /v1/workflow (3.5-4.5 s: its own mint, then three GitHub reads in a row), /v1/runs, and 3 read-token mints.
