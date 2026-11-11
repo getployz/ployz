@@ -10,7 +10,7 @@
 //! :102, volume_plugin/storage.rs:156-166), then the Pool mutation lock (pool.rs:103), then
 //! runs `one_usable` (:213), `recover` (:276) and, when both find nothing, `create`
 //! (:391), which builds the root-backed `ployz` Pool on a backing file. Copy's `first_pool`
-//! takes the same path (volume_plugin/copy.rs:143-157, :175-196). Meanwhile the disk can go
+//! takes the same path (volume_plugin/copy.rs:143-157 and `first_pool` in the same file). Meanwhile the disk can go
 //! missing and return, ZFS imports at boot the Pools its cache file lists, and
 //! `local_storage` (ployzd machine/mod.rs:689) reports what `zpool list` shows.
 //!
