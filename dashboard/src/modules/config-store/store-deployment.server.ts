@@ -178,6 +178,12 @@ export const failStoreDeploymentUnrun = Effect.fn("StoreDeployment.failUnrun")(f
   return failed;
 });
 
+/** Whether the queued Deployment waits for a person to approve its commits again once its builds ended. */
+export const storeDeploymentAwaitsApproval = Effect.fn("StoreDeployment.awaitsApproval")(function* (deploymentId: string) {
+  const store = yield* cloudStore;
+  return yield* storeTry(() => store.awaitingApproval(deploymentId));
+});
+
 /** A run is one durable runner: its retried steps claim as the same runner, and a duplicate delivery is another. */
 export const storeDeploymentRunner = (runId: string) => `cloud-${runId}`;
 
