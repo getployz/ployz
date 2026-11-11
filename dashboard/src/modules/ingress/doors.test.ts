@@ -38,11 +38,12 @@ const MOVE: MovedHostname = { from: "web-prod.acme.ployz.app", to: "web-prod.exa
  */
 function ports(
   held: (doors: readonly string[]) => ReturnType<typeof answer>, log: string[],
-  { stuck = null, seen = { moves: [MOVE] } }: { stuck?: string | null; seen?: { moves: readonly MovedHostname[] } | { failure: string } } = {},
+  { stuck = null, seen = { moves: [MOVE] }, blocked = null }: { stuck?: string | null; seen?: { moves: readonly MovedHostname[] } | { failure: string }; blocked?: string | null } = {},
 ): SwitchPorts<never, never, never> {
   return {
     open: (doors) => Effect.sync(() => { log.push(`open ${doors.join("+")}`); return held(doors); }),
     at: (stage) => Effect.sync(() => { log.push(`at ${stage}`); }),
+    blocked: () => Effect.succeed(blocked),
     moving: () => Effect.sync(() => { log.push("moving"); return seen; }),
     flip: () => Effect.sync(() => { log.push("flip"); }),
     redeploy: (moves) => Effect.sync(() => { log.push(`redeploy ${moves.map(({ to }) => to).join(",")}`); return stuck; }),
@@ -69,6 +70,13 @@ describe("the two-step door switch", () => {
     await Effect.runPromise(runSwitch("public", ports((doors) => answer(doors), log)));
     expect(log.filter((line) => line.startsWith("open"))).toEqual(["open public+tunnel", "open public"]);
     expect(switchSteps("public")).toEqual([["public", "tunnel"], ["public"]]);
+  });
+
+  it("ends before opening any Door when the switch is already known to fail", async () => {
+    const log: string[] = [];
+    const end = await Effect.runPromise(runSwitch("public", ports((doors) => answer(doors), log, { blocked: "wk.example.com is held by a custom domain." })));
+    expect(end).toEqual({ ok: false, failure: "wk.example.com is held by a custom domain." });
+    expect(log).toEqual([]);
   });
 
   it("stops before moving anything when a Server doesn't take both Doors", async () => {

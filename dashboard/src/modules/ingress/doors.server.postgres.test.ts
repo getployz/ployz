@@ -254,7 +254,7 @@ it("stops before the source moves on a name under the zone that no Deployment ac
   expect(await attempts()).toMatchObject([{ state: "failed", stage: "moving", failure: gap }]);
 });
 
-it("stops before the source moves when a generated name would spell a custom domain under the zone, and says so in the review", async () => {
+it("stops before any Door opens when a generated name would spell a custom domain under the zone, and says so in the review", async () => {
   await setup("set_up");
   await hosted();
   session = answering((doors) => doors, Effect.succeed({ ...EMPTY_FRAME, containers: [serving("wk.acme.ployz.test"), serving("wk.example.com")] }));
@@ -265,9 +265,9 @@ it("stops before the source moves when a generated name would spell a custom dom
   });
   const request = await asked("tunnel");
   expect(await run(executeDoorsOnce(request, RUN))).toMatchObject({ state: "failed" });
-  expect(sets).toEqual([["public", "tunnel"]]);
+  expect(sets).toEqual([]);
   expect(await stateNow()).toBe("set_up");
-  expect(await attempts()).toMatchObject([{ state: "failed", stage: "moving", failure: gap }]);
+  expect(await attempts()).toMatchObject([{ state: "failed", failure: gap }]);
 });
 
 it("opens no Door when a switch to public ports would spell a generated name like a custom domain, so the tunnel is never left beside open ports", async () => {
