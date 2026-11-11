@@ -25,6 +25,7 @@ mod names;
 mod old_cli;
 mod permission;
 mod policy;
+mod pr_environment;
 mod preview_rule;
 mod project;
 mod pull_request;

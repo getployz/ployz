@@ -4,6 +4,8 @@ import type { RuntimeWatchView } from "@ployz/sdk";
 import { doorsOpenOn } from "#/modules/cluster-domain/ingress-running";
 import {
   type CloudflareSetup,
+  collidingMoves,
+  collisionGap,
   doorsGap,
   doorWords,
   type LatestDoorsChange,
@@ -36,11 +38,12 @@ const MOVE: MovedHostname = { from: "web-prod.acme.ployz.app", to: "web-prod.exa
  */
 function ports(
   held: (doors: readonly string[]) => ReturnType<typeof answer>, log: string[],
-  { stuck = null, seen = { moves: [MOVE] } }: { stuck?: string | null; seen?: { moves: readonly MovedHostname[] } | { failure: string } } = {},
+  { stuck = null, seen = { moves: [MOVE] }, blocked = null }: { stuck?: string | null; seen?: { moves: readonly MovedHostname[] } | { failure: string }; blocked?: string | null } = {},
 ): SwitchPorts<never, never, never> {
   return {
     open: (doors) => Effect.sync(() => { log.push(`open ${doors.join("+")}`); return held(doors); }),
     at: (stage) => Effect.sync(() => { log.push(`at ${stage}`); }),
+    blocked: () => Effect.succeed(blocked),
     moving: () => Effect.sync(() => { log.push("moving"); return seen; }),
     flip: () => Effect.sync(() => { log.push("flip"); return null; }),
     redeploy: (moves) => Effect.sync(() => { log.push(`redeploy ${moves.map(({ to }) => to).join(",")}`); return stuck; }),
@@ -67,6 +70,13 @@ describe("the two-step door switch", () => {
     await Effect.runPromise(runSwitch("public", ports((doors) => answer(doors), log)));
     expect(log.filter((line) => line.startsWith("open"))).toEqual(["open public+tunnel", "open public"]);
     expect(switchSteps("public")).toEqual([["public", "tunnel"], ["public"]]);
+  });
+
+  it("ends before opening any Door when the switch is already known to fail", async () => {
+    const log: string[] = [];
+    const end = await Effect.runPromise(runSwitch("public", ports((doors) => answer(doors), log, { blocked: "wk.example.com is held by a custom domain." })));
+    expect(end).toEqual({ ok: false, failure: "wk.example.com is held by a custom domain." });
+    expect(log).toEqual([]);
   });
 
   it("stops before moving anything when a Server doesn't take both Doors", async () => {
@@ -152,6 +162,24 @@ describe("what a switch moves", () => {
     expect(unknownGap(unknown)).toBe("web-prod.example.com is served by old-prod/web, which Ployz Cloud can't match to a deployment. Deploy it again or remove it, then switch again.");
     expect(unknownGap([])).toBeNull();
     expect(movedHostnames(back, "example.com", "acme.ployz.app", new Map())).toEqual([]);
+  });
+
+  it("names a move whose new address a custom domain already holds, whichever Service holds it", () => {
+    const moving = [
+      { from: "wk.acme.ployz.app", to: "wk.example.com", namespace: "shop-prod", service: "worker" },
+      { from: "api.acme.ployz.app", to: "api.example.com", namespace: "shop-prod", service: "api" },
+    ];
+    const routes = known(
+      ["shop-prod", "wk.acme.ployz.app", "generated"], ["shop-prod", "wk.example.com", "custom"],
+      ["shop-prod", "api.acme.ployz.app", "generated"], ["docs-main", "api.example.org", "custom"],
+    );
+    expect(collidingMoves(moving, routes)).toEqual([moving[0]]);
+    expect(collisionGap(collidingMoves(moving, routes))).toBe(
+      "wk.example.com would be the generated domain of shop-prod/worker, and a custom domain already holds it. Remove the generated domain or the custom domain, deploy, then switch again.",
+    );
+    expect(collidingMoves(moving, known(["docs-main", "api.example.com", "custom"]))).toEqual([moving[1]]);
+    expect(collidingMoves(moving, new Map())).toEqual([]);
+    expect(collisionGap([])).toBeNull();
   });
 
   it("redeploys only the deployed Services publishing a moved hostname, by their Store names, and never a whole Environment", () => {

@@ -19,6 +19,7 @@ use std::{
 };
 
 use chrono::{DateTime, Utc};
+use ployz_core::cloud_contract::{CHECKIN_PROTOCOL_VERSION, ENROLL_OPTIONS};
 use serde::{Deserialize, Serialize};
 
 pub(crate) use client::{CheckinClient, CheckinKey, FleetToken, Hold, KeyError};
@@ -950,10 +951,10 @@ async fn check_in<H: Host>(
     report.blockers.extend(port_taken);
     status.blockers.clone_from(&report.blockers);
     let request = CheckinRequest {
-        protocol_version: wire::PROTOCOL_VERSION,
+        protocol_version: CHECKIN_PROTOCOL_VERSION,
         checkin_key: key.public_hex(),
         cli_version: env!("CARGO_PKG_VERSION"),
-        enroll_options: wire::ENROLL_OPTIONS,
+        enroll_options: ENROLL_OPTIONS,
         report: &report,
         prep: Some(prep),
         attempt: status.attempt.as_ref(),

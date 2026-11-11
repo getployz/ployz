@@ -16,6 +16,8 @@ import {
 export type SwitchPorts<EngineError, RowError, R> = {
   readonly open: (doors: readonly string[]) => Effect.Effect<DoorsAnswer, EngineError, R>;
   readonly at: (stage: DoorsStage) => Effect.Effect<void, RowError, R>;
+  /** Why the switch can't succeed whatever the Doors do, known before any opens, or null. */
+  readonly blocked: () => Effect.Effect<string | null, RowError, R>;
   /** The generated names the switch moves, as the Servers show them now, or why Cloud can't tell. */
   readonly moving: () => Effect.Effect<{ readonly moves: readonly MovedHostname[] } | { readonly failure: string }, RowError, R>;
   /** Move the Cluster Domain's source to where `want` goes. Why it didn't move, or null: the switch ends there. */
@@ -33,14 +35,17 @@ export type SwitchEnd = { readonly ok: true } | { readonly ok: false; readonly f
 export const switchSteps = (want: DoorsWant, closed = false) => closed ? [[want], [want]] as const : [["public", "tunnel"], [want]] as const;
 
 /**
- * Switch the Cluster to `want`. Both Doors open on every Server before anything moves, so a connector or the ports are
- * serving before the source changes; the names that move are read while both are open, and the source changes only
- * once every one is known; the Door the switch leaves closes only once every Environment serves under the new source.
- * A step that doesn't land ends the switch there, leaving both Doors open as the first step did, and a switch asked
- * again in the same direction finds each step done and carries on from it.
+ * Switch the Cluster to `want`. A switch already known to fail ends before it opens a Door, so a refusal never leaves
+ * ports open beside a tunnel the user meant to keep. Otherwise both Doors open on every Server before anything moves, so
+ * a connector or the ports are serving before the source changes; the names that move are read while both are open, and
+ * the source changes only once every one is known; the Door the switch leaves closes only once every Environment serves
+ * under the new source. A step that doesn't land ends the switch there, leaving both Doors open as the first step did,
+ * and a switch asked again in the same direction finds each step done and carries on from it.
  */
 export const runSwitch = <EngineError, RowError, R>(want: DoorsWant, ports: SwitchPorts<EngineError, RowError, R>, closed = false) => Effect.gen(function* () {
   const [both, only] = switchSteps(want, closed);
+  const blocked = yield* ports.blocked();
+  if (blocked !== null) return { ok: false, failure: blocked } satisfies SwitchEnd;
   yield* ports.at("opening");
   const opened = doorsGap(yield* ports.open(both), both);
   if (opened !== null) return { ok: false, failure: opened } satisfies SwitchEnd;

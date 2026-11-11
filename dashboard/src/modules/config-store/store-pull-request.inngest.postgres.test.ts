@@ -10,7 +10,7 @@ import { createStorePullRequest } from "#/modules/config-store/store-github.inng
 import { unlinkGithubInstallation } from "#/modules/github/github.repository";
 import { githubPullRequestReceivedEvent } from "#/modules/inngest/events";
 import { makeInngestEffectRunner } from "#/server/run.server";
-import { fakeGithubApiBy } from "#/test/fake-github";
+import { fakeGithubApiBy, fakeGithubAuthority } from "#/test/fake-github";
 import { enrollStoreServer, seedStoreOrganization, seedStoreGitService, storeTestCloud } from "#/test/store-cloud";
 
 const ORGANIZATION = "00000000-0000-4000-8000-00000000c001";
@@ -22,20 +22,22 @@ const here = { project: null, environment: null };
 
 type PullState = { state: "open" | "closed"; updated_at: string };
 
-/** GitHub with `acme/web` (42) through installation 7: pull request 5 as `pull` says; check runs land in `posted`. */
-function github(pull: PullState, posted: unknown[]) {
-  return fakeGithubApiBy(({ path, body }): JsonValue => {
-    if (path.endsWith("/check-runs")) posted.push(body);
-    return path.endsWith("/pulls/5")
-      ? {
-        number: 5, title: "Add search", user: { id: 7, login: "ada", type: "User" }, head: { ref: "search", sha: HEAD, repo: { id: 42 } },
-        base: { ref: "main" }, merged: false, merge_commit_sha: null, commits: 1, ...pull,
-      }
-      : path.includes("/check-runs?")
-        ? { check_runs: [] }
-        : path.endsWith("/check-runs") ? { id: 99 } : { id: 42, full_name: "acme/web", private: true };
-  });
+/** GitHub with `acme/web` (42) through installation 7: pull request 5 as `pull` says. */
+function github(pull: PullState) {
+  return fakeGithubApiBy(({ path }): JsonValue => path.endsWith("/pulls/5")
+    ? {
+      number: 5, title: "Add search", user: { id: 7, login: "ada", type: "User" }, head: { ref: "search", sha: HEAD, repo: { id: 42 } },
+      base: { ref: "main" }, merged: false, merge_commit_sha: null, commits: 1, ...pull,
+    }
+    : { id: 42, full_name: "acme/web", private: true });
 }
+
+const checksInto = (posted: unknown[]) => fakeGithubAuthority({
+  postCheck: (check) => {
+    posted.push(check);
+    return Effect.succeed({ checkRunId: 99 });
+  },
+});
 
 const delivery = (id: string) => ({
   name: githubPullRequestReceivedEvent,
@@ -57,8 +59,8 @@ it.live(
         requested.push(event);
         return { ids: [] };
       });
-      const githubApi = github(pull, posted);
-      const services = yield* storeTestCloud({ github: githubApi.service, inngest: checks });
+      const githubApi = github(pull);
+      const services = yield* storeTestCloud({ github: githubApi.service, authority: checksInto(posted).service, inngest: checks });
       yield* Effect.all([seedStoreOrganization(ORGANIZATION), enrollStoreServer(ORGANIZATION)]).pipe(Effect.provide(services));
       const store = yield* cloudStore.pipe(Effect.provide(services));
       const write = (command: ConfigCommand, trusted?: ConfigTrusted) =>
@@ -101,7 +103,7 @@ it.live(
         .toEqual([{ type: "installation", installationId: 7 }]);
       expect(sent).toEqual([[expect.objectContaining({ data: expect.objectContaining({ deploymentId: opened.admitted[0], trigger: "github" }) })]]);
       expect(yield* environments()).toEqual(["pr-5", "production"]);
-      expect(posted).toMatchObject([{ head_sha: HEAD, conclusion: "success", output: { title: "No config changes" } }]);
+      expect(posted).toMatchObject([{ installationId: 7, repositoryId: 42, headSha: HEAD, conclusion: "success", title: "No config changes" }]);
 
       // A later write in its Project may move the check: the Store names it, and Cloud asks for it again.
       yield* callStore(ORGANIZATION, null, { operation: "write", command: {

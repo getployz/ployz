@@ -71,9 +71,6 @@ pub struct PreviewRuleView {
     /// Volumes a preview mounts from the parent rather than a copy of its own, by the
     /// Services that mount them.
     pub shared: BTreeMap<ServiceName, BTreeSet<String>>,
-    /// The GitHub accounts of the Organization's members, as Cloud linked them.
-    #[ts(type = "number[]")]
-    pub members: Vec<u64>,
 }
 
 /// The preview rule an Environment holds, ended or not.
@@ -295,12 +292,6 @@ pub(crate) fn plan(
         generated,
         inherited,
         shared,
-        members: trusted
-            .members
-            .iter()
-            .flatten()
-            .map(|member| member.get())
-            .collect(),
     })
 }
 

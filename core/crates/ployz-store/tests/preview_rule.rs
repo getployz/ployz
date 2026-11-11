@@ -416,6 +416,35 @@ fn templates(
         .collect()
 }
 
+/// Cloud's member rows reach nothing a Device signs: the plan carries no GitHub account,
+/// so an account Cloud plants among the members never becomes a trusted one.
+#[test]
+fn a_plan_carries_no_member_accounts() {
+    let store = backend::open();
+    let who = Actor::system(OrganizationId::parse("org").unwrap());
+    production(&store, &who);
+    let planted = 7_654_321;
+    let view = store
+        .write_trusted(
+            &who,
+            &PlanPreviewRule {
+                environment: at("production"),
+                repository_id: 11,
+                rule: RuleId::from_bytes(RULE),
+            },
+            &Trusted {
+                members: Some(vec![
+                    backend::ada(),
+                    ployz_store::GithubUserId::parse(planted).unwrap(),
+                ]),
+                ..trusted()
+            },
+        )
+        .unwrap();
+    let reply = serde_json::to_string(&view).unwrap();
+    assert!(!reply.contains(&planted.to_string()), "{reply}");
+}
+
 #[test]
 fn two_previews_of_one_rule_differ_only_in_derived_fields() {
     let store = backend::open();

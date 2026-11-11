@@ -200,10 +200,8 @@ function github(state: { branchGone: boolean; heads: number; archives: string[] 
       state.archives.push(sha);
       return Effect.succeed(new Response(archive));
     },
-    app: () => Effect.die("unused"),
     installationRepositories: () => Effect.die("unused"),
-    exchangeUserCode: () => Effect.die("unused"),
-    userJson: () => Effect.die("unused"),
+    installationOf: () => Effect.die("unused"),
   };
 }
 

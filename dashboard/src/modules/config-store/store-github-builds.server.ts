@@ -6,10 +6,13 @@ import { cloudStore, refusedWith, storeTry } from "#/modules/config-store/store-
 import type { StoreRefused } from "#/modules/config-store/store.contract";
 import { pinStoreSources } from "#/modules/config-store/store-deployment.server";
 import { organizationAccess } from "#/modules/github/github-access";
-import { cancelGithubRun, checkGithubBuildWorkflow, dispatchGithubBuildWorkflow, findGithubPushRun, githubRunCompleted, rerunGithubRun } from "#/modules/github/github-build.server";
+import {
+  cancelGithubRun, checkGithubBuildWorkflow, dispatchApprovedGithubBuild, dispatchGithubBuildWorkflow, findGithubPushRun, githubRunCompleted, rerunGithubRun,
+} from "#/modules/github/github-build.server";
 import { githubBuildId } from "#/modules/github/github-build-workflow";
 import { verifyGithubOidcToken } from "#/modules/github/github-oidc.server";
-import { installationRefusal, mintInstallationToken } from "#/modules/github/github-token.server";
+import { GithubAuthority } from "#/modules/github/github-authority.server";
+import { installationRefusal } from "#/modules/github/github-token.server";
 import { logForeignServers } from "#/modules/machines/connections.server";
 import { sendInngestEvent } from "#/modules/inngest/client";
 import { createGithubBuildRunCompletedEvent, type ConfigDeploymentAdmittedEventData } from "#/modules/inngest/events";
@@ -154,10 +157,10 @@ export const startStoreGithubBuild = Effect.fn("StoreGithub.start")(function* (o
     const fullName = workflow.fullName;
     if (start.kind === "follow") {
       // A push under an automatic deploy rule started its own run: follow it rather than dispatch one.
-      const run = yield* followPushRun({ access, fullName, workflow: start.workflow, commit: start.commit });
+      const run = yield* followPushRun({ access, repositoryId: target.repositoryId, workflow: start.workflow, commit: start.commit });
       if (run === null) return yield* skip(`GitHub started no run of ${start.workflow} for this push`);
       // A run that ended before Cloud followed it gave up waiting at its check-in: run it again.
-      if (run.completed) yield* rerunGithubRun({ access, fullName, runId: run.runId });
+      if (run.completed) yield* rerunGithubRun({ access, repositoryId: target.repositoryId, runId: run.runId });
       yield* storeTry(() => store.githubDispatched(target.build, {
         run_id: run.runId, run_url: run.runUrl, workflow_ref: start.workflow_ref, repository: fullName, installation_id: installationId,
       }));
@@ -167,8 +170,8 @@ export const startStoreGithubBuild = Effect.fn("StoreGithub.start")(function* (o
       // A commit a person approved or reviewed under a rule builds on the rule's workflow, on its branch, at that
       // commit; the grant Machine checks the commit is the one the person signed for.
       // The rule's workflow names Cloud's origin itself, and declares only the commit input.
-      const run = yield* dispatchGithubBuildWorkflow({
-        access, fullName, branch: start.branch, workflow: start.workflow, inputs: { commit: start.commit },
+      const run = yield* dispatchApprovedGithubBuild({
+        access, repositoryId: target.repositoryId, branch: start.branch, workflow: start.workflow, commit: start.commit,
       });
       const cancel = cancelGithubRun({ access, fullName, runId: run.runId }).pipe(Effect.ignore);
       yield* storeTry(() => store.githubDispatched(target.build, {
@@ -177,10 +180,11 @@ export const startStoreGithubBuild = Effect.fn("StoreGithub.start")(function* (o
       return { kind: "dispatched", runId: run.runId } satisfies StoreGithubStart;
     }
     if (start.kind !== "dispatch") return done;
-    const config = yield* AppConfig;
+    // A rule build runs the rule's own template, whose builder the grant Machine checks. Through the minter, Cloud
+    // dispatches only its own.
+    if (!workflow.dispatchable) return yield* skip(`${repository}'s .github/workflows/ployz-build.yml isn't the one Ployz offers`);
     const run = yield* dispatchGithubBuildWorkflow({
-      access, fullName, branch: workflow.defaultBranch,
-      inputs: { build: target.build, cloud: config.app.url.origin, runner: start.runner },
+      access, repositoryId: target.repositoryId, branch: workflow.defaultBranch, inputs: { build: target.build, runner: start.runner },
     });
     // The run must not build untracked: whatever stops Cloud recording it (cancelled or replaced meanwhile, a
     // failure it retries) cancels it first.
@@ -419,7 +423,7 @@ export const grantRuleBuild = Effect.fn("StoreGithub.ruleGrant")(function* (requ
     const refusal = yield* installationRefusal(build.organization, build.run.installation_id);
     if (refusal !== null) return yield* new Forbidden({ message: refusal.message });
     const repositoryId = Number(claims.repository_id);
-    const reader = yield* mintInstallationToken(build.run.installation_id, { repositoryId }).pipe(
+    const reader = yield* (yield* GithubAuthority).readToken(build.run.installation_id, { repositoryIds: [repositoryId], permissions: { contents: "read" } }).pipe(
       Effect.catch((error) => Effect.logWarning("Could not mint a head reader for a rule build.", error).pipe(Effect.as(null))),
     );
     const { connections, expect } = yield* deployDialOf(build.organization);

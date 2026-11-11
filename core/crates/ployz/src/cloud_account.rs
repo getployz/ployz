@@ -7,7 +7,7 @@
 
 use std::{collections::BTreeMap, time::Duration};
 
-use ployz_core::{Departed, MachineId, MachineName, RpcError};
+use ployz_core::{Departed, MachineId, MachineName, RpcError, cloud_contract};
 use reqwest::{Method, StatusCode};
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 
@@ -707,13 +707,13 @@ fn approved_request(
 ) -> Result<reqwest::RequestBuilder, LoginError> {
     let mut request = request(credential, method, url, Some(body))?.timeout(OPERATION_TIMEOUT);
     if via == Via::Agent {
-        request = request.header("x-ployz-via", "agent");
+        request = request.header(cloud_contract::VIA_HEADER, "agent");
     }
     if let Some(approval) = approval {
-        request = request.header("x-ployz-approval", approval);
+        request = request.header(cloud_contract::APPROVAL_HEADER, approval);
     }
     if let Some(key) = request_key {
-        request = request.header("x-ployz-request-key", key);
+        request = request.header(cloud_contract::REQUEST_KEY_HEADER, key);
     }
     Ok(request)
 }
@@ -1257,15 +1257,12 @@ fn operation_request(
     Ok(request(credential, method, &url, body)?.timeout(OPERATION_TIMEOUT))
 }
 
-/// The most compressed source one upload may hold, the same as Cloud's cap. It stays
-/// under the 100 MB request body Cloudflare passes, in front of ployz.dev or a Tunnel.
-pub(crate) const UPLOAD_LIMIT: usize = 95 * 1024 * 1024;
 /// How long one upload may take, sending included: 95 MiB at about 1.3 Mbit/s.
 const UPLOAD_TIMEOUT: Duration = Duration::from_secs(10 * 60);
 
 /// Keep `archive`, a gzipped tar of a source directory, in Cloud as the upload of
 /// Deployment `deployment`, which the CLI admits next. An archive over
-/// [`UPLOAD_LIMIT`] is refused here, before it is sent.
+/// [`cloud_contract::UPLOAD_LIMIT`] is refused here, before it is sent.
 ///
 /// # Errors
 ///
@@ -1277,10 +1274,10 @@ pub(crate) async fn upload(
     archive: Vec<u8>,
 ) -> Result<(), StoreCallError> {
     let mib = archive.len().div_ceil(1024 * 1024);
-    if archive.len() > UPLOAD_LIMIT {
+    if archive.len() > cloud_contract::UPLOAD_LIMIT {
         return Err(StoreCallError::Refused(too_big(&format!(
             "The source is {mib} MiB compressed, over the {} MiB upload limit.",
-            UPLOAD_LIMIT / 1024 / 1024
+            cloud_contract::UPLOAD_LIMIT / 1024 / 1024
         ))));
     }
     let url = format!("{}/api/config/upload/{deployment}", credential.cloud());
@@ -1337,8 +1334,6 @@ pub(crate) async fn call<T: DeserializeOwned>(
 static REVISION: std::sync::Mutex<std::collections::BTreeMap<String, String>> =
     std::sync::Mutex::new(std::collections::BTreeMap::new());
 
-pub(crate) const REVISION_HEADER: &str = "x-ployz-manifest";
-
 /// Keep the revision a reply names, so a command can refresh the published
 /// commands after it prints when Cloud moved on.
 pub(crate) fn notice_revision(response: &reqwest::Response) {
@@ -1352,7 +1347,7 @@ pub(crate) fn notice_revision(response: &reqwest::Response) {
 
 fn revision_of(headers: &reqwest::header::HeaderMap) -> Option<String> {
     headers
-        .get(REVISION_HEADER)
+        .get(cloud_contract::REVISION_HEADER)
         .and_then(|value| value.to_str().ok())
         .map(ToOwned::to_owned)
 }
@@ -2027,7 +2022,7 @@ mod tests {
         let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
         listener.set_nonblocking(true).unwrap();
         let cloud = format!("http://{}", listener.local_addr().unwrap());
-        let archive = vec![0; UPLOAD_LIMIT + 1];
+        let archive = vec![0; cloud_contract::UPLOAD_LIMIT + 1];
         let error = upload(&token(&cloud), "d1", archive).await.unwrap_err();
         let StoreCallError::Refused(refused) = error else {
             panic!("expected the size refusal");

@@ -1,6 +1,6 @@
 ---
 name: verify-removal-marks
-description: Model-check the Config Store's removal mark lifecycle (remove, sweep, cancel, pull-request close, the removal Deployment ending) on Postgres and SQLite with the Stateright model in core/crates/ployz-verify. Use when a change touches core/crates/ployz-store/src/removal/ (due.rs sweep, settle, finish, close; mark.rs live, of, save, finish; mod.rs cancel_removal, stop), the row locks and purge in scope.rs, on_servers and ran in deployment/history.rs, the Deployment record path in deployment/lifecycle.rs, the transaction isolation in storage/pg.rs or storage/sqlite.rs, or Cloud's sweep triggers in dashboard/src/modules/config-store/.
+description: Model-check the Config Store's removal mark lifecycle (remove, sweep, cancel, pull-request close, the removal Deployment ending) on Postgres and SQLite with the Stateright model in core/crates/ployz-verify. Use when a change touches core/crates/ployz-store/src/removal/ (due.rs sweep, settle, finish, close; mark.rs live, of, save, finish; mod.rs cancel_removal, stop), the mark SQL spliced into branch/idle.rs and pr_environment.rs, the row locks and purge in scope.rs, on_servers and ran in deployment/history.rs, the Deployment record path in deployment/lifecycle.rs, the transaction isolation in storage/pg.rs or storage/sqlite.rs, or Cloud's sweep triggers in dashboard/src/modules/config-store/.
 ---
 
 # Verify removal marks
@@ -81,8 +81,10 @@ Each model step is a copy of code at the sync commit. Reread these when a diff t
 - `core/crates/ployz-store/src/deployment/history.rs`: `in_flight`, `last_ran`, `on_servers`, `ran`.
 - `core/crates/ployz-store/src/storage/pg.rs`: `begin` and its READ COMMITTED level, `TIMEOUT`.
 - `core/crates/ployz-store/src/storage/sqlite.rs`: `transaction` and `BEGIN IMMEDIATE`.
-- `core/crates/ployz-store/src/pull_request/mod.rs`: the calls to `removal::close` and `removal::sweep`, `mark::unmarked`, `mark::drop_live` at the merge undo, and `idle_facts`.
-- `core/crates/ployz-store/src/branch/follow.rs` and `branch/proposal.rs`: `mark::unmarked`.
+- `core/crates/ployz-store/src/pull_request/mod.rs`: the calls to `removal::close` and `removal::sweep`, `mark::unmarked`, and `mark::drop_live` at the merge undo.
+- `core/crates/ployz-store/src/branch/idle.rs`: `idle_facts`, which splices `mark::marks_holding`.
+- `core/crates/ployz-store/src/pr_environment.rs`: `live_previews`, which splices `mark::unmarked`.
+- `core/crates/ployz-store/src/branch/follow.rs`: `mark::unmarked`.
 - `dashboard/src/modules/config-store/store-github.inngest.ts` and `store-deployment.inngest.ts`: when Cloud sweeps.
 
 Sync commit: `379d927a88e00ad82aafa355f828f3b4a0bf5451`, the commit that made `finish` conditional, checked against it. Code in the list above that changed after it has not been rechecked.

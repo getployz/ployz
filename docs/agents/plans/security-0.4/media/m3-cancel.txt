@@ -1,0 +1,14 @@
+Lane 5: cancel a Deployment while its GitHub build runs, Cloud in minter mode, 2026-11-11T00:46:20Z
+
+Pushed 01790ced7a12030aaf5fccb0098b44e1c9275ebb to Ployz-test/lab-service main under the rule. The runner checked in (the build row turned building) at 00:45:11; cancelled at 00:45:31 with GitHub run 42933777320 in_progress.
+
+$ ployz deployment cancel 6 --project svc
+Deployment #6 of svc/production: cancelled
+  web: not attempted
+  build web from 01790ce: failed cancelled
+
+GitHub run 42933777320 afterwards:
+  push completed cancelled head 01790ced7a12030aaf5fccb0098b44e1c9275ebb
+
+The minter's audit of the cancel:
+{"time":"2026-11-11T00:45:36.770Z","caller":"local-bearer","route":"/v1/cancel","outcome":"granted","installation_id":180070163,"repository_ids":[1450985696],"run_id":42933777320,"github_status":202,"duration_ms":3047}

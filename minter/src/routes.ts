@@ -1,5 +1,5 @@
 import type { AuditFacts, AuditLine, AuditSink } from "./audit.js";
-import { field, Github, GithubError, isRecord, nullable, type TokenPermissions } from "./github.js";
+import { field, Github, GithubError, isRecord, nullable, readJson, type TokenPermissions } from "./github.js";
 import { branch, httpsUrl, id, ids, object, oneOf, optional, Refusal, sha, strict, text, type Parsed, type Shape } from "./parse.js";
 import {
   BUILD_WORKFLOW_FILE,
@@ -78,7 +78,7 @@ export const ROUTES: Readonly<Record<string, AnyRoute>> = {
       facts.permissions_granted = minted.permissions;
       facts.token_expires_at = minted.expiresAt;
       const beyond = Object.entries(minted.permissions).find(([name, level]) => !Object.hasOwn(READ_SET, name) || level !== "read");
-      if (beyond) throw new GithubError("installation_token_granted_more", null);
+      if (beyond) throw new GithubError("installation_token_granted_more", { kind: "overbroad" });
       return { token: minted.token, expires_at: minted.expiresAt };
     },
   }),
@@ -102,7 +102,7 @@ export const ROUTES: Readonly<Record<string, AnyRoute>> = {
       let state: string | null = null;
       if (workflow.status === 404) await workflow.body?.cancel();
       else {
-        const data: unknown = await workflow.json();
+        const data = await readJson(workflow, "fetch_workflow");
         if (field(data, "path", "string", "fetch_workflow") === BUILD_WORKFLOW_PATH) state = field(data, "state", "string", "fetch_workflow");
       }
       const file = await github.file(token, `/repositories/${body.repository_id}/contents/${BUILD_WORKFLOW_PATH}?ref=${encodeURIComponent(defaultBranch)}`);
@@ -157,7 +157,7 @@ export const ROUTES: Readonly<Record<string, AnyRoute>> = {
         await ref.body?.cancel();
         throw new Refusal("branch not found");
       }
-      const target = field(await ref.json(), "object", "object", "read_branch");
+      const target = field(await readJson(ref, "read_branch"), "object", "object", "read_branch");
       if (field(target, "type", "string", "read_branch") !== "commit") throw new Refusal("branch does not point at a commit");
       const head = field(target, "sha", "string", "read_branch");
       facts.head_sha = head;
@@ -263,15 +263,22 @@ export const ROUTES: Readonly<Record<string, AnyRoute>> = {
         }
         if (listed.length < 100) break;
       }
-      const administers = async (account: { login: string; type: string }) => {
+      // Null when GitHub won't say, such as an Organization whose SSO the person hasn't signed in to: Cloud fails the
+      // connect only when it chose that installation.
+      const administers = async (account: { login: string; type: string }): Promise<boolean | null> => {
         if (account.type !== "Organization") return account.type === "User" && account.login.toLowerCase() === login.toLowerCase();
-        const membership = await github.send("read_user_membership", token, "GET", `/user/memberships/orgs/${encodeURIComponent(account.login)}`, { allow: [404] });
-        if (membership.status === 404) {
-          await membership.body?.cancel();
-          return false;
+        try {
+          const membership = await github.send("read_user_membership", token, "GET", `/user/memberships/orgs/${encodeURIComponent(account.login)}`, { allow: [404] });
+          if (membership.status === 404) {
+            await membership.body?.cancel();
+            return false;
+          }
+          const data = await readJson(membership, "read_user_membership");
+          return field(data, "state", "string", "read_user_membership") === "active" && field(data, "role", "string", "read_user_membership") === "admin";
+        } catch (error) {
+          if (error instanceof GithubError) return null;
+          throw error;
         }
-        const data: unknown = await membership.json();
-        return field(data, "state", "string", "read_user_membership") === "active" && field(data, "role", "string", "read_user_membership") === "admin";
       };
       for (let start = 0; start < installations.length; start += 8) {
         await Promise.all(installations.slice(start, start + 8).map(async (installation) => {
@@ -358,11 +365,12 @@ export function createMinter(deps: { github: Github; config: MinterConfig; audit
       } else if (error instanceof GithubError) {
         outcome = "failed";
         reason = `github ${error.operation}`;
-        if (error.status !== null) facts.github_status = error.status;
-        response = {
-          status: 502,
-          body: { error: "github", operation: error.operation, status: error.status, ...(error.retryAfter === null ? {} : { retry_after: error.retryAfter }) },
-        };
+        const { failure } = error;
+        if (failure.kind === "status") facts.github_status = failure.status;
+        const detail = failure.kind !== "status"
+          ? {}
+          : { status: failure.status, ...(failure.retryAfter === null ? {} : { retry_after: failure.retryAfter }) };
+        response = { status: 502, body: { error: "github", operation: error.operation, failure: failure.kind, ...detail } };
       } else {
         outcome = "failed";
         reason = "internal";

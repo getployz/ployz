@@ -1,0 +1,49 @@
+Lane 6: attacker requests with the Cloud's minter credential, 2026-11-10T23:49:58.456Z
+
+token with contents: write
+  -> 400 {"error":"refused","reason":"permission contents must be read"}
+token with actions: read
+  -> 400 {"error":"refused","reason":"permission actions is outside the read set"}
+token with checks: write
+  -> 400 {"error":"refused","reason":"permission checks must be read"}
+token with metadata: write
+  -> 400 {"error":"refused","reason":"permission metadata must be read"}
+dispatch naming release.yml
+  -> 400 {"error":"refused","reason":"body has unknown field workflow"}
+dispatch with a path for a branch
+  -> 400 {"error":"refused","reason":"branch is not a branch"}
+dispatch setting its own cloud input
+  -> 400 {"error":"refused","reason":"inputs has unknown field cloud"}
+dispatch adding an input the workflow doesn't take
+  -> 400 {"error":"refused","reason":"inputs has unknown field script"}
+dispatch on a branch whose ployz-build.yml isn't canonical
+  -> 400 {"error":"refused","reason":"the build workflow is not a canonical template"}
+check named like CI
+  -> 400 {"error":"refused","reason":"check name is not a Ployz check"}
+a GitHub path as a route
+  -> 404 {"error":"not_found"}
+logs as a route
+  -> 404 {"error":"not_found"}
+GET on the token route
+  -> 405 {"error":"method_not_allowed"}
+token with no credential
+  -> 403 {"error":"unauthenticated"}
+token with a wrong credential
+  -> 403 {"error":"unauthenticated"}
+
+The minter's audit, one line per request:
+{"time":"2026-11-10T23:49:58.490Z","caller":"local-bearer","route":"/v1/token","outcome":"refused","reason":"permission contents must be read","installation_id":180070163,"repository_ids":[1450985696],"permissions_asked":{"contents":"write"},"duration_ms":1}
+{"time":"2026-11-10T23:49:58.500Z","caller":"local-bearer","route":"/v1/token","outcome":"refused","reason":"permission actions is outside the read set","installation_id":180070163,"repository_ids":[1450985696],"permissions_asked":{"actions":"read"},"duration_ms":0}
+{"time":"2026-11-10T23:49:58.504Z","caller":"local-bearer","route":"/v1/token","outcome":"refused","reason":"permission checks must be read","installation_id":180070163,"permissions_asked":{"checks":"write"},"duration_ms":0}
+{"time":"2026-11-10T23:49:58.507Z","caller":"local-bearer","route":"/v1/token","outcome":"refused","reason":"permission metadata must be read","installation_id":180070163,"permissions_asked":{"metadata":"write"},"duration_ms":0}
+{"time":"2026-11-10T23:49:58.510Z","caller":"local-bearer","route":"/v1/dispatch","outcome":"refused","reason":"body has unknown field workflow","duration_ms":0}
+{"time":"2026-11-10T23:49:58.513Z","caller":"local-bearer","route":"/v1/dispatch","outcome":"refused","reason":"branch is not a branch","duration_ms":0}
+{"time":"2026-11-10T23:49:58.515Z","caller":"local-bearer","route":"/v1/dispatch","outcome":"refused","reason":"inputs has unknown field cloud","installation_id":180070163,"repository_ids":[1450985696],"ref":"main","duration_ms":1}
+{"time":"2026-11-10T23:49:58.519Z","caller":"local-bearer","route":"/v1/dispatch","outcome":"refused","reason":"inputs has unknown field script","installation_id":180070163,"repository_ids":[1450985696],"ref":"main","duration_ms":0}
+{"time":"2026-11-10T23:49:58.522Z","caller":"local-bearer","route":"/v1/dispatch","outcome":"refused","reason":"the build workflow is not a canonical template","installation_id":180070163,"repository_ids":[1450985696],"ref":"main","head_sha":"ffae5bb2ccb94e080cfd76381045ca8a53bead2b","workflow_digest":"76f24b4a8cabec15ef5ff5de81bd48c1f9bd64acefea1b4d3521544b9906a675","duration_ms":4509}
+{"time":"2026-11-10T23:50:03.035Z","caller":"local-bearer","route":"/v1/check","outcome":"refused","reason":"check name is not a Ployz check","installation_id":180070163,"repository_ids":[1450985696],"check_name":"CI","head_sha":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","duration_ms":1}
+{"time":"2026-11-10T23:50:03.039Z","caller":"local-bearer","route":"/repos/Ployz-test/lab-service/actions/runs","outcome":"refused","reason":"unknown route","duration_ms":0}
+{"time":"2026-11-10T23:50:03.042Z","caller":"local-bearer","route":"/v1/logs","outcome":"refused","reason":"unknown route","duration_ms":0}
+{"time":"2026-11-10T23:50:03.046Z","caller":"local-bearer","route":"/v1/token","outcome":"refused","reason":"method is not POST","duration_ms":0}
+{"time":"2026-11-10T23:50:03.049Z","caller":"unauthenticated","route":"/v1/token","outcome":"refused","reason":"unauthenticated","duration_ms":0}
+{"time":"2026-11-10T23:50:03.052Z","caller":"unauthenticated","route":"/v1/token","outcome":"refused","reason":"unauthenticated","duration_ms":0}

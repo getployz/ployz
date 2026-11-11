@@ -84,12 +84,19 @@ Then generate a private key and a client secret on the app's page, and note its 
 **Client ID**, and its slug, the name in its URL `github.com/apps/<slug>`. Ployz Cloud uses the
 app's client ID and secret to ask GitHub which installations the person connecting owns.
 
+Your Ployz Cloud keeps the private key and the client secret, and makes its own GitHub tokens
+with them. Each token gets only what its step needs. A token for reading code, pull requests
+and checks can only read. A token for starting, following or cancelling a build, or for posting
+the Ployz check, works in that one repository.
+
 **One app for both.** You can skip the OAuth App and sign in with the GitHub App: set
 `GITHUB_CLIENT_ID` and `GITHUB_CLIENT_SECRET` to the GitHub App's client ID and secret. Then the
 GitHub App needs the account permission Email addresses: Read-only, so it can read private
 emails at sign-in, and both Callback URLs, with `https://cloud.example.com/api/github/callback` first
 and `https://cloud.example.com/api/auth/callback/github` second. GitHub sends a fresh
-installation back to the first Callback URL.
+installation back to the first Callback URL. Every sign-in then hands Ployz Cloud a token that
+can do what the GitHub App can, in every repository the person signing in reaches. With a
+separate OAuth App, a sign-in token only reads the person's profile and email addresses.
 
 ## 2. Configure
 

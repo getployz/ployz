@@ -17,6 +17,10 @@ use std::{
 use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
 use futures_util::{StreamExt as _, stream::FuturesUnordered};
 use hmac::{Hmac, KeyInit as _, Mac as _};
+use ployz_core::cloud_contract::{
+    CHECKIN_WAIT_SECONDS, PROBE_ATTEMPT_EVERY_MS, PROBE_FIRST_ATTEMPT_MS, PROBE_GREETING_LENGTH,
+    PROBE_GREETING_READ_MS, PROBE_WINDOW_MS,
+};
 use rustix::io::Errno;
 use serde::{Deserialize, Serialize};
 use sha2::Sha256;
@@ -32,17 +36,16 @@ use tokio_util::sync::CancellationToken;
 
 use super::CheckinKey;
 
-pub(super) const WINDOW_CAP: Duration = Duration::from_secs(10);
+pub(super) const WINDOW_CAP: Duration = Duration::from_millis(PROBE_WINDOW_MS);
 const RESEND: Duration = Duration::from_millis(500);
-const GREETING_CHARS: usize = 22;
-const CLOUD_READS_FOR: Duration = Duration::from_millis(500);
+const CLOUD_READS_FOR: Duration = Duration::from_millis(PROBE_GREETING_READ_MS);
 const DATAGRAM_BUFFER: usize = 2048;
 const SOCKET_BACKOFF: Duration = Duration::from_millis(100);
 const LISTEN_BACKLOG: i32 = 1024;
 /// Cloud settles a probe this long after its window ends.
 const SETTLE_GRACE: Duration = Duration::from_secs(30);
 /// How soon a failed pass tries again while Cloud still waits on a report: its own check-in pace.
-const REPORT_RETRY: Duration = Duration::from_secs(10);
+const REPORT_RETRY: Duration = Duration::from_secs(CHECKIN_WAIT_SECONDS);
 
 /// The newest window to claim each saved path, whichever `Probes` opened it. A writer saves only
 /// while its window is still the newest, so an older report never lands over a newer window.
@@ -254,8 +257,8 @@ fn bind_deadline(window: Duration) -> Duration {
     if let Some(lead) = tests::LEAD.get() {
         return window.saturating_sub(lead);
     }
-    let first = Duration::from_secs(1);
-    let every = Duration::from_millis(1_500);
+    let first = Duration::from_millis(PROBE_FIRST_ATTEMPT_MS);
+    let every = Duration::from_millis(PROBE_ATTEMPT_EVERY_MS);
     if window <= first {
         return Duration::ZERO;
     }
@@ -441,7 +444,7 @@ fn greeting(handout: &str, checkin_key: &str, port: u16) -> String {
         Hmac::<Sha256>::new_from_slice(handout.as_bytes()).expect("HMAC takes a key of any length");
     mac.update(format!("ployz-probe-tcp:{checkin_key}:{port}").as_bytes());
     let mut encoded = URL_SAFE_NO_PAD.encode(mac.finalize().into_bytes());
-    encoded.truncate(GREETING_CHARS);
+    encoded.truncate(PROBE_GREETING_LENGTH);
     encoded
 }
 

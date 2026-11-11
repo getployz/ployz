@@ -16,7 +16,7 @@ use std::io;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
-use ployz_core::{RpcError, RpcErrorCode};
+use ployz_core::{RpcError, RpcErrorCode, cloud_contract::MANIFEST_FORMAT};
 use reqwest::StatusCode;
 use serde_json::Value;
 use sha2::{Digest, Sha256};
@@ -391,13 +391,12 @@ impl Setup {
                 cloud: self.cloud.clone(),
                 reason: error.to_string(),
             })?;
-        if manifest.format != wire::FORMAT {
+        if manifest.format != MANIFEST_FORMAT {
             return Err(PublishError::Malformed {
                 cloud: self.cloud.clone(),
                 reason: format!(
                     "manifest format {} is not {}",
-                    manifest.format,
-                    wire::FORMAT
+                    manifest.format, MANIFEST_FORMAT
                 ),
             });
         }
