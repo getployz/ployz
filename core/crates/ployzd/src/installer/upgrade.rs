@@ -7,8 +7,8 @@ use std::{
 };
 
 use ployz_core::{
-    MachineRelease, MachineUpgradeAttempt, ReleaseChannel, MachineUpgradeAttemptId, MachineUpgradeOutcome,
-    MachineUpgradeStage, MachineVersion, RequestMachineUpgradeRequest,
+    MachineRelease, MachineUpgradeAttempt, MachineUpgradeAttemptId, MachineUpgradeOutcome,
+    MachineUpgradeStage, MachineVersion, ReleaseChannel, RequestMachineUpgradeRequest,
 };
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
@@ -64,7 +64,7 @@ pub enum Error {
     /// An Operator asked a Machine that enforces Device approval for a release off the
     /// Release Channel a person approved for its Cluster.
     #[error(
-        "{capability}: this Server's owner approved the {approved} channel, and {requested} is not on it; approve {requested} under Upgrade settings or with `ployz server upgrade-policy set --channel` from an approved device",
+        "{capability}: {requested} isn't on the approved {approved} Release Channel. Approve its channel under Server upgrades, or with `ployz server upgrade-policy set --channel` from an approved device",
         capability = ployz_core::UPGRADE_CHANNEL_CAPABILITY
     )]
     OffApprovedChannel {

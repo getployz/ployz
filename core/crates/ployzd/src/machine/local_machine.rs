@@ -226,7 +226,7 @@ pub enum Error {
     /// approval. The refusal names [`ployz_core::UPGRADE_CHANNEL_CAPABILITY`] in its
     /// details.
     #[error(
-        "{capability} needs the Release Channel your Cluster's owner approved: {0}",
+        "{capability}: approve a Release Channel for this Cluster first: {0}",
         capability = ployz_core::UPGRADE_CHANNEL_CAPABILITY
     )]
     UpgradeChannelRefused(ployz_core::authority::AuthorityRefusal),

@@ -1,5 +1,5 @@
 import "@tanstack/react-start/server-only";
-import type { MachineId, MachineName, MachineUpgradeAttempt, MachineUpgradeAttemptId } from "@ployz/sdk";
+import type { MachineId, MachineName, MachineUpgradeAttempt, MachineUpgradeAttemptId, Signed } from "@ployz/sdk";
 import { and, desc, eq, gte, inArray, isNotNull, lt, ne, sql, type SQL } from "drizzle-orm";
 import { Data, Effect, Schema } from "effect";
 import { PostHog } from "#/modules/analytics/posthog.server";
@@ -14,6 +14,8 @@ import { requireAccess } from "#/modules/organization/access.server";
 import { OrganizationRuntime, RUNTIME_FRAME_TIMEOUT_MS } from "#/modules/runtime/organization-runtime.server";
 import { machineUpgradeAttemptId, rpcErrorCode } from "#/modules/runtime/ployz.server";
 import {
+  approvedChannel,
+  type ChannelApproval,
   DEFAULT_SERVER_UPGRADE_SETTINGS,
   endEvidence,
   type EndEvidence,
@@ -33,6 +35,7 @@ import {
 import { organizationServerUpgrades, serverUpgradeAttempt } from "#/modules/server-upgrade/tables";
 import type { StoreRefusal } from "#/modules/config-store/store.contract";
 import { AppConfig } from "#/server/config.server";
+import { Validation } from "#/server/public-error";
 import { Database } from "#/server/database.server";
 
 /** The daemon reads its Release Channel pointers here by default (core `RELEASE_CHANNEL_URL`). */
@@ -123,8 +126,17 @@ export const organizationServerUpgradeSettings = Effect.fn("ServerUpgrade.settin
     id: organizationServerUpgrades.organizationId,
     automatic: organizationServerUpgrades.automatic,
     channel: organizationServerUpgrades.channel,
+    approval: organizationServerUpgrades.channelApproval,
   }).from(organizationServerUpgrades).where(eq(organizationServerUpgrades.organizationId, organizationId));
   return serverUpgradeSettings(rows);
+});
+
+/** The Release Channel a person last approved, which every upgrade request carries; null before the first. */
+const organizationChannelApproval = Effect.fn("ServerUpgrade.channelApproval")(function* (organizationId: string) {
+  const { drizzle } = yield* Database;
+  const [row] = yield* drizzle.select({ approval: organizationServerUpgrades.channelApproval }).from(organizationServerUpgrades)
+    .where(eq(organizationServerUpgrades.organizationId, organizationId));
+  return row?.approval ?? null;
 });
 
 /** Each Server's latest Upgrade attempt in the Organization, keyed by Machine ID. */
@@ -302,8 +314,9 @@ export const requestUpgradeOnServer = Effect.fn("ServerUpgrade.requestOnServer")
   readonly attemptId: MachineUpgradeAttemptId;
   readonly channel: ReleaseChannel;
 }) {
+  const approval = yield* organizationChannelApproval(input.organizationId);
   const session = yield* openSession(input.organizationId);
-  const attempt = yield* session.requestMachineUpgrade(input.machineId, input.attemptId, input.channel).pipe(
+  const attempt = yield* session.requestMachineUpgrade(input.machineId, input.attemptId, input.channel, approval).pipe(
     Effect.map((attempt) => ({ busy: false as const, attempt })),
     Effect.catchIf((error) => rpcErrorCode(error) === "conflict", () => Effect.succeed({ busy: true as const })),
     Effect.mapError((cause) => new ServerUpgradeUnreachable({ operation: "request machine upgrade", cause })),
@@ -328,8 +341,9 @@ type AttemptOnServer = {
  * restarts mid-Upgrade).
  */
 const resendUpgradeOnServer = Effect.fn("ServerUpgrade.resendOnServer")(function* (input: AttemptOnServer) {
+  const approval = yield* organizationChannelApproval(input.organizationId);
   const session = yield* openSession(input.organizationId);
-  const attempt = yield* session.requestMachineUpgrade(input.machineId, input.attemptId, input.channel);
+  const attempt = yield* session.requestMachineUpgrade(input.machineId, input.attemptId, input.channel, approval);
   yield* noteAttempt(input.organizationId, attempt);
   return attempt;
 }, Effect.scoped, Effect.catch((error) =>
@@ -522,6 +536,7 @@ export const setServerUpgradeSettings = Effect.fn("ServerUpgrade.setSettings")(f
       id: organizationServerUpgrades.organizationId,
       automatic: organizationServerUpgrades.automatic,
       channel: organizationServerUpgrades.channel,
+      approval: organizationServerUpgrades.channelApproval,
     });
   // The switch sends `automatic` only when it flips; an extra Rollout queues behind the Organization's one and finds
   // nothing behind, and without a founded Cluster `listServersBehind` returns [].
@@ -529,7 +544,69 @@ export const setServerUpgradeSettings = Effect.fn("ServerUpgrade.setSettings")(f
     yield* sendInngestEvent(createServerUpgradeRequestedEvent({ organizationId, machineId: null, trigger: "automatic", userId: null }));
   }
   // ponytail: an upsert always returns its row; the fallback only satisfies the type.
-  return row ?? { id: organizationId, ...DEFAULT_SERVER_UPGRADE_SETTINGS, ...settings };
+  return row ?? { id: organizationId, ...DEFAULT_SERVER_UPGRADE_SETTINGS, approval: null, ...settings };
+});
+
+/** The upgrade policy as the CLI reads it, with the channel and generation a person last approved. */
+export function upgradeChannelView(settings: { readonly automatic: boolean; readonly channel: ReleaseChannel; readonly approval: Signed | null }) {
+  const approved = approvedChannel(settings.approval);
+  return {
+    channel: settings.channel,
+    automatic: settings.automatic,
+    approved: approved === null ? null : { channel: approved.channel, generation: approved.generation },
+  };
+}
+
+/** `server upgrade-policy set` reads the kept approval's generation here, to sign the next. */
+export const readUpgradeChannel = Effect.fn("ServerUpgrade.readChannel")(function* (actor: Actor, organizationSlug: string) {
+  const { organization } = yield* requireAccess(actor, organizationSlug, "servers:read");
+  return upgradeChannelView(yield* organizationServerUpgradeSettings(organization.id));
+});
+
+/**
+ * Keep a person's approval of a Release Channel, and follow it: every upgrade then requests that channel and carries
+ * the approval. Cloud reads the body only to keep its settings in step; each Server that enforces device approval
+ * checks the signature, the Cluster and the generation itself. An approval no newer than the kept one is refused, so
+ * the settings never step back to an older choice.
+ */
+export const approveUpgradeChannel = Effect.fn("ServerUpgrade.approveChannel")(function* (
+  actor: Actor,
+  input: { readonly organizationSlug: string; readonly approval: ChannelApproval },
+) {
+  const { organization } = yield* requireAccess(actor, input.organizationSlug, "servers:operate");
+  const approved = approvedChannel(input.approval);
+  if (approved === null) {
+    return yield* new Validation({ message: "That isn't an approval of a Release Channel.", userFacing: true });
+  }
+  const database = yield* Database;
+  return yield* database.transaction(Effect.gen(function* () {
+    const { drizzle } = yield* Database;
+    const [kept] = yield* drizzle.select({ approval: organizationServerUpgrades.channelApproval }).from(organizationServerUpgrades)
+      .where(eq(organizationServerUpgrades.organizationId, organization.id)).for("update");
+    const newest = approvedChannel(kept?.approval ?? null)?.generation ?? 0;
+    if (approved.generation <= newest) {
+      return yield* new Validation({
+        message: "Someone approved a Release Channel since. Reload and approve again.",
+        userFacing: true,
+      });
+    }
+    // SAFETY: `ChannelApproval` decoded the envelope, and Servers check every byte of it.
+    const approval = input.approval as Signed;
+    const [row] = yield* drizzle.insert(organizationServerUpgrades)
+      .values({ organizationId: organization.id, channel: approved.channel, channelApproval: approval })
+      .onConflictDoUpdate({
+        target: organizationServerUpgrades.organizationId,
+        set: { channel: approved.channel, channelApproval: approval, updatedAt: new Date() },
+      })
+      .returning({
+        id: organizationServerUpgrades.organizationId,
+        automatic: organizationServerUpgrades.automatic,
+        channel: organizationServerUpgrades.channel,
+        approval: organizationServerUpgrades.channelApproval,
+      });
+    // ponytail: an upsert always returns its row; the fallback only satisfies the type.
+    return row ?? { id: organization.id, ...DEFAULT_SERVER_UPGRADE_SETTINGS, channel: approved.channel, approval };
+  }));
 });
 
 const UNCLAIMED = "";

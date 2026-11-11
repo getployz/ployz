@@ -1,6 +1,6 @@
-import type { MachineName } from "@ployz/sdk";
+import type { MachineName, Signed } from "@ployz/sdk";
 import { sql } from "drizzle-orm";
-import { boolean, check, index, pgTable, text, timestamp, uniqueIndex, uuid } from "drizzle-orm/pg-core";
+import { boolean, check, index, jsonb, pgTable, text, timestamp, uniqueIndex, uuid } from "drizzle-orm/pg-core";
 import { createdAt, type MachineId, sqlStringLiterals, updatedAt } from "#/db/tables";
 import { user } from "#/modules/identity/tables";
 import { organization } from "#/modules/organization/tables";
@@ -67,6 +67,11 @@ export const organizationServerUpgrades = pgTable("organization_server_upgrades"
   automatic: boolean("automatic").default(DEFAULT_SERVER_UPGRADE_SETTINGS.automatic).notNull(),
   /** The Release Channel every Upgrade requests, manual or automatic. */
   channel: text("channel").default(DEFAULT_SERVER_UPGRADE_SETTINGS.channel).notNull().$type<ReleaseChannel>(),
+  /**
+   * The Release Channel a person last approved, signed, which Cloud sends with every upgrade. Servers that enforce device
+   * approval upgrade only along it; Cloud keeps it and can't make one. Null until someone approves.
+   */
+  channelApproval: jsonb("channel_approval").$type<Signed>(),
   createdAt,
   updatedAt,
 }, (table) => [

@@ -95,6 +95,7 @@ fn typescript_declarations() -> String {
     declarations.add::<ployz_core::authority::GrantBody>();
     declarations.add::<ployz_core::authority::VolumeApproval>();
     declarations.add::<ployz_core::authority::AutoDeployRule>();
+    declarations.add::<ployz_core::authority::UpgradeChannel>();
     declarations.add::<ployz_core::authority::RuleTerms>();
     declarations.add::<ployz_core::authority::RuleDraft>();
     declarations.add::<ployz_core::authority::ReviewTerms>();

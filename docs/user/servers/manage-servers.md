@@ -384,6 +384,26 @@ the first deploy of a new service. Turn enforcement off to run it. Over `--conne
 everything works as before. If your device key cannot be loaded, restart, stop and start go
 unsigned and still work where enforcement is off.
 
+#### Upgrades on servers that enforce device approval
+
+With enforcement on, a server upgrades through Ployz Cloud only along the Release Channel a person
+approved for its cluster. Approve one by setting **Releases** under **Upgrade settings**, which asks
+for your passkey, or from an approved device:
+
+```sh
+ployz server upgrade-policy set --channel stable
+```
+
+Ployz Cloud keeps the approval and sends it with every upgrade, automatic or by hand. It can't make
+one, so it can't move your servers to Beta, or to a release off the approved channel. Turning on
+**Upgrade automatically** asks for your passkey too, until a channel is approved. Each approval
+counts up, and a server refuses one older than the newest it has seen. A server refuses an
+upgrade with no approval with
+`ployz.machine.upgrade.channel.v1: approve a Release Channel for this Cluster first`, and one
+off the approved channel with `ployz.machine.upgrade.channel.v1: 0.4.1-beta.1 isn't on the approved stable Release Channel`.
+Over `--connect ssh://` you can still upgrade to any release.
+A server before this release ignores the approval and upgrades as before.
+
 With enforcement on, `ployz server rm` and `ployz server forget <server>` work only from an
 approved device or over SSH on a server. Elsewhere they stop before changing anything and name the
 server that needs an approved device. The dashboard's **Remove server** and **Forget server** are
@@ -562,7 +582,12 @@ and each server's page then show the newest release on that channel.
 Switching back to Stable never downgrades a server. A server on a beta ahead of Stable reads as
 current and waits until Stable catches up.
 
-From the CLI, `ployz server upgrade-policy show` and `set` read and change the same two settings.
+From the CLI, `ployz server upgrade-policy show` reads the same two settings, and
+`ployz server upgrade-policy set --channel beta` or `--automatic true` changes them.
+
+On servers that [enforce device approval](#upgrades-on-servers-that-enforce-device-approval), changing
+**Releases** asks for your passkey, and `ployz server upgrade-policy set --channel` signs with
+this device's key.
 
 ### New major lines
 

@@ -12,8 +12,7 @@ use std::{
 use ployz_core::{
     ContainerId, ContainerLocator, ContainerNow, ContainerWant, DeviceEnforcementSet, DeviceKey,
     LocalMachinePhase, ManagementScope, Namespace, OperationId, RunTarget, Sealing,
-    SealingPublicKey, ServiceName,
-    SetDeviceEnforcementRequest,
+    SealingPublicKey, ServiceName, SetDeviceEnforcementRequest,
     authority::{
         AuthorityRefusal, AutoDeployRule, BuildClaim, BuildStage, ClaimRule, DeployApproval,
         PreviewKey, Purpose, RestartApproval, RestartFacts, RestartStep, RuleId, RuleIdentity,

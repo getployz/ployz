@@ -4,11 +4,13 @@ import { Effect, Schema } from "effect";
 import { runCommand } from "#/modules/commands/commands.server";
 import { dashboardCaller } from "#/modules/identity/caller.server";
 import {
+  ApproveUpgradeChannelInput,
   ChannelPointer,
   RequestServerUpgradeInput,
   SetServerUpgradeSettingsInput,
 } from "#/modules/server-upgrade/server-upgrade";
 import {
+  approveUpgradeChannel,
   channelRelease,
   listLatestServerUpgrades,
   requestServerUpgrade,
@@ -41,3 +43,9 @@ export const setServerUpgradeSettingsServerFn = createServerFn({ method: "POST" 
     if (!ran.ok) return yield* new Validation({ message: ran.refusal.message, userFacing: true });
     return { id: caller.organization.id, ...ran.output };
   })));
+
+/** Keep the Release Channel a person's passkey just approved, and follow it. */
+export const approveUpgradeChannelServerFn = createServerFn({ method: "POST" })
+  .middleware([publicErrorMiddleware, actorMiddleware])
+  .validator(strictValidator(ApproveUpgradeChannelInput))
+  .handler(({ context, data }) => runActor(context, approveUpgradeChannel(context.actor, data)));

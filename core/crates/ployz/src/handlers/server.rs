@@ -46,6 +46,7 @@ mod remove;
 mod show;
 pub(super) mod token;
 mod upgrade;
+pub(super) mod upgrade_policy;
 mod waiting;
 
 use add::add;

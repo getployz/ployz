@@ -28,6 +28,7 @@ export type {
   SignerKey,
   StepDigest,
   StepKind,
+  UpgradeChannel,
   VolumeApproval,
   VolumeWorkflow,
 } from "./generated/payloads";

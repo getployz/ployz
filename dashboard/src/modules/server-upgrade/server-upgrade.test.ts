@@ -1,6 +1,9 @@
 import { describe, expect, it } from "vitest";
 import {
+  channelApprovalBody,
+  channelScope,
   compareVersions,
+  needsApproval,
   metricsOnBeta,
   newMajorLine,
   releaseFromPointer,
@@ -252,5 +255,28 @@ describe("metricsOnBeta", () => {
     expect(metricsOnBeta({ version: "0.2.3", channel: "stable", release: "0.2.4", beta: "0.3.0-beta.6" })).toBe(false);
     expect(metricsOnBeta({ version: "0.2.4", channel: "stable", release: "0.2.4", beta: null })).toBe(false);
     expect(metricsOnBeta({ version: "0.2.4", channel: "beta", release: "0.3.0-beta.6", beta: "0.3.0-beta.6" })).toBe(false);
+  });
+});
+
+describe("a Release Channel approval", () => {
+  const cluster = "CQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQk=";
+  const kept = (channel: "stable" | "beta", generation: number, keptCluster = cluster) =>
+    ({ body: JSON.stringify({ channel, cluster: keptCluster, generation, signer: "passkey" }) });
+  const enforcing = channelScope([{ sealing: { kind: "held", public_key: cluster }, deviceEnforcement: true }]);
+
+  // Catches a body the daemon's canonical form doesn't match, which every Server refuses: ployz-core pins the same bytes.
+  it("drafts the body the daemon reads, one generation past the kept approval", () => {
+    expect(channelApprovalBody(cluster, "stable", kept("beta", 1)))
+      .toBe(`{"channel":"stable","cluster":"${cluster}","generation":2,"signer":"passkey"}`);
+    expect(channelApprovalBody(cluster, "beta", null)).toContain(`"generation":1`);
+  });
+
+  it("asks only when the Servers enforce and nobody approved this channel for this Cluster", () => {
+    expect(needsApproval(enforcing, "stable", null)).toBe(true);
+    expect(needsApproval(enforcing, "stable", kept("stable", 3))).toBe(false);
+    expect(needsApproval(enforcing, "beta", kept("stable", 3))).toBe(true);
+    expect(needsApproval(enforcing, "stable", kept("stable", 3, "another"))).toBe(true);
+    expect(needsApproval(channelScope([{ sealing: { kind: "held", public_key: cluster }, deviceEnforcement: false }]), "beta", null))
+      .toBe(false);
   });
 });

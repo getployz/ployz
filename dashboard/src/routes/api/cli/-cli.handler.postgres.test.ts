@@ -2646,6 +2646,33 @@ it.live(
   60_000,
 );
 
+it.live(
+  "`server upgrade-policy set` reads the kept approval's generation, keeps a newer one, and refuses one no newer",
+  () =>
+    Effect.gen(function* () {
+      const layer = yield* cliLayer(fakeServers().layer, { runtime: leftBehindCluster });
+      yield* Effect.gen(function* () {
+        const alice = yield* signUp("alice");
+        const approval = (channel: string, generation: number) => ({
+          body: JSON.stringify({ channel, cluster: "CQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQk=", generation, signer: "a".repeat(64) }),
+          signatures: [{ key: "a".repeat(64), signature: "b".repeat(128) }],
+        });
+        assert.deepStrictEqual((yield* cli("GET", "upgrade-channel", alice)).json, { ...DEFAULT_SERVER_UPGRADE_SETTINGS, approved: null });
+
+        const kept = yield* cli("POST", "upgrade-channel", alice, { approval: approval("beta", 1) });
+        assert.deepStrictEqual(kept.json, { channel: "beta", automatic: false, approved: { channel: "beta", generation: 1 } });
+        assert.deepStrictEqual((yield* cli("GET", "upgrade-channel", alice)).json, kept.json);
+
+        const stale = yield* cli("POST", "upgrade-channel", alice, { approval: approval("stable", 1) });
+        assert.strictEqual(stale.status, 422);
+        assert.match(stale.text, /Someone approved a Release Channel since/u);
+        const malformed = yield* cli("POST", "upgrade-channel", alice, { approval: { body: "{}", signatures: [] } });
+        assert.strictEqual(malformed.status, 422);
+      }).pipe(Effect.provide(layer));
+    }),
+  60_000,
+);
+
 type FraRunsGlobal = { destroys: boolean; namespace: string; holdsOnlyCopy?: string };
 
 const operationClusterOf = (plan: FraRunsGlobal) => Layer.succeed(OrganizationRuntime, {

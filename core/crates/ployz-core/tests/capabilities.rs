@@ -23,8 +23,8 @@ use ployz_core::{
     SET_PASSKEY_CAPABILITY, SET_PRIVATE_ACCESS_CAPABILITY, SET_PUSH_TARGET_CAPABILITY,
     SET_VOLUME_COPY_CAPABILITY, SET_VOLUME_SIZE_CAPABILITY, SHARE_SEALING_KEY_CAPABILITY,
     TAIL_LOGS_CAPABILITY, UPDATE_CONTAINER_LIMITS_CAPABILITY, UPDATE_MACHINE_CAPABILITY,
-    UPGRADE_CHANNEL_CAPABILITY, UPGRADE_EXACT_CAPABILITY, VOLUME_FLOOR_CAPABILITY, VOLUME_SHRINK_CAPABILITY,
-    WRAP_SEALING_KEY_CAPABILITY, op,
+    UPGRADE_CHANNEL_CAPABILITY, UPGRADE_EXACT_CAPABILITY, VOLUME_FLOOR_CAPABILITY,
+    VOLUME_SHRINK_CAPABILITY, WRAP_SEALING_KEY_CAPABILITY, op,
 };
 
 /// Capability constants are generated from the catalog, so a typo would stay
@@ -69,7 +69,10 @@ fn catalogued_capabilities_keep_stable_spellings() {
         ),
         (MANAGEMENT_SCOPE_CAPABILITY, "ployz.management.scope.v1"),
         (UPGRADE_EXACT_CAPABILITY, "ployz.machine.upgrade.exact.v1"),
-        (UPGRADE_CHANNEL_CAPABILITY, "ployz.machine.upgrade.channel.v1"),
+        (
+            UPGRADE_CHANNEL_CAPABILITY,
+            "ployz.machine.upgrade.channel.v1",
+        ),
         (ENV_SEALED_CAPABILITY, "ployz.env.sealed.v1"),
         (BUILD_SEALED_CAPABILITY, "ployz.build.sealed.v1"),
         (BUILD_GRANT_HOLDER_CAPABILITY, "ployz.build.grant.holder.v1"),

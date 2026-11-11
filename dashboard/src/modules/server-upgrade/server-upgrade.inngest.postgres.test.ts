@@ -1,4 +1,4 @@
-import type { MachineId, MachineUpgradeAttempt, MachineUpgradeAttemptId, RuntimeWatchView } from "@ployz/sdk";
+import type { MachineId, MachineUpgradeAttempt, MachineUpgradeAttemptId, RuntimeWatchView, Signed } from "@ployz/sdk";
 import { InngestTestEngine } from "@inngest/test";
 import { ConfigProvider, Effect, Layer } from "effect";
 import { Inngest } from "inngest";
@@ -21,6 +21,7 @@ import {
   executeRollOutServerUpgrade,
 } from "#/modules/server-upgrade/server-upgrade.inngest";
 import {
+  approveUpgradeChannel,
   listLatestServerUpgrades,
   readCliServerUpgrade,
   planCliServerUpgrade,
@@ -75,6 +76,8 @@ describe("roll-out-server-upgrade", () => {
   let polls: number;
   let requests: Array<{ machine: string; attemptId: string; release: string }>;
   let resends: Array<{ machine: string; attemptId: string; release: string }>;
+  /** The channel approval each request and resend carried, in order. */
+  let carried: Array<Signed | null>;
   /** Each request and each terminal answer, in the order the Servers saw them. */
   let log: string[];
   let captured: Parameters<PostHogService["capture"]>[0][];
@@ -116,7 +119,8 @@ describe("roll-out-server-upgrade", () => {
         cancel: () => Effect.void,
         open: () => Effect.succeed({ status: "connected" as const, connected: asTestDouble<PloyzSession>()({
           watchFirstFrame: () => Effect.succeed(frame),
-          requestMachineUpgrade: (machine: string, attemptId: string, release: string) => {
+          requestMachineUpgrade: (machine: string, attemptId: string, release: string, channel: Signed | null) => {
+            carried.push(channel);
             if (requests.some((sent) => sent.machine === machine && sent.attemptId === attemptId)) {
               resends.push({ machine, attemptId, release });
               return poll(machine, attemptId);
@@ -188,6 +192,7 @@ describe("roll-out-server-upgrade", () => {
     polls = 0;
     requests = [];
     resends = [];
+    carried = [];
     log = [];
     captured = [];
     identified = [];
@@ -433,7 +438,7 @@ describe("roll-out-server-upgrade", () => {
       const requested = async () => (await schedule()).result;
 
       expect(await runEffect(setServerUpgradeSettings(organizationId, { automatic: false })))
-        .toEqual({ id: organizationId, automatic: false, channel: "stable" });
+        .toEqual({ id: organizationId, automatic: false, channel: "stable", approval: null });
       expect(await requested()).toMatchObject({ organizationCount: 0 });
       await runEffect(setServerUpgradeSettings(organizationId, { automatic: true }));
       expect(await requested()).toMatchObject({ organizationCount: 1 });
@@ -601,7 +606,7 @@ describe("roll-out-server-upgrade", () => {
       expect(captured.map(({ properties }) => properties?.["channel"])).toEqual(["beta", "beta"]);
 
       expect(await runEffect(setServerUpgradeSettings(organizationId, { channel: "stable" })))
-        .toEqual({ id: organizationId, automatic: false, channel: "stable" });
+        .toEqual({ id: organizationId, automatic: false, channel: "stable", approval: null });
       frame = runtimeWatchFrameFixture({ machines: [
         server("1", "web-1", publishedBeta), server("2", "web-2", publishedBeta), server("3", "web-3", "3.0.0-beta.2"),
       ] });
@@ -941,6 +946,52 @@ describe("roll-out-server-upgrade", () => {
       expect(send).toHaveBeenCalledTimes(1);
       expect(requests).toHaveLength(1);
       expect((await rows()).map((row) => row.attempt_id)).toEqual([id]);
+    });
+  });
+
+  describe("a Release Channel a person approved", () => {
+    const cluster = "CQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQk=";
+    const approval = (channel: "stable" | "beta", generation: number): Signed => ({
+      body: JSON.stringify({ channel, cluster, generation, signer: "passkey" }),
+      signatures: [{ key: "a".repeat(64), signature: "b".repeat(128) }],
+    });
+    const approve = (signed: Signed) => runEffect(approveUpgradeChannel({ userId }, { organizationSlug: "acme", approval: signed }));
+
+    beforeEach(async () => {
+      await harness.pool.query(`update member set role = 'admin' where user_id = '${userId}'`);
+    });
+
+    it("follows the approved channel and sends its approval with the request and every resend", async () => {
+      const beta = approval("beta", 1);
+      expect(await approve(beta)).toEqual({ id: organizationId, automatic: false, channel: "beta", approval: beta });
+
+      await rollOut();
+
+      expect(requests.map(({ release }) => release)).toEqual(["beta"]);
+      expect(carried).toEqual([beta, beta, beta]);
+    });
+
+    it("sends no approval while none is kept", async () => {
+      await rollOut();
+
+      expect(carried).toEqual([null, null, null]);
+    });
+
+    it("refuses an approval no newer than the kept one, and keeps the newer", async () => {
+      const second = approval("stable", 2);
+      await approve(approval("beta", 1));
+      await approve(second);
+
+      await expect(approve(approval("beta", 2))).rejects.toThrow("Someone approved a Release Channel since");
+      await expect(approve(approval("beta", 1))).rejects.toThrow("Someone approved a Release Channel since");
+      expect(await runEffect(setServerUpgradeSettings(organizationId, {}))).toMatchObject({ channel: "stable", approval: second });
+    });
+
+    it("refuses a body that isn't a channel approval, and a member who can't operate Servers", async () => {
+      await expect(approve({ ...approval("beta", 1), body: JSON.stringify({ channel: "beta" }) }))
+        .rejects.toThrow("That isn't an approval of a Release Channel.");
+      await harness.pool.query(`update member set role = 'member' where user_id = '${userId}'`);
+      await expect(approve(approval("beta", 1))).rejects.toThrow();
     });
   });
 

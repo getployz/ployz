@@ -146,6 +146,11 @@ mod tests {
             ..statement()
         };
         let unsigned = Signed::unsigned(&answered).unwrap();
+        // The body the dashboard drafts for the passkey, byte for byte (`channelApprovalBody`).
+        assert_eq!(
+            unsigned.body,
+            r#"{"channel":"stable","cluster":"CQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQk=","generation":2,"signer":"passkey"}"#
+        );
         let assertion = passkey.answer(&Answer {
             challenge: &unsigned.challenge(),
             ..HONEST

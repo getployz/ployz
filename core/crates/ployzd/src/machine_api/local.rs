@@ -1611,9 +1611,13 @@ fn upgrade_error(error: crate::installer::upgrade::Error) -> Result<RpcError, St
                 &error,
                 serde_json::json!({
                     "capability": ployz_core::UPGRADE_CHANNEL_CAPABILITY,
-                    "next": format!(
-                        "ployz server upgrade-policy set --channel {requested} from an approved device"
-                    ),
+                    "next": match ployz_core::ReleaseChannel::of(requested) {
+                        Some(channel) => format!(
+                            "ployz server upgrade-policy set --channel {channel} from an approved device"
+                        ),
+                        None => "ployz server upgrade-policy set --channel stable or beta from an approved device"
+                            .to_owned(),
+                    },
                 }),
             ));
         }

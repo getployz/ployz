@@ -1,0 +1,1 @@
+ALTER TABLE "organization_server_upgrades" ADD COLUMN "channel_approval" jsonb;

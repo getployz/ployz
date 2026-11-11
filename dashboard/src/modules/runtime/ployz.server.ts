@@ -28,6 +28,7 @@ import type {
   MetricHistoryInput,
   ObservedDataLoss,
   PublishCertificateMaterialRequest,
+  RequestMachineUpgradeRequest,
   RuntimeWatchView,
   Signed,
   VolumeSwitchReply,
@@ -138,11 +139,15 @@ export interface PloyzSession {
   readonly setPrivateAccess: (authKey: Redacted.Redacted<string> | null) => Effect.Effect<AccessChanged, PloyzSdkError>;
   /** Bring every Machine of the Cluster to hold its Sealing Key, generating one only on `generator`. */
   readonly backfillSealingKey: (request: BackfillSealingKeyRequest) => Effect.Effect<BackfillSealingKeyReport, PloyzSdkError>;
-  /** Ask one Server to Upgrade; resending it with the same attempt ID is the poll. */
+  /**
+   * Ask one Server to Upgrade; resending it with the same attempt ID is the poll. `channel` is the Release Channel a
+   * person approved, which a Server that enforces device approval needs; null sends none.
+   */
   readonly requestMachineUpgrade: (
     machine: MachineTarget,
     attemptId: MachineUpgradeAttemptId,
     release: string,
+    channel: Signed | null,
   ) => Effect.Effect<MachineUpgradeAttempt, PloyzSdkError>;
   readonly volumeSwitch: <R extends VolumeSwitchRequest>(
     machine: MachineTarget,
@@ -414,8 +419,11 @@ function wrapClient(client: Client): PloyzSession {
     copyContainerImage: (source, container, dest) =>
       sdkPromise("copy container image", () => client.copyContainerImage(source, container, dest)),
     backfillSealingKey: (request) => sdkPromise("backfill sealing key", () => client.backfillSealingKey(request)),
-    requestMachineUpgrade: (machine, attemptId, release) =>
-      sdkPromise("request machine upgrade", () => client.requestMachineUpgrade(machine, { attempt_id: attemptId, release })),
+    requestMachineUpgrade: (machine, attemptId, release, channel) => {
+      const request: RequestMachineUpgradeRequest = { attempt_id: attemptId, release };
+      if (channel !== null) request.channel = channel;
+      return sdkPromise("request machine upgrade", () => client.requestMachineUpgrade(machine, request));
+    },
     publishCertificateMaterial: (request) =>
       sdkPromise("publish certificate material", () => client.publishCertificateMaterial(request).then(() => undefined)),
     watch,

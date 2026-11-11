@@ -1,4 +1,6 @@
-import { Schema } from "effect";
+import type { Signed, UpgradeChannel } from "@ployz/sdk";
+import { Option, Schema } from "effect";
+import { canonicalJson } from "#/modules/approval-session/approval-session";
 import { rustMachineIdSchema } from "#/modules/machines/enrollment";
 import type { ServerStatus } from "#/modules/machines/server-status";
 
@@ -113,13 +115,93 @@ export type ServerUpgradeSettingsChange = typeof ServerUpgradeSettingsChange.Typ
 
 export const SetServerUpgradeSettingsInput = Schema.Struct({ organizationSlug: Schema.String, ...ServerUpgradeSettingsChange.fields });
 
-/** The Org Store's view of the Organization's Server upgrade settings, keyed by Organization ID. */
-export type ServerUpgradeSettingsRow = { readonly id: string; readonly automatic: boolean; readonly channel: ReleaseChannel };
+/**
+ * The Org Store's view of the Organization's Server upgrade settings, keyed by Organization ID. `approval` is the
+ * Release Channel a person last approved for the Cluster, as Servers that enforce device approval check it.
+ */
+export type ServerUpgradeSettingsRow = {
+  readonly id: string;
+  readonly automatic: boolean;
+  readonly channel: ReleaseChannel;
+  readonly approval?: Signed | null;
+};
 
 export const serverUpgradeSettings = (rows: readonly ServerUpgradeSettingsRow[]) => ({
   automatic: rows[0]?.automatic ?? DEFAULT_SERVER_UPGRADE_SETTINGS.automatic,
   channel: rows[0]?.channel ?? DEFAULT_SERVER_UPGRADE_SETTINGS.channel,
+  approval: rows[0]?.approval ?? null,
 });
+
+const Base64Url = Schema.String.check(Schema.isPattern(/^[A-Za-z0-9_-]{1,8192}$/u));
+const Hex = (digits: number) => Schema.String.check(Schema.isPattern(new RegExp(`^[0-9a-f]{${digits}}$`, "u")));
+
+/**
+ * A person's approval of a Release Channel as `ployz_core::authority::Signed<UpgradeChannel>` travels: a Device's
+ * signature or a passkey's own answer. Servers check every byte; Cloud bounds its size and reads its channel.
+ */
+export const ChannelApproval = Schema.Struct({
+  body: Schema.String.check(Schema.isMaxLength(1024)),
+  signatures: Schema.Array(Schema.Struct({ key: Hex(64), signature: Hex(128) })).check(Schema.isMaxLength(4)),
+  assertions: Schema.optionalKey(Schema.Array(Schema.Struct({
+    credential_id: Base64Url,
+    authenticator_data: Base64Url,
+    client_data_json: Base64Url,
+    signature: Base64Url,
+  })).check(Schema.isMaxLength(4))),
+});
+export type ChannelApproval = typeof ChannelApproval.Type;
+
+/** Keep a person's approval of a Release Channel, which also sets the channel every upgrade follows. */
+export const ApproveUpgradeChannelInput = Schema.Struct({ organizationSlug: Schema.String, approval: ChannelApproval });
+
+/** What Cloud reads of an approval's body to keep the settings in step with it. Servers read the rest. */
+const ApprovedChannel = Schema.Struct({
+  cluster: Schema.String,
+  channel: Schema.Literals(RELEASE_CHANNELS),
+  generation: Schema.Int.check(Schema.isGreaterThanOrEqualTo(1)),
+});
+
+/** The channel, Cluster and generation `approval` names, or null when its body isn't one. */
+export function approvedChannel(approval: Pick<Signed, "body"> | null): typeof ApprovedChannel.Type | null {
+  if (approval === null) return null;
+  try {
+    return Option.getOrNull(Schema.decodeUnknownOption(ApprovedChannel)(JSON.parse(approval.body)));
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Whether the Servers enforce device approval, and the Cluster key they hold. An upgrade through Cloud needs a
+ * Release Channel approval only there: a Server that never reported enforcement checks none.
+ */
+export function channelScope(machines: ReadonlyArray<{
+  readonly sealing: { readonly kind: string; readonly public_key?: string } | null;
+  readonly deviceEnforcement?: boolean | null;
+}>) {
+  const enforced = machines.some((machine) => machine.deviceEnforcement === true);
+  const cluster = machines.map((machine) => machine.sealing?.kind === "held" ? machine.sealing.public_key : undefined)
+    .find((key) => key !== undefined) ?? null;
+  return { enforced, cluster };
+}
+
+/** Whether an upgrade along `channel` needs a person's approval first: the Servers enforce, and none approved it. */
+export function needsApproval(scope: ReturnType<typeof channelScope>, channel: ReleaseChannel, approval: Pick<Signed, "body"> | null) {
+  if (!scope.enforced) return false;
+  const kept = approvedChannel(approval);
+  return kept === null || kept.channel !== channel || kept.cluster !== scope.cluster;
+}
+
+/** The body a passkey answers to approve `channel` for `cluster`: one generation past the kept approval. */
+export function channelApprovalBody(cluster: string, channel: ReleaseChannel, approval: Pick<Signed, "body"> | null): string {
+  const statement: UpgradeChannel = {
+    cluster,
+    channel,
+    generation: (approvedChannel(approval)?.generation ?? 0) + 1,
+    signer: "passkey",
+  };
+  return canonicalJson(statement);
+}
 
 /** A Server's latest Upgrade attempt, as the Server page reads it. */
 export const LatestUpgrade = Schema.Struct({
