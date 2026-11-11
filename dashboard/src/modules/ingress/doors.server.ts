@@ -144,7 +144,7 @@ export const closedFounding = Effect.fn("IngressDoors.closedFounding")(function*
   if (publicSpecifiedAnywhere(frame)) return { kind: "open" } as const;
   // The founder may not show yet; until a Server takes web traffic there is nothing to tell the tunnel to.
   if (seen.servers.length === 0) return { kind: "unknown" } as const;
-  return { kind: "closed", hostnames: seen.hostnames } as const;
+  return { kind: "closed" } as const;
 });
 
 /** Where a switch to `to` takes generated names from, and to. Nothing before Cloudflare is set up or the Hosted name exists. */

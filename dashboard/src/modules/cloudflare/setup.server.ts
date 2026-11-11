@@ -18,7 +18,7 @@ import {
 import { loadCloudflareSetup } from "#/modules/cloudflare/source.server";
 import { normalizeZone, wildcardRecord, zoneProblem } from "#/modules/cloudflare/zone";
 import { doorsGap, SETUP_RUNNING_LIMIT_MS } from "#/modules/ingress/doors";
-import { closedFounding } from "#/modules/ingress/doors.server";
+import { closedFounding, requestDoorsSwitch } from "#/modules/ingress/doors.server";
 import { activeDoorsAttempt, lockIngressRows } from "#/modules/ingress/doors.lock.server";
 import { organizationCloudflareIngress } from "#/modules/ingress/tables";
 import { organization } from "#/modules/organization/tables";
@@ -120,7 +120,8 @@ const restorePublic = Effect.fn("Cloudflare.restorePublic")(function* (session: 
  * checked before anything else, then the Cluster is reserved (`setting_up`) under the lock a switch takes, so no switch
  * starts until setup ends and setup never starts over one; the Servers answer and the zone's wildcard is free before
  * anything is created, the tunnel exists before the Cluster is asked to run it, both Doors are open and answering
- * before the wildcard record points names at it, and the row becomes `set_up` last, under the same lock. The API token
+ * before the wildcard record points names at it, and the row becomes `set_up` last, under the same lock, never `active`:
+ * only a switch moves the Cluster Domain's source. The API token
  * is `Redacted` throughout, used for these calls and then dropped; the tunnel's own token goes `Redacted` to the
  * Cluster, which seals it. Every way out after the reservation undoes what was done, puts the row back as it was, and
  * names what was kept.
@@ -222,16 +223,18 @@ export const setUpCloudflare = Effect.fn("Cloudflare.setUp")(function* (
 
     if (there.length === 0) recordId = yield* createRecord(http, input.token, zone.id, wildcardRecord(zone.name, tunnel.id));
 
-    // With nothing published to move, the zone is the Cluster Domain's source at once, as a switch would leave it.
-    const state = founding.kind === "closed" && founding.hostnames.length === 0 ? "active" : "set_up";
-    const row = { zone: zone.name, tunnelId: tunnel.id, tunnelName, state } as const;
+    // Only a switch makes the zone the Cluster Domain's source (`active`), after it has moved the names the Servers publish
+    // then. A Cluster founded closed has no ports to keep its apps answering meanwhile, so its switch is asked for here,
+    // in the write that ends setup, and a Deployment that landed during setup is moved with the rest.
+    const row = { zone: zone.name, tunnelId: tunnel.id, tunnelName, state: "set_up" } as const;
     return yield* database.transaction(Effect.gen(function* () {
       yield* lockIngressRows(organizationId);
       const { drizzle } = yield* Database;
       const [written] = yield* drizzle.update(organizationCloudflareIngress).set({ ...row, updatedAt: new Date() }).where(reserved)
         .returning({ organizationId: organizationCloudflareIngress.organizationId });
       if (written === undefined) return yield* new Conflict({ userFacing: true, message: "Another setup took over this one." });
-      return row;
+      if (closed) yield* requestDoorsSwitch({ organizationId, userId: null, to: "tunnel" });
+      return { ...row, switching: closed };
     }));
   }).pipe(Effect.timeoutOrElse({ duration: SETUP_RUNNING_LIMIT_MS, orElse: () => Effect.fail(refuse("Setup didn't finish in time.")) }));
 

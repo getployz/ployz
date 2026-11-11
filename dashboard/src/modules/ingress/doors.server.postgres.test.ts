@@ -136,6 +136,49 @@ it("opens both doors, flips to Cloudflare, closes the public door, and ends fini
   expect(await attempts()).toMatchObject([{ state: "finished", want: "tunnel", stage: "closing", failure: null }]);
 });
 
+/** The first Server joined on an instruction founding the Cluster with every Door closed, as Cloudflare's first-run card asks for. */
+const foundedClosed = () => harness.pool.query(`
+  with fleet as (
+    insert into fleet_token (organization_id, name, token_hash, expires_at, founds_closed, created_by_user_id)
+    values ($1, 'fleet', 'hash', now() + interval '1 day', true, $2) returning id
+  ), waiting as (
+    insert into waiting_server (organization_id, fleet_token_id, checkin_key, report, observed_ip)
+    select $1, id, 'key', '{}'::jsonb, '203.0.113.9' from fleet returning id, fleet_token_id
+  )
+  insert into server_enrollment (organization_id, waiting_server_id, fleet_token_id, role, instruction, enroll_token_id, state)
+  select $1, id, fleet_token_id, 'founder', '{"ingressClosed": true}'::jsonb, gen_random_uuid(), 'joined' from waiting
+`, [ORG, ADA]);
+const CLOSED_FRAME = { ...EMPTY_FRAME, machines: [server("m1", "up")] };
+
+it("switches a Cluster founded closed with only the tunnel, never the ports, and flips to Cloudflare once it has acted", async () => {
+  await setup("set_up");
+  await foundedClosed();
+  session = answering((doors) => doors, Effect.succeed(CLOSED_FRAME));
+  const request = await asked("tunnel");
+  expect(await run(executeDoorsOnce(request, RUN))).toEqual({ attemptId: request.attemptId, state: "finished" });
+  expect(sets).toEqual([["tunnel"], ["tunnel"]]);
+  expect(await stateNow()).toBe("active");
+});
+
+it("leaves a Cluster founded closed set up, with the switch free to ask again, when its Servers aren't all seen", async () => {
+  await setup("set_up");
+  await foundedClosed();
+  session = answering((doors) => doors, Effect.succeed({ ...CLOSED_FRAME, incomplete_ids: { machines: ["m2"], containers: [], certificates: [] } }));
+  const request = await asked("tunnel");
+  expect(await run(executeDoorsOnce(request, RUN))).toEqual({ attemptId: request.attemptId, state: "failed" });
+  expect(sets).toEqual([]);
+  expect(await stateNow()).toBe("set_up");
+  expect(await attempts()).toMatchObject([{ state: "failed", failure: "Some servers didn't answer. Switch again once they all do." }]);
+
+  session = answering((doors) => doors, Effect.succeed(CLOSED_FRAME));
+  const again = await run(requestDoorsSwitch({ organizationId: ORG, userId: ADA, to: "tunnel" }));
+  expect(again.joined).toBe(false);
+  await run(bindDoorsRun({ attemptId: again.change.attemptId, organizationId: ORG }, "run-2"));
+  expect(await run(executeDoorsOnce({ attemptId: again.change.attemptId, organizationId: ORG }, "run-2"))).toMatchObject({ state: "finished" });
+  expect(sets).toEqual([["tunnel"], ["tunnel"]]);
+  expect(await stateNow()).toBe("active");
+});
+
 it("finishes a switch whose last step failed when asked again, and refuses one already made", async () => {
   await setup("active");
   await harness.pool.query(
