@@ -8315,7 +8315,9 @@ fn a_redeploys_approval_names_what_its_runner_lowers_whatever_was_saved_since() 
     store
         .record(&id(1), &a, RunEvidence::Prepared(preview(&["web", "api"])))
         .unwrap();
-    store.record(&id(1), &a, succeeded(&["web", "api"])).unwrap();
+    store
+        .record(&id(1), &a, succeeded(&["web", "api"]))
+        .unwrap();
     // Saved since: a Deploy now would ship three replicas of web, a redeploy of #1 one.
     set_replicas(&store, &who, "web", 3);
     let now = store
@@ -8354,7 +8356,9 @@ fn a_rollbacks_approval_names_what_its_runner_lowers() {
         store
             .record(&id(n), &a, RunEvidence::Prepared(preview(&["web", "api"])))
             .unwrap();
-        store.record(&id(n), &a, succeeded(&["web", "api"])).unwrap();
+        store
+            .record(&id(n), &a, succeeded(&["web", "api"]))
+            .unwrap();
     };
     admit(&store, &who, 1, &[], None).unwrap();
     ran(1);
@@ -8421,7 +8425,9 @@ fn a_redeploy_without_an_approval_runs_as_before_and_its_source_lends_none() {
     store
         .record(&id(1), &a, RunEvidence::Prepared(preview(&["web", "api"])))
         .unwrap();
-    store.record(&id(1), &a, succeeded(&["web", "api"])).unwrap();
+    store
+        .record(&id(1), &a, succeeded(&["web", "api"]))
+        .unwrap();
     // As an older dashboard or CLI sends it: no approval field at all.
     let older: Admit = serde_json::from_value(json!({
         "admit": "retry", "id": id(2), "deployment": id(1),
