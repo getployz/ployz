@@ -996,3 +996,67 @@ pub(crate) fn empty(name: &str) -> SavedEnvironmentIntent {
         configs: Vec::new(),
     }
 }
+
+/// One Environment of a Project, as teardown orders them.
+pub(crate) struct Member {
+    pub(crate) id: EnvironmentId,
+    pub(crate) name: EnvironmentName,
+    pub(crate) parent: Option<EnvironmentId>,
+}
+
+/// A Project's Environments with their Parents, in ID order.
+pub(crate) fn members(tx: &mut dyn Tx, project: &ProjectId) -> Result<Vec<Member>, RpcError> {
+    let rows = tx.query(
+        "SELECT e.id, e.name, b.parent_id FROM config_environment e \
+         LEFT JOIN config_environment_branch b ON b.environment_id = e.id \
+         WHERE e.project_id = ?1 ORDER BY e.id",
+        &[project.as_str().into()],
+    )?;
+    rows.iter()
+        .map(|row| {
+            Ok(Member {
+                id: row.parse::<EnvironmentId>(0, "Environment")?,
+                name: row.parse::<EnvironmentName>(1, "Environment")?,
+                parent: row.parse_optional::<EnvironmentId>(2, "Environment")?,
+            })
+        })
+        .collect()
+}
+
+/// The Parent of `environment`, its Parent's Parent, and so on.
+pub(crate) fn ancestors_among(
+    members: &[Member],
+    environment: &EnvironmentId,
+) -> Vec<EnvironmentId> {
+    let mut chain = Vec::new();
+    let mut at = environment;
+    while let Some(parent) = members
+        .iter()
+        .find(|member| &member.id == at)
+        .and_then(|member| member.parent.as_ref())
+        .filter(|parent| !chain.contains(*parent))
+    {
+        chain.push(parent.clone());
+        at = parent;
+    }
+    chain
+}
+
+/// Delete `environment` and everything it owns: its rows go with it.
+pub(crate) fn purge(tx: &mut dyn Tx, environment: &EnvironmentId) -> Result<(), RpcError> {
+    // Branch rows, then arrivals, then bases: the order the seal scrub takes them in
+    // under the other side's lock alone. The cascade below would take bases first.
+    tx.execute(
+        "DELETE FROM config_environment_branch WHERE environment_id = ?1 OR parent_id = ?1",
+        &[environment.as_str().into()],
+    )?;
+    tx.execute(
+        "DELETE FROM config_sync_arrival WHERE environment_id = ?1",
+        &[environment.as_str().into()],
+    )?;
+    tx.execute(
+        "DELETE FROM config_environment WHERE id = ?1",
+        &[environment.as_str().into()],
+    )?;
+    Ok(())
+}

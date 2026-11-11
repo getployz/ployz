@@ -56,4 +56,6 @@ pub use trusted_key::{
     TrustedPasskey,
 };
 pub use upgrade::UpgradeChannel;
-pub use volume::{VolumeApproval, VolumeApproved, VolumeFacts, VolumeStep, VolumeWorkflow};
+pub use volume::{
+    ApprovedVolumeChange, VolumeApproval, VolumeApproved, VolumeFacts, VolumeStep, VolumeWorkflow,
+};

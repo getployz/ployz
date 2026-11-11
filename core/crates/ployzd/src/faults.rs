@@ -59,7 +59,7 @@ impl<'a> Identity<'a> {
             },
             WantedCopy::Mirror { target, .. } => Want::Mirror { target },
             WantedCopy::Snapshot { name } => Want::Snapshot { snapshot: name },
-            WantedCopy::Forget => Want::Forget,
+            WantedCopy::Forget { .. } => Want::Forget,
             WantedCopy::Floor => Want::Floor,
         };
         Self {

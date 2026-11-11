@@ -8,6 +8,7 @@ pub(crate) mod admit;
 mod history;
 mod landing;
 mod lifecycle;
+pub(crate) mod loss;
 mod lowering;
 pub(crate) mod query;
 #[cfg(test)]
@@ -55,12 +56,13 @@ use crate::id::{
     Principal, RepositoryId, Revision, RunnerId, ServiceLineageId, VolumeId, VolumeName,
 };
 use crate::registry;
-use crate::removal::VolumeLoss;
 use crate::review::{Head, InFlight};
 use crate::scope::{self, Environment, EnvironmentSummary, revision_param};
 use crate::sealing::SealingKey;
 use crate::storage::{Row, Tx, name_of};
 use crate::variables;
+
+use self::loss::VolumeLoss;
 
 /// Where a Deployment is in its life.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]

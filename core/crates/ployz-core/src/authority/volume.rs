@@ -217,6 +217,26 @@ impl VolumeWorkflow {
         }
     }
 
+    /// The Servers this workflow lets `machine` pull the Volume from: a Mirror's Writer, a
+    /// Move's source for its target, and either side of a Move for a Mirror it keeps
+    /// following. Empty when it lets `machine` pull from nobody.
+    #[must_use]
+    pub fn pulls_from(&self, machine: &MachineId) -> Vec<MachineId> {
+        match self {
+            Self::Mirror { writer, mirror, .. } if mirror == machine => vec![*writer],
+            Self::Move { from, to, .. } if to == machine => vec![*from],
+            Self::Move {
+                from, to, mirrors, ..
+            } if mirrors.contains(machine) => vec![*from, *to],
+            Self::Move { .. }
+            | Self::Mirror { .. }
+            | Self::MirrorRemoval { .. }
+            | Self::Restore { .. }
+            | Self::Resize { .. }
+            | Self::Seed { .. } => Vec::new(),
+        }
+    }
+
     /// Whether `machine` is the source of a Move under this workflow.
     #[must_use]
     pub fn moves_from(&self, machine: &MachineId) -> bool {
@@ -249,6 +269,76 @@ impl VolumeWorkflow {
                 writer != mirror
             }
             Self::Restore { .. } | Self::Resize { .. } | Self::Seed { .. } => true,
+        }
+    }
+}
+
+/// What a person approved in a Volume approval, as a client shows it, computed from the
+/// statement it signs. The Volume and each Server go by the names the client knows them by.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum ApprovedVolumeChange {
+    /// `mirror` keeps a copy of `volume` from `writer`, and takes every later sync of it
+    /// without another approval until the Mirror is removed. With `replace` it first
+    /// destroys the copy it holds.
+    Mirror {
+        volume: String,
+        writer: String,
+        mirror: String,
+        replace: bool,
+    },
+}
+
+impl ApprovedVolumeChange {
+    /// The change `approval` makes to the Volume the client calls `volume`, naming each Server
+    /// with `name`. `None` for a workflow no client signs yet.
+    #[must_use]
+    pub fn of(
+        approval: &VolumeApproval,
+        volume: &str,
+        name: impl Fn(&MachineId) -> String,
+    ) -> Option<Self> {
+        match &approval.workflow {
+            VolumeWorkflow::Mirror {
+                writer,
+                mirror,
+                replace,
+            } => Some(Self::Mirror {
+                volume: volume.to_owned(),
+                writer: name(writer),
+                mirror: name(mirror),
+                replace: *replace,
+            }),
+            VolumeWorkflow::Move { .. }
+            | VolumeWorkflow::MirrorRemoval { .. }
+            | VolumeWorkflow::Restore { .. }
+            | VolumeWorkflow::Resize { .. }
+            | VolumeWorkflow::Seed { .. } => None,
+        }
+    }
+
+    /// One line a person reads: the Volume, both Servers, and that later syncs need no
+    /// approval.
+    #[must_use]
+    pub fn line(&self) -> String {
+        match self {
+            Self::Mirror {
+                volume,
+                writer,
+                mirror,
+                replace,
+            } => {
+                let change = if *replace {
+                    format!(
+                        "copy {volume} from {writer} to {mirror} again, replacing the copy there"
+                    )
+                } else {
+                    format!("mirror {volume} from {writer} to {mirror}")
+                };
+                format!(
+                    "Approved: {change}. Later syncs run without asking until you remove the Mirror."
+                )
+            }
         }
     }
 }

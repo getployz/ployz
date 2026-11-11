@@ -23,8 +23,8 @@ use ployz_core::{
     SET_PASSKEY_CAPABILITY, SET_PRIVATE_ACCESS_CAPABILITY, SET_PUSH_TARGET_CAPABILITY,
     SET_VOLUME_COPY_CAPABILITY, SET_VOLUME_SIZE_CAPABILITY, SHARE_SEALING_KEY_CAPABILITY,
     TAIL_LOGS_CAPABILITY, UPDATE_CONTAINER_LIMITS_CAPABILITY, UPDATE_MACHINE_CAPABILITY,
-    UPGRADE_CHANNEL_CAPABILITY, UPGRADE_EXACT_CAPABILITY, VOLUME_FLOOR_CAPABILITY,
-    VOLUME_SHRINK_CAPABILITY, WRAP_SEALING_KEY_CAPABILITY, op,
+    UPGRADE_CHANNEL_CAPABILITY, UPGRADE_EXACT_CAPABILITY, VOLUME_APPROVAL_CAPABILITY,
+    VOLUME_FLOOR_CAPABILITY, VOLUME_SHRINK_CAPABILITY, WRAP_SEALING_KEY_CAPABILITY, op,
 };
 
 /// Capability constants are generated from the catalog, so a typo would stay
@@ -167,6 +167,7 @@ fn catalogued_capabilities_keep_stable_spellings() {
         (EXEC_CONTAINER_CAPABILITY, "ployz.container.exec.v1"),
         (VOLUME_FLOOR_CAPABILITY, "ployz.volume.copy.floor.v1"),
         (VOLUME_SHRINK_CAPABILITY, "ployz.volume.size.shrink.v1"),
+        (VOLUME_APPROVAL_CAPABILITY, "ployz.volume.approval.v1"),
         (
             RESTART_SESSION_GRANT_CAPABILITY,
             "ployz.restart.session-grant.v2",
@@ -260,6 +261,7 @@ fn advertised_capability_groups_match_the_frozen_catalog() {
             "ployz.build.v1",
             "ployz.volume.copy.floor.v1",
             "ployz.volume.size.shrink.v1",
+            "ployz.volume.approval.v1",
         ]
     );
     assert_eq!(
@@ -466,6 +468,10 @@ const ABOVE_FLOOR: &[(&str, &str)] = &[
     (
         "ployz.volume.size.set.v1",
         "gated: a caller checks the contract first and refuses the resize, naming the Server whose daemon lacks it",
+    ),
+    (
+        "ployz.volume.approval.v1",
+        "falls back: an older daemon ignores the approval and the Forget recipient. It checks no approval and grants nothing, so it pulls and serves the send stream as before, and its Forget writes no withdrawal",
     ),
     (
         "ployz.volume.size.shrink.v1",
@@ -739,7 +745,8 @@ mod coverage {
             "ployz.volume.copy.set.v1",
             &[
                 "a Writer want with a start",
-                "pull, cut, promote, forget",
+                "a pull",
+                "cut, promote, forget",
                 "floor, snapshot",
             ],
         ),

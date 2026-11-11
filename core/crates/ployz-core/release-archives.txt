@@ -1,0 +1,9 @@
+# Every archive a Ployz release publishes. Installed Machines download these names on upgrade,
+# so a name here never changes. Read by ployz-core (release.rs) and by scripts/release-archives.sh.
+# product  os     arch   archive                      binaries (comma separated)
+ployz      linux  amd64  ployz_linux_amd64.tar.gz     ployz
+ployz      linux  arm64  ployz_linux_arm64.tar.gz     ployz
+ployz      macos  amd64  ployz_macos_amd64.tar.gz     ployz
+ployz      macos  arm64  ployz_macos_arm64.tar.gz     ployz
+ployzd     linux  amd64  ployzd_linux_amd64.tar.gz    ployzd,ployz-uninstall
+ployzd     linux  arm64  ployzd_linux_arm64.tar.gz    ployzd,ployz-uninstall

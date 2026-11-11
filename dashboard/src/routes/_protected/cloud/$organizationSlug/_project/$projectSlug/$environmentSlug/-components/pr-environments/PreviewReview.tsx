@@ -1,5 +1,5 @@
 import { Suspense, useState } from "react";
-import type { PreviewReviewView, Review } from "@ployz/sdk";
+import type { PreviewReviewView, Review, Standing } from "@ployz/sdk";
 import { KeyRoundIcon } from "lucide-react";
 import { Button } from "#/components/ui/button";
 import { Dialog, DialogClose, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "#/components/ui/dialog";
@@ -13,8 +13,12 @@ import { useEnvironmentMachines } from "#/providers/runtime-provider";
 /** Approve `head`, with a review of it for each PR Environment that runs under a preview rule. */
 export type Approve = (head: string, reviews?: { environment: string; review: Review }[]) => Promise<void>;
 
-/** `again`: the head is approved already, so only a new review of it, as after one expired, has anything to do. */
-type Props = { organizationSlug: string; project: string; environment: string; number: number; head: string; approve: Approve; again?: boolean };
+/**
+ * `standing`: a head that needs approval can be approved without a review where no Server asks for one. A head
+ * approved or trusted already has only a review left to do, as after its last review expired, or when the preview rule
+ * doesn't trust its author.
+ */
+type Props = { organizationSlug: string; project: string; environment: string; number: number; head: string; approve: Approve; standing: Standing };
 
 /**
  * Approve deploy for a pull request whose PR Environment is open. Under a preview rule, on Servers that enforce device
@@ -22,13 +26,13 @@ type Props = { organizationSlug: string; project: string; environment: string; n
  */
 export function ApproveDeploy(props: Props) {
   return (
-    <Suspense fallback={props.again ? null : <Button size="sm" variant="outline" disabled>Approve deploy</Button>}>
+    <Suspense fallback={props.standing === "needs_approval" ? <Button size="sm" variant="outline" disabled>Approve deploy</Button> : null}>
       <Reviewing {...props} />
     </Suspense>
   );
 }
 
-function Reviewing({ organizationSlug, project, environment, number, head, approve, again = false }: Props) {
+function Reviewing({ organizationSlug, project, environment, number, head, approve, standing }: Props) {
   const read = useStoreView(organizationSlug, previewReviewQuery({ project, environment }));
   const view = read.ok ? read.value : null;
   const { machines } = useRuntimeLens(organizationSlug);
@@ -39,11 +43,11 @@ function Reviewing({ organizationSlug, project, environment, number, head, appro
     environmentMachines, machines, REVIEW_CAPABILITIES,
   );
   if (view === null || scope === null || !scope.enforced) {
-    return again ? null : <Button size="sm" variant="outline" onClick={() => void approve(head)}>Approve deploy</Button>;
+    return standing === "needs_approval" ? <Button size="sm" variant="outline" onClick={() => void approve(head)}>Approve deploy</Button> : null;
   }
   return (
     <>
-      <Button size="sm" variant="outline" onClick={() => setOpen(true)}>{again ? "Review again" : "Review and approve"}</Button>
+      <Button size="sm" variant="outline" onClick={() => setOpen(true)}>{standing === "needs_approval" || standing === "trusted" ? "Review and approve" : "Review again"}</Button>
       {open ? <ReviewDialog view={view} scope={scope} number={number} head={head} approve={approve} onClose={() => setOpen(false)} /> : null}
     </>
   );

@@ -6,6 +6,9 @@ ROOT=$(CDPATH='' cd -- "$(dirname -- "$0")/.." && pwd)
 DIST=${DIST:-"$ROOT/dist"}
 EXPECTED_VERSION=$(sed -n 's/^version = "\([^"]*\)"/\1/p' "$ROOT/Cargo.toml" | head -n1)
 
+# shellcheck source=scripts/release-archives.sh
+source "$ROOT/scripts/release-archives.sh"
+
 fail() { echo "release verification failed: $1" >&2; exit 1; }
 
 sha256() {
@@ -16,23 +19,12 @@ sha256() {
     fi
 }
 
-cli_archives() {
-    printf '%s\n' \
-        ployz_linux_amd64.tar.gz \
-        ployz_linux_arm64.tar.gz \
-        ployz_macos_amd64.tar.gz \
-        ployz_macos_arm64.tar.gz
-}
-
 require_archives() {
     expected=$(printf '%s\n' "$@" | sort)
     actual=$(find "$DIST" -maxdepth 1 -name '*.tar.gz' -exec basename {} \; | sort)
     [ "$actual" = "$expected" ] || fail "archive set differs from the approved names"
     for archive in "$@"; do
-        case $archive in
-            ployzd_*) check_archive "$archive" $'ployz-uninstall\nployzd' ;;
-            *) check_archive "$archive" ployz ;;
-        esac
+        check_archive "$archive" "$(release_archive_binaries "$archive")"
     done
 }
 
@@ -48,7 +40,7 @@ check_archive() {
 
 check_checksums_and_formula() {
     checksum_names=$(awk '{print $2}' "$DIST/checksums.txt" | sort)
-    expected_checksums=$(printf '%s\n' "$(cli_archives)" ployzd_linux_amd64.tar.gz ployzd_linux_arm64.tar.gz | sort)
+    expected_checksums=$(release_archives | sort)
     [ "$checksum_names" = "$expected_checksums" ] || fail "checksums.txt must cover CLI and daemon archives"
 
     formula=$(find "$DIST" -name 'ployz.rb' -print -quit)
@@ -57,7 +49,7 @@ check_checksums_and_formula() {
         grep -Fq "${archive%.tar.gz}" "$formula" || fail "Homebrew formula omits $archive"
         checksum=$(sha256 "$DIST/$archive")
         grep -Fq "$checksum" "$formula" || fail "Homebrew formula has no checksum for $archive"
-    done < <(cli_archives)
+    done < <(release_archives ployz)
     grep -Fq 'bin.install "ployz"' "$formula" || fail "Homebrew formula does not install ployz"
 }
 
@@ -126,18 +118,20 @@ install_native() {
 
 case "${1:-}" in
     macos)
-        require_archives ployz_macos_amd64.tar.gz ployz_macos_arm64.tar.gz
-        run_archive ployz_macos_arm64.tar.gz ployz "arch -arm64"
-        run_archive ployz_macos_amd64.tar.gz ployz "arch -x86_64"
-        install_native "ployz_macos_$(uname -m | sed 's/x86_64/amd64/').tar.gz"
+        # shellcheck disable=SC2046
+        require_archives $(release_archives "" macos)
+        run_archive "$(release_archive ployz macos arm64)" ployz "arch -arm64"
+        run_archive "$(release_archive ployz macos amd64)" ployz "arch -x86_64"
+        install_native "$(release_archive ployz macos "$(uname -m | sed 's/x86_64/amd64/')")"
         ;;
     linux)
-        require_archives ployz_linux_amd64.tar.gz ployz_linux_arm64.tar.gz ployzd_linux_amd64.tar.gz ployzd_linux_arm64.tar.gz
-        run_archive ployz_linux_amd64.tar.gz ployz
-        run_archive ployzd_linux_amd64.tar.gz ployzd
-        run_archive ployz_linux_arm64.tar.gz ployz qemu-aarch64
-        run_archive ployzd_linux_arm64.tar.gz ployzd qemu-aarch64
-        install_native ployz_linux_amd64.tar.gz
+        # shellcheck disable=SC2046
+        require_archives $(release_archives "" linux)
+        run_archive "$(release_archive ployz linux amd64)" ployz
+        run_archive "$(release_archive ployzd linux amd64)" ployzd
+        run_archive "$(release_archive ployz linux arm64)" ployz qemu-aarch64
+        run_archive "$(release_archive ployzd linux arm64)" ployzd qemu-aarch64
+        install_native "$(release_archive ployz linux amd64)"
         for target in x86_64-unknown-linux-musl aarch64-unknown-linux-musl; do
             probe="$ROOT/target/$target/release/sqlite-probe"
             chmod +x "$probe"
@@ -147,7 +141,7 @@ case "${1:-}" in
                 "$probe" "$(mktemp)"
             fi
         done
-        for archive in ployz_linux_amd64.tar.gz ployz_linux_arm64.tar.gz ployzd_linux_amd64.tar.gz ployzd_linux_arm64.tar.gz; do
+        for archive in $(release_archives "" linux); do
             directory=$(mktemp -d)
             tar -xzf "$DIST/$archive" -C "$directory"
             binary=ployz
@@ -159,7 +153,8 @@ case "${1:-}" in
         done
         ;;
     artifacts)
-        require_archives ployz_linux_amd64.tar.gz ployz_linux_arm64.tar.gz ployz_macos_amd64.tar.gz ployz_macos_arm64.tar.gz ployzd_linux_amd64.tar.gz ployzd_linux_arm64.tar.gz
+        # shellcheck disable=SC2046
+        require_archives $(release_archives)
         check_checksums_and_formula
         ;;
     *) fail "usage: $0 macos|linux|artifacts" ;;

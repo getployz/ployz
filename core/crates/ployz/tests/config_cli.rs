@@ -6296,7 +6296,7 @@ fn an_outsiders_pull_request_deploys_once_a_member_approves_its_head() {
         waiting["plans"][0]["open"][0],
         json!({
             "number": 5, "title": "Add search", "author": "ada", "head": "1".repeat(40),
-            "standing": "needs_approval", "environment": null,
+            "standing": "needs_approval", "environment": null, "needs_review": false,
         })
     );
     let names = |listed: &Value| -> Vec<Value> {

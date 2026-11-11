@@ -150,7 +150,9 @@ jobs:
 
 A pull request from a fork, or from an account the rule doesn't trust, opens its preview but deploys
 nothing until you review its commit. In the PR panel its row reads **Needs approval** with the
-commit. Read the pull request's changes on GitHub, then click **Review and approve**. The dialog
+commit. A member's pull request that the rule doesn't trust shows no badge, but your servers still
+refuse its pushes, so its row offers the same review. Read the pull request's changes on GitHub,
+then click **Review and approve**. The dialog
 lists each service the review covers and what it asks for, like:
 
 ```text

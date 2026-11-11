@@ -985,7 +985,7 @@ fn land_one(
         Some(&from.working),
         &applied.next,
     )?;
-    let consent = crate::removal::still_removed(review::consent(latest.as_ref()), &saved);
+    let consent = crate::deployment::loss::still_removed(review::consent(latest.as_ref()), &saved);
     review::publish(
         tx,
         who,

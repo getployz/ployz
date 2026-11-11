@@ -4,9 +4,9 @@
 use ployz_core::{
     ContainerKind, ContainerLocator, ContainerNow, ContainerObservation, ContainerRefusalReason,
     ContainerRuntimeObservation, ContainerWant, CopyPlan, CopyRefusal, CopyRotation,
-    CopyTransition, DockerVolumeName, EnsuredContainer, HealthVerdict, OpaquePayload, RpcError,
-    RunRotation, RunTarget, SetVolumeCopyRefused, SetVolumeCopyReply, SetVolumeCopyRequest, Start,
-    VolumeCopy, VolumeGen, WantedCopy,
+    CopyTransition, DockerVolumeName, EnsuredContainer, HealthVerdict, MachineId, OpaquePayload,
+    RpcError, RunRotation, RunTarget, SetVolumeCopyRefused, SetVolumeCopyReply,
+    SetVolumeCopyRequest, Start, VolumeCopy, VolumeGen, WantedCopy,
 };
 use tonic::{Response, Status};
 
@@ -14,7 +14,7 @@ use super::{MachineService, local_error, respond};
 use crate::{
     docker::FloorTurn,
     faults::{Identity, Want},
-    machine::{CutRefusal, LocalMachineError},
+    machine::{CopyStep, CutRefusal, LocalMachineError},
     volume_copy::{
         CUT_ROUTE, CopyRequest, CutRequest, DESTROY_ROUTE, FORGET_ROUTE, ForgetRequest,
         INSPECT_ROUTE, PULL_ROUTE, PullRequest, SNAPSHOT_ROUTE, SnapshotRequest, WRITER_ROUTE,
@@ -33,9 +33,12 @@ enum StartState {
 }
 
 impl MachineService {
+    /// `operator` says the caller is an Operator, whose steps an enforcing Machine checks
+    /// against the Volume approval they carry.
     pub(super) async fn set_copy(
         &self,
         request: SetVolumeCopyRequest,
+        operator: bool,
     ) -> Result<Response<OpaquePayload>, Status> {
         if request.want == WantedCopy::Floor {
             return match self.floor_copy(&request.name, request.r#gen).await {
@@ -61,7 +64,7 @@ impl MachineService {
         let service = self.clone();
         let admitted = tokio::spawn(async move {
             let _guard = guard;
-            service.set_copy_admitted(request).await
+            service.set_copy_admitted(request, operator).await
         })
         .await
         .map_err(LocalMachineError::from)
@@ -75,12 +78,14 @@ impl MachineService {
     async fn set_copy_admitted(
         &self,
         request: SetVolumeCopyRequest,
+        operator: bool,
     ) -> Result<Copy, LocalMachineError> {
         let SetVolumeCopyRequest {
             name,
             expect,
             want,
             r#gen,
+            approval,
         } = request;
         // Checked again under the switch lock: a newer lane may have fenced this Volume
         // while the request queued behind a cut.
@@ -93,25 +98,42 @@ impl MachineService {
             WantedCopy::Writer { start: None, .. }
             | WantedCopy::Mirror { .. }
             | WantedCopy::Snapshot { .. }
-            | WantedCopy::Forget
+            | WantedCopy::Forget { .. }
             | WantedCopy::Floor => None,
         };
         let start_running = start == Some(StartState::Running);
+        // `None` when the copy is already at the want.
         let transition = match ployz_core::plan(copy.as_ref(), start_running, &expect, &want) {
-            CopyPlan::AtWant => {
-                if let WantedCopy::Writer {
-                    start: Some(start), ..
-                } = &want
-                {
-                    self.route_created(start, &name).await?;
-                }
-                return Ok(copy);
-            }
+            CopyPlan::AtWant => None,
             CopyPlan::Refuse(reason) => return Err(refused(reason, copy, &name)),
             CopyPlan::Transition(_) if start == Some(StartState::Gone) => {
                 return Err(refused(CopyRefusal::NoTransition, copy, &name));
             }
-            CopyPlan::Transition(transition) => transition,
+            CopyPlan::Transition(transition) => Some(transition),
+        };
+        if operator && let Some(step) = approved_step(&want, transition) {
+            self.local
+                .admit_operator_copy(approval.as_ref(), &name, step)
+                .await?;
+        }
+        if let WantedCopy::Forget { recipient } = &want
+            && let Some(recipient) = withdrawn(
+                copy.as_ref(),
+                *recipient,
+                transition,
+                &self.local.record().id(),
+            )
+        {
+            self.local.withdraw_volume(&name, &recipient)?;
+        }
+        let Some(transition) = transition else {
+            if let WantedCopy::Writer {
+                start: Some(start), ..
+            } = &want
+            {
+                self.route_created(start, &name).await?;
+            }
+            return Ok(copy);
         };
         crate::faults::apply(
             fault_point(transition),
@@ -221,7 +243,7 @@ impl MachineService {
                 )
                 .await
             }
-            (CopyTransition::WriterToForget, WantedCopy::Forget) => {
+            (CopyTransition::WriterToForget, WantedCopy::Forget { .. }) => {
                 self.plugin_copy(FORGET_ROUTE, &ForgetRequest { name, r#gen })
                     .await
             }
@@ -244,7 +266,10 @@ impl MachineService {
                 )
                 .await
             }
-            (CopyTransition::MirrorToForget | CopyTransition::SeedToForget, WantedCopy::Forget) => {
+            (
+                CopyTransition::MirrorToForget | CopyTransition::SeedToForget,
+                WantedCopy::Forget { .. },
+            ) => {
                 self.plugin_copy(DESTROY_ROUTE, &ForgetRequest { name, r#gen })
                     .await
             }
@@ -465,6 +490,49 @@ impl MachineService {
     }
 }
 
+/// The step of `want` an enforcing Machine checks against an Operator's Volume approval: a
+/// pull that makes, refreshes or already holds a Mirror, and a run snapshot taken or already
+/// held.
+fn approved_step(want: &WantedCopy, transition: Option<CopyTransition>) -> Option<CopyStep<'_>> {
+    match (want, transition) {
+        (
+            WantedCopy::Mirror {
+                from: Some(from), ..
+            },
+            Some(transition @ (CopyTransition::NoneToMirror | CopyTransition::MirrorToMirror)),
+        ) => Some(CopyStep::Pull { transition, from }),
+        (
+            WantedCopy::Mirror {
+                from: Some(from), ..
+            },
+            None,
+        ) => Some(CopyStep::Held { from }),
+        (WantedCopy::Snapshot { .. }, None | Some(CopyTransition::WriterToSnapshot)) => {
+            Some(CopyStep::Snapshot)
+        }
+        _ => None,
+    }
+}
+
+/// Whom a `Forget` withdraws from the Volume before it destroys anything: on a Mirror's
+/// Machine, or one with no copy left, this Machine itself; on the Writer, the `recipient`
+/// it names. Withdrawn whether the copy changes or is already gone, so a resent or
+/// repeated removal still records it.
+fn withdrawn(
+    copy: Option<&VolumeCopy>,
+    recipient: Option<MachineId>,
+    transition: Option<CopyTransition>,
+    machine: &MachineId,
+) -> Option<MachineId> {
+    match (copy, transition) {
+        (Some(VolumeCopy::Slot { .. }) | None, None | Some(CopyTransition::MirrorToForget)) => {
+            Some(*machine)
+        }
+        (Some(VolumeCopy::Root { .. }), None | Some(CopyTransition::WriterToForget)) => recipient,
+        _ => None,
+    }
+}
+
 /// A delay names one cell, so a run can slow the promote without slowing every pull poll.
 fn fault_point(transition: CopyTransition) -> &'static str {
     match transition {
@@ -522,3 +590,7 @@ fn refusal(refused: SetVolumeCopyRefused, name: &DockerVolumeName) -> LocalMachi
 fn not_routed(message: String) -> RpcError {
     RpcError::conflict(message)
 }
+
+#[cfg(test)]
+#[path = "local_volume_copy_tests.rs"]
+mod tests;

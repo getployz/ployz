@@ -676,7 +676,7 @@ fn admit(
     };
     // Being removed: a push leaves it be. A shut-down PR Environment (its removal
     // applied) comes back on: the push deploys all of it again.
-    let removal = crate::removal::latest(tx, id)?.filter(|removal| {
+    let removal = crate::deployment::latest_removal(tx, id)?.filter(|removal| {
         !matches!(
             removal.status,
             DeploymentStatus::Failed | DeploymentStatus::Cancelled
@@ -1126,7 +1126,7 @@ fn consented(
     namespace: &ployz_core::Namespace,
     trusted: &Trusted,
 ) -> Result<Vec<crate::VolumeLoss>, RpcError> {
-    let removed: Vec<_> = crate::removal::removed(dropped, &saved.intent, namespace)?
+    let removed: Vec<_> = crate::deployment::loss::removed(dropped, &saved.intent, namespace)?
         .into_iter()
         .filter(|volume| {
             saved
@@ -1138,10 +1138,10 @@ fn consented(
     if removed.is_empty() {
         return Ok(Vec::new());
     }
-    match crate::removal::held(removed, trusted.volumes.as_ref()) {
+    match crate::deployment::loss::held(removed, trusted.volumes.as_ref()) {
         Ok((losses, unanswered)) if unanswered.is_empty() => Ok(losses
             .into_iter()
-            .filter(|loss| crate::removal::covered(loss, &saved.accepted))
+            .filter(|loss| crate::deployment::loss::covered(loss, &saved.accepted))
             .collect()),
         Ok(_) | Err(_) => Ok(Vec::new()),
     }

@@ -136,6 +136,7 @@ const foundedClosed = (state: "running" | "joined" = "joined") => harness.pool.q
 const setUp = (zone: string, http: CloudflareHttp, runtime: OrganizationRuntime["Service"]) =>
   harness.runEffect(setUpCloudflare(ORG, { token: Redacted.make(API_TOKEN), zone }, http).pipe(
     Effect.provideService(OrganizationRuntime, runtime),
+    Effect.provideService(InngestClient, inngest),
   ));
 
 const setupRows = async () => (await harness.pool.query("select zone, tunnel_id, tunnel_name, state from organization_cloudflare_ingress")).rows;
@@ -187,14 +188,32 @@ it("sets up a zone with one wildcard record, a tunnel and both doors, and moves 
   expect(calls.at(-1)).toMatchObject({ method: "POST", path: "/zones/z1/dns_records" });
 });
 
-it("opens only the tunnel on a Cluster founded closed and makes the zone the source at once, so ports 80 and 443 never open", async () => {
+it("opens only the tunnel on a Cluster founded closed and ends set up with the switch to it asked for, so ports 80 and 443 never open", async () => {
   await foundedClosed();
   const { http, records } = cloudflare();
   const { runtime, sets } = cluster((doors) => doors, CLOSED_FRAME);
-  expect(await setUp("example.com", http, runtime)).toMatchObject({ zone: "example.com", tunnelId: "t1", state: "active" });
+  expect(await setUp("example.com", http, runtime)).toMatchObject({ zone: "example.com", tunnelId: "t1", state: "set_up", switching: true });
   expect(sets).toEqual([{ doors: ["tunnel"], token: TUNNEL_TOKEN }]);
   expect(records).toHaveLength(1);
-  expect(await setupRows()).toEqual([{ zone: "example.com", tunnel_id: "t1", tunnel_name: "ployz-acme", state: "active" }]);
+  expect(await setupRows()).toEqual([{ zone: "example.com", tunnel_id: "t1", tunnel_name: "ployz-acme", state: "set_up" }]);
+  expect((await harness.pool.query("select want, state from ingress_doors_attempt")).rows).toEqual([{ want: "tunnel", state: "pending" }]);
+});
+
+it("ends set up and keeps the tunnel when the event that starts the switch never sends", async () => {
+  await foundedClosed();
+  vi.mocked(inngest.send).mockImplementationOnce(() => new Promise(() => {}));
+  const { http, records } = cloudflare();
+  const { runtime, sets } = cluster((doors) => doors, CLOSED_FRAME);
+  expect(await setUp("example.com", http, runtime)).toMatchObject({ state: "set_up", switching: true });
+  expect(sets).toEqual([{ doors: ["tunnel"], token: TUNNEL_TOKEN }]);
+  expect(records).toHaveLength(1);
+  expect(await setupRows()).toMatchObject([{ state: "set_up" }]);
+});
+
+it("asks for no switch on a Cluster whose ports are open, leaving the move to the user", async () => {
+  const { runtime } = cluster();
+  expect(await setUp("example.com", cloudflare().http, runtime)).toMatchObject({ state: "set_up", switching: false });
+  expect((await harness.pool.query("select count(*)::int as n from ingress_doors_attempt")).rows[0]).toEqual({ n: 0 });
 });
 
 it("falls back to the ports on a Cluster founded closed when its servers don't take the tunnel, and says so", async () => {
@@ -264,7 +283,7 @@ it("won't open the ports from the unfinished-setup alert once the tunnel is set 
 it("opens only the tunnel while the founder's enrollment hasn't yet been marked joined, as the Machine founded closed already", async () => {
   await foundedClosed("running");
   const { runtime, sets } = cluster((doors) => doors, CLOSED_FRAME);
-  expect(await setUp("example.com", cloudflare().http, runtime)).toMatchObject({ state: "active" });
+  expect(await setUp("example.com", cloudflare().http, runtime)).toMatchObject({ state: "set_up" });
   expect(sets.map(({ doors }) => doors)).toEqual([["tunnel"]]);
 });
 
@@ -286,9 +305,9 @@ it("won't open the ports once a setup that finished while the fallback connected
   });
   const opening = harness.runEffect(openPublicPorts(ORG).pipe(Effect.provideService(OrganizationRuntime, slow)));
   const { runtime } = cluster((doors) => doors, CLOSED_FRAME);
-  expect(await setUp("example.com", cloudflare().http, runtime)).toMatchObject({ state: "active" });
+  expect(await setUp("example.com", cloudflare().http, runtime)).toMatchObject({ state: "set_up" });
   connect();
-  await expect(opening).rejects.toMatchObject({ message: expect.stringContaining("already use Cloudflare Tunnel") });
+  await expect(opening).rejects.toMatchObject({ message: expect.stringContaining("already set up") });
   expect(fallback.sets).toEqual([]);
 });
 
@@ -568,4 +587,20 @@ it("lists the zone names a token can see without changing anything", async () =>
   const { http, calls } = cloudflare();
   expect(await harness.runEffect(listCloudflareZoneNames(Redacted.make(API_TOKEN), http))).toEqual(["example.com"]);
   expect(calls).toHaveLength(1);
+});
+
+it("never marks a Cluster founded closed active from a look taken before a first Deployment kept the Hosted domain", async () => {
+  await foundedClosed();
+  let frame: RuntimeWatchView = CLOSED_FRAME;
+  const session = asTestDouble<PloyzSession>()({
+    watchFirstFrame: () => Effect.sync(() => frame),
+    setIngressDoors: (doors: readonly string[]) => Effect.succeed({ machines: [{ server: "s1", doors }], failures: [] }),
+  });
+  const runtime = asTestDouble<OrganizationRuntime["Service"]>()({ cancel: () => Effect.void, open: () => Effect.succeed({ status: "connected" as const, connected: session }) });
+  const { http } = cloudflare({ onRecord: async () => {
+    frame = frameOf({ ...CLOSED_FRAME, containers: [{ kind: "service_container", namespace: "shop", resolved_spec: { name: "web", ports: [{ mode: "ingress", hostname: "web.acme.ployz.test" }] } }] });
+  } });
+  const row = await setUp("example.com", http, runtime);
+  expect(row.state).toBe("set_up");
+  expect(await setupRows()).toMatchObject([{ state: "set_up" }]);
 });

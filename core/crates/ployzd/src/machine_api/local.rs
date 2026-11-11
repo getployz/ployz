@@ -697,7 +697,7 @@ impl MachineRpc for MachineService {
         {
             return local_error(error);
         }
-        self.set_copy(request).await
+        self.set_copy(request, operator).await
     }
 
     async fn seed_volume(
@@ -1387,6 +1387,7 @@ fn local_failure(error: LocalMachineError) -> Result<RpcError, Status> {
             tonic::Code::PermissionDenied,
             &error,
             serde_json::json!({
+                "capability": ployz_core::VOLUME_APPROVAL_CAPABILITY,
                 "next": "approve the Volume change again from an approved device",
             }),
         )),

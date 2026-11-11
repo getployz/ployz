@@ -8,10 +8,10 @@ use serde_json::json;
 use ts_rs::TS;
 
 use crate::Actor;
+use crate::deployment::loss::{VolumeLoss, removed};
 use crate::deployment::{self, DeploymentSummary, DeploymentView};
 use crate::error;
 use crate::id::{DeploymentId, Hostname};
-use crate::removal::{self, VolumeLoss};
 use crate::review::{self, NodeChange};
 use crate::scope::{self, EnvironmentRef, EnvironmentSummary};
 use crate::storage::Tx;
@@ -227,7 +227,7 @@ pub(crate) fn plan(
         .as_ref()
         .is_none_or(|saved| saved.intent != target);
     let removed: Vec<VolumeLoss> = if query.services.is_empty() || saves {
-        removal::removed(
+        removed(
             &review::approval::deployed(&review.head),
             &target,
             &namespace,

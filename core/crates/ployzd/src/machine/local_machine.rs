@@ -93,6 +93,7 @@ mod sealing_recovery;
 pub(crate) use sealing_recovery::Error as RecoveryError;
 mod upgrade;
 mod volume_approval;
+pub(crate) use volume_approval::CopyStep;
 
 #[derive(Clone)]
 struct ClusterContext {

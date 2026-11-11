@@ -25,7 +25,7 @@ use crate::management::ManagementSecret;
 use crate::network::{DiscoveredNetwork, WireGuardPrivateKey, allocate_machine_subnet};
 use crate::sealing_key::{KeyFile, OpenError, SealingKey};
 
-const STATE_FILE_NAME: &str = "machine.json";
+pub(crate) const STATE_FILE_NAME: &str = "machine.json";
 const TEMPORARY_FILE_NAME: &str = ".machine.json.tmp";
 pub(super) const PENDING_RESET_FILE_NAME: &str = ".machine.reset.pending";
 const LOCK_FILE_NAME: &str = ".ployzd.lock";
@@ -121,7 +121,7 @@ impl PreparedReset {
         }
         fs::rename(
             self.data_dir.join(PENDING_RESET_FILE_NAME),
-            self.data_dir.join(STATE_FILE_NAME),
+            path(&self.data_dir),
         )?;
         store.record = self.resetting.clone();
         if let Err(error) = File::open(&self.data_dir).and_then(|directory| directory.sync_all()) {
@@ -211,8 +211,7 @@ impl LocalMachineStore {
                 StoreError::Io(error)
             }
         })?;
-        let path = data_dir.join(STATE_FILE_NAME);
-        let record = match fs::read(&path) {
+        let record = match fs::read(path(&data_dir)) {
             Ok(data) => vet_device_slots(&data_dir, serde_json::from_slice(&data)?)?,
             Err(error) if error.kind() == io::ErrorKind::NotFound => {
                 match fs::remove_file(data_dir.join(TEMPORARY_FILE_NAME)) {
@@ -220,24 +219,12 @@ impl LocalMachineStore {
                     Err(error) if error.kind() == io::ErrorKind::NotFound => {}
                     Err(error) => return Err(error.into()),
                 }
-                let record = LocalMachineRecord {
-                    body: LocalMachineBody::Uninitialized {
+                let record = LocalMachineRecord::fresh(
+                    LocalMachineBody::Uninitialized {
                         id: MachineId::random(),
                     },
-                    wireguard_private_key: WireGuardPrivateKey::generate(),
-                    management_secret: ManagementSecret::generate(),
-                    management_clients: BTreeMap::new(),
-                    wireguard_mtu: None,
-                    selected_endpoints: BTreeMap::new(),
-                    pinned_addresses: PinnedAddresses::default(),
-                    push_target: None,
-                    device_slots_vetted: true,
-                    device_enforcement: false,
-                    trusted_machines: Vec::new(),
-                    passkeys: Vec::new(),
-                    membership_cluster: None,
-                    enrollment: None,
-                };
+                    WireGuardPrivateKey::generate(),
+                );
                 save(&data_dir, &record)?;
                 record
             }
@@ -942,7 +929,7 @@ impl LocalMachineStore {
             return Err(StoreError::NotResetting);
         }
         let persisted: LocalMachineRecord =
-            serde_json::from_slice(&fs::read(self.data_dir.join(STATE_FILE_NAME))?)?;
+            serde_json::from_slice(&fs::read(path(&self.data_dir))?)?;
         if persisted != self.record {
             return Err(StoreError::OwnershipLost(self.data_dir.clone()));
         }
@@ -964,7 +951,7 @@ impl LocalMachineStore {
             }
         }
         File::open(&self.data_dir)?.sync_all()?;
-        fs::remove_file(self.data_dir.join(STATE_FILE_NAME))?;
+        fs::remove_file(path(&self.data_dir))?;
         if self.data_dir.join(super::PREPARE_DIR_NAME).exists() {
             fs::remove_file(self.data_dir.join(LOCK_FILE_NAME))?;
             return Ok(());
@@ -1033,14 +1020,38 @@ fn vet_device_slots(
     Ok(record)
 }
 
+/// Where the Machine record lives under `data_dir`.
+pub(crate) fn path(data_dir: &Path) -> PathBuf {
+    data_dir.join(STATE_FILE_NAME)
+}
+
+/// What the observe process learns about this Machine from its record.
+pub(crate) struct MachineIdentity {
+    pub(crate) id: MachineId,
+    pub(crate) push_target: Option<Url>,
+    pub(crate) management_secret: ManagementSecret,
+}
+
+/// Read the record fresh, without the store's lock: a reset or Cloud setting a
+/// push target changes what the next read returns. None while the record is
+/// missing or unreadable.
+pub(crate) fn identity(data_dir: &Path) -> Option<MachineIdentity> {
+    let bytes = fs::read(path(data_dir)).ok()?;
+    let record = serde_json::from_slice::<LocalMachineRecord>(&bytes).ok()?;
+    Some(MachineIdentity {
+        id: record.id(),
+        push_target: record.push_target().cloned(),
+        management_secret: record.management_secret().clone(),
+    })
+}
+
 fn save(data_dir: &Path, record: &LocalMachineRecord) -> Result<(), StoreError> {
     fs::create_dir_all(data_dir)?;
     fs::set_permissions(data_dir, fs::Permissions::from_mode(0o711))?;
 
-    let path = data_dir.join(STATE_FILE_NAME);
     let temporary = data_dir.join(TEMPORARY_FILE_NAME);
     write_record(&temporary, record)?;
-    fs::rename(temporary, path)?;
+    fs::rename(temporary, path(data_dir))?;
     File::open(data_dir)?.sync_all()?;
     Ok(())
 }

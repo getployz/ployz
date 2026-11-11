@@ -56,7 +56,7 @@ class CiTest(unittest.TestCase):
         for path in ["core/Cargo.lock", "core/Cargo.toml", "core/crates/ployzd/Cargo.toml", "core/.cargo/config.toml"]:
             with self.subTest(path=path, pull_request=True):
                 self.assertNotIn("release-contracts", ci["select"]([path], pull_request=True))
-        for path in [".github/workflows/release-contracts.yml", "core/.goreleaser.yaml"]:
+        for path in [".github/workflows/release-contracts.yml", "core/.goreleaser.yaml", "core/crates/ployz-core/release-archives.txt", "core/scripts/release-archives.sh"]:
             with self.subTest(path=path, pull_request=True):
                 self.assertIn("release-contracts", ci["select"]([path], pull_request=True))
         self.assertIn("release-contracts", ci["select"]([".github/workflows/ci.yml", "core/.goreleaser.yaml"]))

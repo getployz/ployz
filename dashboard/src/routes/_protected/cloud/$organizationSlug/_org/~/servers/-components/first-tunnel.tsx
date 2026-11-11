@@ -29,7 +29,7 @@ async function runFirstSetup(organizationSlug: string, queryClient: QueryClient)
   for (let tried = 1; ; tried++) {
     try {
       const row = await setUpCloudflareServerFn({ data: { organizationSlug, token: token.trim(), zone } });
-      holdCloudflare(organizationSlug, { kind: "done", zone, switched: row.state === "active" });
+      holdCloudflare(organizationSlug, { kind: "done", zone, switched: row.switching });
       toast.success(`Cloudflare Tunnel is set up on ${zone}.`);
       break;
     } catch (error) {

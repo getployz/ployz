@@ -144,7 +144,7 @@ export const closedFounding = Effect.fn("IngressDoors.closedFounding")(function*
   if (publicSpecifiedAnywhere(frame)) return { kind: "open" } as const;
   // The founder may not show yet; until a Server takes web traffic there is nothing to tell the tunnel to.
   if (seen.servers.length === 0) return { kind: "unknown" } as const;
-  return { kind: "closed", hostnames: seen.hostnames } as const;
+  return { kind: "closed" } as const;
 });
 
 /** Where a switch to `to` takes generated names from, and to. Nothing before Cloudflare is set up or the Hosted name exists. */
@@ -238,15 +238,17 @@ export const freshSwitchDigest = Effect.fn("IngressDoors.freshDigest")(function*
   return there ? null : stored;
 });
 
-const enqueueSwitch = (row: AttemptRow) => enqueueEvent(createIngressDoorsRequestedEvent({ attemptId: row.id, organizationId: row.organizationId }));
+const enqueueSwitch = (row: AttemptRow, delivery: "await" | "detach") =>
+  enqueueEvent(createIngressDoorsRequestedEvent({ attemptId: row.id, organizationId: row.organizationId }), delivery);
 
 /**
  * Ask for a switch of the Cluster's web traffic. Its row is written with its run's event, under the lock Cloudflare
  * setup's write takes, so the switch reads the setup it will move. A request while a switch the same way is active
  * joins it (`joined`); one the other way is refused, since the running switch is still moving every address.
+ * A caller whose own work must not outlive its commit on a slow send passes `detach`: the sweep sends what the send misses.
  */
 export const requestDoorsSwitch = Effect.fn("IngressDoors.request")(function* (
-  input: { readonly organizationId: string; readonly userId: string | null; readonly to: DoorsWant },
+  input: { readonly organizationId: string; readonly userId: string | null; readonly to: DoorsWant; readonly delivery?: "await" | "detach" },
 ) {
   const { organizationId } = input;
   const database = yield* Database;
@@ -265,7 +267,7 @@ export const requestDoorsSwitch = Effect.fn("IngressDoors.request")(function* (
       id: randomUUID(), organizationId, requestedByUserId: input.userId, want: input.to,
     }).returning();
     if (inserted === undefined) return yield* Effect.die(new Error("The switch row was not written."));
-    yield* enqueueSwitch(inserted);
+    yield* enqueueSwitch(inserted, input.delivery ?? "await");
     return { change: yield* latestChangeOf(inserted), joined: false };
   }));
 });

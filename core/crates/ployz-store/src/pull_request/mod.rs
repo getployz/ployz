@@ -194,6 +194,10 @@ pub struct OpenPullRequest {
     pub standing: Standing,
     /// None until a member approves it.
     pub environment: Option<EnvironmentName>,
+    /// Whether each Server starts its head only once a person reviews it, whatever its
+    /// standing: its PR Environment runs under a live preview rule that doesn't trust
+    /// its author.
+    pub needs_review: bool,
 }
 
 /// Whether a pull request's head deploys. Only a member's pull request from the
@@ -515,7 +519,7 @@ fn open_in(
 ) -> Result<Vec<OpenPullRequest>, RpcError> {
     let rows = tx.query(
         &format!(
-            "SELECT p.number, e.name FROM config_pr_environment p \
+            "SELECT p.number, e.name, p.environment_id FROM config_pr_environment p \
              JOIN config_environment e ON e.id = p.environment_id \
              JOIN config_environment_branch b ON b.environment_id = p.environment_id \
              WHERE e.project_id = ?1 AND p.repository_id = ?2 AND {} ORDER BY p.number",
@@ -527,7 +531,12 @@ fn open_in(
     for row in rows {
         let number: PullRequestNumber = row.number(0, "pull request")?;
         let environment = row.parse::<EnvironmentName>(1, "Environment name")?;
+        let id = row.parse::<EnvironmentId>(2, "Environment")?;
         let record = record(tx, who, repository_id, number)?;
+        let needs_review = match &record {
+            Some(record) => reviewed::needs_review(tx, &id, &record.facts)?,
+            None => false,
+        };
         open.push(OpenPullRequest {
             number,
             title: record
@@ -541,6 +550,7 @@ fn open_in(
             head: record.as_ref().map(|r| r.facts.head.clone()),
             standing: record.map_or(Standing::NeedsApproval, |r| r.phase.standing()),
             environment: Some(environment),
+            needs_review,
         });
     }
     if !plan.enabled || plan.start_from.is_none() {
@@ -570,6 +580,7 @@ fn open_in(
                 head: Some(facts.head),
                 standing,
                 environment: None,
+                needs_review: false,
             });
         }
     }
@@ -1723,7 +1734,7 @@ fn shut_down(
     automated: &mut Automated,
 ) -> Result<(), RpcError> {
     let environment = scope::lock_id(tx, who, id)?;
-    if deployment::in_flight(tx, id)?.is_none() && crate::removal::on_servers(tx, id)?.is_some() {
+    if deployment::in_flight(tx, id)?.is_none() && deployment::on_servers(tx, id)?.is_some() {
         automated.shutting_down.push(environment.summary);
     }
     Ok(())

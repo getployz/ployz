@@ -286,6 +286,16 @@ describe("/v1/check", () => {
     expect((await minter.call("/v1/check", check)).body).toEqual({ check_run_id: 4 });
     expect(sent(minter.calls, "POST", `${repo}/check-runs`)).toEqual([]);
   });
+
+  it("updates in place a check posted without an external_id, which GitHub lists with an empty one", async () => {
+    const minter = harness({
+      [`GET ${checkRuns}`]: () => json({ check_runs: [{ id: 6, external_id: "", app: { id: Number(APP_ID) } }] }),
+      [`PATCH ${repo}/check-runs/6`]: () => json({ id: 6 }),
+    });
+    const { external_id: _, ...unkeyed } = check;
+    expect((await minter.call("/v1/check", unkeyed)).body).toEqual({ check_run_id: 6 });
+    expect(sent(minter.calls, "POST", `${repo}/check-runs`)).toEqual([]);
+  });
 });
 
 describe("/v1/connect", () => {

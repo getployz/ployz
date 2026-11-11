@@ -4246,6 +4246,7 @@ dependencies = [
  "ployz",
  "ployz-build",
  "ployz-core",
+ "ployz-decide",
  "ployz-store",
  "ployz-testkit",
  "prost",

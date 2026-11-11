@@ -5,19 +5,13 @@ set -euo pipefail
 ROOT=$(CDPATH='' cd -- "$(dirname -- "$0")/.." && pwd)
 # shellcheck source=scripts/release-tag.sh
 source "$ROOT/scripts/release-tag.sh"
+# shellcheck source=scripts/release-archives.sh
+source "$ROOT/scripts/release-archives.sh"
 
 release_assets() {
     local dist=$1 name
     local expected actual
-    expected=$(printf '%s\n' \
-        checksums.txt \
-        checksums.txt.minisig \
-        ployz_linux_amd64.tar.gz \
-        ployz_linux_arm64.tar.gz \
-        ployz_macos_amd64.tar.gz \
-        ployz_macos_arm64.tar.gz \
-        ployzd_linux_amd64.tar.gz \
-        ployzd_linux_arm64.tar.gz | sort)
+    expected=$(printf '%s\n' checksums.txt checksums.txt.minisig "$(release_archives)" | sort)
     actual=$(find "$dist" -maxdepth 1 \( -name '*.tar.gz' -o -name checksums.txt -o -name checksums.txt.minisig \) -exec basename {} \; | sort)
     if [ "$actual" != "$expected" ]; then
         echo "release asset set differs from the approved files" >&2

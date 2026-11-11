@@ -25,11 +25,11 @@ pub use self::due::{Due, DueQuery};
 pub(crate) use self::due::{admit, close, sweep};
 pub(crate) use self::due::{ask_taking_off, due, shut_down};
 use self::mark::{Accepted, Closed, Mark, State};
-pub use self::review::{ConsentedQuery, ConsentedView, RemovedVolume, VolumeLoss, docker_volume};
-pub(crate) use self::review::{
-    consented, covered, held, named_for, removed, review, short_digest, still_removed,
-};
+pub use self::review::{ConsentedQuery, ConsentedView};
+pub(crate) use self::review::{consented, review};
+use crate::deployment::loss::{VolumeLoss, held, removed};
 use crate::deployment::{self, DeploymentStatus, DeploymentSummary};
+use crate::digest::short_digest;
 use crate::error;
 use crate::id::{
     ApprovalDigest, DeploymentId, EnvironmentId, EnvironmentName, ProjectId, ProjectName,
@@ -311,7 +311,7 @@ pub(crate) fn remove(
         }
         None => {
             let mut members = Vec::new();
-            for member in self::members(tx, &project.id)? {
+            for member in scope::members(tx, &project.id)? {
                 members.push(scope::lock_id(tx, who, &member.id)?);
             }
             guard_project(tx, &project.id)?;
@@ -337,7 +337,9 @@ pub(crate) fn remove(
     let mut reviews = Vec::new();
     for environment in members {
         let id = environment.summary.id.clone();
-        if on_servers(tx, &id)?.is_none() || deployment::forgettable(tx, &id, trusted)?.is_some() {
+        if deployment::on_servers(tx, &id)?.is_none()
+            || deployment::forgettable(tx, &id, trusted)?.is_some()
+        {
             continue;
         }
         let name = environment.summary.name.clone();
@@ -417,7 +419,7 @@ pub(crate) fn remove(
         None => {
             let members = match &target {
                 Target::Environment(id) => vec![id.clone()],
-                Target::Project(id) => self::members(tx, id)?
+                Target::Project(id) => scope::members(tx, id)?
                     .into_iter()
                     .map(|member| member.id)
                     .collect(),
@@ -491,13 +493,8 @@ fn review_member(
     let namespace = deployment::namespace(tx, who, &environment.summary, true)?;
     let empty = scope::empty(&environment.working.environment_slug);
     let deployed = approval::deployed(&review.head);
-    let cluster_domains = if crate::domain::has_generated(&deployed) {
-        deployment::cluster_domains(tx, id, &review.head)?
-    } else {
-        BTreeMap::new()
-    };
-    let effects = approval::destructive_effects(&deployed, &empty, &cluster_domains);
-    let removed = self::removed(&review.head.applied, &empty, &namespace)?;
+    let effects = approval::effects_of(tx, (id, &review.head), (&deployed, &empty))?;
+    let removed = removed(&review.head.applied, &empty, &namespace)?;
     let names: Vec<&VolumeName> = removed.iter().map(|volume| &volume.name).collect();
     if let Some(unknown) = accept
         .iter()
@@ -512,7 +509,7 @@ fn review_member(
             json!({ "valid_children": names }),
         ));
     }
-    let (losses, unanswered) = review::held(removed, trusted.volumes.as_ref())?;
+    let (losses, unanswered) = held(removed, trusted.volumes.as_ref())?;
     Ok(Reviewed {
         base: review.view.version.clone(),
         diff: review.view,
@@ -773,8 +770,7 @@ fn project_digest(
         "project": project,
         "effects": effects,
     });
-    ApprovalDigest::parse(format!("{version}:{}", short_digest(&bound.to_string())))
-        .expect("a version and a 16-digit hex digest form an approval")
+    ApprovalDigest::bind(version, &bound)
 }
 
 pub(crate) fn cancel_removal(
@@ -920,47 +916,13 @@ fn lock_project(tx: &mut dyn Tx, project: &ProjectId) -> Result<(), RpcError> {
     Ok(())
 }
 
-/// The Deployment through which `environment` may still run on the Servers: one
-/// in flight, or the last that ran unless it was a removal that applied. None
-/// when nothing ever ran or its removal applied.
-pub(crate) fn on_servers(
-    tx: &mut dyn Tx,
-    environment: &EnvironmentId,
-) -> Result<Option<DeploymentSummary>, RpcError> {
-    match deployment::in_flight(tx, environment)? {
-        Some(running) => Ok(Some(running)),
-        None => ran(tx, environment),
-    }
-}
-
-/// The last Deployment that ran `environment` on the Servers, unless it was a
-/// removal that applied. None when nothing of it ever ran, or its removal applied.
-pub(crate) fn ran(
-    tx: &mut dyn Tx,
-    environment: &EnvironmentId,
-) -> Result<Option<DeploymentSummary>, RpcError> {
-    Ok(deployment::last_ran(tx, environment)?
-        .filter(|ran| !(ran.remove && ran.status == DeploymentStatus::Applied)))
-}
-
-/// `environment`'s latest Deployment, when that removes it.
-pub(crate) fn latest(
-    tx: &mut dyn Tx,
-    environment: &EnvironmentId,
-) -> Result<Option<DeploymentSummary>, RpcError> {
-    Ok(deployment::history(tx, environment, 1)?
-        .into_iter()
-        .next()
-        .filter(|latest| latest.remove))
-}
-
 /// Where `environment`'s removal stands, as `env ls` shows it: its latest
 /// Deployment when that removes it, else a live mark waiting for the sweep.
 pub(crate) fn listed(
     tx: &mut dyn Tx,
     environment: &EnvironmentId,
 ) -> Result<Option<EnvironmentRemoval>, RpcError> {
-    if let Some(removal) = latest(tx, environment)? {
+    if let Some(removal) = deployment::latest_removal(tx, environment)? {
         return Ok(Some(EnvironmentRemoval::Deployment(Box::new(removal))));
     }
     Ok(
@@ -984,7 +946,7 @@ pub(crate) fn listed(
 pub(crate) fn guard_removal(tx: &mut dyn Tx, environment: &Environment) -> Result<(), RpcError> {
     let summary = &environment.summary;
     let project = scope::project_of(tx, &summary.id)?;
-    let members = members(tx, &project.id)?;
+    let members = scope::members(tx, &project.id)?;
     let branches = members
         .iter()
         .filter(|member| member.parent.as_ref() == Some(&summary.id));
@@ -1002,7 +964,7 @@ pub(crate) fn guard_removal(tx: &mut dyn Tx, environment: &Environment) -> Resul
     if summary.id != project.default_environment {
         return Ok(());
     }
-    let parents = ancestors(&members, &summary.id);
+    let parents = scope::ancestors_among(&members, &summary.id);
     let others = members
         .iter()
         .filter(|member| member.id != summary.id && !parents.contains(&member.id));
@@ -1030,11 +992,11 @@ fn names(names: &[EnvironmentName]) -> String {
 
 fn still_running<'a>(
     tx: &mut dyn Tx,
-    members: impl Iterator<Item = &'a Member>,
+    members: impl Iterator<Item = &'a scope::Member>,
 ) -> Result<Vec<EnvironmentName>, RpcError> {
     let mut running = Vec::new();
     for member in members {
-        if on_servers(tx, &member.id)?.is_some() {
+        if deployment::on_servers(tx, &member.id)?.is_some() {
             running.push(member.name.clone());
         }
     }
@@ -1097,14 +1059,6 @@ pub(crate) fn guard(tx: &mut dyn Tx, environment: &Environment) -> Result<(), Rp
     Ok(())
 }
 
-/// One Environment of a Project, as teardown orders them.
-pub(crate) struct Member {
-    pub(crate) id: EnvironmentId,
-    pub(crate) name: EnvironmentName,
-    pub(crate) parent: Option<EnvironmentId>,
-}
-
-/// A Project's Environments with their Parents, in ID order.
 /// Refuse a caller who may not protect from removing a Project that holds a
 /// Protected Environment: removing the Project removes it too.
 fn guard_project(tx: &mut dyn Tx, project: &ProjectId) -> Result<(), RpcError> {
@@ -1127,48 +1081,14 @@ fn protected_in(tx: &mut dyn Tx, project: &ProjectId) -> Result<Option<Value>, R
     Ok(Some(json!({ "protected": protected })))
 }
 
-pub(crate) fn members(tx: &mut dyn Tx, project: &ProjectId) -> Result<Vec<Member>, RpcError> {
-    let rows = tx.query(
-        "SELECT e.id, e.name, b.parent_id FROM config_environment e \
-         LEFT JOIN config_environment_branch b ON b.environment_id = e.id \
-         WHERE e.project_id = ?1 ORDER BY e.id",
-        &[project.as_str().into()],
-    )?;
-    rows.iter()
-        .map(|row| {
-            Ok(Member {
-                id: row.parse::<EnvironmentId>(0, "Environment")?,
-                name: row.parse::<EnvironmentName>(1, "Environment")?,
-                parent: row.parse_optional::<EnvironmentId>(2, "Environment")?,
-            })
-        })
-        .collect()
-}
-
-/// The Parent of `environment`, its Parent's Parent, and so on.
-fn ancestors(members: &[Member], environment: &EnvironmentId) -> Vec<EnvironmentId> {
-    let mut chain = Vec::new();
-    let mut at = environment;
-    while let Some(parent) = members
-        .iter()
-        .find(|member| &member.id == at)
-        .and_then(|member| member.parent.as_ref())
-        .filter(|parent| !chain.contains(*parent))
-    {
-        chain.push(parent.clone());
-        at = parent;
-    }
-    chain
-}
-
 /// The order a Project's Environments come off the Servers: Branches before their
 /// Parents, and the Default after every other but its own Parents.
 pub(crate) fn teardown_order<'a>(
-    members: &'a [Member],
+    members: &'a [scope::Member],
     default: &EnvironmentId,
-) -> Vec<&'a Member> {
-    let parents = ancestors(members, default);
-    let mut order: Vec<&Member> = members.iter().collect();
+) -> Vec<&'a scope::Member> {
+    let parents = scope::ancestors_among(members, default);
+    let mut order: Vec<&scope::Member> = members.iter().collect();
     order.sort_by_key(|member| {
         let class = if &member.id == default {
             1
@@ -1179,27 +1099,8 @@ pub(crate) fn teardown_order<'a>(
         };
         (
             class,
-            std::cmp::Reverse(ancestors(members, &member.id).len()),
+            std::cmp::Reverse(scope::ancestors_among(members, &member.id).len()),
         )
     });
     order
-}
-
-/// Delete `environment` and everything it owns: its rows go with it.
-pub(crate) fn purge(tx: &mut dyn Tx, environment: &EnvironmentId) -> Result<(), RpcError> {
-    // Branch rows, then arrivals, then bases: the order the seal scrub takes them in
-    // under the other side's lock alone. The cascade below would take bases first.
-    tx.execute(
-        "DELETE FROM config_environment_branch WHERE environment_id = ?1 OR parent_id = ?1",
-        &[environment.as_str().into()],
-    )?;
-    tx.execute(
-        "DELETE FROM config_sync_arrival WHERE environment_id = ?1",
-        &[environment.as_str().into()],
-    )?;
-    tx.execute(
-        "DELETE FROM config_environment WHERE id = ?1",
-        &[environment.as_str().into()],
-    )?;
-    Ok(())
 }

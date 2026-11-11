@@ -197,9 +197,24 @@ pub(crate) fn detached<'a>(
         })
 }
 
+/// What publishing `target` destroys of what is `running` in `environment`, whose
+/// `head` it reads the Cluster Domains of generated domains from.
+pub(crate) fn effects_of(
+    tx: &mut dyn Tx,
+    (environment, head): (&EnvironmentId, &Head),
+    (running, target): (&SavedEnvironmentIntent, &SavedEnvironmentIntent),
+) -> Result<BTreeSet<DestructiveEffect>, RpcError> {
+    let cluster_domains = if crate::domain::has_generated(running) {
+        crate::deployment::cluster_domains(tx, environment, head)?
+    } else {
+        BTreeMap::new()
+    };
+    Ok(destructive_effects(running, target, &cluster_domains))
+}
+
 /// What publishing `target` destroys of what is `running`, naming each generated domain
 /// under its Cluster Domain in `cluster_domains`, by node ID and prefix.
-pub(crate) fn destructive_effects(
+fn destructive_effects(
     running: &SavedEnvironmentIntent,
     target: &SavedEnvironmentIntent,
     cluster_domains: &BTreeMap<(String, String), Hostname>,
@@ -312,7 +327,7 @@ pub(crate) fn approval_digest(
     version: &str,
     effects: &BTreeSet<DestructiveEffect>,
 ) -> ApprovalDigest {
-    digest(version, &bound(who, command, environment, effects))
+    ApprovalDigest::bind(version, &bound(who, command, environment, effects))
 }
 
 /// What every approval binds: who asks, the command it runs, where, and what it destroys.
@@ -330,10 +345,13 @@ fn bound(
     })
 }
 
-fn digest(version: &str, bound: &serde_json::Value) -> ApprovalDigest {
-    let digest = crate::removal::short_digest(&bound.to_string());
-    ApprovalDigest::parse(format!("{version}:{digest}"))
-        .expect("a version and a 16-digit hex digest form an approval")
+impl ApprovalDigest {
+    /// The approval of `version` over `bound`: what a human sees and signs for.
+    pub(crate) fn bind(version: &str, bound: &serde_json::Value) -> Self {
+        let digest = crate::digest::short_digest(&bound.to_string());
+        Self::parse(format!("{version}:{digest}"))
+            .expect("a version and a short digest form an approval")
+    }
 }
 
 /// What a write into one Environment must clear. Cloud says who asks; in a Protected
@@ -407,7 +425,7 @@ impl<'a> Gate<'a> {
         {
             bound.insert("protected".to_owned(), json!(true));
         }
-        let digest = digest(&diff.version, &bound);
+        let digest = ApprovalDigest::bind(&diff.version, &bound);
         match &self.trusted.approval {
             Approval::NotRequired if !self.protected => Ok(()),
             Approval::Approved(approved) if *approved == digest => Ok(()),

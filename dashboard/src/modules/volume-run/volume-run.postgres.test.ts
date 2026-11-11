@@ -12,8 +12,10 @@ import type {
   SetVolumeCopyRequest,
   SetVolumeSizeReply,
   SetVolumeSizeRequest,
+  Signed,
   SlotRole,
   Snapshot,
+  VolumeApproval,
   SystemEvent,
   VolumeCopy,
   VolumeCopyView,
@@ -62,6 +64,7 @@ import {
   startOrphanDeletes,
   volumeBusyMessage,
 } from "#/modules/volume-run/volume-run.server";
+import { MAX_KEPT_APPROVALS, offerApproval } from "#/modules/volume-run/mirror-approvals.server";
 import { PATIENCE_WAITS } from "#/modules/volume-run/patience";
 import type { Member, VolumeRunInput } from "#/modules/volume-run/volume-run";
 import { member } from "#/modules/volume-run/volume-run.test-fixture";
@@ -76,6 +79,7 @@ import { FULL_GRANT } from "#/modules/identity/token-grant";
 import type { Database } from "#/server/database.server";
 import { makeInngestEffectRunner, type runInngestEffect } from "#/server/run.server";
 import { invokeOnFailure } from "#/test/inngest-failure";
+import { syncMirrors } from "#/modules/volume-placement/mirror-sync.server";
 import { type PostgresTestHarness, startPostgresTestHarness } from "#/test/postgres";
 
 const organizationId = "00000000-0000-4000-8000-000000000e01";
@@ -112,6 +116,13 @@ type FakeMachine = {
   needs?: number;
   /** Size requests it answers `switching` to before it holds the size. */
   switching?: number;
+  /** Reports device enforcement on. */
+  enforces?: boolean;
+  /**
+   * Checks the Mirror approval a pull carries as the daemon does: a pull carrying a new one admits it and ends the one
+   * admitted before, and a pull carrying an ended or expired one, or none, is refused for its approval.
+   */
+  approvals?: { admitted: string | null; ended: string[]; expired?: string[] };
 };
 
 type FakeContainer = {
@@ -153,6 +164,14 @@ const writerCopy = (newest: Snapshot | null = base, epoch = 0, readonly = false)
 const slotCopy = (newest: Snapshot | null, pull: { target: string; failure: string | null } | null = null, slot = "1", role: SlotRole = "mirror"): VolumeCopy =>
   ({ kind: "slot", slot, readonly: true, newest, resume_token: null, pull, role });
 const idOf = (name: string) => name.padEnd(32, "0") as MachineId;
+/** A Device's Mirror approval as the CLI sends it; the fake Servers don't check it. */
+const APPROVAL: Signed = { body: '{"volume":"vol"}', signatures: [{ key: "a".repeat(64), signature: "b".repeat(128) }] };
+const approvalRefused = (why: string) => new RawFault({
+  code: "permission_denied",
+  message: `This Server refused the Volume step: ${why}`,
+  details: { capability: "ployz.volume.approval.v1", next: "approve the Volume change again from an approved device" },
+});
+const APPROVAL_REFUSED = approvalRefused("operation 0123 already ran this step; it needs a new approval");
 const first = <T>(items: readonly T[]): T => {
   const item = items[0];
   if (item === undefined) throw new Error("expected at least one item");
@@ -341,6 +360,24 @@ describe("volume runs", () => {
     }
   };
 
+  /**
+   * How `fake` refuses the approval a pull carries, as `FakeMachine.approvals` says, or null when it admits it; admitting
+   * a new one ends the last.
+   */
+  const refusesApproval = (fake: FakeMachine, want: WantedCopy, approval: Signed | undefined) => {
+    const checked = fake.approvals;
+    if (checked === undefined || want.kind !== "mirror" || want.from === null) return null;
+    const carried = approval?.body;
+    if (carried === undefined) return approvalRefused("the volume approval carries no signature");
+    if (checked.ended.includes(carried)) return APPROVAL_REFUSED;
+    if (carried !== checked.admitted && checked.expired?.includes(carried) === true) return approvalRefused("the approval expired");
+    if (carried !== checked.admitted) {
+      if (checked.admitted !== null) checked.ended.push(checked.admitted);
+      checked.admitted = carried;
+    }
+    return null;
+  };
+
   const failure = (fault: Fault, copy: VolumeCopy | null) => {
     if (fault === "down") return { code: "internal", message: "dataset is busy", details: null };
     if (fault instanceof RawFault) return fault.cause;
@@ -370,7 +407,7 @@ describe("volume runs", () => {
       const fault = frameFault?.(++frames) ?? false;
       return fault !== false ? firstFrame(() => answering(fault), fault === true ? 1 : timeoutMs) : Effect.succeed({
       machines: machines.map((fake) => ({
-        machine: { id: fake.id ?? idOf(fake.name), name: fake.name, public_key: Array.from({ length: 32 }, (_, index) => index), runtime: { daemon_version: fake.lacks ?? "", capabilities: fake.capabilities } },
+        machine: { id: fake.id ?? idOf(fake.name), name: fake.name, public_key: Array.from({ length: 32 }, (_, index) => index), runtime: { daemon_version: fake.lacks ?? "", capabilities: fake.capabilities, device_enforcement: fake.enforces ?? null } },
         storage: fake.stateless === true ? { state: "stateless" } : fake.pool ? { state: "pool", size_bytes: 1, used_bytes: 0, free_bytes: 1 } : { state: "ready" },
       })),
       containers: containers.map((container) => ({
@@ -485,7 +522,7 @@ describe("volume runs", () => {
         const fault = failNext.get(key);
         failNext.delete(key);
         if (fault === "lost") {
-          transition(fake, expected, want);
+          if (refusesApproval(fake, want, request.payload.approval) === null) transition(fake, expected, want);
           return unanswered;
         }
         if (fault === "held") {
@@ -496,6 +533,8 @@ describe("volume runs", () => {
         const gen = request.payload.gen ?? 0;
         if (gen < (fake.floor ?? 0)) return fail("stale");
         fake.floor = Math.max(fake.floor ?? 0, gen);
+        const refusal = refusesApproval(fake, want, request.payload.approval);
+        if (refusal !== null) return fail(refusal);
         if (want.kind === "mirror") {
           receive(fake);
           fake.stopped = false;
@@ -570,11 +609,11 @@ describe("volume runs", () => {
       "select 1 from pg_stat_activity where datname = current_database() and wait_event_type = 'Lock'");
     if (waiting.length === 0) throw new Error("nothing waited on the held row lock");
   }, { timeout: 5_000, interval: 25 });
-  const settled = ["05-cut", "07-start", "03-start", "04-resume", "05-resume", "03-restore", "03-demote", "03-reset-forget-mirror", "03-reset-forget-writer", "04-forget"];
+  const settled = ["05-cut", "07-start", "03-start", "04-resume", "05-resume", "03-restore", "03-demote", "03-reset-withdraw", "03-reset-forget-mirror"];
   const sleeps = [
     ...["03-r0", "03-r1", "03-r2", "06-final"].flatMap((prefix) => Array.from({ length: 9 }, (_, poll) => `${prefix}-backoff-${poll}`)),
     ...[...settled, ...["03-r0", "03-r1", "03-r2"].flatMap((round) => [`${round}-snapshot`, `${round}-pull`]), "06-final-pull",
-      ...["fsn-2", "fsn-3"].flatMap((server) => [`04-forget-${server}`, `03-forget-${server}`])]
+      ...["fsn-2", "fsn-3"].flatMap((server) => [`04-forget-${server}`, `03-withdraw-${server}`, `03-forget-${server}`])]
       .flatMap((id) => Array.from({ length: 6 }, (_, check) => `${id}-wait-${check + 1}`)),
     ...Array.from({ length: 8 }, (_, check) => `01-wait-${check}`),
   ].map((id) => ({ id, handler: () => undefined }));
@@ -608,6 +647,8 @@ describe("volume runs", () => {
     id: string; kind: string; state: string; epoch: string | null; phase: string; current: string | null; inngest_run_id: string | null;
     message: string | null; orphan: boolean; volume_id: string; docker_volume: string; refquota_bytes: string; finished_at: Date | null;
   }>;
+  const keptApprovals = async () => (await harness.pool.query(
+    "select machine_id, approvals from volume_mirror_status where volume_id = $1 order by machine_id", [volumeId])).rows as Array<{ machine_id: string; approvals: Signed[] | null }>;
   /** The release a failed Move requested, which the test runs as Inngest would. */
   const releaseRow = async () => {
     const found = (await rows()).find((row) => row.kind === "release");
@@ -814,6 +855,18 @@ describe("volume runs", () => {
 
       await execute(first.id);
       expect((await request({ kind: "sync", args: { full: false } })).ok).toBe(true);
+    });
+
+    it("refuses as invalid an approval for another Mirror, another Volume or another workflow, and plans the one it names", async () => {
+      const signed = (body: Pick<VolumeApproval, "volume" | "workflow">): Signed => ({ ...APPROVAL, body: JSON.stringify(body) });
+      const workflow = { kind: "mirror", writer: idOf("fsn-1"), mirror: idOf("fsn-2"), replace: false } as const;
+      const plan = (approval: Signed) => runEffect(planVolumeRun(organizationId, { volumeId, environment, kind: "mirror", args: { to: "fsn-2", approval } }));
+      const invalid = { ok: false, refusal: { code: "invalid_argument", message: "The approval from your device is for another change, not mirroring data to fsn-2.", details: null } };
+
+      expect(await plan(signed({ volume: dockerVolume, workflow: { ...workflow, mirror: idOf("fsn-3") } }))).toEqual(invalid);
+      expect(await plan(signed({ volume: "shop-production_vol-other", workflow }))).toEqual(invalid);
+      expect(await plan(signed({ volume: dockerVolume, workflow: { kind: "mirror_removal", mirror: idOf("fsn-2"), writer: idOf("fsn-1"), role: "mirror", last_copy: false } }))).toEqual(invalid);
+      expect(await plan(signed({ volume: dockerVolume, workflow }))).toMatchObject({ ok: true });
     });
 
     it("a move onto the Server holding the writer is settled, so nothing offers it again", async () => {
@@ -2377,7 +2430,7 @@ describe("volume runs", () => {
       expect(await rows()).toMatchObject([{ state: "done" }]);
     });
 
-    it("sync --full: forgets both copies' shared snapshots, then pulls from nothing", async () => {
+    it("sync --full: forgets the mirror's copy, then withdraws the mirror on the writer, then pulls from nothing", async () => {
       machines[1] = { name: "fsn-2", pool: true, copy: slotCopy(base) };
       const run = await requested({ kind: "sync", args: { full: true } });
 
@@ -2385,8 +2438,197 @@ describe("volume runs", () => {
 
       expect(output.result).toEqual({ runId: run.id, rounds: 1 });
       expect(verbs).toEqual(["forget@fsn-2", "forget@fsn-1", "snapshot@fsn-1(w-1-0)", "pull@fsn-2(dep-10)", "pull@fsn-2(dep-10)", "snapshot@fsn-1(w-1-1)"]);
-      expect(sent[0]?.expect).toEqual({ kind: "mirror", newest: "10", slot: "1" });
-      expect(sent[1]?.expect).toEqual({ kind: "writer", epoch: 0 });
+      expect(sent[0]).toMatchObject({ expect: { kind: "mirror", newest: "10", slot: "1" }, want: { kind: "forget" } });
+      expect(sent[0]?.want).not.toHaveProperty("recipient");
+      expect(sent[1]).toMatchObject({ expect: { kind: "writer", epoch: 0 }, want: { kind: "forget", recipient: idOf("fsn-2") } });
+    });
+
+    it("mirror: sends the approval with every snapshot and pull, and keeps it with the mirror", async () => {
+      first(machines).writes = 5;
+      const run = await requested({ kind: "mirror", args: { to: "fsn-2", approval: APPROVAL } });
+
+      await execute(run.id);
+
+      expect(await rows()).toMatchObject([{ state: "done" }]);
+      expect(sent.map((request) => request.want.kind)).toEqual(["snapshot", "mirror", "mirror", "snapshot", "mirror", "mirror", "snapshot", "mirror", "mirror"]);
+      expect(sent.map((request) => request.approval)).toEqual(sent.map(() => APPROVAL));
+      expect(await keptApprovals()).toEqual([{ machine_id: idOf("fsn-2"), approvals: [APPROVAL] }]);
+    });
+
+    it("mirror: a caught-up mirror approved again still gets one pull, so it admits the approval kept for later syncs", async () => {
+      machines[1] = { name: "fsn-2", pool: true, copy: slotCopy(base) };
+      const run = await requested({ kind: "mirror", args: { to: "fsn-2", approval: APPROVAL } });
+
+      const output = await execute(run.id);
+
+      expect(output.result).toEqual({ runId: run.id, rounds: 0 });
+      expect(verbs).toEqual(["snapshot@fsn-1(w-1-0)", "pull@fsn-2(dep-10)"]);
+      expect(sent.map((request) => request.approval)).toEqual([APPROVAL, APPROVAL]);
+      expect(await keptApprovals()).toEqual([{ machine_id: idOf("fsn-2"), approvals: [APPROVAL] }]);
+    });
+
+    it("mirror: a caught-up mirror with no approval sends no pull, as before", async () => {
+      machines[1] = { name: "fsn-2", pool: true, copy: slotCopy(base) };
+      const run = await requested({ kind: "mirror", args: { to: "fsn-2" } });
+
+      await execute(run.id);
+
+      expect(verbs).toEqual(["snapshot@fsn-1(w-1-0)"]);
+    });
+
+    it("sync --full: offers its approval ahead of the kept one, and sends it with the snapshots and pulls but not the forgets", async () => {
+      machines[1] = { name: "fsn-2", pool: true, copy: slotCopy(base) };
+      await harness.pool.query(
+        "insert into volume_mirror_status (organization_id, volume_id, machine_id, approvals) values ($1, $2, $3, $4)",
+        [organizationId, volumeId, idOf("fsn-2"), JSON.stringify([{ body: "old", signatures: [] }])]);
+      const run = await requested({ kind: "sync", args: { full: true, approval: APPROVAL } });
+
+      await execute(run.id);
+
+      expect(await rows()).toMatchObject([{ state: "done" }]);
+      expect(sent.map((request) => `${request.want.kind}:${request.approval === undefined ? "none" : "approval"}`)).toEqual([
+        "forget:none", "forget:none", "snapshot:approval", "mirror:approval", "mirror:approval", "snapshot:approval",
+      ]);
+      expect(await keptApprovals()).toEqual([{ machine_id: idOf("fsn-2"), approvals: [APPROVAL, { body: "old", signatures: [] }] }]);
+    });
+
+    it("a move sends no approval", async () => {
+      const run = await requested({ kind: "move", args: { to: "fsn-2" } });
+
+      await execute(run.id);
+
+      expect(sent.length).toBeGreaterThan(0);
+      expect(sent.filter((request) => request.approval !== undefined)).toEqual([]);
+    });
+
+    it.each([
+      ["mirror", { kind: "mirror", args: { to: "fsn-2" } }, "ployz volume mirror data --to fsn-2"],
+      ["full sync", { kind: "sync", args: { full: true } }, "ployz volume sync data --full"],
+    ] as const)("%s with no approval on an enforcing Server is refused before any step", async (_, input, command) => {
+      if (input.kind === "sync") machines[1] = { name: "fsn-2", pool: true, copy: slotCopy(base), enforces: true };
+      else machines[1] = { name: "fsn-2", pool: true, copy: null, enforces: true };
+      const run = await requested(input);
+
+      await execute(run.id);
+
+      expect(verbs.filter((verb) => !verb.startsWith("floor"))).toEqual([]);
+      expect(machines[1]?.copy).toEqual(input.kind === "sync" ? slotCopy(base) : null);
+      expect(await rows()).toMatchObject([{ state: "failed", message: `fsn-2 enforces device approval, so Ployz Cloud can't ${input.kind === "sync" ? "sync data in full" : "mirror data"} on its own. Run ${command} from an approved device.` }]);
+    });
+
+    it("a step the Server refuses for its approval ends the run with the refusal, not a retry", async () => {
+      failNext.set("pull@fsn-2", new RawFault({
+        code: "permission_denied",
+        message: "This Server refused the Volume step: the approval expired",
+        details: { capability: "ployz.volume.approval.v1", next: "approve the Volume change again from an approved device" },
+      }));
+      const run = await requested({ kind: "mirror", args: { to: "fsn-2", approval: APPROVAL } });
+
+      await execute(run.id);
+
+      expect(verbs).toEqual(["snapshot@fsn-1(w-1-0)", "pull@fsn-2(dep-10)"]);
+      expect(await rows()).toMatchObject([{ state: "failed", message: "fsn-2 didn't accept the approval from your device for data. Approve the change again from an approved device." }]);
+    });
+
+    it("a run that fails before the mirror accepts its pull keeps its approval and the one kept before", async () => {
+      machines[1] = { name: "fsn-2", pool: true, copy: slotCopy(base) };
+      const admitted = { body: "admitted", signatures: [] };
+      await harness.pool.query(
+        "insert into volume_mirror_status (organization_id, volume_id, machine_id, approvals) values ($1, $2, $3, $4)",
+        [organizationId, volumeId, idOf("fsn-2"), JSON.stringify([admitted])]);
+      failNext.set("snapshot@fsn-1", "no_capacity");
+      const run = await requested({ kind: "mirror", args: { to: "fsn-2", approval: APPROVAL } });
+
+      await execute(run.id);
+
+      expect(await rows()).toMatchObject([{ state: "failed" }]);
+      expect(await keptApprovals()).toEqual([{ machine_id: idOf("fsn-2"), approvals: [APPROVAL, admitted] }]);
+    });
+
+    it("a run whose pull goes unanswered keeps both, and the next sync pulls under the one the mirror admitted", async () => {
+      const before = { body: "before", signatures: [] };
+      first(machines).writes = 2;
+      machines[1] = { name: "fsn-2", pool: true, copy: slotCopy(base), approvals: { admitted: "before", ended: [] } };
+      await harness.pool.query(
+        "insert into volume_mirror_status (organization_id, volume_id, machine_id, approvals) values ($1, $2, $3, $4)",
+        [organizationId, volumeId, idOf("fsn-2"), JSON.stringify([before])]);
+      failNext.set("pull@fsn-2", "lost");
+      const run = await requested({ kind: "mirror", args: { to: "fsn-2", approval: APPROVAL } });
+
+      // The Mirror admitted the pull's approval and its answer was lost; the retried attempt is refused, so the run
+      // never hears that the Mirror accepted.
+      expect((await execute(run.id)).error).toBeDefined();
+      expect(await keptApprovals()).toEqual([{ machine_id: idOf("fsn-2"), approvals: [APPROVAL, before] }]);
+      failNext.set("pull@fsn-2", "no_capacity");
+      await execute(run.id, "run-1", undefined, volumeId, undefined, 1);
+
+      expect(await rows()).toMatchObject([{ state: "failed" }]);
+      expect(machines[1]?.approvals).toEqual({ admitted: APPROVAL.body, ended: ["before"] });
+      expect(await keptApprovals()).toEqual([{ machine_id: idOf("fsn-2"), approvals: [APPROVAL, before] }]);
+
+      sent.length = 0;
+      await runEffect(syncMirrors(organizationId, { volumeId, name: "data", dockerVolume, environment }));
+
+      expect(new Set(sent.filter((request) => request.want.kind === "mirror").map((request) => request.approval))).toEqual(new Set([APPROVAL]));
+      expect(await keptApprovals()).toEqual([{ machine_id: idOf("fsn-2"), approvals: [APPROVAL, before] }]);
+    });
+
+    it("a mirror that admits a new approval and then fails its receive syncs under that approval after", async () => {
+      const before = { body: "before", signatures: [] };
+      first(machines).writes = 2;
+      machines[1] = {
+        name: "fsn-2", pool: true, copy: slotCopy(base), approvals: { admitted: "before", ended: [] }, pullFault: { target: "w-1-0", kind: "fail" },
+      };
+      await harness.pool.query(
+        "insert into volume_mirror_status (organization_id, volume_id, machine_id, approvals) values ($1, $2, $3, $4)",
+        [organizationId, volumeId, idOf("fsn-2"), JSON.stringify([before])]);
+      const run = await requested({ kind: "mirror", args: { to: "fsn-2", approval: APPROVAL } });
+
+      await execute(run.id);
+
+      expect(await rows()).toMatchObject([{ state: "failed" }]);
+      expect(machines[1]?.approvals).toEqual({ admitted: APPROVAL.body, ended: ["before"] });
+      expect(await keptApprovals()).toEqual([{ machine_id: idOf("fsn-2"), approvals: [APPROVAL, before] }]);
+      sent.length = 0;
+
+      const synced = await runEffect(syncMirrors(organizationId, { volumeId, name: "data", dockerVolume, environment }));
+
+      expect(synced.lines).toEqual(["data-fsn-2 could not receive w-1-0: disk full", expect.stringMatching(/^data-fsn-2 is pulling /)]);
+      expect(sent.filter((request) => request.want.kind === "mirror").map((request) => request.approval)).toEqual([APPROVAL]);
+      expect(machines[1]?.approvals?.admitted).toBe(APPROVAL.body);
+      expect(await keptApprovals()).toEqual([{ machine_id: idOf("fsn-2"), approvals: [APPROVAL, before] }]);
+    });
+
+    it("a sync moves past approvals the mirror refuses to the one it holds, and puts that one first", async () => {
+      const lapsed = { body: "lapsed", signatures: [] };
+      const before = { body: "before", signatures: [] };
+      first(machines).writes = 1;
+      machines[1] = { name: "fsn-2", pool: true, copy: slotCopy(base), approvals: { admitted: "before", ended: [APPROVAL.body], expired: [lapsed.body] } };
+      await harness.pool.query(
+        "insert into volume_mirror_status (organization_id, volume_id, machine_id, approvals) values ($1, $2, $3, $4)",
+        [organizationId, volumeId, idOf("fsn-2"), JSON.stringify([APPROVAL, lapsed, before])]);
+
+      const synced = await runEffect(syncMirrors(organizationId, { volumeId, name: "data", dockerVolume, environment }));
+
+      expect(synced.lines).toEqual([expect.stringMatching(/^data-fsn-2 is pulling /)]);
+      expect(sent.filter((request) => request.want.kind === "mirror").map((request) => request.approval)).toEqual([APPROVAL, lapsed, before]);
+      expect(await keptApprovals()).toEqual([{ machine_id: idOf("fsn-2"), approvals: [before, APPROVAL, lapsed] }]);
+    });
+
+    it("sync --full that fails after its first pull keeps the approval the mirror admitted under it", async () => {
+      machines[1] = { name: "fsn-2", pool: true, copy: slotCopy(base) };
+      first(machines).writes = 5;
+      await harness.pool.query(
+        "insert into volume_mirror_status (organization_id, volume_id, machine_id, approvals) values ($1, $2, $3, $4)",
+        [organizationId, volumeId, idOf("fsn-2"), JSON.stringify([{ body: "withdrawn", signatures: [] }])]);
+      beforeSet.set("pull@fsn-2", () => { failNext.set("snapshot@fsn-1", "no_capacity"); });
+      const run = await requested({ kind: "sync", args: { full: true, approval: APPROVAL } });
+
+      await execute(run.id);
+
+      expect(await rows()).toMatchObject([{ state: "failed" }]);
+      expect(verbs.filter((verb) => verb.startsWith("pull@")).length).toBeGreaterThan(0);
+      expect(await keptApprovals()).toEqual([{ machine_id: idOf("fsn-2"), approvals: [APPROVAL, { body: "withdrawn", signatures: [] }] }]);
     });
 
     it("a refusal ends the run with its message", async () => {
@@ -2411,7 +2653,7 @@ describe("volume runs", () => {
   });
 
   describe("delete_mirror", () => {
-    it("forgets the slot, then the writer's snapshots shared with it", async () => {
+    it("forgets the slot, then withdraws the slot's Server on the writer", async () => {
       machines[1] = { name: "fsn-2", pool: true, copy: slotCopy(base) };
       const run = await requested({ kind: "delete_mirror", args: { slot: "fsn-2", confirmed_name: null, role: "any" } });
 
@@ -2420,8 +2662,110 @@ describe("volume runs", () => {
       expect(output.result).toEqual({ runId: run.id, destroyed: ["fsn-2"] });
       expect(verbs).toEqual(["forget@fsn-2", "forget@fsn-1"]);
       expect(sent[0]?.expect).toEqual({ kind: "mirror", newest: base.guid, slot: "1" });
+      expect(sent[1]).toMatchObject({ expect: { kind: "writer", epoch: 0 }, want: { kind: "forget", recipient: idOf("fsn-2") } });
       expect(machines[1]?.copy).toBeNull();
       expect(await rows()).toMatchObject([{ state: "done", epoch: null }]);
+    });
+
+    it("withdraws every slot it deleted on the writer, each in its own step, once every slot is gone", async () => {
+      machines[1] = { name: "fsn-2", pool: true, copy: slotCopy(base) };
+      machines.push({ name: "fsn-3", pool: true, copy: slotCopy(base, null, "2", "old_copy") });
+      const run = await requested({ kind: "delete_mirror", args: { slot: null, confirmed_name: null, role: "any" } });
+
+      await execute(run.id);
+
+      expect(verbs).toEqual(["forget@fsn-2", "forget@fsn-3", "forget@fsn-1", "forget@fsn-1"]);
+      expect(sent.slice(2).map((request) => request.want)).toEqual([
+        { kind: "forget", recipient: idOf("fsn-2") },
+        { kind: "forget", recipient: idOf("fsn-3") },
+      ]);
+      expect(await rows()).toMatchObject([{ state: "done" }]);
+    });
+
+    it("drops the approval kept with the mirror it deletes", async () => {
+      machines[1] = { name: "fsn-2", pool: true, copy: slotCopy(base) };
+      await harness.pool.query(
+        "insert into volume_mirror_status (organization_id, volume_id, machine_id, approvals) values ($1, $2, $3, $4)",
+        [organizationId, volumeId, idOf("fsn-2"), JSON.stringify([APPROVAL])]);
+      const run = await requested({ kind: "delete_mirror", args: { slot: "fsn-2", confirmed_name: null, role: "any" } });
+
+      await execute(run.id);
+
+      expect(await rows()).toMatchObject([{ state: "done" }]);
+      expect(await keptApprovals()).toEqual([{ machine_id: idOf("fsn-2"), approvals: null }]);
+    });
+
+    it("an offer that read no row keeps an approval committed meanwhile, so a delayed offer never drops a newer one", async () => {
+      const newer = { body: "newer", signatures: [] };
+      // Another run's offer has made the row and holds it uncommitted while this offer starts.
+      const other = await harness.pool.connect();
+      try {
+        await other.query("begin");
+        const { rows: [holder] } = await other.query<{ pid: number }>("select pg_backend_pid() as pid");
+        await other.query(
+          "insert into volume_mirror_status (organization_id, volume_id, machine_id, approvals, updated_at) values ($1, $2, $3, $4, now())",
+          [organizationId, volumeId, idOf("fsn-2"), JSON.stringify([newer])]);
+        const offering = harness.runEffect(offerApproval(organizationId, volumeId, idOf("fsn-2"), APPROVAL));
+        // The offer is under way once it waits on the other transaction's row.
+        await vi.waitFor(async () => {
+          const { rows: waiting } = await harness.pool.query(
+            "select 1 from pg_stat_activity where datname = current_database() and $1 = any(pg_blocking_pids(pid))", [holder?.pid]);
+          expect(waiting.length).toBeGreaterThan(0);
+        });
+        await other.query("commit");
+        expect(await offering).toBe(true);
+      } finally {
+        other.release();
+      }
+
+      expect(await keptApprovals()).toEqual([{ machine_id: idOf("fsn-2"), approvals: [APPROVAL, newer] }]);
+    });
+
+    it(`keeps at most ${MAX_KEPT_APPROVALS} approvals for a mirror, refusing a new one rather than dropping a kept one`, async () => {
+      const kept = Array.from({ length: MAX_KEPT_APPROVALS }, (_, at) => ({ body: `kept-${at}`, signatures: [] }));
+      await harness.pool.query(
+        "insert into volume_mirror_status (organization_id, volume_id, machine_id, approvals) values ($1, $2, $3, $4)",
+        [organizationId, volumeId, idOf("fsn-2"), JSON.stringify(kept)]);
+
+      expect(await harness.runEffect(offerApproval(organizationId, volumeId, idOf("fsn-2"), APPROVAL))).toBe(false);
+      expect(await keptApprovals()).toEqual([{ machine_id: idOf("fsn-2"), approvals: kept }]);
+      // One it already keeps comes first again.
+      const again = { body: "kept-5", signatures: [] };
+      expect(await harness.runEffect(offerApproval(organizationId, volumeId, idOf("fsn-2"), again))).toBe(true);
+      expect((await keptApprovals())[0]?.approvals?.[0]).toEqual(again);
+    });
+
+    it("a mirror run whose mirror keeps the most approvals ends before any step carries its approval", async () => {
+      machines[1] = { name: "fsn-2", pool: true, copy: slotCopy(base) };
+      const kept = Array.from({ length: MAX_KEPT_APPROVALS }, (_, at) => ({ body: `kept-${at}`, signatures: [] }));
+      await harness.pool.query(
+        "insert into volume_mirror_status (organization_id, volume_id, machine_id, approvals) values ($1, $2, $3, $4)",
+        [organizationId, volumeId, idOf("fsn-2"), JSON.stringify(kept)]);
+      const run = await requested({ kind: "mirror", args: { to: "fsn-2", approval: APPROVAL } });
+
+      await execute(run.id);
+
+      expect(sent.filter((request) => request.approval !== undefined)).toEqual([]);
+      expect(await rows()).toMatchObject([{ state: "failed", message: `Ployz Cloud keeps at most ${MAX_KEPT_APPROVALS} approvals for Mirror data-fsn-2. Remove it with ployz volume mirror rm data-fsn-2, then mirror data to fsn-2 again.` }]);
+    });
+
+    it("drops no approval when the run no longer owns its row at the drop, so a Mirror made again keeps the one offered to it", async () => {
+      machines[1] = { name: "fsn-2", pool: true, copy: slotCopy(base) };
+      await harness.pool.query(
+        "insert into volume_mirror_status (organization_id, volume_id, machine_id, approvals) values ($1, $2, $3, $4)",
+        [organizationId, volumeId, idOf("fsn-2"), JSON.stringify([APPROVAL])]);
+      const offered = { body: "offered", signatures: [] };
+      // The run ends during its last forget, and another run makes the Mirror again and offers it an approval. The drop
+      // also holds the run's row, so a run that ends after the check waits for it: see dropRunApprovals.
+      beforeSet.set("forget@fsn-1", async () => {
+        await harness.pool.query("update volume_run set state = 'failed'");
+        await harness.pool.query("update volume_mirror_status set approvals = $1", [JSON.stringify([offered])]);
+      });
+      const run = await requested({ kind: "delete_mirror", args: { slot: "fsn-2", confirmed_name: null, role: "any" } });
+
+      await execute(run.id);
+
+      expect(await keptApprovals()).toEqual([{ machine_id: idOf("fsn-2"), approvals: [offered] }]);
     });
 
     it("refuses an old copy a late pull made the mirror after the run looked, and deletes nothing", async () => {

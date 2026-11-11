@@ -182,6 +182,62 @@ pub const RELEASE_SIGNATURE_ASSET: &str = "checksums.txt.minisig";
 /// The minisign public key that signs every published Ployz release.
 pub const RELEASE_PUBLIC_KEY: &str = include_str!("../release.pub");
 
+const RELEASE_ARCHIVES: &str = include_str!("../release-archives.txt");
+
+/// One archive a release publishes: the product it carries, the platform it runs on and the
+/// binaries inside. `arch` is the archive vocabulary (`amd64`, `arm64`), not Rust's.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ReleaseArchive {
+    pub product: &'static str,
+    pub os: &'static str,
+    pub arch: &'static str,
+    pub name: &'static str,
+    pub binaries: &'static str,
+}
+
+/// Every archive a release publishes, in manifest order.
+pub fn release_archives() -> impl Iterator<Item = ReleaseArchive> {
+    RELEASE_ARCHIVES
+        .lines()
+        .filter(|line| !line.trim_start().starts_with('#'))
+        .filter_map(|line| {
+            let fields: Vec<&'static str> = line.split_whitespace().collect();
+            let [product, os, arch, name, binaries] = fields[..] else {
+                return None;
+            };
+            Some(ReleaseArchive {
+                product,
+                os,
+                arch,
+                name,
+                binaries,
+            })
+        })
+}
+
+/// The CLI archive for an `os` (`linux`, `macos`) and `arch` (`amd64`, `arm64`).
+#[must_use]
+pub fn cli_archive(os: &str, arch: &str) -> Option<&'static str> {
+    archive_for("ployz", os, arch)
+}
+
+/// The Linux daemon archive for a Rust `std::env::consts::ARCH`.
+#[must_use]
+pub fn daemon_archive(rust_arch: &str) -> Option<&'static str> {
+    let arch = match rust_arch {
+        "x86_64" => "amd64",
+        "aarch64" => "arm64",
+        _ => return None,
+    };
+    archive_for("ployzd", "linux", arch)
+}
+
+fn archive_for(product: &str, os: &str, arch: &str) -> Option<&'static str> {
+    release_archives()
+        .find(|archive| archive.product == product && archive.os == os && archive.arch == arch)
+        .map(|archive| archive.name)
+}
+
 /// Why a release's `checksums.txt` is not trusted.
 #[derive(Debug, thiserror::Error)]
 pub enum ReleaseSignatureError {
@@ -256,6 +312,119 @@ mod tests {
             assert!(MachineVersion::parse(release).is_err(), "{release}");
         }
         assert!(MachineVersion::parse("stable").is_err());
+    }
+
+    // Installed daemons and the installer download these names, so they are pinned verbatim.
+    #[test]
+    fn release_archives_hold_todays_asset_names_and_binaries() {
+        let rows: Vec<_> = release_archives()
+            .map(|archive| {
+                (
+                    archive.product,
+                    archive.os,
+                    archive.arch,
+                    archive.name,
+                    archive.binaries,
+                )
+            })
+            .collect();
+        assert_eq!(
+            rows,
+            [
+                (
+                    "ployz",
+                    "linux",
+                    "amd64",
+                    "ployz_linux_amd64.tar.gz",
+                    "ployz"
+                ),
+                (
+                    "ployz",
+                    "linux",
+                    "arm64",
+                    "ployz_linux_arm64.tar.gz",
+                    "ployz"
+                ),
+                (
+                    "ployz",
+                    "macos",
+                    "amd64",
+                    "ployz_macos_amd64.tar.gz",
+                    "ployz"
+                ),
+                (
+                    "ployz",
+                    "macos",
+                    "arm64",
+                    "ployz_macos_arm64.tar.gz",
+                    "ployz"
+                ),
+                (
+                    "ployzd",
+                    "linux",
+                    "amd64",
+                    "ployzd_linux_amd64.tar.gz",
+                    "ployzd,ployz-uninstall"
+                ),
+                (
+                    "ployzd",
+                    "linux",
+                    "arm64",
+                    "ployzd_linux_arm64.tar.gz",
+                    "ployzd,ployz-uninstall"
+                ),
+            ]
+        );
+    }
+
+    #[test]
+    fn every_manifest_line_is_a_comment_or_a_complete_row() {
+        let rows = RELEASE_ARCHIVES
+            .lines()
+            .filter(|line| !line.trim().is_empty() && !line.trim_start().starts_with('#'))
+            .count();
+        assert_eq!(rows, release_archives().count());
+    }
+
+    #[test]
+    fn goreleaser_builds_exactly_the_manifest_platforms() {
+        let goreleaser = std::fs::read_to_string(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../.goreleaser.yaml"
+        ))
+        .unwrap();
+        let built: std::collections::BTreeSet<_> = goreleaser
+            .lines()
+            .filter_map(|line| line.trim().strip_prefix("- id: "))
+            .filter(|id| id.contains("-linux-") || id.contains("-darwin-"))
+            .collect();
+        let listed: std::collections::BTreeSet<_> = release_archives()
+            .map(|archive| {
+                let os = if archive.os == "macos" {
+                    "darwin"
+                } else {
+                    archive.os
+                };
+                format!("{}-{os}-{}", archive.product, archive.arch)
+            })
+            .collect();
+        assert_eq!(
+            built,
+            listed.iter().map(String::as_str).collect(),
+            ".goreleaser.yaml builds and release-archives.txt must name the same platforms"
+        );
+    }
+
+    #[test]
+    fn daemon_archive_maps_rust_architectures_to_todays_names() {
+        assert_eq!(daemon_archive("x86_64"), Some("ployzd_linux_amd64.tar.gz"));
+        assert_eq!(daemon_archive("aarch64"), Some("ployzd_linux_arm64.tar.gz"));
+        assert_eq!(daemon_archive("riscv64"), None);
+        assert_eq!(
+            cli_archive("macos", "arm64"),
+            Some("ployz_macos_arm64.tar.gz")
+        );
+        assert_eq!(cli_archive("darwin", "arm64"), None);
     }
 
     #[test]

@@ -3,6 +3,9 @@
 set -euo pipefail
 
 ROOT=$(CDPATH='' cd -- "$(dirname -- "$0")/.." && pwd)
+# shellcheck source=scripts/release-archives.sh
+source "$ROOT/scripts/release-archives.sh"
+linux_amd64=$(release_archive ployz linux amd64)
 TMP=$(mktemp -d)
 trap 'rm -rf "$TMP"' EXIT
 mkdir -p "$TMP/bin" "$TMP/release" "$TMP/install" "$TMP/keys"
@@ -28,7 +31,7 @@ pack_release() {
     # shellcheck disable=SC2016
     printf '#!/bin/sh\nif [ "${1:-}" = --version ]; then echo %s; else echo installed; fi\n' "$version" > "$TMP/ployz"
     chmod 0755 "$TMP/ployz"
-    for archive in ployz_linux_amd64.tar.gz ployz_linux_arm64.tar.gz ployz_macos_amd64.tar.gz ployz_macos_arm64.tar.gz; do
+    for archive in $(release_archives ployz); do
         tar -czf "$TMP/release/$archive" -C "$TMP" ployz
     done
     (cd "$TMP/release" && sha256sum ./*.tar.gz | sed 's|  \./|  |' > checksums.txt)
@@ -67,12 +70,14 @@ cp "$src" "$output"
 EOF
 chmod 0755 "$TMP/bin/uname" "$TMP/bin/curl"
 
-for platform in Linux:x86_64 Linux:aarch64 Darwin:x86_64 Darwin:arm64; do
-    FAKE_OS=${platform%:*}
-    FAKE_ARCH=${platform#*:}
+# Each platform install.sh can detect, and the manifest os and arch of the archive it must fetch.
+for platform in Linux:x86_64:linux:amd64 Linux:aarch64:linux:arm64 Darwin:x86_64:macos:amd64 Darwin:arm64:macos:arm64; do
+    IFS=: read -r FAKE_OS FAKE_ARCH release_os release_arch <<< "$platform"
+    rm -f "$TMP/urls"
     PATH="$TMP/bin:$PATH" FAKE_OS="$FAKE_OS" FAKE_ARCH="$FAKE_ARCH" FAKE_RELEASE="$TMP/release" \
-        INSTALL_BIN_DIR="$TMP/install" PLOYZ_GITHUB_URL=https://example.invalid \
+        FAKE_CURL_LOG="$TMP/urls" INSTALL_BIN_DIR="$TMP/install" PLOYZ_GITHUB_URL=https://example.invalid \
         sh "$ROOT/install.sh"
+    grep -Fq "/$(release_archive ployz "$release_os" "$release_arch")" "$TMP/urls" || { cat "$TMP/urls" >&2; exit 1; }
     [ "$("$TMP/install/ployz")" = installed ]
     [ "$("$TMP/install/ployz" --version)" = 1.2.3 ]
 done
@@ -90,7 +95,7 @@ for reach in github fallback; do
         github) from=https://github.com/getployz/ployz/releases/download/v1.2.3 ;;
         fallback) from=https://ployz.sh/releases/download/v1.2.3 ;;
     esac
-    for asset in checksums.txt checksums.txt.minisig ployz_linux_amd64.tar.gz; do
+    for asset in checksums.txt checksums.txt.minisig "$linux_amd64"; do
         grep -Fq "$from/$asset" "$TMP/urls" || { cat "$TMP/urls" >&2; exit 1; }
     done
     if [ "$reach" = github ] && grep -Fq https://ployz.sh/releases "$TMP/urls"; then
@@ -106,7 +111,7 @@ FAKE_CURL_LOG=$TMP/curl.log
 PATH="$TMP/bin:$PATH" FAKE_OS=Linux FAKE_ARCH=x86_64 FAKE_RELEASE="$TMP/release" FAKE_CURL_LOG="$FAKE_CURL_LOG" \
     INSTALL_BIN_DIR="$TMP/install" PLOYZ_GITHUB_URL=https://example.invalid \
     sh "$ROOT/install.sh" stable
-grep -Fq '/releases/download/v9.9.9/ployz_linux_amd64.tar.gz' "$FAKE_CURL_LOG"
+grep -Fq "/releases/download/v9.9.9/$linux_amd64" "$FAKE_CURL_LOG"
 
 pack_release 8.8.8-beta.1
 printf 'v8.8.8-beta.1\n' > "$TMP/release/beta"
@@ -114,7 +119,7 @@ printf 'v8.8.8-beta.1\n' > "$TMP/release/beta"
 PATH="$TMP/bin:$PATH" FAKE_OS=Linux FAKE_ARCH=x86_64 FAKE_RELEASE="$TMP/release" FAKE_CURL_LOG="$FAKE_CURL_LOG" \
     INSTALL_BIN_DIR="$TMP/install" PLOYZ_GITHUB_URL=https://example.invalid \
     sh "$ROOT/install.sh" beta
-grep -Fq '/releases/download/v8.8.8-beta.1/ployz_linux_amd64.tar.gz' "$FAKE_CURL_LOG"
+grep -Fq "/releases/download/v8.8.8-beta.1/$linux_amd64" "$FAKE_CURL_LOG"
 
 # A pointer is one raw line: whitespace inside it is corruption, not formatting.
 for pointer in 'v1.2.\n3' 'v1.2.3\ngarbage'; do
@@ -164,7 +169,7 @@ mkdir -p "$TMP/real-curl-bin"
 cp "$TMP/bin/uname" "$TMP/real-curl-bin/uname"
 pack_release 1.2.3
 mkdir -p "$TMP/mirror/releases/download/v1.2.3" "$TMP/mirror-install"
-cp "$TMP/release/ployz_linux_amd64.tar.gz" "$TMP/release/checksums.txt" "$TMP/release/checksums.txt.minisig" "$TMP/mirror/releases/download/v1.2.3/"
+cp "$TMP/release/$linux_amd64" "$TMP/release/checksums.txt" "$TMP/release/checksums.txt.minisig" "$TMP/mirror/releases/download/v1.2.3/"
 PATH="$TMP/real-curl-bin:$PATH" FAKE_OS=Linux FAKE_ARCH=x86_64 INSTALL_BIN_DIR="$TMP/mirror-install" \
     PLOYZ_GITHUB_URL="file://$TMP/mirror" sh "$ROOT/install.sh" 1.2.3 > /dev/null
 [ "$("$TMP/mirror-install/ployz" --version)" = 1.2.3 ]
@@ -174,10 +179,10 @@ for defect in missing wrong-version; do
     pack_release 1.2.3
     if [ "$defect" = missing ]; then
         touch "$TMP/README"
-        tar -czf "$TMP/release/ployz_linux_amd64.tar.gz" -C "$TMP" README
+        tar -czf "$TMP/release/$linux_amd64" -C "$TMP" README
     else
         printf '#!/bin/sh\necho wrong\n' > "$TMP/ployz"
-        tar -czf "$TMP/release/ployz_linux_amd64.tar.gz" -C "$TMP" ployz
+        tar -czf "$TMP/release/$linux_amd64" -C "$TMP" ployz
     fi
     (cd "$TMP/release" && sha256sum ./*.tar.gz | sed 's|  \./|  |' > checksums.txt)
     sign_release 1.2.3
@@ -191,7 +196,7 @@ for defect in missing wrong-version; do
     [ "$("$TMP/install/ployz" --version)" = 8.8.8-beta.1 ]
 done
 pack_release 1.2.3
-printf corrupt >> "$TMP/release/ployz_linux_amd64.tar.gz"
+printf corrupt >> "$TMP/release/$linux_amd64"
 if PATH="$TMP/bin:$PATH" FAKE_OS=Linux FAKE_ARCH=x86_64 FAKE_RELEASE="$TMP/release" INSTALL_BIN_DIR="$TMP/install" \
     PLOYZ_GITHUB_URL=https://example.invalid sh "$ROOT/install.sh" 1.2.3 >/dev/null 2>&1; then
     echo "corrupt CLI archive was installed" >&2
@@ -253,7 +258,7 @@ install_fails 'Release signature verification failed'
 sign_release 1.2.3
 # A rehashed archive: checksums.txt agrees with it, but the signature does not.
 printf '#!/bin/sh\necho 1.2.3\n' > "$TMP/ployz"
-tar -czf "$TMP/release/ployz_linux_amd64.tar.gz" -C "$TMP" ployz
+tar -czf "$TMP/release/$linux_amd64" -C "$TMP" ployz
 (cd "$TMP/release" && sha256sum ./*.tar.gz | sed 's|  \./|  |' > checksums.txt)
 install_fails 'Release signature verification failed'
 pack_release 1.2.3
@@ -303,7 +308,7 @@ case "${FAKE_ANSWER:-wait}" in
     refused) echo "error: Cloud refused this Fleet Token." >&2; exit 1 ;;
 esac
 EOF
-tar -czf "$TMP/release/ployz_linux_amd64.tar.gz" -C "$TMP" ployz
+tar -czf "$TMP/release/$linux_amd64" -C "$TMP" ployz
 (cd "$TMP/release" && sha256sum ./*.tar.gz | sed 's|  \./|  |' > checksums.txt)
 sign_release 1.2.3
 cat > "$TMP/bin/id" <<'EOF'
@@ -332,7 +337,7 @@ enroll() {
         > "$TMP/out" 2> "$TMP/err"
 }
 installed_only() {
-    printf '%s\n' 'ployz_linux_amd64.tar.gz: OK' "Installed ployz to $TMP/install/ployz" | diff - "$TMP/out"
+    printf '%s\n' "$linux_amd64: OK" "Installed ployz to $TMP/install/ployz" | diff - "$TMP/out"
     [ ! -e "$FLEET_TOKEN_FILE" ]
     [ ! -e "$CHECKIN_LOG" ]
 }
