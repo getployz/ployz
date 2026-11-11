@@ -284,12 +284,14 @@ pub(crate) fn approved_by_device(
 }
 
 /// Keep a person's fresh approvals of the commits of queued Deployment
-/// `approve.deployment`, which waited for them once its builds ended, and let it run.
+/// `approve.deployment`, which waited for them once its approved builds ended, and let it
+/// run. They replace every approval it holds, one for each Service.
 ///
 /// # Errors
 /// `conflict` for a Deployment that doesn't wait for them, no longer queues, or whose
-/// builds haven't all ended with an image, and `invalid_argument` for an approval naming
-/// a Service or commit it doesn't build.
+/// approved builds haven't all ended with an image, and `invalid_argument` for an
+/// approval naming a Service or commit it doesn't build, or a set that leaves out or
+/// repeats a Service it holds an approval for.
 pub(crate) fn approve_commits(
     tx: &mut dyn Tx,
     who: &Actor,
@@ -306,8 +308,34 @@ pub(crate) fn approve_commits(
     if stored.summary.status != DeploymentStatus::Queued {
         return refused(format!("Deployment {label} already started or ended"));
     }
-    if !build::all_built(tx, id)? {
+    if !build::approved_built(tx, id)? {
         return refused(format!("Deployment {label} hasn't built every image yet"));
+    }
+    let held: BTreeSet<ServiceName> = build::commit_approvals(tx, id)?.into_keys().collect();
+    let mut named = BTreeSet::new();
+    for approval in &approve.approvals {
+        let service = approval
+            .open()
+            .map_err(|_| error::invalid("A commit approval can't be read", json!({})))?
+            .service;
+        if !named.insert(service.clone()) {
+            return Err(error::invalid(
+                format!("The approvals name {service} twice"),
+                json!({ "service": service }),
+            ));
+        }
+    }
+    if named != held {
+        return Err(error::invalid(
+            format!(
+                "Approve every service Deployment {label} builds under your approval: {}",
+                held.iter()
+                    .map(ToString::to_string)
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            ),
+            json!({ "services": held }),
+        ));
     }
     for approval in &approve.approvals {
         build::approve_commit(tx, id, approval)?;

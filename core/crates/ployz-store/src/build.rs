@@ -616,14 +616,22 @@ pub(crate) fn routed(
     saved: &ployz_core::config::SavedEnvironmentIntent,
 ) -> Result<Vec<GitSource>, RpcError> {
     let organization = organization(tx, &stored.summary.id)?;
+    // A build a person approved builds only on GitHub, under the rule. A Server that
+    // enforces runs no other Builder's image, and a build left for the run's own Builders
+    // would wait behind the run's hold on that approval.
+    let approved = commit_approvals(tx, &stored.summary.id)?;
     let mut sources = Vec::new();
     for (id, mut source) in git_sources(tx, stored, saved)? {
-        (source.builders, source.preferred_machine) = builders::walk(
-            tx,
-            organization.as_str(),
-            &stored.summary.environment_id,
-            &id,
-        )?;
+        (source.builders, source.preferred_machine) = if approved.contains_key(&source.service) {
+            (vec![Builder::Github], None)
+        } else {
+            builders::walk(
+                tx,
+                organization.as_str(),
+                &stored.summary.environment_id,
+                &id,
+            )?
+        };
         sources.push(source);
     }
     Ok(sources)
@@ -1286,14 +1294,17 @@ pub(crate) fn commit_approvals(
         .collect())
 }
 
-/// Whether every build of Deployment `id` ended with an image.
-pub(crate) fn all_built(tx: &mut dyn Tx, id: &DeploymentId) -> Result<bool, RpcError> {
-    Ok(rows(tx, id)?.iter().all(|row| {
-        matches!(
-            row.stage.status(),
-            RowStatus::Reported(BuildStatus::Built | BuildStatus::Reused)
-        )
-    }))
+/// Whether every build of Deployment `id` a person approved ended with an image.
+pub(crate) fn approved_built(tx: &mut dyn Tx, id: &DeploymentId) -> Result<bool, RpcError> {
+    Ok(rows(tx, id)?
+        .iter()
+        .filter(|row| row.commit_approval.is_some())
+        .all(|row| {
+            matches!(
+                row.stage.status(),
+                RowStatus::Reported(BuildStatus::Built | BuildStatus::Reused)
+            )
+        }))
 }
 
 /// Keep a person's approval of the build of its Service at its commit in Deployment

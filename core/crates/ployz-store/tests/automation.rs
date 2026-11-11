@@ -2424,6 +2424,22 @@ fn a_redeploy_keeps_its_sources_image_token_and_builds_an_approved_commit_on_a_d
         RpcErrorCode::Conflict
     );
     let fresh = commit_approval("web", H1);
+    // It takes one approval for each Service it holds one for: none, or one twice, is
+    // refused, and it still waits.
+    for approvals in [Vec::new(), vec![fresh.clone(), fresh.clone()]] {
+        let error = store
+            .write_trusted(
+                &person(),
+                &ployz_store::ApproveDeployment {
+                    deployment: again.id.clone(),
+                    approvals,
+                },
+                &permitted(),
+            )
+            .unwrap_err();
+        assert_eq!(error.code, RpcErrorCode::InvalidArgument, "{error:?}");
+    }
+    assert!(store.awaiting_approval(&again.id).unwrap());
     approve(&again.id, fresh.clone()).unwrap();
     assert!(!store.awaiting_approval(&again.id).unwrap());
     // The runner relays the rule, the token with the authority it was built under, and
@@ -2440,6 +2456,55 @@ fn a_redeploy_keeps_its_sources_image_token_and_builds_an_approved_commit_on_a_d
         claimed.image_tokens[&ServiceName::parse("web").unwrap()].authority,
         CommitAuthority::Approved(ApprovalDigest::of(&approved))
     );
+}
+
+#[test]
+fn a_redeploys_approved_build_walks_only_github_whatever_builder_it_prefers() {
+    use ployz_store::{BuildOrder, Builder, Command, SetBuildOrder};
+    let (store, system_actor) = shop();
+    let first = format!("ployz-build/web@sha256:{}", "d".repeat(64));
+    let pushed = pushed_and_built(&store, &system_actor, "token-1", &first);
+    store
+        .write(
+            &system_actor,
+            &Command::SetBuildOrder(SetBuildOrder {
+                build_order: Some(BuildOrder::ServersThenGithub),
+            }),
+        )
+        .unwrap();
+    let walk = |id: &ployz_store::DeploymentId| {
+        store
+            .sources(id)
+            .unwrap()
+            .into_iter()
+            .find(|source| source.service.as_str() == "web")
+            .unwrap()
+            .builders
+    };
+    // Under a person's approval it builds on GitHub or not at all: a Server that
+    // enforces runs no Servers-built image, and the run waits on the approval.
+    let approved = redeploy(4, &pushed, vec![commit_approval("web", H1)]);
+    store
+        .write_trusted(
+            &person(),
+            &ployz_store::Admit::Retry(approved.clone()),
+            &permitted(),
+        )
+        .unwrap();
+    assert_eq!(walk(&approved.id), [Builder::Github]);
+    // Without one it walks the Build Order, as any redeploy does.
+    let plain = ployz_store::Retry {
+        awaits_approval: false,
+        ..redeploy(5, &pushed, Vec::new())
+    };
+    store
+        .write_trusted(
+            &person(),
+            &ployz_store::Admit::Retry(plain.clone()),
+            &permitted(),
+        )
+        .unwrap();
+    assert_eq!(walk(&plain.id), [Builder::Servers, Builder::Github]);
 }
 
 #[test]
