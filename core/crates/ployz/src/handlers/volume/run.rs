@@ -198,8 +198,11 @@ pub(crate) enum RunAsk {
     Restore {
         from: MachineName,
     },
+    /// `approval`: this Device's, when a Server enforces Device approval.
     Resize {
         maximum_bytes: ProvisionedVolumeMaximumBytes,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        approval: Option<Signed<VolumeApproval>>,
     },
 }
 
@@ -650,16 +653,30 @@ pub(crate) fn resize(
         ));
     }
     let started = format!("resize of Volume {volume} to {maximum_bytes}");
+    let volume_id = &view.volume.volume.id;
+    let approval = super::resize_approval::sign(
+        root,
+        store,
+        (volume, volume_id, &view.environment),
+        maximum_bytes,
+        view.volume.recorded_storage,
+    )?;
+    let (signed, change) = approval.map_or((None, None), |approval| {
+        (Some(approval.signed), Some(approval.change))
+    });
     request_located(
         root,
         store,
         volume,
-        &view.volume.volume.id,
+        volume_id,
         view.environment.clone(),
-        (started, None),
+        (started, change.as_ref()),
         |environment| RunRequest {
             environment,
-            ask: RunAsk::Resize { maximum_bytes },
+            ask: RunAsk::Resize {
+                maximum_bytes,
+                approval: signed,
+            },
         },
     )
 }
@@ -828,7 +845,7 @@ fn approved(
             RunAsk::Restore { from } => {
                 (Verb::Restore, words("restore", &["--from", from.as_str()]))
             }
-            RunAsk::Resize { maximum_bytes } => (
+            RunAsk::Resize { maximum_bytes, .. } => (
                 Verb::Resize,
                 words("set", &["--size", size_word(*maximum_bytes).as_str()]),
             ),
