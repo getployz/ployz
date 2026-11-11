@@ -1079,9 +1079,9 @@ pub(crate) fn rollback_removed(
     tx: &mut dyn Tx,
     stored: &Stored,
     applied: &SavedEnvironmentIntent,
-) -> Result<Vec<crate::removal::RemovedVolume>, RpcError> {
+) -> Result<Vec<loss::RemovedVolume>, RpcError> {
     let source = saved_at(tx, &stored.summary.environment_id, stored.summary.saved)?;
-    let mut removed = crate::removal::removed(applied, &source, &stored.namespace)?;
+    let mut removed = loss::removed(applied, &source, &stored.namespace)?;
     let number = i64::try_from(stored.summary.numbered()?)
         .map_err(|_| error::corrupt("Deployment number"))?;
     for row in &tx.query(
@@ -1102,8 +1102,8 @@ pub(crate) fn rollback_removed(
             {
                 continue;
             }
-            removed.push(crate::removal::RemovedVolume {
-                docker_volume: crate::removal::docker_volume(&stored.namespace, id.as_str())?,
+            removed.push(loss::RemovedVolume {
+                docker_volume: loss::docker_volume(&stored.namespace, id.as_str())?,
                 id,
                 name,
             });

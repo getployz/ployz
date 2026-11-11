@@ -623,7 +623,9 @@ pub(crate) fn destructive(
         }
     };
     let removed = match reviews {
-        true => crate::removal::removed(&approval::deployed(&review.head), target, namespace)?,
+        true => {
+            crate::deployment::loss::removed(&approval::deployed(&review.head), target, namespace)?
+        }
         false => Vec::new(),
     };
     crate::removal::review(

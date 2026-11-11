@@ -25,10 +25,9 @@ pub use self::due::{Due, DueQuery};
 pub(crate) use self::due::{admit, close, sweep};
 pub(crate) use self::due::{ask_taking_off, due, shut_down};
 use self::mark::{Accepted, Closed, Mark, State};
-pub use self::review::{ConsentedQuery, ConsentedView, RemovedVolume, VolumeLoss, docker_volume};
-pub(crate) use self::review::{
-    consented, covered, held, named_for, removed, review, still_removed,
-};
+pub use self::review::{ConsentedQuery, ConsentedView};
+pub(crate) use self::review::{consented, review};
+use crate::deployment::loss::{VolumeLoss, held, removed};
 use crate::deployment::{self, DeploymentStatus, DeploymentSummary};
 use crate::digest::short_digest;
 use crate::error;
@@ -498,7 +497,7 @@ fn review_member(
         BTreeMap::new()
     };
     let effects = approval::destructive_effects(&deployed, &empty, &cluster_domains);
-    let removed = self::removed(&review.head.applied, &empty, &namespace)?;
+    let removed = removed(&review.head.applied, &empty, &namespace)?;
     let names: Vec<&VolumeName> = removed.iter().map(|volume| &volume.name).collect();
     if let Some(unknown) = accept
         .iter()
@@ -513,7 +512,7 @@ fn review_member(
             json!({ "valid_children": names }),
         ));
     }
-    let (losses, unanswered) = review::held(removed, trusted.volumes.as_ref())?;
+    let (losses, unanswered) = held(removed, trusted.volumes.as_ref())?;
     Ok(Reviewed {
         base: review.view.version.clone(),
         diff: review.view,

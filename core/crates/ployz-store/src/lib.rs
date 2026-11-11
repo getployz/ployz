@@ -75,6 +75,7 @@ pub use build::{
 pub use builders::{BuildOrder, BuildOrderQuery, BuildOrderView, Builder, SetBuildOrder};
 pub use client_sealed::SecretValue;
 pub use command::*;
+pub use deployment::loss::{RemovedVolume, VolumeLoss, docker_volume};
 pub use deployment::{
     CiVerdict, Claimed, DeployedNode, DeploymentStatus, DeploymentSummary, DeploymentView,
     DeploymentWarning, FailedAt, Failure, GitPush, IngressAction, IngressFailure, IngressRepair,
@@ -106,8 +107,7 @@ pub use pull_request::{
 pub use query::*;
 pub use removal::{
     CancelRemoval, ConsentedQuery, ConsentedView, Due, DueQuery, Fix, Left, LeftStatus, Removal,
-    RemovalCancelled, Remove, RemovedQuery, RemovedView, RemovedVolume, Residual, VolumeLoss,
-    Waiting, docker_volume,
+    RemovalCancelled, Remove, RemovedQuery, RemovedView, Residual, Waiting,
 };
 pub use reseal::{LegacyCount, Resealed};
 pub use review::history::{HistoryAction, SavedRevision};

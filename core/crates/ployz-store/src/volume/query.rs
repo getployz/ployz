@@ -11,9 +11,9 @@ use serde::{Deserialize, Serialize};
 use ts_rs::TS;
 
 use crate::Actor;
+use crate::deployment::loss::{RemovedVolume, removed};
 use crate::error;
 use crate::id::{VolumeId, VolumeName};
-use crate::removal::{self, RemovedVolume};
 use crate::review;
 use crate::scope::{self, EnvironmentRef, EnvironmentSummary};
 use crate::storage::Tx;
@@ -188,7 +188,7 @@ pub(crate) fn removals(
         // Deployed Volumes mean a Deployment was admitted, which fixed the Namespace.
         let namespace: Namespace =
             crate::deployment::namespace(tx, who, &environment.summary, false)?;
-        removal::removed(&held, &target, &namespace)?
+        removed(&held, &target, &namespace)?
     };
     Ok(RemovalsView {
         environment: environment.summary,

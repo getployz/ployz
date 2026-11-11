@@ -9,20 +9,20 @@ use serde_json::json;
 use ts_rs::TS;
 
 use super::mark::{self, Accepted, Closed, Evidence, Mark, State};
-use super::review::held;
 use super::{
     Left, LeftStatus, Removal, Residual, Target, Waiting, guard, guard_removal, latest, members,
     next, on_servers, purge, teardown_order,
 };
 use crate::automation::{Automated, Skipped};
 use crate::deployment::admit::{AdmitRemoval, ShutDown};
+use crate::deployment::loss::{RemovedVolume, VolumeLoss, held, removed};
 use crate::deployment::{self, DeploymentStatus, DeploymentSummary, Outcome};
 use crate::error;
 use crate::id::{DeploymentId, EnvironmentId, ProjectId};
 use crate::review::approval;
 use crate::scope::{self, Environment, EnvironmentSummary};
 use crate::storage::Tx;
-use crate::{Actor, Trusted, VolumeLoss};
+use crate::{Actor, Trusted};
 
 /// List what comes off the Servers next, across every removal under way.
 #[derive(Clone, Debug, Default, Eq, PartialEq, Serialize, Deserialize, TS)]
@@ -410,7 +410,7 @@ fn admit_member(
     let losses = match forget {
         Some(_) => Vec::new(),
         None => {
-            let removed = super::removed(&review.head.applied, &empty, &namespace)?;
+            let removed = removed(&review.head.applied, &empty, &namespace)?;
             losses(
                 tx,
                 who,
@@ -565,12 +565,12 @@ fn losses(
     tx: &mut dyn Tx,
     who: &Actor,
     environment: &Environment,
-    removed: Vec<super::RemovedVolume>,
+    removed: Vec<RemovedVolume>,
     accepted: Option<&Accepted>,
     trusted: &Trusted,
 ) -> Result<Vec<VolumeLoss>, RpcError> {
     let observed = trusted.volumes.as_ref();
-    let lenient = |removed: Vec<super::RemovedVolume>| {
+    let lenient = |removed: Vec<RemovedVolume>| {
         held(removed.clone(), observed).map_or_else(
             |_| {
                 removed
