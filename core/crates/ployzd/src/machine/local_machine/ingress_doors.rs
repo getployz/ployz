@@ -13,9 +13,9 @@ use std::time::Duration;
 
 use ployz_core::{
     Ciphertext, ContainerId, ContainerKind, ContainerRuntimeObservation, DoorChange, DoorOutcome,
-    Gen, IngressDoor, IngressDoorsFailure, IngressDoorsSet, IngressPorts, IngressStage, Namespace,
-    ResolvedServiceSpec, RpcError, RpcErrorCode, ServiceId, SetIngressDoorsRequest,
-    global_creation_key, tunnel_sealed_token,
+    Gen, IngressDoor, IngressDoors, IngressDoorsFailure, IngressDoorsSet, IngressPorts,
+    IngressStage, Namespace, ResolvedServiceSpec, RpcError, RpcErrorCode, ServiceId,
+    SetIngressDoorsRequest, global_creation_key, tunnel_sealed_token,
 };
 use zeroize::Zeroizing;
 
@@ -316,6 +316,17 @@ struct DoorsHeld {
     sealed: Option<Ciphertext>,
 }
 
+impl DoorsHeld {
+    /// Whether every Door these doors open is one the Cluster declares. A holder that
+    /// publishes the host ports opens the Public Door, and a connector the Tunnel Door.
+    fn within(&self, declared: &IngressDoors) -> bool {
+        let public = !self.specs.holder.ports.is_empty();
+        let tunnel = self.specs.tunnel.is_some();
+        (!public || declared.has(IngressDoor::Public))
+            && (!tunnel || declared.has(IngressDoor::Tunnel))
+    }
+}
+
 /// The doors the inventory shows, or `None` when this Machine held no holder with a
 /// Caddy joined to it, or its newest connector carries no readable token. Planning
 /// without the connector would retire it. A connector left from a closed Tunnel Door
@@ -443,6 +454,11 @@ impl LocalMachine {
     /// and a Machine with no doors places none. A connector left from a closed Tunnel
     /// Door, which Docker refused to remove, is retired again instead of started.
     ///
+    /// The Cluster's declared Doors can only narrow this. Doors that open one the
+    /// declaration lacks stay at rest, as `ployz ingress use` left them, and nothing is
+    /// created, replaced or stopped here. With no declaration, or one this Machine
+    /// can't read, the doors it held are placed as above.
+    ///
     /// # Errors
     ///
     /// Returns [`Error::TunnelToken`] when the connector's token no longer opens, and
@@ -459,6 +475,15 @@ impl LocalMachine {
             let Some(held) = doors_held(&inventory, containers.tunnel_door_closed()) else {
                 return Ok(None);
             };
+            if let Some(declared) = local.declared_doors().await
+                && !held.within(&declared)
+            {
+                tracing::warn!(
+                    declared = ?declared.names(),
+                    "the Ingress doors this Machine held open more than the Cluster declares; they stay at rest until the next `ployz ingress use`"
+                );
+                return Ok(None);
+            }
             if let Some(sealed) = &held.sealed {
                 let token = containers
                     .open_tunnel_token(sealed)
@@ -1320,5 +1345,41 @@ mod tests {
         );
         assert_eq!(plan.retire_holders, vec![retiree('a', false)]);
         assert_eq!(plan.retire_caddys, vec![retiree('b', false)]);
+    }
+    #[test]
+    fn restore_follows_a_declaration_only_inward() {
+        let proxy = ServiceId::parse("c".repeat(32)).unwrap();
+        let held = |ports: IngressPorts, tunnel: bool| {
+            let mut specs = DoorSpecs::new(proxy, ports, None);
+            if tunnel {
+                specs.tunnel = Some(specs.proxy.clone());
+            }
+            DoorsHeld {
+                specs,
+                sealed: None,
+            }
+        };
+        let public = held(IngressPorts::Public, false);
+        let tunnel = held(IngressPorts::Closed, true);
+        let both = held(IngressPorts::Public, true);
+        let closed = held(IngressPorts::Closed, false);
+        let sets = [
+            IngressDoors::closed(),
+            IngressDoors::public(),
+            IngressDoors::tunnel(),
+            IngressDoors::both(),
+        ];
+        let expected = [
+            // closed, public, tunnel, both
+            (&closed, [true, true, true, true]),
+            (&public, [false, true, false, true]),
+            (&tunnel, [false, false, true, true]),
+            (&both, [false, false, false, true]),
+        ];
+        for (held, answers) in expected {
+            for (declared, answer) in sets.iter().zip(answers) {
+                assert_eq!(held.within(declared), answer, "{declared:?}");
+            }
+        }
     }
 }

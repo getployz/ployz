@@ -535,7 +535,10 @@ async fn the_declared_doors_read_back_as_written_and_a_bad_value_reads_unreadabl
     use ployz_core::IngressDoors;
 
     let (store, task) = identity_store(corrosion_db()).await;
-    assert_eq!(store.cluster_doors().await.unwrap(), DeclaredDoors::Undeclared);
+    assert_eq!(
+        store.cluster_doors().await.unwrap(),
+        DeclaredDoors::Undeclared
+    );
     for doors in [
         IngressDoors::closed(),
         IngressDoors::tunnel(),

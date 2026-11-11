@@ -380,18 +380,23 @@ mod tests {
     #[test]
     fn a_snapshot_reads_an_absent_or_unreadable_declaration_as_undeclared() {
         let snapshot = |doors: Option<serde_json::Value>| {
-            let mut wire = serde_json::json!({
-                "network": "10.210.0.0/16",
-                "machines": [],
-                "target_versions": {},
-            });
+            let mut wire = serde_json::Map::new();
+            wire.insert("network".into(), "10.210.0.0/16".into());
+            wire.insert("machines".into(), serde_json::json!([]));
+            wire.insert("target_versions".into(), serde_json::json!({}));
             if let Some(doors) = doors {
-                wire["doors"] = doors;
+                wire.insert("doors".into(), doors);
             }
-            serde_json::from_value::<EnrollmentSnapshot>(wire).unwrap().doors
+            let wire = serde_json::Value::Object(wire);
+            serde_json::from_value::<EnrollmentSnapshot>(wire)
+                .unwrap()
+                .doors
         };
         assert_eq!(snapshot(None), None);
-        assert_eq!(snapshot(Some(serde_json::json!([]))), Some(crate::IngressDoors::closed()));
+        assert_eq!(
+            snapshot(Some(serde_json::json!([]))),
+            Some(crate::IngressDoors::closed())
+        );
         assert_eq!(
             snapshot(Some(serde_json::json!(["tunnel"]))),
             Some(crate::IngressDoors::tunnel())
@@ -410,9 +415,20 @@ mod tests {
             target_versions: BTreeMap::new(),
             doors: Some(crate::IngressDoors::closed()),
         };
-        assert_eq!(serde_json::to_value(&closed).unwrap()["doors"], serde_json::json!([]));
-        let undeclared = EnrollmentSnapshot { doors: None, ..closed };
-        assert!(serde_json::to_value(&undeclared).unwrap().get("doors").is_none());
+        assert_eq!(
+            serde_json::to_value(&closed).unwrap().get("doors"),
+            Some(&serde_json::json!([]))
+        );
+        let undeclared = EnrollmentSnapshot {
+            doors: None,
+            ..closed
+        };
+        assert!(
+            serde_json::to_value(&undeclared)
+                .unwrap()
+                .get("doors")
+                .is_none()
+        );
     }
 
     #[test]

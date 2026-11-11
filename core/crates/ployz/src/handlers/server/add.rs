@@ -88,6 +88,7 @@ pub(in crate::handlers) fn add(root: &ArgMatches) -> Result<(), Error> {
                 public_ip: token.public_ip,
                 advertised_endpoints: token.advertised_endpoints,
                 runtime: token.runtime,
+                capabilities: Vec::new(),
             },
             &snapshot,
         )?;
@@ -302,6 +303,7 @@ mod tests {
             network: "10.210.0.0/16".parse().unwrap(),
             machines: vec![survivor.clone()],
             target_versions: Default::default(),
+            doors: None,
         };
         let returning = assigned_machine("machine-3", 'c');
         let saved = crate::enrollment::local::save_assignment(
@@ -320,6 +322,7 @@ mod tests {
                     "192.0.2.3:51820".parse().unwrap(),
                 )],
                 runtime: Default::default(),
+                capabilities: Vec::new(),
             },
             &joined,
         )
@@ -365,6 +368,7 @@ mod tests {
             network: "10.210.0.0/16".parse().unwrap(),
             machines: vec![live.clone(), joining.clone()],
             target_versions: Default::default(),
+            doors: None,
         };
         let refusal =
             require_free_name(&snapshot, joining.id, &live.name, "root@machine-3").unwrap_err();

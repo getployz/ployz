@@ -1233,13 +1233,18 @@ impl Client {
     /// call, including unary retries, is capped at 10 seconds and surfaces as
     /// deadline exceeded when that cap elapses.
     pub async fn machines(&mut self) -> Result<Vec<MachineObservation>, ConnectError> {
+        self.machine_list().await.map(|list| list.machines)
+    }
+
+    /// The entry Machine's listing of the Cluster, with the enrollment snapshot it carries.
+    pub async fn machine_list(&mut self) -> Result<ployz_core::MachineList, ConnectError> {
         match tokio::time::timeout(
             TARGET_RPC_TIMEOUT,
             self.call::<op::ListMachines>(ListMachinesRequest {}, Call::read()),
         )
         .await
         {
-            Ok(result) => result.map(|list| list.machines),
+            Ok(result) => result,
             Err(_) => Err(tonic::Status::deadline_exceeded("target Machine RPC timed out").into()),
         }
     }

@@ -220,6 +220,10 @@ pub(crate) struct EnrollIdentity {
     recovery_support: Option<u8>,
     #[serde(skip_serializing_if = "Option::is_none")]
     join_confirmation: Option<ployz_core::authority::join::JoinConfirmation>,
+    /// What this client honors when it runs the joiner's catch-up. Cloud relays it in
+    /// Register, and the Machine refuses a joiner that claims too little for the
+    /// Cluster's declared Doors.
+    capabilities: Vec<&'static str>,
 }
 
 fn serialize_as_wireguard_base64<S>(
@@ -254,6 +258,7 @@ impl EnrollIdentity {
             disk_available_bytes: token.disk_available_bytes,
             recovery_support: recovery_supported.then_some(RECOVERY_SUPPORT),
             join_confirmation: None,
+            capabilities: vec![ployz_core::SET_CLUSTER_DOORS_CAPABILITY],
         }
     }
 

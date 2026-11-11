@@ -28,7 +28,8 @@ use super::{
 
 use crate::{
     corrosion::{
-        AdminClient, ClusterSealing, DeclaredDoors, MembershipState, ReplicatedStore, membership_states_by_address,
+        AdminClient, ClusterSealing, DeclaredDoors, MembershipState, ReplicatedStore,
+        membership_states_by_address,
     },
     docker::{ContainerRuntime, LocalDocker},
     host_capacity,
@@ -567,6 +568,23 @@ impl LocalMachine {
             .as_ref()
             .map(|cluster| &cluster.replicated)
             .ok_or(Error::ClusterStoreUnavailable)
+    }
+
+    /// The Doors the Cluster declares on this Machine's own replica. `None` when it
+    /// declares none, the value is unreadable, or the replica can't be asked: the
+    /// Doors this Machine held then stay as they were.
+    pub(crate) async fn declared_doors(&self) -> Option<ployz_core::IngressDoors> {
+        let replicated = self.replicated().ok()?;
+        match replicated.cluster_doors().await {
+            Ok(declared) => declared.followed(),
+            Err(error) => {
+                tracing::warn!(
+                    error = %ployz_core::error_chain::inline(&error),
+                    "could not read the Cluster's declared Doors"
+                );
+                None
+            }
+        }
     }
 
     /// Entry-local membership and Corrosion's RTT from the admin socket, with the mesh

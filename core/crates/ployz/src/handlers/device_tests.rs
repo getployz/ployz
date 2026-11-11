@@ -463,6 +463,7 @@ async fn automatic_join_approval_refuses_clouds_substituted_recipient() {
         public_ip: expected_machine.public_ip,
         advertised_endpoints: expected_machine.advertised_endpoints.clone(),
         runtime: Default::default(),
+        capabilities: Vec::new(),
     };
     let mut allocation = JoinAllocation::from(&expected_machine);
     allocation.public_key = ployz_core::WireGuardPublicKey([9; 32]);

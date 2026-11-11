@@ -3,8 +3,7 @@
 
 use crate::{
     Ciphertext, IngressDoors, IngressPorts, IngressWiring, QualifiedService, ServiceId,
-    ServiceObservation, SetIngressDoorsRequest, tunnel_sealed_token,
-    validate_ingress_service_spec,
+    ServiceObservation, SetIngressDoorsRequest, tunnel_sealed_token, validate_ingress_service_spec,
 };
 
 /// The Doors the Cluster's Ingress Proxies should hold, with the sealed tunnel token
@@ -118,7 +117,10 @@ mod tests {
     #[test]
     fn only_a_set_of_known_doors_is_a_declaration() {
         assert_eq!(declared_doors("[]"), Some(IngressDoors::closed()));
-        assert_eq!(declared_doors(r#"["public"]"#), Some(IngressDoors::public()));
+        assert_eq!(
+            declared_doors(r#"["public"]"#),
+            Some(IngressDoors::public())
+        );
         assert_eq!(
             declared_doors(r#"["tunnel","public"]"#),
             Some(IngressDoors::both())

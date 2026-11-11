@@ -697,6 +697,52 @@ async fn a_joiner_on_a_cluster_founded_closed_opens_no_door() {
     assert_eq!(asked.doors, ployz_core::IngressDoors::closed());
 }
 
+// Catches catch-up following the newest holder when the Cluster declares its Doors: a closed
+// Cluster stays closed whatever its Servers last ran, and one declared Public opens.
+#[tokio::test(start_paused = true)]
+async fn a_joiner_follows_the_declared_doors_over_the_newest_holder() {
+    let founder = machine('f', "founder");
+    let joiner = machine('1', "joiner");
+    let holder = |ports| {
+        ployz_core::holder_service_spec("pause:1", ports)
+            .to_resolved(service_id('d'), ResolvedUpdateConfig::default())
+            .expect("volume graph is scoped")
+    };
+    let cluster = |ports| {
+        vec![
+            global_service(
+                QualifiedService::system_ingress(),
+                'a',
+                Placement::default(),
+                running_on(&founder, 'a'),
+            ),
+            grouped(
+                QualifiedService::system_ingress_holder(),
+                holder(ports),
+                running_on(&founder, 'e'),
+            ),
+        ]
+    };
+    for (running, declared) in [
+        (
+            ployz_core::IngressPorts::Public,
+            ployz_core::IngressDoors::closed(),
+        ),
+        (
+            ployz_core::IngressPorts::Closed,
+            ployz_core::IngressDoors::public(),
+        ),
+    ] {
+        let mut client = fake(&joiner, cluster(running));
+        client.declared = Some(declared.clone());
+        catch_up(&mut client, &joiner).await.unwrap();
+        let [(_, asked)] = client.door_calls.as_slice() else {
+            panic!("one call sets the doors: {:?}", client.door_calls);
+        };
+        assert_eq!(asked.doors, declared);
+    }
+}
+
 // Catches catch-up calling a Caddy that crashes after the daemon set it caught up.
 #[tokio::test(start_paused = true)]
 async fn a_caddy_that_is_not_running_after_its_doors_fails_catch_up() {
@@ -905,6 +951,7 @@ struct FakeCatchUpClient {
     omissions: Vec<MachineId>,
     names: crate::drain::retirement::Names,
     unarrived: crate::drain::retirement::Names,
+    declared: Option<ployz_core::IngressDoors>,
     relisted: Option<Vec<ServiceObservation>>,
     listings: u32,
     /// What the joiner's Containers show, call by call, before `target_services`.
@@ -930,6 +977,7 @@ fn fake(joiner: &Machine, services: Vec<ServiceObservation>) -> FakeCatchUpClien
         omissions: Vec::new(),
         names: Vec::new(),
         unarrived: Vec::new(),
+        declared: None,
         relisted: None,
         listings: 0,
         starting: std::collections::VecDeque::new(),
@@ -1012,6 +1060,7 @@ impl CatchUpClient for FakeCatchUpClient {
             live,
             names: self.names.clone(),
             unarrived: self.unarrived.clone(),
+            declared: self.declared.clone(),
         })
     }
 

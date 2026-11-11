@@ -827,6 +827,7 @@ impl FakeMachine for DiscoveryService {
                             .map(|observation| observation.machine.clone())
                             .collect(),
                         target_versions: BTreeMap::new(),
+                        doors: None,
                     }),
                 machines,
             })

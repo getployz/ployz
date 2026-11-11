@@ -37,6 +37,7 @@ pub async fn publish_enrollment(
     let mut request = assignment.request.clone();
     request.assigned_subnet = Some(assignment.machine.subnet);
     request.runtime.clone_from(&assignment.machine.runtime);
+    request.capabilities = vec![ployz_core::SET_CLUSTER_DOORS_CAPABILITY.to_owned()];
     entry
         .call_shared::<op::Register>(
             request,

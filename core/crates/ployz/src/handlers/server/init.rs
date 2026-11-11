@@ -158,20 +158,27 @@ pub(in crate::handlers) fn init(root: &ArgMatches) -> Result<(), Error> {
                     }),
             );
         }
+        let closed = matches.get_flag("ingress-closed");
+        let incomplete = |error: crate::failure::Failure| {
+            ingress_incomplete(
+                super::super::ingress_hints(error, |args| {
+                    super::super::recovery_command(matches, &context_name, args)
+                }),
+                ingress_recovery.clone(),
+            )
+        };
+        if closed {
+            crate::ingress::declare_founding_closed(&mut ready)
+                .await
+                .map_err(&incomplete)?;
+        }
         if machine.accepts_ingress {
-            let followed = if matches.get_flag("ingress-closed") {
+            let followed = if closed {
                 crate::ingress::found_closed(&mut ready).await
             } else {
                 crate::ingress::follow_roles(&mut ready).await
             }
-            .map_err(|error| {
-                ingress_incomplete(
-                    super::super::ingress_hints(error.into(), |args| {
-                        super::super::recovery_command(matches, &context_name, args)
-                    }),
-                    ingress_recovery.clone(),
-                )
-            })?;
+            .map_err(|error| incomplete(error.into()))?;
             return Ok(Some(followed));
         }
         Ok::<_, Error>(None)

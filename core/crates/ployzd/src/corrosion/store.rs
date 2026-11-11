@@ -16,8 +16,8 @@ use ipnet::Ipv4Net;
 use ployz_core::{
     CERTIFICATE_POLICY_CLUSTER_KEY, CertificateHost, ClusterName, ClusterRoute, ContainerId,
     ContainerObservation, DockerVolume, DockerVolumeId, DockerVolumeName, ForgottenAnswer,
-    IngressDoors, IngressHost, IssuanceClock, Machine, MachineId, ManagementIdentity, QualifiedService,
-    RecoverySeed, SealingPublicKey, forgotten_key,
+    IngressDoors, IngressHost, IssuanceClock, Machine, MachineId, ManagementIdentity,
+    QualifiedService, RecoverySeed, SealingPublicKey, forgotten_key,
 };
 use serde_json::json;
 
@@ -759,7 +759,8 @@ impl ReplicatedStore {
             .await?;
         let rows = query.rows(["value"])?;
         Ok(DeclaredDoors::parse(
-            rows.first().map(|[value]| value.as_str().unwrap_or_default()),
+            rows.first()
+                .map(|[value]| value.as_str().unwrap_or_default()),
         ))
     }
 

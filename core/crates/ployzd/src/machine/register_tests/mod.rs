@@ -7,6 +7,7 @@ use crate::corrosion::{
 use crate::sealing_key::SealingKey;
 
 mod backfill;
+mod doors;
 mod harness;
 mod join_approval;
 mod policy;

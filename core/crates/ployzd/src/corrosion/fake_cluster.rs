@@ -250,11 +250,6 @@ impl FakeCluster {
         key.clone().unwrap()
     }
 
-    /// Store `stored` as the declared Doors, as a newer or broken writer could.
-    pub(crate) fn write_doors(&self, stored: &str) {
-        self.kv.lock().unwrap().doors = Some(stored.to_owned());
-    }
-
     pub(crate) fn write_sealing_awaits_recovery(&self, key: &str) {
         self.kv.lock().unwrap().sealing_awaits_recovery = Some(key.to_owned());
     }

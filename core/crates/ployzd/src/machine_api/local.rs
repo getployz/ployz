@@ -7,12 +7,12 @@ use std::{
 };
 
 use ployz_core::{
-    CapabilityAdvertisement, CertificateMaterialChange, CertificateMaterialPublished, ClusterDoorsDeclared, ClusterNamed,
-    ContainerId, ContainerList, ContainerObservation, ContractDescription, EndpointSelected,
-    EnvironmentValues, LiveLogTarget, LocalMachinePhase, LogMetadata, LogOrigin, MachineLogService,
-    MachineRpc, ManagementScope, OpaquePayload, PROTOCOL_MAJOR, RetainedEnvReply, RoutedAddresses,
-    RoutesRead, Rpc, RpcError, RpcErrorCode, RpcRequestBody, RpcResponse, SelectEndpointRequest,
-    WantedCopy, op,
+    CapabilityAdvertisement, CertificateMaterialChange, CertificateMaterialPublished,
+    ClusterDoorsDeclared, ClusterNamed, ContainerId, ContainerList, ContainerObservation,
+    ContractDescription, EndpointSelected, EnvironmentValues, LiveLogTarget, LocalMachinePhase,
+    LogMetadata, LogOrigin, MachineLogService, MachineRpc, ManagementScope, OpaquePayload,
+    PROTOCOL_MAJOR, RetainedEnvReply, RoutedAddresses, RoutesRead, Rpc, RpcError, RpcErrorCode,
+    RpcRequestBody, RpcResponse, SelectEndpointRequest, WantedCopy, op,
 };
 use tonic::{Request, Response, Status};
 
@@ -1266,10 +1266,12 @@ impl MachineRpc for MachineService {
         let request = expect::<op::SetClusterDoors>(request)?;
         if !request.doors.is_known() {
             return respond(
-                RpcError::invalid_argument("This Server declares only the Public and Tunnel Doors.")
-                    .with_details(serde_json::json!({
-                        "capability": ployz_core::SET_CLUSTER_DOORS_CAPABILITY,
-                    })),
+                RpcError::invalid_argument(
+                    "This Server declares only the Public and Tunnel Doors.",
+                )
+                .with_details(serde_json::json!({
+                    "capability": ployz_core::SET_CLUSTER_DOORS_CAPABILITY,
+                })),
             );
         }
         let replicated = match self.ready_replicated() {
@@ -1457,13 +1459,14 @@ fn local_failure(error: LocalMachineError) -> Result<RpcError, Status> {
         | LocalMachineError::CredentialHeld { .. } => {
             Ok(RpcError::caused(RpcErrorCode::Conflict, &error))
         }
-        LocalMachineError::JoinerCannotFollowDoors { ref joiner } => {
-            Ok(RpcError::unsupported(error.to_string()).with_details(serde_json::json!({
-                "target": joiner.to_string(),
-                "capability": ployz_core::SET_CLUSTER_DOORS_CAPABILITY,
-                "next": "upgrade ployz where the join runs, then rerun it",
-            })))
-        }
+        LocalMachineError::JoinerCannotFollowDoors { ref joiner } => Ok(RpcError::unsupported(
+            error.to_string(),
+        )
+        .with_details(serde_json::json!({
+            "target": joiner.to_string(),
+            "capability": ployz_core::SET_CLUSTER_DOORS_CAPABILITY,
+            "next": "upgrade ployz where the join runs, then rerun it",
+        }))),
         LocalMachineError::DeclaredDoorsUnread(_) => {
             Ok(RpcError::caused(RpcErrorCode::Unavailable, &error))
         }

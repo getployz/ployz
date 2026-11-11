@@ -22,20 +22,20 @@ use std::{
 };
 
 use ployz_core::{
-    CapabilityAdvertisement, ContainerDetails, ContainerId, ContainerKind, ContainerList,
-    ContainerLocator, ContainerNow, ContainerObservation, ContainerObservationParts,
+    CapabilityAdvertisement, ClusterDoorsDeclared, ContainerDetails, ContainerId, ContainerKind,
+    ContainerList, ContainerLocator, ContainerNow, ContainerObservation, ContainerObservationParts,
     ContainerRefusal, ContainerRefusalReason, ContainerRuntimeObservation, ContainerWant,
     ContractDescription, CopyRole, CopyRotation, DockerVolume, DockerVolumeId, DockerVolumeName,
-    DockerVolumeStorageObservation, DoorChange, DoorOutcome, EnsuredContainer, HealthObservation,
-    HistoryContainer, HistoryContainerKind, HistoryRow, HistoryStream, IngressDoorsSet,
-    LiveLogTarget, LocalMachinePhase, LogBody, LogDirection, LogEntry, LogHistoryRequest,
-    LogMetadata, LogOrigin, MANAGED_LABEL, Machine, MachineDetails, MachineId, MachineList,
-    MachineName, MachineObservation, MachinePath, MachineRelease, MachineRpc, MachineRpcServer,
-    MachineRuntime, MachineUpgradeAttempt, MachineUpgradeOutcome, MachineVersion,
-    MembershipObservation, NAMESPACE_LABEL, Namespace, OpaquePayload, PROTOCOL_MAJOR,
-    PrivateAccessSet, ProvisionedCopy, ProvisionedVolumeMaximumBytes, QualifiedService,
-    RUNTIME_WATCH_MESSAGE_SIZE_LIMIT, ResolvedServiceSpec, RotationEdge, RoutedAddresses,
-    RoutesRead, RoutingRequest, RpcError, RpcRequestBody, RpcResponse, RunTarget,
+    DockerVolumeStorageObservation, DoorChange, DoorOutcome, EnrollmentSnapshot, EnsuredContainer,
+    HealthObservation, HistoryContainer, HistoryContainerKind, HistoryRow, HistoryStream,
+    IngressDoors, IngressDoorsSet, LiveLogTarget, LocalMachinePhase, LogBody, LogDirection,
+    LogEntry, LogHistoryRequest, LogMetadata, LogOrigin, MANAGED_LABEL, Machine, MachineDetails,
+    MachineId, MachineList, MachineName, MachineObservation, MachinePath, MachineRelease,
+    MachineRpc, MachineRpcServer, MachineRuntime, MachineUpgradeAttempt, MachineUpgradeOutcome,
+    MachineVersion, MembershipObservation, NAMESPACE_LABEL, Namespace, OpaquePayload,
+    PROTOCOL_MAJOR, PrivateAccessSet, ProvisionedCopy, ProvisionedVolumeMaximumBytes,
+    QualifiedService, RUNTIME_WATCH_MESSAGE_SIZE_LIMIT, ResolvedServiceSpec, RotationEdge,
+    RoutedAddresses, RoutesRead, RoutingRequest, RpcError, RpcRequestBody, RpcResponse, RunTarget,
     RuntimeWatchFrame, ServiceId, ServiceName, SetPrivateAccessRequest, SlotId, SlotRole,
     StorageBacking, StorageCapacity, VolumeCopy, VolumeCopyView, VolumeInventory,
     WireGuardPublicKey, WriterEpoch, encode_runtime_watch_frame,
@@ -247,6 +247,14 @@ impl FakeFleet {
         self.shared.lock()?.machine_mut(name)?.online = false;
         self.shared.close(name);
         Ok(())
+    }
+
+    /// The Doors the fleet's Cluster declares, once a SetClusterDoors wrote them.
+    ///
+    /// # Errors
+    /// Returns an error when the state lock is poisoned.
+    pub fn declared_doors(&self) -> Result<Option<IngressDoors>, FakeFleetError> {
+        Ok(self.shared.lock()?.declared_doors.clone())
     }
 
     /// Every request recorded so far, in order.
@@ -549,6 +557,8 @@ struct Fleet {
     calls: BTreeMap<(MachineId, &'static str), u32>,
     ledger: Vec<LedgerEntry>,
     sink: Option<File>,
+    /// The Doors a SetClusterDoors declared; shared by every Machine, as the replicated key is.
+    declared_doors: Option<IngressDoors>,
 }
 
 impl Fleet {
@@ -568,6 +578,7 @@ impl Fleet {
             calls: BTreeMap::new(),
             ledger: Vec::new(),
             sink,
+            declared_doors: None,
         };
         for place in scenario.drop_volumes {
             let name = physical(&place);
@@ -775,13 +786,34 @@ impl Fleet {
                     .into(),
                 )
             }
-            RpcRequestBody::ListMachines(_) => unary(
-                MachineList {
-                    enrollment: None,
-                    machines: self.observations(),
-                }
-                .into(),
-            ),
+            RpcRequestBody::ListMachines(_) => {
+                let machines = self.observations();
+                let enrollment = self.declared_doors.clone().map(|doors| EnrollmentSnapshot {
+                    network: "10.210.0.0/16".parse().expect("a network"),
+                    machines: machines
+                        .iter()
+                        .map(|observation| observation.machine.clone())
+                        .collect(),
+                    target_versions: BTreeMap::new(),
+                    doors: Some(doors),
+                });
+                unary(
+                    MachineList {
+                        enrollment,
+                        machines,
+                    }
+                    .into(),
+                )
+            }
+            RpcRequestBody::SetClusterDoors(request) => {
+                self.declared_doors = Some(request.doors.clone());
+                unary(
+                    ClusterDoorsDeclared {
+                        doors: request.doors,
+                    }
+                    .into(),
+                )
+            }
             RpcRequestBody::ListContainers(_) => {
                 let machine = self.by_id(target)?;
                 unary(
