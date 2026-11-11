@@ -304,7 +304,7 @@ Outcome. Pushes by trusted GitHub accounts to branches of the repository deploy 
 - [x] Edit `core/crates/ployz-store/src/deployment/mod.rs` (`namespace`, `:1539`) so a PR Environment under a preview rule gets the derived Namespace, and no other Environment ever gets the reserved pattern. Edit the preview lowering to emit derived hostnames.
 - [x] Edit `core/crates/ployz-store/src/build.rs`, `core/crates/ployz/src/sdk/github_build.rs`, `sdk/store_runner.rs`, `cluster.rs` and `handlers/build/rule.rs` so a preview's GitHub build follows its push's run, checks in and asks its grant under the preview rule, and the runner attaches a `PreviewProof` to each `EnsureContainer`. A preview build's Actions cache scope also names the rule, so no preview build writes layers a production build reads.
 - [ ] Edit `core/crates/ployz-store/src/pull_request/mod.rs` and `dashboard/src/modules/config-store/store-pull-request.server.ts` so trust comes from the preview rule. The members join stays only as the label shown before a rule exists. Partly: `pull_request` opens a preview under the rule in its derived Namespace, but Cloud still decides with the members join whether a push deploys. Every Machine checks the rule's `trusted` list, so a member the rule doesn't trust gets a refused preview, not a deployed one.
-- [x] Create the CLI `ployz github preview approve`, which prints the trusted accounts, inherited keys, preview domain, and any Bind Mount or External Volume as "shared with production". It refuses those mounts unless `--share-mounts` is given.
+- [x] Create the CLI `ployz github preview approve`, which prints the trusted accounts, inherited keys, preview domain, and any Bind Mount or External Volume as "shared with production". It refuses those mounts unless `--share-mounts` is given. D7d (below) took Cloud's members out of its default.
 - [x] Edit `docs/user/environments/preview-environments.md` and `docs/user/services/variables.md`.
 
 **Verify, unit.**
@@ -344,6 +344,21 @@ Split from D7 by the program's root on 2026-11-10 under the operator's autopilot
 - [x] Admit `Review(d)` at grant and creation on the Machine: the checks D7 wrote in `verify_review` and `PreviewRule::preview_key`, which D7 leaves unused. Today the Machine refuses every reviewed preview, naming "a reviewed preview".
 - [x] The dashboard review prompt on D5's helper, and its session path for previews that inherit nothing. The dashboard signs every review with a passkey, one prompt each. Machines still take a session-signed review of a preview that opens no secret, for the CLI or a later UI.
 - [x] D7's live lanes 7 to 9.
+
+## Trusted accounts only from the person (D7d)
+
+**Outcome.** A preview rule trusts only the GitHub accounts the person names with `--trust`. Without it, the rule trusts nobody and every pull request needs a review. The CLI reads each named account from GitHub itself and shows its login with its ID before it signs.
+
+**Attack path closed.** Before D7d, approve without `--trust` filled `trusted` from the plan's `members`, Cloud's member rows, and printed bare numeric IDs. A compromised Cloud could plant an attacker's account there. The person can't judge a number, so they signed it, and the attacker's pushes then built and deployed with the parent's inherited values and no review. A value Cloud relays may be shown or echoed, but never fills a signed field the person can't judge.
+
+- [x] Remove `members` from `PreviewRuleView`, so the plan reply carries no account at all.
+- [x] `--trust` takes a login or an ID. The CLI asks `api.github.com` for each account, never Cloud, and refuses one GitHub doesn't name. A re-approval notes the accounts the replaced rule trusted that this one drops.
+- [x] Check every other drafted rule. The dashboard drafts no preview rule. An automatic deploy rule's Cloud-relayed `repository_id` and `owner_id` are bound by the repository name the person sees, since each Server matches `workflow_ref` against it. Its Cluster key and Servers are echoed: each Server admits a rule only when it names that Server's own key and Machine ID.
+- [x] Show every setting a rule signs. Codex's review found that the summary, which the CLI and the dashboard's passkey dialog both print, showed only variables, the pre-deploy command, host ports and `privileged`, while the template signs the whole spec. Cloud could plant a start command, entrypoint, user or capability unseen, and every push would run it with the opened secrets. `rule_draft::settings` now prints every set field by its wire name, so a field added later shows too. A preview approval also prints what its first-deploy spec adds, such as the setup command, where it said only "runs once".
+- [x] Unit. A plan made with a planted member carries no member ID (fails on the code before D7d). No `--trust` asks GitHub nothing and trusts nobody. Trusted accounts show as `login (id)`. An account GitHub doesn't name is refused before signing. Each of ten fields Cloud could plant, the command among them, changes the summary.
+- [x] Live. On a `--cloud` run whose seeded member has a linked GitHub account, approve without `--trust`, and read the kept rule's `trusted`. Pass when it is empty and the output says nobody is trusted. Ran on 2026-11-11 at `44ac88fef4` with the fake GitHub, one Boat Machine, enforcement on. The member's account 9001 was in Cloud's rows. Approve printed `trusted nobody: every pull request needs a review`, and `--json` gave `"trusted": []`. `--trust octocat` read GitHub itself and printed `octocat (583231)`. Approving again without it noted the dropped account, and an unknown login was refused before signing. Both the preview rule and the automatic deploy rule printed the planted `command ["sleep infinity"]`, and so did the dashboard's passkey dialog (`d7d-rule-dialog.png`). The lane needed the fake GitHub to answer a repository's `owner.id`, which it now does.
+
+**Residual.** Cloud still maps the Environment name to its ID and Namespace, so it could mislabel which parent a rule's previews inherit from.
 
 ## Appendix A. Contract gaps
 
