@@ -34,7 +34,7 @@ function NeedsProductionView({ scope }: { scope: AnalyticsScope }) {
           See Production
         </Button>
       }>
-      Ployz keeps counting visits. Add Production to see them.
+      Add Production to see visits. Environments with analytics on keep counting meanwhile.
     </Gate>
   );
 }
