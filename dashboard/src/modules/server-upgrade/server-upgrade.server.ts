@@ -12,7 +12,7 @@ import { enqueueEvent } from "#/modules/operations/outbox.server";
 import { serverStatus, sortServers } from "#/modules/machines/server-status";
 import { requireAccess } from "#/modules/organization/access.server";
 import { OrganizationRuntime, RUNTIME_FRAME_TIMEOUT_MS } from "#/modules/runtime/organization-runtime.server";
-import { machineUpgradeAttemptId, rpcErrorCode } from "#/modules/runtime/ployz.server";
+import { machineUpgradeAttemptId, rpcErrorCode, rpcErrorMessage } from "#/modules/runtime/ployz.server";
 import {
   approvedChannel,
   type ChannelApproval,
@@ -131,12 +131,19 @@ export const organizationServerUpgradeSettings = Effect.fn("ServerUpgrade.settin
   return serverUpgradeSettings(rows);
 });
 
-/** The Release Channel a person last approved, which every upgrade request carries; null before the first. */
-const organizationChannelApproval = Effect.fn("ServerUpgrade.channelApproval")(function* (organizationId: string) {
+/**
+ * The approval an upgrade along `channel` carries: the one a person last approved, when it names `channel`. A channel
+ * changed without one (from an older CLI, or an agent) sends none, so a Server that enforces says to approve it.
+ */
+const organizationChannelApproval = Effect.fn("ServerUpgrade.channelApproval")(function* (
+  organizationId: string,
+  channel: ReleaseChannel,
+) {
   const { drizzle } = yield* Database;
   const [row] = yield* drizzle.select({ approval: organizationServerUpgrades.channelApproval }).from(organizationServerUpgrades)
     .where(eq(organizationServerUpgrades.organizationId, organizationId));
-  return row?.approval ?? null;
+  const approval = row?.approval ?? null;
+  return approvedChannel(approval)?.channel === channel ? approval : null;
 });
 
 /** Each Server's latest Upgrade attempt in the Organization, keyed by Machine ID. */
@@ -306,7 +313,8 @@ const noteAttempt = Effect.fn("ServerUpgrade.note")(function* (organizationId: s
 
 /**
  * Ask the Server to Upgrade along `channel`, never to an exact version. Busy (a build or another installation just
- * started) drops the row: a refused request is no attempt.
+ * started) drops the row: a refused request is no attempt. A Server that refuses the request itself, as one enforcing
+ * device approval does with no approved Release Channel, answers `refused` with its reason, which ends the attempt.
  */
 export const requestUpgradeOnServer = Effect.fn("ServerUpgrade.requestOnServer")(function* (input: {
   readonly organizationId: string;
@@ -314,13 +322,16 @@ export const requestUpgradeOnServer = Effect.fn("ServerUpgrade.requestOnServer")
   readonly attemptId: MachineUpgradeAttemptId;
   readonly channel: ReleaseChannel;
 }) {
-  const approval = yield* organizationChannelApproval(input.organizationId);
+  const approval = yield* organizationChannelApproval(input.organizationId, input.channel);
   const session = yield* openSession(input.organizationId);
   const attempt = yield* session.requestMachineUpgrade(input.machineId, input.attemptId, input.channel, approval).pipe(
     Effect.map((attempt) => ({ busy: false as const, attempt })),
     Effect.catchIf((error) => rpcErrorCode(error) === "conflict", () => Effect.succeed({ busy: true as const })),
+    Effect.catchIf((error) => rpcErrorCode(error) === "permission_denied", (error) =>
+      Effect.succeed({ busy: false as const, refused: rpcErrorMessage(error) ?? "The Server refused the upgrade." })),
     Effect.mapError((cause) => new ServerUpgradeUnreachable({ operation: "request machine upgrade", cause })),
   );
+  if ("refused" in attempt) return { refused: attempt.refused };
   if (attempt.busy) {
     yield* dropUpgradeAttempt(input.organizationId, input.attemptId);
     return null;
@@ -341,7 +352,7 @@ type AttemptOnServer = {
  * restarts mid-Upgrade).
  */
 const resendUpgradeOnServer = Effect.fn("ServerUpgrade.resendOnServer")(function* (input: AttemptOnServer) {
-  const approval = yield* organizationChannelApproval(input.organizationId);
+  const approval = yield* organizationChannelApproval(input.organizationId, input.channel);
   const session = yield* openSession(input.organizationId);
   const attempt = yield* session.requestMachineUpgrade(input.machineId, input.attemptId, input.channel, approval);
   yield* noteAttempt(input.organizationId, attempt);

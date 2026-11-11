@@ -64,8 +64,11 @@ const running = (stage: string): Partial<Attempt> => ({ outcome: "running", stag
 describe("roll-out-server-upgrade", () => {
   let harness: PostgresTestHarness;
   let frame: RuntimeWatchView;
-  /** What the fake Server answers the request with; `busy` refuses it as Busy, `unreachable` never answers. */
-  let requestAnswer: Partial<Attempt> | "busy" | "unreachable";
+  /**
+   * What the fake Server answers the request with; `busy` refuses it as Busy, `refused` as a Server enforcing device
+   * approval refuses an unapproved channel, and `unreachable` never answers.
+   */
+  let requestAnswer: Partial<Attempt> | "busy" | "refused" | "unreachable";
   /** What each resend answers, in order; the last repeats. `unreadable` fails like a restarting daemon. */
   let pollAnswers: Array<Partial<Attempt> | "unreadable">;
   /** Per-Server answers, over the two above. */
@@ -130,6 +133,12 @@ describe("roll-out-server-upgrade", () => {
             const answer = requestAnswerFor[machine] ?? requestAnswer;
             if (answer === "unreachable") {
               return Effect.fail(new PloyzProviderError({ operation: "request machine upgrade", cause: { code: "unavailable" } }));
+            }
+            if (answer === "refused") {
+              return Effect.fail(new PloyzProviderError({
+                operation: "request machine upgrade",
+                cause: { code: "permission_denied", message: "ployz.machine.upgrade.channel.v1: approve a Release Channel for this Cluster first" },
+              }));
             }
             return answer === "busy"
               ? Effect.fail(new PloyzProviderError({ operation: "request machine upgrade", cause: { code: "conflict", message: "busy" } }))
@@ -969,6 +978,22 @@ describe("roll-out-server-upgrade", () => {
 
       expect(requests.map(({ release }) => release)).toEqual(["beta"]);
       expect(carried).toEqual([beta, beta, beta]);
+    });
+
+    it("sends no approval along a channel changed without one, and ends the attempt with the Server's refusal", async () => {
+      await approve(approval("beta", 1));
+      await runEffect(setServerUpgradeSettings(organizationId, { channel: "stable" }));
+      requestAnswer = "refused";
+
+      const output = await rollOut();
+
+      expect(output.error).toBeUndefined();
+      expect(requests.map(({ release }) => release)).toEqual(["stable"]);
+      expect(carried).toEqual([null]);
+      expect(await rows()).toMatchObject([{
+        outcome: "failed",
+        error: "ployz.machine.upgrade.channel.v1: approve a Release Channel for this Cluster first",
+      }]);
     });
 
     it("sends no approval while none is kept", async () => {

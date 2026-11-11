@@ -59,16 +59,32 @@ pub fn verify(
     Ok(body)
 }
 
-/// Refuse `generation` when it is below `newest`, the highest this Machine has accepted:
-/// a person approved another channel since. An equal generation passes, so a resend of the
-/// same request is admitted.
+/// The newest channel approval a Machine accepted for a Cluster: its generation and the
+/// channel it named.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct Accepted {
+    pub generation: u64,
+    pub channel: ReleaseChannel,
+}
+
+/// Refuse `statement` when its generation is below `newest`, the approval this Machine
+/// accepted last: a person approved another channel since. An equal generation passes only
+/// for the same channel, so a resend of the same request is admitted and two approvals
+/// that share a generation cannot both stand.
 ///
 /// # Errors
 /// Returns [`AuthorityRefusal::Mismatch`] naming a generation.
-pub fn admit_generation(generation: u64, newest: Option<u64>) -> Result<(), AuthorityRefusal> {
+pub fn admit_generation(
+    statement: &UpgradeChannel,
+    newest: Option<Accepted>,
+) -> Result<(), AuthorityRefusal> {
     first_mismatch([(
         "a generation",
-        newest.is_none_or(|newest| generation >= newest),
+        newest.is_none_or(|newest| {
+            statement.generation > newest.generation
+                || (statement.generation == newest.generation
+                    && statement.channel == newest.channel)
+        }),
     )])
 }
 
@@ -233,15 +249,26 @@ mod tests {
     }
 
     #[test]
-    fn a_lower_generation_is_refused_and_an_equal_one_passes() {
-        assert!(admit_generation(2, None).is_ok());
-        assert!(admit_generation(2, Some(2)).is_ok());
-        assert!(admit_generation(3, Some(2)).is_ok());
-        assert_eq!(
-            admit_generation(1, Some(2)).unwrap_err(),
-            AuthorityRefusal::Mismatch {
-                field: "a generation"
-            }
-        );
+    fn a_lower_generation_or_an_equal_one_for_another_channel_is_refused() {
+        let at = |generation, channel| UpgradeChannel {
+            generation,
+            channel,
+            ..statement()
+        };
+        let stable_2 = Some(Accepted {
+            generation: 2,
+            channel: ReleaseChannel::Stable,
+        });
+        assert!(admit_generation(&at(2, ReleaseChannel::Stable), None).is_ok());
+        assert!(admit_generation(&at(2, ReleaseChannel::Stable), stable_2).is_ok());
+        assert!(admit_generation(&at(3, ReleaseChannel::Beta), stable_2).is_ok());
+        for refused in [at(1, ReleaseChannel::Stable), at(2, ReleaseChannel::Beta)] {
+            assert_eq!(
+                admit_generation(&refused, stable_2).unwrap_err(),
+                AuthorityRefusal::Mismatch {
+                    field: "a generation"
+                }
+            );
+        }
     }
 }

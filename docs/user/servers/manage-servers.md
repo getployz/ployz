@@ -401,6 +401,11 @@ counts up, and a server refuses one older than the newest it has seen. A server 
 upgrade with no approval with
 `ployz.machine.upgrade.channel.v1: approve a Release Channel for this Cluster first`, and one
 off the approved channel with `ployz.machine.upgrade.channel.v1: 0.4.1-beta.1 isn't on the approved stable Release Channel`.
+An upgrade that fails this way reads **Upgrade failed**, with that message under **Show details**.
+If the channel changes without an approval, from an agent or an older CLI, upgrades fail the same
+way until you approve the new channel. So do upgrades after you remove the device that approved the
+channel, or replace the cluster's Sealing Key. `ployz server upgrade-policy set --channel` stops
+without changing anything when it can't reach your servers to check whether they enforce.
 Over `--connect ssh://` you can still upgrade to any release.
 A server before this release ignores the approval and upgrades as before.
 

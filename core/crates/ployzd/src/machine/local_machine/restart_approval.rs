@@ -261,10 +261,10 @@ struct Consumption {
     /// The hook each rule's Service last ran here, one per push.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     rule_hooks: BTreeMap<String, RuleHook>,
-    /// The highest generation of the Release Channel approval this Machine has accepted,
-    /// per Cluster Sealing key.
+    /// The newest Release Channel approval this Machine has accepted, per Cluster Sealing
+    /// key.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
-    upgrade_channels: BTreeMap<SealingPublicKey, u64>,
+    upgrade_channels: BTreeMap<SealingPublicKey, upgrade::Accepted>,
     /// Volume operations, grants and withdrawals, none ever pruned.
     #[serde(default, skip_serializing_if = "VolumeRecords::is_empty")]
     volumes: VolumeRecords,
@@ -816,21 +816,23 @@ impl ConsumptionLog {
     /// is admitted again.
     ///
     /// # Errors
-    /// Returns [`Error::UpgradeChannelRefused`] for a generation below the mark, and
+    /// Returns [`Error::UpgradeChannelRefused`] for a generation below the mark, or equal to
+    /// it for another channel, and
     /// [`Error::ApprovalRecord`] when the record cannot be read or written.
     pub(crate) fn mark_upgrade_channel(&self, channel: &UpgradeChannel) -> Result<(), Error> {
         let mut guard = self.loaded()?;
         let consumption = guard.as_ref().expect("loaded above");
         let newest = consumption.upgrade_channels.get(&channel.cluster).copied();
-        upgrade::admit_generation(channel.generation, newest)
-            .map_err(Error::UpgradeChannelRefused)?;
-        if newest == Some(channel.generation) {
+        upgrade::admit_generation(channel, newest).map_err(Error::UpgradeChannelRefused)?;
+        let accepted = upgrade::Accepted {
+            generation: channel.generation,
+            channel: channel.channel,
+        };
+        if newest == Some(accepted) {
             return Ok(());
         }
         let mut updated = consumption.clone();
-        updated
-            .upgrade_channels
-            .insert(channel.cluster, channel.generation);
+        updated.upgrade_channels.insert(channel.cluster, accepted);
         self.write(&mut guard, updated)
     }
 

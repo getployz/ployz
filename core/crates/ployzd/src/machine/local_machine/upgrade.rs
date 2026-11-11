@@ -185,10 +185,21 @@ mod tests {
     }
 
     fn approved(dir: &std::path::Path, generation: u64) -> Signed<UpgradeChannel> {
-        let cluster = SealingKey::load(dir).unwrap().unwrap().public_key();
+        approved_for(
+            SealingKey::load(dir).unwrap().unwrap().public_key(),
+            ReleaseChannel::Stable,
+            generation,
+        )
+    }
+
+    fn approved_for(
+        cluster: ployz_core::SealingPublicKey,
+        channel: ReleaseChannel,
+        generation: u64,
+    ) -> Signed<UpgradeChannel> {
         let statement = UpgradeChannel {
             cluster,
-            channel: ReleaseChannel::Stable,
+            channel,
             generation,
             signer: SignerKey::Device(DeviceKey::from(device().public())),
         };
@@ -261,6 +272,58 @@ mod tests {
             &reloaded,
             &request(Some(approved(dir.path(), 1)))
         )));
+    }
+
+    #[tokio::test]
+    async fn an_equal_generation_naming_another_channel_is_refused() {
+        let dir = tempfile::tempdir().unwrap();
+        let local = founder(dir.path(), true).await;
+        let cluster = SealingKey::load(dir.path()).unwrap().unwrap().public_key();
+        choose(&local, &request(Some(approved(dir.path(), 2)))).unwrap();
+        let refused = choose(
+            &local,
+            &request(Some(approved_for(cluster, ReleaseChannel::Beta, 2))),
+        )
+        .unwrap_err();
+        assert!(
+            matches!(
+                refused,
+                Error::UpgradeChannelRefused(AuthorityRefusal::Mismatch {
+                    field: "a generation"
+                })
+            ),
+            "{refused:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn another_clusters_approval_or_no_cluster_key_is_refused() {
+        let dir = tempfile::tempdir().unwrap();
+        let local = founder(dir.path(), true).await;
+        let elsewhere = approved_for(
+            ployz_core::SealingPublicKey::from_bytes([8; 32]),
+            ReleaseChannel::Stable,
+            1,
+        );
+        let refused = choose(&local, &request(Some(elsewhere))).unwrap_err();
+        assert!(
+            matches!(
+                refused,
+                Error::UpgradeChannelRefused(AuthorityRefusal::Mismatch { field: "a Cluster" })
+            ),
+            "{refused:?}"
+        );
+
+        let ours = approved(dir.path(), 1);
+        std::fs::remove_file(dir.path().join("sealing.key")).unwrap();
+        let refused = choose(&local, &request(Some(ours))).unwrap_err();
+        assert!(
+            matches!(
+                refused,
+                Error::UpgradeChannelRefused(AuthorityRefusal::NoClusterIdentity)
+            ),
+            "{refused:?}"
+        );
     }
 
     #[tokio::test]

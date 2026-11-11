@@ -1372,7 +1372,7 @@ fn local_failure(error: LocalMachineError) -> Result<RpcError, Status> {
             &error,
             serde_json::json!({
                 "capability": ployz_core::UPGRADE_CHANNEL_CAPABILITY,
-                "next": "ployz server upgrade-policy set --channel stable from an approved device",
+                "next": "ployz server upgrade-policy set --channel stable or beta from an approved device",
             }),
         )),
         LocalMachineError::VolumeRefused { capability } => Err(ployz_core::rpc::hinted_status(

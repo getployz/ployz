@@ -175,7 +175,9 @@ async function upgradeServer(
     runEffect(requestUpgradeOnServer({ organizationId, machineId, attemptId, channel })));
   if (attempt === null) return { kind: "skipped", reason: "busy" };
 
-  let outcome = finalOutcome(attempt);
+  let outcome = "refused" in attempt
+    ? { outcome: "failed" as const, stage: null, error: attempt.refused }
+    : finalOutcome(attempt);
   poll: for (let poll = 0; outcome === null; poll += 1) {
     await step.sleep(`wait-${machineId}-${poll}`, POLL_INTERVAL_MS);
     const polled = await step.run(`poll-upgrade-${machineId}-${poll}`, () =>

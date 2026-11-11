@@ -6,7 +6,7 @@
 //! one, so it cannot move the Cluster onto another channel.
 
 use clap::{ArgMatches, Command, value_parser};
-use ployz_core::authority::{Signed, SignerKey, UpgradeChannel};
+use ployz_core::authority::{Signed, SignerKey, Timestamp, UpgradeChannel};
 use ployz_core::{ReleaseChannel, RpcErrorCode};
 use reqwest::Method;
 use serde::Deserialize;
@@ -144,11 +144,11 @@ fn approve(
         Probe::Enforcing(enforcing) => enforcing,
         Probe::Off => return Ok(None),
         Probe::NoClusterKey | Probe::Unknown => {
-            crate::ui::warn(
-                "Couldn't reach your servers, so the channel isn't approved. If they enforce \
-                 device approval, run this again once they're reachable.",
-            );
-            return Ok(None);
+            return Err(Error::coded(
+                RpcErrorCode::Unavailable,
+                "Couldn't tell whether your servers enforce device approval, so the channel \
+                 is unchanged. Run this again once they're reachable.",
+            ));
         }
     };
     let signer = github_rule::signer(root).map_err(|_| {
@@ -164,9 +164,12 @@ fn approve(
         "upgrade-channel",
         None,
     ))?;
+    // Past both the kept approval and the clock, so a Cloud that reports a low generation
+    // can't make every Server refuse this one as stale.
     let generation = kept
         .approved
-        .map_or(1, |approved| approved.generation.saturating_add(1));
+        .map_or(1, |approved| approved.generation.saturating_add(1))
+        .max(Timestamp::now().as_millis());
     let statement = UpgradeChannel {
         cluster: enforcing.cluster,
         channel,
