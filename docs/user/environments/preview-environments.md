@@ -78,10 +78,10 @@ Servers with [device enforcement](../servers/manage-servers.md#require-a-devices
 on open a preview only under a preview rule you approve from an approved device. It works like
 [deploy on push](../deploy/github.md#deploy-on-push-to-servers-that-enforce-device-approval):
 approve it once from the environment previews start from, for the services that build from your
-repository:
+repository, naming the GitHub accounts whose pull requests deploy without a review:
 
 ```bash
-ployz github preview approve web --env production
+ployz github preview approve web --env production --trust alice --trust bob
 ```
 
 It prints what every preview will run, then signs it with your device key:
@@ -91,7 +91,7 @@ Approving previews of production:
   repository  acme/web
   builder     getployz/build/.github/workflows/build.yml@5f35eaa8e1372d0d86ff82788adadf308e5f3f97
   urls        <service>-pv-<id>.acme-x7q2.ployz.app
-  trusted     1109914, 2207431
+  trusted     alice (1109914), bob (2207431)
   servers     2 in the cluster
   web
     reads     DATABASE_URL from production
@@ -107,9 +107,12 @@ preview with no prompt. Each server checks the rule, GitHub's tokens, the branch
 settings itself, so Ployz Cloud can't put a preview's code into production or hand it a
 production secret the rule doesn't name.
 
-- **Trusted accounts** are your organization's members' GitHub accounts when you approve. To name
-  them yourself, give each account's numeric GitHub ID: `--trust 1109914 --trust 2207431`.
-  Approve again when someone joins or leaves.
+- **Trusted accounts** are only the ones you name with `--trust`, by GitHub login or numeric ID.
+  Ployz reads each one from GitHub and shows its login and ID, so check the list before you rely
+  on it. Without `--trust` the rule trusts nobody, and every pull request waits for a
+  [review](#review-a-preview-from-a-fork). Joining your Ployz organization doesn't add anyone:
+  approve again with the new list when someone joins or leaves, and name every account you
+  still trust, because each approval replaces the last one's list.
 - **Each preview gets its own namespace and address**, which every server works out from the rule
   and the branch, like `pv-5a5a5a5a5a5a5a5a-3f9c2e1b7d40`. A preview's generated address is
   `web-pv-5a5a5a5a5a5a5a5a-3f9c2e1b7d40.acme-x7q2.ployz.app`, not `web-pr-142…`. Pull requests
@@ -151,7 +154,8 @@ jobs:
 A pull request from a fork, or from an account the rule doesn't trust, opens its preview but deploys
 nothing until you review its commit. In the PR panel its row reads **Needs approval** with the
 commit. A member's pull request that the rule doesn't trust shows no badge, but your servers still
-refuse its pushes, so its row offers the same review. Read the pull request's changes on GitHub,
+refuse its pushes, so its row offers the same review. That includes every pull request when you
+approved the rule without `--trust`. Read the pull request's changes on GitHub,
 then click **Review and approve**. The dialog
 lists each service the review covers and what it asks for, like:
 

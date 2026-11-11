@@ -212,7 +212,9 @@ pub(super) fn builder(matches: &ArgMatches) -> Result<Builder, Error> {
     }
 }
 
-/// The Cluster's key and Servers, from the Servers themselves: Cloud can't name them.
+/// The Cluster's key and Servers, as the Servers report them, through Cloud's relay when
+/// signed in. A key or Server Cloud gets wrong can't widen the rule: each Server admits
+/// it only when it names that Server's own Cluster key and Machine ID.
 pub(super) fn enforcing(root: &ArgMatches) -> Result<approve::Enforcing, Error> {
     match approve::probe(root) {
         approve::Probe::Enforcing(enforcing) => Ok(enforcing),
