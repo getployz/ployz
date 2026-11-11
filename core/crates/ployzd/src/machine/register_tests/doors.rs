@@ -24,8 +24,14 @@ async fn a_closed_cluster_refuses_a_joiner_that_claims_nothing_and_publishes_no_
         .await
         .unwrap_err();
     assert_eq!(refused.code, RpcErrorCode::Unsupported, "{refused:?}");
-    assert_eq!(refused.details["capability"], SET_CLUSTER_DOORS_CAPABILITY);
-    assert_eq!(refused.details["target"], "old");
+    assert_eq!(
+        refused.details.get("capability"),
+        Some(&serde_json::json!(SET_CLUSTER_DOORS_CAPABILITY))
+    );
+    assert_eq!(
+        refused.details.get("target"),
+        Some(&serde_json::json!("old"))
+    );
     assert_eq!(replicated.machines().await.unwrap().observations.len(), 1);
 
     let admitted = rpc_register(&service, claiming("new")).await.unwrap();
