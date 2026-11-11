@@ -173,7 +173,7 @@ pub(crate) fn landings(
     who: &Actor,
     from: &Environment,
 ) -> Result<(PullRequestRef, Vec<Landing>), RpcError> {
-    let Some(pull_request) = of(tx, &from.summary.id)? else {
+    let Some(pull_request) = crate::pr_environment::of(tx, &from.summary.id)? else {
         return Err(error::invalid(
             format!("{} isn't a PR Environment", from.summary.name),
             json!({}),
@@ -593,7 +593,7 @@ pub(crate) fn holds_open(
     who: &Actor,
     id: &EnvironmentId,
 ) -> Result<bool, RpcError> {
-    let Some(pull_request) = of(tx, id)? else {
+    let Some(pull_request) = crate::pr_environment::of(tx, id)? else {
         return Ok(false);
     };
     let Some(facts) = facts(tx, who, pull_request.repository_id, pull_request.number)? else {
