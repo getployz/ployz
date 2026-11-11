@@ -641,10 +641,10 @@ async function releaseVolume(steps: RunSteps, phase: PhaseOf<"release">, epoch: 
       epoch,
       start: { kind: "kept", container_id: source.containerId },
     }, `${A.name} is still starting ${run.volumeName}'s Service`, approval);
-    // When every copy signs and checks handoffs, A decides first: it resumes, or refuses with the receipt it signed and
-    // the Move goes forward. No late start reaches B meanwhile, since B becomes the writer only on that receipt. A
+    // A source that signs handoffs decides first, whatever B runs: it resumes, or refuses with the receipt it signed and
+    // the Move goes forward. The floors above keep a late start of the run this ends from reaching B meanwhile. A
     // release with no approval asks too, so it fails at A before it forgets the copy a handoff left the only writer.
-    const asksFirst = from.slots.every((slot) => slot.handoff === true && slot.enforces === true);
+    const asksFirst = owner.handoff === true && owner.enforces === true;
     if (asksFirst) {
       const decided = await resumeA("04-source");
       if (!decided.ok && decided.reason === "handed_off" && decided.receipt !== undefined) throw new HandedOff(decided.receipt);

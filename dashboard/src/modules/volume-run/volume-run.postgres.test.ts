@@ -2341,6 +2341,22 @@ describe("volume runs", () => {
       expect(named("fsn-2").copy).toMatchObject({ newest: G });
     });
 
+    it("a release asks a source that signs handoffs first even when B predates them, and finishes on B when A handed off", async () => {
+      const G = newSnap("f-1");
+      const receipt = receiptFor(B, G.guid, 4);
+      machines[0] = { name: "fsn-1", pool: true, copy: slotCopy(G), capabilities: HANDOFF_CAPABILITIES, enforces: true, handedOff: { at: G.guid, receipt } };
+      for (const container of containers) container.running = false;
+      machines[1] = { name: "fsn-2", pool: true, copy: slotCopy(G, null, "2") };
+      await owned("warm");
+      await runEffect(closeVolumeRun("run-1", "failure"));
+
+      const output = await execute((await releaseRow()).id, "run-2");
+
+      expect(output.result).toMatchObject({ moved: "fsn-2" });
+      expect(verbs.slice(0, 4)).toEqual(["floor@fsn-1", "floor@fsn-2", "writer@fsn-1(kept)", "writer@fsn-2(create)"]);
+      expect(verbs).not.toContain("forget@fsn-2");
+    });
+
     describe("a committed Move whose release failed", () => {
       const A = idOf("fsn-1");
       const volume = { environmentId: "env-1", volumeName: "data", dockerVolume, refquotaBytes: 5_000_000, recordedBytes: 0 };
