@@ -71,6 +71,12 @@ pub struct RuleGrant {
     /// The commit the builder checked out.
     pub commit: crate::authority::CommitSha,
     pub authority: crate::authority::CommitAuthority,
+    /// The person's approval `authority` names, for a build of a commit that is not the
+    /// branch head. Sent only to a daemon advertising
+    /// [`crate::COMMIT_APPROVAL_CAPABILITY`]; an older one refuses the grant.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(type = "unknown", optional)]
+    pub approval: Option<crate::authority::Signed<crate::authority::CommitApproval>>,
     /// The key the build secrets are sealed to.
     pub recipient: crate::authority::RecipientKey,
     /// A token that may read the repository's branch head, such as an installation

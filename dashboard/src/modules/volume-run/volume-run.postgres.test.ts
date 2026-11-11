@@ -560,6 +560,7 @@ describe("volume runs", () => {
       Effect.provideService(CloudStore, {
         open: Effect.succeed(asTestDouble<ConfigStore>()({
           githubCancel: async () => [],
+          awaitingApproval: async () => false,
           abandonDeployment: async (id: string) => ({ id, status: "failed" }),
           system: async (_: string, event: SystemEvent) => {
             const refusal = storeRefuse?.(event) ?? null;

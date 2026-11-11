@@ -296,7 +296,10 @@ fn show(environment: &str, summary: &RuleSummary) {
         "  repository  {} on {}",
         summary.repository, summary.branch
     ));
-    crate::ui::stream(format_args!("  workflow    {}, on push", summary.workflow));
+    crate::ui::stream(format_args!(
+        "  workflow    {}, on push and on rebuilds you approve",
+        summary.workflow
+    ));
     crate::ui::stream(format_args!("  builder     {}", summary.builder));
     crate::ui::stream(format_args!(
         "  servers     {} in the cluster",

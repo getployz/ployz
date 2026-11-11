@@ -13,9 +13,9 @@
 use ployz_core::{
     BuildGrantId, GithubToken, ServiceName, X25519Secret,
     authority::{
-        AttestKey, AutoDeployRule, BuildClaim, BuildPolicy, BuildStage, CommitAuthority, CommitSha,
-        ImageDigest, PolicyDigest, PreviewRule, RecipientKey, Review, RuleId, Signed,
-        rule::PolicyCache,
+        ApprovalDigest, AttestKey, AutoDeployRule, BuildClaim, BuildPolicy, BuildStage,
+        CommitApproval, CommitAuthority, CommitSha, ImageDigest, PolicyDigest, PreviewRule,
+        RecipientKey, Review, RuleId, Signed, rule::PolicyCache,
     },
 };
 use serde::{Deserialize, Serialize};
@@ -44,18 +44,26 @@ pub(super) struct CheckedIn {
     /// A person's review of the commit, for a reviewed preview's build.
     #[serde(default)]
     pub(super) review: Option<Review>,
+    /// A person's approval of the commit, for a build of one that isn't the rule
+    /// branch's head.
+    #[serde(default)]
+    pub(super) approval: Option<Signed<CommitApproval>>,
 }
 
-/// The authority this build claims for `commit`: the review Cloud relayed, or the head.
-/// A lie fails on the Machine, which checks either for itself.
+/// The authority this build claims for `commit`: the review or approval Cloud relayed,
+/// or the head. A lie fails on the Machine, which checks each for itself.
 ///
 /// # Errors
-/// Refuses a review under an automatic deploy rule, an unreadable one, and one that
-/// names another commit or leaves out the Service, before any token is asked for.
+/// Refuses a review under an automatic deploy rule, an approval under a preview rule,
+/// both at once, an unreadable one, and one that names another commit or leaves out the
+/// Service, before any token is asked for.
 pub(super) fn authority(
     checked_in: &CheckedIn,
     commit: CommitSha,
 ) -> Result<CommitAuthority, Error> {
+    if let Some(approval) = &checked_in.approval {
+        return approved(checked_in, approval, commit);
+    }
     let Some(review) = &checked_in.review else {
         return Ok(CommitAuthority::Head);
     };
@@ -80,6 +88,29 @@ pub(super) fn authority(
         .into());
     }
     Ok(CommitAuthority::Review(review.digest()))
+}
+
+fn approved(
+    checked_in: &CheckedIn,
+    approval: &Signed<CommitApproval>,
+    commit: CommitSha,
+) -> Result<CommitAuthority, Error> {
+    if checked_in.review.is_some() || !matches!(checked_in.rule, Relayed::Rule(_)) {
+        return Err(BuildCommandError::Rule(
+            "Cloud relayed an approval for a build no automatic deploy rule covers",
+        )
+        .into());
+    }
+    let body = approval
+        .open()
+        .map_err(|_| BuildCommandError::Rule("Cloud relayed no readable approval"))?;
+    if body.commit != commit || body.service != checked_in.service {
+        return Err(BuildCommandError::Rule(
+            "the approval Cloud relayed names another commit or Service; refusing to build",
+        )
+        .into());
+    }
+    Ok(CommitAuthority::Approved(ApprovalDigest::of(approval)))
 }
 
 /// The rule Cloud relays: `rule` for a push to the approved branch, `preview` for a

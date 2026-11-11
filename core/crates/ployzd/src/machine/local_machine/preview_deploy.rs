@@ -154,6 +154,7 @@ impl LocalMachine {
                 self.approvals.consume_rule_hook(
                     (rule.rule, Some(&new.slot.namespace)),
                     claim,
+                    None,
                     &new.slot.creation_key,
                     refused,
                 )?;
@@ -277,7 +278,7 @@ impl LocalMachine {
             Some(key) => key,
             None => {
                 let claims = github
-                    .claims(&rule, proof.token.as_str(), now)
+                    .claims(&rule, proof.token.as_str(), now.into())
                     .await
                     .map_err(|refusal| {
                         tracing::warn!(rule = %rule.rule, %refusal, "refused a preview deploy");
@@ -299,7 +300,11 @@ impl LocalMachine {
                     .await
                     .map_err(|error| Error::PreviewDeployRefused(PreviewRefusal::Head(error)))?,
             ),
-            (CommitAuthority::Head | CommitAuthority::Review(_), _) => None,
+            // `preview_key` refuses an approved build, so it never reaches here.
+            (
+                CommitAuthority::Head | CommitAuthority::Review(_) | CommitAuthority::Approved(_),
+                _,
+            ) => None,
         };
         Ok(Admitted {
             rule,
