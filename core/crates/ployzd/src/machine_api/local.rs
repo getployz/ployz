@@ -21,7 +21,7 @@ use crate::{
     docker::{ContainerRuntime, ImageIngest},
     logs::{RpcStream, open_journal_logs, serve_logs},
     machine::{
-        LocalMachine, LocalMachineError, LocalMachineRecord, RecordOwner, RecoveryError,
+        Landing, LocalMachine, LocalMachineError, LocalMachineRecord, RecordOwner, RecoveryError,
         SealingError, StoreError,
     },
     network::{ChoiceRefused, EndpointChoice, MACHINE_API_PORT},
@@ -294,15 +294,32 @@ impl MachineService {
         }
     }
 
+    /// [`Self::volume_verb`] for a step a Volume approval admitted: once `landed` reads the
+    /// step's effect in the reply, `operation` ends here, so the approval never runs again.
+    /// A reply that fails to end it fails the call, and the resend finds it still open.
     #[allow(clippy::result_large_err)]
-    async fn switch_verb<T: serde::de::DeserializeOwned + Into<RpcResponse>>(
+    async fn landing_verb<T: serde::de::DeserializeOwned + Into<RpcResponse>>(
         &self,
-        verb: &'static str,
-        route: &str,
+        (verb, route): (&'static str, &str),
         request: &impl serde::Serialize,
+        operation: Option<ployz_core::OperationId>,
+        landed: impl FnOnce(&T) -> bool,
     ) -> Result<Response<OpaquePayload>, Status> {
-        let _guard = self.switch_mutation.lock().await;
-        self.volume_verb::<T>(verb, route, request).await
+        if let Err(error) = self.require_joined() {
+            return respond(error);
+        }
+        crate::faults::apply(verb, None).await;
+        let reply = match self.local.plugin().call::<T>(route, request).await {
+            Ok(reply) => reply,
+            Err(error) => return respond(error),
+        };
+        if let Some(operation) = operation
+            && landed(&reply)
+            && let Err(error) = self.local.end_volume_operation(operation)
+        {
+            return local_error(error);
+        }
+        respond(reply)
     }
 
     /// A Volume verb that takes no switch lock. A read may land beside a cut's drain: the
@@ -704,12 +721,29 @@ impl MachineRpc for MachineService {
         &self,
         request: Request<OpaquePayload>,
     ) -> Result<Response<OpaquePayload>, Status> {
-        if from_operator(&request)
-            && let Err(error) = self.local.admit_operator_seed()
-        {
-            return local_error(error);
-        }
+        let operator = from_operator(&request);
         let request = expect::<op::SeedVolume>(request)?;
+        // Admitted before the switch lock, so a refused seed asks the plugin for nothing.
+        let landing = if operator {
+            match self.local.admit_operator_seed(&request) {
+                Ok(landing) => landing,
+                Err(error) => return local_error(error),
+            }
+        } else {
+            Landing::Run(None)
+        };
+        let Landing::Run(operation) = landing else {
+            let landed = ployz_core::InspectVolumeCopyRequest {
+                name: request.into.clone(),
+            };
+            return self
+                .volume_verb::<ployz_core::VolumeCopyView>(
+                    "InspectVolumeCopy",
+                    "Volume.Inspect",
+                    &landed,
+                )
+                .await;
+        };
         let _guard = self.switch_mutation.lock().await;
         // Checked under the switch lock, which a mirror pull of `into` takes too: a check
         // before it would let a Seed admitted at the old floor run after a later run
@@ -719,19 +753,43 @@ impl MachineRpc for MachineService {
         {
             return local_error(error);
         }
-        self.volume_verb::<ployz_core::VolumeCopyView>("SeedVolume", "Volume.Seed", &request)
-            .await
+        // A seed lands once `into` answers as a root.
+        self.landing_verb::<ployz_core::VolumeCopyView>(
+            ("SeedVolume", "Volume.Seed"),
+            &request,
+            operation,
+            |view| matches!(view.copy, Some(ployz_core::VolumeCopy::Root { .. })),
+        )
+        .await
     }
 
     async fn set_volume_size(
         &self,
         request: Request<OpaquePayload>,
     ) -> Result<Response<OpaquePayload>, Status> {
+        let operator = from_operator(&request);
         let request = expect::<op::SetVolumeSize>(request)?;
-        self.switch_verb::<ployz_core::SetVolumeSizeReply>(
-            "SetVolumeSize",
-            "Volume.Size.Set",
+        let landing = if operator {
+            match self.local.admit_operator_resize(&request) {
+                Ok(landing) => landing,
+                Err(error) => return local_error(error),
+            }
+        } else {
+            Landing::Run(None)
+        };
+        let Landing::Run(operation) = landing else {
+            // The recorded outcome, not a read: the operation ended only once ZFS answered
+            // this bound, and answering it again changes nothing.
+            return respond(ployz_core::SetVolumeSizeReply {
+                bound_bytes: request.maximum_bytes,
+            });
+        };
+        let _guard = self.switch_mutation.lock().await;
+        self.landing_verb::<ployz_core::SetVolumeSizeReply>(
+            ("SetVolumeSize", "Volume.Size.Set"),
             &request,
+            operation,
+            |reply| reply.bound_bytes == request.maximum_bytes,
         )
         .await
     }
