@@ -23,10 +23,17 @@ export const RUN_FEATURES = {
 type Destination = { readonly to: MachineName; readonly machine?: MachineId };
 
 /**
- * The Device-signed Mirror approval the CLI sends. The run sends it with every snapshot and pull, and the Mirror keeps
- * it for the syncs after. An enforcing Server refuses a pull without one; others ignore it.
+ * The Device-signed Volume approval the CLI sends. A Mirror run sends it with every snapshot and pull, and the Mirror
+ * keeps it for the syncs after. A Move sends it with every step, and its release with the resume or the start that
+ * ends it. An enforcing Server refuses those steps without one; others ignore it.
  */
 type Approved = { readonly approval?: Signed };
+
+/**
+ * The spec the Move's approval names for the Service's start on its target, which the CLI read off the Service's
+ * Container on the source. B starts exactly this, and refuses any other.
+ */
+type Starting = { readonly service?: ResolvedServiceSpec };
 
 /**
  * What a requested Release's plan showed: the slots it may resume from and the slots it may forget. The run refuses to
@@ -49,9 +56,12 @@ export type VolumeRunArgs = {
    * row without one was admitted before runs recorded it, and is refused rather than guessed.
    */
   delete_mirror: { readonly slot: MachineName | null; readonly confirmed_name: string | null; readonly machine?: MachineId; readonly role?: SlotRole | "any" };
-  move: Destination;
-  /** `follows` marks a Deploy's release: it is admitted only while the Volume still finishes on that Machine. */
-  release: { readonly plan?: ReleasePlan; readonly follows?: MachineId };
+  move: Destination & Approved & Starting;
+  /**
+   * `follows` marks a Deploy's release: it is admitted only while the Volume still finishes on that Machine. The
+   * release of a Move carries the Move's approval and spec.
+   */
+  release: { readonly plan?: ReleasePlan; readonly follows?: MachineId } & Approved & Starting;
   restore: { readonly from: MachineName; readonly machine?: MachineId };
   seed: {
     readonly into: { readonly volumeId: string; readonly dockerVolume: string; readonly name: string };

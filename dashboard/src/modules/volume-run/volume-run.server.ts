@@ -9,6 +9,7 @@ import type {
   ExpectedCopy,
   MachineId,
   MachineName,
+  ResolvedServiceSpec,
   Signed,
   SnapshotGuid,
   SwitchError,
@@ -44,7 +45,7 @@ import { RuntimeConnectionFailure } from "#/modules/runtime/runtime-connection-e
 import { movedRouting, type Requirement, requirementFor, requirements, serverSupports } from "#/modules/runtime/daemon-compat";
 import { observeVolumeCopies, type PloyzSdkError, RpcError, sdkFailureMessage, setVolumeCopyRefusal } from "#/modules/runtime/ployz.server";
 import {
-  alreadyOn, approvalRefusedMessage, approvesMirror, enforcedMessage, fullApprovalsMessage, newestGuid, otherApprovalMessage, type PlanInput, type Planned, planForwardRelease, planFromCopies,
+  alreadyOn, approvalRefusedMessage, approvesMirror, approvesMove, enforcedMessage, otherMoveApprovalMessage, fullApprovalsMessage, newestGuid, otherApprovalMessage, type PlanInput, type Planned, planForwardRelease, planFromCopies,
   type Refusal, type RefusalCode, type ReleaseFrom, restoreSource, roleOf, writerRemovedMessage,
 } from "#/modules/volume-run/plan";
 import { type DeploymentsSeen, deployingMessage, gb, resizeRequirements, sizeDirection } from "#/modules/volume-run/resize";
@@ -107,13 +108,20 @@ const OBSERVE_TIMEOUT = "10 seconds";
 const clip = (text: string) =>
   text.length > VOLUME_RUN_MESSAGE_LIMIT ? `${text.slice(0, VOLUME_RUN_MESSAGE_LIMIT - 1)}…` : text;
 
+/** A run's args as views show them: without the spec a Move's approval names, which only its target reads. */
+const shownArgs = (args: VolumeRunRow["args"]) => {
+  if (!("service" in args)) return args;
+  const { service: _, ...shown } = args;
+  return shown;
+};
+
 export function volumeRunView(row: VolumeRunRow): VolumeRunView {
   return {
     id: row.id,
     volume_id: row.volumeId,
     volume_name: row.volumeName,
     kind: row.kind,
-    args: row.args,
+    args: shownArgs(row.args),
     orphan: row.orphan,
     state: row.state,
     epoch: row.epoch,
@@ -666,6 +674,10 @@ export const planOnCluster = Effect.fn("VolumeRun.planOnCluster")(function* (
   const writer = phase.kind === "mirror" || phase.kind === "sync" ? phase.writer.machine.id : null;
   if (recipient !== null && writer !== null && approval !== undefined && !approvesMirror(approval, volume.dockerVolume, writer, recipient.machine.id)) {
     return { ok: false, refusal: storeRefusal({ code: "invalid", message: otherApprovalMessage(volume.volumeName, recipient.machine.name) }) } satisfies ClusterPlan;
+  }
+  if (input.kind === "move" && input.args.approval !== undefined && phase.kind === "move"
+    && !approvesMove(input.args.approval, input.args.service, volume.dockerVolume, phase.writer.machine.id, phase.target.machine.id)) {
+    return { ok: false, refusal: storeRefusal({ code: "invalid", message: otherMoveApprovalMessage(volume.volumeName, phase.target.machine.name) }) } satisfies ClusterPlan;
   }
   if (phase.kind === "landed") {
     const source = yield* answered(keptOn(organizationId, volume.dockerVolume, phase.behind.map((member) => member.machine)));
@@ -1401,7 +1413,8 @@ export const commitMove = Effect.fn("VolumeRun.commit")(function* (ctx: Pick<Run
 
 /**
  * Where B starts: `from` is the Machine whose stopped Container B copies, or null when the run does not know it, so the
- * one stopped Container on any other Machine.
+ * one stopped Container on any other Machine. `approved` is the Move's approval and the spec it names, which B starts
+ * in place of the stopped Container's.
  */
 type WriterStart = {
   readonly to: MachineRef;
@@ -1409,7 +1422,15 @@ type WriterStart = {
   readonly expect: ExpectedCopy;
   readonly at: SnapshotGuid;
   readonly epoch: number;
+  readonly approved?: MoveApproved;
 };
+
+/** A Move's approval and the spec it names for the Service's start on its target. */
+export type MoveApproved = { readonly approval: Signed; readonly service: ResolvedServiceSpec };
+
+/** The approval a Move or its release carries, with its spec, when it carries both. */
+export const moveApproved = (args: { readonly approval?: Signed; readonly service?: ResolvedServiceSpec }): MoveApproved | undefined =>
+  args.approval === undefined || args.service === undefined ? undefined : { approval: args.approval, service: args.service };
 
 /**
  * The point of no return: the commit, then B becomes the writer at G and creates the Service from A's stopped
@@ -1465,12 +1486,7 @@ export const startWriter = Effect.fn("VolumeRun.startWriter")(function* (ctx: Ru
   const { container } = yield* session.inspectContainer(holder.machine_id, holder.container_id).pipe(
     Effect.mapError((error) => new Error(`reading ${holder.resolved_spec.name}'s spec: ${sdkFailureMessage(error)}`)),
   );
-  // The spec was resolved at the Service's last Deploy; a resize since then raised the copies, and the Store recorded it.
-  const volumes = container.resolved_spec.volumes.map((volume) =>
-    volume.source.kind === "provisioned" && volume.source.name === ctx.dockerVolume && ctx.recordedBytes > 0
-      ? { ...volume, source: { ...volume.source, maximum_bytes: ctx.recordedBytes } }
-      : volume);
-  const spec = { ...container.resolved_spec, volumes };
+  const { approved } = start;
   if (ownedBy !== null) yield* requireOwner(ctx.id, ownedBy);
   return yield* askCopy(ctx, to, start.expect, {
     kind: "writer",
@@ -1479,13 +1495,26 @@ export const startWriter = Effect.fn("VolumeRun.startWriter")(function* (ctx: Ru
     start: {
       kind: "create",
       namespace: holder.namespace,
-      resolved_spec: { ...spec, container: { ...spec.container, pull_policy: "never" } },
+      resolved_spec: approved?.service ?? startingSpec(ctx, container.resolved_spec),
       creation_key: creationKey(ctx, start.at),
       gen: container.gen ?? 1,
       rotation: container.rotation === "in" ? { in: { run: null, expect: "pending" } } : "pending",
     },
-  });
+  }, approved?.approval);
 }, Effect.scoped);
+
+/**
+ * The stopped Container's spec as B starts it, from the image already copied there. The spec was resolved at the
+ * Service's last Deploy; a resize since then raised the copies, and the Store recorded it. The CLI makes the same
+ * spec for the Move it approves.
+ */
+const startingSpec = (ctx: Pick<RunContext, "dockerVolume" | "recordedBytes">, resolved: ResolvedServiceSpec): ResolvedServiceSpec => {
+  const volumes = resolved.volumes.map((volume) =>
+    volume.source.kind === "provisioned" && volume.source.name === ctx.dockerVolume && ctx.recordedBytes > 0
+      ? { ...volume, source: { ...volume.source, maximum_bytes: ctx.recordedBytes } }
+      : volume);
+  return { ...resolved, volumes, container: { ...resolved.container, pull_policy: "never" } };
+};
 
 /**
  * Removes the stopped Service containers the Move left on `machines`; a rerun finds the ones already gone gone. Returns
@@ -1513,13 +1542,22 @@ const KeptWithoutSpec = Schema.Struct({
 const keptWithoutSpec = (error: PloyzSdkError) =>
   "cause" in error && Option.isSome(Schema.decodeUnknownOption(KeptWithoutSpec)(error.cause));
 
-/** Removes one Container, or returns the sentence saying it stays when its Server holds no spec for it. */
+const RestartRefusal = Schema.Struct({ details: Schema.Struct({ capability: Schema.Literal("ployz.restart.device-approval.v2") }) });
+
+/** The remove's answer from a Server that enforces device approval: it removes a Container only with a person's approval. */
+const keptUnapproved = (error: PloyzSdkError) => Schema.is(RestartRefusal)("cause" in error ? error.cause : undefined);
+
+/**
+ * Removes one Container, or returns the sentence saying it stays: when its Server holds no spec for it, or enforces
+ * device approval, which a Move's approval does not cover.
+ */
 export const removeContainer = Effect.fn("VolumeRun.removeContainer")(function* (ctx: RunContext, inngestRunId: string, machine: MachineRef, containerId: ContainerId) {
   yield* requireOwner(ctx.id, inngestRunId);
   const session = yield* openSession(ctx.organizationId);
   return yield* session.removeContainer(machine.id, containerId).pipe(
     Effect.as(null),
     Effect.catchIf(keptWithoutSpec, () => Effect.succeed(`${containerId} stays on ${machine.name}, not removed`)),
+    Effect.catchIf(keptUnapproved, () => Effect.succeed(`${containerId} stays on ${machine.name}, which enforces device approval`)),
     Effect.mapError((error) => new Error(`removing ${ctx.volumeName}'s old Container on ${machine.name}: ${sdkFailureMessage(error, [machine])}`)),
   );
 }, Effect.scoped);
@@ -1698,6 +1736,8 @@ const endAndRelease = Effect.fn("VolumeRun.endAndRelease")(function* (owned: SQL
     const rows = yield* drizzle.update(volumeRun).set(closing).where(and(owned, eq(volumeRun.state, "running"))).returning();
     yield* requeueTakenMoves(rows);
     for (const row of rows.filter((ended) => ended.kind === "move")) {
+      const move = laneInputOf(row);
+      const approved = move.kind === "move" ? moveApproved(move.args) : undefined;
       const [release] = yield* drizzle.insert(volumeRun).values({
         organizationId: row.organizationId,
         environmentId: row.environmentId,
@@ -1707,7 +1747,7 @@ const endAndRelease = Effect.fn("VolumeRun.endAndRelease")(function* (owned: SQL
         refquotaBytes: row.refquotaBytes,
         recordedBytes: row.recordedBytes,
         kind: "release",
-        args: {},
+        args: approved ?? {},
         phase: row.phase,
         current: row.current,
         epoch: row.phase === "committed" ? row.epoch : null,

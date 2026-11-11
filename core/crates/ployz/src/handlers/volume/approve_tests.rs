@@ -1,10 +1,11 @@
 use ployz_core::{
-    MachineId, MachineName, SlotId, SlotRole, Snapshot, SnapshotGuid, VolumeCopy, WriterEpoch,
+    DockerVolumeName, MachineId, MachineName, SlotId, SlotRole, Snapshot, SnapshotGuid, VolumeCopy,
+    WriterEpoch,
 };
 use ployz_store::VolumeName;
 
 use super::super::restore::{Seen, Unseen};
-use super::{MirrorOn, parties};
+use super::{MirrorOn, keeps_mirror, parties, starting};
 
 fn volume() -> VolumeName {
     VolumeName::parse("data").unwrap()
@@ -115,4 +116,134 @@ fn approves_nothing_it_cannot_name_from_what_the_servers_report() {
         refused(parties(&volume(), &writer_only, MirrorOn::Server(&web1)))
             .contains("web-1 writes data")
     );
+}
+
+/// A spec mounting the Provisioned Volumes `sources`, each of 1 GB, running `image`.
+fn spec(image: &str, sources: &[&str]) -> ployz_core::ResolvedServiceSpec {
+    use std::collections::BTreeMap;
+    use std::num::NonZeroU64;
+
+    use ployz_core::{
+        ContainerPath, Namespace, ProvisionedVolumeMaximumBytes, RawVolumeSource, ServiceMount,
+        ServiceVolume, ServiceVolumeGraph, ServiceVolumeReference,
+    };
+
+    let mut spec: ployz_core::ResolvedServiceSpec = serde_json::from_value(serde_json::json!({
+        "service_id": ployz_core::ServiceId::random(),
+        "name": "db",
+        "mode": { "mode": "replicated", "replicas": 1 },
+        "container": { "image": image, "pull_policy": "missing" },
+    }))
+    .unwrap();
+    let volumes: Vec<ServiceVolume> = sources
+        .iter()
+        .enumerate()
+        .map(|(index, name)| ServiceVolume {
+            reference: ServiceVolumeReference::parse(format!("v{index}")).unwrap(),
+            source: RawVolumeSource::Provisioned {
+                name: DockerVolumeName::parse(*name).unwrap(),
+                maximum_bytes: ProvisionedVolumeMaximumBytes::new(
+                    NonZeroU64::new(1_000_000_000).unwrap(),
+                ),
+                labels: BTreeMap::new(),
+            }
+            .admit()
+            .unwrap(),
+        })
+        .collect();
+    let mounts = volumes
+        .iter()
+        .enumerate()
+        .map(|(index, volume)| ServiceMount {
+            volume: volume.reference.clone(),
+            target: ContainerPath::parse(format!("/data/{index}")).unwrap(),
+            read_only: false,
+            no_copy: false,
+            subpath: None,
+        })
+        .collect();
+    spec.set_volume_graph(
+        ServiceVolumeGraph::parse(volumes, mounts)
+            .unwrap()
+            .scope_to_namespace(&Namespace::parse("app").unwrap())
+            .unwrap()
+            .try_into()
+            .unwrap(),
+    )
+    .unwrap();
+    spec
+}
+
+fn sizes(spec: &ployz_core::ResolvedServiceSpec) -> Vec<(String, u64)> {
+    spec.volumes()
+        .iter()
+        .filter_map(|volume| {
+            if let ployz_core::RawVolumeSource::Provisioned {
+                name,
+                maximum_bytes,
+                ..
+            } = volume.source.kind()
+            {
+                Some((name.to_string(), maximum_bytes.get()))
+            } else {
+                None
+            }
+        })
+        .collect()
+}
+
+#[test]
+fn a_move_starts_the_running_spec_from_the_copied_image_at_the_recorded_size() {
+    let pinned = format!("postgres@sha256:{}", "a".repeat(64));
+    let running = spec(&pinned, &["data", "logs"]);
+    let docker = DockerVolumeName::parse("app_data").unwrap();
+    let recorded = ployz_core::ProvisionedVolumeMaximumBytes::new(
+        std::num::NonZeroU64::new(4_000_000_000).unwrap(),
+    );
+
+    let started = starting(running.clone(), &docker, Some(recorded)).unwrap();
+    assert_eq!(started.container.pull_policy, ployz_core::PullPolicy::Never);
+    assert_eq!(
+        sizes(&started),
+        vec![
+            ("app_data".to_owned(), 4_000_000_000),
+            ("app_logs".to_owned(), 1_000_000_000)
+        ]
+    );
+    assert_eq!(started.container.image, pinned);
+
+    let unrecorded = starting(running, &docker, None).unwrap();
+    assert_eq!(
+        sizes(&unrecorded),
+        vec![
+            ("app_data".to_owned(), 1_000_000_000),
+            ("app_logs".to_owned(), 1_000_000_000)
+        ]
+    );
+}
+
+#[test]
+fn a_move_of_a_service_whose_image_is_not_pinned_by_digest_is_refused() {
+    let docker = DockerVolumeName::parse("app_data").unwrap();
+    let error = starting(spec("postgres:17", &["data"]), &docker, None)
+        .expect_err("a tag no Server starts under approval");
+    assert!(
+        error.to_string().contains("isn't pinned by digest"),
+        "{error}"
+    );
+}
+
+#[test]
+fn a_move_names_the_mirrors_but_not_an_old_copy() {
+    assert!(keeps_mirror(&seen(
+        "web-3",
+        Some(slot(Some(SlotRole::Mirror)))
+    )));
+    assert!(keeps_mirror(&seen("web-3", Some(slot(None)))));
+    assert!(!keeps_mirror(&seen(
+        "web-3",
+        Some(slot(Some(SlotRole::OldCopy)))
+    )));
+    assert!(!keeps_mirror(&seen("web-1", Some(root(false)))));
+    assert!(!keeps_mirror(&seen("web-4", None)));
 }

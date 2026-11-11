@@ -184,10 +184,12 @@ fn a_device_approval_admits_each_step_its_graph_names_on_each_machine() {
         (a(), VolumeStep::Copy(WriterToSnapshot)),
         (a(), cut()),
         (a(), VolumeStep::Copy(WriterToWriter)),
+        (a(), VolumeStep::Copy(MirrorToWriter)),
         (a(), VolumeStep::Start),
         (b(), VolumeStep::Copy(NoneToMirror)),
         (b(), VolumeStep::Copy(MirrorToMirror)),
         (b(), VolumeStep::Copy(MirrorToWriter)),
+        (b(), VolumeStep::Copy(WriterToWriter)),
         (b(), VolumeStep::Start),
         (c(), VolumeStep::Copy(MirrorToMirror)),
     ] {
@@ -196,7 +198,7 @@ fn a_device_approval_admits_each_step_its_graph_names_on_each_machine() {
         assert_eq!(approved.digest, StepDigest::of(&moved.body));
     }
     for (machine, step) in [
-        (a(), VolumeStep::Copy(MirrorToWriter)),
+        (a(), VolumeStep::Copy(NoneToMirror)),
         (a(), VolumeStep::Copy(WriterToForget)),
         (b(), cut()),
         (b(), VolumeStep::Copy(MirrorToForget)),
@@ -543,6 +545,47 @@ fn a_mirror_approval_shows_the_volume_both_servers_and_that_syncs_continue() {
     );
     assert_eq!(
         ApprovedVolumeChange::of(&approval(moving()), "data", name),
+        None
+    );
+}
+
+#[test]
+fn a_move_approval_shows_both_servers_the_service_it_starts_and_the_mirrors_that_follow() {
+    let name = |machine: &MachineId| {
+        if *machine == a() {
+            "web-1"
+        } else if *machine == b() {
+            "web-2"
+        } else {
+            "web-3"
+        }
+        .to_owned()
+    };
+    let service = |digest: &str| ApprovedChange {
+        service: ServiceName::parse("db").unwrap(),
+        image: format!("postgres@sha256:{}", "0123456789ab".repeat(5)),
+        tag: None,
+        digest: PayloadDigest::try_from(digest.repeat(64)).unwrap(),
+        host: Vec::new(),
+    };
+    let change =
+        ApprovedVolumeChange::moving(&approval(moving()), "data", name, service("d")).unwrap();
+    assert_eq!(
+        change.line(),
+        "Approved: move data from web-1 to web-2. db stops on web-1 for the last copy, then starts on web-2. Approved db: postgres@sha256:0123456789ab… The Mirror on web-3 keeps syncing."
+    );
+    assert_eq!(
+        ApprovedVolumeChange::moving(&approval(moving()), "data", name, service("e")),
+        None,
+        "a payload the approval does not name"
+    );
+    let mirror = approval(VolumeWorkflow::Mirror {
+        writer: a(),
+        mirror: b(),
+        replace: false,
+    });
+    assert_eq!(
+        ApprovedVolumeChange::moving(&mirror, "data", name, service("d")),
         None
     );
 }

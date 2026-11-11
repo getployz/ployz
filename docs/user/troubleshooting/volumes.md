@@ -30,21 +30,38 @@ If Ployz Cloud lost the run itself, the cleanup starts on its own within about a
 run in progress, a release repairs a move that stopped. If the copies changed since you started
 the release, it deletes nothing, leaves your service stopped, and asks you to release again.
 
-## A move or restore says the server enforces device approval
+## A move says the server enforces device approval
 
 ```
-web-2 enforces device approval, so Ployz Cloud can't move data until a later release. To move it now, turn enforcement off from an approved device.
+web-2 enforces device approval, so Ployz Cloud can't move data on its own. Run ployz volume move data --to web-2 from an approved device.
 ```
 
 With [device enforcement](../servers/manage-servers.md#require-a-devices-signature-for-restarts-and-joins)
-on, Ployz Cloud can't move a volume or restore a point into a new volume yet. When you start one,
-it is refused before your service stops, and nothing changes. Run `ployz device enforce --off` on
-an approved device, run the move again, then run `ployz device enforce`.
+on, a move runs only with an approved device's approval. The move was refused before your service
+stopped, and nothing changed. Run the command it prints on an approved device. See
+[Servers that enforce device approval](../services/move-a-volume.md#servers-that-enforce-device-approval).
 
-If you turned enforcement on while a move was running, the servers refuse to start your service
-on either side, so it stays stopped. No data is lost. Run `ployz device enforce --off`, then
-`ployz volume release data`, which finishes or undoes the move, whichever it reached. Then turn
-enforcement back on.
+```
+web-2 didn't accept the approval from your device for data. Approve the change again from an approved device.
+```
+
+A server refused the approval itself: the move didn't start within 15 minutes of it, or the
+volume's copies or `web`'s spec changed since you approved it. Run `ployz volume move` again.
+
+If you turned enforcement on while a move was running, or a move's own release failed, the servers
+refuse to start your service on either side, so it stays stopped. No data is lost. Run
+`ployz device enforce --off`, then `ployz volume release data`, which finishes or undoes the
+move, whichever it reached. Then turn enforcement back on.
+
+## A restore says the server enforces device approval
+
+```
+web-2 enforces device approval, so Ployz Cloud can't restore data into a new volume until a later release. To restore it now, turn enforcement off from an approved device.
+```
+
+Ployz Cloud can't restore a point into a new volume on servers that enforce yet. It is refused
+before anything changes. Run `ployz device enforce --off` on an approved device, restore again,
+then run `ployz device enforce`.
 
 ## A volume command says the volume is busy
 

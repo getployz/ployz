@@ -22,6 +22,16 @@ describe("volumeRunInput", () => {
     expect(volumeRunInput(decode({ environment, kind: "mirror", to: "web-2" }))).toEqual({ kind: "mirror", args: { to: "web-2" } });
   });
 
+  it("carries a Device's approval of a move with the spec it starts, and neither when the CLI sent none", () => {
+    const approval = { body: '{"volume":"v"}', signatures: [{ key: "a".repeat(64), signature: "b".repeat(128) }] };
+    const service = { name: "db", container: { image: `postgres@sha256:${"a".repeat(64)}`, pull_policy: "never" } };
+    expect(volumeRunInput(decode({ environment, kind: "move", to: "web-2", approval, service })))
+      .toEqual({ kind: "move", args: { to: "web-2", approval, service } });
+    expect(volumeRunInput(decode({ environment, kind: "move", to: "web-2" })))
+      .toEqual({ kind: "move", args: { to: "web-2" } });
+    expect(() => decode({ environment, kind: "move", to: "web-2", service: "db" })).toThrow();
+  });
+
   it("refuses an approval that isn't shaped as a signed one", () => {
     expect(() => decode({ environment, kind: "mirror", to: "web-2", approval: { body: "{}", signatures: [{ key: "web-1", signature: "x" }] } })).toThrow();
     expect(() => decode({ environment, kind: "mirror", to: "web-2", approval: "signed" })).toThrow();

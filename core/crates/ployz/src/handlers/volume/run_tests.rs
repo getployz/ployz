@@ -317,6 +317,8 @@ async fn each_kind_posts_only_its_own_fields() {
                 environment: named(),
                 ask: RunAsk::Move {
                     to: MachineName::parse("web-2").unwrap(),
+                    approval: None,
+                    service: None,
                 },
             },
             json!({ "environment": { "project": "shop", "environment": "production" }, "kind": "move", "to": "web-2" }),

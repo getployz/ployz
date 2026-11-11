@@ -9,7 +9,7 @@
 use std::collections::BTreeMap;
 
 use ployz_core::{
-    CopyTransition, DockerVolumeName, MachineId, OperationId, SnapshotName,
+    ContainerId, CopyTransition, DockerVolumeName, MachineId, OperationId, SnapshotName,
     authority::{AuthorityRefusal, StepDigest, VolumeStep, VolumeWorkflow},
 };
 use serde::{Deserialize, Serialize};
@@ -53,6 +53,15 @@ pub struct VolumeRecords {
     withdrawals: Vec<Withdrawal>,
 }
 
+/// What a Move's source stopped at its cut, written before it stops anything: the snapshot
+/// the cut takes, and the Containers it found running. Only these may start again under the
+/// Move.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+struct Cut {
+    snapshot: SnapshotName,
+    stopped: Vec<ContainerId>,
+}
+
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 struct OperationRecord {
     /// The approval's body as signed, so another body under the same ID is refused.
@@ -63,6 +72,23 @@ struct OperationRecord {
     state: OperationState,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     decision: Option<Decision>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    cut: Option<Cut>,
+}
+
+impl OperationRecord {
+    /// Whether `step` on `machine` resends a resume this Move's source recorded: the one
+    /// step an operation ended by its resume still answers, while no later owner holds the
+    /// copy.
+    fn resends_resume(&self, machine: &MachineId, step: &VolumeStep) -> bool {
+        self.decision == Some(Decision::Resumed)
+            && self.workflow.moves_from(machine)
+            && matches!(
+                step,
+                VolumeStep::Copy(CopyTransition::WriterToWriter | CopyTransition::MirrorToWriter)
+                    | VolumeStep::Start
+            )
+    }
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
@@ -108,7 +134,10 @@ impl VolumeRecords {
     ) -> Result<(), AuthorityRefusal> {
         let refused = |field| Err(AuthorityRefusal::Mismatch { field });
         if let Some(record) = self.operations.get(&operation) {
-            if record.state == OperationState::Ended {
+            if record.state == OperationState::Ended
+                && !(record.resends_resume(machine, step)
+                    && !self.owned_by_another(operation, machine, volume))
+            {
                 return Err(AuthorityRefusal::Replayed { operation });
             }
             if record.digest != digest {
@@ -119,6 +148,9 @@ impl VolumeRecords {
             }
             if !record.workflow.permits(machine, step) {
                 return refused("a Volume step");
+            }
+            if record.cut.is_some() && *step == VolumeStep::Copy(CopyTransition::WriterToSnapshot) {
+                return refused("a snapshot after the cut");
             }
             return Ok(());
         }
@@ -155,9 +187,25 @@ impl VolumeRecords {
                 admitted: self.sequence,
                 state: OperationState::Open,
                 decision: None,
+                cut: None,
             },
         );
         Ok(())
+    }
+
+    /// Whether an open operation other than `operation` owns `machine`'s copy of `volume`.
+    fn owned_by_another(
+        &self,
+        operation: OperationId,
+        machine: &MachineId,
+        volume: &DockerVolumeName,
+    ) -> bool {
+        self.operations.iter().any(|(other, record)| {
+            *other != operation
+                && record.state == OperationState::Open
+                && record.volume == *volume
+                && record.workflow.owns(machine)
+        })
     }
 
     /// End an earlier owner of this Machine's copy. A Move this Machine is the source of,
@@ -170,6 +218,81 @@ impl VolumeRecords {
             record.decision = Some(Decision::Resumed);
         }
         self.end(operation);
+    }
+
+    /// Record the cut of `operation`, a Move this Machine `machine` is the source of, before
+    /// it stops anything: the snapshot `snapshot` it takes and the Containers in `running`.
+    /// Grants the Move's target that snapshot. A resend of the same cut adds the Containers
+    /// it finds running then, since the first may have stopped some before it crashed.
+    ///
+    /// # Errors
+    /// Refuses an operation not open here, one that is not a Move from `machine`, a second
+    /// cut at another snapshot, and a target withdrawn since the Move was admitted.
+    pub fn cut(
+        &mut self,
+        operation: OperationId,
+        machine: &MachineId,
+        snapshot: &SnapshotName,
+        running: &[ContainerId],
+    ) -> Result<(), AuthorityRefusal> {
+        let Some(record) = self.operations.get_mut(&operation) else {
+            return Err(AuthorityRefusal::Mismatch {
+                field: "an operation",
+            });
+        };
+        if record.state == OperationState::Ended {
+            return Err(AuthorityRefusal::Replayed { operation });
+        }
+        let VolumeWorkflow::Move { from, to, .. } = &record.workflow else {
+            return Err(AuthorityRefusal::Mismatch { field: "a cut" });
+        };
+        if from != machine {
+            return Err(AuthorityRefusal::Mismatch { field: "a cut" });
+        }
+        let to = *to;
+        let cut = record.cut.get_or_insert_with(|| Cut {
+            snapshot: snapshot.clone(),
+            stopped: Vec::new(),
+        });
+        if cut.snapshot != *snapshot {
+            return Err(AuthorityRefusal::Mismatch {
+                field: "a second cut",
+            });
+        }
+        for container in running {
+            if !cut.stopped.contains(container) {
+                cut.stopped.push(*container);
+            }
+        }
+        self.grant(operation, to, GrantScope::Snapshots(vec![snapshot.clone()]))
+    }
+
+    /// Whether `operation`'s cut on this Machine stopped `container`.
+    #[must_use]
+    pub fn stopped_by_cut(&self, operation: OperationId, container: &ContainerId) -> bool {
+        self.operations
+            .get(&operation)
+            .and_then(|record| record.cut.as_ref())
+            .is_some_and(|cut| cut.stopped.contains(container))
+    }
+
+    /// Record that this Machine, the source of Move `operation`, resumes: the Move ends here
+    /// with its grants, and only a resend of the resume runs under it again.
+    pub fn resume(&mut self, operation: OperationId) {
+        if let Some(record) = self.operations.get_mut(&operation)
+            && record.decision.is_none()
+        {
+            record.decision = Some(Decision::Resumed);
+        }
+        self.end(operation);
+    }
+
+    /// The workflow of `operation`, while it is recorded here.
+    #[must_use]
+    pub fn workflow(&self, operation: OperationId) -> Option<&VolumeWorkflow> {
+        self.operations
+            .get(&operation)
+            .map(|record| &record.workflow)
     }
 
     /// End `operation` here, with its grants. It is refused from then on.

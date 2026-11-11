@@ -6,6 +6,7 @@ import type {
   CopyRotation,
   ExpectedCopy,
   MachineId,
+  ResolvedServiceSpec,
   RuntimeWatchView,
   SeedVolumeRequest,
   SetVolumeCopyReply,
@@ -1812,6 +1813,19 @@ describe("volume runs", () => {
       expect(sent.at(-1)?.want).toMatchObject({ kind: "writer", start: { kind: "create", resolved_spec: { container: { environment: { POSTGRES_PASSWORD: "secret-fsn-1" } } } } });
     });
 
+    it("starts B from the spec a Move's approval names, carrying the approval, and not A's stopped Container's", async () => {
+      const ctx = await owned();
+      containers = [{ machine: "fsn-1", id: "web-fsn-1", running: false, gen: 3 }];
+      const service = asTestDouble<ResolvedServiceSpec>()({ name: "web", container: { image: `example.test/web@sha256:${"a".repeat(64)}`, pull_policy: "never" } });
+
+      await runEffect(commitAndStart(ctx, "run-1", {
+        to: { id: B, name: "fsn-2" }, from: { id: idOf("fsn-1"), name: "fsn-1" }, expect: { kind: "none" }, at: base.guid, epoch: 1,
+        approved: { approval: APPROVAL, service },
+      }));
+
+      expect(sent.at(-1)).toMatchObject({ approval: APPROVAL, want: { kind: "writer", start: { kind: "create", gen: 3, resolved_spec: service } } });
+    });
+
     it.each([
       ["the size a resize recorded since the Deploy", 20 * GB, 20 * GB],
       ["the spec's own size while none is recorded", 0, 5_000_000],
@@ -1881,6 +1895,24 @@ describe("volume runs", () => {
       expect(verbs).toEqual(["floor@fsn-1", "floor@fsn-2", "forget@fsn-2", "writer@fsn-1(kept)"]);
       expect(named("fsn-1").copy).toMatchObject({ kind: "root", readonly: false, newest: G });
       expect(containers).toEqual([{ machine: "fsn-1", id: "web-fsn-1", running: true }]);
+    });
+
+    it("on an approved warm row starts a release that carries the Move's approval and spec, and resumes A under it", async () => {
+      const G = newSnap("f-1");
+      named("fsn-1").copy = slotCopy(G);
+      for (const container of containers) container.running = false;
+      machines[1] = { name: "fsn-2", pool: true, copy: slotCopy(G, null, "2") };
+      const service = asTestDouble<ResolvedServiceSpec>()({ name: "web" });
+      const run = await requested({ kind: "move", args: { to: "fsn-2", approval: APPROVAL, service } });
+      await harness.pool.query("update volume_run set state = 'running', inngest_run_id = 'run-1', phase = 'warm', epoch = 4 where id = $1", [run.id]);
+
+      await runEffect(closeVolumeRun("run-1", "failure"));
+      const { rows: released } = await harness.pool.query("select args from volume_run where kind = 'release'");
+      expect(released).toEqual([{ args: { approval: APPROVAL, service } }]);
+      await execute((await releaseRow()).id, "run-2");
+
+      expect(verbs).toEqual(["floor@fsn-1", "floor@fsn-2", "forget@fsn-2", "writer@fsn-1(kept)"]);
+      expect(sent.at(-1)).toMatchObject({ approval: APPROVAL, want: { kind: "writer", start: { kind: "kept" } } });
     });
 
     it("on a warm row waits for a silent Server, noting it on the row, then releases back to A once it answers", async () => {

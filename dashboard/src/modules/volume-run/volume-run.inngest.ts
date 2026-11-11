@@ -36,6 +36,7 @@ import {
   offerRunApproval,
   laneTarget,
   type MachineRef,
+  moveApproved,
   noteRun,
   observeMembers,
   observeReachable,
@@ -286,7 +287,7 @@ async function pull(steps: RunSteps, prefix: string, ctx: Approving & {
   }
 }
 
-/** The Mirror approval a Mirror run's snapshots and pulls carry; a Move sends none. */
+/** The approval a Mirror run's or a Move's snapshots and pulls carry. */
 type Approving = { readonly approval?: Signed };
 
 /**
@@ -584,6 +585,7 @@ async function demoteVolume(steps: RunSteps, phase: PhaseOf<"demote">, epoch: nu
 async function releaseVolume(steps: RunSteps, phase: PhaseOf<"release">, epoch: number) {
   const { run } = steps;
   const { from } = phase;
+  const approval = run.kind === "release" ? run.args.approval : undefined;
   const kept = async (id: string, machines: readonly MachineRef[]) =>
     steps.step.run(id, () => steps.runEffect(findKept(run, steps.runId, machines)));
   const resume = async (id: string, member: AnsweredMember, containerId: ContainerId | null) => {
@@ -595,7 +597,7 @@ async function releaseVolume(steps: RunSteps, phase: PhaseOf<"release">, epoch: 
       at: at.guid,
       epoch,
       start: containerId === null ? null : { kind: "kept", container_id: containerId },
-    }, `${member.machine.name} is still starting ${run.volumeName}'s Service`);
+    }, `${member.machine.name} is still starting ${run.volumeName}'s Service`, approval);
   };
   try {
     if (from.kind === "cut" || from.kind === "writer") {
@@ -647,7 +649,7 @@ async function releaseVolume(steps: RunSteps, phase: PhaseOf<"release">, epoch: 
       at: at.guid,
       epoch,
       start: { kind: "kept", container_id: source.containerId },
-    }, `${A.name} is still starting ${run.volumeName}'s Service`);
+    }, `${A.name} is still starting ${run.volumeName}'s Service`, approval);
     await finish(steps, "06-finish");
     return { runId: run.id, released: A.name };
   } catch (error) {
@@ -695,6 +697,7 @@ async function finishRelease(steps: RunSteps, current: MachineId, plan: ReleaseP
         expect: expectOf(copy),
         at: copy.newest.guid,
         epoch: copy.kind === "root" ? copy.epoch : epoch,
+        approved: run.kind === "release" ? moveApproved(run.args) : undefined,
       }), `${target.machine.name} is still starting ${run.volumeName}'s Service`);
       if (!started.ok) throw new NonRetriableError(started.message);
       stays = await step.run("04-remove", () => runEffect(removeKept(run, runId, forward.removeOn)));
@@ -728,6 +731,8 @@ async function moveVolume(steps: RunSteps, phase: PhaseOf<"move">, epoch: number
   const A = phase.writer.machine;
   const B = phase.target.machine;
   const name = run.volumeName;
+  const approved = run.kind === "move" ? moveApproved(run.args) : undefined;
+  const approval = approved?.approval;
   let source = phase.writer.view.copy;
   let copy = phase.target.view.copy;
   let service = "the Service";
@@ -745,7 +750,7 @@ async function moveVolume(steps: RunSteps, phase: PhaseOf<"move">, epoch: number
     service = found.holder.redactedSpec.name;
     await note("02-copying", `Copying to ${B.name}`);
     try {
-      ({ copy } = await runRounds(steps, { A: phase.writer, B, copy, epoch }));
+      ({ copy } = await runRounds(steps, { A: phase.writer, B, copy, epoch, approval }));
     } catch (error) {
       return stopped(steps, "03-failed", error instanceof Error ? error : new Error(String(error)));
     }
@@ -763,7 +768,7 @@ async function moveVolume(steps: RunSteps, phase: PhaseOf<"move">, epoch: number
         from: null,
         target: `f-${epoch}`,
         drain: DRAIN_MS,
-      }, `${A.name} is still stopping ${name}'s Service`);
+      }, `${A.name} is still stopping ${name}'s Service`, approval);
       if (!stopped.ok) throw new NonRetriableError(stopped.message);
       source = stopped.copy;
       // A late cut's time may follow the stop by any amount, which would shorten the downtime, so it has no `at`.
@@ -772,7 +777,7 @@ async function moveVolume(steps: RunSteps, phase: PhaseOf<"move">, epoch: number
     }
     const cut = slotAt(source);
     if (cut === null) throw new NonRetriableError(`${copyName(name, A.name)} holds no final snapshot`);
-    if (phase.start !== "start") copy = await pull(steps, "06-final", { B, copy, from: phase.writer.address, target: cut.newest });
+    if (phase.start !== "start") copy = await pull(steps, "06-final", { B, copy, from: phase.writer.address, target: cut.newest, approval });
     await note("07-starting", `Starting ${service} on ${B.name}`);
     const started = await settle(steps, "07-start", commitAndStart(run, runId, {
       to: B,
@@ -780,6 +785,7 @@ async function moveVolume(steps: RunSteps, phase: PhaseOf<"move">, epoch: number
       expect: expectOf(copy),
       at: cut.newest.guid,
       epoch: copy?.kind === "root" ? copy.epoch : epoch,
+      approved,
     }), `${B.name} is still starting ${name}'s Service`);
     if (!started.ok) throw new NonRetriableError(started.message);
     stays = await step.run("08-remove", () => runEffect(removeKept(run, runId, [A])));

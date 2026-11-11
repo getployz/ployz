@@ -118,16 +118,38 @@ If a move stops partway or a command is refused, see
 ## Servers that enforce device approval
 
 On servers with [device enforcement](../servers/manage-servers.md#require-a-devices-signature-for-restarts-and-joins)
-on, Ployz Cloud can't move a volume until a later release. A move from the CLI, a **Make primary**
-deploy and Drain's moves are refused before your service stops:
+on, a move runs only with your approval. `ployz volume move` from an approved device signs it and
+prints what you approved before Ployz Cloud starts it:
 
 ```
-web-2 enforces device approval, so Ployz Cloud can't move data until a later release. To move it now, turn enforcement off from an approved device.
+Approved: move data from web-1 to web-2. web stops on web-1 for the last copy, then starts on web-2. Approved web: registry.example.com/web@sha256:0123456789ab…
 ```
 
-To move a volume now, run `ployz device enforce --off` on an approved device, move the volume,
-then run `ployz device enforce` again. Mirrors, syncs, restoring a volume in place, resizes and
-deploys keep working with enforcement on.
+One approval covers the whole move, its retries, and the release that undoes or finishes it. The
+servers refuse anything else: `web-1` sends the volume only to `web-2`, and `web-2` starts only
+`web` as it runs on `web-1` now.
+
+The move must start within 15 minutes of the approval. If it hasn't, both servers refuse it,
+`web` keeps running on `web-1`, and you run the move again. A move that started finishes, however
+long it takes.
+
+`web` must run an image pinned by digest. If it doesn't, the CLI refuses before anything stops:
+
+```
+web runs registry.example.com/web:2, which isn't pinned by digest, so this device can't approve starting it on another Server. Deploy it again, then move the Volume.
+```
+
+With enforcement on, Ployz Cloud can't remove `web`'s stopped container on `web-1`. It stays
+there, stopped, and the move's last line names it, like
+`web was stopped 26s; <container id> stays on web-1, which enforces device approval.`
+
+A move nobody approved is refused before your service stops. That includes a **Make primary**
+deploy, Drain's moves, a move from a computer without an approved device key, and the move Ployz
+asks for again after a deploy took it over:
+
+```
+web-2 enforces device approval, so Ployz Cloud can't move data on its own. Run ployz volume move data --to web-2 from an approved device.
+```
 
 ## Good to know
 

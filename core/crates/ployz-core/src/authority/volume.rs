@@ -6,12 +6,14 @@
 //! so a later step of an open operation needs no fresh window and an ended one never runs
 //! again. That record is the Machine's, not this module's.
 
+use std::fmt::Write as _;
+
 use serde::{Deserialize, Serialize};
 use ts_rs::TS;
 
 use super::{
     canonical::{self, Timestamp},
-    deploy::ApprovedService,
+    deploy::{ApprovedChange, ApprovedService},
     keys::{Approver, Purpose, Signed, SigningPublicKey, Statement},
     proposal::StepDigest,
     refusal::{AuthorityRefusal, field, first_mismatch},
@@ -134,10 +136,13 @@ impl VolumeWorkflow {
                 (machine == from
                     && matches!(
                         transition,
-                        WriterToSnapshot | WriterToMirror | WriterToWriter
+                        WriterToSnapshot | WriterToMirror | WriterToWriter | MirrorToWriter
                     ))
                     || (machine == to
-                        && matches!(transition, NoneToMirror | MirrorToMirror | MirrorToWriter))
+                        && matches!(
+                            transition,
+                            NoneToMirror | MirrorToMirror | MirrorToWriter | WriterToWriter
+                        ))
                     || (mirrors.contains(machine) && *transition == MirrorToMirror)
             }
             (Self::Move { from, to, .. }, VolumeStep::Start) => machine == from || machine == to,
@@ -287,6 +292,15 @@ pub enum ApprovedVolumeChange {
         mirror: String,
         replace: bool,
     },
+    /// `volume` moves from `from` to `to`. Its Service stops on `from` for the last copy and
+    /// starts on `to` as `service` shows, and the Mirrors on `mirrors` keep following it.
+    Move {
+        volume: String,
+        from: String,
+        to: String,
+        service: ApprovedChange,
+        mirrors: Vec<String>,
+    },
 }
 
 impl ApprovedVolumeChange {
@@ -317,6 +331,37 @@ impl ApprovedVolumeChange {
         }
     }
 
+    /// The Move `approval` makes of the Volume the client calls `volume`, with `service` the
+    /// change the client computed for the Service it starts, from the spec whose digest the
+    /// approval names. `None` unless `approval` is a Move of that Service.
+    #[must_use]
+    pub fn moving(
+        approval: &VolumeApproval,
+        volume: &str,
+        name: impl Fn(&MachineId) -> String,
+        service: ApprovedChange,
+    ) -> Option<Self> {
+        let VolumeWorkflow::Move {
+            from,
+            to,
+            service: approved,
+            mirrors,
+        } = &approval.workflow
+        else {
+            return None;
+        };
+        if approved.name != service.service || approved.digest != service.digest {
+            return None;
+        }
+        Some(Self::Move {
+            volume: volume.to_owned(),
+            from: name(from),
+            to: name(to),
+            service,
+            mirrors: mirrors.iter().map(&name).collect(),
+        })
+    }
+
     /// One line a person reads: the Volume, both Servers, and that later syncs need no
     /// approval.
     #[must_use]
@@ -338,6 +383,33 @@ impl ApprovedVolumeChange {
                 format!(
                     "Approved: {change}. Later syncs run without asking until you remove the Mirror."
                 )
+            }
+            Self::Move {
+                volume,
+                from,
+                to,
+                service,
+                mirrors,
+            } => {
+                let mut line = format!(
+                    "Approved: move {volume} from {from} to {to}. {name} stops on {from} for the last copy, then starts on {to}. {started}",
+                    name = service.service,
+                    started = service.line(),
+                );
+                match mirrors.as_slice() {
+                    [] => {}
+                    [mirror] => {
+                        let _ = write!(line, " The Mirror on {mirror} keeps syncing.");
+                    }
+                    several => {
+                        let _ = write!(
+                            line,
+                            " The Mirrors on {} keep syncing.",
+                            several.join(" and ")
+                        );
+                    }
+                }
+                line
             }
         }
     }
