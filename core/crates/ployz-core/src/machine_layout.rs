@@ -37,6 +37,16 @@ impl MachineLayout {
         Self::new("/run/ployz", "/var/lib/ployz", "/etc/ployz")
     }
 
+    /// The production Machine's config directory with the run and data directories spelled as given.
+    ///
+    /// An operator can type a root the installer accepts as the standard one while spelling it with
+    /// a repeated or trailing separator. The units and `install -d` arguments built from it carry
+    /// that spelling, so it is kept as typed.
+    #[must_use]
+    pub fn production_in(run_dir: impl Into<PathBuf>, data_dir: impl Into<PathBuf>) -> Self {
+        Self::new(run_dir, data_dir, Self::production().config_dir)
+    }
+
     /// A layout under other directories, such as a temporary directory in a test.
     #[must_use]
     pub fn new(

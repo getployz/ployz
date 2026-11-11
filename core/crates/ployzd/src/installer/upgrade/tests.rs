@@ -454,7 +454,7 @@ async fn run_worker_case(root: &Path, case: &str) {
     let attempt_id = MachineUpgradeAttemptId::parse("a".repeat(32)).unwrap();
     let target = MachineVersion::parse("1.2.3").unwrap();
     write(
-        &paths.data_dir,
+        paths.layout.data_dir(),
         &StoredAttempt {
             requested: MachineRelease::Exact(target.clone()),
             attempt: MachineUpgradeAttempt {
@@ -465,11 +465,11 @@ async fn run_worker_case(root: &Path, case: &str) {
         },
     )
     .unwrap();
-    mutation::MutationGate::new(&paths.run_dir, &paths.data_dir)
+    mutation::MutationGate::new(paths.layout.run_dir(), paths.layout.data_dir())
         .mark_active(attempt_id.as_str())
         .unwrap();
-    fs::create_dir_all(&paths.run_dir).unwrap();
-    let api = UnixListener::bind(paths.run_dir.join("ployz.sock")).unwrap();
+    fs::create_dir_all(paths.layout.run_dir()).unwrap();
+    let api = UnixListener::bind(paths.layout.socket()).unwrap();
     tokio::spawn(
         tonic::transport::Server::builder()
             .add_service(FakeMachineApi(root.join("running-version")))
@@ -483,7 +483,7 @@ async fn run_worker_case(root: &Path, case: &str) {
     )
     .await;
 
-    let outcome = read(&paths.data_dir).unwrap().attempt.outcome;
+    let outcome = read(paths.layout.data_dir()).unwrap().attempt.outcome;
     match (&result, &outcome) {
         (Ok(()), MachineUpgradeOutcome::Succeeded { .. }) => {}
         (Err(Error::Upgrade(returned)), MachineUpgradeOutcome::Failed { error, .. }) => {
@@ -603,7 +603,7 @@ async fn run_worker_case(root: &Path, case: &str) {
         other => panic!("unknown upgrade worker case {other}"),
     }
     assert!(
-        !mutation::MutationGate::new(&paths.run_dir, &paths.data_dir)
+        !mutation::MutationGate::new(paths.layout.run_dir(), paths.layout.data_dir())
             .active()
             .unwrap()
     );

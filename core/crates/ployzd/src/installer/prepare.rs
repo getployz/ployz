@@ -8,7 +8,6 @@ use std::{
 
 use chrono::{SecondsFormat, Utc};
 use nix::fcntl::{FcntlArg, FdFlag};
-use ployz_core::MachineLayout;
 use ployz_core::host_preparation::{Begun, DockerOutcome, PrepStep, ZfsOutcome};
 use serde::{Deserialize, Serialize};
 
@@ -65,7 +64,7 @@ pub(super) enum ZfsBuild {
 /// Refuses a caller that isn't root, or reports a step that failed.
 pub async fn prepare(skip_zfs: bool) -> Result<(), Error> {
     require_root()?;
-    let paths = InstallPaths::system(&MachineLayout::production());
+    let paths = InstallPaths::production();
     prepare_at(&paths, skip_zfs, async || docker_step(&paths).await).await
 }
 
@@ -77,7 +76,7 @@ pub async fn prepare(skip_zfs: bool) -> Result<(), Error> {
 /// the step added.
 pub fn discard_zfs_build() -> Result<(), Error> {
     require_root()?;
-    discard_at(&InstallPaths::system(&MachineLayout::production()))
+    discard_at(&InstallPaths::production())
 }
 
 pub(super) fn prepare_dir(paths: &InstallPaths) -> PathBuf {

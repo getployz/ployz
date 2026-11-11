@@ -123,8 +123,6 @@ pub(super) struct InstallPaths {
     pub(super) layout: MachineLayout,
     pub(super) bin_dir: PathBuf,
     pub(super) systemd_dir: PathBuf,
-    pub(super) data_dir: PathBuf,
-    pub(super) run_dir: PathBuf,
     pub(super) docker_config: PathBuf,
     pub(super) modprobe_dir: PathBuf,
     pub(super) modules_load_dir: PathBuf,
@@ -141,13 +139,12 @@ pub(super) struct InstallPaths {
 }
 
 impl InstallPaths {
-    fn system(layout: &MachineLayout) -> Self {
+    /// The production Machine, with the data and run directories spelled as the caller was handed them.
+    fn system(data_dir: impl Into<PathBuf>, run_dir: impl Into<PathBuf>) -> Self {
         Self {
             bin_dir: PathBuf::from(DEFAULT_BIN_DIR),
             systemd_dir: PathBuf::from(DEFAULT_SYSTEMD_DIR),
-            data_dir: layout.data_dir().into(),
-            run_dir: layout.run_dir().into(),
-            layout: layout.clone(),
+            layout: MachineLayout::production_in(run_dir, data_dir),
             docker_config: PathBuf::from("/etc/docker/daemon.json"),
             modprobe_dir: PathBuf::from("/etc/modprobe.d"),
             modules_load_dir: PathBuf::from("/etc/modules-load.d"),
@@ -159,9 +156,14 @@ impl InstallPaths {
             apt_dir: PathBuf::from("/etc/apt"),
             proc_dir: PathBuf::from("/proc"),
             zfs_module: PathBuf::from("/sys/module/zfs"),
-            device_pool_marker: layout.device_pool_marker(),
+            device_pool_marker: MachineLayout::production().device_pool_marker(),
             usr_src: PathBuf::from("/usr/src"),
         }
+    }
+
+    fn production() -> Self {
+        let layout = MachineLayout::production();
+        Self::system(layout.data_dir(), layout.run_dir())
     }
 
     /// The Machine API socket the installed daemon serves.
@@ -180,8 +182,6 @@ impl InstallPaths {
             layout: MachineLayout::new(root.join("run"), root.join("data"), root.join("etc")),
             bin_dir: root.join("bin"),
             systemd_dir: root.join("systemd"),
-            data_dir: root.join("data"),
-            run_dir: root.join("run"),
             docker_config: root.join("docker/daemon.json"),
             modprobe_dir: root.join("modprobe"),
             modules_load_dir: root.join("modules-load"),
@@ -227,7 +227,7 @@ pub async fn install(
     install_at(
         &ReleaseSource::Published,
         request,
-        InstallPaths::system(&MachineLayout::production()),
+        InstallPaths::system(data_dir, MachineLayout::production().run_dir()),
     )
     .await
 }
@@ -239,7 +239,7 @@ pub async fn install(
 /// Fails without root, or where a fact the installer depends on can't be read.
 pub fn probe() -> Result<String, Error> {
     require_root()?;
-    let facts = read_facts(&InstallPaths::system(&MachineLayout::production()))?;
+    let facts = read_facts(&InstallPaths::production())?;
     let assessment = assess(&facts);
     serde_json::to_string_pretty(&serde_json::json!({
         "facts": facts,
@@ -257,9 +257,9 @@ async fn install_at(
     paths: InstallPaths,
 ) -> Result<InstallOutcome, Error> {
     require_root()?;
-    let admission = mutation::MutationGate::new(&paths.run_dir, &paths.data_dir);
+    let admission = mutation::MutationGate::new(paths.layout.run_dir(), paths.layout.data_dir());
     let lock = admission.try_installation().map_err(map_admission_error)?;
-    upgrade::reconcile_for_install(&admission, &paths.data_dir)
+    upgrade::reconcile_for_install(&admission, paths.layout.data_dir())
         .await
         .map_err(map_upgrade_reconciliation)?;
     install_locked(source, request, &paths, &lock, |_| Ok(())).await
@@ -501,26 +501,45 @@ mod tests {
 
     #[test]
     fn machine_files_stay_where_installed_machines_keep_them() {
-        let layout = MachineLayout::production();
-        let paths = InstallPaths::system(&layout);
-        assert_eq!(paths.data_dir, Path::new("/var/lib/ployz"));
-        assert_eq!(paths.run_dir, Path::new("/run/ployz"));
-        assert_eq!(paths.socket(), Path::new("/run/ployz/ployz.sock"));
+        let paths = InstallPaths::production();
+        assert_eq!(paths.layout.data_dir().as_os_str(), "/var/lib/ployz");
+        assert_eq!(paths.layout.run_dir().as_os_str(), "/run/ployz");
+        assert_eq!(paths.socket().as_os_str(), "/run/ployz/ployz.sock");
         assert_eq!(
-            layout.machine_pool_file(),
-            Path::new("/var/lib/ployz-machine-pool")
+            paths.layout.machine_pool_file().as_os_str(),
+            "/var/lib/ployz-machine-pool"
         );
         assert_eq!(
-            paths.device_pool_marker,
-            Path::new("/var/lib/ployz-machine-pool.device")
+            paths.device_pool_marker.as_os_str(),
+            "/var/lib/ployz-machine-pool.device"
         );
         assert_eq!(
-            prepare::prepare_dir(&paths),
-            Path::new("/var/lib/ployz/prepare")
+            prepare::prepare_dir(&paths).as_os_str(),
+            "/var/lib/ployz/prepare"
         );
         assert_eq!(
-            prepare::state_path(&paths),
-            Path::new("/var/lib/ployz/prepare/state.json")
+            prepare::state_path(&paths).as_os_str(),
+            "/var/lib/ployz/prepare/state.json"
+        );
+    }
+
+    #[test]
+    fn accepted_roots_keep_the_spelling_they_were_typed_with() {
+        let paths = InstallPaths::system("/var//lib/ployz/", "/run//ployz");
+        assert_eq!(paths.layout.data_dir().as_os_str(), "/var//lib/ployz/");
+        assert_eq!(paths.layout.run_dir().as_os_str(), "/run//ployz");
+        assert_eq!(paths.socket().as_os_str(), "/run//ployz/ployz.sock");
+        assert_eq!(
+            prepare::prepare_dir(&paths).as_os_str(),
+            "/var//lib/ployz/prepare"
+        );
+        assert_eq!(
+            prepare::state_path(&paths).as_os_str(),
+            "/var//lib/ployz/prepare/state.json"
+        );
+        assert_eq!(
+            paths.device_pool_marker.as_os_str(),
+            "/var/lib/ployz-machine-pool.device"
         );
     }
 
@@ -676,7 +695,8 @@ mod tests {
         };
         let source = ReleaseSource::Local(root.join("release"));
         let result = if case == "busy" {
-            let admission = mutation::MutationGate::new(&paths.run_dir, &paths.data_dir);
+            let admission =
+                mutation::MutationGate::new(paths.layout.run_dir(), paths.layout.data_dir());
             let _held = admission.try_installation().unwrap();
             install_at(&source, request, paths.clone()).await
         } else {
@@ -698,7 +718,7 @@ mod tests {
                 );
                 if case == "install-only" {
                     assert!(!root.join("forbidden-invocation").exists());
-                    assert!(!paths.data_dir.exists());
+                    assert!(!paths.layout.data_dir().exists());
                 }
             }
             "installed-units" => {
@@ -706,7 +726,7 @@ mod tests {
                 let written = format!(
                     "written by installed 1.2.3 for {} {}\n",
                     paths.bin_dir.display(),
-                    paths.run_dir.display()
+                    paths.layout.run_dir().display()
                 );
                 for unit in ["ployz.service", "ployz-volume-plugin.service"] {
                     assert_eq!(

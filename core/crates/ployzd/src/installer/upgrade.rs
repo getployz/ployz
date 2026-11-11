@@ -230,11 +230,10 @@ async fn request_locked(
     if admission.active()? {
         return Err(Error::Busy);
     }
-    let installed = super::release::installed_release(
-        &InstallPaths::system(&MachineLayout::production()).daemon(),
-    )
-    .await
-    .map_err(Error::Resolve)?;
+    let installed =
+        super::release::installed_release(&InstallPaths::system(data_dir, run_dir).daemon())
+            .await
+            .map_err(Error::Resolve)?;
     let target = super::release::resolve_release(
         &request.release,
         &ReleaseSource::Published,
@@ -338,7 +337,7 @@ pub async fn run_worker(
         .map_err(Error::NonstandardPaths)?;
     work(
         &ReleaseSource::Published,
-        &InstallPaths::system(&MachineLayout::production()),
+        &InstallPaths::system(data_dir, run_dir),
         attempt_id,
     )
     .await
@@ -349,8 +348,8 @@ async fn work(
     paths: &InstallPaths,
     attempt_id: MachineUpgradeAttemptId,
 ) -> Result<(), Error> {
-    let data_dir = &paths.data_dir;
-    let admission = mutation::MutationGate::new(&paths.run_dir, data_dir);
+    let data_dir = paths.layout.data_dir();
+    let admission = mutation::MutationGate::new(paths.layout.run_dir(), data_dir);
     let guard = admission.lock_installation()?;
     let mut stored = read(data_dir)?;
     if stored.attempt.attempt_id != attempt_id || stored.attempt.is_terminal() {

@@ -59,7 +59,7 @@ fn production_layout_keeps_the_paths_installed_machines_use() {
         ("prepare directory name", PREPARE_DIR_NAME.into(), "prepare"),
     ];
     for (what, path, today) in table {
-        assert_eq!(path, Path::new(today), "{what}");
+        assert_eq!(path.as_os_str(), today, "{what}");
     }
 }
 
@@ -73,6 +73,19 @@ fn a_socket_names_the_run_directory_it_lives_in() {
         MachineLayout::run_dir_of(Path::new("/")),
         Path::new("/run/ployz")
     );
+}
+
+#[test]
+fn a_layout_keeps_the_spelling_its_directories_were_given() {
+    let layout = MachineLayout::production_in("/run//ployz/", "/var//lib/ployz/");
+    assert_eq!(layout.run_dir().as_os_str(), "/run//ployz/");
+    assert_eq!(layout.data_dir().as_os_str(), "/var//lib/ployz/");
+    assert_eq!(layout.socket().as_os_str(), "/run//ployz/ployz.sock");
+    assert_eq!(
+        layout.prepare_state().as_os_str(),
+        "/var//lib/ployz/prepare/state.json"
+    );
+    assert_eq!(layout.fleet_token().as_os_str(), "/etc/ployz/fleet-token");
 }
 
 #[test]
