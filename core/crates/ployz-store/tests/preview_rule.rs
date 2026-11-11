@@ -525,14 +525,14 @@ fn open_untrusted(store: &ConfigStore, who: &Actor, number: u64, branch: &str) -
         .unwrap()
 }
 
-/// A Device's review of pull request 7's head in `environment`, drafted from its plan as
-/// the dashboard drafts one.
+/// A Device's review of the head of `branch`'s pull request in `environment`, drafted
+/// from its plan as the dashboard drafts one.
 fn review_of(
     store: &ConfigStore,
     who: &Actor,
     rule: &PreviewRule,
     signer: &Signer,
-    environment: &str,
+    (environment, branch): (&str, &str),
 ) -> (EnvironmentId, ployz_core::authority::Review) {
     let view = store
         .read_trusted(
@@ -544,7 +544,7 @@ fn review_of(
         )
         .unwrap();
     assert_eq!(view.rule.open().unwrap(), *rule);
-    assert_eq!(view.key, PreviewKey::Branch("stranger".to_owned()));
+    assert_eq!(view.key, PreviewKey::Branch(branch.to_owned()));
     let drafted = ployz_core::authority::PreviewReview::draft(
         rule,
         &view.namespace,
@@ -698,31 +698,123 @@ fn reviewed(
         opened.admitted.is_empty(),
         "an untrusted head deploys nothing: {opened:?}"
     );
-    let (environment, review) = review_of(&store, &who, &rule, &signer, "pr-7");
+    let (environment, review) = review_of(&store, &who, &rule, &signer, ("pr-7", "stranger"));
 
     let mut other = review.opened().unwrap();
     other.commit = CommitSha::parse(&"2".repeat(40)).unwrap();
     let stale = ployz_core::authority::Review::Signed(Signed::sign(&other, &signer).unwrap());
     // A person approves, as the dashboard does: the Deployment records who admitted it.
     let person = person(&who);
-    let approve = |review: ployz_core::authority::Review| {
-        store.write_trusted(
-            &person,
-            &ployz_store::ApprovePullRequest {
-                repository_id: backend::repo_id(11),
-                number: backend::pr_number(7),
-                head: backend::sha(HEAD),
-                reviews: vec![ployz_store::EnvironmentReview {
-                    environment: environment.clone(),
-                    review,
-                }],
-            },
-            &member(),
-        )
-    };
+    let approve = |review| approve_reviewed(&store, &person, 7, (environment.clone(), review));
     let refused = approve(stale).unwrap_err();
     assert!(refused.message.contains("another commit"), "{refused:?}");
 
     let approved = approve(review.clone()).unwrap();
     (store, approved, review)
+}
+
+/// A person approves pull request `number`'s head with `review`, as the dashboard does.
+fn approve_reviewed(
+    store: &ConfigStore,
+    person: &Actor,
+    number: u64,
+    (environment, review): (EnvironmentId, ployz_core::authority::Review),
+) -> Result<ployz_store::Automated, ployz_core::RpcError> {
+    store.write_trusted(
+        person,
+        &ployz_store::ApprovePullRequest {
+            repository_id: backend::repo_id(11),
+            number: backend::pr_number(number),
+            head: backend::sha(HEAD),
+            reviews: vec![ployz_store::EnvironmentReview {
+                environment,
+                review,
+            }],
+        },
+        &member(),
+    )
+}
+
+/// Production under a preview rule that trusts `trusted`'s pushes, then member ada's
+/// pull request 7 from `ada-change`, listed as the dashboard lists it.
+fn members_pull_request(
+    trusted_accounts: Vec<u64>,
+) -> (
+    ConfigStore,
+    Actor,
+    PreviewRule,
+    Signer,
+    ployz_store::OpenPullRequest,
+) {
+    let store = backend::open();
+    let who = Actor::system(OrganizationId::parse("org").unwrap());
+    production(&store, &who);
+    let signer = Signer::from_seed(&[3; 32]);
+    let rule = PreviewRule {
+        trusted: trusted_accounts,
+        ..rule_over(&plan(&store, &who), &signer)
+    };
+    store
+        .write_trusted(
+            &who,
+            &ApprovePreviewRule {
+                environment: at("production"),
+                rule: Box::new(Signed::sign(&rule, &signer).unwrap()),
+            },
+            &trusted(),
+        )
+        .unwrap();
+    open_pull_request(&store, &who, 7, "ada-change");
+    let plans = store
+        .read_trusted(
+            &who,
+            &ployz_store::PrPlansQuery { project: None },
+            &trusted(),
+        )
+        .unwrap();
+    let open = plans
+        .plans
+        .into_iter()
+        .flat_map(|plan| plan.open)
+        .find(|open| open.number == backend::pr_number(7))
+        .unwrap_or_else(|| panic!("pull request 7 lists"));
+    assert_eq!(
+        open.standing,
+        ployz_store::Standing::Trusted,
+        "ada is a member"
+    );
+    (store, who, rule, signer, open)
+}
+
+#[test]
+fn a_member_the_preview_rule_leaves_out_needs_a_review_and_deploys_once_reviewed() {
+    let (store, who, rule, signer, open) = members_pull_request(vec![42]);
+    assert!(
+        open.needs_review,
+        "every Server refuses ada's pushes, so the dashboard offers a review: {open:?}"
+    );
+
+    let review = review_of(&store, &who, &rule, &signer, ("pr-7", "ada-change"));
+    let approved = approve_reviewed(&store, &person(&who), 7, review.clone()).unwrap();
+    let deployment = approved
+        .admitted
+        .first()
+        .unwrap_or_else(|| panic!("the reviewed head deploys: {approved:?}"))
+        .deployment
+        .id
+        .clone();
+    let build = ployz_store::GithubBuildId {
+        deployment,
+        service: ServiceName::parse("web").unwrap(),
+    };
+    assert_eq!(store.github_review(&build).unwrap(), Some(review.1));
+}
+
+#[test]
+fn a_member_the_preview_rule_trusts_needs_no_review() {
+    let (_, _, _, _, open) = members_pull_request(vec![backend::ada().get()]);
+    assert!(
+        !open.needs_review,
+        "ada's pushes deploy as they are: {open:?}"
+    );
 }
