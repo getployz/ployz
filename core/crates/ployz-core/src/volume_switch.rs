@@ -6,7 +6,8 @@ use serde::{Deserialize, Serialize};
 use ts_rs::TS;
 
 use crate::{
-    CopyRole, DockerVolumeName, MachineName, RpcError, RpcErrorCode, VolumeGen, WriterEpoch,
+    CodedRefusal, CopyRole, DockerVolumeName, Evidence, MachineName, RpcError, RpcErrorCode,
+    VolumeGen, WriterEpoch,
 };
 
 /// How long a Machine waits on one call to its volume plugin, such as the call that
@@ -448,20 +449,19 @@ pub enum SwitchError {
 }
 
 impl SwitchError {
-    /// The switch reason carried by an RPC error, if it is one of the known names.
-    #[must_use]
-    pub fn from_details(details: &serde_json::Value) -> Option<Self> {
-        Self::deserialize(details).ok()
-    }
-
     /// An RPC error that carries this reason in `details`.
     #[must_use]
     pub fn rpc_error(self, message: impl Into<String>) -> RpcError {
-        RpcError::new(self.rpc_code(), message)
-            .with_details(serde_json::to_value(self).expect("a switch reason is JSON serializable"))
+        RpcError::refused(&self, message)
     }
+}
 
-    const fn rpc_code(self) -> RpcErrorCode {
+impl Evidence for SwitchError {
+    const KEY: Option<&'static str> = None;
+}
+
+impl CodedRefusal for SwitchError {
+    fn code(&self) -> RpcErrorCode {
         match self {
             Self::Precondition
             | Self::Busy
@@ -951,16 +951,15 @@ mod tests {
         let error = SwitchError::NoWriter.rpc_error("nothing to mount");
         assert_eq!(error.code, RpcErrorCode::Conflict);
         assert_eq!(error.details, serde_json::json!({ "reason": "no_writer" }));
+        assert_eq!(error.evidence(), Some(SwitchError::NoWriter));
         assert_eq!(
-            SwitchError::from_details(&error.details),
-            Some(SwitchError::NoWriter)
-        );
-        assert_eq!(
-            SwitchError::from_details(&SwitchError::NoCapacity.rpc_error("").details),
+            SwitchError::NoCapacity.rpc_error("").evidence(),
             Some(SwitchError::NoCapacity)
         );
         assert_eq!(
-            SwitchError::from_details(&serde_json::json!({ "reason": "unknown" })),
+            RpcError::conflict("m")
+                .with_details(serde_json::json!({ "reason": "unknown" }))
+                .evidence::<SwitchError>(),
             None
         );
     }

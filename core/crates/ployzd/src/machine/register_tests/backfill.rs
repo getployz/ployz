@@ -157,7 +157,7 @@ async fn generate_refuses_while_the_cluster_awaits_recovery() {
     };
     assert_eq!(error.code, RpcErrorCode::Conflict);
     assert_eq!(
-        error.sealing_refusal(),
+        error.evidence::<SealingRefusal>(),
         Some(SealingRefusal::AwaitsRecovery)
     );
     assert_eq!(SealingKey::load(&dir).unwrap(), None);

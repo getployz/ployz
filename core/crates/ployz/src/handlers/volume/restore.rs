@@ -405,7 +405,7 @@ async fn set(
             Err(error) => error,
         };
         let code = error.code.clone();
-        match SetVolumeCopyRefused::from_details(&error.details) {
+        match error.evidence::<SetVolumeCopyRefused>() {
             Some(SetVolumeCopyRefused {
                 reason: CopyRefusal::Busy,
                 ..

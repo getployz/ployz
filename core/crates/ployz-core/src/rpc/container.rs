@@ -5,7 +5,8 @@ use serde_json::Value;
 use std::collections::BTreeMap;
 use ts_rs::TS;
 
-use super::error::{Departure, RpcError, RpcErrorCode};
+use super::error::{RpcError, RpcErrorCode};
+use super::evidence::{Departure, Evidence};
 use crate::{
     ContainerId, ContainerKind, ContainerLimits, ContainerObservation, Namespace,
     ResolvedServiceSpec, authority::DeployApproval, authority::RestartApproval, authority::Signed,
@@ -423,15 +424,10 @@ impl ContainerRefusal {
                 RpcErrorCode::Internal
             }
         };
-        RpcError {
-            code,
-            message: self.message,
-            details: self.capability.map_or(
-                Value::Null,
-                |capability| serde_json::json!({ "capability": capability }),
-            ),
-            cause: Vec::new(),
-        }
+        RpcError::new(code, self.message).with_details(self.capability.map_or(
+            Value::Null,
+            |capability| serde_json::json!({ "capability": capability }),
+        ))
     }
 }
 
@@ -499,14 +495,8 @@ pub enum LimitsRefusal {
     MemoryUnlimited,
 }
 
-impl LimitsRefusal {
-    /// The `reason` of a limits update RPC error, if it is one of the frozen names.
-    #[must_use]
-    pub fn from_details(details: &serde_json::Value) -> Option<Self> {
-        details
-            .get("reason")
-            .and_then(|reason| Self::deserialize(reason).ok())
-    }
+impl Evidence for LimitsRefusal {
+    const KEY: Option<&'static str> = Some("reason");
 }
 
 impl std::fmt::Display for LimitsRefusal {
@@ -532,12 +522,6 @@ pub enum ContainerNotFoundReason {
     NoResolvedSpec,
 }
 
-impl ContainerNotFoundReason {
-    /// The `reason` of a Container's `NotFound` RPC error, if it is one of the frozen names.
-    #[must_use]
-    pub fn from_details(details: &serde_json::Value) -> Option<Self> {
-        details
-            .get("reason")
-            .and_then(|reason| Self::deserialize(reason).ok())
-    }
+impl Evidence for ContainerNotFoundReason {
+    const KEY: Option<&'static str> = Some("reason");
 }

@@ -529,7 +529,10 @@ async fn the_management_tunnel_never_carries_a_recovery_code() {
             panic!("a Cloud-routed recovery code was accepted");
         };
         assert_eq!(error.code, RpcErrorCode::Unsupported, "{error:?}");
-        assert_eq!(error.recovery_refusal(), Some(RecoveryRefusal::CloudRouted));
+        assert_eq!(
+            error.evidence::<RecoveryRefusal>(),
+            Some(RecoveryRefusal::CloudRouted)
+        );
     }
     let direct = service
         .wrap_sealing_key(routed(wrap(), false))

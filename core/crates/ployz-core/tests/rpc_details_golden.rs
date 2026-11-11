@@ -5,7 +5,7 @@ use std::num::NonZeroU64;
 
 use ployz_core::{
     ContainerNotFoundReason, ContainerRefusal, ContainerRefusalReason, CopyRefusal, Departure,
-    DiskFull, ImageIngestReason, LimitsRefusal, MachineId, MachineName,
+    DiskFull, Evidence, ImageIngestReason, LimitsRefusal, MachineId, MachineName,
     ProvisionedVolumeMaximumBytes, PullPolicy, RecoveryRefusal, RpcError, RpcErrorCode,
     SealingRefusal, SetVolumeCopyRefused, SetVolumeSizeRefused, SizeRefusal, StorageCapacityError,
     SwitchError, VolumeGen,
@@ -20,6 +20,12 @@ fn machine() -> MachineId {
 
 fn bytes(n: u64) -> ProvisionedVolumeMaximumBytes {
     ProvisionedVolumeMaximumBytes::new(NonZeroU64::new(n).unwrap())
+}
+
+fn read<E: Evidence>(details: &Value) -> Option<E> {
+    RpcError::unavailable("m")
+        .with_details(details.clone())
+        .evidence()
 }
 
 fn wire(error: &RpcError) -> String {
@@ -178,7 +184,7 @@ fn a_pull_names_its_image_only_on_details_that_say_nothing() {
     let named = missing.missing_image().unwrap();
     assert_eq!(
         (named.image, named.policy),
-        ("ghcr.io/acme/app:1", Some(PullPolicy::Always))
+        ("ghcr.io/acme/app:1".to_owned(), Some(PullPolicy::Always))
     );
 
     for (policy, wire) in [
@@ -215,7 +221,7 @@ fn a_pull_names_its_image_only_on_details_that_say_nothing() {
 
     let no_policy = RpcError::not_found("m").with_details(json!({ "missing_image": "i" }));
     let named = no_policy.missing_image().unwrap();
-    assert_eq!((named.image, named.policy), ("i", None));
+    assert_eq!((named.image, named.policy), ("i".to_owned(), None));
     let wrong_policy =
         RpcError::not_found("m").with_details(json!({ "missing_image": "i", "pull_policy": 4 }));
     assert_eq!(wrong_policy.missing_image().unwrap().policy, None);
@@ -230,10 +236,10 @@ fn a_full_disk_sits_under_its_own_key() {
         free_bytes: 5_000_000,
     };
     assert_eq!(
-        full.details(),
+        full.to_details(),
         json!({ "disk_full": { "docker_root": "/var/lib/docker", "free_bytes": 5_000_000 } })
     );
-    let error = RpcError::internal("m").with_details(full.details());
+    let error = RpcError::internal("m").with_details(full.to_details());
     assert_eq!(error.disk_full(), Some(full));
     assert_eq!(
         RpcError::internal("m")
@@ -316,19 +322,13 @@ fn a_size_refusal_is_the_whole_details_body() {
         let error = refusal.clone().rpc_error("m");
         assert_eq!(error.code, code, "{details}");
         assert_eq!(error.details, details);
-        assert_eq!(
-            SetVolumeSizeRefused::from_details(&error.details),
-            Some(refusal)
-        );
+        assert_eq!(read::<SetVolumeSizeRefused>(&error.details), Some(refusal));
     }
     assert_eq!(
-        SetVolumeSizeRefused::from_details(&json!({ "reason": "elsewhere" })),
+        read::<SetVolumeSizeRefused>(&json!({ "reason": "elsewhere" })),
         None
     );
-    assert_eq!(
-        SetVolumeSizeRefused::from_details(&json!("not_found")),
-        None
-    );
+    assert_eq!(read::<SetVolumeSizeRefused>(&json!("not_found")), None);
 }
 
 #[test]
@@ -360,14 +360,11 @@ fn a_switch_refusal_is_the_reason_object() {
         let error = refusal.rpc_error("m");
         assert_eq!(error.code, code);
         assert_eq!(error.details, json!({ "reason": reason }));
-        assert_eq!(SwitchError::from_details(&error.details), Some(refusal));
+        assert_eq!(read::<SwitchError>(&error.details), Some(refusal));
     }
-    assert_eq!(
-        SwitchError::from_details(&json!({ "reason": "unknown" })),
-        None
-    );
-    assert_eq!(SwitchError::from_details(&json!("busy")), None);
-    assert_eq!(SwitchError::from_details(&Value::Null), None);
+    assert_eq!(read::<SwitchError>(&json!({ "reason": "unknown" })), None);
+    assert_eq!(read::<SwitchError>(&json!("busy")), None);
+    assert_eq!(read::<SwitchError>(&Value::Null), None);
 }
 
 #[test]
@@ -398,10 +395,7 @@ fn a_copy_refusal_keeps_a_null_copy_on_the_wire() {
         let error = refusal.clone().rpc_error("m");
         assert_eq!(error.code, code);
         assert_eq!(error.details, json!({ "reason": wire, "copy": null }));
-        assert_eq!(
-            SetVolumeCopyRefused::from_details(&error.details),
-            Some(refusal)
-        );
+        assert_eq!(read::<SetVolumeCopyRefused>(&error.details), Some(refusal));
     }
     let stale = SetVolumeCopyRefused {
         reason: CopyRefusal::Stale,
@@ -414,7 +408,7 @@ fn a_copy_refusal_keeps_a_null_copy_on_the_wire() {
         json!({ "reason": "stale", "copy": null, "floor": 7 })
     );
     assert_eq!(
-        SetVolumeCopyRefused::from_details(&json!({ "reason": "stale" })),
+        read::<SetVolumeCopyRefused>(&json!({ "reason": "stale" })),
         Some(SetVolumeCopyRefused {
             reason: CopyRefusal::Stale,
             copy: None,
@@ -422,10 +416,7 @@ fn a_copy_refusal_keeps_a_null_copy_on_the_wire() {
         }),
         "a refusal without its copy key reads as no copy"
     );
-    assert_eq!(
-        SetVolumeCopyRefused::from_details(&json!({ "copy": null })),
-        None
-    );
+    assert_eq!(read::<SetVolumeCopyRefused>(&json!({ "copy": null })), None);
 }
 
 #[test]
@@ -551,10 +542,10 @@ fn sealing_and_recovery_refusals_sit_under_their_own_keys() {
         (SealingRefusal::Unopenable, "unopenable"),
         (SealingRefusal::SealedAnother, "sealed_another"),
     ] {
-        assert_eq!(refusal.details(), json!({ "sealing": name }));
-        let error = RpcError::conflict("m").with_details(refusal.details());
-        assert_eq!(error.sealing_refusal(), Some(refusal));
-        assert_eq!(error.recovery_refusal(), None);
+        assert_eq!(refusal.to_details(), json!({ "sealing": name }));
+        let error = RpcError::conflict("m").with_details(refusal.to_details());
+        assert_eq!(error.evidence::<SealingRefusal>(), Some(refusal));
+        assert_eq!(error.evidence::<RecoveryRefusal>(), None);
     }
     for (refusal, name) in [
         (RecoveryRefusal::CloudRouted, "cloud_routed"),
@@ -566,27 +557,27 @@ fn sealing_and_recovery_refusals_sit_under_their_own_keys() {
         (RecoveryRefusal::WrongCode, "wrong_code"),
         (RecoveryRefusal::HeldAnother, "held_another"),
     ] {
-        assert_eq!(refusal.details(), json!({ "recovery": name }));
-        let error = RpcError::conflict("m").with_details(refusal.details());
-        assert_eq!(error.recovery_refusal(), Some(refusal));
-        assert_eq!(error.sealing_refusal(), None);
+        assert_eq!(refusal.to_details(), json!({ "recovery": name }));
+        let error = RpcError::conflict("m").with_details(refusal.to_details());
+        assert_eq!(error.evidence::<RecoveryRefusal>(), Some(refusal));
+        assert_eq!(error.evidence::<SealingRefusal>(), None);
     }
     let sealed_with_capability = RpcError::conflict("m")
         .with_details(json!({ "sealing": "published", "capability": "ployz.x.v1" }));
     assert_eq!(
-        sealed_with_capability.sealing_refusal(),
+        sealed_with_capability.evidence::<SealingRefusal>(),
         Some(SealingRefusal::Published)
     );
     assert_eq!(
         RpcError::conflict("m")
             .with_details(json!({ "sealing": "nope" }))
-            .sealing_refusal(),
+            .evidence::<SealingRefusal>(),
         None
     );
     assert_eq!(
         RpcError::conflict("m")
             .with_details(json!("sealing"))
-            .sealing_refusal(),
+            .evidence::<SealingRefusal>(),
         None
     );
 }
@@ -623,19 +614,13 @@ fn reason_keyed_refusals_read_the_reason_key_only() {
         let error = reason.rpc_error("m");
         assert_eq!(error.code, code);
         assert_eq!(error.details, json!({ "reason": name }));
-        assert_eq!(
-            ImageIngestReason::from_details(&error.details),
-            Some(reason)
-        );
+        assert_eq!(read::<ImageIngestReason>(&error.details), Some(reason));
     }
     assert_eq!(
-        ImageIngestReason::from_details(&json!({ "reason": "start_failed", "k": 1 })),
+        read::<ImageIngestReason>(&json!({ "reason": "start_failed", "k": 1 })),
         Some(ImageIngestReason::StartFailed)
     );
-    assert_eq!(
-        ImageIngestReason::from_details(&json!("start_failed")),
-        None
-    );
+    assert_eq!(read::<ImageIngestReason>(&json!("start_failed")), None);
 
     for (reason, name) in [
         (LimitsRefusal::OtherService, "other_service"),
@@ -646,17 +631,17 @@ fn reason_keyed_refusals_read_the_reason_key_only() {
         (LimitsRefusal::MemoryUnlimited, "memory_unlimited"),
     ] {
         assert_eq!(
-            LimitsRefusal::from_details(&json!({ "reason": name })),
+            read::<LimitsRefusal>(&json!({ "reason": name })),
             Some(reason)
         );
     }
-    assert_eq!(LimitsRefusal::from_details(&Value::Null), None);
+    assert_eq!(read::<LimitsRefusal>(&Value::Null), None);
     assert_eq!(
-        ContainerNotFoundReason::from_details(&json!({ "reason": "no_resolved_spec" })),
+        read::<ContainerNotFoundReason>(&json!({ "reason": "no_resolved_spec" })),
         Some(ContainerNotFoundReason::NoResolvedSpec)
     );
     assert_eq!(
-        ContainerNotFoundReason::from_details(&json!({ "reason": "else" })),
+        read::<ContainerNotFoundReason>(&json!({ "reason": "else" })),
         None
     );
 }

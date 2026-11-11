@@ -6,6 +6,7 @@ use std::fmt;
 use thiserror::Error;
 use ts_rs::TS;
 
+use super::evidence::{Departure, MissingImage, ReplyLost, Undialed, Unreached};
 use crate::PullPolicy;
 
 #[derive(Debug, Error)]
@@ -191,85 +192,60 @@ impl RpcError {
     /// was the Leave's to stop. Code, message and every other detail stay as they were.
     /// Read back by [`Self::departure`]. Details that aren't an object are kept unmarked.
     #[must_use]
-    pub fn overlapping_leave(mut self, server: &crate::MachineName) -> Self {
-        if self.details.is_null() {
-            self.details = Value::Object(serde_json::Map::new());
-        }
-        if let Value::Object(details) = &mut self.details {
-            details.insert(
-                DEPARTING_KEY.into(),
-                serde_json::json!(Departure {
-                    server: server.clone()
-                }),
-            );
-        }
-        self
+    pub fn overlapping_leave(self, server: &crate::MachineName) -> Self {
+        self.mark(&Departure {
+            server: server.clone(),
+        })
     }
 
     /// The Leave that overlapped the call this error answers, if one did.
     #[must_use]
     pub fn departure(&self) -> Option<Departure> {
-        Departure::deserialize(self.details.get(DEPARTING_KEY)?).ok()
+        self.marked()
     }
 
     /// `self` from a call to `machine_id` whose connection dropped after it went out and
     /// before an answer came back, so the target may have done the work. Read back by
     /// [`Self::reply_lost`]. Details that aren't an object are kept unmarked.
     #[must_use]
-    pub fn reply_lost_from(mut self, machine_id: &crate::MachineId) -> Self {
-        if self.details.is_null() {
-            self.details = Value::Object(serde_json::Map::new());
-        }
-        if let Value::Object(details) = &mut self.details {
-            details.insert(REPLY_LOST_KEY.into(), Value::Bool(true));
-            details
-                .entry("machine_id")
-                .or_insert_with(|| Value::String(machine_id.to_string()));
-        }
-        self
+    pub fn reply_lost_from(self, machine_id: &crate::MachineId) -> Self {
+        self.mark(&ReplyLost {
+            machine_id: Some(*machine_id),
+        })
     }
 
     /// `self` from a call that never reached its target, so the target did nothing with
     /// it. Read back by [`Self::never_reached`]. Details that aren't an object are kept
     /// unmarked.
     #[must_use]
-    pub fn unreached(mut self) -> Self {
-        if self.details.is_null() {
-            self.details = Value::Object(serde_json::Map::new());
-        }
-        if let Value::Object(details) = &mut self.details {
-            details.insert(REACHED_KEY.into(), Value::Bool(false));
-        }
-        self
+    pub fn unreached(self) -> Self {
+        self.mark(&Unreached)
     }
 
     /// `self`, an [`Self::unanswered_target`] error from a router that couldn't dial the
     /// target, so only small packets went its way. Read back by [`Self::undialed`].
     #[must_use]
-    pub fn undialed_target(mut self) -> Self {
-        if let Value::Object(details) = &mut self.details {
-            details.insert(UNDIALED_KEY.into(), Value::Bool(true));
-        }
-        self
+    pub fn undialed_target(self) -> Self {
+        self.mark(&Undialed)
     }
 
     /// Whether the router couldn't dial the unanswered target.
     #[must_use]
     pub fn undialed(&self) -> bool {
-        self.details.get(UNDIALED_KEY).and_then(Value::as_bool) == Some(true)
+        self.marked::<Undialed>().is_some()
     }
 
     /// Whether the call never reached its target.
     #[must_use]
     pub fn never_reached(&self) -> bool {
-        self.details.get(REACHED_KEY).and_then(Value::as_bool) == Some(false)
+        self.marked::<Unreached>().is_some()
     }
 
     /// Whether the connection dropped before the target's answer came back, so the
     /// target may have done the work.
     #[must_use]
     pub fn reply_lost(&self) -> bool {
-        self.details.get(REPLY_LOST_KEY).and_then(Value::as_bool) == Some(true)
+        self.marked::<ReplyLost>().is_some()
     }
 
     /// Whether the target Machine didn't answer, rather than answering with this error.
@@ -306,28 +282,25 @@ impl RpcError {
     /// found or the registry refused it. A registry answers not found for a missing tag
     /// and a private repository alike, and some, such as ghcr.io, answer `denied`.
     #[must_use]
-    pub fn pulling(mut self, image: &str, policy: PullPolicy) -> Self {
+    pub fn pulling(self, image: &str, policy: PullPolicy) -> Self {
         if self.details.is_null()
             && (self.code == RpcErrorCode::NotFound || self.registry_refused())
         {
-            self.details = serde_json::json!({ MISSING_IMAGE: image, PULL_POLICY: policy });
+            return self.with_evidence(&MissingImage {
+                image: image.to_owned(),
+                policy: Some(policy),
+            });
         }
         self
     }
 
     /// The image a not-found or refused pull named through [`Self::pulling`].
     #[must_use]
-    pub fn missing_image(&self) -> Option<MissingImage<'_>> {
+    pub fn missing_image(&self) -> Option<MissingImage> {
         if self.code != RpcErrorCode::NotFound && !self.registry_refused() {
             return None;
         }
-        Some(MissingImage {
-            image: self.details.get(MISSING_IMAGE)?.as_str()?,
-            policy: self
-                .details
-                .get(PULL_POLICY)
-                .and_then(|policy| PullPolicy::deserialize(policy).ok()),
-        })
+        self.evidence()
     }
 
     /// The host a failed pull could not look up, from Docker's error: the registry,
@@ -354,38 +327,19 @@ impl RpcError {
         std::iter::once(self.message.as_str()).chain(self.cause.iter().map(String::as_str))
     }
 
-    /// The full disk a failed pull ran into, as [`DiskFull::details`] named it.
+    /// The full disk a failed pull ran into, as its [`DiskFull`] evidence named it.
     #[must_use]
     pub fn disk_full(&self) -> Option<DiskFull> {
-        serde_json::from_value(self.details.get(DISK_FULL)?.clone()).ok()
+        self.evidence()
     }
 }
 
-const MISSING_IMAGE: &str = "missing_image";
 /// What Docker prints when a registry refuses a pull for want of access.
 const REGISTRY_REFUSALS: [&str; 3] = [
     "error from registry: denied",
     "denied: requested access",
     "unauthorized: ",
 ];
-const PULL_POLICY: &str = "pull_policy";
-const DISK_FULL: &str = "disk_full";
-
-/// The Leave that overlapped a call: what a Server's Containers did since it began is
-/// the Leave's doing. Annotates a failure's details under [`DEPARTING_KEY`], an unhealthy
-/// [`HealthVerdict`], and the `ExecutionError::Health` a deploy stores.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, TS)]
-pub struct Departure {
-    pub server: crate::MachineName,
-}
-
-/// An image a pull answered not found for, from [`RpcError::missing_image`].
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct MissingImage<'a> {
-    pub image: &'a str,
-    /// The policy it was pulled under, when the error recorded one.
-    pub policy: Option<PullPolicy>,
-}
 
 /// A pull failed while a disk it writes to had almost no free space.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
@@ -394,14 +348,6 @@ pub struct DiskFull {
     /// when that is the fuller. The wire keeps the name it shipped with.
     pub docker_root: String,
     pub free_bytes: u64,
-}
-
-impl DiskFull {
-    /// [`RpcError`] details that [`RpcError::disk_full`] reads back.
-    #[must_use]
-    pub fn details(&self) -> Value {
-        serde_json::json!({ DISK_FULL: self })
-    }
 }
 
 impl DiskFull {
@@ -471,11 +417,6 @@ const TARGET_UNANSWERED_REASON: &str = "target_unanswered";
 /// Target it does not list, beside the `targets` it looked up. Read back by
 /// [`RpcError::server_unlisted`].
 pub const NO_SUCH_SERVER_REASON: &str = "no_such_server";
-/// The details key an [`RpcError::overlapping_leave`] mark lives under.
-pub const DEPARTING_KEY: &str = "departing";
-const REPLY_LOST_KEY: &str = "reply_lost";
-const REACHED_KEY: &str = "reached";
-const UNDIALED_KEY: &str = "undialed";
 
 /// [`caused_status`] as `Unavailable`, marked [`TARGET_UNANSWERED_KEY`].
 #[cfg(not(target_arch = "wasm32"))]
@@ -521,10 +462,13 @@ pub fn large_packets_dropped_status(status: tonic::Status, sentence: String) -> 
         _ => serde_json::Map::new(),
     };
     details.insert("reason".into(), LARGE_PACKETS_DROPPED_REASON.into());
-    match details.get_mut("cause") {
+    match details.get_mut(StatusBody::CAUSE) {
         Some(Value::Array(causes)) => causes.push(sentence.into()),
         _ => {
-            details.insert("cause".into(), Value::Array(vec![sentence.into()]));
+            details.insert(
+                StatusBody::CAUSE.into(),
+                Value::Array(vec![sentence.into()]),
+            );
         }
     }
     let details = serde_json::to_vec(&details).expect("a JSON object serializes");
@@ -548,8 +492,7 @@ pub fn caused_status(
     if cause.is_empty() {
         return tonic::Status::new(code, error.to_string());
     }
-    let details = serde_json::to_vec(&serde_json::json!({ "cause": cause }))
-        .expect("a list of strings serializes");
+    let details = StatusBody::new(cause, serde_json::Map::new()).encode();
     tonic::Status::with_details(code, error.to_string(), details.into())
 }
 
@@ -562,11 +505,11 @@ pub fn hinted_status(
     error: &(dyn std::error::Error + 'static),
     hints: Value,
 ) -> tonic::Status {
-    let mut details = hints;
-    if let Some(fields) = details.as_object_mut() {
-        fields.insert("cause".into(), crate::error_chain::causes(error).into());
-    }
-    let details = serde_json::to_vec(&details).expect("a JSON value serializes");
+    let details = if let Value::Object(fields) = hints {
+        StatusBody::new(crate::error_chain::causes(error), fields).encode()
+    } else {
+        serde_json::to_vec(&hints).expect("a JSON value serializes")
+    };
     tonic::Status::with_details(code, error.to_string(), details.into())
 }
 
@@ -574,28 +517,53 @@ pub fn hinted_status(
 /// causes: `Null` when they carried none, `None` for any other details.
 #[must_use]
 pub fn status_details(details: &[u8]) -> Option<Value> {
-    status_causes(details)?;
-    let Ok(Value::Object(mut fields)) = serde_json::from_slice::<Value>(details) else {
-        return None;
-    };
-    fields.remove("cause");
-    Some(if fields.is_empty() {
-        Value::Null
-    } else {
-        Value::Object(fields)
-    })
+    StatusBody::decode(details).map(StatusBody::into_details)
 }
 
 /// The causes a [`caused_status`] carried, or `None` for any other details.
 #[must_use]
 pub fn status_causes(details: &[u8]) -> Option<Vec<String>> {
-    #[derive(Deserialize)]
-    struct Caused {
-        cause: Vec<String>,
+    StatusBody::decode(details).map(|body| body.cause)
+}
+
+/// The bytes a status carries in its details: an object whose `cause` lists the sources
+/// below the message, beside any hints keyed like an [`RpcError`]'s details. `cause` is
+/// always present, even empty, so a status with details always decodes.
+struct StatusBody {
+    cause: Vec<String>,
+    fields: serde_json::Map<String, Value>,
+}
+
+impl StatusBody {
+    const CAUSE: &'static str = "cause";
+
+    #[cfg(not(target_arch = "wasm32"))]
+    fn new(cause: Vec<String>, fields: serde_json::Map<String, Value>) -> Self {
+        Self { cause, fields }
     }
-    serde_json::from_slice::<Caused>(details)
-        .ok()
-        .map(|caused| caused.cause)
+
+    #[cfg(not(target_arch = "wasm32"))]
+    fn encode(self) -> Vec<u8> {
+        let mut fields = self.fields;
+        fields.insert(Self::CAUSE.into(), self.cause.into());
+        serde_json::to_vec(&Value::Object(fields)).expect("a JSON object serializes")
+    }
+
+    fn decode(details: &[u8]) -> Option<Self> {
+        let Value::Object(mut fields) = serde_json::from_slice::<Value>(details).ok()? else {
+            return None;
+        };
+        let cause = serde_json::from_value(fields.remove(Self::CAUSE)?).ok()?;
+        Some(Self { cause, fields })
+    }
+
+    fn into_details(self) -> Value {
+        if self.fields.is_empty() {
+            Value::Null
+        } else {
+            Value::Object(self.fields)
+        }
+    }
 }
 
 #[cfg(test)]

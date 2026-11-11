@@ -1527,7 +1527,7 @@ fn sealing_error(error: SealingError) -> RpcError {
             (RpcErrorCode::InvalidArgument, Refusal::SealedAnother)
         }
     };
-    RpcError::caused(code, &error).with_details(refusal.details())
+    RpcError::caused(code, &error).with_evidence(&refusal)
 }
 
 /// A refusal that keeps a second Sealing Key out of the Cluster also names the route's
@@ -1575,7 +1575,7 @@ fn recovery_error(error: RecoveryError) -> RpcError {
         RecoveryError::WrongCode => (RpcErrorCode::InvalidArgument, Refusal::WrongCode),
         RecoveryError::HeldAnother { .. } => (RpcErrorCode::Conflict, Refusal::HeldAnother),
     };
-    RpcError::caused(code, &error).with_details(refusal.details())
+    RpcError::caused(code, &error).with_evidence(&refusal)
 }
 
 #[expect(
