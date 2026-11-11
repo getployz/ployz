@@ -19,7 +19,7 @@ use std::time::Duration;
 use clap::{Arg, ArgAction, ArgMatches, Command};
 use ployz_core::authority::preview::{secrets_digest, template};
 use ployz_core::authority::rule::{PolicyCache, RuleEvent, RuleSource, Runner};
-use ployz_core::authority::rule_draft::{WORKFLOW, builds, settings};
+use ployz_core::authority::rule_draft::{Signs, WORKFLOW, builds, settings};
 use ployz_core::authority::shown::Shown;
 use ployz_core::authority::{
     BuildPolicy, PreviewRule, PreviewService, RuleId, Signed, SignerKey, Timestamp,
@@ -654,7 +654,7 @@ fn show(view: &PreviewRuleView, rule: &PreviewRule, names: &[ServiceName], trust
             if let Ok(labels) = ployz_core::ContainerLabels::parse(labels) {
                 shown.container.labels = labels;
             }
-            settings(&shown)
+            settings(&shown, Signs::Template)
                 .into_iter()
                 .map(|line| line.as_str().replace(view.sample.as_str(), "pv-<id>"))
                 .collect::<Vec<_>>()

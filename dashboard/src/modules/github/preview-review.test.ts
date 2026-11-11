@@ -73,7 +73,8 @@ describe("draftReview", () => {
       generation: 2, issued_at: 1_000, key: "fork:7", rule: "1".repeat(32), services: [{ digest: TEMPLATE, name: "web" }],
     });
     expect(draft.secrets).toBe(true);
-    expect(draft.lines).toEqual([expect.stringMatching(/^Review web at fedcba987654 \(reads DATABASE_URL from the parent/)]);
+    expect(draft.lines[0]).toMatch(/^Review web at fedcba987654 \(reads DATABASE_URL from the parent/);
+    expect(draft.lines.slice(1).every((line) => line.startsWith("  "))).toBe(true);
   });
 
   it("says why a preview can't be reviewed", () => {

@@ -104,10 +104,10 @@ pub(in crate::handlers) fn sign(
     };
     let (body, approved) =
         DeployApproval::draft(terms, plan.namespace, &target, &pins).map_err(Error::command)?;
-    let signed = Signed::sign(&body, &signer).map_err(Error::command)?;
-    for approved in &approved {
-        crate::ui::stream(format_args!("{}", approved.line()));
+    for line in approved.iter().flat_map(ApprovedChange::lines) {
+        crate::ui::stream(format_args!("{line}"));
     }
+    let signed = Signed::sign(&body, &signer).map_err(Error::command)?;
     Ok(Some(DeviceApproval {
         signed,
         version: plan.version,

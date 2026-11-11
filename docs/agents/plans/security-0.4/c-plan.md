@@ -52,7 +52,7 @@ Terms follow `core/CONTEXT.md` (Deploy, Deploy Intent, Attempt Target, Requested
 - [ ] Resolve the forge once. Default to `gh`; if `command -v origin` succeeds and Origin can resolve the repository, use `origin pr` for every PR operation. Record any fallback to `gh`. Never require `gt`.
 - [ ] Open the PR ready, never draft, per **Opening a PR**. Use the run's built-in PR tool when it has one, else `origin pr create --status open --base <base-branch>` or `gh pr create --base <base-branch>` according to the resolved forge. A stack child targets its parent branch.
 - [ ] Name the `core/DESIGN.md` bets the PR touches in its body and the choice each changed. Every C PR touches the stable promise (one optional request field and one capability row), bet 6 Machine-local authority (the Machine checks its own image store and Volumes), bet 7 Cloud drives and never owns (the runner carries the approval and cannot make one), bet 3 bounded imperative commands (the approval is evidence, not desired state) and bet 10 client first (the client computes the digest, and the daemon only verifies, which is a Machine-local safety boundary).
-- [ ] Name in the PR body, once, the residuals the bar sets aside. Cloud can replay an approved Deploy inside its window, drop or reorder its steps, or show the person a false change. Do not open review rounds on them.
+- [ ] Name in the PR body, once, the residuals the bar sets aside. Cloud can replay an approved Deploy inside its window, drop or reorder its steps, or show a false change on its own screens. Do not open review rounds on them. What a trusted client signs, it shows in full (C5).
 - [ ] Run the repo's lint and typecheck once before the PR-facing push (`cargo fmt --check` and the touched crates' `cargo clippy` in `core/`, `pnpm typecheck && pnpm lint` in `dashboard/` when C4 touches it). Push with hooks on.
 - [ ] Run `/deslop` before each commit and `/no-comments` before review.
 - [ ] Triage every Bugbot and security-reviewer comment per `../references/bugbot-triage.md`. Judge each finding by the Cloud security bar in `AGENTS.md`.
@@ -334,6 +334,26 @@ Outcome. A deploy approved under a browser session opens only Sealed values seal
 - [ ] Rebased onto current trunk after the verdict, patch-id unchanged.
 - [ ] The root appends C4 to the base-branch stack and the operator lands it bottom-up.
 
+## Show every setting a deploy approval signs (C5)
+
+Added by the program's root on 2026-11-11 for #4085, under the operator's grant. The root decision: a trusted client shows everything it signs. That is not the "false change" residual, which covers only Cloud's own screens.
+
+**Outcome.** `ployz deploy` under enforcement prints, under each Service's `Approved` line, every setting the approval's digest covers that holds a value. The browser's deploy approval and the dashboard's preview review list the same lines.
+
+**Attack path closed.** A Device's deploy approval signs each Service's whole requested spec, but the CLI printed only the image and the host-sensitive fields. A compromised Cloud could change a field that line left out, such as the start command, entrypoint, user, a mount or a variable, in the plan it relays. The person signed it unseen, and the Container ran it with the Environment's Sealed values opened.
+
+- [x] `ApprovedChange` gains `settings` from `rule_draft::settings`, the printer D7d built for rules, so a field added to the spec later shows without a change here. `Signs::Deploy` shows the pull policy, which a deploy signs and a template replaces, and every summary leaves out `mode` and `update`, which no payload digest covers.
+- [x] An image the spec names by digest shows its whole digest. A 12-hex prefix is cheap to match with another image, and Cloud relays the digest. A tag the CLI pinned keeps the short form, since the pin is the CLI's own registry read.
+- [x] Each relayed string shows through D7d's `Shown`, the Service line and its host notes included: quoted unless it is a plain token, with everything outside printable ASCII escaped, so a planted value can't redraw, hide or split the line beside it. Config bytes that are UTF-8 show as text, and nested `null`s, which the digest drops, don't show.
+- [x] No two specs that sign differently read the same, but for a Sealed ciphertext. Codex's review found four ways they did. A field now hides only when it equals the spec's own default, so an explicit `false` or empty value shows, such as a hook's `privileged false` that stops it inheriting `privileged`. Variable text that holds a separator is quoted, so one value can't pass for two variables. A value built from text and Sealed parts shows its text, and each Sealed part the variable it was sealed as, with its Service and source Environment when they aren't the Container's own. A preview review applies its placeholder to the JSON the digest hashes, so a Config that names the Namespace reads apart from one that writes the placeholder.
+- [x] Codex's review found a rule's Railpack build command hidden. D7d fixed that on its own branch, showing every field of the build policy, so C5 takes its printer.
+- [x] The dashboard preview review prints the settings its template signs, generated values as their `secret(…)` call and the preview's Namespace as `{preview-namespace}`. Before, a planted field read only "settings differ from the preview rule".
+- [x] Restart, stop and start approvals sign Container IDs, not specs, so they show nothing new. No proposal step signs a deploy from the dashboard.
+- [x] Unit. Each of 31 fields Cloud could plant changes the browser draft's lines. On main, 23 of them, the start command among them, changed nothing the person read. A planted escape prints as text. A planted command shows in the preview review. Each of Codex's four collisions reads apart, and D7d's tests cover the build policy.
+- [x] Live. On a `--cloud` run with enforcement on, Cloud plants a start command, and `ployz deploy` on the Device prints it before signing. Ran on 2026-11-11 at `93b98ea942`, one Boat Machine. The Organization Token set `web.startCommand` to a command that echoes `planted-at-head`. `ployz deploy` on the Device printed `entrypoint ["sh","-c","echo planted-at-head; …"]` under `Approved web`, before `Deploying #4`. The Container printed `planted-at-head`, and the Server logged the deploy approved by the Device. On the same run's Cloud, with a passkey from a virtual authenticator, the dashboard's **Deploy** toast listed the same lines (`c5-head-deploy-approved-toast.png`), and the Server logged the deploy approved by that passkey. The preview review dialog wasn't driven live, since it needs a preview rule, a fork's pull request and the fake GitHub; its lines come from the same core code and its unit tests.
+
+**Open, for the root's call.** Sealed values show by name only, and a Device can't read them. Anyone holding the Cluster's public key can seal a value, Cloud included, so Cloud could swap a Sealed value's ciphertext for one it chose, and no summary can show the difference. The Container then runs with a value Cloud picked, such as a database URL. C5 doesn't close this, and it isn't recorded as accepted.
+
 ## Close the program
 
 - [ ] Every box above is checked with its evidence.
@@ -418,7 +438,7 @@ What C needs from thread A's contract that PRs #3926, #3939 and #3958 do not pro
 ## Appendix D. Residual risks
 
 - Approved code can leak its own secrets, and an approved image that is itself malicious runs.
-- Cloud can replay an approved Deploy inside its 15 minute window, run its steps in another order, run only some of them, or show the person a false change before they approve. The bar sets these aside. A replay recreates approved Containers and never reruns a hook.
+- Cloud can replay an approved Deploy inside its 15 minute window, run its steps in another order, run only some of them, or show a false change on its own screens, such as the dashboard's review of changes. The bar sets these aside. A replay recreates approved Containers and never reruns a hook. The residual stops at Cloud's screens: what a trusted client signs, it prints in full before signing (C5), so a setting Cloud planted in the plan shows there.
 - An unattended `ployz deploy` with a Device key approves whatever Cloud's Saved State says. Thread D's automatic deploy rule is the safe path for automation.
 - A private image named by a tag needs a digest the person writes, since Cloud can hold write access to that registry.
 - A malicious dashboard with a live session can deploy any payload inside that session's Environment. After C4 it cannot open another Environment's Sealed values.

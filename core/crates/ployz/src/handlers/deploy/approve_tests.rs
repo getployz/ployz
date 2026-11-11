@@ -69,11 +69,22 @@ fn a_pinned_tag_prints_its_tag_and_the_digest_it_resolved_to() {
 }
 
 #[test]
-fn the_approved_line_names_the_image_digest_and_what_the_host_gives() {
+fn the_approved_lines_name_the_whole_digest_what_the_host_gives_and_every_setting() {
     assert_eq!(
-        approved(&spec(PINNED)).line(),
-        "Approved web: nginx@sha256:0123456789ab… (privileged, device /dev/fuse:/dev/fuse, adds \
-         NET_ADMIN, host port 8080, binds /srv, hook migrate --up)"
+        approved(&spec(PINNED)).lines(),
+        [
+            "Approved web: nginx@sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef \
+             (privileged, device /dev/fuse:/dev/fuse, adds NET_ADMIN, host port 8080, binds /srv, \
+             hook migrate --up)",
+            r#"  pre-deploy ["migrate","--up"]"#,
+            r#"  mounts [{"no_copy":false,"read_only":false,"target":"/srv","volume":"root"}]"#,
+            r#"  ports [{"bind":{"kind":"all"},"container_port":80,"mode":"host","published_port":8080,"transport_protocol":"tcp"}]"#,
+            r#"  volumes [{"reference":"root","source":{"create_machine_path":false,"kind":"bind","machine_path":"/srv"}}]"#,
+            r#"  cap_add ["NET_ADMIN"]"#,
+            r#"  privileged true"#,
+            r#"  pull_policy "missing""#,
+            r#"  resources {"device_reservations":[],"devices":[{"cgroup_permissions":"rwm","container_path":"/dev/fuse","machine_path":"/dev/fuse"}],"ulimits":{}}"#,
+        ]
     );
 }
 
@@ -90,6 +101,7 @@ fn json_carries_what_was_approved() {
             "digest": digest.to_string(),
             "host": ["privileged", "device /dev/fuse:/dev/fuse", "adds NET_ADMIN", "host port 8080", "binds /srv",
                      "hook migrate --up"],
+            "settings": approved(&spec).settings,
         })
     );
 }

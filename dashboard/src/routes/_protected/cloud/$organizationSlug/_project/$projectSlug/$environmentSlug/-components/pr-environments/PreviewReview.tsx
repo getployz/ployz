@@ -102,7 +102,9 @@ function ReviewDialog({ view, scope, number, head, approve, onClose }: {
         </DialogHeader>
         {lines.length > 0 ? (
           <ul className="flex flex-col gap-1 text-sm">
-            {lines.map((line) => <li key={line} className="break-words">{line}</li>)}
+            {lines.map((line, at) => line.startsWith("  ")
+              ? <li key={`${at}:${line}`} className="pl-4 font-mono text-xs break-all">{line.trimStart()}</li>
+              : <li key={`${at}:${line}`} className="break-words">{line}</li>)}
           </ul>
         ) : null}
         {problem !== null ? <p role="alert" className="text-sm text-destructive">{problem}</p>
