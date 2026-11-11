@@ -95,9 +95,12 @@ Approving previews of production:
   servers     2 in the cluster
   web
     reads     DATABASE_URL from production
-    setup     runs once, on each preview's first deploy
     variables DATABASE_URL (sealed), LOG_LEVEL=info
-    host ports [{"mode":"ingress","hostname":"web-pv-<id>.acme-x7q2.ployz.app","load_balancer_port":443,"container_port":80,"http_protocol":"https"}]
+    mode {"mode":"replicated","replicas":1}
+    ports [{"mode":"ingress","hostname":"web-pv-<id>.acme-x7q2.ployz.app","load_balancer_port":443,"container_port":80,"http_protocol":"https"}]
+    restart {"name":"unless-stopped"}
+    setup     runs once, on each preview's first deploy, with
+      pre-deploy ["sh","-c","pnpm db:seed"]
     generated SESSION_SECRET, new in each preview
 Approved. Pull requests to acme/web by the accounts shown now open a preview of web.
 ```

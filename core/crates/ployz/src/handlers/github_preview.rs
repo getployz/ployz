@@ -23,7 +23,7 @@ use ployz_core::authority::rule_draft::{WORKFLOW, settings};
 use ployz_core::authority::{
     BuildPolicy, PreviewRule, PreviewService, RuleId, Signed, SignerKey, Timestamp,
 };
-use ployz_core::{RpcErrorCode, SealedRecord, ServiceName};
+use ployz_core::{RequestedServiceSpec, RpcErrorCode, SealedRecord, ServiceName};
 use ployz_store::{ApprovePreviewRule, PlanPreviewRule, PreviewRuleView, RuleQuery};
 use reqwest::{StatusCode, header};
 use serde::{Deserialize, Serialize};
@@ -638,20 +638,34 @@ fn show(view: &PreviewRuleView, rule: &PreviewRule, names: &[ServiceName], trust
                 view.environment.name
             ));
         }
-        if approved.setup.is_some() {
-            crate::ui::stream("    setup     runs once, on each preview's first deploy");
-        }
-        if let Some(spec) = view.target.iter().find(|spec| spec.name == *name) {
-            // A Generated Value shows by name: the rehearsal's value is no preview's.
+        // A Generated Value shows by name: the rehearsal's value is no preview's. The
+        // rehearsal's Namespace is no preview's either, so its hostnames show the derived
+        // part as `<id>`.
+        let lines = |spec: &RequestedServiceSpec| {
             let mut shown = spec.clone();
             shown
                 .container
                 .environment
                 .retain(|key, _| !approved.generated.contains_key(key));
-            // The rehearsal's Namespace is no preview's, so its hostnames show the derived part as `<id>`.
-            for line in settings(&shown) {
-                let line = line.replace(view.sample.as_str(), "pv-<id>");
-                crate::ui::stream(format_args!("    {line}"));
+            settings(&shown)
+                .into_iter()
+                .map(|line| line.replace(view.sample.as_str(), "pv-<id>"))
+                .collect::<Vec<_>>()
+        };
+        let ordinary = view
+            .target
+            .iter()
+            .find(|spec| spec.name == *name)
+            .map(lines)
+            .unwrap_or_default();
+        for line in &ordinary {
+            crate::ui::stream(format_args!("    {line}"));
+        }
+        // The first deploy signs its own spec, so what it adds shows apart.
+        if let Some(setup) = view.setup.iter().find(|setup| setup.name == *name) {
+            crate::ui::stream("    setup     runs once, on each preview's first deploy, with");
+            for line in lines(setup).iter().filter(|line| !ordinary.contains(line)) {
+                crate::ui::stream(format_args!("      {line}"));
             }
         }
         if !approved.generated.is_empty() {

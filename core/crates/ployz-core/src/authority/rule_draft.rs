@@ -440,13 +440,48 @@ fn changes(kept: Option<&RuleService>, next: &RuleService) -> Vec<String> {
 }
 
 /// The settings a person reads before approving: each variable, Sealed ones by name only,
-/// and what reaches the host.
+/// the pre-deploy command, then every other field the template signs that holds a value,
+/// by its wire name. A field added to the spec later shows without a change here, so
+/// nothing a rule signs is hidden from the person who signs it.
 #[must_use]
 pub fn settings(spec: &RequestedServiceSpec) -> Vec<String> {
-    let container = &spec.container;
     let mut lines = Vec::new();
-    let variables: Vec<String> = container
-        .environment
+    variables(&mut lines, "variables", &spec.container.environment);
+    if let Some(hook) = &spec.pre_deploy {
+        lines.push(format!("pre-deploy {}", json(&hook.command)));
+        variables(&mut lines, "pre-deploy variables", &hook.environment);
+    }
+    let serde_json::Value::Object(mut fields) =
+        serde_json::to_value(spec).expect("a spec serializes to JSON")
+    else {
+        return lines;
+    };
+    let container = fields.remove("container");
+    let hook = fields.remove("pre_deploy");
+    fields.remove("name");
+    rest(&mut lines, "", fields);
+    // The image and pull policy are the template's own placeholders, the variables show
+    // above, and the Sealed identity is bound by each value's ciphertext.
+    if let Some(serde_json::Value::Object(mut container)) = container {
+        for shown in ["image", "pull_policy", "environment", "sealed_identity"] {
+            container.remove(shown);
+        }
+        rest(&mut lines, "", container);
+    }
+    if let Some(serde_json::Value::Object(mut hook)) = hook {
+        hook.remove("command");
+        hook.remove("environment");
+        rest(&mut lines, "pre-deploy ", hook);
+    }
+    lines
+}
+
+fn variables(
+    lines: &mut Vec<String>,
+    label: &str,
+    environment: &std::collections::BTreeMap<String, crate::EnvValue>,
+) {
+    let variables: Vec<String> = environment
         .iter()
         .map(|(name, value)| match value.text() {
             Some(text) => format!("{name}={text}"),
@@ -454,24 +489,32 @@ pub fn settings(spec: &RequestedServiceSpec) -> Vec<String> {
         })
         .collect();
     if !variables.is_empty() {
-        lines.push(format!("variables {}", variables.join(", ")));
+        lines.push(format!("{label} {}", variables.join(", ")));
     }
-    if let Some(hook) = &spec.pre_deploy {
-        lines.push(format!(
-            "pre-deploy {}",
-            serde_json::to_string(&hook.command).unwrap_or_default()
-        ));
+}
+
+/// One line per field of `fields` that holds a value.
+fn rest(lines: &mut Vec<String>, prefix: &str, fields: serde_json::Map<String, serde_json::Value>) {
+    for (name, value) in fields {
+        if !unset(&value) {
+            lines.push(format!("{prefix}{name} {}", json(&value)));
+        }
     }
-    if !spec.ports.is_empty() {
-        lines.push(format!(
-            "host ports {}",
-            serde_json::to_string(&spec.ports).unwrap_or_default()
-        ));
+}
+
+/// Whether `value` holds nothing: null, false, empty, or an object of such fields.
+fn unset(value: &serde_json::Value) -> bool {
+    match value {
+        serde_json::Value::Null | serde_json::Value::Bool(false) => true,
+        serde_json::Value::String(text) => text.is_empty(),
+        serde_json::Value::Array(items) => items.is_empty(),
+        serde_json::Value::Object(fields) => fields.values().all(unset),
+        serde_json::Value::Bool(true) | serde_json::Value::Number(_) => false,
     }
-    if container.privileged {
-        lines.push("privileged".to_owned());
-    }
-    lines
+}
+
+fn json(value: &impl Serialize) -> String {
+    serde_json::to_string(value).expect("a spec serializes to JSON")
 }
 
 #[cfg(test)]

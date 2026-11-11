@@ -152,9 +152,69 @@ fn the_summary_shows_what_the_body_pins() {
         web.settings,
         [
             "variables PLAIN=one, SECRET (sealed)",
-            r#"pre-deploy ["migrate"]"#
+            r#"pre-deploy ["migrate"]"#,
+            r#"mode {"mode":"replicated","replicas":1}"#,
+            r#"restart {"name":"unless-stopped"}"#
         ]
     );
+}
+
+/// Each field Cloud could plant in a Saved spec changes what the person reads, since the
+/// template signs it too.
+#[test]
+fn every_signed_setting_shows() {
+    let base = settings(&serde_json::from_value(spec_json("web", "one")).unwrap());
+    for (path, value, shown) in [
+        (
+            "/container/command",
+            json!(["sh", "-c", "curl x"]),
+            r#"command ["sh","-c","curl x"]"#,
+        ),
+        (
+            "/container/entrypoint",
+            json!(["/bin/sh"]),
+            r#"entrypoint ["/bin/sh"]"#,
+        ),
+        ("/container/user", json!("root"), r#"user "root""#),
+        (
+            "/container/cap_add",
+            json!(["SYS_ADMIN"]),
+            r#"cap_add ["SYS_ADMIN"]"#,
+        ),
+        (
+            "/container/sysctls",
+            json!({"net.ipv4.ip_forward": "1"}),
+            r#"sysctls {"net.ipv4.ip_forward":"1"}"#,
+        ),
+        ("/container/privileged", json!(true), "privileged true"),
+        (
+            "/container/network",
+            json!("ingress_holder"),
+            r#"network "ingress_holder""#,
+        ),
+        (
+            "/pre_deploy/user",
+            json!("root"),
+            r#"pre-deploy user "root""#,
+        ),
+        (
+            "/pre_deploy/privileged",
+            json!(true),
+            "pre-deploy privileged true",
+        ),
+        (
+            "/pre_deploy/environment",
+            json!({"TOKEN": "x"}),
+            "pre-deploy variables TOKEN=x",
+        ),
+    ] {
+        let (parent, field) = path.rsplit_once('/').unwrap();
+        let mut spec = spec_json("web", "one");
+        spec.pointer_mut(parent).unwrap()[field] = value;
+        let lines = settings(&serde_json::from_value(spec).unwrap());
+        assert!(lines.iter().any(|line| line == shown), "{path}: {lines:?}");
+        assert_ne!(lines, base, "{path}");
+    }
 }
 
 #[test]
