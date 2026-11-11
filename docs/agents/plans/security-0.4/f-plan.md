@@ -228,6 +228,7 @@ Named once in each PR body, then left alone.
 - A Server added from Cloud's install line ran Cloud's script as root before it joined (decision 3). A Cluster founded from that line trusts the first key that line installs (Appendix A gap 6).
 - A teardown a person approved runs in the order and at the time Cloud picks.
 - Cloud can leave a real Server out of the starting set. That's a drop. The Server stays awaiting activation and is named.
+- A secret typed into the dashboard trusts the dashboard: a compromised Cloud can supply the sealing key (or the page) and read it. F3 stops the key reaching an honest Cloud in plaintext; the CLI path that seals to a Device-pinned Cluster key is a follow-up.
 
 ## Program checklist
 
@@ -336,7 +337,7 @@ What users lose. On an enforcing Cluster with no signed channel, upgrades throug
 
 ## Keep ingress and Private Access running under enforcement (F3)
 
-Outcome. Under enforcement, Cloud starts and repairs the Ingress Proxy and its doors as it does with enforcement off, and the daemon renews certificates with Cloud unreachable. Turning Private Access on takes one passkey prompt, and turning it off takes none. Attack path closed. Cloud cannot turn on a Private Access router that joins a tailnet the customer did not approve, which would reach every Service on the mesh. Ingress doors run only images the daemon pins, so serving them unsigned crosses no part of the bar.
+Outcome. Under enforcement, Cloud starts and repairs the Ingress Proxy and its doors as it does with enforcement off, and the daemon renews certificates with Cloud unreachable. Turning Private Access on takes one passkey prompt, and turning it off takes none. Attack path closed. Cloud cannot turn on a Private Access router that joins a tailnet the customer did not approve, which would reach every Service on the mesh. Ingress doors run only images the daemon pins, so serving them unsigned crosses no part of the bar. Residual: A secret typed into the dashboard trusts the dashboard: a compromised Cloud can supply the sealing key (or the page) and read it. F3 stops the key reaching an honest Cloud in plaintext; the CLI path that seals to a Device-pinned Cluster key is a follow-up.
 
 **Depends on.** F1. Appendix A gap 2.
 

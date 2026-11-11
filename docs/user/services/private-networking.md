@@ -158,8 +158,10 @@ your services at their private addresses, on any port and protocol.
    ployz private-access on --auth-key-stdin < auth-key.txt
    ```
 
-   The key is sealed to your cluster before it leaves your browser or device, so Ployz Cloud
-   never sees it, and it's never printed.
+   The key is sealed to your cluster before it leaves your browser or device, and it's never
+   printed. Sealing in the browser trusts the dashboard: a compromised Ployz Cloud could change
+   the page or the key it seals to, and read your auth key. A coming `ployz` release checks your
+   cluster's key itself, so `ployz private-access on` won't depend on Ployz Cloud.
 3. In the admin console, open **Machines**, then **ployz-router**, then **Edit route settings**,
    and approve the route. Do this once per server, unless your tailnet auto-approves the tag.
    A server keeps its router's identity across restarts and reboots, so the route stays
@@ -170,7 +172,7 @@ your services at their private addresses, on any port and protocol.
 **Integrations** lists each server's router. **Approve routes** links to the Tailscale admin
 console, and the Linux command is there to copy. If you ask an agent, or run `ployz cluster private-access on`, it
 waits for an owner or admin to approve. The approver pastes the key in the approval card, so
-neither the agent nor Ployz Cloud sees it. **Connect**
+the agent never sees it. The card seals it in the browser, as **Connect** does. **Connect**
 approves it before the key goes out, so it can't be denied afterwards. If Tailscale refuses the key, the approval stays approved: try another key, or turn
 Private Access off, in **Integrations**.
 
