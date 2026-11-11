@@ -11,13 +11,10 @@ use std::time::Duration;
 use ployz_core::{MachineTarget, OpaquePayload, Retry, Rpc, RpcResponse};
 use tokio::time::Instant;
 
-use tonic::{codec::ProstCodec, codegen::http::uri::PathAndQuery};
-
-use super::{Client, status_error};
+use super::Client;
 use crate::{
     connect::{
         ConnectError, TransportError, UNARY_RETRY_DELAYS, keep_lost_call, keep_target_reply,
-        target_request,
     },
     setup_retry::{self, Expected},
 };
@@ -355,20 +352,8 @@ impl Client {
         once: Once<'_>,
     ) -> Result<ployz_core::RpcResponse, ConnectError> {
         let payload = request.encode().map_err(ConnectError::Codec)?;
-        let send = async {
-            let mut grpc = self.grpc().await?;
-            Ok(grpc
-                .unary(
-                    target_request(payload, once.target),
-                    PathAndQuery::from_static(path),
-                    ProstCodec::<OpaquePayload, OpaquePayload>::default(),
-                )
-                .await
-                .map_err(|status| status_error(status, path, once.target))?
-                .into_inner()
-                .decode_response()?)
-        };
-        Limit::of(once.deadline).apply(send).await
+        self.attempt_once(path, payload, once.target, Limit::of(once.deadline))
+            .await
     }
 
     /// Send, and after a failure a resend can fix, send again at [`UNARY_RETRY_DELAYS`]. One
@@ -435,9 +420,9 @@ impl Client {
     ) -> Result<RpcResponse, ConnectError> {
         if redial {
             match limit {
-                Limit::Unbounded => self.redial().await?,
+                Limit::Unbounded => self.session.redial().await?,
                 Limit::Until(deadline, _) => {
-                    match tokio::time::timeout_at(deadline, self.redial()).await {
+                    match tokio::time::timeout_at(deadline, self.session.redial()).await {
                         Ok(confirmed) => confirmed?,
                         Err(_) => {
                             return Err(tonic::Status::deadline_exceeded(
@@ -459,7 +444,7 @@ impl Client {
         target: Option<&MachineTarget>,
         limit: Limit,
     ) -> Result<RpcResponse, ConnectError> {
-        limit.apply(self.send_once(path, payload, target)).await
+        limit.apply(self.send_path(path, payload, target)).await
     }
 
     /// Send again a second apart until the [`Wait`] runs out. An attempt that outlives five

@@ -272,7 +272,7 @@ impl MachineOperations for Client {
             machine_id,
             &spec.container.image,
             spec.container.pull_policy,
-            self.registry_auth.get(&spec.name).cloned(),
+            self.deploy.registry_auth.get(&spec.name).cloned(),
         )
         .await
     }
@@ -387,7 +387,7 @@ impl MachineOperations for Client {
                 }
                 // A replacement joining a named Deploy keeps that Deploy's label.
                 if new.deployment_id.is_none() {
-                    new.deployment_id.clone_from(&self.deployment_id);
+                    new.deployment_id.clone_from(&self.deploy.id);
                 }
                 None
             }

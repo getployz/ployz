@@ -771,9 +771,9 @@ pub(super) fn request_hint() -> Hint {
 /// Daemons from before Devices, or before Device enforcement. Delete once every supported
 /// daemon has both.
 mod compat {
-    use ployz_core::{DescribeContractRequest, MachineTarget, RpcError, op};
+    use ployz_core::{MachineTarget, RpcError};
 
-    use crate::{cluster::Call, connect::Client};
+    use crate::connect::Client;
 
     /// Whether the Machine at `target` promises `capability`; one that doesn't is an
     /// omission, not a failure.
@@ -782,14 +782,10 @@ mod compat {
         target: &MachineTarget,
         capability: &str,
     ) -> Result<bool, RpcError> {
-        Ok(client
-            .call_shared::<op::DescribeContract>(
-                DescribeContractRequest {},
-                Call::once().to(target),
-            )
+        client
+            .supports(Some(target), capability)
             .await
-            .map_err(crate::connect::rpc_error)?
-            .supports(capability))
+            .map_err(crate::connect::rpc_error)
     }
 }
 
@@ -804,7 +800,7 @@ impl Reach {
     async fn full(client: &mut Client) -> Result<Self, Error> {
         let mut reach = Self::of(client).await?;
         let direct = client.full_machines();
-        if client.full_single() {
+        if client.full_routes().single() {
             reach.asked.retain(|machine| Some(*machine) == reach.entry);
             reach.silent.retain(|machine| Some(*machine) == reach.entry);
         } else if !direct.is_empty() {

@@ -715,7 +715,7 @@ impl Session {
         let stream = tokio::select! {
             biased;
             () = self.inner.cancel.cancelled() => return Err(closed()),
-            stream = client.runtime_watch_stream(payload) => stream
+            stream = client.open_stream::<op::RuntimeWatch>(None, tokio_stream::once(payload)) => stream
                 .map_err(|error| ConnectError::Rpc(error.name_refusal(op::RuntimeWatch::PATH, &entry)))?,
         };
         let cancel = self.inner.cancel.child_token();

@@ -145,7 +145,7 @@ impl Session {
         let stream = self
             .until_closed(async {
                 client
-                    .tail_logs_stream(&target, request)
+                    .open_stream::<op::TailLogs>(Some(&target), tokio_stream::once(request))
                     .await
                     .map_err(|error| RpcError::from(ConnectError::Rpc(error)))
             })
@@ -179,7 +179,7 @@ impl Session {
         let stream = self
             .until_closed(async {
                 client
-                    .log_history_stream(&target, payload)
+                    .open_stream::<op::LogHistory>(Some(&target), tokio_stream::once(payload))
                     .await
                     .map_err(|error| RpcError::from(ConnectError::Rpc(error)))
             })
@@ -580,7 +580,7 @@ pub(crate) async fn process_tail(
     .map_err(|error| crate::ui::rpc_error(RpcErrorCode::InvalidArgument, &error))?;
     let read = async {
         let mut stream = client
-            .tail_logs_stream(&target, request)
+            .open_stream::<op::TailLogs>(Some(&target), tokio_stream::once(request))
             .await
             .map_err(|error| RpcError::from(ConnectError::Rpc(error)))?;
         let mut frames = Vec::new();
@@ -677,7 +677,7 @@ async fn newest_lines(
         .encode()
         .map_err(|error| crate::ui::rpc_error(RpcErrorCode::InvalidArgument, &error))?;
         let mut stream = client
-            .log_history_stream(target, request)
+            .open_stream::<op::LogHistory>(Some(target), tokio_stream::once(request))
             .await
             .map_err(|error| RpcError::from(ConnectError::Rpc(error)))?;
         while let Some(payload) = stream

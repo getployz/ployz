@@ -276,7 +276,10 @@ async fn read_page(
         .encode()
         .map_err(|error| RpcError::from(ConnectError::Codec(error)))?;
     let mut stream = client
-        .log_history_stream(&MachineTarget::from(&source.machine_id), payload)
+        .open_stream::<op::LogHistory>(
+            Some(&MachineTarget::from(&source.machine_id)),
+            tokio_stream::once(payload),
+        )
         .await
         .map_err(|error| {
             RpcError::from(ConnectError::Rpc(

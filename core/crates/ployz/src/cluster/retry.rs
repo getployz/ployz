@@ -81,8 +81,8 @@ where
             }
         })
         .await;
-    client.entry = Some(machine());
-    client.confirmed = Some(machine());
+    client.session.entry = Some(machine());
+    client.session.confirmed = Some(machine());
     (client, record, server)
 }
 

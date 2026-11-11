@@ -608,8 +608,8 @@ pub async fn open_exec(
             |machine| machine.machine.name.to_string(),
         );
     let frames = client
-        .exec_stream(
-            &MachineTarget::from(&machine_id),
+        .open_stream::<op::Exec>(
+            Some(&MachineTarget::from(&machine_id)),
             tokio_stream::wrappers::ReceiverStream::new(receiver),
         )
         .await
@@ -846,7 +846,7 @@ pub async fn open_service_logs(
             // parent cancellation token is cancelled.
             if let Err(error) = open_log_input(&mut inputs, &cancellation, async {
                 client
-                    .tail_logs_stream(&target, request)
+                    .open_stream::<op::TailLogs>(Some(&target), tokio_stream::once(request))
                     .await
                     .map(|stream| stream_input(identity, observation.machine_id, stream))
             })
@@ -1134,7 +1134,7 @@ pub async fn open_machine_logs(
             // parent cancellation token is cancelled.
             if let Err(error) = open_log_input(&mut inputs, &cancellation, async {
                 client
-                    .tail_logs_stream(&target, request)
+                    .open_stream::<op::TailLogs>(Some(&target), tokio_stream::once(request))
                     .await
                     .map(|stream| stream_input(identity, machine.machine.id, stream))
             })

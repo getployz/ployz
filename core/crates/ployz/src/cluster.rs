@@ -14,24 +14,19 @@ use ployz_core::{
     InspectStorageRequest, InspectTelemetry, LeaveRequest, Left, ListContainersRequest,
     ListImagesRequest, ListMachinesRequest, ListVolumesRequest, LiveServices, LocalMachineRemoved,
     MACHINE_STORAGE_OBSERVATION_CAPABILITY, Machine, MachineFailure, MachineId, MachineImages,
-    MachineLabelKey, MachineName, MachineObservation, MachineRpcClient, MachineStorageObservation,
-    MachineSuccess, MachineTarget, MachineUpdate, NameMatches, Namespace, ObservedDataLoss,
-    OpaquePayload, PartialResult, PrivateAccessSet, RUNTIME_WATCH_MESSAGE_SIZE_LIMIT,
-    RemoveVolumeRequest, RemoveVolumesRequest, Rpc, RpcError, RpcErrorCode, RpcResponseBody,
-    RuntimeWatchFrame, RuntimeWatchRequest, SetIngressDoorsRequest, SetPrivateAccessRequest,
-    StopOptions, StorageCapacity, TelemetryObservation, UnconfirmedDataLoss, VolumeInventory,
-    VolumeRemoval, VolumeRemovalOutcome, decode_runtime_watch_frame, derive_live_services, op,
+    MachineLabelKey, MachineName, MachineObservation, MachineStorageObservation, MachineSuccess,
+    MachineTarget, MachineUpdate, NameMatches, Namespace, ObservedDataLoss, OpaquePayload,
+    PartialResult, PrivateAccessSet, RemoveVolumeRequest, RemoveVolumesRequest, Rpc, RpcError,
+    RpcErrorCode, RuntimeWatchFrame, RuntimeWatchRequest, SetIngressDoorsRequest,
+    SetPrivateAccessRequest, StopOptions, StorageCapacity, TelemetryObservation,
+    UnconfirmedDataLoss, VolumeInventory, VolumeRemoval, VolumeRemovalOutcome,
+    decode_runtime_watch_frame, derive_live_services, op,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use tokio::task::JoinSet;
 use tokio_util::sync::CancellationToken;
-use tonic::{
-    Streaming,
-    codec::{CompressionEncoding, ProstCodec},
-    codegen::http::uri::PathAndQuery,
-    transport::Channel,
-};
+use tonic::{Streaming, transport::Channel};
 
 use crate::{
     connect::{
@@ -51,12 +46,22 @@ mod call;
 mod call_audit;
 mod capacity;
 mod container_health;
+mod deploy_context;
 #[cfg(test)]
 mod retry;
+mod routes;
+#[cfg(test)]
+mod routing_tests;
+mod session;
 
 pub(crate) use call::setup_outcome;
 pub use call::{Budgeted, Call, Deadline, Once, Pacing, Repeat, Replay, Wait, Waiting};
 pub(crate) use container_health::HealthWaitError;
+use deploy_context::DeployContext;
+pub use deploy_context::RuleProofs;
+pub(crate) use routes::FullRoutes;
+pub(crate) use session::Refusal;
+use session::Session;
 
 const STORAGE_OBSERVATION_TIMEOUT: Duration = Duration::from_secs(3);
 /// Reply timeout for mutations on a live Machine, which may be mid-Deploy and
@@ -65,111 +70,12 @@ pub(crate) const LIVE_MUTATION_REPLY_TIMEOUT: Duration = Duration::from_secs(60)
 
 #[derive(Clone)]
 pub struct Client {
-    pub(crate) deployment_id: Option<ployz_core::DeploymentLogId>,
-    /// Pull credentials by Service for the Deploy this client executes.
-    pub(crate) registry_auth:
-        std::collections::BTreeMap<ployz_core::ServiceName, ployz_core::RegistryAuth>,
-    /// Shared by every clone, so a redial on any of them reaches the rest.
-    channel: Arc<std::sync::RwLock<Channel>>,
-    connection: Connection,
-    source: ConnectionSource,
-    connector: Arc<dyn Connector>,
-    /// The Machine the entry described itself as when it was last confirmed.
-    entry: Option<MachineId>,
-    /// The Machine `channel` was last confirmed to reach. Unlike `entry`, a failed redial
-    /// keeps it, so a later one can tell the endpoint now reaches another Machine.
-    confirmed: Option<MachineId>,
-    /// The Cluster the dial expected and what the first dial confirmed about it; None when
-    /// it expected none. Boxed so a client stays small beside the enums that carry it.
-    pub(crate) cluster: Option<Box<crate::connect::ExpectedCluster>>,
-    /// Set once a redial finds the entry in another Cluster. Every clone shares it.
-    refused: Refusal,
-    full_single: bool,
-    full_connections: Arc<Vec<Connection>>,
-    /// What every Container change this client sends carries.
-    approvals: Arc<Approvals>,
-}
-
-/// The approvals a client hands each Server with a Container change.
-#[derive(Clone, Debug, Default)]
-struct Approvals {
-    /// The Device-signed approval of a restart step.
-    restart: Option<ployz_core::authority::Signed<ployz_core::authority::RestartApproval>>,
-    /// The approval of the Deploy every Container this client creates or steps belongs to.
-    deploy: Option<ployz_core::authority::Signed<ployz_core::authority::DeployApproval>>,
-    /// A rule's proof for each Service it built, when a rule deploys in place of a
-    /// person's approval.
-    proofs: RuleProofs,
-}
-
-/// The proof each Service a rule built carries to every Server, in place of a person's
-/// deploy approval: an automatic deploy rule's, or a preview rule's.
-#[derive(Clone, Debug, Default)]
-pub struct RuleProofs {
-    pub rules:
-        std::collections::BTreeMap<ployz_core::ServiceName, ployz_core::authority::RuleProof>,
-    pub previews:
-        std::collections::BTreeMap<ployz_core::ServiceName, ployz_core::authority::PreviewProof>,
-}
-
-/// The proof in `proofs` a change of `want` carries: its Service's, or for a step on a
-/// Container named only by ID, any of the Deploy's, since such a step needs only the
-/// rule's Environment.
-fn proof_for<P: Clone>(
-    proofs: &std::collections::BTreeMap<ployz_core::ServiceName, P>,
-    want: &ContainerWant,
-) -> Option<Box<P>> {
-    let service = match want {
-        ContainerWant::Running {
-            container: ployz_core::RunTarget::New(new),
-            ..
-        } => Some(&new.slot.service),
-        ContainerWant::Held { container, .. }
-        | ContainerWant::Out { container, .. }
-        | ContainerWant::Stopped { container, .. }
-        | ContainerWant::Gone { container, .. }
-        | ContainerWant::Running {
-            container: ployz_core::RunTarget::Existing(container),
-            ..
-        } => match container {
-            ployz_core::ContainerLocator::Key(slot) => Some(&slot.service),
-            ployz_core::ContainerLocator::Id(_) => None,
-        },
-    };
-    service
-        .and_then(|service| proofs.get(service))
-        .or_else(|| proofs.values().next())
-        .cloned()
-        .map(Box::new)
-}
-
-/// The entry a redial found in another Cluster, shared by every clone of a client and
-/// the streams it opened. The client ends then: no new call, stream or dial starts on any
-/// clone. Work already started may still complete:
-/// - a dial or tunnel in progress;
-/// - a request already handed to the channel, including one waiting for its connection,
-///   which tonic's own Tcp/Unix reconnect may carry;
-/// - a send racing the refusal on another thread.
-///
-/// A dial, or a Watch or exec output read, that finishes afterwards returns the refusal
-/// instead; a unary call or a stream open already under way returns what the daemon
-/// answered. A request the daemon received isn't undone.
-#[derive(Clone, Default)]
-pub(crate) struct Refusal(Arc<std::sync::OnceLock<MachineId>>);
-
-impl Refusal {
-    /// Fails once a redial found the entry in another Cluster.
-    pub(crate) fn check(&self) -> Result<(), ConnectError> {
-        match self.0.get() {
-            Some(&machine_id) => Err(ConnectError::ClusterMismatch { machine_id }),
-            None => Ok(()),
-        }
-    }
-
-    /// End the client. True for the first refusal only.
-    fn set(&self, machine_id: MachineId) -> bool {
-        self.0.set(machine_id).is_ok()
-    }
+    /// The Deploy this client executes: its log, pull credentials and approvals.
+    pub(crate) deploy: DeployContext,
+    /// The connection to the entry and what was confirmed behind it.
+    session: Session,
+    /// The Full-scope connections a Full call may dial.
+    routes: FullRoutes,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize)]
@@ -186,99 +92,62 @@ impl Client {
         connector: Arc<dyn Connector>,
     ) -> Self {
         Self {
-            deployment_id: None,
-            registry_auth: std::collections::BTreeMap::new(),
-            channel: Arc::new(std::sync::RwLock::new(channel)),
-            connection,
-            source,
-            connector,
-            entry: None,
-            confirmed: None,
-            cluster: None,
-            refused: Refusal::default(),
-            approvals: Arc::default(),
-            full_connections: Arc::default(),
-            full_single: false,
+            deploy: DeployContext::default(),
+            session: Session::new(channel, connection, source, connector),
+            routes: FullRoutes::default(),
         }
     }
 
-    pub(crate) fn with_full_connections(mut self, connections: Vec<Connection>) -> Self {
-        self.full_connections = Arc::new(connections);
+    #[must_use]
+    pub(crate) fn with_full_routes(mut self, routes: FullRoutes) -> Self {
+        self.routes = routes;
         self
     }
 
-    pub(crate) fn with_full_single(mut self, single: bool) -> Self {
-        self.full_single = single;
-        self
-    }
-
-    pub(crate) fn full_single(&self) -> bool {
-        self.full_single
+    /// The Full-scope connections a Full call may dial.
+    pub(crate) fn full_routes(&self) -> &FullRoutes {
+        &self.routes
     }
 
     pub(crate) fn full_machines(&self) -> BTreeSet<MachineId> {
-        if self.full_connections.is_empty() {
-            return BTreeSet::new();
-        }
-        self.entry
-            .into_iter()
-            .chain(
-                self.full_connections
-                    .iter()
-                    .filter_map(|connection| connection.machine_id().copied()),
-            )
-            .collect()
+        self.routes.machines(self.session.entry)
     }
 
     /// Whether this client reaches `machine` with Full scope: over SSH or the local
     /// socket, or over a Management connection dialled as a Device when `device` says one
-    /// is held. Only a client [`Self::with_full_connections`] built can.
+    /// is held. Only a client [`Self::with_full_routes`] built can.
     pub(crate) fn reaches_full(&self, machine: &MachineId, device: bool) -> bool {
-        let full = |connection: &Connection| match connection.transport() {
-            crate::context::Transport::Ssh { .. } | crate::context::Transport::Unix(_) => true,
-            crate::context::Transport::Management(_) => device,
-            crate::context::Transport::Tcp(_) => false,
-        };
-        if self.full_connections.is_empty() {
-            return false;
-        }
-        if self.entry.as_ref() == Some(machine) {
-            return full(&self.connection);
-        }
-        self.full_connections
-            .iter()
-            .any(|connection| connection.machine_id() == Some(machine) && full(connection))
-    }
-
-    /// The connections a Full call may dial, as [`Self::with_full_connections`] set them.
-    pub(crate) fn full_connections(&self) -> &[Connection] {
-        &self.full_connections
+        self.routes.reach(
+            machine,
+            device,
+            self.session.entry.as_ref(),
+            self.session.connection(),
+        )
     }
 
     async fn full_client(&self, target: &MachineTarget) -> Result<Option<Self>, ConnectError> {
-        self.ended()?;
-        if self.full_connections.is_empty()
-            || self.entry.is_some_and(|id| id.as_str() == target.as_str())
+        self.session.ended()?;
+        if self.routes.is_empty()
+            || self
+                .session
+                .entry
+                .is_some_and(|id| id.as_str() == target.as_str())
         {
             return Ok(None);
         }
-        let Some(connection) = self.full_connections.iter().find(|connection| {
-            connection
-                .machine_id()
-                .is_some_and(|id| id.as_str() == target.as_str())
-        }) else {
+        let Some(connection) = self.routes.to(target.as_str()) else {
             return Ok(None);
         };
         let mut client = Box::pin(crate::connect::connect_one(
             connection,
-            &self.source,
-            &self.connector,
+            self.session.source(),
+            self.session.connector(),
             false,
-            self.cluster.as_ref().map(|cluster| &cluster.expect),
+            self.session.cluster.as_ref().map(|cluster| &cluster.expect),
         ))
         .await?;
-        client.refused = self.refused.clone();
-        self.ended()?;
+        client.session.ending_with(&self.session);
+        self.session.ended()?;
         Ok(Some(client))
     }
 
@@ -287,7 +156,7 @@ impl Client {
         mut self,
         approval: Option<ployz_core::authority::Signed<ployz_core::authority::RestartApproval>>,
     ) -> Self {
-        Arc::make_mut(&mut self.approvals).restart = approval;
+        self.deploy.set_restart(approval);
         self
     }
 
@@ -297,7 +166,7 @@ impl Client {
         mut self,
         approval: Option<ployz_core::authority::Signed<ployz_core::authority::DeployApproval>>,
     ) -> Self {
-        Arc::make_mut(&mut self.approvals).deploy = approval;
+        self.deploy.set_deploy(approval);
         self
     }
 
@@ -305,7 +174,7 @@ impl Client {
     /// place of a person's deploy approval.
     #[must_use]
     pub(crate) fn with_rule_proofs(mut self, proofs: RuleProofs) -> Self {
-        Arc::make_mut(&mut self.approvals).proofs = proofs;
+        self.deploy.set_proofs(proofs);
         self
     }
 
@@ -313,7 +182,20 @@ impl Client {
     /// A redial checks the Cluster again but leaves this as the first dial found it.
     #[must_use]
     pub fn cluster(&self) -> Option<&crate::connect::ClusterCheck> {
-        self.cluster.as_ref().map(|cluster| &cluster.check)
+        self.session.cluster.as_ref().map(|cluster| &cluster.check)
+    }
+
+    /// Record the Cluster the dial expected and what it confirmed about it.
+    pub(crate) fn expect_cluster(&mut self, cluster: crate::connect::ExpectedCluster) {
+        self.session.cluster = Some(Box::new(cluster));
+    }
+
+    /// What the dial confirmed about the Cluster, for the connection walk to complete.
+    pub(crate) fn cluster_check_mut(&mut self) -> Option<&mut crate::connect::ClusterCheck> {
+        self.session
+            .cluster
+            .as_deref_mut()
+            .map(|cluster| &mut cluster.check)
     }
 
     /// Whether the confirmed entry holds `expect`'s Sealing Key. Inspect is a read every
@@ -328,206 +210,98 @@ impl Client {
         // A confirmation that carried the held key answers without Inspect.
         let (sealing, machine_id, predates) =
             if let (Some(held @ ployz_core::Sealing::Held { .. }), Some(id)) =
-                (confirmed, self.entry)
+                (confirmed, self.session.entry)
             {
                 (Some(held), id, None)
             } else {
                 let inspect = async {
                     let payload = op::Inspect::into_request(ployz_core::InspectRequest::default())
                         .encode()?;
-                    self.call_once::<op::Inspect>(payload, None).await
+                    self.session.call_once::<op::Inspect>(payload).await
                 };
                 let details = tokio::time::timeout(CONNECT_CONFIRM_TIMEOUT, inspect)
                     .await
                     .map_err(|_| ConnectError::EntryNotReady)??;
                 let predates = crate::connect::predates_sealing(&details);
-                (details.sealing, self.entry.unwrap_or(details.id), predates)
+                (
+                    details.sealing,
+                    self.session.entry.unwrap_or(details.id),
+                    predates,
+                )
             };
         expect.check(machine_id, sealing, predates)
     }
 
     #[must_use]
     pub fn connection(&self) -> &Connection {
-        &self.connection
+        self.session.connection()
     }
 
     #[must_use]
     pub fn connection_source(&self) -> &ConnectionSource {
-        &self.source
+        self.session.source()
     }
 
     /// The entry Machine this client reaches, as the daemon on its current channel
     /// described itself when confirmed. None when it didn't.
     pub(crate) fn entry_machine(&self) -> Option<MachineId> {
-        self.entry
+        self.session.entry
     }
 
     /// The Server this client enters, as people read it: its connection's name, else its
     /// Machine ID.
     pub(crate) fn server(&self) -> Option<String> {
-        self.connection
+        self.session
+            .connection()
             .server()
-            .or_else(|| self.entry.map(|machine| machine.to_string()))
+            .or_else(|| self.session.entry.map(|machine| machine.to_string()))
     }
 
-    /// Replace the channel, and the entry it confirmed, with a freshly confirmed one. An
-    /// entry that now describes itself as another Machine, as after a reset, moves only
-    /// this client: its clones, a Deploy's among them, keep the Machine they confirmed.
-    async fn redial(&mut self) -> Result<(), ConnectError> {
-        self.entry = None;
-        let (channel, entry) = self.dial_confirmed().await?;
-        match (self.confirmed, entry) {
-            (Some(confirmed), Some(entry)) if confirmed != entry => {
-                self.channel = Arc::new(std::sync::RwLock::new(channel));
-            }
-            _ => self.share(channel),
-        }
-        self.confirmed = entry.or(self.confirmed);
-        self.entry = entry;
-        Ok(())
-    }
-
-    /// [`Self::redial`] for a client shared by reference, as a Deploy's is. Its entry
-    /// stays the Machine it confirmed, so an endpoint that now reaches another is refused,
-    /// even after a failed redial made this client forget its entry.
+    /// The transition a Deploy's shared client makes: see [`Session::redial_shared`].
     ///
     /// # Errors
     ///
     /// Returns a transport or codec error, or [`ConnectError::EntryNotReady`], when the
     /// entry doesn't answer on the new channel.
     pub(crate) async fn redial_shared(&self) -> Result<(), ConnectError> {
-        let (channel, entry) = self.dial_confirmed().await?;
-        if let (Some(expected), Some(actual)) = (self.entry.or(self.confirmed), entry)
-            && expected != actual
-        {
-            return Err(ConnectError::IdentityMismatch { expected, actual });
-        }
-        self.share(channel);
-        Ok(())
-    }
-
-    /// Dial the connection again and confirm its entry on the new channel. Returns the
-    /// channel unshared, with the entry it confirmed.
-    /// Fails with the refusal when the client ended while it dialed, whatever the dial found.
-    async fn dial_confirmed(&self) -> Result<(Channel, Option<MachineId>), ConnectError> {
-        self.ended()?;
-        let dialed = async {
-            let candidate = Self {
-                channel: Arc::new(std::sync::RwLock::new(
-                    self.connector.connect(&self.connection).await?,
-                )),
-                ..self.clone()
-            };
-            let entry = candidate.confirmed_entry().await?;
-            Ok((candidate.channel(), entry))
-        }
-        .await;
-        self.ended()?;
-        dialed
-    }
-
-    /// Fails once a redial found the entry in another Cluster.
-    fn ended(&self) -> Result<(), ConnectError> {
-        self.refused.check()
+        self.session.redial_shared().await
     }
 
     /// What ends this client, for a stream it opened to check as it reads.
     pub(crate) fn refusal(&self) -> Refusal {
-        self.refused.clone()
+        self.session.refusal()
     }
 
-    /// Replace the channel every clone shares.
-    fn share(&self, channel: Channel) {
-        *self
-            .channel
-            .write()
-            .unwrap_or_else(std::sync::PoisonError::into_inner) = channel;
-    }
-
-    /// One-shot check that this channel reaches a daemon. No unary retry — a
-    /// down daemon must not stall the connection walk.
+    /// One-shot check that this channel reaches a daemon, as [`Session::confirm_entry`].
     ///
     /// # Errors
     ///
     /// Returns a transport or codec error, or [`ConnectError::EntryNotReady`]
-    /// when the daemon does not answer within [`CONNECT_CONFIRM_TIMEOUT`]. Resolves to the
-    /// Sealing Key the confirmation said the entry holds, None when it said nothing.
+    /// when the daemon does not answer within [`CONNECT_CONFIRM_TIMEOUT`].
     pub(crate) async fn confirm_entry(
         &mut self,
     ) -> Result<Option<ployz_core::Sealing>, ConnectError> {
-        let (entry, sealing) = self.confirmation().await?;
-        self.entry = entry;
-        self.confirmed = self.entry.or(self.confirmed);
-        Ok(sealing)
+        self.session.confirm_entry().await
     }
 
-    /// The Machine this channel's daemon describes itself as, checked against the
-    /// connection and, when the confirmation tells the key it holds, the Cluster this
-    /// client's dial expected. None when neither the connection nor a Machine this client
-    /// confirmed names one and the daemon doesn't say.
-    async fn confirmed_entry(&self) -> Result<Option<MachineId>, ConnectError> {
-        let (entry, sealing) = self.confirmation().await?;
-        // Only a key tells the Cluster without Inspect; a confirmation without one leaves the
-        // redial to the Machine ID, as before.
-        if let (
-            Some(cluster),
-            Some(machine_id),
-            Some(
-                key @ (ployz_core::Sealing::Held { .. }
-                | ployz_core::Sealing::AwaitsRecovery { .. }),
-            ),
-        ) = (&self.cluster, entry, sealing)
-            && let Err(error) = cluster.expect.check(machine_id, Some(key), None)
-        {
-            if self.refused.set(machine_id) {
-                tracing::warn!(
-                    %machine_id,
-                    "the entry now belongs to another Cluster; the session ends"
-                );
-            }
-            return Err(error);
-        }
-        Ok(entry)
-    }
-
-    /// [`Self::confirmed_entry`], with the Sealing Key the daemon said it holds.
-    async fn confirmation(
+    /// Whether the Machine at `target`, the entry when there is none, promises `capability` in
+    /// the contract it describes. A caller words what a Machine that doesn't means to it.
+    ///
+    /// # Errors
+    ///
+    /// Returns the transport or remote error the describe met.
+    pub(crate) async fn supports(
         &self,
-    ) -> Result<(Option<MachineId>, Option<ployz_core::Sealing>), ConnectError> {
-        let confirm = async {
-            let payload =
-                op::DescribeContract::into_request(DescribeContractRequest {}).encode()?;
-            match self.call_once::<op::DescribeContract>(payload, None).await {
-                Ok(description) => {
-                    if let Some(expected) = self.connection.machine_id()
-                        && *expected != description.machine_id
-                    {
-                        return Err(ConnectError::IdentityMismatch {
-                            expected: *expected,
-                            actual: description.machine_id,
-                        });
-                    }
-                    if description.protocol_major != ployz_core::PROTOCOL_MAJOR {
-                        return Err(ConnectError::Codec(
-                            ployz_core::CodecError::UnsupportedProtocolMajor {
-                                requested: description.protocol_major,
-                                supported: ployz_core::PROTOCOL_MAJOR,
-                            },
-                        ));
-                    }
-                    Ok((Some(description.machine_id), description.sealing))
-                }
-                Err(ConnectError::Remote(_))
-                    if self.connection.machine_id().is_none() && self.confirmed.is_none() =>
-                {
-                    Ok((None, None))
-                }
-                Err(error) => Err(error),
-            }
-        };
-        tokio::time::timeout(CONNECT_CONFIRM_TIMEOUT, confirm)
-            .await
-            .map_err(|_| ConnectError::EntryNotReady)?
+        target: Option<&MachineTarget>,
+        capability: &str,
+    ) -> Result<bool, ConnectError> {
+        Ok(self
+            .call_shared::<op::DescribeContract>(
+                DescribeContractRequest {},
+                Call::once().toward(target),
+            )
+            .await?
+            .supports(capability))
     }
 
     /// The id of the Machine this client enters by.
@@ -536,143 +310,48 @@ impl Client {
     ///
     /// Returns a transport or remote error when the entry does not describe itself.
     pub(crate) async fn entry_id(&self) -> Result<MachineId, ConnectError> {
-        let payload = op::DescribeContract::into_request(DescribeContractRequest {}).encode()?;
-        apply_timeout(
-            Some(CONNECT_CONFIRM_TIMEOUT),
-            self.call_once::<op::DescribeContract>(payload, None),
-        )
-        .await
-        .map(|description| description.machine_id)
+        self.session.entry_id().await
     }
 
-    /// The channel the latest dial opened.
-    fn channel(&self) -> Channel {
-        self.channel
-            .read()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .clone()
-    }
-
-    /// Specs carry Config bytes as JSON number arrays, so a 1 MB Config alone nears
-    /// tonic's 4 MiB default, and stored log lines reach 8 MiB.
-    /// Ready to send. Fails once the client has ended, also while it waited to be ready.
-    async fn grpc(&self) -> Result<tonic::client::Grpc<Channel>, ConnectError> {
-        Ok(tonic::client::Grpc::new(self.ready_channel().await?)
-            .max_decoding_message_size(RUNTIME_WATCH_MESSAGE_SIZE_LIMIT))
-    }
-
-    /// [`Self::grpc`] for streams, with the status [`rpc_error`] gives the refusal. The
-    /// channel stays ready, so the stream opens with no wait after the check.
-    async fn machine_rpc(&self) -> Result<MachineRpcClient<Channel>, TransportError> {
-        let channel = self.ready_channel().await.map_err(|error| {
-            if let ConnectError::Dial(error) = error {
-                // Worded as the generated client words a channel that isn't ready.
-                TransportError::from(tonic::Status::unknown(format!(
-                    "Service was not ready: {error}"
-                )))
+    /// Open the stream `Op` names, on the connection its scope routes to.
+    ///
+    /// A Full RPC with a target dials that target directly, as [`Self::send`] does for a
+    /// unary one; the rest go through the entry with the target named. `input` is the one
+    /// request of a server stream, or the whole feed of a client stream. A client stream
+    /// stops reading its feed once this client ends.
+    ///
+    /// # Errors
+    ///
+    /// Returns the transport error the open met, naming `target` when the Server refused it.
+    pub(crate) async fn open_stream<Op: StreamRpc>(
+        &self,
+        target: Option<&MachineTarget>,
+        input: impl tokio_stream::Stream<Item = OpaquePayload> + Send + 'static,
+    ) -> Result<Streaming<OpaquePayload>, TransportError> {
+        let direct = if Op::ENTRY_ONLY {
+            None
+        } else {
+            self.direct_client(Op::PATH, target)
+                .await
+                .map_err(TransportError::client_ended)?
+        };
+        let sent_to = if direct.is_some() { None } else { target };
+        let input: std::pin::Pin<Box<dyn tokio_stream::Stream<Item = OpaquePayload> + Send>> =
+            if Op::CLIENT_STREAM {
+                Box::pin(self.session.until_ended(input))
             } else {
-                TransportError::client_ended(error)
-            }
-        })?;
-        Ok(MachineRpcClient::new(channel)
-            .max_decoding_message_size(RUNTIME_WATCH_MESSAGE_SIZE_LIMIT))
-    }
-
-    /// `input` until the client ends, so a stream it opened takes no more input after that.
-    fn until_ended(
-        &self,
-        input: impl tokio_stream::Stream<Item = OpaquePayload> + Send + 'static,
-    ) -> impl tokio_stream::Stream<Item = OpaquePayload> + Send + 'static {
-        let refused = self.refusal();
-        tokio_stream::StreamExt::take_while(input, move |_| refused.check().is_ok())
-    }
-
-    /// The latest channel, once it can take a call, unless the client ended meanwhile.
-    async fn ready_channel(&self) -> Result<Channel, ConnectError> {
-        self.ended()?;
-        let mut channel = self.channel();
-        tower::ServiceExt::<http::Request<tonic::body::Body>>::ready(&mut channel).await?;
-        self.ended()?;
-        Ok(channel)
-    }
-
-    pub(crate) async fn build_stream(
-        &self,
-        target: &MachineTarget,
-        input: impl tokio_stream::Stream<Item = OpaquePayload> + Send + 'static,
-    ) -> Result<Streaming<OpaquePayload>, TransportError> {
-        // Submission is one-shot. A lost response must never replay a Build.
-        Ok(self
-            .machine_rpc()
-            .await?
-            .build(target_request(self.until_ended(input), Some(target)))
-            .await
-            .map_err(|status| TransportError::from(status).name_refusal(op::Build::PATH, target))?
-            .into_inner())
-    }
-
-    pub(crate) async fn exec_stream(
-        &self,
-        target: &MachineTarget,
-        input: impl tokio_stream::Stream<Item = OpaquePayload> + Send + 'static,
-    ) -> Result<Streaming<OpaquePayload>, TransportError> {
-        let direct = self
-            .full_client(target)
-            .await
-            .map_err(TransportError::client_ended)?;
-        let mut rpc = direct.as_ref().unwrap_or(self).machine_rpc().await?;
-        Ok(rpc
-            .exec(target_request(
-                self.until_ended(input),
-                direct.is_none().then_some(target),
-            ))
-            .await
-            .map_err(|status| TransportError::from(status).name_refusal(op::Exec::PATH, target))?
-            .into_inner())
-    }
-
-    pub(crate) async fn tail_logs_stream(
-        &self,
-        target: &MachineTarget,
-        request: OpaquePayload,
-    ) -> Result<Streaming<OpaquePayload>, TransportError> {
-        let mut rpc = self.machine_rpc().await?;
-        Ok(rpc
-            .tail_logs(target_request(request, Some(target)))
-            .await
-            .map_err(|status| {
-                TransportError::from(status).name_refusal(op::TailLogs::PATH, target)
-            })?
-            .into_inner())
-    }
-
-    pub(crate) async fn log_history_stream(
-        &self,
-        target: &MachineTarget,
-        request: OpaquePayload,
-    ) -> Result<Streaming<OpaquePayload>, TransportError> {
-        let mut rpc = self.machine_rpc().await?;
-        Ok(rpc
-            .log_history(target_request(request, Some(target)))
-            .await
-            .map_err(|status| {
-                TransportError::from(status).name_refusal(op::LogHistory::PATH, target)
-            })?
-            .into_inner())
-    }
-
-    pub(crate) async fn runtime_watch_stream(
-        &self,
-        request: OpaquePayload,
-    ) -> Result<Streaming<OpaquePayload>, TransportError> {
-        let mut rpc = self
-            .machine_rpc()
-            .await?
-            .accept_compressed(CompressionEncoding::Gzip);
-        Ok(rpc
-            .runtime_watch(tonic::Request::new(request))
-            .await?
-            .into_inner())
+                Box::pin(input)
+            };
+        let opened = direct
+            .as_ref()
+            .unwrap_or(self)
+            .session
+            .open(Op::PATH, Op::GZIP, target_request(input, sent_to))
+            .await;
+        match target {
+            Some(target) => opened.map_err(|error| error.name_refusal(Op::PATH, target)),
+            None => opened,
+        }
     }
 
     /// The Cluster as the first Runtime Watch frame shows it.
@@ -681,7 +360,7 @@ impl Client {
             .encode()
             .map_err(|error| RpcError::from(ConnectError::from(error)))?;
         let mut stream = self
-            .runtime_watch_stream(payload)
+            .open_stream::<op::RuntimeWatch>(None, tokio_stream::once(payload))
             .await
             .map_err(|error| error.to_rpc_error())?;
         let Some(frame) = stream
@@ -697,48 +376,48 @@ impl Client {
             .map_err(|error| crate::ui::rpc_error(RpcErrorCode::Internal, &error))
     }
 
-    async fn call_once<T: Rpc>(
+    /// [`Self::send_path`] for an RPC of the catalog.
+    async fn send<T: Rpc>(
         &self,
         payload: OpaquePayload,
         target: Option<&MachineTarget>,
     ) -> Result<T::Response, ConnectError> {
-        self.send_once(T::PATH, payload, target)
+        self.send_path(T::PATH, payload, target)
             .await?
             .decode::<T>()
             .map_err(ConnectError::Codec)
     }
 
-    /// One unary RPC on `path`, answered by the daemon's own error when it sent one.
-    async fn send_once(
+    /// The one attempt every unary call makes, answered by the daemon's own error when it
+    /// sent one. A Full RPC with a target goes straight to it; the rest enter by this
+    /// client's own channel with the target named.
+    async fn send_path(
         &self,
         path: &'static str,
         payload: OpaquePayload,
         target: Option<&MachineTarget>,
     ) -> Result<ployz_core::RpcResponse, ConnectError> {
-        let direct = if dials_direct(path) {
-            match target {
-                Some(target) => self.full_client(target).await?,
-                None => None,
-            }
-        } else {
-            None
-        };
-        let mut grpc = direct.as_ref().unwrap_or(self).grpc().await?;
+        let direct = self.direct_client(path, target).await?;
         let target = if direct.is_some() { None } else { target };
-        let response = grpc
-            .unary(
-                target_request(payload, target),
-                PathAndQuery::from_static(path),
-                ProstCodec::<OpaquePayload, OpaquePayload>::default(),
-            )
+        direct
+            .as_ref()
+            .unwrap_or(self)
+            .session
+            .unary(path, payload, target)
             .await
-            .map_err(|status| status_error(status, path, target))?
-            .into_inner()
-            .decode_response()?;
-        if let RpcResponseBody::Error(error) = &response.body {
-            return Err(ConnectError::Remote(error.clone()));
+    }
+
+    /// The client that dials `target` itself, when `path` is an RPC only a Full connection
+    /// may send and one is held for it.
+    async fn direct_client(
+        &self,
+        path: &str,
+        target: Option<&MachineTarget>,
+    ) -> Result<Option<Self>, ConnectError> {
+        match target {
+            Some(target) if dials_direct(path) => self.full_client(target).await,
+            _ => Ok(None),
         }
-        Ok(response)
     }
 
     /// List Docker Volumes on each Machine that invites an RPC.
@@ -831,10 +510,11 @@ impl Client {
         request: RemoveVolumesRequest,
     ) -> Result<Vec<VolumeRemoval>, RpcError> {
         let machines = self
-            .call::<op::ListMachines>(ListMachinesRequest {}, Call::read())
+            .machine_list_uncapped()
             .await
-            .map_err(RpcError::from)?;
-        Ok(remove_volumes_on(self, &machines.machines, request).await)
+            .map_err(RpcError::from)?
+            .machines;
+        Ok(remove_volumes_on(self, &machines, request).await)
     }
 
     /// Which Machines hold each of the Docker Volumes `sought`, as the Docker Volume
@@ -850,17 +530,18 @@ impl Client {
         sought: Vec<DockerVolumeName>,
     ) -> Result<ployz_store::VolumeObservation, RpcError> {
         let machines = self
-            .call::<op::ListMachines>(ListMachinesRequest {}, Call::read())
+            .machine_list_uncapped()
             .await
-            .map_err(RpcError::from)?;
+            .map_err(RpcError::from)?
+            .machines;
         let inspector = self.clone();
         // Seeking nothing asks only who answers: storage holds nothing sought.
         let storage: &[MachineObservation] = match sought.is_empty() {
             true => &[],
-            false => &machines.machines,
+            false => &machines,
         };
         let (listed, inspected) = tokio::join!(
-            self.list_volumes(&machines.machines),
+            self.list_volumes(&machines),
             inspector.inspect_storage(storage)
         );
         let mut unanswered: BTreeSet<MachineId> = listed
@@ -915,11 +596,12 @@ impl Client {
     /// Returns a generated [`RpcError`] when listing Machines fails.
     pub async fn observe_running(&mut self) -> Result<ployz_store::RunningObservation, RpcError> {
         let machines = self
-            .call::<op::ListMachines>(ListMachinesRequest {}, Call::read())
+            .machine_list_uncapped()
             .await
-            .map_err(RpcError::from)?;
+            .map_err(RpcError::from)?
+            .machines;
         let live = self
-            .live_services_from(&machines.machines, EnvironmentValues::Redacted)
+            .live_services_from(&machines, EnvironmentValues::Redacted)
             .await
             .map_err(RpcError::from)?;
         let services: BTreeSet<_> = live
@@ -940,7 +622,6 @@ impl Client {
         // packets to it are dropped (#3490). A failed dial sends only small packets, so
         // a Server the entry couldn't reach is left out, as the router leaves it.
         let dropped = machines
-            .machines
             .iter()
             .filter(|machine| {
                 machine
@@ -970,10 +651,11 @@ impl Client {
     /// Returns a generated [`RpcError`] when listing Machines fails.
     pub async fn observe_copies(&mut self) -> Result<crate::sdk::CopyObservation, RpcError> {
         let machines = self
-            .call::<op::ListMachines>(ListMachinesRequest {}, Call::read())
+            .machine_list_uncapped()
             .await
-            .map_err(RpcError::from)?;
-        let inspected = self.inspect_storage(&machines.machines).await;
+            .map_err(RpcError::from)?
+            .machines;
+        let inspected = self.inspect_storage(&machines).await;
         let unanswered: BTreeSet<MachineId> = inspected
             .failures
             .iter()
@@ -1216,12 +898,13 @@ impl Client {
         network: &str,
         address: &str,
     ) -> Result<BoxProxyStream, ConnectError> {
-        self.ended()?;
+        self.session.ended()?;
         let stream = self
-            .connector
-            .dial_proxy(&self.connection, network, address)
+            .session
+            .connector()
+            .dial_proxy(self.session.connection(), network, address)
             .await;
-        self.ended()?;
+        self.session.ended()?;
         stream
     }
 
@@ -1238,15 +921,20 @@ impl Client {
 
     /// The entry Machine's listing of the Cluster, with the enrollment snapshot it carries.
     pub async fn machine_list(&mut self) -> Result<ployz_core::MachineList, ConnectError> {
-        match tokio::time::timeout(
-            TARGET_RPC_TIMEOUT,
-            self.call::<op::ListMachines>(ListMachinesRequest {}, Call::read()),
-        )
-        .await
-        {
+        match tokio::time::timeout(TARGET_RPC_TIMEOUT, self.machine_list_uncapped()).await {
             Ok(result) => result,
             Err(_) => Err(tonic::Status::deadline_exceeded("target Machine RPC timed out").into()),
         }
+    }
+
+    /// [`Self::machine_list`] with only the unary retries to bound it. The reads that listed
+    /// Machines this way before the Machine list had a deadline keep it: a slow daemon still
+    /// answers them.
+    pub(crate) async fn machine_list_uncapped(
+        &mut self,
+    ) -> Result<ployz_core::MachineList, ConnectError> {
+        self.call::<op::ListMachines>(ListMachinesRequest {}, Call::read())
+            .await
     }
 
     /// Fill in each reachable Machine's storage; returns the Machines left without it.
@@ -1453,20 +1141,19 @@ impl Client {
     ) -> Result<ployz_core::EnsuredContainer, RpcError> {
         let target = MachineTarget::from(machine_id);
         crate::sealed_compat::admit(self, &target, &want).await?;
-        let rule = proof_for(&self.approvals.proofs.rules, &want);
-        let preview = proof_for(&self.approvals.proofs.previews, &want);
+        let carried = self.deploy.carried(&want);
         let payload = op::EnsureContainer::into_request(EnsureContainerRequest {
-            preview,
+            preview: carried.preview,
             want,
-            approval: self.approvals.restart.clone(),
-            deploy: self.approvals.deploy.clone(),
-            rule,
+            approval: carried.restart,
+            deploy: carried.deploy,
+            rule: carried.rule,
         })
         .encode()
         .map_err(|error| rpc_error(ConnectError::Codec(error)))?;
         apply_timeout(
             timeout,
-            self.call_once::<op::EnsureContainer>(payload, Some(&target)),
+            self.send::<op::EnsureContainer>(payload, Some(&target)),
         )
         .await
         .map_err(|error| answered_by(machine_id, error))
@@ -2032,6 +1719,45 @@ pub(crate) async fn evict_machine(
         .require(confirm_data_loss)
         .map_err(UnconfirmedDataLoss::into_rpc_error)?;
     depart(client, selected, current).await
+}
+
+/// A streaming RPC of the catalog, as [`Client::open_stream`] opens it.
+pub(crate) trait StreamRpc {
+    const PATH: &'static str;
+    /// Whether the caller feeds many requests, not one.
+    const CLIENT_STREAM: bool;
+    /// Whether the stream is submitted through the entry even where a Full connection to
+    /// its target is held: a Build's submission is one-shot.
+    const ENTRY_ONLY: bool = false;
+    /// Whether the frames come gzip-compressed.
+    const GZIP: bool = false;
+}
+
+impl StreamRpc for op::Build {
+    const PATH: &'static str = op::Build::PATH;
+    const CLIENT_STREAM: bool = true;
+    const ENTRY_ONLY: bool = true;
+}
+
+impl StreamRpc for op::Exec {
+    const PATH: &'static str = op::Exec::PATH;
+    const CLIENT_STREAM: bool = true;
+}
+
+impl StreamRpc for op::TailLogs {
+    const PATH: &'static str = op::TailLogs::PATH;
+    const CLIENT_STREAM: bool = false;
+}
+
+impl StreamRpc for op::LogHistory {
+    const PATH: &'static str = op::LogHistory::PATH;
+    const CLIENT_STREAM: bool = false;
+}
+
+impl StreamRpc for op::RuntimeWatch {
+    const PATH: &'static str = op::RuntimeWatch::PATH;
+    const CLIENT_STREAM: bool = false;
+    const GZIP: bool = true;
 }
 
 /// Whether a call on `path` to a named target goes to that target itself when a Full
