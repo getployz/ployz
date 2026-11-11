@@ -205,7 +205,7 @@ fn print_code(public_key: SealingPublicKey, code: &RecoveryCode) -> Result<(), E
     Ok(())
 }
 
-async fn dial(matches: &ArgMatches, verb: &str) -> Result<Client, Error> {
+pub(super) async fn dial(matches: &ArgMatches, verb: &str) -> Result<Client, Error> {
     let selected = crate::connect::resolve_connections(
         &config_path(matches)?,
         matches.get_one::<String>("connect").map(String::as_str),
@@ -362,8 +362,8 @@ async fn cloud_backup(credential: Option<&Credential>) -> Result<Option<SealingK
 
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
-struct RecoveryRow {
-    public_key: SealingPublicKey,
+pub(super) struct RecoveryRow {
+    pub(super) public_key: SealingPublicKey,
     backup: Option<SealingKeyBackup>,
     digest: Option<String>,
 }
@@ -373,7 +373,7 @@ struct Rotated {
     digest: String,
 }
 
-async fn recovery_row(
+pub(super) async fn recovery_row(
     credential: &Credential,
     organization_id: &str,
 ) -> Result<Option<RecoveryRow>, Error> {

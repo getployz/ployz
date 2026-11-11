@@ -1,0 +1,235 @@
+//! The Cluster Sealing public key this computer pinned, by Organization.
+//!
+//! The CLI never seals to a key on Cloud's word. Over a connection the person chose that
+//! Cloud doesn't carry, the local socket or SSH, the entry Server reports its own key.
+//! Through Cloud, a relayed key is compared with the one `ployz device pin` read from a
+//! Server that way, and a seal goes ahead only when they match.
+
+use std::{
+    collections::BTreeMap,
+    io,
+    path::{Path, PathBuf},
+};
+
+use ployz_core::{InspectRequest, MachineName, RpcErrorCode, Sealing, SealingPublicKey, op};
+use serde::{Deserialize, Serialize};
+use thiserror::Error;
+
+use crate::{
+    cluster::{Call, Wait},
+    connect::Client,
+    context::{ConnectionSource, Transport},
+    failure::Failure,
+    ui::Hint,
+};
+
+/// The command that pins the key, named by every refusal here.
+pub(crate) const PIN_COMMAND: &str = "ployz device pin --connect ssh://USER@SERVER";
+
+/// A Cluster's Sealing public key as a Server reported it over a connection Cloud doesn't
+/// carry.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub(crate) struct Pin {
+    pub(crate) public_key: SealingPublicKey,
+    /// The Server that reported it.
+    pub(crate) server: MachineName,
+}
+
+#[derive(Default, Serialize, Deserialize)]
+struct PinFile {
+    #[serde(default)]
+    organizations: BTreeMap<String, Pin>,
+}
+
+#[derive(Debug, Error)]
+pub(crate) enum PinError {
+    #[error("couldn't read {path}")]
+    Read { path: PathBuf, source: io::Error },
+    #[error("couldn't write {path}")]
+    Write { path: PathBuf, source: io::Error },
+    #[error("{path} isn't a list of pinned Sealing Keys. Delete it, then pin again")]
+    Malformed {
+        path: PathBuf,
+        source: serde_json::Error,
+    },
+}
+
+impl From<PinError> for Failure {
+    fn from(error: PinError) -> Self {
+        Self::command(error)
+    }
+}
+
+/// This computer's pins, kept beside its config.
+pub(crate) struct Pins {
+    path: PathBuf,
+}
+
+impl Pins {
+    pub(crate) fn beside(config: &Path) -> Self {
+        Self {
+            path: crate::config_dir::ConfigDir::new(config).sealing_keys(),
+        }
+    }
+
+    /// The key pinned for `organization`, if any.
+    ///
+    /// # Errors
+    ///
+    /// Fails when the file can't be read or isn't a pin file.
+    pub(crate) fn get(&self, organization: &str) -> Result<Option<Pin>, PinError> {
+        Ok(self.load()?.organizations.remove(organization))
+    }
+
+    /// Pin `pin` for `organization`, answering the pin it replaced.
+    ///
+    /// # Errors
+    ///
+    /// Fails when the file can't be read, isn't a pin file, or can't be written.
+    pub(crate) fn set(&self, organization: &str, pin: Pin) -> Result<Option<Pin>, PinError> {
+        let mut file = self.load()?;
+        let replaced = file.organizations.insert(organization.to_owned(), pin);
+        self.save(&file)?;
+        Ok(replaced)
+    }
+
+    fn load(&self) -> Result<PinFile, PinError> {
+        match std::fs::read(&self.path) {
+            Ok(bytes) => serde_json::from_slice(&bytes).map_err(|source| PinError::Malformed {
+                path: self.path.clone(),
+                source,
+            }),
+            Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(PinFile::default()),
+            Err(source) => Err(PinError::Read {
+                path: self.path.clone(),
+                source,
+            }),
+        }
+    }
+
+    fn save(&self, file: &PinFile) -> Result<(), PinError> {
+        let write = |source| PinError::Write {
+            path: self.path.clone(),
+            source,
+        };
+        let dir = self.path.parent().unwrap_or(Path::new("."));
+        std::fs::create_dir_all(dir).map_err(write)?;
+        let mut temporary = tempfile::NamedTempFile::new_in(dir).map_err(write)?;
+        serde_json::to_writer_pretty(&mut temporary, file)
+            .map_err(|error| write(io::Error::other(error)))?;
+        temporary.as_file().sync_all().map_err(write)?;
+        temporary
+            .persist(&self.path)
+            .map_err(|error| write(error.error))?;
+        Ok(())
+    }
+}
+
+/// What a seal through a client trusts for the Cluster's key.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) enum SealTo {
+    /// The person chose the connection and Cloud doesn't carry it, so the entry Server
+    /// reports its own key.
+    Entry,
+    /// Cloud chose or carries the connection, so only the key this computer pinned for
+    /// the Organization counts. None when it pinned none.
+    Pinned(Option<Pin>),
+}
+
+impl SealTo {
+    /// Whether the person chose `client`'s connection and Cloud doesn't carry it. A
+    /// connection from Cloud's Server Access is Cloud's choice whatever its transport.
+    pub(crate) fn direct(client: &Client) -> bool {
+        !matches!(client.connection_source(), ConnectionSource::Cloud)
+            && !matches!(client.connection().transport(), Transport::Management(_))
+    }
+
+    /// The key to seal to through `client`. `relayed` is the key the Cluster's rows
+    /// claim, which counts only when it is the pinned one.
+    ///
+    /// # Errors
+    ///
+    /// Refuses a key nothing here can check: a relayed key with no pin or another pin,
+    /// or an entry that reports no key it holds. Nothing is sealed then.
+    pub(crate) async fn key(
+        &self,
+        client: &mut Client,
+        relayed: Option<SealingPublicKey>,
+    ) -> Result<SealingPublicKey, Failure> {
+        match self {
+            Self::Entry => entry_key(client).await,
+            Self::Pinned(pin) => {
+                let Some(relayed) = relayed else {
+                    return Err(Failure::coded(
+                        RpcErrorCode::Unavailable,
+                        "No online Server holds the Cluster's Sealing Key, so nothing can be \
+                         sealed for it.",
+                    ));
+                };
+                check(pin.as_ref(), relayed)
+            }
+        }
+    }
+}
+
+/// `relayed`, a key Cloud passed on, when it is the one this computer pinned.
+///
+/// # Errors
+///
+/// Refuses with `conflict` when nothing is pinned or the pin is another key, naming the
+/// command that pins it.
+pub(crate) fn check(
+    pin: Option<&Pin>,
+    relayed: SealingPublicKey,
+) -> Result<SealingPublicKey, Failure> {
+    match pin {
+        Some(pin) if pin.public_key == relayed => Ok(pin.public_key),
+        Some(pin) => Err(Failure::conflict(format!(
+            "Ployz Cloud sent a Sealing Key other than the one this computer pinned from {}, \
+             so nothing was sealed. If your Cluster's key changed, pin it again from a Server.",
+            pin.server
+        ))
+        .hint(Hint::Next(PIN_COMMAND.to_owned()))),
+        None => Err(Failure::conflict(
+            "This computer hasn't pinned your Cluster's Sealing Key, so it can't check the key \
+             Ployz Cloud sent, and nothing was sealed. Pin it once from a Server.",
+        )
+        .hint(Hint::Next(PIN_COMMAND.to_owned()))),
+    }
+}
+
+/// The Sealing Key the entry Server reports holding, with its name.
+///
+/// # Errors
+///
+/// Fails when the Server doesn't answer, or holds no key it can open with.
+pub(crate) async fn entry_pin(client: &mut Client) -> Result<Pin, Failure> {
+    let details = client
+        .call::<op::Inspect>(
+            InspectRequest::default(),
+            Call::read().waiting(Wait::standard()),
+        )
+        .await?;
+    match (details.sealing, details.machine) {
+        (Some(Sealing::Held { public_key }), Some(machine)) => Ok(Pin {
+            public_key,
+            server: machine.name,
+        }),
+        (_, machine) => Err(Failure::conflict(format!(
+            "Server {} holds no Sealing Key it can open with, so nothing can be sealed for it.",
+            machine.map_or_else(
+                || details.id.to_string(),
+                |machine| machine.name.to_string()
+            )
+        ))
+        .hint(Hint::Inspect("ployz status".to_owned()))),
+    }
+}
+
+async fn entry_key(client: &mut Client) -> Result<SealingPublicKey, Failure> {
+    Ok(entry_pin(client).await?.public_key)
+}
+
+#[cfg(test)]
+#[path = "sealing_pin_tests.rs"]
+mod tests;
