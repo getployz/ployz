@@ -51,6 +51,74 @@ fn empty_batch() -> Batch {
 }
 
 #[test]
+fn a_stale_write_reads_again_at_the_place_the_call_named() {
+    let moved = Round {
+        kind: Kind::Write,
+        answers: vec![Err(RpcError {
+            code: RpcErrorCode::Conflict,
+            message: "moved".into(),
+            details: json!({ "revision": 4 }),
+            cause: Vec::new(),
+        })],
+    };
+    for (input, next) in [
+        (json!({}), Call::new("environment_show", json!({}))),
+        (
+            json!({ "project": "shop", "environment": "staging", "other": 1 }),
+            Call::new(
+                "environment_show",
+                json!({ "project": "shop", "environment": "staging" }),
+            ),
+        ),
+        (
+            json!({ "project": "shop", "service": "web", "expect_revision": 3 }),
+            Call::new(
+                "service_inspect",
+                json!({ "project": "shop", "service": "web" }),
+            ),
+        ),
+    ] {
+        let rounds = vec![moved.clone()];
+        let mut cx = cx(&rounds, "service_update");
+        cx.call = Call::new("service_update", input.clone());
+        let refusal = refused(cx.write_expecting(&empty_batch(), Some(3), from_store));
+        assert_eq!(refusal.code, RpcErrorCode::Conflict, "{input}");
+        assert_eq!(
+            refusal.message,
+            "The Environment changed since you read it; read it again before writing"
+        );
+        assert_eq!(refusal.next, [next], "{input}");
+    }
+}
+
+#[test]
+fn a_local_call_that_needs_cloud_points_at_the_store_read_in_its_place() {
+    let local = Place {
+        project: None,
+        environment: None,
+        store: StoreAt::Local,
+    };
+    for (input, next) in [
+        (
+            json!({ "project": "shop", "environment": "staging" }),
+            json!({ "project": "shop", "environment": "staging" }),
+        ),
+        (json!({ "environment": "staging" }), json!({ "environment": "staging" })),
+        (json!({}), json!({})),
+    ] {
+        let (step, _) = start("environment_setup", input.clone(), &local, "call-1");
+        let Step::Done {
+            result: ToolResult::Refused(refusal),
+        } = step
+        else {
+            panic!("a local environment_setup is refused at once");
+        };
+        assert_eq!(refusal.code.as_str(), "not_here", "{input}");
+        assert_eq!(refusal.next, [Call::new("environment_show", next)], "{input}");
+    }
+}
+
+#[test]
 fn a_call_takes_at_most_three_reads_and_writes() {
     let rounds = vec![read_round(), read_round(), read_round(), read_round()];
     let mut cx = cx(&rounds, "environment_show");
