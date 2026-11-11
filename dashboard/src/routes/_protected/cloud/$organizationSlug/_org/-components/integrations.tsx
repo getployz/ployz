@@ -51,7 +51,7 @@ function TailscaleSection({ organizationSlug, editable }: { organizationSlug: st
   const rows = observed?.servers.map((server) => ({ ...server, state: stateOf(server, last) })) ?? [];
   const placed = rows.filter((row) => row.state !== "none").length;
   const serving = rows.filter((row) => row.state === "running").length;
-  // Until Connect answers, a running router may still be refused.
+  // Until Connect answers, a running router from a daemon that predates the probe may still be refused.
   const on = placed > 0 && !starting;
   const refused = rows.some((row) => row.state === "refused");
   const failures = last === null ? [] : last.changed.failures.filter((failure) => !putRight(last.to, rows.find((row) => row.id === failure.id)?.state));
@@ -128,7 +128,7 @@ const REMOVAL_LAG_MS = 30_000;
 type RowState = ObservedServer["router"] | "refused";
 
 /**
- * The last answer outranks the poll only where the poll lags: a router whose key Tailscale refused
+ * The last answer outranks the poll only where the poll lags: a router from a daemon that predates the probe whose key Tailscale refused
  * runs until it gives up, and a removed one is listed until the Servers' watch catches up.
  */
 function stateOf(server: ObservedServer, last: PrivateAccessAnswer | null): RowState {
