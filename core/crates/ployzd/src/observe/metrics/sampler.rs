@@ -44,7 +44,7 @@ use super::{
 };
 use crate::{
     docker::{LABEL_HOOK, LABEL_MANAGED, LABEL_SERVICE_ID},
-    machine::LocalMachineRecord,
+    machine::store,
     machine_pool,
     network::DOCKER_NETWORK_NAME,
     observe::{
@@ -56,7 +56,6 @@ use crate::{
 const INTERVAL: Duration = Duration::from_secs(10);
 const DOCKER_TIMEOUT: Duration = Duration::from_secs(5);
 const LABEL_SYSTEM_MANAGED: &str = "ployzd.managed";
-const MACHINE_FILE: &str = "machine.json";
 const CGROUP_V2_PREFIX: &str = "0::";
 const LOOPBACK: &str = "lo";
 /// The host end of each container's veth pair. Its bytes are the
@@ -329,10 +328,7 @@ fn tick(
 
 /// Read every tick: a reset gives the Machine a new id.
 pub(in crate::observe) fn machine_id(data_dir: &Path) -> Option<MachineId> {
-    let bytes = fs::read(data_dir.join(MACHINE_FILE)).ok()?;
-    serde_json::from_slice::<LocalMachineRecord>(&bytes)
-        .ok()
-        .map(|record| record.id())
+    store::identity(data_dir).map(|identity| identity.id)
 }
 
 /// One row per live container, then the Machine's row with its disk. Marker
@@ -695,7 +691,7 @@ Inter-|   Receive                                                |  Transmit
                 )
                 .unwrap();
                 fs::write(
-                    data_dir.join(super::MACHINE_FILE),
+                    crate::machine::store::path(&data_dir),
                     serde_json::to_vec(&record).unwrap(),
                 )
                 .unwrap();
