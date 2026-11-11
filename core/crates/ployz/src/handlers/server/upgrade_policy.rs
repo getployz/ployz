@@ -118,13 +118,7 @@ pub(in crate::handlers) fn set(root: &ArgMatches) -> Result<(), Error> {
         .and_then(|policy| policy.approved)
         .filter(|_| approval.is_some());
     let sentence = match (approved, channel, automatic) {
-        (
-            Some(Approved {
-                channel,
-                generation,
-            }),
-            ..,
-        ) => format!("Approved {channel} releases (approval {generation})."),
+        (Some(Approved { channel, .. }), ..) => format!("Approved {channel} releases."),
         (None, Some(channel), _) => format!("Servers upgrade to {channel} releases."),
         (None, None, Some(true)) => "Servers upgrade automatically.".to_owned(),
         (None, None, _) => "Servers upgrade only when you start one.".to_owned(),

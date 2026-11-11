@@ -248,9 +248,9 @@ connection under omissions. Either way the command exits 3.
 
 ### Add a passkey
 
-A passkey lets you approve changes from your browser. Each server trusts it to approve workflows
-and [automatic deploy rules](../deploy/github.md#deploy-on-push-to-servers-that-enforce-device-approval),
-and nothing else: it can't open a connection, run `exec`, or approve a device. You don't need a
+A passkey lets you approve changes from your browser. Each server trusts it to approve workflows,
+[automatic deploy rules](../deploy/github.md#deploy-on-push-to-servers-that-enforce-device-approval)
+and [Release Channels](#upgrades-on-servers-that-enforce-device-approval), and nothing else: it can't open a connection, run `exec`, or approve a device. You don't need a
 device to add one.
 
 1. In Ployz Cloud, open **Account** in your Organization and choose **Add passkey**. Your browser
@@ -399,7 +399,7 @@ one, so it can't move your servers to Beta, or to a release off the approved cha
 **Upgrade automatically** asks for your passkey too, until a channel is approved. Each approval
 counts up, and a server refuses one older than the newest it has seen. A server refuses an
 upgrade with no approval with
-`ployz.machine.upgrade.channel.v1: approve a Release Channel for this Cluster first`, and one
+`ployz.machine.upgrade.channel.v1: no valid Release Channel approval for this Cluster`, and one
 off the approved channel with `ployz.machine.upgrade.channel.v1: 0.4.1-beta.1 isn't on the approved stable Release Channel`.
 An upgrade that fails this way reads **Upgrade failed**, with that message under **Show details**.
 If the channel changes without an approval, from an agent or an older CLI, upgrades fail the same

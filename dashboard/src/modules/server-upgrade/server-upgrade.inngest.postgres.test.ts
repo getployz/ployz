@@ -137,7 +137,7 @@ describe("roll-out-server-upgrade", () => {
             if (answer === "refused") {
               return Effect.fail(new PloyzProviderError({
                 operation: "request machine upgrade",
-                cause: { code: "forbidden", message: "ployz.machine.upgrade.channel.v1: approve a Release Channel for this Cluster first" },
+                cause: { code: "forbidden", message: "ployz.machine.upgrade.channel.v1: no valid Release Channel approval for this Cluster" },
               }));
             }
             return answer === "busy"
@@ -992,7 +992,7 @@ describe("roll-out-server-upgrade", () => {
       expect(carried).toEqual([null]);
       expect(await rows()).toMatchObject([{
         outcome: "failed",
-        error: "ployz.machine.upgrade.channel.v1: approve a Release Channel for this Cluster first",
+        error: "ployz.machine.upgrade.channel.v1: no valid Release Channel approval for this Cluster",
       }]);
     });
 

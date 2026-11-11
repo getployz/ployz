@@ -1,5 +1,5 @@
 //! The keys a Machine trusts: its Devices, which manage it and sign statements, and its
-//! passkeys, which may only approve workflows and automatic deploy rules.
+//! passkeys, which may only approve workflows, automatic deploy rules and Release Channels.
 //!
 //! A passkey is not a Device. It never holds a Management Client slot, so it never opens a
 //! connection, and it never signs a statement's envelope. A Machine records one only when a
