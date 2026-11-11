@@ -130,7 +130,7 @@ Approving automatic deploys for production:
     builds    Dockerfile in ., for linux/amd64, with the Actions cache
     variables LOG_LEVEL=info, DATABASE_URL (sealed)
     mode {"mode":"replicated","replicas":2}
-    command ["node","server.js"]
+    command ["node server.js"]
     restart {"name":"unless-stopped"}
 Approved. Every push to main now deploys web, worker with these settings.
 ```
