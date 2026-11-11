@@ -302,6 +302,8 @@ impl PreviewRule {
             (CommitAuthority::Head, Some(_)) | (CommitAuthority::Review(_), None) => {
                 mismatch("a review")
             }
+            // A person's commit approval runs only under an automatic deploy rule.
+            (CommitAuthority::Approved(_), _) => mismatch("an authority"),
         }
     }
 }
