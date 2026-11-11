@@ -38,6 +38,7 @@ use store::PENDING_RESET_FILE_NAME;
 pub use store::{EnrollPlan, LocalMachineStore, StoreError};
 pub(crate) use store::{InterruptedReset, Opened};
 
+pub(crate) use local_machine::Landing;
 #[cfg(test)]
 pub(crate) use local_machine::PeerInspect;
 pub(crate) use local_machine::{

@@ -351,6 +351,11 @@ pub struct SeedVolumeRequest {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[ts(optional)]
     pub r#gen: Option<VolumeGen>,
+    /// The Device-signed Seed approval naming this Machine, `name`, `guid` and `into`. An
+    /// enforcing Machine needs one from an Operator. A Machine that predates it ignores it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub approval: Option<crate::authority::Signed<crate::authority::VolumeApproval>>,
 }
 
 /// Which stream a mirror asks its writer Machine for over the mesh.

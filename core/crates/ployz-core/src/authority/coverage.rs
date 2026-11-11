@@ -61,7 +61,8 @@ impl Statement {
             Self::Proposal => &[PROPOSAL_APPROVAL_CAPABILITY, DEPLOY_PROPOSAL_CAPABILITY],
             Self::Rule => &[DEPLOY_RULE_CAPABILITY, BUILD_GRANT_RULE_CAPABILITY],
             Self::PrivateAccess => &[PRIVATE_ACCESS_APPROVAL_CAPABILITY],
-            Self::Volume | Self::Upgrade | Self::Teardown => &[],
+            Self::Volume => &[VOLUME_APPROVAL_CAPABILITY],
+            Self::Upgrade | Self::Teardown => &[],
         }
     }
 }
@@ -151,7 +152,7 @@ pub const AUTHORIZATION: &[(&str, Authorization)] = &[
     (INSPECT_VOLUME_COPY_CAPABILITY, Read),
     (SEED_VOLUME_CAPABILITY, Signed(&[Volume])),
     (SET_VOLUME_COPY_CAPABILITY, Pending("E3 to E6")),
-    (SET_VOLUME_SIZE_CAPABILITY, Pending("E7")),
+    (SET_VOLUME_SIZE_CAPABILITY, Signed(&[Volume])),
     (LIST_IMAGES_CAPABILITY, Read),
     (
         PRUNE_IMAGES_CAPABILITY,
@@ -466,7 +467,7 @@ pub const CASES: &[Case] = &[
         SEED_VOLUME_CAPABILITY,
         "no approval",
         "a SeedVolume from another Machine's copy",
-        Expected::Refused(&[SEED_VOLUME_CAPABILITY]),
+        Expected::Refused(&[VOLUME_APPROVAL_CAPABILITY]),
     ),
     case(
         SET_VOLUME_COPY_CAPABILITY,
@@ -495,8 +496,8 @@ pub const CASES: &[Case] = &[
     case(
         SET_VOLUME_SIZE_CAPABILITY,
         "grow, or a shrink",
-        "a SetVolumeSize growing a Volume",
-        Expected::Served,
+        "a SetVolumeSize growing a Volume, with no approval",
+        Expected::Refused(&[VOLUME_APPROVAL_CAPABILITY]),
     ),
     case(
         PRUNE_IMAGES_CAPABILITY,

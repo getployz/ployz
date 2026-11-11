@@ -320,4 +320,12 @@ impl VolumeRecords {
             .get(&operation)
             .and_then(|record| record.decision)
     }
+
+    /// Whether `operation` ended here after this Machine admitted the body `digest` under it.
+    #[must_use]
+    pub fn ended_as(&self, operation: OperationId, digest: StepDigest) -> bool {
+        self.operations
+            .get(&operation)
+            .is_some_and(|record| record.state == OperationState::Ended && record.digest == digest)
+    }
 }

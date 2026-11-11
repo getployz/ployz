@@ -1,4 +1,5 @@
-import type { MachineName } from "@ployz/sdk";
+import type { MachineId, MachineName, Signed } from "@ployz/sdk";
+import { Option, Schema } from "effect";
 import { listNames } from "#/lib/plural";
 import { gigabytes } from "#/modules/config-store/store-volumes";
 import { type Requirement, requirements } from "#/modules/runtime/daemon-compat";
@@ -119,10 +120,43 @@ export function planResize(
         + `Run ployz volume set ${volumeName} --size ${gigabytes(lowest)} to record the size it holds, then ployz volume set ${volumeName} --size ${gigabytes(size.recorded)} to grow it`) };
     }
   }
+  const approval = approvalRefusal(volumeName, args, direction, holders);
+  if (approval !== null) return { ok: false, refusal: approval };
   const sets = holders.map((member): ResizeStep => ({ kind: "set", member, role: member === writer ? "primary" : "mirror" }));
   const record = { kind: "record" } as const;
   const steps = order.record === "first" ? [record, ...sets] : order.record === "last" ? [...sets, record] : sets;
   return { ok: true, phase: { kind: "resize", direction, from: size.recorded, to: args.maximum_bytes, steps } };
+}
+
+const ResizeApproval = Schema.fromJsonString(Schema.Struct({
+  workflow: Schema.Struct({ kind: Schema.Literal("resize"), machines: Schema.Array(Schema.String), maximum_bytes: Schema.Number, shrink: Schema.Boolean }),
+}));
+
+/**
+ * Whether `approval` lets every one of `holders` hold `to`, lowering a bound exactly when `shrink`. Cloud reads it only
+ * to refuse a mistake before it asks any Server; each Server checks the signature and its own name, size and direction.
+ */
+export function approvesResize(approval: Signed, holders: readonly MachineId[], to: Bytes, shrink: boolean) {
+  const body = Schema.decodeUnknownOption(ResizeApproval)(approval.body);
+  if (Option.isNone(body)) return false;
+  const { machines, maximum_bytes: approved, shrink: approvedShrink } = body.value.workflow;
+  return approved === to && approvedShrink === shrink && holders.every((holder) => machines.includes(holder));
+}
+
+/**
+ * Why the run can't ask `holders` for the size: one enforces device approval and the run carries no approval, or the
+ * approval names another size, direction or set of Servers. Null when the Servers may be asked.
+ */
+function approvalRefusal(volumeName: string, args: VolumeRunArgs["resize"], direction: SizeDirection, holders: readonly AnsweredMember[]): Refusal | null {
+  const again = `ployz volume set ${volumeName} --size ${gigabytes(args.maximum_bytes)}`;
+  if (args.approval === undefined) {
+    const enforcing = holders.find((member) => member.enforces === true);
+    return enforcing === undefined ? null
+      : refuse("enforced", `${enforcing.machine.name} enforces device approval, so Ployz Cloud can't resize ${volumeName} on its own. Run ${again} from an approved device.`);
+  }
+  const shrink = direction !== "grow";
+  if (approvesResize(args.approval, holders.map((member) => member.machine.id), args.maximum_bytes, shrink)) return null;
+  return refuse("invalid", `The approval from your device is for another change, not setting ${volumeName} to ${gb(args.maximum_bytes)} on ${listNames(holders.map((member) => member.machine.name).sort())}. Run ${again} again.`);
 }
 
 function unsizedRefusal(volumeName: string, size: RecordedSize): Refusal | null {
