@@ -1326,6 +1326,72 @@ mod ingress_doors {
     }
 
     #[tokio::test]
+    async fn a_reboot_places_a_held_door_only_while_the_cluster_declares_it() {
+        use crate::corrosion::{
+            AdminClient,
+            store_tests::{corrosion_db, identity_store},
+        };
+        let (data_dir, store, _without_cluster, _fake, runtime, cluster) =
+            fake_docker_service_sealing("ployzd-doors-declared").await;
+        let (replicated, task) = identity_store(corrosion_db()).await;
+        let mut service = MachineService::with_cluster(
+            store,
+            Some((
+                replicated.clone(),
+                AdminClient::new(data_dir.join("admin.sock")),
+            )),
+        )
+        .with_optional_containers(Some(runtime.clone()));
+        service.local = service.local.with_zpool("true");
+        let sealed = cluster.seal_platform(ployz_core::PlatformPurpose::IngressTunnel, b"cf-token");
+        let tunnel =
+            json!({"doors": ["tunnel"], "proxy_service": proxy_id(), "sealed_token": sealed});
+        let placed = set_doors(&service, tunnel, false).await.unwrap().unwrap();
+        assert_eq!(placed.failure, None, "{placed:?}");
+        let connector = placed.tunnel.unwrap().now.container_id;
+        let token = data_dir.join("root/run/ployz/tunnel/token");
+        let reboot = || async {
+            runtime.stop(&connector, None, None).await.unwrap();
+            runtime.remove_tunnel_token().unwrap();
+        };
+
+        // A declaration without the Tunnel Door leaves the connector at rest and writes no token.
+        replicated
+            .publish_cluster_doors(&ployz_core::IngressDoors::public())
+            .await
+            .unwrap();
+        reboot().await;
+        assert!(service.local.restore_doors().await.unwrap().is_none());
+        assert!(!token.exists(), "the connector's token is not written back");
+        let machine_id = service.local.record().id();
+        let connector_running = || async {
+            runtime
+                .door_inventory(&machine_id)
+                .await
+                .unwrap()
+                .iter()
+                .filter(|entry| entry.facts.door == crate::docker::Door::Tunnel)
+                .any(|entry| entry.facts.running())
+        };
+        assert!(!connector_running().await);
+
+        // Declaring it places the connector as a Machine with no declaration does.
+        replicated
+            .publish_cluster_doors(&ployz_core::IngressDoors::tunnel())
+            .await
+            .unwrap();
+        let restored = service.local.restore_doors().await.unwrap().unwrap();
+        assert_eq!(restored.failure, None, "{restored:?}");
+        assert_eq!(restored.tunnel.unwrap().change, DoorChange::Started);
+        assert_eq!(std::fs::read(&token).unwrap(), b"cf-token");
+        assert!(connector_running().await);
+
+        task.abort();
+        runtime.remove_tunnel_token().unwrap();
+        std::fs::remove_dir_all(data_dir).unwrap();
+    }
+
+    #[tokio::test]
     async fn a_connector_closing_could_not_remove_stays_stopped_across_a_reboot() {
         let (data_dir, _store, service, fake, runtime, cluster) =
             fake_docker_service_sealing("ployzd-doors-closed-stays").await;
