@@ -8,7 +8,7 @@
 //! echoes the rule's ID and generation into each approval for the Servers to compare. The
 //! Cluster key comes from the Servers over this Device's own connection.
 //!
-//!   probe ‖ redeployed view ‖ rule ─▶ sign ─▶ admit ─▶ builds end ─▶ sign again ─▶ run
+//!   probe ‖ view ‖ rule ─▶ confirm ─▶ sign ─▶ admit ─▶ builds end ─▶ sign again ─▶ run
 //!
 //! An approval lasts minutes and a build may take longer, so the Deployment waits, queued,
 //! once its builds end, until this client approves the same commits again.
@@ -30,6 +30,7 @@ use serde_json::json;
 use super::super::Error;
 use super::super::store::Store;
 use super::approve::{self, Probe};
+use crate::ui::Hint;
 
 /// How often the redeploy is read while GitHub builds.
 const BUILD_LOOK: Duration = Duration::from_secs(3);
@@ -58,9 +59,10 @@ struct Terms {
 /// Server that enforces refuses what nobody approved.
 ///
 /// # Errors
-/// Refuses before admission when a Server can't check an approval, when the source built
-/// no Service from a commit or built one from an upload, when its Environment has no
-/// automatic deploy rule, and when the Servers or the Store can't be read.
+/// Refuses before admission when a Server can't check an approval, under the hidden local
+/// Store, when the source built no Service from a commit or built one from an upload, when
+/// its Environment has no automatic deploy rule, and when the Servers or the Store can't be
+/// read.
 pub(in crate::handlers) fn prepare(
     matches: &ArgMatches,
     store: &Store,
@@ -101,6 +103,13 @@ pub(in crate::handlers) fn prepare(
              on every server, then redeploy. Nothing deployed.",
         ));
     }
+    // Its builds run on GitHub, which only Ployz Cloud hands them to.
+    if store.local().is_some() {
+        return Err(Error::usage(
+            "The hidden local Store can't redeploy on servers that enforce device approval. \
+             Nothing deployed.",
+        ));
+    }
     let view = view?;
     let commits = git_builds(&view)?;
     let environment = &view.environment.name;
@@ -132,8 +141,25 @@ pub(in crate::handlers) fn prepare(
         commits,
         approvals: Vec::new(),
     };
-    for (service, commit) in &redeploy.commits {
-        crate::ui::stream(format_args!("Approving {service} at {}", short(*commit)));
+    let named = redeploy
+        .commits
+        .iter()
+        .map(|(service, commit)| format!("{service} at {}", short(*commit)))
+        .collect::<Vec<_>>()
+        .join(", ");
+    match matches.get_flag("yes") {
+        true => crate::ui::stream(format_args!("Approving {named}")),
+        false => crate::ui::confirm(
+            &format!("Approve {named}?"),
+            || {
+                Error::coded(
+                    RpcErrorCode::ConfirmationRequired,
+                    "Redeploying needs your approval of each commit. Nothing deployed.",
+                )
+                .hint(Hint::Retry(super::super::typed_with(&["--yes"])))
+            },
+            "Cancelled. Nothing deployed.",
+        )?,
     }
     let approvals = redeploy.signed()?;
     Ok(Some(Redeploy {

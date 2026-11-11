@@ -91,13 +91,14 @@ on, redeploy or roll back from an approved device:
 ployz deployment redeploy 4
 ```
 
-Your device approves the commit of each service GitHub built for #4 under your
-[automatic deploy rule](github.md#deploy-on-push-to-servers-that-enforce-device-approval), one
-line per service:
+Your device asks you to approve the commit of each service #4 built, under your
+[automatic deploy rule](github.md#deploy-on-push-to-servers-that-enforce-device-approval):
 
 ```text
-Approving web at 3f1c2a9b8e7d
+Approve web at 3f1c2a9b8e7d? [y/N]
 ```
+
+`--yes` approves without asking.
 
 Your approval takes the place of the branch's head, and nothing else. Each server still runs only
 the image GitHub built from that commit under your rule, with the settings your rule approves,
@@ -116,6 +117,8 @@ deploys.
 - **Keep the CLI running.** The redeploy waits for your device's second approval. If you stop
   the CLI while it waits, it cancels the redeploy. If the CLI can't cancel it, Ployz Cloud fails
   it after an hour, and nothing deploys.
+- **The second approval lasts 15 minutes.** A server that reaches a service later refuses it,
+  and the redeploy fails. Redeploy again.
 - **A redeploy from the dashboard or by the agent isn't approved.** Servers that enforce refuse
   it. Run `ployz deployment redeploy` on an approved device.
 - **A rollback keeps your rule's settings.** Your servers run each service only with the
@@ -125,9 +128,12 @@ deploys.
 - **It runs under your rule as it stands.** If you approved the rule again since #4, GitHub
   builds the commit again under the new approval. If you ended the rule, your servers refuse the
   rollback.
-- **Only services GitHub built from a commit redeploy here.** A redeploy of a service built from
-  an upload is refused before anything happens. Your servers refuse a service the redeploy runs
-  from an image or built on your servers. Deploy those with `ployz deploy`.
+- **Each rebuild runs on GitHub, under your rule.** A service your servers built for #4 builds
+  again on GitHub. One your rule doesn't deploy fails its build, and the redeploy is cancelled.
+  A service built from an upload is refused before anything happens, and your servers refuse one
+  that runs from an image. Deploy those with `ployz deploy`.
+- **A pre-deploy command runs again.** Each approval runs a service's pre-deploy command once
+  more, even for the commit that's running now.
 - **GitHub retires the keys that sign its build records.** Your servers refuse an image whose
   record GitHub signed with a key it no longer publishes, and name the key. A redeploy can't
   build that commit again yet.

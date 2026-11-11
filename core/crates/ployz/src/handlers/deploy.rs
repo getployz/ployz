@@ -144,12 +144,15 @@ pub(super) fn redeploy_command(command: Command) -> Command {
         command,
         "Deploy an ended Deployment's commit and settings again, and follow it. Redeploying \
          one older than a Deployment that ran rolls that back until the next deploy, so it \
-         asks first; --yes skips the ask. Outside a terminal without --yes it fails with \
+         asks first. On Servers that enforce Device approval it also asks you to approve each \
+         commit. --yes skips both asks. Outside a terminal without --yes it fails with \
          confirmation_required. A rollback that deletes Volume data needs \
          --accept-volume-loss.",
     )))
     .arg(id())
-    .arg(crate::cli::yes("Roll back without asking"))
+    .arg(crate::cli::yes(
+        "Roll back and approve the commits without asking",
+    ))
     .arg(crate::cli::volume_acceptance().help(format!(
         "{}; --yes cannot bypass this",
         crate::cli::VOLUME_ACCEPTANCE
