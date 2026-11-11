@@ -50,7 +50,7 @@ import {
 import { type DeploymentsSeen, deployingMessage, gb, resizeRequirements, sizeDirection } from "#/modules/volume-run/resize";
 import { isBehind, isCurrent, releaseLine } from "#/modules/server-upgrade/server-upgrade";
 import { channelRelease, organizationReleaseChannel } from "#/modules/server-upgrade/server-upgrade.server";
-import { acceptApproval, dropApprovals, offerApproval } from "#/modules/volume-run/mirror-approvals.server";
+import { dropApprovals, offerApproval } from "#/modules/volume-run/mirror-approvals.server";
 import { volumeRun } from "#/modules/volume-run/tables";
 import {
   ACTIVE_VOLUME_RUN_STATES,
@@ -1300,12 +1300,6 @@ export const setVolumeCopy = Effect.fn("VolumeRun.setVolumeCopy")(function* (
 export const offerRunApproval = Effect.fn("VolumeRun.offerRunApproval")(function* (ctx: RunContext, inngestRunId: string, mirror: MachineId, approval: Signed) {
   yield* requireOwner(ctx.id, inngestRunId);
   yield* offerApproval(ctx.organizationId, ctx.volumeId, mirror, approval);
-});
-
-/** The Mirror on `mirror` accepted a pull carrying the run's `approval`, so it is the one later syncs carry. */
-export const keepApproval = Effect.fn("VolumeRun.keepApproval")(function* (ctx: RunContext, inngestRunId: string, mirror: MachineId, approval: Signed) {
-  yield* requireOwner(ctx.id, inngestRunId);
-  yield* acceptApproval(ctx.volumeId, mirror, approval);
 });
 
 /** Drops the approvals kept with the Mirrors on `machines`, once their copies are gone. */

@@ -1,13 +1,13 @@
 import "@tanstack/react-start/server-only";
 import type { EnvironmentRef, ExpectedCopy, MachineId, Signed, Snapshot, VolumeCopy, WantedCopy } from "@ployz/sdk";
 import { and, eq, inArray, max, sql } from "drizzle-orm";
-import { Effect, Option, Semaphore } from "effect";
+import { Clock, Effect, Option, Semaphore } from "effect";
 import { ClusterOutOfTime } from "#/modules/runtime/organization-runtime.server";
 import { volumePlacement } from "#/modules/volume-placement/tables";
 import { slotRole } from "#/modules/volume-placement/volume-placement";
 import { deployClaim } from "#/modules/volume-placement/volume-placement.server";
 import { expectOf, roleOf } from "#/modules/volume-run/plan";
-import { acceptApproval } from "#/modules/volume-run/mirror-approvals.server";
+import { settleApprovals, settledBefore } from "#/modules/volume-run/mirror-approvals.server";
 import { volumeMirrorStatus, volumeRun } from "#/modules/volume-run/tables";
 import { ACTIVE_VOLUME_RUN_STATES, type AnsweredMember, copyName, type Member, unheardOf } from "#/modules/volume-run/volume-run";
 import { askCopy, type CopyAnswer, DRAIN_MS, type MachineRef, observeVolumeMembers, requestVolumeRun, SwitchAttemptError } from "#/modules/volume-run/volume-run.server";
@@ -277,21 +277,22 @@ const syncOnce = Effect.fn("MirrorSync.sync")(function* (organizationId: string,
       )),
     );
     // Each pull carries an approval kept with its Mirror, newest first, past any the Mirror refuses for the approval:
-    // the one it admitted is always kept (mirror-approvals.server.ts), and its acceptance drops the rest. The writer's
-    // snapshot carries none: the Mirror's own run granted it the writer's later snapshots, and one snapshot serves every
-    // Mirror.
+    // the one it admitted is always kept, and an accepted pull settles the rest (mirror-approvals.server.ts). The
+    // writer's snapshot carries none: the Mirror's own run granted it the writer's later snapshots, and one snapshot
+    // serves every Mirror.
     const pull = (member: SlotMember, copy: Slot, target: string) => Effect.gen(function* () {
       const want: WantedCopy = { kind: "mirror", from: writer.address, target, drain: DRAIN_MS };
       const kept = approvals.find((row) => row.machineId === member.machine.id)?.approvals ?? [];
-      const refused: Signed[] = [];
       let answer: MirrorAnswer | undefined;
       for (const approval of kept) {
+        const sentAt = yield* Clock.currentTimeMillis;
         answer = yield* setCopy(member.machine, expectOf(copy), want, approval);
         if (answer.ok || answer.reason !== "unapproved") {
-          if (answer.ok && kept.length > 1) yield* acceptApproval(volume.volumeId, member.machine.id, approval, refused);
+          if (answer.ok && kept.some((other) => other !== approval && settledBefore(other, sentAt))) {
+            yield* settleApprovals(volume.volumeId, member.machine.id, approval, sentAt);
+          }
           return answer;
         }
-        refused.push(approval);
       }
       return answer ?? (yield* setCopy(member.machine, expectOf(copy), want));
     });

@@ -140,10 +140,12 @@ describe("the mirror sync", () => {
     expect(carried).toEqual(["snapshot web-1 none", `mirror web-2 ${approval.body}`, "mirror web-3 none"]);
   });
 
-  it("tries a mirror's kept approvals newest first, stops at the one it accepts and keeps that one alone", async () => {
-    const newest: Signed = { body: "newest", signatures: [] };
-    const admitted: Signed = { body: "admitted", signatures: [] };
-    const oldest: Signed = { body: "oldest", signatures: [] };
+  it("tries a mirror's kept approvals newest first, stops at the one it accepts and settles only the lapsed others", async () => {
+    // The Mirror refuses `newest` now but may admit it later (its window is still open), so it stays; `admitted` lapsed
+    // long ago and stays because the Mirror holds it open; `oldest` lapsed long ago and the Mirror holds `admitted`.
+    const newest: Signed = { body: JSON.stringify({ expires_at: Date.now() + 15 * 60_000 }), signatures: [] };
+    const admitted: Signed = { body: JSON.stringify({ expires_at: 1, n: "admitted" }), signatures: [] };
+    const oldest: Signed = { body: JSON.stringify({ expires_at: 1, n: "oldest" }), signatures: [] };
     await harness.pool.query(
       "insert into volume_mirror_status (organization_id, volume_id, machine_id, approvals) values ($1, $2, $3, $4)",
       [organizationId, volumeId, web("web-2"), JSON.stringify([newest, admitted, oldest])]);
@@ -156,18 +158,18 @@ describe("the mirror sync", () => {
     const asking: CopyAsk = (asker, machine, expected, want, approval) => {
       if (want.kind === "snapshot") return ask(asker, machine, expected, want);
       carried.push(approval?.body ?? "none");
-      return approval?.body === "admitted" ? ask(asker, machine, expected, want) : askRejected(refused)(asker, machine, expected, want, approval);
+      return approval?.body === admitted.body ? ask(asker, machine, expected, want) : askRejected(refused)(asker, machine, expected, want, approval);
     };
 
     expect((await run(syncMirrors(organizationId, volume, () => Effect.succeed(members), asking))).lines).toEqual(["db-web-2 is pulling w-1-5"]);
 
-    expect(carried).toEqual(["newest", "admitted"]);
+    expect(carried).toEqual([newest.body, admitted.body]);
     expect((await harness.pool.query("select approvals from volume_mirror_status where machine_id = $1", [web("web-2")])).rows)
-      .toEqual([{ approvals: [admitted] }]);
+      .toEqual([{ approvals: [newest, admitted] }]);
   });
 
   it("keeps every approval when the mirror refuses them all, and when a pull goes unanswered", async () => {
-    const kept: Signed[] = [{ body: "newest", signatures: [] }, { body: "older", signatures: [] }];
+    const kept: Signed[] = [{ body: '{"expires_at":1,"n":"newest"}', signatures: [] }, { body: '{"expires_at":1,"n":"older"}', signatures: [] }];
     await harness.pool.query(
       "insert into volume_mirror_status (organization_id, volume_id, machine_id, approvals) values ($1, $2, $3, $4)",
       [organizationId, volumeId, web("web-2"), JSON.stringify(kept)]);
@@ -187,16 +189,16 @@ describe("the mirror sync", () => {
   });
 
   it("reads a mirror's kept approvals only after it finds no lane open", async () => {
-    const stale: Signed = { body: "stale", signatures: [] };
-    const narrowed: Signed = { body: "narrowed", signatures: [] };
+    const kept: Signed = { body: "kept", signatures: [] };
+    const offered: Signed = { body: "offered", signatures: [] };
     await harness.pool.query(
       "insert into volume_mirror_status (organization_id, volume_id, machine_id, approvals) values ($1, $2, $3, $4)",
-      [organizationId, volumeId, web("web-2"), JSON.stringify([stale])]);
-    // A run that ended before the lane check narrowed the list; a list read before then would still carry `stale`. The
-    // Deploy check, which reads the Store only for a placement a Deploy claimed, runs after the lane check.
+      [organizationId, volumeId, web("web-2"), JSON.stringify([kept])]);
+    // A run that ended before the lane check offered its approval; a list read before then would miss it. The Deploy
+    // check, which reads the Store only for a placement a Deploy claimed, runs after the lane check.
     await harness.pool.query(`update volume_placement set deployment_id = 'dep-1'`);
     onDeployment = async () => {
-      await harness.pool.query("update volume_mirror_status set approvals = $1 where machine_id = $2", [JSON.stringify([narrowed]), web("web-2")]);
+      await harness.pool.query("update volume_mirror_status set approvals = $1 where machine_id = $2", [JSON.stringify([offered, kept]), web("web-2")]);
     };
     const carried: string[] = [];
     const carrying: CopyAsk = (asker, machine, expected, want, sent) => {
@@ -206,26 +208,32 @@ describe("the mirror sync", () => {
 
     await run(syncMirrors(organizationId, volume, () => Effect.succeed(members), carrying));
 
-    expect(carried).toEqual(["narrowed"]);
+    expect(carried).toEqual(["offered"]);
   });
 
-  it("puts an approval the mirror accepted back on the front when a run dropped it meanwhile", async () => {
-    const sent: Signed = { body: "sent", signatures: [] };
-    const overlapping: Signed = { body: "overlapping", signatures: [] };
+  it("keeps the approval an overlapping run got admitted while this sync's accepted answer was late", async () => {
+    // The sync reads [run's, sync's]. The Mirror refuses the run's approval (its window has not opened), accepts the
+    // sync's, and its answer comes late; meanwhile the run's pull gets its approval admitted, ending the sync's. The
+    // late acceptance must not leave Cloud holding only the approval the Mirror ended.
+    const runs: Signed = { body: JSON.stringify({ expires_at: Date.now() + 15 * 60_000 }), signatures: [] };
+    const syncs: Signed = { body: JSON.stringify({ expires_at: 1 }), signatures: [] };
     await harness.pool.query(
       "insert into volume_mirror_status (organization_id, volume_id, machine_id, approvals) values ($1, $2, $3, $4)",
-      [organizationId, volumeId, web("web-2"), JSON.stringify([sent, { body: "older", signatures: [] }])]);
-    // An overlapping run narrows the list to its own approval while this sync's pull is in flight; the Mirror then
-    // accepts this sync's pull, so the approval it carried is the one the Mirror holds.
-    const asking: CopyAsk = (asker, machine, expected, want, approval) =>
-      want.kind !== "mirror" ? ask(asker, machine, expected, want) : Effect.promise(() => harness.pool.query(
-        "update volume_mirror_status set approvals = $1 where machine_id = $2", [JSON.stringify([overlapping]), web("web-2")])).pipe(
-        Effect.andThen(ask(asker, machine, expected, want, approval)));
+      [organizationId, volumeId, web("web-2"), JSON.stringify([runs, syncs])]);
+    const notYet = new RpcError({
+      code: "permission_denied",
+      message: "This Server refused the Volume step: the approval names a window this request does not match",
+      details: { capability: "ployz.volume.approval.v1", next: "approve the Volume change again from an approved device" },
+    });
+    const asking: CopyAsk = (asker, machine, expected, want, approval) => {
+      if (want.kind !== "mirror") return ask(asker, machine, expected, want);
+      return approval?.body === runs.body ? askRejected(notYet)(asker, machine, expected, want, approval) : ask(asker, machine, expected, want, approval);
+    };
 
     await run(syncMirrors(organizationId, volume, () => Effect.succeed(members), asking));
 
     expect((await harness.pool.query("select approvals from volume_mirror_status where machine_id = $1", [web("web-2")])).rows)
-      .toEqual([{ approvals: [sent, overlapping] }]);
+      .toEqual([{ approvals: [runs, syncs] }]);
   });
 
   it("says a mirror refused the pull for its approval", async () => {

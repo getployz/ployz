@@ -33,7 +33,6 @@ import {
   findHolder,
   findKept,
   inspectCopy,
-  keepApproval,
   offerRunApproval,
   laneTarget,
   type MachineRef,
@@ -262,11 +261,10 @@ async function askPullFollowingDrift(steps: RunSteps, id: string, B: MachineRef,
 
 /**
  * B pulls `target` from A and the run asks again until the pull lands. Every check resends the same request: it finishes
- * a landed pull, leaves a running one alone, and resumes one a restart of B stopped. `accepted` runs once B accepted the
- * pull, before it lands: B admitted the approval the pull carries by then, whatever happens to the receive.
+ * a landed pull, leaves a running one alone, and resumes one a restart of B stopped.
  */
 async function pull(steps: RunSteps, prefix: string, ctx: Approving & {
-  readonly B: MachineRef; readonly copy: VolumeCopy | null; readonly from: string; readonly target: Snapshot; readonly accepted?: () => Promise<void>;
+  readonly B: MachineRef; readonly copy: VolumeCopy | null; readonly from: string; readonly target: Snapshot;
 }) {
   const { step, run } = steps;
   const { B, target } = ctx;
@@ -274,7 +272,6 @@ async function pull(steps: RunSteps, prefix: string, ctx: Approving & {
   const want: WantedCopy = { kind: "mirror", from: ctx.from, target: target.name, drain: DRAIN_MS };
   const still = `${slot} is still busy`;
   let copy = await askPullFollowingDrift(steps, `${prefix}-pull`, B, ctx.copy, want, still, ctx.approval);
-  await ctx.accepted?.();
   for (let check = 0; ; check += 1) {
     if (pulled(copy, target)) return copy;
     const failure = copy?.kind === "slot" ? copy.pull?.failure ?? null : null;
@@ -311,21 +308,16 @@ async function runRounds(steps: RunSteps, ctx: Approving & { readonly A: Answere
     const { approval } = ctx;
     const caughtUp = pulled(copy, target);
     if (caughtUp && (round > 0 || approval === undefined)) return { rounds: round, copy };
-    const { step, runEffect, run, runId } = steps;
-    const accepted = round === 0 && approval !== undefined
-      ? async () => { await step.run("03-keep-approval", () => runEffect(keepApproval(run, runId, B.id, approval))); }
-      : undefined;
-    copy = await pull(steps, prefix, { B, copy, from: A.address, target, approval, accepted });
+    copy = await pull(steps, prefix, { B, copy, from: A.address, target, approval });
     if (caughtUp) return { rounds: round, copy };
   }
   return { rounds: MAX_ROUNDS, copy };
 }
 
 /**
- * The run offers its approval to the Mirror's kept approvals before any step carries it, and keeps it alone once the
- * Mirror accepts its first pull, so the approval the Mirror admitted stays kept whichever step fails (see
- * mirror-approvals.server.ts). A full sync forgets the
- * Mirror's copy, which withdraws it there first, then has the Writer withdraw the Mirror's Server and drop its run snapshots.
+ * The run offers its approval to the Mirror's kept approvals before any step carries it, so the approval the Mirror
+ * admits stays kept whichever step fails; later syncs settle the rest (see mirror-approvals.server.ts). A full sync
+ * forgets the Mirror's copy, which withdraws it there first, then has the Writer withdraw the Mirror's Server and drop its run snapshots.
  */
 async function mirrorVolume(steps: RunSteps, phase: PhaseOf<"mirror"> | PhaseOf<"sync">, epoch: number) {
   const { run } = steps;
