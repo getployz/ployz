@@ -1744,7 +1744,7 @@ pub(crate) fn record(
         } => {
             // A replay must carry the same evidence: Applied State moved since, so
             // recomputing its Node Outcomes would not tell.
-            let executed = crate::removal::short_digest(
+            let executed = crate::digest::short_digest(
                 &serde_json::to_string(&(&outcome, &removed)).expect("evidence is JSON"),
             );
             if stored.run.outcome.is_some() {

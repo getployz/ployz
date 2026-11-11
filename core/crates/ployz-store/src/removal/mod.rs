@@ -27,9 +27,10 @@ pub(crate) use self::due::{ask_taking_off, due, shut_down};
 use self::mark::{Accepted, Closed, Mark, State};
 pub use self::review::{ConsentedQuery, ConsentedView, RemovedVolume, VolumeLoss, docker_volume};
 pub(crate) use self::review::{
-    consented, covered, held, named_for, removed, review, short_digest, still_removed,
+    consented, covered, held, named_for, removed, review, still_removed,
 };
 use crate::deployment::{self, DeploymentStatus, DeploymentSummary};
+use crate::digest::short_digest;
 use crate::error;
 use crate::id::{
     ApprovalDigest, DeploymentId, EnvironmentId, EnvironmentName, ProjectId, ProjectName,
@@ -773,8 +774,7 @@ fn project_digest(
         "project": project,
         "effects": effects,
     });
-    ApprovalDigest::parse(format!("{version}:{}", short_digest(&bound.to_string())))
-        .expect("a version and a 16-digit hex digest form an approval")
+    ApprovalDigest::bind(version, &bound)
 }
 
 pub(crate) fn cancel_removal(

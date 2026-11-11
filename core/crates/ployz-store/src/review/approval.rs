@@ -312,7 +312,7 @@ pub(crate) fn approval_digest(
     version: &str,
     effects: &BTreeSet<DestructiveEffect>,
 ) -> ApprovalDigest {
-    digest(version, &bound(who, command, environment, effects))
+    ApprovalDigest::bind(version, &bound(who, command, environment, effects))
 }
 
 /// What every approval binds: who asks, the command it runs, where, and what it destroys.
@@ -330,10 +330,13 @@ fn bound(
     })
 }
 
-fn digest(version: &str, bound: &serde_json::Value) -> ApprovalDigest {
-    let digest = crate::removal::short_digest(&bound.to_string());
-    ApprovalDigest::parse(format!("{version}:{digest}"))
-        .expect("a version and a 16-digit hex digest form an approval")
+impl ApprovalDigest {
+    /// The approval of `version` over `bound`: what a human sees and signs for.
+    pub(crate) fn bind(version: &str, bound: &serde_json::Value) -> Self {
+        let digest = crate::digest::short_digest(&bound.to_string());
+        Self::parse(format!("{version}:{digest}"))
+            .expect("a version and a short digest form an approval")
+    }
 }
 
 /// What a write into one Environment must clear. Cloud says who asks; in a Protected
@@ -407,7 +410,7 @@ impl<'a> Gate<'a> {
         {
             bound.insert("protected".to_owned(), json!(true));
         }
-        let digest = digest(&diff.version, &bound);
+        let digest = ApprovalDigest::bind(&diff.version, &bound);
         match &self.trusted.approval {
             Approval::NotRequired if !self.protected => Ok(()),
             Approval::Approved(approved) if *approved == digest => Ok(()),

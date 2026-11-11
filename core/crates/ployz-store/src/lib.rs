@@ -14,6 +14,7 @@ mod client_sealed;
 mod command;
 mod config_item;
 mod deployment;
+mod digest;
 pub mod docs;
 mod domain;
 mod error;

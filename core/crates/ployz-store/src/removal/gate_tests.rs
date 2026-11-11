@@ -2,7 +2,8 @@ use std::collections::BTreeSet;
 
 use serde_json::json;
 
-use super::{Target, gate, short_digest};
+use super::{Target, gate};
+use crate::digest::short_digest;
 use crate::id::{ApprovalDigest, EnvironmentId, OrganizationId, ProjectId};
 use crate::review::DestructiveEffect;
 use crate::{Actor, Approval};

@@ -351,7 +351,9 @@ store_string!(
 
 fn is_approval(value: &str) -> bool {
     value.rsplit_once(':').is_some_and(|(version, digest)| {
-        !version.is_empty() && digest.len() == 16 && digest.bytes().all(|b| b.is_ascii_hexdigit())
+        !version.is_empty()
+            && digest.len() == crate::digest::HEX_LEN
+            && digest.bytes().all(|b| b.is_ascii_hexdigit())
     })
 }
 

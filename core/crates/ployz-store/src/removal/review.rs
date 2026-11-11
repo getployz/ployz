@@ -19,6 +19,7 @@ use serde_json::json;
 use ts_rs::TS;
 
 use crate::Actor;
+use crate::digest::short_digest;
 use crate::error;
 use crate::id::{EnvironmentId, VolumeId, VolumeName};
 use crate::storage::Tx;
@@ -360,12 +361,6 @@ pub(crate) fn digest(who: &Actor, environment: &EnvironmentId, lost: &[&VolumeLo
         "volumes": lost,
     });
     short_digest(&bound.to_string())
-}
-
-/// The first 8 bytes of `text`'s SHA-256, in hex: enough to tell reviews apart.
-pub(crate) fn short_digest(text: &str) -> String {
-    let digest = ring::digest::digest(&ring::digest::SHA256, text.as_bytes());
-    hex::encode(digest.as_ref().get(..8).unwrap_or_default())
 }
 
 #[cfg(test)]
