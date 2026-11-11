@@ -561,10 +561,22 @@ impl LocalMachine {
         let plan = plan_doors(inventory, specs, legacy == Legacy::Caddy);
         let mut set = IngressDoorsSet::default();
         let mut effects = Effects::default();
+        let reopening = specs.tunnel.is_some() && containers.tunnel_door_closed();
+        if reopening {
+            containers
+                .clear_tunnel_door_closed()
+                .map_err(Error::TunnelDoorMarker)?;
+        }
         if let Err((stage, error)) = self
             .place_doors(containers, specs, &plan, &mut set, &mut effects)
             .await
         {
+            if reopening && let Err(marker) = containers.mark_tunnel_door_closed() {
+                tracing::warn!(
+                    error = %ployz_core::error_chain::inline(&marker),
+                    "could not record that the Tunnel Door is still closed"
+                );
+            }
             let undo = stage == IngressStage::Holder
                 || (plan.creates_at(stage) && plan.retirees().next().is_some());
             let error = if undo {
@@ -580,15 +592,11 @@ impl LocalMachine {
             set.failure = Some(stage_failure(stage, &error));
             return Ok(set);
         }
-        if specs.tunnel.is_some() {
-            containers
-                .clear_tunnel_door_closed()
-                .map_err(Error::TunnelDoorMarker)?;
-        } else if !plan.retire_tunnels.is_empty() {
-            containers
-                .mark_tunnel_door_closed()
-                .map_err(Error::TunnelDoorMarker)?;
-        }
+        let marked = if specs.tunnel.is_none() && !plan.retire_tunnels.is_empty() {
+            containers.mark_tunnel_door_closed()
+        } else {
+            Ok(())
+        };
         let mut connector_stays = false;
         for retiree in plan.retirees() {
             match containers.remove(&retiree.id, true, true).await {
@@ -605,10 +613,14 @@ impl LocalMachine {
                 }
             }
         }
-        if specs.tunnel.is_none() && !connector_stays {
-            containers
-                .clear_tunnel_door_closed()
-                .map_err(Error::TunnelDoorMarker)?;
+        if specs.tunnel.is_none() {
+            if connector_stays {
+                marked.map_err(Error::TunnelDoorMarker)?;
+            } else {
+                containers
+                    .clear_tunnel_door_closed()
+                    .map_err(Error::TunnelDoorMarker)?;
+            }
         }
         Ok(set)
     }
