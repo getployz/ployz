@@ -30,10 +30,7 @@ use ployzd::machine_pool::MachinePool;
 use super::{
     Dataset, DockerVolumeName, MIRROR_ROOT, Place, VolumeStorage,
     inspect::internal,
-    seed::SEED_PROPERTY,
-    storage::{
-        CUT_PROPERTY, EPOCH_PROPERTY, PROMOTE_PROPERTY, PULLED_PROPERTY, slot_fs, slot_parent,
-    },
+    storage::{slot_fs, slot_parent},
 };
 
 /// Prefix of the snapshot a departure takes on each root before demoting it.
@@ -161,13 +158,14 @@ impl VolumeStorage {
                 self.ensure_mirror_root(pool, &datasets).await?;
                 let parent = slot_parent(pool, name);
                 self.create_slot_parent(&parent, root.refquota).await?;
-                self.mark_slot_role(&parent, SlotRole::OldCopy).await?;
+                self.marks(&parent).set_role(SlotRole::OldCopy).await?;
                 self.move_into_slot(pool, root, name).await?;
                 true
             }
             Departure::RootBesideEmptySlot(root) => {
                 self.freeze_root(root, name, now_unix_seconds).await?;
-                self.mark_slot_role(&slot_parent(pool, name), SlotRole::OldCopy)
+                self.marks(&slot_parent(pool, name))
+                    .set_role(SlotRole::OldCopy)
                     .await?;
                 self.move_into_slot(pool, root, name).await?;
                 true
@@ -242,7 +240,7 @@ impl VolumeStorage {
         let Some(newest) = self.newest_guid(fs).await? else {
             return Ok(false);
         };
-        Ok(self.local_property(fs, PULLED_PROPERTY).await? != Some(newest))
+        Ok(self.marks(fs).pulled_local().await? != Some(newest))
     }
 
     /// Whether a departure snapshot or a seed, promote, cut or epoch mark says the slot
@@ -257,17 +255,7 @@ impl VolumeStorage {
         {
             return Ok(true);
         }
-        for mark in [
-            SEED_PROPERTY,
-            PROMOTE_PROPERTY,
-            CUT_PROPERTY,
-            EPOCH_PROPERTY,
-        ] {
-            if self.property(fs, mark).await?.is_some() {
-                return Ok(true);
-            }
-        }
-        Ok(false)
+        self.marks(fs).holds_alone().await
     }
 
     async fn freeze_root(

@@ -9,7 +9,7 @@ use serde::Serialize;
 
 use super::{
     DATASET_ROOT, DockerVolumeName, ErrorResponse, HangUp, Result, VolumeRequest, VolumeStorage,
-    error_response, storage::CUT_PROPERTY,
+    error_response, marks::Mark,
 };
 
 impl VolumeStorage {
@@ -34,7 +34,7 @@ impl VolumeStorage {
         let dataset = Self::dataset(&datasets, &pool, name)?
             .expect("the requested dataset was just observed");
         dataset.require_provisioned(name)?;
-        if self.unregistered(&dataset.name).await? {
+        if self.marks(&dataset.name).unregistered().await? {
             return Err(format!(
                 "VolumeSwitching: Volume {name} is a promoted root Docker has not registered yet; refusing to remove {}",
                 dataset.name
@@ -62,7 +62,7 @@ impl VolumeStorage {
             return self.inspect_cut(&datasets, &pool, name).await;
         };
         dataset.require_provisioned(name)?;
-        if self.unregistered(&dataset.name).await? {
+        if self.marks(&dataset.name).unregistered().await? {
             return Ok(None);
         }
         Ok(Some(PluginVolume::new(name, dataset)))
@@ -80,7 +80,7 @@ impl VolumeStorage {
         let Some(fs) = Self::slot_fs(datasets, pool, name) else {
             return Ok(None);
         };
-        if self.property(&fs.name, CUT_PROPERTY).await?.is_none() {
+        if !self.marks(&fs.name).is_set(Mark::Cut).await? {
             return Ok(None);
         }
         Ok(Some(PluginVolume {
@@ -128,7 +128,7 @@ impl VolumeStorage {
             }
             let name = name.parse::<DockerVolumeName>()?;
             dataset.require_provisioned(&name)?;
-            if self.unregistered(&dataset.name).await? {
+            if self.marks(&dataset.name).unregistered().await? {
                 continue;
             }
             volumes.push(PluginVolume::new(&name, dataset));

@@ -27,6 +27,7 @@ mod capacity;
 mod copy;
 mod departure;
 mod inspect;
+mod marks;
 mod mirror;
 mod pool;
 mod removal;
@@ -410,6 +411,7 @@ mod tests {
 
     #[path = "copy_tests.rs"]
     mod copy_tests;
+    mod marks_model_tests;
     mod marks_tests;
     mod seed_tests;
     mod size_tests;

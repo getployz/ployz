@@ -2,18 +2,15 @@
 
 use axum::{Json, extract::State};
 use ployz_core::{
-    InspectVolumeCopyRequest, Pull, PullState, RootMark, RpcError, SlotId, SlotRole, Snapshot,
-    SnapshotGuid, SnapshotName, VolumeCopy, VolumeCopyView, WriterEpoch,
+    InspectVolumeCopyRequest, Pull, PullState, RootMark, RpcError, SlotId, Snapshot, SnapshotGuid,
+    SnapshotName, VolumeCopy, VolumeCopyView, WriterEpoch,
 };
 use ployzd::machine_pool::MachinePool;
 
 use super::{
     Dataset, DockerVolumeName, Result, VolumeError, VolumeStorage,
-    seed::SEED_PROPERTY,
-    storage::{
-        CUT_PROPERTY, EPOCH_PROPERTY, PROMOTE_PROPERTY, PULL_PROPERTY, RESUME_TOKEN_PROPERTY,
-        ROLE_PROPERTY, slot_fs, slot_parent,
-    },
+    marks::Mark,
+    storage::{slot_fs, slot_parent},
     transfer::Status,
 };
 
@@ -123,19 +120,6 @@ impl VolumeStorage {
         Ok((value != "-").then(|| value.to_owned()))
     }
 
-    /// A user property set on the dataset itself, ignoring any value it inherits.
-    pub(super) async fn local_property(
-        &self,
-        dataset: &str,
-        property: &str,
-    ) -> Result<Option<String>> {
-        let value = self
-            .zfs(&["get", "-H", "-s", "local", "-o", "value", property, dataset])
-            .await?;
-        let value = value.trim_end_matches('\n');
-        Ok((!value.is_empty() && value != "-").then(|| value.to_owned()))
-    }
-
     /// The guid of a dataset's newest snapshot, whatever its name.
     pub(super) async fn newest_guid(&self, dataset: &str) -> Result<Option<String>> {
         Ok(self
@@ -147,24 +131,16 @@ impl VolumeStorage {
             .map(str::to_owned))
     }
 
-    pub(super) async fn unregistered(&self, dataset: &str) -> Result<bool> {
-        Ok(self.property(dataset, PROMOTE_PROPERTY).await?.is_some())
-    }
-
-    pub(super) async fn unadopted_seed(&self, dataset: &str) -> Result<bool> {
-        Ok(self.unregistered(dataset).await?
-            && self.property(dataset, SEED_PROPERTY).await?.is_some())
-    }
-
     async fn root_marks(&self, root: &Dataset) -> Result<RootMarks> {
-        let promote = if self.unregistered(&root.name).await? {
+        let marks = self.marks(&root.name);
+        let promote = if marks.unregistered().await? {
             PromoteMark::Set {
-                seed: self.property(&root.name, SEED_PROPERTY).await?.is_some(),
+                seed: marks.is_set(Mark::Seed).await?,
             }
         } else {
             PromoteMark::Unset
         };
-        let cut = root.switching() && self.property(&root.name, CUT_PROPERTY).await?.is_some();
+        let cut = root.switching() && marks.is_set(Mark::Cut).await?;
         Ok(RootMarks { cut, promote })
     }
 
@@ -230,53 +206,11 @@ impl VolumeStorage {
         Ok(self.snapshots(dataset).await?.into_iter().next())
     }
 
-    /// The run of writes a root belongs to; a root SetVolumeCopy never numbered reads 0.
-    pub(super) async fn epoch(&self, root: &str) -> Result<WriterEpoch> {
-        match self.property(root, EPOCH_PROPERTY).await? {
-            None => Ok(WriterEpoch::default()),
-            Some(value) => value.parse().map(WriterEpoch::new).map_err(|error| {
-                VolumeError::from(format!(
-                    "{root} carries an unreadable {EPOCH_PROPERTY} {value:?}: {error}"
-                ))
-            }),
-        }
-    }
-
-    /// What this Machine recorded a slot parent as.
-    pub(super) async fn slot_role(&self, parent: &str) -> Result<SlotRole> {
-        match self.property(parent, ROLE_PROPERTY).await? {
-            None => Ok(SlotRole::default()),
-            Some(value) => value.parse().map_err(|error| {
-                VolumeError::from(format!(
-                    "{parent} carries an unreadable {ROLE_PROPERTY} {value:?}: {error}"
-                ))
-            }),
-        }
-    }
-
-    pub(super) async fn mark_slot_role(&self, parent: &str, role: SlotRole) -> Result<()> {
-        self.zfs(&["set", &format!("{ROLE_PROPERTY}={}", role.as_str()), parent])
-            .await
-            .map(drop)
-    }
-
     async fn slot_id(&self, parent: &str) -> Result<SlotId> {
         let value = self.property(parent, "guid").await?.unwrap_or_default();
         value.parse().map(SlotId::new).map_err(|error| {
             VolumeError::from(format!(
                 "{parent} carries an unreadable guid {value:?}: {error}"
-            ))
-        })
-    }
-
-    /// The target a slot parent's `ployz:pull` names.
-    pub(super) async fn pull_target(&self, parent: &str) -> Result<Option<SnapshotName>> {
-        let Some(target) = self.property(parent, PULL_PROPERTY).await? else {
-            return Ok(None);
-        };
-        target.parse().map(Some).map_err(|error| {
-            VolumeError::from(format!(
-                "{parent} carries an unreadable {PULL_PROPERTY} {target:?}: {error}"
             ))
         })
     }
@@ -290,7 +224,7 @@ impl VolumeStorage {
         newest: Option<&Snapshot>,
         resumable: bool,
     ) -> Result<Option<(Pull, PullState)>> {
-        let Some(target) = self.pull_target(&slot.name).await? else {
+        let Some(target) = self.marks(&slot.name).pull_target().await? else {
             return Ok(None);
         };
         let status = self.receives.status_of(name, &target);
@@ -324,7 +258,7 @@ impl VolumeStorage {
             let copy = RootCopy::parse(root, self.root_marks(root).await?);
             return Ok(Some(copy.view(
                 self.newest_snapshot(&root.name).await?,
-                self.epoch(&root.name).await?,
+                self.marks(&root.name).epoch().await?,
             )));
         }
         let Some(slot) = Self::slot(datasets, pool, name) else {
@@ -335,7 +269,7 @@ impl VolumeStorage {
             Some(fs) => (
                 fs.readonly,
                 self.newest_snapshot(&fs.name).await?,
-                self.property(&fs.name, RESUME_TOKEN_PROPERTY).await?,
+                self.marks(&fs.name).get(Mark::ResumeToken).await?,
             ),
             None => (slot.readonly, None, None),
         };
@@ -349,7 +283,7 @@ impl VolumeStorage {
             newest,
             resume_token,
             pull,
-            role: Some(self.slot_role(&slot.name).await?),
+            role: Some(self.marks(&slot.name).role().await?),
             pull_state,
         }))
     }
