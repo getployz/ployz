@@ -9,6 +9,7 @@
 use clap::{Arg, ArgAction, ArgMatches, Command};
 use ployz_core::authority::rule::{BUILDER_SHA, Builder};
 use ployz_core::authority::rule_draft::RuleDraftError;
+use ployz_core::authority::shown::Shown;
 use ployz_core::authority::{
     AutoDeployRule, CommitSha, RuleId, RuleSummary, RuleTerms, Signed, Signer, SignerKey, Timestamp,
 };
@@ -284,10 +285,12 @@ fn drafting(error: RuleDraftError) -> Error {
     Error::caused(code, "Can't draft the automatic deploy rule", error)
 }
 
-/// What the person approves, before it is signed.
+/// What the person approves, before it is signed. The summary's strings came through
+/// [`Shown`] already.
 fn show(environment: &str, summary: &RuleSummary) {
     crate::ui::stream(format_args!(
-        "Approving automatic deploys for {environment}:"
+        "Approving automatic deploys for {}:",
+        Shown::text(environment)
     ));
     crate::ui::stream(format_args!(
         "  repository  {} on {}",

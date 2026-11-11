@@ -13,7 +13,7 @@ import { Switch } from "#/components/ui/switch";
 import { deployScope, RULE_CAPABILITIES } from "#/modules/approval-session/approval-session";
 import { ruleQuery, useStoreView } from "#/modules/config-store/store-view.queries";
 import { useStoreWriter } from "#/modules/config-store/store-write";
-import { answerRule, draftEnd, draftRule, keptRule, RuleRefused, ruleOn } from "#/modules/github/auto-deploy-rule";
+import { answerRule, draftedRepository, draftEnd, draftRule, keptRule, RuleRefused, ruleOn } from "#/modules/github/auto-deploy-rule";
 import { githubRepositoryOwnerQueryOptions } from "#/modules/github/github.queries";
 import { useRuntimeLens } from "#/modules/runtime/use-runtime-lens";
 import { useEnvironmentMachines } from "#/providers/runtime-provider";
@@ -114,7 +114,7 @@ export function RuleDialog({ organizationSlug, view, scope, ending, onClose, com
   } catch (error) {
     unready = error instanceof RuleRefused ? error.message : "This browser couldn't draft the rule. Try again.";
   }
-  const repository = ending ? null : preview?.summary.repository ?? null;
+  const repository = ending || preview === null ? null : draftedRepository(preview);
   // The button waits, disabled, until GitHub answers: a read shows nothing in flight.
   const owner = useQuery({ ...ownerQuery(organizationSlug, repository ?? ""), enabled: repository !== null });
   const ownerProblem = repository === null || owner.isPending ? null

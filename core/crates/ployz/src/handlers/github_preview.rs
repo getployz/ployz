@@ -13,16 +13,18 @@
 //! relays, and a planted one would build and deploy its pushes with the parent's
 //! inherited values and no review.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::time::Duration;
 
 use clap::{Arg, ArgAction, ArgMatches, Command};
 use ployz_core::authority::preview::{secrets_digest, template};
 use ployz_core::authority::rule::{PolicyCache, RuleEvent, RuleSource, Runner};
 use ployz_core::authority::rule_draft::{WORKFLOW, builds, settings};
+use ployz_core::authority::shown::Shown;
 use ployz_core::authority::{
     BuildPolicy, PreviewRule, PreviewService, RuleId, Signed, SignerKey, Timestamp,
 };
+use ployz_core::config::Generator;
 use ployz_core::{RequestedServiceSpec, RpcErrorCode, SealedRecord, ServiceName};
 use ployz_store::{ApprovePreviewRule, PlanPreviewRule, PreviewRuleView, RuleQuery};
 use reqwest::{StatusCode, header};
@@ -269,7 +271,7 @@ fn trusted_line(accounts: &[Account]) -> String {
     accounts
         .iter()
         .map(|account| match &account.login {
-            Some(login) => format!("{login} ({})", account.id),
+            Some(login) => format!("{} ({})", Shown::text(login), account.id),
             None => format!("{} (GitHub didn't name it)", account.id),
         })
         .collect::<Vec<_>>()
@@ -595,22 +597,24 @@ fn keep(
 }
 
 /// What the person approves, before it is signed: who opens previews without review,
-/// what each preview reads from the Environment, and where it is served.
+/// what each preview reads from the Environment, and where it is served. Every value
+/// Cloud relays shows through [`Shown`], so none can pass for another.
 fn show(view: &PreviewRuleView, rule: &PreviewRule, names: &[ServiceName], trusted: &[Account]) {
     let source = &rule.source;
-    crate::ui::stream(format_args!(
-        "Approving previews of {}:",
-        view.environment.name
-    ));
+    let environment = Shown::text(view.environment.name.as_str());
+    crate::ui::stream(format_args!("Approving previews of {environment}:"));
     crate::ui::stream(format_args!(
         "  repository  {}, parent branch {}",
-        source.repository, source.branch
+        Shown::text(&source.repository),
+        Shown::text(&source.branch)
     ));
-    let builder = &source.builder;
-    crate::ui::stream(format_args!("  builder     {}", builder.r#ref));
+    crate::ui::stream(format_args!(
+        "  builder     {}",
+        Shown::text(&source.builder.r#ref)
+    ));
     crate::ui::stream(format_args!(
         "  urls        <service>-pv-<id>.{}",
-        rule.domain
+        Shown::text(&rule.domain)
     ));
     crate::ui::stream(format_args!("  trusted     {}", trusted_line(trusted)));
     crate::ui::stream(format_args!(
@@ -621,31 +625,24 @@ fn show(view: &PreviewRuleView, rule: &PreviewRule, names: &[ServiceName], trust
         let Some(approved) = rule.service(name) else {
             continue;
         };
-        crate::ui::stream(format_args!("  {name}"));
+        crate::ui::stream(format_args!("  {}", Shown::text(name.as_str())));
         crate::ui::stream(format_args!("    builds    {}", builds(&approved.policy)));
         if !approved.inherit.is_empty() {
             crate::ui::stream(format_args!(
-                "    reads     {} from {}",
-                approved
-                    .inherit
-                    .iter()
-                    .cloned()
-                    .collect::<Vec<_>>()
-                    .join(", "),
-                view.environment.name
+                "    reads     {} from {environment}",
+                Shown::list(approved.inherit.iter().map(|key| Shown::text(key)))
             ));
         }
         if let Some(shared) = view.shared.get(name) {
             crate::ui::stream(format_args!(
-                "    shares    {} with {}",
-                shared.iter().cloned().collect::<Vec<_>>().join(", "),
-                view.environment.name
+                "    shares    {} with {environment}",
+                Shown::list(shared.iter().map(|key| Shown::text(key)))
             ));
         }
-        // A Generated Value shows by name, and the Service ID label not at all: neither
-        // rehearsal value is a preview's, and the template leaves the label out. The
-        // rehearsal's Namespace is no preview's either, so its hostnames show the derived
-        // part as `<id>`.
+        // A Generated Value shows by its generator, and the Service ID label not at all:
+        // neither rehearsal value is a preview's, and the template leaves the label out.
+        // The rehearsal's Namespace is no preview's either, so its hostnames show the
+        // derived part as `<id>`.
         let lines = |spec: &RequestedServiceSpec| {
             let mut shown = spec.clone();
             shown
@@ -659,7 +656,7 @@ fn show(view: &PreviewRuleView, rule: &PreviewRule, names: &[ServiceName], trust
             }
             settings(&shown)
                 .into_iter()
-                .map(|line| line.replace(view.sample.as_str(), "pv-<id>"))
+                .map(|line| line.as_str().replace(view.sample.as_str(), "pv-<id>"))
                 .collect::<Vec<_>>()
         };
         let ordinary = view
@@ -681,15 +678,19 @@ fn show(view: &PreviewRuleView, rule: &PreviewRule, names: &[ServiceName], trust
         if !approved.generated.is_empty() {
             crate::ui::stream(format_args!(
                 "    generated {}, new in each preview",
-                approved
-                    .generated
-                    .keys()
-                    .cloned()
-                    .collect::<Vec<_>>()
-                    .join(", ")
+                generated(&approved.generated)
             ));
         }
     }
+}
+
+/// Each generated variable with the generator a preview fills it from, never a value.
+fn generated(generated: &BTreeMap<String, Generator>) -> Shown {
+    Shown::list(generated.iter().map(|(key, generator)| {
+        Shown::text(key)
+            .and_words("=")
+            .and(Shown::generator(generator))
+    }))
 }
 
 #[cfg(test)]
@@ -767,6 +768,31 @@ mod tests {
             trusted_line(&accounts),
             "alice (1109914), 666 (GitHub didn't name it)"
         );
+    }
+
+    /// A preview's generated variable shows with the generator it signs, never a value,
+    /// and a planted name shows escaped.
+    #[test]
+    fn a_generated_variable_shows_its_generator() {
+        let keys = BTreeMap::from([
+            ("API_KEY".to_owned(), Generator::new(48, "a-f0-9").unwrap()),
+            (
+                "a\r\nb".to_owned(),
+                Generator::new(32, "a-zA-Z0-9").unwrap(),
+            ),
+        ]);
+        assert_eq!(
+            generated(&keys).as_str(),
+            r#"API_KEY=${{ secret(48, "a-f0-9") }}, "a\r\nb"=${{ secret(32, "a-zA-Z0-9") }}"#
+        );
+        let shown = [(48, "a-f0-9"), (64, "a-f0-9"), (48, "a-z")].map(|(length, charset)| {
+            generated(&BTreeMap::from([(
+                "API_KEY".to_owned(),
+                Generator::new(length, charset).unwrap(),
+            )]))
+        });
+        assert_ne!(shown[0], shown[1], "the length shows");
+        assert_ne!(shown[0], shown[2], "the charset shows");
     }
 
     #[test]

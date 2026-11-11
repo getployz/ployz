@@ -16,6 +16,7 @@ use super::{
         AutoDeployRule, BuildPolicy, Builder, PolicyCache, PolicyMethod, RuleEvent, RuleId,
         RuleService, RuleSource, Runner, SealedDigest, template,
     },
+    shown::Shown,
 };
 use crate::{
     MachineId, MissingSealedIdentity, Namespace, RequestedServiceSpec, SealedRecord,
@@ -360,13 +361,14 @@ impl AutoDeployRule {
         let builder = &self.source.builder;
         let sha = builder.sha.to_string();
         RuleSummary {
-            repository: self.source.repository.clone(),
-            branch: self.source.branch.clone(),
-            workflow: self.source.workflow.clone(),
+            repository: Shown::text(&self.source.repository).into(),
+            branch: Shown::text(&self.source.branch).into(),
+            workflow: Shown::text(&self.source.workflow).into(),
             builder: match builder.r#ref.ends_with(&sha) {
-                true => builder.r#ref.clone(),
-                false => format!("{} at {sha}", builder.r#ref),
-            },
+                true => Shown::text(&builder.r#ref),
+                false => Shown::text(&builder.r#ref).and_words(" at ").and_text(&sha),
+            }
+            .into(),
             pinned: *builder == Builder::pinned(),
             servers: self.machines.len(),
             generation: self.generation,
@@ -376,7 +378,7 @@ impl AutoDeployRule {
                 .iter()
                 .map(|service| RuleServiceSummary {
                     name: service.name.clone(),
-                    builds: builds(&service.policy),
+                    builds: builds(&service.policy).into(),
                     changes: match &kept {
                         Some(kept) => changes(kept.service(&service.name), service),
                         None => Vec::new(),
@@ -386,7 +388,10 @@ impl AutoDeployRule {
                         .iter()
                         .find(|spec| spec.name == service.name)
                         .map(settings)
-                        .unwrap_or_default(),
+                        .unwrap_or_default()
+                        .into_iter()
+                        .map(String::from)
+                        .collect(),
                 })
                 .collect(),
         }
@@ -397,7 +402,7 @@ impl AutoDeployRule {
 /// must run exactly. The destructuring is exhaustive, so a field added to the policy
 /// fails to compile here until it shows.
 #[must_use]
-pub fn builds(policy: &BuildPolicy) -> String {
+pub fn builds(policy: &BuildPolicy) -> Shown {
     let BuildPolicy {
         method,
         context,
@@ -408,35 +413,47 @@ pub fn builds(policy: &BuildPolicy) -> String {
         cache,
     } = policy;
     let mut line = match method {
-        PolicyMethod::Dockerfile { path } => path.clone(),
-        PolicyMethod::Railpack { command: None } => "Railpack".to_owned(),
+        PolicyMethod::Dockerfile { path } => Shown::words("Dockerfile ").and_text(path),
+        PolicyMethod::Railpack { command: None } => {
+            Shown::words("Railpack, with the build command it detects")
+        }
         PolicyMethod::Railpack {
             command: Some(command),
-        } => format!("Railpack running {}", json(command)),
-    };
-    line.push_str(&format!(
-        " in {context}, for {}",
-        platforms.iter().cloned().collect::<Vec<_>>().join(", ")
+        } => Shown::words("Railpack, with build command ").and_text(command),
+    }
+    .and_words(", context ")
+    .and_text(context)
+    .and_words(", platforms ")
+    .and(Shown::list(
+        platforms.iter().map(|platform| Shown::text(platform)),
     ));
     if let Some(target) = target {
-        line.push_str(&format!(", target {target}"));
+        line = line.and_words(", target ").and_text(target);
     }
-    match cache {
-        PolicyCache::Actions => line.push_str(", with the Actions cache"),
-        PolicyCache::Off => {}
-    }
+    line = match cache {
+        PolicyCache::Actions => line.and_words(", with the Actions cache"),
+        PolicyCache::Off => line.and_words(", no cache"),
+    };
     if !args.is_empty() {
-        let args: Vec<String> = args
-            .iter()
-            .map(|(name, value)| format!("{name}={value}"))
-            .collect();
-        line.push_str(&format!(", build args {}", args.join(", ")));
+        line = line.and_words(", build args ").and(pairs(
+            args.iter().map(|(name, value)| (name, Shown::text(value))),
+        ));
     }
     if !secrets.is_empty() {
-        let secrets: Vec<&str> = secrets.iter().map(String::as_str).collect();
-        line.push_str(&format!(", build secrets {}", secrets.join(", ")));
+        line = line
+            .and_words(", build secrets ")
+            .and(Shown::list(secrets.iter().map(|name| Shown::text(name))));
     }
     line
+}
+
+/// `name=value` for each pair, separated by `", "`.
+fn pairs<'a>(pairs: impl IntoIterator<Item = (&'a String, Shown)>) -> Shown {
+    Shown::list(
+        pairs
+            .into_iter()
+            .map(|(name, value)| Shown::text(name).and_words("=").and(value)),
+    )
 }
 
 /// What differs between the kept rule's approval of a Service and `next`.
@@ -469,12 +486,12 @@ fn changes(kept: Option<&RuleService>, next: &RuleService) -> Vec<String> {
 /// by its wire name. A field added to the spec later shows without a change here, so
 /// nothing a rule signs is hidden from the person who signs it.
 #[must_use]
-pub fn settings(spec: &RequestedServiceSpec) -> Vec<String> {
+pub fn settings(spec: &RequestedServiceSpec) -> Vec<Shown> {
     let mut lines = Vec::new();
-    variables(&mut lines, "variables", &spec.container.environment);
+    variables(&mut lines, "variables ", &spec.container.environment);
     if let Some(hook) = &spec.pre_deploy {
-        lines.push(format!("pre-deploy {}", json(&hook.command)));
-        variables(&mut lines, "pre-deploy variables", &hook.environment);
+        lines.push(Shown::words("pre-deploy ").and_value(&hook.command));
+        variables(&mut lines, "pre-deploy variables ", &hook.environment);
     }
     let serde_json::Value::Object(mut fields) =
         serde_json::to_value(spec).expect("a spec serializes to JSON")
@@ -501,28 +518,36 @@ pub fn settings(spec: &RequestedServiceSpec) -> Vec<String> {
     lines
 }
 
+/// One line of `name=value` pairs, a Sealed value by its name only.
 fn variables(
-    lines: &mut Vec<String>,
-    label: &str,
+    lines: &mut Vec<Shown>,
+    label: &'static str,
     environment: &std::collections::BTreeMap<String, crate::EnvValue>,
 ) {
-    let variables: Vec<String> = environment
-        .iter()
-        .map(|(name, value)| match value.text() {
-            Some(text) => format!("{name}={text}"),
-            None => format!("{name} (sealed)"),
-        })
-        .collect();
-    if !variables.is_empty() {
-        lines.push(format!("{label} {}", variables.join(", ")));
+    if environment.is_empty() {
+        return;
     }
+    let variables = environment.iter().map(|(name, value)| match value.text() {
+        Some(text) => Shown::text(name).and_words("=").and_text(text),
+        None => Shown::text(name).and_words(" (sealed)"),
+    });
+    lines.push(Shown::words(label).and(Shown::list(variables)));
 }
 
 /// One line per field of `fields` that holds a value.
-fn rest(lines: &mut Vec<String>, prefix: &str, fields: serde_json::Map<String, serde_json::Value>) {
+fn rest(
+    lines: &mut Vec<Shown>,
+    prefix: &'static str,
+    fields: serde_json::Map<String, serde_json::Value>,
+) {
     for (name, value) in fields {
         if !unset(&value) {
-            lines.push(format!("{prefix}{name} {}", json(&value)));
+            lines.push(
+                Shown::words(prefix)
+                    .and_text(&name)
+                    .and_words(" ")
+                    .and_value(&value),
+            );
         }
     }
 }
@@ -536,10 +561,6 @@ fn unset(value: &serde_json::Value) -> bool {
         serde_json::Value::Object(fields) => fields.values().all(unset),
         serde_json::Value::Bool(true) | serde_json::Value::Number(_) => false,
     }
-}
-
-fn json(value: &impl Serialize) -> String {
-    serde_json::to_string(value).expect("a spec serializes to JSON")
 }
 
 #[cfg(test)]

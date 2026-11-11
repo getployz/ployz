@@ -20,6 +20,7 @@ pub mod restart;
 pub mod rule;
 pub mod rule_draft;
 pub mod session;
+pub mod shown;
 pub mod starting_set;
 pub mod trusted_key;
 pub mod validity;
