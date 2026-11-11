@@ -143,6 +143,7 @@ calls Ployz's rule builder. Before that, copy it from here exactly as it is:
 name: Ployz build
 on:
   push:
+    branches: ['**']
   workflow_dispatch:
     inputs:
       cloud: { required: false, type: string }

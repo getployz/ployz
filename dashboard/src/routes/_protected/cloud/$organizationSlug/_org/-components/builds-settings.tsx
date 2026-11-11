@@ -20,6 +20,7 @@ import {
   githubBuildWorkflowEditUrl,
   githubBuildWorkflowUrl,
   type GithubBuildRepository,
+  type GithubWorkflowTemplate,
 } from "#/modules/github/github-build-workflow";
 import { useGithubBuildRepositories, useGithubWebOrigin } from "#/modules/github/github.queries";
 import { volumeSupportText } from "#/modules/machines/server-status";
@@ -95,6 +96,7 @@ function GithubActions({ organizationSlug }: { organizationSlug: string }) {
   // ponytail: "waiting for the commit" lives in this tab only; persist it if teammates need to see it.
   const [opened, setOpened] = useState<ReadonlySet<string>>(new Set());
   const [updating, setUpdating] = useState<GithubBuildRepository | null>(null);
+  const page = (repository: GithubBuildRepository, defaultBranch: string) => ({ web: githubWeb, fullName: repository.fullName, defaultBranch });
   const { data: repositories, error } = useGithubBuildRepositories(organizationSlug, opened);
   const githubWeb = useGithubWebOrigin();
   const waiting = (repository: GithubBuildRepository) =>
@@ -124,6 +126,9 @@ function GithubActions({ organizationSlug }: { organizationSlug: string }) {
             ) : repository.readiness === "no_permission" || waiting(repository) || repository.defaultBranch === null ? undefined
             : repository.readiness === "outdated" ? (
               <Button size="sm" variant="outline" onClick={() => setUpdating(repository)}>Update workflow</Button>
+            ) : repository.template === "rule" ? (
+              // The rule template comes with advice on which pushes build, so it opens the dialog first.
+              <Button size="sm" variant="outline" onClick={() => setUpdating(repository)}>Add workflow</Button>
             ) : (
               <Button
                 size="sm"
@@ -131,9 +136,7 @@ function GithubActions({ organizationSlug }: { organizationSlug: string }) {
                 nativeButton={false}
                 render={
                   <a
-                    href={githubBuildWorkflowUrl({
-                      web: githubWeb, fullName: repository.fullName, defaultBranch: repository.defaultBranch, template: repository.template,
-                    })}
+                    href={githubBuildWorkflowUrl({ ...page(repository, repository.defaultBranch), template: repository.template })}
                     target="_blank"
                     rel="noreferrer"
                   />
@@ -147,10 +150,14 @@ function GithubActions({ organizationSlug }: { organizationSlug: string }) {
         ))}
       </SettingsList>
       {updating !== null && updating.defaultBranch !== null ? (
-        <UpdateWorkflowDialog
-          editUrl={githubBuildWorkflowEditUrl({ web: githubWeb, fullName: updating.fullName, defaultBranch: updating.defaultBranch })}
+        <WorkflowDialog
+          adding={updating.readiness !== "outdated"}
+          url={updating.readiness === "outdated"
+            ? githubBuildWorkflowEditUrl(page(updating, updating.defaultBranch))
+            : githubBuildWorkflowUrl({ ...page(updating, updating.defaultBranch), template: updating.template })}
           defaultBranch={updating.defaultBranch}
-          workflow={GITHUB_WORKFLOW_TEMPLATES[updating.template]}
+          template={updating.template}
+          ruleBranch={updating.ruleBranch}
           onOpened={() => {
             open(updating);
             setUpdating(null);
@@ -162,26 +169,41 @@ function GithubActions({ organizationSlug }: { organizationSlug: string }) {
   );
 }
 
-/** The new file to copy, and GitHub's editor on the old one: Cloud never writes to the repository. */
-function UpdateWorkflowDialog({ editUrl, defaultBranch, workflow, onOpened, onClose }: {
-  editUrl: string; defaultBranch: string; workflow: string; onOpened: () => void; onClose: () => void;
+/**
+ * The file to copy, and GitHub's page to commit it on: its new-file page filled in, or its editor on the old file.
+ * Cloud never writes to the repository.
+ */
+function WorkflowDialog({ adding, url, defaultBranch, template, ruleBranch, onOpened, onClose }: {
+  adding: boolean; url: string; defaultBranch: string; template: GithubWorkflowTemplate; ruleBranch: string | null;
+  onOpened: () => void; onClose: () => void;
 }) {
+  const workflow = GITHUB_WORKFLOW_TEMPLATES[template];
+  const file = <span className="font-mono">.github/workflows/{GITHUB_BUILD_WORKFLOW_FILE}</span>;
   return (
     <Dialog open onOpenChange={(next) => !next && onClose()}>
       <DialogContent className="sm:max-w-xl">
         <DialogHeader>
-          <DialogTitle>Update workflow</DialogTitle>
+          <DialogTitle>{adding ? "Add workflow" : "Update workflow"}</DialogTitle>
           <DialogDescription>
-            Replace <span className="font-mono">.github/workflows/{GITHUB_BUILD_WORKFLOW_FILE}</span> on{" "}
-            <span className="font-mono">{defaultBranch}</span> with this file. It runs Ployz's builder at a fixed commit, so a change to the builder can't reach your builds.
+            {adding ? <>Add {file} to</> : <>Replace {file} on</>} <span className="font-mono">{defaultBranch}</span> with this file. It runs
+            Ployz's builder at a fixed commit, so a change to the builder can't reach your builds.
           </DialogDescription>
+          {template === "rule" ? (
+            <DialogDescription>
+              Every push to a branch starts it, and each server builds only what your rules allow.
+              {ruleBranch === null ? null : (
+                <> To skip pushes to other branches, set the repository variable <span className="font-mono">PLOYZ_BRANCH</span> to{" "}
+                  <span className="font-mono">{ruleBranch}</span>, unless the repository has a preview rule.</>
+              )}
+            </DialogDescription>
+          ) : null}
         </DialogHeader>
         <pre aria-label="New workflow file" className="max-h-80 overflow-auto rounded-md border bg-muted/40 p-3 font-mono text-xs leading-5">
           {workflow}
         </pre>
         <DialogFooter>
           <CopyButton value={workflow} label="Copy file" showLabel variant="outline" />
-          <Button nativeButton={false} render={<a href={editUrl} target="_blank" rel="noreferrer" />} onClick={onOpened}>
+          <Button nativeButton={false} render={<a href={url} target="_blank" rel="noreferrer" />} onClick={onOpened}>
             Open in GitHub ↗
           </Button>
         </DialogFooter>

@@ -33,8 +33,8 @@ jobs:
 `;
 
 /**
- * The workflow a repository under an automatic deploy rule or a preview rule runs. A push to any branch builds, since
- * a preview builds on its own push run, and each Server checks the branch against the rule. A dispatch builds an
+ * The workflow a repository under an automatic deploy rule or a preview rule runs. A push to any branch, not a tag,
+ * builds, since a preview builds on its own push run, and each Server checks the branch against the rule. A dispatch builds an
  * approved or reviewed `commit`. No file names a customer's branch or Cloud: on a dispatch the minter fills `cloud`;
  * on a push it comes from the repository's `PLOYZ_CLOUD` variable, which only the repository's admins can set.
  * Setting `PLOYZ_BRANCH` skips pushes to other branches.
@@ -42,6 +42,7 @@ jobs:
 export const GITHUB_RULE_WORKFLOW = `name: Ployz build
 on:
   push:
+    branches: ['**']
   workflow_dispatch:
     inputs:
       cloud: { required: false, type: string }
@@ -83,6 +84,8 @@ export type GithubBuildRepository = {
   readiness: GithubBuildReadiness;
   /** The file Ployz offers this repository. */
   template: GithubWorkflowTemplate;
+  /** The one branch the repository's automatic deploy rules build, which `PLOYZ_BRANCH` may name; else null. */
+  ruleBranch: string | null;
 };
 
 /** Whether the person can still commit Ployz's workflow here: the browser that sent them to GitHub waits for it. */

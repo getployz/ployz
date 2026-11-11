@@ -41,7 +41,7 @@ it.each([
   vi.spyOn(views, "useStoreView").mockReturnValue(asTestDouble<ReturnType<typeof views.useStoreView>>()({ ok: true, value: { build_order: "github-then-servers" } }));
   vi.spyOn(writes, "useStoreWriter").mockReturnValue(asTestDouble<ReturnType<typeof writes.useStoreWriter>>()({ commit: vi.fn() }));
   const repositories = vi.spyOn(github, "useGithubBuildRepositories").mockReturnValue(asTestDouble<ReturnType<typeof github.useGithubBuildRepositories>>()({
-    data: [{ installationId: 7, repositoryId: 42, fullName: "acme/blog", defaultBranch: "main", readiness: "outdated", template }], error: null,
+    data: [{ installationId: 7, repositoryId: 42, fullName: "acme/blog", defaultBranch: "main", readiness: "outdated", template, ruleBranch: null }], error: null,
   }));
   vi.spyOn(github, "useGithubWebOrigin").mockReturnValue("https://github.com");
   vi.spyOn(servers, "useServerList").mockReturnValue(asTestDouble<ReturnType<typeof servers.useServerList>>()({ servers: [] }));
@@ -58,17 +58,24 @@ it.each([
   expect(repositories).toHaveBeenLastCalledWith("ada", new Set(["7:42"]));
 });
 
-it("fills GitHub's new-file page with the rule workflow for a repository a rule builds", async () => {
+it("adds the rule workflow through its dialog, naming the branch PLOYZ_BRANCH may skip others for", async () => {
   const client = await clientWithRole("ada", "owner");
   vi.spyOn(views, "useStoreView").mockReturnValue(asTestDouble<ReturnType<typeof views.useStoreView>>()({ ok: true, value: { build_order: "github-then-servers" } }));
   vi.spyOn(writes, "useStoreWriter").mockReturnValue(asTestDouble<ReturnType<typeof writes.useStoreWriter>>()({ commit: vi.fn() }));
   vi.spyOn(github, "useGithubBuildRepositories").mockReturnValue(asTestDouble<ReturnType<typeof github.useGithubBuildRepositories>>()({
-    data: [{ installationId: 7, repositoryId: 42, fullName: "acme/blog", defaultBranch: "main", readiness: "setup_needed", template: "rule" }], error: null,
+    data: [{ installationId: 7, repositoryId: 42, fullName: "acme/blog", defaultBranch: "main", readiness: "setup_needed", template: "rule", ruleBranch: "main" }], error: null,
   }));
   vi.spyOn(github, "useGithubWebOrigin").mockReturnValue("https://github.com");
   vi.spyOn(servers, "useServerList").mockReturnValue(asTestDouble<ReturnType<typeof servers.useServerList>>()({ servers: [] }));
   render(<QueryClientProvider client={client}><BuildsSettings organizationSlug="ada" /></QueryClientProvider>);
-  const add = (await screen.findByText("Add workflow ↗")).closest("a");
+  fireEvent.click(screen.getByRole("button", { name: "Add workflow" }));
+  expect(screen.getByLabelText("New workflow file").textContent).toBe(GITHUB_RULE_WORKFLOW);
+  expect(screen.getByRole("dialog").textContent).toContain("set the repository variable PLOYZ_BRANCH to main");
+  const add = (await screen.findByText("Open in GitHub ↗")).closest("a");
   if (add === null) throw new Error("no link to GitHub's new-file page");
-  expect(new URL(add.getAttribute("href") ?? "").searchParams.get("value")).toBe(GITHUB_RULE_WORKFLOW);
+  const url = new URL(add.getAttribute("href") ?? "");
+  expect(url.pathname).toBe("/acme/blog/new/main");
+  expect(url.searchParams.get("value")).toBe(GITHUB_RULE_WORKFLOW);
+  fireEvent.click(add);
+  expect(await screen.findByText("Waiting for commit")).toBeTruthy();
 });

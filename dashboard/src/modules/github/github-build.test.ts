@@ -67,36 +67,37 @@ const run = (id: number, headSha: string, event: string, status = "in_progress")
 
 describe("checkGithubBuildRepository", () => {
   const contents = (text: string) => ({ content: Buffer.from(text).toString("base64"), encoding: "base64" });
-  const row = (underRule: boolean, file: ReturnType<typeof workflowFile>, onDisk?: string) => {
+  const row = (ruleBranches: string[], file: ReturnType<typeof workflowFile>, onDisk?: string) => {
     const api = fakeGithubApi(onDisk === undefined ? {} : { "/repositories/42/contents/.github/workflows/ployz-build.yml": contents(onDisk) });
-    return Effect.runPromise(checkGithubBuildRepository("org", { installationId: 7, repositoryId: 42, fullName: "acme/api", underRule }).pipe(
+    return Effect.runPromise(checkGithubBuildRepository("org", { installationId: 7, repositoryId: 42, fullName: "acme/api", ruleBranches }).pipe(
       Effect.provideService(GithubApi, api.service),
       Effect.provideService(GithubAuthority, fakeGithubAuthority({ buildWorkflow: () => Effect.succeed(file) }).service),
     ));
   };
-  const handWritten = GITHUB_RULE_WORKFLOW.replace("on:\n  push:\n", "on:\n  push:\n    branches: [main]\n");
+  const handWritten = GITHUB_RULE_WORKFLOW.replace("branches: ['**']", "branches: [main]");
 
   it("offers the build template to a repository no rule builds", async () => {
-    expect(await row(false, workflowFile("active", "build"))).toMatchObject({ readiness: "ready", template: "build" });
-    expect(await row(false, workflowFile(null, null))).toMatchObject({ readiness: "setup_needed", template: "build" });
-    expect(await row(false, workflowFile("active", null), "jobs:\n  build:\n    steps:\n      - uses: getployz/build@v1\n"))
+    expect(await row([], workflowFile("active", "build"))).toMatchObject({ readiness: "ready", template: "build" });
+    expect(await row([], workflowFile(null, null))).toMatchObject({ readiness: "setup_needed", template: "build" });
+    expect(await row([], workflowFile("active", null), "jobs:\n  build:\n    steps:\n      - uses: getployz/build@v1\n"))
       .toMatchObject({ readiness: "outdated", template: "build" });
   });
 
   it("offers the rule template to a repository an automatic deploy rule builds, never the build template", async () => {
-    expect(await row(true, workflowFile("active", "rule"))).toMatchObject({ readiness: "ready", template: "rule" });
-    expect(await row(true, workflowFile("active", "build"))).toMatchObject({ readiness: "outdated", template: "rule" });
-    expect(await row(true, workflowFile(null, null))).toMatchObject({ readiness: "setup_needed", template: "rule" });
-    expect(await row(true, workflowFile("active", null), handWritten)).toMatchObject({ readiness: "outdated", template: "rule" });
+    expect(await row(["main"], workflowFile("active", "rule"))).toMatchObject({ readiness: "ready", template: "rule", ruleBranch: "main" });
+    expect(await row(["main", "release"], workflowFile("active", "rule"))).toMatchObject({ template: "rule", ruleBranch: null });
+    expect(await row(["main"], workflowFile("active", "build"))).toMatchObject({ readiness: "outdated", template: "rule" });
+    expect(await row(["main"], workflowFile(null, null))).toMatchObject({ readiness: "setup_needed", template: "rule" });
+    expect(await row(["main"], workflowFile("active", null), handWritten)).toMatchObject({ readiness: "outdated", template: "rule" });
   });
 
   it("offers the rule template where the file calls a reusable workflow or already is the rule template", async () => {
-    expect(await row(false, workflowFile("active", null), handWritten)).toMatchObject({ readiness: "outdated", template: "rule" });
-    expect(await row(false, workflowFile("active", "rule"))).toMatchObject({ readiness: "ready", template: "rule" });
+    expect(await row([], workflowFile("active", null), handWritten)).toMatchObject({ readiness: "outdated", template: "rule" });
+    expect(await row([], workflowFile("active", "rule"))).toMatchObject({ readiness: "ready", template: "rule" });
   });
 
   it("offers the build template when the file can't be read", async () => {
-    expect(await row(false, workflowFile("active", null))).toMatchObject({ readiness: "outdated", template: "build" });
+    expect(await row([], workflowFile("active", null))).toMatchObject({ readiness: "outdated", template: "build" });
   });
 });
 

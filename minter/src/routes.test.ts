@@ -1,5 +1,6 @@
+import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
-import { READ_SET, workflowDigest } from "./policy.js";
+import { READ_SET } from "./policy.js";
 import {
   API,
   APP_ID,
@@ -172,9 +173,13 @@ describe("/v1/dispatch", () => {
     expect(response).toMatchObject({ status: 400, body: { reason: "branch not found" } });
   });
 
-  it("dispatches a canonical rule file with only the commit, and fills cloud", async () => {
-    const rule = CANONICAL_WORKFLOW.replace("on:\n", "on:\n  push:\n");
-    const minter = harness(dispatchRoutes(rule), { canonical: new Set([workflowDigest(Buffer.from(rule))]) });
+  it("dispatches the shipped rule template with only the commit, and fills cloud", async () => {
+    const { CANONICAL_DIGESTS } = await import("./policy.js");
+    // The docs carry the dashboard's rule template verbatim; a dashboard test holds them to it.
+    const docs = readFileSync(new URL("../../docs/user/deploy/github.md", import.meta.url), "utf8");
+    const rule = /```yaml\n(name: Ployz build\n[\s\S]*?)```/.exec(docs)?.[1] ?? "";
+    expect(rule).toContain("getployz/build/.github/workflows/build.yml@");
+    const minter = harness(dispatchRoutes(rule), { canonical: CANONICAL_DIGESTS });
     const body = { ...valid, inputs: { commit: HEAD } };
     expect((await minter.call("/v1/dispatch", body)).status).toBe(200);
     expect(sent(minter.calls, "POST", DISPATCH)[0]?.body).toEqual({ ref: "refs/heads/main", inputs: { commit: HEAD, cloud: CLOUD }, return_run_details: true });

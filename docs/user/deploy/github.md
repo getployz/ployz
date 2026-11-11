@@ -142,9 +142,9 @@ From then on every push to that branch deploys with no prompt, force pushes incl
 Actions builds it with Ployz's pinned builder, and each server checks that the image is the one
 built for the branch's current head, under these settings. The repository needs Ployz's rule
 workflow as `.github/workflows/ployz-build.yml` on the rule's branch. **Organization → Builds**
-offers it for each repository a rule builds from: **Add workflow** opens GitHub with the file
-filled in, and **Update workflow** replaces an older one. It builds on every push, and on a
-dispatch with a `commit` for a
+offers it for each repository a rule builds from: **Add workflow** and **Update workflow** show
+the file and open GitHub to commit it. It builds on every push to a branch, and on a dispatch with
+a `commit` for a
 [rollback that builds again](history-and-rollback.md#roll-back-on-servers-that-enforce-device-approval).
 Commit it exactly as Ployz gives it:
 
@@ -152,6 +152,7 @@ Commit it exactly as Ployz gives it:
 name: Ployz build
 on:
   push:
+    branches: ['**']
   workflow_dispatch:
     inputs:
       cloud: { required: false, type: string }
@@ -171,10 +172,12 @@ jobs:
 Nothing in it names your branch or your Ployz Cloud, so commit it unchanged: hosted Ployz Cloud
 dispatches a rebuild only with this exact file, and **Builds** reads any other as **Uses an older
 workflow**. Each server checks that a push was to the rule's branch. To skip pushes to other
-branches, set the repository variable `PLOYZ_BRANCH` to the rule's branch, such as `main`, in the
-repository's **Settings → Secrets and variables → Actions → Variables**. Leave it unset if the
-repository also has a [preview rule](../environments/preview-environments.md). A self-hosted Ployz
-Cloud sets `PLOYZ_CLOUD` there to its own address, such as `https://ployz.example.com`.
+branches, set the repository variable `PLOYZ_BRANCH` to the rule's branch, such as `main`, as the
+dialog names it, in the repository's **Settings → Secrets and variables → Actions → Variables**.
+Leave it unset if the repository also has a [preview rule](../environments/preview-environments.md).
+A self-hosted Ployz Cloud sets `PLOYZ_CLOUD` there to its own address, such as
+`https://ployz.example.com`. A repository with this file builds on GitHub only under its rules: a
+deploy of another environment from it builds on your servers.
 
 - **A saved change waits for you.** After you save a change to a service the rule covers, its
   settings or how it builds, or add a service that builds from the rule's branch, pushes don't

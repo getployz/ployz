@@ -27,3 +27,13 @@ Dispatched run 42987420691, log excerpt:
 Push run of probe-main-noif (no if, PLOYZ_CLOUD from the variable), run 42986995296:
   2026-11-11T08:26:09.7919757Z   cloud: https://lab-push.invalid
   2026-11-11T08:26:21.9187866Z error: could not reach Ployz Cloud at https://lab-push.invalid
+
+After review round 2 the template runs on push: branches: ['**'] (no tags). Digest 8870df1d7d879d714300461f97e7599b5230731a5966b91db0a2b4bd7cdf7aa4.
+POST /v1/workflow -> canonical: true. POST /v1/dispatch {branch: main, inputs: {commit}} -> 200 run 43004268002.
+Runs:
+  43004268002 main workflow_dispatch failure
+  43004241196 main push skipped
+  43004248362 probe-main push skipped
+  2026-11-11T10:31:09.1403098Z Uses: getployz/build/.github/workflows/build.yml@a19b4fca3adea371c25ec29f181e8c7d21037d1e
+  2026-11-11T10:31:09.1409315Z   cloud: https://lab.invalid
+  2026-11-11T10:31:11.3019975Z error: could not reach Ployz Cloud at https://lab.invalid

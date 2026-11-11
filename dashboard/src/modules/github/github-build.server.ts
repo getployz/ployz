@@ -135,7 +135,8 @@ export const githubRunCompleted = Effect.fn("Github.runCompleted")(function* (in
   return run.status === "completed";
 });
 
-export type StoreRepository = { installationId: number; repositoryId: number; fullName: string; underRule: boolean };
+/** `ruleBranches`: the branches automatic deploy rules build from it, none when no rule names it. */
+export type StoreRepository = { installationId: number; repositoryId: number; fullName: string; ruleBranches: string[] };
 
 /** Whether the Environment's automatic deploy rule is on, and the repository it builds from. */
 const ruleSource = (view: { rule: { body: string } | null }) => {
@@ -167,13 +168,15 @@ const listStoreGithubRepositories = Effect.fn("Github.listStoreRepositories")(fu
   for (const result of plans) {
     if (!result.ok) continue;
     for (const plan of result.value.plans) {
-      found.set(plan.repository_id, { installationId: plan.installation_id, repositoryId: plan.repository_id, fullName: plan.repository, underRule: false });
+      found.set(plan.repository_id, { installationId: plan.installation_id, repositoryId: plan.repository_id, fullName: plan.repository, ruleBranches: [] });
     }
   }
-  const ruled = new Map<number, string>();
+  const ruled = new Map<number, { fullName: string; branches: Set<string> }>();
   for (const result of rules) {
     const source = result.ok ? ruleSource(result.value) : null;
-    if (source !== null) ruled.set(source.repository_id, source.repository);
+    if (source === null) continue;
+    const kept = ruled.get(source.repository_id) ?? { fullName: source.repository, branches: new Set<string>() };
+    ruled.set(source.repository_id, { ...kept, branches: kept.branches.add(source.branch) });
   }
   const unplanned = [...ruled.keys()].filter((repositoryId) => !found.has(repositoryId));
   const { drizzle } = yield* Database;
@@ -187,11 +190,11 @@ const listStoreGithubRepositories = Effect.fn("Github.listStoreRepositories")(fu
     .where(inArray(githubRepositoryCache.repositoryId, unplanned))
     .orderBy(githubRepositoryCache.installationId);
   for (const { installationId, repositoryId } of installed) {
-    if (!found.has(repositoryId)) found.set(repositoryId, { installationId, repositoryId, fullName: ruled.get(repositoryId) ?? "", underRule: true });
+    if (!found.has(repositoryId)) found.set(repositoryId, { installationId, repositoryId, fullName: ruled.get(repositoryId)?.fullName ?? "", ruleBranches: [] });
   }
-  for (const repositoryId of ruled.keys()) {
+  for (const [repositoryId, rule] of ruled) {
     const repository = found.get(repositoryId);
-    if (repository !== undefined) repository.underRule = true;
+    if (repository !== undefined) repository.ruleBranches = [...rule.branches].sort();
   }
   return [...found.values()];
 });
@@ -217,7 +220,7 @@ const callsReusableWorkflow = Effect.fn("Github.callsReusableWorkflow")(function
 const offeredTemplate = Effect.fn("Github.offeredTemplate")(function* (
   access: GithubAccess, repository: StoreRepository, checked: { readiness: GithubBuildReadiness; template: GithubWorkflowTemplate | null },
 ) {
-  if (repository.underRule || checked.template === "rule") return "rule";
+  if (repository.ruleBranches.length > 0 || checked.template === "rule") return "rule";
   if (checked.readiness !== "outdated") return "build";
   const reusable = yield* callsReusableWorkflow(access, repository.repositoryId).pipe(Effect.orElseSucceed(() => false));
   return reusable ? "rule" : "build";
@@ -240,6 +243,7 @@ export const checkGithubBuildRepository = Effect.fn("Github.checkBuildRepository
     // The other template is one Ployz offers, but not to this repository.
     readiness: checked.readiness === "ready" && checked.template !== template ? "outdated" : checked.readiness,
     template,
+    ruleBranch: repository.ruleBranches.length === 1 ? repository.ruleBranches[0] ?? null : null,
   } satisfies GithubBuildRepository;
 });
 

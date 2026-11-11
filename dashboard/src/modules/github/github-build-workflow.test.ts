@@ -34,7 +34,7 @@ describe("GitHub build workflows", () => {
   });
 
   it("names no branch or Cloud of a customer in the rule template", () => {
-    expect(GITHUB_RULE_WORKFLOW).toMatch(/^ {2}push:\n {2}workflow_dispatch:\n/m);
+    expect(GITHUB_RULE_WORKFLOW).toContain("  push:\n    branches: ['**']\n  workflow_dispatch:\n");
     expect(GITHUB_RULE_WORKFLOW).toContain("cloud: ${{ inputs.cloud || vars.PLOYZ_CLOUD || 'https://ployz.dev' }}");
     expect(GITHUB_RULE_WORKFLOW).toContain("commit: ${{ inputs.commit }}");
   });
