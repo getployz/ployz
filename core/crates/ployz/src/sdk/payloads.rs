@@ -82,6 +82,7 @@ fn typescript_declarations() -> String {
     declarations.add::<crate::ingress::DoorsChanged>();
     declarations.add::<crate::private_access::AccessChanged>();
     declarations.add::<crate::private_access::PrivateAccessOn>();
+    declarations.add::<ployz_core::authority::KeyApproval>();
     declarations.add::<ployz_core::authority::PrivateAccessApproval>();
     declarations.add::<ployz_core::authority::PrivateAccessTerms>();
     declarations.add::<crate::ingress::IngressCheck>();

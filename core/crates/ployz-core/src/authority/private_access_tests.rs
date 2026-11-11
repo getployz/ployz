@@ -46,25 +46,29 @@ fn approval(signer: SignerKey) -> PrivateAccessApproval {
     }
 }
 
-fn by_device() -> Signed<PrivateAccessApproval> {
-    Signed::sign(
-        &approval(SignerKey::Device(device().public().into())),
-        &device(),
+fn by_device() -> KeyApproval {
+    KeyApproval::Signed(
+        Signed::sign(
+            &approval(SignerKey::Device(device().public().into())),
+            &device(),
+        )
+        .unwrap(),
     )
-    .unwrap()
 }
 
-fn by_passkey(passkey: &Authenticator) -> Signed<PrivateAccessApproval> {
-    let unsigned = Signed::unsigned(&approval(SignerKey::Passkey(OwnPrompt::Passkey))).unwrap();
+fn by_passkey(passkey: &Authenticator) -> KeyApproval {
+    let body = Signed::unsigned(&approval(SignerKey::Passkey(OwnPrompt::Passkey)))
+        .unwrap()
+        .body;
     let assertion = passkey.answer(&Answer {
-        challenge: &unsigned.challenge(),
+        challenge: &key_approval_challenge(&body),
         ..HONEST
     });
-    unsigned.answered(assertion)
+    KeyApproval::Passkey { body, assertion }
 }
 
 fn check(
-    signed: &Signed<PrivateAccessApproval>,
+    signed: &KeyApproval,
     trusted: &TrustedKeys,
     sealed: &Ciphertext,
 ) -> Result<Approver, AuthorityRefusal> {
@@ -139,7 +143,7 @@ fn an_unknown_signer_or_passkey_is_refused() {
     )
     .unwrap();
     assert_eq!(
-        check(&signed, &trusted(&passkey), &sealed()),
+        check(&KeyApproval::Signed(signed), &trusted(&passkey), &sealed()),
         Err(AuthorityRefusal::UnknownKey {
             key: stranger.public()
         })
@@ -187,10 +191,53 @@ fn a_browser_key_under_a_session_grant_is_refused() {
     )
     .unwrap();
     assert_eq!(
-        check(&signed, &trusted(&passkey), &sealed()),
+        check(&KeyApproval::Signed(signed), &trusted(&passkey), &sealed()),
         Err(AuthorityRefusal::Mismatch {
             field: "the signer"
         })
+    );
+}
+
+#[test]
+fn a_passkey_answers_only_by_its_own_prompt_never_inside_an_envelope() {
+    let passkey = Authenticator::es256(4);
+    let unsigned = Signed::unsigned(&approval(SignerKey::Passkey(OwnPrompt::Passkey))).unwrap();
+    let assertion = passkey.answer(&Answer {
+        challenge: &unsigned.challenge(),
+        ..HONEST
+    });
+    assert!(
+        check(
+            &KeyApproval::Signed(unsigned.answered(assertion)),
+            &trusted(&passkey),
+            &sealed()
+        )
+        .is_err()
+    );
+}
+
+#[test]
+fn a_passkey_answer_over_another_body_is_refused() {
+    let passkey = Authenticator::es256(4);
+    let KeyApproval::Passkey { assertion, .. } = by_passkey(&passkey) else {
+        unreachable!()
+    };
+    let later = Signed::unsigned(&PrivateAccessApproval {
+        issued_at: at(1_500),
+        ..approval(SignerKey::Passkey(OwnPrompt::Passkey))
+    })
+    .unwrap()
+    .body;
+    assert!(
+        check(
+            &KeyApproval::Passkey {
+                body: later,
+                assertion
+            },
+            &trusted(&passkey),
+            &sealed()
+        )
+        .is_err()
     );
 }
 

@@ -939,7 +939,9 @@ mod private_access {
     //! `SetPrivateAccess` under Device enforcement: an Operator turns Private Access on only
     //! with an approval of the sealed key it sends, and turns it off with none.
 
-    use ployz_core::authority::{PrivateAccessApproval, PrivateAccessTerms, SignerKey, Timestamp};
+    use ployz_core::authority::{
+        KeyApproval, PrivateAccessApproval, PrivateAccessTerms, SignerKey, Timestamp,
+    };
     use ployz_core::{Ciphertext, PlatformPurpose, SetPrivateAccessRequest, seal_platform};
 
     use super::*;
@@ -956,25 +958,23 @@ mod private_access {
         seal_platform(&cluster, PlatformPurpose::PrivateAccess, key.as_bytes()).unwrap()
     }
 
-    fn approval(
-        machine: &Enforcing,
-        signer: &Signer,
-        sealed: &Ciphertext,
-    ) -> Signed<PrivateAccessApproval> {
+    fn approval(machine: &Enforcing, signer: &Signer, sealed: &Ciphertext) -> KeyApproval {
         let cluster = SealingKey::load(&machine.data_dir)
             .unwrap()
             .unwrap()
             .public_key();
-        Signed::sign(
-            &PrivateAccessApproval::drafted(&PrivateAccessTerms {
-                cluster,
-                sealed_auth_key: sealed.clone(),
-                issued_at: Timestamp::now(),
-                signer: SignerKey::Device(signer.public().into()),
-            }),
-            signer,
+        KeyApproval::Signed(
+            Signed::sign(
+                &PrivateAccessApproval::drafted(&PrivateAccessTerms {
+                    cluster,
+                    sealed_auth_key: sealed.clone(),
+                    issued_at: Timestamp::now(),
+                    signer: SignerKey::Device(signer.public().into()),
+                }),
+                signer,
+            )
+            .unwrap(),
         )
-        .unwrap()
     }
 
     async fn turn(machine: &Enforcing, request: SetPrivateAccessRequest) -> Answer {
@@ -986,10 +986,7 @@ mod private_access {
             .await
     }
 
-    fn on(
-        sealed: Ciphertext,
-        approval: Option<Signed<PrivateAccessApproval>>,
-    ) -> SetPrivateAccessRequest {
+    fn on(sealed: Ciphertext, approval: Option<KeyApproval>) -> SetPrivateAccessRequest {
         SetPrivateAccessRequest {
             enabled: true,
             sealed_auth_key: Some(sealed),

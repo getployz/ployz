@@ -1777,7 +1777,7 @@ pub struct SetPrivateAccessRequest {
     /// `ployz.private-access.approval.v1`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[ts(optional)]
-    pub approval: Option<crate::authority::Signed<crate::authority::PrivateAccessApproval>>,
+    pub approval: Option<crate::authority::KeyApproval>,
 }
 
 /// Why a Private Access router is not serving.

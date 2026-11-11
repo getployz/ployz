@@ -32,7 +32,7 @@ const SLUG = "acme";
 const SEALED = "c2VhbGVkLWluLXRoZS1icm93c2VyLW5ldmVyLXN0b3JlZC1ieS1DbG91ZC0wMTIzNDU2Nzg5";
 const ON: PrivateAccessOn = {
   sealed_auth_key: SEALED,
-  approval: { body: "{\"signer\":\"passkey\"}", signatures: [], assertions: [{ credential_id: "AQID", authenticator_data: "AQID", client_data_json: "AQID", signature: "AQID" }] },
+  approval: { passkey: { body: "{\"signer\":\"passkey\"}", assertion: { credential_id: "AQID", authenticator_data: "AQID", client_data_json: "AQID", signature: "AQID" } } },
 };
 const SERVER = "a".repeat(32) as MachineId;
 

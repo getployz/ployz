@@ -5,16 +5,19 @@
  * approved, so a Cloud that hides enforcement only gets the key refused.
  */
 import type { QueryClient } from "@tanstack/react-query";
-import type { PrivateAccessOn } from "@ployz/sdk";
+import type { KeyApproval, PrivateAccessOn } from "@ployz/sdk";
 import { privateAccessApprovalBody } from "@ployz/sdk/authority";
 import { sealingQueryOptions } from "#/modules/sealing/sealing.queries";
 import { privateAccessQueryOptions } from "./private-access.queries";
-import { PasskeyRefused, signWithPasskey } from "#/modules/approval-session/passkey-statement";
+import { PasskeyRefused, passkeyAnswer, statementChallenge } from "#/modules/approval-session/passkey-statement";
 import { SealError } from "#/modules/sealing/seal-error";
 import { isUnauthorized } from "#/lib/error-message";
 import { sealPlatform } from "#/modules/variables/seal-value";
 
 const UNSEALED = "Couldn't seal the key, so nothing was sent. Try again.";
+
+/** What a browser sends: the sealed key, with its passkey's answer when a Server enforces. A browser never signs as a Device. */
+export type BrowserOn = Omit<PrivateAccessOn, "approval"> & { approval?: Extract<KeyApproval, { passkey: unknown }> };
 
 /** Why the key couldn't be sealed or approved, in words the form shows as they are. */
 export class KeyNotApproved extends Error {}
@@ -23,7 +26,7 @@ export class KeyNotApproved extends Error {}
  * `authKey` sealed to the Organization's Cluster, both read afresh, with the person's passkey approval of that sealed key
  * when a Server enforces. An unread observation asks the passkey, since an enforcing Server needs it.
  */
-export async function sealAndApprove(queryClient: QueryClient, organizationSlug: string, authKey: string): Promise<PrivateAccessOn> {
+export async function sealAndApprove(queryClient: QueryClient, organizationSlug: string, authKey: string): Promise<BrowserOn> {
   const [fresh, observed] = await Promise.all([
     queryClient.fetchQuery({ ...sealingQueryOptions(organizationSlug), staleTime: 0 }),
     queryClient.fetchQuery({ ...privateAccessQueryOptions(organizationSlug), staleTime: 0 }).catch(() => null),
@@ -35,7 +38,7 @@ export async function sealAndApprove(queryClient: QueryClient, organizationSlug:
 }
 
 /** `authKey` sealed to the Cluster key `publicKey`, with the person's passkey approval of exactly that sealed key when `enforced`. */
-export async function approvedKey(publicKey: string, authKey: string, enforced: boolean, now = Date.now()): Promise<PrivateAccessOn> {
+export async function approvedKey(publicKey: string, authKey: string, enforced: boolean, now = Date.now()): Promise<BrowserOn> {
   let sealed: string;
   try {
     sealed = await sealPlatform(publicKey, "private-access", authKey.trim());
@@ -45,7 +48,7 @@ export async function approvedKey(publicKey: string, authKey: string, enforced: 
   if (!enforced) return { sealed_auth_key: sealed };
   const body = privateAccessApprovalBody({ cluster: publicKey, sealed_auth_key: sealed, issued_at: now, signer: "passkey" });
   try {
-    return { sealed_auth_key: sealed, approval: await signWithPasskey(body, "workflow") };
+    return { sealed_auth_key: sealed, approval: { passkey: { body, assertion: await passkeyAnswer(await statementChallenge(body, "workflow")) } } };
   } catch (error) {
     if (error instanceof PasskeyRefused) throw new KeyNotApproved(error.message);
     if (error instanceof Error && error.name === "NotAllowedError") throw new KeyNotApproved("Your passkey didn't answer. Try again.");

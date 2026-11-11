@@ -9,7 +9,10 @@ use ployz_core::{
     PrivateAccessSet, QualifiedService, RowStanding, RpcError, RpcErrorCode,
     SET_PRIVATE_ACCESS_CAPABILITY, Sealing, SealingPublicKey, ServiceObservation,
     SetPrivateAccessRequest,
-    authority::{PrivateAccessApproval, PrivateAccessTerms, Signed, Signer, SignerKey, Timestamp},
+    authority::{
+        KeyApproval, PrivateAccessApproval, PrivateAccessTerms, Signed, Signer, SignerKey,
+        Timestamp,
+    },
     private_access_sealed_key, seal_platform,
 };
 use serde::{Deserialize, Serialize};
@@ -171,7 +174,7 @@ pub struct PrivateAccessOn {
     /// still turn Private Access on. A Server that enforces refuses the key without it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[ts(optional)]
-    pub approval: Option<Signed<PrivateAccessApproval>>,
+    pub approval: Option<KeyApproval>,
 }
 
 /// `signer`'s approval of `sealed`, the auth key sealed to the Cluster whose Sealing Key
@@ -184,20 +187,22 @@ pub(crate) fn device_approval(
     signer: &Signer,
     cluster: SealingPublicKey,
     sealed: &Ciphertext,
-) -> Result<Signed<PrivateAccessApproval>, Failure> {
+) -> Result<KeyApproval, Failure> {
     let approval = PrivateAccessApproval::drafted(&PrivateAccessTerms {
         cluster,
         sealed_auth_key: sealed.clone(),
         issued_at: Timestamp::now(),
         signer: SignerKey::Device(signer.public().into()),
     });
-    Signed::sign(&approval, signer).map_err(|error| {
-        Failure::caused(
-            RpcErrorCode::Internal,
-            "Could not sign the Private Access approval",
-            error,
-        )
-    })
+    Signed::sign(&approval, signer)
+        .map(KeyApproval::Signed)
+        .map_err(|error| {
+            Failure::caused(
+                RpcErrorCode::Internal,
+                "Could not sign the Private Access approval",
+                error,
+            )
+        })
 }
 
 /// What one Machine's daemon answered, or why it wasn't asked to the end.
@@ -240,7 +245,7 @@ pub(crate) async fn turn_on<C: MachineOperations>(
     client: &C,
     machines: Vec<AccessMachine>,
     sealed: Ciphertext,
-    approval: Option<Signed<PrivateAccessApproval>>,
+    approval: Option<KeyApproval>,
     cancel: &CancellationToken,
 ) -> AccessChanged {
     let mut changed = AccessChanged::default();

@@ -39,7 +39,8 @@ pub use preview::{
     ReviewedService,
 };
 pub use private_access::{
-    AuthKeyDigest, PrivateAccessApproval, PrivateAccessFacts, PrivateAccessTerms,
+    AuthKeyDigest, KeyApproval, PrivateAccessApproval, PrivateAccessFacts, PrivateAccessTerms,
+    key_approval_challenge,
 };
 pub use proposal::{ProposalApproval, ProposalRef, ProposalStep, StepDigest, StepKind};
 pub use refusal::AuthorityRefusal;

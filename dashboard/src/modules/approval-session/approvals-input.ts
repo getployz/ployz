@@ -6,12 +6,8 @@ const SignedBody = Schema.String.check(Schema.isMaxLength(4096));
 
 const Assertion = Schema.Struct({ credential_id: Base64Url, authenticator_data: Base64Url, client_data_json: Base64Url, signature: Base64Url });
 
-/** A statement a Device signed or a passkey answered with a prompt of its own. Servers check every byte; Cloud only bounds its size. */
-export const AnsweredInput = Schema.Struct({
-  body: SignedBody,
-  signatures: Schema.Array(Schema.Struct({ key: hexOf(64), signature: hexOf(128) })).check(Schema.isMaxLength(4)),
-  assertions: Schema.optionalKey(Schema.Array(Assertion).check(Schema.isMaxLength(4))),
-});
+/** A statement a passkey answered with a prompt of its own, as `ployz_core::authority::KeyApproval` travels. Servers check every byte; Cloud only bounds its size. */
+export const PasskeyAnswerInput = Schema.Struct({ passkey: Schema.Struct({ body: SignedBody, assertion: Assertion }) });
 
 /** A browser's approval as `ployz_core::authority::Signed` travels. Servers check every byte; Cloud only bounds its size. */
 const ApprovalInput = Schema.Struct({

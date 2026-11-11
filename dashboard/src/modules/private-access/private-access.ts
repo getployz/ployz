@@ -1,7 +1,7 @@
 import type { AccessChanged, ContainerObservation, RuntimeWatchView } from "@ployz/sdk";
 import { Schema } from "effect";
 import { asRecord } from "#/lib/json";
-import { AnsweredInput } from "#/modules/approval-session/approvals-input";
+import { PasskeyAnswerInput } from "#/modules/approval-session/approvals-input";
 import { offlineServers } from "#/modules/machines/server-status";
 
 export const TAILSCALE = "ployz-system/tailscale";
@@ -22,7 +22,7 @@ const Slug = Schema.String.check(Schema.isNonEmpty());
 /** The auth key as the browser sealed it to the Cluster, with the passkey's approval of exactly that ciphertext when a Server enforces. */
 const PrivateAccessOnInput = Schema.Struct({
   sealed_auth_key: Schema.String.check(Schema.isPattern(/^[A-Za-z0-9+/]{1,2048}={0,2}$/)),
-  approval: Schema.optional(AnsweredInput),
+  approval: Schema.optional(PasskeyAnswerInput),
 });
 
 export const SetPrivateAccessInput = Schema.Struct({ organizationSlug: Slug, to: Schema.Literals(PRIVATE_ACCESS_WANTS), on: Schema.optional(PrivateAccessOnInput) });

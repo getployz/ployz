@@ -12,11 +12,11 @@ use sha2::Digest as _;
 use ts_rs::TS;
 
 use super::{
-    canonical::{Timestamp, hex_bytes, write_hex},
-    keys::{Approver, Purpose, Signed, Statement},
+    canonical::{self, Timestamp, hex_bytes, write_hex},
+    keys::{Approver, Purpose, Signed, Statement, signing_input},
     refusal::{AuthorityRefusal, field, first_mismatch},
     restart::SignerKey,
-    trusted_key::TrustedKeys,
+    trusted_key::{PasskeyAssertion, TrustedKeys},
 };
 use crate::{Ciphertext, SealingPublicKey};
 
@@ -84,7 +84,33 @@ pub struct PrivateAccessApproval {
 
 impl Statement for PrivateAccessApproval {
     const PURPOSE: Purpose = Purpose::Workflow;
-    const PASSKEY_ANSWERS: bool = true;
+}
+
+/// An approval as it travels: signed by a Device, or answered by a passkey's own prompt
+/// over its challenge, as a preview's [`super::Review`] is.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "snake_case", deny_unknown_fields)]
+pub enum KeyApproval {
+    Signed(Signed<PrivateAccessApproval>),
+    Passkey {
+        body: String,
+        assertion: PasskeyAssertion,
+    },
+}
+
+impl KeyApproval {
+    fn body(&self) -> &str {
+        match self {
+            Self::Signed(signed) => &signed.body,
+            Self::Passkey { body, .. } => body,
+        }
+    }
+}
+
+/// The challenge a passkey answers for an approval whose canonical body is `body`.
+#[must_use]
+pub fn key_approval_challenge(body: &str) -> [u8; 32] {
+    sha2::Sha256::digest(signing_input(Purpose::Workflow, body)).into()
 }
 
 /// What a client knows when it drafts an approval: the Cluster, the key it sealed to it,
@@ -134,25 +160,48 @@ pub struct PrivateAccessFacts<'a> {
 /// signer that is not a trusted Device or passkey, a body naming another Cluster or auth
 /// key, an invalid lifetime, or an expired window.
 pub fn verify(
-    approval: &Signed<PrivateAccessApproval>,
+    approval: &KeyApproval,
     facts: &PrivateAccessFacts<'_>,
 ) -> Result<Approver, AuthorityRefusal> {
-    let approvers = approval.approvers(facts.trusted, facts.now)?;
-    let body = approval.open()?;
-    if approval.proposal.is_some() {
+    let body: PrivateAccessApproval =
+        canonical::from_canonical(approval.body()).map_err(|error| {
+            AuthorityRefusal::Malformed {
+                purpose: Purpose::Workflow,
+                problem: error.to_string(),
+            }
+        })?;
+    let by = match approval {
+        KeyApproval::Passkey {
+            body: text,
+            assertion,
+        } => {
+            let passkey = facts.trusted.passkey_approval(
+                Purpose::Workflow,
+                assertion,
+                &key_approval_challenge(text),
+            )?;
+            Approver::Passkey(passkey.passkey.code())
+        }
+        KeyApproval::Signed(signed) => {
+            let approvers = signed.approvers(facts.trusted, facts.now)?;
+            if signed.proposal.is_some() {
+                return Err(AuthorityRefusal::Mismatch {
+                    field: "a proposal",
+                });
+            }
+            approvers
+                .into_iter()
+                .find(|approver| matches!(approver, Approver::Device(_)))
+                .ok_or(AuthorityRefusal::Mismatch {
+                    field: "the signer",
+                })?
+        }
+    };
+    if !by.signs_as(body.signer) {
         return Err(AuthorityRefusal::Mismatch {
-            field: "a proposal",
+            field: "the signer",
         });
     }
-    let by = approvers
-        .into_iter()
-        .find(|approver| {
-            matches!(approver, Approver::Device(_) | Approver::Passkey(_))
-                && approver.signs_as(body.signer)
-        })
-        .ok_or(AuthorityRefusal::Mismatch {
-            field: "the signer",
-        })?;
     let cluster = facts.cluster.ok_or(AuthorityRefusal::NoClusterIdentity)?;
     first_mismatch([
         (field::CLUSTER, body.cluster == cluster),

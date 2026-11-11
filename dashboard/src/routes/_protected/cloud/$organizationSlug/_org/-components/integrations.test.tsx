@@ -32,7 +32,7 @@ let changing: (() => Promise<Changed>) | null = null;
 // What this browser sends instead of the key: a stand-in for the key sealed to the Cluster, and the passkey's approval of it.
 const ON = {
   sealed_auth_key: "c2VhbGVk",
-  approval: { body: '{"signer":"passkey"}', signatures: [], assertions: [] },
+  approval: { passkey: { body: '{"signer":"passkey"}', assertion: { credential_id: "AQID", authenticator_data: "AQID", client_data_json: "AQID", signature: "AQID" } } },
 } satisfies Awaited<ReturnType<typeof approvedKey.sealAndApprove>>;
 
 beforeEach(() => {
