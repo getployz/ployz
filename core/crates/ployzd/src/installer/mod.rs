@@ -22,7 +22,9 @@ use std::{
     process::{Command, Output},
 };
 
-use ployz_core::{MachineRelease, MachineUpgradeStage, MachineVersion, StoragePreparation};
+use ployz_core::{
+    MachineLayout, MachineRelease, MachineUpgradeStage, MachineVersion, StoragePreparation,
+};
 use thiserror::Error;
 
 use crate::mutation;
@@ -40,9 +42,6 @@ use self::{
 const PLOYZ_USER: &str = "ployz";
 const DEFAULT_BIN_DIR: &str = "/usr/local/bin";
 const DEFAULT_SYSTEMD_DIR: &str = "/etc/systemd/system";
-const DEFAULT_RUN_DIR: &str = "/run/ployz";
-/// Unix socket installed systemd services use for the local Machine API.
-pub const DEFAULT_SOCKET_PATH: &str = "/run/ployz/ployz.sock";
 /// Mutually exclusive host work for one Machine installation attempt.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum InstallMode {
@@ -121,6 +120,7 @@ pub enum Error {
 
 #[derive(Clone, Debug)]
 pub(super) struct InstallPaths {
+    pub(super) layout: MachineLayout,
     pub(super) bin_dir: PathBuf,
     pub(super) systemd_dir: PathBuf,
     pub(super) data_dir: PathBuf,
@@ -141,12 +141,13 @@ pub(super) struct InstallPaths {
 }
 
 impl InstallPaths {
-    fn system(data_dir: impl Into<PathBuf>, run_dir: impl Into<PathBuf>) -> Self {
+    fn system(layout: &MachineLayout) -> Self {
         Self {
             bin_dir: PathBuf::from(DEFAULT_BIN_DIR),
             systemd_dir: PathBuf::from(DEFAULT_SYSTEMD_DIR),
-            data_dir: data_dir.into(),
-            run_dir: run_dir.into(),
+            data_dir: layout.data_dir().into(),
+            run_dir: layout.run_dir().into(),
+            layout: layout.clone(),
             docker_config: PathBuf::from("/etc/docker/daemon.json"),
             modprobe_dir: PathBuf::from("/etc/modprobe.d"),
             modules_load_dir: PathBuf::from("/etc/modules-load.d"),
@@ -158,9 +159,14 @@ impl InstallPaths {
             apt_dir: PathBuf::from("/etc/apt"),
             proc_dir: PathBuf::from("/proc"),
             zfs_module: PathBuf::from("/sys/module/zfs"),
-            device_pool_marker: crate::machine_pool::DEVICE_POOL_MARKER.into(),
+            device_pool_marker: layout.device_pool_marker(),
             usr_src: PathBuf::from("/usr/src"),
         }
+    }
+
+    /// The Machine API socket the installed daemon serves.
+    fn socket(&self) -> PathBuf {
+        self.layout.socket()
     }
 
     /// The installed daemon executable.
@@ -171,6 +177,7 @@ impl InstallPaths {
     #[cfg(test)]
     fn at(root: &Path) -> Self {
         Self {
+            layout: MachineLayout::new(root.join("run"), root.join("data"), root.join("etc")),
             bin_dir: root.join("bin"),
             systemd_dir: root.join("systemd"),
             data_dir: root.join("data"),
@@ -191,15 +198,14 @@ impl InstallPaths {
 }
 
 pub(crate) fn require_standard_machine_paths(data_dir: &Path, socket: &Path) -> Result<(), String> {
-    if data_dir == Path::new(crate::machine::DEFAULT_DATA_DIR)
-        && socket == Path::new(DEFAULT_SOCKET_PATH)
-    {
+    let standard = MachineLayout::production();
+    if data_dir == standard.data_dir() && socket == standard.socket() {
         return Ok(());
     }
     Err(format!(
         "system installation requires --data-dir {} and --socket {}; received --data-dir {} and --socket {}",
-        crate::machine::DEFAULT_DATA_DIR,
-        DEFAULT_SOCKET_PATH,
+        standard.data_dir().display(),
+        standard.socket().display(),
         data_dir.display(),
         socket.display()
     ))
@@ -221,7 +227,7 @@ pub async fn install(
     install_at(
         &ReleaseSource::Published,
         request,
-        InstallPaths::system(data_dir, DEFAULT_RUN_DIR),
+        InstallPaths::system(&MachineLayout::production()),
     )
     .await
 }
@@ -233,10 +239,7 @@ pub async fn install(
 /// Fails without root, or where a fact the installer depends on can't be read.
 pub fn probe() -> Result<String, Error> {
     require_root()?;
-    let facts = read_facts(&InstallPaths::system(
-        crate::machine::DEFAULT_DATA_DIR,
-        DEFAULT_RUN_DIR,
-    ))?;
+    let facts = read_facts(&InstallPaths::system(&MachineLayout::production()))?;
     let assessment = assess(&facts);
     serde_json::to_string_pretty(&serde_json::json!({
         "facts": facts,
@@ -498,17 +501,14 @@ mod tests {
 
     #[test]
     fn machine_files_stay_where_installed_machines_keep_them() {
-        let paths = InstallPaths::system(crate::machine::DEFAULT_DATA_DIR, DEFAULT_RUN_DIR);
+        let layout = MachineLayout::production();
+        let paths = InstallPaths::system(&layout);
         assert_eq!(paths.data_dir, Path::new("/var/lib/ployz"));
         assert_eq!(paths.run_dir, Path::new("/run/ployz"));
-        assert_eq!(DEFAULT_SOCKET_PATH, "/run/ployz/ployz.sock");
+        assert_eq!(paths.socket(), Path::new("/run/ployz/ployz.sock"));
         assert_eq!(
-            paths.run_dir.join("ployz.sock"),
-            Path::new(DEFAULT_SOCKET_PATH)
-        );
-        assert_eq!(
-            crate::machine_pool::BACKING_FILE,
-            "/var/lib/ployz-machine-pool"
+            layout.machine_pool_file(),
+            Path::new("/var/lib/ployz-machine-pool")
         );
         assert_eq!(
             paths.device_pool_marker,
@@ -531,10 +531,11 @@ mod tests {
             release: MachineRelease::Exact(MachineVersion::parse("1.2.3").unwrap()),
             mode: InstallMode::InstallationOnly,
         };
+        let standard = MachineLayout::production();
 
         for (data_dir, socket) in [
-            (fixture.path(), Path::new(DEFAULT_SOCKET_PATH)),
-            (Path::new(crate::machine::DEFAULT_DATA_DIR), fixture.path()),
+            (fixture.path(), standard.socket().as_path()),
+            (standard.data_dir(), fixture.path()),
         ] {
             let error = install(request.clone(), data_dir, socket)
                 .await

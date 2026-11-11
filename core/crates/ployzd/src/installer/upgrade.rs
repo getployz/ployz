@@ -7,8 +7,8 @@ use std::{
 };
 
 use ployz_core::{
-    MachineRelease, MachineUpgradeAttempt, MachineUpgradeAttemptId, MachineUpgradeOutcome,
-    MachineUpgradeStage, MachineVersion, RequestMachineUpgradeRequest,
+    MachineLayout, MachineRelease, MachineUpgradeAttempt, MachineUpgradeAttemptId,
+    MachineUpgradeOutcome, MachineUpgradeStage, MachineVersion, RequestMachineUpgradeRequest,
 };
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
@@ -230,10 +230,11 @@ async fn request_locked(
     if admission.active()? {
         return Err(Error::Busy);
     }
-    let installed =
-        super::release::installed_release(&InstallPaths::system(data_dir, run_dir).daemon())
-            .await
-            .map_err(Error::Resolve)?;
+    let installed = super::release::installed_release(
+        &InstallPaths::system(&MachineLayout::production()).daemon(),
+    )
+    .await
+    .map_err(Error::Resolve)?;
     let target = super::release::resolve_release(
         &request.release,
         &ReleaseSource::Published,
@@ -333,11 +334,11 @@ pub async fn run_worker(
     data_dir: &Path,
     run_dir: &Path,
 ) -> Result<(), Error> {
-    super::require_standard_machine_paths(data_dir, &run_dir.join("ployz.sock"))
+    super::require_standard_machine_paths(data_dir, &MachineLayout::socket_in(run_dir))
         .map_err(Error::NonstandardPaths)?;
     work(
         &ReleaseSource::Published,
-        &InstallPaths::system(data_dir, run_dir),
+        &InstallPaths::system(&MachineLayout::production()),
         attempt_id,
     )
     .await

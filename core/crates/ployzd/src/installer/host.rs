@@ -241,7 +241,7 @@ pub fn write_units(bin_dir: &Path, run_dir: &Path, systemd_dir: &Path) -> Result
     )?;
     write_file_atomically(
         &systemd_dir.join("ployz-volume-plugin.socket"),
-        volume_plugin_socket_unit(),
+        &volume_plugin_socket_unit(),
         "write Volume plugin socket unit",
     )?;
     write_file_atomically(
@@ -324,14 +324,15 @@ WantedBy=sockets.target
     )
 }
 
-fn volume_plugin_socket_unit() -> &'static str {
-    "\
+fn volume_plugin_socket_unit() -> String {
+    format!(
+        "\
 [Unit]
 Description=Ployz Docker Volume plugin socket
 Before=docker.service
 
 [Socket]
-ListenStream=/run/docker/plugins/ployz.sock
+ListenStream={}
 SocketMode=0660
 DirectoryMode=0755
 Accept=no
@@ -339,7 +340,9 @@ Service=ployz-volume-plugin.service
 
 [Install]
 WantedBy=sockets.target
-"
+",
+        crate::VOLUME_PLUGIN_SOCKET
+    )
 }
 
 fn volume_plugin_service_unit(bin_dir: &Path) -> String {
@@ -535,7 +538,7 @@ pub(super) async fn verify_running_daemon(
             ));
         }
     }
-    verify_daemon_contract(&paths.run_dir.join("ployz.sock"), target).await
+    verify_daemon_contract(&paths.socket(), target).await
 }
 
 /// The process systemd currently runs as `ployz.service`'s main process.
@@ -628,12 +631,13 @@ mod tests {
 
     #[test]
     fn machine_api_socket_unit_listens_where_the_daemon_serves() {
-        let unit = machine_api_socket_unit(Path::new(super::super::DEFAULT_RUN_DIR));
+        let layout = ployz_core::MachineLayout::production();
+        let unit = machine_api_socket_unit(layout.run_dir());
         let listen = unit
             .lines()
             .find_map(|line| line.strip_prefix("ListenStream="))
             .unwrap();
-        assert_eq!(listen, super::super::DEFAULT_SOCKET_PATH);
+        assert_eq!(Path::new(listen), layout.socket());
     }
 
     #[test]

@@ -64,13 +64,33 @@ impl MachineLayout {
     /// The Machine API socket the CLI connects to and the daemon serves.
     #[must_use]
     pub fn socket(&self) -> PathBuf {
-        self.run_dir.join(SOCKET_NAME)
+        Self::socket_in(&self.run_dir)
+    }
+
+    /// The run directory a socket path lives in. A socket with no parent is the production Machine's.
+    #[must_use]
+    pub fn run_dir_of(socket: &Path) -> PathBuf {
+        socket
+            .parent()
+            .map_or_else(|| Self::production().run_dir, Path::to_path_buf)
+    }
+
+    /// The Machine API socket inside a run directory a caller was handed.
+    #[must_use]
+    pub fn socket_in(run_dir: &Path) -> PathBuf {
+        run_dir.join(SOCKET_NAME)
     }
 
     /// The Observe Store's socket.
     #[must_use]
     pub fn observe_socket(&self) -> PathBuf {
-        self.run_dir.join(OBSERVE_SOCKET_NAME)
+        Self::observe_socket_in(&self.run_dir)
+    }
+
+    /// The Observe Store's socket inside a run directory a caller was handed.
+    #[must_use]
+    pub fn observe_socket_in(run_dir: &Path) -> PathBuf {
+        run_dir.join(OBSERVE_SOCKET_NAME)
     }
 
     /// The file a fault-injecting daemon reads its armed fault from.

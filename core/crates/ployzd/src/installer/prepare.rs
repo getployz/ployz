@@ -8,6 +8,7 @@ use std::{
 
 use chrono::{SecondsFormat, Utc};
 use nix::fcntl::{FcntlArg, FdFlag};
+use ployz_core::MachineLayout;
 use ployz_core::host_preparation::{Begun, DockerOutcome, PrepStep, ZfsOutcome};
 use serde::{Deserialize, Serialize};
 
@@ -21,8 +22,8 @@ use super::storage::{
 };
 use super::zfs_route::ZfsRoute;
 use super::{
-    DEFAULT_RUN_DIR, Error, InstallPaths, apt_get, command_exists, refuse, require_root, run_apt,
-    run_command, run_host,
+    Error, InstallPaths, apt_get, command_exists, refuse, require_root, run_apt, run_command,
+    run_host,
 };
 
 const STAGE: &str = "prepare the host";
@@ -64,7 +65,7 @@ pub(super) enum ZfsBuild {
 /// Refuses a caller that isn't root, or reports a step that failed.
 pub async fn prepare(skip_zfs: bool) -> Result<(), Error> {
     require_root()?;
-    let paths = InstallPaths::system(crate::machine::DEFAULT_DATA_DIR, DEFAULT_RUN_DIR);
+    let paths = InstallPaths::system(&MachineLayout::production());
     prepare_at(&paths, skip_zfs, async || docker_step(&paths).await).await
 }
 
@@ -76,18 +77,15 @@ pub async fn prepare(skip_zfs: bool) -> Result<(), Error> {
 /// the step added.
 pub fn discard_zfs_build() -> Result<(), Error> {
     require_root()?;
-    discard_at(&InstallPaths::system(
-        crate::machine::DEFAULT_DATA_DIR,
-        DEFAULT_RUN_DIR,
-    ))
+    discard_at(&InstallPaths::system(&MachineLayout::production()))
 }
 
 pub(super) fn prepare_dir(paths: &InstallPaths) -> PathBuf {
-    paths.data_dir.join(crate::machine::PREPARE_DIR_NAME)
+    paths.layout.prepare_dir()
 }
 
 pub(super) fn state_path(paths: &InstallPaths) -> PathBuf {
-    prepare_dir(paths).join("state.json")
+    paths.layout.prepare_state()
 }
 
 pub(super) async fn prepare_at(
@@ -222,7 +220,7 @@ fn lock(paths: &InstallPaths, wait: Wait) -> Result<Option<File>, Error> {
         .create(true)
         .truncate(false)
         .write(true)
-        .open(dir.join("lock"))
+        .open(paths.layout.prepare_lock())
         .map_err(io)?;
     // Children inherit the descriptor, so a DKMS build keeps the lock if this process is killed.
     nix::fcntl::fcntl(file.as_raw_fd(), FcntlArg::F_SETFD(FdFlag::empty()))
@@ -412,7 +410,7 @@ fn build_amazon_zfs(
     if dkms_built(kernel) {
         return Ok(());
     }
-    let dir = prepare_dir(paths).join("zfs");
+    let dir = paths.layout.prepare_zfs_dir();
     fs::create_dir_all(&dir).map_err(|source| Error::Io {
         stage: "create the ZFS build directory",
         source,
@@ -472,7 +470,7 @@ fn unpack_rpm(rpm: &Path, root: &Path) -> Result<(), Error> {
 }
 
 fn fresh_build_dir(paths: &InstallPaths) -> Result<PathBuf, Error> {
-    let dir = prepare_dir(paths).join("zfs");
+    let dir = paths.layout.prepare_zfs_dir();
     remove_dir(&dir)?;
     fs::create_dir_all(&dir).map_err(|source| Error::Io {
         stage: "create the ZFS build directory",
@@ -874,7 +872,7 @@ fn take_over_preparation(paths: &InstallPaths, package_manager: &str) {
     job.state.zfs_build = remove_unowned_build(package_manager, job.state.zfs_build.take());
     job.state.added_packages.clear();
     job.state.added_contrib_source = false;
-    if let Err(error) = remove_dir(&prepare_dir(paths).join("zfs")) {
+    if let Err(error) = remove_dir(&paths.layout.prepare_zfs_dir()) {
         eprintln!("Couldn't remove the ZFS build files preparation downloaded: {error}");
     }
     if let Err(error) = job.save() {
@@ -938,7 +936,7 @@ pub(super) fn discard_at(paths: &InstallPaths) -> Result<(), Error> {
     {
         remove_build(module, version, source_dir)?;
     }
-    remove_dir(&prepare_dir(paths).join("zfs"))?;
+    remove_dir(&paths.layout.prepare_zfs_dir())?;
     if keep_packages {
         println!("Keeping the packages ZFS was built with, which the installed zfs-dkms needs");
         job.state.added_packages.clear();

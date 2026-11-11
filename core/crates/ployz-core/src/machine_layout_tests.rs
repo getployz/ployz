@@ -64,9 +64,25 @@ fn production_layout_keeps_the_paths_installed_machines_use() {
 }
 
 #[test]
+fn a_socket_names_the_run_directory_it_lives_in() {
+    assert_eq!(
+        MachineLayout::run_dir_of(Path::new("/t/run/ployz.sock")),
+        Path::new("/t/run")
+    );
+    assert_eq!(
+        MachineLayout::run_dir_of(Path::new("/")),
+        Path::new("/run/ployz")
+    );
+}
+
+#[test]
 fn a_layout_under_other_directories_moves_every_file_with_them() {
     let layout = MachineLayout::new("/t/run", "/t/lib/ployz", "/t/etc");
     assert_eq!(layout.socket(), Path::new("/t/run/ployz.sock"));
+    assert_eq!(
+        MachineLayout::socket_in(Path::new("/t/run")),
+        layout.socket()
+    );
     assert_eq!(
         layout.machine_pool_file(),
         Path::new("/t/lib/ployz-machine-pool")
