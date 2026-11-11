@@ -5172,6 +5172,42 @@ describe("volume runs", () => {
       expect(sent.at(-1)).toMatchObject({ approval: APPROVAL, receipt, want: { kind: "writer", at: cut.guid, epoch: 1, start: { kind: "create", resolved_spec: service } } });
     });
 
+    describe("on an approved committed lane with no receipt", () => {
+      const committed = async (handed: boolean) => {
+        const cut = afterCut();
+        const receipt = receiptFor(idOf("fsn-2"), cut.guid, 1);
+        Object.assign(named("fsn-1"), { capabilities: HANDOFF_CAPABILITIES, enforces: true, ...(handed && { handedOff: { at: cut.guid, receipt } }) });
+        Object.assign(named("fsn-2"), { capabilities: HANDOFF_CAPABILITIES, enforces: true });
+        const service = asTestDouble<ResolvedServiceSpec>()({ name: "web" });
+        const run = await requested({ kind: "move", args: { to: "fsn-2", approval: APPROVAL, service } });
+        await harness.pool.query(
+          "update volume_run set state = 'running', inngest_run_id = 'run-move', epoch = 1, phase = 'committed', current = $2 where id = $1",
+          [run.id, idOf("fsn-2")]);
+        send.mockClear();
+        return { cut, receipt, service };
+      };
+
+      it("asks A first, and the app stays on A when A resumes", async () => {
+        const { cut } = await committed(false);
+        const [placed] = await place();
+
+        expect(await fence(placed)).toEqual({ on: "fsn-1" });
+
+        expect(verbs).toEqual(["writer@fsn-1(kept)"]);
+        expect(sent.at(-1)).toMatchObject({ approval: APPROVAL, want: { kind: "writer", at: cut.guid, epoch: 1, start: { kind: "kept" } } });
+      });
+
+      it("starts B on the receipt A answers with when A handed off", async () => {
+        const { cut, receipt, service } = await committed(true);
+        const [placed] = await place();
+
+        expect(await fence(placed)).toEqual({ on: "fsn-2" });
+
+        expect(verbs).toEqual(["writer@fsn-1(kept)", "writer@fsn-2(create)"]);
+        expect(sent.at(-1)).toMatchObject({ approval: APPROVAL, receipt, want: { kind: "writer", at: cut.guid, epoch: 1, start: { kind: "create", resolved_spec: service } } });
+      });
+    });
+
     it("on a committed Move whose run failed: a Deploy that targets nothing on a Volume a mirror removal holds follows the commitment to B without waiting, and refuses to start B once a run admitted after that removal settled the Volume", async () => {
       const cut = afterCut();
       const taken = await moving("committed");

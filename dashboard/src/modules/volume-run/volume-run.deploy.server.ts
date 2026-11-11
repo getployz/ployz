@@ -298,9 +298,9 @@ const fenceFollowed = Effect.fn("VolumeRun.fenceFollowed")(function* (lane: Foll
   const successor = yield* tookOver(lane);
   const members = yield* observeVolumeMembers(run.organizationId, run.dockerVolume);
   const isB = (member: Member) => (lane.machine === null ? member.machine.name === to : member.machine.id === lane.machine);
-  const receipt = run.receipt ?? undefined;
+  let receipt = run.receipt ?? undefined;
   // B takes the epoch its source's receipt names, which it checks; a commitment with none takes the lane's.
-  const owedEpoch = (receipt === undefined ? null : handedTo(receipt))?.epoch ?? lane.epoch;
+  let owedEpoch = (receipt === undefined ? null : handedTo(receipt))?.epoch ?? lane.epoch;
   const writes = (copy: VolumeCopy | null) => copy?.kind === "root" && !copy.readonly && copy.epoch === owedEpoch;
   const restore = () => restoreLine(run.volumeName, restoreSource(members.filter((member) => !isB(member))));
   const b = answered(members).find(isB);
@@ -314,6 +314,14 @@ const fenceFollowed = Effect.fn("VolumeRun.fenceFollowed")(function* (lane: Foll
     return yield* Effect.fail(new NonRetriableError(`${run.volumeName} finishes on ${machine.name}, which holds no copy to start. Remove it with ployz server rm ${machine.name}` + restore()));
   }
   if (writes(copy)) return { on: machine.name };
+  if (receipt === undefined && run.kind !== "restore") {
+    const decided = yield* askSource(lane, answered(members).filter((member) => !isB(member)));
+    if (decided?.kind === "resumed") return { on: decided.on };
+    if (decided?.kind === "handed") {
+      receipt = decided.receipt;
+      owedEpoch = handedTo(receipt)?.epoch ?? owedEpoch;
+    }
+  }
   const epoch = copy.kind === "root" ? copy.epoch : owedEpoch;
   if (epoch === null) return yield* Effect.fail(new Error(`${run.volumeName}'s run on ${machine.name} has not chosen an epoch yet`));
   const started = run.kind === "restore"
@@ -327,6 +335,27 @@ const fenceFollowed = Effect.fn("VolumeRun.fenceFollowed")(function* (lane: Foll
     return yield* Effect.fail(new NonRetriableError(`${run.volumeName} is finishing its move on ${machine.name}; Deploy again`));
   }
   return yield* Effect.fail(retriable(started.reason) ? new Error(started.message) : new NonRetriableError(started.message));
+});
+
+/**
+ * An approved commitment with no receipt does not say its source handed the Volume off, so a source that signs
+ * handoffs decides first, as a release asks it: it resumes at the lane's epoch and the Deploy runs there, or it
+ * answers with the receipt B starts on. Null when the commitment carries no approval or its source signs no handoffs.
+ */
+const askSource = Effect.fn("VolumeRun.askSource")(function* (lane: FollowLane, others: readonly AnsweredMember[]) {
+  const { run } = lane;
+  const approved = carriedApproval(run);
+  const slots = others.filter((member) => member.view.copy?.kind === "slot");
+  if (approved === undefined || slots.length === 0 || lane.epoch === null) return null;
+  const kept = yield* keptOn(run.organizationId, run.dockerVolume, slots.map((member) => member.machine));
+  const source = kept === null ? undefined : slots.find((member) => member.machine.id === kept.machine.id);
+  const copy = source?.view.copy;
+  if (kept === null || source === undefined || source.handoff !== true || source.enforces !== true || copy?.kind !== "slot" || copy.newest === null) return null;
+  const start = { kind: "kept", container_id: kept.containerId } as const;
+  const asked = yield* askCopy(run, source.machine, expectOf(copy), { kind: "writer", at: copy.newest.guid, epoch: lane.epoch, start }, approved.approval);
+  if (asked.ok) return { kind: "resumed", on: source.machine.name } as const;
+  if (asked.reason === "handed_off" && asked.receipt !== undefined) return { kind: "handed", receipt: asked.receipt } as const;
+  return yield* Effect.fail(retriable(asked.reason) ? new Error(asked.message) : new NonRetriableError(asked.message));
 });
 
 export const fenceDeployVolume = (lane: DeployLane, inngestRunId: string) =>
