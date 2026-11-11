@@ -137,7 +137,7 @@ describe("roll-out-server-upgrade", () => {
             if (answer === "refused") {
               return Effect.fail(new PloyzProviderError({
                 operation: "request machine upgrade",
-                cause: { code: "permission_denied", message: "ployz.machine.upgrade.channel.v1: approve a Release Channel for this Cluster first" },
+                cause: { code: "forbidden", message: "ployz.machine.upgrade.channel.v1: approve a Release Channel for this Cluster first" },
               }));
             }
             return answer === "busy"

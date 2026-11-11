@@ -327,7 +327,7 @@ export const requestUpgradeOnServer = Effect.fn("ServerUpgrade.requestOnServer")
   const attempt = yield* session.requestMachineUpgrade(input.machineId, input.attemptId, input.channel, approval).pipe(
     Effect.map((attempt) => ({ busy: false as const, attempt })),
     Effect.catchIf((error) => rpcErrorCode(error) === "conflict", () => Effect.succeed({ busy: true as const })),
-    Effect.catchIf((error) => rpcErrorCode(error) === "permission_denied", (error) =>
+    Effect.catchIf((error) => rpcErrorCode(error) === "forbidden", (error) =>
       Effect.succeed({ busy: false as const, refused: rpcErrorMessage(error) ?? "The Server refused the upgrade." })),
     Effect.mapError((cause) => new ServerUpgradeUnreachable({ operation: "request machine upgrade", cause })),
   );
