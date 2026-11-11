@@ -377,7 +377,7 @@ async fn declare(client: &Client, observed: &Doors, doors: &IngressDoors) -> Res
             let error = last.expect("a Through declaration names a Server");
             Err(Failure::caused(
                 RpcErrorCode::Unavailable,
-                "No Server took the Cluster's Doors, so none were switched. Run the command \
+                "No Server confirmed the Cluster's Doors, so none were switched. Run the command \
                  again, or upgrade the Server you connect through.",
                 error,
             ))

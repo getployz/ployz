@@ -876,7 +876,7 @@ async fn no_server_is_switched_when_every_declarer_refuses() {
 
     let error = refused.expect_err("a switch behind an unwritten declaration is refused");
     assert!(
-        format!("{error:?}").contains("No Server took the Cluster's Doors"),
+        format!("{error:?}").contains("No Server confirmed the Cluster's Doors"),
         "{error:?}"
     );
     assert_eq!(commands_of(&fleet, "set_ingress_doors"), 0);

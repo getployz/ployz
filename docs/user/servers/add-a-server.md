@@ -177,7 +177,7 @@ them can't join a Cluster that is closed or uses the tunnel, with or without the
 to update `ployz` on it and run the join command again. A Cluster that never recorded its doors works
 as it did: new servers copy the doors the servers already run. So does one whose entry server runs an
 older `ployz`, when no server of the Cluster can record doors. When one can, `ployz ingress use` run
-through the older server stops and names the server to run it through.
+through the older server records the doors on that one and goes on.
 
 The bottom bar of an environment offers the same card under **Add servers** while you have no
 server. You can skip it and build your project first.
