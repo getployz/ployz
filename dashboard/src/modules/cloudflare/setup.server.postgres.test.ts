@@ -5,10 +5,12 @@ import { afterAll, beforeAll, beforeEach, expect, it, vi } from "vitest";
 import { asTestDouble } from "#/lib/test-double";
 import { CloudflareHttp } from "#/modules/cloudflare/api.server";
 import { checkCloudflareSetup, listCloudflareZoneNames, openPublicPorts, setUpCloudflare } from "#/modules/cloudflare/setup.server";
+import { endCloudflareSetup } from "#/modules/cloudflare/cluster-gone.server";
 import { requestDoorsSwitch } from "#/modules/ingress/doors.server";
 import { InngestClient } from "#/modules/inngest/client";
 import { OrganizationRuntime, type ScopedRuntimeClientSession } from "#/modules/runtime/organization-runtime.server";
 import type { PloyzSession } from "#/modules/runtime/ployz.server";
+import { Database } from "#/server/database.server";
 import { type PostgresTestHarness, startPostgresTestHarness } from "#/test/postgres";
 
 const ORG = "00000000-0000-4000-8000-00000000c2a1";
@@ -141,7 +143,7 @@ const setUp = (zone: string, http: CloudflareHttp, runtime: OrganizationRuntime[
 
 const setupRows = async () => (await harness.pool.query("select zone, tunnel_id, tunnel_name, state from organization_cloudflare_ingress")).rows;
 const switching = () => harness.pool.query("insert into ingress_doors_attempt (id, organization_id, want, state) values (gen_random_uuid(), $1, 'tunnel', 'pending')", [ORG]);
-const priorRow = (state: "set_up" | "left" | "setting_up", tunnelId: string | null = "t0") =>
+const priorRow = (state: "set_up" | "active" | "left" | "setting_up", tunnelId: string | null = "t0") =>
   harness.pool.query("insert into organization_cloudflare_ingress (organization_id, zone, tunnel_id, tunnel_name, state) values ($1, 'example.com', $2, 'ployz-acme', $3)", [ORG, tunnelId, state]);
 
 const inngest = new Inngest({ id: "setup-test" });
@@ -278,6 +280,20 @@ it("won't open the ports from the unfinished-setup alert once the tunnel is set 
   await expect(harness.runEffect(openPublicPorts(ORG).pipe(Effect.provideService(OrganizationRuntime, runtime))))
     .rejects.toMatchObject({ message: expect.stringContaining("Cloudflare Tunnel is already set up") });
   expect(sets).toEqual([]);
+});
+
+it.each(["set_up", "active"] as const)("lets a Cluster founded after a removal open its ports and set Cloudflare up, though the removed one left a %s row", async (was) => {
+  await priorRow(was);
+  await harness.runEffect(Effect.gen(function* () {
+    const database = yield* Database;
+    yield* database.transaction(endCloudflareSetup(ORG));
+  }));
+  expect(await setupRows()).toMatchObject([{ state: "left" }]);
+  await foundedClosed("running");
+  const { runtime, sets } = cluster((doors) => doors, CLOSED_FRAME);
+  expect(await harness.runEffect(openPublicPorts(ORG).pipe(Effect.provideService(OrganizationRuntime, runtime)))).toEqual({ opened: true });
+  expect(sets.map(({ doors }) => doors)).toEqual([["public"]]);
+  expect(await setUp("example.com", cloudflare().http, runtime)).toMatchObject({ state: "set_up" });
 });
 
 it("opens only the tunnel while the founder's enrollment hasn't yet been marked joined, as the Machine founded closed already", async () => {
