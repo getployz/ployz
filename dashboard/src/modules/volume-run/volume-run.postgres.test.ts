@@ -2694,6 +2694,24 @@ describe("volume runs", () => {
       expect(await keptApprovals()).toEqual([{ machine_id: idOf("fsn-2"), approvals: null }]);
     });
 
+    it("drops no approval once the run no longer owns its row, so a Mirror made again keeps the one offered to it", async () => {
+      machines[1] = { name: "fsn-2", pool: true, copy: slotCopy(base) };
+      await harness.pool.query(
+        "insert into volume_mirror_status (organization_id, volume_id, machine_id, approvals) values ($1, $2, $3, $4)",
+        [organizationId, volumeId, idOf("fsn-2"), JSON.stringify([APPROVAL])]);
+      const offered = { body: "offered", signatures: [] };
+      // The run ends during its last forget, and another run makes the Mirror again and offers it an approval.
+      beforeSet.set("forget@fsn-1", async () => {
+        await harness.pool.query("update volume_run set state = 'failed'");
+        await harness.pool.query("update volume_mirror_status set approvals = $1", [JSON.stringify([offered])]);
+      });
+      const run = await requested({ kind: "delete_mirror", args: { slot: "fsn-2", confirmed_name: null, role: "any" } });
+
+      await execute(run.id);
+
+      expect(await keptApprovals()).toEqual([{ machine_id: idOf("fsn-2"), approvals: [offered] }]);
+    });
+
     it("refuses an old copy a late pull made the mirror after the run looked, and deletes nothing", async () => {
       machines[1] = { name: "fsn-2", pool: true, copy: slotCopy(base, null, "7", "old_copy") };
       beforeSet.set("forget@fsn-2", () => { named("fsn-2").copy = slotCopy(base, null, "7", "mirror"); });

@@ -1083,10 +1083,11 @@ export const claimVolumeRun = Effect.fn("VolumeRun.claim")(function* (
   return settled;
 });
 
-export const requireOwner = Effect.fn("VolumeRun.requireOwner")(function* (rowId: string, inngestRunId: string) {
+export const requireOwner = Effect.fn("VolumeRun.requireOwner")(function* (rowId: string, inngestRunId: string, lock = false) {
   const { drizzle } = yield* Database;
-  const [owned] = yield* drizzle.select({ id: volumeRun.id }).from(volumeRun)
+  const owner = drizzle.select({ id: volumeRun.id }).from(volumeRun)
     .where(and(eq(volumeRun.id, rowId), eq(volumeRun.inngestRunId, inngestRunId), eq(volumeRun.state, "running")));
+  const [owned] = yield* (lock ? owner.for("update") : owner);
   if (owned === undefined) return yield* Effect.fail(new NonRetriableError(`This run no longer owns volume run ${rowId}.`));
 });
 
@@ -1302,10 +1303,13 @@ export const offerRunApproval = Effect.fn("VolumeRun.offerRunApproval")(function
   yield* offerApproval(ctx.organizationId, ctx.volumeId, mirror, approval);
 });
 
-/** Drops the approvals kept with the Mirrors on `machines`, once their copies are gone. */
+/**
+ * Drops the approvals kept with the Mirrors on `machines`, once their copies are gone. It holds the run's row while it
+ * does, so the run can't end, and another run recreate a Mirror and offer it an approval, between the check and the drop.
+ */
 export const dropRunApprovals = Effect.fn("VolumeRun.dropRunApprovals")(function* (ctx: RunContext, inngestRunId: string, machines: readonly MachineId[]) {
-  yield* requireOwner(ctx.id, inngestRunId);
-  yield* dropApprovals(ctx.volumeId, machines);
+  const database = yield* Database;
+  yield* database.transaction(requireOwner(ctx.id, inngestRunId, true).pipe(Effect.andThen(dropApprovals(ctx.volumeId, machines))));
 });
 
 export const inspectCopy = (ctx: RunContext, inngestRunId: string, machine: MachineRef) =>
