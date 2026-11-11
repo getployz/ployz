@@ -1882,6 +1882,22 @@ describe("volume runs", () => {
       { machine: { id: idOf("fsn-3"), name: "fsn-3" }, answered: false },
     ];
 
+    it("releases back to the newest stopped Container on A, not one an earlier Move's cut left there", async () => {
+      const G = newSnap("f-1");
+      named("fsn-1").copy = slotCopy(G);
+      containers = [
+        { machine: "fsn-1", id: "web-old", running: false, created: 1 },
+        { machine: "fsn-1", id: "web-fsn-1", running: false, created: 5 },
+      ];
+      machines[1] = { name: "fsn-2", pool: true, copy: slotCopy(G, null, "2") };
+      await owned("warm");
+
+      expect(await runEffect(closeVolumeRun("run-1", "failure"))).toBe(1);
+      await execute((await releaseRow()).id, "run-2");
+
+      expect(sent.at(-1)?.want).toMatchObject({ kind: "writer", start: { kind: "kept", container_id: "web-fsn-1" } });
+    });
+
     it("on a warm row starts a release back to A", async () => {
       const G = newSnap("f-1");
       named("fsn-1").copy = slotCopy(G);
@@ -3171,6 +3187,20 @@ describe("volume runs", () => {
       expect(verbs).toEqual(["writer@fsn-2(create)", "remove@fsn-1(web-fsn-1)"]);
       expect(containers.map(({ machine, id }) => `${machine}:${id}`)).toEqual(["fsn-1:web-fsn-1", `fsn-2:created-${volumeId}-${G.guid}`]);
       expect(await request({ kind: "resize", args: { maximum_bytes: 20 * GB } })).toMatchObject({ ok: true });
+    });
+
+    it("on a Server that kept an earlier Move's stopped Container, copies and starts the running one", async () => {
+      containers = [
+        { machine: "fsn-1", id: "web-old", running: false, created: 1, gen: 2 },
+        { machine: "fsn-1", id: "web-fsn-1", running: true, created: 5, gen: 3 },
+      ];
+      const run = await requested({ kind: "move", args: { to: "fsn-2" } });
+
+      const output = await execute(run.id);
+
+      expect(output.result).toEqual({ runId: run.id, moved: "fsn-2" });
+      expect(verbs).toContain("copy_image@fsn-1->fsn-2(web-fsn-1)");
+      expect(sent.find((request) => request.want.kind === "writer")?.want).toMatchObject({ start: { kind: "create", gen: 3 } });
     });
 
     it("again once B writes and runs the Service only removes A's kept Container", async () => {

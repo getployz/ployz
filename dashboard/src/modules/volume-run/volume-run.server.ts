@@ -1349,10 +1349,15 @@ const serviceContainers = Effect.fn("VolumeRun.serviceContainers")(function* (or
     && container.resolved_spec.volumes.some(({ source }) => source.kind === "provisioned" && source.name === dockerVolume));
 }, Effect.scoped);
 
-/** The one Service container on `machine` that mounts this Volume, whose image B needs before the cut. */
+/**
+ * The one Service container on `machine` that mounts this Volume, whose image B needs before the cut. A running one wins
+ * over stopped ones: a Server that enforces device approval keeps the Container an earlier Move's cut stopped.
+ */
 export const findHolder = Effect.fn("VolumeRun.findHolder")(function* (ctx: RunContext, inngestRunId: string, machine: MachineRef) {
   yield* requireOwner(ctx.id, inngestRunId);
-  const holders = (yield* serviceContainers(ctx.organizationId, ctx.dockerVolume)).filter((container) => container.machine_id === machine.id);
+  const on = (yield* serviceContainers(ctx.organizationId, ctx.dockerVolume)).filter((container) => container.machine_id === machine.id);
+  const running = on.filter((container) => container.runtime.state === "running");
+  const holders = running.length > 0 ? running : on;
   const [holder] = holders;
   if (holder === undefined || holders.length > 1) {
     const found = holders.length === 0 ? "no Service container" : `${holders.length} Service containers`;
@@ -1370,12 +1375,22 @@ export type Kept = { readonly machine: MachineRef; readonly containerId: Contain
 
 /** With only slots left, the cut's source is the one of them that keeps a Service container for this Volume. */
 export const keptOn = Effect.fn("VolumeRun.keptOn")(function* (organizationId: string, dockerVolume: string, machines: readonly MachineRef[]) {
-  const kept = (yield* serviceContainers(organizationId, dockerVolume)).flatMap((container) => {
-    const machine = machines.find((candidate) => candidate.id === container.machine_id);
-    return machine === undefined ? [] : [{ machine, containerId: container.container_id } satisfies Kept];
-  });
-  return kept.length === 1 ? kept[0] ?? null : null;
+  const on = (yield* serviceContainers(organizationId, dockerVolume)).filter((container) =>
+    machines.some((candidate) => candidate.id === container.machine_id));
+  const [newest] = newestOnOne(on);
+  const machine = newest === undefined ? undefined : machines.find((candidate) => candidate.id === newest.machine_id);
+  return newest === undefined || machine === undefined ? null : { machine, containerId: newest.container_id } satisfies Kept;
 });
+
+/**
+ * `containers` newest first when they are all on one Server, or none when they span several. A Server that enforces
+ * device approval keeps the Container each Move's cut stopped there, and the newest is the one the latest cut stopped;
+ * the Server itself starts only a Container its open cut recorded.
+ */
+const newestOnOne = <C extends { readonly machine_id: string; readonly created_at_unix_nanos: number }>(containers: readonly C[]) =>
+  new Set(containers.map((container) => container.machine_id)).size === 1
+    ? [...containers].sort((a, b) => b.created_at_unix_nanos - a.created_at_unix_nanos)
+    : [];
 
 export const findKept = Effect.fn("VolumeRun.findKept")(function* (ctx: RunContext, inngestRunId: string, machines: readonly MachineRef[]) {
   yield* requireOwner(ctx.id, inngestRunId);
@@ -1469,7 +1484,7 @@ export const startWriter = Effect.fn("VolumeRun.startWriter")(function* (ctx: Ru
     const running: CopyAnswer = { ok: true, copy: null };
     return running;
   }
-  const [holder] = stopped;
+  const [holder] = from === null ? stopped : newestOnOne(stopped);
   if (holder === undefined && from === null && containers.some((container) => container.machine_id === to.id)) {
     if (ownedBy !== null) yield* requireOwner(ctx.id, ownedBy);
     return yield* askCopy(ctx, to, start.expect, { kind: "writer", at: start.at, epoch: start.epoch, start: null });
@@ -1477,9 +1492,9 @@ export const startWriter = Effect.fn("VolumeRun.startWriter")(function* (ctx: Ru
   if (holder === undefined) {
     return yield* Effect.fail(new NonRetriableError(`${ctx.volumeName} has no stopped Service container${from === null ? "" : ` on ${from.name}`} to start on ${to.name}`));
   }
-  if (stopped.length > 1) {
+  if (from === null && stopped.length > 1) {
     const named = yield* Effect.forEach(stopped, (container) => machineNamed(ctx.organizationId, container.machine_id));
-    const on = from?.name ?? named.map((machine) => machine.name ?? machine.id).join(" and ");
+    const on = named.map((machine) => machine.name ?? machine.id).join(" and ");
     return yield* Effect.fail(new NonRetriableError(`${ctx.volumeName} has ${stopped.length} stopped Service containers on ${on}; starting it on ${to.name} needs exactly one`));
   }
   const session = yield* openSession(ctx.organizationId);

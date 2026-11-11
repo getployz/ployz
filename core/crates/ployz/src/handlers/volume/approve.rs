@@ -16,9 +16,10 @@ use ployz_core::authority::{
     VolumeWorkflow, deploy::content_addressed, validity::MAX_LIFETIME_MILLIS,
 };
 use ployz_core::{
-    ContainerKind, DockerVolumeName, InspectContainerRequest, MachineName, MachineTarget,
-    Namespace, OperationId, ProvisionedVolumeMaximumBytes, PullPolicy, ResolvedServiceSpec,
-    RpcErrorCode, SlotRole, VolumeCopy, op,
+    ContainerKind, ContainerObservation, ContainerRuntimeObservation, DockerVolumeName,
+    InspectContainerRequest, MachineName, MachineTarget, Namespace, OperationId,
+    ProvisionedVolumeMaximumBytes, PullPolicy, ResolvedServiceSpec, RpcErrorCode, SlotRole,
+    VolumeCopy, op,
 };
 use ployz_store::{EnvironmentSummary, VolumeId, VolumeName};
 
@@ -239,26 +240,13 @@ async fn running_spec(
     writer: &Seen,
 ) -> Result<ResolvedServiceSpec, Error> {
     let frame = client.runtime_frame().await?;
-    let holders: Vec<_> = frame
-        .containers
-        .iter()
-        .filter(|container| {
-            container.machine_id == writer.id
-                && container.kind == ContainerKind::ServiceContainer
-                && container
-                    .resolved_spec
-                    .volumes()
-                    .iter()
-                    .any(|mounted| mounted.source.docker_volume_name() == Some(docker))
-        })
-        .collect();
-    let holder = match holders.as_slice() {
+    let holder = match holders(&frame.containers, &writer.id, docker).as_slice() {
         [holder] => *holder,
         [] => {
             return Err(Error::coded(
                 RpcErrorCode::Unavailable,
                 format!(
-                    "No Service on {} uses {volume}, so this device can't approve moving it. \
+                    "No Service running on {} uses {volume}, so this device can't approve moving it. \
                      Run ployz status, then try again.",
                     writer.name
                 ),
@@ -268,7 +256,7 @@ async fn running_spec(
             return Err(Error::coded(
                 RpcErrorCode::Conflict,
                 format!(
-                    "{} Containers on {} use {volume}; a Move starts exactly one on the new Server.",
+                    "{} running Containers on {} use {volume}; a Move starts exactly one on the new Server.",
                     several.len(),
                     writer.name
                 ),
@@ -287,6 +275,32 @@ async fn running_spec(
         .await
         .map_err(crate::connect::rpc_error)?;
     Ok(details.container.into_parts().resolved_spec)
+}
+
+/// The Service Containers running on `writer` that mount `docker`. A stopped one, such as
+/// the Container an earlier Move's cut left behind on a Server that enforces, runs nothing
+/// the Move starts.
+fn holders<'a>(
+    containers: &'a [ContainerObservation],
+    writer: &ployz_core::MachineId,
+    docker: &DockerVolumeName,
+) -> Vec<&'a ContainerObservation> {
+    containers
+        .iter()
+        .filter(|container| {
+            container.machine_id == *writer
+                && container.kind == ContainerKind::ServiceContainer
+                && matches!(
+                    container.runtime,
+                    ContainerRuntimeObservation::Running { .. }
+                )
+                && container
+                    .resolved_spec
+                    .volumes()
+                    .iter()
+                    .any(|mounted| mounted.source.docker_volume_name() == Some(docker))
+        })
+        .collect()
 }
 
 /// `running` as the target starts it: from the image already copied there, with `docker`

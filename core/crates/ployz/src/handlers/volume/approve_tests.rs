@@ -5,7 +5,7 @@ use ployz_core::{
 use ployz_store::VolumeName;
 
 use super::super::restore::{Seen, Unseen};
-use super::{MirrorOn, keeps_mirror, parties, starting};
+use super::{MirrorOn, holders, keeps_mirror, parties, starting};
 
 fn volume() -> VolumeName {
     VolumeName::parse("data").unwrap()
@@ -246,4 +246,79 @@ fn a_move_names_the_mirrors_but_not_an_old_copy() {
     )));
     assert!(!keeps_mirror(&seen("web-1", Some(root(false)))));
     assert!(!keeps_mirror(&seen("web-4", None)));
+}
+
+fn container(
+    id: char,
+    machine: &str,
+    kind: ployz_core::ContainerKind,
+    runtime: ployz_core::ContainerRuntimeObservation,
+    spec: ployz_core::ResolvedServiceSpec,
+) -> ployz_core::ContainerObservation {
+    ployz_core::ContainerObservation::try_from(ployz_core::ContainerObservationParts {
+        rotation: None,
+        r#gen: None,
+        container_id: ployz_core::ContainerId::parse(id.to_string().repeat(64)).unwrap(),
+        display_name: "db".into(),
+        created_at_unix_nanos: 0,
+        machine_id: seen(machine, None).id,
+        namespace: ployz_core::Namespace::parse("app").unwrap(),
+        kind,
+        runtime,
+        effective_healthcheck: None,
+        resolved_spec: spec,
+        address: None,
+        labels: Default::default(),
+        stopped: false,
+        run: None,
+    })
+    .unwrap()
+}
+
+#[test]
+fn a_move_reads_only_the_running_service_container_and_never_one_an_earlier_cut_stopped() {
+    use ployz_core::{ContainerKind, ContainerRuntimeObservation, HealthObservation};
+
+    let running = || ContainerRuntimeObservation::Running {
+        health: HealthObservation::NotConfigured,
+    };
+    let docker = DockerVolumeName::parse("app_data").unwrap();
+    let containers = [
+        container(
+            'a',
+            "web-1",
+            ContainerKind::ServiceContainer,
+            running(),
+            spec("db@sha256:1", &["data"]),
+        ),
+        container(
+            'b',
+            "web-1",
+            ContainerKind::ServiceContainer,
+            ContainerRuntimeObservation::Exited { code: 0 },
+            spec("db@sha256:0", &["data"]),
+        ),
+        container(
+            'c',
+            "web-2",
+            ContainerKind::ServiceContainer,
+            running(),
+            spec("db@sha256:1", &["data"]),
+        ),
+        container(
+            'd',
+            "web-1",
+            ContainerKind::ServiceContainer,
+            running(),
+            spec("db@sha256:1", &["other"]),
+        ),
+    ];
+    let found = holders(&containers, &seen("web-1", None).id, &docker);
+    assert_eq!(
+        found
+            .iter()
+            .map(|container| container.container_id)
+            .collect::<Vec<_>>(),
+        [containers[0].container_id]
+    );
 }
