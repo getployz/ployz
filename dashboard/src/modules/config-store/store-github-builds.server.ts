@@ -145,7 +145,7 @@ export const startStoreGithubBuild = Effect.fn("StoreGithub.start")(function* (o
     const workflow = yield* checkGithubBuildWorkflow(access, target.repositoryId);
     const repository = workflow.fullName ?? target.repository;
     if (workflow.readiness === "no_permission") return yield* skip(`the Ployz GitHub App can't run Actions in ${repository}`);
-    if (workflow.readiness !== "ready" || !workflow.fullName || !workflow.defaultBranch) {
+    if (workflow.readiness === "setup_needed" || !workflow.fullName || !workflow.defaultBranch) {
       return yield* skip(`${repository} has no .github/workflows/ployz-build.yml on its default branch`);
     }
     const lacking = yield* serversLackingGrants(organizationId);

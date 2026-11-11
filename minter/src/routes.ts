@@ -1,5 +1,5 @@
 import type { AuditFacts, AuditLine, AuditSink } from "./audit.js";
-import { field, Github, GithubError, isRecord, nullable, readJson, type TokenPermissions } from "./github.js";
+import { field, Github, GithubError, isRecord, nullable, readJson, type MintedToken, type TokenPermissions } from "./github.js";
 import { branch, httpsUrl, id, ids, object, oneOf, optional, Refusal, sha, strict, text, type Parsed, type Shape } from "./parse.js";
 import {
   BUILD_WORKFLOW_FILE,
@@ -96,16 +96,21 @@ export const ROUTES: Readonly<Record<string, AnyRoute>> = {
     own: { contents: "read", actions: "read" },
     async handle(body, { github, config, facts, own }) {
       const token = await own();
-      const repository = await github.json("resolve_repository", token, "GET", `/repositories/${body.repository_id}`);
+      // The contents API reads the default branch when given no ref, so the three reads need not wait on each other.
+      const [repository, state, file] = await Promise.all([
+        github.json("resolve_repository", token, "GET", `/repositories/${body.repository_id}`),
+        (async () => {
+          const workflow = await github.send("fetch_workflow", token, "GET", `/repositories/${body.repository_id}/actions/workflows/${BUILD_WORKFLOW_FILE}`, { allow: [404] });
+          if (workflow.status === 404) {
+            await workflow.body?.cancel();
+            return null;
+          }
+          const data = await readJson(workflow, "fetch_workflow");
+          return field(data, "path", "string", "fetch_workflow") === BUILD_WORKFLOW_PATH ? field(data, "state", "string", "fetch_workflow") : null;
+        })(),
+        github.file(token, `/repositories/${body.repository_id}/contents/${BUILD_WORKFLOW_PATH}`),
+      ]);
       const defaultBranch = field(repository, "default_branch", "string", "resolve_repository");
-      const workflow = await github.send("fetch_workflow", token, "GET", `/repositories/${body.repository_id}/actions/workflows/${BUILD_WORKFLOW_FILE}`, { allow: [404] });
-      let state: string | null = null;
-      if (workflow.status === 404) await workflow.body?.cancel();
-      else {
-        const data = await readJson(workflow, "fetch_workflow");
-        if (field(data, "path", "string", "fetch_workflow") === BUILD_WORKFLOW_PATH) state = field(data, "state", "string", "fetch_workflow");
-      }
-      const file = await github.file(token, `/repositories/${body.repository_id}/contents/${BUILD_WORKFLOW_PATH}?ref=${encodeURIComponent(defaultBranch)}`);
       const digest = file === null ? null : workflowDigest(file);
       facts.ref = defaultBranch;
       if (digest !== null) facts.workflow_digest = digest;
@@ -331,9 +336,40 @@ function definedInputs(inputs: Record<string, string | undefined>): Record<strin
   return Object.fromEntries(Object.entries(inputs).filter((entry): entry is [string, string] => entry[1] !== undefined));
 }
 
+/** An own token is reused until this long before GitHub expires it, so none expires mid-route. */
+const OWN_TOKEN_MARGIN_MS = 10 * 60_000;
+const OWN_TOKENS = 1024;
+
+/**
+ * The minter's own tokens, one per repository and permission set, kept until shortly before they expire. They never
+ * leave the process. A mint that fails is forgotten, so the next request mints again.
+ */
+function ownTokens(github: Github, now: () => number) {
+  const kept = new Map<string, Promise<MintedToken>>();
+  return async (installationId: number, repositoryId: number, permissions: TokenPermissions): Promise<string> => {
+    const key = `${installationId}:${repositoryId}:${JSON.stringify(Object.entries(permissions).sort())}`;
+    const held = kept.get(key);
+    if (held !== undefined) {
+      const token = await held.catch(() => null);
+      if (token !== null && Date.parse(token.expiresAt) - OWN_TOKEN_MARGIN_MS > now()) return token.token;
+      if (kept.get(key) === held) kept.delete(key);
+    }
+    const minting = github.mint(installationId, { permissions, repositoryIds: [repositoryId] });
+    kept.set(key, minting);
+    if (kept.size > OWN_TOKENS) kept.delete(kept.keys().next().value as string);
+    try {
+      return (await minting).token;
+    } catch (error) {
+      if (kept.get(key) === minting) kept.delete(key);
+      throw error;
+    }
+  };
+}
+
 /** Serves one request and writes its one audit line, whatever happens. */
 export function createMinter(deps: { github: Github; config: MinterConfig; audit: AuditSink; now?: () => number }) {
   const now = deps.now ?? Date.now;
+  const own = ownTokens(deps.github, now);
   return async function handle(request: MinterRequest): Promise<MinterResponse> {
     const started = now();
     const facts: AuditFacts = {};
@@ -355,7 +391,7 @@ export function createMinter(deps: { github: Github; config: MinterConfig; audit
         reason = "unknown route";
         response = { status: 404, body: { error: "not_found" } };
       } else {
-        response = { status: 200, body: await serve(row, request.body, deps, facts) };
+        response = { status: 200, body: await serve(row, request.body, { ...deps, own }, facts) };
       }
     } catch (error) {
       if (error instanceof Refusal) {
@@ -390,20 +426,19 @@ export function createMinter(deps: { github: Github; config: MinterConfig; audit
   };
 }
 
-async function serve(row: AnyRoute, raw: unknown, deps: { github: Github; config: MinterConfig }, facts: AuditFacts) {
+async function serve(row: AnyRoute, raw: unknown, deps: {
+  github: Github; config: MinterConfig; own: (installationId: number, repositoryId: number, permissions: TokenPermissions) => Promise<string>;
+}, facts: AuditFacts) {
   const body = strict(raw, row.body);
   const installationId = body["installation_id"];
   const repositoryId = body["repository_id"];
   if (typeof installationId === "number") facts.installation_id = installationId;
   if (typeof repositoryId === "number") facts.repository_ids = [repositoryId];
-  let token: Promise<string> | undefined;
   const own = () => {
     if (row.own === undefined || typeof installationId !== "number" || typeof repositoryId !== "number") {
       throw new Error("this route mints no token of its own");
     }
-    const permissions = row.own;
-    token ??= deps.github.mint(installationId, { permissions, repositoryIds: [repositoryId] }).then((minted) => minted.token);
-    return token;
+    return deps.own(installationId, repositoryId, row.own);
   };
   return row.handle(body, { github: deps.github, config: deps.config, facts, own });
 }

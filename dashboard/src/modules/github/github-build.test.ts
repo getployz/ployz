@@ -3,33 +3,8 @@ import { describe, expect, it } from "vitest";
 import { organizationAccess } from "./github-access";
 import { cancelGithubRun, checkGithubBuildWorkflow, findGithubPushRun, rerunGithubRun } from "./github-build.server";
 import { GithubAuthority, type GithubAuthorityService, type GithubBuildRun } from "./github-authority.server";
-import { GITHUB_BUILD_WORKFLOW, githubBuildId, githubBuildWorkflowUrl } from "./github-build-workflow";
 import { GithubApi, GithubObservationError, githubLacksPermission, type GithubObservationErrorCode } from "./github-observation.api";
 import { fakeGithubApi, fakeGithubAuthority } from "#/test/fake-github";
-
-describe("GitHub build workflow", () => {
-  it("calls getployz/build@v1 with every input Cloud dispatches", () => {
-    expect(GITHUB_BUILD_WORKFLOW).toContain("uses: getployz/build@v1");
-    for (const input of ["build", "cloud"]) {
-      expect(GITHUB_BUILD_WORKFLOW).toContain(`${input}: \${{ inputs.${input} }}`);
-    }
-  });
-
-  it("dispatches build ids that getployz/build@v1 accepts", () => {
-    const accepted = /^[A-Za-z0-9_-][A-Za-z0-9._-]{0,127}$/;
-    const deployment = "36755d9a-dc30-4385-a9bd-86ae1a85e44b";
-    for (const service of ["a", "ployz-soak-node", "s".repeat(63)]) {
-      expect(githubBuildId(deployment, service)).toMatch(accepted);
-    }
-  });
-
-  it("opens GitHub's new-file page on the default branch with the workflow filled in", () => {
-    const url = new URL(githubBuildWorkflowUrl({ web: "http://127.0.0.1:4555", fullName: "acme/api", defaultBranch: "release/v2" }));
-    expect(url.origin + url.pathname).toBe("http://127.0.0.1:4555/acme/api/new/release/v2");
-    expect(url.searchParams.get("filename")).toBe(".github/workflows/ployz-build.yml");
-    expect(url.searchParams.get("value")).toBe(GITHUB_BUILD_WORKFLOW);
-  });
-});
 
 const failure = (code: GithubObservationErrorCode, status: number, retriable = false) =>
   new GithubObservationError({ code, operation: "fetch_workflow", status, retriable, message: "failed" });
@@ -45,7 +20,7 @@ function withGithub<A, E>(effect: Effect.Effect<A, E, GithubApi | GithubAuthorit
 }
 
 const access = organizationAccess("org", 7);
-const workflowFile = (state: string, dispatchable = true) => ({ fullName: "acme/api", defaultBranch: "main", state, dispatchable });
+const workflowFile = (state: string | null, canonical = true, dispatchable = canonical) => ({ fullName: "acme/api", defaultBranch: "main", state, canonical, dispatchable });
 
 function check(workflow: ReturnType<typeof workflowFile> | GithubObservationError) {
   return withGithub(checkGithubBuildWorkflow(access, 42), {
@@ -54,13 +29,18 @@ function check(workflow: ReturnType<typeof workflowFile> | GithubObservationErro
 }
 
 describe("checkGithubBuildWorkflow", () => {
-  it("is ready only when the workflow is active on the default branch, and says whether the file is Ployz's", async () => {
+  it("is ready only when the workflow Ployz offers is active on the default branch", async () => {
     const ready = await check(workflowFile("active"));
     expect(ready.value).toEqual({ fullName: "acme/api", defaultBranch: "main", readiness: "ready", dispatchable: true });
     expect(ready.calls).toEqual([{ operation: "buildWorkflow", input: { installationId: 7, repositoryId: 42 } }]);
-    expect((await check(workflowFile("active", false))).value).toMatchObject({ readiness: "ready", dispatchable: false });
     expect((await check(workflowFile("disabled_manually"))).value.readiness).toBe("setup_needed");
     expect((await check(workflowFile("deleted"))).value.readiness).toBe("setup_needed");
+    expect((await check(workflowFile(null, false))).value.readiness).toBe("setup_needed");
+  });
+
+  it("reads another active file, such as one calling getployz/build@v1, as outdated, and says whether it still dispatches", async () => {
+    expect((await check(workflowFile("active", false))).value).toMatchObject({ readiness: "outdated", dispatchable: false });
+    expect((await check(workflowFile("active", false, true))).value).toMatchObject({ readiness: "outdated", dispatchable: true });
   });
 
   it("reports an installation without Actions access or without the repository as lacking permission", async () => {

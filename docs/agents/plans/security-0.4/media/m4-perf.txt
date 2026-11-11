@@ -1,0 +1,56 @@
+M4 perf: the minter's /v1/workflow, origin/main against this branch, both run locally (node minter/dist/local.js)
+against the real lab App and lab repository, from one host. Each line: minter, HTTP status, seconds (curl time_total).
+main reads the repository, then the workflow, then the file at the default branch, after minting its own token.
+head mints its own token once per repository and keeps it, and makes the three reads at once.
+
+## Warm: ten rounds, interleaved, order alternating each round
+head 200 1.616078
+main 200 4.099229
+main 200 2.603716
+head 200 1.758936
+head 200 1.177305
+main 200 3.490674
+main 200 2.655247
+head 200 1.920214
+head 200 0.691155
+main 200 3.520653
+main 200 2.577909
+head 200 1.624167
+head 200 0.633863
+main 200 3.453355
+main 200 2.599748
+head 200 1.669228
+head 200 0.668234
+main 200 3.520907
+main 200 2.601470
+head 200 1.507676
+
+## Cold: each round restarts both processes, so head mints and opens new connections too
+head 200 3.209442
+main 200 4.455752
+main 200 4.351766
+head 200 3.466269
+head 200 3.303416
+main 200 4.565817
+main 200 4.340757
+head 200 3.228518
+head 200 3.202687
+main 200 4.560982
+
+## Medians
+warm main: n=10 median=3.05s min=2.58s max=4.10s
+warm head: n=10 median=1.56s min=0.63s max=1.92s
+cold main: n=5 median=4.46s min=4.34s max=4.57s
+cold head: n=5 median=3.23s min=3.20s max=3.47s
+
+## What bounds head: one GitHub read from this host, curl with a fresh TLS connection each time (path, status, seconds)
+/repositories/1450985696 200 1.515481
+/repositories/1450985696/contents/.github/workflows/ployz-build.yml 200 1.386550
+/repositories/1450985696 200 1.586059
+/repositories/1450985696/contents/.github/workflows/ployz-build.yml 200 1.330984
+/repositories/1450985696 200 1.453006
+/repositories/1450985696/contents/.github/workflows/ployz-build.yml 200 1.349902
+/repositories/1450985696 200 1.495132
+/repositories/1450985696/contents/.github/workflows/ployz-build.yml 200 1.547098
+/repositories/1450985696 200 1.473823
+/repositories/1450985696/contents/.github/workflows/ployz-build.yml 200 1.385452

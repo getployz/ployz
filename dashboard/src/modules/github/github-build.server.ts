@@ -42,8 +42,8 @@ const cannotRun = (error: GithubReadError) => isGithubObservationNotFound(error)
 /**
  * Whether GitHub will run the build workflow in this repository now. Cloud calls it for the
  * Servers page and again right before dispatching a build. The Actions API only lists
- * workflows on the default branch, so `active` means committed there and not disabled.
- * `dispatchable` says whoever holds the App's authority dispatches the file there.
+ * workflows on the default branch, so `active` means committed there and not disabled. `outdated` means active, but
+ * not a file Ployz offers. `dispatchable` says whoever holds the App's authority dispatches the file there.
  */
 export const checkGithubBuildWorkflow = Effect.fn("Github.checkBuildWorkflow")(
   function* (access: GithubAccess, repositoryId: number) {
@@ -51,7 +51,7 @@ export const checkGithubBuildWorkflow = Effect.fn("Github.checkBuildWorkflow")(
       Effect.catchIf(cannotRun, () => Effect.succeed(null)),
     );
     if (workflow === null) return { fullName: null, defaultBranch: null, readiness: "no_permission" as const, dispatchable: false };
-    const readiness: GithubBuildReadiness = workflow.state === "active" ? "ready" : "setup_needed";
+    const readiness: GithubBuildReadiness = workflow.state !== "active" ? "setup_needed" : workflow.canonical ? "ready" : "outdated";
     return { fullName: workflow.fullName, defaultBranch: workflow.defaultBranch, readiness, dispatchable: workflow.dispatchable };
   },
 );

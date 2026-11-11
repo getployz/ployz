@@ -2,15 +2,25 @@ import { useState } from "react";
 import { Link } from "@tanstack/react-router";
 import { CheckIcon, ChevronRightIcon, ServerIcon } from "lucide-react";
 import { GitHubMarkIcon } from "#/components/icons/github-mark";
+import { CopyButton } from "#/components/copy-button";
 import { SettingsList, SettingsListItem } from "#/components/settings/settings-list";
 import { SettingsRow, SettingsSection } from "#/components/settings/settings-section";
 import { useCommitHold } from "#/components/stageable/use-commit-hold";
 import { Button } from "#/components/ui/button";
+import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "#/components/ui/dialog";
 import { Select, SelectContent, SelectGroup, SelectItem, SelectTrigger, SelectValue } from "#/components/ui/select";
 import type { BuildOrder } from "@ployz/sdk";
 import { requireView, useStoreView } from "#/modules/config-store/store-view.queries";
 import { useStoreWriter } from "#/modules/config-store/store-write";
-import { githubBuildRepositoryKey, githubBuildWorkflowUrl, type GithubBuildRepository } from "#/modules/github/github-build-workflow";
+import {
+  awaitsWorkflowCommit,
+  GITHUB_BUILD_WORKFLOW,
+  GITHUB_BUILD_WORKFLOW_FILE,
+  githubBuildRepositoryKey,
+  githubBuildWorkflowEditUrl,
+  githubBuildWorkflowUrl,
+  type GithubBuildRepository,
+} from "#/modules/github/github-build-workflow";
 import { useGithubBuildRepositories, useGithubWebOrigin } from "#/modules/github/github.queries";
 import { volumeSupportText } from "#/modules/machines/server-status";
 import { useServerList, type ServerListItem } from "#/modules/machines/use-servers";
@@ -84,10 +94,12 @@ function WhereBuildsRun({ organizationSlug }: { organizationSlug: string }) {
 function GithubActions({ organizationSlug }: { organizationSlug: string }) {
   // ponytail: "waiting for the commit" lives in this tab only; persist it if teammates need to see it.
   const [opened, setOpened] = useState<ReadonlySet<string>>(new Set());
+  const [updating, setUpdating] = useState<GithubBuildRepository | null>(null);
   const { data: repositories, error } = useGithubBuildRepositories(organizationSlug, opened);
   const githubWeb = useGithubWebOrigin();
   const waiting = (repository: GithubBuildRepository) =>
-    repository.readiness === "setup_needed" && opened.has(githubBuildRepositoryKey(repository));
+    awaitsWorkflowCommit(repository) && opened.has(githubBuildRepositoryKey(repository));
+  const open = (repository: GithubBuildRepository) => setOpened((current) => new Set(current).add(githubBuildRepositoryKey(repository)));
 
   if (!repositories?.length && !error) return null;
   const ready = repositories?.filter((repository) => repository.readiness === "ready").length ?? 0;
@@ -104,11 +116,15 @@ function GithubActions({ organizationSlug }: { organizationSlug: string }) {
             label={repository.fullName}
             hint={repository.readiness === "no_permission"
               ? "Installation lacks permission"
-              : waiting(repository) ? "Waiting for commit" : undefined}
+              : waiting(repository) ? "Waiting for commit"
+              : repository.readiness === "outdated" ? "Uses an older workflow" : undefined}
             commit="none"
             actions={repository.readiness === "ready" ? (
               <CheckIcon className="size-4 text-success" aria-label="Set up" />
-            ) : repository.readiness === "no_permission" || waiting(repository) || repository.defaultBranch === null ? undefined : (
+            ) : repository.readiness === "no_permission" || waiting(repository) || repository.defaultBranch === null ? undefined
+            : repository.readiness === "outdated" ? (
+              <Button size="sm" variant="outline" onClick={() => setUpdating(repository)}>Update workflow</Button>
+            ) : (
               <Button
                 size="sm"
                 variant="outline"
@@ -120,7 +136,7 @@ function GithubActions({ organizationSlug }: { organizationSlug: string }) {
                     rel="noreferrer"
                   />
                 }
-                onClick={() => setOpened((current) => new Set(current).add(githubBuildRepositoryKey(repository)))}
+                onClick={() => open(repository)}
               >
                 Add workflow ↗
               </Button>
@@ -128,7 +144,46 @@ function GithubActions({ organizationSlug }: { organizationSlug: string }) {
           />
         ))}
       </SettingsList>
+      {updating !== null && updating.defaultBranch !== null ? (
+        <UpdateWorkflowDialog
+          editUrl={githubBuildWorkflowEditUrl({ web: githubWeb, fullName: updating.fullName, defaultBranch: updating.defaultBranch })}
+          defaultBranch={updating.defaultBranch}
+          onOpened={() => {
+            open(updating);
+            setUpdating(null);
+          }}
+          onClose={() => setUpdating(null)}
+        />
+      ) : null}
     </SettingsSection>
+  );
+}
+
+/** GitHub's editor takes no content for an existing file, so the new file is copied from here. */
+function UpdateWorkflowDialog({ editUrl, defaultBranch, onOpened, onClose }: {
+  editUrl: string; defaultBranch: string; onOpened: () => void; onClose: () => void;
+}) {
+  return (
+    <Dialog open onOpenChange={(next) => !next && onClose()}>
+      <DialogContent className="sm:max-w-xl">
+        <DialogHeader>
+          <DialogTitle>Update workflow</DialogTitle>
+          <DialogDescription>
+            Replace <span className="font-mono">.github/workflows/{GITHUB_BUILD_WORKFLOW_FILE}</span> on{" "}
+            <span className="font-mono">{defaultBranch}</span> with this file. Ployz builds on GitHub only with this exact file.
+          </DialogDescription>
+        </DialogHeader>
+        <pre aria-label="New workflow file" className="max-h-80 overflow-auto rounded-md border bg-muted/40 p-3 font-mono text-xs leading-5">
+          {GITHUB_BUILD_WORKFLOW}
+        </pre>
+        <DialogFooter>
+          <CopyButton value={GITHUB_BUILD_WORKFLOW} label="Copy file" showLabel variant="outline" />
+          <Button nativeButton={false} render={<a href={editUrl} target="_blank" rel="noreferrer" />} onClick={onOpened}>
+            Open in GitHub ↗
+          </Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
   );
 }
 

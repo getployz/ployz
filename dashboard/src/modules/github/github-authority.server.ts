@@ -2,7 +2,7 @@ import "@tanstack/react-start/server-only";
 import crypto from "node:crypto";
 import { AwsClient } from "aws4fetch";
 import { Cache, Context, Duration, Effect, Exit, Layer, Redacted, Schema } from "effect";
-import { GITHUB_BUILD_WORKFLOW_FILE } from "#/modules/github/github-build-workflow";
+import { GITHUB_BUILD_WORKFLOW_FILE, GITHUB_BUILD_WORKFLOWS } from "#/modules/github/github-build-workflow";
 import { githubIdSchema, githubTimestampSchema } from "#/modules/github/github-ingestion.contracts";
 import { GithubObservationError, githubResponseError, type GithubObservationOperation } from "#/modules/github/github-observation.api";
 import { AppConfig, type GithubMinterAuth } from "#/server/config.server";
@@ -24,9 +24,20 @@ export const GITHUB_READ_SET = { contents: "read", metadata: "read", pull_reques
 
 const BUILD_WORKFLOW_PATH = `.github/workflows/${GITHUB_BUILD_WORKFLOW_FILE}`;
 
+/** SHA-256 of a workflow file after CRLF becomes LF, as hex, the way the minter compares a file with Ployz's. */
+export function githubBuildWorkflowDigest(bytes: Uint8Array): string {
+  const text = Buffer.from(bytes).toString("latin1").replaceAll("\r\n", "\n");
+  return crypto.createHash("sha256").update(Buffer.from(text, "latin1")).digest("hex");
+}
+
+/** The digests of every workflow Ployz offers: what `minter/src/canonical-workflows.json` must list. */
+export function githubBuildWorkflowDigests(): ReadonlySet<string> {
+  return new Set(GITHUB_BUILD_WORKFLOWS.map((workflow) => githubBuildWorkflowDigest(Buffer.from(workflow, "utf8"))));
+}
+
 /** What each operation's own token may do, for that one repository. */
 const OWN_PERMISSIONS = {
-  workflow: { actions: "read" },
+  workflow: { contents: "read", actions: "read" },
   runs: { actions: "read" },
   dispatch: { contents: "read", actions: "write" },
   act: { actions: "write" },
@@ -76,13 +87,14 @@ export type GithubBuildRun = {
 
 /**
  * The build workflow on the repository's default branch: `state` is null when GitHub lists no such workflow.
- * `dispatchable` says whoever holds the authority dispatches the file there: the minter only the one Ployz offers,
- * byte for byte up to line endings, and Cloud holding the key any file.
+ * `canonical` says the file there is one Ployz offers, byte for byte up to line endings. `dispatchable` says whoever
+ * holds the authority dispatches it: the minter only a canonical file, and Cloud holding the key any file.
  */
 export type GithubBuildWorkflowFile = {
   readonly fullName: string;
   readonly defaultBranch: string;
   readonly state: string | null;
+  readonly canonical: boolean;
   readonly dispatchable: boolean;
 };
 
@@ -239,8 +251,10 @@ export const makeGithubAuthorityLocal = Effect.fn("GithubAuthority.makeLocal")(f
   const config = yield* AppConfig;
   const { origins, appId, appClientId } = config.github;
   const cloud = config.app.url.origin;
+  const canonicalDigests = githubBuildWorkflowDigests();
 
-  const send = Effect.fn("GithubAuthority.send")(function* (input: {
+  /** GitHub's answer when it succeeded. */
+  const respond = Effect.fn("GithubAuthority.respond")(function* (input: {
     operation: GithubObservationOperation; token: string | null; path: `/${string}`; method?: "POST" | "PATCH"; body?: unknown; origin?: string; accept?: string;
   }) {
     const headers = new Headers({ Accept: input.accept ?? "application/vnd.github+json", "X-GitHub-Api-Version": GITHUB_API_VERSION });
@@ -259,8 +273,22 @@ export const makeGithubAuthorityLocal = Effect.fn("GithubAuthority.makeLocal")(f
       yield* Effect.promise(async () => response.body?.cancel());
       return yield* githubResponseError(response, input.operation);
     }
-    return yield* Effect.tryPromise({ try: () => response.text(), catch: () => invalidResponse(input.operation) });
+    return response;
   });
+
+  const send = (input: Parameters<typeof respond>[0]) => respond(input).pipe(
+    Effect.flatMap((response) => Effect.tryPromise({ try: () => response.text(), catch: () => invalidResponse(input.operation) })),
+  );
+
+  /** A file's bytes on the default branch, or null when it holds no such file. Bytes, not text, so the digest is the minter's. */
+  const defaultBranchFile = (token: string, repositoryId: number, path: string) =>
+    respond({ operation: "fetch_contents", token, path: `/repositories/${repositoryId}/contents/${path}`, accept: "application/vnd.github.raw" }).pipe(
+      Effect.flatMap((response) => Effect.tryPromise({
+        try: async () => new Uint8Array(await response.arrayBuffer()),
+        catch: () => failure({ code: "request_failed", operation: "fetch_contents", retriable: true }),
+      })),
+      Effect.catchIf((error) => error.code === "not_found", () => Effect.succeed(null)),
+    );
 
   const call = <S extends Schema.ConstraintDecoder<unknown>>(schema: S, input: Parameters<typeof send>[0]) =>
     send(input).pipe(Effect.flatMap((text) => decodeAs(schema, text, input.operation)));
@@ -332,14 +360,19 @@ export const makeGithubAuthorityLocal = Effect.fn("GithubAuthority.makeLocal")(f
 
   const buildWorkflow: GithubAuthorityService["buildWorkflow"] = Effect.fn("GithubAuthority.local.buildWorkflow")(function* (input) {
     const token = yield* own(input, "workflow");
-    const repository = yield* call(repositorySchema, { operation: "resolve_repository", token, path: `/repositories/${input.repositoryId}` });
-    const workflow = yield* call(workflowSchema, {
-      operation: "fetch_workflow", token, path: `/repositories/${input.repositoryId}/actions/workflows/${GITHUB_BUILD_WORKFLOW_FILE}`,
-    }).pipe(Effect.catchIf((error) => error.code === "not_found", () => Effect.succeed(null)));
+    // The contents API reads the default branch when given no ref, so the three reads need not wait on each other.
+    const [repository, workflow, file] = yield* Effect.all([
+      call(repositorySchema, { operation: "resolve_repository", token, path: `/repositories/${input.repositoryId}` }),
+      call(workflowSchema, {
+        operation: "fetch_workflow", token, path: `/repositories/${input.repositoryId}/actions/workflows/${GITHUB_BUILD_WORKFLOW_FILE}`,
+      }).pipe(Effect.catchIf((error) => error.code === "not_found", () => Effect.succeed(null))),
+      defaultBranchFile(token, input.repositoryId, BUILD_WORKFLOW_PATH),
+    ], { concurrency: "unbounded" });
     return {
       fullName: repository.full_name,
       defaultBranch: repository.default_branch,
       state: workflow !== null && workflow.path === BUILD_WORKFLOW_PATH ? workflow.state : null,
+      canonical: file !== null && canonicalDigests.has(githubBuildWorkflowDigest(file)),
       dispatchable: true,
     };
   });
@@ -572,7 +605,9 @@ export function makeGithubAuthorityMinter(minter: { readonly url: URL; readonly 
     readToken,
     installation,
     buildWorkflow: (input) => post("/v1/workflow", "fetch_workflow", { installation_id: input.installationId, repository_id: input.repositoryId }, minterWorkflowSchema).pipe(
-      Effect.map((found) => ({ fullName: found.full_name, defaultBranch: found.default_branch, state: found.state, dispatchable: found.canonical })),
+      Effect.map((found) => ({
+        fullName: found.full_name, defaultBranch: found.default_branch, state: found.state, canonical: found.canonical, dispatchable: found.canonical,
+      })),
     ),
     buildRuns: (input) => post("/v1/runs", "list_push_runs", {
       installation_id: input.installationId, repository_id: input.repositoryId, head_sha: input.headSha, event: input.event,

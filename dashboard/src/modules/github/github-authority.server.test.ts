@@ -1,7 +1,7 @@
 import { ConfigProvider, Effect, Layer } from "effect";
 import { TestClock } from "effect/testing";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { GITHUB_BUILD_WORKFLOW } from "./github-build-workflow";
+import { GITHUB_BUILD_WORKFLOW, GITHUB_BUILDER_COMMIT } from "./github-build-workflow";
 import { GITHUB_READ_SET, GithubAuthority, GithubAuthorityLive, type GithubAuthorityService } from "./github-authority.server";
 import { testConfigEnvironment, testConfigLayer } from "#/test/config-environment";
 import { AppConfig } from "#/server/config.server";
@@ -135,6 +135,28 @@ describe("the App's authority held in Cloud", () => {
     expect(workflow.dispatchable).toBe(true);
   });
 
+  it("reads whether the default branch holds a workflow Ployz offers, byte for byte up to line endings", async () => {
+    const workflow = (text: string) => {
+      const sent = serve(({ url }) => {
+        if (url.pathname === "/app/installations/7/access_tokens") return token({ contents: "read", actions: "read" });
+        if (url.pathname === "/repositories/42") return Response.json({ full_name: "acme/web", default_branch: "main" });
+        if (url.pathname === "/repositories/42/actions/workflows/ployz-build.yml") return Response.json({ path: ".github/workflows/ployz-build.yml", state: "active" });
+        // Without a ref, GitHub's contents API answers from the default branch.
+        if (url.pathname === "/repositories/42/contents/.github/workflows/ployz-build.yml" && !url.searchParams.has("ref")) return new Response(text);
+        return undefined;
+      });
+      return local((authority) => authority.buildWorkflow({ installationId: 7, repositoryId: 42 })).then((found) => ({ found, sent }));
+    };
+    const pinned = await workflow(GITHUB_BUILD_WORKFLOW);
+    expect(pinned.found).toEqual({ fullName: "acme/web", defaultBranch: "main", state: "active", canonical: true, dispatchable: true });
+    expect(minted(pinned.sent)).toEqual([{ permissions: { contents: "read", actions: "read" }, repository_ids: [42] }]);
+    expect(pinned.sent.find((request) => request.url.pathname.includes("/contents/"))?.headers.get("accept")).toBe("application/vnd.github.raw");
+    expect((await workflow(GITHUB_BUILD_WORKFLOW.replaceAll("\n", "\r\n"))).found.canonical).toBe(true);
+    const tagged = GITHUB_BUILD_WORKFLOW.replace(`getployz/build@${GITHUB_BUILDER_COMMIT}`, "getployz/build@v1");
+    expect((await workflow(tagged)).found).toMatchObject({ state: "active", canonical: false, dispatchable: true });
+    expect((await workflow(`\uFEFF${GITHUB_BUILD_WORKFLOW}`)).found.canonical).toBe(false);
+  });
+
   it("dispatches a commit a person approved on the rule's branch, with a token that can only run Actions there", async () => {
     // The rule's own template on its branch, which names its Cloud and builder: no digest of Ployz's applies.
     const sent = acmeWeb("name: Ployz build\non: { push: { branches: [main] } }\n");
@@ -227,8 +249,8 @@ describe("the App's authority held by the minter", () => {
       serve(() => Response.json({ full_name: "acme/web", default_branch: "main", state: "active", digest: "d", canonical }));
       return viaMinter((authority) => authority.buildWorkflow({ installationId: 7, repositoryId: 42 }));
     };
-    expect(await workflow(true)).toEqual({ fullName: "acme/web", defaultBranch: "main", state: "active", dispatchable: true });
-    expect((await workflow(false)).dispatchable).toBe(false);
+    expect(await workflow(true)).toEqual({ fullName: "acme/web", defaultBranch: "main", state: "active", canonical: true, dispatchable: true });
+    expect(await workflow(false)).toMatchObject({ canonical: false, dispatchable: false });
   });
 
   it("leaves the Cloud input of a dispatch to the minter", async () => {
