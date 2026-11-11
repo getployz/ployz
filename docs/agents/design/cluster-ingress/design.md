@@ -20,11 +20,19 @@ flowchart LR
 
 ## Decisions
 
-1. **No stored mode.** Each ingress Machine has observable doors: Public (Caddy publishes 80/443) and Tunnel
-   (a `ployz-system/tunnel` connector joined to that Caddy). The Cluster's "mode" is what a client sees across
-   doors. Both doors at once is a legal transition state, so a switch opens the tunnel before closing ports.
-   Rejected: a Corrosion `cluster` key `ingress` [codex]. It is persisted desired state plus a second writer of
-   Caddy's shape (bet 3, bet 10).
+1. **A declared Door set, written by the client.** Each ingress Machine has observable doors: Public (Caddy
+   publishes 80/443) and Tunnel (a `ployz-system/tunnel` connector joined to that Caddy). The Cluster's Door set
+   is what the operator last declared in the replicated `cluster` key `doors`, beside the Cluster Name's `name`.
+   The client writes it with `SetClusterDoors` before it fans out `SetIngressDoors`, and every Engine reader
+   goes through `cluster_doors(declared, services)`: the declared set when present, else the newest holder and
+   newest connector, as before. Both doors at once is a legal transition state, so a switch opens the tunnel
+   before closing ports, and only the final set is declared. Nothing converges toward the key. Commands read it.
+   _Reversed 2026-11-11_ from "No stored mode", which rejected this key as persisted desired state plus a second
+   writer of Caddy's shape. Nine readers each rebuilt the Door set from door Containers with their own rule, and
+   most ingress bugs since (#4037, #4039, #4040, #4060, #4061, #4022) were those readers disagreeing. Closed is
+   the first state whose only evidence is an absence, so a rule that held while every Door had positive evidence
+   failed on it. The key adds no writer of Caddy's shape: the daemon still writes a door's spec only from a
+   `SetIngressDoors` request (bet 10), and boot restore may only narrow, never open a door the key lacks.
 2. **Caddy gets exactly two canonical specs**, `IngressPorts::{Public, Closed}`. Validation returns which one
    it saw instead of `()`. No new replicated field; the ports already on the row say which door is open.
 3. **cloudflared is a reserved Global `ployz-system/tunnel`**, eligible on `accepts_ingress`, canonical spec
@@ -67,14 +75,25 @@ flowchart LR
 
 ## Bets touched
 
-- **Stable promise**: new capability `ployz.ingress.tunnel.v1`; no new replicated fields. An older daemon fails
-  validation of the portless Caddy row and treats that Server as not ingress-eligible, which narrows only.
-- **Bet 3**: no persisted mode, no reconciler. The stranded-connector start is the accepted "extend Docker's
+- **Stable promise**: new capability `ployz.ingress.tunnel.v1`. An older daemon fails validation of the portless
+  Caddy row and treats that Server as not ingress-eligible, which narrows only. The declared Door set adds
+  capability `ployz.cluster.doors.v1`, optional `EnrollmentSnapshot.doors` and optional
+  `RegisterRequest.capabilities`. An older reader ignores both fields and infers the set as before. An older
+  client never writes the key, and a Machine with an older client's joiner refuses it when the Cluster declares
+  more than Public (`unsupported`, `details.capability`).
+- **Bet 3**: no reconciler. The declared Door set is persisted desired state, the red flag, argued: the newest
+  holder's spec already was the persisted intent, written by whichever client came last and read by nine
+  differing rules. The key makes that intent explicit with one kind of writer (a client's `SetClusterDoors`),
+  and no loop reads it. It has the shape of the removal mark, a replicated fact a command writes and readers
+  honor, never a record the daemon drives toward. The stranded-connector start is the accepted "extend Docker's
   restart policy to own serving infra" exception, bounded to an existing container joined to the running local
   Caddy.
-- **Bet 4**: switches are per-Server steps with a visible prefix; no rollback.
-- **Bet 6**: doors, netns target and the ACME skip are decided from the Machine's own containers.
-- **Bet 7**: the verb lives in `ployz`; Cloud keeps no tunnel token, no Cloudflare credential and no mode.
+- **Bet 4**: switches are per-Server steps with a visible prefix; no rollback. A declared set stays after a
+  partial fan-out, the result lists the failures, and a rerun converges.
+- **Bet 6**: doors, netns target and the ACME skip are decided from the Machine's own containers. A Register
+  is refused against the Machine's own copy of the key, never against Cloud's record.
+- **Bet 7**: the verb lives in `ployz`; Cloud keeps no tunnel token and no Cloudflare credential, and reads the
+  Door set from the enrollment snapshot instead of inferring it.
 - **Bet 9**: Caddy stays the only Ingress Proxy; cloudflared is a hop before it, like a CDN.
 - **Bet 10 (red flag, argued)**: "the Ingress Proxy is the only Service Container the daemon starts unasked"
   widens to "and the Tunnel Connector joined to it". Forced by "must continue without a client": measured, a
