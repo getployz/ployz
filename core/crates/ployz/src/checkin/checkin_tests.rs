@@ -11,7 +11,7 @@ use reqwest::StatusCode;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
 use super::client::{self, Reply};
-use super::wire::{self, Answer, PrepState, Probe};
+use super::wire::{self, Answer, Probe};
 use super::*;
 
 const PROBE: &str = r#"{
@@ -2188,7 +2188,7 @@ fn a_docker_failure_in_the_second_its_preparation_started_belongs_to_it() {
     let dir = tempfile::tempdir().unwrap();
     let paths = paths(&dir);
     docker_failed_at(&paths, "2026-10-16T00:00:00Z");
-    let state: PrepState =
+    let state: PrepSteps =
         serde_json::from_slice(&fs::read(&paths.prepare_state).unwrap()).unwrap();
     let started = at("2026-10-16T00:00:00.400Z");
     assert!(!state.docker_retried(Some(started)));
@@ -2420,14 +2420,14 @@ async fn a_cloud_that_does_not_answer_is_retried_in_a_minute() {
     );
 }
 
-fn state(json: &str) -> PrepState {
+fn state(json: &str) -> PrepSteps {
     serde_json::from_str(json).unwrap()
 }
 
 #[test]
 fn preparation_starts_when_missing_and_retries_when_it_ended_long_enough_ago() {
     let now = at("2026-10-16T01:00:00Z");
-    let free = |state: Option<&PrepState>, last_start, retries| {
+    let free = |state: Option<&PrepSteps>, last_start, retries| {
         preparation(state, None, Liveness::Stopped, retries, last_start, now)
     };
     assert_eq!(free(None, None, 0), Preparation::NotStarted);
@@ -3633,4 +3633,34 @@ async fn a_preparation_whose_unit_and_lock_cannot_be_read_is_neither_restarted_n
     let host = unreadable();
     assert!(!restart_preparation(&host, &paths, written + TimeDelta::minutes(90)).await);
     assert_eq!(host.prepares.load(Ordering::SeqCst), 0);
+}
+
+/// The check-in reads `prepare/state.json` through its two steps alone: a file ployzd itself would
+/// refuse outside them still reads, and one with a bad step doesn't. The shapes are tabled in
+/// `ployz_core::host_preparation`'s tests; this pins what the loop does with the file on disk.
+#[test]
+fn the_check_in_reads_a_state_file_by_its_steps_alone() {
+    const STEPS: &str = r#""docker": {"state": "ready", "finished_at": "2026-10-16T00:00:00Z"}, "zfs": {"state": "off", "finished_at": "2026-10-16T00:00:00Z"}"#;
+    let dir = tempfile::tempdir().unwrap();
+    let paths = paths(&dir);
+    assert!(read_prep_state(&paths.prepare_state).is_none());
+    fs::create_dir_all(paths.prepare_state.parent().unwrap()).unwrap();
+    for text in [
+        format!("{{{STEPS}}}"),
+        format!("{{{STEPS}, \"added_packages\": [], \"zfs_build\": {{\"route\": \"rpm\"}}}}"),
+        format!("{{{STEPS}, \"added_packages\": [], \"future\": 1}}"),
+    ] {
+        fs::write(&paths.prepare_state, &text).unwrap();
+        let (steps, written) = read_prep_state(&paths.prepare_state).expect(&text);
+        assert!(!steps.unfinished(), "{text}");
+        assert!(written.is_some(), "{text}");
+    }
+    for text in [
+        r#"{"zfs": {"state": "off", "finished_at": "2026-10-16T00:00:00Z"}}"#,
+        "{}",
+        "",
+    ] {
+        fs::write(&paths.prepare_state, text).unwrap();
+        assert!(read_prep_state(&paths.prepare_state).is_none(), "{text}");
+    }
 }

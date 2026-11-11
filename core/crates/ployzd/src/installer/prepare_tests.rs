@@ -1092,7 +1092,7 @@ fn locks_stay_local(root: &Path) -> bool {
 /// does, asked from an open file of its own. Check-in also requires the lock file's owner and mode,
 /// a whole-file range and a local filesystem; this asks none of that.
 fn marked(paths: &InstallPaths) -> bool {
-    let probe = File::open(prepare_dir(paths).join("lock")).unwrap();
+    let probe = File::open(paths.layout.prepare_lock()).unwrap();
     let mut held = nix::libc::flock {
         l_type: nix::libc::F_WRLCK as nix::libc::c_short,
         l_whence: nix::libc::SEEK_SET as nix::libc::c_short,
@@ -1289,4 +1289,35 @@ async fn a_step_left_installing_is_redone_and_recorded() {
     assert_eq!(state.interrupted, ["docker", "zfs"]);
     assert_eq!(state.docker.outcome(), Some(&DockerOutcome::Ready));
     assert_eq!(state.zfs.outcome(), Some(&ZfsOutcome::Off));
+}
+
+/// What `load` does with the shapes of `state.json` the whole record refuses (the table is in
+/// `ployz_core::host_preparation`'s tests): it starts from nothing.
+#[test]
+fn a_state_file_ployzd_cannot_read_back_loads_as_nothing_prepared() {
+    const STEPS: &str = r#""docker": {"state": "ready", "finished_at": "2026-10-16T00:00:00Z"}, "zfs": {"state": "off", "finished_at": "2026-10-16T00:00:00Z"}"#;
+    let fixture = fixture("state-shapes");
+    let paths = InstallPaths::at(fixture.path());
+    fs::create_dir_all(prepare_dir(&paths)).unwrap();
+    for text in [
+        format!("{{{STEPS}}}"),
+        format!("{{{STEPS}, \"added_packages\": [], \"zfs_build\": {{\"route\": \"rpm\"}}}}"),
+        "{}".to_owned(),
+        String::new(),
+    ] {
+        fs::write(state_path(&paths), &text).unwrap();
+        assert_eq!(load(&paths), PrepState::default(), "{text}");
+    }
+    fs::remove_file(state_path(&paths)).unwrap();
+    assert_eq!(load(&paths), PrepState::default());
+
+    fs::write(
+        state_path(&paths),
+        format!("{{{STEPS}, \"added_packages\": [\"dkms\"], \"added_contrib_source\": true}}"),
+    )
+    .unwrap();
+    let loaded = load(&paths);
+    assert_eq!(loaded.added_packages, ["dkms"]);
+    assert!(loaded.added_contrib_source);
+    assert_eq!(loaded.docker.outcome(), Some(&DockerOutcome::Ready));
 }
