@@ -45,7 +45,7 @@ function ports(
     at: (stage) => Effect.sync(() => { log.push(`at ${stage}`); }),
     blocked: () => Effect.succeed(blocked),
     moving: () => Effect.sync(() => { log.push("moving"); return seen; }),
-    flip: () => Effect.sync(() => { log.push("flip"); }),
+    flip: () => Effect.sync(() => { log.push("flip"); return null; }),
     redeploy: (moves) => Effect.sync(() => { log.push(`redeploy ${moves.map(({ to }) => to).join(",")}`); return stuck; }),
   };
 }

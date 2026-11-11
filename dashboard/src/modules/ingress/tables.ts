@@ -30,6 +30,8 @@ export const organizationCloudflareIngress = pgTable("organization_cloudflare_in
   tunnelId: text("tunnel_id"),
   tunnelName: text("tunnel_name").notNull(),
   state: text("state").notNull().$type<CloudflareSetupState>(),
+  /** When the Cluster was removed under the setup holding this `setting_up` reservation: that setup puts nothing back, and drops the row once its cleanup ends. */
+  clusterRemovedAt: timestamptz("cluster_removed_at"),
   createdAt,
   updatedAt,
 }, (table) => [

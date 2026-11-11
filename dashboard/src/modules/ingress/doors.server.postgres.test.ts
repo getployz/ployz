@@ -4,6 +4,7 @@ import { afterAll, beforeAll, beforeEach, expect, it, vi } from "vitest";
 import { asTestDouble } from "#/lib/test-double";
 import type { ConfigStore } from "@ployz/sdk";
 import { CloudStore } from "#/modules/config-store/store-sdk.server";
+import { endClusterIngress } from "#/modules/cloudflare/cluster-gone.server";
 import { closeDoorsRun, closeStaleDoors, bindDoorsRun, executeDoorsOnce, freshSwitchDigest, requestDoorsSwitch, reviewSwitch } from "#/modules/ingress/doors.server";
 import { OrganizationRuntime, type ScopedRuntimeClientSession } from "#/modules/runtime/organization-runtime.server";
 import type { PloyzSession } from "#/modules/runtime/ployz.server";
@@ -56,7 +57,9 @@ type StoreRows =
 /** The Store as a switch reads it: no Environment owns a Namespace unless a test says so, and a switch never writes to it. */
 const noOwners = ({ query }: { query: string }): StoreRows => query === "namespaces" ? { namespaces: [] } : { projects: [] };
 let storeViews = noOwners;
-const store = { open: Effect.succeed(asTestDouble<ConfigStore>()({ read: async (_organizationId: string, query: { query: string }) => storeViews(query) })) };
+/** Held by a test that pauses a switch inside a Store read. */
+let storeRead: () => Promise<void> = () => Promise.resolve();
+const store = { open: Effect.succeed(asTestDouble<ConfigStore>()({ read: async (_organizationId: string, query: { query: string }) => { await storeRead(); return storeViews(query); } })) };
 
 const inngest = new Inngest({ id: "doors-test" });
 vi.spyOn(inngest, "send").mockResolvedValue({ ids: [] });
@@ -105,6 +108,7 @@ beforeEach(async () => {
   sets.length = 0;
   session = answering();
   storeViews = noOwners;
+  storeRead = () => Promise.resolve();
   await harness.pool.query(`
     truncate table operation_outbox, "user", organization cascade;
     insert into organization (id, name, slug) values ('${ORG}', 'Acme', 'acme');
@@ -389,4 +393,24 @@ it("keeps a pending approval for a switch refused only for now, while Cloudflare
   await setup("setting_up");
   expect(await run(freshSwitchDigest(ORG, stored, { to: "tunnel" }))).toBe(stored);
   expect(await run(freshSwitchDigest(ORG, stored, { to: "public" }))).toBe(stored);
+});
+
+it.each(["public", "tunnel"] as const)("never lets a %s switch still running at removal flip the row of the Cluster set up after it", async (to) => {
+  await setup(to === "public" ? "active" : "set_up");
+  await hosted();
+  const request = await asked(to);
+  let release!: () => void;
+  let entered!: () => void;
+  const reading = new Promise<void>((resolve) => { entered = resolve; });
+  const gate = new Promise<void>((resolve) => { release = resolve; });
+  storeRead = () => { entered(); return gate; };
+  const old = run(executeDoorsOnce(request, RUN));
+  await reading;
+  await harness.runEffect(harness.database.transaction(endClusterIngress(ORG)));
+  expect(await attempts()).toMatchObject([{ state: "failed", failure: "The Cluster was removed." }]);
+    await setup("set_up");
+  release();
+  expect(await old).toMatchObject({ state: "failed" });
+  expect(await stateNow()).toBe("set_up");
+  expect(await attempts()).toMatchObject([{ state: "failed", failure: "The Cluster was removed." }]);
 });

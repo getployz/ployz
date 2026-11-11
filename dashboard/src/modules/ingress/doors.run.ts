@@ -20,8 +20,8 @@ export type SwitchPorts<EngineError, RowError, R> = {
   readonly blocked: () => Effect.Effect<string | null, RowError, R>;
   /** The generated names the switch moves, as the Servers show them now, or why Cloud can't tell. */
   readonly moving: () => Effect.Effect<{ readonly moves: readonly MovedHostname[] } | { readonly failure: string }, RowError, R>;
-  /** Move the Cluster Domain's source to where `want` goes. */
-  readonly flip: () => Effect.Effect<void, RowError, R>;
+  /** Move the Cluster Domain's source to where `want` goes. Why it didn't move, or null: the switch ends there. */
+  readonly flip: () => Effect.Effect<string | null, RowError, R>;
   /** Ship the Services publishing `moves` again as they run, staged edits left staged, and wait until the Servers serve each under the new source. Why they don't all, or null. */
   readonly redeploy: (moves: readonly MovedHostname[]) => Effect.Effect<string | null, RowError, R>;
 };
@@ -52,7 +52,8 @@ export const runSwitch = <EngineError, RowError, R>(want: DoorsWant, ports: Swit
   yield* ports.at("moving");
   const seen = yield* ports.moving();
   if ("failure" in seen) return { ok: false, failure: seen.failure } satisfies SwitchEnd;
-  yield* ports.flip();
+  const unflipped = yield* ports.flip();
+  if (unflipped !== null) return { ok: false, failure: unflipped } satisfies SwitchEnd;
   const stuck = yield* ports.redeploy(seen.moves);
   if (stuck !== null) return { ok: false, failure: stuck } satisfies SwitchEnd;
   yield* ports.at("closing");

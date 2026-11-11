@@ -658,9 +658,11 @@ it("ends open attempts and drops the Sealing public key when Cloud forgets an em
   const { seen } = await run(seeCluster(adaOrg));
   await harness.pool.query("insert into cluster_sealing_key (organization_id, cluster_key, public_key) values ($1, $2, $3)",
     [adaOrg, seen.generation, Buffer.alloc(32, 1).toString("base64")]);
+  await harness.pool.query("insert into organization_cloudflare_ingress (organization_id, zone, tunnel_id, tunnel_name, state) values ($1, 'example.com', 't1', 'ployz-ada', 'active')", [adaOrg]);
   expect(await run(forgetEmptiedPairing(adaOrg, seen.generation ?? ""))).toEqual({ kind: "released" });
   expect((await attempts()).map((row) => [row.state, row.ended_at !== null])).toEqual([["cancelled", true]]);
   expect((await harness.pool.query("select 1 from cluster_sealing_key where organization_id = $1", [adaOrg])).rows).toEqual([]);
+  expect((await harness.pool.query("select 1 from organization_cloudflare_ingress where organization_id = $1", [adaOrg])).rows).toEqual([]);
 });
 
 it("fails an attempt whose enroll token was removed under it", async () => {

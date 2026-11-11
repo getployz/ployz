@@ -10,6 +10,7 @@ import { asTestDouble } from "#/lib/test-double";
 import { createDeployToFirstServer } from "#/modules/config-store/store-deployment.inngest";
 import { cloudStore } from "#/modules/config-store/store-sdk.server";
 import { member, user } from "#/modules/identity/tables";
+import { organizationCloudflareIngress } from "#/modules/ingress/tables";
 import { createConfigFirstServerJoinedEvent } from "#/modules/inngest/events";
 import { rustMachineIdSchema } from "#/modules/machines/enrollment";
 import { CLUSTER_UNREACHABLE, enrollMachine, hashEnrollmentToken } from "#/modules/machines/enrollment.server";
@@ -135,12 +136,16 @@ it.live("forgetting unreachable Servers clears Cloud's hold, and the next Server
       ok: false, refusal: { message: "A Server is still joining. Try again in a few minutes." },
     });
     yield* drizzle.update(organizationPairing).set({ founderMachineId: FOUNDER as MachineId });
+    yield* drizzle.insert(organizationCloudflareIngress).values({
+      organizationId: ORGANIZATION, zone: "example.com", tunnelId: "t1", tunnelName: "ployz-forget", state: "active",
+    });
 
     const forgotten = yield* forgetServers({ userId, organizationId: ORGANIZATION });
     expect(forgotten).toEqual({
       ok: true,
       value: { servers: [{ id: FOUNDER, name: FOUNDER, reach: "didnt_answer" }], volumes: [], cancelled: [QUEUED] },
     });
+    expect(yield* drizzle.select().from(organizationCloudflareIngress)).toEqual([]);
     for (const table of [organizationPairing, organizationMachine, clusterSealingKey, machineEnrollmentToken, enrollmentAllocation, machineRemoveAttempt]) {
       expect(yield* drizzle.select().from(table)).toEqual([]);
     }

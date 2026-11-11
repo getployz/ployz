@@ -1,6 +1,6 @@
 import "@tanstack/react-start/server-only";
 import { randomUUID } from "node:crypto";
-import { and, desc, eq, inArray, isNull, lt, or, sql } from "drizzle-orm";
+import { and, desc, eq, exists, inArray, isNull, lt, or, sql } from "drizzle-orm";
 import type { JsonValue, PublishedHostname, RuntimeWatchView } from "@ployz/sdk";
 import { Effect, Schedule, Schema } from "effect";
 import { operationDigest, type OperationAsked } from "#/modules/approvals/approvals.server";
@@ -375,15 +375,26 @@ type RedeployError = Effect.Error<Admission> | Effect.Error<Ending> | Effect.Err
 type RedeployServices = Effect.Services<Admission> | Effect.Services<Ending> | Effect.Services<Observation>;
 
 const applySwitch = Effect.fn("IngressDoors.apply")(function* (session: PloyzSession, request: DoorsRequest, runId: string, want: DoorsWant) {
-  const { drizzle } = yield* Database;
+  const database = yield* Database;
+  const { drizzle } = database;
   const owned = and(eq(ingressDoorsAttempt.id, request.attemptId), eq(ingressDoorsAttempt.inngestRunId, runId));
   const founding = want === "tunnel" ? yield* closedFounding(request.organizationId) : { kind: "open" } as const;
   if (founding.kind === "unknown") return { ok: false, failure: "Some servers didn't answer. Switch again once they all do." } as const;
   return yield* runSwitch(want, {
     open: (doors) => session.setIngressDoors(doors),
     at: (stage) => drizzle.update(ingressDoorsAttempt).set({ stage }).where(owned).pipe(Effect.asVoid),
-    flip: () => drizzle.update(organizationCloudflareIngress).set({ state: want === "tunnel" ? "active" : "left", updatedAt: new Date() })
-      .where(eq(organizationCloudflareIngress.organizationId, request.organizationId)).pipe(Effect.asVoid),
+    // Under the lock removal takes to fail this attempt, and only while the attempt is still running: a switch that a
+    // removal ended must not move the row of the Cluster set up after it.
+    flip: () => database.transaction(Effect.gen(function* () {
+      yield* lockIngressRows(request.organizationId);
+      const { drizzle } = yield* Database;
+      const [flipped] = yield* drizzle.update(organizationCloudflareIngress).set({ state: want === "tunnel" ? "active" : "left", updatedAt: new Date() })
+        .where(and(
+          eq(organizationCloudflareIngress.organizationId, request.organizationId),
+          exists(drizzle.select({ one: sql`1` }).from(ingressDoorsAttempt).where(and(owned, eq(ingressDoorsAttempt.state, "running")))),
+        )).returning({ organizationId: organizationCloudflareIngress.organizationId });
+      return flipped === undefined ? "The Cluster was removed." : null;
+    })).pipe(Effect.orDie),
     blocked: () => blockedNow(request.organizationId, want),
     moving: () => movingNow(request.organizationId, want),
     redeploy: (moves) => redeployMoving(request.organizationId, moves),
