@@ -1,3 +1,4 @@
+import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 import { READ_SET } from "./policy.js";
 import {
@@ -157,7 +158,6 @@ describe("/v1/dispatch", () => {
     ["an input outside the allowed set", { ...valid, inputs: { ...valid.inputs, image: "evil" } }],
     ["a caller-set cloud", { ...valid, inputs: { ...valid.inputs, cloud: "https://evil.test" } }],
     ["a commit that is not 40 hex", { ...valid, inputs: { ...valid.inputs, commit: "abc123" } }],
-    ["no build input", { ...valid, inputs: { runner: "ubuntu-latest" } }],
   ];
 
   it.each(refusedBodies)("refuses %s", async (_, body) => {
@@ -173,7 +173,19 @@ describe("/v1/dispatch", () => {
     expect(response).toMatchObject({ status: 400, body: { reason: "branch not found" } });
   });
 
-  it("refuses everything with the shipped placeholder set until M4 fills it", async () => {
+  it("dispatches the shipped rule template with only the commit, and fills cloud", async () => {
+    const { CANONICAL_DIGESTS } = await import("./policy.js");
+    // The docs carry the dashboard's rule template verbatim; a dashboard test holds them to it.
+    const docs = readFileSync(new URL("../../docs/user/deploy/github.md", import.meta.url), "utf8");
+    const rule = /```yaml\n(name: Ployz build\n[\s\S]*?)```/.exec(docs)?.[1] ?? "";
+    expect(rule).toContain("getployz/build/.github/workflows/build.yml@");
+    const minter = harness(dispatchRoutes(rule), { canonical: CANONICAL_DIGESTS });
+    const body = { ...valid, inputs: { commit: HEAD } };
+    expect((await minter.call("/v1/dispatch", body)).status).toBe(200);
+    expect(sent(minter.calls, "POST", DISPATCH)[0]?.body).toEqual({ ref: "refs/heads/main", inputs: { commit: HEAD, cloud: CLOUD }, return_run_details: true });
+  });
+
+  it("refuses the stand-in template, which the shipped set doesn't list", async () => {
     const { CANONICAL_DIGESTS } = await import("./policy.js");
     const minter = harness(dispatchRoutes(CANONICAL_WORKFLOW), { canonical: CANONICAL_DIGESTS });
     expect((await minter.call("/v1/dispatch", valid)).status).toBe(400);
@@ -345,10 +357,29 @@ describe("/v1/workflow and /v1/installation", () => {
     const minter = harness({
       [`GET ${repo}`]: () => json({ full_name: "lab/app", default_branch: "trunk" }),
       [`GET ${repo}/actions/workflows/ployz-build.yml`]: () => json({ path: ".github/workflows/ployz-build.yml", state: "active" }),
-      [`GET ${WORKFLOW_FILE}`]: (call) => call.query.get("ref") === "trunk" ? raw(CANONICAL_WORKFLOW) : notFound(),
+      // Without a ref, GitHub's contents API answers from the default branch.
+      [`GET ${WORKFLOW_FILE}`]: (call) => call.query.has("ref") ? notFound() : raw(CANONICAL_WORKFLOW),
     });
     const response = await minter.call("/v1/workflow", { installation_id: INSTALLATION, repository_id: REPOSITORY });
     expect(response.body).toMatchObject({ full_name: "lab/app", default_branch: "trunk", state: "active", canonical: true });
+  });
+
+  it("sends its three reads before GitHub answers any of them", async () => {
+    let started = 0;
+    let release!: () => void;
+    const answered = new Promise<void>((resolve) => { release = resolve; });
+    const held = (reply: () => Response) => () => {
+      started += 1;
+      if (started === 3) release();
+      return answered.then(reply);
+    };
+    const minter = harness({
+      [`GET ${repo}`]: held(() => Response.json({ full_name: "lab/app", default_branch: "main" })),
+      [`GET ${repo}/actions/workflows/ployz-build.yml`]: held(() => Response.json({ path: ".github/workflows/ployz-build.yml", state: "active" })),
+      [`GET ${WORKFLOW_FILE}`]: held(() => new Response(CANONICAL_WORKFLOW)),
+    });
+    const response = await minter.call("/v1/workflow", { installation_id: INSTALLATION, repository_id: REPOSITORY });
+    expect(response.body).toMatchObject({ state: "active", canonical: true });
   });
 
   it("reports a repository with no workflow", async () => {
@@ -418,5 +449,61 @@ describe("the request", () => {
       .toEqual({ status: 502, body: { error: "github", operation: "installation_token", failure: "unreachable" } });
     expect(await harness({ [mint]: () => new Response("{\"tok", { status: 201 }) }).call("/v1/token", { installation_id: INSTALLATION }))
       .toEqual({ status: 502, body: { error: "github", operation: "installation_token", failure: "unreadable" } });
+  });
+});
+
+describe("the minter's own tokens", () => {
+  const workflowRoutes: StubRoutes = {
+    [`GET ${repo}`]: () => json({ full_name: "lab/app", default_branch: "main" }),
+  };
+  const ask = (minter: ReturnType<typeof harness>) => minter.call("/v1/workflow", { installation_id: INSTALLATION, repository_id: REPOSITORY });
+
+  it("mints once per repository and route, and reuses it", async () => {
+    const minter = harness(workflowRoutes);
+    await ask(minter);
+    await ask(minter);
+    await minter.call("/v1/runs", { installation_id: INSTALLATION, repository_id: REPOSITORY, head_sha: HEAD, event: "push" });
+    const mints = tokenRequests(minter.calls).map((call) => call.body);
+    expect(mints).toEqual([
+      { permissions: { contents: "read", actions: "read" }, repository_ids: [REPOSITORY] },
+      { permissions: { actions: "read" }, repository_ids: [REPOSITORY] },
+    ]);
+  });
+
+  it("mints again within ten minutes of the token's expiry", async () => {
+    let now = Date.parse("2099-01-01T00:00:00Z") - 11 * 60_000;
+    const minter = harness(workflowRoutes, {}, () => now);
+    await ask(minter);
+    await ask(minter);
+    expect(tokenRequests(minter.calls)).toHaveLength(1);
+    now += 2 * 60_000;
+    await ask(minter);
+    expect(tokenRequests(minter.calls)).toHaveLength(2);
+  });
+
+  it("mints again after GitHub refuses the kept token", async () => {
+    let revoked = false;
+    const minter = harness({ [`GET ${repo}`]: () => revoked ? json({ message: "Bad credentials" }, 401) : json({ full_name: "lab/app", default_branch: "main" }) });
+    expect((await ask(minter)).status).toBe(200);
+    revoked = true;
+    expect((await ask(minter)).status).toBe(502);
+    revoked = false;
+    expect((await ask(minter)).status).toBe(200);
+    expect(tokenRequests(minter.calls)).toHaveLength(2);
+  });
+
+  it("mints again after a mint fails", async () => {
+    let failing = true;
+    const mint = `POST /app/installations/${INSTALLATION}/access_tokens`;
+    const minter = harness({
+      ...workflowRoutes,
+      [mint]: () => failing
+        ? json({ message: "down" }, 503)
+        : json({ token: "ghs_stub", expires_at: "2099-01-01T00:00:00Z", permissions: { contents: "read", actions: "read", metadata: "read" } }, 201),
+    });
+    expect((await ask(minter)).status).toBe(502);
+    failing = false;
+    expect((await ask(minter)).status).toBe(200);
+    expect(tokenRequests(minter.calls)).toHaveLength(2);
   });
 });

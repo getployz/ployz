@@ -211,8 +211,9 @@ pub struct Builder {
 }
 
 /// The commit of `getployz/build` whose reusable workflow a rule approved from the CLI
-/// pins by default.
-pub const BUILDER_SHA: &str = "5f35eaa8e1372d0d86ff82788adadf308e5f3f97";
+/// pins by default. It must be in `getployz/build`'s own history: GitHub won't start a
+/// run that calls a commit only a fork holds. Cloud's rule template pins the same.
+pub const BUILDER_SHA: &str = "a19b4fca3adea371c25ec29f181e8c7d21037d1e";
 
 impl Builder {
     /// `getployz/build`'s reusable workflow at [`BUILDER_SHA`].

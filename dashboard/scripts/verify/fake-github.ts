@@ -359,7 +359,7 @@ export async function run() {
 
   /** A repository's routes, reached by name under /repos or by id under /repositories. */
   function repositoryRoute(
-    found: { installation: Installation; repository: Repository }, rest: string, url: URL, method: string, body: string,
+    found: { installation: Installation; repository: Repository }, rest: string, url: URL, method: string, body: string, accept: string,
   ): Reply {
     const { installation: i, repository: r } = found;
     let n: RegExpExecArray | null;
@@ -390,6 +390,7 @@ export async function run() {
       const want = n[1] ?? "";
       if (!shaOrBranchHead(i, r, url.searchParams.get("ref") ?? r.default_branch)) return notFound;
       const content = r.files[want];
+      if (content !== undefined && accept === "application/vnd.github.raw") return { status: 200, body: content, type: "text/plain; charset=utf-8" };
       if (content !== undefined) {
         return { status: 200, json: { type: "file", path: want, name: want.split("/").at(-1), size: content.length, encoding: "base64", content: Buffer.from(content).toString("base64") } };
       }
@@ -589,12 +590,12 @@ export async function run() {
       if (rest === "") return { status: 200, json: repositoryJson(found.installation, found.repository) };
       if (/^\/commits\/[0-9a-f]{40}\/check-runs$/.test(rest)) return { status: 200, json: { total_count: 0, check_runs: [] } };
       if (/^\/check-runs(\/\d+)?$/.test(rest) && method !== "GET") return { status: 200, json: { id: checkRunId++ } };
-      return repositoryRoute(found, rest, url, method, body);
+      return repositoryRoute(found, rest, url, method, body, request.headers.accept ?? "");
     }
     if ((m = /^\/repos\/([^/]+)\/([^/]+)(\/.*)?$/.exec(path))) {
       const found = byName(who, m[1] ?? "", m[2] ?? "");
       if (!found) return notFound;
-      return repositoryRoute(found, m[3] ?? "", url, method, body);
+      return repositoryRoute(found, m[3] ?? "", url, method, body, request.headers.accept ?? "");
     }
     if ((m = /^\/([^/]+)\/([^/]+)\/legacy\.tar\.gz\/([0-9a-f]{40})$/.exec(path))) {
       const sha = m[3] ?? "";

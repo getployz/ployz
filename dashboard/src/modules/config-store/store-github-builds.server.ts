@@ -145,7 +145,7 @@ export const startStoreGithubBuild = Effect.fn("StoreGithub.start")(function* (o
     const workflow = yield* checkGithubBuildWorkflow(access, target.repositoryId);
     const repository = workflow.fullName ?? target.repository;
     if (workflow.readiness === "no_permission") return yield* skip(`the Ployz GitHub App can't run Actions in ${repository}`);
-    if (workflow.readiness !== "ready" || !workflow.fullName || !workflow.defaultBranch) {
+    if (workflow.readiness === "setup_needed" || !workflow.fullName || !workflow.defaultBranch) {
       return yield* skip(`${repository} has no .github/workflows/ployz-build.yml on its default branch`);
     }
     const lacking = yield* serversLackingGrants(organizationId);
@@ -169,7 +169,6 @@ export const startStoreGithubBuild = Effect.fn("StoreGithub.start")(function* (o
     if (start.kind === "approved") {
       // A commit a person approved or reviewed under a rule builds on the rule's workflow, on its branch, at that
       // commit; the grant Machine checks the commit is the one the person signed for.
-      // The rule's workflow names Cloud's origin itself, and declares only the commit input.
       const run = yield* dispatchApprovedGithubBuild({
         access, repositoryId: target.repositoryId, branch: start.branch, workflow: start.workflow, commit: start.commit,
       });
@@ -182,6 +181,8 @@ export const startStoreGithubBuild = Effect.fn("StoreGithub.start")(function* (o
     if (start.kind !== "dispatch") return done;
     // A rule build runs the rule's own template, whose builder the grant Machine checks. Through the minter, Cloud
     // dispatches only its own.
+    // The rule template takes no build input, so GitHub would refuse this dispatch.
+    if (workflow.template === "rule") return yield* skip(`${repository}'s .github/workflows/ployz-build.yml builds only under its rules`);
     if (!workflow.dispatchable) return yield* skip(`${repository}'s .github/workflows/ployz-build.yml isn't the one Ployz offers`);
     const run = yield* dispatchGithubBuildWorkflow({
       access, repositoryId: target.repositoryId, branch: workflow.defaultBranch, inputs: { build: target.build, runner: start.runner },

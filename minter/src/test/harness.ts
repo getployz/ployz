@@ -52,7 +52,7 @@ export interface Call {
 }
 
 export type Reply = Response | { status?: number; body?: unknown };
-export type StubRoutes = Record<string, (call: Call) => Reply>;
+export type StubRoutes = Record<string, (call: Call) => Reply | Promise<Reply>>;
 
 export const json = (body: unknown, status = 200) => ({ status, body });
 export const raw = (text: string) => new Response(text, { status: 200 });
@@ -84,7 +84,7 @@ afterAll(() => {
 });
 
 /** A minter wired to a stub GitHub. Every audit line and response it writes is scanned for secrets when the file ends. */
-export function harness(routes: StubRoutes = {}, config: Partial<MinterConfig> = {}) {
+export function harness(routes: StubRoutes = {}, config: Partial<MinterConfig> = {}, now?: () => number) {
   const calls: Call[] = [];
   const audit: AuditLine[] = [];
   const fetch: typeof globalThis.fetch = async (input, init) => {
@@ -99,12 +99,13 @@ export function harness(routes: StubRoutes = {}, config: Partial<MinterConfig> =
     calls.push(call);
     const key = `${call.method} ${call.path}`;
     const handler = routes[key] ?? (/^POST \/app\/installations\/\d+\/access_tokens$/.test(key) ? mintToken : undefined);
-    const reply = handler ? handler(call) : notFound();
+    const reply = await (handler ? handler(call) : notFound());
     return reply instanceof Response ? reply : new Response(reply.body === undefined ? null : JSON.stringify(reply.body), { status: reply.status ?? 200 });
   };
-  const github = new Github(new PemSigner(PEM), APP_ID, { api: API, web: "https://github.test" }, fetch);
+  const github = new Github(new PemSigner(PEM), APP_ID, { api: API, web: "https://github.test" }, fetch, now);
   const handle = createMinter({
     github,
+    ...(now === undefined ? {} : { now }),
     audit: (line) => {
       audit.push(line);
       lines.push(line);

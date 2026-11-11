@@ -2,15 +2,26 @@ import { useState } from "react";
 import { Link } from "@tanstack/react-router";
 import { CheckIcon, ChevronRightIcon, ServerIcon } from "lucide-react";
 import { GitHubMarkIcon } from "#/components/icons/github-mark";
+import { CopyButton } from "#/components/copy-button";
 import { SettingsList, SettingsListItem } from "#/components/settings/settings-list";
 import { SettingsRow, SettingsSection } from "#/components/settings/settings-section";
 import { useCommitHold } from "#/components/stageable/use-commit-hold";
 import { Button } from "#/components/ui/button";
+import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "#/components/ui/dialog";
 import { Select, SelectContent, SelectGroup, SelectItem, SelectTrigger, SelectValue } from "#/components/ui/select";
 import type { BuildOrder } from "@ployz/sdk";
 import { requireView, useStoreView } from "#/modules/config-store/store-view.queries";
 import { useStoreWriter } from "#/modules/config-store/store-write";
-import { githubBuildRepositoryKey, githubBuildWorkflowUrl, type GithubBuildRepository } from "#/modules/github/github-build-workflow";
+import {
+  awaitsWorkflowCommit,
+  GITHUB_BUILD_WORKFLOW_FILE,
+  GITHUB_WORKFLOW_TEMPLATES,
+  githubBuildRepositoryKey,
+  githubBuildWorkflowEditUrl,
+  githubBuildWorkflowUrl,
+  type GithubBuildRepository,
+  type GithubWorkflowTemplate,
+} from "#/modules/github/github-build-workflow";
 import { useGithubBuildRepositories, useGithubWebOrigin } from "#/modules/github/github.queries";
 import { volumeSupportText } from "#/modules/machines/server-status";
 import { useServerList, type ServerListItem } from "#/modules/machines/use-servers";
@@ -84,17 +95,20 @@ function WhereBuildsRun({ organizationSlug }: { organizationSlug: string }) {
 function GithubActions({ organizationSlug }: { organizationSlug: string }) {
   // ponytail: "waiting for the commit" lives in this tab only; persist it if teammates need to see it.
   const [opened, setOpened] = useState<ReadonlySet<string>>(new Set());
+  const [updating, setUpdating] = useState<GithubBuildRepository | null>(null);
+  const page = (repository: GithubBuildRepository, defaultBranch: string) => ({ web: githubWeb, fullName: repository.fullName, defaultBranch });
   const { data: repositories, error } = useGithubBuildRepositories(organizationSlug, opened);
   const githubWeb = useGithubWebOrigin();
   const waiting = (repository: GithubBuildRepository) =>
-    repository.readiness === "setup_needed" && opened.has(githubBuildRepositoryKey(repository));
+    awaitsWorkflowCommit(repository) && opened.has(githubBuildRepositoryKey(repository));
+  const open = (repository: GithubBuildRepository) => setOpened((current) => new Set(current).add(githubBuildRepositoryKey(repository)));
 
   if (!repositories?.length && !error) return null;
   const ready = repositories?.filter((repository) => repository.readiness === "ready").length ?? 0;
 
   return (
     <SettingsSection id="github-actions" title="GitHub Actions" description={repositories
-      ? `${ready} of ${repositories.length} repositories set up. Each needs one small workflow file. It only runs when Ployz starts a build, and build secrets are sent to the runner.`
+      ? `${ready} of ${repositories.length} repositories set up. Each needs one small workflow file. It runs when Ployz starts a build, or on each push under an automatic deploy rule. Build secrets are sent to the runner.`
       : "Could not check the repositories on GitHub."}>
       <SettingsList label="Repositories">
         {repositories?.map((repository) => (
@@ -104,23 +118,30 @@ function GithubActions({ organizationSlug }: { organizationSlug: string }) {
             label={repository.fullName}
             hint={repository.readiness === "no_permission"
               ? "Installation lacks permission"
-              : waiting(repository) ? "Waiting for commit" : undefined}
+              : waiting(repository) ? "Waiting for commit"
+              : repository.readiness === "outdated" ? "Uses an older workflow" : undefined}
             commit="none"
             actions={repository.readiness === "ready" ? (
               <CheckIcon className="size-4 text-success" aria-label="Set up" />
-            ) : repository.readiness === "no_permission" || waiting(repository) || repository.defaultBranch === null ? undefined : (
+            ) : repository.readiness === "no_permission" || waiting(repository) || repository.defaultBranch === null ? undefined
+            : repository.readiness === "outdated" ? (
+              <Button size="sm" variant="outline" onClick={() => setUpdating(repository)}>Update workflow</Button>
+            ) : repository.template === "rule" ? (
+              // The rule template comes with advice on which pushes build, so it opens the dialog first.
+              <Button size="sm" variant="outline" onClick={() => setUpdating(repository)}>Add workflow</Button>
+            ) : (
               <Button
                 size="sm"
                 variant="outline"
                 nativeButton={false}
                 render={
                   <a
-                    href={githubBuildWorkflowUrl({ web: githubWeb, fullName: repository.fullName, defaultBranch: repository.defaultBranch })}
+                    href={githubBuildWorkflowUrl({ ...page(repository, repository.defaultBranch), template: repository.template })}
                     target="_blank"
                     rel="noreferrer"
                   />
                 }
-                onClick={() => setOpened((current) => new Set(current).add(githubBuildRepositoryKey(repository)))}
+                onClick={() => open(repository)}
               >
                 Add workflow ↗
               </Button>
@@ -128,7 +149,66 @@ function GithubActions({ organizationSlug }: { organizationSlug: string }) {
           />
         ))}
       </SettingsList>
+      {updating !== null && updating.defaultBranch !== null ? (
+        <WorkflowDialog
+          adding={updating.readiness !== "outdated"}
+          url={updating.readiness === "outdated"
+            ? githubBuildWorkflowEditUrl(page(updating, updating.defaultBranch))
+            : githubBuildWorkflowUrl({ ...page(updating, updating.defaultBranch), template: updating.template })}
+          defaultBranch={updating.defaultBranch}
+          template={updating.template}
+          ruleBranch={updating.ruleBranch}
+          onOpened={() => {
+            open(updating);
+            setUpdating(null);
+          }}
+          onClose={() => setUpdating(null)}
+        />
+      ) : null}
     </SettingsSection>
+  );
+}
+
+/**
+ * The file to copy, and GitHub's page to commit it on: its new-file page filled in, or its editor on the old file.
+ * Cloud never writes to the repository.
+ */
+function WorkflowDialog({ adding, url, defaultBranch, template, ruleBranch, onOpened, onClose }: {
+  adding: boolean; url: string; defaultBranch: string; template: GithubWorkflowTemplate; ruleBranch: string | null;
+  onOpened: () => void; onClose: () => void;
+}) {
+  const workflow = GITHUB_WORKFLOW_TEMPLATES[template];
+  const file = <span className="font-mono">.github/workflows/{GITHUB_BUILD_WORKFLOW_FILE}</span>;
+  return (
+    <Dialog open onOpenChange={(next) => !next && onClose()}>
+      <DialogContent className="sm:max-w-xl">
+        <DialogHeader>
+          <DialogTitle>{adding ? "Add workflow" : "Update workflow"}</DialogTitle>
+          <DialogDescription>
+            {adding ? <>Add {file} to</> : <>Replace {file} on</>} <span className="font-mono">{defaultBranch}</span> with this file. It runs
+            Ployz's builder at a fixed commit, so a change to the builder can't reach your builds.
+          </DialogDescription>
+          {template === "rule" ? (
+            <DialogDescription>
+              Every push to a branch starts it, and each server builds only what your rules allow.
+              {ruleBranch === null ? null : (
+                <> To skip pushes to other branches, set the repository variable <span className="font-mono">PLOYZ_BRANCH</span> to{" "}
+                  <span className="font-mono">{ruleBranch}</span>, unless the repository has a preview rule.</>
+              )}
+            </DialogDescription>
+          ) : null}
+        </DialogHeader>
+        <pre aria-label="New workflow file" className="max-h-80 overflow-auto rounded-md border bg-muted/40 p-3 font-mono text-xs leading-5">
+          {workflow}
+        </pre>
+        <DialogFooter>
+          <CopyButton value={workflow} label="Copy file" showLabel variant="outline" />
+          <Button nativeButton={false} render={<a href={url} target="_blank" rel="noreferrer" />} onClick={onOpened}>
+            Open in GitHub ↗
+          </Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
   );
 }
 
