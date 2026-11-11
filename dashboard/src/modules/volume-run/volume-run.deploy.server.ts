@@ -20,6 +20,8 @@ import {
   laneInputOf,
   laneTarget,
   type MachineRef,
+  moveApproved,
+  type MoveApproved,
   nameRefusal,
   observeMembers,
   observeVolumeMembers,
@@ -240,10 +242,12 @@ export const fenceTaken = Effect.fn("VolumeRun.fenceTaken")(function* (run: RunC
     // nothing else would.
     const { epoch } = yield* takeEpoch(run, inngestRunId, observedEpoch(floored.members));
     const start = { kind: "kept", container_id: kept.containerId } as const;
-    const promoted = yield* setVolumeCopy(run, inngestRunId, writer.machine, expectOf(copy), { kind: "writer", at: copy.newest.guid, epoch, start });
+    // The Move's approval covers the resume or the start that ends it, as it covers its release.
+    const taken = run.kind === "deploy" ? run.args.resume : null;
+    const promoted = yield* setVolumeCopy(run, inngestRunId, writer.machine, expectOf(copy), { kind: "writer", at: copy.newest.guid, epoch, start }, taken?.approval);
     // A source that already handed the Volume off refuses with its receipt, and the Move it decided finishes forward.
     if (!promoted.ok && promoted.reason === "handed_off" && promoted.receipt !== undefined) {
-      return yield* startHanded(run, inngestRunId, floored.members, writer.machine, promoted.receipt);
+      return yield* startHanded(run, inngestRunId, floored.members, writer.machine, promoted.receipt, moveApproved(taken ?? {}));
     }
     if (!promoted.ok) return yield* Effect.fail(retriable(promoted.reason) ? new Error(promoted.message) : new NonRetriableError(promoted.message));
     return { on: writer.machine.name };
@@ -257,13 +261,14 @@ const startHanded = Effect.fn("VolumeRun.startHanded")(function* (
   members: readonly AnsweredMember[],
   from: MachineRef,
   receipt: MachineSigned,
+  approved: MoveApproved | undefined,
 ) {
   const handed = handedTo(receipt);
   const target = handed === null ? undefined : members.find((member) => member.machine.id === handed.to);
   if (handed === null || target === undefined || target.view.copy === null) {
     return yield* Effect.fail(new NonRetriableError(`${run.volumeName} was handed off to a Server that did not answer with its copy; Deploy again once it does`));
   }
-  const started = yield* startWriter(run, inngestRunId, { to: target.machine, from, expect: expectOf(target.view.copy), at: handed.at, epoch: handed.epoch, receipt });
+  const started = yield* startWriter(run, inngestRunId, { to: target.machine, from, expect: expectOf(target.view.copy), at: handed.at, epoch: handed.epoch, approved, receipt });
   if (!started.ok) return yield* Effect.fail(retriable(started.reason) ? new Error(started.message) : new NonRetriableError(started.message));
   return { on: target.machine.name };
 });

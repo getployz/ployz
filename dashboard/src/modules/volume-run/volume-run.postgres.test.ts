@@ -5005,6 +5005,32 @@ describe("volume runs", () => {
       expect(machines[1]?.copy).toMatchObject({ kind: "root", readonly: false, epoch: 2 });
     });
 
+    it("over an approved Move, the Deploy resumes A under the Move's approval", async () => {
+      const cut = afterCut();
+      const service = asTestDouble<ResolvedServiceSpec>()({ name: "web" });
+      const run = await requested({ kind: "move", args: { to: "fsn-2", approval: APPROVAL, service } });
+      await harness.pool.query("update volume_run set state = 'running', inngest_run_id = 'run-move', epoch = 1, phase = 'warm' where id = $1", [run.id]);
+      const [placed] = await place();
+
+      expect(await fence(placed)).toEqual({ on: "fsn-1" });
+
+      expect(sent.at(-1)).toMatchObject({ approval: APPROVAL, want: { kind: "writer", at: cut.guid, start: { kind: "kept", container_id: "web-fsn-1" } } });
+    });
+
+    it("over an approved Move A handed off, the Deploy starts B under the Move's approval, spec and A's receipt", async () => {
+      const cut = afterCut();
+      const receipt = receiptFor(idOf("fsn-2"), cut.guid, 2);
+      named("fsn-1").handedOff = { at: cut.guid, receipt };
+      const service = asTestDouble<ResolvedServiceSpec>()({ name: "web" });
+      const run = await requested({ kind: "move", args: { to: "fsn-2", approval: APPROVAL, service } });
+      await harness.pool.query("update volume_run set state = 'running', inngest_run_id = 'run-move', epoch = 1, phase = 'warm' where id = $1", [run.id]);
+      const [placed] = await place();
+
+      expect(await fence(placed)).toEqual({ on: "fsn-2" });
+
+      expect(sent.at(-1)).toMatchObject({ approval: APPROVAL, receipt, want: { kind: "writer", at: cut.guid, epoch: 2, start: { kind: "create", resolved_spec: service } } });
+    });
+
     it("a cut that flips A between the observe and the floor: the promote still starts the stopped app on A", async () => {
       const cut = newSnap("f-1");
       machines = [{ name: "fsn-1", pool: true, copy: writerCopy(base, 1, true) }, { name: "fsn-2", pool: true, copy: slotCopy(cut) }];

@@ -74,10 +74,11 @@ export type VolumeRunArgs = {
    */
   resize: { readonly maximum_bytes: number } & Approved;
   /**
-   * A Deploy's own lane while its Services run; `resume` is the move it took over, requested again once it ends. `hold`
-   * marks a lane on a Volume no run held: it took nothing, so it is never fenced and leaves no row when the Deploy ends.
+   * A Deploy's own lane while its Services run; `resume` is the move it took over, with its approval and spec, requested
+   * again once it ends. `hold` marks a lane on a Volume no run held: it took nothing, so it is never fenced and leaves no
+   * row when the Deploy ends.
    */
-  deploy: { readonly deployment: string; readonly resume: Destination | null; readonly hold?: true };
+  deploy: { readonly deployment: string; readonly resume: (Destination & Approved & Starting) | null; readonly hold?: true };
 };
 export type AnyVolumeRunArgs = VolumeRunArgs[VolumeRunKind];
 
