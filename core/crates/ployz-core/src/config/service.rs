@@ -273,6 +273,9 @@ pub enum BuildMethod {
     Railpack,
 }
 
+/// The Dockerfile a Dockerfile Build reads when `dockerfilePath` is unset.
+pub const DEFAULT_DOCKERFILE_PATH: &str = "Dockerfile";
+
 /// Build settings for the selected Build Method.
 #[derive(Clone, Debug, Default, Eq, PartialEq, Serialize, Deserialize, TS)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
