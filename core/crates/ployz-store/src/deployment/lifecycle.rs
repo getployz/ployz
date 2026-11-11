@@ -380,7 +380,7 @@ pub(crate) fn forgettable(
     environment: &EnvironmentId,
     trusted: &crate::Trusted,
 ) -> Result<Option<Outcome>, RpcError> {
-    if crate::removal::ran(tx, environment)?.is_none() {
+    if ran(tx, environment)?.is_none() {
         return Ok(Some(Outcome::NeverRan));
     }
     Ok(trusted.no_servers().then_some(Outcome::Forgotten))

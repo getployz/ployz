@@ -369,6 +369,40 @@ pub(crate) fn last_ran(
     )
 }
 
+/// The Deployment through which `environment` may still run on the Servers: one
+/// in flight, or the last that ran unless it was a removal that applied. None
+/// when nothing ever ran or its removal applied.
+pub(crate) fn on_servers(
+    tx: &mut dyn Tx,
+    environment: &EnvironmentId,
+) -> Result<Option<DeploymentSummary>, RpcError> {
+    match in_flight(tx, environment)? {
+        Some(running) => Ok(Some(running)),
+        None => ran(tx, environment),
+    }
+}
+
+/// The last Deployment that ran `environment` on the Servers, unless it was a
+/// removal that applied. None when nothing of it ever ran, or its removal applied.
+pub(crate) fn ran(
+    tx: &mut dyn Tx,
+    environment: &EnvironmentId,
+) -> Result<Option<DeploymentSummary>, RpcError> {
+    Ok(last_ran(tx, environment)?
+        .filter(|ran| !(ran.remove && ran.status == DeploymentStatus::Applied)))
+}
+
+/// `environment`'s latest Deployment, when that removes it.
+pub(crate) fn latest_removal(
+    tx: &mut dyn Tx,
+    environment: &EnvironmentId,
+) -> Result<Option<DeploymentSummary>, RpcError> {
+    Ok(history(tx, environment, 1)?
+        .into_iter()
+        .next()
+        .filter(|latest| latest.remove))
+}
+
 /// The Saved revision `environment`'s latest applied Deployment shipped: what its
 /// Servers run. None before one applied, or once a removal applied.
 pub(crate) fn live(

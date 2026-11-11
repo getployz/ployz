@@ -10,8 +10,8 @@ use ts_rs::TS;
 
 use super::mark::{self, Accepted, Closed, Evidence, Mark, State};
 use super::{
-    Left, LeftStatus, Removal, Residual, Target, Waiting, guard, guard_removal, latest, members,
-    next, on_servers, purge, teardown_order,
+    Left, LeftStatus, Removal, Residual, Target, Waiting, guard, guard_removal, next,
+    teardown_order,
 };
 use crate::automation::{Automated, Skipped};
 use crate::deployment::admit::{AdmitRemoval, ShutDown};
@@ -51,13 +51,15 @@ enum Standing {
 
 fn standing(tx: &mut dyn Tx, mark: &Mark, environment: &Environment) -> Result<Standing, RpcError> {
     let id = &environment.summary.id;
-    if on_servers(tx, id)?.is_none() {
+    if deployment::on_servers(tx, id)?.is_none() {
         return Ok(Standing::Gone);
     }
     if let Some(running) = deployment::in_flight(tx, id)? {
         return Ok(Standing::InFlight(Box::new(running)));
     }
-    if latest(tx, id)?.is_some_and(|latest| latest.status == DeploymentStatus::Unknown) {
+    if deployment::latest_removal(tx, id)?
+        .is_some_and(|latest| latest.status == DeploymentStatus::Unknown)
+    {
         return Ok(Standing::Unknown);
     }
     let structural = match mark.target {
@@ -82,7 +84,7 @@ pub(super) fn alive(tx: &mut dyn Tx, mark: &Mark) -> Result<Vec<EnvironmentId>, 
     match &mark.target {
         Target::Environment(id) => Ok(vec![id.clone()]),
         Target::Project(project) => {
-            let members = members(tx, project)?;
+            let members = scope::members(tx, project)?;
             let default = default_of(tx, project)?;
             Ok(teardown_order(&members, &default)
                 .into_iter()
@@ -111,7 +113,7 @@ pub(crate) fn due(tx: &mut dyn Tx, who: &Actor) -> Result<Vec<Due>, RpcError> {
             if !matches!(standing(tx, &mark, &environment)?, Standing::Due) {
                 continue;
             }
-            let failed_on = match latest(tx, &member)? {
+            let failed_on = match deployment::latest_removal(tx, &member)? {
                 Some(failed) if failed.status == DeploymentStatus::Failed => {
                     deployment::failed_on(tx, &failed.id)?
                 }
@@ -201,14 +203,14 @@ fn services(environment: &Environment) -> Result<Vec<ServiceName>, RpcError> {
 fn finish(tx: &mut dyn Tx, mark: &mut Mark) -> Result<Option<Vec<EnvironmentSummary>>, RpcError> {
     let mut gone = Vec::new();
     for member in alive(tx, mark)? {
-        if on_servers(tx, &member)?.is_some() {
+        if deployment::on_servers(tx, &member)?.is_some() {
             return Ok(None);
         }
         gone.push(scope::load_by_id(tx, &member)?);
     }
     let mut residuals = Vec::new();
     for environment in &gone {
-        let forgotten = latest(tx, &environment.summary.id)?
+        let forgotten = deployment::latest_removal(tx, &environment.summary.id)?
             .is_some_and(|latest| latest.outcome == Some(Outcome::Forgotten));
         if forgotten {
             residuals.push(Residual {
@@ -224,7 +226,7 @@ fn finish(tx: &mut dyn Tx, mark: &mut Mark) -> Result<Option<Vec<EnvironmentSumm
     }
     mark.residuals = residuals;
     match &mark.target {
-        Target::Environment(id) => purge(tx, id)?,
+        Target::Environment(id) => scope::purge(tx, id)?,
         Target::Project(id) => {
             tx.execute(
                 "DELETE FROM config_project WHERE id = ?1",
@@ -521,7 +523,8 @@ fn stalled(
     trusted: &Trusted,
 ) -> Result<(), RpcError> {
     let id = &environment.summary.id;
-    let Some(failed) = latest(tx, id)?.filter(|latest| latest.status == DeploymentStatus::Failed)
+    let Some(failed) = deployment::latest_removal(tx, id)?
+        .filter(|latest| latest.status == DeploymentStatus::Failed)
     else {
         return Ok(());
     };

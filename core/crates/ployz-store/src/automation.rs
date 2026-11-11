@@ -676,7 +676,7 @@ fn admit(
     };
     // Being removed: a push leaves it be. A shut-down PR Environment (its removal
     // applied) comes back on: the push deploys all of it again.
-    let removal = crate::removal::latest(tx, id)?.filter(|removal| {
+    let removal = crate::deployment::latest_removal(tx, id)?.filter(|removal| {
         !matches!(
             removal.status,
             DeploymentStatus::Failed | DeploymentStatus::Cancelled
