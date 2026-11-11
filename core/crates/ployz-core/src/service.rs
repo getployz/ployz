@@ -427,6 +427,44 @@ mod tests {
     }
 
     #[test]
+    fn the_newest_container_breaks_a_creation_tie_by_container_id() {
+        let created = |id: char, created_at: i64, service_id: char, image: &str| {
+            let mut observed = observation(
+                id,
+                &ServiceId::parse(service_id.to_string().repeat(32)).unwrap(),
+                "api",
+                ContainerKind::ServiceContainer,
+                image,
+            );
+            observed
+                .try_update(|parts| {
+                    parts.created_at_unix_nanos = created_at;
+                    parts.resolved_spec.mode = crate::ServiceMode::Global;
+                })
+                .unwrap();
+            observed
+        };
+
+        for order in [['5', '7', '9'], ['9', '7', '5'], ['7', '9', '5']] {
+            let containers = order.map(|id| match id {
+                '5' => created('5', 8, 'a', "old-id"),
+                '7' => created('7', 8, 'b', "tie"),
+                _ => created('9', 3, 'c', "older"),
+            });
+            let services = super::derive_services(containers);
+            let service = services.first().unwrap();
+
+            assert_eq!(
+                service.service_id,
+                ServiceId::parse("b".repeat(32)).unwrap()
+            );
+            let slot = service.observed_global_slot().unwrap();
+            assert_eq!(slot.source, ContainerId::parse("7".repeat(64)).unwrap());
+            assert_eq!(slot.resolved_spec().container.image, "tie");
+        }
+    }
+
+    #[test]
     fn service_selectors_resolve_qualified_names_and_unique_short_names() {
         let staging_id = ServiceId::parse("a".repeat(32)).unwrap();
         let prod_id = ServiceId::parse("b".repeat(32)).unwrap();
