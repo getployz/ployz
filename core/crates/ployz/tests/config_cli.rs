@@ -4133,9 +4133,9 @@ fn the_catalog_describes_settings_without_a_store() {
     ] {
         assert_eq!(classified(&format!("config {action}")), ("never", "cloud"));
     }
-    for action in ["move", "release"] {
-        assert_eq!(classified(&format!("volume {action}")), ("never", "cloud"));
-    }
+    assert_eq!(classified("volume release"), ("never", "cloud"));
+    // A move asks before a Device signs it, when the Servers enforce device approval.
+    assert_eq!(classified("volume move"), ("depends", "cloud"));
     assert_eq!(classified("volume mirror"), ("never", "cloud"));
     assert_eq!(classified("volume mirror rm"), ("always", "cloud"));
     assert_eq!(classified("volume restore"), ("always", "cloud"));

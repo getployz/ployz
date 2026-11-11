@@ -1035,6 +1035,39 @@ async fn a_machine_that_does_not_enforce_sends_to_any_peer() {
     assert!(peered.fixture.records_empty());
 }
 
+/// An Operator's cut, which stops the Writer's Service, needs a Move approval under
+/// enforcement; a promotion and a snapshot without one go on as before E4.
+#[tokio::test]
+async fn a_cut_needs_an_approval() {
+    let fixture = enforcing().await;
+    assert_eq!(
+        refused(
+            fixture
+                .machine
+                .admit_operator_copy(None, &data(), CopyStep::Cut)
+                .await
+        ),
+        Some(AuthorityRefusal::Unsigned {
+            purpose: ployz_core::authority::Purpose::Volume
+        })
+    );
+    for step in [
+        CopyStep::Snapshot,
+        CopyStep::Promote {
+            transition: CopyTransition::MirrorToWriter,
+        },
+    ] {
+        assert!(matches!(
+            fixture
+                .machine
+                .admit_operator_copy(None, &data(), step)
+                .await,
+            Ok(None)
+        ));
+    }
+    assert!(fixture.records_empty());
+}
+
 #[tokio::test]
 async fn a_pull_needs_an_approval_that_names_this_machine_and_its_source() {
     let peered = peered().await;
