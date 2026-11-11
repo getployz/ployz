@@ -6,7 +6,9 @@
 mod plan;
 mod put;
 mod row;
+mod setting;
 
 pub use plan::*;
 pub use put::*;
 pub use row::*;
+pub use setting::*;
