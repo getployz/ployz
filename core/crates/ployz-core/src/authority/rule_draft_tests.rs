@@ -3,6 +3,8 @@
 use serde_json::{Value, json};
 use sha2::{Digest as _, Sha256};
 
+use std::collections::BTreeMap;
+
 use super::*;
 use crate::authority::keys::Signer;
 use crate::authority::restart::OwnPrompt;
@@ -142,7 +144,8 @@ fn the_summary_shows_what_the_body_pins() {
     let web = &summary.services[0];
     assert_eq!(
         web.builds,
-        "Dockerfile in ., for linux/amd64, with the Actions cache"
+        "Dockerfile Dockerfile, context ., platforms linux/amd64, with the Actions cache, \
+         build args PLAIN=one, build secrets SECRET"
     );
     assert!(
         web.changes.is_empty(),
@@ -152,9 +155,403 @@ fn the_summary_shows_what_the_body_pins() {
         web.settings,
         [
             "variables PLAIN=one, SECRET (sealed)",
-            r#"pre-deploy ["migrate"]"#
+            r#"pre-deploy ["migrate"]"#,
+            r#"mode {"mode":"replicated","replicas":1}"#,
+            r#"restart {"name":"unless-stopped"}"#
         ]
     );
+}
+
+/// Each build setting Cloud could plant changes the body the person signs and what they
+/// read: the builder runs the signed policy exactly.
+#[test]
+fn every_drafted_build_setting_shows() {
+    let base = golden();
+    for (path, value, shown) in [
+        (
+            "/root_dir",
+            json!("apps/web"),
+            "Dockerfile Dockerfile, context apps/web,",
+        ),
+        (
+            "/build/dockerfilePath",
+            json!("evil.Dockerfile"),
+            "Dockerfile evil.Dockerfile, context .,",
+        ),
+        (
+            "/build/buildMethod",
+            json!("railpack"),
+            "Railpack, with the build command it detects, context .,",
+        ),
+    ] {
+        let (parent, field) = path.rsplit_once('/').unwrap();
+        let mut view = view_json();
+        view["sources"][0].pointer_mut(parent).unwrap()[field] = value;
+        let planted = basis(view);
+        let next = AutoDeployRule::draft(&planted, &planted.branch_services(), terms())
+            .unwrap()
+            .drafted(&planted)
+            .unwrap();
+        assert_ne!(next.body, base.body, "{path} is signed");
+        let builds = &next.summary.services[0].builds;
+        assert!(builds.starts_with(shown), "{path}: {builds}");
+    }
+    let mut view = view_json();
+    view["sources"][0]["build"] = json!({"buildMethod": "railpack", "command": "curl x | sh"});
+    let planted = basis(view);
+    let railpack = AutoDeployRule::draft(&planted, &planted.branch_services(), terms()).unwrap();
+    assert!(
+        builds(&railpack.services[0].policy)
+            .as_str()
+            .starts_with(r#"Railpack, with build command "curl x | sh", context .,"#),
+        "{}",
+        builds(&railpack.services[0].policy)
+    );
+}
+
+/// The golden rule with its one Service's policy replaced, drafted again.
+fn with_policy(policy: BuildPolicy) -> RuleDraft {
+    let mut rule: AutoDeployRule = canonical::from_canonical(&golden().body).unwrap();
+    rule.services[0].policy = policy;
+    rule.drafted(&basis(view_json())).unwrap()
+}
+
+/// Every field and variant of a build policy changes both the body the person signs and
+/// what they read, and no two policies read alike: a Dockerfile named `Railpack` is not
+/// the Railpack method.
+#[test]
+fn every_build_policy_field_shows() {
+    let base = golden();
+    let policy = || {
+        canonical::from_canonical::<AutoDeployRule>(&base.body)
+            .unwrap()
+            .services[0]
+            .policy
+            .clone()
+    };
+    let changed: Vec<(&str, BuildPolicy)> = vec![
+        ("dockerfile path", {
+            let mut policy = policy();
+            policy.method = PolicyMethod::Dockerfile {
+                path: "web.Dockerfile".into(),
+            };
+            policy
+        }),
+        ("dockerfile named Railpack", {
+            let mut policy = policy();
+            policy.method = PolicyMethod::Dockerfile {
+                path: "Railpack".into(),
+            };
+            policy
+        }),
+        ("railpack detected", {
+            let mut policy = policy();
+            policy.method = PolicyMethod::Railpack { command: None };
+            policy
+        }),
+        ("railpack command", {
+            let mut policy = policy();
+            policy.method = PolicyMethod::Railpack {
+                command: Some("make".into()),
+            };
+            policy
+        }),
+        ("context", {
+            let mut policy = policy();
+            policy.context = "apps/web".into();
+            policy
+        }),
+        ("target", {
+            let mut policy = policy();
+            policy.target = Some("release".into());
+            policy
+        }),
+        ("arg value", {
+            let mut policy = policy();
+            policy.args.insert("PLAIN".into(), "two".into());
+            policy
+        }),
+        ("arg added", {
+            let mut policy = policy();
+            policy.args.insert("MORE".into(), "x".into());
+            policy
+        }),
+        ("args none", {
+            let mut policy = policy();
+            policy.args.clear();
+            policy
+        }),
+        ("secret added", {
+            let mut policy = policy();
+            policy.secrets.insert("TOKEN".into());
+            policy
+        }),
+        ("secrets none", {
+            let mut policy = policy();
+            policy.secrets.clear();
+            policy
+        }),
+        ("platform added", {
+            let mut policy = policy();
+            policy.platforms.insert("linux/arm64".into());
+            policy
+        }),
+        ("platform other", {
+            let mut policy = policy();
+            policy.platforms = BTreeSet::from(["linux/arm64".to_owned()]);
+            policy
+        }),
+        ("cache off", {
+            let mut policy = policy();
+            policy.cache = PolicyCache::Off;
+            policy
+        }),
+    ];
+    let mut bodies = vec![base.body.clone()];
+    let mut shown = vec![builds(&policy())];
+    for (what, policy) in changed {
+        let draft = with_policy(policy.clone());
+        assert!(!bodies.contains(&draft.body), "{what} is signed");
+        assert_eq!(draft.summary.services[0].builds, builds(&policy).as_str());
+        assert!(
+            !shown.contains(&builds(&policy)),
+            "{what}: {}",
+            builds(&policy)
+        );
+        bodies.push(draft.body);
+        shown.push(builds(&policy));
+    }
+}
+
+/// What a person reads holds only printable ASCII: no carriage return, line feed or
+/// escape sequence can rewrite the terminal.
+fn printable(line: &str) -> bool {
+    line.chars().all(|c| matches!(c, ' '..='~'))
+}
+
+const HOSTILE: &str = "x\r\n\u{1b}[2K\u{9b}1A\u{202e}y";
+const ESCAPED: &str = r#""x\r\n\u{1b}[2K\u{9b}1A\u{202e}y""#;
+
+/// Each string a policy holds, set to text that would rewrite the terminal, shows
+/// escaped instead.
+#[test]
+fn a_planted_control_character_in_a_build_policy_shows_escaped() {
+    let base = || {
+        canonical::from_canonical::<AutoDeployRule>(&golden().body)
+            .unwrap()
+            .services[0]
+            .policy
+            .clone()
+    };
+    let hostile = HOSTILE.to_owned();
+    let planted: Vec<(&str, BuildPolicy)> = vec![
+        ("dockerfile path", {
+            let mut policy = base();
+            policy.method = PolicyMethod::Dockerfile {
+                path: hostile.clone(),
+            };
+            policy
+        }),
+        ("railpack command", {
+            let mut policy = base();
+            policy.method = PolicyMethod::Railpack {
+                command: Some(hostile.clone()),
+            };
+            policy
+        }),
+        ("context", {
+            let mut policy = base();
+            policy.context = hostile.clone();
+            policy
+        }),
+        ("target", {
+            let mut policy = base();
+            policy.target = Some(hostile.clone());
+            policy
+        }),
+        ("arg name", {
+            let mut policy = base();
+            policy.args.insert(hostile.clone(), "v".into());
+            policy
+        }),
+        ("arg value", {
+            let mut policy = base();
+            policy.args.insert("PLAIN".into(), hostile.clone());
+            policy
+        }),
+        ("secret", {
+            let mut policy = base();
+            policy.secrets.insert(hostile.clone());
+            policy
+        }),
+        ("platform", {
+            let mut policy = base();
+            policy.platforms.insert(hostile.clone());
+            policy
+        }),
+    ];
+    for (what, policy) in planted {
+        let line = builds(&policy);
+        assert!(printable(line.as_str()), "{what}: {line}");
+        assert!(line.as_str().contains(ESCAPED), "{what}: {line}");
+    }
+}
+
+/// A map shows each entry's boundary, so one value can't pass for two entries.
+#[test]
+fn a_value_cant_pass_for_two_entries() {
+    let mut one = BuildPolicy::derive(
+        ".",
+        &serde_json::from_value(json!({"buildMethod": "dockerfile"})).unwrap(),
+        &serde_json::from_value(spec_json("web", "one")).unwrap(),
+        BTreeSet::from(["linux/amd64".to_owned()]),
+        PolicyCache::Actions,
+    );
+    one.args = BTreeMap::from([("X".to_owned(), "a, Y=b".to_owned())]);
+    let mut two = one.clone();
+    two.args = BTreeMap::from([
+        ("X".to_owned(), "a".to_owned()),
+        ("Y".to_owned(), "b".to_owned()),
+    ]);
+    assert_ne!(builds(&one), builds(&two));
+    assert!(
+        builds(&one)
+            .as_str()
+            .ends_with(r#"build args X="a, Y=b", build secrets SECRET"#)
+    );
+    assert!(
+        builds(&two)
+            .as_str()
+            .ends_with("build args X=a, Y=b, build secrets SECRET")
+    );
+    let mut secrets = one.clone();
+    secrets.secrets = BTreeSet::from(["A, B".to_owned()]);
+    let mut split = one;
+    split.secrets = BTreeSet::from(["A".to_owned(), "B".to_owned()]);
+    assert_ne!(builds(&secrets), builds(&split));
+
+    let variables = |environment: Value| {
+        let mut spec = spec_json("web", "one");
+        spec["container"]["environment"] = environment;
+        settings(&serde_json::from_value(spec).unwrap())[0].clone()
+    };
+    let one = variables(json!({"X": "a, Y=b"}));
+    let two = variables(json!({"X": "a", "Y": "b"}));
+    assert_eq!(one.as_str(), r#"variables X="a, Y=b""#);
+    assert_eq!(two.as_str(), "variables X=a, Y=b");
+}
+
+/// Each string a spec holds, set to text that would rewrite the terminal, shows escaped.
+#[test]
+fn a_planted_control_character_in_a_setting_shows_escaped() {
+    for (parent, field, value) in [
+        ("/container/environment", "PLAIN", json!(HOSTILE)),
+        ("/container/environment", HOSTILE, json!("v")),
+        ("/pre_deploy", "command", json!([HOSTILE])),
+        ("/pre_deploy", "environment", json!({ HOSTILE: HOSTILE })),
+        ("/container", "user", json!(HOSTILE)),
+        ("/container", "command", json!(["sh", HOSTILE])),
+        ("/container", "sysctls", json!({ HOSTILE: "1" })),
+    ] {
+        let mut spec = spec_json("web", "one");
+        spec.pointer_mut(parent).unwrap()[field] = value;
+        let lines = settings(&serde_json::from_value(spec).unwrap());
+        assert!(
+            lines.iter().all(|line| printable(line.as_str())),
+            "{parent}/{field}: {lines:?}"
+        );
+        assert!(
+            lines.iter().any(|line| line.as_str().contains(ESCAPED)),
+            "{parent}/{field}: {lines:?}"
+        );
+    }
+}
+
+/// The repository, branch and builder a person reads show escaped too.
+#[test]
+fn a_planted_control_character_in_the_source_shows_escaped() {
+    for field in ["repository", "branch"] {
+        let mut view = view_json();
+        view["sources"][0][field] = json!(HOSTILE);
+        let planted = basis(view);
+        let summary = AutoDeployRule::draft(&planted, &planted.branch_services(), terms())
+            .unwrap()
+            .summary(&planted);
+        let shown = match field {
+            "repository" => &summary.repository,
+            _ => &summary.branch,
+        };
+        assert_eq!(shown, ESCAPED, "{field}");
+    }
+    let mut terms = terms();
+    terms.builder.r#ref = HOSTILE.to_owned();
+    let basis = basis(view_json());
+    let summary = AutoDeployRule::draft(&basis, &web(), terms)
+        .unwrap()
+        .summary(&basis);
+    assert!(summary.builder.starts_with(ESCAPED), "{}", summary.builder);
+    assert!(printable(&summary.builder));
+}
+
+/// Each field Cloud could plant in a Saved spec changes what the person reads, since the
+/// template signs it too.
+#[test]
+fn every_signed_setting_shows() {
+    let base = settings(&serde_json::from_value(spec_json("web", "one")).unwrap());
+    for (path, value, shown) in [
+        (
+            "/container/command",
+            json!(["sh", "-c", "curl x"]),
+            r#"command ["sh","-c","curl x"]"#,
+        ),
+        (
+            "/container/entrypoint",
+            json!(["/bin/sh"]),
+            r#"entrypoint ["/bin/sh"]"#,
+        ),
+        ("/container/user", json!("root"), r#"user "root""#),
+        (
+            "/container/cap_add",
+            json!(["SYS_ADMIN"]),
+            r#"cap_add ["SYS_ADMIN"]"#,
+        ),
+        (
+            "/container/sysctls",
+            json!({"net.ipv4.ip_forward": "1"}),
+            r#"sysctls {"net.ipv4.ip_forward":"1"}"#,
+        ),
+        ("/container/privileged", json!(true), "privileged true"),
+        (
+            "/container/network",
+            json!("ingress_holder"),
+            r#"network "ingress_holder""#,
+        ),
+        (
+            "/pre_deploy/user",
+            json!("root"),
+            r#"pre-deploy user "root""#,
+        ),
+        (
+            "/pre_deploy/privileged",
+            json!(true),
+            "pre-deploy privileged true",
+        ),
+        (
+            "/pre_deploy/environment",
+            json!({"TOKEN": "x"}),
+            "pre-deploy variables TOKEN=x",
+        ),
+    ] {
+        let (parent, field) = path.rsplit_once('/').unwrap();
+        let mut spec = spec_json("web", "one");
+        spec.pointer_mut(parent).unwrap()[field] = value;
+        let lines = settings(&serde_json::from_value(spec).unwrap());
+        assert!(
+            lines.iter().any(|line| line.as_str() == shown),
+            "{path}: {lines:?}"
+        );
+        assert_ne!(lines, base, "{path}");
+    }
 }
 
 #[test]
