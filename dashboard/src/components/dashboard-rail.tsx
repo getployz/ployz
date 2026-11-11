@@ -1,4 +1,5 @@
 import { Link } from "@tanstack/react-router";
+import { useCallback, useLayoutEffect, useRef, useState } from "react";
 import { PloyzMark } from "./icons/ployz-logo";
 import type { DashboardNavItem, DashboardNavSection } from "./dashboard-navigation-model";
 import { buttonVariants } from "./ui/button-variants";
@@ -108,15 +109,44 @@ export function PhoneTabBar({ places }: { places: DashboardNavItem[] }) {
   );
 }
 
-/** Phones: the current place's sections, in a strip under the top bar. */
+/**
+ * Phones: the current place's sections, in a strip under the top bar. The strip scrolls, so it opens on the current
+ * section and fades the edge that has more sections past it.
+ */
 export function PhoneSections({ places }: { places: DashboardNavItem[] }) {
   const place = places.find((candidate) => candidate.current && candidate.sections.length);
+  const current = place?.sections.find((section) => section.current)?.label;
+  const scroller = useRef<HTMLDivElement>(null);
+  const [overflow, setOverflow] = useState<"start" | "end" | "both" | undefined>();
+  const measure = useCallback(() => {
+    const strip = scroller.current;
+    if (!strip) return;
+    const before = strip.scrollLeft > 1;
+    const after = strip.scrollLeft + strip.clientWidth < strip.scrollWidth - 1;
+    setOverflow(before && after ? "both" : before ? "start" : after ? "end" : undefined);
+  }, []);
+  useLayoutEffect(() => {
+    const strip = scroller.current;
+    const link = strip?.querySelector<HTMLElement>("[aria-current=page]");
+    if (strip && link) {
+      const stripBox = strip.getBoundingClientRect();
+      const linkBox = link.getBoundingClientRect();
+      strip.scrollTo({ left: strip.scrollLeft + linkBox.left - stripBox.left - (stripBox.width - linkBox.width) / 2 });
+    }
+    measure();
+    if (!strip) return;
+    const resize = new ResizeObserver(measure);
+    resize.observe(strip);
+    return () => resize.disconnect();
+  }, [place?.section, current, measure]);
   if (!place) return null;
   return (
-    <nav aria-label={`${place.label} sections`}
-      className="flex h-10 shrink-0 gap-5 overflow-x-auto border-b bg-background px-4 min-wf-nav:hidden">
-      {place.sections.map((section) => <SectionLink key={section.label} section={section}
-        className="-mb-px flex items-center border-b-2 border-transparent text-sm font-medium whitespace-nowrap text-muted-foreground outline-none hover:text-foreground focus-visible:ring-3 focus-visible:ring-ring aria-[current=page]:border-foreground aria-[current=page]:text-foreground" />)}
+    <nav aria-label={`${place.label} sections`} className="h-10 shrink-0 border-b bg-background min-wf-nav:hidden">
+      <div ref={scroller} onScroll={measure} data-overflow={overflow}
+        className="flex h-full gap-5 overflow-x-auto px-4 data-[overflow=both]:mask-x-from-[calc(100%-2rem)] data-[overflow=end]:mask-r-from-[calc(100%-2rem)] data-[overflow=start]:mask-l-from-[calc(100%-2rem)]">
+        {place.sections.map((section) => <SectionLink key={section.label} section={section}
+          className="-mb-px flex items-center border-b-2 border-transparent text-sm font-medium whitespace-nowrap text-muted-foreground outline-none hover:text-foreground focus-visible:ring-3 focus-visible:ring-ring aria-[current=page]:border-foreground aria-[current=page]:text-foreground" />)}
+      </div>
     </nav>
   );
 }
