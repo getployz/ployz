@@ -1808,9 +1808,7 @@ async fn a_target_promotes_only_on_its_sources_receipt() {
                 .admit_operator_copy(Some(&approval), &data(), promote(None))
                 .await
         ),
-        Some(AuthorityRefusal::Mismatch {
-            field: "a handoff receipt"
-        })
+        Some(AuthorityRefusal::Unreceipted)
     );
     assert_eq!(
         refused(

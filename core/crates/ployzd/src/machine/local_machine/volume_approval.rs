@@ -278,9 +278,7 @@ impl LocalMachine {
                     return Ok(Some(admitted));
                 }
                 let receipt =
-                    receipt.ok_or(Error::VolumeStepRefused(AuthorityRefusal::Mismatch {
-                        field: "a handoff receipt",
-                    }))?;
+                    receipt.ok_or(Error::VolumeStepRefused(AuthorityRefusal::Unreceipted))?;
                 let handed =
                     self.checked_receipt(approval, volume, receipt, Lands::Writer { at, epoch })?;
                 let admitted = self.admitted(approval, volume, &step, Some(&handed))?;

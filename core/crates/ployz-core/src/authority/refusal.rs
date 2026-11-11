@@ -21,6 +21,10 @@ pub enum AuthorityRefusal {
     ApproveOnly { code: DeviceCode, purpose: Purpose },
     #[error("the approval names {field} this request does not match")]
     Mismatch { field: &'static str },
+    #[error(
+        "the move's source has not handed this Volume here; this Machine becomes its writer only with the source's handoff receipt"
+    )]
+    Unreceipted,
     #[error("the approval expired")]
     Expired,
     #[error("this Machine holds no Sealing Key, so it cannot tell which Cluster was approved")]

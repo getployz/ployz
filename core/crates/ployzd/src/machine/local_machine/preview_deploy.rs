@@ -454,6 +454,7 @@ pub(crate) fn refusal_text(refusal: &AuthorityRefusal) -> String {
         | AuthorityRefusal::Unsigned { .. }
         | AuthorityRefusal::NoClusterIdentity
         | AuthorityRefusal::ProofReplayed
+        | AuthorityRefusal::Unreceipted
         | AuthorityRefusal::ForeignMachineKey { .. }
         | AuthorityRefusal::BadMachineSignature { .. }
         | AuthorityRefusal::MalformedMachineStatement { .. } => {
