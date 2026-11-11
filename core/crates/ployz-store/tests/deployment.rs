@@ -8273,3 +8273,62 @@ fn a_narrowed_plan_lowers_only_the_services_it_ships() {
     assert_eq!(names(Vec::new()), ["api", "web"]);
     assert_eq!(names(vec![ServiceName::parse("web").unwrap()]), ["web"]);
 }
+
+/// Reapply `app` as Applied State has it, as a Deployment numbered `n`.
+fn reapply_app(store: &ConfigStore, who: &Actor, n: u8) -> DeploymentSummary {
+    store
+        .write_trusted(
+            who,
+            &Admit::Reapply(ployz_store::Reapply {
+                id: id(n),
+                environment: EnvironmentRef::default(),
+                services: vec![ServiceName::parse("app").unwrap()],
+                message: None,
+            }),
+            &Trusted::default(),
+        )
+        .unwrap()
+}
+
+#[test]
+fn a_reapply_builds_the_upload_a_service_runs_not_one_that_never_ran() {
+    let (store, who) = uploaded_app();
+    let a = runner("cli-a");
+    deploy_sent(&store, &who, 1, Some('a'));
+    store.claim(&id(1), &a).unwrap();
+    store
+        .record(&id(1), &a, RunEvidence::Prepared(preview(&["app"])))
+        .unwrap();
+    store.record(&id(1), &a, succeeded(&["app"])).unwrap();
+    deploy_sent(&store, &who, 2, Some('b'));
+    fail(&store, 2);
+
+    let reapplied = reapply_app(&store, &who, 3);
+    assert_eq!(reapplied.upload, Some(digested('a')));
+    let claimed = store.claim(&id(3), &a).unwrap();
+    assert_eq!(
+        claimed.uploads,
+        std::collections::BTreeMap::from([(
+            ServiceName::parse("app").unwrap(),
+            Some(digested('a').digest)
+        )])
+    );
+}
+
+#[test]
+fn a_deploy_without_an_upload_builds_the_upload_a_service_runs_not_one_that_never_ran() {
+    let (store, who) = uploaded_app();
+    let a = runner("cli-a");
+    deploy_sent(&store, &who, 1, Some('a'));
+    store.claim(&id(1), &a).unwrap();
+    store
+        .record(&id(1), &a, RunEvidence::Prepared(preview(&["app"])))
+        .unwrap();
+    store.record(&id(1), &a, succeeded(&["app"])).unwrap();
+    deploy_sent(&store, &who, 2, Some('b'));
+    fail(&store, 2);
+
+    assert_eq!(deploy_sent(&store, &who, 3, None).upload, Some(digested('a')));
+    let claimed = store.claim(&id(3), &a).unwrap();
+    assert_eq!(claimed.deployment.upload, Some(digested('a')));
+}
