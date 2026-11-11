@@ -90,8 +90,8 @@ async fn a_daemon_that_predates_the_route_is_named_on_on_and_has_nothing_to_remo
 fn router_on(machine: char, runtime: ContainerRuntimeObservation) -> ServiceObservation {
     let identity = QualifiedService::system_tailscale();
     let service_id = ployz_core::ServiceId::parse("c".repeat(32)).unwrap();
-    let observation = ployz_core::ContainerObservation::try_from(
-        ployz_core::ContainerObservationParts {
+    let observation =
+        ployz_core::ContainerObservation::try_from(ployz_core::ContainerObservationParts {
             rotation: None,
             r#gen: None,
             container_id: ployz_core::ContainerId::parse(machine.to_string().repeat(64)).unwrap(),
@@ -113,9 +113,8 @@ fn router_on(machine: char, runtime: ContainerRuntimeObservation) -> ServiceObse
             labels: Default::default(),
             stopped: false,
             run: None,
-        },
-    )
-    .unwrap();
+        })
+        .unwrap();
     ServiceObservation {
         identity,
         service_id,

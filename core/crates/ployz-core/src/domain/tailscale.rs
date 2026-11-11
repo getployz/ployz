@@ -10,9 +10,9 @@ use ipnet::Ipv4Net;
 
 use crate::{
     Ciphertext, ConfiguredHealthcheck, ContainerLabels, ContainerPath, HealthcheckCommand,
-    HealthcheckSpec, MachinePath, PrivateAccessStateId, QualifiedService, RawVolumeSource, RequestedServiceSpec, ServiceMode, ServiceMount,
-    ServiceMountGraph, ServiceVolume, ServiceVolumeGraph, ServiceVolumeReference, UpdateConfig,
-    caddy_container,
+    HealthcheckSpec, MachinePath, PrivateAccessStateId, QualifiedService, RawVolumeSource,
+    RequestedServiceSpec, ServiceMode, ServiceMount, ServiceMountGraph, ServiceVolume,
+    ServiceVolumeGraph, ServiceVolumeReference, UpdateConfig, caddy_container,
 };
 
 /// The label on the router's spec that carries the sealed auth key, so every
