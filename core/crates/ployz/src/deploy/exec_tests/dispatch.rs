@@ -552,7 +552,8 @@ async fn a_private_image_is_pulled_with_its_services_credentials_only() {
         username: Some("octocat".into()),
         password: "token".into(),
     };
-    client.registry_auth = std::collections::BTreeMap::from([(private.name.clone(), auth.clone())]);
+    client.deploy.registry_auth =
+        std::collections::BTreeMap::from([(private.name.clone(), auth.clone())]);
     for specification in [&private, &public] {
         MachineOperations::ensure_image(&client, &machine('1'), specification)
             .await

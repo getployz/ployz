@@ -1013,11 +1013,14 @@ async fn a_call_whose_redial_finds_another_cluster_ends_every_clone() {
     let target = machine_id('b');
     let full = client
         .clone()
-        .with_full_connections(vec![
-            Connection::unix("/scripted/full.sock")
-                .unwrap()
-                .with_machine_id(target),
-        ])
+        .with_full_routes(FullRoutes::new(
+            vec![
+                Connection::unix("/scripted/full.sock")
+                    .unwrap()
+                    .with_machine_id(target),
+            ],
+            false,
+        ))
         .call_shared::<op::SetDeviceEnforcement>(
             ployz_core::SetDeviceEnforcementRequest {
                 enforced: false,
@@ -1362,9 +1365,10 @@ async fn a_client_reaches_a_machine_with_full_scope_only_over_ssh_the_socket_or_
         [2; 32],
     );
     let over = |connection: Connection| {
-        client
-            .clone()
-            .with_full_connections(vec![connection.with_machine_id(target)])
+        client.clone().with_full_routes(FullRoutes::new(
+            vec![connection.with_machine_id(target)],
+            false,
+        ))
     };
     let socket = over(Connection::unix("/run/ployz/ployzd.sock").unwrap());
     assert!(socket.reaches_full(&target, false));

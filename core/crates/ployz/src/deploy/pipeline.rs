@@ -196,12 +196,15 @@ impl Client {
         progress: Option<tokio::sync::mpsc::UnboundedSender<DeployEvent>>,
     ) -> DeployOutcome<ExecutionError> {
         let mut client = self.clone();
-        client.registry_auth.clone_from(preview.registry_auth());
-        let run = client.deployment_id.clone().unwrap_or_else(|| {
+        client
+            .deploy
+            .registry_auth
+            .clone_from(preview.registry_auth());
+        let run = client.deploy.id.clone().unwrap_or_else(|| {
             DeploymentLogId::parse(uuid::Uuid::new_v4().simple().to_string())
                 .expect("a simple uuid is a deployment log id")
         });
-        client.deployment_id = Some(run.clone());
+        client.deploy.id = Some(run.clone());
         execute_operation_sequence(preview, &run, &client, cancellation, progress).await
     }
 

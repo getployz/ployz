@@ -46,8 +46,10 @@ mod call;
 mod call_audit;
 mod capacity;
 mod container_health;
+mod deploy_context;
 #[cfg(test)]
 mod retry;
+mod routes;
 #[cfg(test)]
 mod routing_tests;
 mod session;
@@ -55,6 +57,9 @@ mod session;
 pub(crate) use call::setup_outcome;
 pub use call::{Budgeted, Call, Deadline, Once, Pacing, Repeat, Replay, Wait, Waiting};
 pub(crate) use container_health::HealthWaitError;
+use deploy_context::DeployContext;
+pub use deploy_context::RuleProofs;
+pub(crate) use routes::FullRoutes;
 pub(crate) use session::Refusal;
 use session::Session;
 
@@ -65,69 +70,12 @@ pub(crate) const LIVE_MUTATION_REPLY_TIMEOUT: Duration = Duration::from_secs(60)
 
 #[derive(Clone)]
 pub struct Client {
-    pub(crate) deployment_id: Option<ployz_core::DeploymentLogId>,
-    /// Pull credentials by Service for the Deploy this client executes.
-    pub(crate) registry_auth:
-        std::collections::BTreeMap<ployz_core::ServiceName, ployz_core::RegistryAuth>,
+    /// The Deploy this client executes: its log, pull credentials and approvals.
+    pub(crate) deploy: DeployContext,
     /// The connection to the entry and what was confirmed behind it.
     session: Session,
-    full_single: bool,
-    full_connections: Arc<Vec<Connection>>,
-    /// What every Container change this client sends carries.
-    approvals: Arc<Approvals>,
-}
-
-/// The approvals a client hands each Server with a Container change.
-#[derive(Clone, Debug, Default)]
-struct Approvals {
-    /// The Device-signed approval of a restart step.
-    restart: Option<ployz_core::authority::Signed<ployz_core::authority::RestartApproval>>,
-    /// The approval of the Deploy every Container this client creates or steps belongs to.
-    deploy: Option<ployz_core::authority::Signed<ployz_core::authority::DeployApproval>>,
-    /// A rule's proof for each Service it built, when a rule deploys in place of a
-    /// person's approval.
-    proofs: RuleProofs,
-}
-
-/// The proof each Service a rule built carries to every Server, in place of a person's
-/// deploy approval: an automatic deploy rule's, or a preview rule's.
-#[derive(Clone, Debug, Default)]
-pub struct RuleProofs {
-    pub rules:
-        std::collections::BTreeMap<ployz_core::ServiceName, ployz_core::authority::RuleProof>,
-    pub previews:
-        std::collections::BTreeMap<ployz_core::ServiceName, ployz_core::authority::PreviewProof>,
-}
-
-/// The proof in `proofs` a change of `want` carries: its Service's, or for a step on a
-/// Container named only by ID, any of the Deploy's, since such a step needs only the
-/// rule's Environment.
-fn proof_for<P: Clone>(
-    proofs: &std::collections::BTreeMap<ployz_core::ServiceName, P>,
-    want: &ContainerWant,
-) -> Option<Box<P>> {
-    let service = match want {
-        ContainerWant::Running {
-            container: ployz_core::RunTarget::New(new),
-            ..
-        } => Some(&new.slot.service),
-        ContainerWant::Held { container, .. }
-        | ContainerWant::Out { container, .. }
-        | ContainerWant::Stopped { container, .. }
-        | ContainerWant::Gone { container, .. }
-        | ContainerWant::Running {
-            container: ployz_core::RunTarget::Existing(container),
-            ..
-        } => match container {
-            ployz_core::ContainerLocator::Key(slot) => Some(&slot.service),
-            ployz_core::ContainerLocator::Id(_) => None,
-        },
-    };
-    service
-        .and_then(|service| proofs.get(service))
-        .or_else(|| proofs.values().next())
-        .cloned()
-        .map(Box::new)
+    /// The Full-scope connections a Full call may dial.
+    routes: FullRoutes,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize)]
@@ -144,72 +92,42 @@ impl Client {
         connector: Arc<dyn Connector>,
     ) -> Self {
         Self {
-            deployment_id: None,
-            registry_auth: std::collections::BTreeMap::new(),
+            deploy: DeployContext::default(),
             session: Session::new(channel, connection, source, connector),
-            approvals: Arc::default(),
-            full_connections: Arc::default(),
-            full_single: false,
+            routes: FullRoutes::default(),
         }
     }
 
-    pub(crate) fn with_full_connections(mut self, connections: Vec<Connection>) -> Self {
-        self.full_connections = Arc::new(connections);
+    #[must_use]
+    pub(crate) fn with_full_routes(mut self, routes: FullRoutes) -> Self {
+        self.routes = routes;
         self
     }
 
-    pub(crate) fn with_full_single(mut self, single: bool) -> Self {
-        self.full_single = single;
-        self
-    }
-
-    pub(crate) fn full_single(&self) -> bool {
-        self.full_single
+    /// The Full-scope connections a Full call may dial.
+    pub(crate) fn full_routes(&self) -> &FullRoutes {
+        &self.routes
     }
 
     pub(crate) fn full_machines(&self) -> BTreeSet<MachineId> {
-        if self.full_connections.is_empty() {
-            return BTreeSet::new();
-        }
-        self.session
-            .entry
-            .into_iter()
-            .chain(
-                self.full_connections
-                    .iter()
-                    .filter_map(|connection| connection.machine_id().copied()),
-            )
-            .collect()
+        self.routes.machines(self.session.entry)
     }
 
     /// Whether this client reaches `machine` with Full scope: over SSH or the local
     /// socket, or over a Management connection dialled as a Device when `device` says one
-    /// is held. Only a client [`Self::with_full_connections`] built can.
+    /// is held. Only a client [`Self::with_full_routes`] built can.
     pub(crate) fn reaches_full(&self, machine: &MachineId, device: bool) -> bool {
-        let full = |connection: &Connection| match connection.transport() {
-            crate::context::Transport::Ssh { .. } | crate::context::Transport::Unix(_) => true,
-            crate::context::Transport::Management(_) => device,
-            crate::context::Transport::Tcp(_) => false,
-        };
-        if self.full_connections.is_empty() {
-            return false;
-        }
-        if self.session.entry.as_ref() == Some(machine) {
-            return full(self.session.connection());
-        }
-        self.full_connections
-            .iter()
-            .any(|connection| connection.machine_id() == Some(machine) && full(connection))
-    }
-
-    /// The connections a Full call may dial, as [`Self::with_full_connections`] set them.
-    pub(crate) fn full_connections(&self) -> &[Connection] {
-        &self.full_connections
+        self.routes.reach(
+            machine,
+            device,
+            self.session.entry.as_ref(),
+            self.session.connection(),
+        )
     }
 
     async fn full_client(&self, target: &MachineTarget) -> Result<Option<Self>, ConnectError> {
         self.session.ended()?;
-        if self.full_connections.is_empty()
+        if self.routes.is_empty()
             || self
                 .session
                 .entry
@@ -217,11 +135,7 @@ impl Client {
         {
             return Ok(None);
         }
-        let Some(connection) = self.full_connections.iter().find(|connection| {
-            connection
-                .machine_id()
-                .is_some_and(|id| id.as_str() == target.as_str())
-        }) else {
+        let Some(connection) = self.routes.to(target.as_str()) else {
             return Ok(None);
         };
         let mut client = Box::pin(crate::connect::connect_one(
@@ -242,7 +156,7 @@ impl Client {
         mut self,
         approval: Option<ployz_core::authority::Signed<ployz_core::authority::RestartApproval>>,
     ) -> Self {
-        Arc::make_mut(&mut self.approvals).restart = approval;
+        self.deploy.set_restart(approval);
         self
     }
 
@@ -252,7 +166,7 @@ impl Client {
         mut self,
         approval: Option<ployz_core::authority::Signed<ployz_core::authority::DeployApproval>>,
     ) -> Self {
-        Arc::make_mut(&mut self.approvals).deploy = approval;
+        self.deploy.set_deploy(approval);
         self
     }
 
@@ -260,7 +174,7 @@ impl Client {
     /// place of a person's deploy approval.
     #[must_use]
     pub(crate) fn with_rule_proofs(mut self, proofs: RuleProofs) -> Self {
-        Arc::make_mut(&mut self.approvals).proofs = proofs;
+        self.deploy.set_proofs(proofs);
         self
     }
 
@@ -1206,14 +1120,13 @@ impl Client {
     ) -> Result<ployz_core::EnsuredContainer, RpcError> {
         let target = MachineTarget::from(machine_id);
         crate::sealed_compat::admit(self, &target, &want).await?;
-        let rule = proof_for(&self.approvals.proofs.rules, &want);
-        let preview = proof_for(&self.approvals.proofs.previews, &want);
+        let carried = self.deploy.carried(&want);
         let payload = op::EnsureContainer::into_request(EnsureContainerRequest {
-            preview,
+            preview: carried.preview,
             want,
-            approval: self.approvals.restart.clone(),
-            deploy: self.approvals.deploy.clone(),
-            rule,
+            approval: carried.restart,
+            deploy: carried.deploy,
+            rule: carried.rule,
         })
         .encode()
         .map_err(|error| rpc_error(ConnectError::Codec(error)))?;

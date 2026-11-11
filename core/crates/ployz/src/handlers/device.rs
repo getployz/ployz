@@ -800,7 +800,7 @@ impl Reach {
     async fn full(client: &mut Client) -> Result<Self, Error> {
         let mut reach = Self::of(client).await?;
         let direct = client.full_machines();
-        if client.full_single() {
+        if client.full_routes().single() {
             reach.asked.retain(|machine| Some(*machine) == reach.entry);
             reach.silent.retain(|machine| Some(*machine) == reach.entry);
         } else if !direct.is_empty() {

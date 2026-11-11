@@ -512,7 +512,8 @@ async fn full_mutations_report_servers_without_a_direct_connection_as_omissions(
     let (client, server) = cluster([Daemon::Approves; 3]).await;
     let connection =
         crate::context::Connection::tcp("127.0.0.1:7569".parse().unwrap()).with_machine_id(id('1'));
-    let mut client = client.with_full_connections(vec![connection]);
+    let mut client =
+        client.with_full_routes(crate::cluster::FullRoutes::new(vec![connection], false));
     let removed = set_everywhere(&mut client, |client, machine_id| {
         remove_on(client, machine_id, key(1).code())
     })

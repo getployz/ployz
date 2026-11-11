@@ -138,7 +138,7 @@ impl PreparedDeploy {
             .client()?
             .with_deploy_approval(approval)
             .with_rule_proofs(rules);
-        client.deployment_id = deployment_id;
+        client.deploy.id = deployment_id;
         let preview = self.preview.clone();
         let token = cancel.clone();
         let session_cancel = session.inner.cancel.clone();
