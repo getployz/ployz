@@ -862,4 +862,40 @@ mod tests {
                 .is_none()
         );
     }
+
+    /// The Private Access vector `dashboard/src/modules/variables/seal-value.test.ts`
+    /// seals in the browser with `sealPlatform`. Test keys only.
+    #[test]
+    fn an_auth_key_the_browser_sealed_opens_only_for_private_access() {
+        let key = SealingKey(
+            hex::decode("347ace27753bb0420141f071765286281c5fb4c450a9811d4ab13b67ac3da146")
+                .unwrap()
+                .try_into()
+                .unwrap(),
+        );
+        let sealed = Ciphertext::try_from(
+            "aQ3JpLLRSRFxTny/uywru4DsdBNaz2ed/8puzj80FnVgGTBxgtUPPvJq60VaDYOLiLov+SoN+uqbTWZL7UG7g0lob9gVuQq8vl0PFXHHIyTb5VnuvCj0"
+                .to_owned(),
+        )
+        .unwrap();
+        assert_eq!(
+            hex::encode(PlatformPurpose::PrivateAccess.associated_data(&key.public_key())),
+            "00000018706c6f797a2d706c6174666f726d2d7365616c65642d76310000000e707269766174652d6163636573730000002035d895d5063d3f7672a02f36600fc5681b34ce55931bf097535b4b7dc4b40838"
+        );
+        assert_eq!(
+            key.open_platform(PlatformPurpose::PrivateAccess, &sealed)
+                .unwrap()
+                .as_slice(),
+            b"tskey-auth-kTEST1CNTRL-frozenVectorOnly"
+        );
+        assert!(
+            key.open_platform(PlatformPurpose::IngressTunnel, &sealed)
+                .is_none()
+        );
+        assert!(
+            SealingKey::generate()
+                .open_platform(PlatformPurpose::PrivateAccess, &sealed)
+                .is_none()
+        );
+    }
 }

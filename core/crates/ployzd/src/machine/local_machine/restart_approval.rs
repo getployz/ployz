@@ -12,11 +12,12 @@ use std::{
 use ployz_core::{
     ContainerId, ContainerLocator, ContainerNow, ContainerWant, DeviceEnforcementSet, DeviceKey,
     LocalMachinePhase, ManagementScope, Namespace, OperationId, RunTarget, Sealing,
-    SealingPublicKey, ServiceName, SetDeviceEnforcementRequest,
+    SealingPublicKey, ServiceName, SetDeviceEnforcementRequest, SetPrivateAccessRequest,
     authority::{
         AuthorityRefusal, AutoDeployRule, BuildClaim, BuildStage, ClaimRule, DeployApproval,
-        PreviewKey, Purpose, RestartApproval, RestartFacts, RestartStep, RuleId, RuleIdentity,
-        Signed, StartingSet, Timestamp, UpgradeChannel, restart, starting_set, upgrade,
+        PreviewKey, PrivateAccessFacts, Purpose, RestartApproval, RestartFacts, RestartStep,
+        RuleId, RuleIdentity, Signed, StartingSet, Timestamp, UpgradeChannel, private_access,
+        restart, starting_set, upgrade,
     },
 };
 use serde::{Deserialize, Serialize};
@@ -83,16 +84,47 @@ impl LocalMachine {
         .await
     }
 
-    /// Under Device enforcement an Operator caller's `SetIngressDoors` or
-    /// `SetPrivateAccess` is refused before anything changes: no statement admits either
-    /// yet. `capability` is the RPC refused.
+    /// Under Device enforcement an Operator's `SetPrivateAccess` turns Private Access on
+    /// only with an approval, by a trusted Device or a trusted passkey's own prompt, of the
+    /// sealed auth key it carries. The key decides which tailnet reaches the whole Cluster
+    /// network. Turning off needs none, and neither does a Full caller or a Machine not
+    /// enforcing.
     ///
     /// # Errors
-    /// Returns [`Error::IngressRefused`] naming `capability` under enforcement.
-    pub(crate) fn admit_operator_ingress(&self, capability: &'static str) -> Result<(), Error> {
-        if self.record().device_enforcement() {
-            return Err(Error::IngressRefused { capability });
+    /// Returns [`Error::PrivateAccessRefused`] naming what the approval lacks.
+    pub(crate) fn admit_operator_private_access(
+        &self,
+        request: &SetPrivateAccessRequest,
+    ) -> Result<(), Error> {
+        let record = self.record();
+        if !record.device_enforcement() || !request.enabled {
+            return Ok(());
         }
+        let approval = request
+            .approval
+            .as_ref()
+            .ok_or(Error::PrivateAccessRefused(AuthorityRefusal::Unsigned {
+                purpose: Purpose::Workflow,
+            }))?;
+        let sealed = request
+            .sealed_auth_key
+            .as_ref()
+            .ok_or(Error::PrivateAccessKeyMissing)?;
+        let cluster = match self.held_sealing(record.phase()) {
+            Some(Sealing::Held { public_key }) => Some(public_key),
+            _ => None,
+        };
+        let approver = private_access::verify(
+            approval,
+            &PrivateAccessFacts {
+                cluster,
+                trusted: &record.trusted_keys(),
+                sealed,
+                now: Timestamp::now(),
+            },
+        )
+        .map_err(Error::PrivateAccessRefused)?;
+        tracing::info!(%approver, "Private Access approved");
         Ok(())
     }
 

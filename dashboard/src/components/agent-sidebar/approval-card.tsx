@@ -13,6 +13,7 @@ import { cn } from "#/lib/utils";
 import { approvalBadge, approvalSubject, type ApprovalDecision, destroyedLine, droppedLine, losesVolumeAccess, asksForAuthKey, prunes, redeployLine, renamedAddresses, shownServiceAct, switchedAddresses } from "#/modules/approvals/approvals";
 import { Input } from "#/components/ui/input";
 import { authKeyProblem } from "#/modules/private-access/private-access";
+import { KeyNotApproved, sealAndApprove } from "#/modules/private-access/approved-key";
 import { approvePrivateAccessServerFn } from "#/modules/private-access/private-access.functions";
 import { landAnswer } from "#/modules/private-access/private-access.queries";
 import { toast } from "sonner";
@@ -94,8 +95,9 @@ function PendingCard({ organizationSlug, approval }: { organizationSlug: string;
     if (sending) return;
     setSending(true);
     setRefused(null);
-    const answer = await approvePrivateAccessServerFn({ data: { organizationSlug, id: approval.id, digest: approval.digest, authKey: authKey.trim() } })
-      .catch((error: Error) => ({ error: toErrorMessage(error, "Your servers didn't answer. Try again.") }));
+    const answer = await sealAndApprove(queryClient, organizationSlug, authKey)
+      .then((on) => approvePrivateAccessServerFn({ data: { organizationSlug, id: approval.id, digest: approval.digest, on } }))
+      .catch((error: Error) => ({ error: error instanceof KeyNotApproved ? error.message : toErrorMessage(error, "Your servers didn't answer. Try again.") }));
     setSending(false);
     if ("error" in answer) return setRefused(answer.error);
     setAuthKey("");

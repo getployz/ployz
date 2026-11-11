@@ -1,6 +1,7 @@
 import "@tanstack/react-start/server-only";
 import type {
   AccessChanged,
+  PrivateAccessOn,
   BackfillSealingKeyReport,
   BackfillSealingKeyRequest,
   Client,
@@ -136,7 +137,7 @@ export interface PloyzSession {
   /** Open `doors` (`public`, `tunnel`, or both) on every Server that takes web traffic. A `token` is sealed to the Cluster here and kept by it, not by Cloud. */
   readonly setIngressDoors: (doors: readonly string[], token?: Redacted.Redacted<string>) => Effect.Effect<DoorsChanged, PloyzSdkError>;
   /** Turn Private Access on with `authKey`, sealed to the Cluster here and kept by it, not by Cloud, or off with null. */
-  readonly setPrivateAccess: (authKey: Redacted.Redacted<string> | null) => Effect.Effect<AccessChanged, PloyzSdkError>;
+  readonly setPrivateAccess: (on: PrivateAccessOn | null) => Effect.Effect<AccessChanged, PloyzSdkError>;
   /** Bring every Machine of the Cluster to hold its Sealing Key, generating one only on `generator`. */
   readonly backfillSealingKey: (request: BackfillSealingKeyRequest) => Effect.Effect<BackfillSealingKeyReport, PloyzSdkError>;
   /**
@@ -405,8 +406,7 @@ function wrapClient(client: Client): PloyzSession {
     stopIngress: (machine) => sdkPromise("stop ingress", () => client.stopIngress(machine)),
     setIngressDoors: (doors, token) =>
       sdkPromise("set ingress doors", () => client.setIngressDoors([...doors], token === undefined ? undefined : Redacted.value(token))),
-    setPrivateAccess: (authKey) =>
-      sdkPromise("set private access", () => client.setPrivateAccess(authKey !== null, authKey === null ? undefined : Redacted.value(authKey))),
+    setPrivateAccess: (on) => sdkPromise("set private access", () => client.setPrivateAccess(on)),
     volumeSwitch: (machine, request) =>
       sdkPromise("volume switch", () => client.volumeSwitch(machine, request)),
     inspectContainer: (machine, container) =>

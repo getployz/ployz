@@ -516,7 +516,7 @@ async fn sample(case: &Case, machine: &Enforcing) -> Sample {
             }))
         }
         (ployz_core::SET_INGRESS_DOORS_CAPABILITY, _) => unary::<op::SetIngressDoors>(json!({
-            "doors": ["public"], "proxy_service": "c".repeat(32),
+            "doors": ["public"], "proxy_service": "c".repeat(32), "image": "attacker/caddy:latest",
         })),
         (ployz_core::SET_PRIVATE_ACCESS_CAPABILITY, branch) => unary::<op::SetPrivateAccess>(
             json!({"enabled": branch == "on", "sealed_auth_key": null}),
@@ -654,6 +654,22 @@ async fn bounded(case: &Case, check: &str, machine: &Enforcing) {
                 machine.replicated.sealing_public_key().await.unwrap(),
                 Some(held.public_key()),
                 "{case:?}"
+            );
+        }
+        "only pinned images run" => {
+            let created: Vec<String> = machine
+                .fake
+                .request_bodies
+                .lock()
+                .unwrap()
+                .iter()
+                .filter(|(path, _)| path.ends_with("/containers/create"))
+                .map(|(_, body)| body["Image"].as_str().unwrap_or_default().to_owned())
+                .collect();
+            let pinned = [crate::images::CADDY, crate::images::PAUSE];
+            assert!(
+                !created.is_empty() && created.iter().all(|image| pinned.contains(&image.as_str())),
+                "{case:?}: the doors ran images other than the pins: {created:?}"
             );
         }
         "Device slots are untouched" => {
@@ -909,5 +925,129 @@ mod departure {
             restarted.leave(operator(leave())).await,
             ployz_core::LEAVE_MACHINE_CAPABILITY,
         );
+    }
+}
+
+mod private_access {
+    //! `SetPrivateAccess` under Device enforcement: an Operator turns Private Access on only
+    //! with an approval of the sealed key it sends, and turns it off with none.
+
+    use ployz_core::authority::{
+        KeyApproval, PrivateAccessApproval, PrivateAccessTerms, SignerKey, Timestamp,
+    };
+    use ployz_core::{Ciphertext, PlatformPurpose, SetPrivateAccessRequest, seal_platform};
+
+    use super::*;
+
+    fn device() -> Signer {
+        Signer::from_seed(&[7; 32])
+    }
+
+    fn sealed(machine: &Enforcing, key: &str) -> Ciphertext {
+        let cluster = SealingKey::load(&machine.data_dir)
+            .unwrap()
+            .unwrap()
+            .public_key();
+        seal_platform(&cluster, PlatformPurpose::PrivateAccess, key.as_bytes()).unwrap()
+    }
+
+    fn approval(machine: &Enforcing, signer: &Signer, sealed: &Ciphertext) -> KeyApproval {
+        let cluster = SealingKey::load(&machine.data_dir)
+            .unwrap()
+            .unwrap()
+            .public_key();
+        KeyApproval::Signed(
+            Signed::sign(
+                &PrivateAccessApproval::drafted(&PrivateAccessTerms {
+                    cluster,
+                    sealed_auth_key: sealed.clone(),
+                    issued_at: Timestamp::now(),
+                    signer: SignerKey::Device(signer.public().into()),
+                }),
+                signer,
+            )
+            .unwrap(),
+        )
+    }
+
+    async fn turn(machine: &Enforcing, request: SetPrivateAccessRequest) -> Answer {
+        machine
+            .unary(
+                op::SetPrivateAccess::PATH,
+                &op::SetPrivateAccess::into_request(request),
+            )
+            .await
+    }
+
+    fn on(sealed: Ciphertext, approval: Option<KeyApproval>) -> SetPrivateAccessRequest {
+        SetPrivateAccessRequest {
+            enabled: true,
+            sealed_auth_key: Some(sealed),
+            approval,
+        }
+    }
+
+    #[track_caller]
+    fn refused(answer: &Answer) {
+        assert!(
+            matches!(answer, Answer::Refused { capability: Some(name), .. }
+                if name == ployz_core::PRIVATE_ACCESS_APPROVAL_CAPABILITY),
+            "{answer:?}"
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn an_operator_turns_private_access_on_only_with_an_approval_of_its_key() {
+        let machine = Enforcing::new(true).await;
+        let key = sealed(&machine, "tskey-auth-approved");
+        let before = machine.snapshot().await;
+        refused(&turn(&machine, on(key.clone(), None)).await);
+        let other = sealed(&machine, "tskey-auth-planted");
+        let planted = on(other, Some(approval(&machine, &device(), &key)));
+        refused(&turn(&machine, planted).await);
+        let stranger = Signer::from_seed(&[8; 32]);
+        refused(
+            &turn(
+                &machine,
+                on(key.clone(), Some(approval(&machine, &stranger, &key))),
+            )
+            .await,
+        );
+        assert_eq!(
+            machine.snapshot().await,
+            before,
+            "a refusal changed nothing"
+        );
+        let approved = turn(
+            &machine,
+            on(key.clone(), Some(approval(&machine, &device(), &key))),
+        )
+        .await;
+        assert!(
+            !approved.for_authority(),
+            "refused at the gate: {approved:?}"
+        );
+        machine.remove();
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn turning_off_or_a_machine_not_enforcing_needs_no_approval() {
+        let machine = Enforcing::new(true).await;
+        let off = turn(
+            &machine,
+            SetPrivateAccessRequest {
+                enabled: false,
+                sealed_auth_key: None,
+                approval: None,
+            },
+        )
+        .await;
+        assert!(!off.for_authority(), "{off:?}");
+        machine.remove();
+        let machine = Enforcing::new(false).await;
+        let key = sealed(&machine, "tskey-auth-unenforced");
+        let answer = turn(&machine, on(key, None)).await;
+        assert!(!answer.for_authority(), "{answer:?}");
+        machine.remove();
     }
 }
