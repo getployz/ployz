@@ -621,3 +621,33 @@ it("never marks a Cluster founded closed active from a look taken before a first
   expect(row.state).toBe("set_up");
   expect(await setupRows()).toMatchObject([{ state: "set_up" }]);
 });
+
+it("keeps the Cluster reserved when it is removed mid-setup, so no later setup can take up what the first is still cleaning", async () => {
+  let second: string | null = null;
+  const { runtime } = cluster();
+  const cf = cloudflare({ onRecord: async () => {
+    await harness.runEffect(harness.database.transaction(endClusterIngress(ORG)));
+    second = await setUp("example.com", cf.http, runtime).then(() => "set up", (error: { message: string }) => error.message);
+  } });
+  await expect(setUp("example.com", cf.http, runtime)).rejects.toMatchObject({ message: expect.stringContaining("The Cluster was removed.") });
+  expect(second).toBe("Cloudflare is being set up. Wait for it to finish.");
+  expect(cf.alive.has("t1")).toBe(false);
+  expect(await setupRows()).toEqual([]);
+  expect(await setUp("example.com", cloudflare().http, runtime)).toMatchObject({ state: "set_up", tunnelId: "t1" });
+});
+
+it("never puts back the row of a Cluster that was removed mid-setup", async () => {
+  await priorRow("left");
+  const { runtime } = cluster();
+  const cf = cloudflare({ onRecord: () => harness.runEffect(harness.database.transaction(endClusterIngress(ORG))) });
+  await expect(setUp("example.com", cf.http, runtime)).rejects.toMatchObject({ message: expect.stringContaining("The Cluster was removed.") });
+  expect(await setupRows()).toEqual([]);
+});
+
+it("takes over a reservation of a removed Cluster whose setup died, and writes its row clean", async () => {
+  await priorRow("setting_up", null);
+  await harness.pool.query("update organization_cloudflare_ingress set updated_at = now() - interval '11 minutes'");
+  await harness.runEffect(harness.database.transaction(endClusterIngress(ORG)));
+  expect(await setupRows()).toEqual([]);
+  expect(await setUp("example.com", cloudflare().http, cluster().runtime)).toMatchObject({ state: "set_up" });
+});

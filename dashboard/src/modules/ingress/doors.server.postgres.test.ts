@@ -4,6 +4,7 @@ import { afterAll, beforeAll, beforeEach, expect, it, vi } from "vitest";
 import { asTestDouble } from "#/lib/test-double";
 import type { ConfigStore } from "@ployz/sdk";
 import { CloudStore } from "#/modules/config-store/store-sdk.server";
+import { endClusterIngress } from "#/modules/cloudflare/cluster-gone.server";
 import { closeDoorsRun, closeStaleDoors, bindDoorsRun, executeDoorsOnce, freshSwitchDigest, requestDoorsSwitch, reviewSwitch } from "#/modules/ingress/doors.server";
 import { OrganizationRuntime, type ScopedRuntimeClientSession } from "#/modules/runtime/organization-runtime.server";
 import type { PloyzSession } from "#/modules/runtime/ployz.server";
@@ -356,4 +357,26 @@ it("keeps a pending approval for a switch refused only for now, while Cloudflare
   await setup("setting_up");
   expect(await run(freshSwitchDigest(ORG, stored, { to: "tunnel" }))).toBe(stored);
   expect(await run(freshSwitchDigest(ORG, stored, { to: "public" }))).toBe(stored);
+});
+
+it.each(["public", "tunnel"] as const)("never lets a %s switch still running at removal flip the row of the Cluster set up after it", async (to) => {
+  await setup(to === "public" ? "active" : "set_up");
+  await hosted();
+  const request = await asked(to);
+  const oldSession = session;
+  let release!: () => void;
+  let entered!: () => void;
+  const reading = new Promise<void>((resolve) => { entered = resolve; });
+  const gate = new Promise<void>((resolve) => { release = resolve; });
+  storeViews = ((query) => { entered(); return gate.then(() => noOwners(query)); }) as typeof noOwners;
+  const old = run(executeDoorsOnce(request, RUN));
+  await reading;
+  await harness.runEffect(harness.database.transaction(endClusterIngress(ORG)));
+  expect(await attempts()).toMatchObject([{ state: "failed", failure: "The Cluster was removed." }]);
+  if (oldSession.status === "connected") oldSession.connected.setIngressDoors = () => Effect.fail(new Error("the old session is closed"));
+  await setup("set_up");
+  release();
+  expect(await old).toMatchObject({ state: "failed" });
+  expect(await stateNow()).toBe("set_up");
+  expect(await attempts()).toMatchObject([{ state: "failed", failure: "The Cluster was removed." }]);
 });
