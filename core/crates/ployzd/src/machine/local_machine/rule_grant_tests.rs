@@ -210,6 +210,7 @@ pub(crate) fn grant_for(rule: &AutoDeployRule, signer: &Signer, token: String) -
         service: web(),
         commit: commit(),
         authority: CommitAuthority::Head,
+        approval: None,
         recipient: recipient(),
         reader: None,
     }
@@ -220,6 +221,7 @@ pub(crate) fn github(head: CommitSha) -> FixedGithub {
     FixedGithub {
         keys: keys_with_test_signer(),
         head,
+        ancestry: None,
         now: now(),
     }
 }
@@ -618,4 +620,289 @@ async fn a_rule_signed_under_a_browser_session_is_refused_before_anything_opens(
         .admit(&grant, &holder(), Some(&fixture.record()), commit())
         .await;
     refused(result, "the signer");
+}
+
+mod approved {
+    //! A build of a commit that is not the head, under a person's commit approval.
+
+    use ployz_core::authority::{ApprovalDigest, CommitApproval};
+
+    use super::*;
+    use crate::github::head::Ancestry;
+
+    /// A commit earlier on the branch than the head GitHub ran the dispatch at.
+    fn older() -> CommitSha {
+        CommitSha::parse(&"4".repeat(40)).unwrap()
+    }
+
+    fn approval_for(fixture: &Fixture, rule: &AutoDeployRule) -> CommitApproval {
+        CommitApproval {
+            cluster: fixture.cluster,
+            rule: rule.rule,
+            generation: rule.generation,
+            service: web(),
+            commit: older(),
+            issued_at: Timestamp::from_millis(now().as_millis() - 60_000).unwrap(),
+            expires_at: Timestamp::from_millis(now().as_millis() + 14 * 60_000).unwrap(),
+            signer: SignerKey::Device(fixture.signer.public().into()),
+        }
+    }
+
+    /// Claims of a dispatch run at the head that the fixture rule approves.
+    fn dispatch(jti: &str) -> Value {
+        let mut claims = claims();
+        claims["event_name"] = json!("workflow_dispatch");
+        claims["workflow_ref"] =
+            json!("Ployz-test/lab-service/.github/workflows/ployz-build.yml@refs/heads/main");
+        claims["job_workflow_ref"] = json!(format!(
+            "Ployz-test/build/.github/workflows/build.yml@{BUILDER_SHA}"
+        ));
+        claims["job_workflow_sha"] = json!(BUILDER_SHA);
+        claims["sha"] = json!(COMMIT);
+        claims["jti"] = json!(jti);
+        claims
+    }
+
+    /// Admit a grant for [`older`] under `approval` signed by `signer`, with `change`
+    /// applied to the token's claims, while the branch stands to the commit as
+    /// `ancestry` says. The audience names `digest`, or the signed approval's.
+    async fn admit_signed(
+        fixture: &Fixture,
+        approval: &CommitApproval,
+        signer: &Signer,
+        jti: &str,
+        ancestry: Option<Ancestry>,
+        digest: Option<ApprovalDigest>,
+        change: impl FnOnce(&mut Value),
+    ) -> Result<AdmittedRule, Error> {
+        let rule = fixture.rule();
+        let approval = Signed::sign(approval, signer).unwrap();
+        let mut claim = fixture.claim(&rule);
+        claim.commit = older();
+        claim.authority =
+            CommitAuthority::Approved(digest.unwrap_or_else(|| ApprovalDigest::of(&approval)));
+        let mut claims = dispatch(jti);
+        change(&mut claims);
+        claims["aud"] = json!(claim.audience().unwrap());
+        let mut grant = fixture.grant(&rule, signed_by_test_signer(TEST_KID, &claims));
+        grant.commit = claim.commit;
+        grant.authority = claim.authority;
+        grant.approval = Some(approval);
+        let github = FixedGithub {
+            ancestry,
+            ..github(commit())
+        };
+        fixture
+            .machine
+            .admit_rule_grant(
+                &grant,
+                Some(&holder()),
+                Some(&fixture.record()),
+                &github,
+                now(),
+            )
+            .await
+    }
+
+    /// [`admit_signed`] with the fixture's approval, `edit` applied, signed by its Device.
+    async fn admit_approved(
+        fixture: &Fixture,
+        jti: &str,
+        ancestry: Option<Ancestry>,
+        digest: Option<ApprovalDigest>,
+        edit: impl FnOnce(&mut CommitApproval),
+        change: impl FnOnce(&mut Value),
+    ) -> Result<AdmittedRule, Error> {
+        let mut approval = approval_for(fixture, &fixture.rule());
+        edit(&mut approval);
+        admit_signed(
+            fixture,
+            &approval,
+            &fixture.signer,
+            jti,
+            ancestry,
+            digest,
+            change,
+        )
+        .await
+    }
+
+    #[tokio::test]
+    async fn a_commit_the_branch_descends_from_is_admitted() {
+        let fixture = fixture().await;
+        for (jti, ancestry) in [
+            ("ahead", Ancestry::Ahead),
+            ("identical", Ancestry::Identical),
+        ] {
+            let admitted = admit_approved(&fixture, jti, Some(ancestry), None, |_| {}, |_| {})
+                .await
+                .unwrap();
+            assert_eq!(admitted.commit, older(), "{jti}");
+        }
+    }
+
+    #[tokio::test]
+    async fn a_commit_not_on_the_branch_is_refused() {
+        let fixture = fixture().await;
+        for (jti, ancestry) in [
+            // A fork's commit, or one on another branch.
+            ("diverged", Some(Ancestry::Diverged)),
+            // A descendant of the head that was never merged.
+            ("behind", Some(Ancestry::Behind)),
+            // A commit GitHub cannot find while it reads the branch.
+            ("unknown", None),
+        ] {
+            refused(
+                admit_approved(&fixture, jti, ancestry, None, |_| {}, |_| {}).await,
+                "a commit",
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn an_approval_for_another_service_generation_or_commit_is_refused() {
+        let fixture = fixture().await;
+        let ahead = Some(Ancestry::Ahead);
+        let service = admit_approved(
+            &fixture,
+            "service",
+            ahead,
+            None,
+            |approval| approval.service = ServiceName::parse("api").unwrap(),
+            |_| {},
+        )
+        .await;
+        refused(service, "an approval");
+        let generation = admit_approved(
+            &fixture,
+            "generation",
+            ahead,
+            None,
+            |approval| approval.generation = 2,
+            |_| {},
+        )
+        .await;
+        refused(generation, "a generation");
+        let commit = admit_approved(
+            &fixture,
+            "commit",
+            ahead,
+            None,
+            |approval| approval.commit = CommitSha::parse(&"5".repeat(40)).unwrap(),
+            |_| {},
+        )
+        .await;
+        refused(commit, "an approval");
+    }
+
+    #[tokio::test]
+    async fn an_expired_approval_is_refused() {
+        let fixture = fixture().await;
+        let result = admit_approved(
+            &fixture,
+            "expired",
+            Some(Ancestry::Ahead),
+            None,
+            |approval| {
+                approval.issued_at =
+                    Timestamp::from_millis(now().as_millis() - 40 * 60_000).unwrap();
+                approval.expires_at =
+                    Timestamp::from_millis(now().as_millis() - 25 * 60_000).unwrap();
+            },
+            |_| {},
+        )
+        .await;
+        assert!(
+            matches!(
+                result,
+                Err(Error::RuleGrantRefused(AuthorityRefusal::Expired))
+            ),
+            "{result:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_push_run_cannot_build_an_approved_commit() {
+        let fixture = fixture().await;
+        let result = admit_approved(
+            &fixture,
+            "push",
+            Some(Ancestry::Ahead),
+            None,
+            |_| {},
+            |claims| claims["event_name"] = json!("push"),
+        )
+        .await;
+        refused(result, "event_name");
+    }
+
+    #[tokio::test]
+    async fn an_audience_naming_another_approval_is_refused() {
+        let fixture = fixture().await;
+        let result = admit_approved(
+            &fixture,
+            "digest",
+            Some(Ancestry::Ahead),
+            Some(ApprovalDigest::from_bytes([9; 32])),
+            |_| {},
+            |_| {},
+        )
+        .await;
+        refused(result, "an approval");
+    }
+
+    #[tokio::test]
+    async fn an_approval_signed_by_a_key_this_machine_does_not_trust_is_refused() {
+        let fixture = fixture().await;
+        let stranger = Signer::from_seed(&[9; 32]);
+        let mut approval = approval_for(&fixture, &fixture.rule());
+        approval.signer = SignerKey::Device(stranger.public().into());
+        let result = admit_signed(
+            &fixture,
+            &approval,
+            &stranger,
+            "stranger",
+            Some(Ancestry::Ahead),
+            None,
+            |_| {},
+        )
+        .await;
+        assert!(
+            matches!(
+                result,
+                Err(Error::RuleGrantRefused(AuthorityRefusal::UnknownKey { .. }))
+            ),
+            "{result:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn an_approved_authority_without_its_approval_is_refused() {
+        let fixture = fixture().await;
+        let rule = fixture.rule();
+        let approval = Signed::sign(&approval_for(&fixture, &rule), &fixture.signer).unwrap();
+        let mut claim = fixture.claim(&rule);
+        claim.commit = older();
+        claim.authority = CommitAuthority::Approved(ApprovalDigest::of(&approval));
+        let mut claims = dispatch("bare");
+        claims["aud"] = json!(claim.audience().unwrap());
+        let mut grant = fixture.grant(&rule, signed_by_test_signer(TEST_KID, &claims));
+        grant.commit = claim.commit;
+        grant.authority = claim.authority;
+        let github = FixedGithub {
+            ancestry: Some(Ancestry::Ahead),
+            ..github(commit())
+        };
+        let result = fixture
+            .machine
+            .admit_rule_grant(
+                &grant,
+                Some(&holder()),
+                Some(&fixture.record()),
+                &github,
+                now(),
+            )
+            .await;
+        refused(result, "an approval");
+    }
 }

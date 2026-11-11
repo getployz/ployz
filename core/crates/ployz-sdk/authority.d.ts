@@ -38,9 +38,9 @@ import type { ApprovedChange, DeployTerms, PlanView, PreviewReviewView, PrivateA
 
 /**
  * The deploy approval a browser key signs for `plan`, a Store plan read with `target`, under `terms`: the canonical body
- * to sign as it is, what each Service shows the approver, and one line per Service. Each spec's digest is taken here, by
- * the ployz-core code the CLI and the Servers run. Throws an Error for a plan read without `target`, a Service built from
- * source, an image named by a tag, or malformed terms.
+ * to sign as it is, what each Service shows the approver, and one line per Service followed by each setting it signs,
+ * indented. Each spec's digest is taken here, by the ployz-core code the CLI and the Servers run. Throws an Error for a
+ * plan read without `target`, a Service built from source, an image named by a tag, or malformed terms.
  */
 export function deployApprovalBody(plan: Pick<PlanView, "namespace" | "target">, terms: DeployTerms): { body: string; changes: ApprovedChange[]; lines: string[] };
 
@@ -65,7 +65,7 @@ export function privateAccessApprovalBody(terms: PrivateAccessTerms): string;
 /**
  * The review a person signs of `view`, the Store's view of a PR Environment's preview, for its head under `terms`: the
  * canonical body to sign as it is, whether any Service opens a secret (then only a passkey may sign it), and one line per
- * Service. Each spec's digest is taken here, by the ployz-core code the Servers run. Throws an Error naming what keeps
+ * Service followed by each setting its template signs, indented. Each spec's digest is taken here, by the ployz-core code the Servers run. Throws an Error naming what keeps
  * the preview from a review.
  */
 export function previewReviewBody(view: PreviewReviewView, terms: Pick<ReviewTerms, "cluster" | "issued_at" | "expires_at">): ReviewDraft;

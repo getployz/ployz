@@ -11,26 +11,29 @@ use std::future::Future;
 use ployz_core::{
     BuildGrantId, GithubToken, RuleGrant, SealedRecord,
     authority::{
-        AuthorityRefusal, BuildClaim, BuildStage, ClaimRule, CommitAuthority, CommitSha,
-        GithubClaims, PolicyDigest, RecipientKey, SealedDigest, Timestamp, rule::verify_signature,
+        ApprovalDigest, ApprovalFacts, AuthorityRefusal, AutoDeployRule, BuildClaim, BuildStage,
+        ClaimRule, CommitAuthority, CommitSha, GithubClaims, PolicyDigest, RecipientKey,
+        SealedDigest, Timestamp,
+        rule::{RuleEvent, verify_commit_approval, verify_signature},
     },
 };
 
 use super::{Error, LocalMachine};
 use crate::github::{
-    head::{GithubApi, HeadError},
-    oidc::{IssuerKeys, ProofRefusal},
+    head::{Ancestry, GithubApi, HeadError},
+    oidc::{Freshness, IssuerKeys, ProofRefusal},
 };
 
-/// What a rule grant learns from GitHub: a token's verified claims and a branch head.
+/// What a rule grant learns from GitHub: a token's verified claims, a branch head, and
+/// how a branch stands to a commit.
 pub(crate) trait Github: Sync {
-    /// The claims of `token` once its signature, issuer, lifetime and every claim `rule`
-    /// names check out at `now`.
+    /// The claims of `token` once its signature, issuer and every claim `rule` names
+    /// check out, and its lifetime at `freshness`.
     fn claims(
         &self,
         rule: &impl ClaimRule,
         token: &str,
-        now: Timestamp,
+        freshness: Freshness<'_>,
     ) -> impl Future<Output = Result<GithubClaims, ProofRefusal>> + Send;
 
     /// The commit `branch` of repository `repository_id` points at now.
@@ -40,6 +43,15 @@ pub(crate) trait Github: Sync {
         branch: &str,
         reader: Option<&GithubToken>,
     ) -> impl Future<Output = Result<CommitSha, HeadError>> + Send;
+
+    /// How commit `head` of repository `repository_id` stands to `commit`.
+    fn ancestry(
+        &self,
+        repository_id: u64,
+        commit: CommitSha,
+        head: CommitSha,
+        reader: Option<&GithubToken>,
+    ) -> impl Future<Output = Result<Ancestry, HeadError>> + Send;
 }
 
 /// GitHub itself: its issuer's keys over TLS, and `api.github.com`.
@@ -74,9 +86,9 @@ impl Github for GithubOnline {
         &self,
         rule: &impl ClaimRule,
         token: &str,
-        now: Timestamp,
+        freshness: Freshness<'_>,
     ) -> Result<GithubClaims, ProofRefusal> {
-        self.keys.check(rule, token, now).await
+        self.keys.check(rule, token, freshness).await
     }
 
     async fn head(
@@ -85,20 +97,36 @@ impl Github for GithubOnline {
         branch: &str,
         reader: Option<&GithubToken>,
     ) -> Result<CommitSha, HeadError> {
-        let reader =
-            reader.map(|token| crate::github::head::GithubToken::new(token.as_str().into()));
         self.api
-            .branch_head(repository_id, branch, reader.as_ref())
+            .branch_head(repository_id, branch, reader_token(reader).as_ref())
+            .await
+    }
+
+    async fn ancestry(
+        &self,
+        repository_id: u64,
+        commit: CommitSha,
+        head: CommitSha,
+        reader: Option<&GithubToken>,
+    ) -> Result<Ancestry, HeadError> {
+        self.api
+            .compare(repository_id, commit, head, reader_token(reader).as_ref())
             .await
     }
 }
 
-/// GitHub as a test fixes it: tokens verify against `keys` at `now`, and every branch
-/// points at `head`.
+fn reader_token(reader: Option<&GithubToken>) -> Option<crate::github::head::GithubToken> {
+    reader.map(|token| crate::github::head::GithubToken::new(token.as_str().into()))
+}
+
+/// GitHub as a test fixes it: tokens verify against `keys` at `now`, every branch points
+/// at `head`, and `head` stands to every commit as `ancestry` says, or reads as
+/// unreadable for `None`. A compare against any other commit reads as unreadable.
 #[cfg(test)]
 pub(crate) struct FixedGithub {
     pub(crate) keys: crate::github::oidc::KeySet,
     pub(crate) head: CommitSha,
+    pub(crate) ancestry: Option<Ancestry>,
     pub(crate) now: Timestamp,
 }
 
@@ -116,10 +144,10 @@ impl Github for FixedGithub {
         &self,
         rule: &impl ClaimRule,
         token: &str,
-        now: Timestamp,
+        freshness: Freshness<'_>,
     ) -> Result<GithubClaims, ProofRefusal> {
-        let claims =
-            crate::github::oidc::verify(token, &self.keys, now).map_err(ProofRefusal::Token)?;
+        let claims = crate::github::oidc::verify(token, &self.keys, freshness)
+            .map_err(ProofRefusal::Token)?;
         rule.verify_claims(&claims).map_err(ProofRefusal::Claim)?;
         Ok(claims)
     }
@@ -131,6 +159,20 @@ impl Github for FixedGithub {
         _reader: Option<&GithubToken>,
     ) -> Result<CommitSha, HeadError> {
         Ok(self.head)
+    }
+
+    async fn ancestry(
+        &self,
+        _repository_id: u64,
+        _commit: CommitSha,
+        head: CommitSha,
+        _reader: Option<&GithubToken>,
+    ) -> Result<Ancestry, HeadError> {
+        self.ancestry
+            .filter(|_| head == self.head)
+            .ok_or_else(|| HeadError::Unreadable {
+                branch: head.to_string(),
+            })
     }
 }
 
@@ -150,7 +192,9 @@ pub(crate) struct AdmittedRule {
 impl LocalMachine {
     /// Admit a grant for `holder` under `grant`'s rule, with `sealed` the record Cloud
     /// relays, at `now`. Every check runs before anything opens, in the order
-    /// `d-build-proof.md` lists them, and the token is spent last.
+    /// `d-build-proof.md` lists them, and the token is spent last. A build of a commit
+    /// that is not the head needs a person's live approval naming it, a dispatched run,
+    /// and the commit on the rule's branch as GitHub answers now.
     ///
     /// # Errors
     /// Returns [`Error::RuleGrantRefused`] naming what does not match,
@@ -198,7 +242,7 @@ impl LocalMachine {
             .ok_or_else(|| refused("a Service"))?;
         let holder = holder.ok_or_else(|| refused("a holder"))?;
         let claims = github
-            .claims(&rule, grant.proof.as_str(), now)
+            .claims(&rule, grant.proof.as_str(), now.into())
             .await
             .map_err(Error::RuleProofRefused)?;
         let expected = BuildClaim {
@@ -237,6 +281,41 @@ impl LocalMachine {
                     return Err(refused("a commit"));
                 }
             }
+            CommitAuthority::Approved(digest) => {
+                let approval = grant
+                    .approval
+                    .as_ref()
+                    .filter(|approval| ApprovalDigest::of(approval) == digest)
+                    .ok_or_else(|| refused("an approval"))?;
+                let approved = verify_commit_approval(
+                    approval,
+                    &rule,
+                    &ApprovalFacts {
+                        cluster,
+                        machine: &record.id(),
+                        trusted: &record.trusted_keys(),
+                        now,
+                    },
+                )
+                .map_err(|refusal| {
+                    tracing::warn!(rule = %rule.rule, %refusal, "refused a rule build's approval");
+                    Error::RuleGrantRefused(refusal)
+                })?;
+                if !approved.names(&rule, &grant.service, grant.commit) {
+                    return Err(refused("an approval"));
+                }
+                // GitHub starts an approved build only when someone asks it to; a push
+                // always builds its own head.
+                if claims.event_name != RuleEvent::WorkflowDispatch.as_str() {
+                    return Err(refused("event_name"));
+                }
+                on_branch(github, &rule, grant).await?;
+                tracing::info!(
+                    rule = %rule.rule,
+                    approver = %approved.by(),
+                    "a person approved this build's commit"
+                );
+            }
         }
         let digest = sealed
             .map(SealedDigest::of)
@@ -267,6 +346,36 @@ impl LocalMachine {
             service: grant.service.clone(),
             commit: grant.commit,
         })
+    }
+}
+
+/// Refuse unless `grant`'s commit is the head of `rule`'s branch or one of its ancestors,
+/// as GitHub answers this Machine now. The head comes from the branch's own ref, and the
+/// compare names two commits, so a tag named like the branch can't stand in for it. A
+/// commit GitHub cannot find while it can read the branch is not on it.
+async fn on_branch(
+    github: &impl Github,
+    rule: &AutoDeployRule,
+    grant: &RuleGrant,
+) -> Result<(), Error> {
+    let source = &rule.source;
+    let reader = grant.reader.as_ref();
+    let head = github
+        .head(source.repository_id, &source.branch, reader)
+        .await
+        .map_err(Error::RuleHeadUnread)?;
+    match github
+        .ancestry(source.repository_id, grant.commit, head, reader)
+        .await
+    {
+        Ok(ancestry) if ancestry.on_branch() => Ok(()),
+        Ok(_) | Err(HeadError::Unreadable { .. }) => {
+            tracing::warn!(rule = %rule.rule, commit = %grant.commit, %head, "refused a commit not on the rule's branch");
+            Err(Error::RuleGrantRefused(AuthorityRefusal::Mismatch {
+                field: "a commit",
+            }))
+        }
+        Err(error) => Err(Error::RuleHeadUnread(error)),
     }
 }
 

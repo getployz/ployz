@@ -3,6 +3,7 @@
 use std::{collections::BTreeMap, sync::atomic::Ordering};
 
 use axum::http::Method;
+use ployz_core::RpcErrorCode;
 
 use super::*;
 use crate::docker::test_support::*;
@@ -939,4 +940,41 @@ async fn a_volume_planted_under_an_approved_name_is_refused_at_use() {
             .await,
         Err(Error::ExternalVolumeNotFound(missing)) if missing == name
     ));
+}
+
+#[test]
+fn unverified_create_returns_named_observation_failure() {
+    let id = DockerVolumeId {
+        machine_id: MachineId::random(),
+        name: DockerVolumeName::parse("data").unwrap(),
+    };
+    let error = RpcError {
+        code: RpcErrorCode::Unavailable,
+        message: "inspect failed".into(),
+        details: Value::Null,
+        cause: Vec::new(),
+    };
+
+    let failure = CreateVolumeReport::Unverified {
+        id: id.clone(),
+        error: error.clone(),
+    }
+    .into_observation()
+    .unwrap_err();
+    let message = failure.to_string();
+    for hint in [
+        "data",
+        &id.machine_id.to_string(),
+        "inspect failed",
+        "resolve the reported Docker or storage error",
+        "inspect the Volume again",
+    ] {
+        assert!(message.contains(hint), "{message}");
+    }
+    let encoded = serde_json::to_value(&failure).unwrap();
+    assert_eq!(
+        serde_json::from_value::<VolumeObservationFailure>(encoded).unwrap(),
+        failure
+    );
+    assert_eq!(failure, VolumeObservationFailure { id, error });
 }

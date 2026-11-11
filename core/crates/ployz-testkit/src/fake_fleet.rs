@@ -74,6 +74,9 @@ pub struct FleetMachine {
     pub containers: Vec<FleetContainer>,
     #[serde(default)]
     pub volumes: Vec<FleetVolume>,
+    /// The Sealing Key it holds, reported by Inspect and in its row.
+    #[serde(default)]
+    pub sealing: Option<ployz_core::SealingPublicKey>,
 }
 
 /// One Container. The fixture's `id` is the Docker display name; its wire Container ID
@@ -537,6 +540,7 @@ struct MachineState {
     containers: Vec<ContainerState>,
     copies: Vec<CopyState>,
     upgrades: Vec<MachineUpgradeAttempt>,
+    sealing: Option<ployz_core::Sealing>,
 }
 
 struct ContainerState {
@@ -780,7 +784,7 @@ impl Fleet {
                         storage: None,
                         upgrade: machine.upgrades.last().cloned(),
                         token: None,
-                        sealing: None,
+                        sealing: machine.sealing,
                         founding: Default::default(),
                     }
                     .into(),
@@ -1222,6 +1226,9 @@ impl MachineState {
                 .collect(),
             copies,
             upgrades: Vec::new(),
+            sealing: machine
+                .sealing
+                .map(|public_key| ployz_core::Sealing::Held { public_key }),
         })
     }
 
@@ -1242,6 +1249,7 @@ impl MachineState {
             advertised_endpoints: Vec::new(),
             runtime: MachineRuntime {
                 daemon_version: self.version.to_string(),
+                sealing: self.sealing,
                 ..MachineRuntime::default()
             },
             join_approval: None,

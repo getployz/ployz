@@ -364,6 +364,7 @@ async fn readiness_waits_out_a_cluster_store_that_is_still_opening() {
     let (mut client, lists, server) = restarting_cluster_store(founder(), 3).await;
     crate::setup_retry::run(
         &mut client,
+        &crate::ui::WaitNotices,
         "Waiting for the participating phase",
         ployz_core::MACHINE_START_WAIT,
         crate::connect::ConnectError::is_setup_retryable,

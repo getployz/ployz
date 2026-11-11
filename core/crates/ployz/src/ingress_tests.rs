@@ -206,6 +206,31 @@ fn the_newest_observed_proxy_is_the_one_every_server_follows() {
     assert_ne!(proxy_service(&[]), proxy_service(&[]));
 }
 
+// Catches the newest-copy tie-break drifting: copies created in the same nanosecond are
+// told apart by the larger Container ID, however the observations are ordered.
+#[test]
+fn a_creation_tie_between_proxy_copies_goes_to_the_larger_container_id() {
+    let one = machine('a', "one");
+    let ingress = |id, hex| {
+        global_service(
+            QualifiedService::system_ingress(),
+            id,
+            Placement::default(),
+            running_on(&one, hex),
+        )
+    };
+
+    for services in [
+        [ingress('1', 'b'), ingress('2', 'c')],
+        [ingress('2', 'c'), ingress('1', 'b')],
+    ] {
+        assert_eq!(
+            proxy_service(&services),
+            crate::global_fixtures::service_id('2')
+        );
+    }
+}
+
 // Catches a holder that couldn't bind 80 or 443 reading as anything but a taken port, and
 // a Caddy failure reading as one.
 #[test]

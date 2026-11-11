@@ -125,6 +125,17 @@ impl Error {
             .as_str()
             .map(str::to_owned)
     }
+    fn is_connect(&self) -> bool {
+        matches!(self, Self::Connect(_))
+    }
+    /// Cloud answers 503 until it can reach the Machine; both stages are safe to repeat.
+    fn is_callback_retryable(&self) -> bool {
+        self.is_transport()
+            || matches!(
+                self,
+                Self::Status { status: 503, .. } | Self::CloudCantReach
+            )
+    }
     fn is_transport(&self) -> bool {
         match self {
             Self::Timeout(error) | Self::Connect(error) | Self::Http(error) => {
@@ -506,9 +517,10 @@ pub(crate) async fn enroll(
     loop {
         let response = crate::setup_retry::run(
             &mut (),
+            &crate::ui::WaitNotices,
             &format!("Cloud enrollment at {}", diagnostic_origin(url)),
             crate::setup_retry::WAIT,
-            |error| matches!(error, Error::Connect(_)),
+            Error::is_connect,
             async |_| send(post(&http, url, token, identity).timeout(ENROLL_TIMEOUT)).await,
         )
         .await
@@ -657,16 +669,10 @@ async fn post_callback(
     let sent = sent_strings(token, body);
     crate::setup_retry::run(
         &mut (),
+        &crate::ui::WaitNotices,
         &format!("Cloud {operation} at {}", diagnostic_origin(url)),
         crate::setup_retry::WAIT,
-        // Cloud answers 503 until it can reach the Machine; both stages are safe to repeat.
-        |error: &Error| {
-            error.is_transport()
-                || matches!(
-                    error,
-                    Error::Status { status: 503, .. } | Error::CloudCantReach
-                )
-        },
+        Error::is_callback_retryable,
         async |_| {
             post_json(&http, url, token, body).await.map_err(|error| {
                 let (status, body) = match error {

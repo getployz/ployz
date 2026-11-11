@@ -612,8 +612,13 @@ pub struct Claimed {
     /// The review a person signed for a reviewed preview's commit, which the runner hands
     /// each Server beside `preview`; none for a trusted push's preview.
     pub review: Option<ployz_core::authority::Review>,
-    /// The image token each Service's GitHub build under `rule` or `preview` reported.
-    pub image_tokens: BTreeMap<ServiceName, String>,
+    /// The image token each Service's GitHub build under `rule` or `preview` reported,
+    /// or a redeploy copied with its source's image.
+    pub image_tokens: BTreeMap<ServiceName, crate::ImageToken>,
+    /// A person's approval of each Service's commit, which the runner hands each Server
+    /// with its image token in place of the branch head.
+    pub approvals:
+        BTreeMap<ServiceName, ployz_core::authority::Signed<ployz_core::authority::CommitApproval>>,
 }
 
 /// One node a Deployment targets, as frozen at admission.

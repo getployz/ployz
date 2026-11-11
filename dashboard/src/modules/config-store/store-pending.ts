@@ -104,6 +104,7 @@ export function marksOf(command: ConfigCommand | BatchCommand): Mark[] {
     case "approve_pull_request":
     case "approve_rule":
     case "approve_preview_rule":
+    case "approve_deployment":
     case "plan_preview_rule": return [];
     default: return absurd(command);
   }

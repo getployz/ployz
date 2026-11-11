@@ -665,10 +665,7 @@ fn sources(
         })
         .filter_map(|service| {
             let copies = || service.containers.iter().map(|c| c.as_observation());
-            let newest = copies().max_by(|a, b| {
-                (a.created_at_unix_nanos, a.container_id.as_str())
-                    .cmp(&(b.created_at_unix_nanos, b.container_id.as_str()))
-            })?;
+            let newest = service.newest_container()?.as_observation();
             if newest.resolved_spec.mode != ServiceMode::Global {
                 return None;
             }
@@ -679,18 +676,7 @@ fn sources(
                         CopyRotation::In | CopyRotation::Pending
                     )
                 })
-                .max_by(|a, b| {
-                    (
-                        a.copy_gen(),
-                        a.created_at_unix_nanos,
-                        a.container_id.as_str(),
-                    )
-                        .cmp(&(
-                            b.copy_gen(),
-                            b.created_at_unix_nanos,
-                            b.container_id.as_str(),
-                        ))
-                });
+                .max_by_key(|observed| (observed.copy_gen(), observed.recency_key()));
             Some(Source {
                 identity: service.identity.clone(),
                 work: CatchUpWork::Service(copy.cloned().map(Box::new)),

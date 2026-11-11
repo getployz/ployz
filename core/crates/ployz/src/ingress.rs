@@ -138,10 +138,7 @@ pub(crate) fn proxy_service(services: &[ServiceObservation]) -> ServiceId {
             let newest = service
                 .containers
                 .iter()
-                .map(|copy| {
-                    let copy = copy.as_observation();
-                    (copy.created_at_unix_nanos, copy.container_id)
-                })
+                .map(|copy| copy.as_observation().recency_key())
                 .max()?;
             Some((newest, service.service_id))
         })

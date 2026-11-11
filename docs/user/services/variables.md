@@ -96,8 +96,10 @@ service still gets the real value when it deploys.
   only those its copy leaves **Not set**. The server refuses any other environment's value,
   and a value set in the preview itself.
 - A value you seal in the dashboard trusts the dashboard: a compromised Ployz Cloud could
-  change the page or the key it seals to, and read the value. A coming `ployz` release checks
-  your cluster's key itself, so a value sealed with the CLI won't depend on Ployz Cloud.
+  change the page or the key it seals to, and read the value. The CLI doesn't trust Ployz Cloud
+  for the key. It seals only to your cluster's key as
+  [pinned on your computer](../servers/manage-servers.md#pin-your-clusters-key), so run
+  `ployz device pin` once before you seal with the CLI.
 - Your sealed values open only on your servers. Keep your organization's
   [recovery code](../servers/recovery-code.md): if you lose every server, it's the only way to
   open them again.

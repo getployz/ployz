@@ -1,7 +1,7 @@
 use ployz_core::{
     BUILD_GRANT_HOLDER_CAPABILITY, BUILD_GRANT_PREVIEW_CAPABILITY, BUILD_GRANT_RULE_CAPABILITY,
-    BUILD_SEALED_CAPABILITY, CERTIFICATE_POLICY_CAPABILITY, CapabilityAdvertisement,
-    CapabilityName, DEPLOY_PREVIEW_CAPABILITY, DEPLOY_RULE_CAPABILITY,
+    BUILD_SEALED_CAPABILITY, CERTIFICATE_POLICY_CAPABILITY, COMMIT_APPROVAL_CAPABILITY,
+    CapabilityAdvertisement, CapabilityName, DEPLOY_PREVIEW_CAPABILITY, DEPLOY_RULE_CAPABILITY,
     DESCRIBE_CONTRACT_CAPABILITY, ENROLL_FOR_RECOVERY_CAPABILITY, ENROLL_MACHINE_CAPABILITY,
     ENSURE_CONTAINER_CAPABILITY, ENSURE_IMAGE_INGEST_CAPABILITY, ENV_SEALED_CAPABILITY,
     EXEC_CONTAINER_CAPABILITY, FORGET_MACHINE_CAPABILITY, GENERATE_SEALING_KEY_CAPABILITY,
@@ -84,6 +84,7 @@ fn catalogued_capabilities_keep_stable_spellings() {
             "ployz.container.deploy-preview.v1",
         ),
         (PREVIEW_REVIEW_CAPABILITY, "ployz.preview.review.v1"),
+        (COMMIT_APPROVAL_CAPABILITY, "ployz.rule.commit-approval.v1"),
         (
             SET_DEVICE_ENFORCEMENT_CAPABILITY,
             "ployz.machine.set-device-enforcement.v2",
@@ -225,6 +226,7 @@ fn advertised_capability_groups_match_the_frozen_catalog() {
             "ployz.rule.passkey.v1",
             "ployz.container.deploy-preview.v1",
             "ployz.preview.review.v1",
+            "ployz.rule.commit-approval.v1",
         ]
     );
     assert_eq!(
@@ -450,6 +452,10 @@ const ABOVE_FLOOR: &[(&str, &str)] = &[
     (
         "ployz.preview.review.v1",
         "gated: Cloud relays a review at grant only to a Machine that advertises it, and the dashboard offers a review only when every enforcing Machine does. An older daemon refuses every reviewed preview build and deploy, naming a reviewed preview, so one there fails closed",
+    ),
+    (
+        "ployz.rule.commit-approval.v1",
+        "gated: Cloud relays a commit approval at grant only to a Machine that advertises it, and the CLI signs one only when every Server it lists does. An older daemon refuses the approval's field in the grant and in the rule proof as unknown, so a rollback there fails closed",
     ),
     (
         "ployz.image.pull.v1",

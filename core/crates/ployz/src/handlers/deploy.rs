@@ -5,6 +5,7 @@
 //! prepares and confirms it on the Cluster, and records what happened.
 
 pub(super) mod approve;
+mod built;
 #[cfg(test)]
 mod follow_tests;
 mod progress;
@@ -64,7 +65,10 @@ pub(super) fn deploy_command(command: Command) -> Command {
                 .conflicts_with_all(["service", "plan", "skip-deploy"])
                 .hide(true),
         )
-        .arg(crate::cli::yes("Does nothing; kept for older scripts").hide(true))
+        .arg(crate::cli::yes(
+            "Sign without asking when your servers enforce device approval; still prints \
+             what it signs",
+        ))
         .arg(crate::cli::reviewed_version())
         .arg(crate::cli::approval())
         .arg(
@@ -143,12 +147,15 @@ pub(super) fn redeploy_command(command: Command) -> Command {
         command,
         "Deploy an ended Deployment's commit and settings again, and follow it. Redeploying \
          one older than a Deployment that ran rolls that back until the next deploy, so it \
-         asks first; --yes skips the ask. Outside a terminal without --yes it fails with \
+         asks first. On Servers that enforce Device approval it also asks you to approve each \
+         commit. --yes skips both asks. Outside a terminal without --yes it fails with \
          confirmation_required. A rollback that deletes Volume data needs \
          --accept-volume-loss.",
     )))
     .arg(id())
-    .arg(crate::cli::yes("Roll back without asking"))
+    .arg(crate::cli::yes(
+        "Roll back and approve the commits without asking",
+    ))
     .arg(crate::cli::volume_acceptance().help(format!(
         "{}; --yes cannot bypass this",
         crate::cli::VOLUME_ACCEPTANCE
@@ -1397,6 +1404,8 @@ pub(super) fn redeploy(root: &ArgMatches) -> Result<(), Error> {
         false => Some(confirm_rollback(&store, &source)?),
     };
     let events = open_events(matches)?;
+    // On Servers that enforce Device approval, this Device approves each commit.
+    let mut device = built::prepare(matches, &store, &source)?;
     let admitted = store
         .admit(&Admit::Retry(ployz_store::Retry {
             id: DeploymentId::parse(mint())?,
@@ -1404,6 +1413,11 @@ pub(super) fn redeploy(root: &ArgMatches) -> Result<(), Error> {
             rolls_back,
             version: matches.get_one::<String>("expect-version").cloned(),
             accept_volume_loss: super::teardown::accepted(matches)?,
+            approvals: device
+                .as_mut()
+                .map(|device| std::mem::take(&mut device.approvals))
+                .unwrap_or_default(),
+            awaits_approval: device.is_some(),
         }))
         .map_err(|error| {
             let asks = matches!(&error, StoreCallError::Refused(refusal)
@@ -1413,6 +1427,9 @@ pub(super) fn redeploy(root: &ArgMatches) -> Result<(), Error> {
                 false => refused(matches, &store, &source)(error),
             }
         })?;
+    if let Some(device) = device {
+        device.approve(&store, &admitted)?;
+    }
     ship(matches, &store, &admitted, events)
 }
 

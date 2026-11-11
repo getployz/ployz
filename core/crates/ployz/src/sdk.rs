@@ -770,9 +770,7 @@ impl Session {
             let mut captured = capture(input).await?;
             captured.intent.registry_auth = registry_auth;
             if let Some((operator, ended_runs)) = runner {
-                captured.intent.options.operator = operator;
-                captured.intent.options.block_unmountable = true;
-                captured.intent.options.ended_runs = ended_runs;
+                captured.intent.options = captured.intent.options.as_runner(operator, ended_runs);
             }
             if token.is_cancelled() {
                 return Err(E::from(preparation_error(

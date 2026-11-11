@@ -352,7 +352,24 @@ impl ContainerObservationParts {
     }
 }
 
+/// The newest Container of a set: the latest Docker creation time, ties to the larger
+/// Container ID.
+pub fn newest<'a>(
+    containers: impl IntoIterator<Item = &'a ContainerObservation>,
+) -> Option<&'a ContainerObservation> {
+    containers
+        .into_iter()
+        .max_by_key(|container| container.recency_key())
+}
+
 impl ContainerObservation {
+    /// Orders Containers oldest to newest: Docker creation time, then Container ID. Put
+    /// it last in a larger tuple to rank by something else first.
+    #[must_use]
+    pub fn recency_key(&self) -> (i64, ContainerId) {
+        (self.created_at_unix_nanos, self.container_id)
+    }
+
     /// Update observed facts atomically, retaining the previous observation on rejection.
     ///
     /// # Errors

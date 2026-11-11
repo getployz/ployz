@@ -98,13 +98,7 @@ pub(super) fn plan_router(
                     spec,
                 )
         })
-        .max_by_key(|router| {
-            (
-                running(router),
-                router.created_at_unix_nanos,
-                router.container_id,
-            )
-        });
+        .max_by_key(|router| (running(router), router.recency_key()));
     let kept_id = kept.map(|router| router.container_id);
     let step = match kept {
         Some(router)
@@ -113,13 +107,7 @@ pub(super) fn plan_router(
             RouterStep::Keep(router.container_id)
         }
         Some(router) => RouterStep::Start(router.container_id),
-        None => RouterStep::Create(
-            routers
-                .iter()
-                .map(|router| (router.created_at_unix_nanos, router.container_id))
-                .max()
-                .map(|(_, id)| id),
-        ),
+        None => RouterStep::Create(ployz_core::newest(routers).map(|router| router.container_id)),
     };
     RouterPlan {
         retire: retirees(routers, kept_id),

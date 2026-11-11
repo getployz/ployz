@@ -1,13 +1,13 @@
 import {
   cancelStoreDeploymentRun, deployToFirstServer, failStoreDeploymentUnrun, forgetStoreDeploymentRun, publishedEnvironments, recordStoreDeploymentRun, runStoreDeployment, type StoreEffectRunner,
-  stopStoreDeploymentRun, storeDeploymentRunner, unclaimedStoreDeployments,
+  stopStoreDeploymentRun, storeDeploymentAwaitsApproval, storeDeploymentRunner, unclaimedStoreDeployments,
 } from "#/modules/config-store/store-deployment.server";
 import { mailFailedGithubDeploy } from "#/modules/config-store/deploy-failed-mail.server";
 import { serversLackingEnsure } from "#/modules/runtime/daemon-compat.server";
 import type { PloyzInngest } from "#/modules/inngest/client";
 import { decodeInngestEnvelope } from "#/modules/inngest/envelope";
 import {
-  configDeploymentAdmittedEventType, configFirstServerJoinedEventType, createClusterDomainSyncRequestedEvent, createConfigDeploymentRetireRequestedEvent,
+  configDeploymentAdmittedEventType, configDeploymentApprovedEvent, configFirstServerJoinedEventType, createClusterDomainSyncRequestedEvent, createConfigDeploymentRetireRequestedEvent,
   createConfigDeploymentStartedEvent, githubBuildRunCompletedEvent, inngestFunctionCancelledEnvelopeSchema,
   inngestFunctionCancelledEventType, inngestFunctionFinishedEventType, type ConfigDeploymentAdmittedEventData,
 } from "#/modules/inngest/events";
@@ -63,6 +63,10 @@ export const createRunStoreDeployment = (inngest: PloyzInngest, runEffect: Store
       const disconnected = walked.find((failed) => failed !== null);
       if (disconnected !== undefined) {
         return step.run("github-failed", () => runEffect(failStoreDeploymentUnrun(event.data.organizationId, event.data.environmentId, event.data.deploymentId, runId, disconnected)));
+      }
+      if (!(await walkApproval(event.data, step, runEffect))) {
+        const failure = "Nobody approved this redeploy within an hour of its builds. Run ployz deployment redeploy again.";
+        return step.run("approval-failed", () => runEffect(failStoreDeploymentUnrun(event.data.organizationId, event.data.environmentId, event.data.deploymentId, runId, failure)));
       }
       const storage = await walkPlacement(event.data, step, runEffect);
       if (storage.kind === "failed") {
@@ -163,6 +167,24 @@ async function walkGithub(organizationId: string, target: StoreGithubTarget, ste
     const found = await step.run(`github-check-${key}-${check}`, () => runEffect(checkStoreGithubBuild(organizationId, target, seen)));
     if (found === "done") return null;
     if (found !== "waiting") return found.failed;
+  }
+}
+
+export const APPROVAL_LOOKS = 60;
+const APPROVAL_LOOK_WAIT = "1m";
+
+/**
+ * A redeploy a person approved runs only once they approve its commits again after its builds, so the approvals each
+ * Server checks are fresh. Looks once a minute for an hour, or at once when the approval's event comes, and once more
+ * after the last wait, so an approval that lands during it counts. False when none came.
+ */
+export async function walkApproval(data: ConfigDeploymentAdmittedEventData, step: Step, runEffect: StoreEffectRunner): Promise<boolean> {
+  for (let look = 0; ; look += 1) {
+    if (!(await step.run(`approval-${look}`, () => runEffect(storeDeploymentAwaitsApproval(data.deploymentId))))) return true;
+    if (look === APPROVAL_LOOKS) return false;
+    await step.waitForEvent(`approval-wait-${look}`, {
+      event: configDeploymentApprovedEvent, if: `async.data.deploymentId == '${data.deploymentId}'`, timeout: APPROVAL_LOOK_WAIT,
+    });
   }
 }
 

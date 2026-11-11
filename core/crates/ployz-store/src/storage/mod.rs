@@ -318,6 +318,12 @@ const MIGRATIONS: &[(&str, Step)] = &[
             "migrations/0044_deployment_preview_review.sql"
         )),
     ),
+    (
+        // A build's receipt, image token and a person's approval of its commit, and a
+        // Deployment that waits for that approval again once its builds end.
+        "0045_commit_approvals",
+        Step::Sql(include_str!("migrations/0045_commit_approvals.sql")),
+    ),
 ];
 
 enum Step {

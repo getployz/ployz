@@ -142,19 +142,46 @@ ployz deploy
 
 With [device enforcement](../servers/manage-servers.md#require-a-devices-signature-for-restarts-and-joins)
 on, a server creates a container only from a spec an approved device signed. Run `ployz deploy`
-on that device. It works out what each service will run, prints one line per service, signs
-them with your device key, and deploys, with no prompt:
+on that device. It works out what each service will run, prints what it signs for each service,
+and asks before it signs with your device key:
 
 ```text
 Approved web: nginx:1.29-alpine → @sha256:3f1c2a9b8e7d…
-Approved worker: ghcr.io/acme/worker@sha256:9a0b1c2d3e4f… (adds NET_ADMIN, host port 9000)
+  variables DATABASE_HOST=db.internal, DATABASE_URL (sealed), URL="postgres://app:" + (sealed "DB_PASSWORD") + "@db.internal/app"
+  command ["nginx","-g","daemon off;"]
+  ports [{"container_port":80,"hostname":"web.example.com","http_protocol":"http","load_balancer_port":443,"mode":"ingress"}]
+  pull_policy "missing"
+Approved worker: ghcr.io/acme/worker@sha256:9a0b1c2d3e4f5a6b7c8d9e0f1a2b3c4d5e6f7a8b9c0d1e2f3a4b5c6d7e8f9a0b (adds NET_ADMIN, host port 9000)
+  cap_add ["NET_ADMIN"]
+  ...
+Approve web, worker? [y/N]
 ```
 
-Each line names the image and anything the service asks of the server: privileged mode, added
-capabilities, PID mode, sysctls, host ports, bind mounts and its pre-deploy hook. Each server
-checks every container it creates against what you signed: the image, command, variables and
-sealed values, mounts, config files, ports, privileges and hook. Ployz Cloud carries the
-approval but can't change what it covers. A server logs each one, such as
+The first line of each service names the image and anything the service asks of the server:
+privileged mode, added capabilities, PID mode, sysctls, host ports, bind mounts and its
+pre-deploy hook. An image you wrote by digest shows its whole digest. The lines under it list
+every setting the signature covers that isn't Ployz's default, by its name in the spec:
+variables, the start command and entrypoint, user, mounts, config files, ports, privileges, the
+hook and the rest. A setting added to Ployz later shows there too, and so does a `false` or empty
+value that overrides one the hook would inherit. A text value with anything but letters, digits
+and `-_./:@+` shows in double quotes. A sealed value shows by the name it was sealed as, never
+its value, and a value built from text and sealed parts shows its text, quoted. Since the
+approval shows a sealed value's name and not its contents, Ployz Cloud could replace a sealed
+value before a deploy you approve.
+Ployz Cloud relays the plan, so read these lines before you answer: a setting you didn't make
+shows here even if Cloud put it there. A control character in a value prints as its escape,
+such as `\u{1b}`, so a value can't redraw the lines around it. Answer no and nothing is signed
+or deployed, and the command exits with 130.
+
+A script or CI job on an approved device has no terminal to ask in, so `ployz deploy` refuses
+before it signs and tells you to add `--yes`. With `--yes`, or `PLOYZ_AUTO_CONFIRM=1`, it prints
+the same lines and signs without asking. `--json` never asks either, so it needs `--yes` too.
+Use `--yes` only where you trust the plan Ployz Cloud sends. Without device enforcement,
+`ployz deploy` signs nothing and never asks.
+
+Each server checks every container it creates against what you signed: the image, command,
+variables and sealed values, mounts, config files, ports, privileges and hook. Ployz Cloud
+carries the approval but can't change what it covers. A server logs each one, such as
 `deploy 0f8fad5b… approved by device 3KQ7-M2XD for web digest=cb8d3c6ef656`. A hook runs once per
 approval, even if the same approval is sent again. The approval lasts 15 minutes. A rollout still
 going after that stops partway; run `ployz deploy` again.
@@ -189,7 +216,7 @@ without signing, and servers that enforce refuse it.
 **Deploy** at the bottom of an environment asks for your
 [passkey](../servers/manage-servers.md#add-a-passkey) the first time you press it, then not again
 in that environment for 60 minutes. Your browser approves the deployment as `ployz deploy` does,
-then lists what it approved, such as `Approved web: nginx@sha256:65645c7bb6a0…`. Each server
+then lists what it approved, the same lines `ployz deploy` prints. Each server
 checks every container against that approval. Its log names the passkey and the browser key,
 such as `deploy 0f8fad5b… approved by passkey q3x7mfk2pa via browser key 72asyextvn for web
 digest=cb8d3c6ef656`. If the settings change after you press **Deploy**, the server refuses the
@@ -206,8 +233,11 @@ A server that enforces and runs a Ployz from before 0.4 can't take an approval f
 dashboard. **Deploy** names it and deploys nothing: upgrade it, or run `ployz deploy`.
 
 Servers that enforce refuse a deploy nobody approved: a Git push, an organization token,
-`ployz up`, a redeploy, a rollback, a restore, or a deploy the dashboard starts from a Sync or a
-new branch. Each server's part of that deployment
+`ployz up`, a restore, a redeploy or rollback started anywhere but `ployz deployment redeploy` on
+an approved device, or a deploy the dashboard starts from a Sync or a new branch. To redeploy or
+roll back, see
+[Roll back on servers that enforce device approval](history-and-rollback.md#roll-back-on-servers-that-enforce-device-approval).
+Each server's part of that deployment
 fails with `This server runs only deploys an approved device signed.`, and nothing new starts
 there. A server added after you signed isn't covered by that approval; run `ployz deploy` again.
 A container already stopped starts again only if its settings are ones you approved. Running

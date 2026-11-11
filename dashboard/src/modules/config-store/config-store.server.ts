@@ -19,6 +19,7 @@ import { answerForSupport } from "#/modules/support-access/support-view";
 import { sendInngestEvent } from "#/modules/inngest/client";
 import {
   createConfigDeploymentAdmittedEvent,
+  createConfigDeploymentApprovedEvent,
   createConfigDeploymentStartedEvent,
   createConfigPrCheckRequestedEvent,
   createConfigSweepRequestedEvent,
@@ -325,6 +326,14 @@ const afterWrite = Effect.fn("ConfigStore.afterWrite")(function* (
   if (command.command === "admit" || command.command === "start" || command.command === "remove"
     || command.command === "approve_pull_request") {
     yield* dispatchAdmitted(organizationId, written, command.command === "start");
+  }
+  // A Deployment that waited for a person to approve its commits again goes on at once; its run looks again within a
+  // minute if this send is lost.
+  if (command.command === "approve_deployment") {
+    yield* sendInngestEvent(createConfigDeploymentApprovedEvent({ deploymentId: command.deployment })).pipe(
+      Effect.catchTag("InngestEventSendError", (error) =>
+        Effect.logWarning("An approved Deployment goes on at its run's next look: Cloud couldn't tell its run.", error)),
+    );
   }
   // A removal that applied at admission (nothing on a Server) is deleted by the next sweep, and admits what is due
   // after it, as is the removal a Sync's close marked: no worker will ask for that sweep, so ask now.

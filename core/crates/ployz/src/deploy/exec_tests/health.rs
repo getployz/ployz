@@ -892,13 +892,13 @@ fn new_api() -> ployz_core::RequestedServiceSpec {
 
 /// The options of a runner whose Store claim reports `ended` as the runs that ended.
 fn ended_options(ended: &[&str]) -> crate::deploy::PlanOptions {
-    crate::deploy::PlanOptions {
-        ended_runs: ended
+    crate::deploy::PlanOptions::default().as_runner(
+        ployz_core::Operator::Cloud,
+        ended
             .iter()
             .map(|run| DeploymentLogId::parse(*run).unwrap())
             .collect(),
-        ..Default::default()
-    }
+    )
 }
 
 /// The Deploy of `api` such a runner plans from what `client` holds.
