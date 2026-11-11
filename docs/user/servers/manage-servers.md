@@ -257,8 +257,9 @@ ployz device pin --connect ssh://root@203.0.113.10
 ```
 
 `pin` reads the key from that server, never through Ployz Cloud, and keeps it on this computer
-for the organization you're signed in to. It refuses a server whose key isn't the one Ployz
-Cloud has for that organization.
+for the organization you're signed in to. It reads only over SSH or the server's local socket,
+and refuses a plain TCP connection or one Ployz Cloud chose. It also refuses a server whose key
+isn't the one Ployz Cloud has for that organization.
 
 Until you pin the key, the CLI refuses to seal through Ployz Cloud and names `ployz device pin`.
 If Ployz Cloud later sends a different key, the CLI refuses too, and the secret never leaves your

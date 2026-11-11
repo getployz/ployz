@@ -137,11 +137,28 @@ pub(crate) enum SealTo {
 }
 
 impl SealTo {
-    /// Whether the person chose `client`'s connection and Cloud doesn't carry it. A
-    /// connection from Cloud's Server Access is Cloud's choice whatever its transport.
+    /// What a seal through `client` trusts: the entry's own report over a connection
+    /// the person chose, else the pin `pinned` reads for the Organization.
+    ///
+    /// # Errors
+    ///
+    /// As `pinned`, which runs only when the entry can't answer for itself.
+    pub(crate) async fn of(
+        client: &Client,
+        pinned: impl AsyncFnOnce() -> Result<Option<Pin>, Failure>,
+    ) -> Result<Self, Failure> {
+        if Self::direct(client) {
+            return Ok(Self::Entry);
+        }
+        Ok(Self::Pinned(pinned().await?))
+    }
+
+    /// Whether the person chose `client`'s connection and it reaches the Server's daemon
+    /// over SSH or the local socket, which Cloud doesn't carry and which say who answers.
+    /// A connection from Cloud's Server Access is Cloud's choice whatever its transport,
+    /// and plain TCP authenticates no one.
     pub(crate) fn direct(client: &Client) -> bool {
-        !matches!(client.connection_source(), ConnectionSource::Cloud)
-            && !matches!(client.connection().transport(), Transport::Management(_))
+        trusts(client.connection_source(), client.connection().transport())
     }
 
     /// The key to seal to through `client`. `relayed` is the key the Cluster's rows
@@ -170,6 +187,11 @@ impl SealTo {
             }
         }
     }
+}
+
+fn trusts(source: &ConnectionSource, transport: &Transport) -> bool {
+    !matches!(source, ConnectionSource::Cloud)
+        && matches!(transport, Transport::Ssh { .. } | Transport::Unix(_))
 }
 
 /// `relayed`, a key Cloud passed on, when it is the one this computer pinned.

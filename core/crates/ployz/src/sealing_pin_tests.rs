@@ -79,10 +79,15 @@ fn planted_row() -> ployz_testkit::fake_fleet::FleetFile {
 }
 
 async fn direct_client(fleet: &FakeFleet) -> Client {
+    client_from(fleet, ConnectionSource::Direct).await
+}
+
+/// A client to edge's socket, as if `source` had chosen it.
+async fn client_from(fleet: &FakeFleet, source: ConnectionSource) -> Client {
     let socket = fleet.socket(&MachineName::parse("edge").unwrap()).unwrap();
     crate::connect::connect_selected_with(
         crate::context::SelectedConnections {
-            source: ConnectionSource::Direct,
+            source,
             connections: vec![crate::context::Connection::unix(socket).unwrap()],
         },
         std::sync::Arc::new(crate::connect::SystemConnector::default()),
@@ -143,4 +148,77 @@ async fn a_relayed_key_other_than_the_pin_is_refused_before_anything_is_sealed()
             .code,
         RpcErrorCode::Unavailable
     );
+}
+
+#[test]
+fn only_ssh_or_the_local_socket_the_person_chose_reports_its_own_key() {
+    use crate::context::{Connection, SshDestination};
+
+    let ssh = Connection::ssh(SshDestination::parse("root@host").unwrap());
+    let unix = Connection::unix("/run/ployz/ployzd.sock").unwrap();
+    let tcp = Connection::tcp("127.0.0.1:9000".parse().unwrap());
+    let management = Connection::management(
+        ployz_core::ManagementCapability::new(
+            ployz_core::ManagementIdentity::from_bytes([1; 32]),
+            [2; 32],
+        )
+        .to_secret_string(),
+    )
+    .unwrap();
+    let context = || ConnectionSource::Context("prod".to_owned());
+
+    for (source, connection, trusted, why) in [
+        (ConnectionSource::Direct, &ssh, true, "--connect ssh"),
+        (
+            ConnectionSource::LocalSocket,
+            &unix,
+            true,
+            "the local socket",
+        ),
+        (context(), &ssh, true, "a context's SSH"),
+        (
+            ConnectionSource::Direct,
+            &tcp,
+            false,
+            "plain TCP authenticates no one",
+        ),
+        (
+            context(),
+            &management,
+            false,
+            "Cloud carries a Management connection",
+        ),
+        (
+            ConnectionSource::Cloud,
+            &ssh,
+            false,
+            "Server Access is Cloud's choice",
+        ),
+        (
+            ConnectionSource::Cloud,
+            &unix,
+            false,
+            "Server Access is Cloud's choice",
+        ),
+    ] {
+        assert_eq!(trusts(&source, connection.transport()), trusted, "{why}");
+    }
+}
+
+#[tokio::test]
+async fn a_connection_from_cloud_checks_the_pin_however_it_reaches_the_server() {
+    let sockets = tempfile::tempdir().unwrap();
+    let fleet = FakeFleet::start(planted_row(), Scenario::default(), sockets.path(), None).unwrap();
+
+    let from_cloud = client_from(&fleet, ConnectionSource::Cloud).await;
+    let seal_to = SealTo::of(&from_cloud, async || Ok(Some(pinned(1))))
+        .await
+        .unwrap();
+    assert_eq!(seal_to, SealTo::Pinned(Some(pinned(1))));
+
+    let chosen = direct_client(&fleet).await;
+    let seal_to = SealTo::of(&chosen, async || panic!("a chosen socket reads no pin"))
+        .await
+        .unwrap();
+    assert_eq!(seal_to, SealTo::Entry);
 }
