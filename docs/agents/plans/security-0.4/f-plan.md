@@ -228,7 +228,7 @@ Named once in each PR body, then left alone.
 - A Server added from Cloud's install line ran Cloud's script as root before it joined (decision 3). A Cluster founded from that line trusts the first key that line installs (Appendix A gap 6).
 - A teardown a person approved runs in the order and at the time Cloud picks.
 - Cloud can leave a real Server out of the starting set. That's a drop. The Server stays awaiting activation and is named.
-- A secret typed into the dashboard trusts the dashboard: a compromised Cloud can supply the sealing key (or the page) and read it. F3 stops the key reaching an honest Cloud in plaintext; the CLI path that seals to a Device-pinned Cluster key is a follow-up.
+- A secret typed into the dashboard trusts the dashboard: a compromised Cloud can supply the sealing key (or the page) and read it. F3 stops the key reaching an honest Cloud in plaintext; F3b makes the CLI seal only to a Device-pinned Cluster key.
 
 ## Program checklist
 
@@ -369,6 +369,40 @@ Outcome. Under enforcement, Cloud starts and repairs the Ingress Proxy and its d
 - [ ] Metric. `SetIngressDoors` admission, trunk enforcement off and head enforcement on, ten each. Rule: within 20 ms at the median.
 
 **Review gate.** The operator reviews the Private Access prompt with lane 5's screenshot.
+
+## Seal from the CLI only to a key the Device pinned (F3b)
+
+Outcome. When `ployz` seals a secret through Cloud, a Private Access auth key or a Sealed variable, it seals only to the Cluster's Sealing public key as a Server reported it to this computer over the local socket or SSH. `ployz device pin` reads that key and keeps it per Organization in `sealing-keys.json` beside the config. Attack path closed. Cloud hands the CLI a key it controls and reads the secret the person seals: a relayed key other than the pin is refused before anything is sealed, and so is a relayed key with no pin. A Cloud that answers "seals in the Store" or lacks the sealing route no longer gets the plain text. Over a connection the person chose and Cloud doesn't carry, `private-access on` seals to the entry Server's own Inspect answer, not to the first Machine row that claims a key.
+
+Design choices, settled from the code:
+
+- The pin source. The Device trusts no Machine key yet (the known-Machines file is F6's), and Cloud's Server Access supplies each relayed connection's identity, so nothing read through Cloud can be checked. SSH and the local socket can. `pin` dials only those, through `ployz recovery rotate`'s dial, which refuses a Management connection. A Machine-signed attestation waits on F6's pins.
+- The rule. A value Cloud relays may be shown and compared, but it never gates a seal. Cloud's key counts only when it equals the pin. The Organization that keys the pin is Cloud's word for a token sign-in, so a lying Cloud can only steer a seal to another Cluster this computer pinned, which is a mislabel.
+- When the CLI can't verify. It refuses with `conflict` and `next: ployz device pin --connect ssh://USER@SERVER`. `pin` itself refuses a Server whose key isn't the one Cloud's recovery backup names for the Organization, so a pin from the wrong Cluster fails at once.
+- Rotation. Nothing tells a rotated key from a planted one without a pinned Machine, so a changed key is refused and the person pins again. F6's `ployz device enforce` rotates the key over pinned connections, so it should re-pin the new key as it prints the recovery code (handoff below).
+
+Not closed. #4106: a sealed value doesn't say who sealed it, so Cloud can still seal a value of its own. A secret typed into the dashboard still trusts the dashboard. The Cloudflare tunnel token stays thread X's.
+
+**Files.**
+
+- [x] Create `core/crates/ployz/src/sealing_pin.rs` (`Pins`, `Pin`, `SealTo`, `check`, `entry_pin`) and `core/crates/ployz/src/handlers/device/pin.rs` (`ployz device pin`, `seal_to`).
+- [x] Edit `core/crates/ployz/src/handlers/private_access.rs` and `private_access.rs` so `on` seals to `SealTo::key`.
+- [x] Edit `core/crates/ployz/src/handlers/store/sealing.rs` so `ready` checks Cloud's key against the pin, and refuses `off` or a missing route instead of sending plain text.
+- [x] Edit `docs/user/servers/manage-servers.md`, `docs/user/services/private-networking.md` and `docs/user/services/variables.md`.
+
+**Verify, unit.**
+
+- [x] `cargo nextest run -p ployz sealing_pin private_access`. A relayed key other than the pin is refused, and so is one with no pin. A direct entry seals to its own key when another row claims a planted one.
+- [x] `config_cli` `set_seals_only_to_the_key_this_computer_pinned_and_writes_nothing_otherwise` and `a_secrets_plain_text_never_goes_to_a_cloud_that_offers_no_key_to_seal_it_to`. Cloud never sees the plain text and no write is sent.
+
+**Verify, live.**
+
+- [ ] Lane 1. `ployz device pin --connect ssh://` on a real Cluster, then `ployz set --secret` through Cloud. Pass when a deploy opens the value on the Machine.
+- [ ] Lane 2. Plant another key in Cloud's record of the Cluster's Sealing key. Pass when `ployz set --secret` and `ployz private-access on` refuse and Cloud receives no write.
+
+**Verify, perf.** `ployz set --secret` reads one local file and makes no new network call. `private-access on` makes one Inspect over a direct connection, and one Organization read for a token sign-in through Cloud.
+
+**Handoff to F6.** `ployz device enforce` re-pins the rotated key for the Organization once activation publishes it.
 
 ## Sign the dashboard deploys B5 left (F4)
 

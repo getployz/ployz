@@ -246,6 +246,26 @@ ployz device rm mmg42klgyq
 that answers. A server that doesn't answer is listed under failures, and one with no direct
 connection under omissions. Either way the command exits 3.
 
+### Pin your cluster's key
+
+`ployz private-access on` and sealed variables seal the secret on your computer, to your
+cluster's key. Before the CLI seals through Ployz Cloud, it checks the key Ployz Cloud sends
+against one it read from a server itself. Read it once per organization, over SSH or on a server:
+
+```sh
+ployz device pin --connect ssh://root@203.0.113.10
+```
+
+`pin` reads the key from that server, never through Ployz Cloud, and keeps it on this computer
+for the organization you're signed in to. It refuses a server whose key isn't the one Ployz
+Cloud has for that organization.
+
+Until you pin the key, the CLI refuses to seal through Ployz Cloud and names `ployz device pin`.
+If Ployz Cloud later sends a different key, the CLI refuses too, and the secret never leaves your
+computer. If your cluster's key really changed, for example because you started a new cluster,
+run `pin` again. Over `--connect ssh://`, `ployz private-access on` reads the key from that
+server and needs no pin.
+
 ### Add a passkey
 
 A passkey lets you approve changes from your browser. Each server trusts it to approve workflows
