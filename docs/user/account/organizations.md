@@ -249,8 +249,17 @@ Ployz is free on your own servers: unlimited servers and projects, preview envir
 generated https addresses and custom domains. Your hosting provider bills you for the servers.
 
 Pay when your cluster is in production. **Production** is $10 a month with two servers included,
-then $5 for each extra server. Nothing is locked today. Production pays for what doesn't run on
-your own servers, starting with longer log and metrics history.
+then $5 for each extra server. Production pays for what Ployz Cloud runs for you:
+
+- [Uptime checks](../observe/uptime.md) from outside your servers, and an email when a service goes
+  down or comes back.
+- [Web analytics](../observe/analytics.md) for your domains.
+- Longer log and metrics history, coming.
+
+Without Production, Ployz keeps checking your services and counting your visits. You can't see the
+results: the Monitoring tab, **Analytics**, `ployz uptime` and the Ployz agent ask you to add
+Production instead, and the uptime emails stop. Add Production and the results show again, as far
+back as Ployz keeps them. Everything else is free: metrics, logs, deploys and the crash emails.
 
 Click **Upgrade to production** on **Organization → Billing** to start. The page shows your server
 count and what you pay a month. A server you add is charged as soon as it joins. When you remove
@@ -259,8 +268,8 @@ Production or gets invoices. A cancelled Production stays until the end of the p
 
 In an agent's sandbox, billing waits until someone keeps it.
 
-A [self-hosted Ployz Cloud](../self-hosting.md) has no billing, and custom domains are always
-allowed.
+A [self-hosted Ployz Cloud](../self-hosting.md) has no billing. Custom domains, uptime and
+analytics are always available there.
 
 ## Delete an organization
 

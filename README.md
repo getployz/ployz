@@ -117,7 +117,8 @@ backups and automatic failover today, wait. Ployz is young and changes quickly. 
 - **No automatic failover.** If a server dies, what ran only there stops. Replicas on other
   servers keep running.
 - **No Docker Compose files.** Add each container as its own service.
-- **Alerts are email only.** Ployz Cloud emails you when a service goes down or crashes.
+- **Alerts are email only.** Ployz Cloud emails you when a service crashes. With Production it also
+  emails you when a service goes down.
 
 **Soon:** offsite backups, automatic rollbacks, and moving a database to a bigger server without
 downtime.
@@ -128,9 +129,11 @@ Ployz is free on your own servers, custom domains included. Your hosting provide
 the servers.
 
 Mark your cluster as production on [Ployz Cloud](https://ployz.dev) when you depend on it. That is
-$10 a month with two servers included, then $5 for each extra server. Nothing is locked today.
-Production pays for what doesn't run on your own servers, starting with longer log and metrics
-history.
+$10 a month with two servers included, then $5 for each extra server. Production pays for what
+Ployz Cloud runs for you: uptime checks from outside your servers with an email when a service goes
+down, and web analytics for your domains. Longer log and metrics history is next.
+
+Without Production, Ployz keeps checking and counting. You see the results once you add it.
 
 ## Self-hosting the dashboard
 

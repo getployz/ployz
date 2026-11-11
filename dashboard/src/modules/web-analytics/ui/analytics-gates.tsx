@@ -1,3 +1,4 @@
+import { Link } from "@tanstack/react-router";
 import { ChartLineIcon } from "lucide-react";
 import type { ReactNode } from "react";
 import { Button } from "#/components/ui/button";
@@ -20,7 +21,22 @@ export function Gate({ title, children, action }: { title: string; children?: Re
 
 /** Why the page reads nothing: the plan or the Environment's switch. */
 export function ClosedGateView({ gate, scope }: { gate: ClosedGate; scope: AnalyticsScope }) {
-  return gate === "self-host-off" ? <SelfHostOff /> : <SiteOff scope={scope} />;
+  if (gate === "self-host-off") return <SelfHostOff />;
+  return gate === "production" ? <NeedsProductionView scope={scope} /> : <SiteOff scope={scope} />;
+}
+
+function NeedsProductionView({ scope }: { scope: AnalyticsScope }) {
+  return (
+    <Gate title="Analytics is part of Production"
+      action={
+        <Button nativeButton={false}
+          render={<Link to="/cloud/$organizationSlug/~/billing" params={{ organizationSlug: scope.organizationSlug }} />}>
+          See Production
+        </Button>
+      }>
+      Ployz keeps counting visits. Add Production to see them.
+    </Gate>
+  );
 }
 
 function SelfHostOff() {

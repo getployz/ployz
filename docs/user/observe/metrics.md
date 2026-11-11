@@ -12,8 +12,8 @@ without installing anything.
 1. Click the service on the canvas.
 2. Open its **Monitoring** tab.
 
-A service with a public address leads with its [uptime](uptime.md) and **Response time**. Then
-come **CPU**, **Memory**, **Network** and **Disk**, all on one time axis, so hovering one chart
+A service with a public address leads with its [uptime](uptime.md) and **Response time** when the
+Organization has [Production](../account/organizations.md#billing). Then come **CPU**, **Memory**, **Network** and **Disk**, all on one time axis, so hovering one chart
 moves the cursor on every chart. **CPU** reads as a share of one core, so 100% is one full
 core. A dashed line on **CPU** and **Memory** marks the service's limit. A vertical rule marks
 each deploy, and a marker shows each OOM kill, exit and restart. A service with a managed volume ends with a **Managed volume** row that names the volume and its
@@ -58,8 +58,8 @@ exit or a stop, such as `ployz service restart`, a Deploy or a rollback, shows n
 the app exits non-zero on the stop signal, as with SIGTERM (143), SIGINT (130) or SIGKILL (137).
 When other issues share the card, the badge adds their count, as in **⚠ OOM +1**. The badge is
 amber, or red when the service is down. Click the ⚠ to open the service's Monitoring tab. A
-server that needs an upgrade or doesn't answer adds nothing to the card. A failing uptime check
-shows **⚠ Unreachable**, and a failing healthcheck **⚠ Check failing**.
+server that needs an upgrade or doesn't answer adds nothing to the card. With Production, a failing
+uptime check shows **⚠ Unreachable**, and a failing healthcheck **⚠ Check failing**.
 
 A crash or OOM kill also emails the organization, as
 [Notifications](../account/notifications.md) describes. A crash that happened while the server's

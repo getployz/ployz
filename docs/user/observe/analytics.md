@@ -8,8 +8,11 @@ sends it to Cloud as a request row. There is no script to add and no cookie bann
 is a browser asking for an HTML page, and the same rows show how fast each route answers and which
 requests failed.
 
-Every Ployz Cloud Organization has analytics. A self-hosted Cloud runs it once its operator sets
-`ANALYTICS_ENABLED=true` and restarts it.
+Analytics is part of [Production](../account/organizations.md#billing). An Organization without it
+sees **Analytics is part of Production** on every **Analytics** page, with a link to **Billing**.
+Ployz keeps counting visits for an Environment that has analytics on, and the numbers show once
+Production is added, as far back as Ployz keeps them. A self-hosted Cloud has no billing: it runs
+analytics once its operator sets `ANALYTICS_ENABLED=true` and restarts it.
 
 ## Turn it on
 
