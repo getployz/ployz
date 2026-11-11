@@ -230,7 +230,7 @@ class Cache(Scratch):
             artifacts.store(found, self.build(f"build-{index}", b"x" * 1000))
             os.utime(self.root / "cache" / "sdk" / found.value, (time.time() - 100 + index, time.time() - 100 + index))
         artifacts.fetch(used, self.root / "out")
-        with mock.patch.object(artifacts, "CACHE_BYTES", 18000):  # two entries of about 7.4 kB fit, three don't
+        with mock.patch.object(artifacts, "CACHE_BYTES", 27000):  # two entries of about 11.3 kB fit, three don't
             artifacts.prune()
         self.assertEqual(sorted(entry.name for entry in (self.root / "cache" / "sdk").iterdir()),
                          sorted([used.value, new.value]))
