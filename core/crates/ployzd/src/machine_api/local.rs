@@ -1460,12 +1460,17 @@ fn local_failure(error: LocalMachineError) -> Result<RpcError, Status> {
                 "next": "ployz device enforce --off from an approved device",
             }),
         )),
-        LocalMachineError::VolumeStepRefused(_) => Err(ployz_core::rpc::hinted_status(
+        LocalMachineError::VolumeStepRefused(ref refusal) => Err(ployz_core::rpc::hinted_status(
             tonic::Code::PermissionDenied,
             &error,
             serde_json::json!({
                 "capability": ployz_core::VOLUME_APPROVAL_CAPABILITY,
-                "next": "approve the Volume change again from an approved device",
+                "next": if matches!(refusal, ployz_core::authority::AuthorityRefusal::Unreceipted) {
+                    // A new approval would not help: only the source's receipt makes this Machine the writer.
+                    "ployz volume release asks the move's source where the move ends"
+                } else {
+                    "approve the Volume change again from an approved device"
+                },
             }),
         )),
         LocalMachineError::RuleGrantRefused(_)

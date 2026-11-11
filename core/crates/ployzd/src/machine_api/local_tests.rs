@@ -4101,9 +4101,9 @@ mod set_volume_copy {
             DeviceKey, DockerVolumeName, Namespace, OPERATOR_SCOPE_HEADER, OperationId,
             ResolvedServiceSpec, SealingPublicKey, VOLUME_APPROVAL_CAPABILITY,
             authority::{
-                ApprovedService, AuthorityRefusal, PayloadDigest, Purpose, Signed, Signer,
-                SignerKey, Timestamp, VolumeApproval, VolumeWorkflow,
-                validity::MAX_LIFETIME_MILLIS,
+                ApprovedService, AuthorityRefusal, HandoffReceipt, MachineSigned, PayloadDigest,
+                Purpose, Signed, Signer, SignerKey, StepDigest, Timestamp, VolumeApproval,
+                VolumeWorkflow, validity::MAX_LIFETIME_MILLIS,
             },
         };
         use tonic::Status;
@@ -4180,6 +4180,37 @@ mod set_volume_copy {
                 };
                 Signed::sign(&body, &self.signer).unwrap()
             }
+        }
+
+        /// `request` with the receipt `from` signs with this Cluster's receipt key, handing
+        /// `approval`'s Volume to this Machine at the snapshot `create_of` names.
+        #[expect(clippy::indexing_slicing, reason = "JSON fixture")]
+        fn receipted(
+            mut request: Value,
+            approval: &Signed<VolumeApproval>,
+            data_dir: &std::path::Path,
+            (from, to): (MachineId, MachineId),
+        ) -> Value {
+            let key = crate::sealing_key::SealingKey::load(data_dir)
+                .unwrap()
+                .unwrap();
+            let body = approval.open().unwrap();
+            let receipt = HandoffReceipt {
+                cluster: key.public_key(),
+                operation: body.operation,
+                approval: StepDigest::of(&approval.body),
+                volume: body.volume,
+                from,
+                to,
+                at: ployz_core::SnapshotGuid::new(900),
+                snapshot: "f-1".parse().unwrap(),
+                from_epoch: ployz_core::WriterEpoch::new(0),
+                epoch: ployz_core::WriterEpoch::new(1),
+            };
+            request["receipt"] =
+                serde_json::to_value(MachineSigned::sign(&receipt, &key.receipt_signer()).unwrap())
+                    .unwrap();
+            request
         }
 
         fn elsewhere() -> MachineId {
@@ -4397,14 +4428,35 @@ mod set_volume_copy {
                 docker_writes(&fake)
             );
 
+            let status = operator_set_copy(&service, approved(create_of(&spec), &approval))
+                .await
+                .expect_err("a start under the Move with no receipt");
+            refused_step(&status, AuthorityRefusal::Unreceipted);
+            assert_eq!(
+                ployz_core::rpc::status_details(status.details())
+                    .unwrap()
+                    .get("next"),
+                Some(&json!(
+                    "ployz volume release asks the move's source where the move ends"
+                ))
+            );
+            assert!(docker_writes(&fake).is_empty());
+            let handed = |request| {
+                receipted(
+                    approved(request, &approval),
+                    &approval,
+                    &data_dir,
+                    (elsewhere(), device.this),
+                )
+            };
             reply(
-                &operator_set_copy(&service, approved(create_of(&spec), &approval))
+                &operator_set_copy(&service, handed(create_of(&spec)))
                     .await
                     .unwrap(),
             );
             assert_eq!(holder_status(&fake), vec![json!("running")]);
             reply(
-                &operator_set_copy(&service, approved(create_of(&spec), &approval))
+                &operator_set_copy(&service, handed(create_of(&spec)))
                     .await
                     .expect("a resent start under the same approval"),
             );
