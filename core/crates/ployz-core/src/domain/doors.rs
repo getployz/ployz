@@ -90,7 +90,7 @@ pub fn cluster_doors(
 
 /// The declared Doors in `stored`, the JSON text of the replicated `doors` key. `None`
 /// when it is not a set of Doors, or names a Door this release doesn't know: a reader
-/// then treats the Cluster as undeclared, and never as Public.
+/// then treats the Cluster as undeclared and falls back to what the door Containers show.
 #[must_use]
 pub fn declared_doors(stored: &str) -> Option<IngressDoors> {
     serde_json::from_str::<IngressDoors>(stored)

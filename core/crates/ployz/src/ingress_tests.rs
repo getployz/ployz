@@ -750,7 +750,7 @@ async fn an_entry_that_cannot_keep_a_declaration_hands_it_to_a_server_that_can()
     let observed = observe_doors(&mut client).await.unwrap();
     assert!(
         matches!(&observed.declaration, Declaration::Through(through)
-            if through.len() == 1 && through[0].server.as_str() == "upgraded"),
+            if matches!(through.as_slice(), [only] if only.server.as_str() == "upgraded")),
         "{:?}",
         observed.declaration
     );

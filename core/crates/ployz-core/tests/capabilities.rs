@@ -507,7 +507,7 @@ const ABOVE_FLOOR: &[(&str, &str)] = &[
     ),
     (
         "ployz.cluster.doors.v1",
-        "falls back: `ployz ingress use`, `server init --ingress-closed` and Cloud founding warn that the entry can't keep the Cluster's Doors and set each Server's Doors as before; claims nothing: the snapshot carries no declaration and readers infer the Doors from what runs, and an older Register ignores the joiner's claim",
+        "falls back: `ployz ingress use`, `server init --ingress-closed` and Cloud founding declare through an online Server that serves it when the entry can't, and warn and set each Server's Doors as before when none can; claims nothing: the snapshot carries no declaration and readers infer the Doors from what runs, and an older Register ignores the joiner's claim",
     ),
     (
         "ployz.private-access.v1",
