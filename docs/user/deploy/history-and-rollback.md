@@ -81,3 +81,55 @@ An accepted deployment and its redeploys keep their original snapshot while you 
   and says to add one, as a deploy does.
 
 [The agent](../account/agent-sidebar.md) can do the same, and its redeploys wait for you to approve.
+
+## Roll back on servers that enforce device approval
+
+With [device enforcement](../servers/manage-servers.md#require-a-devices-signature-for-restarts-and-joins)
+on, redeploy or roll back from an approved device:
+
+```bash
+ployz deployment redeploy 4
+```
+
+Your device approves the commit of each service GitHub built for #4 under your
+[automatic deploy rule](github.md#deploy-on-push-to-servers-that-enforce-device-approval), one
+line per service:
+
+```text
+Approving web at 3f1c2a9b8e7d
+```
+
+Your approval takes the place of the branch's head, and nothing else. Each server still runs only
+the image GitHub built from that commit under your rule, with the settings your rule approves,
+and checks all of it itself. Ployz Cloud can't swap the image, the settings or the commit.
+
+A server that still holds the image GitHub built for #4 runs it again. Otherwise GitHub builds
+the commit again on the rule's branch, and your servers release the build's secrets only for a
+commit in that branch's history. The redeploy waits, printing `Building web at 3f1c2a9b8e7d on
+GitHub`. Once every build ends, your device approves the same commits again, so a long build
+doesn't use up the approval's 15 minutes. A build that fails cancels the redeploy, and nothing
+deploys.
+
+- **The rule's workflow runs the rebuild.** It needs the `workflow_dispatch` trigger with a
+  `commit` input, shown in [the workflow](github.md#deploy-on-push-to-servers-that-enforce-device-approval).
+  A rule approved before Ployz 0.4 runs only on push: approve the rule again, then redeploy.
+- **Keep the CLI running.** The redeploy waits for your device's second approval. If you stop
+  the CLI while it waits, it cancels the redeploy. If the CLI can't cancel it, Ployz Cloud fails
+  it after an hour, and nothing deploys.
+- **A redeploy from the dashboard or by the agent isn't approved.** Servers that enforce refuse
+  it. Run `ployz deployment redeploy` on an approved device.
+- **A rollback keeps your rule's settings.** Your servers run each service only with the
+  settings your rule approves now: its command, environment, ports, mounts, health check and
+  pre-deploy command. A redeploy of a deployment saved with other settings is refused. To roll
+  those back, change the settings back and approve the rule again.
+- **It runs under your rule as it stands.** If you approved the rule again since #4, GitHub
+  builds the commit again under the new approval. If you ended the rule, your servers refuse the
+  rollback.
+- **Only services GitHub built from a commit redeploy here.** A redeploy of a service built from
+  an upload is refused before anything happens. Your servers refuse a service the redeploy runs
+  from an image or built on your servers. Deploy those with `ployz deploy`.
+- **GitHub retires the keys that sign its build records.** Your servers refuse an image whose
+  record GitHub signed with a key it no longer publishes, and name the key. A redeploy can't
+  build that commit again yet.
+- **Every server needs a Ployz that checks your approval.** If one runs an older Ployz, the CLI
+  says so and deploys nothing.
