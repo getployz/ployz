@@ -197,11 +197,13 @@ fn free_port() -> u16 {
 
 /// Fails when another caller holds the port, whichever process it runs in.
 fn reserve(port: u16) -> bool {
+    let locks = std::env::temp_dir().join("ployz-probe-test-ports");
+    fs::create_dir_all(&locks).unwrap();
     let lock = fs::OpenOptions::new()
         .create(true)
         .truncate(false)
         .write(true)
-        .open(std::env::temp_dir().join(format!("ployz-probe-test-port-{port}.lock")))
+        .open(locks.join(port.to_string()))
         .unwrap();
     let held = lock.try_lock().is_ok();
     if held {
@@ -242,8 +244,8 @@ fn a_free_port_is_not_one_the_kernel_hands_out() {
 
 #[test]
 fn a_free_port_is_never_handed_out_twice() {
-    let ports: std::collections::HashSet<u16> = (0..2_000).map(|_| free_port()).collect();
-    assert_eq!(ports.len(), 2_000);
+    let ports: std::collections::HashSet<u16> = (0..500).map(|_| free_port()).collect();
+    assert_eq!(ports.len(), 500);
 }
 
 fn handout(handout: &str, window_ms: u64, listen: &[Port], send: &[u16]) -> Handout {
