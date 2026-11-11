@@ -335,6 +335,7 @@ impl Fixture {
         let paths = Paths {
             checkin_dir: dir.path().join("checkin"),
             prepare_state: dir.path().join("prepare/state.json"),
+            prepare_lock: dir.path().join("prepare/lock"),
             token_file: dir.path().join("fleet-token"),
         };
         fs::create_dir_all(paths.prepare_state.parent().unwrap()).unwrap();
@@ -1363,7 +1364,7 @@ fn the_host_adapter_overrides_remote_context_and_connection_environment() {
         Path::new(matches.get_one::<String>("ployz-config").unwrap()),
         matches.get_one::<String>("connect").map(String::as_str),
         None,
-        Path::new(crate::connect::DEFAULT_LOCAL_SOCKET),
+        &ployz_core::MachineLayout::production().socket(),
     )
     .unwrap();
     assert_eq!(selected.connections.len(), 1);

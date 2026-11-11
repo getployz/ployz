@@ -96,7 +96,7 @@ async fn soak(paths: &InstallPaths, target: &MachineVersion) -> Result<(), Insta
             format!("ployz.service restarted (main PID {started} became {running})"),
         ));
     }
-    super::host::verify_daemon_contract(&paths.run_dir.join("ployz.sock"), target).await
+    super::host::verify_daemon_contract(&paths.socket(), target).await
 }
 
 /// Put the retained previous daemon back into service, restart `plugins`, and prove it ready.

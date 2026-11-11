@@ -2345,7 +2345,7 @@ fn status_warns_when_the_context_it_was_given_does_not_exist() {
 
 #[test]
 fn status_checks_nothing_and_says_nothing_with_no_server_set_up() {
-    if std::path::Path::new(crate::connect::DEFAULT_LOCAL_SOCKET).exists()
+    if ployz_core::MachineLayout::production().socket().exists()
         || std::env::var_os(crate::cli::env::TOKEN).is_some()
     {
         return;

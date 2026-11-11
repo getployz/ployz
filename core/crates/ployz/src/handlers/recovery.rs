@@ -1,13 +1,12 @@
 use crate::cluster::{Call, Wait};
 use std::io::Read;
-use std::path::Path;
 use std::sync::Arc;
 
 use clap::{ArgMatches, Command};
 use ployz_core::{
-    DescribeContractRequest, RECOVER_SEALING_KEY_CAPABILITY, RecoverSealingKeyRequest,
-    RecoveryCode, RecoveryRefusal, RpcErrorCode, SealingKeyBackup, SealingPublicKey,
-    WRAP_SEALING_KEY_CAPABILITY, WrapSealingKeyRequest, op,
+    DescribeContractRequest, MachineLayout, RECOVER_SEALING_KEY_CAPABILITY,
+    RecoverSealingKeyRequest, RecoveryCode, RecoveryRefusal, RpcErrorCode, SealingKeyBackup,
+    SealingPublicKey, WRAP_SEALING_KEY_CAPABILITY, WrapSealingKeyRequest, op,
 };
 use serde::Deserialize;
 use serde_json::json;
@@ -17,7 +16,7 @@ use crate::cli::{base, switch};
 use crate::cloud_account::{self, Credential};
 use crate::cloud_enroll::RecoveryBackup;
 use crate::cloud_login::LoginError;
-use crate::connect::{Client, ConnectError, DEFAULT_LOCAL_SOCKET, SystemConnector};
+use crate::connect::{Client, ConnectError, SystemConnector};
 use crate::context::Transport;
 use crate::ui::{self, Fields, Hint};
 
@@ -210,7 +209,7 @@ pub(super) async fn dial(matches: &ArgMatches, verb: &str) -> Result<Client, Err
         &config_path(matches)?,
         matches.get_one::<String>("connect").map(String::as_str),
         matches.get_one::<String>("context").map(String::as_str),
-        Path::new(DEFAULT_LOCAL_SOCKET),
+        &MachineLayout::production().socket(),
     )?;
     if selected
         .connections
@@ -422,7 +421,7 @@ fn rotate_failure(error: LoginError) -> Error {
 mod tests {
     use std::io::Cursor;
     use std::os::unix::fs::PermissionsExt;
-    use std::path::PathBuf;
+    use std::path::{Path, PathBuf};
     use std::sync::atomic::{AtomicUsize, Ordering};
     use std::sync::{Arc, Mutex};
 

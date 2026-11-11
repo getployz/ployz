@@ -5,14 +5,14 @@
 //! :96-106), checks the Pool with `existing_device_pool` (:107-112), and only then records
 //! ownership with `remember_device_pool` (:113), an atomic write of the CONFIRMED marker
 //! (:77-83). `install_at` holds the installation gate's exclusive guard throughout
-//! (installer/mod.rs:256-261, :286). The plugin's `VolumeStorage::create`
-//! (volume_plugin/pool.rs:97-125) takes that gate's shared guard (`admit_mutation`,
-//! :103, volume_plugin/storage.rs:178-188), then the Pool mutation lock (pool.rs:104), then
-//! runs `one_usable` (:214), `recover` (:277) and, when both find nothing, `create`
+//! (installer/mod.rs:259-264, :286). The plugin's `VolumeStorage::create`
+//! (volume_plugin/pool.rs:96-124) takes that gate's shared guard (`admit_mutation`,
+//! :102, volume_plugin/storage.rs:178-188), then the Pool mutation lock (pool.rs:103), then
+//! runs `one_usable` (:213), `recover` (:276) and, when both find nothing, `create`
 //! (:391), which builds the root-backed `ployz` Pool on a backing file. Copy's `first_pool`
 //! takes the same path (volume_plugin/copy.rs:146-160, :175-196). Meanwhile the disk can go
 //! missing and return, ZFS imports at boot the Pools its cache file lists, and
-//! `local_storage` (ployzd machine/mod.rs:691) reports what `zpool list` shows.
+//! `local_storage` (ployzd machine/mod.rs:689) reports what `zpool list` shows.
 //!
 //! How ZFS imports at boot comes from a reboot run on Ubuntu 24.04.4 with ZFS 2.2.2 (the
 //! verify-pool-ownership skill's ZFS at boot). Neither `zpool create` sets a cachefile, so
@@ -24,24 +24,24 @@
 //!
 //! The finding needs a volume plugin installed before the installer creates `ployz-device`.
 //! `install_locked` runs `prepare_storage` before it installs the binaries and units and
-//! enables the plugin's socket (installer/mod.rs:286, :298-301, installer/host.rs:262), so
+//! enables the plugin's socket (installer/mod.rs:289, :298-301, installer/host.rs:270), so
 //! a fresh host has no plugin until a run completes. An earlier `ployzd install`, whose
 //! `--storage` defaults to `none` (ployzd main.rs:108-109), installs both and enables the
 //! socket whatever its storage, and a later `ployzd install --storage zfs:<device>` runs
-//! `prepare_storage` again (installer/mod.rs:280-286); docs/user/servers/add-a-server.md:207-208
+//! `prepare_storage` again (installer/mod.rs:283-289); docs/user/servers/add-a-server.md:207-208
 //! names that command. The model starts from either host.
 //!
 //! Docker's List (volume_plugin/removal.rs:96-104) and Inspect (:48-53) take the Pool
 //! mutation lock but not the installation gate, and run `admit`: `one_usable`, which
-//! writes CONFIRMED for an imported `ployz-device` (pool.rs:237-246), then `recover`. The
+//! writes CONFIRMED for an imported `ployz-device` (pool.rs:236-245), then `recover`. The
 //! model has them as two steps, offered whenever a release is installed, including while
 //! the installer runs: `List`, which is `one_usable`, then `ListRecover`, which is `recover`
 //! when `one_usable` found nothing. The installer is another process (`ployzd install`),
 //! so it can step between any two of a List's reads, not only at an await. In
-//! `one_usable`, a `Record` between `zpool list` (:221) and the marker read or write
-//! (:239-245) leaves the CONFIRMED marker the List would have written. In `recover`, the
-//! `zpool import` scan (:287) never lists `ployz-device` while the installer runs, since
-//! the disk is blank or `zpool create` imported it, and the backing-file reads (:278-279)
+//! `one_usable`, a `Record` between `zpool list` (:220) and the marker read or write
+//! (:238-244) leaves the CONFIRMED marker the List would have written. In `recover`, the
+//! `zpool import` scan (:286) never lists `ployz-device` while the installer runs, since
+//! the disk is blank or `zpool create` imported it, and the backing-file reads (:277-278)
 //! see no file, which the installer never writes. So an installer step between the scan
 //! and the marker read (:308) changes only that read: the List refuses with the device
 //! imported, as a `ListRecover` placed after `Record` does
@@ -61,13 +61,13 @@
 //! by a crash, or by `existing_device_pool`'s backing check refusing with `ployz-device`
 //! imported (installer/storage.rs:214). The disk then carries a
 //! `ployz-device` label and the host has no marker. Once the disk is missing, `recover`
-//! finds no importable device Pool and no marker and returns `Ok(None)` (pool.rs:314),
-//! `create` passes its marker-only refusal (:392-396), and the plugin builds a root-backed
-//! `ployz` beside the labelled disk (:401, :422). That `zpool create` rewrites the cache file
+//! finds no importable device Pool and no marker and returns `Ok(None)` (pool.rs:313),
+//! `create` passes its marker-only refusal (:391-395), and the plugin builds a root-backed
+//! `ployz` beside the labelled disk (:400, :421). That `zpool create` rewrites the cache file
 //! from the imported Pools alone, so no boot imports `ployz-device` again, and `admit`
-//! returns `ployz` from `one_usable` without reaching `recover` (pool.rs:256-261). And
+//! returns `ployz` from `one_usable` without reaching `recover` (pool.rs:255-260). And
 //! `local_storage` reads Ready while a recorded device Pool's disk is missing
-//! (machine/mod.rs:710).
+//! (machine/mod.rs:708).
 //!
 //! The fix variant keeps the marker's bytes. Before `zpool create`, the installer writes an
 //! intent, a sibling file naming the device. `recover` refuses while an intent's disk is
@@ -83,7 +83,7 @@
 //! `reconcile_device_pool_marker`, a legacy or partial marker, a second disk, a disk that
 //! vanishes under an imported Pool, a boot during an installation or a Volume create, an
 //! operator's own `zpool` commands, and Volume operations other than List, Inspect and
-//! creating the first Pool. So is `create`'s cleanup (pool.rs:455-469), which runs when
+//! creating the first Pool. So is `create`'s cleanup (pool.rs:454-468), which runs when
 //! `create`'s `one_usable` finds a Pool other than `ployz`: between `recover` and `create`
 //! the gate keeps the installer out, and only a boot or an operator imports `ployz-device`.
 
@@ -108,13 +108,13 @@ struct Disk {
 #[derive(Clone, Copy, Debug, Hash, PartialEq, Eq)]
 struct Host {
     /// A release is installed with its units, so ployzd and its volume plugin answer
-    /// (installer/mod.rs:298-301, installer/host.rs:253-266).
+    /// (installer/mod.rs:301-304, installer/host.rs:261-274).
     release: bool,
     /// The root-backed `ployz` Pool exists on `/var/lib/ployz-machine-pool`, imported
-    /// (machine_pool.rs `BACKING_FILE`).
+    /// (`MachineLayout::machine_pool_file`, machine_layout.rs:112-116).
     root: bool,
-    /// `/var/lib/ployz-machine-pool.device` holds CONFIRMED (machine_pool.rs
-    /// `DEVICE_POOL_MARKER`, `CONFIRMED_DEVICE_POOL_MARKER`).
+    /// `/var/lib/ployz-machine-pool.device` holds CONFIRMED (`MachineLayout::device_pool_marker`,
+    /// machine_layout.rs:118-122; machine_pool.rs `CONFIRMED_DEVICE_POOL_MARKER`).
     marker: bool,
     /// The fix's intent file names the disk. Nothing in the code as it is writes one.
     intent: bool,
@@ -122,7 +122,7 @@ struct Host {
 
 /// Where the installer is in `prepare_storage` and `create_device_pool`
 /// (installer/storage.rs). In every phase but `Start`, `Done` and `Stopped`, `install_at`
-/// holds the installation gate's exclusive guard (installer/mod.rs:256-261).
+/// holds the installation gate's exclusive guard (installer/mod.rs:259-264).
 #[derive(Clone, Copy, Debug, Hash, PartialEq, Eq)]
 enum Installer {
     /// `install_at` has not run.
@@ -157,15 +157,15 @@ impl Installer {
 enum Plugin {
     /// No request holds the installation gate's shared guard or the Pool mutation lock.
     Idle,
-    /// The request holds both (`admit_mutation`, :103; `lock_mutation`, :104);
-    /// `one_usable` (:214) is next.
+    /// The request holds both (`admit_mutation`, :102; `lock_mutation`, :103);
+    /// `one_usable` (:213) is next.
     Admitting,
-    /// `one_usable` found nothing imported; `recover` (:277) is next.
+    /// `one_usable` found nothing imported; `recover` (:276) is next.
     Recovering,
-    /// `recover` returned `Ok(None)`; `PoolStorage::create` (:391) is next.
+    /// `recover` returned `Ok(None)`; `PoolStorage::create` (:390) is next.
     Creating,
     /// A List's or Inspect's `one_usable` found nothing imported; its `recover` is next,
-    /// under the Pool mutation lock and without the installation gate (pool.rs:256-261,
+    /// under the Pool mutation lock and without the installation gate (pool.rs:255-260,
     /// volume_plugin/removal.rs:96-104, :48-53).
     Listing,
 }
@@ -178,7 +178,7 @@ impl Plugin {
     }
 }
 
-/// What `local_storage` (ployzd machine/mod.rs:691-719) answered.
+/// What `local_storage` (ployzd machine/mod.rs:689-717) answered.
 #[derive(Clone, Copy, Debug, Hash, PartialEq, Eq)]
 enum Observed {
     /// `MachineStorageObservation::Ready`: `zpool list` lists no Pool (:710).
@@ -186,7 +186,7 @@ enum Observed {
     /// `MachineStorageObservation::Pool`: one usable Pool (:705-709).
     Pool,
     /// `None`: `machine_pool::one_usable` refused two usable Pools (:711,
-    /// machine_pool.rs:84-91). Not reached on the code as it is
+    /// machine_pool.rs:78-85). Not reached on the code as it is
     /// (`current_code_keeps_the_root_pool_once_the_disk_returns`); `installer_ignores_root`
     /// reaches it.
     Ambiguous,
@@ -201,43 +201,43 @@ enum Branch {
     /// active" (volume_plugin/storage.rs:178-188, ployzd mutation.rs:55-69).
     InstallationActive,
     /// `install_at`'s `try_installation` refused at once while a Volume create holds the
-    /// shared guard (ployzd mutation.rs:77-81, installer/mod.rs:256-257). The installer
-    /// prints "another Ployz installation is active" (installer/mod.rs:93-94, :342-350).
+    /// shared guard (ployzd mutation.rs:77-81, installer/mod.rs:259-260). The installer
+    /// prints "another Ployz installation is active" (installer/mod.rs:92-93, :342-350).
     InstallerBusy,
     /// `prepare_storage` refuses beside a root-backed Pool: the backing check
     /// (installer/storage.rs:48-53), or `existing_device_pool` finding `ployz`
     /// (:178-187).
     InstallerRefusesRoot,
     /// `create_device_pool`'s `existing_device_pool` refused (installer/storage.rs:107-112):
-    /// `machine_pool::one_usable` found two usable Pools (machine_pool.rs:84-91). Reached
+    /// `machine_pool::one_usable` found two usable Pools (machine_pool.rs:78-85). Reached
     /// on neither the code as it is nor the fix; `installer_ignores_root` reaches it.
     VerifyRefuses,
     /// `create_device_pool`'s `remember_device_pool` wrote CONFIRMED
     /// (installer/storage.rs:113).
     Records,
     /// `PoolStorage::one_usable`'s `machine_pool::one_usable` refused two usable Pools
-    /// (volume_plugin/pool.rs:225-226, machine_pool.rs:84-91). Reached on neither the code
+    /// (volume_plugin/pool.rs:224-225, machine_pool.rs:78-85). Reached on neither the code
     /// as it is nor the fix; `installer_ignores_root` reaches it.
     Ambiguous,
     /// `PoolStorage::one_usable` refused the backing file beside device ownership
-    /// (volume_plugin/pool.rs:229-236). Reached on neither the code as it is nor the fix;
+    /// (volume_plugin/pool.rs:228-235). Reached on neither the code as it is nor the fix;
     /// the two marker flags together reach it.
     Conflict,
     /// `PoolStorage::one_usable` returned `ployz-device` and wrote CONFIRMED
-    /// (volume_plugin/pool.rs:237-246).
+    /// (volume_plugin/pool.rs:236-245).
     Confirms,
     /// `PoolStorage::one_usable` returned `ployz-device` without writing CONFIRMED: it
-    /// was there (volume_plugin/pool.rs:239-242), or under Broken.
+    /// was there (volume_plugin/pool.rs:238-241), or under Broken.
     UsesDevice,
-    /// `PoolStorage::one_usable` returned `ployz` (volume_plugin/pool.rs:225-249).
+    /// `PoolStorage::one_usable` returned `ployz` (volume_plugin/pool.rs:224-248).
     UsesRoot,
-    /// `recover` imported the one importable `ployz-device` (volume_plugin/pool.rs:301-306).
+    /// `recover` imported the one importable `ployz-device` (volume_plugin/pool.rs:300-305).
     RecoverImports,
     /// `recover` refused: no importable device Pool and the marker exists
-    /// (volume_plugin/pool.rs:308-313).
+    /// (volume_plugin/pool.rs:307-312).
     RefusesOwned,
     /// The fix: `recover` refused, the intent's disk missing or labelled. A present labelled
-    /// disk is imported first (volume_plugin/pool.rs:301-306) unless the `zpool import`
+    /// disk is imported first (volume_plugin/pool.rs:300-305) unless the `zpool import`
     /// scan does not list it. Within the bounds that happens when a List's `one_usable`
     /// ran before the installer's `zpool create` and its `recover` after: the Pool is
     /// imported, so the scan does not list it. A label the scan skips for another reason
@@ -245,26 +245,26 @@ enum Branch {
     RefusesIntent,
     /// The fix: `recover` removed an intent whose disk is present with no label, for a
     /// caller that holds the installation gate's shared guard, a Volume create or copy
-    /// (`admit_mutation`, volume_plugin/pool.rs:103, copy.rs:146-153). No installer runs
+    /// (`admit_mutation`, volume_plugin/pool.rs:102, copy.rs:146-153). No installer runs
     /// while that guard is held (ployzd mutation.rs:77-81).
     ClearsStale,
     /// The fix: `recover` found an intent whose disk is present with no label, for List or
     /// Inspect, which hold no installation guard (volume_plugin/removal.rs:96-104, :48-53).
     /// An installer may still be before its `zpool create`, so `recover` leaves the intent
-    /// and returns `Ok(None)`. The product change: `recover` (volume_plugin/pool.rs:277)
-    /// takes whether its caller holds the shared guard; `admit` (:256-261) passes it
+    /// and returns `Ok(None)`. The product change: `recover` (volume_plugin/pool.rs:276)
+    /// takes whether its caller holds the shared guard; `admit` (:255-260) passes it
     /// through, and copy's `first_pool`, which calls `recover` directly (copy.rs:181-187),
     /// passes yes.
     KeepsIntent,
-    /// `recover` returned `Ok(None)` (volume_plugin/pool.rs:314).
+    /// `recover` returned `Ok(None)` (volume_plugin/pool.rs:313).
     RecoverNone,
-    /// `PoolStorage::create` refused on the marker (volume_plugin/pool.rs:392-396). Reached
+    /// `PoolStorage::create` refused on the marker (volume_plugin/pool.rs:391-395). Reached
     /// on neither the code as it is nor the fix, since `recover` read the same marker
     /// under the same gate and lock; `recover_ignores_marker` and
     /// `gate_admits_during_install` each reach it.
     CreateRefusesOwned,
     /// `PoolStorage::create` built `ployz`, and its `one_usable` returned it
-    /// (volume_plugin/pool.rs:401-454).
+    /// (volume_plugin/pool.rs:400-453).
     CreatesRoot,
     /// The fix: `local_storage` read None for device ownership.
     ObservesUnresolved,
@@ -287,7 +287,7 @@ enum Action {
     /// and the guard goes with it (ployzd mutation.rs:37).
     InstallerStops,
     /// `install_at` tries the installation gate's exclusive guard once
-    /// (installer/mod.rs:256-257, ployzd mutation.rs:77-81), then `prepare_storage`'s checks
+    /// (installer/mod.rs:259-260, ployzd mutation.rs:77-81), then `prepare_storage`'s checks
     /// run, from resolving the device (installer/storage.rs:44) to `empty_device` (:63).
     Assess,
     /// The fix: the installer writes the intent atomically.
@@ -298,29 +298,29 @@ enum Action {
     Verify,
     /// `remember_device_pool` (installer/storage.rs:77-83, :113). `install_locked` then
     /// installs the binaries and units and enables the plugin's socket
-    /// (installer/mod.rs:298-301, installer/host.rs:262), which this step includes.
+    /// (installer/mod.rs:301-304, installer/host.rs:270), which this step includes.
     Record,
     /// Docker asks the plugin to create a Provisioned Volume (`VolumeStorage::create`,
-    /// volume_plugin/pool.rs:97), or a copy asks for the first Pool (copy.rs `first_pool`).
-    /// The request takes the installation gate's shared guard (`admit_mutation`, pool.rs:103,
-    /// copy.rs:146-153), then the Pool mutation lock (pool.rs:104, copy.rs:180).
+    /// volume_plugin/pool.rs:96), or a copy asks for the first Pool (copy.rs `first_pool`).
+    /// The request takes the installation gate's shared guard (`admit_mutation`, pool.rs:102,
+    /// copy.rs:146-153), then the Pool mutation lock (pool.rs:103, copy.rs:180).
     Request,
-    /// `PoolStorage::one_usable` (volume_plugin/pool.rs:214-250).
+    /// `PoolStorage::one_usable` (volume_plugin/pool.rs:213-249).
     OneUsable,
-    /// `PoolStorage::recover(UnlabeledBacking::Remove)` (volume_plugin/pool.rs:277-315).
+    /// `PoolStorage::recover(UnlabeledBacking::Remove)` (volume_plugin/pool.rs:276-314).
     Recover,
     /// `PoolStorage::create`: the marker check, the backing file, `fallocate`,
-    /// `zpool create ployz`, and its `one_usable` (volume_plugin/pool.rs:392-454).
+    /// `zpool create ployz`, and its `one_usable` (volume_plugin/pool.rs:391-453).
     CreateRoot,
-    /// `local_storage` runs `zpool list` (ployzd machine/mod.rs:691-719), in an installed
+    /// `local_storage` runs `zpool list` (ployzd machine/mod.rs:689-717), in an installed
     /// ployzd.
     Observe,
     /// Docker lists Volumes (`VolumeStorage::list`, volume_plugin/removal.rs:96-104) or
     /// inspects one (`inspect`, :48-53). Each takes the Pool mutation lock but not the
-    /// installation gate, then runs `admit` (pool.rs:256-261). This step is its
+    /// installation gate, then runs `admit` (pool.rs:255-260). This step is its
     /// `one_usable`; when that finds nothing, `ListRecover` follows. Neither creates a Pool.
     List,
-    /// A List's or Inspect's `recover` (pool.rs:259, :277-315). The installer can step
+    /// A List's or Inspect's `recover` (pool.rs:258, :276-314). The installer can step
     /// between it and the List's `one_usable`, since neither holds the other out.
     ListRecover,
 }
@@ -331,7 +331,7 @@ struct State {
     /// The disk went missing once; it goes missing at most once.
     went_missing: bool,
     /// ZFS's cache file lists `ployz-device`. Neither `zpool create` sets a cachefile, so
-    /// both Pools use the default one (installer/storage.rs:96-106, pool.rs:422-440), and a
+    /// both Pools use the default one (installer/storage.rs:96-106, pool.rs:421-439), and a
     /// Pool change rewrites it from the imported Pools (OpenZFS module/zfs/spa_config.c
     /// `spa_write_cachefile`).
     cache_lists_device: bool,
@@ -355,18 +355,18 @@ struct State {
 )]
 struct Broken {
     /// The installation gate admits a Volume create while `install_at` runs, and lets
-    /// `install_at` start while a Volume create holds the shared guard (installer/mod.rs:257,
+    /// `install_at` start while a Volume create holds the shared guard (installer/mod.rs:260,
     /// volume_plugin/storage.rs:182-185).
     gate_admits_during_install: bool,
-    /// `recover` (volume_plugin/pool.rs:308-313) ignores the marker.
+    /// `recover` (volume_plugin/pool.rs:307-312) ignores the marker.
     recover_ignores_marker: bool,
-    /// `create` (volume_plugin/pool.rs:392-396) ignores the marker.
+    /// `create` (volume_plugin/pool.rs:391-395) ignores the marker.
     create_ignores_marker: bool,
     /// `remember_device_pool` runs before `zpool create`, as 0d1e04b143 had it before
     /// cc647240a5 moved it after `existing_device_pool` (installer/storage.rs:107-113). It
     /// takes the fix's intent's place.
     records_before_create: bool,
-    /// `one_usable` (volume_plugin/pool.rs:237-246) returns an imported `ployz-device`
+    /// `one_usable` (volume_plugin/pool.rs:236-245) returns an imported `ployz-device`
     /// without writing CONFIRMED.
     one_usable_never_confirms: bool,
     /// `prepare_storage` goes on beside a root-backed Pool: no backing check
@@ -660,7 +660,7 @@ impl PoolOwnership {
         }
     }
 
-    /// `PoolStorage::one_usable` (volume_plugin/pool.rs:214-250): `machine_pool::one_usable`
+    /// `PoolStorage::one_usable` (volume_plugin/pool.rs:213-249): `machine_pool::one_usable`
     /// over `zpool list`, the backing-and-device conflict, then CONFIRMED for an imported
     /// `ployz-device`.
     fn one_usable(&self, state: &mut State) {
@@ -686,7 +686,7 @@ impl PoolOwnership {
         state.took = branch;
     }
 
-    /// `PoolStorage::recover` (volume_plugin/pool.rs:277-315) with no backing file: only
+    /// `PoolStorage::recover` (volume_plugin/pool.rs:276-314) with no backing file: only
     /// this plugin creates the root-backed Pool, under its lock, so `one_usable` would have
     /// returned it. With one disk the `zpool import` scan lists at most one `ployz-device`.
     /// The fix's intent check comes after the marker's. `gated` says the caller holds the
@@ -726,7 +726,7 @@ impl PoolOwnership {
         );
     }
 
-    /// `local_storage` (ployzd machine/mod.rs:691-719) over `zpool list`. With no Pool
+    /// `local_storage` (ployzd machine/mod.rs:689-717) over `zpool list`. With no Pool
     /// listed, the fix reads None where `recover` would refuse: no importable
     /// `ployz-device`, and the marker, or an intent that is not stale.
     fn observe(&self, state: &mut State) {
@@ -981,7 +981,7 @@ fn reads_as(model: &PoolOwnership, before: &State, action: Action, after: &State
         ),
         Action::Assess => match after.took {
             Some(Branch::InstallerBusy) => {
-                "Installer: install_at's try_installation finds a Volume create holding the gate and returns \"another Ployz installation is active\" at once (installer/mod.rs install_at :257, mutation.rs try_installation)".to_owned()
+                "Installer: install_at's try_installation finds a Volume create holding the gate and returns \"another Ployz installation is active\" at once (installer/mod.rs install_at :260, mutation.rs try_installation)".to_owned()
             }
             Some(Branch::InstallerRefusesRoot) => {
                 "Installer: install_at takes the installation gate; a file-backed Machine Pool already exists; refuses (installer/storage.rs prepare_storage :48)".to_owned()
@@ -1073,10 +1073,10 @@ fn reads_as(model: &PoolOwnership, before: &State, action: Action, after: &State
         }
         Action::CreateRoot => match after.took {
             Some(Branch::CreateRefusesOwned) => {
-                "Plugin: create finds the marker and refuses (pool.rs create :392)".to_owned()
+                "Plugin: create finds the marker and refuses (pool.rs create :391)".to_owned()
             }
             _ => format!(
-                "Plugin: create {} (:392), creates the backing file (:401), runs zpool create ployz on it (:422){}, and its one_usable returns ployz (pool.rs create :445); the Volume is created on it (pool.rs VolumeStorage::create :113-120)",
+                "Plugin: create {} (:391), creates the backing file (:400), runs zpool create ployz on it (:421){}, and its one_usable returns ployz (pool.rs create :444); the Volume is created on it (pool.rs VolumeStorage::create :112-119)",
                 if before.host.marker {
                     "skips the marker refusal (under Broken)"
                 } else {
@@ -1364,7 +1364,7 @@ mod tests {
     /// A List straddles the install. Its `one_usable` finds nothing imported; the installer
     /// then creates, checks and records `ployz-device`; the List's `recover` finds no
     /// importable Pool, since `zpool import` lists only Pools not imported, and refuses on
-    /// the marker (pool.rs:308-313) while `ployz-device` is imported.
+    /// the marker (pool.rs:307-312) while `ployz-device` is imported.
     #[test]
     fn a_list_across_the_install_refuses_beside_the_imported_device() {
         let path = replay(
@@ -1537,7 +1537,7 @@ mod tests {
 
     /// Without the installation gate, a Volume create builds `ployz` after the installer's
     /// checks, and the installer's `zpool create` then labels the disk beside it, with no
-    /// disk missing. The model does not run `create`'s cleanup (pool.rs:455-469), so the
+    /// disk missing. The model does not run `create`'s cleanup (pool.rs:454-468), so the
     /// test keeps to paths where `ployz` was built before the label, which no cleanup
     /// undoes.
     #[test]
@@ -1606,7 +1606,7 @@ mod tests {
     /// With `remember_device_pool` before `zpool create`, an installer that stops between
     /// them leaves a marker for a disk with no label. The story ends on List's `recover`
     /// refusing on that marker; a Volume create there takes the same refusal
-    /// (volume_plugin/pool.rs:308-313). A List while that installer still runs refuses too,
+    /// (volume_plugin/pool.rs:307-312). A List while that installer still runs refuses too,
     /// so the test keeps to paths where the installer stopped.
     #[test]
     fn ownership_is_recorded_only_after_zpool_create() {
@@ -1694,7 +1694,7 @@ mod tests {
     /// Without clearing a stale intent, an installer that stops before `zpool create`
     /// leaves an intent on a disk that never got a label. The story ends on List's
     /// `recover` refusing on that intent; a Volume create there takes the same refusal,
-    /// which the fix adds beside the marker's (volume_plugin/pool.rs:308-313). A List while
+    /// which the fix adds beside the marker's (volume_plugin/pool.rs:307-312). A List while
     /// that installer still runs refuses too, so the test keeps to paths where the
     /// installer stopped.
     #[test]

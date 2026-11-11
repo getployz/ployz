@@ -306,7 +306,10 @@ pub(super) fn add_arguments(
         "add",
         "--yes",
         "--connect",
-        &format!("unix://{}", crate::connect::DEFAULT_LOCAL_SOCKET),
+        &format!(
+            "unix://{}",
+            ployz_core::MachineLayout::production().socket().display()
+        ),
         "--storage",
         &storage,
         "--cloud-url",

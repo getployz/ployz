@@ -311,7 +311,7 @@ fn install_route(
                 super::prepare::prepared_dkms_build(paths, kernel),
             ),
             ZfsRoute::AmazonLinux => prepare_amazon_zfs(
-                &super::prepare::prepare_dir(paths).join("zfs"),
+                &paths.layout.prepare_zfs_dir(),
                 &paths.modules_load_dir,
                 os,
                 kernel,
