@@ -4,6 +4,7 @@
 //! or still routes its Out or Held ones. What the check could not see is a warning, never an
 //! all-clear.
 
+use crate::cluster::{Call, Deadline};
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::time::{Duration, SystemTime};
 
@@ -254,12 +255,14 @@ async fn observe(
         stream::iter(up)
             .map(|machine| async move {
                 let routed = client
-                    .invoke::<op::ReadRoutedAddresses>(
+                    .call_shared::<op::ReadRoutedAddresses>(
                         ReadRoutedAddressesRequest {},
-                        &MachineTarget::from(&machine),
-                        Some(ROUTED_READ_TIMEOUT),
+                        Call::once()
+                            .to(&MachineTarget::from(&machine))
+                            .within(Deadline::Target(ROUTED_READ_TIMEOUT)),
                     )
-                    .await;
+                    .await
+                    .map_err(crate::connect::rpc_error);
                 (machine, routed)
             })
             .buffer_unordered(READS_AT_ONCE)

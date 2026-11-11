@@ -362,13 +362,18 @@ struct AcceptedBuild {
     /// The review it was built under, for a reviewed preview's build.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     review: Option<ployz_core::authority::ReviewDigest>,
+    /// The commit approval it was built under, for a build of a commit a person approved.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    approved: Option<ployz_core::authority::ApprovalDigest>,
 }
 
 impl AcceptedBuild {
     fn of(claim: &BuildClaim, preview: Option<&PreviewKey>) -> Option<Self> {
-        let review = match claim.authority {
-            ployz_core::authority::CommitAuthority::Review(digest) => Some(digest),
-            ployz_core::authority::CommitAuthority::Head => None,
+        use ployz_core::authority::CommitAuthority;
+        let (review, approved) = match claim.authority {
+            CommitAuthority::Review(digest) => (Some(digest), None),
+            CommitAuthority::Approved(digest) => (None, Some(digest)),
+            CommitAuthority::Head => (None, None),
         };
         match claim.stage {
             BuildStage::Built { image, .. } => Some(Self {
@@ -377,6 +382,7 @@ impl AcceptedBuild {
                 image,
                 preview: preview.cloned(),
                 review,
+                approved,
             }),
             BuildStage::Grant { .. } => None,
         }
@@ -391,6 +397,25 @@ struct RuleHook {
     slot: ployz_core::CreationKey,
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     made: bool,
+    /// The person's approval it ran under, for a redeploy of the commit.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    approval: Option<HookApproval>,
+}
+
+/// The commit approval a hook ran under, and when the person signed it.
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+struct HookApproval {
+    digest: ployz_core::authority::ApprovalDigest,
+    issued_at: Timestamp,
+}
+
+impl HookApproval {
+    fn of(approval: &ployz_core::authority::CheckedCommitApproval) -> Self {
+        Self {
+            digest: approval.digest(),
+            issued_at: approval.body().issued_at,
+        }
+    }
 }
 
 /// A rule's identity as this Machine first saw it, which no later generation may change,
@@ -939,18 +964,21 @@ impl ConsumptionLog {
     /// refusing one taken for another slot. A request resent for the same slot passes:
     /// the Machine adopts the hook that ran. A later push of the Service replaces the
     /// entry, so a push runs its hook once; a force push back to an earlier commit can
-    /// run that commit's hook again. A preview rule keeps one entry per preview, named by
-    /// its Namespace in `preview`.
+    /// run that commit's hook again. A person's `approval` of the commit runs it once
+    /// more, and only one signed after the approval the hook last ran under does. A
+    /// preview rule keeps one entry per preview, named by its Namespace in `preview`.
     pub(crate) fn consume_rule_hook(
         &self,
         (rule, preview): (RuleId, Option<&Namespace>),
         claim: &BuildClaim,
+        approval: Option<&ployz_core::authority::CheckedCommitApproval>,
         slot: &ployz_core::CreationKey,
         refused: impl FnOnce(AuthorityRefusal) -> Error,
     ) -> Result<(), Error> {
         let mut guard = self.loaded()?;
         let consumption = guard.as_ref().expect("loaded above");
         let key = rule_service_key(rule, preview, &claim.service);
+        let approval = approval.map(HookApproval::of);
         if let Some(taken) = consumption.rule_hooks.get(&key)
             && taken.generation == claim.generation
             && taken.commit == claim.commit
@@ -958,9 +986,16 @@ impl ConsumptionLog {
             if &taken.slot == slot {
                 return Ok(());
             }
-            return Err(refused(AuthorityRefusal::Mismatch {
-                field: "a hook run",
-            }));
+            let newer = match (approval, taken.approval) {
+                (Some(approval), Some(ran)) => approval.issued_at > ran.issued_at,
+                (Some(_), None) => true,
+                (None, _) => false,
+            };
+            if !newer {
+                return Err(refused(AuthorityRefusal::Mismatch {
+                    field: "a hook run",
+                }));
+            }
         }
         let mut updated = consumption.clone();
         updated.rule_hooks.insert(
@@ -970,6 +1005,7 @@ impl ConsumptionLog {
                 commit: claim.commit,
                 slot: slot.clone(),
                 made: false,
+                approval,
             },
         );
         self.write(&mut guard, updated)

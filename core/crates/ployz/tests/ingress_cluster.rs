@@ -1,3 +1,4 @@
+use ployz::connect::Call;
 use std::{
     process::{self, Command},
     time::Duration,
@@ -680,7 +681,7 @@ async fn deploy(
     requested: &RequestedServiceSpec,
 ) -> ServiceId {
     let machines = client
-        .call::<op::ListMachines>(ListMachinesRequest {}, None)
+        .call::<op::ListMachines>(ListMachinesRequest {}, Call::read())
         .await
         .unwrap()
         .machines;

@@ -1,3 +1,4 @@
+use crate::cluster::Call;
 use crate::sdk::test_support as support;
 
 /// A failure with no deploy evidence keeps each path's headline as it was.
@@ -84,10 +85,9 @@ async fn set_web_traffic_on(
     )
     .await;
     let details = client
-        .invoke_answered::<ployz_core::op::Inspect>(
+        .call_shared::<ployz_core::op::Inspect>(
             ployz_core::InspectRequest::default(),
-            &ployz_core::MachineTarget::from(&id),
-            None,
+            Call::once().to(&ployz_core::MachineTarget::from(&id)),
         )
         .await
         .unwrap();

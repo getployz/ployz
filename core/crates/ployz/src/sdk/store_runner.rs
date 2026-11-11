@@ -1651,9 +1651,10 @@ fn targets(
 
 /// The proof each Service built under `claimed`'s automatic deploy rule or preview rule
 /// creates with: the rule, its image token, and the claim the token's audience names,
-/// rebuilt from the rule, the pinned commit, the image the Machine received and the
-/// Cluster's keys. A Service without all of them gets none, and an enforcing Server
-/// refuses it.
+/// rebuilt from the rule, the pinned commit, the image the Machine received, the
+/// Cluster's keys, and the generation and authority the token was built under. A
+/// person's approval of the commit rides along. A Service without all of them gets
+/// none, and an enforcing Server refuses it.
 async fn rule_proofs(
     session: &Session,
     claimed: &Claimed,
@@ -1661,8 +1662,7 @@ async fn rule_proofs(
     reader: Option<&ployz_core::GithubToken>,
 ) -> crate::cluster::RuleProofs {
     use ployz_core::authority::{
-        BuildClaim, BuildStage, CommitAuthority, CommitSha, ImageDigest, PolicyDigest,
-        PreviewProof, RuleProof,
+        BuildClaim, BuildStage, CommitSha, ImageDigest, PolicyDigest, PreviewProof, RuleProof,
     };
     let mut proofs = crate::cluster::RuleProofs::default();
     // Each rule's ID, generation and the policy it approves for a Service.
@@ -1674,10 +1674,10 @@ async fn rule_proofs(
     let approved = |service: &ServiceName| match (&rule, &preview) {
         (Some(rule), _) => rule
             .service(service)
-            .map(|approved| (rule.rule, rule.generation, &approved.policy)),
+            .map(|approved| (rule.rule, &approved.policy)),
         (None, Some(preview)) => preview
             .service(service)
-            .map(|approved| (preview.rule, preview.generation, &approved.policy)),
+            .map(|approved| (preview.rule, &approved.policy)),
         (None, None) => None,
     };
     if (rule.is_none() && preview.is_none()) || claimed.image_tokens.is_empty() {
@@ -1695,12 +1695,6 @@ async fn rule_proofs(
     else {
         return proofs;
     };
-    // A reviewed preview's builds ran under the person's review; the Machine checks it
-    // names this commit and Service.
-    let authority = match &claimed.review {
-        Some(review) if claimed.rule.is_none() => CommitAuthority::Review(review.digest()),
-        _ => CommitAuthority::Head,
-    };
     for (service, token) in &claimed.image_tokens {
         let approved = approved(service);
         let receipt = receipts.get(service);
@@ -1713,24 +1707,26 @@ async fn rule_proofs(
         let (Some(approved), Some(receipt), Some(commit)) = (approved, receipt, commit) else {
             continue;
         };
-        let (id, generation, approved) = approved;
+        let (id, approved) = approved;
         let (Ok(image), Ok(policy)) = (
             ImageDigest::parse(&receipt.image.reference),
             PolicyDigest::of(approved),
         ) else {
             continue;
         };
+        // The generation and authority the token was built under: the Machine checks
+        // each against the rule and, for a reviewed or approved build, the person's word.
         let claim = BuildClaim {
             cluster: public_key,
             rule: id,
-            generation,
+            generation: token.generation,
             service: service.clone(),
             policy,
             commit,
-            authority,
+            authority: token.authority,
             stage: BuildStage::Built { image, attest },
         };
-        let token = ployz_core::GithubToken::new(token.clone());
+        let token = ployz_core::GithubToken::new(token.token.clone());
         match (&claimed.rule, &claimed.preview) {
             (Some(signed), _) => {
                 proofs.rules.insert(
@@ -1739,6 +1735,7 @@ async fn rule_proofs(
                         rule: signed.clone(),
                         token,
                         claim,
+                        approval: claimed.approvals.get(service).cloned(),
                         reader: reader.cloned(),
                     },
                 );

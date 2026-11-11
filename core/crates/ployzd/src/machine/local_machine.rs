@@ -288,6 +288,8 @@ pub enum Error {
     TunnelToken(crate::sealed_env::OpenError),
     #[error("could not write the tunnel token for the Tunnel Connector")]
     TunnelTokenFile(#[source] std::io::Error),
+    #[error("could not record whether the Tunnel Door is closed")]
+    TunnelDoorMarker(#[source] std::io::Error),
     #[error("Ingress Proxy container {container_id} is {runtime} right after starting")]
     DoorNotRunning {
         container_id: ContainerId,

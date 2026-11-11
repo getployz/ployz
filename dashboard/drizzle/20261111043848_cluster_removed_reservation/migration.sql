@@ -1,0 +1,1 @@
+ALTER TABLE "organization_cloudflare_ingress" ADD COLUMN "cluster_removed_at" timestamp with time zone;

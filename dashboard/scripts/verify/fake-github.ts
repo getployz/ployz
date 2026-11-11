@@ -24,7 +24,7 @@ type WebhookInput = {
   repository?: string; number?: number; head_branch?: string; target_branch?: string; merged?: boolean;
   ref?: string; head_sha?: string; conclusion?: string; run_id?: number;
 };
-type Run = { repository: string; status: "in_progress" | "completed"; conclusion: string | null };
+type Run = { repository: string; head_sha: string; event: string; status: "in_progress" | "completed"; conclusion: string | null };
 /** `users` reach the installation; on an Organization only `admins` own it, the rest collaborate on a repository. */
 type Installation = {
   id: number;
@@ -145,7 +145,7 @@ export async function run() {
 
   const repositoryJson = (i: Installation, r: Repository) => ({
     id: r.id, node_id: `R_${r.id}`, name: r.name, full_name: fullName(i, r), private: r.private,
-    owner: { login: i.account.login, type: i.account.type }, default_branch: r.default_branch,
+    owner: { id: i.account.id, login: i.account.login, type: i.account.type }, default_branch: r.default_branch,
     html_url: `${origin}/${fullName(i, r)}`, updated_at: "2026-10-01T00:00:00Z",
   });
   const installationJson = (i: Installation) => ({
@@ -357,6 +357,84 @@ export async function run() {
     return p ? { status: 200, json: pullJson(i, r, p) } : notFound;
   };
 
+  /** A repository's routes, reached by name under /repos or by id under /repositories. */
+  function repositoryRoute(
+    found: { installation: Installation; repository: Repository }, rest: string, url: URL, method: string, body: string,
+  ): Reply {
+    const { installation: i, repository: r } = found;
+    let n: RegExpExecArray | null;
+    if (rest === "") return { status: 200, json: repositoryJson(i, r) };
+    if (rest === "/branches") {
+      const branches = url.searchParams.get("page") === "1" || !url.searchParams.has("page") ? r.branches : [];
+      return { status: 200, json: branches.map((b) => ({ name: b, commit: { sha: commitSha(i, r, b) }, protected: false })) };
+    }
+    if ((n = /^\/git\/ref\/heads\/(.+)$/.exec(rest))) {
+      const branch = r.branches.find((b) => b === n?.[1]);
+      if (!branch) return notFound;
+      return { status: 200, json: { ref: `refs/heads/${branch}`, object: { type: "commit", sha: commitSha(i, r, branch) } } };
+    }
+    if ((n = /^\/commits\/(.+)$/.exec(rest))) {
+      const sha = shaOrBranchHead(i, r, n[1] ?? "");
+      if (!sha) return notFound;
+      return { status: 200, json: { sha, commit: { tree: { sha: treeSha(sha) }, message: "Fake commit" } } };
+    }
+    if ((n = /^\/git\/trees\/([0-9a-f]{40})$/.exec(rest))) {
+      const directories = new Set(Object.keys(r.files).flatMap((p) => p.split("/").slice(0, -1).map((_, k, parts) => parts.slice(0, k + 1).join("/"))));
+      const tree = [
+        ...[...directories].map((p) => ({ path: p, mode: "040000", type: "tree", sha: sha1("dir", p) })),
+        ...Object.entries(r.files).map(([p, content]) => ({ path: p, mode: "100644", type: "blob", sha: sha1("blob", content), size: content.length })),
+      ];
+      return { status: 200, json: { sha: n[1], truncated: false, tree } };
+    }
+    if ((n = /^\/contents(?:\/(.*))?$/.exec(rest))) {
+      const want = n[1] ?? "";
+      if (!shaOrBranchHead(i, r, url.searchParams.get("ref") ?? r.default_branch)) return notFound;
+      const content = r.files[want];
+      if (content !== undefined) {
+        return { status: 200, json: { type: "file", path: want, name: want.split("/").at(-1), size: content.length, encoding: "base64", content: Buffer.from(content).toString("base64") } };
+      }
+      const prefix = want === "" ? "" : `${want}/`;
+      const children = [...new Set(Object.keys(r.files).filter((p) => p.startsWith(prefix)).map((p) => p.slice(prefix.length).split("/")[0] ?? ""))];
+      if (children.length === 0) return notFound;
+      return { status: 200, json: children.map((c) => ({ path: `${prefix}${c}`, name: c, type: r.files[`${prefix}${c}`] === undefined ? "dir" : "file" })) };
+    }
+    if ((n = /^\/compare\/([0-9a-f]{40})\.\.\.([0-9a-f]{40})$/.exec(rest))) {
+      const identical = n[1] === n[2];
+      return { status: 200, json: { status: identical ? "identical" : "ahead", base_commit: { sha: n[1] }, files: identical ? [] : Object.keys(r.files).map((filename) => ({ filename })) } };
+    }
+    if ((n = /^\/pulls\/(\d+)$/.exec(rest))) return pullReply(i, r, Number(n[1]));
+    if ((n = /^\/check-suites\/(\d+)$/.exec(rest))) {
+      const recorded = checkSuites.get(Number(n[1]));
+      return recorded?.repositoryId === r.id ? { status: 200, json: recorded.suite } : notFound;
+    }
+    if ((n = /^\/actions\/workflows\/ployz-build\.yml(\/dispatches)?$/.exec(rest))) {
+      if (r.files[BUILD_WORKFLOW] === undefined) return notFound;
+      if (!n[1]) return { status: 200, json: { id: r.id, name: "Ployz build", path: BUILD_WORKFLOW, state: "active" } };
+      if (method !== "POST") return notFound;
+      const branch = (JSON.parse(body || "{}") as { ref?: string }).ref?.replace(/^refs\/heads\//, "") ?? r.default_branch;
+      const head = shaOrBranchHead(i, r, branch);
+      if (!head) return { status: 422, json: { message: `No ref found for: ${branch}` } };
+      const id = runId++;
+      runs.set(id, { repository: fullName(i, r), head_sha: head, event: "workflow_dispatch", status: "in_progress", conclusion: null });
+      return { status: 200, json: { workflow_run_id: id, run_url: `${origin}/repos/${fullName(i, r)}/actions/runs/${id}`, html_url: `${origin}/${fullName(i, r)}/actions/runs/${id}` } };
+    }
+    if ((n = /^\/actions\/runs\/(\d+)(\/cancel)?$/.exec(rest))) {
+      const id = Number(n[1]);
+      const recorded = runs.get(id);
+      if (recorded?.repository !== fullName(i, r)) return notFound;
+      if (!n[2]) return { status: 200, json: { id, path: BUILD_WORKFLOW, html_url: `${origin}/${fullName(i, r)}/actions/runs/${id}`, ...recorded } };
+      if (method !== "POST") return notFound;
+      if (recorded.status === "completed") return { status: 409, json: { message: "Cannot cancel a workflow run that is completed." } };
+      Object.assign(recorded, { status: "completed", conclusion: "cancelled" });
+      return { status: 202, json: {} };
+    }
+    if ((n = /^\/tarball\/([0-9a-f]{40})$/.exec(rest))) {
+      if (!shaOrBranchHead(i, r, n[1] ?? "")) return notFound;
+      return { status: 302, location: `${origin}/${fullName(i, r)}/legacy.tar.gz/${n[1]}` };
+    }
+    return notFound;
+  }
+
   async function route(request: IncomingMessage, body: string): Promise<Reply> {
     const url = new URL(request.url ?? "/", origin);
     const method = request.method ?? "GET";
@@ -398,7 +476,9 @@ export async function run() {
       if (suspended.has(i.id)) return SUSPENDED;
       const minted = token("ghs");
       installationTokens.set(minted, i.id);
-      return { status: 201, json: { token: minted, expires_at: new Date(Date.now() + 3600_000).toISOString(), permissions: installationJson(i).permissions } };
+      // GitHub answers with what the token can do: the permissions the request named, or all the installation's.
+      const requested = (JSON.parse(body || "{}") as { permissions?: Record<string, string> }).permissions;
+      return { status: 201, json: { token: minted, expires_at: new Date(Date.now() + 3600_000).toISOString(), permissions: requested ?? installationJson(i).permissions } };
     }
     if (path === "/installation/repositories") {
       const i = who.installationId === undefined ? undefined : installation(who.installationId);
@@ -509,83 +589,12 @@ export async function run() {
       if (rest === "") return { status: 200, json: repositoryJson(found.installation, found.repository) };
       if (/^\/commits\/[0-9a-f]{40}\/check-runs$/.test(rest)) return { status: 200, json: { total_count: 0, check_runs: [] } };
       if (/^\/check-runs(\/\d+)?$/.test(rest) && method !== "GET") return { status: 200, json: { id: checkRunId++ } };
-      const pull = /^\/pulls\/(\d+)$/.exec(rest);
-      if (pull) return pullReply(found.installation, found.repository, Number(pull[1]));
-      return notFound;
+      return repositoryRoute(found, rest, url, method, body);
     }
     if ((m = /^\/repos\/([^/]+)\/([^/]+)(\/.*)?$/.exec(path))) {
       const found = byName(who, m[1] ?? "", m[2] ?? "");
       if (!found) return notFound;
-      const { installation: i, repository: r } = found;
-      const rest = m[3] ?? "";
-      let n: RegExpExecArray | null;
-      if (rest === "") return { status: 200, json: repositoryJson(i, r) };
-      if (rest === "/branches") {
-        const branches = url.searchParams.get("page") === "1" || !url.searchParams.has("page") ? r.branches : [];
-        return { status: 200, json: branches.map((b) => ({ name: b, commit: { sha: commitSha(i, r, b) }, protected: false })) };
-      }
-      if ((n = /^\/git\/ref\/heads\/(.+)$/.exec(rest))) {
-        const branch = r.branches.find((b) => b === n?.[1]);
-        if (!branch) return notFound;
-        return { status: 200, json: { ref: `refs/heads/${branch}`, object: { type: "commit", sha: commitSha(i, r, branch) } } };
-      }
-      if ((n = /^\/commits\/(.+)$/.exec(rest))) {
-        const sha = shaOrBranchHead(i, r, n[1] ?? "");
-        if (!sha) return notFound;
-        return { status: 200, json: { sha, commit: { tree: { sha: treeSha(sha) }, message: "Fake commit" } } };
-      }
-      if ((n = /^\/git\/trees\/([0-9a-f]{40})$/.exec(rest))) {
-        const directories = new Set(Object.keys(r.files).flatMap((p) => p.split("/").slice(0, -1).map((_, k, parts) => parts.slice(0, k + 1).join("/"))));
-        const tree = [
-          ...[...directories].map((p) => ({ path: p, mode: "040000", type: "tree", sha: sha1("dir", p) })),
-          ...Object.entries(r.files).map(([p, content]) => ({ path: p, mode: "100644", type: "blob", sha: sha1("blob", content), size: content.length })),
-        ];
-        return { status: 200, json: { sha: n[1], truncated: false, tree } };
-      }
-      if ((n = /^\/contents(?:\/(.*))?$/.exec(rest))) {
-        const want = n[1] ?? "";
-        if (!shaOrBranchHead(i, r, url.searchParams.get("ref") ?? r.default_branch)) return notFound;
-        const content = r.files[want];
-        if (content !== undefined) {
-          return { status: 200, json: { type: "file", path: want, name: want.split("/").at(-1), size: content.length, encoding: "base64", content: Buffer.from(content).toString("base64") } };
-        }
-        const prefix = want === "" ? "" : `${want}/`;
-        const children = [...new Set(Object.keys(r.files).filter((p) => p.startsWith(prefix)).map((p) => p.slice(prefix.length).split("/")[0] ?? ""))];
-        if (children.length === 0) return notFound;
-        return { status: 200, json: children.map((c) => ({ path: `${prefix}${c}`, name: c, type: r.files[`${prefix}${c}`] === undefined ? "dir" : "file" })) };
-      }
-      if ((n = /^\/compare\/([0-9a-f]{40})\.\.\.([0-9a-f]{40})$/.exec(rest))) {
-        const identical = n[1] === n[2];
-        return { status: 200, json: { status: identical ? "identical" : "ahead", base_commit: { sha: n[1] }, files: identical ? [] : Object.keys(r.files).map((filename) => ({ filename })) } };
-      }
-      if ((n = /^\/pulls\/(\d+)$/.exec(rest))) return pullReply(i, r, Number(n[1]));
-      if ((n = /^\/check-suites\/(\d+)$/.exec(rest))) {
-        const recorded = checkSuites.get(Number(n[1]));
-        return recorded?.repositoryId === r.id ? { status: 200, json: recorded.suite } : notFound;
-      }
-      if ((n = /^\/actions\/workflows\/ployz-build\.yml(\/dispatches)?$/.exec(rest))) {
-        if (r.files[BUILD_WORKFLOW] === undefined) return notFound;
-        if (!n[1]) return { status: 200, json: { id: r.id, name: "Ployz build", path: BUILD_WORKFLOW, state: "active" } };
-        if (method !== "POST") return notFound;
-        const id = runId++;
-        runs.set(id, { repository: fullName(i, r), status: "in_progress", conclusion: null });
-        return { status: 200, json: { workflow_run_id: id, run_url: `${origin}/repos/${fullName(i, r)}/actions/runs/${id}`, html_url: `${origin}/${fullName(i, r)}/actions/runs/${id}` } };
-      }
-      if ((n = /^\/actions\/runs\/(\d+)(\/cancel)?$/.exec(rest))) {
-        const id = Number(n[1]);
-        const recorded = runs.get(id);
-        if (recorded?.repository !== fullName(i, r)) return notFound;
-        if (!n[2]) return { status: 200, json: { id, path: BUILD_WORKFLOW, ...recorded } };
-        if (method !== "POST") return notFound;
-        if (recorded.status === "completed") return { status: 409, json: { message: "Cannot cancel a workflow run that is completed." } };
-        Object.assign(recorded, { status: "completed", conclusion: "cancelled" });
-        return { status: 202, json: {} };
-      }
-      if ((n = /^\/tarball\/([0-9a-f]{40})$/.exec(rest))) {
-        if (!shaOrBranchHead(i, r, n[1] ?? "")) return notFound;
-        return { status: 302, location: `${origin}/${fullName(i, r)}/legacy.tar.gz/${n[1]}` };
-      }
-      return notFound;
+      return repositoryRoute(found, m[3] ?? "", url, method, body);
     }
     if ((m = /^\/([^/]+)\/([^/]+)\/legacy\.tar\.gz\/([0-9a-f]{40})$/.exec(path))) {
       const sha = m[3] ?? "";

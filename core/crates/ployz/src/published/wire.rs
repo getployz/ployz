@@ -4,8 +4,6 @@
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-pub(super) const FORMAT: u32 = 1;
-
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub(super) struct Manifest {
     pub(super) format: u32,

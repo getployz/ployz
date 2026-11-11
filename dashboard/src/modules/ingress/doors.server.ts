@@ -1,6 +1,6 @@
 import "@tanstack/react-start/server-only";
 import { randomUUID } from "node:crypto";
-import { and, desc, eq, inArray, isNull, lt, or, sql } from "drizzle-orm";
+import { and, desc, eq, exists, inArray, isNull, lt, or, sql } from "drizzle-orm";
 import type { JsonValue, PublishedHostname, RuntimeWatchView } from "@ployz/sdk";
 import { Effect, Schedule, Schema } from "effect";
 import { operationDigest, type OperationAsked } from "#/modules/approvals/approvals.server";
@@ -23,6 +23,8 @@ import {
   type KnownRoutes,
   type LatestDoorsChange,
   type MovedHostname,
+  collidingMoves,
+  collisionGap,
   keptHostnames,
   movedHostnames,
   observationGap,
@@ -178,21 +180,27 @@ const switchSeen = Effect.fn("IngressDoors.seen")(function* (organizationId: str
   const hosted = (yield* loadClusterDomain(organizationId))?.name ?? null;
   const seen = yield* observeClusterIngress(organizationId);
   const sources = sourcesOf(setup, hosted, to);
-  if (seen === null || sources === null) return { setup, hosted, seen, moving: [], kept: [], unknown: [] };
+  if (seen === null || sources === null) return { setup, hosted, seen, moving: [], kept: [], unknown: [], colliding: [] };
   const known = yield* knownRoutes(organizationId);
+  const moving = movedHostnames(seen.hostnames, sources.from, sources.to, known);
   return {
     setup,
     hosted,
     seen,
-    moving: movedHostnames(seen.hostnames, sources.from, sources.to, known),
+    moving,
     kept: keptHostnames(seen.hostnames, known),
     unknown: unknownHostnames(seen.hostnames, sources.from, known),
+    colliding: collidingMoves(moving, known),
   };
 });
 
 /** Why a switch can't trust what it saw: a Server that didn't answer, or a published name no Deployment accounts for. */
-const switchGap = ({ seen, unknown }: { readonly seen: ClusterIngressObservation | null; readonly unknown: readonly PublishedHostname[] }) =>
+const unreadGap = ({ seen, unknown }: { readonly seen: ClusterIngressObservation | null; readonly unknown: readonly PublishedHostname[] }) =>
   observationGap(seen) ?? unknownGap(unknown);
+
+/** Why a switch can't go on: what it can't trust, or a move onto a hostname a custom domain holds. */
+const switchGap = (looked: Parameters<typeof unreadGap>[0] & { readonly colliding: readonly MovedHostname[] }) =>
+  unreadGap(looked) ?? collisionGap(looked.colliding);
 
 /**
  * What switching the Cluster to `to` asks a human: every generated hostname moves between the Hosted domain and the
@@ -315,13 +323,22 @@ const deploymentEnd = (organizationId: string, id: string) =>
   );
 
 /**
+ * A move onto a hostname a custom domain holds, as the Servers and the Store show it before any Door opens. The switch
+ * ends there: it would flip the source and be refused on its route IDs at the redeploy. Looked for before the Doors
+ * open, not after, since a refusal with both open and the source unmoved can't be walked back from public ports.
+ */
+const blockedNow = Effect.fn("IngressDoors.blocked")(function* (organizationId: string, want: DoorsWant) {
+  return collisionGap((yield* switchSeen(organizationId, want)).colliding);
+});
+
+/**
  * The generated names a switch to `want` moves, read while both Doors are open, or why Cloud can't tell: a Server
  * that didn't answer may publish a name the switch would otherwise leave behind, and a name no Deployment accounts for
  * may be either kind, so the switch stops before its source moves.
  */
 const movingNow = Effect.fn("IngressDoors.moving")(function* (organizationId: string, want: DoorsWant) {
   const looked = yield* switchSeen(organizationId, want);
-  const gap = switchGap(looked);
+  const gap = unreadGap(looked);
   return gap === null ? { moves: looked.moving } : { failure: gap };
 });
 
@@ -358,15 +375,27 @@ type RedeployError = Effect.Error<Admission> | Effect.Error<Ending> | Effect.Err
 type RedeployServices = Effect.Services<Admission> | Effect.Services<Ending> | Effect.Services<Observation>;
 
 const applySwitch = Effect.fn("IngressDoors.apply")(function* (session: PloyzSession, request: DoorsRequest, runId: string, want: DoorsWant) {
-  const { drizzle } = yield* Database;
+  const database = yield* Database;
+  const { drizzle } = database;
   const owned = and(eq(ingressDoorsAttempt.id, request.attemptId), eq(ingressDoorsAttempt.inngestRunId, runId));
   const founding = want === "tunnel" ? yield* closedFounding(request.organizationId) : { kind: "open" } as const;
   if (founding.kind === "unknown") return { ok: false, failure: "Some servers didn't answer. Switch again once they all do." } as const;
   return yield* runSwitch(want, {
     open: (doors) => session.setIngressDoors(doors),
     at: (stage) => drizzle.update(ingressDoorsAttempt).set({ stage }).where(owned).pipe(Effect.asVoid),
-    flip: () => drizzle.update(organizationCloudflareIngress).set({ state: want === "tunnel" ? "active" : "left", updatedAt: new Date() })
-      .where(eq(organizationCloudflareIngress.organizationId, request.organizationId)).pipe(Effect.asVoid),
+    // Under the lock removal takes to fail this attempt, and only while the attempt is still running: a switch that a
+    // removal ended must not move the row of the Cluster set up after it.
+    flip: () => database.transaction(Effect.gen(function* () {
+      yield* lockIngressRows(request.organizationId);
+      const { drizzle } = yield* Database;
+      const [flipped] = yield* drizzle.update(organizationCloudflareIngress).set({ state: want === "tunnel" ? "active" : "left", updatedAt: new Date() })
+        .where(and(
+          eq(organizationCloudflareIngress.organizationId, request.organizationId),
+          exists(drizzle.select({ one: sql`1` }).from(ingressDoorsAttempt).where(and(owned, eq(ingressDoorsAttempt.state, "running")))),
+        )).returning({ organizationId: organizationCloudflareIngress.organizationId });
+      return flipped === undefined ? "The Cluster was removed." : null;
+    })).pipe(Effect.orDie),
+    blocked: () => blockedNow(request.organizationId, want),
     moving: () => movingNow(request.organizationId, want),
     redeploy: (moves) => redeployMoving(request.organizationId, moves),
   }, founding.kind === "closed");

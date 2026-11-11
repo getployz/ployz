@@ -1,10 +1,10 @@
 import type { RuleView } from "@ployz/sdk";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { hex } from "#/modules/approval-session/approval-session";
-import { answerRule, draftEnd, draftRule, keptRule, RuleRefused, ruleOn } from "./auto-deploy-rule";
+import { answerRule, draftedRepository, draftEnd, draftRule, keptRule, RuleRefused, ruleOn } from "./auto-deploy-rule";
 
 /** `rule_draft_tests::GOLDEN`: the CLI and the Servers draft these bytes from the same view and terms. */
-const GOLDEN = "004e199a9600b0c6fa8b432a1de4d098c1f217a4bc8e40f36ffa3af27b2c7b28";
+const GOLDEN = "9c041c83758d801e0350725886e31596384b655d7edb2f66189bdb542a32ae63";
 const SEALED = "QUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQQ==";
 const BUILDER_SHA = "5f35eaa8e1372d0d86ff82788adadf308e5f3f97";
 
@@ -67,6 +67,7 @@ describe("draftRule", () => {
     expect(await sha256(draft.body)).toBe(GOLDEN);
     expect(JSON.parse(draft.body)).toMatchObject({ signer: "passkey", generation: 1, source: { builder: { sha: BUILDER_SHA } } });
     expect(draft.summary).toMatchObject({ repository: "Ployz-test/lab-service", branch: "main", pinned: true, servers: 2 });
+    expect(draftedRepository(draft)).toBe("Ployz-test/lab-service");
     expect(draft.summary.services.map((service) => service.name)).toEqual(["web"]);
   });
 

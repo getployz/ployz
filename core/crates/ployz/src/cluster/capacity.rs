@@ -7,7 +7,7 @@ use ployz_core::{
     BridgeEndpointCapacity, InspectRequest, MachineId, MachineObservation, MachineTarget, op,
 };
 
-use super::Client;
+use super::{Call, Client};
 
 pub(super) async fn observe(
     client: &Client,
@@ -19,14 +19,17 @@ pub(super) async fn observe(
             let mut client = client.clone();
             async move {
                 let result = client
-                    .read::<op::Inspect>(
+                    .call::<op::Inspect>(
                         InspectRequest {
                             telemetry: ployz_core::InspectTelemetry::BridgeCapacity,
                             ..Default::default()
                         },
-                        &MachineTarget::from(&machine_id),
+                        Call::read()
+                            .to(&MachineTarget::from(&machine_id))
+                            .budget(crate::connect::target_read_timeout()),
                     )
-                    .await;
+                    .await
+                    .map_err(crate::connect::rpc_error);
                 (machine_id, result)
             }
         })

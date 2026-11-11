@@ -1,3 +1,4 @@
+use crate::cluster::{Call, Deadline};
 use std::{
     collections::BTreeMap,
     net::{IpAddr, SocketAddr},
@@ -265,7 +266,7 @@ pub(super) async fn connect_avoiding(
         let mut client =
             crate::connect::connect_selected_with(selected, Arc::new(connector)).await?;
         let entry = client
-            .call::<op::DescribeContract>(ployz_core::DescribeContractRequest {}, None)
+            .call::<op::DescribeContract>(ployz_core::DescribeContractRequest {}, Call::read())
             .await?
             .machine_id;
         if entry != leaving.id {
@@ -290,7 +291,7 @@ pub(super) async fn connect_full_avoiding(
 ) -> Result<(Client, ployz_core::MachineId, bool), Error> {
     let mut client = connect_full(matches, context).await?;
     let entry = client
-        .call::<op::DescribeContract>(ployz_core::DescribeContractRequest {}, None)
+        .call::<op::DescribeContract>(ployz_core::DescribeContractRequest {}, Call::read())
         .await?
         .machine_id;
     let Some(leaving) = leaving.filter(|leaving| leaving.id == entry) else {
@@ -314,7 +315,7 @@ pub(super) async fn connect_full_avoiding(
             .await?
             .with_full_connections(every);
         let entry = client
-            .call::<op::DescribeContract>(ployz_core::DescribeContractRequest {}, None)
+            .call::<op::DescribeContract>(ployz_core::DescribeContractRequest {}, Call::read())
             .await?
             .machine_id;
         if entry != leaving.id {
@@ -1122,10 +1123,11 @@ pub(crate) async fn apply_update(
     // Setting or clearing the public IP pins it, so daemon start no longer looks one up.
     let public_ip_pinned = update.public_ip != PublicIpUpdate::Keep;
     let updated = client
-        .invoke_answered::<op::UpdateMachine>(
+        .call_shared::<op::UpdateMachine>(
             UpdateMachineRequest { update },
-            &selector,
-            Some(TARGET_RPC_TIMEOUT),
+            Call::once()
+                .to(&selector)
+                .within(Deadline::Target(TARGET_RPC_TIMEOUT)),
         )
         .await
         .map_err(|error| (error.unreplied(), RpcError::from(error)));
@@ -1284,10 +1286,11 @@ pub(crate) async fn apply_update(
 /// this command didn't turn on.
 async fn ingress_off(client: &Client, selector: &MachineTarget) -> Option<MachineId> {
     let details = client
-        .invoke_answered::<op::Inspect>(
+        .call_shared::<op::Inspect>(
             InspectRequest::default(),
-            selector,
-            Some(TARGET_RPC_TIMEOUT),
+            Call::once()
+                .to(selector)
+                .within(Deadline::Target(TARGET_RPC_TIMEOUT)),
         )
         .await
         .ok()?;
@@ -1323,10 +1326,11 @@ fn own_start_failure(
 async fn nothing_serves(client: &Client, machine: MachineId) -> bool {
     let target = MachineTarget::from(&machine);
     let Ok(listed) = client
-        .invoke_answered::<op::ListContainers>(
+        .call_shared::<op::ListContainers>(
             ListContainersRequest::default(),
-            &target,
-            Some(TARGET_RPC_TIMEOUT),
+            Call::once()
+                .to(&target)
+                .within(Deadline::Target(TARGET_RPC_TIMEOUT)),
         )
         .await
     else {
@@ -1340,10 +1344,11 @@ async fn nothing_serves(client: &Client, machine: MachineId) -> bool {
         return false;
     }
     client
-        .invoke_answered::<op::Inspect>(
+        .call_shared::<op::Inspect>(
             InspectRequest::default(),
-            &target,
-            Some(TARGET_RPC_TIMEOUT),
+            Call::once()
+                .to(&target)
+                .within(Deadline::Target(TARGET_RPC_TIMEOUT)),
         )
         .await
         .is_ok_and(|details| details.id == machine)
@@ -1369,10 +1374,11 @@ async fn turn_back_off(
     };
     let name = machine.name.clone();
     match client
-        .invoke_answered::<op::UpdateMachine>(
+        .call_shared::<op::UpdateMachine>(
             UpdateMachineRequest { update: off },
-            &MachineTarget::from(&machine.id),
-            Some(TARGET_RPC_TIMEOUT),
+            Call::once()
+                .to(&MachineTarget::from(&machine.id))
+                .within(Deadline::Target(TARGET_RPC_TIMEOUT)),
         )
         .await
     {

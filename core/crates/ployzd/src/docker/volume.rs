@@ -7,17 +7,44 @@ use bollard::{
 };
 use futures_util::{StreamExt, stream};
 use ployz_core::{
-    ContainerId, CreateVolumeReport, CreateVolumeRequest, DockerVolume, DockerVolumeId,
-    DockerVolumeName, DockerVolumeStorageObservation, MachineId, Namespace, QualifiedService,
-    ResolvedServiceSpec, ServiceName, VolumeInventory, VolumeObservationFailure, VolumeSource,
+    ContainerId, CreateVolumeRequest, DockerVolume, DockerVolumeId, DockerVolumeName,
+    DockerVolumeStorageObservation, MachineId, Namespace, QualifiedService, ResolvedServiceSpec,
+    RpcError, ServiceName, VolumeInventory, VolumeObservationFailure, VolumeSource,
 };
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 use super::{ContainerRuntime, Error, LABEL_NAMESPACE, LABEL_SERVICE_NAME, some_map};
 use crate::VolumePluginStatus;
 
 const VOLUME_INSPECTION_CONCURRENCY: usize = 8;
+
+/// Successful Docker mutation followed by its independent verification outcome.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "verification", rename_all = "snake_case")]
+pub enum CreateVolumeReport {
+    Verified { volume: DockerVolume },
+    Unverified { id: DockerVolumeId, error: RpcError },
+}
+
+impl CreateVolumeReport {
+    /// Return the verified observation or the created identity and verification failure.
+    ///
+    /// # Errors
+    ///
+    /// Returns the created identity and verification error when creation succeeded but
+    /// its follow-up observation failed.
+    #[expect(
+        clippy::result_large_err,
+        reason = "both outcomes are public wire values; boxing would leak allocation into the contract"
+    )]
+    pub fn into_observation(self) -> Result<DockerVolume, VolumeObservationFailure> {
+        match self {
+            Self::Verified { volume } => Ok(volume),
+            Self::Unverified { id, error } => Err(VolumeObservationFailure { id, error }),
+        }
+    }
+}
 
 impl ContainerRuntime {
     /// Ensure every mounted Docker Volume exists and every managed source matches exactly.

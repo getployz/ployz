@@ -162,6 +162,8 @@ macro_rules! rpc_catalog {
                 DEPLOY_PREVIEW_CAPABILITY: ("ployz.container.deploy-preview.v1", Always),
                 /// A preview build's grant and its Containers may run on a person's review of one commit, a passkey's own prompt over it or a signature, which the daemon checks before anything opens.
                 PREVIEW_REVIEW_CAPABILITY: ("ployz.preview.review.v1", Always),
+                /// A rule build's grant and its Containers may run on a person's approval of one commit in place of the branch head. The grant needs the commit on the rule's branch, read from GitHub, and a Container the token's image and the rule's settings, the token's lifetime aside.
+                COMMIT_APPROVAL_CAPABILITY: ("ployz.rule.commit-approval.v1", Always),
             }
         }
     };

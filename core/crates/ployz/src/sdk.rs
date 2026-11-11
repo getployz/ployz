@@ -1,3 +1,4 @@
+use crate::cluster::{Call, Deadline, Repeat};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
@@ -446,15 +447,23 @@ impl Session {
         }
     }
 
-    async fn unary<T: Rpc>(&self, request: T::Request) -> Result<T::Response, RpcError> {
-        Ok(self.unary_answered::<T>(request).await?)
+    async fn unary<T: Rpc>(
+        &self,
+        request: T::Request,
+        replay: Repeat<'static>,
+    ) -> Result<T::Response, RpcError> {
+        Ok(self.unary_answered::<T>(request, replay).await?)
     }
 
-    async fn unary_answered<T: Rpc>(&self, request: T::Request) -> Result<T::Response, CallError> {
+    async fn unary_answered<T: Rpc>(
+        &self,
+        request: T::Request,
+        replay: Repeat<'static>,
+    ) -> Result<T::Response, CallError> {
         let mut client = self.client()?;
         self.until_closed_answered(async {
             client
-                .call::<T>(request, None)
+                .call::<T>(request, replay)
                 .await
                 .map_err(CallError::from)
         })
@@ -500,10 +509,11 @@ impl Session {
         let client = self.client()?;
         self.until_closed(async {
             client
-                .call_unretried::<op::SetManagementClient>(
+                .call_shared::<op::SetManagementClient>(
                     ployz_core::SetManagementClientRequest::Clear { label },
-                    None,
-                    crate::cluster::LIVE_MUTATION_REPLY_TIMEOUT,
+                    Call::once().within(Deadline::MutationReply(
+                        crate::cluster::LIVE_MUTATION_REPLY_TIMEOUT,
+                    )),
                 )
                 .await
                 .map(|_| ())
@@ -530,7 +540,7 @@ impl Session {
                 &MachineTarget::from(&description.machine_id),
             ));
         }
-        self.unary::<op::SetPushTarget>(ployz_core::SetPushTargetRequest { url })
+        self.unary::<op::SetPushTarget>(ployz_core::SetPushTargetRequest { url }, Call::keyed())
             .await
             .map(drop)
     }
@@ -556,7 +566,7 @@ impl Session {
                 &MachineTarget::from(&description.machine_id),
             ));
         }
-        self.unary::<op::SetClusterName>(ployz_core::SetClusterNameRequest { name })
+        self.unary::<op::SetClusterName>(ployz_core::SetClusterNameRequest { name }, Call::keyed())
             .await
     }
 
@@ -572,6 +582,7 @@ impl Session {
         let response = self
             .unary_answered::<op::SetManagementClient>(
                 ployz_core::SetManagementClientRequest::Set { label },
+                Call::keyed(),
             )
             .await?;
         response.capability.ok_or_else(|| {
@@ -585,7 +596,7 @@ impl Session {
     /// # Errors
     /// Returns cancellation or Inspect errors.
     pub async fn inspect(&self) -> Result<ployz_core::MachineDetails, RpcError> {
-        self.unary::<op::Inspect>(ployz_core::InspectRequest::default())
+        self.unary::<op::Inspect>(ployz_core::InspectRequest::default(), Call::read())
             .await
     }
 
@@ -601,11 +612,17 @@ impl Session {
         let target = MachineTarget::parse(machine)
             .map_err(|error| RpcError::invalid_argument(error.to_string()))?;
         let client = self.client()?;
-        self.until_closed(client.invoke::<op::Inspect>(
-            ployz_core::InspectRequest::default(),
-            &target,
-            Some(crate::connect::TARGET_RPC_TIMEOUT),
-        ))
+        self.until_closed(async {
+            client
+                .call_shared::<op::Inspect>(
+                    ployz_core::InspectRequest::default(),
+                    Call::once()
+                        .to(&target)
+                        .within(Deadline::Target(crate::connect::TARGET_RPC_TIMEOUT)),
+                )
+                .await
+                .map_err(crate::connect::rpc_error)
+        })
         .await
     }
 
@@ -619,7 +636,8 @@ impl Session {
         &self,
         request: PublishCertificateMaterialRequest,
     ) -> Result<CertificateMaterialPublished, RpcError> {
-        self.unary::<op::PublishCertificateMaterial>(request).await
+        self.unary::<op::PublishCertificateMaterial>(request, Call::keyed())
+            .await
     }
 
     /// Mint a Build Grant on the entry Machine: one image push into `repository`.
@@ -635,10 +653,11 @@ impl Session {
         let client = self.client()?;
         self.until_closed(async {
             client
-                .call_unretried::<op::MintBuildGrant>(
+                .call_shared::<op::MintBuildGrant>(
                     request,
-                    None,
-                    crate::cluster::LIVE_MUTATION_REPLY_TIMEOUT,
+                    Call::once().within(Deadline::MutationReply(
+                        crate::cluster::LIVE_MUTATION_REPLY_TIMEOUT,
+                    )),
                 )
                 .await
                 .map_err(RpcError::from)
@@ -655,7 +674,8 @@ impl Session {
         &self,
         request: ployz_core::InspectBuildGrantRequest,
     ) -> Result<ployz_core::BuildGrantInspected, RpcError> {
-        self.unary::<op::InspectBuildGrant>(request).await
+        self.unary::<op::InspectBuildGrant>(request, Call::read())
+            .await
     }
 
     /// Describe the entry Machine contract.
@@ -665,7 +685,7 @@ impl Session {
     /// Returns a generated [`RpcError`] when the session is closed or
     /// `DescribeContract` fails.
     pub async fn about(&self) -> Result<ContractDescription, RpcError> {
-        self.unary::<op::DescribeContract>(DescribeContractRequest {})
+        self.unary::<op::DescribeContract>(DescribeContractRequest {}, Call::read())
             .await
     }
 
@@ -985,11 +1005,12 @@ impl Session {
         let response = self
             .until_closed_answered(async {
                 client
-                    .invoke_raw(
+                    .call_raw(
                         &request,
                         path,
-                        Some(&target),
-                        Some(crate::connect::TARGET_RPC_TIMEOUT),
+                        Call::once()
+                            .to(&target)
+                            .within(Deadline::Target(crate::connect::TARGET_RPC_TIMEOUT)),
                     )
                     .await
                     .map_err(CallError::from)
@@ -1297,11 +1318,17 @@ impl Session {
             .map_err(|error| RpcError::invalid_argument(error.to_string()))?;
         let client = self.client()?;
         let details = self
-            .until_closed(client.invoke::<ployz_core::op::InspectContainer>(
-                ployz_core::InspectContainerRequest { container_id },
-                &target,
-                Some(crate::connect::TARGET_RPC_TIMEOUT),
-            ))
+            .until_closed(async {
+                client
+                    .call_shared::<ployz_core::op::InspectContainer>(
+                        ployz_core::InspectContainerRequest { container_id },
+                        Call::once()
+                            .to(&target)
+                            .within(Deadline::Target(crate::connect::TARGET_RPC_TIMEOUT)),
+                    )
+                    .await
+                    .map_err(crate::connect::rpc_error)
+            })
             .await?;
         serde_json::to_value(details)
             .map_err(|error| RpcError::internal(format!("encoding Container {container}: {error}")))
@@ -1339,12 +1366,14 @@ impl Session {
                 .machine
                 .clone();
             let details = client
-                .invoke::<ployz_core::op::InspectContainer>(
+                .call_shared::<ployz_core::op::InspectContainer>(
                     ployz_core::InspectContainerRequest { container_id },
-                    &MachineTarget::from(&source.id),
-                    Some(crate::connect::TARGET_RPC_TIMEOUT),
+                    Call::once()
+                        .to(&MachineTarget::from(&source.id))
+                        .within(Deadline::Target(crate::connect::TARGET_RPC_TIMEOUT)),
                 )
-                .await?;
+                .await
+                .map_err(crate::connect::rpc_error)?;
             let image_id = details.image_id.ok_or_else(|| {
                 RpcError::unsupported(format!(
                     "{} does not report the image ID its Containers run",
@@ -1376,11 +1405,17 @@ impl Session {
         let target = MachineTarget::parse(machine)
             .map_err(|error| RpcError::invalid_argument(error.to_string()))?;
         let client = self.client()?;
-        self.until_closed(client.invoke::<op::UpdateMachine>(
-            ployz_core::UpdateMachineRequest { update },
-            &target,
-            Some(crate::connect::TARGET_RPC_TIMEOUT),
-        ))
+        self.until_closed(async {
+            client
+                .call_shared::<op::UpdateMachine>(
+                    ployz_core::UpdateMachineRequest { update },
+                    Call::once()
+                        .to(&target)
+                        .within(Deadline::Target(crate::connect::TARGET_RPC_TIMEOUT)),
+                )
+                .await
+                .map_err(crate::connect::rpc_error)
+        })
         .await
     }
 
@@ -1399,21 +1434,21 @@ impl Session {
         machine: &str,
         request: ployz_core::RequestMachineUpgradeRequest,
     ) -> Result<ployz_core::MachineUpgradeAttempt, RpcError> {
-        self.repeatable::<op::RequestMachineUpgrade>(machine, request)
-            .await
-    }
-
-    /// A call on `machine` that is safe to repeat, retried across dropped connections for
-    /// [`crate::connect::TARGET_RPC_TIMEOUT`]. Unlike the CLI's retries it never writes to stderr.
-    async fn repeatable<T: Rpc>(
-        &self,
-        machine: &str,
-        request: T::Request,
-    ) -> Result<T::Response, RpcError> {
         let target = MachineTarget::parse(machine)
             .map_err(|error| RpcError::invalid_argument(error.to_string()))?;
         let mut client = self.client()?;
-        self.until_closed(client.read::<T>(request, &target)).await
+        self.until_closed(async {
+            client
+                .call::<op::RequestMachineUpgrade>(
+                    request,
+                    Call::keyed()
+                        .to(&target)
+                        .budget(crate::connect::target_read_timeout()),
+                )
+                .await
+                .map_err(crate::connect::rpc_error)
+        })
+        .await
     }
 
     /// Live Observation of Data Loss that destroying `namespace` would cause.

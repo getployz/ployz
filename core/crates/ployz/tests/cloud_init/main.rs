@@ -13,6 +13,7 @@ use harness::{
     EnrollListen, EventLog, JOIN_CONFIRMATION, JoinDaemon, PAIRING, RESET_PUBLIC_KEY, TOKEN,
     approved_registration, founder_machine, ingress_on, registration, serve_machine,
 };
+use ployz::connect::Call;
 use ployz_core::{EnrollAs, EnrollRequest, InspectRequest, LocalMachinePhase, Registered, op};
 use serde_json::json;
 
@@ -338,7 +339,7 @@ async fn cloud_zfs_rejects_a_remote_machine_before_join() {
 
     let details = connect_daemon(machine_addr)
         .await
-        .call::<op::Inspect>(InspectRequest::default(), None)
+        .call::<op::Inspect>(InspectRequest::default(), Call::read())
         .await
         .unwrap();
     assert_eq!(details.phase, LocalMachinePhase::Uninitialized);
@@ -814,7 +815,7 @@ async fn initialized_machine_yes_refuses_reset_without_explicit_reset() {
                 wireguard_mtu: None,
                 pinned: Default::default(),
             },
-            None,
+            Call::keyed(),
         )
         .await
         .unwrap();
@@ -874,7 +875,7 @@ async fn rerun_on_the_founded_machine_does_not_claim_to_found_it() {
                 wireguard_mtu: None,
                 pinned: Default::default(),
             },
-            None,
+            Call::keyed(),
         )
         .await
         .unwrap();
@@ -936,7 +937,7 @@ async fn invalid_cluster_network_does_not_reset_an_initialized_machine() {
                 wireguard_mtu: None,
                 pinned: Default::default(),
             },
-            None,
+            Call::keyed(),
         )
         .await
         .unwrap();
@@ -1007,7 +1008,7 @@ async fn reset_enroll_posts_the_rotated_public_key() {
                 wireguard_mtu: None,
                 pinned: Default::default(),
             },
-            None,
+            Call::keyed(),
         )
         .await
         .unwrap();
@@ -1079,7 +1080,7 @@ async fn reset_enroll_does_not_occupy_the_name_with_the_pre_reset_key() {
                 wireguard_mtu: None,
                 pinned: Default::default(),
             },
-            None,
+            Call::keyed(),
         )
         .await
         .unwrap();
@@ -1277,7 +1278,7 @@ async fn join_ingress_rejection_is_durable_and_still_places_other_globals() {
     }));
     let details = connect_daemon(machine_addr)
         .await
-        .call::<op::Inspect>(InspectRequest::default(), None)
+        .call::<op::Inspect>(InspectRequest::default(), Call::read())
         .await
         .unwrap();
     assert!(!details.machine.unwrap().accepts_ingress);

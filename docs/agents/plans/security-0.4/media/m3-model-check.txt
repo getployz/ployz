@@ -1,0 +1,25 @@
+verify-build-handoff model check at the PR head, rebased on origin/main (c35cec0ba0)
+cd core && cargo nextest run -p ployz-verify build_handoff --no-capture
+
+        PASS [   3.068s] ( 1/18) ployz-verify build_handoff::tests::a_later_look_ends_the_run_the_start_limit_waited_for
+        PASS [   0.017s] ( 2/18) ployz-verify build_handoff::tests::a_retried_start_follows_a_hand_off_that_commits_after_its_read
+        PASS [  13.873s] ( 3/18) ployz-verify build_handoff::tests::a_retried_start_follows_the_held_run
+        PASS [   0.024s] ( 4/18) ployz-verify build_handoff::tests::a_retried_start_needs_its_second_read
+        PASS [   3.111s] ( 5/18) ployz-verify build_handoff::tests::a_retried_start_s_run_that_checked_in_keeps_its_build
+        PASS [  16.829s] ( 6/18) ployz-verify build_handoff::tests::record_needs_its_github_guard
+        PASS [   0.067s] ( 7/18) ployz-verify build_handoff::tests::the_check_in_guard_refuses_a_cancelled_deployment
+two requests: 3234872 states
+        PASS [  13.334s] ( 8/18) ployz-verify build_handoff::tests::the_check_in_guard_refuses_a_second_grant
+the code: 1407273 states
+        PASS [   5.505s] ( 9/18) ployz-verify build_handoff::tests::the_code_keeps_a_started_run
+        PASS [   0.073s] (10/18) ployz-verify build_handoff::tests::the_start_limit_needs_its_look
+        PASS [   0.081s] (11/18) ployz-verify build_handoff::tests::the_start_limit_needs_the_done_gate
+        PASS [   0.060s] (12/18) ployz-verify build_handoff::tests::the_start_limit_needs_the_unstarted_guard
+        PASS [   0.006s] (13/18) ployz-verify build_handoff::tests::the_start_limit_on_each_edge_state
+        PASS [   0.006s] (14/18) ployz-verify build_handoff::tests::the_start_limit_waits_for_the_finding_s_run
+timed out: 1523471 states
+        PASS [   5.458s] (15/18) ployz-verify build_handoff::tests::timed_out_breaks_only_the_finding
+        PASS [  13.794s] (16/18) ployz-verify build_handoff::tests::timed_out_fails_a_run_that_checked_in_when_its_machine_is_unreachable
+        PASS [   9.537s] (17/18) ployz-verify build_handoff::tests::timed_out_needs_the_unstarted_guard
+        PASS [   0.071s] (18/18) ployz-verify build_handoff::tests::timed_out_passes_on_a_run_that_checked_in
+     Summary [  84.921s] 18 tests run: 18 passed, 203 skipped

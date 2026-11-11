@@ -1,5 +1,5 @@
 import "@tanstack/react-start/server-only";
-import { and, eq } from "drizzle-orm";
+import { and, eq, isNotNull, isNull } from "drizzle-orm";
 import { Cause, Effect, Exit, type Redacted } from "effect";
 import {
   CloudflareError,
@@ -147,7 +147,7 @@ export const setUpCloudflare = Effect.fn("Cloudflare.setUp")(function* (
 
   // The reservation: the row as it was, to put back, and the moment written as `updated_at`, which names this setup.
   const reservedAt = new Date();
-  const reservation = { zone: zone.name, tunnelId: null, tunnelName, state: "setting_up", updatedAt: reservedAt } as const;
+  const reservation = { zone: zone.name, tunnelId: null, tunnelName, state: "setting_up", updatedAt: reservedAt, clusterRemovedAt: null } as const;
   const prior = yield* database.transaction(Effect.gen(function* () {
     yield* lockIngressRows(organizationId);
     const problem = yield* setupProblem(organizationId);
@@ -166,7 +166,9 @@ export const setUpCloudflare = Effect.fn("Cloudflare.setUp")(function* (
   const putBack = database.transaction(Effect.gen(function* () {
     yield* lockIngressRows(organizationId);
     const { drizzle } = yield* Database;
+    // A Cluster removed under this setup took the row it would put back, so the reservation is dropped, not restored.
     if (prior === null) return yield* drizzle.delete(organizationCloudflareIngress).where(reserved);
+    yield* drizzle.delete(organizationCloudflareIngress).where(and(reserved, isNotNull(organizationCloudflareIngress.clusterRemovedAt)));
     const { zone, tunnelId, tunnelName, state, updatedAt } = prior;
     yield* drizzle.update(organizationCloudflareIngress).set({ zone, tunnelId, tunnelName, state, updatedAt }).where(reserved);
   }));
@@ -231,9 +233,13 @@ export const setUpCloudflare = Effect.fn("Cloudflare.setUp")(function* (
     return yield* database.transaction(Effect.gen(function* () {
       yield* lockIngressRows(organizationId);
       const { drizzle } = yield* Database;
-      const [written] = yield* drizzle.update(organizationCloudflareIngress).set({ ...row, updatedAt: new Date() }).where(reserved)
+      const [written] = yield* drizzle.update(organizationCloudflareIngress).set({ ...row, updatedAt: new Date() })
+        .where(and(reserved, isNull(organizationCloudflareIngress.clusterRemovedAt)))
         .returning({ organizationId: organizationCloudflareIngress.organizationId });
-      if (written === undefined) return yield* new Conflict({ userFacing: true, message: "Another setup took over this one." });
+      if (written === undefined) {
+        const [kept] = yield* drizzle.select({ removed: organizationCloudflareIngress.clusterRemovedAt }).from(organizationCloudflareIngress).where(reserved);
+        return yield* new Conflict({ userFacing: true, message: kept?.removed ? "The Cluster was removed." : "Another setup took over this one." });
+      }
       if (closed) yield* requestDoorsSwitch({ organizationId, userId: null, to: "tunnel", delivery: "detach" });
       return { ...row, switching: closed };
     }));

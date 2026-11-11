@@ -18,8 +18,8 @@ use ployz_core::config::{
     AuthoredServiceConfig, COMMAND_MAX, CPU_LIMIT_MAX, HEALTHCHECK_PATH_MAX,
     HEALTHCHECK_TIMEOUT_DEFAULT, HEALTHCHECK_TIMEOUT_MAX, IMAGE_MAX, MAX_RETRIES_MAX,
     MEM_LIMIT_MAX, REPLICAS_MAX, RESTART_POLICIES, ServiceBuildConfig, ServiceHealthcheck,
-    ServiceImageCredentials, ServiceSource, UPDATE_ORDERS, default_max_retries, default_replicas,
-    parse_service_setting,
+    ServiceImageCredentials, ServiceRestartPolicy, ServiceSource, UPDATE_ORDERS,
+    default_max_retries, default_replicas, parse_service_setting,
 };
 use ployz_core::{RpcError, ServiceName};
 use serde::{Deserialize, Serialize};
@@ -293,7 +293,7 @@ impl ServiceSetting {
             | Self::UpdateOrder => Value::Null,
             Self::MaxRetries => json!(default_max_retries()),
             Self::Replicas => json!(default_replicas()),
-            Self::RestartPolicy => json!("unless-stopped"),
+            Self::RestartPolicy => json!(ServiceRestartPolicy::default()),
             Self::Git(git) => git.default(),
             Self::Policy(policy) => policy.default(),
         }
@@ -654,10 +654,7 @@ impl ServiceSetting {
         match (self, &mut config.source) {
             // Disconnected, the Service is empty until it gets a source again.
             (Self::Image, ServiceSource::Image { .. }) => {
-                config.source = ServiceSource::Empty {
-                    version: 1,
-                    root_dir: "/".to_owned(),
-                };
+                config.source = ServiceSource::empty();
                 Ok(())
             }
             (Self::RegistryCredential, ServiceSource::Image { credentials, .. }) => {

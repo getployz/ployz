@@ -7,7 +7,7 @@ use ployz_core::{
 use tokio::time::Instant;
 use tokio_util::sync::CancellationToken;
 
-use super::Client;
+use super::{Call, Client, Deadline};
 use crate::connect::TARGET_RPC_TIMEOUT;
 
 #[derive(Debug)]
@@ -57,14 +57,17 @@ impl Client {
         cancellation: &CancellationToken,
     ) -> Result<(), HealthWaitError<RpcError>> {
         let target = MachineTarget::from(machine_id);
-        wait_until_ready(Instant::now(), cancellation, || {
-            self.invoke::<op::InspectContainer>(
+        wait_until_ready(Instant::now(), cancellation, || async {
+            self.call_shared::<op::InspectContainer>(
                 InspectContainerRequest {
                     container_id: *container_id,
                 },
-                &target,
-                Some(TARGET_RPC_TIMEOUT),
+                Call::once()
+                    .to(&target)
+                    .within(Deadline::Target(TARGET_RPC_TIMEOUT)),
             )
+            .await
+            .map_err(crate::connect::rpc_error)
         })
         .await
     }

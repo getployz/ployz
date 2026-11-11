@@ -1,0 +1,15 @@
+M3 static boundary test: github-authority.static.test.ts
+
+Planted src/modules/github/planted-bypass.ts with:
+  fetch(`${api}/app/installations/1/access_tokens`, { method: "POST", ... })
+  "/repos/acme/web/actions/runs"
+
+Run with the plant:
+     × mints tokens and exchanges sign-in codes only through the App's authority 8ms
+     × names GitHub Actions only in the App's authority 3ms
+  ⎯⎯⎯⎯⎯⎯⎯ Failed Tests 2 ⎯⎯⎯⎯⎯⎯⎯
+  +   "modules/github/planted-bypass.ts",
+  +   "modules/github/planted-bypass.ts",
+        Tests  2 failed | 2 passed (4)
+
+Plant removed; rerun: 4 passed (4).

@@ -1,3 +1,4 @@
+use crate::cluster::Call;
 use std::{process, time::Duration};
 
 use crate::{
@@ -617,7 +618,7 @@ async fn ensure(
                 deploy: None,
                 rule: None,
             },
-            Some(&MachineTarget::from(&machine_id)),
+            Call::keyed().to(&MachineTarget::from(&machine_id)),
         )
         .await
         .unwrap()
@@ -633,7 +634,7 @@ async fn inspect_container(
     client
         .call::<op::InspectContainer>(
             InspectContainerRequest { container_id },
-            Some(&MachineTarget::from(&machine_id)),
+            Call::read().to(&MachineTarget::from(&machine_id)),
         )
         .await
         .map(|details| details.container)

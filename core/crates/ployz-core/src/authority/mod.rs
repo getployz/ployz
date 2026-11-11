@@ -21,6 +21,7 @@ pub mod restart;
 pub mod rule;
 pub mod rule_draft;
 pub mod session;
+pub mod shown;
 pub mod starting_set;
 pub mod trusted_key;
 pub mod upgrade;
@@ -49,9 +50,10 @@ pub use restart::{
     Approved, OwnPrompt, RestartApproval, RestartFacts, RestartStep, SignerKey, WorkflowKind,
 };
 pub use rule::{
-    AttestKey, AutoDeployRule, BuildClaim, BuildPolicy, BuildStage, ClaimRule, CommitAuthority,
-    CommitSha, GithubClaims, ImageDigest, PolicyDigest, RecipientKey, ReviewDigest, RuleFacts,
-    RuleId, RuleIdentity, RuleProof, RuleService, RuleSource, SealedDigest,
+    ApprovalDigest, ApprovalFacts, AttestKey, AutoDeployRule, BuildClaim, BuildPolicy, BuildStage,
+    CheckedCommitApproval, ClaimRule, CommitApproval, CommitAuthority, CommitNow, CommitSha,
+    GithubClaims, ImageDigest, PolicyDigest, RecipientKey, ReviewDigest, RuleFacts, RuleId,
+    RuleIdentity, RuleProof, RuleService, RuleSource, SealedDigest,
 };
 pub use rule_draft::{RuleBasis, RuleDraft, RuleDraftError, RuleSummary, RuleTerms};
 pub use session::{ActionFamily, GrantBody, SessionGrant};

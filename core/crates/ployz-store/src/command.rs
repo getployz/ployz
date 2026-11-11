@@ -13,7 +13,7 @@ pub use crate::config_item::{
     DeleteConfig, DetachConfig, PutConfigFile, RemoveConfigFile, RenameConfig,
 };
 pub use crate::deployment::admit::{
-    Admit, AdmitRemoval, Cancel, Deploy, Reapply, Retry, ShutDown, Start,
+    Admit, AdmitRemoval, ApproveDeployment, Cancel, Deploy, Reapply, Retry, ShutDown, Start,
 };
 pub use crate::project::{
     CreateEnvironment, CreateProject, EnvironmentCreated, ProjectCreated, ProjectSummary,
@@ -373,6 +373,11 @@ commands! {
         needs ChangesDeploy
         agent [DeploymentStart]
         => crate::deployment::start(tx, who, &c.deployment, trusted);
+    /// Approve again the commits of a queued Deployment that waited for its builds.
+    ApproveDeployment(ApproveDeployment) -> Deployment(crate::DeploymentSummary)
+        needs ChangesDeploy
+        agent none "A person's Device approves the commits a redeploy runs."
+        => crate::deployment::approve_commits(tx, who, c);
     /// Cancel a queued or running Deployment.
     Cancel(Cancel) -> Deployment(crate::DeploymentSummary)
         needs ChangesDeploy

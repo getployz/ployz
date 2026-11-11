@@ -1,6 +1,7 @@
 //! Bounded enrollment after the caller has durably saved its allocation.
 pub mod local;
 
+use crate::cluster::{Call, Deadline};
 use crate::connect::{Client, ConnectError};
 use ployz_core::{
     EnrollmentAssignment, EnrollmentSnapshot, ListMachinesRequest, Registered, RpcError, op,
@@ -12,7 +13,7 @@ use ployz_core::{
 /// Returns transport errors or missing enrollment facts.
 pub async fn observe_enrollment(entry: &mut Client) -> Result<EnrollmentSnapshot, RpcError> {
     entry
-        .call::<op::ListMachines>(ListMachinesRequest {}, None)
+        .call::<op::ListMachines>(ListMachinesRequest {}, Call::read())
         .await?
         .enrollment
         .ok_or_else(|| RpcError::unavailable("Entry Machine returned no enrollment snapshot"))
@@ -37,7 +38,12 @@ pub async fn publish_enrollment(
     request.assigned_subnet = Some(assignment.machine.subnet);
     request.runtime.clone_from(&assignment.machine.runtime);
     entry
-        .call_unretried::<op::Register>(request, None, crate::cluster::LIVE_MUTATION_REPLY_TIMEOUT)
+        .call_shared::<op::Register>(
+            request,
+            Call::once().within(Deadline::MutationReply(
+                crate::cluster::LIVE_MUTATION_REPLY_TIMEOUT,
+            )),
+        )
         .await
         .map_err(|error| {
             if let ConnectError::Remote(error) = error {

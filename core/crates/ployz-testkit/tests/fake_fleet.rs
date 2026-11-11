@@ -4,6 +4,7 @@
     reason = "Fixed test fixtures use indexing; missing entries must fail the test."
 )]
 
+use ployz::connect::Call;
 use std::{
     collections::{BTreeMap, BTreeSet},
     io::{BufRead, BufReader, Write},
@@ -136,7 +137,7 @@ async fn a_dropped_stop_reply_is_retried_and_both_attempts_are_in_the_ledger() {
     client
         .call::<op::EnsureContainer>(
             stop("app-production-web-1"),
-            Some(&MachineTarget::parse("web-1").unwrap()),
+            Call::keyed().to(&MachineTarget::parse("web-1").unwrap()),
         )
         .await
         .unwrap();
@@ -180,7 +181,7 @@ async fn a_disconnect_after_a_web_2_stop_leaves_web_2_offline() {
     let result = client
         .call::<op::EnsureContainer>(
             stop("app-production-web-2"),
-            Some(&MachineTarget::parse("web-2").unwrap()),
+            Call::keyed().to(&MachineTarget::parse("web-2").unwrap()),
         )
         .await;
 
@@ -281,7 +282,7 @@ async fn an_unmodeled_command_is_recorded_and_answers_unimplemented() {
                     anonymous_volumes: ployz_core::AnonymousVolumes::Remove,
                 },
             },
-            None,
+            Call::keyed(),
         )
         .await
         .unwrap_err();
@@ -324,7 +325,7 @@ async fn a_held_copy_leaves_every_live_route_and_only_its_run_brings_it_back() {
                 ReadRoutesRequest {
                     service: service.clone(),
                 },
-                None,
+                Call::read(),
             )
             .await
             .unwrap()
@@ -339,7 +340,7 @@ async fn a_held_copy_leaves_every_live_route_and_only_its_run_brings_it_back() {
                     deploy: None,
                     rule: None,
                 },
-                on_web_1.as_ref(),
+                Call::keyed().toward(on_web_1.as_ref()),
             )
             .await
             .unwrap()
@@ -606,11 +607,11 @@ async fn set_ingress_doors_runs_the_holder_and_caddy_once() {
     let target = MachineTarget::parse("web-1").unwrap();
 
     let first = client
-        .call::<op::SetIngressDoors>(request(), Some(&target))
+        .call::<op::SetIngressDoors>(request(), Call::keyed().to(&target))
         .await
         .unwrap();
     let again = client
-        .call::<op::SetIngressDoors>(request(), Some(&target))
+        .call::<op::SetIngressDoors>(request(), Call::keyed().to(&target))
         .await
         .unwrap();
 

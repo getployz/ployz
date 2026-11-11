@@ -245,8 +245,9 @@ fn an_enforcing_cluster_with_no_reported_key_is_named() {
 
 #[test]
 fn an_enforcing_cluster_signs_for_every_server_listed() {
-    let Probe::Enforcing(Enforcing { cluster, machines }) =
-        enforced(&[server(2, Some(true), None), server(1, Some(false), Some(9))])
+    let Probe::Enforcing(Enforcing {
+        cluster, machines, ..
+    }) = enforced(&[server(2, Some(true), None), server(1, Some(false), Some(9))])
     else {
         panic!("expected enforcing");
     };

@@ -266,6 +266,8 @@ fn redeploy(store: &ConfigStore, who: &Actor, n: u8, source: &DeploymentId) {
                 rolls_back: None,
                 version: None,
                 accept_volume_loss: Vec::new(),
+                approvals: Vec::new(),
+                awaits_approval: false,
             }),
         )
         .unwrap();

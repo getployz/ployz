@@ -242,6 +242,55 @@ impl VolumeSource {
     }
 }
 
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct CreateVolumeRequest {
+    pub name: DockerVolumeName,
+    pub driver: String,
+    #[serde(default)]
+    pub options: BTreeMap<String, String>,
+    #[serde(default)]
+    pub labels: BTreeMap<String, String>,
+}
+
+impl VolumeSource {
+    /// Build the exact Docker creation request for a managed Volume source.
+    ///
+    /// External Volumes, Bind Mounts, and Tmpfs Mounts have no creation
+    /// request because Ployz does not create them as Docker Volumes. Managed
+    /// declarations have no creation request until Namespace scoping establishes ownership.
+    #[must_use]
+    pub fn to_create_volume_request(&self) -> Option<CreateVolumeRequest> {
+        if !self.is_resolved() {
+            return None;
+        }
+        match self.kind() {
+            crate::RawVolumeSource::Ordinary {
+                name,
+                driver,
+                labels: _,
+            } => Some(CreateVolumeRequest {
+                name: name.clone(),
+                driver: driver.name().into(),
+                options: driver.options().clone(),
+                labels: self.creation_labels(),
+            }),
+            crate::RawVolumeSource::Provisioned {
+                name,
+                maximum_bytes,
+                labels: _,
+            } => Some(CreateVolumeRequest {
+                name: name.clone(),
+                driver: PROVISIONED_VOLUME_DRIVER.into(),
+                options: BTreeMap::from([("size".into(), format!("{}b", maximum_bytes.get()))]),
+                labels: self.creation_labels(),
+            }),
+            crate::RawVolumeSource::External { .. }
+            | crate::RawVolumeSource::Bind { .. }
+            | crate::RawVolumeSource::Tmpfs { .. } => None,
+        }
+    }
+}
+
 /// Reserved Docker driver used only by [`RawVolumeSource::Provisioned`].
 pub const PROVISIONED_VOLUME_DRIVER: &str = "ployz";
 

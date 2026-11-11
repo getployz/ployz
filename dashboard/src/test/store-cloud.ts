@@ -7,6 +7,7 @@ import { Polar, type PolarService } from "#/modules/billing/polar-provider.serve
 import { RunningObserver } from "#/modules/config-store/running-evidence.server";
 import { cloudStore, CloudStoreLive } from "#/modules/config-store/store-sdk.server";
 import { GithubRepositories, GithubRepositoriesLive } from "#/modules/github/github-cli.server";
+import { GithubAuthority, type GithubAuthorityService } from "#/modules/github/github-authority.server";
 import { GithubApi, type GithubApiService } from "#/modules/github/github-observation.api";
 import { githubInstallation, organizationGithubInstallation } from "#/modules/github/tables";
 import { ANONYMOUS_ORGANIZATION_NAME } from "#/modules/identity/anonymous-signup.server";
@@ -19,7 +20,7 @@ import { makeOrganizationRuntimeLayer, OrganizationRuntime } from "#/modules/run
 import { PloyzLive } from "#/modules/runtime/ployz.server";
 import { Database, DatabaseLive } from "#/server/database.server";
 import { testConfigLayer } from "#/test/config-environment";
-import { fakeGithubApi } from "#/test/fake-github";
+import { fakeGithubApi, fakeGithubAuthority } from "#/test/fake-github";
 import { machineId } from "#/test/ids";
 import { noPairingChanges } from "#/test/organization-runtime";
 import { postgresTestDatabase } from "#/test/postgres";
@@ -36,6 +37,7 @@ export const sendsNowhere = () => {
 
 interface StoreCloudOptions {
   readonly github?: GithubApiService;
+  readonly authority?: GithubAuthorityService;
   readonly repositories?: GithubRepositories["Service"];
   readonly polar?: PolarService;
   readonly inngest?: Inngest;
@@ -55,6 +57,7 @@ const storeCloudLayer = Effect.fn(function* (options: StoreCloudOptions) {
     SecretEncryptionLive.pipe(Layer.provide(configLayer)),
     CloudStoreLive.pipe(Layer.provide(Layer.merge(configLayer, database))),
     Layer.succeed(GithubApi, github),
+    Layer.succeed(GithubAuthority, options.authority ?? fakeGithubAuthority().service),
     options.repositories === undefined
       ? GithubRepositoriesLive.pipe(Layer.provide(Layer.merge(database, Layer.succeed(GithubApi, github))))
       : Layer.succeed(GithubRepositories, options.repositories),

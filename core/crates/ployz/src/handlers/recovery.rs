@@ -1,3 +1,4 @@
+use crate::cluster::{Call, Wait};
 use std::io::Read;
 use std::path::Path;
 use std::sync::Arc;
@@ -180,7 +181,10 @@ pub(super) async fn wrap_sealing_key(
     code: &RecoveryCode,
 ) -> Result<RecoveryBackup, Error> {
     let wrapped = client
-        .call_repeatable::<op::WrapSealingKey>(WrapSealingKeyRequest { code: code.clone() }, None)
+        .call::<op::WrapSealingKey>(
+            WrapSealingKeyRequest { code: code.clone() },
+            Call::keyed().waiting(Wait::standard()),
+        )
         .await?;
     Ok(RecoveryBackup {
         public_key: wrapped.public_key,
@@ -222,7 +226,10 @@ async fn dial(matches: &ArgMatches, verb: &str) -> Result<Client, Error> {
 /// Refuses a Server whose daemon predates `capability`, naming the Server.
 async fn require(client: &mut Client, capability: &str, verb: &str) -> Result<(), Error> {
     let contract = client
-        .call_repeatable::<op::DescribeContract>(DescribeContractRequest {}, None)
+        .call::<op::DescribeContract>(
+            DescribeContractRequest {},
+            Call::read().waiting(Wait::standard()),
+        )
         .await?;
     if contract.supports(capability) {
         return Ok(());
@@ -287,12 +294,12 @@ async fn recover_with(
     backup: Option<SealingKeyBackup>,
 ) -> Result<SealingPublicKey, ConnectError> {
     let recovered = client
-        .call_repeatable::<op::RecoverSealingKey>(
+        .call::<op::RecoverSealingKey>(
             RecoverSealingKeyRequest {
                 code: code.clone(),
                 backup,
             },
-            None,
+            Call::keyed().waiting(Wait::standard()),
         )
         .await?;
     Ok(recovered.public_key)

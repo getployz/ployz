@@ -54,6 +54,12 @@ export function draftRule(view: RuleView, scope: ApprovalScope, ownerId: number,
   }
 }
 
+/** The repository `draft` signs, read from its body: the summary is text to show, quoted when the name is unusual. */
+export function draftedRepository(draft: RuleDraft): string {
+  // SAFETY: ployz-core drafted the body from an `AutoDeployRule`.
+  return (JSON.parse(draft.body) as AutoDeployRule).source.repository;
+}
+
 /** The generation that turns the kept rule off. */
 export function draftEnd(view: RuleView, now = Date.now()): RuleDraft {
   try {

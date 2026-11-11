@@ -1,3 +1,4 @@
+use crate::cluster::{Call, Deadline};
 use clap::ArgMatches;
 use ployz_core::{
     DescribeContractRequest, LiveServices, Machine, MachineId, MachineTarget, QualifiedService,
@@ -138,7 +139,7 @@ fn leave(root: &ArgMatches, removal: Removal) -> Result<(), Error> {
         let observation = crate::cluster::visible_machine(&machine_target, &machines)?;
         let selected = observation.machine.clone();
         let mut current = client
-            .call::<op::DescribeContract>(DescribeContractRequest {}, None)
+            .call::<op::DescribeContract>(DescribeContractRequest {}, Call::read())
             .await?
             .machine_id;
         // An enforcing Server leaves, and forgets another, only for a Full caller, so the
@@ -646,12 +647,14 @@ async fn cloud_manages(
     name: &str,
 ) -> Result<bool, Error> {
     let details = client
-        .invoke::<op::Inspect>(
+        .call_shared::<op::Inspect>(
             ployz_core::InspectRequest::default(),
-            &MachineTarget::from(&entry),
-            Some(crate::connect::TARGET_RPC_TIMEOUT),
+            Call::once()
+                .to(&MachineTarget::from(&entry))
+                .within(Deadline::Target(crate::connect::TARGET_RPC_TIMEOUT)),
         )
         .await
+        .map_err(crate::connect::rpc_error)
         .map_err(|error| {
             Error::caused(
                 RpcErrorCode::Unavailable,

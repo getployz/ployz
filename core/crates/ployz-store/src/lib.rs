@@ -25,6 +25,7 @@ mod names;
 mod old_cli;
 mod permission;
 mod policy;
+mod pr_environment;
 mod preview_rule;
 mod project;
 mod pull_request;
@@ -70,7 +71,7 @@ pub use branch::{
 pub use build::{
     BuildLogQuery, BuildLogView, BuildReport, BuildStatus, BuildView, GitSource, GithubBuild,
     GithubBuildId, GithubClaims, GithubEnd, GithubGrant, GithubHandOff, GithubInput, GithubReport,
-    GithubRule, GithubRun, RunEnd,
+    GithubRule, GithubRun, ImageToken, RunEnd,
 };
 pub use builders::{BuildOrder, BuildOrderQuery, BuildOrderView, Builder, SetBuildOrder};
 pub use client_sealed::SecretValue;
@@ -564,6 +565,32 @@ impl ConfigStore {
         id: &GithubBuildId,
     ) -> Result<Option<ployz_core::authority::Review>, RpcError> {
         self.storage.read(|tx| build::github_review(tx, id))
+    }
+
+    /// The approval a person signed for GitHub build `id`'s commit, when it builds under
+    /// its Environment's automatic deploy rule: Cloud dispatches it on the rule's branch,
+    /// and relays the approval to the grant Machine.
+    ///
+    /// # Errors
+    /// Returns `not_found` for an unknown build, or a storage error.
+    pub fn github_approval(
+        &self,
+        id: &GithubBuildId,
+    ) -> Result<
+        Option<ployz_core::authority::Signed<ployz_core::authority::CommitApproval>>,
+        RpcError,
+    > {
+        self.storage.read(|tx| build::github_approval(tx, id))
+    }
+
+    /// Whether Deployment `id` waits, queued, for a person to approve its commits again
+    /// once its builds ended: Cloud holds it until one does.
+    ///
+    /// # Errors
+    /// Returns `not_found` for an unknown Deployment, or a storage error.
+    pub fn awaiting_approval(&self, id: &DeploymentId) -> Result<bool, RpcError> {
+        self.storage
+            .read(|tx| deployment::awaiting_approval(tx, id))
     }
 
     /// The GitHub build run `run_id` holds while it builds, if any.
