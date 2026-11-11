@@ -4,6 +4,8 @@ import type { RuntimeWatchView } from "@ployz/sdk";
 import { doorsOpenOn } from "#/modules/cluster-domain/ingress-running";
 import {
   type CloudflareSetup,
+  collidingMoves,
+  collisionGap,
   doorsGap,
   doorWords,
   type LatestDoorsChange,
@@ -152,6 +154,24 @@ describe("what a switch moves", () => {
     expect(unknownGap(unknown)).toBe("web-prod.example.com is served by old-prod/web, which Ployz Cloud can't match to a deployment. Deploy it again or remove it, then switch again.");
     expect(unknownGap([])).toBeNull();
     expect(movedHostnames(back, "example.com", "acme.ployz.app", new Map())).toEqual([]);
+  });
+
+  it("names a move whose new address a custom domain already holds, whichever Service holds it", () => {
+    const moving = [
+      { from: "wk.acme.ployz.app", to: "wk.example.com", namespace: "shop-prod", service: "worker" },
+      { from: "api.acme.ployz.app", to: "api.example.com", namespace: "shop-prod", service: "api" },
+    ];
+    const routes = known(
+      ["shop-prod", "wk.acme.ployz.app", "generated"], ["shop-prod", "wk.example.com", "custom"],
+      ["shop-prod", "api.acme.ployz.app", "generated"], ["docs-main", "api.example.org", "custom"],
+    );
+    expect(collidingMoves(moving, routes)).toEqual([moving[0]]);
+    expect(collisionGap(collidingMoves(moving, routes))).toBe(
+      "wk.example.com would be the generated domain of shop-prod/worker, and a custom domain already holds it. Remove the generated domain or the custom domain, then switch again.",
+    );
+    expect(collidingMoves(moving, known(["docs-main", "api.example.com", "custom"]))).toEqual([moving[1]]);
+    expect(collidingMoves(moving, new Map())).toEqual([]);
+    expect(collisionGap([])).toBeNull();
   });
 
   it("redeploys only the deployed Services publishing a moved hostname, by their Store names, and never a whole Environment", () => {
