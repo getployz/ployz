@@ -1,13 +1,12 @@
 //! The writer: puts a row's cell into an intent, the inverse of its projection.
 
-use serde_json::{Value, json};
+use serde_json::Value;
 
 use super::*;
-use crate::config::service_changes::{default_value, keep_branch};
 use crate::config::{
     ConfigAttachment, ConfigError, PlainText, SavedEnvironmentIntent as Intent, SavedServiceIntent,
-    SavedVariableIntent, SavedVariableValue, ServiceGitBranch, ServiceImageCredentials,
-    ServiceSource, ValueFingerprint, VariableValue, VolumeAttachment,
+    SavedVariableIntent, SavedVariableValue, ServiceSource, ValueFingerprint, VariableValue,
+    VolumeAttachment,
 };
 
 /// Give `intent` `cell` at `row`, the inverse of the projection a plan's cells come
@@ -236,7 +235,7 @@ pub(super) fn put_into(env: &mut Intent, row: &RowId, cell: &Cell) -> Result<(),
                 return missing();
             };
             let value = match cell {
-                Cell::Absent => default_value(setting.path()),
+                Cell::Absent => setting.default(),
                 Cell::Value(value) => value.clone(),
                 Cell::Secret { .. } | Cell::SecretWithoutValue => {
                     return Err(invalid("A setting is never secret"));
@@ -262,39 +261,6 @@ pub fn arriving_source(id: &str, node: &Value) -> Result<ServiceSource, serde_js
     source_of(id, cell(Setting::Source), cell(Setting::Branch))
 }
 
-/// The source a Service with ID `id` holds as its `source` cell and its
-/// `source.branch` cell say.
-fn source_of(
-    id: &str,
-    mut source: Value,
-    branch: Value,
-) -> Result<ServiceSource, serde_json::Error> {
-    let fields = source
-        .as_object_mut()
-        .ok_or_else(|| serde::de::Error::custom("not a source"))?;
-    // A git source parses with the branch it carries, else none yet.
-    if fields.get("type") == Some(&json!("git")) {
-        if !branch.is_null() {
-            fields.insert("branch".to_owned(), branch);
-        }
-        fields.entry("branch").or_insert_with(|| {
-            json!(ServiceGitBranch::Disconnected {
-                previous_name: None
-            })
-        });
-    }
-    // Each Service's credential is its own: it is bound to the Service's id.
-    if let Some(credentials) = fields.get_mut("credentials") {
-        *credentials = match serde_json::from_value(credentials.take())? {
-            true => json!(ServiceImageCredentials::Configured {
-                credential_id: id.to_owned()
-            }),
-            false => json!(ServiceImageCredentials::None),
-        };
-    }
-    serde_json::from_value(source)
-}
-
 /// Write `setting` of `service` as `value` says it. Settings each Environment owns
 /// never move, so nothing writes their rows.
 pub(super) fn put_setting(
@@ -302,38 +268,7 @@ pub(super) fn put_setting(
     setting: Setting,
     value: Value,
 ) -> Result<(), serde_json::Error> {
-    use serde_json::from_value as parse;
-    let id = service.id.clone();
-    let config = &mut service.config;
-    match (setting, value) {
-        (Setting::Routes | Setting::ManagedHostnames, _) => {
-            return Err(serde::de::Error::custom("never moves"));
-        }
-        (Setting::Source, value) => {
-            config.source = keep_branch(&config.source, source_of(&id, value, Value::Null)?);
-        }
-        (Setting::Branch, value) => {
-            if let ServiceSource::Git { branch, .. } = &mut config.source
-                && !value.is_null()
-            {
-                *branch = parse(value)?;
-            }
-        }
-        (Setting::PrivateDns, value) => config.private_dns = parse(value)?,
-        (Setting::PreDeployCommand, value) => config.pre_deploy_command = parse(value)?,
-        (Setting::StartCommand, value) => config.start_command = parse(value)?,
-        (Setting::Healthcheck, value) => config.healthcheck = parse(value)?,
-        (Setting::RestartPolicy, value) => config.restart_policy = parse(value)?,
-        (Setting::MaxRetries, value) => config.max_retries = parse(value)?,
-        (Setting::UpdateOrder, value) => config.update_order = parse(value)?,
-        (Setting::Replicas, value) => config.replicas = parse(value)?,
-        (Setting::CpuLimit, value) => config.cpu_limit = parse(value)?,
-        (Setting::MemLimit, value) => config.mem_limit = parse(value)?,
-        (Setting::BuildMethod, value) => config.build.build_method = parse(value)?,
-        (Setting::DockerfilePath, value) => config.build.dockerfile_path = parse(value)?,
-        (Setting::BuildCommand, value) => config.build.command = parse(value)?,
-    }
-    Ok(())
+    setting.write(&mut service.config, &service.id, value)
 }
 
 /// A plain variable's cell back as its value.
