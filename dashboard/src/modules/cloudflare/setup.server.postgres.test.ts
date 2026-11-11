@@ -569,3 +569,19 @@ it("lists the zone names a token can see without changing anything", async () =>
   expect(await harness.runEffect(listCloudflareZoneNames(Redacted.make(API_TOKEN), http))).toEqual(["example.com"]);
   expect(calls).toHaveLength(1);
 });
+
+it("never marks a Cluster founded closed active from a look taken before a first Deployment kept the Hosted domain", async () => {
+  await foundedClosed();
+  let frame: RuntimeWatchView = CLOSED_FRAME;
+  const session = asTestDouble<PloyzSession>()({
+    watchFirstFrame: () => Effect.sync(() => frame),
+    setIngressDoors: (doors: readonly string[]) => Effect.succeed({ machines: [{ server: "s1", doors }], failures: [] }),
+  });
+  const runtime = asTestDouble<OrganizationRuntime["Service"]>()({ cancel: () => Effect.void, open: () => Effect.succeed({ status: "connected" as const, connected: session }) });
+  const { http } = cloudflare({ onRecord: async () => {
+    frame = frameOf({ ...CLOSED_FRAME, containers: [{ kind: "service_container", namespace: "shop", resolved_spec: { name: "web", ports: [{ mode: "ingress", hostname: "web.acme.ployz.test" }] } }] });
+  } });
+  const row = await setUp("example.com", http, runtime);
+  expect(row.state).toBe("set_up");
+  expect(await setupRows()).toMatchObject([{ state: "set_up" }]);
+});
