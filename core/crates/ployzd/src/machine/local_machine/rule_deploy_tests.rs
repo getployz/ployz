@@ -567,6 +567,55 @@ mod approved {
     }
 
     #[tokio::test]
+    async fn each_newer_approval_runs_the_commits_hook_once_more() {
+        let fixture = fixture().await;
+        let rule = fixture.deploy_rule(3);
+        let claim = fixture.built(&rule, fixture.attest());
+        let hook = |key: &'static str| want("pre_deploy_hook", key, &spec());
+        let push = fixture.proof(&rule, &claim, token_for(&claim, "push"));
+        fixture
+            .deploy(hook("h1"), &push, commit(), now())
+            .await
+            .unwrap();
+        let first = approval(&fixture, &rule, now());
+        let redeploy = fixture.approved(&rule, &claim, token_for(&claim, "first"), &first);
+        fixture
+            .deploy(hook("h2"), &redeploy, moved(), now())
+            .await
+            .unwrap();
+        // The same approval resent for its slot adopts the hook; another slot is refused.
+        fixture
+            .deploy(hook("h2"), &redeploy, moved(), now())
+            .await
+            .unwrap();
+        assert_eq!(
+            refused(fixture.deploy(hook("h3"), &redeploy, moved(), now()).await),
+            "a hook run"
+        );
+        // An approval signed no later than the one the hook last ran under runs nothing.
+        let mut older = approval(&fixture, &rule, now());
+        older.issued_at = Timestamp::from_millis(first.issued_at.as_millis() - 1).unwrap();
+        older.expires_at = Timestamp::from_millis(first.expires_at.as_millis() - 1).unwrap();
+        let replayed = fixture.approved(&rule, &claim, token_for(&claim, "older"), &older);
+        assert_eq!(
+            refused(fixture.deploy(hook("h4"), &replayed, moved(), now()).await),
+            "a hook run"
+        );
+        let mut second = approval(&fixture, &rule, now());
+        second.issued_at = Timestamp::from_millis(first.issued_at.as_millis() + 1).unwrap();
+        let again = fixture.approved(&rule, &claim, token_for(&claim, "second"), &second);
+        fixture
+            .deploy(hook("h5"), &again, moved(), now())
+            .await
+            .unwrap();
+        // The push's own proof cannot take the hook back.
+        assert_eq!(
+            refused(fixture.deploy(hook("h6"), &push, commit(), now()).await),
+            "a hook run"
+        );
+    }
+
+    #[tokio::test]
     async fn an_expired_token_deploys_only_under_a_live_approval() {
         let fixture = fixture().await;
         let rule = fixture.deploy_rule(3);

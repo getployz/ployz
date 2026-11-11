@@ -187,6 +187,7 @@ impl LocalMachine {
                 self.approvals.consume_rule_hook(
                     (rule.rule, None),
                     claim,
+                    approved.as_ref(),
                     &new.slot.creation_key,
                     refused,
                 )?;
