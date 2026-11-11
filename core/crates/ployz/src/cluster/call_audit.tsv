@@ -17,7 +17,7 @@ src/cluster.rs::inspect_storage	op::InspectStorage	read	unary	budget(target_read
 src/cluster.rs::list_images	op::ListImages	read	unary	budget(target_read_timeout)	redial	read
 src/cluster.rs::list_on_machine	op::ListContainers	try_read	unary	budget(target_read_timeout)	redial	read
 src/cluster.rs::list_volumes_on_machine	op::ListVolumes	read	unary	budget(target_read_timeout)	redial	read
-src/cluster.rs::machines	op::ListMachines	call	unary	-	redial	read
+src/cluster.rs::machine_list	op::ListMachines	call	unary	-	redial	read
 src/cluster.rs::observe_copies	op::ListMachines	call	unary	-	redial	read
 src/cluster.rs::observe_docker_disks	op::Inspect	invoke	single	-	-	once
 src/cluster.rs::observe_machine_storage	op::DescribeContract	invoke	single	-	-	once
@@ -123,6 +123,9 @@ src/image/built.rs::open	op::EnsureImageIngest	call	unary	-	redial	keyed
 src/image/built.rs::open	op::ListImages	call	unary	-	redial	read
 src/image/cleanup.rs::clean	op::DescribeContract	invoke	single	-	-	once
 src/image/cleanup.rs::clean	op::PruneImages	invoke	single	-	-	once
+src/ingress.rs::declaration_of	op::DescribeContract	call	unary	-	redial	read
+src/ingress.rs::declare	op::SetClusterDoors	call_shared	single	-	-	once
+src/ingress.rs::declare	op::SetClusterDoors	call_shared	single	-	-	once
 src/sdk.rs::about	op::DescribeContract	unary	unary	-	redial	read
 src/sdk.rs::clear_management_client	op::SetManagementClient	call_unretried	single	reply(crate::cluster::LIVE_MUTATION_REPLY_TIMEOUT)	-	once
 src/sdk.rs::copy_container_image	ployz_core::op::InspectContainer	invoke	single	target(crate::connect::TARGET_RPC_TIMEOUT)	-	once

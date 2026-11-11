@@ -6,13 +6,14 @@ use std::collections::BTreeMap;
 
 use futures_util::{StreamExt, stream};
 use ployz_core::{
-    Ciphertext, ContainerId, ContainerObservation, ContainerRuntimeObservation, DoorChange,
-    DoorOutcome, EnvironmentValues, IngressDoor, IngressDoors, IngressDoorsFailure,
+    ContainerId, ContainerObservation, ContainerRuntimeObservation, DescribeContractRequest,
+    DoorChange, DoorOutcome, EnvironmentValues, IngressDoor, IngressDoors, IngressDoorsFailure,
     IngressDoorsSet, IngressPorts, IngressStage, IngressWiring, Machine, MachineFailure, MachineId,
-    MachineName, MachineObservation, PartialResult, PlatformPurpose, QualifiedService, RowStanding,
-    RpcError, RpcErrorCode, SET_INGRESS_DOORS_CAPABILITY, SET_INGRESS_TUNNEL_CAPABILITY, Sealing,
-    SealingPublicKey, ServiceId, ServiceObservation, SetIngressDoorsRequest, seal_platform,
-    tunnel_sealed_token, validate_ingress_service_spec,
+    MachineName, MachineObservation, MachineTarget, PartialResult, PlatformPurpose,
+    QualifiedService, RowStanding, RpcError, RpcErrorCode, SET_CLUSTER_DOORS_CAPABILITY,
+    SET_INGRESS_DOORS_CAPABILITY, SET_INGRESS_TUNNEL_CAPABILITY, Sealing, SealingPublicKey,
+    ServiceId, ServiceObservation, SetClusterDoorsRequest, op, seal_platform,
+    validate_ingress_service_spec,
 };
 use ployz_store::{IngressAction, IngressFailure, IngressRepair};
 use serde::{Deserialize, Serialize};
@@ -20,6 +21,7 @@ use tokio_util::sync::CancellationToken;
 use ts_rs::TS;
 
 use crate::{
+    cluster::Call,
     connect::{Client, ConnectError},
     deploy::{MachineOperations, RestartTolerant, SlotAction},
     failure::Failure,
@@ -93,70 +95,7 @@ pub(crate) fn door_machines(observed: &[MachineObservation]) -> Vec<DoorMachine>
         .collect()
 }
 
-/// The Doors the Cluster's Ingress Proxies hold, with the sealed tunnel token the Tunnel
-/// Connector carries. Every Server a command sets gets these, so a joiner opens the same
-/// Doors as the rest.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub(crate) struct ClusterDoors {
-    pub(crate) doors: IngressDoors,
-    pub(crate) sealed_token: Option<Ciphertext>,
-}
-
-impl ClusterDoors {
-    fn closed() -> Self {
-        Self {
-            doors: IngressDoors::closed(),
-            sealed_token: None,
-        }
-    }
-
-    #[cfg(test)]
-    pub(crate) fn public() -> Self {
-        Self {
-            doors: IngressDoors::public(),
-            sealed_token: None,
-        }
-    }
-
-    fn request(&self, proxy: ServiceId) -> SetIngressDoorsRequest {
-        SetIngressDoorsRequest {
-            doors: self.doors.clone(),
-            proxy_service: proxy,
-            sealed_token: self.sealed_token.clone(),
-        }
-    }
-}
-
-/// The Doors the Cluster holds, read from the newest holder any Server runs and the
-/// newest Tunnel Connector with a token. A Cluster with no holder and no connector holds
-/// the Public Door, as every Cluster did before the Tunnel Door existed, and one whose
-/// newest holder publishes no port and runs no connector holds none, as a Cluster
-/// founded closed does until its tunnel opens.
-pub(crate) fn cluster_doors(services: &[ServiceObservation]) -> ClusterDoors {
-    let newest = |identity: QualifiedService| {
-        ployz_core::newest(
-            services
-                .iter()
-                .filter(|service| service.identity == identity)
-                .flat_map(|service| service.containers.iter().map(|copy| copy.as_observation())),
-        )
-    };
-    let sealed_token = newest(QualifiedService::system_tunnel())
-        .and_then(|tunnel| tunnel_sealed_token(&tunnel.resolved_spec.container.labels));
-    let ports = newest(QualifiedService::system_ingress_holder())
-        .and_then(|holder| validate_ingress_service_spec(&holder.resolved_spec).ok())
-        .map_or(IngressPorts::Public, IngressWiring::ports);
-    let doors = match (ports, sealed_token.is_some()) {
-        (IngressPorts::Public, false) => IngressDoors::public(),
-        (IngressPorts::Closed, false) => IngressDoors::closed(),
-        (IngressPorts::Public, true) => IngressDoors::both(),
-        (IngressPorts::Closed, true) => IngressDoors::tunnel(),
-    };
-    ClusterDoors {
-        doors,
-        sealed_token,
-    }
-}
+pub(crate) use ployz_core::{ClusterDoors, cluster_doors};
 
 /// The Doors each Server holds open now: the Public Door when a holder with the host
 /// ports, or an older Caddy publishing them, runs there, and the Tunnel Door when a
@@ -216,11 +155,38 @@ enum Answer {
     Cancelled,
 }
 
+/// A Server that serves SetClusterDoors, reached through the entry.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct Declarer {
+    pub(crate) machine: MachineId,
+    pub(crate) server: MachineName,
+}
+
+/// Where the command declares the Cluster's Doors.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) enum Declaration {
+    /// The entry Machine serves SetClusterDoors.
+    Entry,
+    /// The entry predates it, and these Servers, each online and not leaving, serve it.
+    /// A rolling upgrade has the entry and its peers on different versions, and the
+    /// declaration still has to land in the Cluster's one key.
+    Through(Vec<Declarer>),
+    /// No Server that could be asked serves it, so a command sets each Server's Doors as
+    /// it did before the declaration existed.
+    Unsupported,
+}
+
 /// The Servers' Ingress Proxies observed in full, with every Server that should run one.
 pub(crate) struct Doors {
     pub(crate) machines: Vec<DoorMachine>,
     pub(crate) proxy: ServiceId,
+    /// The Doors a Server's Ingress Proxy follows: the Cluster's declared Doors, or what
+    /// the Servers run when none is declared.
     pub(crate) cluster: ClusterDoors,
+    /// The Doors the Cluster declares, as the entry Machine's replica holds them.
+    pub(crate) declared: Option<IngressDoors>,
+    /// Who declares Doors for the Cluster.
+    pub(crate) declaration: Declaration,
     /// What each Server holds open now, by Server; one that listed nothing is absent.
     pub(crate) open: BTreeMap<MachineId, IngressDoors>,
     /// The listing the rest derives from, with the Servers that didn't answer it.
@@ -279,7 +245,13 @@ pub(crate) fn cluster_doors_for(
 }
 
 pub(crate) async fn observe_doors(client: &mut Client) -> Result<Doors, Failure> {
-    let machines = client.machines().await?;
+    let list = client.machine_list().await?;
+    let declared = list
+        .enrollment
+        .as_ref()
+        .and_then(|snapshot| snapshot.doors.clone());
+    let machines = list.machines;
+    let declaration = declaration_of(client, &machines).await?;
     let live = client
         .live_services_from(&machines, EnvironmentValues::Redacted)
         .await?;
@@ -309,11 +281,108 @@ pub(crate) async fn observe_doors(client: &mut Client) -> Result<Doors, Failure>
     Ok(Doors {
         machines: door_machines(&machines),
         proxy: proxy_service(&services),
-        cluster: cluster_doors(&services),
+        cluster: cluster_doors(declared.clone(), &services),
+        declared,
+        declaration,
         open: machine_doors(&services),
         listed: live.containers,
         sealing,
     })
+}
+
+/// Where the Cluster's Doors are declared: the entry when it serves SetClusterDoors, else
+/// the Servers that advertise it and can be asked. An entry that can't be asked fails the
+/// command: reading it as unsupported would set Doors the declaration then disagrees with.
+async fn declaration_of(
+    client: &mut Client,
+    machines: &[MachineObservation],
+) -> Result<Declaration, Failure> {
+    let contract = client
+        .call::<op::DescribeContract>(DescribeContractRequest {}, Call::read())
+        .await?;
+    if contract.supports(SET_CLUSTER_DOORS_CAPABILITY) {
+        return Ok(Declaration::Entry);
+    }
+    let declarers = declarers_of(machines);
+    Ok(if declarers.is_empty() {
+        Declaration::Unsupported
+    } else {
+        Declaration::Through(declarers)
+    })
+}
+
+/// The Servers that advertise SetClusterDoors and can be asked: online, and not leaving,
+/// since a leaving or silent Server's advertisement is no route.
+fn declarers_of(machines: &[MachineObservation]) -> Vec<Declarer> {
+    machines
+        .iter()
+        .filter(|observation| {
+            observation.invites_rpc()
+                && !matches!(observation.machine.standing(), RowStanding::Leaving { .. })
+                && observation
+                    .machine
+                    .runtime
+                    .capabilities
+                    .contains(SET_CLUSTER_DOORS_CAPABILITY)
+        })
+        .map(|observation| Declarer {
+            machine: observation.machine.id,
+            server: observation.machine.name.clone(),
+        })
+        .collect()
+}
+
+/// Declare `doors` as the Cluster's Doors, so a joiner, a restart and every reader follow
+/// them. It writes even when the entry already shows them, since another operator's
+/// declaration may not have reached it yet. An entry that can't keep a declaration hands
+/// it to a Server that can, through the route the Doors themselves take. Nothing is
+/// written when no Server can.
+///
+/// # Errors
+///
+/// Fails when the Server asked refuses or can't be reached. A reply lost after the Server
+/// committed leaves the Doors declared with no Server switched, which a rerun converges.
+async fn declare(client: &Client, observed: &Doors, doors: &IngressDoors) -> Result<(), Failure> {
+    let request = || SetClusterDoorsRequest {
+        doors: doors.clone(),
+    };
+    match &observed.declaration {
+        Declaration::Unsupported => {
+            crate::ui::warn(
+                "No Server can keep the Cluster's Doors, so each Server's Doors are set without \
+                 declaring them. Upgrade a Server to have a joiner and a restart follow them.",
+            );
+            Ok(())
+        }
+        Declaration::Entry => {
+            client
+                .call_shared::<op::SetClusterDoors>(request(), Call::once())
+                .await?;
+            Ok(())
+        }
+        Declaration::Through(declarers) => {
+            let mut last = None;
+            for declarer in declarers {
+                match client
+                    .call_shared::<op::SetClusterDoors>(
+                        request(),
+                        Call::once().to(&MachineTarget::from(&declarer.machine)),
+                    )
+                    .await
+                {
+                    Ok(_) => return Ok(()),
+                    Err(error) => last = Some(error),
+                }
+            }
+            let error = last.expect("a Through declaration names a Server");
+            Err(Failure::caused(
+                RpcErrorCode::Unavailable,
+                "No Server confirmed the Cluster's Doors, so none were switched. Run the command \
+                 again, or upgrade the Server you connect through.",
+                error,
+            ))
+        }
+    }
 }
 
 /// Ask each of `machines` to set `doors` for `proxy`, `at_once` at a time, in order.
@@ -421,16 +490,40 @@ pub(crate) async fn follow_roles(client: &mut Client) -> Result<Vec<Followed>, N
     set_roles(client, doors, &cluster).await
 }
 
+/// Declare the Cluster closed when it declares nothing yet, as a Cluster founded closed
+/// starts. A Cluster that already declares Doors keeps them, so a rerun of the founding
+/// follows what the operator set since. An entry that can't keep a declaration declares
+/// through an online Server that can, and nothing when none can. Through such an entry the
+/// snapshot carries no declaration, so a Cluster that already declares Doors is declared
+/// closed again.
+///
+/// # Errors
+///
+/// Fails when the entry can't be read or refuses the declaration.
+pub(crate) async fn declare_founding_closed(client: &mut Client) -> Result<(), Failure> {
+    let observed = observe_doors(client).await?;
+    if observed.declared.is_none() {
+        declare(client, &observed, &IngressDoors::closed()).await?;
+    }
+    Ok(())
+}
+
 /// Set the Ingress Proxy on every Server that holds the ingress role with no Door open,
 /// as a Cluster founded closed starts: Caddy runs, and ports 80 and 443 never open, until
-/// `ployz ingress use tunnel` opens the Tunnel Door.
+/// `ployz ingress use tunnel` opens the Tunnel Door. A Cluster that declares Doors keeps
+/// them instead.
 ///
 /// # Errors
 ///
 /// As [`follow_roles`].
 pub(crate) async fn found_closed(client: &mut Client) -> Result<Vec<Followed>, NotFollowed> {
     let doors = observe_doors(client).await?;
-    set_roles(client, doors, &ClusterDoors::closed()).await
+    let cluster = if doors.declared.is_some() {
+        doors.cluster.clone()
+    } else {
+        ClusterDoors::closed()
+    };
+    set_roles(client, doors, &cluster).await
 }
 
 async fn set_roles(
@@ -483,6 +576,7 @@ pub(crate) async fn use_doors(
     doors: ClusterDoors,
     cancel: &CancellationToken,
 ) -> Result<DoorsChanged, Failure> {
+    declare(client, &observed, &doors.doors).await?;
     let mut machines = observed.machines;
     let mut failures = Vec::new();
     machines.retain(|machine| match machine.refusal(&doors.doors) {

@@ -540,6 +540,411 @@ async fn a_deploy_sets_the_doors_only_where_caddy_is_at_rest() {
     }
 }
 
+async fn entry_of(fleet: &ployz_testkit::fake_fleet::FakeFleet) -> crate::connect::Client {
+    let socket = fleet.socket(&MachineName::parse("edge").unwrap()).unwrap();
+    crate::connect::connect_selected_with(
+        crate::context::SelectedConnections {
+            source: crate::context::ConnectionSource::Direct,
+            connections: vec![crate::context::Connection::unix(socket).unwrap()],
+        },
+        std::sync::Arc::new(crate::connect::SystemConnector::default()),
+    )
+    .await
+    .unwrap()
+}
+
+fn commands(fleet: &ployz_testkit::fake_fleet::FakeFleet) -> Vec<String> {
+    fleet
+        .ledger()
+        .unwrap()
+        .into_iter()
+        .map(|entry| entry.command)
+        .filter(|command| command.starts_with("set_"))
+        .collect()
+}
+
+#[tokio::test]
+async fn a_switch_declares_the_final_doors_once_before_it_sets_any_server() {
+    use ployz_testkit::fake_fleet::{FakeFleet, RunState, Scenario};
+    let sockets = tempfile::tempdir().unwrap();
+    let fleet = FakeFleet::start(
+        fleet_with_caddy(RunState::Running),
+        Scenario::default(),
+        sockets.path(),
+        None,
+    )
+    .unwrap();
+    let mut client = entry_of(&fleet).await;
+    let observed = observe_doors(&mut client).await.unwrap();
+    assert_eq!(observed.declared, None);
+    assert_eq!(observed.declaration, Declaration::Entry);
+    let tunnel = ClusterDoors {
+        doors: IngressDoors::tunnel(),
+        sealed_token: Some(ployz_core::Ciphertext::from_bytes(vec![9; 48])),
+    };
+
+    let changed = use_doors(&mut client, observed, tunnel, &CancellationToken::new())
+        .await
+        .unwrap();
+
+    assert!(changed.failures.is_empty(), "{changed:?}");
+    assert_eq!(
+        fleet.declared_doors().unwrap(),
+        Some(IngressDoors::tunnel())
+    );
+    let commands = commands(&fleet);
+    assert_eq!(
+        commands.first().map(String::as_str),
+        Some("set_cluster_doors")
+    );
+    assert_eq!(
+        commands
+            .iter()
+            .filter(|command| *command == "set_cluster_doors")
+            .count(),
+        1,
+        "the interim Doors are never declared: {commands:?}"
+    );
+
+    let rerun = observe_doors(&mut client).await.unwrap();
+    assert_eq!(rerun.declared, Some(IngressDoors::tunnel()));
+    assert_eq!(rerun.cluster.doors, IngressDoors::tunnel());
+    let again = ClusterDoors {
+        doors: IngressDoors::tunnel(),
+        sealed_token: Some(ployz_core::Ciphertext::from_bytes(vec![9; 48])),
+    };
+    use_doors(&mut client, rerun, again, &CancellationToken::new())
+        .await
+        .unwrap();
+    assert_eq!(
+        commands_of(&fleet, "set_cluster_doors"),
+        2,
+        "a rerun declares again, since another operator's declaration may not have reached the entry yet"
+    );
+    assert_eq!(
+        fleet.declared_doors().unwrap(),
+        Some(IngressDoors::tunnel())
+    );
+}
+
+fn commands_of(fleet: &ployz_testkit::fake_fleet::FakeFleet, command: &str) -> usize {
+    commands(fleet)
+        .iter()
+        .filter(|seen| *seen == command)
+        .count()
+}
+
+#[tokio::test]
+async fn a_declaration_whose_reply_is_lost_stops_the_switch_and_stays_declared() {
+    use ployz_testkit::fake_fleet::{FakeFleet, Fault, RunState, Scenario};
+    let sockets = tempfile::tempdir().unwrap();
+    let fleet = FakeFleet::start(
+        fleet_with_caddy(RunState::Running),
+        Scenario {
+            faults: vec![Fault::DropReply {
+                machine: MachineName::parse("edge").unwrap(),
+                command: "set_cluster_doors".into(),
+                nth: std::num::NonZeroU32::MIN,
+            }],
+            ..Scenario::default()
+        },
+        sockets.path(),
+        None,
+    )
+    .unwrap();
+    let mut client = entry_of(&fleet).await;
+    let observed = observe_doors(&mut client).await.unwrap();
+
+    let refused = use_doors(
+        &mut client,
+        observed,
+        ClusterDoors::closed(),
+        &CancellationToken::new(),
+    )
+    .await;
+
+    assert!(refused.is_err());
+    assert_eq!(commands_of(&fleet, "set_ingress_doors"), 0);
+    // The Machine applied it before the reply was lost, so the Cluster declares it and a rerun converges.
+    assert_eq!(
+        fleet.declared_doors().unwrap(),
+        Some(ClusterDoors::closed().doors)
+    );
+}
+
+/// How a Server of the upgrading fleet answers SetClusterDoors.
+#[derive(Clone, Copy)]
+enum Declares {
+    Predates,
+    Serves,
+    Refuses,
+    Offline,
+}
+
+fn upgrading_fleet(servers: &[(&str, Declares)]) -> ployz_testkit::fake_fleet::FleetFile {
+    let machines: Vec<_> = servers
+        .iter()
+        .enumerate()
+        .map(|(index, (name, declares))| {
+            serde_json::json!({
+                "name": name,
+                "id": char::from(b'1' + index as u8).to_string().repeat(32),
+                "version": "0.4.0",
+                "online": !matches!(declares, Declares::Offline),
+                "predates_doors": matches!(declares, Declares::Predates),
+                "refuses_doors": matches!(declares, Declares::Refuses),
+                "containers": [
+                    {"id": format!("{name}-ingress-holder"), "namespace": "ployz-system",
+                     "service": "ingress-holder", "image": "pause", "state": "running"},
+                    {"id": format!("{name}-ingress"), "namespace": "ployz-system",
+                     "service": "ingress", "image": "caddy", "state": "running"},
+                ],
+            })
+        })
+        .collect();
+    serde_json::from_value(serde_json::json!({ "machines": machines })).unwrap()
+}
+
+fn declared_on(fleet: &ployz_testkit::fake_fleet::FakeFleet) -> Vec<String> {
+    fleet
+        .ledger()
+        .unwrap()
+        .into_iter()
+        .filter(|entry| entry.command == "set_cluster_doors")
+        .map(|entry| entry.machine.to_string())
+        .collect()
+}
+
+#[tokio::test]
+async fn an_entry_that_cannot_keep_a_declaration_sets_the_doors_without_one() {
+    use ployz_testkit::fake_fleet::{FakeFleet, Scenario};
+    let sockets = tempfile::tempdir().unwrap();
+    let fleet = FakeFleet::start(
+        upgrading_fleet(&[("edge", Declares::Predates), ("old", Declares::Predates)]),
+        Scenario::default(),
+        sockets.path(),
+        None,
+    )
+    .unwrap();
+    let mut client = entry_of(&fleet).await;
+    let observed = observe_doors(&mut client).await.unwrap();
+    assert_eq!(observed.declaration, Declaration::Unsupported);
+
+    let changed = use_doors(
+        &mut client,
+        observed,
+        ClusterDoors::closed(),
+        &CancellationToken::new(),
+    )
+    .await
+    .unwrap();
+
+    assert!(changed.failures.is_empty(), "{changed:?}");
+    assert_eq!(commands_of(&fleet, "set_cluster_doors"), 0);
+    assert_eq!(commands_of(&fleet, "set_ingress_doors"), 2);
+    assert_eq!(fleet.declared_doors().unwrap(), None);
+}
+
+#[tokio::test]
+async fn an_entry_that_cannot_keep_a_declaration_hands_it_to_a_server_that_can() {
+    use ployz_testkit::fake_fleet::{FakeFleet, Scenario};
+    let sockets = tempfile::tempdir().unwrap();
+    let fleet = FakeFleet::start(
+        upgrading_fleet(&[("edge", Declares::Predates), ("upgraded", Declares::Serves)]),
+        Scenario::default(),
+        sockets.path(),
+        None,
+    )
+    .unwrap();
+    let mut client = entry_of(&fleet).await;
+    let observed = observe_doors(&mut client).await.unwrap();
+    assert!(
+        matches!(&observed.declaration, Declaration::Through(through)
+            if matches!(through.as_slice(), [only] if only.server.as_str() == "upgraded")),
+        "{:?}",
+        observed.declaration
+    );
+
+    let changed = use_doors(
+        &mut client,
+        observed,
+        ClusterDoors::closed(),
+        &CancellationToken::new(),
+    )
+    .await
+    .unwrap();
+
+    assert!(changed.failures.is_empty(), "{changed:?}");
+    assert_eq!(declared_on(&fleet), ["upgraded"]);
+    assert_eq!(
+        fleet.declared_doors().unwrap(),
+        Some(ClusterDoors::closed().doors)
+    );
+    assert!(commands_of(&fleet, "set_ingress_doors") > 0);
+}
+
+#[tokio::test]
+async fn a_capable_server_that_is_offline_is_no_route_and_no_refusal() {
+    use ployz_testkit::fake_fleet::{FakeFleet, Scenario};
+    let sockets = tempfile::tempdir().unwrap();
+    let fleet = FakeFleet::start(
+        upgrading_fleet(&[
+            ("edge", Declares::Predates),
+            ("upgraded", Declares::Offline),
+        ]),
+        Scenario::default(),
+        sockets.path(),
+        None,
+    )
+    .unwrap();
+    let mut client = entry_of(&fleet).await;
+    let observed = observe_doors(&mut client).await.unwrap();
+
+    use_doors(
+        &mut client,
+        observed,
+        ClusterDoors::closed(),
+        &CancellationToken::new(),
+    )
+    .await
+    .unwrap();
+
+    assert_eq!(declared_on(&fleet), Vec::<String>::new());
+    assert_eq!(commands_of(&fleet, "set_ingress_doors"), 1);
+}
+
+#[tokio::test]
+async fn a_declarer_that_refuses_is_followed_by_the_next_one() {
+    use ployz_testkit::fake_fleet::{FakeFleet, Scenario};
+    let sockets = tempfile::tempdir().unwrap();
+    let fleet = FakeFleet::start(
+        upgrading_fleet(&[
+            ("edge", Declares::Predates),
+            ("first", Declares::Refuses),
+            ("second", Declares::Serves),
+        ]),
+        Scenario::default(),
+        sockets.path(),
+        None,
+    )
+    .unwrap();
+    let mut client = entry_of(&fleet).await;
+    let observed = observe_doors(&mut client).await.unwrap();
+
+    let changed = use_doors(
+        &mut client,
+        observed,
+        ClusterDoors::closed(),
+        &CancellationToken::new(),
+    )
+    .await
+    .unwrap();
+
+    assert!(changed.failures.is_empty(), "{changed:?}");
+    assert_eq!(declared_on(&fleet), ["first", "second"]);
+    assert_eq!(
+        fleet.declared_doors().unwrap(),
+        Some(ClusterDoors::closed().doors)
+    );
+}
+
+#[tokio::test]
+async fn no_server_is_switched_when_every_declarer_refuses() {
+    use ployz_testkit::fake_fleet::{FakeFleet, Scenario};
+    let sockets = tempfile::tempdir().unwrap();
+    let fleet = FakeFleet::start(
+        upgrading_fleet(&[
+            ("edge", Declares::Predates),
+            ("first", Declares::Refuses),
+            ("second", Declares::Refuses),
+        ]),
+        Scenario::default(),
+        sockets.path(),
+        None,
+    )
+    .unwrap();
+    let mut client = entry_of(&fleet).await;
+    let observed = observe_doors(&mut client).await.unwrap();
+
+    let refused = use_doors(
+        &mut client,
+        observed,
+        ClusterDoors::closed(),
+        &CancellationToken::new(),
+    )
+    .await;
+
+    let error = refused.expect_err("a switch behind an unwritten declaration is refused");
+    assert!(
+        format!("{error:?}").contains("No Server confirmed the Cluster's Doors"),
+        "{error:?}"
+    );
+    assert_eq!(commands_of(&fleet, "set_ingress_doors"), 0);
+    assert_eq!(fleet.declared_doors().unwrap(), None);
+}
+
+#[test]
+fn only_an_online_server_that_is_not_leaving_is_asked_to_declare() {
+    use ployz_core::{MembershipObservation, RowStanding};
+    let capable = |hex: char, name: &str| {
+        let mut machine = machine(hex, name);
+        machine.runtime.capabilities = [SET_CLUSTER_DOORS_CAPABILITY.to_owned()].into();
+        machine
+    };
+    let mut leaving = capable('c', "leaving");
+    leaving.runtime.leaving = true;
+    assert!(matches!(leaving.standing(), RowStanding::Leaving { .. }));
+    let observations = [
+        MachineObservation::new(capable('a', "up"), MembershipObservation::Up),
+        MachineObservation::new(capable('b', "down"), MembershipObservation::Down),
+        MachineObservation::new(leaving, MembershipObservation::Up),
+        MachineObservation::new(machine('d', "old"), MembershipObservation::Up),
+    ];
+
+    let names: Vec<String> = declarers_of(&observations)
+        .into_iter()
+        .map(|declarer| declarer.server.to_string())
+        .collect();
+
+    assert_eq!(names, ["up"]);
+}
+
+#[tokio::test]
+async fn a_founding_declares_a_closed_cluster_once_and_keeps_a_later_declaration() {
+    use ployz_testkit::fake_fleet::{FakeFleet, RunState, Scenario};
+    let sockets = tempfile::tempdir().unwrap();
+    let fleet = FakeFleet::start(
+        fleet_with_caddy(RunState::Running),
+        Scenario::default(),
+        sockets.path(),
+        None,
+    )
+    .unwrap();
+    let mut client = entry_of(&fleet).await;
+
+    declare_founding_closed(&mut client).await.unwrap();
+    assert_eq!(
+        fleet.declared_doors().unwrap(),
+        Some(IngressDoors::closed())
+    );
+
+    let observed = observe_doors(&mut client).await.unwrap();
+    use_doors(
+        &mut client,
+        observed,
+        ClusterDoors::public(),
+        &CancellationToken::new(),
+    )
+    .await
+    .unwrap();
+    declare_founding_closed(&mut client).await.unwrap();
+    assert_eq!(
+        fleet.declared_doors().unwrap(),
+        Some(IngressDoors::public()),
+        "a resumed founding follows the declaration and does not redeclare"
+    );
+}
+
 // Catches a rerun of `ingress use tunnel` reopening ports 80 and 443 and replacing every
 // connector, which darkens a one-Server tunnel Cluster.
 #[test]

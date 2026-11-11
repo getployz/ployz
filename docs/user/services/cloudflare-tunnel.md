@@ -110,7 +110,14 @@ web-2    tunnel
 To start a new Cluster whose ports never open, add `--ingress-closed` to the first server's
 `ployz server add`. It starts the web server with ports 80 and 443 closed and no door open, so
 nothing reaches your apps until you run `ployz ingress use tunnel`. A server that joins
-meanwhile opens no door either. The flag does nothing for a server that joins a Cluster.
+meanwhile opens no door either, and so does one that restarts. The flag does nothing for a server
+that joins a Cluster.
+
+The Cluster remembers the doors that `--ingress-closed` and `ployz ingress use` set. A server
+whose `ployz` is too old to follow them can't join a Cluster that is closed or uses the tunnel,
+with or without the ports: update `ployz` on it and run the join command again. If `ployz ingress use` stops partway, the Cluster
+keeps the doors you asked for, the command lists the servers that didn't switch, and running it
+again finishes them.
 
 Run `ployz ingress use tunnel` without the switch to type the token at a prompt. Ployz keeps the
 token sealed for your servers; nobody reads it back, and a server that joins later gets it on

@@ -88,9 +88,14 @@ pub(in crate::handlers) fn add(root: &ArgMatches) -> Result<(), Error> {
                 public_ip: token.public_ip,
                 advertised_endpoints: token.advertised_endpoints,
                 runtime: token.runtime,
+                capabilities: Vec::new(),
             },
             &snapshot,
         )?;
+        // This CLI runs the joiner's catch-up, so it claims what it honors. The saved
+        // assignment never holds a claim, so it is set on the copy Register carries.
+        let mut assignment = assignment;
+        assignment.request.capabilities = vec![ployz_core::SET_CLUSTER_DOORS_CAPABILITY.to_owned()];
         let assigned = assignment.machine.clone();
         let registration = match crate::enrollment::publish_enrollment(&mut entry, &assignment)
             .await
@@ -302,6 +307,7 @@ mod tests {
             network: "10.210.0.0/16".parse().unwrap(),
             machines: vec![survivor.clone()],
             target_versions: Default::default(),
+            doors: None,
         };
         let returning = assigned_machine("machine-3", 'c');
         let saved = crate::enrollment::local::save_assignment(
@@ -320,6 +326,7 @@ mod tests {
                     "192.0.2.3:51820".parse().unwrap(),
                 )],
                 runtime: Default::default(),
+                capabilities: Vec::new(),
             },
             &joined,
         )
@@ -365,6 +372,7 @@ mod tests {
             network: "10.210.0.0/16".parse().unwrap(),
             machines: vec![live.clone(), joining.clone()],
             target_versions: Default::default(),
+            doors: None,
         };
         let refusal =
             require_free_name(&snapshot, joining.id, &live.name, "root@machine-3").unwrap_err();

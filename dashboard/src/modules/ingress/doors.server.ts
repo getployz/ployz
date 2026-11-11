@@ -39,6 +39,7 @@ import { activeDoorsAttempt, lockIngressRows } from "#/modules/ingress/doors.loc
 import { type RedeployPorts, redeployMoved, runSwitch } from "#/modules/ingress/doors.run";
 import { ingressDoorsAttempt, organizationCloudflareIngress } from "#/modules/ingress/tables";
 import { createIngressDoorsRequestedEvent, type IngressDoorsRequestedEventData } from "#/modules/inngest/events";
+import { observeClusterEnrollment } from "#/modules/machines/enrollment.server";
 import { offlineServers } from "#/modules/machines/server-status";
 import { refusalWords } from "#/modules/machines/server-web-traffic.server";
 import { enqueueEvent } from "#/modules/operations/outbox.server";
@@ -133,19 +134,33 @@ function observationOf(frame: RuntimeWatchView): ClusterIngressObservation {
 }
 
 /**
- * Whether Cloudflare setup may open only the tunnel: the Cluster was founded closed and, seen whole, no Server holds the
- * Public Door, whether or not it takes web traffic now. Unknown while a Server isn't seen, since it may hold the ports,
+ * The Door set the Cluster declares, as a Server's replica carries it in the enrollment snapshot: null when the Cluster
+ * never declared one, runs a Ployz that predates the declaration, or can't be read now. Null is never an empty set.
+ */
+const declaredDoors = Effect.fn("IngressDoors.declared")(function* (organizationId: string) {
+  const observed = yield* observeClusterEnrollment(organizationId).pipe(Effect.scoped, Effect.catch(() => Effect.succeed(null)));
+  return observed?.kind === "joined" ? observed.snapshot.doors ?? null : null;
+});
+
+/**
+ * Whether Cloudflare setup may open only the tunnel. A declared Door set with Public is open. Without Public, or with no
+ * declaration but a Cluster founded closed, it is closed when, seen whole, no Server holds the Public Door, whether or not
+ * it takes web traffic now. Unknown while a Server isn't seen, since it may hold the ports,
  * or while none takes web traffic yet.
  */
 export const closedFounding = Effect.fn("IngressDoors.closedFounding")(function* (organizationId: string) {
-  if (!(yield* foundedClosed(organizationId))) return { kind: "open" } as const;
+  const declared = yield* declaredDoors(organizationId);
+  if (declared?.includes("public")) return { kind: "open" } as const;
+  if (declared === null && !(yield* foundedClosed(organizationId))) return { kind: "open" } as const;
   const frame = yield* firstRuntimeFrame(organizationId).pipe(Effect.catch(() => Effect.succeed(null)));
   if (frame === null) return { kind: "unknown" } as const;
   const seen = observationOf(frame);
   if (seen.partial) return { kind: "unknown" } as const;
+  // A declaration without Public is written before the Servers follow it, so a switch that stopped partway leaves
+  // Servers holding Public under it. Seen whole, one that does means the handover still has work to do.
   if (publicSpecifiedAnywhere(frame)) return { kind: "open" } as const;
   // The founder may not show yet; until a Server takes web traffic there is nothing to tell the tunnel to.
-  if (seen.servers.length === 0) return { kind: "unknown" } as const;
+  if (declared === null && seen.servers.length === 0) return { kind: "unknown" } as const;
   return { kind: "closed" } as const;
 });
 

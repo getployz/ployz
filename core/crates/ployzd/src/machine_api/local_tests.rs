@@ -1326,6 +1326,87 @@ mod ingress_doors {
     }
 
     #[tokio::test]
+    async fn a_reboot_places_a_held_door_only_while_the_cluster_declares_it() {
+        use crate::corrosion::{
+            AdminClient,
+            store_tests::{corrosion_db, identity_store},
+        };
+        let (data_dir, store, _without_cluster, _fake, runtime, cluster) =
+            fake_docker_service_sealing("ployzd-doors-declared").await;
+        let (replicated, task) = identity_store(corrosion_db()).await;
+        let mut service = MachineService::with_cluster(
+            store,
+            Some((
+                replicated.clone(),
+                AdminClient::new(data_dir.join("admin.sock")),
+            )),
+        )
+        .with_optional_containers(Some(runtime.clone()));
+        service.local = service.local.with_zpool("true");
+        let sealed = cluster.seal_platform(ployz_core::PlatformPurpose::IngressTunnel, b"cf-token");
+        let tunnel =
+            json!({"doors": ["tunnel"], "proxy_service": proxy_id(), "sealed_token": sealed});
+        let placed = set_doors(&service, tunnel, false).await.unwrap().unwrap();
+        assert_eq!(placed.failure, None, "{placed:?}");
+        let connector = placed.tunnel.unwrap().now.container_id;
+        let token = data_dir.join("root/run/ployz/tunnel/token");
+        let reboot = || async {
+            runtime.stop(&connector, None, None).await.unwrap();
+            runtime.remove_tunnel_token().unwrap();
+        };
+
+        // A declaration without the Tunnel Door leaves the connector at rest and writes no token.
+        replicated
+            .publish_cluster_doors(&ployz_core::IngressDoors::public())
+            .await
+            .unwrap();
+        reboot().await;
+        assert!(service.local.restore_doors().await.unwrap().is_none());
+        assert!(!token.exists(), "the connector's token is not written back");
+        let machine_id = service.local.record().id();
+        let connector_running = || async {
+            runtime
+                .door_inventory(&machine_id)
+                .await
+                .unwrap()
+                .iter()
+                .filter(|entry| entry.facts.door == crate::docker::Door::Tunnel)
+                .any(|entry| entry.facts.running())
+        };
+        assert!(!connector_running().await);
+
+        // Declaring it places the connector as a Machine with no declaration does.
+        replicated
+            .publish_cluster_doors(&ployz_core::IngressDoors::tunnel())
+            .await
+            .unwrap();
+        let restored = service.local.restore_doors().await.unwrap().unwrap();
+        assert_eq!(restored.failure, None, "{restored:?}");
+        assert_eq!(restored.tunnel.unwrap().change, DoorChange::Started);
+        assert_eq!(std::fs::read(&token).unwrap(), b"cf-token");
+        assert!(connector_running().await);
+
+        // Part way through a switch to tunnel the Machine still holds both Doors. Docker
+        // brings the holder back, so the declared connector must come back too.
+        let both = json!({"doors": ["public", "tunnel"], "proxy_service": proxy_id(), "sealed_token": sealed});
+        let switching = set_doors(&service, both, false).await.unwrap().unwrap();
+        assert_eq!(switching.failure, None, "{switching:?}");
+        let connector = switching.tunnel.unwrap().now.container_id;
+        runtime.stop(&connector, None, None).await.unwrap();
+        runtime.remove_tunnel_token().unwrap();
+        assert!(!connector_running().await);
+        let restored = service.local.restore_doors().await.unwrap().unwrap();
+        assert_eq!(restored.failure, None, "{restored:?}");
+        assert_eq!(restored.tunnel.unwrap().change, DoorChange::Started);
+        assert_eq!(std::fs::read(&token).unwrap(), b"cf-token");
+        assert!(connector_running().await);
+
+        task.abort();
+        runtime.remove_tunnel_token().unwrap();
+        std::fs::remove_dir_all(data_dir).unwrap();
+    }
+
+    #[tokio::test]
     async fn a_connector_closing_could_not_remove_stays_stopped_across_a_reboot() {
         let (data_dir, _store, service, fake, runtime, cluster) =
             fake_docker_service_sealing("ployzd-doors-closed-stays").await;
@@ -7378,6 +7459,70 @@ mod cluster_name {
             panic!("expected a refusal, got {response:?}");
         };
         assert_eq!(error.code, RpcErrorCode::Unavailable);
+        std::fs::remove_dir_all(dir).ok();
+    }
+}
+
+mod cluster_doors {
+    use ployz_core::{
+        ClusterDoorsDeclared, IngressDoors, RpcResponse, RpcResponseBody, SetClusterDoorsRequest,
+    };
+
+    use super::*;
+
+    async fn declare(service: &MachineService, doors: IngressDoors) -> RpcResponse {
+        let request = op::SetClusterDoors::into_request(SetClusterDoorsRequest { doors });
+        service
+            .set_cluster_doors(Request::new(request.encode().unwrap()))
+            .await
+            .unwrap()
+            .into_inner()
+            .decode_response()
+            .unwrap()
+    }
+
+    #[tokio::test]
+    async fn a_known_set_is_declared_and_answered_back() {
+        let dir = std::env::temp_dir().join(format!("ployzd-doors-{}", MachineId::random()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let (service, task) = super::read_routes::serve(&dir, &[]).await;
+
+        for doors in [IngressDoors::tunnel(), IngressDoors::closed()] {
+            let response = declare(&service, doors.clone()).await;
+            let shown = format!("{response:?}");
+            let declared = response
+                .decode::<op::SetClusterDoors>()
+                .unwrap_or_else(|error| panic!("{error:?}: {shown}"));
+            assert_eq!(
+                service.local.declared_doors().await,
+                Some(doors.clone()),
+                "the key holds what was declared"
+            );
+            assert_eq!(declared, ClusterDoorsDeclared { doors });
+        }
+        task.abort();
+        std::fs::remove_dir_all(dir).ok();
+    }
+
+    #[tokio::test]
+    async fn a_door_this_release_does_not_know_is_refused_and_nothing_is_declared() {
+        let dir = std::env::temp_dir().join(format!("ployzd-doors-{}", MachineId::random()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let (service, task) = super::read_routes::serve(&dir, &[]).await;
+        let unknown: IngressDoors = serde_json::from_str(r#"["tunnel","warp"]"#).unwrap();
+
+        let response = declare(&service, unknown).await;
+
+        let RpcResponseBody::Error(error) = response.body else {
+            panic!("expected a refusal, got {response:?}");
+        };
+        assert_eq!(error.code, RpcErrorCode::InvalidArgument);
+        assert_eq!(
+            error.details.get("capability"),
+            Some(&serde_json::json!(ployz_core::SET_CLUSTER_DOORS_CAPABILITY))
+        );
+        assert_eq!(service.local.declared_doors().await, None);
+        task.abort();
         std::fs::remove_dir_all(dir).ok();
     }
 }

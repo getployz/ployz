@@ -506,6 +506,7 @@ define_responses! {
     IngressDoorsSet(IngressDoorsSet) => "ingress_doors_set";
     PrivateAccessSet(PrivateAccessSet) => "private_access_set";
     ClusterNamed(ClusterNamed) => "cluster_named";
+    ClusterDoorsDeclared(ClusterDoorsDeclared) => "cluster_doors_declared";
     MachineUpdated(MachineUpdated) => "machine_updated";
     MachineUpgradeAttempt(MachineUpgradeAttempt) => "machine_upgrade_attempt";
     SealingKeyHeld(SealingKeyHeld) => "sealing_key_held";

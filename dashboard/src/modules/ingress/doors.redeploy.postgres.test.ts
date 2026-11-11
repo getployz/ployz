@@ -33,6 +33,7 @@ const applied = (id: string) => Effect.gen(function* () {
 
 /** The Servers, as serving exactly what the Store's Applied State routes, and holding whatever Doors they are told. */
 const servers = asTestDouble<PloyzSession>()({
+  observeEnrollment: () => Effect.succeed({ network: "10.42.0.0/16", machines: [], target_versions: {} }),
   watchFirstFrame: () => readStore(ORG, { query: "namespace", environment: production }).pipe(
     Effect.map((view) => ({
       machines: [], services: [], unanswered: [], incomplete_ids: { machines: [], containers: [], certificates: [] },

@@ -546,7 +546,7 @@ The Machine-local process that receives published HTTP traffic and routes it tow
 _Avoid_: Edge, public ingress as a process
 
 **Door**:
-A way published HTTP traffic enters a Machine's Ingress Proxy. The Public Door is host ports 80 and 443, which the holder owns. The Tunnel Door is a Tunnel Connector dialling Caddy's 8480 loopback listener, with the holder publishing no port. A Cluster's Doors are one set for every ingress Machine; `{Public, Tunnel}` holds both while a switch runs. A Machine's open Doors are read from its running door Containers, and a Machine with none is closed. Caddy's 8480 listener is not a Door on its own.
+A way published HTTP traffic enters a Machine's Ingress Proxy. The Public Door is host ports 80 and 443, which the holder owns. The Tunnel Door is a Tunnel Connector dialling Caddy's 8480 loopback listener, with the holder publishing no port. A Cluster's Doors are one set for every ingress Machine; `{Public, Tunnel}` holds both while a switch runs. The set is declared: the operator's client writes it to the replicated `cluster` key `doors` before it asks any Machine to change, and a Cluster that never declared one is read from its newest door Containers as before. A declared set is a fact commands and joiners follow, and no loop converges Machines toward it. A Machine's open Doors are read from its running door Containers, and a Machine with none is closed. Caddy's 8480 listener is not a Door on its own.
 _Avoid_: Port mapping, ingress port, mode
 
 **Tunnel Connector**:

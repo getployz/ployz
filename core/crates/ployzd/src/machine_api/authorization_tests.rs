@@ -540,6 +540,9 @@ async fn sample(case: &Case, machine: &Enforcing) -> Sample {
         (ployz_core::SET_CLUSTER_NAME_CAPABILITY, _) => {
             unary::<op::SetClusterName>(json!({"name": "renamed"}))
         }
+        (ployz_core::SET_CLUSTER_DOORS_CAPABILITY, _) => {
+            unary::<op::SetClusterDoors>(json!({"doors": ["public"]}))
+        }
         (ployz_core::EXEC_CONTAINER_CAPABILITY, _) => Sample::Exec,
         (ployz_core::BUILD_CAPABILITY, _) => Sample::Build,
         (capability, branch) => panic!("{capability} has no sample for branch {branch:?}"),

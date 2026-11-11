@@ -401,6 +401,7 @@ async fn enroll_current_identity(
                     public_ip: machine_token.public_ip,
                     advertised_endpoints: machine_token.advertised_endpoints.clone(),
                     runtime: Default::default(),
+                    capabilities: Vec::new(),
                 };
                 if super::device::sign_waiting_join(&mut entry, &config, &expected).await? {
                     cloud_enroll::enroll(command, url, token, &identity, progress).await?
@@ -764,6 +765,14 @@ where
         None => None,
     };
     let mut partial = None;
+    if matches.get_flag("ingress-closed")
+        && let Err(error) = crate::ingress::declare_founding_closed(&mut ready).await
+    {
+        return Err(ingress_incomplete(
+            command,
+            super::ingress_hints(error, |args| super::rerun(matches, args)),
+        ));
+    }
     if machine.accepts_ingress
         && let Err(error) = if matches.get_flag("ingress-closed") {
             crate::ingress::found_closed(&mut ready).await

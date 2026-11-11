@@ -7,12 +7,12 @@ use std::{
 };
 
 use ployz_core::{
-    CapabilityAdvertisement, CertificateMaterialChange, CertificateMaterialPublished, ClusterNamed,
-    ContainerId, ContainerList, ContainerObservation, ContractDescription, EndpointSelected,
-    EnvironmentValues, LiveLogTarget, LocalMachinePhase, LogMetadata, LogOrigin, MachineLayout,
-    MachineLogService, MachineRpc, ManagementScope, OpaquePayload, PROTOCOL_MAJOR,
-    RetainedEnvReply, RoutedAddresses, RoutesRead, Rpc, RpcError, RpcErrorCode, RpcRequestBody,
-    RpcResponse, SelectEndpointRequest, WantedCopy, op,
+    CapabilityAdvertisement, CertificateMaterialChange, CertificateMaterialPublished,
+    ClusterDoorsDeclared, ClusterNamed, ContainerId, ContainerList, ContainerObservation,
+    ContractDescription, EndpointSelected, EnvironmentValues, LiveLogTarget, LocalMachinePhase,
+    LogMetadata, LogOrigin, MachineLayout, MachineLogService, MachineRpc, ManagementScope,
+    OpaquePayload, PROTOCOL_MAJOR, RetainedEnvReply, RoutedAddresses, RoutesRead, Rpc, RpcError,
+    RpcErrorCode, RpcRequestBody, RpcResponse, SelectEndpointRequest, WantedCopy, op,
 };
 use tonic::{Request, Response, Status};
 
@@ -1321,6 +1321,33 @@ impl MachineRpc for MachineService {
             Err(error) => respond(cluster_store_error(error)),
         }
     }
+
+    async fn set_cluster_doors(
+        &self,
+        request: Request<OpaquePayload>,
+    ) -> Result<Response<OpaquePayload>, Status> {
+        let request = expect::<op::SetClusterDoors>(request)?;
+        if !request.doors.is_known() {
+            return respond(
+                RpcError::invalid_argument(
+                    "This Server declares only the Public and Tunnel Doors.",
+                )
+                .with_details(serde_json::json!({
+                    "capability": ployz_core::SET_CLUSTER_DOORS_CAPABILITY,
+                })),
+            );
+        }
+        let replicated = match self.ready_replicated() {
+            Ok(replicated) => replicated,
+            Err(error) => return respond(error),
+        };
+        match replicated.publish_cluster_doors(&request.doors).await {
+            Ok(()) => respond(ClusterDoorsDeclared {
+                doors: request.doors,
+            }),
+            Err(error) => respond(cluster_store_error(error)),
+        }
+    }
 }
 
 fn listed(ackers: &Ackers) -> impl Iterator<Item = ployz_core::MachineId> + '_ {
@@ -1494,6 +1521,17 @@ fn local_failure(error: LocalMachineError) -> Result<RpcError, Status> {
         | LocalMachineError::DeviceIsPasskey(_)
         | LocalMachineError::CredentialHeld { .. } => {
             Ok(RpcError::caused(RpcErrorCode::Conflict, &error))
+        }
+        LocalMachineError::JoinerCannotFollowDoors { ref joiner } => Ok(RpcError::unsupported(
+            error.to_string(),
+        )
+        .with_details(serde_json::json!({
+            "target": joiner.to_string(),
+            "capability": ployz_core::SET_CLUSTER_DOORS_CAPABILITY,
+            "next": "upgrade ployz where the join runs, then rerun it",
+        }))),
+        LocalMachineError::DeclaredDoorsUnread(_) => {
+            Ok(RpcError::caused(RpcErrorCode::Unavailable, &error))
         }
         LocalMachineError::MissingAssignment
         | LocalMachineError::DeviceSlot

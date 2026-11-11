@@ -22,20 +22,20 @@ use std::{
 };
 
 use ployz_core::{
-    CapabilityAdvertisement, ContainerDetails, ContainerId, ContainerKind, ContainerList,
-    ContainerLocator, ContainerNow, ContainerObservation, ContainerObservationParts,
+    CapabilityAdvertisement, ClusterDoorsDeclared, ContainerDetails, ContainerId, ContainerKind,
+    ContainerList, ContainerLocator, ContainerNow, ContainerObservation, ContainerObservationParts,
     ContainerRefusal, ContainerRefusalReason, ContainerRuntimeObservation, ContainerWant,
     ContractDescription, CopyRole, CopyRotation, DockerVolume, DockerVolumeId, DockerVolumeName,
-    DockerVolumeStorageObservation, DoorChange, DoorOutcome, EnsuredContainer, HealthObservation,
-    HistoryContainer, HistoryContainerKind, HistoryRow, HistoryStream, IngressDoorsSet,
-    LiveLogTarget, LocalMachinePhase, LogBody, LogDirection, LogEntry, LogHistoryRequest,
-    LogMetadata, LogOrigin, MANAGED_LABEL, Machine, MachineDetails, MachineId, MachineList,
-    MachineName, MachineObservation, MachinePath, MachineRelease, MachineRpc, MachineRpcServer,
-    MachineRuntime, MachineUpgradeAttempt, MachineUpgradeOutcome, MachineVersion,
-    MembershipObservation, NAMESPACE_LABEL, Namespace, OpaquePayload, PROTOCOL_MAJOR,
-    PrivateAccessSet, ProvisionedCopy, ProvisionedVolumeMaximumBytes, QualifiedService,
-    RUNTIME_WATCH_MESSAGE_SIZE_LIMIT, ResolvedServiceSpec, RotationEdge, RoutedAddresses,
-    RoutesRead, RoutingRequest, RpcError, RpcRequestBody, RpcResponse, RunTarget,
+    DockerVolumeStorageObservation, DoorChange, DoorOutcome, EnrollmentSnapshot, EnsuredContainer,
+    HealthObservation, HistoryContainer, HistoryContainerKind, HistoryRow, HistoryStream,
+    IngressDoors, IngressDoorsSet, LiveLogTarget, LocalMachinePhase, LogBody, LogDirection,
+    LogEntry, LogHistoryRequest, LogMetadata, LogOrigin, MANAGED_LABEL, Machine, MachineDetails,
+    MachineId, MachineList, MachineName, MachineObservation, MachinePath, MachineRelease,
+    MachineRpc, MachineRpcServer, MachineRuntime, MachineUpgradeAttempt, MachineUpgradeOutcome,
+    MachineVersion, MembershipObservation, NAMESPACE_LABEL, Namespace, OpaquePayload,
+    PROTOCOL_MAJOR, PrivateAccessSet, ProvisionedCopy, ProvisionedVolumeMaximumBytes,
+    QualifiedService, RUNTIME_WATCH_MESSAGE_SIZE_LIMIT, ResolvedServiceSpec, RotationEdge,
+    RoutedAddresses, RoutesRead, RoutingRequest, RpcError, RpcRequestBody, RpcResponse, RunTarget,
     RuntimeWatchFrame, ServiceId, ServiceName, SetPrivateAccessRequest, SlotId, SlotRole,
     StorageBacking, StorageCapacity, VolumeCopy, VolumeCopyView, VolumeInventory,
     WireGuardPublicKey, WriterEpoch, encode_runtime_watch_frame,
@@ -77,6 +77,13 @@ pub struct FleetMachine {
     /// The Sealing Key it holds, reported by Inspect and in its row.
     #[serde(default)]
     pub sealing: Option<ployz_core::SealingPublicKey>,
+    /// A daemon from before SetClusterDoors: it neither advertises the capability nor
+    /// serves the route.
+    #[serde(default)]
+    pub predates_doors: bool,
+    /// A daemon that advertises SetClusterDoors and answers it with a refusal.
+    #[serde(default)]
+    pub refuses_doors: bool,
 }
 
 /// One Container. The fixture's `id` is the Docker display name; its wire Container ID
@@ -250,6 +257,14 @@ impl FakeFleet {
         self.shared.lock()?.machine_mut(name)?.online = false;
         self.shared.close(name);
         Ok(())
+    }
+
+    /// The Doors the fleet's Cluster declares, once a SetClusterDoors wrote them.
+    ///
+    /// # Errors
+    /// Returns an error when the state lock is poisoned.
+    pub fn declared_doors(&self) -> Result<Option<IngressDoors>, FakeFleetError> {
+        Ok(self.shared.lock()?.declared_doors.clone())
     }
 
     /// Every request recorded so far, in order.
@@ -529,6 +544,8 @@ struct MachineState {
     id: MachineId,
     version: MachineVersion,
     online: bool,
+    predates_doors: bool,
+    refuses_doors: bool,
     containers: Vec<ContainerState>,
     copies: Vec<CopyState>,
     upgrades: Vec<MachineUpgradeAttempt>,
@@ -553,6 +570,8 @@ struct Fleet {
     calls: BTreeMap<(MachineId, &'static str), u32>,
     ledger: Vec<LedgerEntry>,
     sink: Option<File>,
+    /// The Doors a SetClusterDoors declared; shared by every Machine, as the replicated key is.
+    declared_doors: Option<IngressDoors>,
 }
 
 impl Fleet {
@@ -572,6 +591,7 @@ impl Fleet {
             calls: BTreeMap::new(),
             ledger: Vec::new(),
             sink,
+            declared_doors: None,
         };
         for place in scenario.drop_volumes {
             let name = physical(&place);
@@ -741,14 +761,7 @@ impl Fleet {
                         machine_id: machine.id,
                         protocol_major: PROTOCOL_MAJOR,
                         daemon_version: machine.version.to_string(),
-                        capabilities: [
-                            CapabilityAdvertisement::Always,
-                            CapabilityAdvertisement::Container,
-                            CapabilityAdvertisement::Cluster,
-                        ]
-                        .into_iter()
-                        .flat_map(CapabilityAdvertisement::capabilities)
-                        .collect::<BTreeSet<_>>(),
+                        capabilities: machine.capabilities(),
                         sealing: None,
                         attest: None,
                     }
@@ -779,13 +792,40 @@ impl Fleet {
                     .into(),
                 )
             }
-            RpcRequestBody::ListMachines(_) => unary(
-                MachineList {
-                    enrollment: None,
-                    machines: self.observations(),
-                }
-                .into(),
+            RpcRequestBody::ListMachines(_) => {
+                let machines = self.observations();
+                let enrollment = self.declared_doors.clone().map(|doors| EnrollmentSnapshot {
+                    network: "10.210.0.0/16".parse().expect("a network"),
+                    machines: machines
+                        .iter()
+                        .map(|observation| observation.machine.clone())
+                        .collect(),
+                    target_versions: BTreeMap::new(),
+                    doors: Some(doors),
+                });
+                unary(
+                    MachineList {
+                        enrollment,
+                        machines,
+                    }
+                    .into(),
+                )
+            }
+            RpcRequestBody::SetClusterDoors(_) if self.by_id(target)?.predates_doors => Err(
+                Status::unimplemented("this daemon predates SetClusterDoors"),
             ),
+            RpcRequestBody::SetClusterDoors(_) if self.by_id(target)?.refuses_doors => {
+                Err(Status::unavailable("this daemon's store is not ready"))
+            }
+            RpcRequestBody::SetClusterDoors(request) => {
+                self.declared_doors = Some(request.doors.clone());
+                unary(
+                    ClusterDoorsDeclared {
+                        doors: request.doors,
+                    }
+                    .into(),
+                )
+            }
             RpcRequestBody::ListContainers(_) => {
                 let machine = self.by_id(target)?;
                 unary(
@@ -1184,6 +1224,8 @@ impl MachineState {
             id: machine.id,
             version: machine.version,
             online: machine.online,
+            predates_doors: machine.predates_doors,
+            refuses_doors: machine.refuses_doors,
             containers: machine
                 .containers
                 .into_iter()
@@ -1198,6 +1240,23 @@ impl MachineState {
                 .sealing
                 .map(|public_key| ployz_core::Sealing::Held { public_key }),
         })
+    }
+
+    /// What the daemon advertises: every catalogued capability, less SetClusterDoors for
+    /// one that predates it.
+    fn capabilities(&self) -> BTreeSet<ployz_core::CapabilityName> {
+        [
+            CapabilityAdvertisement::Always,
+            CapabilityAdvertisement::Container,
+            CapabilityAdvertisement::Cluster,
+        ]
+        .into_iter()
+        .flat_map(CapabilityAdvertisement::capabilities)
+        .filter(|capability| {
+            !(self.predates_doors
+                && capability.as_str() == ployz_core::SET_CLUSTER_DOORS_CAPABILITY)
+        })
+        .collect()
     }
 
     fn record(&self) -> Machine {
@@ -1218,6 +1277,11 @@ impl MachineState {
             runtime: MachineRuntime {
                 daemon_version: self.version.to_string(),
                 sealing: self.sealing,
+                capabilities: self
+                    .capabilities()
+                    .iter()
+                    .map(|capability| capability.as_str().to_owned())
+                    .collect(),
                 ..MachineRuntime::default()
             },
             join_approval: None,

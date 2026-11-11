@@ -18,7 +18,7 @@ use crate::cluster::Call;
 use ployz_core::{
     AnonymousVolumes, BridgeEndpointCapacity, Ciphertext, ContainerKind, ContainerObservation,
     ContainerRefusalReason, ContainerRuntimeObservation, ContainerWant, CopyRotation, CreationKey,
-    EnvironmentValues, HealthFailure, HealthVerdict, IngressDoorsSet, InspectRequest,
+    EnvironmentValues, HealthFailure, HealthVerdict, IngressDoors, IngressDoorsSet, InspectRequest,
     ListContainersRequest, LiveServices, Machine, MachineId, MachineTarget, NewContainer,
     PartialResult, PrivateAccessSet, QualifiedService, ResolvedServiceSpec, RpcError, RunRotation,
     RunTarget, ServiceId, ServiceMode, ServiceObservation, ServicePlacementEligibility,
@@ -64,6 +64,8 @@ pub(crate) struct Observed {
     names: Names,
     /// Omitted Servers that are Unarrived Machines, which hold no copy to wait on.
     unarrived: Names,
+    /// The Doors the Cluster declares, as the entry Machine's replica holds them.
+    declared: Option<IngressDoors>,
 }
 
 pub(crate) trait CatchUpClient {
@@ -118,7 +120,9 @@ pub(crate) trait CatchUpClient {
 
 impl CatchUpClient for Client {
     async fn live_services(&mut self) -> Result<Observed, Failure> {
-        let machines = self.machines().await.map_err(Failure::from)?;
+        let list = self.machine_list().await.map_err(Failure::from)?;
+        let declared = list.enrollment.and_then(|snapshot| snapshot.doors);
+        let machines = list.machines;
         let live = self
             .live_services_from(&machines, EnvironmentValues::Included)
             .await
@@ -134,6 +138,7 @@ impl CatchUpClient for Client {
                 .filter(|machine| machine.unarrived())
                 .map(named)
                 .collect(),
+            declared,
         })
     }
 
@@ -648,7 +653,11 @@ fn may_still_run(target: &[ContainerObservation], started: &Started) -> bool {
 /// One source per observed Global, the Ingress Proxy's door identities as one and the
 /// Private Access router as its sealed auth key. A joiner with the ingress role gets the
 /// Ingress Proxy even when none runs anywhere.
-fn sources(services: &[ServiceObservation], takes_ingress: bool) -> Vec<Source> {
+fn sources(
+    services: &[ServiceObservation],
+    takes_ingress: bool,
+    declared: Option<IngressDoors>,
+) -> Vec<Source> {
     let mut sources: Vec<Source> = services
         .iter()
         .filter(|service| {
@@ -682,7 +691,7 @@ fn sources(services: &[ServiceObservation], takes_ingress: bool) -> Vec<Source> 
             identity: QualifiedService::system_ingress(),
             work: CatchUpWork::Ingress(
                 crate::ingress::proxy_service(services),
-                crate::ingress::cluster_doors(services),
+                crate::ingress::cluster_doors(declared, services),
             ),
         });
     }
@@ -759,13 +768,14 @@ async fn observe_complete<C: CatchUpClient>(
     this_machine: &MachineId,
     cancel: &CancellationToken,
     observe: &mut impl FnMut(CatchUpFact),
-) -> Result<LiveServices<RpcError>, CatchUpError> {
+) -> Result<(LiveServices<RpcError>, Option<IngressDoors>), CatchUpError> {
     let cancelled = || CatchUpError::new(Failure::cancelled(), Vec::new());
     for attempt in 1..=OBSERVATION_ATTEMPTS {
         let Observed {
             mut live,
             names,
             mut unarrived,
+            declared,
         } = tokio::select! {
             biased;
             () = cancel.cancelled() => return Err(cancelled()),
@@ -780,7 +790,7 @@ async fn observe_complete<C: CatchUpClient>(
             .retain(|id| !unarrived.iter().any(|(unarrived, _)| unarrived == id));
         if live.containers.all_targets_succeeded() {
             observe(CatchUpFact::NotArrived(unarrived));
-            return Ok(live);
+            return Ok((live, declared));
         }
         if attempt == OBSERVATION_ATTEMPTS {
             observe(CatchUpFact::NotArrived(unarrived));
@@ -809,9 +819,9 @@ pub(crate) async fn catch_up_globals<C: CatchUpClient>(
     cancel: &CancellationToken,
     mut observe: impl FnMut(CatchUpFact),
 ) -> Result<(), CatchUpError> {
-    let live = observe_complete(client, &this_machine.id, cancel, &mut observe).await?;
+    let (live, declared) = observe_complete(client, &this_machine.id, cancel, &mut observe).await?;
     let services = live.services();
-    let sources = sources(&services, this_machine.accepts_ingress);
+    let sources = sources(&services, this_machine.accepts_ingress, declared);
     let mut unresolved: Vec<QualifiedService> = sources
         .iter()
         .map(|source| source.identity.clone())

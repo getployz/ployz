@@ -24,6 +24,7 @@ fn request(seed: u8) -> RegisterRequest {
         public_ip: None,
         advertised_endpoints: vec![AdvertisedEndpoint("192.0.2.1:51820".parse().unwrap())],
         runtime: Default::default(),
+        capabilities: Vec::new(),
     }
 }
 
@@ -32,6 +33,7 @@ fn snapshot(seed: u8) -> EnrollmentSnapshot {
         network: "10.210.0.0/22".parse().unwrap(),
         machines: vec![],
         target_versions: Default::default(),
+        doors: None,
     };
     snapshot.machines.push(
         allocate_enrollment(&request(seed), &snapshot, &[])

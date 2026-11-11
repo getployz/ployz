@@ -18,13 +18,13 @@ use ployz_core::{
     REQUEST_MACHINE_UPGRADE_CAPABILITY, RESTART_APPROVAL_CAPABILITY,
     RESTART_SESSION_GRANT_CAPABILITY, RETAINED_ENV_CAPABILITY, RULE_PASSKEY_CAPABILITY,
     RUNTIME_WATCH_CAPABILITY, Rpc, SEED_VOLUME_CAPABILITY, SELECT_ENDPOINT_CAPABILITY,
-    SET_CLUSTER_NAME_CAPABILITY, SET_DEVICE_CAPABILITY, SET_DEVICE_ENFORCEMENT_CAPABILITY,
-    SET_INGRESS_DOORS_CAPABILITY, SET_INGRESS_TUNNEL_CAPABILITY, SET_MANAGEMENT_CLIENT_CAPABILITY,
-    SET_PASSKEY_CAPABILITY, SET_PRIVATE_ACCESS_CAPABILITY, SET_PUSH_TARGET_CAPABILITY,
-    SET_VOLUME_COPY_CAPABILITY, SET_VOLUME_SIZE_CAPABILITY, SHARE_SEALING_KEY_CAPABILITY,
-    TAIL_LOGS_CAPABILITY, UPDATE_CONTAINER_LIMITS_CAPABILITY, UPDATE_MACHINE_CAPABILITY,
-    UPGRADE_EXACT_CAPABILITY, VOLUME_APPROVAL_CAPABILITY, VOLUME_FLOOR_CAPABILITY,
-    VOLUME_SHRINK_CAPABILITY, WRAP_SEALING_KEY_CAPABILITY, op,
+    SET_CLUSTER_DOORS_CAPABILITY, SET_CLUSTER_NAME_CAPABILITY, SET_DEVICE_CAPABILITY,
+    SET_DEVICE_ENFORCEMENT_CAPABILITY, SET_INGRESS_DOORS_CAPABILITY, SET_INGRESS_TUNNEL_CAPABILITY,
+    SET_MANAGEMENT_CLIENT_CAPABILITY, SET_PASSKEY_CAPABILITY, SET_PRIVATE_ACCESS_CAPABILITY,
+    SET_PUSH_TARGET_CAPABILITY, SET_VOLUME_COPY_CAPABILITY, SET_VOLUME_SIZE_CAPABILITY,
+    SHARE_SEALING_KEY_CAPABILITY, TAIL_LOGS_CAPABILITY, UPDATE_CONTAINER_LIMITS_CAPABILITY,
+    UPDATE_MACHINE_CAPABILITY, UPGRADE_EXACT_CAPABILITY, VOLUME_APPROVAL_CAPABILITY,
+    VOLUME_FLOOR_CAPABILITY, VOLUME_SHRINK_CAPABILITY, WRAP_SEALING_KEY_CAPABILITY, op,
 };
 
 /// Capability constants are generated from the catalog, so a typo would stay
@@ -145,6 +145,7 @@ fn catalogued_capabilities_keep_stable_spellings() {
         (SET_INGRESS_TUNNEL_CAPABILITY, "ployz.ingress.tunnel.v1"),
         (READ_CLUSTER_NAME_CAPABILITY, "ployz.cluster.name.read.v1"),
         (SET_CLUSTER_NAME_CAPABILITY, "ployz.cluster.name.v1"),
+        (SET_CLUSTER_DOORS_CAPABILITY, "ployz.cluster.doors.v1"),
         (SET_PRIVATE_ACCESS_CAPABILITY, "ployz.private-access.v1"),
         (UPDATE_MACHINE_CAPABILITY, "ployz.machine.update.v1"),
         (GENERATE_SEALING_KEY_CAPABILITY, "ployz.sealing.generate.v1"),
@@ -271,6 +272,7 @@ fn advertised_capability_groups_match_the_frozen_catalog() {
             "ployz.private-access.v1",
             "ployz.cluster.name.read.v1",
             "ployz.cluster.name.v1",
+            "ployz.cluster.doors.v1",
             "ployz.runtime.watch.v1",
             "ployz.ingress.tunnel.v1",
             "ployz.private-access.approval.v1",
@@ -502,6 +504,10 @@ const ABOVE_FLOOR: &[(&str, &str)] = &[
     (
         "ployz.cluster.name.v1",
         "gated: `ployz cluster name <name>` and the SDK check the contract first and refuse, naming the Server whose daemon lacks it",
+    ),
+    (
+        "ployz.cluster.doors.v1",
+        "falls back: `ployz ingress use`, `server init --ingress-closed` and Cloud founding declare through an online Server that serves it when the entry can't, and warn and set each Server's Doors as before when none can; claims nothing: the snapshot carries no declaration and readers infer the Doors from what runs, and an older Register ignores the joiner's claim",
     ),
     (
         "ployz.private-access.v1",
