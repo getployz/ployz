@@ -578,35 +578,29 @@ export const approveUpgradeChannel = Effect.fn("ServerUpgrade.approveChannel")(f
   if (approved === null) {
     return yield* new Validation({ message: "That isn't an approval of a Release Channel.", userFacing: true });
   }
-  const database = yield* Database;
-  return yield* database.transaction(Effect.gen(function* () {
-    const { drizzle } = yield* Database;
-    const [kept] = yield* drizzle.select({ approval: organizationServerUpgrades.channelApproval }).from(organizationServerUpgrades)
-      .where(eq(organizationServerUpgrades.organizationId, organization.id)).for("update");
-    const newest = approvedChannel(kept?.approval ?? null)?.generation ?? 0;
-    if (approved.generation <= newest) {
-      return yield* new Validation({
-        message: "Someone approved a Release Channel since. Reload and approve again.",
-        userFacing: true,
-      });
-    }
-    // SAFETY: `ChannelApproval` decoded the envelope, and Servers check every byte of it.
-    const approval = input.approval as Signed;
-    const [row] = yield* drizzle.insert(organizationServerUpgrades)
-      .values({ organizationId: organization.id, channel: approved.channel, channelApproval: approval })
-      .onConflictDoUpdate({
-        target: organizationServerUpgrades.organizationId,
-        set: { channel: approved.channel, channelApproval: approval, updatedAt: new Date() },
-      })
-      .returning({
-        id: organizationServerUpgrades.organizationId,
-        automatic: organizationServerUpgrades.automatic,
-        channel: organizationServerUpgrades.channel,
-        approval: organizationServerUpgrades.channelApproval,
-      });
-    // ponytail: an upsert always returns its row; the fallback only satisfies the type.
-    return row ?? { id: organization.id, ...DEFAULT_SERVER_UPGRADE_SETTINGS, channel: approved.channel, approval };
-  }));
+  const { drizzle } = yield* Database;
+  // SAFETY: `ChannelApproval` decoded the envelope, and Servers check every byte of it.
+  const approval = input.approval as Signed;
+  // The generation check is the upsert's own, so of two concurrent first approvals the second, waiting on the key,
+  // finds the first committed and updates nothing.
+  const kept = sql<number>`coalesce(((${organizationServerUpgrades.channelApproval}->>'body')::jsonb->>'generation')::bigint, 0)`;
+  const [row] = yield* drizzle.insert(organizationServerUpgrades)
+    .values({ organizationId: organization.id, channel: approved.channel, channelApproval: approval })
+    .onConflictDoUpdate({
+      target: organizationServerUpgrades.organizationId,
+      set: { channel: approved.channel, channelApproval: approval, updatedAt: new Date() },
+      setWhere: sql`${kept} < ${approved.generation}`,
+    })
+    .returning({
+      id: organizationServerUpgrades.organizationId,
+      automatic: organizationServerUpgrades.automatic,
+      channel: organizationServerUpgrades.channel,
+      approval: organizationServerUpgrades.channelApproval,
+    });
+  if (row === undefined) {
+    return yield* new Validation({ message: "Someone approved a Release Channel since. Reload and approve again.", userFacing: true });
+  }
+  return row;
 });
 
 const UNCLAIMED = "";

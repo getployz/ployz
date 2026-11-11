@@ -987,6 +987,29 @@ describe("roll-out-server-upgrade", () => {
       expect(await runEffect(setServerUpgradeSettings(organizationId, {}))).toMatchObject({ channel: "stable", approval: second });
     });
 
+    // Catches the second of two first approvals overwriting the first, which no settings row existed to lock against.
+    it("refuses a first approval while another first approval of the same generation commits", async () => {
+      const first = await harness.pool.connect();
+      onTestFinished(() => first.release());
+      const beta = approval("beta", 1);
+      await first.query("begin");
+      await first.query(
+        "insert into organization_server_upgrades (organization_id, channel, channel_approval) values ($1, 'beta', $2)",
+        [organizationId, beta],
+      );
+      const second = approve(approval("stable", 1));
+      await vi.waitFor(async () => {
+        const { rows } = await harness.pool.query(
+          "select 1 from pg_stat_activity where datname = current_database() and wait_event_type = 'Lock'",
+        );
+        expect(rows).toHaveLength(1);
+      });
+      await first.query("commit");
+
+      await expect(second).rejects.toThrow("Someone approved a Release Channel since");
+      expect(await runEffect(setServerUpgradeSettings(organizationId, {}))).toMatchObject({ channel: "beta", approval: beta });
+    });
+
     it("refuses a body that isn't a channel approval, and a member who can't operate Servers", async () => {
       await expect(approve({ ...approval("beta", 1), body: JSON.stringify({ channel: "beta" }) }))
         .rejects.toThrow("That isn't an approval of a Release Channel.");

@@ -2657,11 +2657,11 @@ it.live(
           body: JSON.stringify({ channel, cluster: "CQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQk=", generation, signer: "a".repeat(64) }),
           signatures: [{ key: "a".repeat(64), signature: "b".repeat(128) }],
         });
-        assert.deepStrictEqual((yield* cli("GET", "upgrade-channel", alice)).json, { ...DEFAULT_SERVER_UPGRADE_SETTINGS, approved: null });
+        assert.deepStrictEqual(JSON.parse((yield* cli("GET", "upgrade-channel", alice)).text), { ...DEFAULT_SERVER_UPGRADE_SETTINGS, approved: null });
 
         const kept = yield* cli("POST", "upgrade-channel", alice, { approval: approval("beta", 1) });
-        assert.deepStrictEqual(kept.json, { channel: "beta", automatic: false, approved: { channel: "beta", generation: 1 } });
-        assert.deepStrictEqual((yield* cli("GET", "upgrade-channel", alice)).json, kept.json);
+        assert.deepStrictEqual(JSON.parse(kept.text), { channel: "beta", automatic: false, approved: { channel: "beta", generation: 1 } });
+        assert.deepStrictEqual((yield* cli("GET", "upgrade-channel", alice)).text, kept.text);
 
         const stale = yield* cli("POST", "upgrade-channel", alice, { approval: approval("stable", 1) });
         assert.strictEqual(stale.status, 422);
