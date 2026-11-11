@@ -118,18 +118,25 @@ If a move stops partway or a command is refused, see
 ## Servers that enforce device approval
 
 On servers with [device enforcement](../servers/manage-servers.md#require-a-devices-signature-for-restarts-and-joins)
-on, a move runs only with your approval. `ployz volume move` from an approved device signs it and
-prints what you approved before Ployz Cloud starts it:
+on, a move runs only with your approval. `ployz volume move` from an approved device shows what
+it will sign and asks before it signs:
 
 ```
 Approved: move data from web-1 to web-2. web stops on web-1 for the last copy, then starts on web-2.
 Approved web: registry.example.com/web@sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef
   variables DATABASE_HOST=db.internal
   pull_policy "never"
+Approve the move of data? [y/N]
 ```
 
 Below the first line is `web` as it starts on `web-2`, with each setting, as a
-[deploy's approval](../deploy/deployments.md) lists them.
+[deploy's approval](../deploy/deployments.md) lists them. Ployz Cloud relays what `web` runs on
+`web-1`, so read these lines before you answer: a setting you didn't make shows here even if
+Cloud put it there. Answer no and nothing is signed or moved.
+
+A script has no terminal to ask in, so the move is refused before it signs and tells you to add
+`--yes`. With `--yes`, or `PLOYZ_AUTO_CONFIRM=1`, it prints the same lines and signs without
+asking. Use `--yes` only where you trust what Ployz Cloud relays.
 
 One approval covers the whole move, its retries, and the release that undoes or finishes it. The
 servers refuse anything else: `web-1` sends the volume only to `web-2`, and `web-2` starts only

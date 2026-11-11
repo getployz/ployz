@@ -5,7 +5,7 @@ use ployz_core::{
 use ployz_store::VolumeName;
 
 use super::super::restore::{Seen, Unseen};
-use super::{MirrorOn, holders, keeps_mirror, parties, starting};
+use super::{MirrorOn, consent, holders, keeps_mirror, parties, starting};
 
 fn volume() -> VolumeName {
     VolumeName::parse("data").unwrap()
@@ -321,4 +321,53 @@ fn a_move_reads_only_the_running_service_container_and_never_one_an_earlier_cut_
             .collect::<Vec<_>>(),
         [containers[0].container_id]
     );
+}
+
+/// `--yes` signs a Move nobody watches without asking.
+#[test]
+fn yes_signs_a_move_without_asking() {
+    consent(&volume(), true, |question, _, _| {
+        panic!("--yes asked {question:?}")
+    })
+    .unwrap();
+}
+
+/// Without a terminal or `--yes`, nothing is signed, and the refusal names the retry.
+#[test]
+fn a_move_with_no_terminal_refuses_before_signing_and_names_yes() {
+    let error = consent(&volume(), false, |question, refusal, declined| {
+        crate::ui::confirm(question, || refusal, declined)
+    })
+    .unwrap_err();
+    let rpc = error.report();
+    assert_eq!(rpc.code, ployz_core::RpcErrorCode::ConfirmationRequired);
+    assert!(rpc.message.contains("add --yes"), "{}", rpc.message);
+    assert!(rpc.message.ends_with("Nothing moved."), "{}", rpc.message);
+    assert!(
+        error.hints().iter().any(|hint| matches!(
+            hint,
+            crate::ui::Hint::Retry(retry) if retry.ends_with(" --yes")
+        )),
+        "{:?}",
+        error.hints()
+    );
+}
+
+/// A person asked names the Volume, and their no fails the Move before it signs.
+#[test]
+fn declining_a_move_signs_nothing_and_fails() {
+    let mut asked = None;
+    let error = consent(&volume(), false, |question, _, declined| {
+        asked = Some((question.to_owned(), declined));
+        Err(crate::handlers::Error::cancelled())
+    })
+    .unwrap_err();
+    assert_eq!(
+        asked,
+        Some((
+            "Approve the move of data?".to_owned(),
+            "Cancelled. Nothing signed or moved."
+        ))
+    );
+    assert!(error.is_interrupted(), "a no exits 130, not 0");
 }

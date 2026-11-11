@@ -427,6 +427,7 @@ pub(crate) fn move_command(command: Command) -> Command {
             .required(true)
             .help("The Server the Volume moves to; a Move that stopped continues when asked again"),
     )
+    .arg(crate::cli::yes("Sign the Move without asking, when your Servers enforce device approval"))
     .arg(approval_arg())
     .arg(wait_flag())
 }

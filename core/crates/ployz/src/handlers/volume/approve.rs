@@ -6,7 +6,7 @@
 //!
 //! `ployz volume move` signs the Move: the Volume, the Server that writes it, the target,
 //! the Mirrors that follow, and the spec its Service starts with on the target, which is
-//! the one it runs with now.
+//! the one it runs with now. It shows that spec and asks before it signs, as a deploy does.
 
 use std::collections::BTreeMap;
 
@@ -22,12 +22,14 @@ use ployz_core::{
     VolumeCopy, op,
 };
 use ployz_store::{EnvironmentSummary, VolumeId, VolumeName};
+use serde_json::json;
 
 use super::super::deploy::approve::{Enforcing, Probe, probe};
 use super::super::{Error, leaf_matches, store};
 use super::restore::{Seen, copies, docker_volume};
 use crate::cluster::{Call, Deadline};
 use crate::connect::TARGET_RPC_TIMEOUT;
+use crate::ui::Hint;
 
 /// A signed Mirror approval and the change it approved.
 pub(super) struct MirrorApproval {
@@ -97,13 +99,14 @@ pub(super) struct MoveApproval {
 }
 
 /// Sign the Move of `volume` onto `to` with this CLI's Device key, when it holds one and a
-/// Server of the Cluster enforces Device approval, and show the change. The Service starts
+/// Server of the Cluster enforces Device approval, after showing the change and asking. The Service starts
 /// on `to` with the spec its one Container on the Writer runs, from the image already there,
 /// at the size the Store records (`recorded`), as Cloud would start it. None otherwise.
 ///
 /// # Errors
 /// Refuses as [`sign`] does, and when `to` already writes the Volume, when the Writer runs no
-/// Container of it or more than one, and when its image is not pinned by digest; returns the
+/// Container of it or more than one, when its image is not pinned by digest, and when the
+/// person says no or can't be asked without `--yes`; returns the
 /// Store's, a Server's or the key's error.
 pub(super) fn sign_move(
     root: &ArgMatches,
@@ -151,17 +154,53 @@ pub(super) fn sign_move(
             mirrors,
         },
     );
-    let signed = Signed::sign(&body, &signer).map_err(Error::command)?;
     let change = ApprovedVolumeChange::moving(&body, volume.as_str(), named(&seen), change)
         .expect("a Move approval names the change it was made from");
     for line in change.lines() {
-        crate::ui::stream(line);
+        crate::ui::note(format_args!("{line}"));
     }
+    let yes = matches
+        .try_get_one::<bool>("yes")
+        .ok()
+        .flatten()
+        .copied()
+        .unwrap_or(false);
+    consent(volume, yes, |question, refusal, declined| {
+        crate::ui::confirm(question, || refusal, declined)
+    })?;
+    let signed = Signed::sign(&body, &signer).map_err(Error::command)?;
     Ok(Some(MoveApproval {
         signed,
         change,
         service,
     }))
+}
+
+/// What a person says to signing the Move of `volume`, asked after its lines show: Cloud
+/// relays the Writer's spec the Move starts on the target, so a setting it planted must be
+/// refusable before this Device signs it. `--yes` answers for a run nobody watches; without
+/// it, a run that can't ask refuses before signing, and a person who says no moves nothing.
+fn consent(
+    volume: &VolumeName,
+    yes: bool,
+    confirm: impl FnOnce(&str, Error, &'static str) -> Result<(), Error>,
+) -> Result<(), Error> {
+    if yes {
+        return Ok(());
+    }
+    let refusal = Error::detailed(
+        RpcErrorCode::ConfirmationRequired,
+        "Your servers enforce device approval, so signing this move needs your yes, and \
+         there's no terminal to ask in. Read the lines above, then add --yes to sign them. \
+         Nothing moved.",
+        json!({ "volume": volume.as_str() }),
+    )
+    .hint(Hint::Retry(super::super::typed_with(&["--yes"])));
+    confirm(
+        &format!("Approve the move of {volume}?"),
+        refusal,
+        "Cancelled. Nothing signed or moved.",
+    )
 }
 
 /// This CLI's Device signer and what the Servers report of enforcement, when it holds a key
