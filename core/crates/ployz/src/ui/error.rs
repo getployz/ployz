@@ -204,10 +204,14 @@ pub(crate) fn warn_cause(what: impl std::fmt::Display, error: Chain<'_>) {
 }
 
 pub(crate) fn retrying(operation: &str, error: Chain<'_>, seconds: u64) {
-    super::note(format_args!(
+    super::note(retrying_line(operation, error, seconds));
+}
+
+fn retrying_line(operation: &str, error: Chain<'_>, seconds: u64) -> String {
+    format!(
         "{operation}: {}; retrying for up to {seconds}s. Check outbound firewall access if this connection is blocked.",
         inline(error)
-    ));
+    )
 }
 
 pub(crate) fn rpc_error(code: ployz_core::RpcErrorCode, error: Chain<'_>) -> ployz_core::RpcError {
@@ -284,6 +288,15 @@ pub fn write(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_retry_notice_names_the_operation_the_cause_and_the_time_left() {
+        let error = std::io::Error::other("connection refused");
+        assert_eq!(
+            retrying_line("Reconnecting to the Cluster", &error, 60),
+            "Reconnecting to the Cluster: connection refused; retrying for up to 60s. Check outbound firewall access if this connection is blocked."
+        );
+    }
 
     #[test]
     fn valid_caps_at_eight_and_counts_the_rest() {

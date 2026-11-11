@@ -308,6 +308,26 @@ mod tests {
     }
 
     #[tokio::test(start_paused = true)]
+    async fn attempts_are_one_second_apart_and_one_more_starts_at_the_deadline() {
+        let started = Instant::now();
+        let mut starts = Vec::new();
+        run(
+            &mut starts,
+            "probe",
+            WAIT,
+            |_| true,
+            async |starts| {
+                starts.push(Instant::now() - started);
+                Err::<(), _>(Probe("connection refused"))
+            },
+        )
+        .await
+        .unwrap_err();
+        let expected: Vec<_> = (0..=60).map(Duration::from_secs).collect();
+        assert_eq!(starts, expected);
+    }
+
+    #[tokio::test(start_paused = true)]
     async fn the_deadline_says_whether_it_cut_an_attempt_in_flight() {
         for (hangs_after, cut) in [(None, false), (Some(11), true)] {
             let mut calls = 0;
