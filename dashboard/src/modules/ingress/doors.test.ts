@@ -167,7 +167,7 @@ describe("what a switch moves", () => {
     );
     expect(collidingMoves(moving, routes)).toEqual([moving[0]]);
     expect(collisionGap(collidingMoves(moving, routes))).toBe(
-      "wk.example.com would be the generated domain of shop-prod/worker, and a custom domain already holds it. Remove the generated domain or the custom domain, then switch again.",
+      "wk.example.com would be the generated domain of shop-prod/worker, and a custom domain already holds it. Remove the generated domain or the custom domain, deploy, then switch again.",
     );
     expect(collidingMoves(moving, known(["docs-main", "api.example.com", "custom"]))).toEqual([moving[1]]);
     expect(collidingMoves(moving, new Map())).toEqual([]);

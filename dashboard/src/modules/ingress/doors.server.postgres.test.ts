@@ -259,7 +259,7 @@ it("stops before the source moves when a generated name would spell a custom dom
   await hosted();
   session = answering((doors) => doors, Effect.succeed({ ...EMPTY_FRAME, containers: [serving("wk.acme.ployz.test"), serving("wk.example.com")] }));
   storeViews = owning([{ kind: "generated", hostname: "wk.acme.ployz.test" }, { kind: "custom", hostname: "wk.example.com" }]);
-  const gap = "wk.example.com would be the generated domain of shop-prod/shop, and a custom domain already holds it. Remove the generated domain or the custom domain, then switch again.";
+  const gap = "wk.example.com would be the generated domain of shop-prod/shop, and a custom domain already holds it. Remove the generated domain or the custom domain, deploy, then switch again.";
   expect(await run(reviewSwitch(ORG, "tunnel"))).toEqual({
     moves: [{ from: "wk.acme.ployz.test", to: "wk.example.com" }], kept: ["wk.example.com"], zone: "example.com", hostedName: "acme.ployz.test", gap,
   });

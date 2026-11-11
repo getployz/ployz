@@ -136,7 +136,7 @@ export function collidingMoves(moving: readonly MovedHostname[], known: KnownRou
 export function collisionGap(colliding: readonly MovedHostname[]) {
   const [first] = colliding;
   if (first === undefined) return null;
-  return `${first.to} would be the generated domain of ${first.namespace}/${first.service}, and a custom domain already holds it. Remove the generated domain or the custom domain, then switch again.`;
+  return `${first.to} would be the generated domain of ${first.namespace}/${first.service}, and a custom domain already holds it. Remove the generated domain or the custom domain, deploy, then switch again.`;
 }
 
 /** The hostnames published one label under `from` that no Deployment the Store knows of put there. */
