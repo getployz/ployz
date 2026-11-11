@@ -53,6 +53,7 @@ export const runtimeFrameRecords = Effect.gen(function* () {
     write: (organizationId, generation, frame) => recordDepartedServers(organizationId, generation, frame).pipe(
       Effect.provideService(Database, database),
       Effect.provideService(SecretEncryption, encryption),
+      Effect.provideService(InngestClient, inngest),
     ),
   };
   return [names, sealing, departed] as const;

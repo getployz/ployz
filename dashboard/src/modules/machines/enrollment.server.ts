@@ -40,6 +40,7 @@ import {
 import { readOrganizationSealingKey, recordFirstRecoveryBackup, recordReportedSealingPublicKey } from "#/modules/machines/sealing-key.server";
 import { supportsSealingRecovery } from "#/modules/machines/sealing-recovery-compat.server";
 import { SecretEncryption } from "#/utils/encrypted-secret.server";
+import { requestBillingSync } from "#/modules/billing/billing-sync.server";
 import { sendInngestEvent } from "#/modules/inngest/client";
 import {
   createClusterDomainSyncRequestedEvent,
@@ -223,6 +224,7 @@ const recordJoined = Effect.fn("MachineEnrollment.recordJoined")(
     // Credited once, to whoever made the token: a retried completion joins nothing new.
     for (const { userId, organizationId } of joined) {
       yield* (yield* PostHog).capture({ userId, organizationId, event: "server_enrolled", properties: { founder } });
+      yield* requestBillingSync(organizationId, "server-joined");
     }
   },
 );

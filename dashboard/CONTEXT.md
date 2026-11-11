@@ -86,8 +86,8 @@ A Cloud instance an operator runs on their own infrastructure from the released 
 _Avoid_: Standalone Cluster, on-prem control plane, self-hosted relay
 
 **Billing Plan**:
-The plan an Organization is on in Ployz Cloud: Free, or the legacy paid Polar subscription once sold as "Pro" for custom domains. Holding that subscription is the plan; there is no plan column. It grants nothing now, since custom domains are free; its holders keep the billing portal to cancel it. Hobby ($5 a month) and Pro ($49 a month per Organization) are shown as coming soon and are not sold. Display names are product copy, not stored values. A Self-hosted Cloud has no Billing Plan.
-_Avoid_: Free plan, Teams plan, plan slug, subscription tier
+The plan an Organization is on in Ployz Cloud: Free, or Production. Production is priced per production Cluster: $10 a month including two Servers, then $5 for each extra Server. An Organization has one Cluster today, so holding the Production Polar subscription is what makes it production. There is no plan column and no production flag on a Cluster. Cloud keeps the subscription's units at the Server count, never below two: an increase is invoiced at once and a decrease applies at the next renewal. Nothing is enforced. An Organization without the subscription shows as Free and is refused nothing. Display names are product copy, not stored values. A Self-hosted Cloud has no Billing Plan.
+_Avoid_: Free plan, Teams plan, Pro plan, Hobby, plan slug, subscription tier
 
 **Member**:
 A user who belongs to an Organization, with one role: owner, admin or member. Owners and admins invite, change roles and remove; only an owner can make or remove an owner. An Organization always keeps at least one owner. A member's commands act as them; when they leave or are removed, their Organization Tokens and Server Access end with the membership.

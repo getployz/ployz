@@ -1658,6 +1658,9 @@ it.live(
         mode: "hosted",
         productId: "pro",
         listActiveSubscriptions: () => Effect.die("not used"),
+        createCheckout: () => Effect.die("not used"),
+        setSubscriptionUnits: () => Effect.die("not used"),
+        clearPendingUpdate: () => Effect.die("not used"),
         createCustomerPortal: () => Effect.die("not used"),
       };
       const cloud = yield* cloudServices({ polar: hosted, hostedDnsUrl: hostedDns.url }, inngest);

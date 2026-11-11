@@ -8,11 +8,13 @@ import { runInngestEffect } from "#/server/run.server";
 import {
   getActiveManagedSubscriptionSnapshot,
   persistOrganizationBillingStateSnapshot,
+  syncSubscriptionUnits,
 } from "#/modules/billing/billing.server";
 import { listOrganizationIds } from "#/modules/organization/organization-state.server";
 import type { Polar } from "#/modules/billing/polar-provider.server";
 import type { Database } from "#/server/database.server";
 import type { PolarConfiguration } from "#/server/config.server";
+import type { SecretEncryption } from "#/utils/encrypted-secret.server";
 
 export const SYNC_ORGANIZATION_BILLING_STATE_SINGLETON = {
   key: "event.data.organizationId",
@@ -25,7 +27,7 @@ export type BillingSyncStepTools = Pick<
 >;
 
 export type BillingEffectRunner = <A, E extends Error>(
-  effect: Effect.Effect<A, E, Database | Polar>,
+  effect: Effect.Effect<A, E, Database | Polar | SecretEncryption>,
 ) => Promise<A>;
 
 const OrganizationId = Schema.Trim.check(Schema.isMinLength(1));
@@ -106,6 +108,16 @@ export async function executeSyncOrganizationBillingState(
       }),
     ),
   );
+
+  if (persistedSnapshot.hasActiveSubscription) {
+    await step.run("sync-subscription-units", () =>
+      runEffect(
+        syncSubscriptionUnits(organizationId).pipe(
+          Effect.map((change) => change.kind),
+        ),
+      ),
+    );
+  }
 
   return {
     organizationId,
