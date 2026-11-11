@@ -3,7 +3,7 @@
 
 use std::collections::BTreeSet;
 
-use ployz_core::{RpcError, RpcErrorCode, ServiceName};
+use ployz_core::{Namespace, RpcError, RpcErrorCode, ServiceName};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 use ts_rs::TS;
@@ -423,13 +423,51 @@ fn admit_member(
             )?
         }
     };
+    let admitted = admit_taking_everything_off(
+        tx,
+        who,
+        (environment, deployment_id),
+        (&review, &losses, namespace),
+        trusted,
+    )?;
+    mark.evidence.insert(
+        id.clone(),
+        Evidence {
+            deployment: admitted.id.clone(),
+            servers: trusted.servers,
+            // Unseen, the Servers that didn't answer last time still count.
+            unanswered: unanswered(trusted).unwrap_or_else(|| {
+                mark.evidence
+                    .get(id)
+                    .map(|before| before.unanswered.clone())
+                    .unwrap_or_default()
+            }),
+        },
+    );
+    mark::save(tx, who, mark)?;
+    if let Some(outcome) = forget {
+        return deployment::forget(tx, &admitted.id, outcome);
+    }
+    Ok(admitted)
+}
+
+/// Admit the Deployment `deployment_id` that takes everything `environment` runs off
+/// the Servers, deleting the Docker Volumes `losses` names, as `review` saw it.
+fn admit_taking_everything_off(
+    tx: &mut dyn Tx,
+    who: &Actor,
+    (environment, deployment_id): (&Environment, &DeploymentId),
+    (review, losses, namespace): (&crate::review::Review, &[VolumeLoss], Namespace),
+    trusted: &Trusted,
+) -> Result<DeploymentSummary, RpcError> {
+    let id = &environment.summary.id;
     let frozen = deployment::freeze(
         id,
         &who.organization,
-        &empty,
+        &scope::empty(&environment.working.environment_slug),
         &deployment::Landing::applied(&review.head.applied),
         deployment::Scope::All {
-            losses: &losses,
+            losses,
             retire: &[],
             prune: true,
         },
@@ -453,24 +491,6 @@ fn admit_member(
         &frozen,
     )?;
     deployment::admitted_by_user(tx, &admitted.id, trusted)?;
-    mark.evidence.insert(
-        id.clone(),
-        Evidence {
-            deployment: admitted.id.clone(),
-            servers: trusted.servers,
-            // Unseen, the Servers that didn't answer last time still count.
-            unanswered: unanswered(trusted).unwrap_or_else(|| {
-                mark.evidence
-                    .get(id)
-                    .map(|before| before.unanswered.clone())
-                    .unwrap_or_default()
-            }),
-        },
-    );
-    mark::save(tx, who, mark)?;
-    if let Some(outcome) = forget {
-        return deployment::forget(tx, &admitted.id, outcome);
-    }
     Ok(admitted)
 }
 
@@ -729,36 +749,13 @@ pub(crate) fn shut_down(
             trusted,
         )?;
     }
-    let frozen = deployment::freeze(
-        id,
-        &who.organization,
-        &empty,
-        &deployment::Landing::applied(&review.head.applied),
-        deployment::Scope::All {
-            losses: &losses,
-            retire: &[],
-            prune: true,
-        },
-        namespace,
-        None,
-    )?;
-    let admitted = deployment::admit(
+    let admitted = admit_taking_everything_off(
         tx,
         who,
-        (
-            deployment::Admission::New {
-                id: &admit.id,
-                push: None,
-            },
-            &[],
-            None,
-            None,
-        ),
-        id,
-        deployment::NOTHING,
-        &frozen,
+        (&environment, &admit.id),
+        (&review, &losses, namespace),
+        trusted,
     )?;
-    deployment::admitted_by_user(tx, &admitted.id, trusted)?;
     if let Some(outcome) = forget {
         return deployment::forget(tx, &admitted.id, outcome);
     }

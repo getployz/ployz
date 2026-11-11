@@ -51,7 +51,7 @@ enum MarkState {
     Removed,
 }
 
-/// The removal Deployment `remove()` admitted, as `on_servers` (removal/mod.rs)
+/// The removal Deployment `remove()` admitted, as `on_servers` (deployment/history.rs)
 /// reads it: in flight, or the last that ran. Only an applied removal takes the
 /// Environment off the Servers; a cancelled one leaves the Deploy before it there.
 #[derive(Clone, Copy, Debug, Hash, PartialEq, Eq)]
@@ -724,10 +724,10 @@ fn reads_as(
             "finish moves the mark to `removed` only from `removing` (removal/due.rs, mark::finish's conditional UPDATE)"
         }
         Step::Purge if broken.finish_saves_unconditionally => {
-            "finish purges the Environment (removal/due.rs, removal::purge, under Broken)"
+            "finish purges the Environment (removal/due.rs, scope::purge, under Broken)"
         }
         Step::Purge => {
-            "finish purges the Environment if its UPDATE moved the mark (removal/due.rs, removal::purge)"
+            "finish purges the Environment if its UPDATE moved the mark (removal/due.rs, scope::purge)"
         }
         Step::CancelRemoval => match removal {
             Some(Removal::Running) => {

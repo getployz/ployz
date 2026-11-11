@@ -75,10 +75,10 @@ Each model step is a copy of code at the sync commit. Reread these when a diff t
 
 - `core/crates/ployz-store/src/removal/due.rs`: `sweep`, `settle`, `finish`, `close` and its `Cancelled` early return.
 - `core/crates/ployz-store/src/removal/mark.rs`: `live`, `of`, `save` and its `ON CONFLICT` update, `finish` and its `WHERE state = 'removing'`, and the helpers other modules call: `unmarked` and `marks_holding`, which return SQL they splice in, and `drop_live`, which deletes the live mark.
-- `core/crates/ployz-store/src/removal/mod.rs`: `cancel_removal`, `stop`, `lock_project`, `on_servers`, `ran`, `purge`.
-- `core/crates/ployz-store/src/scope.rs`: `environment`, `lock`, `lock_all`, `lock_id`, `owned`, `load_by_id`.
+- `core/crates/ployz-store/src/removal/mod.rs`: `cancel_removal`, `stop`, `lock_project`.
+- `core/crates/ployz-store/src/scope.rs`: `environment`, `lock`, `lock_all`, `lock_id`, `owned`, `load_by_id`, `purge`.
 - `core/crates/ployz-store/src/deployment/lifecycle.rs`: `cancel`, `record` and its `Applied`/`Failed` choice, `end` and its `(Cancelling, Failed)` to `Cancelled` mapping.
-- `core/crates/ployz-store/src/deployment/history.rs`: `in_flight`, `last_ran`.
+- `core/crates/ployz-store/src/deployment/history.rs`: `in_flight`, `last_ran`, `on_servers`, `ran`.
 - `core/crates/ployz-store/src/storage/pg.rs`: `begin` and its READ COMMITTED level, `TIMEOUT`.
 - `core/crates/ployz-store/src/storage/sqlite.rs`: `transaction` and `BEGIN IMMEDIATE`.
 - `core/crates/ployz-store/src/pull_request/mod.rs`: the calls to `removal::close` and `removal::sweep`, `mark::unmarked`, `mark::drop_live` at the merge undo, and `idle_facts`.
