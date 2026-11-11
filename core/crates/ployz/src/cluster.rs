@@ -46,6 +46,8 @@ use crate::{
     service::ContainerOperationFailure,
 };
 
+#[cfg(test)]
+mod call_audit;
 mod capacity;
 mod container_health;
 
