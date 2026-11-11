@@ -32,7 +32,7 @@ export type Servers = { readonly machines: DeployTarget["machines"]; readonly ru
 /** What an approval reads and asks: the Store, the Servers, and the person, who answers each review. */
 export type Approving = { readonly reads: Reads; readonly servers: Servers; readonly review: (review: Review) => Promise<boolean> };
 
-const SIGNS_FOR = "Your servers run only what you approve here, and check it themselves.";
+const SIGNS_FOR = "Your servers run only what you approve here.";
 
 const enforcing = (servers: Servers) => servers.machines.some((machine) => machine.deviceEnforcement === true);
 
@@ -90,7 +90,7 @@ function ruleTerms(view: RuleView) {
 function commitsOf(source: DeploymentView) {
   return source.builds.map((build) => {
     if (build.commit === null) {
-      throw new SessionRefused(`${build.service} builds from an upload. Servers that enforce device approval run only what GitHub built from a commit. Nothing deployed.`);
+      throw new SessionRefused(`${build.service} builds from an upload, which these servers won't run. Deploy it with ployz deploy. Nothing deployed.`);
     }
     return { service: build.service, commit: build.commit };
   });
@@ -112,8 +112,8 @@ export async function approveRedeploy(approving: Approving, source: DeploymentVi
     const scope = await deployApprovalScope(target, COMMIT_CAPABILITIES);
     if (scope === undefined || scope === null) return scope;
     const terms = { ...ruleTerms(await reads.rule(environment)), commits };
-    const approvals = await reviewed(approving, await draftCommits(scope, terms), `Approve the commits of this redeploy?`,
-      "Your servers run only what GitHub builds from these commits under your rule. Once each image is built or reused, this browser approves the same commits again without asking, so keep this tab open until it deploys.");
+    const approvals = await reviewed(approving, await draftCommits(scope, terms), "Approve these commits?",
+      "Keep this tab open until it deploys. Once the images are built, this browser approves these commits again without asking.");
     return approvals === null ? null : { fields: { approvals, awaits_approval: true }, again: { scope, terms } };
   }
   const scope = await deployApprovalScope(target);

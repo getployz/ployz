@@ -169,7 +169,7 @@ describe("approveRedeploy of a GitHub build", () => {
     const sign = vi.spyOn(crypto.subtle, "sign");
     review.mockResolvedValue(true);
     await expect(approveRedeploy(approving(reads(), placing()), deployment([build({ commit: null })]), crypto.randomUUID()))
-      .rejects.toThrow("web builds from an upload.");
+      .rejects.toThrow("web builds from an upload, which these servers won't run.");
     await expect(approveRedeploy(approving(reads({ rule: vi.fn(async () => rule(null)) }), placing()), deployment([build()]), crypto.randomUUID()))
       .rejects.toThrow("production has no automatic deploy rule.");
     expect(sign).not.toHaveBeenCalled();

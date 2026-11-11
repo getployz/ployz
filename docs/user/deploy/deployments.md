@@ -232,11 +232,37 @@ The dashboard can't check what web's tag nginx:1.29-alpine points to. Write the 
 A server that enforces and runs a Ployz from before 0.4 can't take an approval from the
 dashboard. **Deploy** names it and deploys nothing: upgrade it, or run `ployz deploy`.
 
-Servers that enforce refuse a deploy nobody approved: a Git push, an organization token,
-`ployz up`, a restore, a redeploy or rollback started anywhere but `ployz deployment redeploy` on
-an approved device, or a deploy the dashboard starts from a Sync or a new branch. To redeploy or
-roll back, see
+#### Other deploys the dashboard starts
+
+**Create and deploy** on a new branch, **Deploy {name}** on a preview that was shut down, and
+**Redeploy** or **Roll back** on a deployment's page ask before they deploy. Your browser reads
+what the deploy ships, then shows every term it will sign, such as:
+
+```text
+Approved web: nginx@sha256:3f1c2a9b8e7d…
+  variables GREETING="hello  world", API_KEY (sealed)
+  deployment 0f8fad5b9d4f4c6e8a1b2c3d4e5f6a7b
+  servers 6f1e0c2a9b8d4e7f8a1b2c3d4e5f6a7b, 9c0d1e2f3a4b5c6d7e8f9a0b1c2d3e4f
+  cluster "q8Xc0mZ1vN4yT7rE2wK9pL3sD6fH5jG8aB1nM0oQ4uI="
+  signer browser key 72asyextvn
+  valid 2026-11-11T03:19:09Z to 2026-11-11T03:34:09Z
+```
+
+They ask for your passkey as **Deploy** does. **Approve** signs exactly those lines.
+**Cancel** signs nothing and deploys nothing; a new branch is still created.
+
+A new branch or a preview that runs nowhere yet deploys to the servers of the environment it
+branched from. A redeploy approves what the deployment saved, not what you've saved since.
+
+A redeploy of a deployment that built from GitHub approves each service's commit under your
+[automatic deploy rule](github.md#deploy-on-push-to-servers-that-enforce-device-approval), as
+`ployz deployment redeploy` does: see
 [Roll back on servers that enforce device approval](history-and-rollback.md#roll-back-on-servers-that-enforce-device-approval).
+Keep the tab open until it deploys. Once each image is built or reused, your browser approves the
+same commits again without asking. If you close the tab first, nothing deploys.
+
+Servers that enforce refuse a deploy nobody approved: a Git push, an organization token,
+`ployz up`, a restore, or a redeploy or rollback by [the agent](../account/agent-sidebar.md).
 Each server's part of that deployment
 fails with `This server runs only deploys an approved device signed.`, and nothing new starts
 there. A server added after you signed isn't covered by that approval; run `ployz deploy` again.
