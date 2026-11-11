@@ -127,7 +127,7 @@ Approving automatic deploys for production:
   builder     getployz/build/.github/workflows/build.yml@5f35eaa8e1372d0d86ff82788adadf308e5f3f97
   servers     2 in the cluster
   web
-    builds    Dockerfile in ., for linux/amd64, with the Actions cache
+    builds    Dockerfile in ., for linux/amd64, with the Actions cache, build args LOG_LEVEL=info, build secrets DATABASE_URL
     variables LOG_LEVEL=info, DATABASE_URL (sealed)
     mode {"mode":"replicated","replicas":2}
     command ["node server.js"]
@@ -135,7 +135,7 @@ Approving automatic deploys for production:
 Approved. Every push to main now deploys web, worker with these settings.
 ```
 
-It lists every setting the rule pins, start command included, so read them before you rely on it.
+It lists every setting the rule pins, including the start command and how GitHub builds each service, so read them before you rely on it.
 
 To pin your own fork of the builder, add `--builder <owner>/build/.github/workflows/build.yml@<sha>`
 and `--builder-sha <sha>`.

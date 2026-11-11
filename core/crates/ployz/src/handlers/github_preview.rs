@@ -19,7 +19,7 @@ use std::time::Duration;
 use clap::{Arg, ArgAction, ArgMatches, Command};
 use ployz_core::authority::preview::{secrets_digest, template};
 use ployz_core::authority::rule::{PolicyCache, RuleEvent, RuleSource, Runner};
-use ployz_core::authority::rule_draft::{WORKFLOW, settings};
+use ployz_core::authority::rule_draft::{WORKFLOW, builds, settings};
 use ployz_core::authority::{
     BuildPolicy, PreviewRule, PreviewService, RuleId, Signed, SignerKey, Timestamp,
 };
@@ -602,7 +602,10 @@ fn show(view: &PreviewRuleView, rule: &PreviewRule, names: &[ServiceName], trust
         "Approving previews of {}:",
         view.environment.name
     ));
-    crate::ui::stream(format_args!("  repository  {}", source.repository));
+    crate::ui::stream(format_args!(
+        "  repository  {}, parent branch {}",
+        source.repository, source.branch
+    ));
     let builder = &source.builder;
     crate::ui::stream(format_args!("  builder     {}", builder.r#ref));
     crate::ui::stream(format_args!(
@@ -619,6 +622,7 @@ fn show(view: &PreviewRuleView, rule: &PreviewRule, names: &[ServiceName], trust
             continue;
         };
         crate::ui::stream(format_args!("  {name}"));
+        crate::ui::stream(format_args!("    builds    {}", builds(&approved.policy)));
         if !approved.inherit.is_empty() {
             crate::ui::stream(format_args!(
                 "    reads     {} from {}",

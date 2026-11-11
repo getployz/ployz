@@ -88,12 +88,13 @@ It prints what every preview will run, then signs it with your device key:
 
 ```text
 Approving previews of production:
-  repository  acme/web
+  repository  acme/web, parent branch main
   builder     getployz/build/.github/workflows/build.yml@5f35eaa8e1372d0d86ff82788adadf308e5f3f97
   urls        <service>-pv-<id>.acme-x7q2.ployz.app
   trusted     alice (1109914), bob (2207431)
   servers     2 in the cluster
   web
+    builds    Dockerfile in ., for linux/amd64, with the Actions cache, build args LOG_LEVEL=info, build secrets DATABASE_URL
     reads     DATABASE_URL from production
     variables DATABASE_URL (sealed), LOG_LEVEL=info
     mode {"mode":"replicated","replicas":1}

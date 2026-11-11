@@ -393,25 +393,50 @@ impl AutoDeployRule {
     }
 }
 
-fn builds(policy: &BuildPolicy) -> String {
-    let method = match &policy.method {
+/// How a Service builds, as a person reads it: every field of `policy`, which the builder
+/// must run exactly. The destructuring is exhaustive, so a field added to the policy
+/// fails to compile here until it shows.
+#[must_use]
+pub fn builds(policy: &BuildPolicy) -> String {
+    let BuildPolicy {
+        method,
+        context,
+        target,
+        args,
+        secrets,
+        platforms,
+        cache,
+    } = policy;
+    let mut line = match method {
         PolicyMethod::Dockerfile { path } => path.clone(),
-        PolicyMethod::Railpack { .. } => "Railpack".to_owned(),
+        PolicyMethod::Railpack { command: None } => "Railpack".to_owned(),
+        PolicyMethod::Railpack {
+            command: Some(command),
+        } => format!("Railpack running {}", json(command)),
     };
-    format!(
-        "{method} in {}, for {}{}",
-        policy.context,
-        policy
-            .platforms
+    line.push_str(&format!(
+        " in {context}, for {}",
+        platforms.iter().cloned().collect::<Vec<_>>().join(", ")
+    ));
+    if let Some(target) = target {
+        line.push_str(&format!(", target {target}"));
+    }
+    match cache {
+        PolicyCache::Actions => line.push_str(", with the Actions cache"),
+        PolicyCache::Off => {}
+    }
+    if !args.is_empty() {
+        let args: Vec<String> = args
             .iter()
-            .cloned()
-            .collect::<Vec<_>>()
-            .join(", "),
-        match policy.cache {
-            PolicyCache::Actions => ", with the Actions cache",
-            PolicyCache::Off => "",
-        }
-    )
+            .map(|(name, value)| format!("{name}={value}"))
+            .collect();
+        line.push_str(&format!(", build args {}", args.join(", ")));
+    }
+    if !secrets.is_empty() {
+        let secrets: Vec<&str> = secrets.iter().map(String::as_str).collect();
+        line.push_str(&format!(", build secrets {}", secrets.join(", ")));
+    }
+    line
 }
 
 /// What differs between the kept rule's approval of a Service and `next`.

