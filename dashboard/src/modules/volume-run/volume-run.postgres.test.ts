@@ -2694,13 +2694,14 @@ describe("volume runs", () => {
       expect(await keptApprovals()).toEqual([{ machine_id: idOf("fsn-2"), approvals: null }]);
     });
 
-    it("drops no approval once the run no longer owns its row, so a Mirror made again keeps the one offered to it", async () => {
+    it("drops no approval when the run no longer owns its row at the drop, so a Mirror made again keeps the one offered to it", async () => {
       machines[1] = { name: "fsn-2", pool: true, copy: slotCopy(base) };
       await harness.pool.query(
         "insert into volume_mirror_status (organization_id, volume_id, machine_id, approvals) values ($1, $2, $3, $4)",
         [organizationId, volumeId, idOf("fsn-2"), JSON.stringify([APPROVAL])]);
       const offered = { body: "offered", signatures: [] };
-      // The run ends during its last forget, and another run makes the Mirror again and offers it an approval.
+      // The run ends during its last forget, and another run makes the Mirror again and offers it an approval. The drop
+      // also holds the run's row, so a run that ends after the check waits for it: see dropRunApprovals.
       beforeSet.set("forget@fsn-1", async () => {
         await harness.pool.query("update volume_run set state = 'failed'");
         await harness.pool.query("update volume_mirror_status set approvals = $1", [JSON.stringify([offered])]);
