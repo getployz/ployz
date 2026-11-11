@@ -270,6 +270,20 @@ it("stops before the source moves when a generated name would spell a custom dom
   expect(await attempts()).toMatchObject([{ state: "failed", stage: "moving", failure: gap }]);
 });
 
+it("opens no Door when a switch to public ports would spell a generated name like a custom domain, so the tunnel is never left beside open ports", async () => {
+  await setup("active");
+  await hosted();
+  session = answering((doors) => doors, Effect.succeed({ ...EMPTY_FRAME, containers: [serving("wk.example.com"), serving("wk.acme.ployz.test")] }));
+  storeViews = owning([{ kind: "generated", hostname: "wk.example.com" }, { kind: "custom", hostname: "wk.acme.ployz.test" }]);
+  const gap = "wk.acme.ployz.test would be the generated domain of shop-prod/shop, and a custom domain already holds it. Remove the generated domain or the custom domain, deploy, then switch again.";
+  expect((await run(reviewSwitch(ORG, "public"))).gap).toBe(gap);
+  const request = await asked("public");
+  expect(await run(executeDoorsOnce(request, RUN))).toMatchObject({ state: "failed" });
+  expect(sets).toEqual([]);
+  expect(await stateNow()).toBe("active");
+  expect(await attempts()).toMatchObject([{ state: "failed", failure: gap }]);
+});
+
 it("moves nothing when a Server doesn't take both doors, and says so", async () => {
   await setup("set_up");
   session = answering(() => ["public"]);
