@@ -1,3 +1,4 @@
+use ployz::connect::Call;
 use std::{
     collections::{BTreeMap, BTreeSet},
     process::Command,
@@ -33,7 +34,7 @@ async fn deploy_scale_and_rename_execute_through_the_sdk_and_cli() {
     .unwrap();
     let session = session(address).await;
     let machines = client
-        .call::<op::ListMachines>(ListMachinesRequest {}, None)
+        .call::<op::ListMachines>(ListMachinesRequest {}, Call::read())
         .await
         .unwrap()
         .machines;
@@ -333,7 +334,7 @@ async fn wait_for_machine(
 ) {
     poll_until(Duration::from_secs(30), "a matching Machine", async || {
         client
-            .call::<op::ListMachines>(ListMachinesRequest {}, None)
+            .call::<op::ListMachines>(ListMachinesRequest {}, Call::read())
             .await
             .is_ok_and(|list| {
                 list.machines

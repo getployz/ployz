@@ -36,6 +36,9 @@ pub(in crate::handlers) struct DeviceApproval {
 pub(in crate::handlers) struct Enforcing {
     pub(in crate::handlers) cluster: SealingPublicKey,
     pub(in crate::handlers) machines: Vec<ployz_core::MachineId>,
+    /// Whether every Server listed checks a person's approval of a commit in place of
+    /// its branch head. An older one refuses the approval as an unknown field.
+    pub(in crate::handlers) commit_approval: bool,
 }
 
 /// How long `ployz deploy` waits to learn whether a Server enforces Device approval.
@@ -47,7 +50,8 @@ const PROBE_TIMEOUT: Duration = Duration::from_secs(15);
 /// asked while the Store plans, so a Cluster that doesn't enforce waits for neither.
 ///
 /// # Errors
-/// Refuses before admission when a Service it ships builds from source, when a tag image
+/// Refuses before admission when the person declines the lines it shows, or no terminal
+/// can ask and `--yes` wasn't given, when a Service it ships builds from source, when a tag image
 /// can't be pinned (its registry wants credentials, can't be reached, or has no such tag),
 /// when a Server enforces but none reports the Cluster's key, and when the Store can't
 /// lower the plan; returns the plan's or the key's error.
@@ -104,15 +108,55 @@ pub(in crate::handlers) fn sign(
     };
     let (body, approved) =
         DeployApproval::draft(terms, plan.namespace, &target, &pins).map_err(Error::command)?;
-    let signed = Signed::sign(&body, &signer).map_err(Error::command)?;
-    for approved in &approved {
-        crate::ui::stream(format_args!("{}", approved.line()));
+    for line in approved.iter().flat_map(ApprovedChange::lines) {
+        crate::ui::note(format_args!("{line}"));
     }
+    let yes = matches
+        .try_get_one::<bool>("yes")
+        .ok()
+        .flatten()
+        .copied()
+        .unwrap_or(false);
+    consent(&approved, yes, |question, refusal, declined| {
+        crate::ui::confirm(question, || refusal, declined)
+    })?;
+    let signed = Signed::sign(&body, &signer).map_err(Error::command)?;
     Ok(Some(DeviceApproval {
         signed,
         version: plan.version,
         approved,
     }))
+}
+
+/// What a person says to signing `approved`, asked after its lines show: Cloud relays the
+/// plan, so a setting it planted must be refusable before this Device signs it. `--yes`
+/// answers for a run nobody watches; without it, a run that can't ask refuses before
+/// signing, and a person who says no deploys nothing.
+fn consent(
+    approved: &[ApprovedChange],
+    yes: bool,
+    confirm: impl FnOnce(&str, Error, &'static str) -> Result<(), Error>,
+) -> Result<(), Error> {
+    if yes {
+        return Ok(());
+    }
+    let services: Vec<&str> = approved
+        .iter()
+        .map(|change| change.service.as_str())
+        .collect();
+    let refusal = Error::detailed(
+        RpcErrorCode::ConfirmationRequired,
+        "Your servers enforce device approval, so signing this deploy needs your yes, and \
+         there's no terminal to ask in. Read the lines above, then add --yes to sign them. \
+         Nothing deployed.",
+        json!({ "services": services }),
+    )
+    .hint(Hint::Retry(super::super::typed_with(&["--yes"])));
+    confirm(
+        &format!("Approve {}?", services.join(", ")),
+        refusal,
+        "Cancelled. Nothing signed or deployed.",
+    )
 }
 
 /// The plan's target when a Device can sign every spec it ships, once its tags are pinned.
@@ -219,7 +263,18 @@ fn enforced(observed: &[MachineObservation]) -> Probe {
         .collect();
     machines.sort_unstable();
     machines.dedup();
-    Probe::Enforcing(Enforcing { cluster, machines })
+    let commit_approval = observed.iter().all(|observed| {
+        observed
+            .machine
+            .runtime
+            .capabilities
+            .contains(ployz_core::COMMIT_APPROVAL_CAPABILITY)
+    });
+    Probe::Enforcing(Enforcing {
+        cluster,
+        machines,
+        commit_approval,
+    })
 }
 
 /// Whether `spec` runs the image a build or upload will make, which no Device can

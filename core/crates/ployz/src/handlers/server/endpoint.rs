@@ -1,6 +1,7 @@
 //! `server set --wg-endpoint`: every other Server the command line enters by dials the
 //! target at the new endpoint, so a mesh that lost the target heals without it.
 
+use crate::cluster::Call;
 use std::sync::Arc;
 
 use futures_util::future::join_all;
@@ -197,7 +198,7 @@ async fn enter(
     };
     match apply_timeout(
         Some(TARGET_RPC_TIMEOUT),
-        client.call::<op::SelectEndpoint>(request, None),
+        client.call::<op::SelectEndpoint>(request, Call::keyed()),
     )
     .await
     {

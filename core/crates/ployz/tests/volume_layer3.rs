@@ -1,3 +1,4 @@
+use ployz::connect::Call;
 use std::sync::Arc;
 
 #[path = "support/containers.rs"]
@@ -33,7 +34,7 @@ async fn volume_mounts_and_partial_results_stay_machine_local() {
     .await
     .unwrap();
     let machines = client
-        .call::<op::ListMachines>(ListMachinesRequest {}, None)
+        .call::<op::ListMachines>(ListMachinesRequest {}, Call::read())
         .await
         .unwrap()
         .machines;

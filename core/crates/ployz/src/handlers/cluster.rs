@@ -1,3 +1,4 @@
+use crate::cluster::Call;
 use clap::{ArgMatches, Command};
 use ployz_core::{
     ClusterName, ClusterNamed, DescribeContractRequest, READ_CLUSTER_NAME_CAPABILITY,
@@ -130,21 +131,24 @@ pub(crate) fn parse(name: &str) -> Result<ClusterName, Error> {
 pub(crate) async fn set(client: &Client, name: ClusterName) -> Result<ClusterNamed, Error> {
     require(client, SET_CLUSTER_NAME_CAPABILITY).await?;
     Ok(client
-        .invoke_entry::<op::SetClusterName>(SetClusterNameRequest { name }, None)
-        .await?)
+        .call_shared::<op::SetClusterName>(SetClusterNameRequest { name }, Call::once())
+        .await
+        .map_err(crate::connect::rpc_error)?)
 }
 
 async fn read(client: &Client) -> Result<ClusterNamed, Error> {
     require(client, READ_CLUSTER_NAME_CAPABILITY).await?;
     Ok(client
-        .invoke_entry::<op::ReadClusterName>(ReadClusterNameRequest {}, None)
-        .await?)
+        .call_shared::<op::ReadClusterName>(ReadClusterNameRequest {}, Call::once())
+        .await
+        .map_err(crate::connect::rpc_error)?)
 }
 
 async fn require(client: &Client, capability: &str) -> Result<(), Error> {
     let contract = client
-        .invoke_entry::<op::DescribeContract>(DescribeContractRequest {}, None)
-        .await?;
+        .call_shared::<op::DescribeContract>(DescribeContractRequest {}, Call::once())
+        .await
+        .map_err(crate::connect::rpc_error)?;
     if contract.supports(capability) {
         return Ok(());
     }

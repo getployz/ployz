@@ -14,6 +14,24 @@ export const REVIEW_CAPABILITIES = ["ployz.preview.review.v1"] as const;
 /** How long a review lasts. Servers cap it at `validity::MAX_LIFETIME_MILLIS`. */
 const REVIEW_MS = 15 * 60_000;
 
+/**
+ * `text` as ployz-core's `Shown::text` shows a relayed string: bare when it holds only letters, digits and `-_./:@+`,
+ * otherwise quoted, with `"` and `\\` escaped and every character outside printable ASCII written as an escape.
+ */
+export function shownText(text: string): string {
+  if (/^[A-Za-z0-9\-_./:@+]+$/.test(text)) return text;
+  let shown = '"';
+  for (const c of text) {
+    if (c === '"' || c === "\\") shown += `\\${c}`;
+    else if (c === "\n") shown += "\\n";
+    else if (c === "\r") shown += "\\r";
+    else if (c === "\t") shown += "\\t";
+    else if (c >= " " && c <= "~") shown += c;
+    else shown += `\\u{${(c.codePointAt(0) ?? 0).toString(16)}}`;
+  }
+  return `${shown}"`;
+}
+
 /** Why a review couldn't be made, in words the dialog shows as they are. */
 export class ReviewRefused extends Error {}
 

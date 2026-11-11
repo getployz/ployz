@@ -1,0 +1,33 @@
+Lane 7: what each token /v1/token gives can reach on Ployz-test/lab-service, 2026-11-10T23:50:08.213Z
+
+a real run to ask for logs of: 42857631055 (found with the harness's own actions: read token, status 200)
+
+read set, every repository: minted 200, expires 2026-11-11T00:50:13Z
+  PUT contents/x            -> 403 Resource not accessible by integration
+  POST ployz-build dispatch -> 403 Resource not accessible by integration
+  GET run logs              -> 403 Resource not accessible by integration
+  GET the repository (read) -> 200
+
+read set, this repository: minted 200, expires 2026-11-11T00:50:17Z
+  PUT contents/x            -> 403 Resource not accessible by integration
+  POST ployz-build dispatch -> 403 Resource not accessible by integration
+  GET run logs              -> 403 Resource not accessible by integration
+  GET the repository (read) -> 200
+
+contents: read only: minted 200, expires 2026-11-11T00:50:20Z
+  PUT contents/x            -> 403 Resource not accessible by integration
+  POST ployz-build dispatch -> 403 Resource not accessible by integration
+  GET run logs              -> 403 Resource not accessible by integration
+  GET the repository (read) -> 200
+
+checks: read and pull_requests: read: minted 200, expires 2026-11-11T00:50:23Z
+  PUT contents/x            -> 403 Resource not accessible by integration
+  POST ployz-build dispatch -> 403 Resource not accessible by integration
+  GET run logs              -> 403 Resource not accessible by integration
+  GET the repository (read) -> 200
+
+The minter's audit of those four tokens:
+{"time":"2026-11-10T23:50:12.583Z","caller":"local-bearer","route":"/v1/token","outcome":"granted","installation_id":180070163,"permissions_granted":{"checks":"read","contents":"read","metadata":"read","pull_requests":"read"},"token_expires_at":"2026-11-11T00:50:13Z","duration_ms":1342}
+{"time":"2026-11-10T23:50:16.648Z","caller":"local-bearer","route":"/v1/token","outcome":"granted","installation_id":180070163,"repository_ids":[1450985696],"permissions_granted":{"checks":"read","contents":"read","metadata":"read","pull_requests":"read"},"token_expires_at":"2026-11-11T00:50:17Z","duration_ms":677}
+{"time":"2026-11-10T23:50:19.837Z","caller":"local-bearer","route":"/v1/token","outcome":"granted","installation_id":180070163,"repository_ids":[1450985696],"permissions_asked":{"contents":"read"},"permissions_granted":{"contents":"read","metadata":"read"},"token_expires_at":"2026-11-11T00:50:20Z","duration_ms":586}
+{"time":"2026-11-10T23:50:23.158Z","caller":"local-bearer","route":"/v1/token","outcome":"granted","installation_id":180070163,"repository_ids":[1450985696],"permissions_asked":{"checks":"read","pull_requests":"read"},"permissions_granted":{"checks":"read","metadata":"read","pull_requests":"read"},"token_expires_at":"2026-11-11T00:50:23Z","duration_ms":642}

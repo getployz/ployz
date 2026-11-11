@@ -104,7 +104,7 @@ export function useStoreChangeActions(organizationSlug: string, environment: Env
         return { ...command, approval: signed.approval };
       };
       await writer.commit(command, ["confirmation_required"], approved);
-      if (lines.length > 0) toast.success("Deploy approved", { description: <div className="font-mono">{lines.map((line) => <div key={line}>{line}</div>)}</div> });
+      if (lines.length > 0) toast.success("Deploy approved", { description: <div className="font-mono whitespace-pre-wrap break-all">{lines.map((line, at) => <div key={`${at}:${line}`}>{line}</div>)}</div> });
       if (action === "deploy") onAdmitted(id);
       return { status: "done" };
     } catch (error) {

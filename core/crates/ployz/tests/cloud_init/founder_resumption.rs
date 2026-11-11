@@ -2,6 +2,7 @@
 
 use super::*;
 use harness::CallbackReply;
+use ployz::connect::Call;
 
 #[tokio::test]
 async fn lost_completion_response_reruns_idempotently_when_cloud_is_ready() {
@@ -113,7 +114,7 @@ async fn new_founding_claim_with_reset_resets_then_initializes() {
                 wireguard_mtu: None,
                 pinned: Default::default(),
             },
-            None,
+            Call::keyed(),
         )
         .await
         .unwrap();
@@ -194,7 +195,7 @@ async fn resumed_founder_uses_the_matching_participating_machine() {
                 wireguard_mtu: None,
                 pinned: Default::default(),
             },
-            None,
+            Call::keyed(),
         )
         .await
         .unwrap();
@@ -280,7 +281,7 @@ async fn resumed_founder_converges_before_pairing_and_final_completion() {
                 wireguard_mtu: None,
                 pinned: Default::default(),
             },
-            None,
+            Call::keyed(),
         )
         .await
         .unwrap();

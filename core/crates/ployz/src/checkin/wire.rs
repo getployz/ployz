@@ -15,8 +15,6 @@ use crate::cloud_enroll::EnrollStage;
 
 use super::probe;
 
-pub(super) const PROTOCOL_VERSION: u8 = 1;
-pub(super) const ENROLL_OPTIONS: &[&str] = &["ingressClosed"];
 pub(super) const UNKNOWN_WAIT: Duration = Duration::from_secs(60);
 pub(super) const WAIT_CAP: Duration = Duration::from_secs(60 * 60);
 pub(crate) const DOCKER_INSTALL_FAILED: &str = "docker_install_failed";

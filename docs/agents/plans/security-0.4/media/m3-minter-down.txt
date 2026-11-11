@@ -1,0 +1,48 @@
+Lane 8: the minter stopped from 2026-11-11T00:46:44Z to 2026-11-11T00:58:22Z (11.6 minutes), device enforcement off, Cloud in minter mode.
+== 00:47:01 repository sync while the minter is down
+200 OK
+$ ployz github ls
+Ployz-test: 3 repositories, connected by Ada Lovelace.
+REPOSITORY	VISIBILITY	DEFAULT BRANCH
+Ployz-test/build	public	main
+Ployz-test/lab-preview	private	main
+Ployz-test/lab-service	private	main
+
+== 00:47:02 a push to lab-preview main, which lab/production deploys
+pushed cfeee82f9e14955d509f9cad9c4dd4ffe089a0ce
+200 OK
+
+== 00:47:10 a push to PR #9's branch
+pushed 3f4ec1ec63b21501b98513fd1088e80fd5b1af7c
+200 OK
+200 OK
+
+== 00:58:20 still down. lab/production and lab/pr-9 deployed through Servers builds:
+  web: deployed
+  build web from cfeee82: built on machine-2 
+    GitHub skipped it: GitHub couldn't take the build: GitHub fetch_workflow failed (request_failed).
+  web: deployed
+  build web from 3f4ec1e: built on machine-2 
+    GitHub skipped it: GitHub couldn't take the build: GitHub fetch_workflow failed (request_failed).
+Ployz check on PR #9's new head 3f4ec1ec63b21501b98513fd1088e80fd5b1af7c while down:
+  0 check runs
+Cloud's worker meanwhile: the check step fails and Inngest retries it (GitHub create_check_run failed (request_failed)); a head reader for each Deployment could not be minted (non-fatal with enforcement off).
+
+== 00:58:43 minter back (restarted at 2026-11-11T00:58:22Z)
+200 OK
+
+== 01:09:19 the next push to PR #9 (5f094ac2739d9dc4f32fb9a54aac82085ffa126d) after the minter returned:
+  Ployz · ready to merge completed success, app ployz-lab
+The check for 3f4ec1ec63b21501b98513fd1088e80fd5b1af7c, the head pushed during the outage, was never posted: Inngest's retries ran out while the minter was down. Trunk has the same retry policy when GitHub itself is down (read from the code, not run).
+
+The minter's audit after it returned:
+{"time":"2026-11-11T01:09:13.740Z","caller":"local-bearer","route":"/v1/check","outcome":"granted","installation_id":180070163,"repository_ids":[1452922192],"check_name":"Ployz · ready to merge","head_sha":"5f094ac2739d9dc4f32fb9a54aac82085ffa126d","duration_ms":4421}
+{"time":"2026-11-11T01:09:17.011Z","caller":"local-bearer","route":"/v1/workflow","outcome":"granted","installation_id":180070163,"repository_ids":[1452922192],"ref":"main","workflow_digest":"9f09b7700c1c4a3a134a7ef750d4dba48815136a2ee40fab5353235ce598e827","duration_ms":3506}
+{"time":"2026-11-11T00:58:44.229Z","caller":"local-bearer","route":"/v1/token","outcome":"granted","installation_id":180070163,"permissions_asked":{"contents":"read","metadata":"read","pull_requests":"read","checks":"read"},"permissions_granted":{"checks":"read","contents":"read","metadata":"read","pull_requests":"read"},"token_expires_at":"2026-11-11T01:58:45Z","duration_ms":1440}
+
+Also seen, with enforcement on: the minter went down at about 00:40 during lane 5's first push, under the automatic deploy rule. That Deployment failed closed:
+$ ployz deployment show 5 --project svc
+Deployment #5 of svc/production: failed
+  web: create Container failed
+    cause: this server could not read the approved branch's head from GitHub
+  web: not switched to its new copies

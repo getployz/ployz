@@ -392,7 +392,8 @@ describe("approveDeploy", () => {
     });
     expect(canonicalJson(JSON.parse(approval.body) as JsonValue)).toBe(approval.body);
     expect(JSON.parse(approval.grants?.[0]?.body ?? "{}")).toMatchObject({ families: ["deploy", "restart", "start", "stop"] });
-    expect(lines).toEqual(["Approved web: nginx@sha256:000000000000… (device /dev/null:/dev/null, adds NET_ADMIN, sysctl net.core.somaxconn, host port 8080, binds /srv/web, hook migrate)"]);
+    expect(lines[0]).toBe("Approved web: nginx@sha256:0000000000000000000000000000000000000000000000000000000000000001 (device /dev/null:/dev/null, adds NET_ADMIN, sysctl net.core.somaxconn, host port 8080, binds /srv/web, hook migrate)");
+    expect(lines).toContain('  command ["nginx","-g","daemon off;"]');
     expect(await verifies(approval, approval.body)).toBe(true);
   });
 

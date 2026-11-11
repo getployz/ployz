@@ -7,6 +7,7 @@
 
 mod create;
 mod follow;
+pub(crate) mod idle;
 mod live;
 mod never_sync;
 mod pair;

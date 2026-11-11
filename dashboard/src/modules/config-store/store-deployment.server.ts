@@ -13,14 +13,14 @@ import { eq } from "drizzle-orm";
 import type { GithubApi } from "#/modules/github/github-observation.api";
 import { GithubDisconnected } from "#/modules/github/github-access";
 import { GithubSourceError, materializeGithubSource, resolveGithubSourceSha } from "#/modules/github/github-source.server";
-import { mintInstallationToken } from "#/modules/github/github-token.server";
+import { GithubAuthority } from "#/modules/github/github-authority.server";
 import type { ConfigDeploymentAdmittedEventData } from "#/modules/inngest/events";
 import type { AppConfig } from "#/server/config.server";
 import { Database } from "#/server/database.server";
 import type { SecretEncryption } from "#/utils/encrypted-secret.server";
 
 /** What Cloud's Store workers need from Cloud. */
-export type StoreServices = AppConfig | Database | SecretEncryption | GithubApi | CloudStore | InngestClient | OrganizationRuntime | Polar;
+export type StoreServices = AppConfig | Database | SecretEncryption | GithubApi | GithubAuthority | CloudStore | InngestClient | OrganizationRuntime | Polar;
 
 /** Runs one of the Store workers' Effects for an Inngest step. */
 export type StoreEffectRunner = <A, E extends Error>(program: Effect.Effect<A, E, StoreServices>) => Promise<A>;
@@ -89,7 +89,8 @@ const headReader = Effect.fn("StoreDeployment.headReader")(function* (store: Con
   const sources = yield* storeTry(() => store.deploymentSources(deploymentId)).pipe(Effect.orElseSucceed(() => []));
   for (const source of sources) {
     if (source.access.type === "public") continue;
-    return yield* mintInstallationToken(source.access.installationId, { repositoryId: source.repository_id }).pipe(
+    const authority = yield* GithubAuthority;
+    return yield* authority.readToken(source.access.installationId, { repositoryIds: [source.repository_id], permissions: { contents: "read" } }).pipe(
       Effect.catch((error) => Effect.logWarning("Could not mint a head reader for a Deployment.", error).pipe(Effect.as(null))),
     );
   }
@@ -175,6 +176,12 @@ export const failStoreDeploymentUnrun = Effect.fn("StoreDeployment.failUnrun")(f
   yield* releasePlacementClaims(organizationId, deploymentId);
   yield* forgetStoreDeploymentRun(runId);
   return failed;
+});
+
+/** Whether the queued Deployment waits for a person to approve its commits again once its builds ended. */
+export const storeDeploymentAwaitsApproval = Effect.fn("StoreDeployment.awaitsApproval")(function* (deploymentId: string) {
+  const store = yield* cloudStore;
+  return yield* storeTry(() => store.awaitingApproval(deploymentId));
 });
 
 /** A run is one durable runner: its retried steps claim as the same runner, and a duplicate delivery is another. */

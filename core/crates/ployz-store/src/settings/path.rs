@@ -10,6 +10,7 @@ use ts_rs::TS;
 use super::ServiceSetting;
 use crate::error;
 use crate::id::{ConfigRef, VolumeName};
+use crate::policy::PolicySetting;
 use crate::variables::VariableKey;
 
 /// A node of an Environment: `SERVICE` for a Service, `volumes.VOLUME` for a
@@ -353,6 +354,17 @@ impl SettingPath {
         }
     }
 
+    /// Whether it is a Service's Preferred Builder, `SERVICE.preferredBuilder`.
+    #[must_use]
+    pub const fn is_preferred_builder(&self) -> bool {
+        matches!(
+            self.target(),
+            Some(Target::Setting(ServiceSetting::Policy(
+                PolicySetting::PreferredBuilder
+            )))
+        )
+    }
+
     /// The Service whose Settings it addresses, or why a Volume or Config has none.
     pub(crate) fn settings_of(&self) -> Result<&ServiceName, RpcError> {
         self.service().ok_or_else(|| {
@@ -466,4 +478,27 @@ pub(crate) fn name_a_setting(node: impl std::fmt::Display) -> RpcError {
             "example": format!("{node}.replicas"),
         }),
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn only_a_services_preferred_builder_is_one() {
+        let is = |path: &str| SettingPath::parse(path).unwrap().is_preferred_builder();
+        assert!(is("web.preferredBuilder"));
+        assert!(is("WEB.preferredBuilder"));
+        for path in [
+            "web",
+            "web.replicas",
+            "web.autoDeploy",
+            "web.env.preferredBuilder",
+            "setup.preferredBuilder",
+            "volumes.data",
+            "configs.sentry",
+        ] {
+            assert!(!is(path), "{path}");
+        }
+    }
 }

@@ -7,7 +7,6 @@ use serde::{Deserialize, Serialize};
 use serde_json::json;
 
 use super::*;
-use crate::config::service_changes::default_value;
 use crate::config::{
     ConfigAttachment, ConfigError, SavedConfigFile, SavedConfigIntent,
     SavedEnvironmentIntent as Intent, SavedServiceIntent, SavedVolumeIntent,
@@ -273,23 +272,7 @@ fn owned(at: &At) -> Option<Why> {
     let At::Setting(setting) = at else {
         return None;
     };
-    match setting {
-        Setting::Replicas | Setting::CpuLimit | Setting::MemLimit => Some(Why::Sizing),
-        Setting::Routes => Some(Why::CustomDomain),
-        Setting::ManagedHostnames => Some(Why::GeneratedAddress),
-        Setting::Branch => Some(Why::GitBranch),
-        Setting::Source
-        | Setting::PrivateDns
-        | Setting::PreDeployCommand
-        | Setting::StartCommand
-        | Setting::Healthcheck
-        | Setting::RestartPolicy
-        | Setting::MaxRetries
-        | Setting::UpdateOrder
-        | Setting::BuildMethod
-        | Setting::DockerfilePath
-        | Setting::BuildCommand => None,
-    }
+    setting.owner()
 }
 
 /// Compare `sides` under `policy`: every place either side holds, by lineage.
@@ -794,7 +777,7 @@ impl Plan {
             config_attachments: Vec::new(),
         };
         for setting in Setting::ALL.into_iter().filter(|s| !s.carried()) {
-            put_setting(&mut copy, setting, default_value(setting.path()))
+            put_setting(&mut copy, setting, setting.default())
                 .expect("a setting takes its default");
         }
         let config = &mut copy.config;

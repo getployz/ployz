@@ -7,19 +7,28 @@
 //! CLI's Device key. Each Server derives a preview's Namespace and hostnames itself and
 //! checks the rule, the builder's GitHub tokens and the settings before it runs
 //! anything.
+//!
+//! The accounts a rule trusts come only from `--trust`, each read from GitHub by this
+//! CLI. Cloud's member rows never fill the list: a person can't judge a numeric ID Cloud
+//! relays, and a planted one would build and deploy its pushes with the parent's
+//! inherited values and no review.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
+use std::time::Duration;
 
 use clap::{Arg, ArgAction, ArgMatches, Command};
 use ployz_core::authority::preview::{secrets_digest, template};
 use ployz_core::authority::rule::{PolicyCache, RuleEvent, RuleSource, Runner};
-use ployz_core::authority::rule_draft::{WORKFLOW, settings};
+use ployz_core::authority::rule_draft::{Signs, WORKFLOW, builds, settings};
+use ployz_core::authority::shown::Shown;
 use ployz_core::authority::{
     BuildPolicy, PreviewRule, PreviewService, RuleId, Signed, SignerKey, Timestamp,
 };
-use ployz_core::{RpcErrorCode, SealedRecord, ServiceName};
+use ployz_core::config::Generator;
+use ployz_core::{RequestedServiceSpec, RpcErrorCode, SealedRecord, ServiceName};
 use ployz_store::{ApprovePreviewRule, PlanPreviewRule, PreviewRuleView, RuleQuery};
-use serde::Serialize;
+use reqwest::{StatusCode, header};
+use serde::{Deserialize, Serialize};
 
 use super::github_rule::{builder, enforcing, joined, owner, signer};
 use super::store::{self, Store};
@@ -36,9 +45,9 @@ pub(super) fn approve_command(command: Command) -> Command {
         .long_about(
             "Sign a preview rule with this device's key: a pull request from the repository by \
              an account you trust opens a preview with the settings shown, built by the pinned \
-             builder, with no prompt. Each preview gets its own namespace and URLs, which your \
-             servers work out themselves. A change to those settings stops previews until you \
-             approve again.",
+             builder, with no prompt. Anyone else's pull request opens one only once you review \
+             its commit. Each preview gets its own namespace and URLs, which your servers work \
+             out themselves. A change to those settings stops previews until you approve again.",
         )
         .arg(
             Arg::new("service")
@@ -50,10 +59,10 @@ pub(super) fn approve_command(command: Command) -> Command {
         .arg(
             value("trust", None)
                 .action(ArgAction::Append)
-                .value_name("GITHUB_ID")
+                .value_name("ACCOUNT")
                 .help(
-                    "A GitHub account ID whose pull requests open a preview without review \
-                     [default: your organization's members]",
+                    "A GitHub login or numeric account ID whose pull requests open a preview \
+                     without review [default: nobody, so every pull request needs a review]",
                 ),
         )
         .arg(
@@ -96,8 +105,177 @@ struct Approved<'a> {
     ended: bool,
     repository: &'a str,
     domain: &'a str,
-    trusted: &'a [u64],
+    trusted: &'a [Account],
     services: Vec<&'a ServiceName>,
+}
+
+/// A GitHub account as GitHub named it to this CLI. `login` is `None` when GitHub didn't
+/// answer for an account this CLI only shows.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+struct Account {
+    id: u64,
+    login: Option<String>,
+}
+
+/// An account as `--trust` names it. Digits are an account ID, as GitHub's own IDs are.
+#[derive(Clone, Debug, PartialEq, Eq)]
+enum Named {
+    Id(u64),
+    Login(String),
+}
+
+impl Named {
+    fn parse(text: &str) -> Result<Self, Error> {
+        if let Ok(id) = text.parse() {
+            return Ok(Self::Id(id));
+        }
+        let login = !text.is_empty()
+            && text.len() <= 39
+            && !text.starts_with('-')
+            && text
+                .bytes()
+                .all(|byte| byte.is_ascii_alphanumeric() || byte == b'-');
+        match login {
+            true => Ok(Self::Login(text.to_owned())),
+            false => Err(Error::usage(format!(
+                "{text} isn't a GitHub login or account ID"
+            ))),
+        }
+    }
+}
+
+impl std::fmt::Display for Named {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Id(id) => write!(f, "account ID {id}"),
+            Self::Login(login) => write!(f, "{login}"),
+        }
+    }
+}
+
+/// Why GitHub didn't name an account.
+#[derive(Debug, thiserror::Error)]
+enum Lookup {
+    #[error("GitHub has no such account")]
+    NotFound,
+    #[error("GitHub answered {0}")]
+    Status(StatusCode),
+    #[error("GitHub's answer named another account")]
+    Mismatch,
+    #[error("GitHub didn't answer")]
+    Unavailable(#[source] reqwest::Error),
+}
+
+const GITHUB_API: &str = "https://api.github.com";
+
+/// `named`, as GitHub's public REST API names it now. This CLI asks GitHub itself, never
+/// Cloud, and checks the answer is about the account asked for.
+async fn lookup(client: &reqwest::Client, named: &Named) -> Result<Account, Lookup> {
+    let path = match named {
+        Named::Id(id) => format!("user/{id}"),
+        Named::Login(login) => format!("users/{login}"),
+    };
+    let response = client
+        .get(format!("{GITHUB_API}/{path}"))
+        .header(header::ACCEPT, "application/vnd.github+json")
+        .header("X-GitHub-Api-Version", "2022-11-28")
+        .send()
+        .await
+        .map_err(Lookup::Unavailable)?;
+    match response.status() {
+        StatusCode::OK => {}
+        StatusCode::NOT_FOUND => return Err(Lookup::NotFound),
+        status => return Err(Lookup::Status(status)),
+    }
+    #[derive(Deserialize)]
+    struct User {
+        id: u64,
+        login: String,
+    }
+    let user: User = response.json().await.map_err(Lookup::Unavailable)?;
+    let same = match named {
+        Named::Id(id) => user.id == *id,
+        Named::Login(login) => user.login.eq_ignore_ascii_case(login),
+    };
+    match same {
+        true => Ok(Account {
+            id: user.id,
+            login: Some(user.login),
+        }),
+        false => Err(Lookup::Mismatch),
+    }
+}
+
+fn github() -> Result<reqwest::Client, Error> {
+    reqwest::Client::builder()
+        .https_only(true)
+        .redirect(reqwest::redirect::Policy::none())
+        .timeout(Duration::from_secs(10))
+        .user_agent(concat!("ployz-cli/", env!("CARGO_PKG_VERSION")))
+        .build()
+        .map_err(Error::command)
+}
+
+/// The accounts the rule trusts: each one `--trust` names, as GitHub names it. Every
+/// one must resolve, so the person sees whom they trust before the rule is signed.
+async fn trusted_accounts(
+    named: &[Named],
+    lookup: impl AsyncFn(&Named) -> Result<Account, Lookup>,
+) -> Result<Vec<Account>, Error> {
+    let mut accounts = Vec::new();
+    for named in named {
+        let account = lookup(named).await.map_err(|error| match error {
+            Lookup::NotFound => Error::coded(
+                RpcErrorCode::NotFound,
+                format!("GitHub has no account {named}. Check --trust."),
+            ),
+            error @ (Lookup::Status(_) | Lookup::Mismatch | Lookup::Unavailable(_)) => {
+                Error::caused(
+                    RpcErrorCode::Unavailable,
+                    format!(
+                        "Couldn't read {named} from GitHub, so it can't be trusted. Try again."
+                    ),
+                    error,
+                )
+            }
+        })?;
+        accounts.push(account);
+    }
+    accounts.sort_by_key(|account| account.id);
+    accounts.dedup_by_key(|account| account.id);
+    Ok(accounts)
+}
+
+/// `ids` as GitHub names them, for showing only: an ID GitHub doesn't answer for shows
+/// without a login.
+async fn shown_accounts(
+    ids: &[u64],
+    lookup: impl AsyncFn(&Named) -> Result<Account, Lookup>,
+) -> Vec<Account> {
+    let mut accounts = Vec::new();
+    for &id in ids {
+        accounts.push(
+            lookup(&Named::Id(id))
+                .await
+                .unwrap_or(Account { id, login: None }),
+        );
+    }
+    accounts
+}
+
+/// `accounts` as a person reads them: each login with its ID.
+fn trusted_line(accounts: &[Account]) -> String {
+    if accounts.is_empty() {
+        return "nobody: every pull request needs a review".to_owned();
+    }
+    accounts
+        .iter()
+        .map(|account| match &account.login {
+            Some(login) => format!("{} ({})", Shown::text(login), account.id),
+            None => format!("{} (GitHub didn't name it)", account.id),
+        })
+        .collect::<Vec<_>>()
+        .join(", ")
 }
 
 pub(super) fn approve(root: &ArgMatches) -> Result<(), Error> {
@@ -112,14 +290,11 @@ pub(super) fn approve(root: &ArgMatches) -> Result<(), Error> {
                 .map_err(|_| Error::usage(format!("{name} isn't a service name")))
         })
         .collect::<Result<_, _>>()?;
-    let trust: Vec<u64> = matches
+    let trust: Vec<Named> = matches
         .get_many::<String>("trust")
         .into_iter()
         .flatten()
-        .map(|id| {
-            id.parse()
-                .map_err(|_| Error::usage(format!("{id} isn't a GitHub account ID")))
-        })
+        .map(|text| Named::parse(text))
         .collect::<Result<_, _>>()?;
     let builder = builder(matches)?;
     let platform = matches
@@ -171,13 +346,11 @@ pub(super) fn approve(root: &ArgMatches) -> Result<(), Error> {
     }
     services.sort_by(|left, right| left.name.cmp(&right.name));
     let (id, generation) = next(&view);
-    let mut trusted = if trust.is_empty() {
-        view.members.clone()
-    } else {
-        trust
-    };
-    trusted.sort_unstable();
-    trusted.dedup();
+    let client = github()?;
+    let runtime = super::runtime()?;
+    let accounts = runtime.block_on(trusted_accounts(&trust, async |named| {
+        lookup(&client, named).await
+    }))?;
     let rule = PreviewRule {
         cluster: enforcing.cluster,
         rule: id,
@@ -196,13 +369,32 @@ pub(super) fn approve(root: &ArgMatches) -> Result<(), Error> {
             builder,
             runner: Runner::GithubHosted,
         },
-        trusted,
+        trusted: accounts.iter().map(|account| account.id).collect(),
         services,
         issued_at: Timestamp::now(),
         ended: false,
         signer: SignerKey::Device(signer.public().into()),
     };
-    show(&view, &rule, &names);
+    show(&view, &rule, &names, &accounts);
+    let dropped: Vec<u64> = view
+        .rule
+        .as_ref()
+        .and_then(|kept| kept.open().ok())
+        .filter(|kept| !kept.ended)
+        .map(|kept| kept.trusted)
+        .unwrap_or_default()
+        .into_iter()
+        .filter(|id| !rule.trusted.contains(id))
+        .collect();
+    if !dropped.is_empty() {
+        let dropped = runtime.block_on(shown_accounts(&dropped, async |named| {
+            lookup(&client, named).await
+        }));
+        crate::ui::note(format_args!(
+            "The rule you replace also trusted {}. Name each with --trust to keep it.",
+            trusted_line(&dropped)
+        ));
+    }
     keep(&store, environment, &rule, &signer)?;
     crate::ui::stream(format_args!(
         "Approved. Pull requests to {repository} by the accounts shown now open a preview of {}.",
@@ -214,7 +406,7 @@ pub(super) fn approve(root: &ArgMatches) -> Result<(), Error> {
         ended: false,
         repository: &repository,
         domain: &domain,
-        trusted: &rule.trusted,
+        trusted: &accounts,
         services: names.iter().collect(),
     })?;
     Ok(())
@@ -251,6 +443,10 @@ pub(super) fn end(root: &ArgMatches) -> Result<(), Error> {
         ..kept
     };
     keep(&store, environment, &rule, &signer)?;
+    let client = github()?;
+    let accounts = super::runtime()?.block_on(shown_accounts(&rule.trusted, async |named| {
+        lookup(&client, named).await
+    }));
     crate::ui::stream(
         "Previews are off. Pull requests no longer open a preview on servers that enforce \
          device approval.",
@@ -261,7 +457,7 @@ pub(super) fn end(root: &ArgMatches) -> Result<(), Error> {
         ended: true,
         repository: &rule.source.repository,
         domain: &rule.domain,
-        trusted: &rule.trusted,
+        trusted: &accounts,
         services: rule.services.iter().map(|service| &service.name).collect(),
     })?;
     Ok(())
@@ -401,32 +597,26 @@ fn keep(
 }
 
 /// What the person approves, before it is signed: who opens previews without review,
-/// what each preview reads from the Environment, and where it is served.
-fn show(view: &PreviewRuleView, rule: &PreviewRule, names: &[ServiceName]) {
+/// what each preview reads from the Environment, and where it is served. Every value
+/// Cloud relays shows through [`Shown`], so none can pass for another.
+fn show(view: &PreviewRuleView, rule: &PreviewRule, names: &[ServiceName], trusted: &[Account]) {
     let source = &rule.source;
+    let environment = Shown::text(view.environment.name.as_str());
+    crate::ui::stream(format_args!("Approving previews of {environment}:"));
     crate::ui::stream(format_args!(
-        "Approving previews of {}:",
-        view.environment.name
+        "  repository  {}, parent branch {}",
+        Shown::text(&source.repository),
+        Shown::text(&source.branch)
     ));
-    crate::ui::stream(format_args!("  repository  {}", source.repository));
-    let builder = &source.builder;
-    crate::ui::stream(format_args!("  builder     {}", builder.r#ref));
+    crate::ui::stream(format_args!(
+        "  builder     {}",
+        Shown::text(&source.builder.r#ref)
+    ));
     crate::ui::stream(format_args!(
         "  urls        <service>-pv-<id>.{}",
-        rule.domain
+        Shown::text(&rule.domain)
     ));
-    crate::ui::stream(format_args!(
-        "  trusted     {}",
-        match rule.trusted.is_empty() {
-            true => "nobody: every pull request needs a review".to_owned(),
-            false => rule
-                .trusted
-                .iter()
-                .map(u64::to_string)
-                .collect::<Vec<_>>()
-                .join(", "),
-        }
-    ));
+    crate::ui::stream(format_args!("  trusted     {}", trusted_line(trusted)));
     crate::ui::stream(format_args!(
         "  servers     {} in the cluster",
         rule.machines.len()
@@ -435,52 +625,185 @@ fn show(view: &PreviewRuleView, rule: &PreviewRule, names: &[ServiceName]) {
         let Some(approved) = rule.service(name) else {
             continue;
         };
-        crate::ui::stream(format_args!("  {name}"));
+        crate::ui::stream(format_args!("  {}", Shown::text(name.as_str())));
+        crate::ui::stream(format_args!("    builds    {}", builds(&approved.policy)));
         if !approved.inherit.is_empty() {
             crate::ui::stream(format_args!(
-                "    reads     {} from {}",
-                approved
-                    .inherit
-                    .iter()
-                    .cloned()
-                    .collect::<Vec<_>>()
-                    .join(", "),
-                view.environment.name
+                "    reads     {} from {environment}",
+                Shown::list(approved.inherit.iter().map(|key| Shown::text(key)))
             ));
         }
         if let Some(shared) = view.shared.get(name) {
             crate::ui::stream(format_args!(
-                "    shares    {} with {}",
-                shared.iter().cloned().collect::<Vec<_>>().join(", "),
-                view.environment.name
+                "    shares    {} with {environment}",
+                Shown::list(shared.iter().map(|key| Shown::text(key)))
             ));
         }
-        if approved.setup.is_some() {
-            crate::ui::stream("    setup     runs once, on each preview's first deploy");
-        }
-        if let Some(spec) = view.target.iter().find(|spec| spec.name == *name) {
-            // A Generated Value shows by name: the rehearsal's value is no preview's.
+        // A Generated Value shows by its generator, and the Service ID label not at all:
+        // neither rehearsal value is a preview's, and the template leaves the label out.
+        // The rehearsal's Namespace is no preview's either, so its hostnames show the
+        // derived part as `<id>`.
+        let lines = |spec: &RequestedServiceSpec| {
             let mut shown = spec.clone();
             shown
                 .container
                 .environment
                 .retain(|key, _| !approved.generated.contains_key(key));
-            // The rehearsal's Namespace is no preview's, so its hostnames show the derived part as `<id>`.
-            for line in settings(&shown) {
-                let line = line.replace(view.sample.as_str(), "pv-<id>");
-                crate::ui::stream(format_args!("    {line}"));
+            let mut labels = shown.container.labels.as_map().clone();
+            labels.remove(ployz_core::config::SERVICE_ID_LABEL);
+            if let Ok(labels) = ployz_core::ContainerLabels::parse(labels) {
+                shown.container.labels = labels;
+            }
+            settings(&shown, Signs::Template)
+                .into_iter()
+                .map(|line| line.as_str().replace(view.sample.as_str(), "pv-<id>"))
+                .collect::<Vec<_>>()
+        };
+        let ordinary = view
+            .target
+            .iter()
+            .find(|spec| spec.name == *name)
+            .map(lines)
+            .unwrap_or_default();
+        for line in &ordinary {
+            crate::ui::stream(format_args!("    {line}"));
+        }
+        // The first deploy signs its own spec, so what it adds shows apart.
+        if let Some(setup) = view.setup.iter().find(|setup| setup.name == *name) {
+            crate::ui::stream("    setup     runs once, on each preview's first deploy, with");
+            for line in lines(setup).iter().filter(|line| !ordinary.contains(line)) {
+                crate::ui::stream(format_args!("      {line}"));
             }
         }
         if !approved.generated.is_empty() {
             crate::ui::stream(format_args!(
                 "    generated {}, new in each preview",
-                approved
-                    .generated
-                    .keys()
-                    .cloned()
-                    .collect::<Vec<_>>()
-                    .join(", ")
+                generated(&approved.generated)
             ));
+        }
+    }
+}
+
+/// Each generated variable with the generator a preview fills it from, never a value.
+fn generated(generated: &BTreeMap<String, Generator>) -> Shown {
+    Shown::list(generated.iter().map(|(key, generator)| {
+        Shown::text(key)
+            .and_words("=")
+            .and(Shown::generator(generator))
+    }))
+}
+
+#[cfg(test)]
+mod tests {
+    use std::cell::Cell;
+
+    use super::*;
+
+    /// GitHub as these tests see it: `alice` is 1109914 and `bob` 2207431.
+    async fn github(named: &Named) -> Result<Account, Lookup> {
+        let (id, login) = match named {
+            Named::Id(1_109_914) => (1_109_914, "alice"),
+            Named::Login(login) if login.eq_ignore_ascii_case("alice") => (1_109_914, "alice"),
+            Named::Id(2_207_431) => (2_207_431, "bob"),
+            Named::Login(login) if login == "bob" => (2_207_431, "bob"),
+            Named::Id(_) | Named::Login(_) => return Err(Lookup::NotFound),
+        };
+        Ok(Account {
+            id,
+            login: Some(login.to_owned()),
+        })
+    }
+
+    #[tokio::test]
+    async fn without_trust_the_rule_trusts_nobody_and_github_is_not_asked() {
+        let asked = Cell::new(0);
+        let accounts = trusted_accounts(&[], async |named| {
+            asked.set(asked.get() + 1);
+            github(named).await
+        })
+        .await
+        .unwrap();
+        assert!(accounts.is_empty());
+        assert_eq!(asked.get(), 0);
+        assert_eq!(
+            trusted_line(&accounts),
+            "nobody: every pull request needs a review"
+        );
+    }
+
+    #[tokio::test]
+    async fn trusted_accounts_show_as_logins_github_names_with_their_ids() {
+        let named = ["bob", "1109914", "Alice"]
+            .map(|text| Named::parse(text).unwrap())
+            .to_vec();
+        let accounts = trusted_accounts(&named, github).await.unwrap();
+        assert_eq!(
+            accounts
+                .iter()
+                .map(|account| account.id)
+                .collect::<Vec<_>>(),
+            [1_109_914, 2_207_431]
+        );
+        assert_eq!(trusted_line(&accounts), "alice (1109914), bob (2207431)");
+    }
+
+    #[tokio::test]
+    async fn an_account_github_does_not_name_is_refused_before_signing() {
+        let error = trusted_accounts(&[Named::Id(666)], github)
+            .await
+            .unwrap_err();
+        assert_eq!(error.report().code, RpcErrorCode::NotFound);
+        let error = trusted_accounts(&[Named::Id(1_109_914)], async |_| {
+            Err(Lookup::Status(StatusCode::FORBIDDEN))
+        })
+        .await
+        .unwrap_err();
+        assert_eq!(error.report().code, RpcErrorCode::Unavailable);
+    }
+
+    #[tokio::test]
+    async fn an_account_shown_only_keeps_its_id_when_github_does_not_answer() {
+        let accounts = shown_accounts(&[1_109_914, 666], github).await;
+        assert_eq!(
+            trusted_line(&accounts),
+            "alice (1109914), 666 (GitHub didn't name it)"
+        );
+    }
+
+    /// A preview's generated variable shows with the generator it signs, never a value,
+    /// and a planted name shows escaped.
+    #[test]
+    fn a_generated_variable_shows_its_generator() {
+        let keys = BTreeMap::from([
+            ("API_KEY".to_owned(), Generator::new(48, "a-f0-9").unwrap()),
+            (
+                "a\r\nb".to_owned(),
+                Generator::new(32, "a-zA-Z0-9").unwrap(),
+            ),
+        ]);
+        assert_eq!(
+            generated(&keys).as_str(),
+            r#"API_KEY=${{ secret(48, "a-f0-9") }}, "a\r\nb"=${{ secret(32, "a-zA-Z0-9") }}"#
+        );
+        let shown = [(48, "a-f0-9"), (64, "a-f0-9"), (48, "a-z")].map(|(length, charset)| {
+            generated(&BTreeMap::from([(
+                "API_KEY".to_owned(),
+                Generator::new(length, charset).unwrap(),
+            )]))
+        });
+        assert_ne!(shown[0], shown[1], "the length shows");
+        assert_ne!(shown[0], shown[2], "the charset shows");
+    }
+
+    #[test]
+    fn trust_takes_a_login_or_an_id() {
+        assert_eq!(Named::parse("1109914").unwrap(), Named::Id(1_109_914));
+        assert_eq!(
+            Named::parse("octo-cat").unwrap(),
+            Named::Login("octo-cat".into())
+        );
+        for text in ["", "-octo", "octo cat", "octo/cat", &"a".repeat(40)] {
+            assert!(Named::parse(text).is_err(), "{text:?}");
         }
     }
 }

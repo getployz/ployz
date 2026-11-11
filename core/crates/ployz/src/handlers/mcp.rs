@@ -94,17 +94,18 @@ pub(super) fn serve(root: &ArgMatches) -> Result<(), Error> {
     } else {
         None
     };
-    let store = match local {
-        Some(store::Backend::Local(store, who)) => Store::Local(store, who),
-        _ => Store::Cloud,
+    let local = match local {
+        Some(store::Backend::Local(store, who)) => Some(Local { store, who }),
+        _ => None,
     };
-    if matches!(store, Store::Cloud) {
+    if local.is_none() {
         crate::ui::note(CLOUD_CREDENTIAL);
     }
     let cloud = std::env::var(crate::cli::env::CLOUD_URL).ok();
     let token = crate::cloud_account::env_token();
     // Only Cloud runs a published command, so a local Store lists none.
-    let setup = matches!(store, Store::Cloud)
+    let setup = local
+        .is_none()
         .then(|| publishing_setup(&config, cloud.clone(), token.as_deref()));
     let place = located(config.clone());
     let server = Server::new(
@@ -114,7 +115,7 @@ pub(super) fn serve(root: &ArgMatches) -> Result<(), Error> {
             cloud,
             organization: Acting::default(),
         },
-        store,
+        local,
         place,
     );
     let runtime = super::runtime()?;
@@ -228,19 +229,35 @@ where
     }
 }
 
-/// Where the Config Store is. Only Cloud answers Cloud asks and runs Acts.
-enum Store {
-    Local(Arc<ConfigStore>, Actor),
-    Cloud,
+/// The hidden in-process Config Store `PLOYZ_STORE` serves instead of Cloud's.
+struct Local {
+    store: Arc<ConfigStore>,
+    who: Actor,
 }
 
-/// How one call answers its steps.
+/// The Cloud a call reaches: its credential and the Organization that credential acts in.
+struct Cloud {
+    credential: Credential,
+    organization: OrganizationId,
+}
+
+/// Where one call's Config Store is. Only Cloud answers Cloud asks and runs Acts.
 enum Backend<'a> {
     Local(&'a ConfigStore, &'a Actor),
-    Cloud(Credential),
+    Cloud(Cloud),
 }
 
 impl Backend<'_> {
+    /// The Store the registry's tools address for this call.
+    fn at(&self) -> StoreAt {
+        match self {
+            Self::Local(..) => StoreAt::Local,
+            Self::Cloud(cloud) => StoreAt::Cloud {
+                organization: cloud.organization.clone(),
+            },
+        }
+    }
+
     async fn asks(&self, asks: &[Ask]) -> Vec<Result<Value, RpcError>> {
         join_all(asks.iter().map(|each| self.ask(each))).await
     }
@@ -250,13 +267,14 @@ impl Backend<'_> {
             (Self::Local(store, who), Ask::Store(query)) => {
                 store.read(who, query).and_then(|view| value(&view))
             }
-            (Self::Local(..), Ask::Cloud(_)) => Err(not_here()),
-            (Self::Cloud(credential), Ask::Store(query)) => called(
-                cloud_account::config_store(credential, Via::Agent, "read", query, None).await,
+            (Self::Local(..), Ask::Cloud(_)) => Err(cloud_only()),
+            (Self::Cloud(cloud), Ask::Store(query)) => called(
+                cloud_account::config_store(&cloud.credential, Via::Agent, "read", query, None)
+                    .await,
             ),
-            (Self::Cloud(credential), Ask::Cloud(query)) => called(
+            (Self::Cloud(cloud), Ask::Cloud(query)) => called(
                 cloud_account::approved_answer(
-                    credential,
+                    &cloud.credential,
                     Method::POST,
                     "agent/ask",
                     &json!({ "ask": query }),
@@ -272,14 +290,20 @@ impl Backend<'_> {
             (Self::Local(store, who), Write::Store(command)) => store
                 .write(who, command)
                 .and_then(|written| value(&written)),
-            (Self::Local(..), Write::Act(_)) => Err(not_here()),
-            (Self::Cloud(credential), Write::Store(command)) => written(
-                cloud_account::config_store(credential, Via::Agent, "write", command, approval)
-                    .await,
+            (Self::Local(..), Write::Act(_)) => Err(cloud_only()),
+            (Self::Cloud(cloud), Write::Store(command)) => written(
+                cloud_account::config_store(
+                    &cloud.credential,
+                    Via::Agent,
+                    "write",
+                    command,
+                    approval,
+                )
+                .await,
             ),
-            (Self::Cloud(credential), Write::Act(act)) => written(
+            (Self::Cloud(cloud), Write::Act(act)) => written(
                 cloud_account::approved_answer(
-                    credential,
+                    &cloud.credential,
                     Method::POST,
                     "agent/act",
                     &json!({ "act": act }),
@@ -358,10 +382,11 @@ fn may_have_landed(error: &LoginError) -> bool {
     }
 }
 
-/// The registry refuses Cloud tools on a local Store before asking; this guards the rest.
-fn not_here() -> RpcError {
+/// The registry refuses Cloud tools on a local Store before asking, so a Cloud step
+/// reaching the in-process Store is the registry's mistake.
+fn cloud_only() -> RpcError {
     RpcError::new(
-        RpcErrorCode::from("not_here"),
+        RpcErrorCode::Internal,
         "This needs Ployz Cloud; a local Config Store cannot answer it",
     )
 }
@@ -371,14 +396,14 @@ type Locate = Box<dyn Fn(StoreAt) -> Result<Place, Error> + Send + Sync>;
 
 struct Server {
     account: Account,
-    store: Store,
+    local: Option<Local>,
     place: Locate,
     deadline: Duration,
     session: String,
     keys: fn(&str, &RequestId, &str) -> String,
     tools: Vec<Tool>,
     gates: HashMap<&'static str, Gate>,
-    /// The Cloud whose published commands are listed, when the Store is Cloud.
+    /// The Cloud whose published commands are listed, when there is no `local` Store.
     setup: Option<Setup>,
     /// The published commands as last read, replaced when a reply names a newer revision.
     published: Mutex<Option<Published>>,
@@ -444,12 +469,12 @@ impl Acting {
 }
 
 impl Server {
-    fn new(account: Account, store: Store, place: Locate) -> Self {
+    fn new(account: Account, local: Option<Local>, place: Locate) -> Self {
         let catalog = tools::catalog();
         let gates = catalog.iter().map(|def| (def.name, def.gate)).collect();
         Self {
             account,
-            store,
+            local,
             place,
             deadline: CALL_DEADLINE,
             session: uuid::Uuid::new_v4().to_string(),
@@ -473,12 +498,7 @@ impl Server {
     }
 
     async fn refreshed(&self, setup: &Setup) -> Option<Published> {
-        let credential = async {
-            match self.backend().await {
-                Ok(Backend::Cloud(credential)) => Some(credential),
-                Ok(Backend::Local(..)) | Err(_) => None,
-            }
-        };
+        let credential = async { self.agent().await.ok() };
         setup.refresh(credential).await.ok()
     }
 
@@ -582,9 +602,8 @@ impl Server {
                 ));
             }
         };
-        let credential = match self.backend().await {
-            Ok(Backend::Cloud(credential)) => credential,
-            Ok(Backend::Local(..)) => return Ok(refused(not_here().message).into()),
+        let credential = match self.agent().await {
+            Ok(credential) => credential,
             Err(text) => return Ok(refused(text).into()),
         };
         if let Some(setup) = &self.setup
@@ -644,13 +663,18 @@ impl Server {
     }
 
     async fn backend(&self) -> Result<Backend<'_>, String> {
-        match &self.store {
-            // The in-process Store sweeps as each call starts, as each CLI command does.
-            Store::Local(store, who) => store::sweep(store, who)
-                .map(|()| Backend::Local(store, who))
-                .map_err(|error| Error::from(StoreCallError::Refused(error)).to_string()),
-            Store::Cloud => self.agent().await.map(Backend::Cloud),
-        }
+        let Some(Local { store, who }) = &self.local else {
+            let credential = self.agent().await?;
+            let organization = self.organization(&credential).await?;
+            return Ok(Backend::Cloud(Cloud {
+                credential,
+                organization,
+            }));
+        };
+        // The in-process Store sweeps as each call starts, as each CLI command does.
+        store::sweep(store, who)
+            .map(|()| Backend::Local(store, who))
+            .map_err(|error| Error::from(StoreCallError::Refused(error)).to_string())
     }
 
     async fn agent(&self) -> Result<Credential, String> {
@@ -731,15 +755,11 @@ impl Server {
         Ok(device)
     }
 
-    /// Which Store a new call reaches. A device can switch Organizations
+    /// The Organization a new call acts in. A device can switch Organizations
     /// between calls; an Organization Token cannot.
-    async fn store_at(&self, backend: &Backend<'_>) -> Result<StoreAt, String> {
-        let credential = match backend {
-            Backend::Local(..) => return Ok(StoreAt::Local),
-            Backend::Cloud(credential) => credential,
-        };
+    async fn organization(&self, credential: &Credential) -> Result<OrganizationId, String> {
         if let Some(organization) = self.account.organization.of(credential) {
-            return Ok(StoreAt::Cloud { organization });
+            return Ok(organization);
         }
         let organization = cloud_account::acting_in(credential)
             .await
@@ -750,31 +770,23 @@ impl Server {
                 .organization
                 .learn(credential, organization.clone());
         }
-        Ok(StoreAt::Cloud { organization })
+        Ok(organization)
     }
 
     async fn move_links_after_project_rename(&self, call: &Call<'_>, write: &Write) {
         let Write::Store(ployz_store::Command::RenameProject(rename)) = write else {
             return;
         };
-        let store = match &call.store {
-            Some(store) => Ok(store.clone()),
-            None => self.store_at(call.backend).await,
+        let acting = match call.backend.at() {
+            StoreAt::Local => store::LOCAL_ORGANIZATION.to_owned(),
+            StoreAt::Cloud { organization } => organization.as_str().to_owned(),
         };
-        let moved = match store {
-            Ok(StoreAt::Local) => Ok(store::LOCAL_ORGANIZATION.to_owned()),
-            Ok(StoreAt::Cloud { organization }) => Ok(organization.as_str().to_owned()),
-            Err(error) => Err(error),
-        }
-        .and_then(|acting| {
-            super::link::rename_project(
-                &self.account.config,
-                Some(&acting),
-                &rename.project,
-                &rename.name,
-            )
-            .map_err(|error| error.to_string())
-        });
+        let moved = super::link::rename_project(
+            &self.account.config,
+            Some(&acting),
+            &rename.project,
+            &rename.name,
+        );
         if let Err(error) = moved {
             crate::ui::note(format_args!(
                 "Renamed Project {} to {}, but this device's links still name {0}: {error}",
@@ -914,11 +926,7 @@ impl Server {
             Ok(backend) => backend,
             Err(text) => return Ok(refused(text).into()),
         };
-        let store = match self.store_at(&backend).await {
-            Ok(store) => store,
-            Err(text) => return Ok(refused(text).into()),
-        };
-        let place = match (self.place)(store.clone()) {
+        let place = match (self.place)(backend.at()) {
             Ok(place) => place,
             Err(error) => return Ok(refused(error.to_string()).into()),
         };
@@ -929,7 +937,6 @@ impl Server {
             tool,
             input: &input,
             backend: &backend,
-            store: Some(store),
             until,
         };
         tokio::select! {
@@ -966,7 +973,6 @@ struct Call<'a> {
     tool: &'a str,
     input: &'a Value,
     backend: &'a Backend<'a>,
-    store: Option<StoreAt>,
     until: Instant,
 }
 
@@ -1006,7 +1012,7 @@ impl Server {
         mut approval: Option<String>,
         context: &RequestContext<RoleServer>,
     ) -> Result<CallToolResponse, McpError> {
-        let mut answered: Option<(Asked, ElicitResult)> = None;
+        let mut answered: Option<(&Cloud, Asked, ElicitResult)> = None;
         loop {
             let answers = match step {
                 Step::Done { result } => return Ok(rendered(result).into()),
@@ -1016,14 +1022,12 @@ impl Server {
                     call.backend.asks(&then).await
                 }
                 Step::Write { write } => {
-                    if let Some((asked, answer)) = answered.take() {
-                        let (Backend::Cloud(agent), Some(StoreAt::Cloud { organization })) =
-                            (call.backend, &call.store)
-                        else {
-                            return Ok(refused(not_here().message).into());
-                        };
+                    if let Some((cloud, asked, answer)) = answered.take() {
                         let verb = verb(call.tool, call.input, &asked);
-                        let person = match self.decider(agent, organization, verb, &asked).await {
+                        let person = match self
+                            .decider(&cloud.credential, &cloud.organization, verb, &asked)
+                            .await
+                        {
                             Ok(person) => person,
                             Err(text) => return Ok(refused(text).into()),
                         };
@@ -1046,12 +1050,12 @@ impl Server {
                         }
                     };
                     let asked = match (&written, call.backend) {
-                        (Err(error), Backend::Cloud(_)) => {
-                            Asked::of(error).map(|asked| (asked, error.message.clone()))
+                        (Err(error), Backend::Cloud(cloud)) => {
+                            Asked::of(error).map(|asked| (cloud, asked, error.message.clone()))
                         }
                         _ => None,
                     };
-                    let Some((asked, message)) = asked else {
+                    let Some((cloud, asked, message)) = asked else {
                         if written.is_ok() {
                             self.move_links_after_project_rename(call, &write).await;
                         }
@@ -1059,9 +1063,6 @@ impl Server {
                         continue;
                     };
                     let verb = verb(call.tool, call.input, &asked);
-                    let Backend::Cloud(credential) = call.backend else {
-                        return Ok(refused(not_here().message).into());
-                    };
                     if can_ask(context) {
                         let form = form(verb, &asked, typed(&write).as_deref());
                         let answer = context
@@ -1069,9 +1070,9 @@ impl Server {
                             .create_elicitation(form)
                             .await
                             .map_err(|error| McpError::internal_error(error.to_string(), None))?;
-                        answered = Some((asked, answer));
+                        answered = Some((cloud, asked, answer));
                     } else {
-                        let url = waiting_on_you(credential).await;
+                        let url = waiting_on_you(&cloud.credential).await;
                         return Ok(pending(verb, &asked, &message, &url).into());
                     }
                     step = Step::Write { write };

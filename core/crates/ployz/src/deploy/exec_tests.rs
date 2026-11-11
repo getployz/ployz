@@ -1986,7 +1986,7 @@ async fn application_failure_and_cancellation_retain_prepared_storage() {
 #[tokio::test(start_paused = true)]
 async fn a_lost_answer_outlasts_a_resend_that_never_reached_the_server() {
     let machine = machine('1');
-    // `call_retried` keeps a lost answer only when it was worth retrying.
+    // `Client::repeat` keeps a lost answer only when it was worth retrying.
     let lost = || {
         RpcError {
             code: RpcErrorCode::Unavailable,

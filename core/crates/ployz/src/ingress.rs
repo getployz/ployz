@@ -134,11 +134,12 @@ impl ClusterDoors {
 /// founded closed does until its tunnel opens.
 pub(crate) fn cluster_doors(services: &[ServiceObservation]) -> ClusterDoors {
     let newest = |identity: QualifiedService| {
-        services
-            .iter()
-            .filter(|service| service.identity == identity)
-            .flat_map(|service| service.containers.iter().map(|copy| copy.as_observation()))
-            .max_by_key(|copy| (copy.created_at_unix_nanos, copy.container_id))
+        ployz_core::newest(
+            services
+                .iter()
+                .filter(|service| service.identity == identity)
+                .flat_map(|service| service.containers.iter().map(|copy| copy.as_observation())),
+        )
     };
     let sealed_token = newest(QualifiedService::system_tunnel())
         .and_then(|tunnel| tunnel_sealed_token(&tunnel.resolved_spec.container.labels));
@@ -199,10 +200,7 @@ pub(crate) fn proxy_service(services: &[ServiceObservation]) -> ServiceId {
             let newest = service
                 .containers
                 .iter()
-                .map(|copy| {
-                    let copy = copy.as_observation();
-                    (copy.created_at_unix_nanos, copy.container_id)
-                })
+                .map(|copy| copy.as_observation().recency_key())
                 .max()?;
             Some((newest, service.service_id))
         })

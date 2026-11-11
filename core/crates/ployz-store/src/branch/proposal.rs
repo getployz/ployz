@@ -9,8 +9,7 @@ use super::pair::{self, Arrival, Claim, Which};
 use super::*;
 use crate::Trusted;
 use crate::id::{ProposalId, RepositoryId};
-use crate::pull_request::PullRequestRef;
-use crate::removal::mark;
+use crate::pr_environment::{self, PullRequestRef};
 use crate::storage::Param;
 
 /// Remove a proposal from a draft: what it still owns there goes back to what the
@@ -913,15 +912,11 @@ pub(crate) fn included(
              r.id \
              FROM config_proposal p JOIN config_environment d ON d.id = p.environment_id \
              LEFT JOIN config_environment e ON e.id = p.source_environment_id \
-             LEFT JOIN (SELECT q.environment_id AS id, q.repository_id, q.number, \
-              v.project_id, v.name, v.working_revision \
-              FROM config_pr_environment q JOIN config_environment v ON v.id = q.environment_id \
-              JOIN config_environment_branch b ON b.environment_id = q.environment_id \
-              WHERE {}) r \
+             LEFT JOIN {} \
              ON r.id <> p.source_environment_id AND r.repository_id = p.repository_id \
              AND r.number = p.number AND r.project_id = d.project_id \
              WHERE p.environment_id = ?1 ORDER BY p.source_name, p.id",
-            mark::unmarked("b.environment_id")
+            pr_environment::live_previews()
         ),
         &[environment.as_str().into()],
     )?;

@@ -89,16 +89,19 @@ fn one_changed_byte_in_any_part_is_refused() {
 fn a_key_id_the_issuer_does_not_publish_is_refused() {
     assert!(matches!(
         verify(token(), &KeySet::default(), issued_at()),
-        Err(TokenRefusal::UnknownKey)
+        Err(TokenRefusal::UnknownKey(_))
     ));
     let mut header = header_of(token());
     header["kid"] = json!("not-a-github-key");
     let mut renamed = parts(token());
     *renamed.first_mut().unwrap() = encode(&header);
-    assert!(matches!(
-        verify(&renamed.join("."), &github_keys(), issued_at()),
-        Err(TokenRefusal::UnknownKey)
-    ));
+    let refused = verify(&renamed.join("."), &github_keys(), issued_at()).unwrap_err();
+    assert!(matches!(&refused, TokenRefusal::UnknownKey(kid) if kid == "not-a-github-key"));
+    assert_eq!(
+        refused.to_string(),
+        "GitHub publishes no token key named not-a-github-key",
+        "the refusal names the key"
+    );
 }
 
 #[test]
@@ -268,19 +271,19 @@ async fn keys_are_cached_and_fetched_again_once_for_an_unknown_key_id() {
     let keys = keys_at(url, Duration::ZERO);
 
     assert!(matches!(
-        keys.verify(token(), issued_at()).await,
-        Err(TokenRefusal::UnknownKey)
+        keys.verify(token(), issued_at().into()).await,
+        Err(TokenRefusal::UnknownKey(_))
     ));
     assert_eq!(hits.load(Ordering::SeqCst), 1, "the first use fetches");
 
-    assert!(keys.verify(token(), issued_at()).await.is_ok());
+    assert!(keys.verify(token(), issued_at().into()).await.is_ok());
     assert_eq!(
         hits.load(Ordering::SeqCst),
         2,
         "a rotated key fetches once more"
     );
 
-    assert!(keys.verify(token(), issued_at()).await.is_ok());
+    assert!(keys.verify(token(), issued_at().into()).await.is_ok());
     assert_eq!(
         hits.load(Ordering::SeqCst),
         2,
@@ -292,8 +295,8 @@ async fn keys_are_cached_and_fetched_again_once_for_an_unknown_key_id() {
     let mut made_up = parts(token());
     *made_up.first_mut().unwrap() = encode(&header);
     assert!(matches!(
-        keys.verify(&made_up.join("."), issued_at()).await,
-        Err(TokenRefusal::UnknownKey)
+        keys.verify(&made_up.join("."), issued_at().into()).await,
+        Err(TokenRefusal::UnknownKey(_))
     ));
     assert_eq!(
         hits.load(Ordering::SeqCst),
@@ -306,13 +309,17 @@ async fn keys_are_cached_and_fetched_again_once_for_an_unknown_key_id() {
 async fn unknown_key_ids_cannot_make_the_machine_refetch_within_a_minute() {
     let (url, hits) = jwks_host(vec![JWKS.to_vec()]).await;
     let keys = keys_at(url, REFETCH_FLOOR);
-    assert!(keys.verify(token(), issued_at()).await.is_ok());
+    assert!(keys.verify(token(), issued_at().into()).await.is_ok());
     let mut header = header_of(token());
     for at in 0..5 {
         header["kid"] = json!(format!("made-up-{at}"));
         let mut made_up = parts(token());
         *made_up.first_mut().unwrap() = encode(&header);
-        assert!(keys.verify(&made_up.join("."), issued_at()).await.is_err());
+        assert!(
+            keys.verify(&made_up.join("."), issued_at().into())
+                .await
+                .is_err()
+        );
     }
     assert_eq!(hits.load(Ordering::SeqCst), 1);
 }
@@ -322,7 +329,7 @@ async fn a_key_set_that_does_not_answer_is_a_keys_refusal() {
     let (url, _) = jwks_host(vec![b"not json".to_vec()]).await;
     assert!(matches!(
         keys_at(url, Duration::ZERO)
-            .verify(token(), issued_at())
+            .verify(token(), issued_at().into())
             .await,
         Err(TokenRefusal::Keys(KeysError::Malformed))
     ));
@@ -360,7 +367,7 @@ async fn a_refusal_logs_the_claim_and_the_rule_never_the_token() {
     let keys = keys_at(url, Duration::ZERO);
 
     assert!(
-        keys.check(&fixture_rule(), token(), issued_at())
+        keys.check(&fixture_rule(), token(), issued_at().into())
             .await
             .is_ok()
     );
@@ -368,13 +375,14 @@ async fn a_refusal_logs_the_claim_and_the_rule_never_the_token() {
     let mut moved = fixture_rule();
     moved.source.builder.sha = CommitSha::from_bytes([0; 20]);
     assert!(matches!(
-        keys.check(&moved, token(), issued_at()).await,
+        keys.check(&moved, token(), issued_at().into()).await,
         Err(ProofRefusal::Claim(AuthorityRefusal::Mismatch {
             field: "job_workflow_sha"
         }))
     ));
     assert!(matches!(
-        keys.check(&fixture_rule(), token(), Timestamp::now()).await,
+        keys.check(&fixture_rule(), token(), Timestamp::now().into())
+            .await,
         Err(ProofRefusal::Token(TokenRefusal::Lifetime(_)))
     ));
 

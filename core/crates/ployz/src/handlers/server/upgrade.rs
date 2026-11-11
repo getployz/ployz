@@ -25,6 +25,7 @@ use serde_json::json;
 
 use super::super::{Error, leaf_matches, runtime, string_values, with_client};
 use super::ConnectionOptions;
+use crate::cluster::{Call, Wait, setup_outcome};
 
 const OBSERVATION_TIMEOUT: Duration = Duration::from_secs(16 * 60);
 const POLL_INTERVAL: Duration = Duration::from_secs(1);
@@ -62,14 +63,18 @@ impl UpgradeRequests for Client {
         machine: &Machine,
         wait: Duration,
     ) -> Result<MachineUpgradeAttempt, crate::setup_retry::Error<ConnectError>> {
-        self.call_repeatable_for::<op::RequestMachineUpgrade>(
+        self.call::<op::RequestMachineUpgrade>(
             request,
-            Some(&MachineTarget::from(&machine.id)),
-            Some(machine.name.as_str()),
-            None,
-            wait,
+            Call::keyed()
+                .to(&MachineTarget::from(&machine.id))
+                .waiting(Wait {
+                    wait,
+                    server: Some(machine.name.as_str()),
+                    expected: None,
+                }),
         )
         .await
+        .map_err(setup_outcome)
     }
 
     async fn poll_upgrade(
@@ -78,14 +83,18 @@ impl UpgradeRequests for Client {
         machine: &Machine,
         wait: Duration,
     ) -> Result<MachineUpgradeAttempt, crate::setup_retry::Error<ConnectError>> {
-        self.call_repeatable_for::<op::RequestMachineUpgrade>(
+        self.call::<op::RequestMachineUpgrade>(
             request,
-            Some(&MachineTarget::from(&machine.id)),
-            Some(machine.name.as_str()),
-            Some(RESTART),
-            wait,
+            Call::keyed()
+                .to(&MachineTarget::from(&machine.id))
+                .waiting(Wait {
+                    wait,
+                    server: Some(machine.name.as_str()),
+                    expected: Some(RESTART),
+                }),
         )
         .await
+        .map_err(setup_outcome)
     }
 
     async fn move_ingress(&mut self) -> Result<Vec<Followed>, Error> {

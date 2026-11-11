@@ -118,20 +118,18 @@ fn a_refused_key_is_told_from_a_router_that_merely_stopped() {
 }
 
 #[test]
-fn the_auth_key_is_sealed_for_this_cluster_and_never_in_the_clear() {
-    let observed = Access {
-        machines: Vec::new(),
-        running: Default::default(),
-        listed: PartialResult {
-            successes: Vec::new(),
-            failures: Vec::new(),
-            omissions: Vec::new(),
-        },
-        sealing: None,
-    };
-    let refusal = seal_key(&observed, "tskey-auth-secret")
-        .unwrap_err()
-        .report();
-    assert_eq!(refusal.code, RpcErrorCode::Unavailable);
-    assert!(!refusal.message.contains("tskey-auth-secret"));
+fn the_auth_key_opens_only_for_the_cluster_it_was_sealed_to() {
+    let cluster = ployz_core::Keypair::generate();
+    let sealed = seal_key(&cluster.public(), "tskey-auth-secret").unwrap();
+
+    assert_eq!(
+        cluster
+            .open_platform(PlatformPurpose::PrivateAccess, &sealed)
+            .as_deref(),
+        Some(b"tskey-auth-secret".as_slice())
+    );
+    assert_eq!(
+        ployz_core::Keypair::generate().open_platform(PlatformPurpose::PrivateAccess, &sealed),
+        None
+    );
 }

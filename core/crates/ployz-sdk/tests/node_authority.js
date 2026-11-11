@@ -69,8 +69,22 @@ test("the body names the fixture's golden digest, in canonical form", async () =
   assert.equal(body, JSON.stringify(parsed));
   assert.equal(changes[0].digest, GOLDEN);
   assert.deepEqual(lines, [
-    "Approved web: nginx@sha256:000000000000… (device /dev/null:/dev/null, adds NET_ADMIN, " +
+    `Approved web: ${IMAGE} (device /dev/null:/dev/null, adds NET_ADMIN, ` +
       "sysctl net.core.somaxconn, host port 8080, binds /srv/web, hook migrate)",
+    '  variables PLAIN=one, SECRET (sealed)',
+    '  pre-deploy ["migrate"]',
+    '  configs [{"content":"hi","name":"site"}]',
+    '  mounts [{"no_copy":false,"read_only":false,"target":"/srv","volume":"host"},{"no_copy":false,"read_only":false,"target":"/data","volume":"data"}]',
+    '  ports [{"bind":{"kind":"all"},"container_port":80,"mode":"host","published_port":8080,"transport_protocol":"tcp"},{"container_port":80,"hostname":"web.example.com","http_protocol":"http","load_balancer_port":443,"mode":"ingress"}]',
+    '  volumes [{"reference":"host","source":{"create_machine_path":false,"kind":"bind","machine_path":"/srv/web"}},{"reference":"data","source":{"driver":{"name":"local","options":{"type":"tmpfs"}},"kind":"ordinary","labels":{},"name":"data"}}]',
+    '  cap_add ["NET_ADMIN"]',
+    '  command ["nginx","-g","daemon off;"]',
+    '  config_mounts [{"config_name":"site","mode":420,"target":"/etc/site.conf"}]',
+    '  entrypoint ["/docker-entrypoint.sh"]',
+    '  pull_policy "missing"',
+    '  resources {"device_reservations":[],"devices":[{"cgroup_permissions":"rwm","container_path":"/dev/null","machine_path":"/dev/null"}],"ulimits":{}}',
+    '  sysctls {"net.core.somaxconn":"1024"}',
+    "  pre-deploy privileged false",
   ]);
 });
 
@@ -94,7 +108,7 @@ test("a built image, a tag image, a plan read without target, or unknown terms s
 });
 
 // `AutoDeployRule::draft`'s golden fixture in ployz-core's authority/rule_draft_tests.rs, and the digest of its body there.
-const RULE_GOLDEN = "004e199a9600b0c6fa8b432a1de4d098c1f217a4bc8e40f36ffa3af27b2c7b28";
+const RULE_GOLDEN = "9c041c83758d801e0350725886e31596384b655d7edb2f66189bdb542a32ae63";
 const BUILDER_SHA = "5f35eaa8e1372d0d86ff82788adadf308e5f3f97";
 const ruleSpec = (name, plain) => ({
   name,

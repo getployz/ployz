@@ -812,6 +812,7 @@ export type InngestSendableEvent =
   | ReturnType<typeof createGithubCheckSuiteReceivedEvent>
   | ReturnType<typeof createGithubPullRequestReceivedEvent>
   | ReturnType<typeof createGithubBuildRunCompletedEvent>
+  | ReturnType<typeof createConfigDeploymentApprovedEvent>
   | ReturnType<typeof createAnonymousTeardownRequestedEvent>;
 
 /**
@@ -821,4 +822,10 @@ export type InngestSendableEvent =
 export const githubBuildRunCompletedEvent = "github/build-run.completed";
 export function createGithubBuildRunCompletedEvent(data: { id: string; runId: number }) {
   return { id: data.id, name: githubBuildRunCompletedEvent, data: { runId: data.runId } };
+}
+
+/** A person approved again the commits of a Deployment that waited once its builds ended: its run goes on. */
+export const configDeploymentApprovedEvent = "config/deployment.approved";
+export function createConfigDeploymentApprovedEvent(data: { deploymentId: string }) {
+  return { id: `config-deployment-approved-${data.deploymentId}`, name: configDeploymentApprovedEvent, data } as const;
 }

@@ -1,5 +1,6 @@
 //! Cloud enrollment behind `ployz server add`, and `ployz cloud reset`.
 
+use crate::cluster::{Call, Deadline, Wait};
 use std::{future::Future, time::Duration};
 
 use clap::{ArgMatches, Command};
@@ -856,7 +857,10 @@ fn shows_code(matches: &ArgMatches, reader: Reader, json: bool, stdout_is_termin
 /// Whether the enrolled Machine holds its Cluster's Sealing Key, for Cloud to record at completion.
 async fn sealing(client: &mut Client) -> Result<Option<ployz_core::Sealing>, Error> {
     Ok(client
-        .call_repeatable::<op::Inspect>(InspectRequest::default(), None)
+        .call::<op::Inspect>(
+            InspectRequest::default(),
+            Call::read().waiting(Wait::standard()),
+        )
         .await?
         .sealing)
 }
@@ -926,11 +930,11 @@ async fn set_cloud_management_client(
     client: &mut Client,
 ) -> Result<ManagementCapability, Error> {
     let response = client
-        .call_repeatable::<op::SetManagementClient>(
+        .call::<op::SetManagementClient>(
             SetManagementClientRequest::Set {
                 label: ManagementClientLabel::cloud(),
             },
-            None,
+            Call::keyed().waiting(Wait::standard()),
         )
         .await?;
     let capability = response.capability.ok_or_else(|| {
@@ -984,7 +988,10 @@ where
     InstallFuture: Future<Output = Result<(), Error>>,
 {
     let daemon = client
-        .call_repeatable::<op::DescribeContract>(DescribeContractRequest {}, None)
+        .call::<op::DescribeContract>(
+            DescribeContractRequest {},
+            Call::read().waiting(Wait::standard()),
+        )
         .await?;
     if daemon.daemon_version == env!("CARGO_PKG_VERSION") {
         return Ok(client);
@@ -1002,7 +1009,10 @@ where
 async fn wait_matching_daemon(matches: &ArgMatches) -> Result<Client, Error> {
     let mut client = wait_client(matches).await?;
     let daemon = client
-        .call_repeatable::<op::DescribeContract>(DescribeContractRequest {}, None)
+        .call::<op::DescribeContract>(
+            DescribeContractRequest {},
+            Call::read().waiting(Wait::standard()),
+        )
         .await?;
     if daemon.daemon_version != env!("CARGO_PKG_VERSION") {
         return Err(Error::unavailable(format!(
@@ -1104,6 +1114,7 @@ fn retry_local_connect(error: &ConnectError) -> bool {
 async fn wait_client(matches: &ArgMatches) -> Result<Client, Error> {
     crate::setup_retry::run(
         &mut (),
+        &crate::ui::WaitNotices,
         "Waiting for local daemon",
         crate::setup_retry::WAIT,
         retry_local_connect,
@@ -1120,7 +1131,10 @@ async fn ensure_uninitialized(
     mut client: Client,
 ) -> Result<Client, Error> {
     let details = client
-        .call_repeatable::<op::Inspect>(InspectRequest::default(), None)
+        .call::<op::Inspect>(
+            InspectRequest::default(),
+            Call::read().waiting(Wait::standard()),
+        )
         .await?;
     if details.phase == LocalMachinePhase::Uninitialized {
         return Ok(client);
@@ -1171,6 +1185,7 @@ async fn wait_phase(
     let mut joining = crate::handlers::server::Joining::default();
     crate::setup_retry::run_expecting(
         &mut joining,
+        &crate::ui::WaitNotices,
         &format!("Waiting for the {} phase", phase.as_str()),
         expected,
         wait,
@@ -1183,7 +1198,10 @@ async fn wait_phase(
             }
             let mut client = dial(matches).await?;
             let details = client
-                .call_repeatable::<op::Inspect>(InspectRequest::default(), None)
+                .call::<op::Inspect>(
+                    InspectRequest::default(),
+                    Call::read().waiting(Wait::standard()),
+                )
                 .await?;
             if details.phase != phase {
                 return Err(ConnectError::Attempt(
@@ -1209,7 +1227,10 @@ async fn check_enrolled(
     joining: &mut crate::handlers::server::Joining,
 ) -> Result<(), ConnectError> {
     let details = client
-        .read_once::<op::Inspect>(InspectRequest::default(), None)
+        .call::<op::Inspect>(
+            InspectRequest::default(),
+            Call::once().within(Deadline::SetupRead),
+        )
         .await?;
     let reached = details.machine.map_or(details.id, |machine| machine.id);
     if reached != expected {

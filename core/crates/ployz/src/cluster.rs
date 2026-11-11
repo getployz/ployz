@@ -36,7 +36,7 @@ use tonic::{
 use crate::{
     connect::{
         BoxProxyStream, CONNECT_CONFIRM_TIMEOUT, ConnectError, Connector, TARGET_RPC_TIMEOUT,
-        TransportError, UNARY_RETRY_DELAYS, apply_timeout, rpc_error, target_request,
+        TransportError, apply_timeout, rpc_error, target_request,
     },
     context::{Connection, ConnectionSource},
     deploy::{
@@ -46,9 +46,16 @@ use crate::{
     service::ContainerOperationFailure,
 };
 
+mod call;
+#[cfg(test)]
+mod call_audit;
 mod capacity;
 mod container_health;
+#[cfg(test)]
+mod retry;
 
+pub(crate) use call::setup_outcome;
+pub use call::{Budgeted, Call, Deadline, Once, Pacing, Repeat, Replay, Wait, Waiting};
 pub(crate) use container_health::HealthWaitError;
 
 const STORAGE_OBSERVATION_TIMEOUT: Duration = Duration::from_secs(3);
@@ -538,314 +545,6 @@ impl Client {
         .map(|description| description.machine_id)
     }
 
-    /// Issue one unary RPC. The response type is derived from the RPC, so a request
-    /// cannot be paired with the wrong response.
-    ///
-    /// Transient transport drops (`Attempt`, tonic `Unavailable` / `DeadlineExceeded`)
-    /// redial the same connection and retry up to four times; a failure the entry's router
-    /// reported retries on the channel it came back on. Domain `Remote` errors and other gRPC
-    /// status codes are not retried.
-    ///
-    /// # Errors
-    ///
-    /// Returns an encoding, transport, or remote RPC error when the call does
-    /// not succeed within the bounded retry policy.
-    pub async fn call<T: Rpc>(
-        &mut self,
-        request: T::Request,
-        target: Option<&MachineTarget>,
-    ) -> Result<T::Response, ConnectError> {
-        let payload = T::into_request(request).encode()?;
-        self.call_retried::<T>(payload, target, None).await
-    }
-
-    /// Retry only reads or known-idempotent setup RPCs with short attempts.
-    /// Callers must use `call_unretried` for mutations with uncertain outcomes.
-    pub(crate) async fn call_repeatable<T: Rpc>(
-        &mut self,
-        request: T::Request,
-        target: Option<&MachineTarget>,
-    ) -> Result<T::Response, ConnectError> {
-        self.call_repeatable_for::<T>(request, target, None, None, crate::setup_retry::WAIT)
-            .await
-            .map_err(|error| match error {
-                crate::setup_retry::Error::Permanent(error) => error,
-                exhausted => ConnectError::Exhausted(Box::new(exhausted)),
-            })
-    }
-
-    /// Retry a read or stable-identity request for the caller's remaining time budget.
-    /// `server` names the target in the connectivity warning; `expected` announces an
-    /// anticipated outage in its place.
-    pub(crate) async fn call_repeatable_for<T: Rpc>(
-        &mut self,
-        request: T::Request,
-        target: Option<&MachineTarget>,
-        server: Option<&str>,
-        expected: Option<crate::setup_retry::Expected>,
-        wait: Duration,
-    ) -> Result<T::Response, crate::setup_retry::Error<ConnectError>> {
-        let payload = T::into_request(request)
-            .encode()
-            .map_err(ConnectError::from)
-            .map_err(crate::setup_retry::Error::Permanent)?;
-        let mut redial = false;
-        let progress = match (server, target) {
-            (Some(server), _) => format!("Could not reach Server {server}"),
-            (None, Some(target)) => format!(
-                "Could not reach Server {} via {}",
-                target.as_str().escape_debug(),
-                self.connection
-            ),
-            (None, None) => format!("Could not reach {}", self.connection),
-        };
-        crate::setup_retry::run_expecting(
-            self,
-            &progress,
-            expected,
-            wait,
-            ConnectError::is_setup_retryable,
-            async |client| {
-                let reconnect = redial;
-                redial = true;
-                client
-                    .setup_read_attempt::<T>(payload.clone(), target, reconnect)
-                    .await
-            },
-        )
-        .await
-    }
-
-    /// One read with no retry or notice of its own, for a readiness check whose
-    /// caller's wait retries it and owns what the user sees (#3620).
-    pub(crate) async fn read_once<T: Rpc>(
-        &mut self,
-        request: T::Request,
-        target: Option<&MachineTarget>,
-    ) -> Result<T::Response, ConnectError> {
-        let payload = T::into_request(request).encode()?;
-        self.setup_read_attempt::<T>(payload, target, false).await
-    }
-
-    async fn setup_read_attempt<T: Rpc>(
-        &mut self,
-        payload: OpaquePayload,
-        target: Option<&MachineTarget>,
-        redial: bool,
-    ) -> Result<T::Response, ConnectError> {
-        tokio::time::timeout(
-            Duration::from_secs(5),
-            self.unary_attempt::<T>(payload, target, redial),
-        )
-        .await
-        .unwrap_or_else(|_| {
-            Err(tonic::Status::deadline_exceeded("Machine setup read timed out").into())
-        })
-    }
-
-    /// Mutations that must not be replayed after a lost response. `reply_timeout` is
-    /// usually [`LIVE_MUTATION_REPLY_TIMEOUT`].
-    pub(crate) async fn call_unretried<T: Rpc>(
-        &self,
-        request: T::Request,
-        target: Option<&MachineTarget>,
-        reply_timeout: Duration,
-    ) -> Result<T::Response, ConnectError> {
-        tokio::time::timeout(
-            reply_timeout,
-            self.call_once::<T>(T::into_request(request).encode()?, target),
-        )
-        .await
-        .unwrap_or_else(|_| {
-            Err(tonic::Status::deadline_exceeded("Machine setup mutation reply timed out").into())
-        })
-    }
-
-    /// Issue a retryable read-only targeted RPC with a deadline per attempt.
-    ///
-    /// # Errors
-    ///
-    /// Returns an RPC error when request encoding fails or the targeted read
-    /// does not succeed within the bounded retry policy.
-    pub(crate) async fn read<T: Rpc>(
-        &mut self,
-        request: T::Request,
-        target: &MachineTarget,
-    ) -> Result<T::Response, RpcError> {
-        self.try_read::<T>(request, target).await.map_err(rpc_error)
-    }
-
-    pub(crate) async fn try_read<T: Rpc>(
-        &mut self,
-        request: T::Request,
-        target: &MachineTarget,
-    ) -> Result<T::Response, ConnectError> {
-        let payload = T::into_request(request)
-            .encode()
-            .map_err(ConnectError::Codec)?;
-        let timeout = crate::connect::target_read_timeout();
-        self.call_retried::<T>(payload, Some(target), Some(timeout))
-            .await
-    }
-
-    async fn call_retried<T: Rpc>(
-        &mut self,
-        payload: OpaquePayload,
-        target: Option<&MachineTarget>,
-        timeout: Option<Duration>,
-    ) -> Result<T::Response, ConnectError> {
-        let mut delays = UNARY_RETRY_DELAYS.iter().copied();
-        let mut redial = false;
-        // One budget across retries: fast failures retry inside it, and a vanished
-        // Machine costs the budget once instead of once per attempt.
-        let deadline = timeout.map(|timeout| tokio::time::Instant::now() + timeout);
-        // A reply on an earlier attempt means the target was not silent throughout.
-        let mut reply: Option<ConnectError> = None;
-        // An earlier attempt that went out and lost its answer may have been done.
-        let mut lost: Option<ConnectError> = None;
-        loop {
-            let outcome = match deadline {
-                Some(deadline) => {
-                    self.bounded_attempt::<T>(&payload, target, redial, deadline)
-                        .await
-                }
-                None => {
-                    self.unary_attempt::<T>(payload.clone(), target, redial)
-                        .await
-                }
-            };
-            let error = match outcome {
-                Ok(response) => return Ok(response),
-                Err(error) => error,
-            };
-            // The entry's router made this failure, so the channel to the entry works.
-            let entry_answered = error.routed_by_entry();
-            let error = crate::connect::keep_target_reply(&mut reply, error);
-            if error.retry() != ployz_core::Retry::Now {
-                return Err(crate::connect::keep_lost_call(lost, error));
-            }
-            let Some(delay) = delays.next() else {
-                return Err(crate::connect::keep_lost_call(lost, error));
-            };
-            if deadline.is_some_and(|deadline| tokio::time::Instant::now() + delay >= deadline) {
-                return Err(crate::connect::keep_lost_call(lost, error));
-            }
-            tokio::time::sleep(delay).await;
-            redial = !entry_answered;
-            if error.target_replied() {
-                // The target answered after the loss: that answer is the news now.
-                lost = None;
-                reply = Some(error);
-            } else if error.unreplied() {
-                lost = Some(error);
-            }
-        }
-    }
-
-    /// Only a deadline spent waiting on a confirmed entry is evidence the target is silent;
-    /// one spent reconnecting to the entry says nothing about it. An entry that just reported
-    /// the target silent on this channel counts as confirmed, as one a redial checked does.
-    async fn bounded_attempt<T: Rpc>(
-        &mut self,
-        payload: &OpaquePayload,
-        target: Option<&MachineTarget>,
-        redial: bool,
-        deadline: tokio::time::Instant,
-    ) -> Result<T::Response, ConnectError> {
-        if redial {
-            match tokio::time::timeout_at(deadline, self.redial()).await {
-                Ok(confirmed) => confirmed?,
-                Err(_) => {
-                    return Err(tonic::Status::deadline_exceeded(
-                        "entry Machine reconnect timed out",
-                    )
-                    .into());
-                }
-            }
-        }
-        match tokio::time::timeout_at(deadline, self.call_once::<T>(payload.clone(), target)).await
-        {
-            Ok(outcome) => outcome,
-            Err(_) => Err(ConnectError::Rpc(TransportError::budget_expired(
-                "target Machine RPC timed out",
-            ))),
-        }
-    }
-
-    async fn unary_attempt<T: Rpc>(
-        &mut self,
-        payload: OpaquePayload,
-        target: Option<&MachineTarget>,
-        redial: bool,
-    ) -> Result<T::Response, ConnectError> {
-        if redial {
-            self.redial().await?;
-        }
-        self.call_once::<T>(payload, target).await
-    }
-
-    /// One-shot targeted RPC. No retry: a mutating operation that is not keyed
-    /// must not be re-issued after a dropped response.
-    pub(crate) async fn invoke<T: Rpc>(
-        &self,
-        request: T::Request,
-        target: &MachineTarget,
-        timeout: Option<Duration>,
-    ) -> Result<T::Response, RpcError> {
-        self.invoke_answered::<T>(request, target, timeout)
-            .await
-            .map_err(rpc_error)
-    }
-
-    /// [`Self::invoke`] on the entry Machine itself, which this client always reaches.
-    pub(crate) async fn invoke_entry<T: Rpc>(
-        &self,
-        request: T::Request,
-        timeout: Option<Duration>,
-    ) -> Result<T::Response, RpcError> {
-        let call = async {
-            let payload = T::into_request(request).encode()?;
-            apply_timeout(timeout, self.call_once::<T>(payload, None)).await
-        };
-        call.await.map_err(rpc_error)
-    }
-
-    /// [`Self::invoke`], keeping whether the failure came back from a daemon or no reply came.
-    pub(crate) async fn invoke_answered<T: Rpc>(
-        &self,
-        request: T::Request,
-        target: &MachineTarget,
-        timeout: Option<Duration>,
-    ) -> Result<T::Response, ConnectError> {
-        let payload = T::into_request(request).encode()?;
-        apply_timeout(timeout, self.call_once::<T>(payload, Some(target))).await
-    }
-
-    /// One unary RPC from an already-shaped request body. No retry, as [`Self::invoke`].
-    pub(crate) async fn invoke_raw(
-        &self,
-        request: &ployz_core::RpcRequest,
-        path: &'static str,
-        target: Option<&MachineTarget>,
-        timeout: Option<Duration>,
-    ) -> Result<ployz_core::RpcResponse, ConnectError> {
-        let payload = request.encode().map_err(ConnectError::Codec)?;
-        apply_timeout(timeout, async {
-            let mut grpc = self.grpc().await?;
-            Ok(grpc
-                .unary(
-                    target_request(payload, target),
-                    PathAndQuery::from_static(path),
-                    ProstCodec::<OpaquePayload, OpaquePayload>::default(),
-                )
-                .await
-                .map_err(|status| status_error(status, path, target))?
-                .into_inner()
-                .decode_response()?)
-        })
-        .await
-    }
-
     /// The channel the latest dial opened.
     fn channel(&self) -> Channel {
         self.channel
@@ -1003,7 +702,20 @@ impl Client {
         payload: OpaquePayload,
         target: Option<&MachineTarget>,
     ) -> Result<T::Response, ConnectError> {
-        let direct = if dials_direct(T::PATH) {
+        self.send_once(T::PATH, payload, target)
+            .await?
+            .decode::<T>()
+            .map_err(ConnectError::Codec)
+    }
+
+    /// One unary RPC on `path`, answered by the daemon's own error when it sent one.
+    async fn send_once(
+        &self,
+        path: &'static str,
+        payload: OpaquePayload,
+        target: Option<&MachineTarget>,
+    ) -> Result<ployz_core::RpcResponse, ConnectError> {
+        let direct = if dials_direct(path) {
             match target {
                 Some(target) => self.full_client(target).await?,
                 None => None,
@@ -1016,17 +728,17 @@ impl Client {
         let response = grpc
             .unary(
                 target_request(payload, target),
-                PathAndQuery::from_static(T::PATH),
+                PathAndQuery::from_static(path),
                 ProstCodec::<OpaquePayload, OpaquePayload>::default(),
             )
             .await
-            .map_err(|status| status_error(status, T::PATH, target))?
+            .map_err(|status| status_error(status, path, target))?
             .into_inner()
             .decode_response()?;
         if let RpcResponseBody::Error(error) = &response.body {
             return Err(ConnectError::Remote(error.clone()));
         }
-        response.decode::<T>().map_err(ConnectError::Codec)
+        Ok(response)
     }
 
     /// List Docker Volumes on each Machine that invites an RPC.
@@ -1079,11 +791,14 @@ impl Client {
             let machine_id = machine.machine.id;
             requests.push(async move {
                 let result = client
-                    .read::<op::InspectStorage>(
+                    .call::<op::InspectStorage>(
                         InspectStorageRequest {},
-                        &MachineTarget::from(&machine_id),
+                        Call::read()
+                            .to(&MachineTarget::from(&machine_id))
+                            .budget(crate::connect::target_read_timeout()),
                     )
-                    .await;
+                    .await
+                    .map_err(crate::connect::rpc_error);
                 (machine_id, result)
             });
         }
@@ -1116,7 +831,7 @@ impl Client {
         request: RemoveVolumesRequest,
     ) -> Result<Vec<VolumeRemoval>, RpcError> {
         let machines = self
-            .call::<op::ListMachines>(ListMachinesRequest {}, None)
+            .call::<op::ListMachines>(ListMachinesRequest {}, Call::read())
             .await
             .map_err(RpcError::from)?;
         Ok(remove_volumes_on(self, &machines.machines, request).await)
@@ -1135,7 +850,7 @@ impl Client {
         sought: Vec<DockerVolumeName>,
     ) -> Result<ployz_store::VolumeObservation, RpcError> {
         let machines = self
-            .call::<op::ListMachines>(ListMachinesRequest {}, None)
+            .call::<op::ListMachines>(ListMachinesRequest {}, Call::read())
             .await
             .map_err(RpcError::from)?;
         let inspector = self.clone();
@@ -1200,7 +915,7 @@ impl Client {
     /// Returns a generated [`RpcError`] when listing Machines fails.
     pub async fn observe_running(&mut self) -> Result<ployz_store::RunningObservation, RpcError> {
         let machines = self
-            .call::<op::ListMachines>(ListMachinesRequest {}, None)
+            .call::<op::ListMachines>(ListMachinesRequest {}, Call::read())
             .await
             .map_err(RpcError::from)?;
         let live = self
@@ -1255,7 +970,7 @@ impl Client {
     /// Returns a generated [`RpcError`] when listing Machines fails.
     pub async fn observe_copies(&mut self) -> Result<crate::sdk::CopyObservation, RpcError> {
         let machines = self
-            .call::<op::ListMachines>(ListMachinesRequest {}, None)
+            .call::<op::ListMachines>(ListMachinesRequest {}, Call::read())
             .await
             .map_err(RpcError::from)?;
         let inspected = self.inspect_storage(&machines.machines).await;
@@ -1337,7 +1052,7 @@ impl Client {
         };
         let selected = observation.machine.id;
         let current = self
-            .call::<op::DescribeContract>(DescribeContractRequest {}, None)
+            .call::<op::DescribeContract>(DescribeContractRequest {}, Call::read())
             .await
             .map_err(RpcError::from)?
             .machine_id;
@@ -1418,9 +1133,11 @@ impl Client {
         }
         let mut client = self.clone();
         match client
-            .try_read::<op::InspectStorage>(
+            .call::<op::InspectStorage>(
                 InspectStorageRequest {},
-                &MachineTarget::from(&machine.machine.id),
+                Call::read()
+                    .to(&MachineTarget::from(&machine.machine.id))
+                    .budget(crate::connect::target_read_timeout()),
             )
             .await
         {
@@ -1460,14 +1177,17 @@ impl Client {
             let reference = reference.clone();
             async move {
                 let response = client
-                    .read::<op::ListImages>(
+                    .call::<op::ListImages>(
                         ListImagesRequest {
                             reference,
                             last_tagged: false,
                         },
-                        &MachineTarget::from(&machine_id),
+                        Call::read()
+                            .to(&MachineTarget::from(&machine_id))
+                            .budget(crate::connect::target_read_timeout()),
                     )
-                    .await;
+                    .await
+                    .map_err(crate::connect::rpc_error);
                 (machine_id, machine_name, response)
             }
         });
@@ -1515,7 +1235,7 @@ impl Client {
     pub async fn machines(&mut self) -> Result<Vec<MachineObservation>, ConnectError> {
         match tokio::time::timeout(
             TARGET_RPC_TIMEOUT,
-            self.call::<op::ListMachines>(ListMachinesRequest {}, None),
+            self.call::<op::ListMachines>(ListMachinesRequest {}, Call::read()),
         )
         .await
         {
@@ -1571,7 +1291,7 @@ impl Client {
                     ..Default::default()
                 };
                 let target = MachineTarget::from(&machine);
-                let read = self.invoke::<op::Inspect>(request, &target, None);
+                let read = self.call_shared::<op::Inspect>(request, Call::once().to(&target));
                 match tokio::time::timeout(STORAGE_OBSERVATION_TIMEOUT, read).await {
                     Ok(Ok(details)) => match details.telemetry {
                         Some(TelemetryObservation::Full { host, .. }) => {
@@ -1677,9 +1397,12 @@ impl Client {
         machine: &MachineId,
         request: SetIngressDoorsRequest,
     ) -> Result<IngressDoorsSet, RpcError> {
-        self.invoke_answered::<op::SetIngressDoors>(request, &MachineTarget::from(machine), None)
-            .await
-            .map_err(|error| answered_by(machine, error))
+        self.call_shared::<op::SetIngressDoors>(
+            request,
+            Call::once().to(&MachineTarget::from(machine)),
+        )
+        .await
+        .map_err(|error| answered_by(machine, error))
     }
 
     /// Turn Private Access on or off on `machine`: place the Tailscale router with the
@@ -1696,9 +1419,12 @@ impl Client {
         machine: &MachineId,
         request: SetPrivateAccessRequest,
     ) -> Result<PrivateAccessSet, RpcError> {
-        self.invoke_answered::<op::SetPrivateAccess>(request, &MachineTarget::from(machine), None)
-            .await
-            .map_err(|error| answered_by(machine, error))
+        self.call_shared::<op::SetPrivateAccess>(
+            request,
+            Call::once().to(&MachineTarget::from(machine)),
+        )
+        .await
+        .map_err(|error| answered_by(machine, error))
     }
 
     pub(crate) async fn ensure_settled(
@@ -1914,15 +1640,17 @@ async fn remove_volumes_on(
             .any(|machine| machine.machine.id == id.machine_id && machine.invites_rpc())
         {
             match client
-                .invoke::<op::RemoveVolume>(
+                .call_shared::<op::RemoveVolume>(
                     RemoveVolumeRequest {
                         name: id.name.clone(),
                         force: request.force,
                     },
-                    &MachineTarget::from(&id.machine_id),
-                    Some(TARGET_RPC_TIMEOUT),
+                    Call::once()
+                        .to(&MachineTarget::from(&id.machine_id))
+                        .within(Deadline::Target(TARGET_RPC_TIMEOUT)),
                 )
                 .await
+                .map_err(crate::connect::rpc_error)
             {
                 Ok(_)
                 | Err(RpcError {
@@ -2023,12 +1751,14 @@ pub(crate) async fn refuse_last_managed(
         return Ok(CloudHold::None);
     }
     let holders = client
-        .invoke::<op::Inspect>(
+        .call_shared::<op::Inspect>(
             InspectRequest::default(),
-            &MachineTarget::from(&selected),
-            Some(TARGET_RPC_TIMEOUT),
+            Call::once()
+                .to(&MachineTarget::from(&selected))
+                .within(Deadline::Target(TARGET_RPC_TIMEOUT)),
         )
         .await
+        .map_err(crate::connect::rpc_error)
         .map_err(|error| {
             RpcError::unavailable(crate::ui::then_sentence(
                 &format!(
@@ -2321,7 +2051,10 @@ async fn depart(
     current: MachineId,
 ) -> Result<LocalMachineRemoved, RpcError> {
     let departed = match client
-        .call::<op::Leave>(LeaveRequest {}, Some(&MachineTarget::from(&machine)))
+        .call::<op::Leave>(
+            LeaveRequest {},
+            Call::keyed().to(&MachineTarget::from(&machine)),
+        )
         .await
     {
         Ok(Left::Left { reset_warning, .. }) => Departed::Reset {
@@ -2377,7 +2110,7 @@ impl LeftNotForgotten {
 /// Delete `machine_id`'s shared row through the entry Machine.
 pub(crate) async fn forget(client: &mut Client, machine_id: MachineId) -> Result<(), RpcError> {
     match client
-        .call::<op::Forget>(ForgetRequest { machine_id }, None)
+        .call::<op::Forget>(ForgetRequest { machine_id }, Call::keyed())
         .await
         .map_err(RpcError::from)?
     {
@@ -2443,21 +2176,25 @@ async fn observe_machine_storage(
     let target = MachineTarget::from(&machine_id);
     let observation = async {
         let description = client
-            .invoke::<op::DescribeContract>(DescribeContractRequest {}, &target, None)
-            .await?;
+            .call_shared::<op::DescribeContract>(
+                DescribeContractRequest {},
+                Call::once().to(&target),
+            )
+            .await
+            .map_err(crate::connect::rpc_error)?;
         if !description.supports(MACHINE_STORAGE_OBSERVATION_CAPABILITY) {
             return Ok(None);
         }
         Ok(client
-            .invoke::<op::Inspect>(
+            .call_shared::<op::Inspect>(
                 InspectRequest {
                     include_storage: true,
                     ..Default::default()
                 },
-                &target,
-                None,
+                Call::once().to(&target),
             )
-            .await?
+            .await
+            .map_err(crate::connect::rpc_error)?
             .storage)
     };
     let storage = tokio::time::timeout(STORAGE_OBSERVATION_TIMEOUT, observation)
@@ -2471,8 +2208,14 @@ async fn list_volumes_on_machine(
     machine_id: MachineId,
 ) -> Result<MachineSuccess<VolumeInventory>, MachineFailure<RpcError>> {
     client
-        .read::<op::ListVolumes>(ListVolumesRequest {}, &MachineTarget::from(&machine_id))
+        .call::<op::ListVolumes>(
+            ListVolumesRequest {},
+            Call::read()
+                .to(&MachineTarget::from(&machine_id))
+                .budget(crate::connect::target_read_timeout()),
+        )
         .await
+        .map_err(crate::connect::rpc_error)
         .and_then(|inventory| validate_volume_inventory(machine_id, inventory))
         .map(|list| MachineSuccess {
             machine_id,
@@ -2514,9 +2257,11 @@ async fn list_on_machine(
     environment: EnvironmentValues,
 ) -> Result<MachineSuccess<Vec<ployz_core::ContainerObservation>>, MachineFailure<RpcError>> {
     client
-        .try_read::<op::ListContainers>(
+        .call::<op::ListContainers>(
             ListContainersRequest { environment },
-            &MachineTarget::from(&machine_id),
+            Call::read()
+                .to(&MachineTarget::from(&machine_id))
+                .budget(crate::connect::target_read_timeout()),
         )
         .await
         .map(|list| MachineSuccess {

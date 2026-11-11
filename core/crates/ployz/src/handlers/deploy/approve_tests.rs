@@ -4,7 +4,7 @@ use ployz_core::authority::{ApprovedChange, PayloadDigest};
 use ployz_core::{Namespace, RequestedServiceSpec, ServiceName};
 use serde_json::json;
 
-use super::{Enforcing, Probe, enforced, pin_tags, signable, unpinnable};
+use super::{Enforcing, Probe, consent, enforced, pin_tags, signable, unpinnable};
 use crate::image::PinError;
 
 const PINNED: &str =
@@ -69,11 +69,22 @@ fn a_pinned_tag_prints_its_tag_and_the_digest_it_resolved_to() {
 }
 
 #[test]
-fn the_approved_line_names_the_image_digest_and_what_the_host_gives() {
+fn the_approved_lines_name_the_whole_digest_what_the_host_gives_and_every_setting() {
     assert_eq!(
-        approved(&spec(PINNED)).line(),
-        "Approved web: nginx@sha256:0123456789ab… (privileged, device /dev/fuse:/dev/fuse, adds \
-         NET_ADMIN, host port 8080, binds /srv, hook migrate --up)"
+        approved(&spec(PINNED)).lines(),
+        [
+            "Approved web: nginx@sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef \
+             (privileged, device /dev/fuse:/dev/fuse, adds NET_ADMIN, host port 8080, binds /srv, \
+             hook migrate --up)",
+            r#"  pre-deploy ["migrate","--up"]"#,
+            r#"  mounts [{"no_copy":false,"read_only":false,"target":"/srv","volume":"root"}]"#,
+            r#"  ports [{"bind":{"kind":"all"},"container_port":80,"mode":"host","published_port":8080,"transport_protocol":"tcp"}]"#,
+            r#"  volumes [{"reference":"root","source":{"create_machine_path":false,"kind":"bind","machine_path":"/srv"}}]"#,
+            r#"  cap_add ["NET_ADMIN"]"#,
+            r#"  privileged true"#,
+            r#"  pull_policy "missing""#,
+            r#"  resources {"device_reservations":[],"devices":[{"cgroup_permissions":"rwm","container_path":"/dev/fuse","machine_path":"/dev/fuse"}],"ulimits":{}}"#,
+        ]
     );
 }
 
@@ -90,6 +101,7 @@ fn json_carries_what_was_approved() {
             "digest": digest.to_string(),
             "host": ["privileged", "device /dev/fuse:/dev/fuse", "adds NET_ADMIN", "host port 8080", "binds /srv",
                      "hook migrate --up"],
+            "settings": approved(&spec).settings,
         })
     );
 }
@@ -245,12 +257,70 @@ fn an_enforcing_cluster_with_no_reported_key_is_named() {
 
 #[test]
 fn an_enforcing_cluster_signs_for_every_server_listed() {
-    let Probe::Enforcing(Enforcing { cluster, machines }) =
-        enforced(&[server(2, Some(true), None), server(1, Some(false), Some(9))])
+    let Probe::Enforcing(Enforcing {
+        cluster, machines, ..
+    }) = enforced(&[server(2, Some(true), None), server(1, Some(false), Some(9))])
     else {
         panic!("expected enforcing");
     };
     assert_eq!(cluster, ployz_core::SealingPublicKey::from_bytes([9; 32]));
     assert_eq!(machines.len(), 2);
     assert!(machines.is_sorted());
+}
+
+/// `--yes` signs without asking, for a run nobody watches.
+#[test]
+fn yes_signs_without_asking() {
+    let approved = [approved(&spec(PINNED))];
+    consent(&approved, true, |question, _, _| {
+        panic!("--yes asked {question:?}")
+    })
+    .unwrap();
+}
+
+/// Without a terminal, and without `--yes`, nothing is signed: the refusal names the
+/// `--yes` retry.
+#[test]
+fn no_terminal_refuses_before_signing_and_names_yes() {
+    let approved = [approved(&spec(PINNED))];
+    let error = consent(&approved, false, |question, refusal, declined| {
+        crate::ui::confirm(question, || refusal, declined)
+    })
+    .unwrap_err();
+    let rpc = error.report();
+    assert_eq!(rpc.code, ployz_core::RpcErrorCode::ConfirmationRequired);
+    assert!(rpc.message.contains("add --yes"), "{}", rpc.message);
+    assert!(
+        rpc.message.ends_with("Nothing deployed."),
+        "{}",
+        rpc.message
+    );
+    assert!(
+        error.hints().iter().any(|hint| matches!(
+            hint,
+            crate::ui::Hint::Retry(retry) if retry.ends_with(" --yes")
+        )),
+        "{:?}",
+        error.hints()
+    );
+}
+
+/// A person asked names each Service, and their no fails the deploy before it signs.
+#[test]
+fn declining_signs_nothing_and_fails() {
+    let approved = [approved(&spec(PINNED))];
+    let mut asked = None;
+    let error = consent(&approved, false, |question, _, declined| {
+        asked = Some((question.to_owned(), declined));
+        Err(crate::handlers::Error::cancelled())
+    })
+    .unwrap_err();
+    assert_eq!(
+        asked,
+        Some((
+            "Approve web?".to_owned(),
+            "Cancelled. Nothing signed or deployed."
+        ))
+    );
+    assert!(error.is_interrupted(), "a no exits 130, not 0");
 }

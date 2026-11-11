@@ -1,3 +1,4 @@
+use crate::cluster::{Call, Wait};
 use std::io::Read;
 use std::path::Path;
 use std::sync::Arc;
@@ -180,7 +181,10 @@ pub(super) async fn wrap_sealing_key(
     code: &RecoveryCode,
 ) -> Result<RecoveryBackup, Error> {
     let wrapped = client
-        .call_repeatable::<op::WrapSealingKey>(WrapSealingKeyRequest { code: code.clone() }, None)
+        .call::<op::WrapSealingKey>(
+            WrapSealingKeyRequest { code: code.clone() },
+            Call::keyed().waiting(Wait::standard()),
+        )
         .await?;
     Ok(RecoveryBackup {
         public_key: wrapped.public_key,
@@ -201,7 +205,7 @@ fn print_code(public_key: SealingPublicKey, code: &RecoveryCode) -> Result<(), E
     Ok(())
 }
 
-async fn dial(matches: &ArgMatches, verb: &str) -> Result<Client, Error> {
+pub(super) async fn dial(matches: &ArgMatches, verb: &str) -> Result<Client, Error> {
     let selected = crate::connect::resolve_connections(
         &config_path(matches)?,
         matches.get_one::<String>("connect").map(String::as_str),
@@ -222,7 +226,10 @@ async fn dial(matches: &ArgMatches, verb: &str) -> Result<Client, Error> {
 /// Refuses a Server whose daemon predates `capability`, naming the Server.
 async fn require(client: &mut Client, capability: &str, verb: &str) -> Result<(), Error> {
     let contract = client
-        .call_repeatable::<op::DescribeContract>(DescribeContractRequest {}, None)
+        .call::<op::DescribeContract>(
+            DescribeContractRequest {},
+            Call::read().waiting(Wait::standard()),
+        )
         .await?;
     if contract.supports(capability) {
         return Ok(());
@@ -287,12 +294,12 @@ async fn recover_with(
     backup: Option<SealingKeyBackup>,
 ) -> Result<SealingPublicKey, ConnectError> {
     let recovered = client
-        .call_repeatable::<op::RecoverSealingKey>(
+        .call::<op::RecoverSealingKey>(
             RecoverSealingKeyRequest {
                 code: code.clone(),
                 backup,
             },
-            None,
+            Call::keyed().waiting(Wait::standard()),
         )
         .await?;
     Ok(recovered.public_key)
@@ -355,8 +362,8 @@ async fn cloud_backup(credential: Option<&Credential>) -> Result<Option<SealingK
 
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
-struct RecoveryRow {
-    public_key: SealingPublicKey,
+pub(super) struct RecoveryRow {
+    pub(super) public_key: SealingPublicKey,
     backup: Option<SealingKeyBackup>,
     digest: Option<String>,
 }
@@ -366,7 +373,7 @@ struct Rotated {
     digest: String,
 }
 
-async fn recovery_row(
+pub(super) async fn recovery_row(
     credential: &Credential,
     organization_id: &str,
 ) -> Result<Option<RecoveryRow>, Error> {

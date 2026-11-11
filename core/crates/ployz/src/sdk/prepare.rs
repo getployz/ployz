@@ -1,5 +1,6 @@
 //! Cloud preparation: builder eligibility, Builds, planning, and image delivery.
 use crate::build::CapabilityCheckError;
+use crate::cluster::{Call, Deadline};
 use crate::connect::ConnectError;
 use ployz_core::{
     DescribeContractRequest, MachineId, MachineName, MachineObservation, MachineTarget, RpcError,
@@ -144,12 +145,14 @@ pub async fn select_build_machine(
             ("does not accept Builds".into(), "builds are turned off")
         } else {
             match client
-                .invoke::<op::DescribeContract>(
+                .call_shared::<op::DescribeContract>(
                     DescribeContractRequest {},
-                    &MachineTarget::from(&machine.id),
-                    Some(Duration::from_secs(5)),
+                    Call::once()
+                        .to(&MachineTarget::from(&machine.id))
+                        .within(Deadline::Target(Duration::from_secs(5))),
                 )
                 .await
+                .map_err(crate::connect::rpc_error)
             {
                 Ok(contract) if contract.machine_id != machine.id => (
                     format!(

@@ -57,7 +57,7 @@ builds:
       - --bin=ployzd
     hooks: &ployzd-hooks
       pre:
-        - cargo zigbuild --release --locked --package ployz-testkit --bin sqlite-probe --target {{ .Target }}
+        - cargo zigbuild --release --locked --package sqlite-probe --bin sqlite-probe --target {{ .Target }}
 
   - id: ployzd-linux-arm64
     builder: rust

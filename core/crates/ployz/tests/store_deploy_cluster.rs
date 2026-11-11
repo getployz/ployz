@@ -6,6 +6,7 @@
     reason = "Fixed JSON results use indexing; missing entries must fail the test."
 )]
 
+use ployz::connect::Call;
 use std::{path::Path, process::Command, sync::Arc, time::Duration};
 
 use ployz::{
@@ -263,7 +264,7 @@ async fn an_image_service_deploys_through_the_hidden_store() {
 /// Whether a Server holds Docker Volume `name`.
 async fn held(client: &mut ployz::connect::Client, name: &str) -> bool {
     let machines = client
-        .call::<ployz_core::op::ListMachines>(ployz_core::ListMachinesRequest {}, None)
+        .call::<ployz_core::op::ListMachines>(ployz_core::ListMachinesRequest {}, Call::read())
         .await
         .unwrap()
         .machines;

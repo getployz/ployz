@@ -889,7 +889,7 @@ fn a_browser_draft_names_the_golden_digest_and_refuses_a_build_or_a_tag() {
             .as_deref(),
         Some("cb8d3c6ef656772fbe9764188fc4ff7b7059e682de60a7686263ab386cd4ffa5")
     );
-    assert_eq!(draft.lines, vec![draft.changes.first().unwrap().line()]);
+    assert_eq!(draft.lines, draft.changes.first().unwrap().lines());
 
     let built = requested(with(
         &["container", "image"],
@@ -904,4 +904,189 @@ fn a_browser_draft_names_the_golden_digest_and_refuses_a_build_or_a_tag() {
         DeployApproval::browser_draft(terms, namespace(), &[tagged]),
         Err(BrowserDraftError::Tag { .. })
     ));
+}
+
+fn draft_lines(spec: Value) -> Vec<String> {
+    let fixture = approval(&signer(1), &requested(requested_json()));
+    let terms = DeployTerms {
+        cluster: fixture.cluster,
+        operation: fixture.operation,
+        machines: fixture.machines,
+        issued_at: fixture.issued_at,
+        expires_at: fixture.expires_at,
+        signer: fixture.signer,
+        proposal: None,
+    };
+    DeployApproval::browser_draft(terms, namespace(), &[requested(spec)])
+        .unwrap()
+        .lines
+}
+
+/// Each field Cloud could plant in the plan it relays changes what the approver reads
+/// before signing, since the digest covers it. A Sealed ciphertext shows by name only, and
+/// its identity not at all: neither is a value a person can read.
+#[test]
+fn every_field_cloud_could_plant_shows_before_signing() {
+    let base = draft_lines(requested_json());
+    let cases: Vec<(&str, Value)> = vec![
+        ("image digest", with(&["container", "image"], json!(OTHER))),
+        ("command", with(&["container", "command", "0"], json!("sh"))),
+        (
+            "entrypoint",
+            with(&["container", "entrypoint"], json!(["/bin/sh"])),
+        ),
+        ("user", with(&["container", "user"], json!("root"))),
+        (
+            "working directory",
+            with(&["container", "working_directory"], json!("/tmp")),
+        ),
+        (
+            "plain variable",
+            with(&["container", "environment", "PLAIN"], json!("two")),
+        ),
+        (
+            "new variable",
+            with(&["container", "environment", "LD_PRELOAD"], json!("/x.so")),
+        ),
+        (
+            "label",
+            with(&["container", "labels"], json!({"traefik.enable": "true"})),
+        ),
+        ("hostname", with(&["container", "hostname"], json!("db"))),
+        ("cap_drop", with(&["container", "cap_drop"], json!(["ALL"]))),
+        ("init", with(&["container", "init"], json!(true))),
+        ("tty", with(&["container", "tty"], json!(true))),
+        (
+            "restart",
+            with(&["container", "restart"], json!({"name": "always"})),
+        ),
+        (
+            "pull policy",
+            with(&["container", "pull_policy"], json!("always")),
+        ),
+        (
+            "Bind Mount source",
+            with(&["volumes", "0", "source", "machine_path"], json!("/")),
+        ),
+        (
+            "Ordinary Volume driver option",
+            with(
+                &["volumes", "1", "source", "driver", "options"],
+                json!({"type": "none", "o": "bind", "device": "/"}),
+            ),
+        ),
+        (
+            "mount target",
+            with(&["mounts", "1", "target"], json!("/etc")),
+        ),
+        (
+            "Config file bytes",
+            with(&["configs", "0", "content"], json!([104, 106])),
+        ),
+        (
+            "Config Mount mode",
+            with(&["container", "config_mounts", "0", "mode"], json!(511)),
+        ),
+        (
+            "Host port",
+            with(&["ports", "0", "published_port"], json!(22)),
+        ),
+        (
+            "Ingress hostname",
+            with(&["ports", "1", "hostname"], json!("other.example.com")),
+        ),
+        (
+            "privileged",
+            with(&["container", "privileged"], json!(true)),
+        ),
+        (
+            "cap_add",
+            with(&["container", "cap_add"], json!(["NET_ADMIN", "SYS_ADMIN"])),
+        ),
+        (
+            "device mapping",
+            with(
+                &["container", "resources", "devices", "0", "machine_path"],
+                json!("/dev/sda"),
+            ),
+        ),
+        ("pid_mode", with(&["container", "pid_mode"], json!("host"))),
+        (
+            "sysctl",
+            with(
+                &["container", "sysctls", "net.core.somaxconn"],
+                json!("4096"),
+            ),
+        ),
+        (
+            "network",
+            with(&["container", "network"], json!("ingress_holder")),
+        ),
+        (
+            "hook command",
+            with(&["pre_deploy", "command"], json!(["sh", "-c", "id"])),
+        ),
+        (
+            "hook privileged",
+            with(&["pre_deploy", "privileged"], json!(true)),
+        ),
+        ("hook user", with(&["pre_deploy", "user"], json!("root"))),
+        (
+            "hook variable",
+            with(&["pre_deploy", "environment"], json!({"TOKEN": "x"})),
+        ),
+    ];
+    for (field, changed) in cases {
+        let lines = draft_lines(changed);
+        assert_ne!(lines, base, "{field}: {lines:#?}");
+    }
+}
+
+#[test]
+fn an_approval_lists_its_settings_under_the_service_line() {
+    assert_eq!(
+        draft_lines(requested_json()),
+        [
+            "Approved web: nginx@sha256:0000000000000000000000000000000000000000000000000000000000000001 \
+             (device /dev/null:/dev/null, adds NET_ADMIN, sysctl net.core.somaxconn, host port \
+             8080, binds /srv/web, hook migrate)",
+            "  variables PLAIN=one, SECRET (sealed)",
+            r#"  pre-deploy ["migrate"]"#,
+            r#"  configs [{"content":"hi","name":"site"}]"#,
+            r#"  mounts [{"no_copy":false,"read_only":false,"target":"/srv","volume":"host"},{"no_copy":false,"read_only":false,"target":"/data","volume":"data"}]"#,
+            r#"  ports [{"bind":{"kind":"all"},"container_port":80,"mode":"host","published_port":8080,"transport_protocol":"tcp"},{"container_port":80,"hostname":"web.example.com","http_protocol":"http","load_balancer_port":443,"mode":"ingress"}]"#,
+            r#"  volumes [{"reference":"host","source":{"create_machine_path":false,"kind":"bind","machine_path":"/srv/web"}},{"reference":"data","source":{"driver":{"name":"local","options":{"type":"tmpfs"}},"kind":"ordinary","labels":{},"name":"data"}}]"#,
+            r#"  cap_add ["NET_ADMIN"]"#,
+            r#"  command ["nginx","-g","daemon off;"]"#,
+            r#"  config_mounts [{"config_name":"site","mode":420,"target":"/etc/site.conf"}]"#,
+            r#"  entrypoint ["/docker-entrypoint.sh"]"#,
+            r#"  pull_policy "missing""#,
+            r#"  resources {"device_reservations":[],"devices":[{"cgroup_permissions":"rwm","container_path":"/dev/null","machine_path":"/dev/null"}],"ulimits":{}}"#,
+            r#"  sysctls {"net.core.somaxconn":"1024"}"#,
+            "  pre-deploy privileged false",
+        ]
+    );
+}
+
+/// A value that would move the cursor, recolour or reorder text shows as its escape, so
+/// it can't redraw the line that names the command.
+#[test]
+fn a_planted_escape_shows_as_text() {
+    let lines = draft_lines(with(
+        &["container", "environment", "PLAIN"],
+        json!("one\u{1b}[1A\u{1b}[2K\u{9b}2K\u{202e}"),
+    ));
+    assert!(
+        lines.contains(
+            &r#"  variables PLAIN="one\u{1b}[1A\u{1b}[2K\u{9b}2K\u{202e}", SECRET (sealed)"#
+                .to_owned()
+        ),
+        "{lines:#?}"
+    );
+    assert!(
+        lines
+            .iter()
+            .all(|line| line.chars().all(|c| matches!(c, ' '..='~' | '→' | '…'))),
+        "{lines:#?}"
+    );
 }

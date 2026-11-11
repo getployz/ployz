@@ -1,3 +1,4 @@
+use crate::cluster::Call;
 use ployz_core::{
     ClusterTeardown, DataLoss, DataLossConfirmation, DescribeContractRequest, MachineFailure,
     MachineSuccess, ObservedDataLoss, PartialResult, RpcError, UnconfirmedDataLoss,
@@ -101,7 +102,7 @@ impl Client {
             .require(confirm_data_loss)
             .map_err(UnconfirmedDataLoss::into_rpc_error)?;
         let current = self
-            .call::<op::DescribeContract>(DescribeContractRequest {}, None)
+            .call::<op::DescribeContract>(DescribeContractRequest {}, Call::read())
             .await
             .map_err(RpcError::from)?
             .machine_id;

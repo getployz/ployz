@@ -4036,7 +4036,6 @@ dependencies = [
  "regex",
  "reqwest",
  "rmcp",
- "rusqlite",
  "rustix",
  "serde",
  "serde_json",
@@ -4241,7 +4240,6 @@ dependencies = [
  "iroh",
  "listenfd",
  "memchr",
- "netlink-packet-wireguard",
  "nix 0.29.0",
  "ployz",
  "ployz-build",
@@ -5543,6 +5541,14 @@ checksum = "1d9efca8738c78ee9484207732f728b1ef517bbb1833d6fc0879ca898a522f6f"
 dependencies = [
  "base64ct",
  "der 0.8.2",
+]
+
+[[package]]
+name = "sqlite-probe"
+version = "0.3.17"
+dependencies = [
+ "rusqlite",
+ "thiserror 2.0.20",
 ]
 
 [[package]]

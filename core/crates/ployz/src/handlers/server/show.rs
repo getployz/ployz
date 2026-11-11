@@ -1,3 +1,4 @@
+use crate::cluster::Call;
 use std::{fmt, time::Duration};
 
 use clap::ArgMatches;
@@ -430,7 +431,7 @@ async fn read_details(
     let deadline = tokio::time::Instant::now() + TARGET_RPC_TIMEOUT;
     let routed = tokio::time::timeout_at(
         deadline,
-        client.invoke_answered::<op::Inspect>(inspect_request(), selector, None),
+        client.call_shared::<op::Inspect>(inspect_request(), Call::once().to(selector)),
     );
     tokio::pin!(routed);
     let routed_error = tokio::select! {
@@ -494,8 +495,9 @@ async fn read_direct(
     // Untargeted, so the Server answers for itself rather than resolving the selector again
     // against its own view, where the name may lead elsewhere.
     let details = server
-        .invoke_entry::<op::Inspect>(inspect_request(), None)
+        .call_shared::<op::Inspect>(inspect_request(), Call::once())
         .await
+        .map_err(crate::connect::rpc_error)
         .ok()?;
     (details.id == target_id).then_some((details, name))
 }

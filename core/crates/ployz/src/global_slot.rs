@@ -1,5 +1,6 @@
 //! A Global's slot on one Machine: its fresh eligibility there.
 
+use crate::cluster::Call;
 use ployz_core::{
     InspectRequest, MachineId, MachineTarget, Namespace, ResolvedServiceSpec, RpcError,
     ServicePlacementEligibility, ServicePlacementUnknownReason, op,
@@ -19,14 +20,17 @@ pub(crate) async fn slot_eligibility(
     spec: &ResolvedServiceSpec,
 ) -> Result<ServicePlacementEligibility, RpcError> {
     let details = client
-        .read::<op::Inspect>(
+        .call::<op::Inspect>(
             InspectRequest {
                 include_storage: true,
                 ..Default::default()
             },
-            &MachineTarget::from(machine_id),
+            Call::read()
+                .to(&MachineTarget::from(machine_id))
+                .budget(crate::connect::target_read_timeout()),
         )
-        .await?;
+        .await
+        .map_err(crate::connect::rpc_error)?;
     let machine = details
         .machine
         .filter(|machine| {

@@ -160,8 +160,10 @@ your services at their private addresses, on any port and protocol.
 
    The key is sealed to your cluster before it leaves your browser or device, and it's never
    printed. Sealing in the browser trusts the dashboard: a compromised Ployz Cloud could change
-   the page or the key it seals to, and read your auth key. A coming `ployz` release checks your
-   cluster's key itself, so `ployz private-access on` won't depend on Ployz Cloud.
+   the page or the key it seals to, and read your auth key. `ployz private-access on` doesn't
+   trust Ployz Cloud for the key. It seals only to your cluster's key as
+   [pinned on your computer](../servers/manage-servers.md#pin-your-clusters-key), so run
+   `ployz device pin` once first.
 3. In the admin console, open **Machines**, then **ployz-router**, then **Edit route settings**,
    and approve the route. Do this once per server, unless your tailnet auto-approves the tag.
    A server keeps its router's identity across restarts and reboots, so the route stays

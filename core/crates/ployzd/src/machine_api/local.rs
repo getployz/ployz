@@ -1486,7 +1486,9 @@ fn local_failure(error: LocalMachineError) -> Result<RpcError, Status> {
                 serde_json::json!({ "capability": ployz_core::SET_INGRESS_TUNNEL_CAPABILITY }),
             )),
         LocalMachineError::TunnelToken(_) => Ok(RpcError::invalid_argument(error.to_string())),
-        LocalMachineError::DoorNotRunning { .. } | LocalMachineError::TunnelTokenFile(_) => {
+        LocalMachineError::DoorNotRunning { .. }
+        | LocalMachineError::TunnelTokenFile(_)
+        | LocalMachineError::TunnelDoorMarker(_) => {
             Ok(RpcError::caused(RpcErrorCode::Internal, &error))
         }
         LocalMachineError::Docker(error) => Ok(RpcError::from(&error)),

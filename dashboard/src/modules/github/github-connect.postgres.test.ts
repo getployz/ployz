@@ -20,7 +20,7 @@ import { member, user } from "#/modules/identity/tables";
 import { organization } from "#/modules/organization/tables";
 import type { AppConfig } from "#/server/config.server";
 import { Database } from "#/server/database.server";
-import { fakeGithubApi, fakeGithubUsers } from "#/test/fake-github";
+import { fakeGithubApi, fakeGithubAuthority, fakeGithubUsers } from "#/test/fake-github";
 import { seedStoreOrganization, storeTestCloud } from "#/test/store-cloud";
 
 const SHOP = "00000000-0000-4000-8000-00000000c001";
@@ -54,6 +54,11 @@ const users = fakeGithubUsers({
     adminOf: ["hopper"],
   },
   "octo-code": { login: "octo", installations: MANY, adminOf: MANY.map((installation) => installation.login) },
+  "dana-code": {
+    login: "dana",
+    installations: [{ id: 16, login: "dana", type: "User" }, { id: 17, login: "saml", type: "Organization" }],
+    unknownOf: ["saml"],
+  },
 });
 // Installation 9 holds more repositories than one page lists.
 const REPOSITORY_COUNTS = new Map([[8, 3], [9, 150]]);
@@ -82,14 +87,15 @@ const repository = (id: number) => {
     html_url: `https://github.test/owner/${name}`, updated_at: new Date("2026-01-01T00:00:00Z"),
   };
 };
-const github = { ...fakeGithubApi().service, ...users.service, installationRepositories };
+const github = { ...fakeGithubApi().service, installationRepositories };
+const authority = fakeGithubAuthority({ connect: users.connect }).service;
 
 const stateOf = (location: string) => new URL(location).searchParams.get("state") ?? "";
 const landing = (path: string) => Object.fromEntries(new URL(path, "http://cloud").searchParams);
 
 it.live("links only installations the person who started the connect owns on GitHub, in any Organization they manage", () =>
   Effect.gen(function* () {
-    const services = yield* storeTestCloud({ github });
+    const services = yield* storeTestCloud({ github, authority });
     const run = <A, E, R>(program: Effect.Effect<A, E, R>) => program.pipe(Effect.provide(services));
     const failure = <A, E extends { readonly _tag: string }, R>(program: Effect.Effect<A, E, R>) => run(Effect.flip(program)).pipe(Effect.map((error) => error._tag));
     const linked = (organizationId: string) => run(listGithubInstallationsForOrganization(organizationId)).pipe(
@@ -162,15 +168,18 @@ it.live("links only installations the person who started the connect owns on Git
 
     const manyLanding = yield* complete(bob, { state: labExisting, code: "octo-code" });
     expect(manyLanding.length).toBeLessThan(8192);
-    expect(users.calls).toContain("/user/installations?per_page=100&page=2");
     const manyOffer = landing(manyLanding)["offer"] ?? "";
-    expect(users.calls).toContain("/user/installations?per_page=100&page=4");
     expect((yield* run(listGithubOffer(bob, "lab", manyOffer))).map((account) => account.installationId)).toEqual(OFFERED);
     const everyOffered = yield* Effect.promise(async () =>
       acceptGithubOfferInput["~standard"].validate({ organizationSlug: "lab", offer: manyOffer, installationIds: OFFERED }));
     if (everyOffered.issues !== undefined) throw new Error(`accept rejected the full offer: ${everyOffered.issues[0]?.message}`);
     expect(yield* run(acceptGithubOffer(bob, everyOffered.value))).toEqual({ linked: MAX_OFFERED_INSTALLATIONS });
     expect(yield* linked(LAB)).toEqual([7, 9, ...[...OFFERED].sort((a, b) => a - b)]);
+
+    // An Organization GitHub won't tell about holds back only a connect that would link it.
+    expect(landing(yield* complete(ada, { state: shopInstall, code: "dana-code", installation_id: "16" }))).toEqual({ section: "github", connect: "linked" });
+    expect(landing(yield* complete(ada, { state: shopExisting, code: "dana-code" }))).toEqual({ section: "github", connect: "failed" });
+    expect(yield* linked(SHOP)).toEqual([7, 8, 16]);
   }), 60_000);
 
 it.live("returns from a connect without listing GitHub, queues a sync for every linked account, and counts once those land", () =>
@@ -213,7 +222,7 @@ const hopperCloud = Effect.fn(function* () {
   renamed.clear();
   afterSecondPage = undefined;
   listingAllowed = true;
-  const services = yield* storeTestCloud({ github, inngest });
+  const services = yield* storeTestCloud({ github, authority, inngest });
   const run = <A, E, R>(program: Effect.Effect<A, E, R>) => program.pipe(Effect.provide(services));
   const ada = { userId: yield* run(seedStoreOrganization(SHOP)) };
   yield* run(upsertGithubInstallation({ installationId: 9, accountLogin: "hopper", accountType: "Organization", accountAvatarUrl: null }));

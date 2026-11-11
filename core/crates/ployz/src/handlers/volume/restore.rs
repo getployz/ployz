@@ -4,6 +4,7 @@
 //! the step against the copy it holds, under its switch lock (DESIGN.md bet 6). Nothing is
 //! recorded: the next Deploy reads the new writer off the Servers.
 
+use crate::cluster::{Call, Deadline};
 use std::time::{Duration, Instant};
 
 use chrono::DateTime;
@@ -268,14 +269,16 @@ pub(super) async fn copies(
     .map(|observed| async move {
         let copy = if observed.invites_rpc() {
             let inspected = client
-                .invoke::<op::InspectVolumeCopy>(
+                .call_shared::<op::InspectVolumeCopy>(
                     InspectVolumeCopyRequest {
                         name: docker.clone(),
                     },
-                    &MachineTarget::from(&observed.machine.id),
-                    Some(TARGET_RPC_TIMEOUT),
+                    Call::once()
+                        .to(&MachineTarget::from(&observed.machine.id))
+                        .within(Deadline::Target(TARGET_RPC_TIMEOUT)),
                 )
-                .await;
+                .await
+                .map_err(crate::connect::rpc_error);
             let capabilities = &observed.machine.runtime.capabilities;
             // An empty list is a record that predates it, which claims nothing.
             let unfenced =
@@ -389,12 +392,14 @@ async fn set(
     let mut at_floor = false;
     loop {
         let error = match client
-            .invoke::<op::SetVolumeCopy>(
+            .call_shared::<op::SetVolumeCopy>(
                 request.clone(),
-                &MachineTarget::from(machine),
-                Some(TARGET_RPC_TIMEOUT),
+                Call::once()
+                    .to(&MachineTarget::from(machine))
+                    .within(Deadline::Target(TARGET_RPC_TIMEOUT)),
             )
             .await
+            .map_err(crate::connect::rpc_error)
         {
             Ok(_) => return Ok(()),
             Err(error) => error,

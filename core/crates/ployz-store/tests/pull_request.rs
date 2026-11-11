@@ -1019,6 +1019,79 @@ fn idle_branches_close_after_a_week_unless_kept() {
     );
 }
 
+#[test]
+fn a_deployed_branch_with_a_branch_below_it_never_closes_for_sitting_idle() {
+    let (store, who) = shop();
+    for (n, name, from) in [(20, "mid", "production"), (21, "leaf", "mid")] {
+        store
+            .write(
+                &who,
+                &CreateBranch {
+                    id: EnvironmentId::parse(uuid(n)).unwrap(),
+                    from: at(from),
+                    name: EnvironmentName::parse(name).unwrap(),
+                    copy: vec![node("web")],
+                    live: Vec::new(),
+                    setup: Vec::new(),
+                    keep: false,
+                    fix: None,
+                },
+            )
+            .unwrap();
+    }
+    deploy(&store, &who, "mid", &["web"]);
+    let closes_at = |name: &str| {
+        store
+            .read(
+                &who,
+                &ployz_store::BranchQuery {
+                    environment: at(name),
+                },
+            )
+            .unwrap()
+            .closes_at
+    };
+    assert_eq!((closes_at("mid"), closes_at("leaf")), (None, None));
+    let late = sweep(&store, &who, now() + 8 * DAY);
+    assert!(
+        late.closing.is_empty() && late.removed.is_empty(),
+        "{late:?}"
+    );
+    assert_eq!(
+        listed(&store, &who),
+        ["leaf<mid", "mid<production", "production"]
+    );
+}
+
+#[test]
+fn a_preview_branch_view_names_its_pull_request_in_its_wire_form() {
+    let (store, who) = shop();
+    plan(&store, &who, on());
+    pull(&store, &who, facts(true, "2026-09-29T10:00:00Z"));
+    let view = store
+        .read(
+            &who,
+            &ployz_store::BranchQuery {
+                environment: at("pr-5"),
+            },
+        )
+        .unwrap();
+    assert_eq!(
+        serde_json::to_value(&view.pull_request).unwrap(),
+        json!({"repository_id": 11, "number": 5})
+    );
+    let production = store
+        .read(
+            &who,
+            &ployz_store::BranchQuery {
+                environment: at("production"),
+            },
+        )
+        .ok()
+        .and_then(|view| view.pull_request);
+    assert_eq!(production, None);
+}
+
 /// Admit a Deploy of `services` of `environment` and run it.
 fn deploy(store: &ConfigStore, who: &Actor, environment: &str, services: &[&str]) {
     let id = DeploymentId::parse(uuid::Uuid::new_v4().to_string()).unwrap();

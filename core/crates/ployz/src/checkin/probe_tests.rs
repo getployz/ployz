@@ -817,7 +817,7 @@ async fn a_listener_greets_cloud_while_a_later_bind_stalls() {
         binds.recv().unwrap();
         let mut stream = std::net::TcpStream::connect(("127.0.0.1", first)).unwrap();
         stream.set_read_timeout(Some(CLOUD_READS_FOR)).unwrap();
-        let mut read = vec![0; GREETING_CHARS];
+        let mut read = vec![0; PROBE_GREETING_LENGTH];
         std::io::Read::read_exact(&mut stream, &mut read).map(|()| read)
     });
     let mut probes = Probes::default();

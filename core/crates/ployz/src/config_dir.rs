@@ -26,6 +26,11 @@ impl<'a> ConfigDir<'a> {
         self.0.with_file_name("store.key")
     }
 
+    /// The Cluster Sealing public keys this computer pinned, by Organization.
+    pub(crate) fn sealing_keys(self) -> PathBuf {
+        self.0.with_file_name("sealing-keys.json")
+    }
+
     /// The links from directories to Projects and Environments.
     pub(crate) fn links(self) -> PathBuf {
         self.0.with_file_name("links.json")
@@ -50,6 +55,7 @@ mod tests {
             (dir.cloud(), "cloud.json"),
             (dir.device_key(), "device.key"),
             (dir.store_key(), "store.key"),
+            (dir.sealing_keys(), "sealing-keys.json"),
             (dir.links(), "links.json"),
             (dir.published(), "published"),
         ];

@@ -6,20 +6,24 @@
 use std::collections::BTreeSet;
 
 use serde::{Deserialize, Serialize};
+use serde_json::{Map, Value};
 use ts_rs::TS;
 
 use super::{
     canonical::{self, CanonicalError, Timestamp},
+    deploy::drop_nulls,
     keys::Signed,
     restart::SignerKey,
     rule::{
         AutoDeployRule, BuildPolicy, Builder, PolicyCache, PolicyMethod, RuleEvent, RuleId,
         RuleService, RuleSource, Runner, SealedDigest, template,
     },
+    shown::Shown,
 };
 use crate::{
-    MachineId, MissingSealedIdentity, Namespace, RequestedServiceSpec, SealedRecord,
-    SealingPublicKey, ServiceName, config::ServiceBuildConfig,
+    EnvPart, EnvValue, MachineId, MissingSealedIdentity, Namespace, RequestedServiceSpec,
+    SealedRecord, SealedScope, SealedValue, SealingPublicKey, ServiceName,
+    config::ServiceBuildConfig,
 };
 
 /// The caller workflow every rule builds with, as `ployz github` sets it up.
@@ -306,7 +310,9 @@ impl AutoDeployRule {
                 repository,
                 branch,
                 workflow: WORKFLOW.to_owned(),
-                events: vec![RuleEvent::Push],
+                // A push builds its head; a rebuild of an older commit a person approved
+                // runs on a dispatch.
+                events: vec![RuleEvent::Push, RuleEvent::WorkflowDispatch],
                 builder: terms.builder,
                 runner: Runner::GithubHosted,
             },
@@ -360,13 +366,14 @@ impl AutoDeployRule {
         let builder = &self.source.builder;
         let sha = builder.sha.to_string();
         RuleSummary {
-            repository: self.source.repository.clone(),
-            branch: self.source.branch.clone(),
-            workflow: self.source.workflow.clone(),
+            repository: Shown::text(&self.source.repository).into(),
+            branch: Shown::text(&self.source.branch).into(),
+            workflow: Shown::text(&self.source.workflow).into(),
             builder: match builder.r#ref.ends_with(&sha) {
-                true => builder.r#ref.clone(),
-                false => format!("{} at {sha}", builder.r#ref),
-            },
+                true => Shown::text(&builder.r#ref),
+                false => Shown::text(&builder.r#ref).and_words(" at ").and_text(&sha),
+            }
+            .into(),
             pinned: *builder == Builder::pinned(),
             servers: self.machines.len(),
             generation: self.generation,
@@ -376,7 +383,7 @@ impl AutoDeployRule {
                 .iter()
                 .map(|service| RuleServiceSummary {
                     name: service.name.clone(),
-                    builds: builds(&service.policy),
+                    builds: builds(&service.policy).into(),
                     changes: match &kept {
                         Some(kept) => changes(kept.service(&service.name), service),
                         None => Vec::new(),
@@ -385,32 +392,72 @@ impl AutoDeployRule {
                         .target
                         .iter()
                         .find(|spec| spec.name == service.name)
-                        .map(settings)
-                        .unwrap_or_default(),
+                        .map(|spec| settings(spec, Signs::Template))
+                        .unwrap_or_default()
+                        .into_iter()
+                        .map(String::from)
+                        .collect(),
                 })
                 .collect(),
         }
     }
 }
 
-fn builds(policy: &BuildPolicy) -> String {
-    let method = match &policy.method {
-        PolicyMethod::Dockerfile { path } => path.clone(),
-        PolicyMethod::Railpack { .. } => "Railpack".to_owned(),
-    };
-    format!(
-        "{method} in {}, for {}{}",
-        policy.context,
-        policy
-            .platforms
-            .iter()
-            .cloned()
-            .collect::<Vec<_>>()
-            .join(", "),
-        match policy.cache {
-            PolicyCache::Actions => ", with the Actions cache",
-            PolicyCache::Off => "",
+/// How a Service builds, as a person reads it: every field of `policy`, which the builder
+/// must run exactly. The destructuring is exhaustive, so a field added to the policy
+/// fails to compile here until it shows.
+#[must_use]
+pub fn builds(policy: &BuildPolicy) -> Shown {
+    let BuildPolicy {
+        method,
+        context,
+        target,
+        args,
+        secrets,
+        platforms,
+        cache,
+    } = policy;
+    let mut line = match method {
+        PolicyMethod::Dockerfile { path } => Shown::words("Dockerfile ").and_text(path),
+        PolicyMethod::Railpack { command: None } => {
+            Shown::words("Railpack, with the build command it detects")
         }
+        PolicyMethod::Railpack {
+            command: Some(command),
+        } => Shown::words("Railpack, with build command ").and_text(command),
+    }
+    .and_words(", context ")
+    .and_text(context)
+    .and_words(", platforms ")
+    .and(Shown::list(
+        platforms.iter().map(|platform| Shown::text(platform)),
+    ));
+    if let Some(target) = target {
+        line = line.and_words(", target ").and_text(target);
+    }
+    line = match cache {
+        PolicyCache::Actions => line.and_words(", with the Actions cache"),
+        PolicyCache::Off => line.and_words(", no cache"),
+    };
+    if !args.is_empty() {
+        line = line.and_words(", build args ").and(pairs(
+            args.iter().map(|(name, value)| (name, Shown::text(value))),
+        ));
+    }
+    if !secrets.is_empty() {
+        line = line
+            .and_words(", build secrets ")
+            .and(Shown::list(secrets.iter().map(|name| Shown::text(name))));
+    }
+    line
+}
+
+/// `name=value` for each pair, separated by `", "`.
+fn pairs<'a>(pairs: impl IntoIterator<Item = (&'a String, Shown)>) -> Shown {
+    Shown::list(
+        pairs
+            .into_iter()
+            .map(|(name, value)| Shown::text(name).and_words("=").and(value)),
     )
 }
 
@@ -439,39 +486,205 @@ fn changes(kept: Option<&RuleService>, next: &RuleService) -> Vec<String> {
     .collect()
 }
 
-/// The settings a person reads before approving: each variable, Sealed ones by name only,
-/// and what reaches the host.
+/// What a statement signs of a spec beyond its name, which decides what its summary leaves
+/// out as shown elsewhere or replaced.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum Signs {
+    /// A rule's or a review's template, whose image and pull policy are placeholders.
+    Template,
+    /// A deploy approval, which shows its image on the Service's own line.
+    Deploy,
+}
+
+/// The settings a person reads before approving: each variable, Sealed parts by name only,
+/// the pre-deploy command, then every other field `signs` covers whose value is not the
+/// spec's default, by its wire name. A field added to the spec later shows without a
+/// change here, and a value shows whenever it signs differently from the default, so no
+/// two specs that sign differently read the same, but for a Sealed ciphertext.
 #[must_use]
-pub fn settings(spec: &RequestedServiceSpec) -> Vec<String> {
-    let container = &spec.container;
+pub fn settings(spec: &RequestedServiceSpec, signs: Signs) -> Vec<Shown> {
+    settings_edited(spec, signs, |_| {})
+}
+
+/// [`settings`] of `spec`'s JSON after `edit` changed it, as a digest that edits the JSON
+/// it hashes, such as a preview template's placeholders, reads it.
+pub(super) fn settings_edited(
+    spec: &RequestedServiceSpec,
+    signs: Signs,
+    edit: impl FnOnce(&mut Value),
+) -> Vec<Shown> {
+    let mut value = serde_json::to_value(spec).expect("a spec serializes to JSON");
+    drop_nulls(&mut value);
+    edit(&mut value);
+    let Value::Object(mut fields) = value else {
+        return Vec::new();
+    };
+    let mut container = object(fields.remove("container"));
+    let mut hook = fields.remove("pre_deploy").map(|hook| object(Some(hook)));
     let mut lines = Vec::new();
-    let variables: Vec<String> = container
-        .environment
-        .iter()
-        .map(|(name, value)| match value.text() {
-            Some(text) => format!("{name}={text}"),
-            None => format!("{name} (sealed)"),
-        })
-        .collect();
-    if !variables.is_empty() {
-        lines.push(format!("variables {}", variables.join(", ")));
+    variables(&mut lines, "variables ", container.remove("environment"));
+    if let Some(hook) = &mut hook {
+        if let Some(command) = hook.remove("command") {
+            lines.push(Shown::words("pre-deploy ").and_value(&command));
+        }
+        variables(
+            &mut lines,
+            "pre-deploy variables ",
+            hook.remove("environment"),
+        );
     }
-    if let Some(hook) = &spec.pre_deploy {
-        lines.push(format!(
-            "pre-deploy {}",
-            serde_json::to_string(&hook.command).unwrap_or_default()
-        ));
+    if let Some(Value::Array(configs)) = fields.get_mut("configs") {
+        configs.iter_mut().for_each(config_text);
     }
-    if !spec.ports.is_empty() {
-        lines.push(format!(
-            "host ports {}",
-            serde_json::to_string(&spec.ports).unwrap_or_default()
-        ));
+    let defaults = defaults();
+    // A payload digest leaves out how many copies run and in what order.
+    for unsigned in ["name", "mode", "update"] {
+        fields.remove(unsigned);
     }
-    if container.privileged {
-        lines.push("privileged".to_owned());
+    changed(&mut lines, "", fields, &defaults.service);
+    // The image shows on its own line or is a template's placeholder, and the Sealed
+    // identity is bound by each value's ciphertext.
+    container.remove("image");
+    container.remove("sealed_identity");
+    if signs == Signs::Template {
+        container.remove("pull_policy");
+    }
+    changed(&mut lines, "", container, &defaults.container);
+    if let Some(hook) = hook {
+        changed(&mut lines, "pre-deploy ", hook, &defaults.hook);
     }
     lines
+}
+
+/// The JSON a spec writes for each field it leaves at its default, per part. A field
+/// absent here, such as an `Option` or one every spec names, shows whenever it is set.
+struct Defaults {
+    service: Map<String, Value>,
+    container: Map<String, Value>,
+    hook: Map<String, Value>,
+}
+
+fn defaults() -> &'static Defaults {
+    static DEFAULTS: std::sync::OnceLock<Defaults> = std::sync::OnceLock::new();
+    DEFAULTS.get_or_init(|| {
+        let spec: RequestedServiceSpec = serde_json::from_value(serde_json::json!({
+            "name": "defaults",
+            "mode": {"mode": "global"},
+            "container": {"image": "", "pull_policy": "never"},
+            "pre_deploy": {"command": ["defaults"]},
+        }))
+        .expect("the defaults spec parses");
+        let mut value = serde_json::to_value(spec).expect("a spec serializes to JSON");
+        drop_nulls(&mut value);
+        let Value::Object(mut service) = value else {
+            unreachable!("a spec serializes to an object")
+        };
+        let mut container = object(service.remove("container"));
+        let mut hook = object(service.remove("pre_deploy"));
+        for named in ["image", "pull_policy"] {
+            container.remove(named);
+        }
+        hook.remove("command");
+        Defaults {
+            service,
+            container,
+            hook,
+        }
+    })
+}
+
+fn object(value: Option<Value>) -> Map<String, Value> {
+    match value {
+        Some(Value::Object(fields)) => fields,
+        _ => Map::new(),
+    }
+}
+
+/// One line per field of `fields` whose value is not its default.
+fn changed(
+    lines: &mut Vec<Shown>,
+    prefix: &'static str,
+    fields: Map<String, Value>,
+    defaults: &Map<String, Value>,
+) {
+    for (name, value) in fields {
+        if defaults.get(&name) != Some(&value) {
+            lines.push(
+                Shown::words(prefix)
+                    .and_text(&name)
+                    .and_words(" ")
+                    .and_value(&value),
+            );
+        }
+    }
+}
+
+/// `label` and each variable of `environment`: its text, a Sealed value by the name it
+/// was sealed as, and a template's parts joined by `+`.
+fn variables(lines: &mut Vec<Shown>, label: &'static str, environment: Option<Value>) {
+    let environment = object(environment);
+    if environment.is_empty() {
+        return;
+    }
+    let variables = environment.into_iter().map(|(name, value)| {
+        let shown = Shown::text(&name);
+        match serde_json::from_value::<EnvValue>(value.clone()) {
+            Ok(EnvValue::Text(text)) => shown.and_words("=").and_text(&text),
+            Ok(EnvValue::Sealed(sealed)) if sealed.key == name && plain_seal(&sealed) => {
+                shown.and_words(" (sealed)")
+            }
+            Ok(EnvValue::Sealed(sealed)) => shown.and_words("=").and(sealed_part(&sealed)),
+            Ok(EnvValue::Template(template)) => {
+                let mut shown = shown.and_words("=");
+                for (index, part) in template.template.iter().enumerate() {
+                    if index > 0 {
+                        shown = shown.and_words(" + ");
+                    }
+                    shown = match part {
+                        EnvPart::Text(text) => shown.and_value(text),
+                        EnvPart::Sealed(sealed) => shown.and(sealed_part(sealed)),
+                    };
+                }
+                shown
+            }
+            Err(_) => shown.and_words("=").and_value(&value),
+        }
+    });
+    lines.push(Shown::words(label).and(Shown::list(variables)));
+}
+
+fn plain_seal(sealed: &SealedValue) -> bool {
+    sealed.scope == SealedScope::Shared && sealed.environment.is_none()
+}
+
+/// `(sealed KEY)`, with the Service it was authored on and the Environment it was sealed
+/// for when they are not the Container's own.
+fn sealed_part(sealed: &SealedValue) -> Shown {
+    let mut shown = Shown::words("(sealed ").and_value(&sealed.key);
+    if let SealedScope::Service(service) = sealed.scope {
+        shown = shown
+            .and_words(" of service ")
+            .and_text(&service.to_string());
+    }
+    if let Some(environment) = sealed.environment {
+        shown = shown
+            .and_words(" from environment ")
+            .and_text(&environment.to_string());
+    }
+    shown.and_words(")")
+}
+
+/// A Config's bytes as text when they are UTF-8, which a person can read; else as they are.
+fn config_text(config: &mut Value) {
+    let Some(content) = config.get_mut("content") else {
+        return;
+    };
+    let text = serde_json::from_value::<Vec<u8>>(content.clone())
+        .ok()
+        .and_then(|bytes| String::from_utf8(bytes).ok());
+    if let Some(text) = text {
+        *content = Value::String(text);
+    }
 }
 
 #[cfg(test)]

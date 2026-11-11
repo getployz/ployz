@@ -1,3 +1,4 @@
+use crate::cluster::Call;
 use std::{fs, os::unix::fs::symlink, process::Command as StdCommand, time::Duration};
 
 use super::*;
@@ -1162,12 +1163,12 @@ async fn prepare_volumes_answered_with(answer: Result<RpcError, tonic::Status>) 
     })
     .await;
     let error = client
-        .invoke::<ployz_core::op::PrepareVolumes>(
+        .call_shared::<ployz_core::op::PrepareVolumes>(
             ployz_core::PrepareVolumesRequest { specs: Vec::new() },
-            &MachineTarget::parse("machine-2").unwrap(),
-            None,
+            Call::once().to(&MachineTarget::parse("machine-2").unwrap()),
         )
         .await
+        .map_err(crate::connect::rpc_error)
         .unwrap_err();
     server.abort();
     error
@@ -1317,7 +1318,7 @@ fn a_closed_session_does_not_outlast_a_later_silence() {
     };
     let machine = MachineId::parse("b".repeat(32)).unwrap();
     for silence in [budget_spent(), routed_silence()] {
-        // As `call_retried`: the closed session first, then the redialled target is silent.
+        // As `Client::repeat`: the closed session first, then the redialled target is silent.
         let mut reply = None;
         let error = keep_target_reply(&mut reply, closed());
         assert!(!error.target_replied(), "no daemon sent it");
@@ -1714,6 +1715,7 @@ async fn an_ssh_session_that_fails_names_what_it_said_on_stderr() {
     assert_ne!(refused.retry(), Retry::Never, "{text}");
     let waited = crate::setup_retry::run(
         &mut (),
+        &crate::ui::WaitNotices,
         "Waiting for the participating phase",
         Duration::from_secs(5),
         ConnectError::is_start_retryable,

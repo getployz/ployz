@@ -9,6 +9,7 @@
 use clap::{Arg, ArgAction, ArgMatches, Command};
 use ployz_core::authority::rule::{BUILDER_SHA, Builder};
 use ployz_core::authority::rule_draft::RuleDraftError;
+use ployz_core::authority::shown::Shown;
 use ployz_core::authority::{
     AutoDeployRule, CommitSha, RuleId, RuleSummary, RuleTerms, Signed, Signer, SignerKey, Timestamp,
 };
@@ -212,7 +213,9 @@ pub(super) fn builder(matches: &ArgMatches) -> Result<Builder, Error> {
     }
 }
 
-/// The Cluster's key and Servers, from the Servers themselves: Cloud can't name them.
+/// The Cluster's key and Servers, as the Servers report them, through Cloud's relay when
+/// signed in. A key or Server Cloud gets wrong can't widen the rule: each Server admits
+/// it only when it names that Server's own Cluster key and Machine ID.
 pub(super) fn enforcing(root: &ArgMatches) -> Result<approve::Enforcing, Error> {
     match approve::probe(root) {
         approve::Probe::Enforcing(enforcing) => Ok(enforcing),
@@ -282,16 +285,21 @@ fn drafting(error: RuleDraftError) -> Error {
     Error::caused(code, "Can't draft the automatic deploy rule", error)
 }
 
-/// What the person approves, before it is signed.
+/// What the person approves, before it is signed. The summary's strings came through
+/// [`Shown`] already.
 fn show(environment: &str, summary: &RuleSummary) {
     crate::ui::stream(format_args!(
-        "Approving automatic deploys for {environment}:"
+        "Approving automatic deploys for {}:",
+        Shown::text(environment)
     ));
     crate::ui::stream(format_args!(
         "  repository  {} on {}",
         summary.repository, summary.branch
     ));
-    crate::ui::stream(format_args!("  workflow    {}, on push", summary.workflow));
+    crate::ui::stream(format_args!(
+        "  workflow    {}, on push and on rebuilds you approve",
+        summary.workflow
+    ));
     crate::ui::stream(format_args!("  builder     {}", summary.builder));
     crate::ui::stream(format_args!(
         "  servers     {} in the cluster",
