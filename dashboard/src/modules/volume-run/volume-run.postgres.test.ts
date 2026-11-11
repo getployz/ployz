@@ -1915,6 +1915,23 @@ describe("volume runs", () => {
       expect((await rows()).at(-1)).toMatchObject({ state: "done" });
     });
 
+    it("releases back to the slot holding the cut's snapshot, though the other Server's clock made its old Container look newer", async () => {
+      const G = newSnap("f-1");
+      const cut = { ...newSnap("f-2"), created_unix_seconds: G.created_unix_seconds + 60 };
+      named("fsn-1").copy = slotCopy(cut);
+      containers = [
+        { machine: "fsn-2", id: "web-fsn-2", running: false, created: 9 },
+        { machine: "fsn-1", id: "web-fsn-1", running: false, created: 5 },
+      ];
+      machines[1] = { name: "fsn-2", pool: true, copy: slotCopy(G, null, "2") };
+      await owned("warm");
+
+      expect(await runEffect(closeVolumeRun("run-1", "failure"))).toBe(1);
+      await execute((await releaseRow()).id, "run-2");
+
+      expect(sent.at(-1)?.want).toMatchObject({ kind: "writer", start: { kind: "kept", container_id: "web-fsn-1" } });
+    });
+
     it("on a warm row starts a release back to A", async () => {
       const G = newSnap("f-1");
       named("fsn-1").copy = slotCopy(G);

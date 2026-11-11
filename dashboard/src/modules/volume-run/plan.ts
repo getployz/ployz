@@ -430,6 +430,19 @@ function planRestore(name: string, { from, machine }: VolumeRunArgs["restore"], 
   return { ok: true, phase: { kind: "restore", from: source, lostAfter: copy.kind === "slot" ? copy.newest : null } };
 }
 
+/**
+ * The slots that hold the newest snapshot among them, or all of them when none holds one. The newest snapshots of a
+ * run's slots all came from its latest Writer, so their times share one clock, unlike Containers made on different
+ * Servers.
+ */
+export function holdingNewest<M extends AnsweredMember>(slots: readonly M[]): readonly M[] {
+  const times = slots.map((slot) => slot.view.copy?.newest?.created_unix_seconds ?? null);
+  const known = times.filter((time): time is number => time !== null);
+  if (known.length === 0) return slots;
+  const newest = Math.max(...known);
+  return slots.filter((_, index) => times[index] === newest);
+}
+
 export function restoreSource(members: readonly Member[]): MachineName | undefined {
   const answered = members.filter((member): member is AnsweredMember => member.answered);
   if (answered.length < members.length) return undefined;

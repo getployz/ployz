@@ -15,7 +15,7 @@ import { PATIENCE, PATIENCE_WAITS, waitsFor } from "#/modules/volume-run/patienc
 import { type DeploymentsSeen, gb, gbAtLeast, type ResizePhase, type ResizeStep, type SizeDirection, type SizeOutcome, undoOnRefusal } from "#/modules/volume-run/resize";
 import { type RecordAnswer, recordVolumeSize, resizeCopy } from "#/modules/volume-run/volume-size.server";
 import { fenceTaken } from "#/modules/volume-run/volume-run.deploy.server";
-import { alreadyOn, epochOf, expectOf, observedEpoch, type Planned, planForwardRelease, planFromCopies, type Refusal, ROLE_NOUN } from "#/modules/volume-run/plan";
+import { alreadyOn, epochOf, expectOf, holdingNewest, observedEpoch, type Planned, planForwardRelease, planFromCopies, type Refusal, ROLE_NOUN } from "#/modules/volume-run/plan";
 import { type AnsweredMember, copyName, type Member, type ReleasePlan } from "#/modules/volume-run/volume-run";
 import {
   claimVolumeRun,
@@ -614,7 +614,7 @@ async function releaseVolume(steps: RunSteps, phase: PhaseOf<"release">, epoch: 
       await finish(steps, "06-finish", doneMessage(...stays));
       return { runId: run.id, released: root.machine.name };
     }
-    const source = await kept("03-holder", from.slots.map((slot) => slot.machine));
+    const source = await kept("03-holder", holdingNewest(from.slots).map((slot) => slot.machine));
     const owner = source === null ? undefined : from.slots.find((slot) => slot.machine.id === source.machine.id);
     const cut = slotAt(owner?.view.copy ?? null);
     if (source === null || owner === undefined || cut === null) {

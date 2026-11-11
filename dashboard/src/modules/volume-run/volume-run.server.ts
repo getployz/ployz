@@ -45,7 +45,7 @@ import { RuntimeConnectionFailure } from "#/modules/runtime/runtime-connection-e
 import { movedRouting, type Requirement, requirementFor, requirements, serverSupports } from "#/modules/runtime/daemon-compat";
 import { observeVolumeCopies, type PloyzSdkError, RpcError, sdkFailureMessage, setVolumeCopyRefusal } from "#/modules/runtime/ployz.server";
 import {
-  alreadyOn, approvalRefusedMessage, approvesMirror, approvesMove, enforcedMessage, otherMoveApprovalMessage, fullApprovalsMessage, newestGuid, otherApprovalMessage, type PlanInput, type Planned, planForwardRelease, planFromCopies,
+  alreadyOn, approvalRefusedMessage, approvesMirror, approvesMove, enforcedMessage, otherMoveApprovalMessage, fullApprovalsMessage, holdingNewest, newestGuid, otherApprovalMessage, type PlanInput, type Planned, planForwardRelease, planFromCopies,
   type Refusal, type RefusalCode, type ReleaseFrom, restoreSource, roleOf, writerRemovedMessage,
 } from "#/modules/volume-run/plan";
 import { type DeploymentsSeen, deployingMessage, gb, resizeRequirements, sizeDirection } from "#/modules/volume-run/resize";
@@ -688,7 +688,7 @@ export const planOnCluster = Effect.fn("VolumeRun.planOnCluster")(function* (
   }
   const from = phase.kind === "release" ? phase.from : null;
   const source = from?.kind === "slots"
-    ? yield* answered(keptOn(organizationId, volume.dockerVolume, from.slots.map((member) => member.machine)).pipe(
+    ? yield* answered(keptOn(organizationId, volume.dockerVolume, holdingNewest(from.slots).map((member) => member.machine)).pipe(
       Effect.map((kept) => kept?.machine.id ?? null),
     ))
     : Option.some(null);
@@ -1378,7 +1378,8 @@ export type Kept = { readonly machine: MachineRef; readonly containerId: Contain
  * One Writer runs at a time and each Move creates its Container on the target, so the newest is the one the latest
  * cut stopped. A Server that enforces device approval keeps the Container each Move's cut stopped there, so older
  * ones may stay on any of them; the Server itself starts only a Container its open cut recorded. Two Servers whose
- * newest were made at once name no source.
+ * newest were made at once name no source. Creation times come from each Server's clock, so a release first narrows
+ * the slots to those holding the newest snapshot (`holdingNewest`).
  */
 export const keptOn = Effect.fn("VolumeRun.keptOn")(function* (organizationId: string, dockerVolume: string, machines: readonly MachineRef[]) {
   const on = (yield* serviceContainers(organizationId, dockerVolume)).filter((container) =>
