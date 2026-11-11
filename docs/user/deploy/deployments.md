@@ -165,7 +165,9 @@ variables, the start command and entrypoint, user, mounts, config files, ports, 
 hook and the rest. A setting added to Ployz later shows there too, and so does a `false` or empty
 value that overrides one the hook would inherit. A text value with anything but letters, digits
 and `-_./:@+` shows in double quotes. A sealed value shows by the name it was sealed as, never
-its value, and a value built from text and sealed parts shows its text, quoted.
+its value, and a value built from text and sealed parts shows its text, quoted. Since the
+approval shows a sealed value's name and not its contents, Ployz Cloud could replace a sealed
+value before a deploy you approve.
 Ployz Cloud relays the plan, so read these lines before you answer: a setting you didn't make
 shows here even if Cloud put it there. A control character in a value prints as its escape,
 such as `\u{1b}`, so a value can't redraw the lines around it. Answer no and nothing is signed
