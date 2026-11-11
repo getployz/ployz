@@ -7,9 +7,8 @@ use serde_json::{Map, Value, json};
 
 use super::act::{Run, latest, operate, operations, resolve, roster, servers};
 use super::cloud::{CopiesAnswer, OperationsAnswer, VolumeCopies};
-use super::machine::{Cx, Effect, Stop, Tool, at, store};
+use super::machine::{Cx, Effect, Stop, Tool, WAIT_CAP_SECONDS, at, store};
 use super::refusal::{Call, Refusal};
-use super::release::place;
 use super::step::{
     AcceptedLoss, Action, Ask, CloudQuery, Gate, RequestKey, ServerName, Subject, VolumeRun,
 };
@@ -18,11 +17,9 @@ use crate::{
     EnvironmentName, NamespaceQuery, ProjectName, VolumeName, VolumeQuery, VolumeView, VolumesQuery,
 };
 
-const REQUEST_KEY: &str = "^[A-Za-z0-9_-]{8,64}$";
-
 /// `volume_show` for `volume` where the call is.
 fn volume_show(cx: &Cx<'_>, volume: &VolumeName) -> Call {
-    let mut input = place(cx.call());
+    let mut input = cx.place_args();
     input.insert("volume".into(), volume.as_str().into());
     Call::new("volume_show", Value::Object(input))
 }
@@ -188,10 +185,10 @@ pub(crate) struct VolumeMirror {
     #[serde(default)]
     full: bool,
     #[serde(default)]
-    #[schemars(range(min = 0, max = 300))]
+    #[schemars(range(min = 0, max = WAIT_CAP_SECONDS))]
     wait_seconds: u32,
     #[serde(default)]
-    #[schemars(with = "Option<String>", pattern(REQUEST_KEY))]
+    #[schemars(with = "Option<String>", pattern(RequestKey::PATTERN))]
     request_key: Option<RequestKey>,
     #[serde(default)]
     #[schemars(with = "Option<String>", pattern(NODE_NAME))]
@@ -266,7 +263,7 @@ impl Tool for VolumeMirror {
             }
             (Some(_), Some(mirror)) => {
                 // One mirror: another server's would replace it, deleting it.
-                let mut input = place(cx.call());
+                let mut input = cx.place_args();
                 input.insert("volume".into(), self.volume.as_str().into());
                 return Err(Refusal::conflict(format!(
                     "It already has a mirror on {}; remove it first",
@@ -291,7 +288,7 @@ pub(crate) struct VolumeMirrorRemove {
     #[serde(default)]
     version: Option<String>,
     #[serde(default)]
-    #[schemars(with = "Option<String>", pattern(REQUEST_KEY))]
+    #[schemars(with = "Option<String>", pattern(RequestKey::PATTERN))]
     request_key: Option<RequestKey>,
     #[serde(default)]
     #[schemars(with = "Option<String>", pattern(NODE_NAME))]
@@ -341,10 +338,10 @@ pub(crate) struct VolumeMove {
     #[schemars(with = "String", pattern(NODE_NAME))]
     to: ServerName,
     #[serde(default)]
-    #[schemars(range(min = 0, max = 300))]
+    #[schemars(range(min = 0, max = WAIT_CAP_SECONDS))]
     wait_seconds: u32,
     #[serde(default)]
-    #[schemars(with = "Option<String>", pattern(REQUEST_KEY))]
+    #[schemars(with = "Option<String>", pattern(RequestKey::PATTERN))]
     request_key: Option<RequestKey>,
     #[serde(default)]
     #[schemars(with = "Option<String>", pattern(NODE_NAME))]
@@ -362,7 +359,7 @@ impl Tool for VolumeMove {
     const LOCAL_NEXT: Option<&'static str> = Some("environment_show");
 
     fn example() -> Value {
-        json!({ "volume": "pgdata", "to": "db-2", "wait_seconds": 300 })
+        json!({ "volume": "pgdata", "to": "db-2", "wait_seconds": WAIT_CAP_SECONDS })
     }
 
     fn plan(self, cx: &mut Cx<'_>) -> Result<Value, Stop> {
@@ -396,10 +393,10 @@ pub(crate) struct VolumeRelease {
     #[serde(default)]
     version: Option<String>,
     #[serde(default)]
-    #[schemars(range(min = 0, max = 300))]
+    #[schemars(range(min = 0, max = WAIT_CAP_SECONDS))]
     wait_seconds: u32,
     #[serde(default)]
-    #[schemars(with = "Option<String>", pattern(REQUEST_KEY))]
+    #[schemars(with = "Option<String>", pattern(RequestKey::PATTERN))]
     request_key: Option<RequestKey>,
     #[serde(default)]
     #[schemars(with = "Option<String>", pattern(NODE_NAME))]
@@ -430,7 +427,7 @@ impl Tool for VolumeRelease {
             self.environment.as_ref(),
             None,
         )?;
-        let mut moving = place(cx.call());
+        let mut moving = cx.place_args();
         moving.insert("volume".into(), view.volume.volume.name.as_str().into());
         on_volume(
             cx,
@@ -451,10 +448,10 @@ pub(crate) struct VolumeRestore {
     #[schemars(with = "String", pattern(NODE_NAME))]
     from: ServerName,
     #[serde(default)]
-    #[schemars(range(min = 0, max = 300))]
+    #[schemars(range(min = 0, max = WAIT_CAP_SECONDS))]
     wait_seconds: u32,
     #[serde(default)]
-    #[schemars(with = "Option<String>", pattern(REQUEST_KEY))]
+    #[schemars(with = "Option<String>", pattern(RequestKey::PATTERN))]
     request_key: Option<RequestKey>,
     #[serde(default)]
     #[schemars(with = "Option<String>", pattern(NODE_NAME))]

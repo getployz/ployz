@@ -103,7 +103,10 @@ fn a_local_call_that_needs_cloud_points_at_the_store_read_in_its_place() {
             json!({ "project": "shop", "environment": "staging" }),
             json!({ "project": "shop", "environment": "staging" }),
         ),
-        (json!({ "environment": "staging" }), json!({ "environment": "staging" })),
+        (
+            json!({ "environment": "staging" }),
+            json!({ "environment": "staging" }),
+        ),
         (json!({}), json!({})),
     ] {
         let (step, _) = start("environment_setup", input.clone(), &local, "call-1");
@@ -114,7 +117,11 @@ fn a_local_call_that_needs_cloud_points_at_the_store_read_in_its_place() {
             panic!("a local environment_setup is refused at once");
         };
         assert_eq!(refusal.code.as_str(), "not_here", "{input}");
-        assert_eq!(refusal.next, [Call::new("environment_show", next)], "{input}");
+        assert_eq!(
+            refusal.next,
+            [Call::new("environment_show", next)],
+            "{input}"
+        );
     }
 }
 

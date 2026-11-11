@@ -142,12 +142,27 @@ pub(crate) struct Cx<'run> {
     place: &'run Place,
     call: Call,
     call_key: &'run str,
-    local_next: Option<Call>,
+    local_next: Option<&'static str>,
 }
 
 impl Cx<'_> {
     pub(crate) const fn call(&self) -> &Call {
         &self.call
+    }
+
+    /// `project` and `environment` as the call named them: the arguments of a
+    /// `next` or retry call that stays in the same place.
+    pub(crate) fn place_args(&self) -> Map<String, Value> {
+        ["project", "environment"]
+            .into_iter()
+            .filter_map(|key| Some((key.to_owned(), self.call.input.get(key)?.clone())))
+            .collect()
+    }
+
+    /// A local call's next: the Store read, in the same place.
+    fn local_next(&self) -> Option<Call> {
+        self.local_next
+            .map(|tool| Call::new(tool, self.place_args().into()))
     }
 
     /// The Environment `project` and `environment` name, else the place's.
@@ -180,7 +195,7 @@ impl Cx<'_> {
     /// Answers to `asks`, read in one step.
     pub(crate) fn read(&mut self, asks: Vec<Ask>) -> Result<Vec<Result<Value, RpcError>>, Stop> {
         if self.is_local() && asks.iter().any(|ask| matches!(ask, Ask::Cloud(_))) {
-            return Err(Refusal::not_here(self.local_next.clone()).into());
+            return Err(Refusal::not_here(self.local_next()).into());
         }
         self.steps += 1;
         let kind = Kind::Read { count: asks.len() };
@@ -256,7 +271,7 @@ impl Cx<'_> {
     /// Refuse a call only Cloud can run before it reads anything.
     pub(crate) fn cloud_only(&self) -> Result<(), Stop> {
         match self.is_local() {
-            true => Err(Refusal::not_here(self.local_next.clone()).into()),
+            true => Err(Refusal::not_here(self.local_next()).into()),
             false => Ok(()),
         }
     }
@@ -332,12 +347,13 @@ impl Cx<'_> {
         expect: Option<u64>,
         refuse: impl FnOnce(RpcError, &Call, Writes) -> Refusal,
     ) -> Result<C::Written, Stop> {
+        let stale = expect.map(|_| self.stale());
         self.write_with(command, |error, call, writes| {
             let moved =
                 error.code == RpcErrorCode::Conflict && error.details.get("revision").is_some();
-            match expect.is_some() && moved {
-                true => stale_refusal(call),
-                false => refuse(error, call, writes),
+            match (stale, moved) {
+                (Some(stale), true) => stale,
+                _ => refuse(error, call, writes),
             }
         })
     }
@@ -388,16 +404,40 @@ impl Cx<'_> {
         scope: &EnvironmentRef,
         expect: Option<u64>,
     ) -> Result<(), Stop> {
-        let Some(expect) = expect else {
+        if expect.is_none() {
             return Ok(());
-        };
+        }
         let view = self.one(&ServicesQuery {
             environment: scope.clone(),
         })?;
-        match view.environment.revision == Revision(expect) {
-            true => Ok(()),
-            false => Err(stale(&self.call)),
+        self.fresh(&view.environment, expect)
+    }
+
+    /// Refuse as stale when `environment` moved past `expect`, the revision the
+    /// caller read; no `expect` never refuses.
+    pub(crate) fn fresh(
+        &self,
+        environment: &EnvironmentSummary,
+        expect: Option<u64>,
+    ) -> Result<(), Stop> {
+        match expect.is_some_and(|expect| environment.revision != Revision(expect)) {
+            true => Err(self.stale().into()),
+            false => Ok(()),
         }
+    }
+
+    /// `conflict` for a write whose `expect_revision` no longer holds: read again.
+    fn stale(&self) -> Refusal {
+        let mut next = self.place_args();
+        let tool = match self.call.input.get("service") {
+            Some(service) => {
+                next.insert("service".into(), service.clone());
+                "service_inspect"
+            }
+            None => "environment_show",
+        };
+        Refusal::conflict("The Environment changed since you read it; read it again before writing")
+            .with_next(Call::new(tool, next.into()))
     }
 
     fn recorded(&mut self, kind: Kind) -> Result<Option<Vec<Result<Value, RpcError>>>, Stop> {
@@ -456,26 +496,6 @@ fn writes_of(error: &RpcError) -> Writes {
     }
 }
 
-/// `conflict` for a write whose `expect_revision` no longer holds: read again.
-pub(crate) fn stale(call: &Call) -> Stop {
-    stale_refusal(call).into()
-}
-
-fn stale_refusal(call: &Call) -> Refusal {
-    let mut next = Map::new();
-    for key in ["project", "environment", "service"] {
-        if let Some(value) = call.input.get(key) {
-            next.insert(key.into(), value.clone());
-        }
-    }
-    let tool = match next.contains_key("service") {
-        true => "service_inspect",
-        false => "environment_show",
-    };
-    Refusal::conflict("The Environment changed since you read it; read it again before writing")
-        .with_next(Call::new(tool, next.into()))
-}
-
 /// The one result a batch wrote that `pick` takes, the last when several do.
 pub(crate) fn written<T>(
     results: Vec<Written>,
@@ -491,6 +511,12 @@ pub(crate) fn written<T>(
 /// Where a result ran: `project/environment`.
 pub(crate) fn at(environment: &EnvironmentSummary) -> String {
     format!("{}/{}", environment.project, environment.name)
+}
+
+/// `project` and `environment` as a Store view resolved them: the arguments of
+/// a `next` call to where the view was read.
+pub(crate) fn place_of(environment: &EnvironmentSummary) -> Value {
+    json!({ "project": environment.project, "environment": environment.name })
 }
 
 /// One registered tool, as plain functions so the table is `const`.
@@ -683,7 +709,7 @@ fn advance(mut state: State) -> (Step, State) {
         place: &state.place,
         call: Call::new(&state.tool, state.input.clone()),
         call_key: &state.call_key,
-        local_next: entry.local_next.map(|tool| local_next(tool, &state.input)),
+        local_next: entry.local_next,
     };
     let outcome = (entry.run)(&mut cx, &state.input);
     let call = cx.call;
@@ -708,17 +734,6 @@ fn advance(mut state: State) -> (Step, State) {
             )
         }
     }
-}
-
-/// A local call's next: the Store read, in the same place.
-fn local_next(tool: &str, input: &Value) -> Call {
-    let mut next = Map::new();
-    for key in ["project", "environment"] {
-        if let Some(value) = input.get(key) {
-            next.insert(key.into(), value.clone());
-        }
-    }
-    Call::new(tool, next.into())
 }
 
 fn done(state: State, refusal: Refusal) -> (Step, State) {

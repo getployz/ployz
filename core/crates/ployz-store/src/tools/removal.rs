@@ -9,7 +9,7 @@ use serde_json::{Map, Value, json};
 
 use super::act::{server_show, servers};
 use super::cloud::ServersAnswer;
-use super::machine::{Cx, Effect, Stop, Tool, store};
+use super::machine::{Cx, Effect, Stop, Tool, WAIT_CAP_SECONDS, store};
 use super::refusal::{Call, Refusal, Writes, from_store};
 use super::step::{AcceptedLoss, DashboardPage, Fix, Gate, ServerName};
 use crate::catalog::NODE_NAME;
@@ -295,7 +295,7 @@ pub(crate) struct EnvironmentRemove {
     #[serde(default)]
     version: Option<String>,
     #[serde(default)]
-    #[schemars(range(min = 0, max = 300))]
+    #[schemars(range(min = 0, max = WAIT_CAP_SECONDS))]
     wait_seconds: u32,
 }
 
@@ -350,7 +350,7 @@ pub(crate) struct ProjectRemove {
     #[serde(default)]
     version: Option<String>,
     #[serde(default)]
-    #[schemars(range(min = 0, max = 300))]
+    #[schemars(range(min = 0, max = WAIT_CAP_SECONDS))]
     wait_seconds: u32,
 }
 

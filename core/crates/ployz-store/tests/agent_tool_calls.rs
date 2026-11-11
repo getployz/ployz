@@ -914,7 +914,11 @@ fn every_expect_revision_check_refuses_a_moved_environment_with_the_same_read() 
             json!({ "service": "web", "to": "frontend" }),
             &service_inspect,
         ),
-        ("service_remove", json!({ "service": "web" }), &service_inspect),
+        (
+            "service_remove",
+            json!({ "service": "web" }),
+            &service_inspect,
+        ),
     ] {
         let mut input = input;
         input["project"] = json!("shop");
@@ -927,7 +931,7 @@ fn every_expect_revision_check_refuses_a_moved_environment_with_the_same_read() 
             "{tool}"
         );
         assert_eq!(stale.writes, Writes::None, "{tool}");
-        assert_eq!(stale.next, [next.clone()], "{tool}");
+        assert_eq!(stale.next, std::slice::from_ref(next), "{tool}");
     }
 }
 

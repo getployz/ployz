@@ -193,12 +193,7 @@ impl Tool for EnvironmentPr {
             .into_iter();
         let plans = cx.view::<PrPlansQuery>(answers.next())?;
         let services = cx.view::<ServicesQuery>(answers.next())?;
-        if self
-            .expect_revision
-            .is_some_and(|expect| services.environment.revision.0 != expect)
-        {
-            return Err(super::machine::stale(cx.call()));
-        }
+        cx.fresh(&services.environment, self.expect_revision)?;
         let repository = match (self.repository, plans.plans.as_slice()) {
             (Some(repository), _) => repository,
             (None, [only]) => only.repository.clone(),

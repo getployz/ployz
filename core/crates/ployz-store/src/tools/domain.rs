@@ -6,7 +6,7 @@ use schemars::JsonSchema;
 use serde::Deserialize;
 use serde_json::{Value, json};
 
-use super::machine::{Cx, Effect, Stop, Tool, at, stale};
+use super::machine::{Cx, Effect, Stop, Tool, at};
 use super::refusal::Refusal;
 use crate::catalog::NODE_NAME;
 use crate::{
@@ -83,10 +83,8 @@ fn domains(
         environment,
         service: None,
     })?;
-    match expect.is_some_and(|expect| view.environment.revision.0 != expect) {
-        true => Err(stale(cx.call())),
-        false => Ok(view),
-    }
+    cx.fresh(&view.environment, expect)?;
+    Ok(view)
 }
 
 #[derive(Deserialize, JsonSchema)]

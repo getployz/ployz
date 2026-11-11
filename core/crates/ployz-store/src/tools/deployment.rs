@@ -8,9 +8,9 @@ use schemars::JsonSchema;
 use serde::Deserialize;
 use serde_json::{Value, json};
 
-use super::machine::{Cx, Effect, Stop, Tool, at, store};
+use super::machine::{Cx, Effect, Stop, Tool, WAIT_CAP_SECONDS, at, store};
 use super::refusal::{Call, Refusal};
-use super::release::{place, version_for_loss};
+use super::release::version_for_loss;
 use super::step::{Gate, RequestKey};
 use crate::catalog::NODE_NAME;
 use crate::{
@@ -18,8 +18,6 @@ use crate::{
     DeploymentWarning, DeploymentsQuery, EnvironmentName, EnvironmentRef, EnvironmentSummary,
     NodeOutcome, NumberedDeploymentQuery, Outcome, ProjectName, Retry, RowState, Start, VolumeName,
 };
-
-const REQUEST_KEY: &str = "^[A-Za-z0-9_-]{8,64}$";
 
 /// The Deployment `number` names, or the latest numbered one when it names none,
 /// with the query that reads it again by its number.
@@ -115,7 +113,7 @@ fn progress(view: &DeploymentView) -> Value {
 /// `service_logs` and `service_metrics` for the first Service whose work
 /// failed, over this Deployment: an exit code shows in logs, an OOM kill only in
 /// metrics.
-fn diagnose(view: &DeploymentView, call: &Call) -> Option<[Call; 2]> {
+fn diagnose(view: &DeploymentView, cx: &Cx<'_>) -> Option<[Call; 2]> {
     let service = view.nodes.iter().find_map(|node| match &node.node {
         DeployedNode::Service { name, .. }
             if node.rows.iter().any(|row| {
@@ -134,7 +132,7 @@ fn diagnose(view: &DeploymentView, call: &Call) -> Option<[Call; 2]> {
         | DeployedNode::Volume { .. }
         | DeployedNode::Config { .. } => None,
     })?;
-    let mut input = place(call);
+    let mut input = cx.place_args();
     input.insert("service".into(), json!(service));
     input.insert("deployment".into(), view.deployment.number.into());
     let input = Value::Object(input);
@@ -199,8 +197,8 @@ fn show(view: &DeploymentView) -> Value {
     shown
 }
 
-fn follow(call: &Call, number: u64) -> Call {
-    let mut input = place(call);
+fn follow(cx: &Cx<'_>, number: u64) -> Call {
+    let mut input = cx.place_args();
     input.insert("deployment".into(), number.into());
     input.insert("wait_seconds".into(), 120.into());
     Call::new("deployment_show", Value::Object(input))
@@ -247,7 +245,7 @@ impl Tool for DeploymentList {
             "next_cursor": page.next_cursor,
         });
         if let (Some(cursor), Value::Object(object)) = (&page.next_cursor, &mut listed) {
-            let mut input = place(cx.call());
+            let mut input = cx.place_args();
             input.insert("cursor".into(), cursor.as_str().into());
             if let Some(limit) = self.limit {
                 input.insert("limit".into(), limit.into());
@@ -270,7 +268,7 @@ pub(crate) struct DeploymentShow {
     deployment: Option<u64>,
     /// Wait up to this long for the outcome.
     #[serde(default)]
-    #[schemars(range(min = 0, max = 300))]
+    #[schemars(range(min = 0, max = WAIT_CAP_SECONDS))]
     wait_seconds: u32,
     /// Project name.
     #[serde(default)]
@@ -313,12 +311,12 @@ impl Tool for DeploymentShow {
                 json!(
                     view.deployment
                         .number
-                        .map(|number| follow(cx.call(), number))
+                        .map(|number| follow(cx, number))
                         .into_iter()
                         .collect::<Vec<_>>()
                 ),
             );
-        } else if let Some(calls) = diagnose(&view, cx.call()) {
+        } else if let Some(calls) = diagnose(&view, cx) {
             object.insert("next".into(), json!(calls));
         }
         Ok(shown)
@@ -377,7 +375,7 @@ pub(crate) struct DeploymentRetry {
     #[schemars(range(min = 1))]
     deployment: Option<u64>,
     #[serde(default)]
-    #[schemars(with = "Option<String>", pattern(REQUEST_KEY))]
+    #[schemars(with = "Option<String>", pattern(RequestKey::PATTERN))]
     request_key: Option<RequestKey>,
     #[serde(default)]
     version: Option<String>,
@@ -484,7 +482,7 @@ fn retried(
         "rolls_back": rolls_back,
         "status": retried.status,
         "saved_revision": retried.saved.0,
-        "next": retried.number.map(|number| follow(cx.call(), number)),
+        "next": retried.number.map(|number| follow(cx, number)),
     })
 }
 
@@ -524,7 +522,7 @@ impl Tool for DeploymentStart {
             "at": at(&queued.environment),
             "deployment": started.number,
             "status": started.status,
-            "next": started.number.map(|number| follow(cx.call(), number)),
+            "next": started.number.map(|number| follow(cx, number)),
         }))
     }
 }
