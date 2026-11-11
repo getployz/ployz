@@ -297,9 +297,9 @@ pub(crate) async fn observe_doors(client: &mut Client) -> Result<Doors, Failure>
 /// Whether the entry Machine serves SetClusterDoors. An entry that can't be asked fails
 /// the command: reading it as unsupported would set Doors the declaration then disagrees
 /// with.
-async fn declaration_of(client: &Client) -> Result<Declaration, Failure> {
+async fn declaration_of(client: &mut Client) -> Result<Declaration, Failure> {
     let contract = client
-        .call_shared::<op::DescribeContract>(DescribeContractRequest {}, Call::once())
+        .call::<op::DescribeContract>(DescribeContractRequest {}, Call::read())
         .await?;
     Ok(if contract.supports(SET_CLUSTER_DOORS_CAPABILITY) {
         Declaration::Supported
@@ -314,7 +314,9 @@ async fn declaration_of(client: &Client) -> Result<Declaration, Failure> {
 ///
 /// # Errors
 ///
-/// Fails when the entry refuses or can't be reached, with nothing declared.
+/// Fails when the entry refuses or can't be reached, or when the entry can't keep a
+/// declaration and another Server can. A reply lost after the entry committed leaves the
+/// Doors declared with no Server switched, which a rerun converges.
 async fn declare(client: &Client, observed: &Doors, doors: &IngressDoors) -> Result<(), Failure> {
     match observed.declaration {
         Declaration::Unsupported => match observed.declarers.first() {

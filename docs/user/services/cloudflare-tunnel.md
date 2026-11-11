@@ -114,8 +114,8 @@ meanwhile opens no door either, and so does one that restarts. The flag does not
 that joins a Cluster.
 
 The Cluster remembers the doors that `--ingress-closed` and `ployz ingress use` set. A server
-whose `ployz` is too old to follow them can't join a closed or tunnel-only Cluster: update
-`ployz` on it and run the join command again. If `ployz ingress use` stops partway, the Cluster
+whose `ployz` is too old to follow them can't join a Cluster that is closed or uses the tunnel,
+with or without the ports: update `ployz` on it and run the join command again. If `ployz ingress use` stops partway, the Cluster
 keeps the doors you asked for, the command lists the servers that didn't switch, and running it
 again finishes them.
 

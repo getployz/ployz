@@ -631,7 +631,7 @@ fn commands_of(fleet: &ployz_testkit::fake_fleet::FakeFleet, command: &str) -> u
 }
 
 #[tokio::test]
-async fn a_declaration_that_fails_stops_the_switch_before_it_sets_any_server() {
+async fn a_declaration_whose_reply_is_lost_stops_the_switch_and_stays_declared() {
     use ployz_testkit::fake_fleet::{FakeFleet, Fault, RunState, Scenario};
     let sockets = tempfile::tempdir().unwrap();
     let fleet = FakeFleet::start(
@@ -661,6 +661,11 @@ async fn a_declaration_that_fails_stops_the_switch_before_it_sets_any_server() {
 
     assert!(refused.is_err());
     assert_eq!(commands_of(&fleet, "set_ingress_doors"), 0);
+    // The Machine applied it before the reply was lost, so the Cluster declares it and a rerun converges.
+    assert_eq!(
+        fleet.declared_doors().unwrap(),
+        Some(ClusterDoors::closed().doors)
+    );
 }
 
 #[tokio::test]

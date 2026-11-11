@@ -7155,3 +7155,61 @@ mod cluster_name {
         std::fs::remove_dir_all(dir).ok();
     }
 }
+
+mod cluster_doors {
+    use ployz_core::{
+        ClusterDoorsDeclared, IngressDoors, RpcResponse, RpcResponseBody, SetClusterDoorsRequest,
+    };
+
+    use super::*;
+
+    async fn declare(service: &MachineService, doors: IngressDoors) -> RpcResponse {
+        let request = op::SetClusterDoors::into_request(SetClusterDoorsRequest { doors });
+        service
+            .set_cluster_doors(Request::new(request.encode().unwrap()))
+            .await
+            .unwrap()
+            .into_inner()
+            .decode_response()
+            .unwrap()
+    }
+
+    #[tokio::test]
+    async fn a_known_set_is_declared_and_answered_back() {
+        let dir = std::env::temp_dir().join(format!("ployzd-doors-{}", MachineId::random()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let (service, task) = super::read_routes::serve(&dir, &[]).await;
+
+        for doors in [IngressDoors::tunnel(), IngressDoors::closed()] {
+            let response = declare(&service, doors.clone()).await;
+            let shown = format!("{response:?}");
+            let declared = response
+                .decode::<op::SetClusterDoors>()
+                .unwrap_or_else(|error| panic!("{error:?}: {shown}"));
+            assert_eq!(declared, ClusterDoorsDeclared { doors });
+        }
+        task.abort();
+        std::fs::remove_dir_all(dir).ok();
+    }
+
+    #[tokio::test]
+    async fn a_door_this_release_does_not_know_is_refused_and_nothing_is_declared() {
+        let dir = std::env::temp_dir().join(format!("ployzd-doors-{}", MachineId::random()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let (service, task) = super::read_routes::serve(&dir, &[]).await;
+        let unknown: IngressDoors = serde_json::from_str(r#"["tunnel","warp"]"#).unwrap();
+
+        let response = declare(&service, unknown).await;
+
+        let RpcResponseBody::Error(error) = response.body else {
+            panic!("expected a refusal, got {response:?}");
+        };
+        assert_eq!(error.code, RpcErrorCode::InvalidArgument);
+        assert_eq!(
+            error.details["capability"],
+            ployz_core::SET_CLUSTER_DOORS_CAPABILITY
+        );
+        task.abort();
+        std::fs::remove_dir_all(dir).ok();
+    }
+}
