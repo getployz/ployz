@@ -377,11 +377,11 @@ impl Github for Slow {
         &self,
         repository_id: u64,
         commit: CommitSha,
-        branch: &str,
+        head: CommitSha,
         reader: Option<&GithubToken>,
     ) -> Result<crate::github::head::Ancestry, crate::github::head::HeadError> {
         self.inner
-            .ancestry(repository_id, commit, branch, reader)
+            .ancestry(repository_id, commit, head, reader)
             .await
     }
 }

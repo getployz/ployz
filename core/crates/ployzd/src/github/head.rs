@@ -119,17 +119,18 @@ impl GithubApi {
         Ok(head.object.sha)
     }
 
-    /// How `branch` of repository `repository_id` stands to `commit` now, read with
-    /// `credential`, or with none for a public repository.
+    /// How commit `head` of repository `repository_id` stands to `commit`, read with
+    /// `credential`, or with none for a public repository. Both sides are commits, so no
+    /// tag or other ref that shares a branch's name can stand in for one.
     ///
     /// # Errors
-    /// As [`Self::branch_head`], with [`HeadError::Malformed`] also for an answer about
-    /// another commit.
+    /// As [`Self::branch_head`], with [`HeadError::Unreadable`] also for a commit GitHub
+    /// can't find, and [`HeadError::Malformed`] also for an answer about another commit.
     pub async fn compare(
         &self,
         repository_id: u64,
         commit: CommitSha,
-        branch: &str,
+        head: CommitSha,
         credential: Option<&GithubToken>,
     ) -> Result<Ancestry, HeadError> {
         #[derive(Deserialize)]
@@ -141,10 +142,10 @@ impl GithubApi {
         struct Commit {
             sha: CommitSha,
         }
-        let mut url = self.compare_url(repository_id, commit, branch)?;
+        let mut url = self.compare_url(repository_id, commit, head);
         // The answer lists the commits between; one is enough to read its status.
         url.query_pairs_mut().append_pair("per_page", "1");
-        let bytes = self.get(url, branch, credential).await?;
+        let bytes = self.get(url, &head.to_string(), credential).await?;
         let comparison: Comparison =
             serde_json::from_slice(&bytes).map_err(|_| HeadError::Malformed)?;
         if comparison.base_commit.sha != commit {
@@ -197,16 +198,8 @@ impl GithubApi {
         Ok(url)
     }
 
-    /// `/repositories/<id>/compare/<commit>...<branch>`, the branch's own slashes kept as
-    /// path separators, as GitHub reads them.
-    fn compare_url(
-        &self,
-        repository_id: u64,
-        commit: CommitSha,
-        branch: &str,
-    ) -> Result<Url, HeadError> {
-        let mut segments = branch_segments(branch)?.into_iter();
-        let first = segments.next().unwrap_or_default();
+    /// `/repositories/<id>/compare/<commit>...<head>`.
+    fn compare_url(&self, repository_id: u64, commit: CommitSha, head: CommitSha) -> Url {
         let mut url = self.base.clone();
         url.path_segments_mut()
             .expect("the API URL has a path")
@@ -215,29 +208,28 @@ impl GithubApi {
                 "repositories",
                 &repository_id.to_string(),
                 "compare",
-                &format!("{commit}...{first}"),
-            ])
-            .extend(segments);
-        Ok(url)
+                &format!("{commit}...{head}"),
+            ]);
+        url
     }
 }
 
-/// How a branch stands to a commit, as GitHub's compare names it.
+/// How a head commit stands to another commit, as GitHub's compare names it.
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq)]
 #[serde(rename_all = "snake_case")]
 pub enum Ancestry {
-    /// The branch points at the commit.
+    /// The head is the commit.
     Identical,
-    /// The branch descends from the commit.
+    /// The head descends from the commit.
     Ahead,
-    /// The commit descends from the branch: never merged into it.
+    /// The commit descends from the head.
     Behind,
     /// Neither descends from the other.
     Diverged,
 }
 
 impl Ancestry {
-    /// Whether the commit is the branch's head or one of its ancestors.
+    /// Whether the commit is the head or one of its ancestors.
     #[must_use]
     pub const fn on_branch(self) -> bool {
         matches!(self, Self::Identical | Self::Ahead)

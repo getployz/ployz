@@ -44,12 +44,12 @@ pub(crate) trait Github: Sync {
         reader: Option<&GithubToken>,
     ) -> impl Future<Output = Result<CommitSha, HeadError>> + Send;
 
-    /// How `branch` of repository `repository_id` stands to `commit` now.
+    /// How commit `head` of repository `repository_id` stands to `commit`.
     fn ancestry(
         &self,
         repository_id: u64,
         commit: CommitSha,
-        branch: &str,
+        head: CommitSha,
         reader: Option<&GithubToken>,
     ) -> impl Future<Output = Result<Ancestry, HeadError>> + Send;
 }
@@ -106,11 +106,11 @@ impl Github for GithubOnline {
         &self,
         repository_id: u64,
         commit: CommitSha,
-        branch: &str,
+        head: CommitSha,
         reader: Option<&GithubToken>,
     ) -> Result<Ancestry, HeadError> {
         self.api
-            .compare(repository_id, commit, branch, reader_token(reader).as_ref())
+            .compare(repository_id, commit, head, reader_token(reader).as_ref())
             .await
     }
 }
@@ -120,8 +120,8 @@ fn reader_token(reader: Option<&GithubToken>) -> Option<crate::github::head::Git
 }
 
 /// GitHub as a test fixes it: tokens verify against `keys` at `now`, every branch points
-/// at `head`, and stands to every commit as `ancestry` says, or reads as unreadable for
-/// `None`.
+/// at `head`, and `head` stands to every commit as `ancestry` says, or reads as
+/// unreadable for `None`. A compare against any other commit reads as unreadable.
 #[cfg(test)]
 pub(crate) struct FixedGithub {
     pub(crate) keys: crate::github::oidc::KeySet,
@@ -165,12 +165,14 @@ impl Github for FixedGithub {
         &self,
         _repository_id: u64,
         _commit: CommitSha,
-        branch: &str,
+        head: CommitSha,
         _reader: Option<&GithubToken>,
     ) -> Result<Ancestry, HeadError> {
-        self.ancestry.ok_or_else(|| HeadError::Unreadable {
-            branch: branch.to_owned(),
-        })
+        self.ancestry
+            .filter(|_| head == self.head)
+            .ok_or_else(|| HeadError::Unreadable {
+                branch: head.to_string(),
+            })
     }
 }
 
@@ -348,8 +350,9 @@ impl LocalMachine {
 }
 
 /// Refuse unless `grant`'s commit is the head of `rule`'s branch or one of its ancestors,
-/// as GitHub answers this Machine now. A commit GitHub cannot find while it can read the
-/// branch is not on it.
+/// as GitHub answers this Machine now. The head comes from the branch's own ref, and the
+/// compare names two commits, so a tag named like the branch can't stand in for it. A
+/// commit GitHub cannot find while it can read the branch is not on it.
 async fn on_branch(
     github: &impl Github,
     rule: &AutoDeployRule,
@@ -357,22 +360,20 @@ async fn on_branch(
 ) -> Result<(), Error> {
     let source = &rule.source;
     let reader = grant.reader.as_ref();
-    let refused = || {
-        tracing::warn!(rule = %rule.rule, commit = %grant.commit, "refused a commit not on the rule's branch");
-        Error::RuleGrantRefused(AuthorityRefusal::Mismatch { field: "a commit" })
-    };
+    let head = github
+        .head(source.repository_id, &source.branch, reader)
+        .await
+        .map_err(Error::RuleHeadUnread)?;
     match github
-        .ancestry(source.repository_id, grant.commit, &source.branch, reader)
+        .ancestry(source.repository_id, grant.commit, head, reader)
         .await
     {
         Ok(ancestry) if ancestry.on_branch() => Ok(()),
-        Ok(_) => Err(refused()),
-        Err(HeadError::Unreadable { .. }) => {
-            github
-                .head(source.repository_id, &source.branch, reader)
-                .await
-                .map_err(Error::RuleHeadUnread)?;
-            Err(refused())
+        Ok(_) | Err(HeadError::Unreadable { .. }) => {
+            tracing::warn!(rule = %rule.rule, commit = %grant.commit, %head, "refused a commit not on the rule's branch");
+            Err(Error::RuleGrantRefused(AuthorityRefusal::Mismatch {
+                field: "a commit",
+            }))
         }
         Err(error) => Err(Error::RuleHeadUnread(error)),
     }

@@ -43,9 +43,10 @@ async fn github(Path((id, branch)): Path<(u64, String)>, headers: HeaderMap) -> 
     }
 }
 
-/// GitHub's compare as the ancestry read sees it: `main` descends from [`BASE`], is
-/// [`HEAD`] itself, is an ancestor of [`AHEAD_OF_MAIN`], and shares only history with
-/// [`FORKED`]. Another commit is not found.
+/// GitHub's compare as the ancestry read sees it: [`HEAD`] descends from [`BASE`], is an
+/// ancestor of [`AHEAD_OF_MAIN`], and shares only history with [`FORKED`]. A tag `main`
+/// points at [`FORKED`], so a compare against the name would find it on the branch.
+/// Another commit is not found.
 async fn compare(
     Path((id, basehead)): Path<(u64, String)>,
     headers: HeaderMap,
@@ -58,15 +59,15 @@ async fn compare(
     if !authorized || id != REPOSITORY || query.0.as_deref() != Some("per_page=1") {
         return AxumStatus::NOT_FOUND.into_response();
     }
-    let Some((base, branch)) = basehead.split_once("...") else {
+    let Some((base, head)) = basehead.split_once("...") else {
         return AxumStatus::NOT_FOUND.into_response();
     };
-    let status = match (base, branch) {
-        (HEAD, "main" | "feature/x") => "identical",
-        (BASE, "main" | "feature/x") => "ahead",
-        (AHEAD_OF_MAIN, "main") => "behind",
-        (FORKED, "main") => "diverged",
-        (LIAR, "main") => {
+    let status = match (base, head) {
+        (HEAD, HEAD) | (FORKED, "main") => "identical",
+        (BASE, HEAD) => "ahead",
+        (AHEAD_OF_MAIN, HEAD) => "behind",
+        (FORKED, HEAD) => "diverged",
+        (LIAR, HEAD) => {
             return Json(json!({"status": "ahead", "base_commit": {"sha": HEAD}})).into_response();
         }
         _ => return AxumStatus::NOT_FOUND.into_response(),
@@ -183,26 +184,27 @@ fn a_token_never_prints() {
 }
 
 #[tokio::test]
-async fn compare_reads_how_the_branch_stands_to_a_commit() {
+async fn compare_reads_how_the_head_stands_to_a_commit() {
     let api = api().await;
     let reader = token(READER);
-    for (commit, branch, ancestry) in [
-        (HEAD, "main", Ancestry::Identical),
-        (BASE, "main", Ancestry::Ahead),
-        (BASE, "feature/x", Ancestry::Ahead),
-        (AHEAD_OF_MAIN, "main", Ancestry::Behind),
-        (FORKED, "main", Ancestry::Diverged),
+    let head = CommitSha::parse(HEAD).unwrap();
+    for (commit, ancestry) in [
+        (HEAD, Ancestry::Identical),
+        (BASE, Ancestry::Ahead),
+        (AHEAD_OF_MAIN, Ancestry::Behind),
+        // On the branch only by a tag that shares its name.
+        (FORKED, Ancestry::Diverged),
     ] {
         let read = api
             .compare(
                 REPOSITORY,
                 CommitSha::parse(commit).unwrap(),
-                branch,
+                head,
                 Some(&reader),
             )
             .await
             .unwrap();
-        assert_eq!(read, ancestry, "{commit} {branch}");
+        assert_eq!(read, ancestry, "{commit}");
         assert_eq!(
             read.on_branch(),
             matches!(ancestry, Ancestry::Identical | Ancestry::Ahead)
@@ -217,8 +219,13 @@ async fn compare_refuses_an_answer_about_another_commit_or_none() {
         let api = &api;
         let commit = CommitSha::parse(commit).unwrap();
         async move {
-            api.compare(REPOSITORY, commit, "main", credential.as_ref())
-                .await
+            api.compare(
+                REPOSITORY,
+                commit,
+                CommitSha::parse(HEAD).unwrap(),
+                credential.as_ref(),
+            )
+            .await
         }
     };
     assert!(matches!(
@@ -236,12 +243,15 @@ async fn compare_refuses_an_answer_about_another_commit_or_none() {
 }
 
 #[test]
-fn a_compare_keeps_the_branchs_slashes() {
+fn a_compare_names_two_commits_and_no_ref() {
     let api = GithubApi::with(reqwest::Client::new(), Url::parse(API).unwrap());
     assert_eq!(
-        api.compare_url(7, CommitSha::parse(BASE).unwrap(), "feature/a b")
-            .unwrap()
-            .as_str(),
-        format!("https://api.github.com/repositories/7/compare/{BASE}...feature/a%20b")
+        api.compare_url(
+            7,
+            CommitSha::parse(BASE).unwrap(),
+            CommitSha::parse(HEAD).unwrap()
+        )
+        .as_str(),
+        format!("https://api.github.com/repositories/7/compare/{BASE}...{HEAD}")
     );
 }
