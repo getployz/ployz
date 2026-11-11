@@ -8,7 +8,7 @@ use std::{collections::BTreeMap, time::Duration};
 
 use chrono::{DateTime, SubsecRound, Utc};
 use ployz_core::CloudEnrollToken;
-use ployz_core::host_preparation::{DockerOutcome, PrepStep, ZfsOutcome};
+use ployz_core::host_preparation::{DockerOutcome, PrepStep, PrepSteps, ZfsOutcome};
 use serde::{Deserialize, Serialize};
 
 use crate::cloud_enroll::EnrollStage;
@@ -399,11 +399,28 @@ enum ProbeTarget {
     Disk { by_id: String },
 }
 
-/// ployzd's record of host preparation. A host with no record reads as both steps not started.
-#[derive(Debug, Default, Deserialize)]
-pub(super) struct PrepState {
-    pub(super) docker: PrepStep<DockerOutcome>,
-    pub(super) zfs: PrepStep<ZfsOutcome>,
+/// What check-in judges from ployzd's record of host preparation.
+pub(super) trait PrepRecord {
+    /// Whether a step has yet to finish. A step this release can't read counts too: only a run of
+    /// ployzd rewrites it.
+    fn unfinished(&self) -> bool;
+
+    /// Whether a step finished failed.
+    fn failed(&self) -> bool;
+
+    /// When the latest failed step failed, when its time reads.
+    fn failed_at(&self) -> Option<DateTime<Utc>>;
+
+    /// The latest time either step records.
+    fn last_dated(&self) -> Option<DateTime<Utc>>;
+
+    /// Each step as check-in reports it. Once it has given up, a step left unfinished counts as
+    /// failed.
+    fn prep(&self, gave_up: bool) -> Prep;
+
+    /// Whether Docker's install failed before `started`, so the preparation started then tries it
+    /// again and the failure no longer stands.
+    fn docker_retried(&self, started: Option<DateTime<Utc>>) -> bool;
 }
 
 /// Whether a step has yet to finish. A step this release can't read counts too: only a run of
@@ -427,31 +444,26 @@ enum Reported<'s, O> {
     GaveUp,
 }
 
-impl PrepState {
-    pub(super) fn unfinished(&self) -> bool {
+impl PrepRecord for PrepSteps {
+    fn unfinished(&self) -> bool {
         step_unfinished(&self.docker) || step_unfinished(&self.zfs)
     }
 
-    /// Whether a step finished failed.
-    pub(super) fn failed(&self) -> bool {
+    fn failed(&self) -> bool {
         self.docker.failed_at().is_some() || self.zfs.failed_at().is_some()
     }
 
-    /// When the latest failed step failed, when its time reads.
-    pub(super) fn failed_at(&self) -> Option<DateTime<Utc>> {
+    fn failed_at(&self) -> Option<DateTime<Utc>> {
         let docker = self.docker.failed_at().and_then(time);
         docker.max(self.zfs.failed_at().and_then(time))
     }
 
-    /// The latest time either step records.
-    pub(super) fn last_dated(&self) -> Option<DateTime<Utc>> {
+    fn last_dated(&self) -> Option<DateTime<Utc>> {
         let docker = self.docker.last_dated().and_then(time);
         docker.max(self.zfs.last_dated().and_then(time))
     }
 
-    /// Each step as check-in reports it. Once it has given up, a step left unfinished counts as
-    /// failed.
-    pub(super) fn prep(&self, gave_up: bool) -> Prep {
+    fn prep(&self, gave_up: bool) -> Prep {
         Prep {
             docker: match reported(&self.docker, gave_up) {
                 Reported::Unfinished => DockerPrep::Installing,
@@ -470,9 +482,7 @@ impl PrepState {
         }
     }
 
-    /// Whether Docker's install failed before `started`, so the preparation started then tries it
-    /// again and the failure no longer stands.
-    pub(super) fn docker_retried(&self, started: Option<DateTime<Utc>>) -> bool {
+    fn docker_retried(&self, started: Option<DateTime<Utc>>) -> bool {
         let failed = self.docker.failed_at().and_then(time);
         // ployzd dates the failure to the second, so one in the start's own second is this run's.
         failed
@@ -496,7 +506,7 @@ impl Probe {
     pub(super) fn report(
         self,
         hostname: String,
-        prep: &PrepState,
+        prep: &PrepSteps,
         preparing: bool,
         gave_up: bool,
         prepare_started: Option<DateTime<Utc>>,

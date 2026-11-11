@@ -22,12 +22,13 @@ use std::{
 use chrono::{DateTime, Utc};
 use ployz_core::MachineLayout;
 use ployz_core::cloud_contract::{CHECKIN_PROTOCOL_VERSION, ENROLL_OPTIONS};
+use ployz_core::host_preparation::{PrepSteps, StateError, read_state};
 use serde::{Deserialize, Serialize};
 
 pub(crate) use client::{CheckinClient, CheckinKey, FleetToken, Hold, KeyError};
 pub(crate) use enroll::Committed;
 use probe::Probes;
-use wire::{Answer, CheckinRequest, PrepState, Wait};
+use wire::{Answer, CheckinRequest, PrepRecord, Wait};
 pub(crate) use wire::{
     Attempt, DOCKER_INSTALL_FAILED, DockerPrep, EnrollInstruction, Issue, Prep, Probe, StopReason,
     ZfsPrep,
@@ -1183,18 +1184,21 @@ pub(crate) fn record(status: &LocalCheckin, paths: &Paths) {
 
 /// ployzd's preparation state and when it was last written, or none when there is none or it
 /// can't be read.
-fn read_prep_state(path: &Path) -> Option<(PrepState, Option<DateTime<Utc>>)> {
-    let bytes = match fs::read(path) {
-        Ok(bytes) => bytes,
-        Err(error) if error.kind() == io::ErrorKind::NotFound => return None,
-        Err(error) => {
-            crate::ui::note(format!("Could not read {}: {error}", path.display()));
+fn read_prep_state(path: &Path) -> Option<(PrepSteps, Option<DateTime<Utc>>)> {
+    let note = |cause: &dyn std::fmt::Display| {
+        crate::ui::note(format!("Could not read {}: {cause}", path.display()));
+    };
+    let state = match read_state(path) {
+        Ok(state) => state?,
+        Err(StateError::Unreadable(error)) => {
+            note(&error);
+            return None;
+        }
+        Err(StateError::Malformed(error)) => {
+            note(&error);
             return None;
         }
     };
-    let state = serde_json::from_slice(&bytes)
-        .inspect_err(|error| crate::ui::note(format!("Could not read {}: {error}", path.display())))
-        .ok()?;
     let written = fs::metadata(path)
         .and_then(|metadata| metadata.modified())
         .ok()
@@ -1388,7 +1392,7 @@ enum PrepareRun {
 /// last start, up to [`PREPARE_TRIES`] times. A run's last record mid-step is its latest save:
 /// the ZFS step saves what it adds as it goes, without a new time of its own.
 fn preparation(
-    state: Option<&PrepState>,
+    state: Option<&PrepSteps>,
     written: Option<DateTime<Utc>>,
     liveness: Liveness,
     retries: u32,

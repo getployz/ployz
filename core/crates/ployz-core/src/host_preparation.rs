@@ -3,9 +3,92 @@
 //!
 //! Each step is one object: a `state` tag beside `started_at` and `finished_at`, as ployzd has
 //! always written it, so every reader of an earlier release still parses what this one writes.
+//! The file is written by ployzd and read by every CLI release, so its shape only grows.
+
+use std::{
+    fs, io,
+    path::{Path, PathBuf},
+};
 
 use serde::{Deserialize, Deserializer, Serialize, Serializer, de::DeserializeOwned, ser::Error};
 use serde_json::{Map, Value};
+
+/// Everything ployzd records about preparing this host: the record it reads back to resume a run
+/// and writes whole after each step.
+#[derive(Debug, Default, Serialize, Deserialize, PartialEq)]
+pub struct PrepState {
+    pub docker: PrepStep<DockerOutcome>,
+    pub zfs: PrepStep<ZfsOutcome>,
+    pub added_packages: Vec<String>,
+    pub zfs_build: Option<ZfsBuild>,
+    /// Preparation wrote the Debian contrib source, so discard may remove it.
+    #[serde(default)]
+    pub added_contrib_source: bool,
+    /// Steps an earlier run left `installing` when it died, which this run redid.
+    #[serde(default)]
+    pub interrupted: Vec<String>,
+}
+
+/// What the ZFS step built or downloaded, which discarding the build removes.
+#[derive(Debug, Serialize, Deserialize, PartialEq)]
+#[serde(tag = "route", rename_all = "lowercase")]
+pub enum ZfsBuild {
+    Ubuntu {
+        downloaded: Vec<String>,
+    },
+    Dkms {
+        module: String,
+        version: String,
+        source_dir: PathBuf,
+    },
+}
+
+/// The two steps of [`PrepState`], which is all the check-in loop reads of it. A projection, not
+/// a second record: it ignores `added_packages`, `zfs_build` and the fields after them, so a file
+/// ployzd itself can't read back (a missing `added_packages`, a build route this release doesn't
+/// know) still tells the check-in where each step stands. A host with no record reads as both steps
+/// not started.
+#[derive(Debug, Default, Deserialize)]
+pub struct PrepSteps {
+    pub docker: PrepStep<DockerOutcome>,
+    pub zfs: PrepStep<ZfsOutcome>,
+}
+
+/// Why `prepare/state.json` didn't read.
+#[derive(Debug, thiserror::Error)]
+pub enum StateError {
+    #[error("The host preparation state couldn't be read.")]
+    Unreadable(#[source] io::Error),
+    #[error("The host preparation state isn't a record this release reads.")]
+    Malformed(#[source] serde_json::Error),
+}
+
+/// Reads the preparation record at `path` as `S`: the whole [`PrepState`] for ployzd, or the
+/// [`PrepSteps`] a check-in reports from. `None` when there is no file.
+///
+/// # Errors
+///
+/// [`StateError::Unreadable`] when the file exists but can't be read, [`StateError::Malformed`]
+/// when its bytes aren't an `S`.
+pub fn read_state<S: DeserializeOwned>(path: &Path) -> Result<Option<S>, StateError> {
+    let bytes = match fs::read(path) {
+        Ok(bytes) => bytes,
+        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(None),
+        Err(error) => return Err(StateError::Unreadable(error)),
+    };
+    serde_json::from_slice(&bytes)
+        .map(Some)
+        .map_err(StateError::Malformed)
+}
+
+/// The bytes ployzd writes to `prepare/state.json`.
+///
+/// # Errors
+///
+/// When a step can't be serialized.
+pub fn encode_state(state: &PrepState) -> Result<Vec<u8>, serde_json::Error> {
+    serde_json::to_vec_pretty(state)
+}
 
 /// One preparation step, Docker's install or the ZFS build, with the outcome `O` it finishes on.
 ///

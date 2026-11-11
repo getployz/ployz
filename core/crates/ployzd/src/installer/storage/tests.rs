@@ -571,7 +571,8 @@ esac"#,
 
 #[test]
 fn zfs_install_takes_over_a_prepared_build_contract() {
-    use crate::installer::prepare::{PrepState, ZfsBuild, discard_at};
+    use crate::installer::prepare::discard_at;
+    use ployz_core::host_preparation::{PrepState, ZfsBuild};
 
     const CASE: &str = "PLOYZ_ZFS_TAKEOVER_CONTRACT";
     const KERNEL: &str = "6.12.43+deb13-cloud-amd64";

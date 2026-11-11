@@ -8,8 +8,10 @@ use std::{
 
 use chrono::{SecondsFormat, Utc};
 use nix::fcntl::{FcntlArg, FdFlag};
-use ployz_core::host_preparation::{Begun, DockerOutcome, PrepStep, ZfsOutcome};
-use serde::{Deserialize, Serialize};
+use ployz_core::host_preparation::{
+    Begun, DockerOutcome, PrepState, PrepStep, StateError, ZfsBuild, ZfsOutcome, encode_state,
+    read_state,
+};
 
 use super::assess::{assess, read_facts};
 use super::host::{install_docker, verify_docker};
@@ -29,33 +31,6 @@ const STAGE: &str = "prepare the host";
 
 /// The Debian packages a DKMS build of `zfs-dkms` needs beyond the toolchain `dkms` pulls in.
 const DEBIAN_ZFS_DKMS_DEPENDENCIES: [&str; 4] = ["file", "libc6-dev", "lsb-release", "perl"];
-
-#[derive(Debug, Default, Serialize, Deserialize, PartialEq)]
-pub(super) struct PrepState {
-    pub(super) docker: PrepStep<DockerOutcome>,
-    pub(super) zfs: PrepStep<ZfsOutcome>,
-    pub(super) added_packages: Vec<String>,
-    pub(super) zfs_build: Option<ZfsBuild>,
-    /// Preparation wrote the Debian contrib source, so discard may remove it.
-    #[serde(default)]
-    pub(super) added_contrib_source: bool,
-    /// Steps an earlier run left `installing` when it died, which this run redid.
-    #[serde(default)]
-    pub(super) interrupted: Vec<String>,
-}
-
-#[derive(Debug, Serialize, Deserialize, PartialEq)]
-#[serde(tag = "route", rename_all = "lowercase")]
-pub(super) enum ZfsBuild {
-    Ubuntu {
-        downloaded: Vec<String>,
-    },
-    Dkms {
-        module: String,
-        version: String,
-        source_dir: PathBuf,
-    },
-}
 
 /// Runs preparation on this host.
 ///
@@ -196,12 +171,13 @@ fn finish_interrupted_package_installs() {
 
 pub(super) fn load(paths: &InstallPaths) -> PrepState {
     let path = state_path(paths);
-    match fs::read(&path) {
-        Ok(bytes) => serde_json::from_slice(&bytes).unwrap_or_else(|error| {
+    match read_state(&path) {
+        Ok(state) => state.unwrap_or_default(),
+        Err(StateError::Malformed(error)) => {
             eprintln!("ignoring unreadable {}: {error}", path.display());
             PrepState::default()
-        }),
-        Err(_) => PrepState::default(),
+        }
+        Err(StateError::Unreadable(_)) => PrepState::default(),
     }
 }
 
@@ -266,7 +242,7 @@ fn now() -> String {
 impl Job {
     pub(super) fn save(&self) -> Result<(), Error> {
         let stage = "write the host preparation state";
-        let bytes = serde_json::to_vec_pretty(&self.state).map_err(|error| Error::Io {
+        let bytes = encode_state(&self.state).map_err(|error| Error::Io {
             stage,
             source: io::Error::other(error),
         })?;
