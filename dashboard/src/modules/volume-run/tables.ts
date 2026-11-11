@@ -100,8 +100,8 @@ export const volumeMirrorStatus = pgTable(
     failedSnapshot: text("failed_snapshot"),
     failure: text("failure"),
     /**
-     * The Device-signed Mirror approvals Cloud has sent toward this Mirror since it last accepted one, newest first. The
-     * one the Mirror admitted is always among them: see mirror-approvals.server.ts.
+     * The Device-signed Mirror approvals Cloud has sent toward this Mirror, newest first, less those no Mirror can admit
+     * or hold open any more. The one the Mirror admitted is always among them: see mirror-approvals.server.ts.
      */
     approvals: jsonb("approvals").$type<Signed[]>(),
     updatedAt,
