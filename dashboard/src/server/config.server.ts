@@ -242,6 +242,9 @@ export type GithubMinterAuth =
   | { readonly kind: "sigv4"; readonly accessKeyId: string; readonly secretAccessKey: Redacted.Redacted<string>; readonly region: string }
   | { readonly kind: "bearer"; readonly token: Redacted.Redacted<string> };
 
+/** An OAuth App's client ID: `Ov23…`, or 20 hex digits from before GitHub prefixed them. A GitHub App's is `Iv1.…` or `Iv23…`. */
+const OAUTH_APP_CLIENT_ID = /^(Ov23[A-Za-z0-9]+|[0-9a-f]{20})$/;
+
 const LAMBDA_FUNCTION_URL = /^[a-z0-9]+\.lambda-url\.([a-z0-9-]+)\.on\.aws$/;
 
 const resolveGithubAuthority = Effect.fn("Config.resolveGithubAuthority")(function* (
@@ -262,10 +265,11 @@ const resolveGithubAuthority = Effect.fn("Config.resolveGithubAuthority")(functi
   if (input.githubAppPrivateKey !== undefined || input.githubAppClientSecret !== undefined) {
     return yield* invalid("GITHUB_APP_PRIVATE_KEY and GITHUB_APP_CLIENT_SECRET must be unset when GITHUB_MINTER_URL is set: the minter holds them");
   }
-  // Sign-in with the App's own client would put the App's client secret, and the user tokens it yields, back in Cloud.
-  // GitHub may match client IDs without regard to case, so equal ignoring case is the same client.
-  if (input.githubClientId.toLowerCase() === input.githubAppClientId.toLowerCase()) {
-    return yield* invalid("GITHUB_CLIENT_ID must be a separate OAuth App, not the GitHub App's client, when GITHUB_MINTER_URL is set");
+  // Sign-in through the App's own client would put the App's client secret, and user tokens with the App's authority,
+  // back in Cloud. Comparing against GITHUB_APP_CLIENT_ID trusts another value Cloud supplies, so sign-in's own ID must
+  // have an OAuth App's shape, which no GitHub App client ID has.
+  if (!OAUTH_APP_CLIENT_ID.test(input.githubClientId)) {
+    return yield* invalid("GITHUB_CLIENT_ID must be a separate OAuth App's client ID (Ov23… or 20 hex digits) when GITHUB_MINTER_URL is set: sign-in can't use the GitHub App");
   }
   if (url.search !== "" || url.hash !== "" || url.username !== "" || url.password !== "" || url.pathname !== "/") {
     return yield* invalid("GITHUB_MINTER_URL must be an origin with no path, query or credentials");

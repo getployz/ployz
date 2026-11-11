@@ -36,7 +36,11 @@ const postShibaMail = {
 /** The App's key and client secret, which Cloud needs only while it holds the App's authority itself. */
 const localAuthority = ["GITHUB_APP_PRIVATE_KEY", "GITHUB_APP_CLIENT_SECRET"];
 
+/** Sign-in through a separate OAuth App, which minter mode requires. */
+const OAUTH_CLIENT_ID = "Ov23liAbCdEf0123456789";
+
 const minter = {
+  GITHUB_CLIENT_ID: OAUTH_CLIENT_ID,
   GITHUB_MINTER_URL: "https://abc123.lambda-url.eu-central-1.on.aws",
   GITHUB_MINTER_ACCESS_KEY_ID: "AKIAEXAMPLE",
   GITHUB_MINTER_SECRET_ACCESS_KEY: "minter-secret-access-key",
@@ -133,27 +137,43 @@ describe("AppConfig", () => {
       for (const url of [`${minter.GITHUB_MINTER_URL}/v1`, `${minter.GITHUB_MINTER_URL}/?x=1`]) {
         assert.include(yield* refused({ ...keyless, ...minter, GITHUB_MINTER_URL: url }), "origin");
       }
-      const oneApp = { GITHUB_CLIENT_ID: requiredEnvironment.GITHUB_APP_CLIENT_ID };
-      assert.strictEqual((yield* load({ ...requiredEnvironment, ...oneApp })).github.authority.mode, "local");
-      const lab = { NODE_ENV: "development", GITHUB_MINTER_URL: "http://127.0.0.1:8787", PLOYZ_VERIFY_GITHUB_MINTER_BEARER: "lab-bearer" };
+    }),
+  );
+
+  it.effect("signs in through a separate OAuth App in minter mode, judged by sign-in's own client ID", () =>
+    Effect.gen(function* () {
+      const keyless = without(without(requiredEnvironment, "GITHUB_APP_PRIVATE_KEY"), "GITHUB_APP_CLIENT_SECRET");
+      const lab = { NODE_ENV: "development", GITHUB_MINTER_URL: "http://127.0.0.1:8787", PLOYZ_VERIFY_GITHUB_MINTER_BEARER: "lab-bearer", GITHUB_CLIENT_ID: OAUTH_CLIENT_ID };
+      const appClientIds = ["Iv1.0123456789abcdef", "Iv23liAbCdEf0123456789", "github-client-id"];
       for (const [path, reach] of [["sigv4", minter], ["bearer", lab]] as const) {
-        assert.include(yield* refused({ ...keyless, ...reach, ...oneApp }), "separate OAuth App", path);
-        const shouted = { ...keyless, ...reach, ...oneApp, GITHUB_APP_CLIENT_ID: oneApp.GITHUB_CLIENT_ID.toUpperCase() };
-        assert.include(yield* refused(shouted), "separate OAuth App", `${path}, case`);
-        for (const padded of [` ${oneApp.GITHUB_CLIENT_ID}`, `${oneApp.GITHUB_CLIENT_ID}\n`, `${oneApp.GITHUB_CLIENT_ID}\u200b`]) {
-          const failure = yield* Effect.flip(load({ ...keyless, ...reach, ...oneApp, GITHUB_APP_CLIENT_ID: padded }));
-          assert.notInstanceOf(failure, InvalidConfiguration, `${path}, ${JSON.stringify(padded)}`);
-          assert.include(startupConfigFailure({ ...keyless, ...reach, ...oneApp, GITHUB_APP_CLIENT_ID: padded }), "GITHUB_APP_CLIENT_ID");
+        for (const signIn of ["Ov23liAbCdEf0123456789", "0123456789abcdef0123"]) {
+          assert.strictEqual((yield* load({ ...keyless, ...reach, GITHUB_CLIENT_ID: signIn })).github.clientId, signIn, `${path}, ${signIn}`);
+        }
+        for (const signIn of appClientIds) {
+          const failure = yield* Effect.flip(load({ ...keyless, ...reach, GITHUB_CLIENT_ID: signIn }));
+          assert.instanceOf(failure, InvalidConfiguration);
+          assert.include(failure.message, "GITHUB_CLIENT_ID", `${path}, ${signIn}`);
+          assert.include(failure.message, "separate OAuth App");
+        }
+        // The App's client ID Cloud holds decides nothing: a stale one, or one equal to sign-in's, changes no answer.
+        const appSigningIn = { ...keyless, ...reach, GITHUB_CLIENT_ID: "Iv23liAbCdEf0123456789" };
+        assert.instanceOf(yield* Effect.flip(load({ ...appSigningIn, GITHUB_APP_CLIENT_ID: "Iv23liStaleStale012345" })), InvalidConfiguration);
+        assert.strictEqual((yield* load({ ...keyless, ...reach, GITHUB_APP_CLIENT_ID: OAUTH_CLIENT_ID })).github.authority.mode, "minter");
+        for (const padded of [` ${OAUTH_CLIENT_ID}`, `${OAUTH_CLIENT_ID}\n`, `${OAUTH_CLIENT_ID}\u200b`]) {
+          assert.notInstanceOf(yield* Effect.flip(load({ ...keyless, ...reach, GITHUB_CLIENT_ID: padded })), InvalidConfiguration);
           assert.include(startupConfigFailure({ ...keyless, ...reach, GITHUB_CLIENT_ID: padded }), "GITHUB_CLIENT_ID");
+          assert.include(startupConfigFailure({ ...keyless, ...reach, GITHUB_APP_CLIENT_ID: padded }), "GITHUB_APP_CLIENT_ID");
         }
       }
+      const oneApp = { GITHUB_CLIENT_ID: requiredEnvironment.GITHUB_APP_CLIENT_ID };
+      assert.strictEqual((yield* load({ ...requiredEnvironment, ...oneApp })).github.authority.mode, "local");
     }),
   );
 
   it.effect("lets a verify lab reach a local minter with a bearer, outside production only", () =>
     Effect.gen(function* () {
       const keyless = without(without(requiredEnvironment, "GITHUB_APP_PRIVATE_KEY"), "GITHUB_APP_CLIENT_SECRET");
-      const lab = { ...keyless, NODE_ENV: "development", GITHUB_MINTER_URL: "http://127.0.0.1:8787", PLOYZ_VERIFY_GITHUB_MINTER_BEARER: "lab-bearer" };
+      const lab = { ...keyless, NODE_ENV: "development", GITHUB_MINTER_URL: "http://127.0.0.1:8787", PLOYZ_VERIFY_GITHUB_MINTER_BEARER: "lab-bearer", GITHUB_CLIENT_ID: OAUTH_CLIENT_ID };
       const config = yield* load(lab);
       assert.deepStrictEqual(config.github.authority.mode === "minter" && config.github.authority.auth.kind, "bearer");
       const production = yield* Effect.flip(load({ ...lab, NODE_ENV: "production" }));

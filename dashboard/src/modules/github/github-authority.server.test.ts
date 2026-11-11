@@ -31,7 +31,7 @@ const keyless = () => Object.fromEntries(Object.entries({ ...testConfigEnvironme
   .filter(([name]) => name !== "GITHUB_APP_PRIVATE_KEY" && name !== "GITHUB_APP_CLIENT_SECRET"));
 const minterUrl = "https://abc123.lambda-url.eu-central-1.on.aws";
 const minterConfig = AppConfig.layer.pipe(Layer.provide(ConfigProvider.layer(ConfigProvider.fromEnv({
-  env: { ...keyless(), GITHUB_MINTER_URL: minterUrl, GITHUB_MINTER_ACCESS_KEY_ID: "AKIAEXAMPLE", GITHUB_MINTER_SECRET_ACCESS_KEY: "minter-secret" },
+  env: { ...keyless(), GITHUB_CLIENT_ID: "Ov23liAbCdEf0123456789", GITHUB_MINTER_URL: minterUrl, GITHUB_MINTER_ACCESS_KEY_ID: "AKIAEXAMPLE", GITHUB_MINTER_SECRET_ACCESS_KEY: "minter-secret" },
 }))));
 
 const withAuthority = <A>(config: Layer.Layer<AppConfig, unknown>, use: (authority: GithubAuthorityService) => Effect.Effect<A, unknown>) =>

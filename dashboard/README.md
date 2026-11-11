@@ -38,7 +38,7 @@ what is missing or invalid.
 | `APP_URL` | yes | public URL of web |
 | `BETTER_AUTH_SECRET` | yes | auth session secret |
 | `APP_ENCRYPTION_SECRET` | yes | 32+ characters; encrypts stored credentials, keep it stable |
-| `GITHUB_CLIENT_ID`, `GITHUB_CLIENT_SECRET` | yes | GitHub OAuth App (sign-in) |
+| `GITHUB_CLIENT_ID`, `GITHUB_CLIENT_SECRET` | yes | GitHub OAuth App (sign-in); with `GITHUB_MINTER_URL`, the ID must be an OAuth App's (`Ov23…` or 20 hex digits), never the GitHub App's |
 | `GITHUB_APP_ID`, `GITHUB_APP_SLUG`, `GITHUB_APP_CLIENT_ID`, `GITHUB_APP_WEBHOOK_SECRET` | yes | GitHub App (repository access) |
 | `GITHUB_APP_PRIVATE_KEY`, `GITHUB_APP_CLIENT_SECRET` | unless `GITHUB_MINTER_URL` | the App's key and client secret, held in Cloud; refused alongside `GITHUB_MINTER_URL` |
 | `GITHUB_MINTER_URL`, `GITHUB_MINTER_ACCESS_KEY_ID`, `GITHUB_MINTER_SECRET_ACCESS_KEY` | no | all or none; the minter's Lambda Function URL and the IAM key that signs for it. Set, Cloud asks the minter (`minter/`) for every token and Actions call instead of holding the App's key |
