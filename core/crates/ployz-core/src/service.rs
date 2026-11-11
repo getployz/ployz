@@ -80,14 +80,12 @@ impl ServiceObservation {
         })
     }
 
-    fn newest_container(&self) -> Option<&ServiceContainer> {
-        self.containers.iter().max_by_key(|container| {
-            let observation = container.as_observation();
-            (
-                observation.created_at_unix_nanos,
-                observation.container_id.as_str(),
-            )
-        })
+    /// The newest Service Container, the one whose spec stands for the Service.
+    #[must_use]
+    pub fn newest_container(&self) -> Option<&ServiceContainer> {
+        self.containers
+            .iter()
+            .max_by_key(|container| container.as_observation().recency_key())
     }
 
     /// Service Containers for Start and Restart; both roles for Stop and Remove.
@@ -223,14 +221,8 @@ pub fn derive_services(
         }
     }
     for service in services.values_mut() {
-        if let Some(newest) = service.members().max_by_key(|container| {
-            let observation = container.as_observation();
-            (
-                observation.created_at_unix_nanos,
-                observation.container_id.as_str(),
-            )
-        }) {
-            service.service_id = newest.as_observation().service_id();
+        if let Some(newest) = crate::newest(service.members().map(ContainerRef::as_observation)) {
+            service.service_id = newest.service_id();
         }
     }
     services.into_values().collect()
