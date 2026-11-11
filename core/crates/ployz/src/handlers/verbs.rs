@@ -312,6 +312,9 @@ pub(crate) const DEVICE_ENFORCE: Verb = Verb::local(
 pub(crate) const DEVICE_LS: Verb =
     Verb::local("device ls", Never, device::list_command, device::list)
         .docs("servers/manage-servers.md");
+pub(crate) const DEVICE_PIN: Verb =
+    Verb::cloud("device pin", Never, device::pin_command, device::pin)
+        .docs("servers/manage-servers.md");
 pub(crate) const DEVICE_RM: Verb =
     Verb::local("device rm", Always, device::remove_command, device::remove)
         .docs("servers/manage-servers.md");
@@ -919,6 +922,7 @@ pub(crate) const VERBS: &[Verb] = &[
     DEVICE_APPROVE,
     DEVICE_ENFORCE,
     DEVICE_LS,
+    DEVICE_PIN,
     DEVICE_RM,
     DEVICE_REQUEST,
     DIFF,

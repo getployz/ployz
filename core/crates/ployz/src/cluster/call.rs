@@ -483,6 +483,7 @@ impl Client {
         let mut redial = false;
         setup_retry::run_expecting(
             self,
+            &crate::ui::WaitNotices,
             &progress,
             wait.expected,
             wait.wait,

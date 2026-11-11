@@ -776,15 +776,15 @@ impl Run {
         let (deployment, runner) = (self.deployment.clone(), self.runner.clone());
         let mut claimed =
             super::store_call(&self.store, move |store| store.claim(&deployment, &runner)).await?;
-        // The Store lowers the Intent without knowing who will run it.
-        claimed.intent.options.operator = operator;
-        claimed.intent.options.block_unmountable = true;
-        // Each labels its copies with its Deployment's id, as this run does.
-        claimed.intent.options.ended_runs = claimed
+        // The Store lowers the Intent without knowing who will run it, so the runner
+        // sets who does. Each ended run labels its copies with its Deployment's id,
+        // as this run does.
+        let ended_runs = claimed
             .ended_runs
             .iter()
             .filter_map(|ended| ended.as_str().parse().ok())
             .collect();
+        claimed.intent.options = claimed.intent.options.as_runner(operator, ended_runs);
         Ok(claimed)
     }
 

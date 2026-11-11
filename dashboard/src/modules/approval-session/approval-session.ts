@@ -284,7 +284,7 @@ export const RULE_CAPABILITIES = ["ployz.container.deploy-rule.v1", "ployz.rule.
 /** A Store plan read with `target`, as the browser signs a Deploy of it. */
 export type DeployPlan = Pick<PlanView, "version" | "namespace" | "target">;
 
-/** What a Deploy's approval holds, and what it shows the person: one `Approved web: nginx@sha256:…` line per Service. */
+/** What a Deploy's approval holds, and what it shows the person: an `Approved web: nginx@sha256:…` line per Service, then each setting it signs, indented. */
 export type DeployApproved = { readonly approval: Signed; readonly lines: readonly string[] };
 
 /**

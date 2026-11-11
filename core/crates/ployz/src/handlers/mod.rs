@@ -511,6 +511,7 @@ async fn reconnect_client(
     let connect = matches.get_one::<String>("connect").map(String::as_str);
     crate::setup_retry::run(
         &mut (),
+        &crate::ui::WaitNotices,
         "Reconnecting to the Cluster",
         crate::setup_retry::WAIT,
         crate::connect::ConnectError::is_setup_retryable,

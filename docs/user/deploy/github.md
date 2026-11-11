@@ -129,13 +129,11 @@ Approving automatic deploys for production:
   web
     builds    Dockerfile Dockerfile, context ., platforms linux/amd64, with the Actions cache, build args LOG_LEVEL=info, build secrets DATABASE_URL
     variables DATABASE_URL (sealed), LOG_LEVEL=info
-    mode {"mode":"replicated","replicas":2}
     command ["node server.js"]
-    restart {"name":"unless-stopped"}
 Approved. Every push to main now deploys web, worker with these settings.
 ```
 
-It lists every setting the rule pins, including the start command and how GitHub builds each service, so read them before you rely on it. A value with anything but letters, digits and `-_./:@+` shows in double quotes, with line breaks and other control characters escaped, so `X="a, Y=b"` is one build arg and `X=a, Y=b` is two.
+It lists every setting the rule pins that isn't Ployz's default, including the start command and how GitHub builds each service, so read them before you rely on it. A value with anything but letters, digits and `-_./:@+` shows in double quotes, with line breaks and other control characters escaped, so `X="a, Y=b"` is one build arg and `X=a, Y=b` is two.
 
 To pin your own fork of the builder, add `--builder <owner>/build/.github/workflows/build.yml@<sha>`
 and `--builder-sha <sha>`.

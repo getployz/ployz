@@ -96,10 +96,8 @@ Approving previews of production:
   web
     builds    Dockerfile Dockerfile, context ., platforms linux/amd64, with the Actions cache, build args LOG_LEVEL=info, build secrets DATABASE_URL
     reads     DATABASE_URL from production
-    variables DATABASE_URL (sealed), LOG_LEVEL=info
-    mode {"mode":"replicated","replicas":1}
-    ports [{"mode":"ingress","hostname":"web-pv-<id>.acme-x7q2.ployz.app","load_balancer_port":443,"container_port":80,"http_protocol":"https"}]
-    restart {"name":"unless-stopped"}
+    variables DATABASE_URL=(sealed "DATABASE_URL" from environment 0f8fad5b-d9cb-469f-a165-70867728950e), LOG_LEVEL=info
+    ports [{"container_port":80,"hostname":"web-pv-<id>.acme-x7q2.ployz.app","http_protocol":"https","load_balancer_port":443,"mode":"ingress"}]
     setup     runs once, on each preview's first deploy, with
       pre-deploy ["/bin/sh","-c","pnpm db:seed"]
     generated SESSION_SECRET=${{ secret(32, "a-zA-Z0-9") }}, new in each preview
@@ -161,11 +159,19 @@ commit. A member's pull request that the rule doesn't trust shows no badge, but 
 refuse its pushes, so its row offers the same review. That includes every pull request when you
 approved the rule without `--trust`. Read the pull request's changes on GitHub,
 then click **Review and approve**. The dialog
-lists each service the review covers and what it asks for, like:
+lists each service the review covers and what it asks for, then every setting the review signs,
+like:
 
 ```text
 Review web at a1b2c3d4e5f6 (reads DATABASE_URL from the parent, builds with secrets)
+  variables DATABASE_URL=(sealed "DATABASE_URL" from environment 0f8fad5b-d9cb-469f-a165-70867728950e), SESSION_KEY="${{ secret(32, \"a-zA-Z0-9\") }}"
+  command ["npm","start"]
+  ports [{"container_port":3000,"hostname":"web.{preview-namespace}.example.com","http_protocol":"http","load_balancer_port":443,"mode":"ingress"}]
 ```
+
+A generated value shows as the `secret(…)` call that makes it, a secret the preview reads from its
+parent as sealed from that environment, and the preview's own namespace as `{preview-namespace}`,
+since each preview gets its own.
 
 A line also says when the service **opens its own** secrets you set in the preview, when its
 **settings differ from the preview rule** because someone changed them in the preview, and when it

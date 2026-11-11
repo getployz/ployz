@@ -316,7 +316,7 @@ fn on_cloud(fake: &Fake, place: Place) -> Server {
                 cloud: Some(fake.url.clone()),
                 organization: Acting::known(&fake.url, "ployz_acme", org()),
             },
-            Store::Cloud,
+            None,
             fixed(place),
         )
     }
@@ -361,7 +361,10 @@ fn on_local(place: Place) -> Server {
         keys: |_, _, tool| format!("call-{tool}"),
         ..Server::new(
             Account::default(),
-            Store::Local(Arc::new(shop()), who()),
+            Some(Local {
+                store: Arc::new(shop()),
+                who: who(),
+            }),
             fixed(place),
         )
     }
@@ -617,7 +620,7 @@ async fn a_token_swapped_by_mcp_login_acts_in_its_own_organization_on_the_next_c
 
 #[expect(clippy::indexing_slicing, reason = "JSON fixture assertions")]
 #[tokio::test]
-async fn a_cloud_tool_on_a_local_store_is_not_here_and_names_the_fix() {
+async fn a_cloud_tool_on_a_local_store_names_the_fix() {
     let transcript = transcript("server_remove", StoreAt::Local);
     let mut client = Client::initialized(on_local(transcript.place.clone()), json!({})).await;
     let done = client
@@ -635,13 +638,17 @@ async fn a_cloud_tool_on_a_local_store_is_not_here_and_names_the_fix() {
 }
 
 #[tokio::test]
-async fn a_local_backend_answers_a_cloud_ask_not_here() {
+async fn a_local_backend_cannot_answer_a_cloud_ask() {
     let store = shop();
     let who = who();
     let backend = Backend::Local(&store, &who);
     let servers = serde_json::from_value(json!({ "query": "servers", "only": null })).unwrap();
     let answered = backend.ask(&Ask::Cloud(servers)).await.unwrap_err();
-    assert_eq!(answered.code.as_str(), "not_here");
+    assert_eq!(answered.code.as_str(), "internal");
+    assert_eq!(
+        answered.message,
+        "This needs Ployz Cloud; a local Config Store cannot answer it"
+    );
 }
 
 #[expect(clippy::indexing_slicing, reason = "JSON fixture assertions")]
@@ -1067,7 +1074,7 @@ async fn a_refused_token_names_where_it_came_from_and_its_fix() {
             cloud: cloud.map(str::to_owned),
             organization: Acting::default(),
         };
-        let server = Server::new(account, Store::Cloud, fixed(transcript.place.clone()));
+        let server = Server::new(account, None, fixed(transcript.place.clone()));
         let mut client = Client::initialized(server, json!({})).await;
         let done = client
             .call(2, "project_create", transcript.input.clone())
@@ -2021,7 +2028,10 @@ async fn each_local_call_sweeps_the_store_first() {
     );
     let place = transcript("environment_show", StoreAt::Local).place;
     let server = Server {
-        store: Store::Local(Arc::new(store), who()),
+        local: Some(Local {
+            store: Arc::new(store),
+            who: who(),
+        }),
         ..on_local(place)
     };
     let mut client = Client::initialized(server, json!({})).await;
