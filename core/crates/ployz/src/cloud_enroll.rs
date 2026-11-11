@@ -939,7 +939,7 @@ async fn send(request: reqwest::RequestBuilder) -> Result<Vec<u8>, Error> {
     let coded_conflict = status == reqwest::StatusCode::CONFLICT
         && sent
             .headers()
-            .get("Ployz-Error-Code")
+            .get(ployz_core::cloud_contract::ERROR_CODE_HEADER)
             .is_some_and(|code| code == "CONFLICT");
     let bytes = sent.bytes().await.map_err(classify_http)?;
     if status == reqwest::StatusCode::UNAUTHORIZED {

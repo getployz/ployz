@@ -3,13 +3,14 @@
 
 use std::{fs, path::Path, time::Duration};
 
+use ployz_core::cloud_contract::{CHECKIN_PROTOCOL_VERSION, ENROLL_OPTIONS};
 use tokio::sync::watch;
 
 use super::{Attempt, EnrollInstruction, Prep};
 use super::{
     CheckinClient, CheckinEnd, CheckinKey, CheckinRequest, Host, LocalCheckin, Next, Paths, Seen,
     System, ZfsPrep, client, read_prep_state, record, unit,
-    wire::{self, Answer, AttemptFailure, EnrollStorage, HostReport, StopReason},
+    wire::{Answer, AttemptFailure, EnrollStorage, HostReport, StopReason},
 };
 use crate::cloud_enroll::EnrollStage;
 
@@ -182,10 +183,10 @@ async fn heartbeat(
     status.attempt = Some(attempt.clone());
     record(status, paths);
     let request = CheckinRequest {
-        protocol_version: wire::PROTOCOL_VERSION,
+        protocol_version: CHECKIN_PROTOCOL_VERSION,
         checkin_key: key.public_hex(),
         cli_version: env!("CARGO_PKG_VERSION"),
-        enroll_options: wire::ENROLL_OPTIONS,
+        enroll_options: ENROLL_OPTIONS,
         report: report.report,
         prep: Some(report.prep),
         attempt: Some(attempt),

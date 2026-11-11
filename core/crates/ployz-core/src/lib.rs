@@ -1,6 +1,7 @@
 //! Domain and wire contracts shared byte-for-byte by the Ployz CLI and daemon.
 
 pub mod authority;
+pub mod cloud_contract;
 pub mod config;
 mod container_metadata;
 pub mod decode;
