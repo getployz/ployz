@@ -71,6 +71,13 @@ impl Target {
                 command
                     .env("PLOYZ_CLOUD_URL", url)
                     .env("PLOYZ_TOKEN", token);
+                if let Some(key) = PINNED.lock().unwrap().get(url) {
+                    let organization = token.trim_start_matches("ployz_");
+                    let pins = json!({ "organizations": {
+                        organization: { "public_key": key, "server": "web-1" },
+                    }});
+                    std::fs::write(home.join("sealing-keys.json"), pins.to_string()).unwrap();
+                }
             }
         }
         command
@@ -177,6 +184,9 @@ fn cloud(
 ) -> String {
     let listener = TcpListener::bind("127.0.0.1:0").unwrap();
     let url = format!("http://{}", listener.local_addr().unwrap());
+    if let Some(SealingState::Ready(key)) = &sealing {
+        PINNED.lock().unwrap().insert(url.clone(), key.clone());
+    }
     let store = std::sync::Arc::new(
         ConfigStore::open("sqlite::memory:", SealingKey::new(b"cloud").unwrap()).unwrap(),
     );
@@ -537,6 +547,12 @@ enum SealingState {
     /// The Organization seals on the client, to this key.
     Ready(String),
 }
+
+/// The Sealing Key each `ployz` run against a Cloud finds pinned, by the Cloud's URL. A
+/// Cloud that seals on the client starts with its own key pinned, as `ployz device pin`
+/// would leave it.
+static PINNED: std::sync::Mutex<std::collections::BTreeMap<String, String>> =
+    std::sync::Mutex::new(std::collections::BTreeMap::new());
 
 /// The Cluster key every Cloud seals to unless a test brings its own to open with.
 static KEYPAIR: std::sync::LazyLock<Keypair> = std::sync::LazyLock::new(Keypair::generate);
@@ -8342,11 +8358,13 @@ fn set_seals_a_secret_asked_with_its_exported_flag_and_keeps_the_flag() {
 }
 
 #[test]
-fn a_plain_text_secret_sent_to_a_cloud_without_the_sealing_route_is_refused_with_the_update() {
-    // An old CLI sends plain text, as this one does to a Cloud it can't ask.
+fn a_secrets_plain_text_never_goes_to_a_cloud_that_offers_no_key_to_seal_it_to() {
+    // A Cloud from before sealing on the client has no sealing route, and a compromised
+    // one can answer the same way to ask for the plain text.
     let cloud = sealing_cloud(None);
     ok(&cloud, &["project", "new", "shop"]);
     ok(&cloud, &["service", "add", "web", "--image", "nginx:1"]);
+    let writes = requests_to(&cloud, "/api/config/write").len();
     let (code, refused) = ployz_with_stdin(
         &cloud,
         &["set", "web.env.TOKEN", "--secret"],
@@ -8355,39 +8373,16 @@ fn a_plain_text_secret_sent_to_a_cloud_without_the_sealing_route_is_refused_with
     assert_eq!(code, Some(1), "{refused}");
     assert_eq!(requests_to(&cloud, "/api/config/sealing").len(), 1);
     let refused: Value = serde_json::from_str(&refused).unwrap();
-    assert_eq!(
-        refused["error"],
-        json!({
-            "code": "unsupported",
-            "message": "TOKEN: update ployz to set a Sealed value.",
-            "details": { "variable": "TOKEN", "next": "curl -fsSL https://ployz.sh | sh" },
-            "cause": [],
-        }),
+    assert_eq!(refused["error"]["code"], json!("unsupported"), "{refused}");
+    assert!(
+        refused["error"]["message"]
+            .as_str()
+            .unwrap()
+            .starts_with("Ployz Cloud offered no key to seal this secret to"),
         "{refused}"
     );
-
-    let home = tempfile::tempdir().unwrap();
-    let mut command = cloud.command(home.path());
-    command
-        .args(["set", "web.env.TOKEN", "--secret"])
-        .stdin(std::process::Stdio::piped())
-        .stdout(std::process::Stdio::piped())
-        .stderr(std::process::Stdio::piped());
-    let mut child = command.spawn().unwrap();
-    child
-        .stdin
-        .take()
-        .unwrap()
-        .write_all(b"old-s3cr3t\n")
-        .unwrap();
-    let output = child.wait_with_output().unwrap();
-    assert_eq!(output.status.code(), Some(1));
-    let stderr = String::from_utf8(output.stderr).unwrap();
-    assert!(
-        stderr.contains("TOKEN: update ployz to set a Sealed value.")
-            && stderr.contains("next: curl -fsSL https://ployz.sh | sh"),
-        "{stderr}"
-    );
+    assert_eq!(requests_to(&cloud, "/api/config/write").len(), writes);
+    cloud_never_saw(&cloud, "old-s3cr3t");
     let missing = error(&cloud, &["get", "web.env.TOKEN"]);
     assert_eq!(missing["code"], json!("not_found"), "{missing}");
 }
@@ -8449,6 +8444,62 @@ fn set_refuses_a_new_secret_until_a_server_holds_the_sealing_key_and_writes_noth
     assert_eq!(missing["code"], json!("not_found"), "{missing}");
     // A plain variable still goes through: nothing to seal.
     ok(&cloud, &["set", "web.env.LOG_LEVEL=info"]);
+}
+
+#[test]
+fn set_seals_only_to_the_key_this_computer_pinned_and_writes_nothing_otherwise() {
+    let planted = Keypair::generate();
+    let cloud = sealing_cloud(Some(SealingState::Ready(planted.public().to_string())));
+    ok(&cloud, &["project", "new", "shop"]);
+    ok(&cloud, &["service", "add", "web", "--image", "nginx:1"]);
+    let writes = requests_to(&cloud, "/api/config/write").len();
+    let refused = |pinned: Option<String>, plaintext: &str| {
+        match pinned {
+            Some(key) => PINNED.lock().unwrap().insert(cloud.url().to_owned(), key),
+            None => PINNED.lock().unwrap().remove(cloud.url()),
+        };
+        let (code, refused) = ployz_with_stdin(
+            &cloud,
+            &["set", "web.env.TOKEN", "--secret"],
+            &format!("{plaintext}\n"),
+        );
+        assert_eq!(code, Some(1), "{refused}");
+        let refused: Value = serde_json::from_str(&refused).unwrap();
+        assert_eq!(refused["error"]["code"], json!("conflict"), "{refused}");
+        assert_eq!(
+            refused["error"]["details"]["next"],
+            json!("ployz device pin --connect ssh://USER@SERVER")
+        );
+        cloud_never_saw(&cloud, plaintext);
+        refused["error"]["message"].as_str().unwrap().to_owned()
+    };
+
+    // Cloud sends a key of its own in place of the Cluster's, which this computer pinned.
+    let message = refused(Some(KEYPAIR.public().to_string()), "planted-s3cr3t");
+    assert!(
+        message.contains("other than the one this computer pinned from web-1"),
+        "{message}"
+    );
+    let message = refused(None, "unpinned-s3cr3t");
+    assert!(message.contains("hasn't pinned"), "{message}");
+    assert_eq!(requests_to(&cloud, "/api/config/write").len(), writes);
+    assert!(sealed_in_writes(&cloud).is_empty());
+
+    PINNED
+        .lock()
+        .unwrap()
+        .insert(cloud.url().to_owned(), planted.public().to_string());
+    let (code, set) = ployz_with_stdin(
+        &cloud,
+        &["set", "web.env.TOKEN", "--secret"],
+        "pinned-s3cr3t\n",
+    );
+    assert_eq!(code, Some(0), "{set}");
+    let token = &sealed_in_writes(&cloud)["TOKEN"];
+    assert_eq!(
+        planted.open(&authored(token), token).as_deref(),
+        Some("pinned-s3cr3t")
+    );
 }
 
 #[test]

@@ -1,7 +1,8 @@
-//! Seals a write's new secrets in this CLI once its Organization seals on the client.
+//! Seals a write's new secrets in this CLI when the write goes through Cloud.
 //! Cloud says whether it does and to which key, asked once per command and only for
-//! a write that carries plain text; the Store says where each secret lands. Off, the
-//! write goes exactly as it always has. The in-process Store seals every secret itself.
+//! a write that carries plain text; the Store says where each secret lands. The key is
+//! sealed to only when it is the one this computer pinned for the Organization, and a
+//! secret's plain text never goes to Cloud. The in-process Store seals every secret itself.
 
 use ployz_core::{RpcErrorCode, SealedIdentity, SealingPublicKey, seal_value};
 use ployz_store::{
@@ -11,15 +12,18 @@ use ployz_store::{
 use serde::Deserialize;
 use uuid::Uuid;
 
+use super::super::config_path;
 use super::{Backend, Error, Store};
 use crate::cloud_account::{self, StoreCallError};
+use crate::sealing_pin::{self, Pins};
 use crate::ui::Hint;
 
 /// What Cloud answers about sealing one write's secrets.
 #[derive(Deserialize)]
 #[serde(tag = "state", rename_all = "snake_case")]
 enum Sealing {
-    /// The Organization seals in the Store: the write goes as it always has.
+    /// The Organization seals in the Store, as a Cloud from before sealing on the client
+    /// says. The CLI never sends it a secret's plain text.
     Off,
     /// It seals on the client, but no Server holds a Sealing Key yet.
     #[serde(rename_all = "camelCase")]
@@ -37,9 +41,11 @@ enum Sealing {
 }
 
 impl Backend {
-    fn sealing(&self, query: &SealingTargetsQuery) -> Result<Sealing, StoreCallError> {
+    /// What Cloud answers about sealing `query`'s secrets; None for the in-process Store,
+    /// which seals every secret itself.
+    fn sealing(&self, query: &SealingTargetsQuery) -> Result<Option<Sealing>, StoreCallError> {
         let Self::Cloud(runtime, credential) = self else {
-            return Ok(Sealing::Off);
+            return Ok(None);
         };
         let answer = runtime.block_on(cloud_account::config_store_if_routed(
             credential,
@@ -47,20 +53,20 @@ impl Backend {
             "sealing",
             query,
         ))?;
-        // Mixed-version: a Cloud from before this CLI sealed has no such route, and
-        // its Store seals. Delete with `ployz_store::old_cli`.
-        Ok(answer.unwrap_or(Sealing::Off))
+        // A Cloud without the route predates sealing on the client, as one answering Off does.
+        Ok(Some(answer.unwrap_or(Sealing::Off)))
     }
 }
 
 impl Store<'_> {
-    /// `edit` with each new secret's plain text sealed for the Service it sets, when
-    /// the Organization seals on the client. `fail` maps what Cloud or the Store
+    /// `edit` with each new secret's plain text sealed for the Service it sets, when it
+    /// goes through Cloud. `fail` maps what Cloud or the Store
     /// refuses, as it maps the write's own refusal.
     ///
     /// # Errors
-    /// `conflict` when the Organization seals on the client but has no Server; what
-    /// Cloud or the Store refused, the text included.
+    /// `conflict` when the Organization has no Server, or Cloud's key isn't the one this
+    /// computer pinned; `unsupported` when Cloud offers no key; what Cloud or the Store
+    /// refused, the text included.
     pub(crate) fn seal_edit(
         &self,
         mut edit: Edit,
@@ -101,7 +107,7 @@ impl Store<'_> {
     }
 
     /// `request` with each plain-text value sealed for the receiver's Service its row
-    /// lands in, when the Organization seals on the client. `fail` maps what Cloud or
+    /// lands in, when it goes through Cloud. `fail` maps what Cloud or
     /// the Store refuses, as it maps the write's own refusal.
     ///
     /// # Errors
@@ -161,32 +167,44 @@ impl Store<'_> {
     }
 
     /// The key to seal to and where `query`'s secrets land; `None` when the Store seals.
+    /// Cloud's key counts only when it is the one pinned for the Organization it names.
     fn ready(
         &self,
         query: &SealingTargetsQuery,
         fail: impl Fn(StoreCallError) -> Error,
     ) -> Result<Option<(SealingPublicKey, SealingTargetsView)>, Error> {
         match self.backend.sealing(query).map_err(&fail)? {
-            Sealing::Off => Ok(None),
-            Sealing::NoServer {
+            None => Ok(None),
+            Some(Sealing::Off) => Err(Error::coded(
+                RpcErrorCode::Unsupported,
+                "Ployz Cloud offered no key to seal this secret to on your computer, so nothing \
+                 was sent. If you host Ployz Cloud yourself, update it.",
+            )),
+            Some(Sealing::NoServer {
                 awaits_recovery: true,
-            } => Err(Error::conflict(
+            }) => Err(Error::conflict(
                 // Cloud learns of a recover from the Server's next report, a few seconds later.
                 "Your server needs the Sealing Key back before it can take sealed values. \
                  If you just ran ployz recover, try again in a few seconds.",
             )
             .hint(Hint::Next("sudo ployz recover".into()))),
-            Sealing::NoServer {
+            Some(Sealing::NoServer {
                 awaits_recovery: false,
-            } => Err(Error::conflict("Sealed values need a server.")
+            }) => Err(Error::conflict("Sealed values need a server.")
                 .hint(Hint::Next("ployz server add".into()))),
-            Sealing::Ready {
+            Some(Sealing::Ready {
                 public_key,
                 targets,
-            } => {
+            }) => {
                 let targets = SealingTargetsQuery::view(*targets)
                     .map_err(|error| fail(StoreCallError::Refused(error)))?;
-                Ok(Some((public_key, targets)))
+                let (SealingTargetsView::Edit { organization, .. }
+                | SealingTargetsView::Sync { organization, .. }) = &targets;
+                let pin = Pins::beside(&config_path(self.matches)?).get(organization)?;
+                Ok(Some((
+                    sealing_pin::check(pin.as_ref(), public_key)?,
+                    targets,
+                )))
             }
         }
     }
