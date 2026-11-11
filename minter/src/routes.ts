@@ -221,7 +221,8 @@ export const ROUTES: Readonly<Record<string, AnyRoute>> = {
       for (let page = 1; existing === undefined && page <= CHECK_PAGES; page++) {
         const query = new URLSearchParams({ check_name: body.name, filter: "all", per_page: "100", page: String(page) });
         const runs = field(await github.json("list_check_runs", token, "GET", `${repository}/commits/${body.head_sha}/check-runs?${query.toString()}`), "check_runs", "array", "list_check_runs");
-        const match = runs.find((run) => ownCheckRun(run, config.appId) && (nullable(run, "external_id", "string", "list_check_runs") ?? undefined) === body.external_id);
+        // GitHub returns a check posted without an external_id with an empty one.
+        const match = runs.find((run) => ownCheckRun(run, config.appId) && (nullable(run, "external_id", "string", "list_check_runs") || undefined) === body.external_id);
         if (match !== undefined) existing = field(match, "id", "number", "list_check_runs");
         if (runs.length < 100) break;
       }
