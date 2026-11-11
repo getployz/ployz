@@ -244,6 +244,7 @@ fn the_other_workflows_permit_only_their_own_steps() {
         (&restore, b(), VolumeStep::Start, false),
         (&resize, a(), shrink(false), true),
         (&resize, b(), shrink(true), false),
+        (&resize, c(), shrink(false), false),
         (&seed, a(), seeding("app_old", 42), true),
         (&seed, a(), seeding("other", 42), false),
         (&seed, a(), seeding("app_old", 43), false),
@@ -265,6 +266,16 @@ fn the_other_workflows_permit_only_their_own_steps() {
         allow_shrink: false,
     };
     assert!(!resize.permits(&a(), &resize_other));
+    let shrinking = VolumeWorkflow::Resize {
+        machines: vec![a(), b()],
+        maximum_bytes: bytes(20),
+        shrink: true,
+    };
+    assert!(shrinking.permits(&a(), &shrink(true)));
+    assert!(
+        !shrinking.permits(&a(), &shrink(false)),
+        "a shrink's approval names its direction, so a request without allow_shrink is another change"
+    );
 }
 
 #[test]
@@ -544,5 +555,45 @@ fn a_mirror_approval_shows_the_volume_both_servers_and_that_syncs_continue() {
     assert_eq!(
         ApprovedVolumeChange::of(&approval(moving()), "data", name),
         None
+    );
+}
+
+#[test]
+fn a_resize_approval_shows_the_volume_its_size_every_server_and_whether_a_copy_shrinks() {
+    let name = |machine: &MachineId| {
+        if *machine == a() {
+            "web-1".to_owned()
+        } else {
+            "web 2\u{1b}[2K".to_owned()
+        }
+    };
+    let resize = |maximum_bytes, shrink| {
+        approval(VolumeWorkflow::Resize {
+            machines: vec![a(), b()],
+            maximum_bytes,
+            shrink,
+        })
+    };
+    let grow = ApprovedVolumeChange::of(&resize(bytes(20), false), "data", name).unwrap();
+    assert_eq!(
+        grow.line(),
+        r#"Approved: set data to 20GB on web-1, "web 2\u{1b}[2K". No copy shrinks."#
+    );
+    assert_eq!(
+        serde_json::to_value(&grow).unwrap(),
+        serde_json::json!({
+            "kind": "resize",
+            "volume": "data",
+            "servers": ["web-1", "web 2\u{1b}[2K"],
+            "size": "20GB",
+            "shrink": false,
+        })
+    );
+    let half = ProvisionedVolumeMaximumBytes::new(NonZeroU64::new(1_500_000_001).unwrap());
+    assert_eq!(
+        ApprovedVolumeChange::of(&resize(half, true), "data", name)
+            .unwrap()
+            .line(),
+        r#"Approved: set data to 1.500000001GB on web-1, "web 2\u{1b}[2K", lowering any copy above it."#
     );
 }
