@@ -4,11 +4,12 @@
 //! the approval itself in place of the head, along with the rule, its generation, the
 //! image token and every setting, as it does for a push.
 //!
-//! This client verifies nothing Cloud relays. It shows each Service and commit, and
-//! echoes the rule's ID and generation into each approval for the Servers to compare. The
-//! Cluster key comes from the Servers over this Device's own connection.
+//! This client verifies nothing Cloud relays. It builds each approval whole, shows the
+//! person every term in it through [`Shown`], and signs exactly what it showed. It echoes
+//! the rule's ID and generation for the Servers to compare. The Cluster key comes from the
+//! Servers over this Device's own connection.
 //!
-//!   probe ‖ view ‖ rule ─▶ confirm ─▶ sign ─▶ admit ─▶ builds end ─▶ sign again ─▶ run
+//!   probe ‖ view ‖ rule ─▶ build ─▶ show ─▶ confirm ─▶ sign ─▶ admit ─▶ builds end ─▶ sign again ─▶ run
 //!
 //! An approval lasts minutes and a build may take longer, so the Deployment waits, queued,
 //! once its builds end, until this client approves the same commits again.
@@ -16,11 +17,13 @@
 use std::collections::BTreeMap;
 use std::time::Duration;
 
+use chrono::{DateTime, SecondsFormat, Utc};
 use clap::ArgMatches;
+use ployz_core::authority::shown::Shown;
 use ployz_core::authority::{
     CommitApproval, CommitSha, RuleId, Signed, Signer, SignerKey, Timestamp, validity,
 };
-use ployz_core::{RpcErrorCode, SealingPublicKey, ServiceName};
+use ployz_core::{DeviceKey, RpcErrorCode, SealingPublicKey, ServiceName};
 use ployz_store::{
     ApproveDeployment, BuildStatus, BuildView, Cancel, DeploymentId, DeploymentQuery,
     DeploymentSummary, DeploymentView, EnvironmentRef, RuleQuery,
@@ -141,16 +144,18 @@ pub(in crate::handlers) fn prepare(
         commits,
         approvals: Vec::new(),
     };
-    let named = redeploy
-        .commits
-        .iter()
-        .map(|(service, commit)| format!("{service} at {}", short(*commit)))
-        .collect::<Vec<_>>()
-        .join(", ");
-    match matches.get_flag("yes") {
-        true => crate::ui::stream(format_args!("Approving {named}")),
-        false => crate::ui::confirm(
-            &format!("Approve {named}?"),
+    // The person approves these bodies, and this signs exactly them.
+    let bodies = redeploy.bodies(Timestamp::now());
+    for line in shown(&bodies) {
+        crate::ui::stream(format_args!("{line}"));
+    }
+    crate::ui::stream(
+        "Once each image is built or reused, this device approves the same commits again, \
+         without asking.",
+    );
+    if !matches.get_flag("yes") {
+        crate::ui::confirm(
+            "Approve these commits?",
             || {
                 Error::coded(
                     RpcErrorCode::ConfirmationRequired,
@@ -159,9 +164,10 @@ pub(in crate::handlers) fn prepare(
                 .hint(Hint::Retry(super::super::typed_with(&["--yes"])))
             },
             "Cancelled. Nothing deployed.",
-        )?,
+        )?;
     }
-    let approvals = redeploy.signed()?;
+    live(&bodies, Timestamp::now())?;
+    let approvals = redeploy.sign(&bodies)?;
     Ok(Some(Redeploy {
         approvals,
         ..redeploy
@@ -182,9 +188,18 @@ impl Redeploy {
         admitted: &DeploymentSummary,
     ) -> Result<(), Error> {
         let approved = ended_builds(store, &admitted.id).and_then(|()| {
+            // The same terms as the first approval, which the person saw, with new times.
+            let bodies = self.bodies(Timestamp::now());
+            let approvals = self.sign(&bodies)?;
+            if let Some(body) = bodies.first() {
+                crate::ui::stream(format_args!(
+                    "Approved the same commits again, {}",
+                    valid(body)
+                ));
+            }
             store.write(&ApproveDeployment {
                 deployment: admitted.id.clone(),
-                approvals: self.signed()?,
+                approvals,
             })
         });
         if approved.is_err() {
@@ -196,26 +211,96 @@ impl Redeploy {
         approved.map(drop)
     }
 
-    /// An approval of each Service's commit, valid from now for as long as any may be.
-    fn signed(&self) -> Result<Vec<Signed<CommitApproval>>, Error> {
-        let issued_at = Timestamp::now();
+    /// An approval of each Service's commit, valid from `issued_at` for as long as any may
+    /// be, before it is signed.
+    fn bodies(&self, issued_at: Timestamp) -> Vec<CommitApproval> {
         self.commits
             .iter()
-            .map(|(service, commit)| {
-                let body = CommitApproval {
-                    cluster: self.terms.cluster,
-                    rule: self.terms.rule,
-                    generation: self.terms.generation,
-                    service: service.clone(),
-                    commit: *commit,
-                    issued_at,
-                    expires_at: issued_at.plus(validity::MAX_LIFETIME_MILLIS),
-                    signer: SignerKey::Device(self.signer.public().into()),
-                };
-                Signed::sign(&body, &self.signer).map_err(Error::command)
+            .map(|(service, commit)| CommitApproval {
+                cluster: self.terms.cluster,
+                rule: self.terms.rule,
+                generation: self.terms.generation,
+                service: service.clone(),
+                commit: *commit,
+                issued_at,
+                expires_at: issued_at.plus(validity::MAX_LIFETIME_MILLIS),
+                signer: SignerKey::Device(self.signer.public().into()),
             })
             .collect()
     }
+
+    /// `bodies`, each signed with this Device's key and nothing added.
+    fn sign(&self, bodies: &[CommitApproval]) -> Result<Vec<Signed<CommitApproval>>, Error> {
+        bodies
+            .iter()
+            .map(|body| Signed::sign(body, &self.signer).map_err(Error::command))
+            .collect()
+    }
+}
+
+/// Every term of `bodies`, as the person reads it before signing: each Service and its
+/// whole commit, then the terms they share. [`Redeploy::bodies`] builds every body from
+/// the same terms, so the first one's stand for all.
+fn shown(bodies: &[CommitApproval]) -> Vec<Shown> {
+    let mut lines = vec![Shown::words("Approving commits for this redeploy:")];
+    lines.extend(bodies.iter().map(|body| {
+        Shown::words("  ")
+            .and_text(body.service.as_str())
+            .and_words(" at ")
+            .and_text(&body.commit.to_string())
+    }));
+    if let Some(body) = bodies.first() {
+        lines.extend([
+            Shown::words("  rule ")
+                .and_text(&body.rule.to_string())
+                .and_words(", generation ")
+                .and_text(&body.generation.to_string()),
+            Shown::words("  cluster ").and_text(&body.cluster.to_string()),
+            Shown::words("  signer ").and(signer(body.signer)),
+            Shown::words("  ").and(valid(body)),
+        ]);
+    }
+    lines
+}
+
+/// Refuses `bodies` once any has expired at `now`, such as when the person answered late.
+fn live(bodies: &[CommitApproval], now: Timestamp) -> Result<(), Error> {
+    if bodies.iter().any(|body| now >= body.expires_at) {
+        return Err(Error::coded(
+            RpcErrorCode::Conflict,
+            "Your approval expired before you answered. Redeploy again. Nothing deployed.",
+        ));
+    }
+    Ok(())
+}
+
+/// The signer as a Server names it in its log, such as `device zfdzb65sqr`.
+fn signer(signer: SignerKey) -> Shown {
+    match signer {
+        SignerKey::Device(key) => Shown::words("device ").and_text(&key.code().to_string()),
+        SignerKey::Browser { browser } => {
+            Shown::words("browser key ").and_text(&DeviceKey::from(browser).code().to_string())
+        }
+        SignerKey::Passkey(_) => Shown::words("passkey"),
+    }
+}
+
+/// `valid 2026-11-11T03:19:09Z to 2026-11-11T03:34:09Z`, in UTC.
+fn valid(body: &CommitApproval) -> Shown {
+    Shown::words("valid ")
+        .and_text(&utc(body.issued_at))
+        .and_words(" to ")
+        .and_text(&utc(body.expires_at))
+}
+
+fn utc(at: Timestamp) -> String {
+    i64::try_from(at.as_millis())
+        .ok()
+        .and_then(DateTime::<Utc>::from_timestamp_millis)
+        .map_or_else(
+            || format!("{} ms", at.as_millis()),
+            |at| at.to_rfc3339_opts(SecondsFormat::Secs, true),
+        )
 }
 
 /// Each Service `view` built, and the commit it built from.
@@ -325,10 +410,6 @@ fn building(build: &BuildView) -> String {
         Some(commit) => format!("{} at {}", build.service, short_str(&commit.to_string())),
         None => build.service.to_string(),
     }
-}
-
-fn short(commit: CommitSha) -> String {
-    short_str(&commit.to_string())
 }
 
 fn short_str(commit: &str) -> String {

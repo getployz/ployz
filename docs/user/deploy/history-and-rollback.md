@@ -91,14 +91,21 @@ on, redeploy or roll back from an approved device:
 ployz deployment redeploy 4
 ```
 
-Your device asks you to approve the commit of each service #4 built, under your
-[automatic deploy rule](github.md#deploy-on-push-to-servers-that-enforce-device-approval):
+Your device shows everything it signs and asks you to approve the commit of each service #4
+built, under your [automatic deploy rule](github.md#deploy-on-push-to-servers-that-enforce-device-approval):
 
 ```text
-Approve web at 3f1c2a9b8e7d? [y/N]
+Approving commits for this redeploy:
+  web at 3f1c2a9b8e7d6c5b4a3f2e1d0c9b8a7f6e5d4c3b
+  rule 5e0c2b7a91d84f36a0e9c1b2d3f4a5b6, generation 2
+  cluster "q8Xc0mZ1vN4yT7rE2wK9pL3sD6fH5jG8aB1nM0oQ4uI="
+  signer device k3m8q2xw7d
+  valid 2026-11-11T03:19:09Z to 2026-11-11T03:34:09Z
+Once each image is built or reused, this device approves the same commits again, without asking.
+Approve these commits? [y/N]
 ```
 
-`--yes` approves without asking.
+`--yes` approves without asking. Outside a terminal, the redeploy needs `--yes`.
 
 Your approval takes the place of the branch's head, and nothing else. Each server still runs only
 the image GitHub built from that commit under your rule, with the settings your rule approves,
@@ -107,8 +114,8 @@ and checks all of it itself. Ployz Cloud can't swap the image, the settings or t
 A server that still holds the image GitHub built for #4 runs it again. Otherwise GitHub builds
 the commit again on the rule's branch, and your servers release the build's secrets only for a
 commit in that branch's history. The redeploy waits, printing `Building web at 3f1c2a9b8e7d on
-GitHub`. Once every build ends, your device approves the same commits again, so a long build
-doesn't use up the approval's 15 minutes. A build that fails cancels the redeploy, and nothing
+GitHub`. Once every build ends, your device approves the same commits again with new times,
+so a long build doesn't use up the approval's 15 minutes. A build that fails cancels the redeploy, and nothing
 deploys.
 
 - **The rule's workflow runs the rebuild.** It needs the `workflow_dispatch` trigger with a
