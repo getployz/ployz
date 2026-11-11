@@ -426,10 +426,19 @@ describe("a Cluster's declared Door set", () => {
   };
   const founding = () => run(closedFounding(ORG));
 
-  it.each([[[]], [["tunnel"]]] as const)("reads %j as closed, without founding instruction or a look at the Servers", async (doors) => {
+  it.each([[[]], [["tunnel"]]] as const)("reads %j as closed once the Servers seen whole hold no Public Door", async (doors) => {
     declaring(doors);
-    session = answering((held) => held, Effect.succeed(PARTIAL_FRAME));
+    session = answering((held) => held, Effect.succeed(CLOSED_FRAME));
     expect(await founding()).toEqual({ kind: "closed" });
+    session = answering((held) => held, Effect.succeed(PARTIAL_FRAME));
+    expect(await founding()).toEqual({ kind: "unknown" });
+  });
+
+  it("reads a declaration without Public as open while a Server still holds the ports, as after a switch that stopped partway", async () => {
+    declaring(["tunnel"]);
+    const holding = { ...CLOSED_FRAME, services: [{ identity: "ployz-system/ingress-holder", containers: [{ machine_id: "m1", runtime: { state: "running" }, resolved_spec: { ports: [{ mode: "host", published_port: 443 }] } }] }] };
+    session = answering((held) => held, Effect.succeed(holding));
+    expect(await founding()).toEqual({ kind: "open" });
   });
 
   it.each([[["public"]], [["public", "tunnel"]]] as const)("reads %j as open, whatever the founder was told", async (doors) => {

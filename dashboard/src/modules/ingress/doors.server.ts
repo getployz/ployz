@@ -143,22 +143,24 @@ const declaredDoors = Effect.fn("IngressDoors.declared")(function* (organization
 });
 
 /**
- * Whether Cloudflare setup may open only the tunnel. The Cluster's declared Door set decides when it has one: without
- * Public is closed, with Public is open. Otherwise the Cluster was founded closed and, seen whole, no Server holds the
- * Public Door, whether or not it takes web traffic now. Unknown while a Server isn't seen, since it may hold the ports,
+ * Whether Cloudflare setup may open only the tunnel. A declared Door set with Public is open. Without Public, or with no
+ * declaration but a Cluster founded closed, it is closed when, seen whole, no Server holds the Public Door, whether or not
+ * it takes web traffic now. Unknown while a Server isn't seen, since it may hold the ports,
  * or while none takes web traffic yet.
  */
 export const closedFounding = Effect.fn("IngressDoors.closedFounding")(function* (organizationId: string) {
   const declared = yield* declaredDoors(organizationId);
-  if (declared !== null) return declared.includes("public") ? { kind: "open" } as const : { kind: "closed" } as const;
-  if (!(yield* foundedClosed(organizationId))) return { kind: "open" } as const;
+  if (declared?.includes("public")) return { kind: "open" } as const;
+  if (declared === null && !(yield* foundedClosed(organizationId))) return { kind: "open" } as const;
   const frame = yield* firstRuntimeFrame(organizationId).pipe(Effect.catch(() => Effect.succeed(null)));
   if (frame === null) return { kind: "unknown" } as const;
   const seen = observationOf(frame);
   if (seen.partial) return { kind: "unknown" } as const;
+  // A declaration without Public is written before the Servers follow it, so a switch that stopped partway leaves
+  // Servers holding Public under it. Seen whole, one that does means the handover still has work to do.
   if (publicSpecifiedAnywhere(frame)) return { kind: "open" } as const;
   // The founder may not show yet; until a Server takes web traffic there is nothing to tell the tunnel to.
-  if (seen.servers.length === 0) return { kind: "unknown" } as const;
+  if (declared === null && seen.servers.length === 0) return { kind: "unknown" } as const;
   return { kind: "closed" } as const;
 });
 

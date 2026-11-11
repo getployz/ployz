@@ -99,6 +99,8 @@ const writesOf = (calls: readonly Call[]) => calls.filter(({ method, body }) => 
 type Set = { readonly doors: readonly string[]; readonly token: string | undefined };
 
 const frameOf = asTestDouble<RuntimeWatchView>();
+/** A Cluster that never declared its Doors, as one founded before the declaration, so the Servers and the founder's instruction decide. */
+const UNDECLARED = { network: "10.42.0.0/16", machines: [], target_versions: {} };
 const NO_SERVER_FRAME = frameOf({ machines: [], services: [], containers: [], incomplete_ids: { machines: [], containers: [], certificates: [] }, unanswered: [] });
 /** One Server taking web traffic and running no door Container, as a Cluster founded closed is before its tunnel opens. */
 const CLOSED_FRAME = frameOf({ ...NO_SERVER_FRAME, machines: [{ machine: { id: "m1", name: "s1", accepts_ingress: true, runtime: { running_builds: 0 } }, membership: "up" }] });
@@ -110,6 +112,7 @@ function cluster(take: (doors: readonly string[]) => readonly string[] = (doors)
     status: "connected",
     connected: asTestDouble<PloyzSession>()({
       watchFirstFrame: () => Effect.succeed(frame),
+      observeEnrollment: () => Effect.succeed(UNDECLARED),
       setIngressDoors: (doors: readonly string[], token?: Redacted.Redacted<string>) => {
         sets.push({ doors, token: token === undefined ? undefined : Redacted.value(token) });
         return Effect.succeed({ machines: [{ server: "s1", doors: take(doors) }], failures: [] });
@@ -265,6 +268,7 @@ it("refuses on a Cluster founded closed when its Servers can't be read at all, o
       status: "connected" as const,
       connected: asTestDouble<PloyzSession>()({
         watchFirstFrame: () => Effect.fail(new Error("no frame")),
+        observeEnrollment: () => Effect.succeed(UNDECLARED),
         setIngressDoors: (doors: readonly string[]) => Effect.sync(() => { sets.push({ doors, token: undefined }); return { machines: [], failures: [] }; }),
       }),
     }),
@@ -333,6 +337,7 @@ it("says the ports may be open when the fallback reached only some servers of a 
   const sets: Set[] = [];
   const session = asTestDouble<PloyzSession>()({
     watchFirstFrame: () => Effect.succeed(CLOSED_FRAME),
+    observeEnrollment: () => Effect.succeed(UNDECLARED),
     setIngressDoors: (doors: readonly string[]) => Effect.sync(() => {
       sets.push({ doors, token: undefined });
       return doors.includes("tunnel")
@@ -364,6 +369,7 @@ it("says what a setup that died left behind, ports opened included", async () =>
   const sets: Set[] = [];
   const session = asTestDouble<PloyzSession>()({
     watchFirstFrame: () => Effect.succeed(CLOSED_FRAME),
+    observeEnrollment: () => Effect.succeed(UNDECLARED),
     setIngressDoors: (doors: readonly string[]) => {
       sets.push({ doors, token: undefined });
       return doors.includes("tunnel") ? Effect.die(new Error("napi panic")) : Effect.succeed({ machines: [{ server: "s1", doors: ["public"] }], failures: [] });
@@ -611,6 +617,7 @@ it("never marks a Cluster founded closed active from a look taken before a first
   let frame: RuntimeWatchView = CLOSED_FRAME;
   const session = asTestDouble<PloyzSession>()({
     watchFirstFrame: () => Effect.sync(() => frame),
+    observeEnrollment: () => Effect.succeed(UNDECLARED),
     setIngressDoors: (doors: readonly string[]) => Effect.succeed({ machines: [{ server: "s1", doors }], failures: [] }),
   });
   const runtime = asTestDouble<OrganizationRuntime["Service"]>()({ cancel: () => Effect.void, open: () => Effect.succeed({ status: "connected" as const, connected: session }) });
