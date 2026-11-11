@@ -297,7 +297,9 @@ impl RpcError {
     /// The image a not-found or refused pull named through [`Self::pulling`].
     #[must_use]
     pub fn missing_image(&self) -> Option<MissingImage> {
-        if self.code != RpcErrorCode::NotFound && !self.registry_refused() {
+        if !self.details.is_object()
+            || self.code != RpcErrorCode::NotFound && !self.registry_refused()
+        {
             return None;
         }
         self.evidence()
@@ -462,13 +464,10 @@ pub fn large_packets_dropped_status(status: tonic::Status, sentence: String) -> 
         _ => serde_json::Map::new(),
     };
     details.insert("reason".into(), LARGE_PACKETS_DROPPED_REASON.into());
-    match details.get_mut(StatusBody::CAUSE) {
+    match details.get_mut(STATUS_CAUSE) {
         Some(Value::Array(causes)) => causes.push(sentence.into()),
         _ => {
-            details.insert(
-                StatusBody::CAUSE.into(),
-                Value::Array(vec![sentence.into()]),
-            );
+            details.insert(STATUS_CAUSE.into(), Value::Array(vec![sentence.into()]));
         }
     }
     let details = serde_json::to_vec(&details).expect("a JSON object serializes");
@@ -517,52 +516,52 @@ pub fn hinted_status(
 /// causes: `Null` when they carried none, `None` for any other details.
 #[must_use]
 pub fn status_details(details: &[u8]) -> Option<Value> {
-    StatusBody::decode(details).map(StatusBody::into_details)
+    status_causes(details)?;
+    let Ok(Value::Object(mut fields)) = serde_json::from_slice::<Value>(details) else {
+        return None;
+    };
+    fields.remove(STATUS_CAUSE);
+    Some(if fields.is_empty() {
+        Value::Null
+    } else {
+        Value::Object(fields)
+    })
 }
 
 /// The causes a [`caused_status`] carried, or `None` for any other details.
 #[must_use]
 pub fn status_causes(details: &[u8]) -> Option<Vec<String>> {
-    StatusBody::decode(details).map(|body| body.cause)
+    #[derive(Deserialize)]
+    struct Caused {
+        cause: Vec<String>,
+    }
+    serde_json::from_slice::<Caused>(details)
+        .ok()
+        .map(|caused| caused.cause)
 }
+
+/// The key under which a status lists the sources below its message.
+const STATUS_CAUSE: &str = "cause";
 
 /// The bytes a status carries in its details: an object whose `cause` lists the sources
 /// below the message, beside any hints keyed like an [`RpcError`]'s details. `cause` is
 /// always present, even empty, so a status with details always decodes.
+#[cfg(not(target_arch = "wasm32"))]
 struct StatusBody {
     cause: Vec<String>,
     fields: serde_json::Map<String, Value>,
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 impl StatusBody {
-    const CAUSE: &'static str = "cause";
-
-    #[cfg(not(target_arch = "wasm32"))]
     fn new(cause: Vec<String>, fields: serde_json::Map<String, Value>) -> Self {
         Self { cause, fields }
     }
 
-    #[cfg(not(target_arch = "wasm32"))]
     fn encode(self) -> Vec<u8> {
         let mut fields = self.fields;
-        fields.insert(Self::CAUSE.into(), self.cause.into());
+        fields.insert(STATUS_CAUSE.into(), self.cause.into());
         serde_json::to_vec(&Value::Object(fields)).expect("a JSON object serializes")
-    }
-
-    fn decode(details: &[u8]) -> Option<Self> {
-        let Value::Object(mut fields) = serde_json::from_slice::<Value>(details).ok()? else {
-            return None;
-        };
-        let cause = serde_json::from_value(fields.remove(Self::CAUSE)?).ok()?;
-        Some(Self { cause, fields })
-    }
-
-    fn into_details(self) -> Value {
-        if self.fields.is_empty() {
-            Value::Null
-        } else {
-            Value::Object(self.fields)
-        }
     }
 }
 

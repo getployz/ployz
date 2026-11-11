@@ -786,3 +786,63 @@ fn the_status_codec_keeps_its_asymmetries() {
         Some(json!({ "reason": "large_packets_dropped" }))
     );
 }
+
+#[test]
+fn a_missing_image_reads_only_from_object_details() {
+    let not_found = |details: Value| RpcError::not_found("m").with_details(details);
+    for positional in [json!(["i", "always"]), json!(["img"]), json!(["雪", null])] {
+        assert_eq!(not_found(positional).missing_image(), None);
+    }
+    let named = not_found(json!({ "missing_image": "i", "pull_policy": "always" }));
+    assert_eq!(
+        named.missing_image().map(|m| (m.image, m.policy)),
+        Some(("i".to_owned(), Some(PullPolicy::Always)))
+    );
+    let bad_policy = not_found(json!({ "missing_image": "i", "pull_policy": 4 }));
+    assert_eq!(
+        bad_policy.missing_image().map(|m| (m.image, m.policy)),
+        Some(("i".to_owned(), None))
+    );
+}
+
+#[test]
+fn a_status_body_decodes_as_the_typed_cause_struct_does() {
+    let causes = |body: &[u8]| ployz_core::status_causes(body);
+    let details = |body: &[u8]| ployz_core::status_details(body);
+    let deep = format!(
+        r#"{{"cause":["a"],"x":{}{}}}"#,
+        "[".repeat(200),
+        "]".repeat(200)
+    );
+    for duplicated in [
+        br#"{"cause":[],"cause":["a"]}"#.as_slice(),
+        br#"{"cause":3,"cause":[]}"#,
+        br#"{"cause":["a"],"cause":["b"]}"#,
+    ] {
+        assert_eq!(causes(duplicated), None);
+        assert_eq!(details(duplicated), None);
+    }
+    for unparsable in [
+        br#"{"cause":["a"],"x":1e400}"#.as_slice(),
+        br#"{"cause":["a"],"x":"\ud800"}"#,
+        deep.as_bytes(),
+    ] {
+        assert_eq!(causes(unparsable), Some(vec!["a".to_owned()]));
+        assert_eq!(details(unparsable), None);
+    }
+    assert_eq!(
+        causes(br#"[["a","b"]]"#),
+        Some(vec!["a".to_owned(), "b".to_owned()])
+    );
+    assert_eq!(details(br#"[["a","b"]]"#), None);
+    assert_eq!(causes(b"[[]]"), Some(vec![]));
+    assert_eq!(
+        causes(br#"{"cause":["a"],"next":"x"}"#),
+        Some(vec!["a".to_owned()])
+    );
+    assert_eq!(
+        details(br#"{"cause":["a"],"next":"x"}"#),
+        Some(json!({ "next": "x" }))
+    );
+    assert_eq!(causes(b"opaque"), None);
+}
