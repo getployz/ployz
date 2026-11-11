@@ -36,6 +36,9 @@ pub(in crate::handlers) struct DeviceApproval {
 pub(in crate::handlers) struct Enforcing {
     pub(in crate::handlers) cluster: SealingPublicKey,
     pub(in crate::handlers) machines: Vec<ployz_core::MachineId>,
+    /// Whether every Server listed checks a person's approval of a commit in place of
+    /// its branch head. An older one refuses the approval as an unknown field.
+    pub(in crate::handlers) commit_approval: bool,
 }
 
 /// How long `ployz deploy` waits to learn whether a Server enforces Device approval.
@@ -219,7 +222,18 @@ fn enforced(observed: &[MachineObservation]) -> Probe {
         .collect();
     machines.sort_unstable();
     machines.dedup();
-    Probe::Enforcing(Enforcing { cluster, machines })
+    let commit_approval = observed.iter().all(|observed| {
+        observed
+            .machine
+            .runtime
+            .capabilities
+            .contains(ployz_core::COMMIT_APPROVAL_CAPABILITY)
+    });
+    Probe::Enforcing(Enforcing {
+        cluster,
+        machines,
+        commit_approval,
+    })
 }
 
 /// Whether `spec` runs the image a build or upload will make, which no Device can

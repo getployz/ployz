@@ -453,7 +453,7 @@ const ABOVE_FLOOR: &[(&str, &str)] = &[
     ),
     (
         "ployz.rule.commit-approval.v1",
-        "gated: Cloud relays a commit approval at grant only to a Machine that advertises it, and the CLI signs one only when every enforcing Machine does. An older daemon refuses the approval's field in the grant and in the rule proof as unknown, so a rollback there fails closed",
+        "gated: Cloud relays a commit approval at grant only to a Machine that advertises it, and the CLI signs one only when every Server it lists does. An older daemon refuses the approval's field in the grant and in the rule proof as unknown, so a rollback there fails closed",
     ),
     (
         "ployz.image.pull.v1",
