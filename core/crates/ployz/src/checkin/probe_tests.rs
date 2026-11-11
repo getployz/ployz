@@ -1,5 +1,6 @@
 use std::{
     cell::{Cell, RefCell},
+    hash::RandomState,
     net::{TcpListener as StdTcpListener, UdpSocket as StdUdpSocket},
     sync::{Arc, Condvar},
 };
@@ -165,13 +166,20 @@ impl Drop for StalledBinds {
 /// holding it stalls saves in every test sharing the process; nextest runs each test alone.
 pub(in crate::checkin) static SAVES: Mutex<()> = Mutex::new(());
 
+const FIRST_FREE_PORT: u16 = 20_000;
+
+/// A port nothing holds, from below the kernel's ephemeral range. A port the kernel allocated is
+/// free only until a test in another process, running its own mock server, outbound connection or
+/// UDP socket, is handed the same number.
 fn free_port() -> u16 {
+    let below_ephemeral = ephemeral_ports().start().saturating_sub(FIRST_FREE_PORT);
+    assert!(
+        below_ephemeral > 0,
+        "the ephemeral range leaves no ports below it"
+    );
     loop {
-        let port = StdTcpListener::bind("127.0.0.1:0")
-            .unwrap()
-            .local_addr()
-            .unwrap()
-            .port();
+        let draw = std::hash::BuildHasher::hash_one(&RandomState::new(), 0_u8);
+        let port = FIRST_FREE_PORT + u16::try_from(draw % u64::from(below_ephemeral)).unwrap();
         if bindable(port) {
             return port;
         }
