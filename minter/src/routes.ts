@@ -78,7 +78,7 @@ export const ROUTES: Readonly<Record<string, AnyRoute>> = {
       facts.permissions_granted = minted.permissions;
       facts.token_expires_at = minted.expiresAt;
       const beyond = Object.entries(minted.permissions).find(([name, level]) => !Object.hasOwn(READ_SET, name) || level !== "read");
-      if (beyond) throw new GithubError("installation_token_granted_more", null);
+      if (beyond) throw new GithubError("installation_token_granted_more", { kind: "overbroad" });
       return { token: minted.token, expires_at: minted.expiresAt };
     },
   }),
@@ -365,11 +365,12 @@ export function createMinter(deps: { github: Github; config: MinterConfig; audit
       } else if (error instanceof GithubError) {
         outcome = "failed";
         reason = `github ${error.operation}`;
-        if (error.status !== null) facts.github_status = error.status;
-        response = {
-          status: 502,
-          body: { error: "github", operation: error.operation, status: error.status, ...(error.retryAfter === null ? {} : { retry_after: error.retryAfter }) },
-        };
+        const { failure } = error;
+        if (failure.kind === "status") facts.github_status = failure.status;
+        const detail = failure.kind !== "status"
+          ? {}
+          : { status: failure.status, ...(failure.retryAfter === null ? {} : { retry_after: failure.retryAfter }) };
+        response = { status: 502, body: { error: "github", operation: error.operation, failure: failure.kind, ...detail } };
       } else {
         outcome = "failed";
         reason = "internal";

@@ -2,6 +2,11 @@ import { readdirSync, readFileSync } from "node:fs";
 import { join, relative } from "node:path";
 import { expect, it } from "vitest";
 
+/**
+ * A textual tripwire, not a boundary: it greps Cloud's sources for the strings a new path to the App's authority would
+ * likely use, so such a path shows up in review. Code that builds those strings another way passes it. In minter mode
+ * the boundary is the minter's own policy, which Cloud's code can't widen.
+ */
 const SRC = join(process.cwd(), "src");
 const AUTHORITY = "modules/github/github-authority.server.ts";
 

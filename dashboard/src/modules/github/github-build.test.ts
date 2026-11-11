@@ -45,7 +45,7 @@ function withGithub<A, E>(effect: Effect.Effect<A, E, GithubApi | GithubAuthorit
 }
 
 const access = organizationAccess("org", 7);
-const workflowFile = (state: string, canonical = true) => ({ fullName: "acme/api", defaultBranch: "main", state, canonical });
+const workflowFile = (state: string, dispatchable = true) => ({ fullName: "acme/api", defaultBranch: "main", state, dispatchable });
 
 function check(workflow: ReturnType<typeof workflowFile> | GithubObservationError) {
   return withGithub(checkGithubBuildWorkflow(access, 42), {
@@ -56,16 +56,16 @@ function check(workflow: ReturnType<typeof workflowFile> | GithubObservationErro
 describe("checkGithubBuildWorkflow", () => {
   it("is ready only when the workflow is active on the default branch, and says whether the file is Ployz's", async () => {
     const ready = await check(workflowFile("active"));
-    expect(ready.value).toEqual({ fullName: "acme/api", defaultBranch: "main", readiness: "ready", canonical: true });
+    expect(ready.value).toEqual({ fullName: "acme/api", defaultBranch: "main", readiness: "ready", dispatchable: true });
     expect(ready.calls).toEqual([{ operation: "buildWorkflow", input: { installationId: 7, repositoryId: 42 } }]);
-    expect((await check(workflowFile("active", false))).value).toMatchObject({ readiness: "ready", canonical: false });
+    expect((await check(workflowFile("active", false))).value).toMatchObject({ readiness: "ready", dispatchable: false });
     expect((await check(workflowFile("disabled_manually"))).value.readiness).toBe("setup_needed");
     expect((await check(workflowFile("deleted"))).value.readiness).toBe("setup_needed");
   });
 
   it("reports an installation without Actions access or without the repository as lacking permission", async () => {
     expect((await check(failure("request_failed", 403))).value.readiness).toBe("no_permission");
-    expect((await check(failure("not_found", 404))).value).toMatchObject({ fullName: null, readiness: "no_permission", canonical: false });
+    expect((await check(failure("not_found", 404))).value).toMatchObject({ fullName: null, readiness: "no_permission", dispatchable: false });
   });
 
   it("fails on a rate limit instead of guessing", async () => {

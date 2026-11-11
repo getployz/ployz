@@ -133,6 +133,9 @@ describe("AppConfig", () => {
       for (const url of [`${minter.GITHUB_MINTER_URL}/v1`, `${minter.GITHUB_MINTER_URL}/?x=1`]) {
         assert.include(yield* refused({ ...keyless, ...minter, GITHUB_MINTER_URL: url }), "origin");
       }
+      const oneApp = { GITHUB_CLIENT_ID: requiredEnvironment.GITHUB_APP_CLIENT_ID };
+      assert.include(yield* refused({ ...keyless, ...minter, ...oneApp }), "separate OAuth App");
+      assert.strictEqual((yield* load({ ...requiredEnvironment, ...oneApp })).github.authority.mode, "local");
     }),
   );
 

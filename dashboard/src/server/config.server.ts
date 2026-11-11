@@ -260,6 +260,10 @@ const resolveGithubAuthority = Effect.fn("Config.resolveGithubAuthority")(functi
   if (input.githubAppPrivateKey !== undefined || input.githubAppClientSecret !== undefined) {
     return yield* invalid("GITHUB_APP_PRIVATE_KEY and GITHUB_APP_CLIENT_SECRET must be unset when GITHUB_MINTER_URL is set: the minter holds them");
   }
+  // Sign-in with the App's own client would put the App's client secret, and the user tokens it yields, back in Cloud.
+  if (input.githubClientId === input.githubAppClientId) {
+    return yield* invalid("GITHUB_CLIENT_ID must be a separate OAuth App, not the GitHub App's client, when GITHUB_MINTER_URL is set");
+  }
   if (url.search !== "" || url.hash !== "" || url.username !== "" || url.password !== "" || url.pathname !== "/") {
     return yield* invalid("GITHUB_MINTER_URL must be an origin with no path, query or credentials");
   }

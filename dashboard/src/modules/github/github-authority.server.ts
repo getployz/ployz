@@ -2,7 +2,7 @@ import "@tanstack/react-start/server-only";
 import crypto from "node:crypto";
 import { AwsClient } from "aws4fetch";
 import { Cache, Context, Duration, Effect, Exit, Layer, Redacted, Schema } from "effect";
-import { GITHUB_BUILD_WORKFLOW, GITHUB_BUILD_WORKFLOW_FILE } from "#/modules/github/github-build-workflow";
+import { GITHUB_BUILD_WORKFLOW_FILE } from "#/modules/github/github-build-workflow";
 import { githubIdSchema, githubTimestampSchema } from "#/modules/github/github-ingestion.contracts";
 import { GithubObservationError, githubResponseError, type GithubObservationOperation } from "#/modules/github/github-observation.api";
 import { AppConfig, type GithubMinterAuth } from "#/server/config.server";
@@ -26,7 +26,7 @@ const BUILD_WORKFLOW_PATH = `.github/workflows/${GITHUB_BUILD_WORKFLOW_FILE}`;
 
 /** What each operation's own token may do, for that one repository. */
 const OWN_PERMISSIONS = {
-  workflow: { contents: "read", actions: "read" },
+  workflow: { actions: "read" },
   runs: { actions: "read" },
   dispatch: { contents: "read", actions: "write" },
   act: { actions: "write" },
@@ -58,15 +58,6 @@ function readSetToken(
   )));
 }
 
-/** SHA-256 of a workflow file after CRLF becomes LF, as the minter compares it. */
-export function githubWorkflowDigest(bytes: Uint8Array): string {
-  const text = Buffer.from(bytes).toString("latin1").replaceAll("\r\n", "\n");
-  return crypto.createHash("sha256").update(Buffer.from(text, "latin1")).digest("hex");
-}
-
-/** The `ployz-build.yml` files Ployz dispatches: the ones the dashboard offers. */
-export const GITHUB_BUILD_WORKFLOW_DIGESTS: ReadonlySet<string> = new Set([githubWorkflowDigest(Buffer.from(GITHUB_BUILD_WORKFLOW))]);
-
 export type GithubRepositoryRef = { readonly installationId: number; readonly repositoryId: number };
 export type GithubBuildRunRef = GithubRepositoryRef & { readonly runId: number };
 
@@ -83,12 +74,16 @@ export type GithubBuildRun = {
   readonly conclusion: string | null;
 };
 
-/** The build workflow on the repository's default branch: `state` is null when GitHub lists no such workflow. */
+/**
+ * The build workflow on the repository's default branch: `state` is null when GitHub lists no such workflow.
+ * `dispatchable` says whoever holds the authority dispatches the file there: the minter only the one Ployz offers,
+ * byte for byte up to line endings, and Cloud holding the key any file.
+ */
 export type GithubBuildWorkflowFile = {
   readonly fullName: string;
   readonly defaultBranch: string;
   readonly state: string | null;
-  readonly canonical: boolean;
+  readonly dispatchable: boolean;
 };
 
 export type GithubBuildDispatch = GithubRepositoryRef & {
@@ -198,7 +193,6 @@ const tokenSchema = Schema.Struct({
 const installationSchema = Schema.Struct({ html_url: Schema.String, permissions: Schema.Record(Schema.String, Schema.String) });
 const repositorySchema = Schema.Struct({ full_name: Schema.String, default_branch: Schema.String });
 const workflowSchema = Schema.Struct({ path: Schema.String, state: Schema.String });
-const contentsSchema = Schema.Struct({ type: Schema.String, encoding: Schema.optional(Schema.String), content: Schema.optional(Schema.String) });
 const branchSchema = Schema.Struct({ object: Schema.Struct({ type: Schema.String, sha: Schema.String }) });
 const runSchema = Schema.Struct({
   id: githubIdSchema,
@@ -317,15 +311,6 @@ export const makeGithubAuthorityLocal = Effect.fn("GithubAuthority.makeLocal")(f
   const own = (ref: GithubRepositoryRef, need: OwnNeed) =>
     Cache.get(owned, { installationId: ref.installationId, repositoryId: ref.repositoryId, need });
 
-  /** A file's bytes at a ref, or null when the ref holds no such file. */
-  const file = (token: string, repositoryId: number, path: string, ref: string) => call(contentsSchema, {
-    operation: "fetch_contents", token, path: `/repositories/${repositoryId}/contents/${path}?ref=${encodeURIComponent(ref)}`,
-  }).pipe(
-    Effect.map((found) => found.type === "file" && found.encoding === "base64" && found.content !== undefined
-      ? Buffer.from(found.content, "base64") : null),
-    Effect.catchIf((error) => error.code === "not_found", () => Effect.succeed(null)),
-  );
-
   const buildRunOf = Effect.fn("GithubAuthority.buildRunOf")(function* (token: string, input: GithubBuildRunRef, operation: GithubObservationOperation) {
     const run = yield* call(runSchema, { operation, token, path: `/repositories/${input.repositoryId}/actions/runs/${input.runId}` });
     if (run.path !== BUILD_WORKFLOW_PATH) return yield* refused(operation, "the run is not of the build workflow");
@@ -351,12 +336,11 @@ export const makeGithubAuthorityLocal = Effect.fn("GithubAuthority.makeLocal")(f
     const workflow = yield* call(workflowSchema, {
       operation: "fetch_workflow", token, path: `/repositories/${input.repositoryId}/actions/workflows/${GITHUB_BUILD_WORKFLOW_FILE}`,
     }).pipe(Effect.catchIf((error) => error.code === "not_found", () => Effect.succeed(null)));
-    const bytes = yield* file(token, input.repositoryId, BUILD_WORKFLOW_PATH, repository.default_branch);
     return {
       fullName: repository.full_name,
       defaultBranch: repository.default_branch,
       state: workflow !== null && workflow.path === BUILD_WORKFLOW_PATH ? workflow.state : null,
-      canonical: bytes !== null && GITHUB_BUILD_WORKFLOW_DIGESTS.has(githubWorkflowDigest(bytes)),
+      dispatchable: true,
     };
   });
 
@@ -383,9 +367,6 @@ export const makeGithubAuthorityLocal = Effect.fn("GithubAuthority.makeLocal")(f
     }).pipe(Effect.catchIf((error) => error.code === "not_found", () => refused(operation, "branch not found")));
     if (branch.object.type !== "commit") return yield* refused(operation, "branch does not point at a commit");
     const head = branch.object.sha;
-    const bytes = yield* file(token, input.repositoryId, BUILD_WORKFLOW_PATH, head);
-    if (bytes === null) return yield* refused(operation, "the branch has no build workflow");
-    if (!GITHUB_BUILD_WORKFLOW_DIGESTS.has(githubWorkflowDigest(bytes))) return yield* refused(operation, "the build workflow is not a canonical template");
     const inputs = Object.fromEntries(Object.entries(input.inputs).filter((entry): entry is [string, string] => entry[1] !== undefined));
     const run = yield* call(dispatchedSchema, {
       operation, token, method: "POST", path: `/repositories/${input.repositoryId}/actions/workflows/${GITHUB_BUILD_WORKFLOW_FILE}/dispatches`,
@@ -477,12 +458,16 @@ export const makeGithubAuthorityLocal = Effect.fn("GithubAuthority.makeLocal")(f
 });
 
 const minterRefusalSchema = Schema.Struct({ error: Schema.Literal("refused"), reason: Schema.String });
-const minterGithubSchema = Schema.Struct({
-  error: Schema.Literal("github"),
-  operation: Schema.String,
-  status: Schema.NullOr(Schema.Number),
-  retry_after: Schema.optional(Schema.Number),
-});
+const minterGithubSchema = Schema.Union([
+  Schema.Struct({
+    error: Schema.Literal("github"),
+    operation: Schema.String,
+    failure: Schema.Literal("status"),
+    status: Schema.Number,
+    retry_after: Schema.optional(Schema.Number),
+  }),
+  Schema.Struct({ error: Schema.Literal("github"), operation: Schema.String, failure: Schema.Literals(["unreachable", "unreadable", "overbroad"]) }),
+]);
 const minterTokenSchema = Schema.Struct({ token: Schema.String.check(Schema.isMinLength(1)), expires_at: Schema.String });
 const minterInstallationSchema = Schema.Struct({ url: Schema.String, permissions: Schema.Record(Schema.String, Schema.String) });
 const minterWorkflowSchema = Schema.Struct({
@@ -515,19 +500,28 @@ function minterError(operation: GithubObservationOperation, status: number, text
   if (status === 400 && refusal._tag === "Some") return refused(operation, refusal.value.reason.slice(0, 200));
   const github = Schema.decodeUnknownOption(Schema.fromJsonString(minterGithubSchema))(text);
   if (status === 502 && github._tag === "Some") {
-    const { status: githubStatus, retry_after: retryAfter } = github.value;
-    const minting = github.value.operation === "installation_token";
-    // A token mint under a secondary limit answers a bare 403, so any 403 on a mint is worth trying again.
-    const limited = githubStatus === 403 && (minting || retryAfter !== undefined);
-    // No status: GitHub answered something the minter couldn't read, or a token wider than asked. Waiting fixes neither.
-    if (githubStatus === null) return failure({ code: "invalid_response", operation: minting ? "installation_token" : operation, retriable: false });
-    return failure({
-      code: githubStatus === 404 ? "not_found" : "request_failed",
-      operation: minting ? "installation_token" : operation,
-      status: githubStatus,
-      retryAfterSeconds: retryAfter,
-      retriable: githubStatus === 429 || githubStatus >= 500 || limited,
-    });
+    const answer = github.value;
+    const minting = answer.operation === "installation_token";
+    const failedOperation = minting ? "installation_token" : operation;
+    switch (answer.failure) {
+      case "unreachable":
+        return failure({ code: "request_failed", operation: failedOperation, retriable: true });
+      case "unreadable":
+      case "overbroad":
+        return failure({ code: "invalid_response", operation: failedOperation, retriable: false });
+      case "status": {
+        const { status: githubStatus, retry_after: retryAfter } = answer;
+        // A token mint under a secondary limit answers a bare 403, so any 403 on a mint is worth trying again.
+        const limited = githubStatus === 403 && (minting || retryAfter !== undefined);
+        return failure({
+          code: githubStatus === 404 ? "not_found" : "request_failed",
+          operation: failedOperation,
+          status: githubStatus,
+          retryAfterSeconds: retryAfter,
+          retriable: githubStatus === 429 || githubStatus >= 500 || limited,
+        });
+      }
+    }
   }
   // The minter itself is down, throttled, or refuses Cloud's credential, which waiting won't fix.
   return failure({ code: "request_failed", operation, retriable: status === 429 || status >= 500 });
@@ -578,7 +572,7 @@ export function makeGithubAuthorityMinter(minter: { readonly url: URL; readonly 
     readToken,
     installation,
     buildWorkflow: (input) => post("/v1/workflow", "fetch_workflow", { installation_id: input.installationId, repository_id: input.repositoryId }, minterWorkflowSchema).pipe(
-      Effect.map((found) => ({ fullName: found.full_name, defaultBranch: found.default_branch, state: found.state, canonical: found.canonical })),
+      Effect.map((found) => ({ fullName: found.full_name, defaultBranch: found.default_branch, state: found.state, dispatchable: found.canonical })),
     ),
     buildRuns: (input) => post("/v1/runs", "list_push_runs", {
       installation_id: input.installationId, repository_id: input.repositoryId, head_sha: input.headSha, event: input.event,

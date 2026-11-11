@@ -85,7 +85,7 @@ describe("/v1/token", () => {
         json({ token: "ghs_wider", expires_at: "2099-01-01T00:00:00Z", permissions: { contents: "write" } }, 201),
     });
     const response = await minter.call("/v1/token", { installation_id: INSTALLATION });
-    expect(response.status).toBe(502);
+    expect(response).toEqual({ status: 502, body: { error: "github", operation: "installation_token_granted_more", failure: "overbroad" } });
     expect(JSON.stringify(response.body)).not.toContain("ghs_");
   });
 
@@ -392,7 +392,17 @@ describe("the request", () => {
       [`POST /app/installations/${INSTALLATION}/access_tokens`]: () => new Response(JSON.stringify({ message: "rate limited" }), { status: 429, headers: { "retry-after": "30" } }),
     });
     const response = await minter.call("/v1/token", { installation_id: INSTALLATION });
-    expect(response).toEqual({ status: 502, body: { error: "github", operation: "installation_token", status: 429, retry_after: 30 } });
+    expect(response).toEqual({ status: 502, body: { error: "github", operation: "installation_token", failure: "status", status: 429, retry_after: 30 } });
     expect(minter.audit[0]).toMatchObject({ outcome: "failed", github_status: 429 });
+  });
+
+  it("tells a GitHub that never answered apart from one that answered a shape it can't read", async () => {
+    const mint = `POST /app/installations/${INSTALLATION}/access_tokens`;
+    const down = harness({ [mint]: () => { throw new TypeError("fetch failed"); } });
+    expect(await down.call("/v1/token", { installation_id: INSTALLATION }))
+      .toEqual({ status: 502, body: { error: "github", operation: "installation_token", failure: "unreachable" } });
+    const garbled = harness({ [mint]: () => json({ token: 7 }, 201) });
+    expect(await garbled.call("/v1/token", { installation_id: INSTALLATION }))
+      .toEqual({ status: 502, body: { error: "github", operation: "installation_token", failure: "unreadable" } });
   });
 });

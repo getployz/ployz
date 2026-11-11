@@ -43,16 +43,16 @@ const cannotRun = (error: GithubReadError) => isGithubObservationNotFound(error)
  * Whether GitHub will run the build workflow in this repository now. Cloud calls it for the
  * Servers page and again right before dispatching a build. The Actions API only lists
  * workflows on the default branch, so `active` means committed there and not disabled.
- * `canonical` says the file there is one Ployz dispatches.
+ * `dispatchable` says whoever holds the App's authority dispatches the file there.
  */
 export const checkGithubBuildWorkflow = Effect.fn("Github.checkBuildWorkflow")(
   function* (access: GithubAccess, repositoryId: number) {
     const workflow = yield* (yield* GithubAuthority).buildWorkflow(yield* repositoryOf(access, repositoryId)).pipe(
       Effect.catchIf(cannotRun, () => Effect.succeed(null)),
     );
-    if (workflow === null) return { fullName: null, defaultBranch: null, readiness: "no_permission" as const, canonical: false };
+    if (workflow === null) return { fullName: null, defaultBranch: null, readiness: "no_permission" as const, dispatchable: false };
     const readiness: GithubBuildReadiness = workflow.state === "active" ? "ready" : "setup_needed";
-    return { fullName: workflow.fullName, defaultBranch: workflow.defaultBranch, readiness, canonical: workflow.canonical };
+    return { fullName: workflow.fullName, defaultBranch: workflow.defaultBranch, readiness, dispatchable: workflow.dispatchable };
   },
 );
 
@@ -150,7 +150,7 @@ export const listGithubBuildRepositories = Effect.fn("Github.listBuildRepositori
     const repositories = yield* listStoreGithubRepositories(actor, input.organizationSlug);
     return yield* Effect.forEach(repositories, (repository) =>
       checkGithubBuildWorkflow(organizationAccess(organization.id, repository.installationId), repository.repositoryId).pipe(
-        Effect.catchTag("GithubDisconnected", () => Effect.succeed({ fullName: null, defaultBranch: null, readiness: "no_permission" as const, canonical: false })),
+        Effect.catchTag("GithubDisconnected", () => Effect.succeed({ fullName: null, defaultBranch: null, readiness: "no_permission" as const, dispatchable: false })),
         Effect.map((checked): GithubBuildRepository => ({
           installationId: repository.installationId,
           repositoryId: repository.repositoryId,

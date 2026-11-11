@@ -180,8 +180,9 @@ export const startStoreGithubBuild = Effect.fn("StoreGithub.start")(function* (o
       return { kind: "dispatched", runId: run.runId } satisfies StoreGithubStart;
     }
     if (start.kind !== "dispatch") return done;
-    // A rule build runs the rule's own template, whose builder the grant Machine checks. Cloud dispatches only its own.
-    if (!workflow.canonical) return yield* skip(`${repository}'s .github/workflows/ployz-build.yml isn't the one Ployz offers`);
+    // A rule build runs the rule's own template, whose builder the grant Machine checks. Through the minter, Cloud
+    // dispatches only its own.
+    if (!workflow.dispatchable) return yield* skip(`${repository}'s .github/workflows/ployz-build.yml isn't the one Ployz offers`);
     const run = yield* dispatchGithubBuildWorkflow({
       access, repositoryId: target.repositoryId, branch: workflow.defaultBranch, inputs: { build: target.build, runner: start.runner },
     });
