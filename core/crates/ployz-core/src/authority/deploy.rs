@@ -700,11 +700,29 @@ fn creation_digest(
     body: &DeployApproval,
     creation: Creation<'_>,
 ) -> Result<PayloadDigest, AuthorityRefusal> {
-    let payload = AuthorityRefusal::Mismatch { field: "a payload" };
     let approved = body
         .service(creation.service)
-        .filter(|_| &creation.spec.name == creation.service)
         .ok_or(AuthorityRefusal::Mismatch { field: "a Service" })?;
+    approved_creation(approved, &body.namespace, creation)
+}
+
+/// Check `creation` is the Service `approved` names, in `namespace`: the same name, the
+/// pinned image when there is one, a content-addressed image, a hook for a hook creation,
+/// and a spec whose [`PayloadDigest`] is the approved one. A Deploy's approval checks each
+/// creation here, and so does a Volume Move's start.
+///
+/// # Errors
+/// Returns [`AuthorityRefusal::Mismatch`] naming the Service, the hook, the image or the
+/// payload that differs.
+pub fn approved_creation(
+    approved: &ApprovedService,
+    namespace: &Namespace,
+    creation: Creation<'_>,
+) -> Result<PayloadDigest, AuthorityRefusal> {
+    let payload = AuthorityRefusal::Mismatch { field: "a payload" };
+    if &approved.name != creation.service || &creation.spec.name != creation.service {
+        return Err(AuthorityRefusal::Mismatch { field: "a Service" });
+    }
     if creation.kind == ContainerKind::PreDeployHook && creation.spec.pre_deploy.is_none() {
         return Err(AuthorityRefusal::Mismatch { field: "a hook" });
     }
@@ -715,8 +733,8 @@ fn creation_digest(
     {
         return Err(AuthorityRefusal::Mismatch { field: "an image" });
     }
-    let digest = PayloadDigest::of(&creation.spec.to_requested(), &body.namespace)
-        .map_err(|_| payload.clone())?;
+    let digest =
+        PayloadDigest::of(&creation.spec.to_requested(), namespace).map_err(|_| payload.clone())?;
     if digest != approved.digest {
         return Err(payload);
     }

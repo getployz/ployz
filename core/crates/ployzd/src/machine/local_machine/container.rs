@@ -565,16 +565,21 @@ impl LocalMachine {
     /// writer and stops no holder after the raise, since the raiser may have kept that
     /// holder or started it.
     ///
+    /// `record` gets the holders Docker runs, and returns before any of them stops, so a
+    /// cut under a Volume approval names exactly the Containers it stops.
+    ///
     /// Detached from the RPC with the installation held, so a caller that hangs up
     /// does not abandon a half-stopped Container.
-    pub(crate) async fn cut_volume_copy<Z, Fut>(
+    pub(crate) async fn cut_volume_copy<R, Z, Fut>(
         &self,
         name: DockerVolumeName,
         r#gen: VolumeGen,
         drain: Drain,
+        record: R,
         zfs: Z,
     ) -> Result<Result<(), CutRefusal>, Error>
     where
+        R: FnOnce(&[ContainerId]) -> Result<(), Error> + Send + 'static,
         Z: FnOnce() -> Fut + Send + 'static,
         Fut: std::future::Future<Output = Result<(), Error>> + Send + 'static,
     {
@@ -582,7 +587,18 @@ impl LocalMachine {
         self.finish_installed(move |installation| async move {
             let containers = local.containers.as_ref().ok_or(Error::DockerUnavailable)?;
             let stop = StopOptions::default();
-            for holder in containers.volume_holder_ids(&name).await? {
+            let holders = containers.volume_holder_ids(&name).await?;
+            let machine_id = local.record().id();
+            let mut running = Vec::new();
+            for holder in &holders {
+                match containers.inspect_managed(holder, &machine_id).await {
+                    Ok(observed) if is_running(&observed.runtime) => running.push(*holder),
+                    Ok(_) | Err(crate::docker::Error::ContainerNotFound(_)) => {}
+                    Err(error) => return Err(error.into()),
+                }
+            }
+            record(&running)?;
+            for holder in holders {
                 if let Err(floor) = containers.floor_turn().await.admit(&name, r#gen).await? {
                     return Ok(Err(CutRefusal::Stale(floor)));
                 }

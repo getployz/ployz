@@ -914,7 +914,7 @@ async fn peered() -> Peered {
     }
 }
 
-fn refused(result: Result<(), Error>) -> Option<AuthorityRefusal> {
+fn refused<T>(result: Result<T, Error>) -> Option<AuthorityRefusal> {
     match result {
         Err(Error::VolumeStepRefused(refusal)) => Some(refusal),
         _ => None,
@@ -1035,6 +1035,39 @@ async fn a_machine_that_does_not_enforce_sends_to_any_peer() {
     assert!(peered.fixture.records_empty());
 }
 
+/// An Operator's cut, which stops the Writer's Service, needs a Move approval under
+/// enforcement; a promotion and a snapshot without one go on as before E4.
+#[tokio::test]
+async fn a_cut_needs_an_approval() {
+    let fixture = enforcing().await;
+    assert_eq!(
+        refused(
+            fixture
+                .machine
+                .admit_operator_copy(None, &data(), CopyStep::Cut)
+                .await
+        ),
+        Some(AuthorityRefusal::Unsigned {
+            purpose: ployz_core::authority::Purpose::Volume
+        })
+    );
+    for step in [
+        CopyStep::Snapshot,
+        CopyStep::Promote {
+            transition: CopyTransition::MirrorToWriter,
+        },
+    ] {
+        assert!(matches!(
+            fixture
+                .machine
+                .admit_operator_copy(None, &data(), step)
+                .await,
+            Ok(None)
+        ));
+    }
+    assert!(fixture.records_empty());
+}
+
 #[tokio::test]
 async fn a_pull_needs_an_approval_that_names_this_machine_and_its_source() {
     let peered = peered().await;
@@ -1153,5 +1186,241 @@ async fn a_caught_up_mirror_admits_its_new_approval_and_passes_a_resend_without_
     assert!(
         !peered.fixture.records_empty(),
         "the new approval is admitted, so later refreshes pass after its window"
+    );
+}
+
+fn container(fill: char) -> ContainerId {
+    fill.to_string().repeat(64).parse().unwrap()
+}
+
+/// A's side of a Move to web-2: each warm snapshot and the cut grant web-2 only what A left
+/// newest, the resume ends the Move here with its grants, and every later snapshot or cut
+/// under it is refused, after a reload too.
+#[tokio::test]
+async fn a_move_grants_its_target_only_its_own_snapshots_and_ends_at_the_resume() {
+    let peered = peered().await;
+    let this = peered.machine.record().id();
+    let target = address(&peered.web2);
+    let sends = |snapshot: &'static str| {
+        let machine = &peered.machine;
+        async move {
+            machine
+                .sends_volume(target, &data(), Some(&name(snapshot)))
+                .await
+                .unwrap()
+        }
+    };
+    let approval = peered.fixture.signed(
+        data(),
+        VolumeWorkflow::Move {
+            from: this,
+            to: peered.web2.id,
+            service: ApprovedService {
+                name: ServiceName::parse("db").unwrap(),
+                digest: PayloadDigest::parse(&"d".repeat(64)).unwrap(),
+                image: None,
+            },
+            mirrors: vec![peered.web3.id],
+        },
+    );
+    let admitted = peered
+        .machine
+        .admit_operator_copy(Some(&approval), &data(), CopyStep::Snapshot)
+        .await
+        .unwrap()
+        .expect("an enforcing Machine admits the warm snapshot");
+    assert!(
+        matches!(sends("w-1-1").await, Sends::Refused { .. }),
+        "the snapshot is granted only once it exists"
+    );
+    peered
+        .machine
+        .grant_move_snapshot(&admitted, &name("w-1-1"))
+        .unwrap();
+    assert_eq!(sends("w-1-1").await, Sends::Granted(peered.web2.id));
+    assert!(matches!(sends("w-2-1").await, Sends::Refused { .. }));
+    assert!(
+        matches!(
+            peered
+                .machine
+                .sends_volume(address(&peered.web3), &data(), Some(&name("w-1-1")))
+                .await
+                .unwrap(),
+            Sends::Refused { .. }
+        ),
+        "a Mirror that follows the Move gets nothing from its source"
+    );
+
+    peered
+        .machine
+        .admit_operator_copy(Some(&approval), &data(), CopyStep::Cut)
+        .await
+        .unwrap();
+    peered
+        .machine
+        .record_cut(operation('1'), &name("f-1"), &[container('c')])
+        .unwrap();
+    peered
+        .machine
+        .record_cut(operation('1'), &name("f-1"), &[container('c')])
+        .expect("a resent cut");
+    assert_eq!(
+        refused(
+            peered
+                .machine
+                .record_cut(operation('1'), &name("f-2"), &[container('c')])
+        ),
+        Some(AuthorityRefusal::Mismatch {
+            field: "a second cut"
+        })
+    );
+    assert_eq!(sends("f-1").await, Sends::Granted(peered.web2.id));
+    assert_eq!(
+        refused(
+            peered
+                .machine
+                .admit_operator_copy(Some(&approval), &data(), CopyStep::Snapshot)
+                .await
+        ),
+        Some(AuthorityRefusal::Mismatch {
+            field: "a snapshot after the cut"
+        })
+    );
+
+    let resume = || CopyStep::Promote {
+        transition: CopyTransition::MirrorToWriter,
+    };
+    peered
+        .machine
+        .admit_operator_copy(Some(&approval), &data(), resume())
+        .await
+        .unwrap();
+    peered
+        .machine
+        .admit_operator_copy(Some(&approval), &data(), resume())
+        .await
+        .expect("a resent resume");
+    let replayed = Some(AuthorityRefusal::Replayed {
+        operation: operation('1'),
+    });
+    let reloaded = LocalMachine::new(peered.fixture.machine.owner().clone()).with_cluster(Some((
+        peered.machine.replicated().unwrap().clone(),
+        crate::corrosion::AdminClient::new("/no/admin"),
+    )));
+    for machine in [&peered.machine, &reloaded] {
+        assert!(matches!(
+            machine
+                .sends_volume(target, &data(), Some(&name("f-1")))
+                .await
+                .unwrap(),
+            Sends::Refused { .. }
+        ));
+        for step in [CopyStep::Snapshot, CopyStep::Cut] {
+            assert_eq!(
+                refused(
+                    machine
+                        .admit_operator_copy(Some(&approval), &data(), step)
+                        .await
+                ),
+                replayed
+            );
+        }
+        assert_eq!(
+            refused(machine.record_cut(operation('1'), &name("f-1"), &[])),
+            replayed
+        );
+    }
+}
+
+/// B's side of a Move from web-2: its first step must fall inside the window, and its
+/// promotion grants each Mirror the Move names every snapshot B takes from then on.
+#[tokio::test]
+async fn a_move_target_needs_the_window_and_its_promotion_grants_the_following_mirrors() {
+    let peered = peered().await;
+    let this = peered.machine.record().id();
+    let web2 = peered.web2.management_address();
+    let moving_here = |issued_at: Timestamp, lifetime| {
+        let body = VolumeApproval {
+            cluster: peered.fixture.cluster,
+            operation: operation('1'),
+            namespace: Namespace::parse("app").unwrap(),
+            volume: data(),
+            workflow: VolumeWorkflow::Move {
+                from: peered.web2.id,
+                to: this,
+                service: ApprovedService {
+                    name: ServiceName::parse("db").unwrap(),
+                    digest: PayloadDigest::parse(&"d".repeat(64)).unwrap(),
+                    image: None,
+                },
+                mirrors: vec![peered.web3.id],
+            },
+            issued_at,
+            expires_at: issued_at.plus(lifetime),
+            signer: SignerKey::Device(DeviceKey::from(peered.fixture.signer.public())),
+        };
+        Signed::sign(&body, &peered.fixture.signer).unwrap()
+    };
+    let pull = |transition| CopyStep::Pull {
+        transition,
+        from: &web2,
+    };
+    let lapsed = moving_here(
+        at(Timestamp::now().as_millis() - MAX_LIFETIME_MILLIS - 600_000),
+        MAX_LIFETIME_MILLIS,
+    );
+    assert_eq!(
+        refused(
+            peered
+                .machine
+                .admit_operator_copy(Some(&lapsed), &data(), pull(CopyTransition::NoneToMirror))
+                .await
+        ),
+        Some(AuthorityRefusal::Expired)
+    );
+    assert!(peered.fixture.records_empty());
+
+    let approval = moving_here(Timestamp::now(), MAX_LIFETIME_MILLIS);
+    peered
+        .machine
+        .admit_operator_copy(Some(&approval), &data(), pull(CopyTransition::NoneToMirror))
+        .await
+        .unwrap();
+    peered
+        .machine
+        .admit_operator_copy(
+            Some(&approval),
+            &data(),
+            pull(CopyTransition::MirrorToMirror),
+        )
+        .await
+        .unwrap();
+    assert!(matches!(
+        peered
+            .machine
+            .sends_volume(address(&peered.web3), &data(), Some(&name("w-1-1")))
+            .await
+            .unwrap(),
+        Sends::Refused { .. }
+    ));
+    peered
+        .machine
+        .admit_operator_copy(
+            Some(&approval),
+            &data(),
+            CopyStep::Promote {
+                transition: CopyTransition::MirrorToWriter,
+            },
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        peered
+            .machine
+            .sends_volume(address(&peered.web3), &data(), Some(&name("w-1-1")))
+            .await
+            .unwrap(),
+        Sends::Granted(peered.web3.id),
+        "the Mirror that followed the Move now follows B"
     );
 }

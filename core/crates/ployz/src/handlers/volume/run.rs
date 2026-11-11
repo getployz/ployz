@@ -7,7 +7,7 @@ use std::time::Duration;
 
 use clap::{ArgMatches, Command};
 use ployz_core::authority::{ApprovedVolumeChange, Signed, VolumeApproval};
-use ployz_core::{MachineName, ProvisionedVolumeMaximumBytes, RpcErrorCode};
+use ployz_core::{MachineName, ProvisionedVolumeMaximumBytes, ResolvedServiceSpec, RpcErrorCode};
 use ployz_store::{
     EnvironmentId, EnvironmentName, EnvironmentSummary, ProjectName, VolumeId, VolumeName,
     VolumeQuery, VolumeView, VolumesQuery,
@@ -191,8 +191,14 @@ pub(crate) enum RunAsk {
         #[serde(skip_serializing_if = "Option::is_none")]
         confirm: Option<String>,
     },
+    /// `approval`: this Device's, when a Server enforces Device approval, with `service`,
+    /// the spec it approved the Service starting with on `to`.
     Move {
         to: MachineName,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        approval: Option<Signed<VolumeApproval>>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        service: Option<Box<ResolvedServiceSpec>>,
     },
     Release,
     Restore {
@@ -424,6 +430,7 @@ pub(crate) fn move_command(command: Command) -> Command {
             .required(true)
             .help("The Server the Volume moves to; a Move that stopped continues when asked again"),
     )
+    .arg(crate::cli::yes("Sign the Move without asking, when your Servers enforce device approval"))
     .arg(approval_arg())
     .arg(wait_flag())
 }
@@ -598,15 +605,50 @@ fn hand_off(root: &ArgMatches, volume: &VolumeName) -> Result<(), Error> {
     })
 }
 
+/// Ask Cloud to move the Volume, carrying this Device's approval of the Move and of the
+/// Service it starts on the target when a Server enforces Device approval.
 pub(crate) fn move_volume(root: &ArgMatches) -> Result<(), Error> {
     let matches = leaf_matches(root);
     let volume = store::volume_name(matches, "volume")?;
     let to = server_name(matches, "to")?;
     let started = format!("Move of Volume {volume} onto {to}");
-    request(root, &volume, started, |environment| RunRequest {
-        environment,
-        ask: RunAsk::Move { to: to.clone() },
-    })
+    let store = store::store(root)?;
+    cloud(store.backend())?;
+    let view = store.read(&VolumeQuery {
+        environment: store::environment(matches)?,
+        volume: volume.clone(),
+    })?;
+    let volume_id = view.volume.volume.id;
+    let approval = super::approve::sign_move(
+        root,
+        &store,
+        (&volume, &volume_id, &view.environment),
+        &to,
+        view.volume.recorded_storage,
+    )?;
+    let (signed, service, change) = approval.map_or((None, None, None), |approval| {
+        (
+            Some(approval.signed),
+            Some(Box::new(approval.service)),
+            Some(approval.change),
+        )
+    });
+    request_located(
+        root,
+        &store,
+        &volume,
+        &volume_id,
+        view.environment,
+        (started, change.as_ref()),
+        |environment| RunRequest {
+            environment,
+            ask: RunAsk::Move {
+                to: to.clone(),
+                approval: signed,
+                service,
+            },
+        },
+    )
 }
 
 pub(crate) fn release(root: &ArgMatches) -> Result<(), Error> {
@@ -841,7 +883,7 @@ fn approved(
         };
         match &asked.ask {
             RunAsk::Release => (Verb::Release, words("release", &[])),
-            RunAsk::Move { to } => (Verb::Move, words("move", &["--to", to.as_str()])),
+            RunAsk::Move { to, .. } => (Verb::Move, words("move", &["--to", to.as_str()])),
             RunAsk::Restore { from } => {
                 (Verb::Restore, words("restore", &["--from", from.as_str()]))
             }

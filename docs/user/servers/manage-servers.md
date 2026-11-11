@@ -363,12 +363,12 @@ A rule names the servers it was approved for, so after you add a server, approve
 `ployz github rule approve`. Turn enforcement off to build through Ployz Cloud again. See
 [Builds on servers that enforce device approval](../builds/where-builds-run.md#builds-on-servers-that-enforce-device-approval).
 
-Enforcement also stops volume moves until a later release. Ployz Cloud can't move a volume or
-restore a point into a new volume on servers that enforce, and refuses before your service stops.
-Mirrors, syncs, restoring a volume in place and deploys keep working. A resize runs only under
-an approved device's approval, which `ployz volume set --size` signs. To move a volume,
-turn enforcement off first. See
+Enforcement also covers volume moves and resizes. A server moves a volume only under an approved
+device's approval, which `ployz volume move` signs, and resizes one only under the approval
+`ployz volume set --size` signs. Ployz Cloud refuses a move nobody approved before your service
+stops. Mirrors, syncs, restoring a volume in place and deploys keep working. See
 [Servers that enforce device approval](../services/move-a-volume.md#servers-that-enforce-device-approval).
+Restoring a point into a new volume waits for a later release; turn enforcement off first.
 
 Enforcement also requires an approved Device to authorize a new server's identity, keys,
 allocation, and initial Devices. See [Approve a join](add-a-server.md#approve-a-join-when-device-enforcement-is-on).

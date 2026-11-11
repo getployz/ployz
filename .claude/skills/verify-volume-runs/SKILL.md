@@ -1,6 +1,6 @@
 ---
 name: verify-volume-runs
-description: Model-check Volume Runs (resize, Move, Release, late steps from a dead run) against DESIGN.md bet 6, and a Mirror's removal against its standing approval replayed, with the Stateright models in core/crates/ployz-verify. Use when a change touches `plan` or `expect_matches` in ployz-core's volume_copy.rs, `SetVolumeCopy` or `SetVolumeSize` handling in ployzd (local_volume_copy.rs and its `withdrawn`, spec_store.rs floors, container.rs cut and start, volume_plugin/size.rs, the pull's `raise_slot_bound` in volume_plugin/copy.rs), `VolumeRecords` in ployz-decide's volume_records.rs, `admit_operator_copy` or `withdraw_volume` in ployzd's volume_approval.rs, the send stream's grant check in volume_send.rs, or the volume-run Inngest steps and Postgres gates in dashboard/src/modules/volume-run/.
+description: Model-check Volume Runs (resize, Move, Release, late steps from a dead run) against DESIGN.md bet 6, a Mirror's removal against its standing approval replayed, and each Machine's admission of an approved Move against its window and its own record, with the Stateright models in core/crates/ployz-verify. Use when a change touches `plan` or `expect_matches` in ployz-core's volume_copy.rs, `SetVolumeCopy` or `SetVolumeSize` handling in ployzd (local_volume_copy.rs and its `withdrawn`, spec_store.rs floors, container.rs cut and start, volume_plugin/size.rs, the pull's `raise_slot_bound` in volume_plugin/copy.rs), `VolumeRecords` in ployz-decide's volume_records.rs, `admit_operator_copy`, `admit_operator_volume_start`, `record_cut` or `withdraw_volume` in ployzd's volume_approval.rs, the send stream's grant check in volume_send.rs, or the volume-run Inngest steps and Postgres gates in dashboard/src/modules/volume-run/.
 ---
 
 # Verify Volume Runs
@@ -15,11 +15,12 @@ cd core && cargo test -p ployz-verify
 
 A few minutes on a cold build, about 30 s warm. CI runs it in the workspace nextest, so a red model blocks the PR.
 
-The run is green when all seventeen tests pass:
+The run is green when all twenty tests pass:
 
 - `volume_runs_hold`: the code as it is, in each of the three scenarios (below), in both directions. It prints each scenario's state count. Every property holds and every `sometimes` is reached. A `sometimes` that is never reached also fails here: it means the model can no longer reach that outcome, so a property passing beside it proves nothing.
-- `volume_runs_hold_under_enforcement`: the same with Device enforcement turning on at any moment of the Move. `an_enforcing_machine_refuses_every_operator_start` takes the start gate out and expects "an enforcing Machine starts no Container an Operator's Writer start names" to fail.
+- `volume_runs_hold_under_enforcement`: the same with Device enforcement turning on at any moment of the Move. That Move was asked for before enforcement and carries no Volume approval. `an_enforcing_machine_refuses_every_operator_start` takes the start gate out and expects "an enforcing Machine starts no Container an Operator's Writer start names" to fail.
 - `mirror_removal_holds` and `a_removed_mirror_withdraws_before_its_slot_goes`: the Mirror removal model (below).
+- `move_admission_holds`, `a_first_step_needs_the_window` and `an_ended_move_never_runs_again`: the Move admission model (below).
 - The twelve `breaks` tests each remove one guard (a `Broken` flag) and expect the named properties to fail. One of these going green-to-red means a guard no longer earns its keep, or the model lost the path that shows it. Eight are the resize's. For the grow: `a_grow_records_only_after_every_copy_holds_it`, `a_refused_grow_records_nothing`, and `a_move_needs_no_raise_of_its_own`, which shows that the pull's raise is what makes a Move to a Machine the grow never asked safe without a raise step of its own. For the shrink: `a_shrink_records_before_any_copy_lowers`, `a_shrink_lowers_the_primary_before_its_mirrors`, `a_shrink_refused_before_any_copy_changed_undoes_its_record`, and `a_refused_shrink_stops`. `a_done_resize_recorded_its_target` runs in both directions.
 
 Each start names a direction. A grow starts with every copy and the Store at the small size and asks the large one; a shrink starts at the large size and asks the small one. The one Machine that can't take the target, if any, is `cramped`: a Pool with no room for the grow, or a copy that references too much for the shrink, whose `shrink_floor` then sits above it.
@@ -48,6 +49,22 @@ A replayed approval is a `Snapshot` or a `Pull` with op 1 after the removal. Its
 
 `a_removed_mirror_withdraws_before_its_slot_goes` sets `Broken::removal_no_withdrawal`, so M's `Forget` destroys the slot without withdrawing. It expects the first property to fail. M's record still holds op 1 open, so a replayed pull lands a slot while W still grants M. The second property holds even then, because W's own withdrawal fences it.
 
+## Move admission
+
+`admission::MoveAdmission` is its own small model (about 80 states, under a second). It checks one approved Move of a Volume from A to B, op 1, against its window and each Machine's own record. A and B each hold their own `VolumeRecords`, and the model calls the real `admit`, `grant`, `cut`, `stopped_by_cut`, `resume` and `live` on them. The window passes at any moment (`Expire`). A hostile driver sends any step to either Machine, in any order, again and again:
+
+- on A: `Snapshot`, a warm snapshot that grants B what A leaves newest; `Cut`, which records the running Container it stops and grants B its snapshot; `Resume(Service)` or `Resume(Planted)`, a Kept start of the cut's own Container or of one made before enforcement, which ends the Move on A.
+- on B: `Pull`, which lands A's newest snapshot only if A's send stream serves B; `Promote`, after a pull of the cut's snapshot.
+
+Properties:
+
+- "no Machine admits its first step of the Move after the window". `a_first_step_needs_the_window` sets `Broken::admits_expired`, so the approval's check ignores the window.
+- "once A resumed, A takes no snapshot or cut under the Move, and B pulls nothing new". `an_ended_move_never_runs_again` sets `Broken::admits_ended`, so an ended record admits every step.
+- "a resume starts only a Container the approved cut stopped".
+- `sometimes`: a Move admitted inside its window promotes B after it; A resumes after the window; a first step after the window is refused `Expired`.
+
+Out of its scope: the receipt (E5, so a hostile driver can still both resume A and promote B), the payload digest of B's start (unit tests in ployzd's local_tests.rs), a second Move, the Mirrors that follow the Move, and withdrawals.
+
 ## Read a counterexample
 
 A failure prints the property name and a `Path[n]` of actions:
@@ -59,7 +76,7 @@ A failure prints the property name and a `Path[n]` of actions:
 - `Machine(i)`: request `i` in `State.requests` advances one step (admit, cut drain, stop, flip, start, reply; a `SetVolumeSize` runs in one step). The index is the request's position at that moment, not a stable id. A `SetVolumeSize` answer no driver waits on leaves the list when it lands, and the indices after it move down.
 - `Crash(i)`: A's daemon restarts mid-flip of request `i`, losing every in-flight request on that Machine.
 
-The Mirror removal model's actions are the steps listed under "Mirror removal". The checker hands jobs out in blocks, so a path can run past the first state that breaks a property. Find the first failing step before telling the story.
+The Mirror removal and Move admission models' actions are the steps listed under their own headings. The checker hands jobs out in blocks, so a path can run past the first state that breaks a property. Find the first failing step before telling the story.
 
 The action list alone rarely tells the story. To see the states, add a scratch test that takes the path and prints it, then delete it:
 

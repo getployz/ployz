@@ -747,7 +747,8 @@ mod coverage {
             &[
                 "a Writer want with a start",
                 "a pull",
-                "cut, promote, forget",
+                "a cut",
+                "promote, forget",
                 "floor, snapshot",
             ],
         ),

@@ -4011,12 +4011,19 @@ mod set_volume_copy {
     }
 
     mod enforcement {
-        //! Device enforcement on the Volume verbs. An Operator's Writer start, Create or Kept,
-        //! and its Seed are refused before the copy is read. A Full caller, the Operator's
-        //! other wants and a Machine not enforcing are not.
+        //! Device enforcement on the Volume verbs. An Operator's Writer start needs a Move
+        //! approval: a Create must be the approved Service, and a Kept start a Container the
+        //! Move's own cut stopped. An Operator's cut needs one too. A Seed is refused. A Full
+        //! caller, the Operator's other wants and a Machine not enforcing are not.
 
         use ployz_core::{
-            OPERATOR_SCOPE_HEADER, SET_VOLUME_COPY_CAPABILITY, VOLUME_START_REFUSED_BY_ENFORCEMENT,
+            DeviceKey, DockerVolumeName, Namespace, OPERATOR_SCOPE_HEADER, OperationId,
+            ResolvedServiceSpec, SealingPublicKey, VOLUME_APPROVAL_CAPABILITY,
+            authority::{
+                ApprovedService, AuthorityRefusal, PayloadDigest, Purpose, Signed, Signer,
+                SignerKey, Timestamp, VolumeApproval, VolumeWorkflow,
+                validity::MAX_LIFETIME_MILLIS,
+            },
         };
         use tonic::Status;
 
@@ -4027,6 +4034,88 @@ mod set_volume_copy {
                 .mutate(|store| store.set_device_enforcement(true, Vec::new()).unwrap())
                 .await
                 .unwrap();
+        }
+
+        /// This Machine enforcing with one approved Device, which signs Volume approvals.
+        struct Approving {
+            signer: Signer,
+            cluster: SealingPublicKey,
+            this: MachineId,
+        }
+
+        async fn enforce_approving(
+            store: &RecordOwner,
+            data_dir: &std::path::Path,
+            service: &MachineService,
+        ) -> Approving {
+            let signer = Signer::from_seed(&[7; 32]);
+            let device = DeviceKey::from(signer.public());
+            store
+                .mutate(move |store| {
+                    store.approve_device(device).unwrap();
+                    store.set_device_enforcement(true, Vec::new()).unwrap();
+                })
+                .await
+                .unwrap();
+            let cluster = crate::sealing_key::SealingKey::load(data_dir)
+                .unwrap()
+                .unwrap()
+                .public_key();
+            Approving {
+                signer,
+                cluster,
+                this: service.local.record().id(),
+            }
+        }
+
+        impl Approving {
+            /// A Move of `volume` from `from` to `to` that starts `spec`, signed now.
+            fn moving(
+                &self,
+                volume: &str,
+                (from, to): (MachineId, MachineId),
+                spec: &ResolvedServiceSpec,
+            ) -> Signed<VolumeApproval> {
+                let namespace = Namespace::parse("app").unwrap();
+                let issued_at = Timestamp::now();
+                let body = VolumeApproval {
+                    cluster: self.cluster,
+                    operation: OperationId::parse("1".repeat(32)).unwrap(),
+                    namespace: namespace.clone(),
+                    volume: DockerVolumeName::parse(volume).unwrap(),
+                    workflow: VolumeWorkflow::Move {
+                        from,
+                        to,
+                        service: ApprovedService {
+                            name: spec.name.clone(),
+                            digest: PayloadDigest::of(&spec.to_requested(), &namespace).unwrap(),
+                            image: None,
+                        },
+                        mirrors: Vec::new(),
+                    },
+                    issued_at,
+                    expires_at: issued_at.plus(MAX_LIFETIME_MILLIS),
+                    signer: SignerKey::Device(DeviceKey::from(self.signer.public())),
+                };
+                Signed::sign(&body, &self.signer).unwrap()
+            }
+        }
+
+        fn elsewhere() -> MachineId {
+            MachineId::parse("e".repeat(32)).unwrap()
+        }
+
+        #[expect(clippy::indexing_slicing, reason = "JSON fixture")]
+        fn approved(mut request: Value, approval: &Signed<VolumeApproval>) -> Value {
+            request["approval"] = serde_json::to_value(approval).unwrap();
+            request
+        }
+
+        /// The spec a Move starts, with its image pinned by digest as a Device approves it.
+        fn pinned_spec() -> ResolvedServiceSpec {
+            let mut spec: ResolvedServiceSpec = serde_json::from_value(spec()).unwrap();
+            spec.container.image = format!("example.test/api@sha256:{}", "a".repeat(64));
+            spec
         }
 
         fn as_operator<T>(mut request: Request<T>) -> Request<T> {
@@ -4075,6 +4164,21 @@ mod set_volume_copy {
             assert_eq!(details["capability"], json!(capability));
         }
 
+        /// The refusal of a Volume step for `refusal`, naming the Volume approval.
+        fn refused_step(status: &Status, refusal: AuthorityRefusal) {
+            refused(
+                status,
+                VOLUME_APPROVAL_CAPABILITY,
+                &crate::machine::LocalMachineError::VolumeStepRefused(refusal).to_string(),
+            );
+        }
+
+        fn unsigned() -> AuthorityRefusal {
+            AuthorityRefusal::Unsigned {
+                purpose: Purpose::Volume,
+            }
+        }
+
         fn docker_writes(fake: &FakeDocker) -> Vec<String> {
             fake.requests
                 .lock()
@@ -4103,11 +4207,15 @@ mod set_volume_copy {
             plugin
         }
 
-        fn create_start() -> Value {
+        fn create_of(spec: &ResolvedServiceSpec) -> Value {
             json!({"name":VOLUME, "expect":{"kind":"mirror", "newest":"900", "slot":"1"},
             "want":{"kind":"writer", "at":"900", "epoch":1, "start":{
-                "kind":"create", "namespace":"app", "resolved_spec":spec(),
+                "kind":"create", "namespace":"app", "resolved_spec":spec,
                 "creation_key":"move-1", "gen":1, "rotation":"pending"}}})
+        }
+
+        fn create_start() -> Value {
+            create_of(&serde_json::from_value(spec()).unwrap())
         }
 
         fn kept_start(container: &ContainerId) -> Value {
@@ -4117,7 +4225,8 @@ mod set_volume_copy {
         }
 
         #[tokio::test]
-        async fn an_operator_create_under_enforcement_is_refused_before_the_copy_or_docker() {
+        async fn an_unapproved_operator_create_under_enforcement_is_refused_before_the_copy_or_docker()
+         {
             let (data_dir, store, service, fake) = fake_docker_service("ployzd-gate-create").await;
             let plugin = promoting_plugin();
             let (socket, server) = plugin.serve(&data_dir);
@@ -4127,11 +4236,7 @@ mod set_volume_copy {
             let status = operator_set_copy(&service, create_start())
                 .await
                 .expect_err("an Operator's Create must be refused");
-            refused(
-                &status,
-                SET_VOLUME_COPY_CAPABILITY,
-                VOLUME_START_REFUSED_BY_ENFORCEMENT,
-            );
+            refused_step(&status, unsigned());
             assert!(
                 plugin.routes_called().is_empty(),
                 "{:?}",
@@ -4152,8 +4257,83 @@ mod set_volume_copy {
             std::fs::remove_dir_all(data_dir).unwrap();
         }
 
+        /// Lane 4's attack, and the start it guards: a spec with one environment value changed
+        /// is refused under the Move's approval, and the approved spec then starts.
         #[tokio::test]
-        async fn an_operator_kept_start_of_an_unrelated_container_is_refused_under_enforcement() {
+        async fn a_move_starts_only_the_service_its_approval_names() {
+            let (data_dir, store, service, fake) = fake_docker_service("ployzd-gate-move").await;
+            let plugin = promoting_plugin();
+            let (socket, server) = plugin.serve(&data_dir);
+            let service = service.with_volume_plugin(socket);
+            let device = enforce_approving(&store, &data_dir, &service).await;
+            let spec = pinned_spec();
+            let approval = device.moving(VOLUME, (elsewhere(), device.this), &spec);
+            let payload = AuthorityRefusal::Mismatch { field: "a payload" };
+
+            let mut changed = spec.clone();
+            changed
+                .container
+                .environment
+                .insert("MODE".parse().unwrap(), "evil".into());
+            let mut image = spec.clone();
+            image.container.image = format!("example.test/api@sha256:{}", "b".repeat(64));
+            let mut command = spec.clone();
+            command.container.command = vec!["sh".into(), "-c".into(), "cat /data/0/*".into()];
+            let mut mounts: ResolvedServiceSpec = serde_json::from_value(
+                serde_json::to_value(spec_with_sources(vec![
+                    provisioned_source("data", 1_073_741_824),
+                    provisioned_source("other", 1_073_741_824),
+                ]))
+                .unwrap(),
+            )
+            .unwrap();
+            mounts.container.image.clone_from(&spec.container.image);
+            for other in [changed, image, command, mounts] {
+                let status = operator_set_copy(&service, approved(create_of(&other), &approval))
+                    .await
+                    .expect_err("a spec the approval does not name");
+                refused_step(&status, payload.clone());
+            }
+            let elsewhere_approval = device.moving(
+                VOLUME,
+                (elsewhere(), MachineId::parse("f".repeat(32)).unwrap()),
+                &spec,
+            );
+            let status =
+                operator_set_copy(&service, approved(create_of(&spec), &elsewhere_approval))
+                    .await
+                    .expect_err("a Move that does not name this Server");
+            refused_step(
+                &status,
+                AuthorityRefusal::Mismatch {
+                    field: "this Server",
+                },
+            );
+            assert_eq!(plugin.routes_called(), vec![INSPECT_ROUTE; 5]);
+            assert!(
+                docker_writes(&fake).is_empty(),
+                "{:?}",
+                docker_writes(&fake)
+            );
+
+            reply(
+                &operator_set_copy(&service, approved(create_of(&spec), &approval))
+                    .await
+                    .unwrap(),
+            );
+            assert_eq!(holder_status(&fake), vec![json!("running")]);
+            reply(
+                &operator_set_copy(&service, approved(create_of(&spec), &approval))
+                    .await
+                    .expect("a resent start under the same approval"),
+            );
+            assert_eq!(holder_status(&fake), vec![json!("running")]);
+            server.abort();
+            std::fs::remove_dir_all(data_dir).unwrap();
+        }
+
+        #[tokio::test]
+        async fn an_unapproved_operator_kept_start_is_refused_under_enforcement() {
             let (data_dir, store, service, fake) =
                 fake_docker_service("ployzd-gate-unrelated").await;
             let plugin = promoting_plugin();
@@ -4167,11 +4347,7 @@ mod set_volume_copy {
             let status = operator_set_copy(&service, kept_start(&unrelated))
                 .await
                 .expect_err("an Operator's Kept start must be refused");
-            refused(
-                &status,
-                SET_VOLUME_COPY_CAPABILITY,
-                VOLUME_START_REFUSED_BY_ENFORCEMENT,
-            );
+            refused_step(&status, unsigned());
             assert!(
                 plugin.routes_called().is_empty(),
                 "{:?}",
@@ -4183,12 +4359,7 @@ mod set_volume_copy {
             std::fs::remove_dir_all(data_dir).unwrap();
         }
 
-        /// Cloud's attack on an enforcing Machine: cut the Volume, which stops its holder, then
-        /// promote the copy with a Kept start naming a Container made before enforcement.
-        #[tokio::test]
-        async fn an_operator_kept_start_of_a_container_from_before_enforcement_is_refused_after_a_cut()
-         {
-            let (data_dir, store, service, fake) = fake_docker_service("ployzd-gate-kept").await;
+        fn cutting_plugin() -> FakePlugin {
             let plugin = FakePlugin::default();
             plugin.reply(INSPECT_ROUTE, writer_root(0, None));
             plugin.reply(CUT_ROUTE, slot(Some(snapshot("f-1", 900))));
@@ -4200,30 +4371,82 @@ mod set_volume_copy {
                     .insert(INSPECT_ROUTE.into(), slot(Some(snapshot("f-1", 900))));
             });
             plugin.reply(WRITER_ROUTE, writer_root(1, Some(snapshot("f-1", 900))));
+            let replies = plugin.replies.clone();
+            plugin.on(WRITER_ROUTE, move || {
+                replies.lock().unwrap().insert(
+                    INSPECT_ROUTE.into(),
+                    writer_root(1, Some(snapshot("f-1", 900))),
+                );
+            });
+            plugin
+        }
+
+        /// Cloud's attack on an enforcing Machine: cut the Volume, which stops its holder, then
+        /// resume with a Kept start naming a Container made before enforcement. Only the
+        /// holder the approved cut stopped starts again.
+        #[tokio::test]
+        async fn a_resume_starts_only_a_container_the_approved_cut_stopped() {
+            let (data_dir, store, service, fake) = fake_docker_service("ployzd-gate-kept").await;
+            let plugin = cutting_plugin();
             let (socket, server) = plugin.serve(&data_dir);
             let service = service.with_volume_plugin(socket);
             let holder = running_holder(&service, &fake).await;
-            enforce(&store).await;
+            // Made and stopped before enforcement, and mounting the Volume.
+            let planted = kept_holder(&service, &fake).await;
+            let device = enforce_approving(&store, &data_dir, &service).await;
+            let approval = device.moving(VOLUME, (device.this, elsewhere()), &pinned_spec());
+            let other = device.moving("app_other", (device.this, elsewhere()), &pinned_spec());
+            let cut_writer = || cut(json!({"kind":"writer", "epoch":0}));
 
-            let cut = operator_set_copy(&service, cut(json!({"kind":"writer", "epoch":0})))
+            let status = operator_set_copy(&service, cut_writer())
                 .await
-                .expect("a cut starts nothing, so enforcement leaves it to the Operator");
-            reply(&cut);
-            assert_eq!(holder_status(&fake), vec![json!("exited")]);
-            let cut_routes = plugin.routes_called();
+                .expect_err("a cut no approval names");
+            refused_step(&status, unsigned());
+            let status = operator_set_copy(&service, approved(cut_writer(), &other))
+                .await
+                .expect_err("a cut under another Volume's approval");
+            refused_step(&status, AuthorityRefusal::Mismatch { field: "a Volume" });
+            assert_eq!(running(&fake), 1, "the refused cuts stopped nothing");
+
+            reply(
+                &operator_set_copy(&service, approved(cut_writer(), &approval))
+                    .await
+                    .unwrap(),
+            );
+            assert_eq!(running(&fake), 0);
+            let stray = stopped_container(&service).await;
             let before = docker_writes(&fake);
 
-            let status = operator_set_copy(&service, kept_start(&holder))
-                .await
-                .expect_err("an Operator's Kept start must be refused");
-            refused(
-                &status,
-                SET_VOLUME_COPY_CAPABILITY,
-                VOLUME_START_REFUSED_BY_ENFORCEMENT,
-            );
-            assert_eq!(plugin.routes_called(), cut_routes);
+            for stray in [planted, stray] {
+                let status = operator_set_copy(&service, approved(kept_start(&stray), &approval))
+                    .await
+                    .expect_err("a Container the cut did not stop");
+                refused_step(
+                    &status,
+                    AuthorityRefusal::Mismatch {
+                        field: "a Container",
+                    },
+                );
+            }
             assert_eq!(docker_writes(&fake), before);
-            assert_eq!(holder_status(&fake), vec![json!("exited")]);
+            assert_eq!(running(&fake), 0);
+
+            reply(
+                &operator_set_copy(&service, approved(kept_start(&holder), &approval))
+                    .await
+                    .unwrap(),
+            );
+            assert_eq!(running(&fake), 1, "the holder the cut stopped runs again");
+            let recut = cut(json!({"kind":"writer", "epoch":1}));
+            let status = operator_set_copy(&service, approved(recut, &approval))
+                .await
+                .expect_err("the Move ended here when it resumed");
+            refused_step(
+                &status,
+                AuthorityRefusal::Replayed {
+                    operation: OperationId::parse("1".repeat(32)).unwrap(),
+                },
+            );
             server.abort();
             std::fs::remove_dir_all(data_dir).unwrap();
         }

@@ -71,7 +71,20 @@ fn checks_a_pull_that_moves_data_and_every_run_snapshot() {
         epoch: WriterEpoch::new(2),
         start: None,
     };
-    assert!(approved_step(&writer, Some(CopyTransition::WriterToWriter)).is_none());
+    for transition in [
+        CopyTransition::MirrorToWriter,
+        CopyTransition::WriterToWriter,
+    ] {
+        assert!(matches!(
+            approved_step(&writer, Some(transition)),
+            Some(CopyStep::Promote { transition: checked }) if checked == transition
+        ));
+    }
+    assert!(approved_step(&writer, None).is_none());
+    assert!(matches!(
+        approved_step(&pull(None), Some(CopyTransition::WriterToMirror)),
+        Some(CopyStep::Cut)
+    ));
     assert!(approved_step(&WantedCopy::Forget { recipient: None }, None).is_none());
 }
 

@@ -1,4 +1,4 @@
-import type { ExpectedCopy, MachineId, MachineName, Signed, SlotRole, Snapshot, SnapshotGuid, VolumeCopy } from "@ployz/sdk";
+import type { ExpectedCopy, MachineId, MachineName, ResolvedServiceSpec, Signed, SlotRole, Snapshot, SnapshotGuid, VolumeCopy } from "@ployz/sdk";
 import { Option, Schema } from "effect";
 import { type DeploymentsSeen, planResize, planUnheld, type ResizePhase } from "#/modules/volume-run/resize";
 import { type AnsweredMember, copyName, heardFrom, type Member, type ReleasePlan, type VolumeRunArgs, type VolumeRunInput } from "#/modules/volume-run/volume-run";
@@ -115,15 +115,15 @@ const isDestination = ({ to, machine }: VolumeRunArgs["move"], member: Member) =
 const refuse = (code: RefusalCode, message: string, next?: string): Planned => ({ ok: false, refusal: { code, message, ...(next !== undefined && { next }) } });
 
 /**
- * Pure: Inngest re-runs it outside any step on every replay, so the same members must plan the same run. A Move or a
- * seed a Server it starts or writes on would refuse, since that Server enforces device approval, is refused here,
- * before anything stops. So is a Mirror or a full Sync that carries no approval: a full Sync would otherwise forget
- * the Mirror's copy before its pull met the refusal.
+ * Pure: Inngest re-runs it outside any step on every replay, so the same members must plan the same run. A seed a
+ * Server it writes on would refuse, since that Server enforces device approval, is refused here, before anything
+ * stops. So is a Move, a Mirror or a full Sync that carries no approval: a Move would otherwise stop the Service before
+ * its start met the refusal, and a full Sync forget the Mirror's copy before its pull did.
  */
 export function planFromCopies(input: PlanInput, observed: readonly Member[]): Planned {
   const planned = planCopies(input, observed);
   if (!planned.ok) return planned;
-  const unapproved = (input.kind === "mirror" || input.kind === "sync") && input.args.approval === undefined;
+  const unapproved = (input.kind === "mirror" || input.kind === "sync" || input.kind === "move") && input.args.approval === undefined;
   const enforcing = gatedOn(planned.phase, unapproved).find((member) => member.enforces === true);
   return enforcing === undefined ? planned : enforcedRefusal(planned.phase, input.volumeName, enforcing.machine.name);
 }
@@ -131,15 +131,15 @@ export function planFromCopies(input: PlanInput, observed: readonly Member[]): P
 type PlannedPhase = Extract<Planned, { ok: true }>["phase"];
 
 /**
- * The Servers a phase asks for what an enforcing Server refuses from Ployz Cloud: a Move's start on B, its release
- * back to A's stopped Container, a seed, and an `unapproved` Mirror's snapshot and pull.
+ * The Servers a phase asks for what an enforcing Server refuses from Ployz Cloud: a seed, and an `unapproved` Move's
+ * start on B and release back to A's stopped Container, or Mirror's snapshot and pull.
  */
 function gatedOn(phase: PlannedPhase, unapproved: boolean): readonly AnsweredMember[] {
   switch (phase.kind) {
     case "move":
-      return [phase.writer, phase.target];
+      return unapproved ? [phase.writer, phase.target] : [];
     case "landed":
-      return [phase.target, ...phase.behind];
+      return unapproved ? [phase.target, ...phase.behind] : [];
     case "seed":
       return [phase.source];
     case "mirror":
@@ -158,10 +158,15 @@ function enforcedRefusal(phase: PlannedPhase, name: string, server: string): Pla
       return refuse("enforced", `${own} mirror ${name} on its own. Run ployz volume mirror ${name} --to ${phase.target.machine.name} from an approved device.`);
     case "sync":
       return refuse("enforced", `${own} sync ${name} in full on its own. Run ployz volume sync ${name} --full from an approved device.`);
+    case "move":
+    case "landed":
+      return refuse("enforced", `${own} move ${name} on its own. Run ployz volume move ${name} --to ${phase.target.machine.name} from an approved device.`);
     default:
       return refuse("enforced", enforcedMessage(phase.kind === "seed", name, server), ENFORCEMENT_OFF);
   }
 }
+
+const bytesOf = (value: Signed | ResolvedServiceSpec) => new TextEncoder().encode(JSON.stringify(value)).length;
 
 const MirrorApproval = Schema.fromJsonString(Schema.Struct({
   volume: Schema.String,
@@ -177,10 +182,34 @@ export const MAX_APPROVAL_BYTES = 4096;
  * shaped for this Mirror; the Servers check the signature.
  */
 export function approvesMirror(approval: Signed, volume: string, writer: MachineId, mirror: MachineId) {
-  if (new TextEncoder().encode(JSON.stringify(approval)).length > MAX_APPROVAL_BYTES) return false;
+  if (bytesOf(approval) > MAX_APPROVAL_BYTES) return false;
   const body = Schema.decodeUnknownOption(MirrorApproval)(approval.body);
   return Option.isSome(body) && body.value.volume === volume && body.value.workflow.writer === writer && body.value.workflow.mirror === mirror;
 }
+
+const MoveApproval = Schema.fromJsonString(Schema.Struct({
+  volume: Schema.String,
+  workflow: Schema.Struct({ kind: Schema.Literal("move"), from: Schema.String, to: Schema.String, service: Schema.Struct({ name: Schema.String }) }),
+}));
+
+/** The most bytes the spec a Move's approval names may take as JSON. */
+export const MAX_SERVICE_BYTES = 65_536;
+
+
+/**
+ * Whether `approval` approves moving Docker Volume `volume` from `from` to `to` and starting `service` there, in at
+ * most `MAX_APPROVAL_BYTES` and `MAX_SERVICE_BYTES`. Cloud reads them only to refuse a mistake before anything stops;
+ * the Servers check the signature and the spec.
+ */
+export function approvesMove(approval: Signed, service: ResolvedServiceSpec | undefined, volume: string, from: MachineId, to: MachineId) {
+  if (service === undefined || bytesOf(approval) > MAX_APPROVAL_BYTES || bytesOf(service) > MAX_SERVICE_BYTES) return false;
+  const body = Schema.decodeUnknownOption(MoveApproval)(approval.body);
+  return Option.isSome(body) && body.value.volume === volume && body.value.workflow.from === from
+    && body.value.workflow.to === to && body.value.workflow.service.name === service.name;
+}
+
+export const otherMoveApprovalMessage = (name: string, server: string) =>
+  `The approval from your device is for another change, not moving ${name} to ${server}.`;
 
 /** Why a run can't keep another approval for the Mirror of `name` on `server`. */
 export const fullApprovalsMessage = (name: string, server: string, most: number) =>
@@ -399,6 +428,19 @@ function planRestore(name: string, { from, machine }: VolumeRunArgs["restore"], 
   }
   // A slot holds the data as of its newest snapshot; a root holds every write, so restoring it loses none.
   return { ok: true, phase: { kind: "restore", from: source, lostAfter: copy.kind === "slot" ? copy.newest : null } };
+}
+
+/**
+ * The slots that hold the newest snapshot among them, or all of them when none holds one. The newest snapshots of a
+ * run's slots all came from its latest Writer, so their times share one clock, unlike Containers made on different
+ * Servers.
+ */
+export function holdingNewest<M extends AnsweredMember>(slots: readonly M[]): readonly M[] {
+  const times = slots.map((slot) => slot.view.copy?.newest?.created_unix_seconds ?? null);
+  const known = times.filter((time): time is number => time !== null);
+  if (known.length === 0) return slots;
+  const newest = Math.max(...known);
+  return slots.filter((_, index) => times[index] === newest);
 }
 
 export function restoreSource(members: readonly Member[]): MachineName | undefined {
