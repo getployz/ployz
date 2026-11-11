@@ -10,7 +10,7 @@ pub(crate) mod query;
 pub(crate) use path::{
     ConfigField, NodeField, Target, config_name, domains_are_read_only, name_a_setting,
 };
-pub use path::{NodeName, SettingPath};
+pub use path::{NodeName, SecretSlot, SettingPath};
 
 pub(crate) mod size;
 

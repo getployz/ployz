@@ -8832,13 +8832,7 @@ fn set_refuses_a_secret_on_the_command_line_and_sends_the_rest_as_typed() {
             "Expected PATH=VALUE, for example web.replicas=3"
         );
 
-        for path in [
-            "web.env.KEY",
-            "WEB.env.KEY",
-            "web.registryCredential",
-            "bad name.env.KEY",
-            "web.env.bad key",
-        ] {
+        for path in ["web.env.KEY", "WEB.env.KEY", "web.registryCredential"] {
             let sealed = refused(&[&format!("{path}={secret}")]);
             assert_eq!(sealed["code"], "invalid_argument", "{path}: {sealed}");
             assert_eq!(sealed["message"], on_command_line(path), "{path}");
@@ -8852,6 +8846,19 @@ fn set_refuses_a_secret_on_the_command_line_and_sends_the_rest_as_typed() {
         ] {
             let sealed = refused(&assignments);
             assert_eq!(sealed["message"], on_command_line("web.env.KEY"));
+        }
+
+        // A path that does not parse is refused as a path, whatever its value looks like.
+        for (path, message) in [
+            ("bad name.env.KEY", "Expected a path like SERVICE.SETTING"),
+            (
+                "web.env.bad key",
+                "A variable name is letters, digits and _, not starting with a digit, at most 128 characters",
+            ),
+        ] {
+            let bad = refused(&[&format!("{path}={secret}")]);
+            assert_eq!(bad["code"], "invalid_argument", "{path}: {bad}");
+            assert_eq!(bad["message"], message, "{path}");
         }
 
         let kept = refused(&[r#"web.registryCredential={"secret":true}"#]);
@@ -8914,10 +8921,6 @@ fn set_names_a_preferred_builder_to_the_servers_that_cloud_keeps() {
             "Expected a Volume name: up to 63 lowercase letters, digits and -, starting and ending with a letter or digit"
         );
         let setup = error(store, &["set", "setup.preferredBuilder=pnpm seed"]);
-        if cloud {
-            assert_eq!(setup["message"], "Server pnpm seed was not found");
-        } else {
-            assert_eq!(setup["message"], "production is not a Branch");
-        }
+        assert_eq!(setup["message"], "production is not a Branch");
     }
 }

@@ -10,6 +10,7 @@ use ts_rs::TS;
 use super::ServiceSetting;
 use crate::error;
 use crate::id::{ConfigRef, VolumeName};
+use crate::policy::PolicySetting;
 use crate::variables::VariableKey;
 
 /// A node of an Environment: `SERVICE` for a Service, `volumes.VOLUME` for a
@@ -147,6 +148,15 @@ impl VolumeField {
             Self::SharedWrites => "sharedWrites",
         }
     }
+}
+
+/// Where a path takes a secret: what the Store seals a `{"secret": "…"}` value into.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum SecretSlot {
+    /// A variable's value, `SERVICE.env.KEY`.
+    VariableValue,
+    /// A private image's credential, `SERVICE.registryCredential`.
+    RegistryCredential,
 }
 
 /// What a path addresses inside its Service.
@@ -353,6 +363,29 @@ impl SettingPath {
         }
     }
 
+    /// The secret a new value at this path would carry, if the path takes one.
+    #[must_use]
+    pub const fn carries_secret(&self) -> Option<SecretSlot> {
+        match self.target() {
+            Some(Target::Variable(_)) => Some(SecretSlot::VariableValue),
+            Some(Target::Setting(ServiceSetting::RegistryCredential)) => {
+                Some(SecretSlot::RegistryCredential)
+            }
+            _ => None,
+        }
+    }
+
+    /// Whether it is a Service's Preferred Builder, `SERVICE.preferredBuilder`.
+    #[must_use]
+    pub const fn is_preferred_builder(&self) -> bool {
+        matches!(
+            self.target(),
+            Some(Target::Setting(ServiceSetting::Policy(
+                PolicySetting::PreferredBuilder
+            )))
+        )
+    }
+
     /// The Service whose Settings it addresses, or why a Volume or Config has none.
     pub(crate) fn settings_of(&self) -> Result<&ServiceName, RpcError> {
         self.service().ok_or_else(|| {
@@ -466,4 +499,63 @@ pub(crate) fn name_a_setting(node: impl std::fmt::Display) -> RpcError {
             "example": format!("{node}.replicas"),
         }),
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn slot(path: &str) -> Option<SecretSlot> {
+        SettingPath::parse(path).unwrap().carries_secret()
+    }
+
+    #[test]
+    fn a_variable_and_a_registry_credential_take_a_secret() {
+        assert_eq!(slot("web.env.KEY"), Some(SecretSlot::VariableValue));
+        assert_eq!(slot("WEB.env.KEY"), Some(SecretSlot::VariableValue));
+        assert_eq!(
+            slot("web.registryCredential"),
+            Some(SecretSlot::RegistryCredential)
+        );
+    }
+
+    #[test]
+    fn nothing_else_takes_a_secret() {
+        for path in [
+            "web",
+            "web.replicas",
+            "web.preferredBuilder",
+            "web.source",
+            "web.domains",
+            "web.env.KEY.exported",
+            "web.env.KEY.description",
+            "web.mounts.data",
+            "web.configs.sentry",
+            "setup.web",
+            "volumes.data",
+            "volumes.data.storage",
+            "configs.sentry",
+            "configs.sentry.name",
+        ] {
+            assert_eq!(slot(path), None, "{path}");
+        }
+    }
+
+    #[test]
+    fn only_a_services_preferred_builder_is_one() {
+        let is = |path: &str| SettingPath::parse(path).unwrap().is_preferred_builder();
+        assert!(is("web.preferredBuilder"));
+        assert!(is("WEB.preferredBuilder"));
+        for path in [
+            "web",
+            "web.replicas",
+            "web.autoDeploy",
+            "web.env.preferredBuilder",
+            "setup.preferredBuilder",
+            "volumes.data",
+            "configs.sentry",
+        ] {
+            assert!(!is(path), "{path}");
+        }
+    }
 }
