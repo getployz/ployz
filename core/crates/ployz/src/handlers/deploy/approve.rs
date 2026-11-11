@@ -106,7 +106,7 @@ pub(in crate::handlers) fn sign(
     let (body, approved) =
         DeployApproval::draft(terms, plan.namespace, &target, &pins).map_err(Error::command)?;
     for line in approved.iter().flat_map(ApprovedChange::lines) {
-        crate::ui::stream(format_args!("{line}"));
+        crate::ui::note(format_args!("{line}"));
     }
     let yes = matches
         .try_get_one::<bool>("yes")
