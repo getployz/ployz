@@ -152,7 +152,7 @@ export function PhoneSections({ places }: { places: DashboardNavItem[] }) {
   return (
     <nav aria-label={`${place.label} sections`} className="h-10 shrink-0 border-b bg-background min-wf-nav:hidden">
       <div ref={scroller} onScroll={(event) => setOverflow(stripOverflow(event.currentTarget))} data-overflow={overflow}
-        className="flex h-full gap-5 overflow-x-auto px-4 data-[overflow=both]:mask-x-from-[calc(100%-2rem)] data-[overflow=end]:mask-r-from-[calc(100%-2rem)] data-[overflow=start]:mask-l-from-[calc(100%-2rem)]">
+        className="flex h-full scroll-px-8 gap-5 overflow-x-auto px-4 data-[overflow=both]:mask-x-from-[calc(100%-2rem)] data-[overflow=end]:mask-r-from-[calc(100%-2rem)] data-[overflow=start]:mask-l-from-[calc(100%-2rem)]">
         {place.sections.map((section) => <SectionLink key={section.label} section={section}
           className="-mb-px flex items-center border-b-2 border-transparent text-sm font-medium whitespace-nowrap text-muted-foreground outline-none hover:text-foreground focus-visible:ring-3 focus-visible:ring-ring aria-[current=page]:border-foreground aria-[current=page]:text-foreground" />)}
       </div>
