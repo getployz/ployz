@@ -67,7 +67,7 @@ pub struct PlanOptions {
 impl PlanOptions {
     /// Who runs this Deploy, which the planner reads instead of the loose runner fields.
     /// A Deploy is a runner's exactly when it blocks unmountable Services, the one flag
-    /// a runner always sets; `operator` and `ended_runs` mean nothing without it.
+    /// a runner always sets; `ended_runs` means nothing without it.
     #[must_use]
     pub fn mode(&self) -> PlanMode<'_> {
         if self.block_unmountable {
@@ -76,7 +76,9 @@ impl PlanOptions {
                 ended_runs: &self.ended_runs,
             }
         } else {
-            PlanMode::Interactive
+            PlanMode::Interactive {
+                operator: self.operator,
+            }
         }
     }
 
@@ -104,7 +106,10 @@ impl PlanOptions {
 pub enum PlanMode<'a> {
     /// A command a person runs and sees refused whole: a Volume nothing can mount fails
     /// the Deploy, and no run's leftovers are removed.
-    Interactive,
+    Interactive {
+        /// Who drives the Deploy, as the Intent says; Ployz Cloud's when it doesn't.
+        operator: Operator,
+    },
     /// A runner that records each Service's outcome.
     Runner {
         /// Who drives the Deploy, which a refusal's way back depends on.
@@ -122,13 +127,11 @@ impl PlanMode<'_> {
         matches!(self, Self::Runner { .. })
     }
 
-    /// Who drives the Deploy. An interactive Deploy is Ployz Cloud's, as an Intent that
-    /// doesn't say.
+    /// Who drives the Deploy.
     #[must_use]
     pub const fn operator(&self) -> Operator {
         match self {
-            Self::Interactive => Operator::Cloud,
-            Self::Runner { operator, .. } => *operator,
+            Self::Interactive { operator } | Self::Runner { operator, .. } => *operator,
         }
     }
 }
@@ -1596,9 +1599,23 @@ mod tests {
     fn a_runner_is_the_options_it_sets_and_serializes_the_same_fields() {
         let ended = BTreeSet::from([crate::DeploymentLogId::parse("run-1").unwrap()]);
         let interactive = PlanOptions::default();
-        assert_eq!(interactive.mode(), PlanMode::Interactive);
+        assert_eq!(
+            interactive.mode(),
+            PlanMode::Interactive {
+                operator: Operator::Cloud
+            }
+        );
         assert!(!interactive.mode().blocks_unmountable());
         assert_eq!(interactive.mode().operator(), Operator::Cloud);
+        let told_cli = PlanOptions {
+            operator: Operator::Cli,
+            ..PlanOptions::default()
+        };
+        assert_eq!(
+            told_cli.mode().operator(),
+            Operator::Cli,
+            "an Intent that names its operator keeps it without block_unmountable"
+        );
 
         let runner = interactive.clone().as_runner(Operator::Cli, ended.clone());
         assert_eq!(
