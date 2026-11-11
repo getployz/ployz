@@ -2701,13 +2701,15 @@ describe("volume runs", () => {
       const other = await harness.pool.connect();
       try {
         await other.query("begin");
+        const { rows: [holder] } = await other.query<{ pid: number }>("select pg_backend_pid() as pid");
         await other.query(
           "insert into volume_mirror_status (organization_id, volume_id, machine_id, approvals, updated_at) values ($1, $2, $3, $4, now())",
           [organizationId, volumeId, idOf("fsn-2"), JSON.stringify([newer])]);
         const offering = harness.runEffect(offerApproval(organizationId, volumeId, idOf("fsn-2"), APPROVAL));
         // The offer is under way once it waits on the other transaction's row.
         await vi.waitFor(async () => {
-          const { rows: waiting } = await harness.pool.query("select 1 from pg_stat_activity where wait_event_type = 'Lock'");
+          const { rows: waiting } = await harness.pool.query(
+            "select 1 from pg_stat_activity where datname = current_database() and $1 = any(pg_blocking_pids(pid))", [holder?.pid]);
           expect(waiting.length).toBeGreaterThan(0);
         });
         await other.query("commit");

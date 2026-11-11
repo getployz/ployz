@@ -20,8 +20,10 @@ import { volumeMirrorStatus } from "#/modules/volume-run/tables";
  * - Deleting the Mirror drops them all.
  *
  * A sync tries them in order and moves on only past a refusal for the approval. The list grows by one each time a
- * Device approves the Mirror again, up to `MAX_KEPT_APPROVALS`. Past it Cloud refuses the new approval before any
- * step carries it, rather than drop a kept one: that could be the open one.
+ * Device approves the Mirror again, up to `MAX_KEPT_APPROVALS` offers. Past it Cloud refuses the new approval before
+ * any step carries it, rather than drop a kept one: that could be the open one. A sync's late accept can still put back
+ * one it read before the Mirror was deleted and made again, which an earlier offer kept, since the Mirror may hold it
+ * open; it never adds a body no offer kept.
  */
 export const sameApproval = (a: Signed, b: Signed) => a.body === b.body;
 
