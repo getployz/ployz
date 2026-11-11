@@ -1721,11 +1721,11 @@ pub(crate) fn sweep(tx: &mut dyn Tx, who: &Actor, sweep: &Sweep) -> Result<Autom
     // holds something only comes off the Servers.
     let mut idle = Vec::new();
     let mut held = Vec::new();
-    for Deadline {
-        environment: id,
-        closes_at,
-    } in branch::idle::deadlines(tx, &who.organization)?
-    {
+    for deadline in branch::idle::deadlines(tx, &who.organization)? {
+        let Deadline {
+            environment: id,
+            closes_at,
+        } = deadline?;
         if closes_at.is_some_and(|at| sweep.now >= at) && on_merge::holds_open(tx, who, &id)? {
             held.push(id);
         } else {

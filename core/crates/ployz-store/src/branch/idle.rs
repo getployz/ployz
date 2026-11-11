@@ -50,10 +50,11 @@ pub(crate) struct Deadline {
 }
 
 /// Every Branch of `organization` with its idle deadline, in Environment ID order.
+/// Each row is read as the caller reaches it, so a corrupt row fails only then.
 pub(crate) fn deadlines(
     tx: &mut dyn Tx,
     organization: &OrganizationId,
-) -> Result<Vec<Deadline>, RpcError> {
+) -> Result<impl Iterator<Item = Result<Deadline, RpcError>> + use<>, RpcError> {
     let rows = tx.query(
         &format!(
             "{} WHERE b.organization_id = ?1 ORDER BY b.environment_id",
@@ -61,14 +62,12 @@ pub(crate) fn deadlines(
         ),
         &[organization.as_str().into()],
     )?;
-    rows.iter()
-        .map(|row| {
-            Ok(Deadline {
-                environment: row.parse(0, "Environment ID")?,
-                closes_at: idle_close(row)?,
-            })
+    Ok(rows.into_iter().map(|row| {
+        Ok(Deadline {
+            environment: row.parse(0, "Environment ID")?,
+            closes_at: idle_close(&row)?,
         })
-        .collect()
+    }))
 }
 
 #[cfg(test)]
