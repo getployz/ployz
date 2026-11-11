@@ -191,7 +191,9 @@ pub fn verify(
             }
             approvers
                 .into_iter()
-                .find(|approver| matches!(approver, Approver::Device(_)))
+                .find(|approver| {
+                    matches!(approver, Approver::Device(_)) && approver.signs_as(body.signer)
+                })
                 .ok_or(AuthorityRefusal::Mismatch {
                     field: "the signer",
                 })?

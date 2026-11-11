@@ -159,6 +159,25 @@ fn an_unknown_signer_or_passkey_is_refused() {
 }
 
 #[test]
+fn the_device_the_body_names_approves_whatever_order_its_signature_comes_in() {
+    let passkey = Authenticator::es256(4);
+    let other = Signer::from_seed(&[8; 32]);
+    let mut trusted = trusted(&passkey);
+    trusted.devices.push(DeviceKey::from(other.public()));
+    let mut signed = Signed::sign(
+        &approval(SignerKey::Device(device().public().into())),
+        &device(),
+    )
+    .unwrap();
+    let theirs = Signed::<PrivateAccessApproval>::sign(&signed.open().unwrap(), &other).unwrap();
+    signed.signatures.splice(0..0, theirs.signatures);
+    assert_eq!(
+        check(&KeyApproval::Signed(signed), &trusted, &sealed()),
+        Ok(Approver::Device(device().public()))
+    );
+}
+
+#[test]
 fn a_browser_key_under_a_session_grant_is_refused() {
     let passkey = Authenticator::es256(4);
     let browser = Signer::from_seed(&[6; 32]);
