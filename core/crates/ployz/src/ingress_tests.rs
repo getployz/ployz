@@ -672,27 +672,37 @@ async fn a_declaration_whose_reply_is_lost_stops_the_switch_and_stays_declared()
     );
 }
 
-fn upgrading_fleet(
-    entry_predates: bool,
-    peer_online: bool,
-) -> ployz_testkit::fake_fleet::FleetFile {
-    let machine = |name: &str, hex: &str, predates: bool, online: bool| {
-        serde_json::json!({
-            "name": name, "id": hex.repeat(32), "version": "0.4.0", "online": online,
-            "predates_doors": predates,
-            "containers": [
-                {"id": format!("{name}-ingress-holder"), "namespace": "ployz-system",
-                 "service": "ingress-holder", "image": "pause", "state": "running"},
-                {"id": format!("{name}-ingress"), "namespace": "ployz-system",
-                 "service": "ingress", "image": "caddy", "state": "running"},
-            ],
+/// How a Server of the upgrading fleet answers SetClusterDoors.
+#[derive(Clone, Copy)]
+enum Declares {
+    Predates,
+    Serves,
+    Refuses,
+    Offline,
+}
+
+fn upgrading_fleet(servers: &[(&str, Declares)]) -> ployz_testkit::fake_fleet::FleetFile {
+    let machines: Vec<_> = servers
+        .iter()
+        .enumerate()
+        .map(|(index, (name, declares))| {
+            serde_json::json!({
+                "name": name,
+                "id": char::from(b'1' + index as u8).to_string().repeat(32),
+                "version": "0.4.0",
+                "online": !matches!(declares, Declares::Offline),
+                "predates_doors": matches!(declares, Declares::Predates),
+                "refuses_doors": matches!(declares, Declares::Refuses),
+                "containers": [
+                    {"id": format!("{name}-ingress-holder"), "namespace": "ployz-system",
+                     "service": "ingress-holder", "image": "pause", "state": "running"},
+                    {"id": format!("{name}-ingress"), "namespace": "ployz-system",
+                     "service": "ingress", "image": "caddy", "state": "running"},
+                ],
+            })
         })
-    };
-    serde_json::from_value(serde_json::json!({"machines": [
-        machine("edge", "1", entry_predates, true),
-        machine("upgraded", "2", false, peer_online),
-    ]}))
-    .unwrap()
+        .collect();
+    serde_json::from_value(serde_json::json!({ "machines": machines })).unwrap()
 }
 
 fn declared_on(fleet: &ployz_testkit::fake_fleet::FakeFleet) -> Vec<String> {
@@ -710,7 +720,7 @@ async fn an_entry_that_cannot_keep_a_declaration_sets_the_doors_without_one() {
     use ployz_testkit::fake_fleet::{FakeFleet, Scenario};
     let sockets = tempfile::tempdir().unwrap();
     let fleet = FakeFleet::start(
-        upgrading_fleet(true, false),
+        upgrading_fleet(&[("edge", Declares::Predates), ("old", Declares::Predates)]),
         Scenario::default(),
         sockets.path(),
         None,
@@ -731,7 +741,7 @@ async fn an_entry_that_cannot_keep_a_declaration_sets_the_doors_without_one() {
 
     assert!(changed.failures.is_empty(), "{changed:?}");
     assert_eq!(commands_of(&fleet, "set_cluster_doors"), 0);
-    assert_eq!(commands_of(&fleet, "set_ingress_doors"), 1);
+    assert_eq!(commands_of(&fleet, "set_ingress_doors"), 2);
     assert_eq!(fleet.declared_doors().unwrap(), None);
 }
 
@@ -740,7 +750,7 @@ async fn an_entry_that_cannot_keep_a_declaration_hands_it_to_a_server_that_can()
     use ployz_testkit::fake_fleet::{FakeFleet, Scenario};
     let sockets = tempfile::tempdir().unwrap();
     let fleet = FakeFleet::start(
-        upgrading_fleet(true, true),
+        upgrading_fleet(&[("edge", Declares::Predates), ("upgraded", Declares::Serves)]),
         Scenario::default(),
         sockets.path(),
         None,
@@ -778,7 +788,10 @@ async fn a_capable_server_that_is_offline_is_no_route_and_no_refusal() {
     use ployz_testkit::fake_fleet::{FakeFleet, Scenario};
     let sockets = tempfile::tempdir().unwrap();
     let fleet = FakeFleet::start(
-        upgrading_fleet(true, false),
+        upgrading_fleet(&[
+            ("edge", Declares::Predates),
+            ("upgraded", Declares::Offline),
+        ]),
         Scenario::default(),
         sockets.path(),
         None,
@@ -798,6 +811,76 @@ async fn a_capable_server_that_is_offline_is_no_route_and_no_refusal() {
 
     assert_eq!(declared_on(&fleet), Vec::<String>::new());
     assert_eq!(commands_of(&fleet, "set_ingress_doors"), 1);
+}
+
+#[tokio::test]
+async fn a_declarer_that_refuses_is_followed_by_the_next_one() {
+    use ployz_testkit::fake_fleet::{FakeFleet, Scenario};
+    let sockets = tempfile::tempdir().unwrap();
+    let fleet = FakeFleet::start(
+        upgrading_fleet(&[
+            ("edge", Declares::Predates),
+            ("first", Declares::Refuses),
+            ("second", Declares::Serves),
+        ]),
+        Scenario::default(),
+        sockets.path(),
+        None,
+    )
+    .unwrap();
+    let mut client = entry_of(&fleet).await;
+    let observed = observe_doors(&mut client).await.unwrap();
+
+    let changed = use_doors(
+        &mut client,
+        observed,
+        ClusterDoors::closed(),
+        &CancellationToken::new(),
+    )
+    .await
+    .unwrap();
+
+    assert!(changed.failures.is_empty(), "{changed:?}");
+    assert_eq!(declared_on(&fleet), ["first", "second"]);
+    assert_eq!(
+        fleet.declared_doors().unwrap(),
+        Some(ClusterDoors::closed().doors)
+    );
+}
+
+#[tokio::test]
+async fn no_server_is_switched_when_every_declarer_refuses() {
+    use ployz_testkit::fake_fleet::{FakeFleet, Scenario};
+    let sockets = tempfile::tempdir().unwrap();
+    let fleet = FakeFleet::start(
+        upgrading_fleet(&[
+            ("edge", Declares::Predates),
+            ("first", Declares::Refuses),
+            ("second", Declares::Refuses),
+        ]),
+        Scenario::default(),
+        sockets.path(),
+        None,
+    )
+    .unwrap();
+    let mut client = entry_of(&fleet).await;
+    let observed = observe_doors(&mut client).await.unwrap();
+
+    let refused = use_doors(
+        &mut client,
+        observed,
+        ClusterDoors::closed(),
+        &CancellationToken::new(),
+    )
+    .await;
+
+    let error = refused.expect_err("a switch behind an unwritten declaration is refused");
+    assert!(
+        format!("{error:?}").contains("No Server took the Cluster's Doors"),
+        "{error:?}"
+    );
+    assert_eq!(commands_of(&fleet, "set_ingress_doors"), 0);
+    assert_eq!(fleet.declared_doors().unwrap(), None);
 }
 
 #[test]

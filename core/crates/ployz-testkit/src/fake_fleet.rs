@@ -81,6 +81,9 @@ pub struct FleetMachine {
     /// serves the route.
     #[serde(default)]
     pub predates_doors: bool,
+    /// A daemon that advertises SetClusterDoors and answers it with a refusal.
+    #[serde(default)]
+    pub refuses_doors: bool,
 }
 
 /// One Container. The fixture's `id` is the Docker display name; its wire Container ID
@@ -542,6 +545,7 @@ struct MachineState {
     version: MachineVersion,
     online: bool,
     predates_doors: bool,
+    refuses_doors: bool,
     containers: Vec<ContainerState>,
     copies: Vec<CopyState>,
     upgrades: Vec<MachineUpgradeAttempt>,
@@ -810,6 +814,9 @@ impl Fleet {
             RpcRequestBody::SetClusterDoors(_) if self.by_id(target)?.predates_doors => Err(
                 Status::unimplemented("this daemon predates SetClusterDoors"),
             ),
+            RpcRequestBody::SetClusterDoors(_) if self.by_id(target)?.refuses_doors => {
+                Err(Status::unavailable("this daemon's store is not ready"))
+            }
             RpcRequestBody::SetClusterDoors(request) => {
                 self.declared_doors = Some(request.doors.clone());
                 unary(
@@ -1218,6 +1225,7 @@ impl MachineState {
             version: machine.version,
             online: machine.online,
             predates_doors: machine.predates_doors,
+            refuses_doors: machine.refuses_doors,
             containers: machine
                 .containers
                 .into_iter()

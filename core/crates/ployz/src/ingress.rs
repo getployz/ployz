@@ -371,17 +371,14 @@ async fn declare(client: &Client, observed: &Doors, doors: &IngressDoors) -> Res
                     .await
                 {
                     Ok(_) => return Ok(()),
-                    Err(error) => last = Some((declarer, error)),
+                    Err(error) => last = Some(error),
                 }
             }
-            let (declarer, error) = last.expect("a Through declaration names a Server");
+            let error = last.expect("a Through declaration names a Server");
             Err(Failure::caused(
                 RpcErrorCode::Unavailable,
-                format!(
-                    "Server {} didn't take the Cluster's Doors, so no Server's Doors were \
-                     switched. Run the command again, or upgrade the Server you connect through.",
-                    declarer.server
-                ),
+                "No Server took the Cluster's Doors, so none were switched. Run the command \
+                 again, or upgrade the Server you connect through.",
                 error,
             ))
         }
@@ -496,7 +493,9 @@ pub(crate) async fn follow_roles(client: &mut Client) -> Result<Vec<Followed>, N
 /// Declare the Cluster closed when it declares nothing yet, as a Cluster founded closed
 /// starts. A Cluster that already declares Doors keeps them, so a rerun of the founding
 /// follows what the operator set since. An entry that can't keep a declaration declares
-/// nothing.
+/// through an online Server that can, and nothing when none can. Through such an entry the
+/// snapshot carries no declaration, so a Cluster that already declares Doors is declared
+/// closed again.
 ///
 /// # Errors
 ///

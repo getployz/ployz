@@ -26,11 +26,11 @@ flowchart LR
    The client writes it with `SetClusterDoors` before it fans out `SetIngressDoors`, and every Engine reader
    goes through `cluster_doors(declared, services)`: the declared set when present, else the newest holder and
    newest connector, as before. Both doors at once is a legal transition state, so a switch opens the tunnel
-   before closing ports. Each `SetIngressDoors` call declares the set it was given, so Cloud's tunnel switch,
+   before closing ports. Each SDK `setIngressDoors` call declares the set it was given, so Cloud's tunnel switch,
    which calls it with both Doors and then with the tunnel alone, can stop with both declared. No background
    loop converges toward the key. Commands and a later catch-up read it, and a rerun converges. An entry
    daemon from before `SetClusterDoors` hands the declaration to an online Server that serves it, through the
-   route the Doors take, so a rolling upgrade never blocks a switch.
+   route the Doors take, so a rolling upgrade stops no switch for want of a route.
    _Reversed 2026-11-11_ from "No stored mode", which rejected this key as persisted desired state plus a second
    writer of Caddy's shape. Nine readers each rebuilt the Door set from door Containers with their own rule, and
    most ingress bugs since (#4037, #4039, #4040, #4060, #4061, #4022) were those readers disagreeing. Closed is
