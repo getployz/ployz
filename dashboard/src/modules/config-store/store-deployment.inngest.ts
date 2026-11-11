@@ -175,17 +175,17 @@ const APPROVAL_LOOK_WAIT = "1m";
 
 /**
  * A redeploy a person approved runs only once they approve its commits again after its builds, so the approvals each
- * Server checks are fresh. Looks once a minute for an hour, or at once when the approval's event comes. False when none
- * came.
+ * Server checks are fresh. Looks once a minute for an hour, or at once when the approval's event comes, and once more
+ * after the last wait, so an approval that lands during it counts. False when none came.
  */
 export async function walkApproval(data: ConfigDeploymentAdmittedEventData, step: Step, runEffect: StoreEffectRunner): Promise<boolean> {
-  for (let look = 0; look < APPROVAL_LOOKS; look += 1) {
+  for (let look = 0; ; look += 1) {
     if (!(await step.run(`approval-${look}`, () => runEffect(storeDeploymentAwaitsApproval(data.deploymentId))))) return true;
+    if (look === APPROVAL_LOOKS) return false;
     await step.waitForEvent(`approval-wait-${look}`, {
       event: configDeploymentApprovedEvent, if: `async.data.deploymentId == '${data.deploymentId}'`, timeout: APPROVAL_LOOK_WAIT,
     });
   }
-  return false;
 }
 
 const PLACEMENT_PULLS = 144;

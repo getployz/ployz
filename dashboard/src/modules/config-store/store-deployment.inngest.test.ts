@@ -109,10 +109,17 @@ describe("a redeploy that waits for its commits to be approved again", () => {
     expect(order).toEqual(["approval-0", "approval-wait-0", "approval-1", "approval-wait-1", "approval-2"]);
   });
 
+  it("runs an approval that lands during the last wait", async () => {
+    const { approved, order } = await walk((look) => look < APPROVAL_LOOKS);
+    expect(approved).toBe(true);
+    expect(order.slice(-2)).toEqual([`approval-wait-${APPROVAL_LOOKS - 1}`, `approval-${APPROVAL_LOOKS}`]);
+  });
+
   it("gives up once no approval came within the hour", async () => {
     const { approved, order } = await walk(() => true);
     expect(approved).toBe(false);
     expect(order.filter((name) => name.startsWith("approval-wait-"))).toHaveLength(APPROVAL_LOOKS);
+    expect(order.at(-1)).toBe(`approval-${APPROVAL_LOOKS}`);
   });
 });
 
