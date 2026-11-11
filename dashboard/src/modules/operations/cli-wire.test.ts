@@ -13,13 +13,17 @@ describe("volumeRunInput", () => {
       .toEqual({ kind: "delete_mirror", args: { slot: "web-1", confirmed_name: "data", role: "any" } });
   });
 
-  it("carries a Device's approval on a mirror and a full sync, and none when the CLI sent none", () => {
+  it("carries a Device's approval on a mirror, a full sync and a resize, and none when the CLI sent none", () => {
     const approval = { body: '{"volume":"v"}', signatures: [{ key: "a".repeat(64), signature: "b".repeat(128) }] };
     expect(volumeRunInput(decode({ environment, kind: "mirror", to: "web-2", approval })))
       .toEqual({ kind: "mirror", args: { to: "web-2", approval } });
     expect(volumeRunInput(decode({ environment, kind: "sync", full: true, approval })))
       .toEqual({ kind: "sync", args: { full: true, approval } });
     expect(volumeRunInput(decode({ environment, kind: "mirror", to: "web-2" }))).toEqual({ kind: "mirror", args: { to: "web-2" } });
+    expect(volumeRunInput(decode({ environment, kind: "resize", maximum_bytes: 20_000_000_000, approval })))
+      .toEqual({ kind: "resize", args: { maximum_bytes: 20_000_000_000, approval } });
+    expect(volumeRunInput(decode({ environment, kind: "resize", maximum_bytes: 20_000_000_000 })))
+      .toEqual({ kind: "resize", args: { maximum_bytes: 20_000_000_000 } });
   });
 
   it("refuses an approval that isn't shaped as a signed one", () => {
