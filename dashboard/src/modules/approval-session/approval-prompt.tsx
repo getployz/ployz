@@ -26,7 +26,13 @@ import {
 import { strandedByProposal } from "#/modules/proposals/proposal";
 import { needsNewerPloyz, strandedByStop } from "#/modules/service-act/service-act";
 
-type Ask = { readonly scope: ApprovalScope; readonly reason: PromptReason; readonly resolve: (approved: boolean) => void };
+/** A passkey prompt for a session, or the lines of approvals this browser drafted, which it signs only once approved. */
+type Ask =
+  | { readonly kind: "session"; readonly scope: ApprovalScope; readonly reason: PromptReason; readonly resolve: (approved: boolean) => void }
+  | { readonly kind: "review"; readonly review: Review; readonly resolve: (approved: boolean) => void };
+
+/** What the person approves: every line of what this browser will sign, kept as written, and the button that signs it. */
+export type Review = { readonly title: string; readonly lines: readonly string[]; readonly note: string; readonly action: string };
 
 let pendingAsk: Ask | null = null;
 const askListeners = new Set<() => void>();
@@ -49,7 +55,16 @@ export function ensureApproval(scope: ApprovalScope, family: ActionFamily | "pro
   const reason = family === "proposal" ? "proposal" : promptReason(readSession(), scope, family);
   if (reason === null) return Promise.resolve(true);
   pendingAsk?.resolve(false);
-  return new Promise((resolve) => setAsk({ scope, reason, resolve }));
+  return new Promise((resolve) => setAsk({ kind: "session", scope, reason, resolve }));
+}
+
+/**
+ * Resolves true once the person approves `review`, false when they cancel. Every term of what is signed shows first,
+ * read back from the bodies this browser drafted: Cloud relays the plan, so a setting nobody made shows here too.
+ */
+export function reviewApproval(review: Review): Promise<boolean> {
+  pendingAsk?.resolve(false);
+  return new Promise((resolve) => setAsk({ kind: "review", review, resolve }));
 }
 
 /** A restart, stop or start as the browser approves it: where it runs, the Service's copies, and the Servers. */
@@ -117,8 +132,8 @@ export type DeployTarget = {
  * enforces can't take an approval from a browser, or Cloud can't tell which Cluster the Deploy goes to: either way the
  * Deploy would only be refused there.
  */
-export async function deployApprovalScope(target: DeployTarget): Promise<ApprovalScope | null | undefined> {
-  const { enforced, scope, older } = deployScope(target.environment, target.environmentMachines, target.machines);
+export async function deployApprovalScope(target: DeployTarget, capabilities?: readonly string[]): Promise<ApprovalScope | null | undefined> {
+  const { enforced, scope, older } = deployScope(target.environment, target.environmentMachines, target.machines, capabilities);
   if (!enforced) return undefined;
   if (older !== null) throw new Error(`${older} needs a newer Ployz to deploy from the dashboard. Upgrade it, or run ployz deploy.`);
   if (scope === null) throw new Error("Cloud couldn't check the servers. Try again.");
@@ -127,20 +142,25 @@ export async function deployApprovalScope(target: DeployTarget): Promise<Approva
 
 export function ApprovalPrompt() {
   const ask = useSyncExternalStore(subscribeAsk, () => pendingAsk, () => null);
-  const [busy, setBusy] = useState(false);
-  const [failed, setFailed] = useState<string | null>(null);
   if (ask === null) return null;
   const close = (approved: boolean) => {
-    setFailed(null);
     ask.resolve(approved);
     setAsk(null);
   };
+  return ask.kind === "session"
+    ? <SessionPrompt scope={ask.scope} close={close} />
+    : <ReviewPrompt review={ask.review} close={close} />;
+}
+
+function SessionPrompt({ scope, close }: { scope: ApprovalScope; close: (approved: boolean) => void }) {
+  const [busy, setBusy] = useState(false);
+  const [failed, setFailed] = useState<string | null>(null);
   const confirm = async () => {
     if (busy) return;
     setBusy(true);
     setFailed(null);
     try {
-      await startSession(ask.scope);
+      await startSession(scope);
       close(true);
     } catch (error) {
       setFailed(error instanceof SessionRefused ? error.message
@@ -164,6 +184,27 @@ export function ApprovalPrompt() {
             {busy ? <Spinner data-icon="inline-start" /> : <KeyRoundIcon data-icon="inline-start" />}
             Use passkey
           </Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
+  );
+}
+
+/** Each line as it is, spacing kept, so values that sign differently read differently. */
+function ReviewPrompt({ review, close }: { review: Review; close: (approved: boolean) => void }) {
+  return (
+    <Dialog open onOpenChange={(open) => { if (!open) close(false); }}>
+      <DialogContent className="sm:max-w-2xl">
+        <DialogHeader>
+          <DialogTitle>{review.title}</DialogTitle>
+          <DialogDescription>{review.note}</DialogDescription>
+        </DialogHeader>
+        <div aria-label="What you approve" className="max-h-80 overflow-y-auto rounded-md border p-2 font-mono text-xs whitespace-pre-wrap break-all">
+          {review.lines.map((line, at) => <div key={`${at}:${line}`}>{line}</div>)}
+        </div>
+        <DialogFooter>
+          <DialogClose render={<Button variant="outline" />}>Cancel</DialogClose>
+          <Button onClick={() => close(true)}>{review.action}</Button>
         </DialogFooter>
       </DialogContent>
     </Dialog>
