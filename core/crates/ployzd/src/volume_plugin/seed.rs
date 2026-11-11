@@ -15,17 +15,11 @@ use tokio::process::Command;
 use super::{
     Dataset, DockerVolumeName, VolumeStorage,
     inspect::{answering, internal},
+    marks::{Mark, Marks},
     mirror,
-    storage::{
-        HeldMutation, PROMOTE_PROPERTY, PULL_PROPERTY, PULLED_PROPERTY, root_dataset, slot_fs,
-        slot_parent,
-    },
+    storage::{HeldMutation, root_dataset, slot_fs, slot_parent},
     transfer::{Busy, Stop, ZfsChild, exited},
 };
-
-/// On the root a seed lands as: the guid of the restore point it holds. Landing sets it on
-/// the slot just before the rename, so a completed copy that has not landed carries none.
-pub(super) const SEED_PROPERTY: &str = "ployz:seed";
 
 /// Where a Seed of `into` at one guid stands on this Machine, as
 /// [`VolumeStorage::seed_progress`] reads it under the mutation. Nothing records it: each
@@ -110,15 +104,8 @@ impl Copied {
         let fs = &self.fs;
         // The slot may be a mirror that pulled this point; landed, it is no received copy.
         storage
-            .zfs(&["inherit", PULLED_PROPERTY, fs])
-            .await
-            .map_err(internal)?;
-        storage
-            .zfs(&["set", &format!("{SEED_PROPERTY}={guid}"), fs])
-            .await
-            .map_err(internal)?;
-        storage
-            .zfs(&["set", &format!("{PROMOTE_PROPERTY}=on"), fs])
+            .marks(fs)
+            .apply(&Marks::landed(guid))
             .await
             .map_err(internal)?;
         storage
@@ -242,10 +229,7 @@ impl VolumeStorage {
             .map_err(internal)?
             .is_some()
         {
-            let seed = self
-                .property(&root, SEED_PROPERTY)
-                .await
-                .map_err(internal)?;
+            let seed = self.marks(&root).get(Mark::Seed).await.map_err(internal)?;
             if seed != Some(guid.to_string()) {
                 return Ok(SeedProgress::Taken);
             }
@@ -262,7 +246,7 @@ impl VolumeStorage {
             );
         }
         let pulling = if slot {
-            self.pull_target(&parent).await.map_err(internal)?
+            self.marks(&parent).pull_target().await.map_err(internal)?
         } else {
             None
         };
@@ -344,7 +328,8 @@ impl VolumeStorage {
         let fs = slot_fs(pool, into);
         let Source { root, point, bound } = source;
         self.create_bounded_slot(&parent, bound).await?;
-        self.zfs(&["set", &format!("{PULL_PROPERTY}={}", point.name), &parent])
+        self.marks(&parent)
+            .set_pull(point.name.as_str())
             .await
             .map_err(internal)?;
         let storage = self.clone();

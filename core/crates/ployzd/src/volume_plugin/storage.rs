@@ -24,28 +24,6 @@ use super::{
 
 pub(super) use ployz_core::{DATASET_ROOT, MIRROR_ROOT};
 pub(super) const MOUNT_ROOT: &str = "/var/lib/ployz-volumes";
-/// Set on a root renamed into place until Docker's Create registers it with its labels.
-/// Get and List hide a marked root, so Docker never records it without them.
-pub(super) const PROMOTE_PROPERTY: &str = "ployz:promote";
-/// Set by ZFS on a dataset whose `receive -s` was interrupted; `-` otherwise.
-pub(super) const RESUME_TOKEN_PROPERTY: &str = "receive_resume_token";
-/// On a root: the SetVolumeCopy run of writes it belongs to. Missing reads as 0.
-pub(super) const EPOCH_PROPERTY: &str = "ployz:epoch";
-/// Set on a root the cut renames into its slot, so the rename carries it to the slot's
-/// `fs`. It means Docker on this Machine still holds a record for the Volume, and plugin
-/// Get keeps answering for it until a Writer want makes the root writable again.
-pub(super) const CUT_PROPERTY: &str = "ployz:cut";
-/// On a slot parent: the target of the SetVolumeCopy pull in flight, from its start until
-/// its prune is done.
-pub(super) const PULL_PROPERTY: &str = "ployz:pull";
-/// On a slot's `fs`: the guid of the snapshot a mirror pull received, set once the
-/// receive exits having made a snapshot newer than the slot held. That snapshot came from
-/// a writer elsewhere, so while it is still the newest the departure may destroy the slot.
-/// Read only where set locally: a value inherited from a parent proves nothing.
-pub(super) const PULLED_PROPERTY: &str = "ployz:pulled";
-/// On a slot parent: what this Machine holds the slot for, `mirror` once a pull starts
-/// and `old_copy` once a cut or a departure parks a root in it. Unset reads as a Mirror.
-pub(super) const ROLE_PROPERTY: &str = "ployz:role";
 
 pub(super) fn slot_parent(pool: &MachinePool, name: &DockerVolumeName) -> String {
     format!("{}/{MIRROR_ROOT}/{name}", pool.name())
@@ -199,9 +177,9 @@ impl VolumeStorage {
 
         if let Some(existing) = Self::dataset(&datasets, pool, name)? {
             existing.require_requested(name, requested)?;
-            if self.unregistered(&existing.name).await? {
-                self.zfs(&["inherit", PROMOTE_PROPERTY, &existing.name])
-                    .await?;
+            let marks = self.marks(&existing.name);
+            if marks.unregistered().await? {
+                marks.clear_promote().await?;
                 ployzd::faults::kill_inside("Create", None);
             }
             return Ok(());

@@ -7,10 +7,10 @@
 //! (:77-83). `install_at` holds the installation gate's exclusive guard throughout
 //! (installer/mod.rs:259-264, :286). The plugin's `VolumeStorage::create`
 //! (volume_plugin/pool.rs:96-124) takes that gate's shared guard (`admit_mutation`,
-//! :102, volume_plugin/storage.rs:178-188), then the Pool mutation lock (pool.rs:103), then
+//! :102, volume_plugin/storage.rs:156-166), then the Pool mutation lock (pool.rs:103), then
 //! runs `one_usable` (:213), `recover` (:276) and, when both find nothing, `create`
 //! (:391), which builds the root-backed `ployz` Pool on a backing file. Copy's `first_pool`
-//! takes the same path (volume_plugin/copy.rs:146-160, :175-196). Meanwhile the disk can go
+//! takes the same path (volume_plugin/copy.rs:143-157 and `first_pool` in the same file). Meanwhile the disk can go
 //! missing and return, ZFS imports at boot the Pools its cache file lists, and
 //! `local_storage` (ployzd machine/mod.rs:689) reports what `zpool list` shows.
 //!
@@ -198,7 +198,7 @@ enum Observed {
 #[derive(Clone, Copy, Debug, Hash, PartialEq, Eq)]
 enum Branch {
     /// `admit_mutation`'s `try_mutation` refused: "a Ployz installation or upgrade is
-    /// active" (volume_plugin/storage.rs:178-188, ployzd mutation.rs:55-69).
+    /// active" (volume_plugin/storage.rs:156-166, ployzd mutation.rs:55-69).
     InstallationActive,
     /// `install_at`'s `try_installation` refused at once while a Volume create holds the
     /// shared guard (ployzd mutation.rs:77-81, installer/mod.rs:259-260). The installer
@@ -245,7 +245,7 @@ enum Branch {
     RefusesIntent,
     /// The fix: `recover` removed an intent whose disk is present with no label, for a
     /// caller that holds the installation gate's shared guard, a Volume create or copy
-    /// (`admit_mutation`, volume_plugin/pool.rs:102, copy.rs:146-153). No installer runs
+    /// (`admit_mutation`, volume_plugin/pool.rs:102, copy.rs:143-150). No installer runs
     /// while that guard is held (ployzd mutation.rs:77-81).
     ClearsStale,
     /// The fix: `recover` found an intent whose disk is present with no label, for List or
@@ -253,7 +253,7 @@ enum Branch {
     /// An installer may still be before its `zpool create`, so `recover` leaves the intent
     /// and returns `Ok(None)`. The product change: `recover` (volume_plugin/pool.rs:276)
     /// takes whether its caller holds the shared guard; `admit` (:255-260) passes it
-    /// through, and copy's `first_pool`, which calls `recover` directly (copy.rs:181-187),
+    /// through, and copy's `first_pool`, which calls `recover` directly (copy.rs:178-184),
     /// passes yes.
     KeepsIntent,
     /// `recover` returned `Ok(None)` (volume_plugin/pool.rs:313).
@@ -303,7 +303,7 @@ enum Action {
     /// Docker asks the plugin to create a Provisioned Volume (`VolumeStorage::create`,
     /// volume_plugin/pool.rs:96), or a copy asks for the first Pool (copy.rs `first_pool`).
     /// The request takes the installation gate's shared guard (`admit_mutation`, pool.rs:102,
-    /// copy.rs:146-153), then the Pool mutation lock (pool.rs:103, copy.rs:180).
+    /// copy.rs:143-150), then the Pool mutation lock (pool.rs:103, copy.rs:177).
     Request,
     /// `PoolStorage::one_usable` (volume_plugin/pool.rs:213-249).
     OneUsable,
@@ -356,7 +356,7 @@ struct State {
 struct Broken {
     /// The installation gate admits a Volume create while `install_at` runs, and lets
     /// `install_at` start while a Volume create holds the shared guard (installer/mod.rs:260,
-    /// volume_plugin/storage.rs:182-185).
+    /// volume_plugin/storage.rs:160-163).
     gate_admits_during_install: bool,
     /// `recover` (volume_plugin/pool.rs:307-312) ignores the marker.
     recover_ignores_marker: bool,
