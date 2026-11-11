@@ -199,6 +199,17 @@ it("opens only the tunnel on a Cluster founded closed and ends set up with the s
   expect((await harness.pool.query("select want, state from ingress_doors_attempt")).rows).toEqual([{ want: "tunnel", state: "pending" }]);
 });
 
+it("ends set up and keeps the tunnel when the event that starts the switch never sends", async () => {
+  await foundedClosed();
+  vi.mocked(inngest.send).mockImplementationOnce(() => new Promise(() => {}));
+  const { http, records } = cloudflare();
+  const { runtime, sets } = cluster((doors) => doors, CLOSED_FRAME);
+  expect(await setUp("example.com", http, runtime)).toMatchObject({ state: "set_up", switching: true });
+  expect(sets).toEqual([{ doors: ["tunnel"], token: TUNNEL_TOKEN }]);
+  expect(records).toHaveLength(1);
+  expect(await setupRows()).toMatchObject([{ state: "set_up" }]);
+});
+
 it("asks for no switch on a Cluster whose ports are open, leaving the move to the user", async () => {
   const { runtime } = cluster();
   expect(await setUp("example.com", cloudflare().http, runtime)).toMatchObject({ state: "set_up", switching: false });

@@ -159,8 +159,8 @@ Keep the tab open while it joins: the tab holds your token, and Ployz never stor
 server joins, Ployz creates a tunnel named `ployz-<your organization>` and one `*.example.com`
 record, opens the tunnel on the server, drops the token, and the Servers page says **Cloudflare
 Tunnel is set up on example.com**. With no open ports to keep your apps answering meanwhile,
-Ployz then switches your web traffic to the tunnel by itself, and a deployment you start while
-setup runs moves with it. Your apps get addresses like `web-production.example.com`. If that
+Ployz then switches your web traffic to the tunnel by itself, and a deployment that is already
+running when it looks moves with it. Your apps get addresses like `web-production.example.com`. If that
 switch stops, **Organization → Network** says why, and **Review and switch** finishes it.
 
 If setup stops, the Servers page says why. **Try again** runs it with the same token. **Use

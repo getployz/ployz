@@ -36,7 +36,7 @@ when something is left, the message names it.
 
 Setup adds a tunnel named `ployz-<your organization>` and one proxied `*.example.com` record to
 your zone. It never touches `example.com` itself or a record you already have. Your addresses
-stay where they are until you switch. A Cluster whose first server started with ports closed
+stay where they are until you switch. A Cluster whose servers still have ports closed
 switches by itself as setup ends, since nothing else would serve its apps.
 
 Click **Review and switch**. The review lists every address that moves, like
