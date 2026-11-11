@@ -15,7 +15,7 @@ use std::io::{IsTerminal as _, Read};
 use ployz_core::{MachineId, MachineObservation, MachineTarget, RpcError, RpcErrorCode};
 use ployz_store::{
     Change, DomainRow, DomainsQuery, DomainsView, Edit, EnvironmentQuery, EnvironmentView, Instead,
-    NodeName, Revision, SecretSlot, SettingPath, SettingRow, TypedAddresses,
+    NodeName, Revision, SettingPath, SettingRow, TypedAddresses,
 };
 use serde::Serialize;
 use serde_json::{Value, json};
@@ -319,7 +319,7 @@ pub(super) fn set(root: &ArgMatches) -> Result<(), Error> {
         })
         .collect::<Result<Vec<_>, Error>>()?;
     if let Some(Assignment { text: path, .. }) = assignments.iter().find(|assignment| {
-        (assignment.path.as_ref()).is_ok_and(|path| seals_as_text(path, assignment.value))
+        assignment.path.is_ok() && seals_as_text(assignment.text, assignment.value)
     }) {
         return Err(Error::usage(format!(
             "A new secret never goes on the command line: pipe it in with printf %s \"$VALUE\" | ployz set {path} --secret"
@@ -380,22 +380,24 @@ fn seals(variable: &Value) -> bool {
 /// Whether `set PATH=VALUE` would send a new secret as text. A variable's value is any
 /// text, so only the shape the Store seals counts: `{"secret": "…"}`, nonempty, alone.
 /// A registry credential takes no text but `{"secret": true}`, so any new secret counts.
-fn seals_as_text(path: &SettingPath, value: &str) -> bool {
-    let Some(slot) = path.carries_secret() else {
-        return false;
-    };
+///
+/// It reads the path as typed, case and all, not what it parses to: `setup.registryCredential`
+/// and `volumes.env.name` parse to a Setup Command and a Volume field, and the refusal still
+/// covers them. The caller asks only of a path that parses.
+fn seals_as_text(path: &str, value: &str) -> bool {
     let Ok(value) = serde_json::from_str::<Value>(value) else {
         return false;
     };
-    match slot {
-        SecretSlot::VariableValue => value.as_object().is_some_and(|fields| {
+    match path.split('.').collect::<Vec<_>>()[..] {
+        [_, "env", _] => value.as_object().is_some_and(|fields| {
             fields.len() == 1
                 && fields
                     .get("secret")
                     .and_then(Value::as_str)
                     .is_some_and(|secret| !secret.is_empty())
         }),
-        SecretSlot::RegistryCredential => seals(&value),
+        [_, "registryCredential"] => seals(&value),
+        _ => false,
     }
 }
 
@@ -773,25 +775,45 @@ mod tests {
     #[test]
     fn an_assignment_shaped_like_a_new_secret_is_refused_but_text_and_kept_secrets_are_not() {
         let fake = r#"{"secret":"FAKE-3588"}"#;
-        let seals = |text: &str, value: &str| seals_as_text(&path(text), value);
-        assert!(seals("web.env.RX", fake));
-        assert!(seals("web.registryCredential", fake));
-        assert!(seals(
+        assert!(seals_as_text("web.env.RX", fake));
+        assert!(seals_as_text("web.registryCredential", fake));
+        assert!(seals_as_text(
             "web.registryCredential",
             r#"{"username":"u","secret":"FAKE-3588"}"#
         ));
         // Keeping the stored secret carries no value.
-        assert!(!seals("web.registryCredential", r#"{"secret":true}"#));
+        assert!(!seals_as_text(
+            "web.registryCredential",
+            r#"{"secret":true}"#
+        ));
         // A variable keeps any JSON the Store would not seal, as text.
-        assert!(!seals("web.env.RX", "plain"));
-        assert!(!seals("web.env.RX", r#"{"other":"x"}"#));
-        assert!(!seals(
+        assert!(!seals_as_text("web.env.RX", "plain"));
+        assert!(!seals_as_text("web.env.RX", r#"{"other":"x"}"#));
+        assert!(!seals_as_text(
             "web.env.RX",
             r#"{"secret":"field-name","enabled":false}"#
         ));
-        assert!(!seals("web.env.RX", r#"{"secret":""}"#));
-        assert!(!seals("web.env.RX.description", fake));
-        assert!(!seals("setup.web", fake));
+        assert!(!seals_as_text("web.env.RX", r#"{"secret":""}"#));
+        assert!(!seals_as_text("web.env.RX.description", fake));
+        assert!(!seals_as_text("setup.web", fake));
+    }
+
+    #[test]
+    fn the_refusal_reads_a_path_as_typed_so_it_covers_every_spelling_that_parses() {
+        let fake = r#"{"secret":"FAKE-3588"}"#;
+        for text in [
+            "setup.registryCredential",
+            "volumes.env.name",
+            "volumes.env.storage",
+            "volumes.env.sharedWrites",
+            "configs.env.name",
+        ] {
+            assert!(SettingPath::parse(text).is_ok(), "{text} parses");
+            assert!(seals_as_text(text, fake), "{text}");
+        }
+        for text in ["setup.registrycredential", "web.registrycredential"] {
+            assert!(!seals_as_text(text, fake), "{text}");
+        }
     }
 
     #[test]

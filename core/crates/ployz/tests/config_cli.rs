@@ -8832,12 +8832,29 @@ fn set_refuses_a_secret_on_the_command_line_and_sends_the_rest_as_typed() {
             "Expected PATH=VALUE, for example web.replicas=3"
         );
 
-        for path in ["web.env.KEY", "WEB.env.KEY", "web.registryCredential"] {
+        // The refusal reads the path as typed: these also parse, to a Setup Command, a
+        // Volume field and a Config field, and a new secret still never leaves the command line.
+        for path in [
+            "web.env.KEY",
+            "WEB.env.KEY",
+            "web.registryCredential",
+            "setup.registryCredential",
+            "volumes.env.name",
+            "volumes.env.storage",
+            "volumes.env.sharedWrites",
+            "configs.env.name",
+        ] {
             let sealed = refused(&[&format!("{path}={secret}")]);
             assert_eq!(sealed["code"], "invalid_argument", "{path}: {sealed}");
             assert_eq!(sealed["message"], on_command_line(path), "{path}");
             assert_eq!(sealed["details"], Value::Null, "{path}");
+            if matches!(store, Target::Cloud { .. }) {
+                cloud_never_saw(store, "FAKE-4001");
+            }
         }
+        // Another case of `registryCredential` is another path, which the Store refuses.
+        let lowercase = refused(&[&format!("setup.registrycredential={secret}")]);
+        assert_eq!(lowercase["message"], "production is not a Branch");
         let sealing = format!("web.env.KEY={secret}");
         for assignments in [
             ["web.replicas=3", &sealing],
