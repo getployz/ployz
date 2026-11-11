@@ -183,7 +183,7 @@ pub(super) fn lock_below(
 
 /// Whether `branch` was shut down, or is being removed: nothing follows into it.
 pub(super) fn stopped(tx: &mut dyn Tx, branch: &EnvironmentId) -> Result<bool, RpcError> {
-    let shut_down = crate::removal::latest(tx, branch)?.is_some_and(|removal| {
+    let shut_down = crate::deployment::latest_removal(tx, branch)?.is_some_and(|removal| {
         !matches!(
             removal.status,
             crate::DeploymentStatus::Failed | crate::DeploymentStatus::Cancelled

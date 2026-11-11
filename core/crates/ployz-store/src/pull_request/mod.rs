@@ -1734,7 +1734,7 @@ fn shut_down(
     automated: &mut Automated,
 ) -> Result<(), RpcError> {
     let environment = scope::lock_id(tx, who, id)?;
-    if deployment::in_flight(tx, id)?.is_none() && crate::removal::on_servers(tx, id)?.is_some() {
+    if deployment::in_flight(tx, id)?.is_none() && deployment::on_servers(tx, id)?.is_some() {
         automated.shutting_down.push(environment.summary);
     }
     Ok(())

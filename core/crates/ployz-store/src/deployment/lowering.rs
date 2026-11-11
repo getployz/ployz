@@ -912,7 +912,7 @@ pub(super) fn lower(
                 volume_resource_id: volume.resource_id.clone(),
                 storage: volume.storage,
                 deployed: deployed.contains(&volume.resource_id),
-                named_for: crate::removal::named_for(&namespace, volume)
+                named_for: super::loss::named_for(&namespace, volume)
                     .filter(|named| *named != volume.resource_id)
                     .map(str::to_owned),
             })

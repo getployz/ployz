@@ -380,7 +380,7 @@ pub(crate) fn forgettable(
     environment: &EnvironmentId,
     trusted: &crate::Trusted,
 ) -> Result<Option<Outcome>, RpcError> {
-    if crate::removal::ran(tx, environment)?.is_none() {
+    if ran(tx, environment)?.is_none() {
         return Ok(Some(Outcome::NeverRan));
     }
     Ok(trusted.no_servers().then_some(Outcome::Forgotten))
@@ -846,12 +846,11 @@ pub(crate) fn retry(
     let environment = scope::load_by_id(tx, &stored.summary.environment_id)?;
     let head = head(tx, &environment)?;
     let running = crate::review::approval::may_hold(&head);
-    let cluster_domains = match crate::domain::has_generated(&running) {
-        true => cluster_domains(tx, &stored.summary.environment_id, &head)?,
-        false => BTreeMap::new(),
-    };
-    let dropped =
-        crate::review::approval::destructive_effects(&running, &revision, &cluster_domains);
+    let dropped = crate::review::approval::effects_of(
+        tx,
+        (&stored.summary.environment_id, &head),
+        (&running, &revision),
+    )?;
     // A Service teardown it queues destroys nothing once an applied Deployment took
     // the Service off and Cloud saw every Server without it. A Volume delete always
     // counts: a failed Deployment may have left its data where Head can't see.
@@ -1079,9 +1078,9 @@ pub(crate) fn rollback_removed(
     tx: &mut dyn Tx,
     stored: &Stored,
     applied: &SavedEnvironmentIntent,
-) -> Result<Vec<crate::removal::RemovedVolume>, RpcError> {
+) -> Result<Vec<loss::RemovedVolume>, RpcError> {
     let source = saved_at(tx, &stored.summary.environment_id, stored.summary.saved)?;
-    let mut removed = crate::removal::removed(applied, &source, &stored.namespace)?;
+    let mut removed = loss::removed(applied, &source, &stored.namespace)?;
     let number = i64::try_from(stored.summary.numbered()?)
         .map_err(|_| error::corrupt("Deployment number"))?;
     for row in &tx.query(
@@ -1102,8 +1101,8 @@ pub(crate) fn rollback_removed(
             {
                 continue;
             }
-            removed.push(crate::removal::RemovedVolume {
-                docker_volume: crate::removal::docker_volume(&stored.namespace, id.as_str())?,
+            removed.push(loss::RemovedVolume {
+                docker_volume: loss::docker_volume(&stored.namespace, id.as_str())?,
                 id,
                 name,
             });
@@ -1744,7 +1743,7 @@ pub(crate) fn record(
         } => {
             // A replay must carry the same evidence: Applied State moved since, so
             // recomputing its Node Outcomes would not tell.
-            let executed = crate::removal::short_digest(
+            let executed = crate::digest::short_digest(
                 &serde_json::to_string(&(&outcome, &removed)).expect("evidence is JSON"),
             );
             if stored.run.outcome.is_some() {

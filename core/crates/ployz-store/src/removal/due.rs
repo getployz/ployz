@@ -3,26 +3,26 @@
 
 use std::collections::BTreeSet;
 
-use ployz_core::{RpcError, RpcErrorCode, ServiceName};
+use ployz_core::{Namespace, RpcError, RpcErrorCode, ServiceName};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 use ts_rs::TS;
 
 use super::mark::{self, Accepted, Closed, Evidence, Mark, State};
-use super::review::held;
 use super::{
-    Left, LeftStatus, Removal, Residual, Target, Waiting, guard, guard_removal, latest, members,
-    next, on_servers, purge, teardown_order,
+    Left, LeftStatus, Removal, Residual, Target, Waiting, guard, guard_removal, next,
+    teardown_order,
 };
 use crate::automation::{Automated, Skipped};
 use crate::deployment::admit::{AdmitRemoval, ShutDown};
+use crate::deployment::loss::{RemovedVolume, VolumeLoss, held, removed};
 use crate::deployment::{self, DeploymentStatus, DeploymentSummary, Outcome};
 use crate::error;
 use crate::id::{DeploymentId, EnvironmentId, ProjectId};
 use crate::review::approval;
 use crate::scope::{self, Environment, EnvironmentSummary};
 use crate::storage::Tx;
-use crate::{Actor, Trusted, VolumeLoss};
+use crate::{Actor, Trusted};
 
 /// List what comes off the Servers next, across every removal under way.
 #[derive(Clone, Debug, Default, Eq, PartialEq, Serialize, Deserialize, TS)]
@@ -51,13 +51,15 @@ enum Standing {
 
 fn standing(tx: &mut dyn Tx, mark: &Mark, environment: &Environment) -> Result<Standing, RpcError> {
     let id = &environment.summary.id;
-    if on_servers(tx, id)?.is_none() {
+    if deployment::on_servers(tx, id)?.is_none() {
         return Ok(Standing::Gone);
     }
     if let Some(running) = deployment::in_flight(tx, id)? {
         return Ok(Standing::InFlight(Box::new(running)));
     }
-    if latest(tx, id)?.is_some_and(|latest| latest.status == DeploymentStatus::Unknown) {
+    if deployment::latest_removal(tx, id)?
+        .is_some_and(|latest| latest.status == DeploymentStatus::Unknown)
+    {
         return Ok(Standing::Unknown);
     }
     let structural = match mark.target {
@@ -82,7 +84,7 @@ pub(super) fn alive(tx: &mut dyn Tx, mark: &Mark) -> Result<Vec<EnvironmentId>, 
     match &mark.target {
         Target::Environment(id) => Ok(vec![id.clone()]),
         Target::Project(project) => {
-            let members = members(tx, project)?;
+            let members = scope::members(tx, project)?;
             let default = default_of(tx, project)?;
             Ok(teardown_order(&members, &default)
                 .into_iter()
@@ -111,7 +113,7 @@ pub(crate) fn due(tx: &mut dyn Tx, who: &Actor) -> Result<Vec<Due>, RpcError> {
             if !matches!(standing(tx, &mark, &environment)?, Standing::Due) {
                 continue;
             }
-            let failed_on = match latest(tx, &member)? {
+            let failed_on = match deployment::latest_removal(tx, &member)? {
                 Some(failed) if failed.status == DeploymentStatus::Failed => {
                     deployment::failed_on(tx, &failed.id)?
                 }
@@ -201,14 +203,14 @@ fn services(environment: &Environment) -> Result<Vec<ServiceName>, RpcError> {
 fn finish(tx: &mut dyn Tx, mark: &mut Mark) -> Result<Option<Vec<EnvironmentSummary>>, RpcError> {
     let mut gone = Vec::new();
     for member in alive(tx, mark)? {
-        if on_servers(tx, &member)?.is_some() {
+        if deployment::on_servers(tx, &member)?.is_some() {
             return Ok(None);
         }
         gone.push(scope::load_by_id(tx, &member)?);
     }
     let mut residuals = Vec::new();
     for environment in &gone {
-        let forgotten = latest(tx, &environment.summary.id)?
+        let forgotten = deployment::latest_removal(tx, &environment.summary.id)?
             .is_some_and(|latest| latest.outcome == Some(Outcome::Forgotten));
         if forgotten {
             residuals.push(Residual {
@@ -224,7 +226,7 @@ fn finish(tx: &mut dyn Tx, mark: &mut Mark) -> Result<Option<Vec<EnvironmentSumm
     }
     mark.residuals = residuals;
     match &mark.target {
-        Target::Environment(id) => purge(tx, id)?,
+        Target::Environment(id) => scope::purge(tx, id)?,
         Target::Project(id) => {
             tx.execute(
                 "DELETE FROM config_project WHERE id = ?1",
@@ -410,7 +412,7 @@ fn admit_member(
     let losses = match forget {
         Some(_) => Vec::new(),
         None => {
-            let removed = super::removed(&review.head.applied, &empty, &namespace)?;
+            let removed = removed(&review.head.applied, &empty, &namespace)?;
             losses(
                 tx,
                 who,
@@ -421,13 +423,51 @@ fn admit_member(
             )?
         }
     };
+    let admitted = admit_taking_everything_off(
+        tx,
+        who,
+        (environment, deployment_id),
+        (&review, &losses, namespace),
+        trusted,
+    )?;
+    mark.evidence.insert(
+        id.clone(),
+        Evidence {
+            deployment: admitted.id.clone(),
+            servers: trusted.servers,
+            // Unseen, the Servers that didn't answer last time still count.
+            unanswered: unanswered(trusted).unwrap_or_else(|| {
+                mark.evidence
+                    .get(id)
+                    .map(|before| before.unanswered.clone())
+                    .unwrap_or_default()
+            }),
+        },
+    );
+    mark::save(tx, who, mark)?;
+    if let Some(outcome) = forget {
+        return deployment::forget(tx, &admitted.id, outcome);
+    }
+    Ok(admitted)
+}
+
+/// Admit the Deployment `deployment_id` that takes everything `environment` runs off
+/// the Servers, deleting the Docker Volumes `losses` names, as `review` saw it.
+fn admit_taking_everything_off(
+    tx: &mut dyn Tx,
+    who: &Actor,
+    (environment, deployment_id): (&Environment, &DeploymentId),
+    (review, losses, namespace): (&crate::review::Review, &[VolumeLoss], Namespace),
+    trusted: &Trusted,
+) -> Result<DeploymentSummary, RpcError> {
+    let id = &environment.summary.id;
     let frozen = deployment::freeze(
         id,
         &who.organization,
-        &empty,
+        &scope::empty(&environment.working.environment_slug),
         &deployment::Landing::applied(&review.head.applied),
         deployment::Scope::All {
-            losses: &losses,
+            losses,
             retire: &[],
             prune: true,
         },
@@ -451,24 +491,6 @@ fn admit_member(
         &frozen,
     )?;
     deployment::admitted_by_user(tx, &admitted.id, trusted)?;
-    mark.evidence.insert(
-        id.clone(),
-        Evidence {
-            deployment: admitted.id.clone(),
-            servers: trusted.servers,
-            // Unseen, the Servers that didn't answer last time still count.
-            unanswered: unanswered(trusted).unwrap_or_else(|| {
-                mark.evidence
-                    .get(id)
-                    .map(|before| before.unanswered.clone())
-                    .unwrap_or_default()
-            }),
-        },
-    );
-    mark::save(tx, who, mark)?;
-    if let Some(outcome) = forget {
-        return deployment::forget(tx, &admitted.id, outcome);
-    }
     Ok(admitted)
 }
 
@@ -521,7 +543,8 @@ fn stalled(
     trusted: &Trusted,
 ) -> Result<(), RpcError> {
     let id = &environment.summary.id;
-    let Some(failed) = latest(tx, id)?.filter(|latest| latest.status == DeploymentStatus::Failed)
+    let Some(failed) = deployment::latest_removal(tx, id)?
+        .filter(|latest| latest.status == DeploymentStatus::Failed)
     else {
         return Ok(());
     };
@@ -565,12 +588,12 @@ fn losses(
     tx: &mut dyn Tx,
     who: &Actor,
     environment: &Environment,
-    removed: Vec<super::RemovedVolume>,
+    removed: Vec<RemovedVolume>,
     accepted: Option<&Accepted>,
     trusted: &Trusted,
 ) -> Result<Vec<VolumeLoss>, RpcError> {
     let observed = trusted.volumes.as_ref();
-    let lenient = |removed: Vec<super::RemovedVolume>| {
+    let lenient = |removed: Vec<RemovedVolume>| {
         held(removed.clone(), observed).map_or_else(
             |_| {
                 removed
@@ -671,13 +694,8 @@ pub(crate) fn ask_taking_off(
 ) -> Result<(), RpcError> {
     let id = &environment.summary.id;
     let deployed = approval::deployed(&review.head);
-    let cluster_domains = if crate::domain::has_generated(&deployed) {
-        deployment::cluster_domains(tx, id, &review.head)?
-    } else {
-        Default::default()
-    };
     let empty = scope::empty(&environment.working.environment_slug);
-    let effects = approval::destructive_effects(&deployed, &empty, &cluster_domains);
+    let effects = approval::effects_of(tx, (id, &review.head), (&deployed, &empty))?;
     let gate = approval::Gate::new(tx, id, trusted)?;
     approval::approve_shut_down(who, taking_off, review, &effects, &gate)
 }
@@ -731,36 +749,13 @@ pub(crate) fn shut_down(
             trusted,
         )?;
     }
-    let frozen = deployment::freeze(
-        id,
-        &who.organization,
-        &empty,
-        &deployment::Landing::applied(&review.head.applied),
-        deployment::Scope::All {
-            losses: &losses,
-            retire: &[],
-            prune: true,
-        },
-        namespace,
-        None,
-    )?;
-    let admitted = deployment::admit(
+    let admitted = admit_taking_everything_off(
         tx,
         who,
-        (
-            deployment::Admission::New {
-                id: &admit.id,
-                push: None,
-            },
-            &[],
-            None,
-            None,
-        ),
-        id,
-        deployment::NOTHING,
-        &frozen,
+        (&environment, &admit.id),
+        (&review, &losses, namespace),
+        trusted,
     )?;
-    deployment::admitted_by_user(tx, &admitted.id, trusted)?;
     if let Some(outcome) = forget {
         return deployment::forget(tx, &admitted.id, outcome);
     }

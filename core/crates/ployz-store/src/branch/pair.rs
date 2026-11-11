@@ -9,7 +9,7 @@
 
 use super::*;
 use crate::Trusted;
-use crate::removal::short_digest;
+use crate::digest::short_digest;
 use crate::settings::ServiceSetting;
 
 /// What a write checks the receiver against before anything lands. Only the Store
