@@ -22,6 +22,7 @@ mod checks;
 pub(crate) mod on_merge;
 mod plan;
 mod reviewed;
+pub use crate::pr_environment::PullRequestRef;
 pub(crate) use checks::*;
 pub(crate) use on_merge::view as on_merge;
 pub use on_merge::{MergeRow, OnMerge, OnMergeInto, OnMergeQuery, Ride, SetMergeValue};
@@ -45,10 +46,12 @@ use serde_json::json;
 use ts_rs::TS;
 
 use crate::automation::{AutoDeployed, Automated, Skipped};
+use crate::branch::idle::Deadline;
 use crate::branch::{self, CreateBranch, SetupCommand};
 use crate::deployment::{self, DeploymentSummary};
 use crate::error;
 use crate::id::{EnvironmentId, EnvironmentName, ProjectName};
+use crate::pr_environment::pull_request_ref;
 use crate::project::ProjectSummary;
 use crate::removal::mark;
 use crate::review::history::NotSetVariable;
@@ -56,9 +59,6 @@ use crate::scope::{self, Environment, EnvironmentRef, EnvironmentSummary};
 use crate::settings::NodeName;
 use crate::storage::Tx;
 use crate::{Actor, Trusted, review};
-
-/// A Branch closes after this long without a Deployment.
-const IDLE: i64 = 7 * 24 * 60 * 60;
 
 /// Why a pull request's head didn't deploy.
 pub(crate) const NEEDS_APPROVAL: &str = "Needs approval";
@@ -108,14 +108,6 @@ pub struct Sweep {
     /// Cloud's clock, in seconds since the Unix epoch.
     #[ts(type = "number")]
     pub now: i64,
-}
-
-/// A pull request whose GitHub check Cloud publishes again from
-/// [`crate::Query::PullRequest`].
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
-pub struct PullRequestRef {
-    pub repository_id: RepositoryId,
-    pub number: PullRequestNumber,
 }
 
 /// Change a Project's PR plan for one repository: only the fields given change.
@@ -767,16 +759,7 @@ fn start_from(tx: &mut dyn Tx, id: &EnvironmentId) -> Result<Option<Environment>
 }
 
 fn pr_environment(tx: &mut dyn Tx, id: &EnvironmentId) -> Result<bool, RpcError> {
-    Ok(of(tx, id)?.is_some())
-}
-
-/// The pull request (repository ID, number) Environment `id` is the PR Environment of.
-pub(crate) fn of(tx: &mut dyn Tx, id: &EnvironmentId) -> Result<Option<PullRequestRef>, RpcError> {
-    let rows = tx.query(
-        "SELECT repository_id, number FROM config_pr_environment WHERE environment_id = ?1",
-        &[id.as_str().into()],
-    )?;
-    rows.first().map(pull_request_ref).transpose()
+    Ok(crate::pr_environment::of(tx, id)?.is_some())
 }
 
 /// The pull request of PR Environment `from` when `into` is one of its Destinations.
@@ -801,14 +784,6 @@ pub(crate) fn destined(
     let project = scope::project_of(tx, from)?.id;
     let destinations = destinations_of(tx, &project, pr.repository_id, &facts.target_branch)?;
     Ok(destinations.contains(into).then_some(pr))
-}
-
-/// A pull request's repository and number, the first two columns of `row`.
-fn pull_request_ref(row: &crate::storage::Row) -> Result<PullRequestRef, RpcError> {
-    Ok(PullRequestRef {
-        repository_id: row.number(0, "pull request")?,
-        number: row.number(1, "pull request")?,
-    })
 }
 
 /// The latest facts Cloud reported of a pull request, merged once any event said so:
@@ -1740,55 +1715,17 @@ fn shut_down(
     Ok(())
 }
 
-/// What the idle rule reads of each Branch: `environment_id`, kept, whether a
-/// removal names it (or a cancelled one did), its latest admission (-1 for none),
-/// its Branches and whether it is a Default.
-fn idle_facts() -> String {
-    format!(
-        "SELECT b.environment_id, b.kept, {}, \
-         (SELECT COALESCE(MAX(d.admitted), -1) FROM config_deployment d WHERE d.environment_id = b.environment_id), \
-         (SELECT COUNT(*) FROM config_environment_branch c WHERE c.parent_id = b.environment_id), \
-         (SELECT COUNT(*) FROM config_project p WHERE p.default_environment_id = b.environment_id) \
-         FROM config_environment_branch b",
-        mark::marks_holding("b.environment_id")
-    )
-}
-
-/// When the sweep closes a Branch for sitting idle, from an [`idle_facts`] row: a
-/// week after its latest Deployment. Never when it is kept, being removed or its
-/// removal was cancelled, never
-/// deployed, a Parent or the Default Environment.
-fn idle_close(row: &crate::storage::Row) -> Result<Option<i64>, RpcError> {
-    let (kept, marked, admitted) = (row.int(1)?, row.int(2)?, row.int(3)?);
-    let held = kept != 0 || marked != 0 || admitted < 0 || row.int(4)? != 0 || row.int(5)? != 0;
-    Ok((!held).then_some(admitted + IDLE))
-}
-
-/// When a Branch closes for sitting idle, in seconds since the Unix epoch.
-pub(crate) fn closes_at(tx: &mut dyn Tx, id: &EnvironmentId) -> Result<Option<i64>, RpcError> {
-    let rows = tx.query(
-        &format!("{} WHERE b.environment_id = ?1", idle_facts()),
-        &[id.as_str().into()],
-    )?;
-    rows.first().map_or(Ok(None), idle_close)
-}
-
 /// Move every removal on, then close each Branch idle past its deadline.
 pub(crate) fn sweep(tx: &mut dyn Tx, who: &Actor, sweep: &Sweep) -> Result<Automated, RpcError> {
-    let rows = tx.query(
-        &format!(
-            "{} WHERE b.organization_id = ?1 ORDER BY b.environment_id",
-            idle_facts()
-        ),
-        &[who.organization.as_str().into()],
-    )?;
     // Closing would lose what it holds for its merge: an idle PR Environment that
     // holds something only comes off the Servers.
     let mut idle = Vec::new();
     let mut held = Vec::new();
-    for row in &rows {
-        let id = row.parse::<EnvironmentId>(0, "Environment ID")?;
-        let closes_at = idle_close(row)?;
+    for Deadline {
+        environment: id,
+        closes_at,
+    } in branch::idle::deadlines(tx, &who.organization)?
+    {
         if closes_at.is_some_and(|at| sweep.now >= at) && on_merge::holds_open(tx, who, &id)? {
             held.push(id);
         } else {

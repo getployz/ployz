@@ -1053,7 +1053,10 @@ fn a_deployed_branch_with_a_branch_below_it_never_closes_for_sitting_idle() {
     };
     assert_eq!((closes_at("mid"), closes_at("leaf")), (None, None));
     let late = sweep(&store, &who, now() + 8 * DAY);
-    assert!(late.closing.is_empty() && late.removed.is_empty(), "{late:?}");
+    assert!(
+        late.closing.is_empty() && late.removed.is_empty(),
+        "{late:?}"
+    );
     assert_eq!(
         listed(&store, &who),
         ["leaf<mid", "mid<production", "production"]
