@@ -1,5 +1,5 @@
 import type { AuditFacts, AuditLine, AuditSink } from "./audit.js";
-import { field, Github, GithubError, isRecord, nullable, type TokenPermissions } from "./github.js";
+import { field, Github, GithubError, isRecord, nullable, readJson, type TokenPermissions } from "./github.js";
 import { branch, httpsUrl, id, ids, object, oneOf, optional, Refusal, sha, strict, text, type Parsed, type Shape } from "./parse.js";
 import {
   BUILD_WORKFLOW_FILE,
@@ -102,7 +102,7 @@ export const ROUTES: Readonly<Record<string, AnyRoute>> = {
       let state: string | null = null;
       if (workflow.status === 404) await workflow.body?.cancel();
       else {
-        const data: unknown = await workflow.json();
+        const data = await readJson(workflow, "fetch_workflow");
         if (field(data, "path", "string", "fetch_workflow") === BUILD_WORKFLOW_PATH) state = field(data, "state", "string", "fetch_workflow");
       }
       const file = await github.file(token, `/repositories/${body.repository_id}/contents/${BUILD_WORKFLOW_PATH}?ref=${encodeURIComponent(defaultBranch)}`);
@@ -157,7 +157,7 @@ export const ROUTES: Readonly<Record<string, AnyRoute>> = {
         await ref.body?.cancel();
         throw new Refusal("branch not found");
       }
-      const target = field(await ref.json(), "object", "object", "read_branch");
+      const target = field(await readJson(ref, "read_branch"), "object", "object", "read_branch");
       if (field(target, "type", "string", "read_branch") !== "commit") throw new Refusal("branch does not point at a commit");
       const head = field(target, "sha", "string", "read_branch");
       facts.head_sha = head;
@@ -273,7 +273,7 @@ export const ROUTES: Readonly<Record<string, AnyRoute>> = {
             await membership.body?.cancel();
             return false;
           }
-          const data: unknown = await membership.json();
+          const data = await readJson(membership, "read_user_membership");
           return field(data, "state", "string", "read_user_membership") === "active" && field(data, "role", "string", "read_user_membership") === "admin";
         } catch (error) {
           if (error instanceof GithubError) return null;

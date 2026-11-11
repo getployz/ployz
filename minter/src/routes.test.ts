@@ -405,4 +405,18 @@ describe("the request", () => {
     expect(await garbled.call("/v1/token", { installation_id: INSTALLATION }))
       .toEqual({ status: 502, body: { error: "github", operation: "installation_token", failure: "unreadable" } });
   });
+
+  it("reads a body cut off after its headers as unreachable, and a whole body that doesn't parse as unreadable", async () => {
+    const mint = `POST /app/installations/${INSTALLATION}/access_tokens`;
+    const cutOff = () => new Response(new ReadableStream<Uint8Array>({
+      start(controller) {
+        controller.enqueue(new TextEncoder().encode("{\"tok"));
+        controller.error(new TypeError("terminated"));
+      },
+    }), { status: 201 });
+    expect(await harness({ [mint]: cutOff }).call("/v1/token", { installation_id: INSTALLATION }))
+      .toEqual({ status: 502, body: { error: "github", operation: "installation_token", failure: "unreachable" } });
+    expect(await harness({ [mint]: () => new Response("{\"tok", { status: 201 }) }).call("/v1/token", { installation_id: INSTALLATION }))
+      .toEqual({ status: 502, body: { error: "github", operation: "installation_token", failure: "unreadable" } });
+  });
 });

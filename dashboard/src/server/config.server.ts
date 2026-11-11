@@ -25,6 +25,8 @@ const GITHUB_ORIGINS: GithubOrigins = {
   oidc: "https://token.actions.githubusercontent.com",
 };
 const NonEmptySecret = Schema.Redacted(Schema.NonEmptyString);
+/** An OAuth client ID as GitHub issues it, taken exactly: padding or other characters are refused, never trimmed. */
+const GithubClientId = Schema.String.check(Schema.isPattern(/^[A-Za-z0-9._-]+$/));
 const EncryptionSecret = Schema.Redacted(
   Schema.String.check(Schema.isMinLength(32)),
 );
@@ -69,12 +71,12 @@ const rawFields = {
   ),
   // Railway injects this; its edge sets X-Real-IP to the client's address.
   railwayEnvironmentId: optional(Config.nonEmptyString("RAILWAY_ENVIRONMENT_ID")),
-  githubClientId: Config.nonEmptyString("GITHUB_CLIENT_ID"),
+  githubClientId: Config.schema(GithubClientId, "GITHUB_CLIENT_ID"),
   githubClientSecret: Config.schema(NonEmptySecret, "GITHUB_CLIENT_SECRET"),
   githubAppId: Config.nonEmptyString("GITHUB_APP_ID"),
   githubAppPrivateKey: optional(Config.schema(NonEmptySecret, "GITHUB_APP_PRIVATE_KEY")),
   githubAppSlug: Config.nonEmptyString("GITHUB_APP_SLUG"),
-  githubAppClientId: Config.nonEmptyString("GITHUB_APP_CLIENT_ID"),
+  githubAppClientId: Config.schema(GithubClientId, "GITHUB_APP_CLIENT_ID"),
   githubAppClientSecret: optional(Config.schema(NonEmptySecret, "GITHUB_APP_CLIENT_SECRET")),
   githubMinterUrl: optional(Config.url("GITHUB_MINTER_URL")),
   githubMinterAccessKeyId: optional(Config.nonEmptyString("GITHUB_MINTER_ACCESS_KEY_ID")),
@@ -261,7 +263,8 @@ const resolveGithubAuthority = Effect.fn("Config.resolveGithubAuthority")(functi
     return yield* invalid("GITHUB_APP_PRIVATE_KEY and GITHUB_APP_CLIENT_SECRET must be unset when GITHUB_MINTER_URL is set: the minter holds them");
   }
   // Sign-in with the App's own client would put the App's client secret, and the user tokens it yields, back in Cloud.
-  if (input.githubClientId === input.githubAppClientId) {
+  // GitHub may match client IDs without regard to case, so equal ignoring case is the same client.
+  if (input.githubClientId.toLowerCase() === input.githubAppClientId.toLowerCase()) {
     return yield* invalid("GITHUB_CLIENT_ID must be a separate OAuth App, not the GitHub App's client, when GITHUB_MINTER_URL is set");
   }
   if (url.search !== "" || url.hash !== "" || url.username !== "" || url.password !== "" || url.pathname !== "/") {

@@ -103,7 +103,11 @@ export class Github {
       await response.body?.cancel();
       return null;
     }
-    return new Uint8Array(await response.arrayBuffer());
+    try {
+      return new Uint8Array(await response.arrayBuffer());
+    } catch {
+      throw new GithubError("read_file", { kind: "unreachable" });
+    }
   }
 
   /** Exchanges a connect code for the person's user token. The caller keeps the token inside its own handler. */
@@ -135,9 +139,19 @@ async function failed(response: Response, operation: string): Promise<GithubErro
   return new GithubError(operation, { kind: "status", status: response.status, retryAfter: retryAfter && /^\d+$/.test(retryAfter) ? Number(retryAfter) : null });
 }
 
-async function readJson(response: Response, operation: string): Promise<unknown> {
+/**
+ * A response's JSON. The body read is transport, as `fetch` resolves once headers arrive: a connection that ends or
+ * times out mid-body is `unreachable`. Only a body that arrived whole and doesn't parse is `unreadable`.
+ */
+export async function readJson(response: Response, operation: string): Promise<unknown> {
+  let text: string;
   try {
-    return await response.json();
+    text = await response.text();
+  } catch {
+    throw new GithubError(operation, { kind: "unreachable" });
+  }
+  try {
+    return JSON.parse(text);
   } catch {
     throw unreadable(operation);
   }

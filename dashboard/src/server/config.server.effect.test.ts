@@ -134,8 +134,19 @@ describe("AppConfig", () => {
         assert.include(yield* refused({ ...keyless, ...minter, GITHUB_MINTER_URL: url }), "origin");
       }
       const oneApp = { GITHUB_CLIENT_ID: requiredEnvironment.GITHUB_APP_CLIENT_ID };
-      assert.include(yield* refused({ ...keyless, ...minter, ...oneApp }), "separate OAuth App");
       assert.strictEqual((yield* load({ ...requiredEnvironment, ...oneApp })).github.authority.mode, "local");
+      const lab = { NODE_ENV: "development", GITHUB_MINTER_URL: "http://127.0.0.1:8787", PLOYZ_VERIFY_GITHUB_MINTER_BEARER: "lab-bearer" };
+      for (const [path, reach] of [["sigv4", minter], ["bearer", lab]] as const) {
+        assert.include(yield* refused({ ...keyless, ...reach, ...oneApp }), "separate OAuth App", path);
+        const shouted = { ...keyless, ...reach, ...oneApp, GITHUB_APP_CLIENT_ID: oneApp.GITHUB_CLIENT_ID.toUpperCase() };
+        assert.include(yield* refused(shouted), "separate OAuth App", `${path}, case`);
+        for (const padded of [` ${oneApp.GITHUB_CLIENT_ID}`, `${oneApp.GITHUB_CLIENT_ID}\n`, `${oneApp.GITHUB_CLIENT_ID}\u200b`]) {
+          const failure = yield* Effect.flip(load({ ...keyless, ...reach, ...oneApp, GITHUB_APP_CLIENT_ID: padded }));
+          assert.notInstanceOf(failure, InvalidConfiguration, `${path}, ${JSON.stringify(padded)}`);
+          assert.include(startupConfigFailure({ ...keyless, ...reach, ...oneApp, GITHUB_APP_CLIENT_ID: padded }), "GITHUB_APP_CLIENT_ID");
+          assert.include(startupConfigFailure({ ...keyless, ...reach, GITHUB_CLIENT_ID: padded }), "GITHUB_CLIENT_ID");
+        }
+      }
     }),
   );
 
