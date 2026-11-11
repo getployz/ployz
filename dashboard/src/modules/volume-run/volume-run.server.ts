@@ -9,6 +9,7 @@ import type {
   ExpectedCopy,
   MachineId,
   MachineName,
+  Signed,
   SnapshotGuid,
   SwitchError,
   VolumeCopy,
@@ -43,12 +44,13 @@ import { RuntimeConnectionFailure } from "#/modules/runtime/runtime-connection-e
 import { movedRouting, type Requirement, requirementFor, requirements, serverSupports } from "#/modules/runtime/daemon-compat";
 import { observeVolumeCopies, type PloyzSdkError, RpcError, sdkFailureMessage, setVolumeCopyRefusal } from "#/modules/runtime/ployz.server";
 import {
-  alreadyOn, enforcedMessage, newestGuid, type PlanInput, type Planned, planForwardRelease, planFromCopies, type Refusal, type RefusalCode, type ReleaseFrom, restoreSource,
-  roleOf, writerRemovedMessage,
+  alreadyOn, approvalRefusedMessage, approvesMirror, enforcedMessage, fullApprovalsMessage, newestGuid, otherApprovalMessage, type PlanInput, type Planned, planForwardRelease, planFromCopies,
+  type Refusal, type RefusalCode, type ReleaseFrom, restoreSource, roleOf, writerRemovedMessage,
 } from "#/modules/volume-run/plan";
 import { type DeploymentsSeen, deployingMessage, gb, resizeRequirements, sizeDirection } from "#/modules/volume-run/resize";
 import { isBehind, isCurrent, releaseLine } from "#/modules/server-upgrade/server-upgrade";
 import { channelRelease, organizationReleaseChannel } from "#/modules/server-upgrade/server-upgrade.server";
+import { dropApprovals, MAX_KEPT_APPROVALS, offerApproval } from "#/modules/volume-run/mirror-approvals.server";
 import { volumeRun } from "#/modules/volume-run/tables";
 import {
   ACTIVE_VOLUME_RUN_STATES,
@@ -659,6 +661,12 @@ export const planOnCluster = Effect.fn("VolumeRun.planOnCluster")(function* (
   }
   const verb = VERBS[input.kind];
   const { phase } = planned;
+  const recipient = phase.kind === "mirror" ? phase.target : phase.kind === "sync" ? phase.mirror : null;
+  const approval = input.kind === "mirror" || input.kind === "sync" ? input.args.approval : undefined;
+  const writer = phase.kind === "mirror" || phase.kind === "sync" ? phase.writer.machine.id : null;
+  if (recipient !== null && writer !== null && approval !== undefined && !approvesMirror(approval, volume.dockerVolume, writer, recipient.machine.id)) {
+    return { ok: false, refusal: storeRefusal({ code: "invalid", message: otherApprovalMessage(volume.volumeName, recipient.machine.name) }) } satisfies ClusterPlan;
+  }
   if (phase.kind === "landed") {
     const source = yield* answered(keptOn(organizationId, volume.dockerVolume, phase.behind.map((member) => member.machine)));
     if (Option.isNone(source)) return { ok: false, refusal: unanswered } satisfies ClusterPlan;
@@ -1076,10 +1084,11 @@ export const claimVolumeRun = Effect.fn("VolumeRun.claim")(function* (
   return settled;
 });
 
-export const requireOwner = Effect.fn("VolumeRun.requireOwner")(function* (rowId: string, inngestRunId: string) {
+export const requireOwner = Effect.fn("VolumeRun.requireOwner")(function* (rowId: string, inngestRunId: string, lock = false) {
   const { drizzle } = yield* Database;
-  const [owned] = yield* drizzle.select({ id: volumeRun.id }).from(volumeRun)
+  const owner = drizzle.select({ id: volumeRun.id }).from(volumeRun)
     .where(and(eq(volumeRun.id, rowId), eq(volumeRun.inngestRunId, inngestRunId), eq(volumeRun.state, "running")));
+  const [owned] = yield* (lock ? owner.for("update") : owner);
   if (owned === undefined) return yield* Effect.fail(new NonRetriableError(`This run no longer owns volume run ${rowId}.`));
 });
 
@@ -1141,6 +1150,11 @@ const EnforcementRefusal = Schema.Struct({ details: Schema.Struct({ capability: 
 
 /** Whether the Server enforces device approval and refused a Container start or a seed from Ployz Cloud. */
 export const refusedByEnforcement = (error: PloyzSdkError) => Schema.is(EnforcementRefusal)("cause" in error ? error.cause : undefined);
+
+const ApprovalRefusal = Schema.Struct({ details: Schema.Struct({ capability: Schema.Literal("ployz.volume.approval.v1") }) });
+
+/** Whether the Server refused a step for the Volume approval it carried, or lacked. */
+const refusedApproval = (error: PloyzSdkError) => Schema.is(ApprovalRefusal)("cause" in error ? error.cause : undefined);
 
 export function switchErrorOf(error: PloyzSdkError): SwitchReason | null {
   const decoded = decodeSwitchError("cause" in error ? error.cause : undefined);
@@ -1227,7 +1241,7 @@ export const sendSwitch = <R extends SwitchRequest>(ctx: RunContext, inngestRunI
 /** Plain JSON, since a step returns it: the copy the Machine holds now, after the step or after its refusal. */
 export type CopyAnswer =
   | { readonly ok: true; readonly copy: VolumeCopy | null }
-  | { readonly ok: false; readonly reason: CopyRefusal | "enforced"; readonly copy: VolumeCopy | null; readonly message: string };
+  | { readonly ok: false; readonly reason: CopyRefusal | "enforced" | "unapproved"; readonly copy: VolumeCopy | null; readonly message: string };
 
 /**
  * Who a SetVolumeCopy is for: a run, a Deploy following another run's lane without owning its row, or the rowless
@@ -1239,14 +1253,15 @@ export type CopyAsker = Pick<RunContext, "organizationId" | "dockerVolume" | "vo
  * One SetVolumeCopy. A refusal is an answer, since the caller decides what follows it; only a failure to ask fails,
  * so a run's step retries. Spent Cluster time fails it before it opens a session, and out of time is `inFlight` only
  * when the SetVolumeCopy itself was cut. Any other failure but a `SwitchAttemptError` is a session that didn't open, so
- * the SetVolumeCopy was never sent.
+ * the SetVolumeCopy was never sent. `approval` is the Mirror approval a snapshot or a pull carries.
  */
-export const askCopy = Effect.fn("VolumeRun.askCopy")(function* (asker: CopyAsker, machine: MachineRef, expect: ExpectedCopy, want: WantedCopy) {
+export const askCopy = Effect.fn("VolumeRun.askCopy")(function* (asker: CopyAsker, machine: MachineRef, expect: ExpectedCopy, want: WantedCopy, approval?: Signed) {
   yield* requireClusterTime;
   const session = yield* openSession(asker.organizationId).pipe(
     Effect.catchIf((error) => error instanceof ClusterOutOfTime, () => Effect.fail(new ClusterOutOfTime({ inFlight: false }))),
   );
-  return yield* session.volumeSwitch(machine.id, { command: "set_volume_copy", payload: { name: asker.dockerVolume, expect, want, gen: asker.gen } }).pipe(
+  const payload = { name: asker.dockerVolume, expect, want, gen: asker.gen, ...(approval && { approval }) };
+  return yield* session.volumeSwitch(machine.id, { command: "set_volume_copy", payload }).pipe(
     clusterRead,
     Effect.map((reply): CopyAnswer => ({ ok: true, copy: reply.copy })),
     Effect.catch((error): Effect.Effect<CopyAnswer, ClusterOutOfTime | SwitchAttemptError> => {
@@ -1254,6 +1269,10 @@ export const askCopy = Effect.fn("VolumeRun.askCopy")(function* (asker: CopyAske
       // Refused before the Server read its copy, so the copy is as the caller last saw it.
       if (refusedByEnforcement(error)) {
         return Effect.succeed<CopyAnswer>({ ok: false, reason: "enforced", copy: null, message: enforcedMessage(false, asker.volumeName, machine.name) });
+      }
+      // Refused before the step changed anything, so the copy is as the caller last saw it too.
+      if (refusedApproval(error)) {
+        return Effect.succeed<CopyAnswer>({ ok: false, reason: "unapproved", copy: null, message: approvalRefusedMessage(asker.volumeName, machine.name) });
       }
       const refused = setVolumeCopyRefusal("cause" in error ? error.cause : undefined);
       if (refused === null) {
@@ -1273,9 +1292,31 @@ export const setVolumeCopy = Effect.fn("VolumeRun.setVolumeCopy")(function* (
   machine: MachineRef,
   expect: ExpectedCopy,
   want: WantedCopy,
+  approval?: Signed,
 ) {
   yield* requireOwner(ctx.id, inngestRunId);
-  return yield* askCopy(ctx, machine, expect, want);
+  return yield* askCopy(ctx, machine, expect, want, approval);
+});
+
+/**
+ * Keeps the run's `approval` with the Mirror on `mirror`, first, before any of the run's steps carries it. It holds the
+ * run's row while it does, so a run that ended can't keep its approval after a later run's.
+ */
+export const offerRunApproval = Effect.fn("VolumeRun.offerRunApproval")(function* (ctx: RunContext, inngestRunId: string, mirror: MachineRef, approval: Signed) {
+  const database = yield* Database;
+  const offered = yield* database.transaction(requireOwner(ctx.id, inngestRunId, true).pipe(
+    Effect.andThen(offerApproval(ctx.organizationId, ctx.volumeId, mirror.id, approval)),
+  ));
+  if (!offered) return yield* failRun(ctx, inngestRunId, fullApprovalsMessage(ctx.volumeName, mirror.name, MAX_KEPT_APPROVALS));
+});
+
+/**
+ * Drops the approvals kept with the Mirrors on `machines`, once their copies are gone. It holds the run's row while it
+ * does, so the run can't end, and another run recreate a Mirror and offer it an approval, between the check and the drop.
+ */
+export const dropRunApprovals = Effect.fn("VolumeRun.dropRunApprovals")(function* (ctx: RunContext, inngestRunId: string, machines: readonly MachineId[]) {
+  const database = yield* Database;
+  yield* database.transaction(requireOwner(ctx.id, inngestRunId, true).pipe(Effect.andThen(dropApprovals(ctx.volumeId, machines))));
 });
 
 export const inspectCopy = (ctx: RunContext, inngestRunId: string, machine: MachineRef) =>

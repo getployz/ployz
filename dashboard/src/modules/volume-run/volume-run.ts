@@ -1,4 +1,4 @@
-import type { MachineId, MachineName, Namespace, ResolvedServiceSpec, SlotRole, VolumeCopyView } from "@ployz/sdk";
+import type { MachineId, MachineName, Namespace, ResolvedServiceSpec, Signed, SlotRole, VolumeCopyView } from "@ployz/sdk";
 
 export const VOLUME_RUN_STATES = ["requested", "running", "done", "failed", "cancelled", "lost", "not_started", "yielded"] as const;
 export type VolumeRunState = (typeof VOLUME_RUN_STATES)[number];
@@ -23,6 +23,12 @@ export const RUN_FEATURES = {
 type Destination = { readonly to: MachineName; readonly machine?: MachineId };
 
 /**
+ * The Device-signed Mirror approval the CLI sends. The run sends it with every snapshot and pull, and the Mirror keeps
+ * it for the syncs after. An enforcing Server refuses a pull without one; others ignore it.
+ */
+type Approved = { readonly approval?: Signed };
+
+/**
  * What a requested Release's plan showed: the slots it may resume from and the slots it may forget. The run refuses to
  * resume or forget anywhere else, so it never deletes a copy the approval did not name. Cloud's own Release of a Move
  * it ended carries none. `forward` pins a release that finishes a committed Move: the commitment it follows, the
@@ -35,8 +41,8 @@ export type ReleasePlan = {
 };
 
 export type VolumeRunArgs = {
-  mirror: Destination;
-  sync: { readonly full: boolean };
+  mirror: Destination & Approved;
+  sync: { readonly full: boolean } & Approved;
   /**
    * `role` is what the request was admitted to delete: an old copy, or a mirror a Deploy removes. The run's Forget names it,
    * so the Machine refuses a slot that holds the other role by then. `any` is `volume mirror rm`, which deletes either. A

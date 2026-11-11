@@ -93,6 +93,33 @@ In a [Protected environment](../environments/environments.md#protect-an-environm
 `environments:protect`, waits for an owner or admin to approve it. Adding a mirror and syncing
 don't ask.
 
+## Mirror on servers that enforce device approval
+
+With [device enforcement](../servers/manage-servers.md#require-a-devices-signature-for-restarts-and-joins)
+on, a server copies a volume only to a server an approved device chose. Run
+`ployz volume mirror data --to web-2` on an approved device. It signs the mirror, prints what it
+approved and starts it without asking:
+
+```
+Approved: mirror data from web-1 to web-2. Later syncs run without asking until you remove the Mirror.
+```
+
+web-2 then pulls `data` only from web-1, and web-1 sends `data` only to web-2. Refreshes after a deploy, the 15-minute refresh, **Refresh now** and
+`ployz volume sync data` all run without another approval.
+
+`ployz volume sync data --full` deletes the mirror's copy and copies everything again, so it signs
+a new approval the same way. Removing the mirror ends its approval for good. To mirror to that
+server again, run `ployz volume mirror` again. A mirror takes up to 128 approvals. After that,
+remove it and mirror again.
+
+Ployz Cloud can't add a mirror on these servers yet. Adding one under **Copies** fails before it
+changes anything. A mirror added before you turned enforcement on has no approval, so its
+refreshes fail. Run `ployz volume sync data --full` on an approved device to approve it.
+
+If `ployz volume mirror` can't reach your servers to ask whether they enforce, it warns and runs
+without signing, and servers that enforce refuse it. A server from before Ployz 0.4 ignores the
+approval and copies as before.
+
 ## Good to know
 
 - **A mirror isn't an offsite backup.** It holds the data as of its last refresh, on another of

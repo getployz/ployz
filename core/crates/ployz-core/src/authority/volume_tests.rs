@@ -509,3 +509,40 @@ fn a_field_this_machine_cannot_read_is_malformed() {
         Err(AuthorityRefusal::Malformed { .. })
     ));
 }
+
+#[test]
+fn a_mirror_approval_shows_the_volume_both_servers_and_that_syncs_continue() {
+    let name = |machine: &MachineId| if *machine == a() { "web-1" } else { "web-2" }.to_owned();
+    let mirror = |replace| {
+        approval(VolumeWorkflow::Mirror {
+            writer: a(),
+            mirror: b(),
+            replace,
+        })
+    };
+    let change = ApprovedVolumeChange::of(&mirror(false), "data", name).unwrap();
+    assert_eq!(
+        change.line(),
+        "Approved: mirror data from web-1 to web-2. Later syncs run without asking until you remove the Mirror."
+    );
+    assert_eq!(
+        serde_json::to_value(&change).unwrap(),
+        serde_json::json!({
+            "kind": "mirror",
+            "volume": "data",
+            "writer": "web-1",
+            "mirror": "web-2",
+            "replace": false,
+        })
+    );
+    assert_eq!(
+        ApprovedVolumeChange::of(&mirror(true), "data", name)
+            .unwrap()
+            .line(),
+        "Approved: copy data from web-1 to web-2 again, replacing the copy there. Later syncs run without asking until you remove the Mirror."
+    );
+    assert_eq!(
+        ApprovedVolumeChange::of(&approval(moving()), "data", name),
+        None
+    );
+}

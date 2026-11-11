@@ -1,4 +1,4 @@
-import type { ContainerId, ExpectedCopy, MachineId, SlotRole, Snapshot, VolumeCopy, WantedCopy } from "@ployz/sdk";
+import type { ContainerId, ExpectedCopy, MachineId, Signed, SlotRole, Snapshot, VolumeCopy, WantedCopy } from "@ployz/sdk";
 import { Effect, Option, Schema } from "effect";
 import { NonRetriableError } from "inngest";
 import { attemptLifecycle } from "#/modules/inngest/attempt-lifecycle";
@@ -26,12 +26,14 @@ import {
   type CopyAnswer,
   copyImage,
   DRAIN_MS,
+  dropRunApprovals,
   endRun,
   failAndRelease,
   failRun,
   findHolder,
   findKept,
   inspectCopy,
+  offerRunApproval,
   laneTarget,
   type MachineRef,
   noteRun,
@@ -225,12 +227,12 @@ async function settle({ step, runEffect, run, runId, attempt }: RunSteps, id: st
   throw new NonRetriableError(`${still} after ${BUSY_CHECKS} checks`);
 }
 
-const setCopy = (steps: RunSteps, id: string, machine: MachineRef, expect: ExpectedCopy, want: WantedCopy, still: string) =>
-  settle(steps, id, setVolumeCopy(steps.run, steps.runId, machine, expect, want), still);
+const setCopy = (steps: RunSteps, id: string, machine: MachineRef, expect: ExpectedCopy, want: WantedCopy, still: string, approval?: Signed) =>
+  settle(steps, id, setVolumeCopy(steps.run, steps.runId, machine, expect, want, approval), still);
 
 /** A step whose refusal ends what the run is doing; the caller decides whether that fails the run or releases it. */
-async function mustSet(steps: RunSteps, id: string, machine: MachineRef, expect: ExpectedCopy, want: WantedCopy, still: string) {
-  const answer = await setCopy(steps, id, machine, expect, want, still);
+async function mustSet(steps: RunSteps, id: string, machine: MachineRef, expect: ExpectedCopy, want: WantedCopy, still: string, approval?: Signed) {
+  const answer = await setCopy(steps, id, machine, expect, want, still, approval);
   if (!answer.ok) throw new NonRetriableError(answer.message);
   return answer.copy;
 }
@@ -247,10 +249,10 @@ const pulled = (copy: VolumeCopy | null, target: Snapshot) =>
 
 const MAX_DRIFTS = 3;
 
-async function askPullFollowingDrift(steps: RunSteps, id: string, B: MachineRef, copy: VolumeCopy | null, want: WantedCopy, still: string) {
+async function askPullFollowingDrift(steps: RunSteps, id: string, B: MachineRef, copy: VolumeCopy | null, want: WantedCopy, still: string, approval?: Signed) {
   let expect = expectOf(copy);
   for (let drift = 0; ; drift += 1) {
-    const answer = await setCopy(steps, drift === 0 ? id : `${id}-drift-${drift}`, B, expect, want, still);
+    const answer = await setCopy(steps, drift === 0 ? id : `${id}-drift-${drift}`, B, expect, want, still, approval);
     if (answer.ok) return answer.copy;
     if (answer.reason !== "mismatch" || answer.copy?.kind !== "slot" || drift === MAX_DRIFTS) throw new NonRetriableError(answer.message);
     expect = expectOf(answer.copy);
@@ -261,13 +263,15 @@ async function askPullFollowingDrift(steps: RunSteps, id: string, B: MachineRef,
  * B pulls `target` from A and the run asks again until the pull lands. Every check resends the same request: it finishes
  * a landed pull, leaves a running one alone, and resumes one a restart of B stopped.
  */
-async function pull(steps: RunSteps, prefix: string, ctx: { readonly B: MachineRef; readonly copy: VolumeCopy | null; readonly from: string; readonly target: Snapshot }) {
+async function pull(steps: RunSteps, prefix: string, ctx: Approving & {
+  readonly B: MachineRef; readonly copy: VolumeCopy | null; readonly from: string; readonly target: Snapshot;
+}) {
   const { step, run } = steps;
   const { B, target } = ctx;
   const slot = copyName(run.volumeName, B.name);
   const want: WantedCopy = { kind: "mirror", from: ctx.from, target: target.name, drain: DRAIN_MS };
   const still = `${slot} is still busy`;
-  let copy = await askPullFollowingDrift(steps, `${prefix}-pull`, B, ctx.copy, want, still);
+  let copy = await askPullFollowingDrift(steps, `${prefix}-pull`, B, ctx.copy, want, still, ctx.approval);
   for (let check = 0; ; check += 1) {
     if (pulled(copy, target)) return copy;
     const failure = copy?.kind === "slot" ? copy.pull?.failure ?? null : null;
@@ -278,15 +282,18 @@ async function pull(steps: RunSteps, prefix: string, ctx: { readonly B: MachineR
     const idle = copy?.kind === "slot" && copy.pull === null;
     // Ids apart from the 5 s checks' `-wait-`/`-repull-`, so a run they started replays none of them into this schedule.
     if (!idle) await step.sleep(`${prefix}-backoff-${check}`, `${wait}s`);
-    copy = await askPullFollowingDrift(steps, `${prefix}-ask-${check}`, B, copy, want, still);
+    copy = await askPullFollowingDrift(steps, `${prefix}-ask-${check}`, B, copy, want, still, ctx.approval);
   }
 }
+
+/** The Mirror approval a Mirror run's snapshots and pulls carry; a Move sends none. */
+type Approving = { readonly approval?: Signed };
 
 /**
  * Warm rounds: A snapshots `w-<epoch>-<round>` and B pulls it, until B already holds A's newest or the rounds run out.
  * A takes no snapshot when nothing was written, so its newest is then what B pulls.
  */
-async function runRounds(steps: RunSteps, ctx: { readonly A: AnsweredMember; readonly B: MachineRef; readonly copy: VolumeCopy | null; readonly epoch: number }) {
+async function runRounds(steps: RunSteps, ctx: Approving & { readonly A: AnsweredMember; readonly B: MachineRef; readonly copy: VolumeCopy | null; readonly epoch: number }) {
   const { A, B, epoch } = ctx;
   let copy = ctx.copy;
   for (let round = 0; round < MAX_ROUNDS; round += 1) {
@@ -294,28 +301,42 @@ async function runRounds(steps: RunSteps, ctx: { readonly A: AnsweredMember; rea
     const warmed = await mustSet(steps, `${prefix}-snapshot`, A.machine, { kind: "writer", epoch: epochOf(A) }, {
       kind: "snapshot",
       name: `w-${epoch}-${round}`,
-    }, `${A.machine.name} is still busy with ${steps.run.volumeName}`);
+    }, `${A.machine.name} is still busy with ${steps.run.volumeName}`, ctx.approval);
     const target = warmed?.newest ?? null;
     if (target === null) throw new NonRetriableError(`${steps.run.volumeName}'s writer on ${A.machine.name} made no snapshot`);
-    if (pulled(copy, target)) return { rounds: round, copy };
-    copy = await pull(steps, prefix, { B, copy, from: A.address, target });
+    // A caught-up Mirror approved again still gets the pull once, so it admits the approval the run keeps for later syncs.
+    const { approval } = ctx;
+    const caughtUp = pulled(copy, target);
+    if (caughtUp && (round > 0 || approval === undefined)) return { rounds: round, copy };
+    copy = await pull(steps, prefix, { B, copy, from: A.address, target, approval });
+    if (caughtUp) return { rounds: round, copy };
   }
   return { rounds: MAX_ROUNDS, copy };
 }
 
+/**
+ * The run offers its approval to the Mirror's kept approvals before any step carries it, so the approval the Mirror
+ * admits stays kept whichever step fails; later syncs settle the rest (see mirror-approvals.server.ts). A full sync
+ * forgets the Mirror's copy, which withdraws it there first, then has the Writer withdraw the Mirror's Server and drop its run snapshots.
+ */
 async function mirrorVolume(steps: RunSteps, phase: PhaseOf<"mirror"> | PhaseOf<"sync">, epoch: number) {
   const { run } = steps;
   const A = phase.writer;
   const target = phase.kind === "mirror" ? phase.target : phase.mirror;
   const B = target.machine;
+  const approval = run.kind === "mirror" || run.kind === "sync" ? run.args.approval : undefined;
   let copy = target.view.copy;
   try {
+    if (approval !== undefined) {
+      const { step, runEffect, runId } = steps;
+      await step.run("03-offer-approval", () => runEffect(offerRunApproval(run, runId, B, approval)));
+    }
     if (phase.kind === "sync") {
       await mustSet(steps, "03-reset-forget-mirror", B, expectOf(copy), { kind: "forget" }, `${B.name} is still busy with ${run.volumeName}`);
-      await mustSet(steps, "03-reset-forget-writer", A.machine, { kind: "writer", epoch: epochOf(A) }, { kind: "forget" }, `${A.machine.name} is still busy with ${run.volumeName}`);
+      await mustSet(steps, "03-reset-forget-writer", A.machine, { kind: "writer", epoch: epochOf(A) }, { kind: "forget", recipient: B.id }, `${A.machine.name} is still busy with ${run.volumeName}`);
       copy = null;
     }
-    const { rounds } = await runRounds(steps, { A, B, copy, epoch });
+    const { rounds } = await runRounds(steps, { A, B, copy, epoch, approval });
     await finish(steps, "05-finish");
     return { runId: run.id, rounds };
   } catch (error) {
@@ -329,8 +350,13 @@ const deleteExpect = (copy: VolumeCopy | null, role: SlotRole | null): ExpectedC
   return expect.kind === "mirror" && role !== null ? { ...expect, role } : expect;
 };
 
+/**
+ * Each slot's Forget withdraws its Server there before it destroys anything. Only once every slot is gone does the
+ * Writer withdraw each one and drop its run snapshots, so a slot that refuses leaves the Writer as it was. Then the
+ * slots' kept approvals go too.
+ */
 async function deleteMirror(steps: RunSteps, phase: PhaseOf<"delete_mirror">) {
-  const { run } = steps;
+  const { step, runEffect, run, runId } = steps;
   try {
     for (const slot of phase.destroy) {
       const expect = deleteExpect(slot.view.copy, phase.role);
@@ -342,10 +368,16 @@ async function deleteMirror(steps: RunSteps, phase: PhaseOf<"delete_mirror">) {
         ? `${copyName(run.volumeName, slot.machine.name)} is no longer ${ROLE_NOUN[role]}, so nothing was deleted`
         : answer.message);
     }
-    if (phase.forget !== null) {
-      const writer = phase.forget;
-      await mustSet(steps, "04-forget", writer.machine, { kind: "writer", epoch: epochOf(writer) }, { kind: "forget" }, `${writer.machine.name} is still busy with ${run.volumeName}`);
+    const writer = phase.forget;
+    if (writer !== null) {
+      for (const slot of phase.destroy) {
+        await mustSet(steps, `04-forget-${slot.machine.name}`, writer.machine, { kind: "writer", epoch: epochOf(writer) }, {
+          kind: "forget",
+          recipient: slot.machine.id,
+        }, `${writer.machine.name} is still busy with ${run.volumeName}`);
+      }
     }
+    await step.run("04-drop-approvals", () => runEffect(dropRunApprovals(run, runId, phase.destroy.map((slot) => slot.machine.id))));
   } catch (error) {
     return stopped(steps, "05-failed", error instanceof Error ? error : new Error(String(error)));
   }

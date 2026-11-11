@@ -33,7 +33,8 @@
 //!   (`admit_operator_volume_start` in `ployzd/src/machine_api/local.rs`).
 //!
 //! The whole product is millions of states, so each `Scenario` checks one bounded
-//! slice of it.
+//! slice of it. A Mirror's removal followed by a replayed Mirror approval is its own
+//! small model, [`removal::MirrorRemoval`].
 //!
 //! Out of scope: Deploy lanes, operator collisions, Machines that do not answer,
 //! warm rounds beyond that one pull, and a second takeover. Of the resize: real
@@ -615,6 +616,9 @@ struct Broken {
     shrink_keeps_refused_record: bool,
     /// An enforcing Machine admits an Operator's Writer start.
     start_gate: bool,
+    /// A Mirror's `Forget` destroys its slot without first withdrawing the Mirror's
+    /// Machine. Only [`removal::MirrorRemoval`] reads it.
+    removal_no_withdrawal: bool,
 }
 
 /// One bounded slice of the runs. Each is checked whole; together they cover the resize
@@ -809,7 +813,7 @@ fn wanted(want: Want) -> WantedCopy {
             target: snapshot(target).name,
             drain: Drain::NONE,
         },
-        Want::Forget => WantedCopy::Forget,
+        Want::Forget => WantedCopy::Forget { recipient: None },
         Want::Floor => WantedCopy::Floor,
         Want::Size { .. } => unreachable!("SetVolumeSize never asks plan"),
     }
@@ -2569,5 +2573,439 @@ mod tests {
             },
             &[STORE_FITS],
         );
+    }
+}
+
+/// A Mirror's removal, then its standing approval replayed.
+///
+/// One Writer W and one Mirror M of a Volume, both enforcing, each with its own
+/// [`ployz_decide::volume_records::VolumeRecords`]. One standing Mirror approval, op 1, is
+/// already admitted on both: W granted M every snapshot, and M holds a slot. Its window
+/// has passed, so op 1 runs only on the records, and a first admission of it would be
+/// refused `Expired`. A hostile driver then takes, in any order:
+///
+/// - a write on W, and a run snapshot on W with op 1's approval (`admit_operator_copy`:
+///   admit, then grant M) or without one (runs and records nothing);
+/// - a pull on M with op 1's approval: admitted on M's record, it lands W's newest
+///   snapshot only if W's send stream serves M that snapshot (`volume_send.rs`);
+/// - M's `Forget` (`set_copy_admitted` in `local_volume_copy.rs`): M withdraws itself,
+///   then the plugin destroys the slot. M's daemon may restart between the two, and the
+///   `Forget` may be sent again;
+/// - W's `Forget` naming M, which withdraws M and destroys W's run snapshots, or Cloud
+///   dropping it;
+/// - a read of W's send stream from M's shell, outside any pull.
+///
+/// A replayed approval is a snapshot or a pull with op 1 after the removal.
+///
+/// Bounds: two writes, two sends of M's `Forget`, one restart of M's daemon, one send of
+/// W's. Out of scope: a new approval after the removal, an approval a Machine never
+/// admitted (still new work inside its window), a second Mirror, a Machine that doesn't
+/// enforce, and the source check on a pull's `from`.
+mod removal {
+    use std::hash::{Hash, Hasher};
+
+    use ployz_core::{
+        CopyTransition, DockerVolumeName, MachineId, OperationId, SnapshotName,
+        authority::{AuthorityRefusal, StepDigest, VolumeStep, VolumeWorkflow},
+    };
+    use ployz_decide::volume_records::{GrantScope, VolumeRecords};
+    use stateright::{Model, Property};
+
+    use super::Broken;
+
+    const WRITES: u8 = 2;
+    const MIRROR_FORGETS: u8 = 2;
+    const RESTARTS: u8 = 1;
+
+    /// One Machine's records. `VolumeRecords` derives no `Hash`, so the checker hashes its
+    /// `Debug` form, which prints every field.
+    #[derive(Clone, Debug, PartialEq, Eq)]
+    struct Records(VolumeRecords);
+
+    impl Hash for Records {
+        fn hash<H: Hasher>(&self, state: &mut H) {
+            format!("{:?}", self.0).hash(state);
+        }
+    }
+
+    #[derive(Clone, Copy, Debug, Hash, PartialEq, Eq)]
+    struct Slot {
+        /// The writes on W that the snapshot it holds covers.
+        at: u8,
+        /// Pulled after M's `Forget` first reached it.
+        after_removal: bool,
+    }
+
+    #[derive(Clone, Copy, Debug, Default, Hash, PartialEq, Eq)]
+    struct MirrorForget {
+        sent: u8,
+        /// Withdrawn, and the slot not yet destroyed.
+        destroying: bool,
+    }
+
+    #[derive(Clone, Copy, Debug, Hash, PartialEq, Eq)]
+    enum WriterForget {
+        Unsent,
+        Withdrew,
+        Dropped,
+    }
+
+    #[derive(Clone, Copy, Debug, Hash, PartialEq, Eq)]
+    enum Via {
+        Pull,
+        Stream,
+    }
+
+    /// A snapshot of W that reached M after M's `Forget` did, and where W's `Forget` stood.
+    #[derive(Clone, Copy, Debug, Hash, PartialEq, Eq)]
+    struct Receipt {
+        via: Via,
+        writer: WriterForget,
+    }
+
+    #[derive(Clone, Debug, Hash, PartialEq, Eq)]
+    struct State {
+        w: Records,
+        m: Records,
+        written: u8,
+        /// W's newest run snapshot, by the writes it covers.
+        newest: Option<u8>,
+        slot: Option<Slot>,
+        mirror_forget: MirrorForget,
+        writer_forget: WriterForget,
+        restarts: u8,
+        receipts: Vec<Receipt>,
+    }
+
+    impl State {
+        fn removal_reached_mirror(&self) -> bool {
+            self.mirror_forget.sent > 0
+        }
+
+        fn removed_with(&self, writer: WriterForget) -> bool {
+            self.removal_reached_mirror()
+                && !self.mirror_forget.destroying
+                && self.slot.is_none()
+                && self.writer_forget == writer
+        }
+
+        fn receive(&mut self, via: Via) {
+            let receipt = Receipt {
+                via,
+                writer: self.writer_forget,
+            };
+            if self.removal_reached_mirror() && !self.receipts.contains(&receipt) {
+                self.receipts.push(receipt);
+            }
+        }
+    }
+
+    #[derive(Clone, Copy, Debug, Hash, PartialEq, Eq)]
+    enum Action {
+        Write,
+        Snapshot { approved: bool },
+        Pull,
+        ForgetMirror,
+        Destroy,
+        Restart,
+        ForgetWriter,
+        DropWriterForget,
+        ReadStream,
+    }
+
+    struct MirrorRemoval {
+        broken: Broken,
+        writer: MachineId,
+        mirror: MachineId,
+        volume: DockerVolumeName,
+        operation: OperationId,
+        digest: StepDigest,
+    }
+
+    fn snapshot_name(at: u8) -> SnapshotName {
+        format!("dep-{at}").parse().expect("a deploy snapshot name")
+    }
+
+    impl MirrorRemoval {
+        fn new(broken: Broken) -> Self {
+            let id = |fill: char| MachineId::parse(fill.to_string().repeat(32)).expect("an ID");
+            Self {
+                broken,
+                writer: id('a'),
+                mirror: id('b'),
+                volume: DockerVolumeName::parse("app_data").expect("a Volume name"),
+                operation: OperationId::parse("1".repeat(32)).expect("an operation ID"),
+                digest: StepDigest::of("op 1"),
+            }
+        }
+
+        fn workflow(&self) -> VolumeWorkflow {
+            VolumeWorkflow::Mirror {
+                writer: self.writer,
+                mirror: self.mirror,
+                replace: false,
+            }
+        }
+
+        /// `admit_volume_step` for op 1 after its window: the record decides.
+        fn admit(
+            &self,
+            records: &mut Records,
+            machine: &MachineId,
+            transition: CopyTransition,
+        ) -> bool {
+            records
+                .0
+                .admit(
+                    self.operation,
+                    self.digest,
+                    machine,
+                    &self.volume,
+                    &VolumeStep::Copy(transition),
+                    || Err(AuthorityRefusal::Expired),
+                )
+                .is_ok()
+        }
+
+        /// Whether W's send stream serves M the snapshot covering `at` writes.
+        fn serves(&self, state: &State, at: u8) -> bool {
+            state
+                .w
+                .0
+                .live(&self.volume, &self.mirror, Some(&snapshot_name(at)))
+        }
+    }
+
+    impl Model for MirrorRemoval {
+        type State = State;
+        type Action = Action;
+
+        fn init_states(&self) -> Vec<State> {
+            let mut w = VolumeRecords::default();
+            let snapshot = VolumeStep::Copy(CopyTransition::WriterToSnapshot);
+            w.admit(
+                self.operation,
+                self.digest,
+                &self.writer,
+                &self.volume,
+                &snapshot,
+                || Ok(self.workflow()),
+            )
+            .expect("W admits op 1 inside its window");
+            w.grant(self.operation, self.mirror, GrantScope::Standing)
+                .expect("W grants M every snapshot");
+            let mut m = VolumeRecords::default();
+            let pull = VolumeStep::Copy(CopyTransition::NoneToMirror);
+            m.admit(
+                self.operation,
+                self.digest,
+                &self.mirror,
+                &self.volume,
+                &pull,
+                || Ok(self.workflow()),
+            )
+            .expect("M admits op 1 inside its window");
+            vec![State {
+                w: Records(w),
+                m: Records(m),
+                written: 0,
+                newest: Some(0),
+                slot: Some(Slot {
+                    at: 0,
+                    after_removal: false,
+                }),
+                mirror_forget: MirrorForget::default(),
+                writer_forget: WriterForget::Unsent,
+                restarts: 0,
+                receipts: Vec::new(),
+            }]
+        }
+
+        fn actions(&self, state: &State, actions: &mut Vec<Action>) {
+            if state.written < WRITES {
+                actions.push(Action::Write);
+            }
+            actions.push(Action::Snapshot { approved: true });
+            actions.push(Action::Snapshot { approved: false });
+            actions.push(Action::Pull);
+            if state.mirror_forget.destroying {
+                actions.push(Action::Destroy);
+                if state.restarts < RESTARTS {
+                    actions.push(Action::Restart);
+                }
+            } else if state.mirror_forget.sent < MIRROR_FORGETS {
+                actions.push(Action::ForgetMirror);
+            }
+            if state.writer_forget == WriterForget::Unsent {
+                actions.push(Action::ForgetWriter);
+                actions.push(Action::DropWriterForget);
+            }
+            actions.push(Action::ReadStream);
+        }
+
+        fn next_state(&self, last: &State, action: Action) -> Option<State> {
+            let mut next = last.clone();
+            match action {
+                Action::Write => next.written += 1,
+                Action::Snapshot { approved } => {
+                    if approved {
+                        let transition = CopyTransition::WriterToSnapshot;
+                        if !self.admit(&mut next.w, &self.writer, transition) {
+                            return None;
+                        }
+                        let granted =
+                            next.w
+                                .0
+                                .grant(self.operation, self.mirror, GrantScope::Standing);
+                        if granted.is_err() {
+                            return (next != *last).then_some(next);
+                        }
+                    }
+                    next.newest = Some(next.written);
+                }
+                Action::Pull => {
+                    let newest = next.newest?;
+                    if next.slot.is_some_and(|slot| slot.at == newest) {
+                        return None;
+                    }
+                    let transition = if next.slot.is_some() {
+                        CopyTransition::MirrorToMirror
+                    } else {
+                        CopyTransition::NoneToMirror
+                    };
+                    if !self.admit(&mut next.m, &self.mirror, transition) {
+                        return None;
+                    }
+                    if self.serves(&next, newest) {
+                        next.slot = Some(Slot {
+                            at: newest,
+                            after_removal: next.removal_reached_mirror(),
+                        });
+                        next.receive(Via::Pull);
+                    }
+                }
+                Action::ForgetMirror => {
+                    next.mirror_forget.sent += 1;
+                    if !self.broken.removal_no_withdrawal {
+                        next.m.0.withdraw(&self.mirror, &self.volume, &self.mirror);
+                    }
+                    next.mirror_forget.destroying = next.slot.is_some();
+                }
+                Action::Destroy => {
+                    next.slot = None;
+                    next.mirror_forget.destroying = false;
+                }
+                Action::Restart => {
+                    next.mirror_forget.destroying = false;
+                    next.restarts += 1;
+                }
+                Action::ForgetWriter => {
+                    next.w.0.withdraw(&self.writer, &self.volume, &self.mirror);
+                    next.newest = None;
+                    next.writer_forget = WriterForget::Withdrew;
+                }
+                Action::DropWriterForget => next.writer_forget = WriterForget::Dropped,
+                Action::ReadStream => {
+                    let newest = next.newest?;
+                    if self.serves(&next, newest) {
+                        next.receive(Via::Stream);
+                    }
+                }
+            }
+            (next != *last).then_some(next)
+        }
+
+        fn properties(&self) -> Vec<Property<Self>> {
+            vec![
+                Property::always(NO_SLOT_AFTER_REMOVAL, |_, state: &State| {
+                    state.slot.is_none_or(|slot| !slot.after_removal)
+                }),
+                Property::always(NOTHING_AFTER_REMOVAL, |_, state: &State| {
+                    !state
+                        .receipts
+                        .iter()
+                        .any(|receipt| receipt.writer == WriterForget::Withdrew)
+                }),
+                Property::sometimes(
+                    "M syncs a newer snapshot under op 1 before the removal",
+                    |_, state: &State| {
+                        state
+                            .slot
+                            .is_some_and(|slot| slot.at > 0 && !slot.after_removal)
+                    },
+                ),
+                Property::sometimes(
+                    "a restart leaves M's withdrawal on disk and its slot in place",
+                    |_, state: &State| {
+                        state.restarts > 0
+                            && !state.mirror_forget.destroying
+                            && state.slot.is_some()
+                            && !state.m.0.withdrawals().is_empty()
+                    },
+                ),
+                Property::sometimes(
+                    "the removal completes on both Machines",
+                    |_, state: &State| state.removed_with(WriterForget::Withdrew),
+                ),
+                Property::sometimes(
+                    "the removal completes on M with W's Forget dropped",
+                    |_, state: &State| state.removed_with(WriterForget::Dropped),
+                ),
+                Property::sometimes(
+                    "with W's Forget dropped, W's stream still serves M's shell after the removal",
+                    |_, state: &State| {
+                        state.receipts.contains(&Receipt {
+                            via: Via::Stream,
+                            writer: WriterForget::Dropped,
+                        })
+                    },
+                ),
+            ]
+        }
+    }
+
+    const NO_SLOT_AFTER_REMOVAL: &str =
+        "once M's Forget has run, M never again holds a slot pulled under op 1";
+    /// W's grant is the only fence against a read from M's shell, so a removal whose
+    /// Writer `Forget` Cloud dropped leaves it open. That is a residual, and this property
+    /// leaves it out.
+    const NOTHING_AFTER_REMOVAL: &str = "once both Machines recorded the removal, M gets no \
+        snapshot of W by pull or stream read (with W's Forget dropped, W's grant stands and \
+        M's shell still reads its stream: a residual, not claimed)";
+
+    mod tests {
+        use stateright::{Checker, HasDiscoveries};
+
+        use super::*;
+
+        #[test]
+        fn mirror_removal_holds() {
+            let checker = MirrorRemoval::new(Broken::default())
+                .checker()
+                .threads(4)
+                .spawn_bfs()
+                .join();
+            println!("MirrorRemoval: {} states", checker.unique_state_count());
+            checker.assert_properties();
+        }
+
+        /// Without its withdrawal, M's own record still holds op 1 open, so a replayed pull
+        /// lands a slot whenever W still grants M, before W's `Forget` or with it dropped.
+        #[test]
+        fn a_removed_mirror_withdraws_before_its_slot_goes() {
+            let broken = Broken {
+                removal_no_withdrawal: true,
+                ..Broken::default()
+            };
+            let checker = MirrorRemoval::new(broken)
+                .checker()
+                .finish_when(HasDiscoveries::AllOf(
+                    [NO_SLOT_AFTER_REMOVAL].into_iter().collect(),
+                ))
+                .spawn_bfs()
+                .join();
+            let path = checker.assert_any_discovery(NO_SLOT_AFTER_REMOVAL);
+            println!("{NO_SLOT_AFTER_REMOVAL} breaks with {broken:?}:\n{path}");
+        }
     }
 }

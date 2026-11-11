@@ -408,6 +408,7 @@ impl Daemon {
         let management_cluster = corrosion
             .as_ref()
             .map(|running| (running.store().clone(), running.admin_client()));
+        let send_cluster = management_cluster.clone();
         let local_for_servers = local.clone();
         let shutdown_for_servers = shutdown.clone();
         let servers = tokio::spawn(async move {
@@ -416,7 +417,11 @@ impl Daemon {
             let network_rpc = async {
                 tokio::try_join!(
                     serve_machine_api(machine_api_listener, machine_api.clone(), shutdown.clone()),
-                    serve_volume_send(volume_send_listener, shutdown.clone()),
+                    serve_volume_send(
+                        volume_send_listener,
+                        crate::machine::LocalMachine::new(local.clone()).with_cluster(send_cluster),
+                        shutdown.clone(),
+                    ),
                     async {
                         management::serve(
                             management_endpoint,
@@ -824,16 +829,19 @@ async fn serve_machine_api(
     }
 }
 
+/// The send stream asks `recipients`, this Machine's own record and accepted rows, whom
+/// it may serve.
 async fn serve_volume_send(
     listener: Option<TcpListener>,
+    recipients: crate::machine::LocalMachine,
     shutdown: CancellationToken,
 ) -> io::Result<()> {
     match listener {
         Some(listener) => {
             crate::volume_send::serve(
                 listener,
-                PathBuf::from("zfs"),
-                PathBuf::from("zpool"),
+                (PathBuf::from("zfs"), PathBuf::from("zpool")),
+                recipients,
                 shutdown,
             )
             .await
