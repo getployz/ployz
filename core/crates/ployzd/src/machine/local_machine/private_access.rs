@@ -18,7 +18,8 @@ use std::time::Duration;
 use ployz_core::{
     ContainerId, ContainerKind, ContainerObservation, ContainerRuntimeObservation, DoorChange,
     DoorOutcome, Namespace, PrivateAccessFailure, PrivateAccessProblem, PrivateAccessSet,
-    ResolvedServiceSpec, SetPrivateAccessRequest, private_access_sealed_key, private_access_state,
+    ResolvedServiceSpec, SetPrivateAccessRequest, private_access_router_joined,
+    private_access_sealed_key, private_access_state,
 };
 use zeroize::Zeroizing;
 
@@ -164,6 +165,13 @@ fn detail(output: &str, key: &[u8]) -> String {
         line.truncate(end);
     }
     line
+}
+
+/// Whether the router has joined the tailnet: it said so and its probe agrees. The
+/// start-up line comes before the first probe passes, and a success answered between
+/// the two would read as stopped to the next look.
+fn has_joined(output: &str, runtime: &ContainerRuntimeObservation) -> bool {
+    output.contains(ROUTER_UP) && private_access_router_joined(runtime)
 }
 
 /// Whether a placement waits to see the router join the tailnet.
@@ -470,7 +478,8 @@ impl LocalMachine {
                     detail: format!("the router is {runtime}: {}", detail(&output, key)),
                 });
             }
-            if !settles || output.contains(ROUTER_UP) || tokio::time::Instant::now() >= deadline {
+            if !settles || has_joined(&output, &runtime) || tokio::time::Instant::now() >= deadline
+            {
                 return None;
             }
             tokio::time::sleep(ROUTER_POLL).await;
@@ -489,6 +498,31 @@ fn unix_seconds() -> i32 {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use ployz_core::HealthObservation;
+
+    // Catches a placement answering success on the start-up line before the probe
+    // passes, which reads as stopped to the next look.
+    #[test]
+    fn a_router_has_joined_only_once_it_said_so_and_its_probe_passes() {
+        let running = |health| ContainerRuntimeObservation::Running { health };
+        assert!(!has_joined(
+            "Startup complete",
+            &running(HealthObservation::Starting)
+        ));
+        assert!(!has_joined(
+            "Startup complete",
+            &running(HealthObservation::Unhealthy)
+        ));
+        assert!(!has_joined("booting", &running(HealthObservation::Healthy)));
+        assert!(has_joined(
+            "Startup complete",
+            &running(HealthObservation::Healthy)
+        ));
+        assert!(has_joined(
+            "Startup complete",
+            &running(HealthObservation::NotConfigured)
+        ));
+    }
 
     #[test]
     fn a_refused_key_is_told_from_a_router_that_merely_stopped() {
