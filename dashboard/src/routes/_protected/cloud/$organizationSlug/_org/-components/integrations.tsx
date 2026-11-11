@@ -128,7 +128,7 @@ const REMOVAL_LAG_MS = 30_000;
 type RowState = ObservedServer["router"] | "refused";
 
 /**
- * The last answer outranks the poll only where the poll lags: a router from a daemon that predates the probe whose key Tailscale refused
+ * The last answer outranks the poll only where the poll lags: a router without a probe (from an older daemon) that Tailscale refused the key for
  * runs until it gives up, and a removed one is listed until the Servers' watch catches up.
  */
 function stateOf(server: ObservedServer, last: PrivateAccessAnswer | null): RowState {

@@ -179,6 +179,13 @@ fn detail(output: &str, key: &[u8]) -> String {
     line
 }
 
+/// Whether the router has joined the tailnet: it said so and its probe agrees. The
+/// start-up line comes before the first probe passes, and a success answered between
+/// the two would read as stopped to the next look.
+fn has_joined(output: &str, runtime: &ContainerRuntimeObservation) -> bool {
+    output.contains(ROUTER_UP) && private_access_router_joined(runtime)
+}
+
 /// Whether a placement waits to see the router join the tailnet.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum Watch {
@@ -448,9 +455,8 @@ impl LocalMachine {
         Ok(Some(DoorOutcome { now, change }))
     }
 
-    /// Watch a placed router until it has joined the tailnet, which is its start-up line and
-    /// then its probe passing, has died, or the settle time ends with it running and
-    /// saying nothing wrong. A router that already ran is
+    /// Watch a placed router until it has joined the tailnet, has died, or the settle
+    /// time ends with it running and saying nothing wrong. A router that already ran is
     /// read once, from the last two minutes, and not waited on.
     async fn watch_router(
         &self,
@@ -484,8 +490,8 @@ impl LocalMachine {
                     detail: format!("the router is {runtime}: {}", detail(&output, key)),
                 });
             }
-            let joined = output.contains(ROUTER_UP) && private_access_router_joined(&runtime);
-            if !settles || joined || tokio::time::Instant::now() >= deadline {
+            if !settles || has_joined(&output, &runtime) || tokio::time::Instant::now() >= deadline
+            {
                 return None;
             }
             tokio::time::sleep(ROUTER_POLL).await;
@@ -504,6 +510,31 @@ fn unix_seconds() -> i32 {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use ployz_core::HealthObservation;
+
+    // Catches a placement answering success on the start-up line before the probe
+    // passes, which reads as stopped to the next look.
+    #[test]
+    fn a_router_has_joined_only_once_it_said_so_and_its_probe_passes() {
+        let running = |health| ContainerRuntimeObservation::Running { health };
+        assert!(!has_joined(
+            "Startup complete",
+            &running(HealthObservation::Starting)
+        ));
+        assert!(!has_joined(
+            "Startup complete",
+            &running(HealthObservation::Unhealthy)
+        ));
+        assert!(!has_joined("booting", &running(HealthObservation::Healthy)));
+        assert!(has_joined(
+            "Startup complete",
+            &running(HealthObservation::Healthy)
+        ));
+        assert!(has_joined(
+            "Startup complete",
+            &running(HealthObservation::NotConfigured)
+        ));
+    }
 
     #[test]
     fn a_refused_key_is_told_from_a_router_that_merely_stopped() {
