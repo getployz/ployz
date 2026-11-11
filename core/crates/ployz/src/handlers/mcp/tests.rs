@@ -628,6 +628,7 @@ async fn a_cloud_tool_on_a_local_store_names_the_fix() {
         .await;
     assert_eq!(done["result"]["isError"], true, "{done}");
     let refusal = &done["result"]["structuredContent"];
+    assert_eq!(refusal["code"], "not_here", "{done}");
     assert_eq!(refusal["writes"], "none", "{done}");
     assert_eq!(
         refusal["details"]["fix"],
@@ -643,6 +644,7 @@ async fn a_local_backend_cannot_answer_a_cloud_ask() {
     let backend = Backend::Local(&store, &who);
     let servers = serde_json::from_value(json!({ "query": "servers", "only": null })).unwrap();
     let answered = backend.ask(&Ask::Cloud(servers)).await.unwrap_err();
+    assert_eq!(answered.code.as_str(), "internal");
     assert_eq!(
         answered.message,
         "This needs Ployz Cloud; a local Config Store cannot answer it"
