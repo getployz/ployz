@@ -227,6 +227,19 @@ describe("approveEnvironmentDeploy", () => {
     expect(await verifies(approved.approval)).toBe(true);
   });
 
+  it("asks nothing for a plan that builds from source, so the Deploy goes as before and runs under its rule", async () => {
+    review.mockResolvedValue(true);
+    const built = plan();
+    const [spec] = built.target ?? [];
+    if (spec === undefined) return expect.fail("a spec");
+    spec.container.image = "ployz-build/web:pending";
+    const store = reads({ plan: vi.fn(async () => built) });
+    const prompted = vi.spyOn(navigator.credentials, "get");
+    expect(await approveEnvironmentDeploy(approving(store, placing()), branch, crypto.randomUUID(), parent)).toBeUndefined();
+    expect(prompted).not.toHaveBeenCalled();
+    expect(review).not.toHaveBeenCalled();
+  });
+
   it("names the Cluster its Parent runs on for a Branch that runs nowhere yet, and refuses when Cloud can't tell which", async () => {
     review.mockResolvedValue(true);
     const store = reads({ namespace: vi.fn(async () => "production-ns") });

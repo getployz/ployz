@@ -252,7 +252,10 @@ They ask for your passkey as **Deploy** does. **Approve** signs exactly those li
 **Cancel** signs nothing and deploys nothing; a new branch is still created.
 
 A new branch or a preview that runs nowhere yet deploys to the servers of the environment it
-branched from. A redeploy approves what the deployment saved, not what you've saved since.
+branched from. A redeploy approves what the deployment saved, not what you've saved since. A new
+branch or a preview with a service that builds from source doesn't ask: it deploys under your
+[preview rule](../environments/preview-environments.md#previews-on-servers-that-enforce-device-approval)
+or automatic deploy rule, as a push does.
 
 A redeploy of a deployment that built from GitHub approves each service's commit under your
 [automatic deploy rule](github.md#deploy-on-push-to-servers-that-enforce-device-approval), as

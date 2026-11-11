@@ -34,6 +34,9 @@ export type Approving = { readonly reads: Reads; readonly servers: Servers; read
 
 const SIGNS_FOR = "Your servers run only what you approve here.";
 
+/** The image a plan names for a Service its Deployment builds, as `DeployApproval::browser_draft` refuses it. */
+const BUILT = "ployz-build/";
+
 const enforcing = (servers: Servers) => servers.machines.some((machine) => machine.deviceEnforcement === true);
 
 /** Shows `drafted` and signs exactly its bodies once the person approves. Null when they cancel: nothing is signed. */
@@ -49,12 +52,14 @@ const scopeOf = (environment: { readonly id: string; readonly name: string }, na
  * A Deploy of `environment`, as Deployment `id`, approved in this browser: its plan read now, every term shown, then
  * signed. The version it read goes with it, so the Store refuses it once the Environment changes. One that runs nowhere
  * yet, a new Branch or a shut-down preview, names the Cluster `near` runs on, its Parent. Undefined when no Server
- * enforces, so the Deploy goes as before; null when the person cancels.
+ * enforces or the plan builds from source, so the Deploy goes as before; null when the person cancels.
  */
 export async function approveEnvironmentDeploy(approving: Approving, environment: EnvironmentRef, id: string, near: EnvironmentRef) {
   const { reads, servers } = approving;
   if (!enforcing(servers)) return undefined;
   const plan = await reads.plan(environment);
+  // A Service that builds from source runs under the automatic deploy or preview rule, which no browser signs.
+  if ((plan.target ?? []).some((spec) => spec.container.image.startsWith(BUILT))) return undefined;
   const own = servers.running(plan.namespace);
   const environmentMachines = own.length > 0 ? own : servers.running(await reads.namespace(near));
   const scope = await deployApprovalScope({ environment: scopeOf(plan.environment, plan.namespace), environmentMachines, machines: servers.machines });
