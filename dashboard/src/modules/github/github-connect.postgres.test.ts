@@ -54,6 +54,11 @@ const users = fakeGithubUsers({
     adminOf: ["hopper"],
   },
   "octo-code": { login: "octo", installations: MANY, adminOf: MANY.map((installation) => installation.login) },
+  "dana-code": {
+    login: "dana",
+    installations: [{ id: 16, login: "dana", type: "User" }, { id: 17, login: "saml", type: "Organization" }],
+    unknownOf: ["saml"],
+  },
 });
 // Installation 9 holds more repositories than one page lists.
 const REPOSITORY_COUNTS = new Map([[8, 3], [9, 150]]);
@@ -170,6 +175,11 @@ it.live("links only installations the person who started the connect owns on Git
     if (everyOffered.issues !== undefined) throw new Error(`accept rejected the full offer: ${everyOffered.issues[0]?.message}`);
     expect(yield* run(acceptGithubOffer(bob, everyOffered.value))).toEqual({ linked: MAX_OFFERED_INSTALLATIONS });
     expect(yield* linked(LAB)).toEqual([7, 9, ...[...OFFERED].sort((a, b) => a - b)]);
+
+    // An Organization GitHub won't tell about holds back only a connect that would link it.
+    expect(landing(yield* complete(ada, { state: shopInstall, code: "dana-code", installation_id: "16" }))).toEqual({ section: "github", connect: "linked" });
+    expect(landing(yield* complete(ada, { state: shopExisting, code: "dana-code" }))).toEqual({ section: "github", connect: "failed" });
+    expect(yield* linked(SHOP)).toEqual([7, 8, 16]);
   }), 60_000);
 
 it.live("returns from a connect without listing GitHub, queues a sync for every linked account, and counts once those land", () =>

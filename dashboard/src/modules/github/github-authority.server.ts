@@ -1,7 +1,7 @@
 import "@tanstack/react-start/server-only";
 import crypto from "node:crypto";
 import { AwsClient } from "aws4fetch";
-import { Context, Effect, Layer, Redacted, Schema } from "effect";
+import { Cache, Context, Duration, Effect, Exit, Layer, Redacted, Schema } from "effect";
 import { GITHUB_BUILD_WORKFLOW, GITHUB_BUILD_WORKFLOW_FILE } from "#/modules/github/github-build-workflow";
 import { githubIdSchema, githubTimestampSchema } from "#/modules/github/github-ingestion.contracts";
 import { GithubObservationError, githubResponseError, type GithubObservationOperation } from "#/modules/github/github-observation.api";
@@ -24,6 +24,40 @@ export const GITHUB_READ_SET = { contents: "read", metadata: "read", pull_reques
 
 const BUILD_WORKFLOW_PATH = `.github/workflows/${GITHUB_BUILD_WORKFLOW_FILE}`;
 
+/** What each operation's own token may do, for that one repository. */
+const OWN_PERMISSIONS = {
+  workflow: { contents: "read", actions: "read" },
+  runs: { actions: "read" },
+  dispatch: { contents: "read", actions: "write" },
+  act: { actions: "write" },
+  check: { checks: "write" },
+} as const satisfies Record<string, Readonly<Record<string, "read" | "write">>>;
+type OwnNeed = keyof typeof OWN_PERMISSIONS;
+
+/** An installation token lives an hour; an operation's own token is kept for less, so none expires mid-call. */
+const OWN_TOKEN_TTL = Duration.minutes(50);
+
+/** GitHub refuses the whole mint when it names a permission the installation never accepted. */
+const unaccepted = (error: GithubObservationError) => error.operation === "installation_token" && error.status === 422;
+
+/**
+ * A read token with `scope`'s permissions, or the whole read set. An installation that never accepted, say, Checks
+ * still reads its code: on GitHub's refusal, the token asks only for what the installation accepted.
+ */
+function readSetToken(
+  installationId: number,
+  scope: GithubReadScope | undefined,
+  installation: GithubAuthorityService["installation"],
+  mintWith: (permissions: GithubReadPermissions) => Effect.Effect<string, GithubObservationError>,
+): Effect.Effect<string, GithubObservationError> {
+  if (scope?.permissions !== undefined) return mintWith(scope.permissions);
+  return mintWith(GITHUB_READ_SET).pipe(Effect.catchIf(unaccepted, () => installation(installationId).pipe(
+    Effect.flatMap(({ permissions }) => mintWith(Object.fromEntries(Object.keys(GITHUB_READ_SET)
+      .filter((name) => permissions[name] === "read" || permissions[name] === "write")
+      .map((name) => [name, "read"])))),
+  )));
+}
+
 /** SHA-256 of a workflow file after CRLF becomes LF, as the minter compares it. */
 export function githubWorkflowDigest(bytes: Uint8Array): string {
   const text = Buffer.from(bytes).toString("latin1").replaceAll("\r\n", "\n");
@@ -35,6 +69,9 @@ export const GITHUB_BUILD_WORKFLOW_DIGESTS: ReadonlySet<string> = new Set([githu
 
 export type GithubRepositoryRef = { readonly installationId: number; readonly repositoryId: number };
 export type GithubBuildRunRef = GithubRepositoryRef & { readonly runId: number };
+
+/** Which repositories and read permissions a read token covers. Left out, every repository and the whole read set. */
+export type GithubReadScope = { readonly repositoryIds?: ReadonlyArray<number>; readonly permissions?: GithubReadPermissions };
 
 /** A build workflow run's metadata. Never its jobs, logs or artifacts. */
 export type GithubBuildRun = {
@@ -83,8 +120,11 @@ export type GithubConnectedUser = {
     readonly id: number;
     readonly account: { readonly login: string; readonly type: string; readonly avatarUrl: string | null };
     readonly suspendedAt: string | null;
-    /** Owns the account: its admin for an Organization, the person for a User. Reaching it is not owning it. */
-    readonly administers: boolean;
+    /**
+     * Owns the account: its admin for an Organization, the person for a User. Reaching it is not owning it. Null when
+     * GitHub wouldn't say, such as an Organization whose SSO the person hasn't signed in to.
+     */
+    readonly administers: boolean | null;
   }>;
 };
 
@@ -94,7 +134,7 @@ export interface GithubAuthorityService {
   /** A token that reads `permissions` (the whole read set by default), on `repositoryIds` or every repository. */
   readonly readToken: (
     installationId: number,
-    scope?: { readonly repositoryIds?: ReadonlyArray<number>; readonly permissions?: GithubReadPermissions },
+    scope?: GithubReadScope,
   ) => Effect.Effect<string, Failure>;
   readonly installation: (installationId: number) => Effect.Effect<{ url: string; permissions: Readonly<Record<string, string>> }, Failure>;
   readonly buildWorkflow: (input: GithubRepositoryRef) => Effect.Effect<GithubBuildWorkflowFile, Failure>;
@@ -207,9 +247,9 @@ export const makeGithubAuthorityLocal = Effect.fn("GithubAuthority.makeLocal")(f
   const cloud = config.app.url.origin;
 
   const send = Effect.fn("GithubAuthority.send")(function* (input: {
-    operation: GithubObservationOperation; token: string | null; path: `/${string}`; method?: "POST" | "PATCH"; body?: unknown; origin?: string;
+    operation: GithubObservationOperation; token: string | null; path: `/${string}`; method?: "POST" | "PATCH"; body?: unknown; origin?: string; accept?: string;
   }) {
-    const headers = new Headers({ Accept: "application/vnd.github+json", "X-GitHub-Api-Version": GITHUB_API_VERSION });
+    const headers = new Headers({ Accept: input.accept ?? "application/vnd.github+json", "X-GitHub-Api-Version": GITHUB_API_VERSION });
     if (input.token !== null) headers.set("Authorization", `Bearer ${input.token}`);
     const init: RequestInit = { headers };
     if (input.method !== undefined) {
@@ -268,9 +308,14 @@ export const makeGithubAuthorityLocal = Effect.fn("GithubAuthority.makeLocal")(f
     return yield* Schema.decodeUnknownEffect(tokenSchema)(parsed).pipe(Effect.mapError(() => invalidResponse(operation)));
   });
 
-  /** A token for one repository with what the operation needs. Cloud never hands it on. */
-  const own = (ref: GithubRepositoryRef, permissions: Readonly<Record<string, "read" | "write">>) =>
-    mint(ref.installationId, { permissions, repository_ids: [ref.repositoryId] }).pipe(Effect.map((minted) => minted.token));
+  /** A token for one repository with what the operation needs, kept until shortly before it expires. Cloud never hands it on. */
+  const owned = yield* Cache.makeWith(
+    (key: GithubRepositoryRef & { readonly need: OwnNeed }) =>
+      mint(key.installationId, { permissions: OWN_PERMISSIONS[key.need], repository_ids: [key.repositoryId] }).pipe(Effect.map((minted) => minted.token)),
+    { capacity: 1024, timeToLive: (exit) => Exit.isSuccess(exit) ? OWN_TOKEN_TTL : Duration.zero },
+  );
+  const own = (ref: GithubRepositoryRef, need: OwnNeed) =>
+    Cache.get(owned, { installationId: ref.installationId, repositoryId: ref.repositoryId, need });
 
   /** A file's bytes at a ref, or null when the ref holds no such file. */
   const file = (token: string, repositoryId: number, path: string, ref: string) => call(contentsSchema, {
@@ -287,23 +332,21 @@ export const makeGithubAuthorityLocal = Effect.fn("GithubAuthority.makeLocal")(f
     return run;
   });
 
-  const readToken: GithubAuthorityService["readToken"] = Effect.fn("GithubAuthority.local.readToken")(function* (installationId, scope) {
-    const minted = yield* mint(installationId, {
-      permissions: scope?.permissions ?? GITHUB_READ_SET,
-      repository_ids: scope?.repositoryIds,
-    });
-    const beyond = Object.entries(minted.permissions ?? {}).some(([name, level]) => !Object.hasOwn(GITHUB_READ_SET, name) || level !== "read");
-    if (beyond) return yield* failure({ code: "invalid_response", operation: "installation_token", retriable: false });
-    return minted.token;
-  });
-
   const installation: GithubAuthorityService["installation"] = Effect.fn("GithubAuthority.local.installation")(function* (installationId) {
     const found = yield* call(installationSchema, { operation: "fetch_installation", token: yield* appJwt, path: `/app/installations/${installationId}` });
     return { url: found.html_url, permissions: found.permissions };
   });
 
+  const readToken: GithubAuthorityService["readToken"] = (installationId, scope) => readSetToken(installationId, scope, installation, (permissions) =>
+    Effect.gen(function* () {
+      const minted = yield* mint(installationId, { permissions, repository_ids: scope?.repositoryIds });
+      const beyond = Object.entries(minted.permissions ?? {}).some(([name, level]) => !Object.hasOwn(GITHUB_READ_SET, name) || level !== "read");
+      if (beyond) return yield* failure({ code: "invalid_response", operation: "installation_token", retriable: false });
+      return minted.token;
+    }));
+
   const buildWorkflow: GithubAuthorityService["buildWorkflow"] = Effect.fn("GithubAuthority.local.buildWorkflow")(function* (input) {
-    const token = yield* own(input, { contents: "read", actions: "read" });
+    const token = yield* own(input, "workflow");
     const repository = yield* call(repositorySchema, { operation: "resolve_repository", token, path: `/repositories/${input.repositoryId}` });
     const workflow = yield* call(workflowSchema, {
       operation: "fetch_workflow", token, path: `/repositories/${input.repositoryId}/actions/workflows/${GITHUB_BUILD_WORKFLOW_FILE}`,
@@ -321,19 +364,19 @@ export const makeGithubAuthorityLocal = Effect.fn("GithubAuthority.makeLocal")(f
     const query = new URLSearchParams({ head_sha: input.headSha, event: input.event, per_page: "20" });
     const runs = yield* call(runsSchema, {
       operation: "list_push_runs",
-      token: yield* own(input, { actions: "read" }),
+      token: yield* own(input, "runs"),
       path: `/repositories/${input.repositoryId}/actions/workflows/${GITHUB_BUILD_WORKFLOW_FILE}/runs?${query.toString()}`,
     });
     return runs.workflow_runs.filter((run) => run.path === BUILD_WORKFLOW_PATH).map(runOf);
   });
 
   const buildRun: GithubAuthorityService["buildRun"] = Effect.fn("GithubAuthority.local.buildRun")(function* (input) {
-    return runOf(yield* buildRunOf(yield* own(input, { actions: "read" }), input, "fetch_run"));
+    return runOf(yield* buildRunOf(yield* own(input, "runs"), input, "fetch_run"));
   });
 
   const dispatchBuild: GithubAuthorityService["dispatchBuild"] = Effect.fn("GithubAuthority.local.dispatchBuild")(function* (input) {
     const operation = "dispatch_workflow";
-    const token = yield* own(input, { contents: "read", actions: "write" });
+    const token = yield* own(input, "dispatch");
     const repository = yield* call(repositorySchema, { operation: "resolve_repository", token, path: `/repositories/${input.repositoryId}` });
     const branch = yield* call(branchSchema, {
       operation: "resolve_branch_head", token, path: `/repositories/${input.repositoryId}/git/ref/heads/${encodeBranch(input.branch)}`,
@@ -354,7 +397,7 @@ export const makeGithubAuthorityLocal = Effect.fn("GithubAuthority.makeLocal")(f
   const dispatchApprovedBuild: GithubAuthorityService["dispatchApprovedBuild"] = Effect.fn("GithubAuthority.local.dispatchApprovedBuild")(function* (input) {
     const run = yield* call(dispatchedSchema, {
       operation: "dispatch_workflow",
-      token: yield* own(input, { actions: "write" }),
+      token: yield* own(input, "act"),
       method: "POST",
       path: `/repositories/${input.repositoryId}/actions/workflows/${GITHUB_BUILD_WORKFLOW_FILE}/dispatches`,
       body: { ref: `refs/heads/${input.branch}`, inputs: { commit: input.commit }, return_run_details: true },
@@ -363,7 +406,7 @@ export const makeGithubAuthorityLocal = Effect.fn("GithubAuthority.makeLocal")(f
   });
 
   const cancelBuild: GithubAuthorityService["cancelBuild"] = Effect.fn("GithubAuthority.local.cancelBuild")(function* (input) {
-    const token = yield* own(input, { actions: "write" });
+    const token = yield* own(input, "act");
     yield* buildRunOf(token, input, "cancel_run");
     yield* send({ operation: "cancel_run", token, method: "POST", path: `/repositories/${input.repositoryId}/actions/runs/${input.runId}/cancel` }).pipe(
       Effect.catchIf((error) => error.status === 409, () => Effect.void),
@@ -371,13 +414,13 @@ export const makeGithubAuthorityLocal = Effect.fn("GithubAuthority.makeLocal")(f
   });
 
   const rerunBuild: GithubAuthorityService["rerunBuild"] = Effect.fn("GithubAuthority.local.rerunBuild")(function* (input) {
-    const token = yield* own(input, { actions: "write" });
+    const token = yield* own(input, "act");
     yield* buildRunOf(token, input, "rerun_run");
     yield* send({ operation: "rerun_run", token, method: "POST", path: `/repositories/${input.repositoryId}/actions/runs/${input.runId}/rerun` });
   });
 
   const postCheck: GithubAuthorityService["postCheck"] = Effect.fn("GithubAuthority.local.postCheck")(function* (input) {
-    const token = yield* own(input, { checks: "write" });
+    const token = yield* own(input, "check");
     const repository = `/repositories/${input.repositoryId}` as const;
     let existing: number | undefined;
     for (let page = 1; existing === undefined && page <= CHECK_PAGES; page++) {
@@ -400,7 +443,8 @@ export const makeGithubAuthorityLocal = Effect.fn("GithubAuthority.makeLocal")(f
 
   const connect: GithubAuthorityService["connect"] = Effect.fn("GithubAuthority.local.connect")(function* (code) {
     const exchanged = yield* call(userAccessTokenSchema, {
-      operation: "exchange_user_code", token: null, origin: origins.web, method: "POST", path: "/login/oauth/access_token",
+      // The OAuth endpoint answers form-encoded unless asked for exactly this.
+      operation: "exchange_user_code", token: null, origin: origins.web, method: "POST", path: "/login/oauth/access_token", accept: "application/json",
       body: { client_id: appClientId, client_secret: Redacted.value(secrets.appClientSecret), code },
     });
     const token = exchanged.access_token;
@@ -413,8 +457,9 @@ export const makeGithubAuthorityLocal = Effect.fn("GithubAuthority.makeLocal")(f
     }
     const administers = (account: { login: string; type: string }) => account.type === "Organization"
       ? call(membershipSchema, { operation: "read_user_membership", token, path: `/user/memberships/orgs/${encodeURIComponent(account.login)}` }).pipe(
-        Effect.map((membership) => membership.state === "active" && membership.role === "admin"),
+        Effect.map((membership): boolean | null => membership.state === "active" && membership.role === "admin"),
         Effect.catchIf((error) => error.code === "not_found", () => Effect.succeed(false)),
+        Effect.orElseSucceed(() => null),
       )
       : Effect.succeed(account.type === "User" && account.login.toLowerCase() === login.toLowerCase());
     const installations = yield* Effect.forEach(reached, (found) => administers(found.account).pipe(Effect.map((owned) => ({
@@ -454,7 +499,7 @@ const minterConnectSchema = Schema.Struct({
     id: githubIdSchema,
     account: Schema.Struct({ login: Schema.String, type: Schema.String, avatar_url: Schema.NullOr(Schema.String) }),
     suspended_at: Schema.NullOr(Schema.String),
-    administers: Schema.Boolean,
+    administers: Schema.NullOr(Schema.Boolean),
   })),
 });
 
@@ -474,12 +519,14 @@ function minterError(operation: GithubObservationOperation, status: number, text
     const minting = github.value.operation === "installation_token";
     // A token mint under a secondary limit answers a bare 403, so any 403 on a mint is worth trying again.
     const limited = githubStatus === 403 && (minting || retryAfter !== undefined);
+    // No status: GitHub answered something the minter couldn't read, or a token wider than asked. Waiting fixes neither.
+    if (githubStatus === null) return failure({ code: "invalid_response", operation: minting ? "installation_token" : operation, retriable: false });
     return failure({
       code: githubStatus === 404 ? "not_found" : "request_failed",
       operation: minting ? "installation_token" : operation,
-      status: githubStatus ?? undefined,
+      status: githubStatus,
       retryAfterSeconds: retryAfter,
-      retriable: githubStatus === null || githubStatus === 429 || githubStatus >= 500 || limited,
+      retriable: githubStatus === 429 || githubStatus >= 500 || limited,
     });
   }
   // The minter itself is down, throttled, or refuses Cloud's credential, which waiting won't fix.
@@ -519,13 +566,17 @@ export function makeGithubAuthorityMinter(minter: { readonly url: URL; readonly 
       return yield* decodeAs(schema, answered.text, operation);
     });
 
-  const readToken: GithubAuthorityService["readToken"] = (installationId, scope) => post("/v1/token", "installation_token", {
-    installation_id: installationId, repository_ids: scope?.repositoryIds, permissions: scope?.permissions,
-  }, minterTokenSchema).pipe(Effect.map((minted) => minted.token));
+  const installation: GithubAuthorityService["installation"] = (installationId) =>
+    post("/v1/installation", "fetch_installation", { installation_id: installationId }, minterInstallationSchema);
+
+  const readToken: GithubAuthorityService["readToken"] = (installationId, scope) => readSetToken(installationId, scope, installation, (permissions) =>
+    post("/v1/token", "installation_token", { installation_id: installationId, repository_ids: scope?.repositoryIds, permissions }, minterTokenSchema).pipe(
+      Effect.map((minted) => minted.token),
+    ));
 
   return {
     readToken,
-    installation: (installationId) => post("/v1/installation", "fetch_installation", { installation_id: installationId }, minterInstallationSchema),
+    installation,
     buildWorkflow: (input) => post("/v1/workflow", "fetch_workflow", { installation_id: input.installationId, repository_id: input.repositoryId }, minterWorkflowSchema).pipe(
       Effect.map((found) => ({ fullName: found.full_name, defaultBranch: found.default_branch, state: found.state, canonical: found.canonical })),
     ),

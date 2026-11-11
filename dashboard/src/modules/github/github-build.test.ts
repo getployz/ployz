@@ -4,7 +4,7 @@ import { organizationAccess } from "./github-access";
 import { cancelGithubRun, checkGithubBuildWorkflow, findGithubPushRun, rerunGithubRun } from "./github-build.server";
 import { GithubAuthority, type GithubAuthorityService, type GithubBuildRun } from "./github-authority.server";
 import { GITHUB_BUILD_WORKFLOW, githubBuildId, githubBuildWorkflowUrl } from "./github-build-workflow";
-import { GithubApi, GithubObservationError, type GithubObservationErrorCode } from "./github-observation.api";
+import { GithubApi, GithubObservationError, githubLacksPermission, type GithubObservationErrorCode } from "./github-observation.api";
 import { fakeGithubApi, fakeGithubAuthority } from "#/test/fake-github";
 
 describe("GitHub build workflow", () => {
@@ -112,5 +112,14 @@ describe("a build run Cloud acts on", () => {
   it("is cancelled in the repository its recorded name resolves to", async () => {
     const cancel = await withGithub(cancelGithubRun({ access, fullName: "acme/api", runId: 3 }), { cancelBuild: () => Effect.void });
     expect(cancel.calls).toEqual([{ operation: "cancelBuild", input: { installationId: 7, repositoryId: 42, runId: 3 } }]);
+  });
+});
+
+describe("an installation that never accepted a permission an operation needs", () => {
+  it("lacks it when GitHub refuses the operation's token with 422, so builds read no_permission and the PR check is skipped", async () => {
+    const refused = new GithubObservationError({ code: "request_failed", operation: "installation_token", status: 422, retriable: false, message: "not granted" });
+    expect(githubLacksPermission(refused)).toBe(true);
+    expect(githubLacksPermission(new GithubObservationError({ ...refused, operation: "create_check_run" }))).toBe(false);
+    expect((await check(refused)).value).toMatchObject({ fullName: null, readiness: "no_permission" });
   });
 });

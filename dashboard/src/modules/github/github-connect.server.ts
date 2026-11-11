@@ -123,6 +123,7 @@ export const completeGithubConnect = Effect.fn("GithubConnect.complete")(functio
   const linked = new Set((yield* listGithubInstallationsForOrganization(organization.id)).map((row) => row.installationId));
   if (!state.existing && linked.has(Number(requestedInstallationId))) return land({ connect: "linked" });
   const unlinked = chosen.filter((installation) => !linked.has(installation.id));
+  if (unlinked.some((installation) => installation.administers === null)) return land({ connect: "failed" });
   // Past the bound, the next connect offers the rest: linked accounts drop out of `unlinked`.
   const candidates = unlinked.filter((installation) => installation.administers).slice(0, MAX_OFFERED_INSTALLATIONS);
   if (candidates.length === 0) return land({ connect: unlinked.length > 0 ? "not-admin" : "none" });

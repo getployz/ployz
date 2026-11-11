@@ -69,6 +69,26 @@ describe("the App's authority held in Cloud", () => {
     expect(sent[0]?.headers.get("authorization")).toMatch(/^Bearer [\w-]+\.[\w-]+\.[\w-]+$/);
   });
 
+  it("asks only for the read permissions an installation accepted, when GitHub refuses the whole read set", async () => {
+    const sent = serve(({ url, body }) => {
+      if (url.pathname === "/app/installations/7") return Response.json({ html_url: "https://github.com/settings/installations/7", permissions: { contents: "read", metadata: "read", actions: "write" } });
+      if (url.pathname !== "/app/installations/7/access_tokens") return undefined;
+      return JSON.stringify(body).includes("checks") ? Response.json({ message: "The permissions requested are not granted to this installation." }, { status: 422 }) : token({ contents: "read", metadata: "read" });
+    });
+    expect(await local((authority) => authority.readToken(7))).toBe("minted");
+    expect(minted(sent)).toEqual([{ permissions: GITHUB_READ_SET }, { permissions: { contents: "read", metadata: "read" } }]);
+  });
+
+  it("keeps an operation's token for its repository, and mints again for another need", async () => {
+    const sent = acmeWeb(GITHUB_BUILD_WORKFLOW);
+    await local((authority) => Effect.all([
+      authority.buildRun({ installationId: 7, repositoryId: 42, runId: 9001 }),
+      authority.buildRun({ installationId: 7, repositoryId: 42, runId: 9001 }),
+      authority.cancelBuild({ installationId: 7, repositoryId: 42, runId: 9001 }),
+    ]));
+    expect(minted(sent)).toEqual([{ permissions: { actions: "read" }, repository_ids: [42] }, { permissions: { actions: "write" }, repository_ids: [42] }]);
+  });
+
   it("refuses a read token GitHub granted more than reading", async () => {
     serve(({ url }) => url.pathname === "/app/installations/7/access_tokens" ? token({ contents: "read", actions: "write" }) : undefined);
     await expect(local((authority) => authority.readToken(7))).rejects.toMatchObject({ code: "invalid_response", operation: "installation_token" });
@@ -118,6 +138,7 @@ describe("the App's authority held in Cloud", () => {
         return Response.json({ installations: reached.slice((page - 1) * 100, page * 100) });
       }
       if (url.pathname === "/user/memberships/orgs/org-1") return Response.json({ state: "active", role: "admin" });
+      if (url.pathname === "/user/memberships/orgs/org-2") return Response.json({ message: "Resource protected by organization SAML enforcement." }, { status: 403 });
       if (url.pathname.startsWith("/user/memberships/orgs/")) return Response.json({ state: "active", role: "member" });
       return undefined;
     });
@@ -125,8 +146,10 @@ describe("the App's authority held in Cloud", () => {
     expect(user.login).toBe("ada");
     expect(user.installations).toHaveLength(130);
     expect(user.installations.filter((installation) => installation.administers).map((installation) => installation.id)).toEqual([1, 2]);
+    expect(user.installations.filter((installation) => installation.administers === null).map((installation) => installation.id)).toEqual([3]);
     expect(sent.filter((request) => request.url.pathname === "/user/installations").map((request) => request.url.searchParams.get("page"))).toEqual(["1", "2"]);
     expect(sent[0]?.url.origin).toBe("https://github.com");
+    expect(sent[0]?.headers.get("accept")).toBe("application/json");
     expect(sent[0]?.body).toMatchObject({ code: "code-1" });
   });
 
@@ -141,7 +164,7 @@ describe("the App's authority held in Cloud", () => {
 /** What the minter answers when a route fails: its refusal, GitHub's failure, or its own. */
 type MinterAnswer =
   | { readonly error: "refused"; readonly reason: string }
-  | { readonly error: "github"; readonly operation: string; readonly status: number; readonly retry_after?: number }
+  | { readonly error: "github"; readonly operation: string; readonly status: number | null; readonly retry_after?: number }
   | { readonly error: "internal" }
   | { readonly message: string };
 
@@ -155,6 +178,21 @@ describe("the App's authority held by the minter", () => {
     expect(request?.headers.get("authorization")).toMatch(/^AWS4-HMAC-SHA256 Credential=AKIAEXAMPLE\/\d{8}\/eu-central-1\/lambda\/aws4_request, SignedHeaders=[^,]+, Signature=[0-9a-f]{64}$/);
     expect(request?.headers.get("x-amz-date")).toMatch(/^\d{8}T\d{6}Z$/);
     expect(request?.body).toEqual({ installation_id: 7, repository_ids: [42], permissions: { contents: "read" } });
+  });
+
+  it("asks only for the read permissions an installation accepted, when the minter reports GitHub refused the whole set", async () => {
+    const sent = serve(({ url, body }) => {
+      if (url.pathname === "/v1/installation") return Response.json({ url: "https://github.com/settings/installations/7", permissions: { contents: "read", metadata: "read" } });
+      return JSON.stringify(body).includes("checks")
+        ? Response.json({ error: "github", operation: "installation_token", status: 422 }, { status: 502 })
+        : Response.json({ token: "minted", expires_at: "2099-01-01T00:00:00Z" });
+    });
+    expect(await viaMinter((authority) => authority.readToken(7))).toBe("minted");
+    expect(sent.map((request) => [request.url.pathname, request.body])).toEqual([
+      ["/v1/token", { installation_id: 7, permissions: GITHUB_READ_SET }],
+      ["/v1/installation", { installation_id: 7 }],
+      ["/v1/token", { installation_id: 7, permissions: { contents: "read", metadata: "read" } }],
+    ]);
   });
 
   it("leaves the Cloud input of a dispatch to the minter", async () => {
@@ -177,6 +215,8 @@ describe("the App's authority held by the minter", () => {
     await expect(cancel(502, { error: "github", operation: "cancel_run", status: 403 })).rejects.toMatchObject({ retriable: false });
     await expect(cancel(502, { error: "github", operation: "installation_token", status: 403 }))
       .rejects.toMatchObject({ operation: "installation_token", retriable: true });
+    await expect(cancel(502, { error: "github", operation: "installation_token", status: null }))
+      .rejects.toMatchObject({ code: "invalid_response", operation: "installation_token", retriable: false });
     await expect(cancel(500, { error: "internal" })).rejects.toMatchObject({ code: "request_failed", retriable: true });
     await expect(cancel(403, { message: "Forbidden" })).rejects.toMatchObject({ code: "request_failed", retriable: false });
   });

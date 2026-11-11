@@ -106,9 +106,13 @@ export function isGithubObservationNotFound(
   return cause instanceof GithubObservationError && cause.code === "not_found";
 }
 
-/** A missing permission is a 403 GitHub won't lift by waiting; rate limits are retriable 403s. */
+/**
+ * A missing permission is a 403 GitHub won't lift by waiting, or a token mint GitHub refused with 422 for naming a
+ * permission the installation never accepted. Rate limits are retriable 403s.
+ */
 export function githubLacksPermission(cause: unknown): cause is GithubObservationError {
-  return cause instanceof GithubObservationError && cause.status === 403 && !cause.retriable;
+  return cause instanceof GithubObservationError
+    && ((cause.status === 403 && !cause.retriable) || (cause.operation === "installation_token" && cause.status === 422));
 }
 
 function resolvedRepositoryPath(

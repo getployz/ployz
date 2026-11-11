@@ -263,15 +263,22 @@ export const ROUTES: Readonly<Record<string, AnyRoute>> = {
         }
         if (listed.length < 100) break;
       }
-      const administers = async (account: { login: string; type: string }) => {
+      // Null when GitHub won't say, such as an Organization whose SSO the person hasn't signed in to: Cloud fails the
+      // connect only when it chose that installation.
+      const administers = async (account: { login: string; type: string }): Promise<boolean | null> => {
         if (account.type !== "Organization") return account.type === "User" && account.login.toLowerCase() === login.toLowerCase();
-        const membership = await github.send("read_user_membership", token, "GET", `/user/memberships/orgs/${encodeURIComponent(account.login)}`, { allow: [404] });
-        if (membership.status === 404) {
-          await membership.body?.cancel();
-          return false;
+        try {
+          const membership = await github.send("read_user_membership", token, "GET", `/user/memberships/orgs/${encodeURIComponent(account.login)}`, { allow: [404] });
+          if (membership.status === 404) {
+            await membership.body?.cancel();
+            return false;
+          }
+          const data: unknown = await membership.json();
+          return field(data, "state", "string", "read_user_membership") === "active" && field(data, "role", "string", "read_user_membership") === "admin";
+        } catch (error) {
+          if (error instanceof GithubError) return null;
+          throw error;
         }
-        const data: unknown = await membership.json();
-        return field(data, "state", "string", "read_user_membership") === "active" && field(data, "role", "string", "read_user_membership") === "admin";
       };
       for (let start = 0; start < installations.length; start += 8) {
         await Promise.all(installations.slice(start, start + 8).map(async (installation) => {

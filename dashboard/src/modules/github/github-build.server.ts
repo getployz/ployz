@@ -10,7 +10,7 @@ import { GithubAuthority } from "#/modules/github/github-authority.server";
 import { githubIdSchema, githubRepositoryFullNameSchema } from "#/modules/github/github-ingestion.contracts";
 import { organizationAccess, type GithubAccess } from "#/modules/github/github-access";
 import {
-  GithubApi, GithubObservationError, type GithubReadError,
+  GithubApi, GithubObservationError, githubLacksPermission, isGithubObservationNotFound, type GithubReadError,
 } from "#/modules/github/github-observation.api";
 import type { Actor } from "#/modules/identity/actor";
 import { requireAccess } from "#/modules/organization/access.server";
@@ -37,8 +37,7 @@ const repositoryNamed = Effect.fn("Github.repositoryNamed")(function* (access: G
 });
 
 /** An installation that no longer reaches the repository, or never accepted Actions: GitHub won't build here. */
-const cannotRun = (error: GithubReadError) => error instanceof GithubObservationError
-  && (error.code === "not_found" || (error.status === 403 && !error.retriable) || (error.operation === "installation_token" && error.status === 422));
+const cannotRun = (error: GithubReadError) => isGithubObservationNotFound(error) || githubLacksPermission(error);
 
 /**
  * Whether GitHub will run the build workflow in this repository now. Cloud calls it for the

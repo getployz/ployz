@@ -123,6 +123,8 @@ export type FakeGithubUser = {
   readonly adminOf?: ReadonlyArray<string>;
   /** Organizations this person is a plain member of. */
   readonly memberOf?: ReadonlyArray<string>;
+  /** Organizations GitHub won't say whether this person administers, such as one whose SSO they haven't signed in to. */
+  readonly unknownOf?: ReadonlyArray<string>;
 };
 
 /**
@@ -141,9 +143,9 @@ export function fakeGithubUsers(byCode: Readonly<Record<string, FakeGithubUser>>
         id: installation.id,
         account: { login: installation.login, type: installation.type, avatarUrl: null },
         suspendedAt: installation.suspended ? "2026-01-01T00:00:00Z" : null,
-        administers: installation.type === "Organization"
-          ? user.adminOf?.includes(installation.login) ?? false
-          : installation.login.toLowerCase() === user.login.toLowerCase(),
+        administers: installation.type !== "Organization"
+          ? installation.login.toLowerCase() === user.login.toLowerCase()
+          : user.unknownOf?.includes(installation.login) ? null : user.adminOf?.includes(installation.login) ?? false,
       })),
     } satisfies GithubConnectedUser);
   };

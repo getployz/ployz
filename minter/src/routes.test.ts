@@ -310,12 +310,14 @@ describe("/v1/connect", () => {
         { id: 1, account: { login: "acme", type: "Organization", avatar_url: null }, suspended_at: null },
         { id: 2, account: { login: "octo", type: "User", avatar_url: "https://avatars.test/2" }, suspended_at: null },
         { id: 3, account: { login: "other", type: "Organization", avatar_url: null }, suspended_at: "2026-01-01T00:00:00Z" },
+        { id: 4, account: { login: "sso", type: "Organization", avatar_url: null }, suspended_at: null },
       ],
     }),
     "GET /user/memberships/orgs/acme": () => json({ state: "active", role: "admin" }),
+    "GET /user/memberships/orgs/sso": () => json({ message: "Resource protected by organization SAML enforcement." }, 403),
   };
 
-  it("returns the login and installations, and never the user token", async () => {
+  it("returns the login and installations, unknown where GitHub won't say who administers one, and never the user token", async () => {
     const minter = harness(connectRoutes);
     const response = await minter.call("/v1/connect", { code: CODE });
     expect(response.body).toEqual({
@@ -324,6 +326,7 @@ describe("/v1/connect", () => {
         { id: 1, account: { login: "acme", type: "Organization", avatar_url: null }, suspended_at: null, administers: true },
         { id: 2, account: { login: "octo", type: "User", avatar_url: "https://avatars.test/2" }, suspended_at: null, administers: true },
         { id: 3, account: { login: "other", type: "Organization", avatar_url: null }, suspended_at: "2026-01-01T00:00:00Z", administers: false },
+        { id: 4, account: { login: "sso", type: "Organization", avatar_url: null }, suspended_at: null, administers: null },
       ],
     });
     expect(JSON.stringify([response, minter.audit])).not.toContain(USER_TOKEN);
