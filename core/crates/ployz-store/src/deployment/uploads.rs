@@ -114,19 +114,13 @@ fn moved(deployment: &Stored, service: &str) -> bool {
 }
 
 /// Whether a Deployment admitted now runs after `deployment` has moved `service`:
-/// it applied it, or it may still run and sent its upload or is running, or a newer
-/// Deploy superseded it and so carries its upload on. A Deployment that settled
-/// otherwise without applying `service` moved it nowhere, whatever it sent.
+/// it applied it, or it is running, so the next one queues behind it. A queued one
+/// is superseded instead, and one that settled without applying `service` moved it
+/// nowhere, whatever it sent.
 fn ahead(deployment: &Stored, service: &str) -> bool {
-    let sent = deployment
-        .service_uploads
-        .as_ref()
-        .is_some_and(|uploads| uploads.sent);
     applied(deployment, service)
-        || (sent && deployment.summary.status == crate::DeploymentStatus::Superseded)
         || (deployment.summary.in_flight
-            && (moved(deployment, service)
-                || deployment.summary.status != crate::DeploymentStatus::Queued))
+            && deployment.summary.status != crate::DeploymentStatus::Queued)
 }
 
 /// The upload `service` builds from: its own in the latest Deployment that `moves` it.
@@ -339,7 +333,7 @@ fn kept(
     );
     for service in services {
         let mut latest = deployments.iter().rev();
-        for moves in [moved, applied, ahead] {
+        for moves in [moved, applied] {
             kept.extend(lineage(&deployments, service, moves).map(|(_, digest)| digest.clone()));
         }
         kept.extend(
