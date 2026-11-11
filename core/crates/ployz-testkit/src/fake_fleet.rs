@@ -77,6 +77,10 @@ pub struct FleetMachine {
     /// The Sealing Key it holds, reported by Inspect and in its row.
     #[serde(default)]
     pub sealing: Option<ployz_core::SealingPublicKey>,
+    /// A daemon from before SetClusterDoors: it neither advertises the capability nor
+    /// serves the route.
+    #[serde(default)]
+    pub predates_doors: bool,
 }
 
 /// One Container. The fixture's `id` is the Docker display name; its wire Container ID
@@ -537,6 +541,7 @@ struct MachineState {
     id: MachineId,
     version: MachineVersion,
     online: bool,
+    predates_doors: bool,
     containers: Vec<ContainerState>,
     copies: Vec<CopyState>,
     upgrades: Vec<MachineUpgradeAttempt>,
@@ -752,14 +757,7 @@ impl Fleet {
                         machine_id: machine.id,
                         protocol_major: PROTOCOL_MAJOR,
                         daemon_version: machine.version.to_string(),
-                        capabilities: [
-                            CapabilityAdvertisement::Always,
-                            CapabilityAdvertisement::Container,
-                            CapabilityAdvertisement::Cluster,
-                        ]
-                        .into_iter()
-                        .flat_map(CapabilityAdvertisement::capabilities)
-                        .collect::<BTreeSet<_>>(),
+                        capabilities: machine.capabilities(),
                         sealing: None,
                         attest: None,
                     }
@@ -809,6 +807,9 @@ impl Fleet {
                     .into(),
                 )
             }
+            RpcRequestBody::SetClusterDoors(_) if self.by_id(target)?.predates_doors => Err(
+                Status::unimplemented("this daemon predates SetClusterDoors"),
+            ),
             RpcRequestBody::SetClusterDoors(request) => {
                 self.declared_doors = Some(request.doors.clone());
                 unary(
@@ -1216,6 +1217,7 @@ impl MachineState {
             id: machine.id,
             version: machine.version,
             online: machine.online,
+            predates_doors: machine.predates_doors,
             containers: machine
                 .containers
                 .into_iter()
@@ -1230,6 +1232,23 @@ impl MachineState {
                 .sealing
                 .map(|public_key| ployz_core::Sealing::Held { public_key }),
         })
+    }
+
+    /// What the daemon advertises: every catalogued capability, less SetClusterDoors for
+    /// one that predates it.
+    fn capabilities(&self) -> BTreeSet<ployz_core::CapabilityName> {
+        [
+            CapabilityAdvertisement::Always,
+            CapabilityAdvertisement::Container,
+            CapabilityAdvertisement::Cluster,
+        ]
+        .into_iter()
+        .flat_map(CapabilityAdvertisement::capabilities)
+        .filter(|capability| {
+            !(self.predates_doors
+                && capability.as_str() == ployz_core::SET_CLUSTER_DOORS_CAPABILITY)
+        })
+        .collect()
     }
 
     fn record(&self) -> Machine {
@@ -1250,6 +1269,11 @@ impl MachineState {
             runtime: MachineRuntime {
                 daemon_version: self.version.to_string(),
                 sealing: self.sealing,
+                capabilities: self
+                    .capabilities()
+                    .iter()
+                    .map(|capability| capability.as_str().to_owned())
+                    .collect(),
                 ..MachineRuntime::default()
             },
             join_approval: None,

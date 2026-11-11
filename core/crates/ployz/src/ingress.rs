@@ -9,10 +9,11 @@ use ployz_core::{
     ContainerId, ContainerObservation, ContainerRuntimeObservation, DescribeContractRequest,
     DoorChange, DoorOutcome, EnvironmentValues, IngressDoor, IngressDoors, IngressDoorsFailure,
     IngressDoorsSet, IngressPorts, IngressStage, IngressWiring, Machine, MachineFailure, MachineId,
-    MachineName, MachineObservation, PartialResult, PlatformPurpose, QualifiedService, RowStanding,
-    RpcError, RpcErrorCode, SET_CLUSTER_DOORS_CAPABILITY, SET_INGRESS_DOORS_CAPABILITY,
-    SET_INGRESS_TUNNEL_CAPABILITY, Sealing, SealingPublicKey, ServiceId, ServiceObservation,
-    SetClusterDoorsRequest, op, seal_platform, validate_ingress_service_spec,
+    MachineName, MachineObservation, MachineTarget, PartialResult, PlatformPurpose,
+    QualifiedService, RowStanding, RpcError, RpcErrorCode, SET_CLUSTER_DOORS_CAPABILITY,
+    SET_INGRESS_DOORS_CAPABILITY, SET_INGRESS_TUNNEL_CAPABILITY, Sealing, SealingPublicKey,
+    ServiceId, ServiceObservation, SetClusterDoorsRequest, op, seal_platform,
+    validate_ingress_service_spec,
 };
 use ployz_store::{IngressAction, IngressFailure, IngressRepair};
 use serde::{Deserialize, Serialize};
@@ -154,12 +155,24 @@ enum Answer {
     Cancelled,
 }
 
-/// Whether the entry Machine's daemon serves SetClusterDoors. One that doesn't keeps no
-/// declaration, so a command sets each Server's Doors as it did before the declaration
-/// existed.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+/// A Server that serves SetClusterDoors, reached through the entry.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct Declarer {
+    pub(crate) machine: MachineId,
+    pub(crate) server: MachineName,
+}
+
+/// Where the command declares the Cluster's Doors.
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) enum Declaration {
-    Supported,
+    /// The entry Machine serves SetClusterDoors.
+    Entry,
+    /// The entry predates it, and these Servers, each online and not leaving, serve it.
+    /// A rolling upgrade has the entry and its peers on different versions, and the
+    /// declaration still has to land in the Cluster's one key.
+    Through(Vec<Declarer>),
+    /// No Server that could be asked serves it, so a command sets each Server's Doors as
+    /// it did before the declaration existed.
     Unsupported,
 }
 
@@ -172,12 +185,8 @@ pub(crate) struct Doors {
     pub(crate) cluster: ClusterDoors,
     /// The Doors the Cluster declares, as the entry Machine's replica holds them.
     pub(crate) declared: Option<IngressDoors>,
-    /// Whether the entry Machine can declare Doors for the Cluster.
+    /// Who declares Doors for the Cluster.
     pub(crate) declaration: Declaration,
-    /// The Servers that advertise they can keep the Cluster's declared Doors. When the
-    /// entry can't, this names who could, and the Cluster may already hold a declaration
-    /// the entry can't read.
-    pub(crate) declarers: Vec<MachineName>,
     /// What each Server holds open now, by Server; one that listed nothing is absent.
     pub(crate) open: BTreeMap<MachineId, IngressDoors>,
     /// The listing the rest derives from, with the Servers that didn't answer it.
@@ -242,19 +251,7 @@ pub(crate) async fn observe_doors(client: &mut Client) -> Result<Doors, Failure>
         .as_ref()
         .and_then(|snapshot| snapshot.doors.clone());
     let machines = list.machines;
-    let declarers = machines
-        .iter()
-        .filter(|observation| {
-            observation
-                .machine
-                .runtime
-                .capabilities
-                .iter()
-                .any(|capability| capability == SET_CLUSTER_DOORS_CAPABILITY)
-        })
-        .map(|observation| observation.machine.name.clone())
-        .collect();
-    let declaration = declaration_of(client).await?;
+    let declaration = declaration_of(client, &machines).await?;
     let live = client
         .live_services_from(&machines, EnvironmentValues::Redacted)
         .await?;
@@ -287,67 +284,106 @@ pub(crate) async fn observe_doors(client: &mut Client) -> Result<Doors, Failure>
         cluster: cluster_doors(declared.clone(), &services),
         declared,
         declaration,
-        declarers,
         open: machine_doors(&services),
         listed: live.containers,
         sealing,
     })
 }
 
-/// Whether the entry Machine serves SetClusterDoors. An entry that can't be asked fails
-/// the command: reading it as unsupported would set Doors the declaration then disagrees
-/// with.
-async fn declaration_of(client: &mut Client) -> Result<Declaration, Failure> {
+/// Where the Cluster's Doors are declared: the entry when it serves SetClusterDoors, else
+/// the Servers that advertise it and can be asked. An entry that can't be asked fails the
+/// command: reading it as unsupported would set Doors the declaration then disagrees with.
+async fn declaration_of(
+    client: &mut Client,
+    machines: &[MachineObservation],
+) -> Result<Declaration, Failure> {
     let contract = client
         .call::<op::DescribeContract>(DescribeContractRequest {}, Call::read())
         .await?;
-    Ok(if contract.supports(SET_CLUSTER_DOORS_CAPABILITY) {
-        Declaration::Supported
-    } else {
+    if contract.supports(SET_CLUSTER_DOORS_CAPABILITY) {
+        return Ok(Declaration::Entry);
+    }
+    let declarers = declarers_of(machines);
+    Ok(if declarers.is_empty() {
         Declaration::Unsupported
+    } else {
+        Declaration::Through(declarers)
     })
 }
 
-/// Declare `doors` as the Cluster's Doors on the entry Machine, so a joiner, a restart
-/// and every reader follow them. It writes even when the entry already shows them, since
-/// another operator's declaration may not have reached it yet. Nothing is written when
-/// the entry can't keep a declaration.
+/// The Servers that advertise SetClusterDoors and can be asked: online, and not leaving,
+/// since a leaving or silent Server's advertisement is no route.
+fn declarers_of(machines: &[MachineObservation]) -> Vec<Declarer> {
+    machines
+        .iter()
+        .filter(|observation| {
+            observation.invites_rpc()
+                && !matches!(observation.machine.standing(), RowStanding::Leaving { .. })
+                && observation
+                    .machine
+                    .runtime
+                    .capabilities
+                    .contains(SET_CLUSTER_DOORS_CAPABILITY)
+        })
+        .map(|observation| Declarer {
+            machine: observation.machine.id,
+            server: observation.machine.name.clone(),
+        })
+        .collect()
+}
+
+/// Declare `doors` as the Cluster's Doors, so a joiner, a restart and every reader follow
+/// them. It writes even when the entry already shows them, since another operator's
+/// declaration may not have reached it yet. An entry that can't keep a declaration hands
+/// it to a Server that can, through the route the Doors themselves take. Nothing is
+/// written when no Server can.
 ///
 /// # Errors
 ///
-/// Fails when the entry refuses or can't be reached, or when the entry can't keep a
-/// declaration and another Server can. A reply lost after the entry committed leaves the
-/// Doors declared with no Server switched, which a rerun converges.
+/// Fails when the Server asked refuses or can't be reached. A reply lost after the Server
+/// committed leaves the Doors declared with no Server switched, which a rerun converges.
 async fn declare(client: &Client, observed: &Doors, doors: &IngressDoors) -> Result<(), Failure> {
-    match observed.declaration {
-        Declaration::Unsupported => match observed.declarers.first() {
-            Some(declarer) => Err(Failure::coded(
-                RpcErrorCode::Unsupported,
-                format!(
-                    "This entry Server can't keep the Cluster's Doors, but Server {declarer} can, \
-                     and the Cluster may already declare Doors this entry can't read. Run the \
-                     command through {declarer}, or upgrade this Server."
-                ),
-            )),
-            None => {
-                crate::ui::warn(
-                    "The entry Server can't keep the Cluster's Doors, so each Server's Doors are \
-                     set without declaring them. Upgrade it to have a joiner and a restart \
-                     follow them.",
-                );
-                Ok(())
-            }
-        },
-        Declaration::Supported => {
+    let request = || SetClusterDoorsRequest {
+        doors: doors.clone(),
+    };
+    match &observed.declaration {
+        Declaration::Unsupported => {
+            crate::ui::warn(
+                "No Server can keep the Cluster's Doors, so each Server's Doors are set without \
+                 declaring them. Upgrade a Server to have a joiner and a restart follow them.",
+            );
+            Ok(())
+        }
+        Declaration::Entry => {
             client
-                .call_shared::<op::SetClusterDoors>(
-                    SetClusterDoorsRequest {
-                        doors: doors.clone(),
-                    },
-                    Call::once(),
-                )
+                .call_shared::<op::SetClusterDoors>(request(), Call::once())
                 .await?;
             Ok(())
+        }
+        Declaration::Through(declarers) => {
+            let mut last = None;
+            for declarer in declarers {
+                match client
+                    .call_shared::<op::SetClusterDoors>(
+                        request(),
+                        Call::once().to(&MachineTarget::from(&declarer.machine)),
+                    )
+                    .await
+                {
+                    Ok(_) => return Ok(()),
+                    Err(error) => last = Some((declarer, error)),
+                }
+            }
+            let (declarer, error) = last.expect("a Through declaration names a Server");
+            Err(Failure::caused(
+                RpcErrorCode::Unavailable,
+                format!(
+                    "Server {} didn't take the Cluster's Doors, so no Server's Doors were \
+                     switched. Run the command again, or upgrade the Server you connect through.",
+                    declarer.server
+                ),
+                error,
+            ))
         }
     }
 }

@@ -577,7 +577,7 @@ async fn a_switch_declares_the_final_doors_once_before_it_sets_any_server() {
     let mut client = entry_of(&fleet).await;
     let observed = observe_doors(&mut client).await.unwrap();
     assert_eq!(observed.declared, None);
-    assert_eq!(observed.declaration, Declaration::Supported);
+    assert_eq!(observed.declaration, Declaration::Entry);
     let tunnel = ClusterDoors {
         doors: IngressDoors::tunnel(),
         sealed_token: Some(ployz_core::Ciphertext::from_bytes(vec![9; 48])),
@@ -672,20 +672,53 @@ async fn a_declaration_whose_reply_is_lost_stops_the_switch_and_stays_declared()
     );
 }
 
+fn upgrading_fleet(
+    entry_predates: bool,
+    peer_online: bool,
+) -> ployz_testkit::fake_fleet::FleetFile {
+    let machine = |name: &str, hex: &str, predates: bool, online: bool| {
+        serde_json::json!({
+            "name": name, "id": hex.repeat(32), "version": "0.4.0", "online": online,
+            "predates_doors": predates,
+            "containers": [
+                {"id": format!("{name}-ingress-holder"), "namespace": "ployz-system",
+                 "service": "ingress-holder", "image": "pause", "state": "running"},
+                {"id": format!("{name}-ingress"), "namespace": "ployz-system",
+                 "service": "ingress", "image": "caddy", "state": "running"},
+            ],
+        })
+    };
+    serde_json::from_value(serde_json::json!({"machines": [
+        machine("edge", "1", entry_predates, true),
+        machine("upgraded", "2", false, peer_online),
+    ]}))
+    .unwrap()
+}
+
+fn declared_on(fleet: &ployz_testkit::fake_fleet::FakeFleet) -> Vec<String> {
+    fleet
+        .ledger()
+        .unwrap()
+        .into_iter()
+        .filter(|entry| entry.command == "set_cluster_doors")
+        .map(|entry| entry.machine.to_string())
+        .collect()
+}
+
 #[tokio::test]
 async fn an_entry_that_cannot_keep_a_declaration_sets_the_doors_without_one() {
-    use ployz_testkit::fake_fleet::{FakeFleet, RunState, Scenario};
+    use ployz_testkit::fake_fleet::{FakeFleet, Scenario};
     let sockets = tempfile::tempdir().unwrap();
     let fleet = FakeFleet::start(
-        fleet_with_caddy(RunState::Running),
+        upgrading_fleet(true, false),
         Scenario::default(),
         sockets.path(),
         None,
     )
     .unwrap();
     let mut client = entry_of(&fleet).await;
-    let mut observed = observe_doors(&mut client).await.unwrap();
-    observed.declaration = Declaration::Unsupported;
+    let observed = observe_doors(&mut client).await.unwrap();
+    assert_eq!(observed.declaration, Declaration::Unsupported);
 
     let changed = use_doors(
         &mut client,
@@ -703,33 +736,94 @@ async fn an_entry_that_cannot_keep_a_declaration_sets_the_doors_without_one() {
 }
 
 #[tokio::test]
-async fn an_entry_that_cannot_keep_a_declaration_refuses_while_another_server_can() {
-    use ployz_testkit::fake_fleet::{FakeFleet, RunState, Scenario};
+async fn an_entry_that_cannot_keep_a_declaration_hands_it_to_a_server_that_can() {
+    use ployz_testkit::fake_fleet::{FakeFleet, Scenario};
     let sockets = tempfile::tempdir().unwrap();
     let fleet = FakeFleet::start(
-        fleet_with_caddy(RunState::Running),
+        upgrading_fleet(true, true),
         Scenario::default(),
         sockets.path(),
         None,
     )
     .unwrap();
     let mut client = entry_of(&fleet).await;
-    let mut observed = observe_doors(&mut client).await.unwrap();
-    observed.declaration = Declaration::Unsupported;
-    observed.declarers = vec![MachineName::parse("upgraded").unwrap()];
+    let observed = observe_doors(&mut client).await.unwrap();
+    assert!(
+        matches!(&observed.declaration, Declaration::Through(through)
+            if through.len() == 1 && through[0].server.as_str() == "upgraded"),
+        "{:?}",
+        observed.declaration
+    );
 
-    let refused = use_doors(
+    let changed = use_doors(
         &mut client,
         observed,
         ClusterDoors::closed(),
         &CancellationToken::new(),
     )
-    .await;
+    .await
+    .unwrap();
 
-    let error = refused.expect_err("a stale declaration would outlive the switch");
-    assert!(format!("{error:?}").contains("upgraded"), "{error:?}");
-    assert_eq!(commands_of(&fleet, "set_ingress_doors"), 0);
-    assert_eq!(commands_of(&fleet, "set_cluster_doors"), 0);
+    assert!(changed.failures.is_empty(), "{changed:?}");
+    assert_eq!(declared_on(&fleet), ["upgraded"]);
+    assert_eq!(
+        fleet.declared_doors().unwrap(),
+        Some(ClusterDoors::closed().doors)
+    );
+    assert!(commands_of(&fleet, "set_ingress_doors") > 0);
+}
+
+#[tokio::test]
+async fn a_capable_server_that_is_offline_is_no_route_and_no_refusal() {
+    use ployz_testkit::fake_fleet::{FakeFleet, Scenario};
+    let sockets = tempfile::tempdir().unwrap();
+    let fleet = FakeFleet::start(
+        upgrading_fleet(true, false),
+        Scenario::default(),
+        sockets.path(),
+        None,
+    )
+    .unwrap();
+    let mut client = entry_of(&fleet).await;
+    let observed = observe_doors(&mut client).await.unwrap();
+
+    use_doors(
+        &mut client,
+        observed,
+        ClusterDoors::closed(),
+        &CancellationToken::new(),
+    )
+    .await
+    .unwrap();
+
+    assert_eq!(declared_on(&fleet), Vec::<String>::new());
+    assert_eq!(commands_of(&fleet, "set_ingress_doors"), 1);
+}
+
+#[test]
+fn only_an_online_server_that_is_not_leaving_is_asked_to_declare() {
+    use ployz_core::{MembershipObservation, RowStanding};
+    let capable = |hex: char, name: &str| {
+        let mut machine = machine(hex, name);
+        machine.runtime.capabilities = [SET_CLUSTER_DOORS_CAPABILITY.to_owned()].into();
+        machine
+    };
+    let mut leaving = capable('c', "leaving");
+    leaving.runtime.leaving = true;
+    assert!(matches!(leaving.standing(), RowStanding::Leaving { .. }));
+    let observations = [
+        MachineObservation::new(capable('a', "up"), MembershipObservation::Up),
+        MachineObservation::new(capable('b', "down"), MembershipObservation::Down),
+        MachineObservation::new(leaving, MembershipObservation::Up),
+        MachineObservation::new(machine('d', "old"), MembershipObservation::Up),
+    ];
+
+    let names: Vec<String> = declarers_of(&observations)
+        .into_iter()
+        .map(|declarer| declarer.server.to_string())
+        .collect();
+
+    assert_eq!(names, ["up"]);
 }
 
 #[tokio::test]
