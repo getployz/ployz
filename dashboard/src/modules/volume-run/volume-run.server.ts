@@ -1472,7 +1472,7 @@ type WriterStart = {
   readonly receipt?: MachineSigned | null;
 };
 
-const HandoffBody = Schema.fromJsonString(Schema.Struct({ to: Schema.String, at: Schema.String, epoch: Schema.Number }));
+const HandoffBody = Schema.fromJsonString(Schema.Struct({ from: Schema.String, to: Schema.String, at: Schema.String, epoch: Schema.Number }));
 const decodeHandoffBody = Schema.decodeUnknownOption(HandoffBody);
 
 /**
@@ -1480,10 +1480,13 @@ const decodeHandoffBody = Schema.decodeUnknownOption(HandoffBody);
  * reads the body only to route the start; that Server checks the receipt's signature and every field itself. Null for a
  * body Cloud can't read, which no Server would take either.
  */
-export const handedTo = (receipt: MachineSigned): { readonly to: MachineId; readonly at: SnapshotGuid; readonly epoch: number } | null => {
+export const handedTo = (
+  receipt: MachineSigned,
+): { readonly from: MachineId; readonly to: MachineId; readonly at: SnapshotGuid; readonly epoch: number } | null => {
   const body = decodeHandoffBody(receipt.body);
-  // SAFETY: the Server that reads it checks `to` against its own ID; a value that is not one is refused there.
-  return Option.isSome(body) ? { ...body.value, to: body.value.to as MachineId } : null;
+  // SAFETY: the Server that reads it checks `to` against its own ID, so a value that is not one is refused there, and
+  // `from` only names the Server a Restore line suggests.
+  return Option.isSome(body) ? { ...body.value, from: body.value.from as MachineId, to: body.value.to as MachineId } : null;
 };
 
 /** A Move's approval and the spec it names for the Service's start on its target. */

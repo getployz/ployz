@@ -201,7 +201,7 @@ const label = (fake: FakeMachine, want: WantedCopy) => {
 
 /** A handoff receipt as a source signs it. The fakes check nothing in it; Cloud reads only where it routes. */
 const receiptFor = (to: MachineId, at: string, epoch: number): MachineSigned =>
-  ({ body: JSON.stringify({ to, at, epoch }), key: { kind: "cluster", key: "c".repeat(64) }, signature: "d".repeat(128) });
+  ({ body: JSON.stringify({ from: idOf("fsn-1"), to, at, epoch }), key: { kind: "cluster", key: "c".repeat(64) }, signature: "d".repeat(128) });
 /** Every capability a Move asks of a Server that signs and checks handoffs. */
 const HANDOFF_CAPABILITIES = [
   requirements.volumeMove.capability,
@@ -2035,6 +2035,31 @@ describe("volume runs", () => {
       expect(named("fsn-2").copy).toMatchObject({ kind: "root", readonly: false, epoch: 4, newest: G });
       const { rows: [recorded] } = await harness.pool.query("select phase, current, receipt, state from volume_run where id = $1", [release.id]);
       expect(recorded).toEqual({ phase: "committed", current: idOf("fsn-2"), receipt, state: "done" });
+    });
+
+    it("on a committed row whose B stays silent after A handed off, fails naming the Restore from A's copy", async () => {
+      const G = newSnap("f-1");
+      named("fsn-1").copy = slotCopy(G);
+      for (const container of containers) container.running = false;
+      machines[1] = { name: "fsn-2", pool: true, copy: slotCopy(G, null, "2") };
+      await owned("committed");
+      await harness.pool.query("update volume_run set receipt = $1 where kind = 'move'", [receiptFor(B, G.guid, 4)]);
+      await runEffect(closeVolumeRun("run-1", "failure"));
+      const id = (await releaseRow()).id;
+      const silent: Member[] = [
+        { machine: { id: idOf("fsn-1"), name: "fsn-1" }, address: "fdcc::1", answered: true, view: { copy: slotCopy(G) }, floorless: false },
+        { machine: { id: B, name: "fsn-2" }, answered: false },
+      ];
+      const observes = Array.from({ length: 9 }, (_, check) => ({ id: check === 0 ? "01-observe" : `01-observe-${check}`, handler: () => silent }));
+
+      await execute(id, "run-2", observes);
+
+      expect(verbs).toEqual([]);
+      expect((await rows()).at(-1)).toMatchObject({
+        id,
+        state: "failed",
+        message: "fsn-2 did not answer for 15m; data still finishes on fsn-2; ployz volume release data tries again. Restore from fsn-1's copy: ployz volume restore data --from fsn-1",
+      });
     });
 
     it("on an approved committed row with no receipt goes back to A, which decides, before it forgets B's copy", async () => {

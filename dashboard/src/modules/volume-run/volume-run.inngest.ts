@@ -15,7 +15,7 @@ import { PATIENCE, PATIENCE_WAITS, waitsFor } from "#/modules/volume-run/patienc
 import { type DeploymentsSeen, gb, gbAtLeast, type ResizePhase, type ResizeStep, type SizeDirection, type SizeOutcome, undoOnRefusal } from "#/modules/volume-run/resize";
 import { type RecordAnswer, recordVolumeSize, resizeCopy } from "#/modules/volume-run/volume-size.server";
 import { fenceTaken } from "#/modules/volume-run/volume-run.deploy.server";
-import { alreadyOn, epochOf, expectOf, holdingNewest, observedEpoch, type Planned, planForwardRelease, planFromCopies, type Refusal, ROLE_NOUN } from "#/modules/volume-run/plan";
+import { alreadyOn, epochOf, expectOf, holdingNewest, observedEpoch, type Planned, planForwardRelease, planFromCopies, type Refusal, restoreLine, ROLE_NOUN } from "#/modules/volume-run/plan";
 import { type AnsweredMember, copyName, type Member, type ReleasePlan } from "#/modules/volume-run/volume-run";
 import {
   claimVolumeRun,
@@ -719,7 +719,12 @@ async function finishRelease(steps: RunSteps, current: MachineId, plan: ReleaseP
       const silent = forward?.kind === "waiting" ? forward.servers.map((machine) => machine.name).join(" and ") : "the Servers";
       const wait = FORWARD_WAITS[check];
       if (wait === undefined) {
-        return fail(steps, id("02-unanswered"), `${silent} did not answer for 15m; ${run.volumeName} still finishes on ${to.name}; ployz volume release ${run.volumeName} tries again`);
+        // After a handoff the source never takes the Volume back, so with B gone it has no writer until B returns or a
+        // Restore from the source's copy.
+        const gone = handed !== null && forward?.kind === "waiting" && forward.servers.some((machine) => machine.id === current);
+        const source = members?.find((member) => member.machine.id === handed?.from)?.machine.name;
+        const restore = gone ? restoreLine(run.volumeName, source) : "";
+        return fail(steps, id("02-unanswered"), `${silent} did not answer for 15m; ${run.volumeName} still finishes on ${to.name}; ployz volume release ${run.volumeName} tries again${restore}`);
       }
       await step.run(id(`01-note-${check}`), () => runEffect(noteRun(run, runId, `waiting for ${silent} to answer (check ${check + 1} of ${FORWARD_WAITS.length})`)));
       await step.sleep(id(`01-wait-${check}`), `${wait}s`);

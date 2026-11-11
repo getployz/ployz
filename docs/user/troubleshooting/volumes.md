@@ -169,6 +169,9 @@ If the server stays silent, the release fails and your service stays down:
 - "web-1 did not answer for 15m; data still finishes on web-2; ployz volume release data tries
   again" when the move belongs to `web-2`.
 - "web-3 did not answer; data's copies are unknown" when it doesn't.
+- The first line, then ". Restore from web-1's copy: ployz volume restore data --from web-1",
+  when `web-1` had already handed the volume to `web-2`. `web-1` won't take it back under the move,
+  so until `web-2` answers the volume has no writer.
 
 Bring the server back and run `ployz volume release data` again. If the server is gone for good,
 [forget it](../servers/manage-servers.md#forget-a-server-that-is-gone) with **Forget server** on
@@ -182,6 +185,18 @@ make the copy on `web-2` the volume, then deploy your service:
 ```sh
 ployz volume restore data --from web-2
 ```
+
+## A server says it handed the volume to its move's new server
+
+```
+web-1 handed data to its move's new Server
+```
+
+On servers that enforce device approval, the old server of a move decides once, after the last
+copy, where the move ends. Once it handed the volume to the new server it never writes it again
+under that move, so it refuses to become the writer, whoever asks. A release or a deploy that
+asks it then finishes the move on the new server instead. If you see the line on its own, run
+`ployz volume release data` to finish the move there.
 
 ## A volume has no writer after you removed a server mid-move
 
