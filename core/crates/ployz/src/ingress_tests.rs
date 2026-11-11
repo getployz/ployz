@@ -694,6 +694,36 @@ async fn an_entry_that_cannot_keep_a_declaration_sets_the_doors_without_one() {
 }
 
 #[tokio::test]
+async fn an_entry_that_cannot_keep_a_declaration_refuses_while_another_server_can() {
+    use ployz_testkit::fake_fleet::{FakeFleet, RunState, Scenario};
+    let sockets = tempfile::tempdir().unwrap();
+    let fleet = FakeFleet::start(
+        fleet_with_caddy(RunState::Running),
+        Scenario::default(),
+        sockets.path(),
+        None,
+    )
+    .unwrap();
+    let mut client = entry_of(&fleet).await;
+    let mut observed = observe_doors(&mut client).await.unwrap();
+    observed.declaration = Declaration::Unsupported;
+    observed.declarers = vec![MachineName::parse("upgraded").unwrap()];
+
+    let refused = use_doors(
+        &mut client,
+        observed,
+        ClusterDoors::closed(),
+        &CancellationToken::new(),
+    )
+    .await;
+
+    let error = refused.expect_err("a stale declaration would outlive the switch");
+    assert!(format!("{error:?}").contains("upgraded"), "{error:?}");
+    assert_eq!(commands_of(&fleet, "set_ingress_doors"), 0);
+    assert_eq!(commands_of(&fleet, "set_cluster_doors"), 0);
+}
+
+#[tokio::test]
 async fn a_founding_declares_a_closed_cluster_once_and_keeps_a_later_declaration() {
     use ployz_testkit::fake_fleet::{FakeFleet, RunState, Scenario};
     let sockets = tempfile::tempdir().unwrap();

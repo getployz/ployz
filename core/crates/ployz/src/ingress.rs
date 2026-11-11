@@ -174,6 +174,10 @@ pub(crate) struct Doors {
     pub(crate) declared: Option<IngressDoors>,
     /// Whether the entry Machine can declare Doors for the Cluster.
     pub(crate) declaration: Declaration,
+    /// The Servers that advertise they can keep the Cluster's declared Doors. When the
+    /// entry can't, this names who could, and the Cluster may already hold a declaration
+    /// the entry can't read.
+    pub(crate) declarers: Vec<MachineName>,
     /// What each Server holds open now, by Server; one that listed nothing is absent.
     pub(crate) open: BTreeMap<MachineId, IngressDoors>,
     /// The listing the rest derives from, with the Servers that didn't answer it.
@@ -238,6 +242,18 @@ pub(crate) async fn observe_doors(client: &mut Client) -> Result<Doors, Failure>
         .as_ref()
         .and_then(|snapshot| snapshot.doors.clone());
     let machines = list.machines;
+    let declarers = machines
+        .iter()
+        .filter(|observation| {
+            observation
+                .machine
+                .runtime
+                .capabilities
+                .iter()
+                .any(|capability| capability == SET_CLUSTER_DOORS_CAPABILITY)
+        })
+        .map(|observation| observation.machine.name.clone())
+        .collect();
     let declaration = declaration_of(client).await?;
     let live = client
         .live_services_from(&machines, EnvironmentValues::Redacted)
@@ -271,6 +287,7 @@ pub(crate) async fn observe_doors(client: &mut Client) -> Result<Doors, Failure>
         cluster: cluster_doors(declared.clone(), &services),
         declared,
         declaration,
+        declarers,
         open: machine_doors(&services),
         listed: live.containers,
         sealing,
@@ -300,13 +317,24 @@ async fn declaration_of(client: &Client) -> Result<Declaration, Failure> {
 /// Fails when the entry refuses or can't be reached, with nothing declared.
 async fn declare(client: &Client, observed: &Doors, doors: &IngressDoors) -> Result<(), Failure> {
     match observed.declaration {
-        Declaration::Unsupported => {
-            crate::ui::warn(
-                "The entry Server can't keep the Cluster's Doors, so each Server's Doors are set \
-                 without declaring them. Upgrade it to have a joiner and a restart follow them.",
-            );
-            Ok(())
-        }
+        Declaration::Unsupported => match observed.declarers.first() {
+            Some(declarer) => Err(Failure::coded(
+                RpcErrorCode::Unsupported,
+                format!(
+                    "This entry Server can't keep the Cluster's Doors, but Server {declarer} can, \
+                     and the Cluster may already declare Doors this entry can't read. Run the \
+                     command through {declarer}, or upgrade this Server."
+                ),
+            )),
+            None => {
+                crate::ui::warn(
+                    "The entry Server can't keep the Cluster's Doors, so each Server's Doors are \
+                     set without declaring them. Upgrade it to have a joiner and a restart \
+                     follow them.",
+                );
+                Ok(())
+            }
+        },
         Declaration::Supported if observed.declared.as_ref() == Some(doors) => Ok(()),
         Declaration::Supported => {
             client
