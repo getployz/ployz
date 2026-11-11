@@ -3,7 +3,7 @@ import { createHash } from "node:crypto";
 import type { MachineId } from "@ployz/sdk";
 import { and, eq, gt, isNull, sql } from "drizzle-orm";
 import { Data, Effect, Schema } from "effect";
-import { endCloudflareSetup } from "#/modules/cloudflare/cluster-gone.server";
+import { endClusterIngress } from "#/modules/cloudflare/cluster-gone.server";
 import { storeSystem } from "#/modules/config-store/config-store.server";
 import { releasingExpectation } from "#/modules/machines/connections.server";
 import { rustMachineIdSchema } from "#/modules/machines/enrollment";
@@ -187,7 +187,7 @@ export const forgetEmptiedPairing = Effect.fn("PairingRemoval.forgetEmptied")(
       yield* drizzle.delete(clusterSealingKey).where(eq(clusterSealingKey.organizationId, organizationId));
       yield* drizzle.delete(clusterSealingKeyGenerator).where(eq(clusterSealingKeyGenerator.organizationId, organizationId));
       yield* drizzle.delete(organizationPairing).where(eq(organizationPairing.organizationId, organizationId));
-      yield* endCloudflareSetup(organizationId);
+      yield* endClusterIngress(organizationId);
       return { kind: "released" } satisfies ServerRelease;
     }));
   },
@@ -247,7 +247,7 @@ export const forgetCluster = Effect.fn("PairingRemoval.forgetCluster")(function*
     yield* drizzle.delete(enrollmentAllocation).where(eq(enrollmentAllocation.organizationId, organizationId));
     yield* drizzle.delete(machineRemoveAttempt).where(eq(machineRemoveAttempt.organizationId, organizationId));
     yield* drizzle.delete(organizationPairing).where(eq(organizationPairing.organizationId, organizationId));
-    yield* endCloudflareSetup(organizationId);
+    yield* endClusterIngress(organizationId);
     return { kind: "forgotten" as const, cancelled: written.written === "automated" ? written.cancelled : [] };
   }));
 });
@@ -331,7 +331,7 @@ export const revokeOrganizationPairing = Effect.fn("PairingRemoval.revoke")(
       const confirmed = current.removalEndpoints.every((endpoint) => endpoint.status === "confirmed");
       if (confirmed) {
         yield* drizzle.delete(organizationPairing).where(eq(organizationPairing.organizationId, organizationId));
-        yield* endCloudflareSetup(organizationId);
+        yield* endClusterIngress(organizationId);
       }
       return { confirmed, endpoints: current.removalEndpoints.map((endpoint) => ({
         machineId: endpoint.machineId,

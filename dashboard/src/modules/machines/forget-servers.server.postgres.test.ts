@@ -145,7 +145,7 @@ it.live("forgetting unreachable Servers clears Cloud's hold, and the next Server
       ok: true,
       value: { servers: [{ id: FOUNDER, name: FOUNDER, reach: "didnt_answer" }], volumes: [], cancelled: [QUEUED] },
     });
-    expect(yield* drizzle.select({ state: organizationCloudflareIngress.state }).from(organizationCloudflareIngress)).toEqual([{ state: "left" }]);
+    expect(yield* drizzle.select().from(organizationCloudflareIngress)).toEqual([]);
     for (const table of [organizationPairing, organizationMachine, clusterSealingKey, machineEnrollmentToken, enrollmentAllocation, machineRemoveAttempt]) {
       expect(yield* drizzle.select().from(table)).toEqual([]);
     }

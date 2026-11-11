@@ -5,7 +5,7 @@ import { afterAll, beforeAll, beforeEach, expect, it, vi } from "vitest";
 import { asTestDouble } from "#/lib/test-double";
 import { CloudflareHttp } from "#/modules/cloudflare/api.server";
 import { checkCloudflareSetup, listCloudflareZoneNames, openPublicPorts, setUpCloudflare } from "#/modules/cloudflare/setup.server";
-import { endCloudflareSetup } from "#/modules/cloudflare/cluster-gone.server";
+import { endClusterIngress } from "#/modules/cloudflare/cluster-gone.server";
 import { requestDoorsSwitch } from "#/modules/ingress/doors.server";
 import { InngestClient } from "#/modules/inngest/client";
 import { OrganizationRuntime, type ScopedRuntimeClientSession } from "#/modules/runtime/organization-runtime.server";
@@ -282,13 +282,13 @@ it("won't open the ports from the unfinished-setup alert once the tunnel is set 
   expect(sets).toEqual([]);
 });
 
-it.each(["set_up", "active"] as const)("lets a Cluster founded after a removal open its ports and set Cloudflare up, though the removed one left a %s row", async (was) => {
+it.each(["set_up", "active"] as const)("lets a Cluster founded after a removal open its ports and set Cloudflare up, though the removed one held a %s row", async (was) => {
   await priorRow(was);
   await harness.runEffect(Effect.gen(function* () {
     const database = yield* Database;
-    yield* database.transaction(endCloudflareSetup(ORG));
+    yield* database.transaction(endClusterIngress(ORG));
   }));
-  expect(await setupRows()).toMatchObject([{ state: "left" }]);
+  expect(await setupRows()).toEqual([]);
   await foundedClosed("running");
   const { runtime, sets } = cluster((doors) => doors, CLOSED_FRAME);
   expect(await harness.runEffect(openPublicPorts(ORG).pipe(Effect.provideService(OrganizationRuntime, runtime)))).toEqual({ opened: true });
