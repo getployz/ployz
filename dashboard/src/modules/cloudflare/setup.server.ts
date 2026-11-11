@@ -223,8 +223,8 @@ export const setUpCloudflare = Effect.fn("Cloudflare.setUp")(function* (
 
     if (there.length === 0) recordId = yield* createRecord(http, input.token, zone.id, wildcardRecord(zone.name, tunnel.id));
 
-    // Only a switch makes the zone the Cluster Domain's source (`active`), after it has moved the names the Servers publish
-    // then. A Cluster founded closed has no ports to keep its apps answering meanwhile, so its switch is asked for here,
+    // Only a switch makes the zone the Cluster Domain's source (`active`): it opens the tunnel, reads the names the Servers
+    // publish, flips the source, then redeploys those names. A Cluster founded closed has no ports to keep its apps answering meanwhile, so its switch is asked for here,
     // in the write that ends setup, and a Deployment already published by then is moved with the rest. The event goes out
     // detached: once this commits, a slow send must not run the undo, which would delete the tunnel the switch will use.
     const row = { zone: zone.name, tunnelId: tunnel.id, tunnelName, state: "set_up" } as const;
