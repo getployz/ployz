@@ -390,6 +390,7 @@ fn range(valid: bool, path: &str, message: &str) -> Result<(), ConfigError> {
 }
 
 #[cfg(test)]
+#[expect(clippy::indexing_slicing, reason = "JSON fixtures")]
 mod tests {
     use super::*;
 
@@ -415,5 +416,375 @@ mod tests {
             message("memLimit", serde_json::json!(0)),
             expected("memLimit")
         );
+    }
+
+    const ROUTE_ID: &str = "00000000-0000-4000-8000-000000000001";
+
+    fn complete_config() -> Value {
+        serde_json::json!({
+            "version": 2,
+            "privateDns": "api",
+            "source": {"version": 2, "type": "git", "repository": " acme/api ",
+                "repositoryId": 42,
+                "access": {"type": "github-installation", "installationId": 7},
+                "rootDir": " /apps/api/ ",
+                "branch": {"type": "connected", "name": " main "}},
+            "preDeployCommand": "  npm run migrate ",
+            "startCommand": " npm start\n",
+            "healthcheck": {"type": "http", "path": " /health ", "timeoutSeconds": 5},
+            "restartPolicy": "on-failure",
+            "maxRetries": 3,
+            "updateOrder": "rolling",
+            "replicas": 2,
+            "cpuLimit": 0.5,
+            "memLimit": 2,
+            "routes": [{"id": ROUTE_ID, "hostname": " WWW.Example.COM ", "targetPort": 8080}],
+            "managedHostnames": [{"prefix": " Web ", "targetPort": null}],
+            "build": {"buildMethod": "auto", "dockerfilePath": " Dockerfile ", "command": " make "},
+            "template": {"id": "postgres", "version": 3},
+            "env": {"KEY": {"kind": "literal", "value": "  untouched  "}},
+            "mounts": [{"volumeResourceId": "v1", "volumeName": " data ", "mountPath": "/data"}],
+        })
+    }
+
+    fn parsed(input: Value) -> Result<Value, (String, String)> {
+        parse_service_config(input)
+            .map(|config| serde_json::to_value(config).expect("config is JSON"))
+            .map_err(|error| (error.path, error.message))
+    }
+
+    fn rejected(input: Value) -> (String, String) {
+        parsed(input).unwrap_err()
+    }
+
+    #[test]
+    fn a_complete_config_normalizes_every_authored_field() {
+        assert_eq!(
+            parsed(complete_config()).unwrap(),
+            serde_json::json!({
+                "version": 2,
+                "source": {"version": 2, "type": "git", "repository": "acme/api",
+                    "repositoryId": 42,
+                    "access": {"type": "github-installation", "installationId": 7},
+                    "rootDir": "/apps/api",
+                    "branch": {"type": "connected", "name": "main"}},
+                "preDeployCommand": "npm run migrate",
+                "startCommand": "npm start",
+                "healthcheck": {"type": "http", "path": "/health", "timeoutSeconds": 5},
+                "restartPolicy": "on-failure",
+                "maxRetries": 3,
+                "updateOrder": "rolling",
+                "replicas": 2,
+                "cpuLimit": 0.5,
+                "memLimit": 2.0,
+                "privateDns": "api",
+                "routes": [{"id": ROUTE_ID, "hostname": "www.example.com", "targetPort": 8080}],
+                "managedHostnames": [{"prefix": "web", "targetPort": null}],
+                "build": {"buildMethod": "railpack", "dockerfilePath": "Dockerfile", "command": "make"},
+                "template": {"id": "postgres", "version": 3},
+                "env": {"KEY": {"kind": "literal", "value": "  untouched  "}},
+                "mounts": [{"volumeResourceId": "v1", "volumeName": " data ", "mountPath": "/data"}],
+            })
+        );
+    }
+
+    #[test]
+    fn a_minimal_config_keeps_its_defaults_and_omits_unset_fields() {
+        let minimal = serde_json::json!({
+            "version": 2, "privateDns": "api",
+            "source": {"version": 1, "type": "empty", "rootDir": "/"},
+            "preDeployCommand": null, "startCommand": null,
+            "healthcheck": {"type": "none"}, "restartPolicy": "unless-stopped",
+        });
+        assert_eq!(
+            parsed(minimal).unwrap(),
+            serde_json::json!({
+                "version": 2,
+                "source": {"version": 1, "type": "empty", "rootDir": "/"},
+                "preDeployCommand": null, "startCommand": null,
+                "healthcheck": {"type": "none"}, "restartPolicy": "unless-stopped",
+                "maxRetries": 10, "replicas": 1, "cpuLimit": null, "memLimit": null,
+                "privateDns": "api", "routes": [], "managedHostnames": [],
+                "build": {"buildMethod": "railpack", "dockerfilePath": null, "command": null},
+                "env": {}, "mounts": [],
+            })
+        );
+    }
+
+    #[test]
+    fn each_source_and_healthcheck_variant_normalizes() {
+        let with = |field: &str, value: Value| {
+            let mut input = complete_config();
+            input[field] = value;
+            parsed(input).map(|mut config| config[field].take())
+        };
+        for (source, normalized) in [
+            (
+                serde_json::json!({"version": 1, "type": "empty", "rootDir": " /apps// "}),
+                Err((
+                    "source.rootDir",
+                    "Expected an absolute repository directory",
+                )),
+            ),
+            (
+                serde_json::json!({"version": 1, "type": "empty", "rootDir": " /apps/ "}),
+                Ok(serde_json::json!({"version": 1, "type": "empty", "rootDir": "/apps"})),
+            ),
+            (
+                serde_json::json!({"version": 1, "type": "image", "image": " nginx:1.27 ",
+                    "credentials": {"type": "none"}}),
+                Ok(
+                    serde_json::json!({"version": 1, "type": "image", "image": "nginx:1.27",
+                    "credentials": {"type": "none"}}),
+                ),
+            ),
+            (
+                serde_json::json!({"version": 1, "type": "image", "image": "nginx",
+                    "credentials": {"type": "configured", "credentialId": "nope"}}),
+                Err(("source.credentials", "Expected a credential ID")),
+            ),
+            (
+                serde_json::json!({"version": 2, "type": "git", "repository": "acme/api",
+                    "repositoryId": 0, "access": {"type": "public"}, "rootDir": "/",
+                    "branch": {"type": "disconnected", "previousName": null}}),
+                Err(("source.repository", "Expected positive safe GitHub IDs")),
+            ),
+            (
+                serde_json::json!({"version": 2, "type": "git", "repository": "acme/api",
+                    "repositoryId": 1, "access": {"type": "public"}, "rootDir": "/",
+                    "branch": {"type": "disconnected", "previousName": " dev "}}),
+                Ok(
+                    serde_json::json!({"version": 2, "type": "git", "repository": "acme/api",
+                    "repositoryId": 1, "access": {"type": "public"}, "rootDir": "/",
+                    "branch": {"type": "disconnected", "previousName": "dev"}}),
+                ),
+            ),
+            (
+                serde_json::json!({"version": 3, "type": "empty", "rootDir": "/"}),
+                Err(("source.version", "Expected version 1")),
+            ),
+        ] {
+            assert_eq!(
+                with("source", source),
+                normalized.map_err(|(path, message)| (path.to_owned(), message.to_owned()))
+            );
+        }
+        for (healthcheck, normalized) in [
+            (
+                serde_json::json!({"type": "command", "command": " pg_isready \n", "timeoutSeconds": 300}),
+                Ok(
+                    serde_json::json!({"type": "command", "command": "pg_isready", "timeoutSeconds": 300}),
+                ),
+            ),
+            (
+                serde_json::json!({"type": "command", "command": "x", "timeoutSeconds": 301}),
+                Err(("healthcheck.timeoutSeconds", "Expected 1–300 seconds")),
+            ),
+            (
+                serde_json::json!({"type": "http", "path": "health", "timeoutSeconds": 5}),
+                Err((
+                    "healthcheck.path",
+                    "Expected an absolute HTTP path without control characters",
+                )),
+            ),
+            (
+                serde_json::json!({"type": "none"}),
+                Ok(serde_json::json!({"type": "none"})),
+            ),
+        ] {
+            assert_eq!(
+                with("healthcheck", healthcheck),
+                normalized.map_err(|(path, message)| (path.to_owned(), message.to_owned()))
+            );
+        }
+    }
+
+    /// One invalid value per field that normalization can reject, in the order the first error is reported.
+    fn invalid_fields() -> [(&'static str, Value, (&'static str, &'static str)); 11] {
+        [
+            (
+                "build",
+                serde_json::json!({"buildMethod": "dockerfile", "dockerfilePath": "Dockerfile", "command": "a\0b"}),
+                ("build.command", "Null characters are not allowed"),
+            ),
+            (
+                "cpuLimit",
+                serde_json::json!(0),
+                ("cpuLimit", expected("cpuLimit")),
+            ),
+            (
+                "healthcheck",
+                serde_json::json!({"type": "http", "path": "nope", "timeoutSeconds": 5}),
+                (
+                    "healthcheck.path",
+                    "Expected an absolute HTTP path without control characters",
+                ),
+            ),
+            (
+                "managedHostnames",
+                serde_json::json!([{"prefix": "Bad_Label", "targetPort": null}]),
+                ("managedHostname.prefix", "Expected a lowercase DNS label"),
+            ),
+            (
+                "maxRetries",
+                serde_json::json!(101),
+                ("maxRetries", expected("maxRetries")),
+            ),
+            (
+                "memLimit",
+                serde_json::json!(2000),
+                ("memLimit", expected("memLimit")),
+            ),
+            (
+                "preDeployCommand",
+                serde_json::json!(" "),
+                (
+                    "command",
+                    "Expected a non-empty value within the length limit",
+                ),
+            ),
+            (
+                "replicas",
+                serde_json::json!(0),
+                ("replicas", expected("replicas")),
+            ),
+            (
+                "routes",
+                serde_json::json!([{"id": "x", "hostname": "a.example.com", "targetPort": null}]),
+                ("routes", "Route IDs must be valid and unique"),
+            ),
+            (
+                "source",
+                serde_json::json!({"version": 1, "type": "empty", "rootDir": "relative"}),
+                (
+                    "source.rootDir",
+                    "Expected an absolute repository directory",
+                ),
+            ),
+            (
+                "startCommand",
+                serde_json::json!("a\0b"),
+                ("command", "Null characters are not allowed"),
+            ),
+        ]
+    }
+
+    #[test]
+    fn each_invalid_field_reports_its_path_and_message() {
+        let owned = |(path, message): (&str, &str)| (path.to_owned(), message.to_owned());
+        for (field, value, error) in invalid_fields() {
+            let mut input = complete_config();
+            input[field] = value;
+            assert_eq!(rejected(input), owned(error), "{field}");
+        }
+    }
+
+    #[test]
+    fn the_first_error_is_the_alphabetically_first_invalid_field() {
+        let owned = |(path, message): (&str, &str)| (path.to_owned(), message.to_owned());
+        let invalid = invalid_fields();
+        let mut input = complete_config();
+        for (field, value, _) in &invalid {
+            input[field] = value.clone();
+        }
+        let valid = complete_config();
+        for (field, _, error) in &invalid {
+            assert_eq!(rejected(input.clone()), owned(*error), "before {field}");
+            input[field] = valid[field].clone();
+        }
+        parsed(input).unwrap();
+    }
+
+    #[test]
+    fn a_wrong_version_is_reported_before_any_field_is_normalized() {
+        let mut input = complete_config();
+        input["version"] = serde_json::json!(1);
+        input["replicas"] = serde_json::json!(0);
+        assert_eq!(
+            rejected(input),
+            ("version".to_owned(), "Expected version 2".to_owned())
+        );
+    }
+
+    #[test]
+    fn a_document_that_does_not_decode_is_an_invalid_service_configuration() {
+        let invalid = (
+            "service".to_owned(),
+            "Invalid service configuration".to_owned(),
+        );
+        for (field, value) in [
+            ("unexpected", serde_json::json!(true)),
+            ("privateDns", serde_json::json!("Invalid_DNS")),
+            ("restartPolicy", serde_json::json!("sometimes")),
+            ("updateOrder", serde_json::json!("sideways")),
+            ("replicas", serde_json::json!(1.5)),
+            ("maxRetries", serde_json::json!(-1)),
+            (
+                "template",
+                serde_json::json!({"id": "postgres", "version": 0}),
+            ),
+        ] {
+            let mut input = complete_config();
+            input[field] = value;
+            assert_eq!(rejected(input), invalid, "{field}");
+        }
+        assert_eq!(rejected(Value::Null), invalid);
+    }
+
+    #[test]
+    fn route_and_hostname_rules_hold_across_entries() {
+        let route = |id: &str, hostname: &str, port: Value| serde_json::json!({"id": id, "hostname": hostname, "targetPort": port});
+        let other = "00000000-0000-4000-8000-000000000002";
+        for (routes, error) in [
+            (
+                serde_json::json!([
+                    route(ROUTE_ID, "a.example.com", Value::Null),
+                    route(ROUTE_ID, "b.example.com", Value::Null)
+                ]),
+                ("routes", "Route IDs must be valid and unique"),
+            ),
+            (
+                serde_json::json!([route(ROUTE_ID, "not a host", Value::Null)]),
+                ("routes", "Invalid public hostname"),
+            ),
+            (
+                serde_json::json!([route(ROUTE_ID, "a.example.com", serde_json::json!(0))]),
+                ("routes", "Expected a port from 1–65535"),
+            ),
+        ] {
+            let mut input = complete_config();
+            input["routes"] = routes;
+            assert_eq!(rejected(input), (error.0.to_owned(), error.1.to_owned()));
+        }
+        let mut input = complete_config();
+        input["routes"] = serde_json::json!([
+            route(ROUTE_ID, " A.Example.com ", Value::Null),
+            route(other, "B.example.com", serde_json::json!(80)),
+        ]);
+        assert_eq!(
+            parsed(input).unwrap()["routes"],
+            serde_json::json!([
+                route(ROUTE_ID, "a.example.com", Value::Null),
+                route(other, "b.example.com", serde_json::json!(80)),
+            ])
+        );
+
+        for (hostnames, error) in [
+            (
+                serde_json::json!([{"prefix": "web", "targetPort": null}, {"prefix": " WEB ", "targetPort": 80}]),
+                (
+                    "managedHostnames",
+                    "Each managed domain needs a distinct subdomain",
+                ),
+            ),
+            (
+                serde_json::json!([{"prefix": "web", "targetPort": 0}]),
+                ("managedHostnames", "Expected a port from 1–65535"),
+            ),
+        ] {
+            let mut input = complete_config();
+            input["managedHostnames"] = hostnames;
+            assert_eq!(rejected(input), (error.0.to_owned(), error.1.to_owned()));
+        }
     }
 }
