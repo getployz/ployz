@@ -47,6 +47,10 @@ pub enum Want<'a> {
     },
     Forget,
     Floor,
+    Handoff {
+        at: SnapshotGuid,
+        epoch: WriterEpoch,
+    },
 }
 
 impl<'a> Identity<'a> {
@@ -61,6 +65,10 @@ impl<'a> Identity<'a> {
             WantedCopy::Snapshot { name } => Want::Snapshot { snapshot: name },
             WantedCopy::Forget { .. } => Want::Forget,
             WantedCopy::Floor => Want::Floor,
+            WantedCopy::Handoff { at, epoch, .. } => Want::Handoff {
+                at: *at,
+                epoch: *epoch,
+            },
         };
         Self {
             volume,
@@ -112,7 +120,9 @@ fn warn(act: Act, verb: &'static str, identity: Option<Identity<'_>>) {
     let (target, snapshot, writer) = match identity.map(|identity| identity.want) {
         Some(Want::Mirror { target }) => (Some(target), None, None),
         Some(Want::Snapshot { snapshot }) => (None, Some(snapshot), None),
-        Some(Want::Writer { at, epoch }) => (None, None, Some((at, epoch))),
+        Some(Want::Writer { at, epoch } | Want::Handoff { at, epoch }) => {
+            (None, None, Some((at, epoch)))
+        }
         Some(Want::Forget | Want::Floor) | None => (None, None, None),
     };
     tracing::warn!(

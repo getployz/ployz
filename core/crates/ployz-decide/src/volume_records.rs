@@ -9,7 +9,8 @@
 use std::collections::BTreeMap;
 
 use ployz_core::{
-    ContainerId, CopyTransition, DockerVolumeName, MachineId, OperationId, SnapshotName,
+    ContainerId, CopyTransition, DockerVolumeName, HandoffReceiptEnvelope, MachineId, OperationId,
+    SnapshotGuid, SnapshotName, WriterEpoch,
     authority::{AuthorityRefusal, StepDigest, VolumeStep, VolumeWorkflow},
 };
 use serde::{Deserialize, Serialize};
@@ -24,11 +25,37 @@ pub enum GrantScope {
     Snapshots(Vec<SnapshotName>),
 }
 
-/// What the source of a Move did after its cut. Written once.
-#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+/// What the source of a Move did after its cut. Written once, and never changed.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Decision {
+    /// The source became the Writer again. No receipt follows.
     Resumed,
+    /// The source gave the Volume up to its target, which may become the Writer under the
+    /// receipt the source signs from this.
+    Handed(Handoff),
+}
+
+/// A Move source's handoff: everything its receipt states beyond the operation itself.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct Handoff {
+    pub to: MachineId,
+    /// The cut's snapshot.
+    pub at: SnapshotGuid,
+    pub snapshot: SnapshotName,
+    /// The source's Writer epoch when it cut.
+    pub from_epoch: WriterEpoch,
+    /// The epoch the target takes.
+    pub epoch: WriterEpoch,
+}
+
+/// A handoff this Machine recorded, with what its receipt names of the approval.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct Handed {
+    pub operation: OperationId,
+    pub digest: StepDigest,
+    pub volume: DockerVolumeName,
+    pub handoff: Handoff,
 }
 
 /// A recipient withdrawn from a Volume on this Machine, ranked against admissions by `at`.
@@ -60,6 +87,18 @@ pub struct VolumeRecords {
 struct Cut {
     snapshot: SnapshotName,
     stopped: Vec<ContainerId>,
+    /// The Writer epoch the root held when it was cut. A cut recorded before handoffs
+    /// existed reads as 0.
+    #[serde(default)]
+    epoch: WriterEpoch,
+}
+
+/// What a Move's target became the Writer at, and the source's receipt it became it under.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+struct Promotion {
+    at: SnapshotGuid,
+    epoch: WriterEpoch,
+    receipt: HandoffReceiptEnvelope,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
@@ -74,20 +113,33 @@ struct OperationRecord {
     decision: Option<Decision>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     cut: Option<Cut>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    promoted: Option<Promotion>,
 }
 
 impl OperationRecord {
-    /// Whether `step` on `machine` resends a resume this Move's source recorded: the one
-    /// step an operation ended by its resume still answers, while no later owner holds the
-    /// copy.
-    fn resends_resume(&self, machine: &MachineId, step: &VolumeStep) -> bool {
-        self.decision == Some(Decision::Resumed)
-            && self.workflow.moves_from(machine)
-            && matches!(
-                step,
-                VolumeStep::Copy(CopyTransition::WriterToWriter | CopyTransition::MirrorToWriter)
-                    | VolumeStep::Start
-            )
+    /// Whether `step` on `machine` resends the step that ended this operation here, which
+    /// returns what it recorded and changes nothing more: a Move source's resume after
+    /// `Resumed`, its handoff after `Handed`, and its target's promotion and start after
+    /// it promoted.
+    fn resends_end(&self, machine: &MachineId, step: &VolumeStep) -> bool {
+        let writer = matches!(
+            step,
+            VolumeStep::Copy(CopyTransition::WriterToWriter | CopyTransition::MirrorToWriter)
+                | VolumeStep::Start
+        );
+        match (&self.workflow, &self.decision) {
+            (VolumeWorkflow::Move { from, .. }, Some(Decision::Resumed)) if from == machine => {
+                writer
+            }
+            (VolumeWorkflow::Move { from, .. }, Some(Decision::Handed(_))) if from == machine => {
+                *step == VolumeStep::Handoff
+            }
+            (VolumeWorkflow::Move { to, .. }, _) if to == machine => {
+                self.promoted.is_some() && writer
+            }
+            _ => false,
+        }
     }
 }
 
@@ -135,8 +187,8 @@ impl VolumeRecords {
         let refused = |field| Err(AuthorityRefusal::Mismatch { field });
         if let Some(record) = self.operations.get(&operation) {
             if record.state == OperationState::Ended
-                && !(record.resends_resume(machine, step)
-                    && !self.owned_by_another(operation, machine, volume))
+                && !(record.resends_end(machine, step)
+                    && !self.superseded(operation, record.admitted, machine, volume))
             {
                 return Err(AuthorityRefusal::Replayed { operation });
             }
@@ -188,21 +240,25 @@ impl VolumeRecords {
                 state: OperationState::Open,
                 decision: None,
                 cut: None,
+                promoted: None,
             },
         );
         Ok(())
     }
 
-    /// Whether an open operation other than `operation` owns `machine`'s copy of `volume`.
-    fn owned_by_another(
+    /// Whether this Machine admitted, after `operation` at `admitted`, another operation that
+    /// owns its copy of `volume`. A resend of an ended operation's last step is then
+    /// refused: a later owner holds the copy, whether or not it ended since.
+    fn superseded(
         &self,
         operation: OperationId,
+        admitted: u64,
         machine: &MachineId,
         volume: &DockerVolumeName,
     ) -> bool {
         self.operations.iter().any(|(other, record)| {
             *other != operation
-                && record.state == OperationState::Open
+                && record.admitted > admitted
                 && record.volume == *volume
                 && record.workflow.owns(machine)
         })
@@ -233,6 +289,7 @@ impl VolumeRecords {
         operation: OperationId,
         machine: &MachineId,
         snapshot: &SnapshotName,
+        epoch: WriterEpoch,
         running: &[ContainerId],
     ) -> Result<(), AuthorityRefusal> {
         let Some(record) = self.operations.get_mut(&operation) else {
@@ -253,6 +310,7 @@ impl VolumeRecords {
         let cut = record.cut.get_or_insert_with(|| Cut {
             snapshot: snapshot.clone(),
             stopped: Vec::new(),
+            epoch,
         });
         if cut.snapshot != *snapshot {
             return Err(AuthorityRefusal::Mismatch {
@@ -278,13 +336,171 @@ impl VolumeRecords {
 
     /// Record that this Machine, the source of Move `operation`, resumes: the Move ends here
     /// with its grants, and only a resend of the resume runs under it again.
-    pub fn resume(&mut self, operation: OperationId) {
-        if let Some(record) = self.operations.get_mut(&operation)
-            && record.decision.is_none()
-        {
-            record.decision = Some(Decision::Resumed);
+    ///
+    /// # Errors
+    /// Refuses a Move this Machine already handed off.
+    pub fn resume(&mut self, operation: OperationId) -> Result<(), AuthorityRefusal> {
+        if let Some(record) = self.operations.get_mut(&operation) {
+            match record.decision {
+                Some(Decision::Handed(_)) => return Err(AuthorityRefusal::Replayed { operation }),
+                Some(Decision::Resumed) => {}
+                None => record.decision = Some(Decision::Resumed),
+            }
         }
         self.end(operation);
+        Ok(())
+    }
+
+    /// Record that this Machine, the source of Move `operation`, hands its copy of the
+    /// Volume to `to` at the cut's snapshot, which it holds as `at` and `snapshot`, and
+    /// `to` takes `epoch`. The Move ends here: from then on its grant serves `to` the
+    /// cut's snapshot and nothing else, and only a resend of this handoff runs under it,
+    /// returning the same one.
+    ///
+    /// # Errors
+    /// Refuses an operation not recorded here, one that is not a Move from `machine` to
+    /// `to`, one with no cut or cut at another snapshot, an epoch not above the cut's, a
+    /// Move this Machine resumed, and a second handoff that differs from the first.
+    pub fn handoff(
+        &mut self,
+        operation: OperationId,
+        machine: &MachineId,
+        to: MachineId,
+        (at, snapshot): (SnapshotGuid, &SnapshotName),
+        epoch: WriterEpoch,
+    ) -> Result<Handed, AuthorityRefusal> {
+        let refused = |field| Err(AuthorityRefusal::Mismatch { field });
+        let Some(record) = self.operations.get_mut(&operation) else {
+            return refused("an operation");
+        };
+        if !matches!(&record.workflow, VolumeWorkflow::Move { from, to: target, .. } if from == machine && *target == to)
+        {
+            return refused("a handoff");
+        }
+        let (digest, volume) = (record.digest, record.volume.clone());
+        let handoff = match &record.decision {
+            Some(Decision::Resumed) => return Err(AuthorityRefusal::Replayed { operation }),
+            Some(Decision::Handed(handed)) => {
+                if handed.at != at || handed.epoch != epoch {
+                    return refused("a second handoff");
+                }
+                handed.clone()
+            }
+            None => {
+                if record.state == OperationState::Ended {
+                    return Err(AuthorityRefusal::Replayed { operation });
+                }
+                let Some(cut) = &record.cut else {
+                    return refused("a cut");
+                };
+                if cut.snapshot != *snapshot {
+                    return refused("a snapshot");
+                }
+                if epoch <= cut.epoch {
+                    return refused("an epoch");
+                }
+                let handoff = Handoff {
+                    to,
+                    at,
+                    snapshot: cut.snapshot.clone(),
+                    from_epoch: cut.epoch,
+                    epoch,
+                };
+                record.decision = Some(Decision::Handed(handoff.clone()));
+                record.state = OperationState::Ended;
+                let cut = cut.snapshot.clone();
+                self.grants
+                    .retain(|grant| grant.operation != operation || grant.recipient == to);
+                for grant in &mut self.grants {
+                    if grant.operation == operation {
+                        grant.scope = GrantScope::Snapshots(vec![cut.clone()]);
+                    }
+                }
+                handoff
+            }
+        };
+        Ok(Handed {
+            operation,
+            digest,
+            volume,
+            handoff,
+        })
+    }
+
+    /// The handoff this Machine recorded of `volume` at the snapshot `at`, if any: the copy
+    /// there was given up and never becomes the Writer again under a Move's word.
+    #[must_use]
+    pub fn handed_at(&self, volume: &DockerVolumeName, at: &SnapshotGuid) -> Option<Handed> {
+        self.operations
+            .iter()
+            .find_map(|(operation, record)| match &record.decision {
+                Some(Decision::Handed(handoff))
+                    if record.volume == *volume && handoff.at == *at =>
+                {
+                    Some(Handed {
+                        operation: *operation,
+                        digest: record.digest,
+                        volume: record.volume.clone(),
+                        handoff: handoff.clone(),
+                    })
+                }
+                _ => None,
+            })
+    }
+
+    /// Record that this Machine, the target of Move `operation`, becomes the Writer at `at`
+    /// with `epoch` under `receipt`, which the caller checked names them. Each Mirror the
+    /// Move keeps following may pull every snapshot from here from then on, unless it was
+    /// withdrawn; those grants outlive the Move. The Move ends here, and only a resend of
+    /// this promotion and the approved start run under it again.
+    ///
+    /// # Errors
+    /// Refuses an operation not recorded here, one that is not a Move to `machine`, one
+    /// ended here before it promoted, and a promotion at another snapshot or epoch than
+    /// the one recorded.
+    pub fn promote(
+        &mut self,
+        operation: OperationId,
+        machine: &MachineId,
+        (at, epoch): (SnapshotGuid, WriterEpoch),
+        receipt: HandoffReceiptEnvelope,
+    ) -> Result<(), AuthorityRefusal> {
+        let Some(record) = self.operations.get(&operation) else {
+            return Err(AuthorityRefusal::Mismatch {
+                field: "an operation",
+            });
+        };
+        let VolumeWorkflow::Move { to, mirrors, .. } = &record.workflow else {
+            return Err(AuthorityRefusal::Mismatch {
+                field: "a promotion",
+            });
+        };
+        if to != machine {
+            return Err(AuthorityRefusal::Mismatch {
+                field: "a promotion",
+            });
+        }
+        if let Some(promoted) = &record.promoted {
+            if promoted.at != at || promoted.epoch != epoch {
+                return Err(AuthorityRefusal::Mismatch {
+                    field: "a second promotion",
+                });
+            }
+            return Ok(());
+        }
+        if record.state == OperationState::Ended {
+            return Err(AuthorityRefusal::Replayed { operation });
+        }
+        for mirror in mirrors.clone() {
+            match self.grant(operation, mirror, GrantScope::Standing) {
+                Ok(()) | Err(AuthorityRefusal::Replayed { .. }) => {}
+                Err(refusal) => return Err(refusal),
+            }
+        }
+        let record = self.operations.get_mut(&operation).expect("checked above");
+        record.promoted = Some(Promotion { at, epoch, receipt });
+        record.state = OperationState::Ended;
+        Ok(())
     }
 
     /// The workflow of `operation`, while it is recorded here.
@@ -438,10 +654,18 @@ impl VolumeRecords {
 
     /// The decision a Move's source recorded for `operation`, if any.
     #[must_use]
-    pub fn decision(&self, operation: OperationId) -> Option<Decision> {
+    pub fn decision(&self, operation: OperationId) -> Option<&Decision> {
         self.operations
             .get(&operation)
-            .and_then(|record| record.decision)
+            .and_then(|record| record.decision.as_ref())
+    }
+
+    /// Whether this Machine, a Move's target, promoted under `operation`.
+    #[must_use]
+    pub fn promoted(&self, operation: OperationId) -> bool {
+        self.operations
+            .get(&operation)
+            .is_some_and(|record| record.promoted.is_some())
     }
 
     /// Whether `operation` ended here after this Machine admitted the body `digest` under it.

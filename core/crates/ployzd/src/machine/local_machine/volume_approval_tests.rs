@@ -166,7 +166,7 @@ impl Records<'_> {
 
     fn decision(&self, op: char) -> Option<Decision> {
         self.log()
-            .read_volumes(|records| records.decision(operation(op)))
+            .read_volumes(|records| records.decision(operation(op)).cloned())
             .unwrap()
     }
 }
@@ -574,6 +574,34 @@ impl Enforcing {
             signer: SignerKey::Device(DeviceKey::from(self.signer.public())),
         };
         Signed::sign(&body, &self.signer).unwrap()
+    }
+
+    /// The handoff receipt `from` signs with this Cluster's receipt key for `approval`'s
+    /// Move to `to` at the cut snapshot `f-1`, held as guid `at`, taking epoch 2.
+    fn receipt(
+        &self,
+        approval: &Signed<VolumeApproval>,
+        from: MachineId,
+        to: MachineId,
+        at: u64,
+    ) -> HandoffReceiptEnvelope {
+        let key = crate::sealing_key::SealingKey::load(&self.data_dir.0)
+            .unwrap()
+            .unwrap();
+        let body = approval.open().unwrap();
+        let receipt = HandoffReceipt {
+            cluster: key.public_key(),
+            operation: body.operation,
+            approval: StepDigest::of(&approval.body),
+            volume: body.volume,
+            from,
+            to,
+            at: SnapshotGuid::new(at),
+            snapshot: name("f-1"),
+            from_epoch: ployz_core::WriterEpoch::new(1),
+            epoch: ployz_core::WriterEpoch::new(2),
+        };
+        MachineSigned::sign(&receipt, &key.receipt_signer()).unwrap()
     }
 
     fn records_empty(&self) -> bool {
@@ -1055,6 +1083,9 @@ async fn a_cut_needs_an_approval() {
         CopyStep::Snapshot,
         CopyStep::Promote {
             transition: CopyTransition::MirrorToWriter,
+            at: &SnapshotGuid::new(7),
+            epoch: ployz_core::WriterEpoch::new(2),
+            receipt: None,
         },
     ] {
         assert!(matches!(
@@ -1072,9 +1103,12 @@ async fn a_cut_needs_an_approval() {
 async fn a_pull_needs_an_approval_that_names_this_machine_and_its_source() {
     let peered = peered().await;
     let this = peered.machine.record().id();
+    let target = name("w-1-1");
     let pull = |from| CopyStep::Pull {
         transition: CopyTransition::NoneToMirror,
         from,
+        target: &target,
+        receipt: None,
     };
     let web2 = peered.web2.management_address();
     let web3 = peered.web3.management_address();
@@ -1258,18 +1292,26 @@ async fn a_move_grants_its_target_only_its_own_snapshots_and_ends_at_the_resume(
         .unwrap();
     peered
         .machine
-        .record_cut(operation('1'), &name("f-1"), &[container('c')])
+        .record_cut(
+            operation('1'),
+            (&name("f-1"), ployz_core::WriterEpoch::new(1)),
+            &[container('c')],
+        )
         .unwrap();
     peered
         .machine
-        .record_cut(operation('1'), &name("f-1"), &[container('c')])
+        .record_cut(
+            operation('1'),
+            (&name("f-1"), ployz_core::WriterEpoch::new(1)),
+            &[container('c')],
+        )
         .expect("a resent cut");
     assert_eq!(
-        refused(
-            peered
-                .machine
-                .record_cut(operation('1'), &name("f-2"), &[container('c')])
-        ),
+        refused(peered.machine.record_cut(
+            operation('1'),
+            (&name("f-2"), ployz_core::WriterEpoch::new(1)),
+            &[container('c')]
+        )),
         Some(AuthorityRefusal::Mismatch {
             field: "a second cut"
         })
@@ -1287,8 +1329,12 @@ async fn a_move_grants_its_target_only_its_own_snapshots_and_ends_at_the_resume(
         })
     );
 
+    let cut_at = SnapshotGuid::new(7);
     let resume = || CopyStep::Promote {
         transition: CopyTransition::MirrorToWriter,
+        at: &cut_at,
+        epoch: ployz_core::WriterEpoch::new(2),
+        receipt: None,
     };
     peered
         .machine
@@ -1326,7 +1372,11 @@ async fn a_move_grants_its_target_only_its_own_snapshots_and_ends_at_the_resume(
             );
         }
         assert_eq!(
-            refused(machine.record_cut(operation('1'), &name("f-1"), &[])),
+            refused(machine.record_cut(
+                operation('1'),
+                (&name("f-1"), ployz_core::WriterEpoch::new(1)),
+                &[]
+            )),
             replayed
         );
     }
@@ -1361,9 +1411,12 @@ async fn a_move_target_needs_the_window_and_its_promotion_grants_the_following_m
         };
         Signed::sign(&body, &peered.fixture.signer).unwrap()
     };
+    let target = name("f-1");
     let pull = |transition| CopyStep::Pull {
         transition,
         from: &web2,
+        target: &target,
+        receipt: None,
     };
     let lapsed = moving_here(
         at(Timestamp::now().as_millis() - MAX_LIFETIME_MILLIS - 600_000),
@@ -1410,6 +1463,9 @@ async fn a_move_target_needs_the_window_and_its_promotion_grants_the_following_m
             &data(),
             CopyStep::Promote {
                 transition: CopyTransition::MirrorToWriter,
+                at: &SnapshotGuid::new(9),
+                epoch: ployz_core::WriterEpoch::new(2),
+                receipt: Some(&peered.fixture.receipt(&approval, peered.web2.id, this, 9)),
             },
         )
         .await
@@ -1422,5 +1478,480 @@ async fn a_move_target_needs_the_window_and_its_promotion_grants_the_following_m
             .unwrap(),
         Sends::Granted(peered.web3.id),
         "the Mirror that followed the Move now follows B"
+    );
+}
+
+fn db() -> ApprovedService {
+    ApprovedService {
+        name: ServiceName::parse("db").unwrap(),
+        digest: PayloadDigest::parse(&"d".repeat(64)).unwrap(),
+        image: None,
+    }
+}
+
+/// A Move of `data` from `from` to `to` under operation `op`, signed by `fixture`'s Device at
+/// `issued_at` for the longest window.
+fn move_signed(
+    fixture: &Enforcing,
+    op: char,
+    (from, to): (MachineId, MachineId),
+    issued_at: Timestamp,
+) -> Signed<VolumeApproval> {
+    let body = VolumeApproval {
+        cluster: fixture.cluster,
+        operation: operation(op),
+        namespace: Namespace::parse("app").unwrap(),
+        volume: data(),
+        workflow: VolumeWorkflow::Move {
+            from,
+            to,
+            service: db(),
+            mirrors: Vec::new(),
+        },
+        issued_at,
+        expires_at: issued_at.plus(MAX_LIFETIME_MILLIS),
+        signer: SignerKey::Device(DeviceKey::from(fixture.signer.public())),
+    };
+    Signed::sign(&body, &fixture.signer).unwrap()
+}
+
+/// A change to a receipt's body before it is signed.
+type Change<'a> = dyn Fn(&mut HandoffReceipt) + 'a;
+
+fn promoting<'a>(
+    at: &'a SnapshotGuid,
+    receipt: Option<&'a HandoffReceiptEnvelope>,
+) -> CopyStep<'a> {
+    CopyStep::Promote {
+        transition: CopyTransition::MirrorToWriter,
+        at,
+        epoch: epoch(2),
+        receipt,
+    }
+}
+
+fn lapsed() -> Timestamp {
+    at(Timestamp::now().as_millis() - MAX_LIFETIME_MILLIS - 600_000)
+}
+
+fn epoch(value: u32) -> ployz_core::WriterEpoch {
+    ployz_core::WriterEpoch::new(value)
+}
+
+fn cut_slot(guid: u64, snapshot: &str) -> ployz_core::VolumeCopy {
+    ployz_core::VolumeCopy::Slot {
+        slot: ployz_core::SlotId::new(1),
+        readonly: true,
+        newest: Some(ployz_core::Snapshot {
+            name: name(snapshot),
+            guid: SnapshotGuid::new(guid),
+            created_unix_seconds: 1,
+        }),
+        resume_token: None,
+        pull: None,
+        role: Some(ployz_core::SlotRole::OldCopy),
+        pull_state: None,
+    }
+}
+
+/// A Move's source decides once. A handoff needs the cut, its snapshot and a higher epoch,
+/// and is synced before its receipt leaves; a resend returns the same bytes, after a reload
+/// too. From then on the source refuses its resume, any snapshot or cut, and a second
+/// handoff, and serves its target the cut's snapshot and nothing else.
+#[tokio::test]
+async fn a_source_hands_off_once_and_never_resumes_after() {
+    let peered = peered().await;
+    let this = peered.machine.record().id();
+    let web2 = peered.web2.id;
+    let approval = move_signed(&peered.fixture, '1', (this, web2), Timestamp::now());
+    let machine = &peered.machine;
+    let hand = |to, snapshot: &str, wanted: u32| {
+        machine.hand_off(
+            &approval,
+            &data(),
+            to,
+            (SnapshotGuid::new(9), &name(snapshot)),
+            epoch(wanted),
+        )
+    };
+    let admitted = machine
+        .admit_operator_copy(Some(&approval), &data(), CopyStep::Snapshot)
+        .await
+        .unwrap()
+        .unwrap();
+    machine
+        .grant_move_snapshot(&admitted, &name("w-1-1"))
+        .unwrap();
+    assert_eq!(
+        refused(hand(web2, "f-1", 2)),
+        Some(AuthorityRefusal::Mismatch { field: "a cut" }),
+        "no handoff before the cut"
+    );
+    machine
+        .admit_operator_copy(Some(&approval), &data(), CopyStep::Cut)
+        .await
+        .unwrap();
+    machine
+        .record_cut(operation('1'), (&name("f-1"), epoch(1)), &[container('c')])
+        .unwrap();
+    for (to, snapshot, wanted, field) in [
+        (peered.web3.id, "f-1", 2, "a handoff"),
+        (web2, "w-1-1", 2, "a snapshot"),
+        (web2, "f-1", 1, "an epoch"),
+    ] {
+        assert_eq!(
+            refused(hand(to, snapshot, wanted)),
+            Some(AuthorityRefusal::Mismatch { field }),
+            "{field}"
+        );
+    }
+
+    let receipt = hand(web2, "f-1", 2).unwrap();
+    let key = crate::sealing_key::SealingKey::load(&peered.fixture.data_dir.0)
+        .unwrap()
+        .unwrap();
+    let body = receipt.verify(key.receipt_signer().public()).unwrap();
+    assert_eq!(
+        (
+            body.from,
+            body.to,
+            body.at,
+            body.snapshot.clone(),
+            body.from_epoch,
+            body.epoch
+        ),
+        (
+            this,
+            web2,
+            SnapshotGuid::new(9),
+            name("f-1"),
+            epoch(1),
+            epoch(2)
+        )
+    );
+    assert_eq!(body.approval, StepDigest::of(&approval.body));
+    assert_eq!(
+        hand(web2, "f-1", 2).unwrap(),
+        receipt,
+        "a resend returns the same receipt"
+    );
+    assert_eq!(
+        refused(hand(web2, "f-1", 3)),
+        Some(AuthorityRefusal::Mismatch {
+            field: "a second handoff"
+        })
+    );
+
+    let reloaded = Records {
+        dir: &peered.fixture.data_dir.0,
+        machine: this,
+    };
+    assert!(matches!(
+        reloaded.decision('1'),
+        Some(Decision::Handed(handoff)) if handoff.to == web2 && handoff.epoch == epoch(2)
+    ));
+    let cut_at = SnapshotGuid::new(9);
+    let resume = CopyStep::Promote {
+        transition: CopyTransition::MirrorToWriter,
+        at: &cut_at,
+        epoch: epoch(3),
+        receipt: None,
+    };
+    for step in [resume, CopyStep::Snapshot, CopyStep::Cut] {
+        assert_eq!(
+            refused(
+                machine
+                    .admit_operator_copy(Some(&approval), &data(), step)
+                    .await
+            ),
+            Some(AuthorityRefusal::Replayed {
+                operation: operation('1')
+            }),
+            "{step:?} after the handoff"
+        );
+    }
+    assert_eq!(
+        machine
+            .handed_off(&data(), Some(&cut_slot(9, "f-1")))
+            .unwrap(),
+        Some(receipt),
+        "a Writer want on the handed copy is refused with its receipt"
+    );
+    assert_eq!(
+        machine
+            .handed_off(&data(), Some(&cut_slot(10, "f-1")))
+            .unwrap(),
+        None
+    );
+    let sends = |peer, snapshot: &'static str| {
+        let machine = &peered.machine;
+        async move {
+            machine
+                .sends_volume(peer, &data(), Some(&name(snapshot)))
+                .await
+                .unwrap()
+        }
+    };
+    assert_eq!(
+        sends(address(&peered.web2), "f-1").await,
+        Sends::Granted(web2)
+    );
+    assert!(matches!(
+        sends(address(&peered.web2), "w-1-1").await,
+        Sends::Refused { .. }
+    ));
+    assert!(matches!(
+        sends(address(&peered.web3), "f-1").await,
+        Sends::Refused { .. }
+    ));
+}
+
+/// A resume first decides the other way: no handoff follows it.
+#[tokio::test]
+async fn a_source_that_resumed_never_hands_off() {
+    let peered = peered().await;
+    let this = peered.machine.record().id();
+    let approval = move_signed(
+        &peered.fixture,
+        '1',
+        (this, peered.web2.id),
+        Timestamp::now(),
+    );
+    let machine = &peered.machine;
+    machine
+        .admit_operator_copy(Some(&approval), &data(), CopyStep::Cut)
+        .await
+        .unwrap();
+    machine
+        .record_cut(operation('1'), (&name("f-1"), epoch(1)), &[container('c')])
+        .unwrap();
+    let cut_at = SnapshotGuid::new(9);
+    machine
+        .admit_operator_copy(
+            Some(&approval),
+            &data(),
+            CopyStep::Promote {
+                transition: CopyTransition::MirrorToWriter,
+                at: &cut_at,
+                epoch: epoch(3),
+                receipt: None,
+            },
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        refused(machine.hand_off(
+            &approval,
+            &data(),
+            peered.web2.id,
+            (cut_at, &name("f-1")),
+            epoch(2)
+        )),
+        Some(AuthorityRefusal::Replayed {
+            operation: operation('1')
+        })
+    );
+    assert_eq!(
+        machine
+            .handed_off(&data(), Some(&cut_slot(9, "f-1")))
+            .unwrap(),
+        None
+    );
+}
+
+/// A Move's target becomes the Writer only on its source's receipt for this operation, this
+/// Server, this snapshot and epoch, signed with the key this Cluster derives. The receipt
+/// admits its first steps after the window, and once it promoted only a resend of the
+/// promotion runs, after a reload too.
+#[tokio::test]
+async fn a_target_promotes_only_on_its_sources_receipt() {
+    let peered = peered().await;
+    let this = peered.machine.record().id();
+    let web2 = peered.web2.id;
+    let approval = move_signed(&peered.fixture, '1', (web2, this), lapsed());
+    let machine = &peered.machine;
+    let key = crate::sealing_key::SealingKey::load(&peered.fixture.data_dir.0)
+        .unwrap()
+        .unwrap();
+    let signed = |change: &Change<'_>, signer: &ployz_core::authority::Signer| {
+        let mut receipt = HandoffReceipt {
+            cluster: key.public_key(),
+            operation: operation('1'),
+            approval: StepDigest::of(&approval.body),
+            volume: data(),
+            from: web2,
+            to: this,
+            at: SnapshotGuid::new(9),
+            snapshot: name("f-1"),
+            from_epoch: epoch(1),
+            epoch: epoch(2),
+        };
+        change(&mut receipt);
+        MachineSigned::sign(&receipt, signer).unwrap()
+    };
+    let cluster_key = key.receipt_signer();
+    let receipt = signed(&|_| {}, &cluster_key);
+    let cut_at = SnapshotGuid::new(9);
+    let promote = |receipt| promoting(&cut_at, receipt);
+    let target = name("f-1");
+    let web2_address = peered.web2.management_address();
+    let pull_from = |receipt| CopyStep::Pull {
+        transition: CopyTransition::NoneToMirror,
+        from: &web2_address,
+        target: &target,
+        receipt,
+    };
+
+    assert_eq!(
+        refused(
+            machine
+                .admit_operator_copy(Some(&approval), &data(), promote(None))
+                .await
+        ),
+        Some(AuthorityRefusal::Mismatch {
+            field: "a handoff receipt"
+        })
+    );
+    assert_eq!(
+        refused(
+            machine
+                .admit_operator_copy(Some(&approval), &data(), pull_from(None))
+                .await
+        ),
+        Some(AuthorityRefusal::Expired),
+        "with no receipt the window has passed"
+    );
+    let other_operation = move_signed(&peered.fixture, '2', (web2, this), lapsed());
+    let foreign = crate::sealing_key::SealingKey::generate().receipt_signer();
+    let wrong: [(&Change<'_>, AuthorityRefusal); 6] = [
+        (
+            &|receipt| receipt.operation = operation('2'),
+            AuthorityRefusal::Mismatch {
+                field: "an operation",
+            },
+        ),
+        (
+            &|receipt| receipt.approval = StepDigest::of(&other_operation.body),
+            AuthorityRefusal::Mismatch {
+                field: "an approval",
+            },
+        ),
+        (
+            &|receipt| receipt.to = peered.web3.id,
+            AuthorityRefusal::Mismatch {
+                field: "this Server",
+            },
+        ),
+        (
+            &|receipt| receipt.at = SnapshotGuid::new(8),
+            AuthorityRefusal::Mismatch {
+                field: "a snapshot",
+            },
+        ),
+        (
+            &|receipt| receipt.epoch = epoch(3),
+            AuthorityRefusal::Mismatch { field: "an epoch" },
+        ),
+        (
+            &|receipt| receipt.volume = other_volume(),
+            AuthorityRefusal::Mismatch { field: "a Volume" },
+        ),
+    ];
+    for (change, refusal) in wrong {
+        let receipt = signed(change, &cluster_key);
+        assert_eq!(
+            refused(
+                machine
+                    .admit_operator_copy(
+                        Some(&approval),
+                        &data(),
+                        promoting(&cut_at, Some(&receipt))
+                    )
+                    .await
+            ),
+            Some(refusal)
+        );
+    }
+    let forged = signed(&|_| {}, &foreign);
+    assert_eq!(
+        refused(
+            machine
+                .admit_operator_copy(Some(&approval), &data(), promote(Some(&forged)))
+                .await
+        ),
+        Some(AuthorityRefusal::ForeignMachineKey {
+            kind: "volume-handoff"
+        })
+    );
+    let mut tampered = receipt.clone();
+    tampered.signature[0] ^= 1;
+    assert_eq!(
+        refused(
+            machine
+                .admit_operator_copy(Some(&approval), &data(), promote(Some(&tampered)))
+                .await
+        ),
+        Some(AuthorityRefusal::BadMachineSignature {
+            kind: "volume-handoff"
+        })
+    );
+    assert!(
+        peered.fixture.records_empty(),
+        "no refused receipt left a record"
+    );
+
+    machine
+        .admit_operator_copy(Some(&approval), &data(), pull_from(Some(&receipt)))
+        .await
+        .expect("the receipt admits the pull after the window");
+    machine
+        .admit_operator_copy(Some(&approval), &data(), promote(Some(&receipt)))
+        .await
+        .expect("and the promotion");
+    machine
+        .admit_operator_copy(Some(&approval), &data(), promote(Some(&receipt)))
+        .await
+        .expect("a resend of the promotion");
+    let reloaded = Records {
+        dir: &peered.fixture.data_dir.0,
+        machine: this,
+    };
+    assert!(
+        reloaded
+            .log()
+            .read_volumes(|records| records.promoted(operation('1')))
+            .unwrap()
+    );
+    assert_eq!(
+        refused(
+            machine
+                .admit_operator_copy(Some(&approval), &data(), pull_from(Some(&receipt)))
+                .await
+        ),
+        Some(AuthorityRefusal::Replayed {
+            operation: operation('1')
+        }),
+        "the Move ended here at the promotion"
+    );
+    let later = SnapshotGuid::new(10);
+    assert_eq!(
+        refused(
+            machine
+                .admit_operator_copy(
+                    Some(&approval),
+                    &data(),
+                    CopyStep::Promote {
+                        transition: CopyTransition::WriterToWriter,
+                        at: &later,
+                        epoch: epoch(2),
+                        receipt: Some(&receipt),
+                    },
+                )
+                .await
+        ),
+        Some(AuthorityRefusal::Mismatch {
+            field: "a snapshot"
+        }),
+        "the receipt names one snapshot"
     );
 }

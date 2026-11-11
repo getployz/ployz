@@ -494,6 +494,12 @@ pub const CASES: &[Case] = &[
     ),
     case(
         SET_VOLUME_COPY_CAPABILITY,
+        "a handoff",
+        "a SetVolumeCopy handing a cut Volume to its Move's target, with no approval",
+        Expected::Refused(&[VOLUME_APPROVAL_CAPABILITY]),
+    ),
+    case(
+        SET_VOLUME_COPY_CAPABILITY,
         "promote, forget",
         "a SetVolumeCopy forgetting a copy",
         Expected::Served,

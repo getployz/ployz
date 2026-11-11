@@ -180,6 +180,7 @@ pub(super) fn plan(
             },
             r#gen: VolumeGen::default(),
             approval: None,
+            receipt: None,
         },
         lost_after,
     })

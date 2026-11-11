@@ -29,6 +29,12 @@ pub enum AuthorityRefusal {
     Replayed { operation: OperationId },
     #[error("this GitHub token already minted a Build Grant; a build asks for a new one")]
     ProofReplayed,
+    #[error("the {kind} statement is signed by a key this Cluster does not hold")]
+    ForeignMachineKey { kind: &'static str },
+    #[error("the {kind} statement's signature does not verify")]
+    BadMachineSignature { kind: &'static str },
+    #[error("the {kind} statement is malformed: {problem}")]
+    MalformedMachineStatement { kind: &'static str, problem: String },
 }
 
 /// The first of `checks` that does not hold, as a [`AuthorityRefusal::Mismatch`] naming its field.

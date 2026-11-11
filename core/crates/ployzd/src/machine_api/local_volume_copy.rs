@@ -1,12 +1,13 @@
 //! SetVolumeCopy: the transition table and its Container half. ZFS runs on the plugin
 //! through the routes in [`crate::volume_copy`].
 
+use ployz_core::authority::{AuthorityRefusal, Purpose};
 use ployz_core::{
     ContainerKind, ContainerLocator, ContainerNow, ContainerObservation, ContainerRefusalReason,
     ContainerRuntimeObservation, ContainerWant, CopyPlan, CopyRefusal, CopyRotation,
-    CopyTransition, DockerVolumeName, EnsuredContainer, HealthVerdict, MachineId, OpaquePayload,
-    RpcError, RunRotation, RunTarget, SetVolumeCopyRefused, SetVolumeCopyReply,
-    SetVolumeCopyRequest, Start, VolumeCopy, VolumeGen, WantedCopy,
+    CopyTransition, DockerVolumeName, EnsuredContainer, HandoffReceiptEnvelope, HealthVerdict,
+    MachineId, OpaquePayload, RpcError, RunRotation, RunTarget, SetVolumeCopyRefused,
+    SetVolumeCopyReply, SetVolumeCopyRequest, Start, VolumeCopy, VolumeGen, WantedCopy,
 };
 use tonic::{Response, Status};
 
@@ -42,7 +43,10 @@ impl MachineService {
     ) -> Result<Response<OpaquePayload>, Status> {
         if request.want == WantedCopy::Floor {
             return match self.floor_copy(&request.name, request.r#gen).await {
-                Ok(copy) => respond(SetVolumeCopyReply { copy }),
+                Ok(copy) => respond(SetVolumeCopyReply {
+                    copy,
+                    receipt: None,
+                }),
                 Err(error) => local_error(error),
             };
         }
@@ -70,12 +74,70 @@ impl MachineService {
         .map_err(LocalMachineError::from)
         .and_then(|copy| copy);
         match admitted {
-            Ok(copy) => respond(SetVolumeCopyReply { copy }),
+            Ok(reply) => respond(reply),
             Err(error) => local_error(error),
         }
     }
 
     async fn set_copy_admitted(
+        &self,
+        request: SetVolumeCopyRequest,
+        operator: bool,
+    ) -> Result<SetVolumeCopyReply, LocalMachineError> {
+        if let WantedCopy::Handoff { to, at, epoch } = request.want {
+            return self.hand_off(request, to, at, epoch).await;
+        }
+        let copy = self.set_copy_planned(request, operator).await?;
+        Ok(SetVolumeCopyReply {
+            copy,
+            receipt: None,
+        })
+    }
+
+    /// The Handoff want: on a Move's source whose cut left the old copy at `at`, record that
+    /// it hands the Volume to `to` with `epoch`, and answer with the receipt.
+    async fn hand_off(
+        &self,
+        request: SetVolumeCopyRequest,
+        to: MachineId,
+        at: ployz_core::SnapshotGuid,
+        epoch: ployz_core::WriterEpoch,
+    ) -> Result<SetVolumeCopyReply, LocalMachineError> {
+        let SetVolumeCopyRequest {
+            name,
+            expect,
+            want,
+            approval,
+            ..
+        } = request;
+        let Some(approval) = approval else {
+            return Err(LocalMachineError::VolumeStepRefused(
+                AuthorityRefusal::Unsigned {
+                    purpose: Purpose::Volume,
+                },
+            ));
+        };
+        let copy = self.inspect_copy(&name).await?;
+        if let CopyPlan::Refuse(reason) = ployz_core::plan(copy.as_ref(), false, &expect, &want) {
+            return Err(refused(reason, copy, &name));
+        }
+        let Some(VolumeCopy::Slot {
+            newest: Some(newest),
+            ..
+        }) = &copy
+        else {
+            return Err(refused(CopyRefusal::NoTransition, copy, &name));
+        };
+        let receipt = self
+            .local
+            .hand_off(&approval, &name, to, (at, &newest.name), epoch)?;
+        Ok(SetVolumeCopyReply {
+            copy,
+            receipt: Some(receipt),
+        })
+    }
+
+    async fn set_copy_planned(
         &self,
         request: SetVolumeCopyRequest,
         operator: bool,
@@ -86,6 +148,7 @@ impl MachineService {
             want,
             r#gen,
             approval,
+            receipt,
         } = request;
         // Checked again under the switch lock: a newer lane may have fenced this Volume
         // while the request queued behind a cut.
@@ -99,7 +162,8 @@ impl MachineService {
             | WantedCopy::Mirror { .. }
             | WantedCopy::Snapshot { .. }
             | WantedCopy::Forget { .. }
-            | WantedCopy::Floor => None,
+            | WantedCopy::Floor
+            | WantedCopy::Handoff { .. } => None,
         };
         let start_running = start == Some(StartState::Running);
         // `None` when the copy is already at the want.
@@ -112,6 +176,21 @@ impl MachineService {
             CopyPlan::Transition(transition) => Some(transition),
         };
         if operator
+            && matches!(want, WantedCopy::Writer { .. })
+            && let Some(handed) = self.local.handed_off(&name, copy.as_ref())?
+        {
+            tracing::warn!(%name, "Volume handed off here refuses to become its Writer again");
+            return Err(refusal(
+                SetVolumeCopyRefused {
+                    reason: CopyRefusal::HandedOff,
+                    copy,
+                    floor: None,
+                    receipt: Some(handed),
+                },
+                &name,
+            ));
+        }
+        if operator
             && transition.is_some()
             && let WantedCopy::Writer {
                 start: Some(start), ..
@@ -120,7 +199,7 @@ impl MachineService {
             self.local
                 .admit_operator_volume_start(approval.as_ref(), &name, start)?;
         }
-        let admitted = match approved_step(&want, transition) {
+        let admitted = match approved_step(&want, transition, receipt.as_ref()) {
             Some(step) if operator => {
                 self.local
                     .admit_operator_copy(approval.as_ref(), &name, step)
@@ -213,8 +292,14 @@ impl MachineService {
                 let plugin = self.local.plugin().clone();
                 let local = self.local.clone();
                 let snapshot = target.clone();
+                let cut_epoch = match &copy {
+                    Some(VolumeCopy::Root { epoch, .. }) => *epoch,
+                    _ => ployz_core::WriterEpoch::default(),
+                };
                 let record = move |running: &[ployz_core::ContainerId]| match &admitted {
-                    Some(admitted) => local.record_cut(admitted.operation, &snapshot, running),
+                    Some(admitted) => {
+                        local.record_cut(admitted.operation, (&snapshot, cut_epoch), running)
+                    }
                     None => Ok(()),
                 };
                 let request = CutRequest {
@@ -538,14 +623,25 @@ impl MachineService {
 /// The step of `want` an enforcing Machine checks against an Operator's Volume approval: a
 /// pull that makes, refreshes or already holds a Mirror, a run snapshot taken or already
 /// held, a Move's cut, and a promote to the Writer.
-fn approved_step(want: &WantedCopy, transition: Option<CopyTransition>) -> Option<CopyStep<'_>> {
+fn approved_step<'a>(
+    want: &'a WantedCopy,
+    transition: Option<CopyTransition>,
+    receipt: Option<&'a HandoffReceiptEnvelope>,
+) -> Option<CopyStep<'a>> {
     match (want, transition) {
         (
             WantedCopy::Mirror {
-                from: Some(from), ..
+                from: Some(from),
+                target,
+                ..
             },
             Some(transition @ (CopyTransition::NoneToMirror | CopyTransition::MirrorToMirror)),
-        ) => Some(CopyStep::Pull { transition, from }),
+        ) => Some(CopyStep::Pull {
+            transition,
+            from,
+            target,
+            receipt,
+        }),
         (
             WantedCopy::Mirror {
                 from: Some(from), ..
@@ -559,9 +655,14 @@ fn approved_step(want: &WantedCopy, transition: Option<CopyTransition>) -> Optio
             Some(CopyStep::Cut)
         }
         (
-            WantedCopy::Writer { .. },
+            WantedCopy::Writer { at, epoch, .. },
             Some(transition @ (CopyTransition::MirrorToWriter | CopyTransition::WriterToWriter)),
-        ) => Some(CopyStep::Promote { transition }),
+        ) => Some(CopyStep::Promote {
+            transition,
+            at,
+            epoch: *epoch,
+            receipt,
+        }),
         _ => None,
     }
 }
@@ -606,6 +707,7 @@ fn refused(reason: CopyRefusal, copy: Copy, name: &DockerVolumeName) -> LocalMac
             reason,
             copy,
             floor: None,
+            receipt: None,
         },
         name,
     )
@@ -617,6 +719,7 @@ fn stale(floor: VolumeGen, copy: Copy, name: &DockerVolumeName) -> LocalMachineE
             reason: CopyRefusal::Stale,
             copy,
             floor: Some(floor),
+            receipt: None,
         },
         name,
     )
@@ -634,6 +737,9 @@ fn refusal(refused: SetVolumeCopyRefused, name: &DockerVolumeName) -> LocalMachi
         CopyRefusal::Stale => format!(
             "a newer move or release owns Volume {name}; this Machine is at lane {}",
             refused.floor.unwrap_or_default()
+        ),
+        CopyRefusal::HandedOff => format!(
+            "this Machine handed Volume {name} off in a move, so it will not write it again"
         ),
     };
     LocalMachineError::StoragePreparation(refused.rpc_error(message))

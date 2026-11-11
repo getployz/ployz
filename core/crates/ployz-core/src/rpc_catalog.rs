@@ -120,6 +120,8 @@ macro_rules! rpc_catalog {
                 VOLUME_SHRINK_CAPABILITY: ("ployz.volume.size.shrink.v1", Container),
                 /// `SetVolumeCopy` takes a Device-signed Volume approval and a `Forget` recipient. Under Device enforcement an Operator's pull needs an approval that names this Server and its source, a Snapshot under a Mirror approval grants that Mirror the send stream, and the send stream serves only a granted recipient. A Mirror's `Forget` withdraws it first.
                 VOLUME_APPROVAL_CAPABILITY: ("ployz.volume.approval.v1", Container),
+                /// `SetVolumeCopy` takes the `handoff` want and a request `receipt`. A Move's source records one decision after its cut and signs a receipt for it, refusing the other outcome with `handed_off`. Under Device enforcement a Move's target becomes the Writer only with that receipt.
+                VOLUME_HANDOFF_CAPABILITY: ("ployz.volume.copy.handoff.v1", Container),
                 /// The daemon can take a Certificate Policy from cluster state.
                 CERTIFICATE_POLICY_CAPABILITY: ("ployz.certificates.policy.v1", Always),
                 /// `Inspect` can report requested current local Machine storage evidence.

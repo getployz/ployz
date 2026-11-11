@@ -9,19 +9,22 @@
 use std::net::IpAddr;
 
 use ployz_core::{
-    ContainerId, ContainerKind, CopyTransition, DockerVolumeName, MachineId, ManagementAddress,
-    OperationId, Sealing, SnapshotName, Start,
+    ContainerId, ContainerKind, CopyTransition, DockerVolumeName, HandoffReceiptEnvelope,
+    MachineId, ManagementAddress, OperationId, Sealing, SnapshotGuid, SnapshotName, Start,
+    VolumeCopy, WriterEpoch,
     authority::{
-        Approver, AuthorityRefusal, Purpose, Signed, StepDigest, Timestamp, VolumeApproval,
-        VolumeFacts, VolumeStep, VolumeWorkflow,
+        Approver, AuthorityRefusal, Handed as Lands, HandoffFacts, HandoffReceipt, MachineSigned,
+        Purpose, Signed, StepDigest, Timestamp, VolumeApproval, VolumeFacts, VolumeStep,
+        VolumeWorkflow,
         deploy::{self, Creation},
         volume,
     },
 };
+use ployz_decide::volume_records::Handed;
 pub(crate) use ployz_decide::volume_records::{GrantScope, VolumeRecords};
 
 use super::{Error, LocalMachine};
-use crate::volume_send::Sends;
+use crate::{sealing_key::SealingKey, volume_send::Sends};
 
 impl LocalMachine {
     /// Admit `step` on `volume` under `approval`. An operation this Machine ended is
@@ -43,6 +46,18 @@ impl LocalMachine {
         approval: &Signed<VolumeApproval>,
         volume: &DockerVolumeName,
         step: &VolumeStep,
+    ) -> Result<OperationId, Error> {
+        self.admit_handed_step(approval, volume, step, None)
+    }
+
+    /// [`Self::admit_volume_step`], where `handed`, a receipt this Machine checked, proves
+    /// the Move started on its source inside the window and so stands in for it.
+    fn admit_handed_step(
+        &self,
+        approval: &Signed<VolumeApproval>,
+        volume: &DockerVolumeName,
+        step: &VolumeStep,
+        handed: Option<&HandoffReceipt>,
     ) -> Result<OperationId, Error> {
         let record = self.record();
         let machine = record.id();
@@ -67,6 +82,7 @@ impl LocalMachine {
                                 volume,
                                 step,
                                 now,
+                                handed,
                             },
                         )
                         .map(|approved| {
@@ -192,11 +208,31 @@ impl LocalMachine {
             })
         };
         match step {
-            CopyStep::Pull { transition, from } => {
+            CopyStep::Pull {
+                transition,
+                from,
+                target,
+                receipt,
+            } => {
                 let approval = approval.ok_or_else(unsigned)?;
                 self.admit_source(approval, from).await?;
-                self.admitted(approval, volume, &VolumeStep::Copy(transition))
-                    .map(Some)
+                let handed = receipt
+                    .map(|receipt| {
+                        self.checked_receipt(
+                            approval,
+                            volume,
+                            receipt,
+                            Lands::Pull { snapshot: target },
+                        )
+                    })
+                    .transpose()?;
+                self.admitted(
+                    approval,
+                    volume,
+                    &VolumeStep::Copy(transition),
+                    handed.as_ref(),
+                )
+                .map(Some)
             }
             CopyStep::Held { from } => {
                 let Some(approval) = approval else {
@@ -204,14 +240,14 @@ impl LocalMachine {
                 };
                 self.admit_source(approval, from).await?;
                 let step = VolumeStep::Copy(CopyTransition::MirrorToMirror);
-                self.admitted(approval, volume, &step).map(Some)
+                self.admitted(approval, volume, &step, None).map(Some)
             }
             CopyStep::Snapshot => {
                 let Some(approval) = approval else {
                     return Ok(None);
                 };
                 let step = VolumeStep::Copy(CopyTransition::WriterToSnapshot);
-                let admitted = self.admitted(approval, volume, &step)?;
+                let admitted = self.admitted(approval, volume, &step, None)?;
                 if let VolumeWorkflow::Mirror { mirror, .. } = admitted.workflow {
                     self.grant_volume(admitted.operation, mirror, GrantScope::Standing)?;
                 }
@@ -220,30 +256,173 @@ impl LocalMachine {
             CopyStep::Cut => {
                 let approval = approval.ok_or_else(unsigned)?;
                 let step = VolumeStep::Copy(CopyTransition::WriterToMirror);
-                self.admitted(approval, volume, &step).map(Some)
+                self.admitted(approval, volume, &step, None).map(Some)
             }
-            CopyStep::Promote { transition } => {
+            CopyStep::Promote {
+                transition,
+                at,
+                epoch,
+                receipt,
+            } => {
                 let Some(approval) = approval else {
                     return Ok(None);
                 };
-                let admitted = self.admitted(approval, volume, &VolumeStep::Copy(transition))?;
                 let machine = self.record().id();
-                if let VolumeWorkflow::Move {
-                    from, to, mirrors, ..
-                } = &admitted.workflow
-                {
-                    if *from == machine {
+                let step = VolumeStep::Copy(transition);
+                let body = approval.open().map_err(Error::VolumeStepRefused)?;
+                if !matches!(&body.workflow, VolumeWorkflow::Move { to, .. } if *to == machine) {
+                    let admitted = self.admitted(approval, volume, &step, None)?;
+                    if admitted.workflow.moves_from(&machine) {
                         self.resume_volume(admitted.operation)?;
                     }
-                    if *to == machine && transition == CopyTransition::MirrorToWriter {
-                        for mirror in mirrors {
-                            self.grant_volume(admitted.operation, *mirror, GrantScope::Standing)?;
-                        }
-                    }
+                    return Ok(Some(admitted));
                 }
+                let receipt =
+                    receipt.ok_or(Error::VolumeStepRefused(AuthorityRefusal::Mismatch {
+                        field: "a handoff receipt",
+                    }))?;
+                let handed =
+                    self.checked_receipt(approval, volume, receipt, Lands::Writer { at, epoch })?;
+                let admitted = self.admitted(approval, volume, &step, Some(&handed))?;
+                self.approvals
+                    .change_volumes(Timestamp::now(), |records, _| {
+                        records
+                            .promote(admitted.operation, &machine, (*at, epoch), receipt.clone())
+                            .map_err(Error::VolumeStepRefused)
+                    })?;
+                tracing::info!(
+                    operation = %admitted.operation,
+                    from = %handed.from,
+                    %at,
+                    "Volume move promoted here on its source's receipt; it ends on this Server"
+                );
                 Ok(Some(admitted))
             }
         }
+    }
+
+    /// On a Move's source after its cut, record that it hands `volume` to `to`, which becomes
+    /// the Writer at the cut's snapshot, held here as `at` and `snapshot`, with `epoch`. The
+    /// decision is synced before this returns the receipt, and a resend returns the same one.
+    /// After it this Machine never becomes the Writer again under the Move.
+    ///
+    /// # Errors
+    /// Returns [`Error::VolumeStepRefused`] for an approval that is not a Move from here to
+    /// `to`, a Move with no cut at that snapshot, a Move this Machine resumed, a
+    /// second handoff that differs, and a Machine holding no Sealing Key;
+    /// [`Error::ApprovalRecord`] when the record cannot be read or written.
+    pub(crate) fn hand_off(
+        &self,
+        approval: &Signed<VolumeApproval>,
+        volume: &DockerVolumeName,
+        to: MachineId,
+        (at, snapshot): (SnapshotGuid, &SnapshotName),
+        epoch: WriterEpoch,
+    ) -> Result<HandoffReceiptEnvelope, Error> {
+        let operation = self.admit_volume_step(approval, volume, &VolumeStep::Handoff)?;
+        let machine = self.record().id();
+        let handed = self
+            .approvals
+            .change_volumes(Timestamp::now(), |records, _| {
+                records
+                    .handoff(operation, &machine, to, (at, snapshot), epoch)
+                    .map_err(Error::VolumeStepRefused)
+            })?;
+        tracing::info!(
+            %operation,
+            %volume,
+            %to,
+            %snapshot,
+            "Volume move handed off here; this Server never writes it again under the move"
+        );
+        self.receipt_of(&handed)
+    }
+
+    /// The receipt this Machine signed when it handed `copy` of `volume` off, if it did: an
+    /// Operator's Writer want on that copy is refused with it, approved or not.
+    ///
+    /// # Errors
+    /// Returns [`Error::ApprovalRecord`] when the record cannot be read, and
+    /// [`Error::VolumeStepRefused`] when this Machine holds no Sealing Key to sign with.
+    pub(crate) fn handed_off(
+        &self,
+        volume: &DockerVolumeName,
+        copy: Option<&VolumeCopy>,
+    ) -> Result<Option<HandoffReceiptEnvelope>, Error> {
+        let Some(VolumeCopy::Slot {
+            newest: Some(newest),
+            ..
+        }) = copy
+        else {
+            return Ok(None);
+        };
+        let handed = self
+            .approvals
+            .read_volumes(|records| records.handed_at(volume, &newest.guid))?;
+        handed.map(|handed| self.receipt_of(&handed)).transpose()
+    }
+
+    /// The receipt for `handed`, signed with the Cluster's receipt key. Ed25519 signs one
+    /// body one way, so a resend carries the same bytes.
+    fn receipt_of(&self, handed: &Handed) -> Result<HandoffReceiptEnvelope, Error> {
+        let key = self.receipt_key()?;
+        let receipt = HandoffReceipt {
+            cluster: key.public_key(),
+            operation: handed.operation,
+            approval: handed.digest,
+            volume: handed.volume.clone(),
+            from: self.record().id(),
+            to: handed.handoff.to,
+            at: handed.handoff.at,
+            snapshot: handed.handoff.snapshot.clone(),
+            from_epoch: handed.handoff.from_epoch,
+            epoch: handed.handoff.epoch,
+        };
+        MachineSigned::sign(&receipt, &key.receipt_signer()).map_err(|error| {
+            Error::VolumeStepRefused(AuthorityRefusal::MalformedMachineStatement {
+                kind: "volume-handoff",
+                problem: error.to_string(),
+            })
+        })
+    }
+
+    /// Check `receipt` is this Cluster's statement that `approval`'s Move handed `volume` to
+    /// this Machine at the snapshot the step lands on.
+    fn checked_receipt(
+        &self,
+        approval: &Signed<VolumeApproval>,
+        volume: &DockerVolumeName,
+        receipt: &HandoffReceiptEnvelope,
+        at: Lands<'_>,
+    ) -> Result<HandoffReceipt, Error> {
+        let key = self.receipt_key()?;
+        let body = approval.open().map_err(Error::VolumeStepRefused)?;
+        volume::verify_receipt(
+            receipt,
+            &HandoffFacts {
+                key: key.receipt_signer().public(),
+                cluster: key.public_key(),
+                machine: &self.record().id(),
+                operation: body.operation,
+                approval: StepDigest::of(&approval.body),
+                volume,
+                at,
+            },
+        )
+        .map_err(|refusal| {
+            tracing::warn!(%volume, "Volume handoff receipt refused: {refusal}");
+            Error::VolumeStepRefused(refusal)
+        })
+    }
+
+    /// The Sealing Key this Machine holds, which its receipt key derives from.
+    fn receipt_key(&self) -> Result<SealingKey, Error> {
+        let held = self
+            .held_sealing(self.record().phase())
+            .and_then(|_| SealingKey::load(self.owner.data_dir()).ok().flatten());
+        held.ok_or(Error::VolumeStepRefused(
+            AuthorityRefusal::NoClusterIdentity,
+        ))
     }
 
     fn admitted(
@@ -251,8 +430,9 @@ impl LocalMachine {
         approval: &Signed<VolumeApproval>,
         volume: &DockerVolumeName,
         step: &VolumeStep,
+        handed: Option<&HandoffReceipt>,
     ) -> Result<Admitted, Error> {
-        let operation = self.admit_volume_step(approval, volume, step)?;
+        let operation = self.admit_handed_step(approval, volume, step, handed)?;
         let workflow = approval.open().map_err(Error::VolumeStepRefused)?.workflow;
         Ok(Admitted {
             operation,
@@ -268,8 +448,7 @@ impl LocalMachine {
     fn resume_volume(&self, operation: OperationId) -> Result<(), Error> {
         self.approvals
             .change_volumes(Timestamp::now(), |records, _| {
-                records.resume(operation);
-                Ok(())
+                records.resume(operation).map_err(Error::VolumeStepRefused)
             })?;
         tracing::info!(%operation, "Volume move resumed here; it ends on this Server");
         Ok(())
@@ -285,14 +464,14 @@ impl LocalMachine {
     pub(crate) fn record_cut(
         &self,
         operation: OperationId,
-        snapshot: &SnapshotName,
+        (snapshot, epoch): (&SnapshotName, WriterEpoch),
         running: &[ContainerId],
     ) -> Result<(), Error> {
         let machine = self.record().id();
         self.approvals
             .change_volumes(Timestamp::now(), |records, _| {
                 records
-                    .cut(operation, &machine, snapshot, running)
+                    .cut(operation, &machine, snapshot, epoch, running)
                     .map_err(Error::VolumeStepRefused)
             })?;
         tracing::info!(%operation, %snapshot, stopping = running.len(), "Volume cut recorded");
@@ -479,10 +658,13 @@ impl LocalMachine {
 /// Volume approval.
 #[derive(Clone, Copy, Debug)]
 pub(crate) enum CopyStep<'a> {
-    /// A pull that makes or refreshes a Mirror, from `from`.
+    /// A pull that makes or refreshes a Mirror of `target`, from `from`, with the Move
+    /// source's receipt for it when the request carries one.
     Pull {
         transition: CopyTransition,
         from: &'a ManagementAddress,
+        target: &'a SnapshotName,
+        receipt: Option<&'a HandoffReceiptEnvelope>,
     },
     /// A pull of the snapshot the slot already holds. Checked as a refresh when it carries
     /// an approval, so a Mirror approved again while caught up admits it; passed without one,
@@ -492,8 +674,14 @@ pub(crate) enum CopyStep<'a> {
     Snapshot,
     /// The cut on a Move's source.
     Cut,
-    /// The copy becomes the Writer: a Move's target promotes, or its source resumes.
-    Promote { transition: CopyTransition },
+    /// The copy becomes the Writer at `at` with `epoch`: a Move's target promotes, which
+    /// needs its source's `receipt`, or its source resumes.
+    Promote {
+        transition: CopyTransition,
+        at: &'a SnapshotGuid,
+        epoch: WriterEpoch,
+        receipt: Option<&'a HandoffReceiptEnvelope>,
+    },
 }
 
 /// A Volume step this Machine admitted, for its effect to record against.

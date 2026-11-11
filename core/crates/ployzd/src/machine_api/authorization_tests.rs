@@ -496,6 +496,9 @@ async fn sample(case: &Case, machine: &Enforcing) -> Sample {
                         "creation_key": "attacker-0001", "gen": 1, "rotation": "pending",
                     },
                 }),
+                "a handoff" => json!({
+                    "kind": "handoff", "to": "b".repeat(32), "at": "7", "epoch": 2,
+                }),
                 "promote, forget" => json!({"kind": "forget"}),
                 "floor, snapshot" => json!({"kind": "floor"}),
                 other => panic!("SetVolumeCopy has no sample for {other:?}"),
