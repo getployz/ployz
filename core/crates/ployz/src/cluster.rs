@@ -53,6 +53,8 @@ mod capacity;
 mod container_health;
 #[cfg(test)]
 mod retry;
+#[cfg(test)]
+mod routing_tests;
 
 pub(crate) use call::setup_outcome;
 pub use call::{Budgeted, Call, Deadline, Once, Pacing, Repeat, Replay, Wait, Waiting};
