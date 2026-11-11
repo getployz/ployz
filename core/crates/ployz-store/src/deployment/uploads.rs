@@ -339,7 +339,7 @@ fn kept(
     );
     for service in services {
         let mut latest = deployments.iter().rev();
-        for moves in [moved, applied] {
+        for moves in [moved, applied, ahead] {
             kept.extend(lineage(&deployments, service, moves).map(|(_, digest)| digest.clone()));
         }
         kept.extend(

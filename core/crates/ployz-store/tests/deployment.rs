@@ -8353,3 +8353,25 @@ fn a_deploy_that_supersedes_a_queued_upload_builds_it_as_it_starts() {
     let claimed = store.claim(&id(3), &a).unwrap();
     assert_eq!(claimed.deployment.upload, Some(digested('b')));
 }
+
+#[test]
+fn cloud_keeps_the_upload_a_deploy_chooses_from_a_superseded_one() {
+    let (store, who) = uploaded_app();
+    let a = runner("cli-a");
+    deploy_sent(&store, &who, 1, Some('a'));
+    store.claim(&id(1), &a).unwrap();
+    deploy_sent(&store, &who, 2, Some('b'));
+    deploy_sent(&store, &who, 3, Some('c'));
+    store
+        .record(&id(1), &a, RunEvidence::Prepared(preview(&["app"])))
+        .unwrap();
+    store.record(&id(1), &a, succeeded(&["app"])).unwrap();
+    fail(&store, 3);
+    let held = kept_of(&store, &who, &[1, 2, 3]);
+    let chosen = deploy_sent(&store, &who, 4, None).upload.unwrap();
+    let at = ['a', 'b', 'c']
+        .iter()
+        .position(|digest| digested(*digest) == chosen)
+        .unwrap();
+    assert!(held[at], "{chosen:?} chosen but released: {held:?}");
+}
