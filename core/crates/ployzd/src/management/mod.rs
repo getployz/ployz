@@ -26,8 +26,8 @@ use iroh::{
     tls::CaTlsConfig,
 };
 use ployz_core::{
-    BUILD_GRANT_ALPN, DEFAULT_RELAY_URL, FORGOTTEN_ALPN, MANAGEMENT_ALPN, MANAGEMENT_PORT,
-    MANAGEMENT_PROOF_LABEL, ManagementProof, Rpc, TUNNEL_ALPN, op,
+    BUILD_GRANT_ALPN, ClientKey, DEFAULT_RELAY_URL, FORGOTTEN_ALPN, MANAGEMENT_ALPN,
+    MANAGEMENT_PORT, MANAGEMENT_PROOF_LABEL, ManagementProof, Rpc, TUNNEL_ALPN, op,
 };
 use serde::{Deserialize, Serialize};
 use tokio::sync::{OwnedSemaphorePermit, Semaphore, watch};
@@ -162,11 +162,6 @@ fn transport() -> QuicTransportConfig {
         .build()
 }
 
-/// The Management Client key a connection proved with its [`ManagementProof`]. Each
-/// management request carries it; the connection's own transport key is never trusted.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub struct ProvenClient(pub [u8; 32]);
-
 /// Serve `api` over `endpoint` until `shutdown`, then drain every connection.
 ///
 /// A connection proves its Management Client key first; see [`ManagementProof`]. A
@@ -291,7 +286,7 @@ async fn serve_connection<S, R>(
     }
     match serve_admitted(
         &connection,
-        ProvenClient(remote),
+        remote,
         streams,
         revoked(records, remote),
         api,
@@ -307,7 +302,7 @@ async fn serve_connection<S, R>(
 /// Accept the connection's first stream and read the client's proof from its head.
 /// Returns the client key it proves with the stream, or `None` when the proof is missing,
 /// late, malformed, or signed for another connection.
-async fn authenticate(connection: &Connection) -> Option<([u8; 32], (SendStream, RecvStream))> {
+async fn authenticate(connection: &Connection) -> Option<(ClientKey, (SendStream, RecvStream))> {
     let proven = async {
         let (send, mut recv) = connection.accept_bi().await.ok()?;
         let mut frame = [0; ManagementProof::LEN];
@@ -317,7 +312,7 @@ async fn authenticate(connection: &Connection) -> Option<([u8; 32], (SendStream,
         connection
             .export_keying_material(&mut exporter, MANAGEMENT_PROOF_LABEL, &[])
             .ok()?;
-        PublicKey::from_bytes(&proof.client)
+        PublicKey::from_bytes(proof.client.as_bytes())
             .ok()?
             .verify(
                 &ManagementProof::message(&exporter),
@@ -333,7 +328,7 @@ async fn authenticate(connection: &Connection) -> Option<([u8; 32], (SendStream,
 }
 
 /// The close code refusing `remote`, or `None` when a slot admits it.
-fn refusal(record: &LocalMachineRecord, remote: &[u8; 32]) -> Option<VarInt> {
+fn refusal(record: &LocalMachineRecord, remote: &ClientKey) -> Option<VarInt> {
     if record.admits_management_client(remote) {
         None
     } else if record.clears_management_client(remote) {
@@ -355,7 +350,7 @@ enum Ended {
 
 async fn serve_admitted<S>(
     connection: &Connection,
-    client: ProvenClient,
+    client: ClientKey,
     (send, recv): (SendStream, RecvStream),
     revoked: impl Future<Output = ()>,
     api: S,
@@ -425,7 +420,7 @@ where
 }
 
 /// Completes once a published record no longer admits `remote`.
-async fn revoked(mut records: watch::Receiver<Arc<LocalMachineRecord>>, remote: [u8; 32]) {
+async fn revoked(mut records: watch::Receiver<Arc<LocalMachineRecord>>, remote: ClientKey) {
     loop {
         if records.changed().await.is_err() {
             // The record owner stopped; shutdown ends this connection.
@@ -447,7 +442,9 @@ async fn revoked(mut records: watch::Receiver<Arc<LocalMachineRecord>>, remote: 
 struct ConnectionApi<S> {
     api: S,
     connection: Connection,
-    client: ProvenClient,
+    /// The Management Client key the connection proved with its [`ManagementProof`]. Each
+    /// management request carries it; the connection's own transport key is never trusted.
+    client: ClientKey,
     drain: CancellationToken,
 }
 

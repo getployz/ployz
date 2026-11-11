@@ -25,10 +25,10 @@ use ployz::{
     context::Connection,
 };
 use ployz_core::{
-    AdvertisedEndpoint, ContainerId, DescribeContractRequest, DeviceKey, EnrollAs, EnrollRequest,
-    ExecConfig, ExecOptions, ExecRequestFrame, ForgottenAnswer, MANAGEMENT_ALPN, MachineId,
-    MachineName, MachineRpcClient, ManagementCapability, ManagementClientLabel, ManagementIdentity,
-    OpaquePayload, RemoveTrustedKeyRequest, RpcErrorCode, SetDeviceRequest,
+    AdvertisedEndpoint, ClientKey, ContainerId, DescribeContractRequest, DeviceKey, EnrollAs,
+    EnrollRequest, ExecConfig, ExecOptions, ExecRequestFrame, ForgottenAnswer, MANAGEMENT_ALPN,
+    MachineId, MachineName, MachineRpcClient, ManagementCapability, ManagementClientLabel,
+    ManagementIdentity, OpaquePayload, RemoveTrustedKeyRequest, RpcErrorCode, SetDeviceRequest,
     SetManagementClientRequest, TUNNEL_ALPN, TUNNEL_FAILED, TUNNEL_OPEN, TrustedKeyRemoved, op,
 };
 use ployzd::{
@@ -273,11 +273,11 @@ async fn a_management_proof_admits_only_the_connection_it_was_made_on() {
         .capability
         .unwrap();
     local
-        .activate_management_client(
+        .activate_management_client(ClientKey::from_bytes(
             *SecretKey::from_bytes(capability.client_secret())
                 .public()
                 .as_bytes(),
-        )
+        ))
         .await
         .unwrap();
     let endpoint = management::bind(
@@ -519,9 +519,11 @@ async fn verification_racing_removal_does_not_revoke_the_saved_candidate() {
         .unwrap()
         .capability
         .unwrap();
-    let old_key = *SecretKey::from_bytes(old.client_secret())
-        .public()
-        .as_bytes();
+    let old_key = ClientKey::from_bytes(
+        *SecretKey::from_bytes(old.client_secret())
+            .public()
+            .as_bytes(),
+    );
     local.activate_management_client(old_key).await.unwrap();
     let endpoint = management::bind(
         local.record().management_secret(),
@@ -590,9 +592,11 @@ async fn rotating_or_clearing_one_slot_revokes_only_its_holder() {
                 .unwrap()
                 .capability
                 .unwrap();
-            let key = *SecretKey::from_bytes(capability.client_secret())
-                .public()
-                .as_bytes();
+            let key = ClientKey::from_bytes(
+                *SecretKey::from_bytes(capability.client_secret())
+                    .public()
+                    .as_bytes(),
+            );
             local.activate_management_client(key).await.unwrap();
             capability
         }
@@ -685,9 +689,11 @@ async fn only_a_device_execs_or_tunnels() {
                 .unwrap()
                 .capability
                 .unwrap();
-            let key = *SecretKey::from_bytes(capability.client_secret())
-                .public()
-                .as_bytes();
+            let key = ClientKey::from_bytes(
+                *SecretKey::from_bytes(capability.client_secret())
+                    .public()
+                    .as_bytes(),
+            );
             local.activate_management_client(key).await.unwrap();
             capability
         }
@@ -1052,11 +1058,11 @@ async fn contract() {
         .await
         .unwrap();
     local
-        .activate_management_client(
+        .activate_management_client(ClientKey::from_bytes(
             *SecretKey::from_bytes(delayed_capability.client_secret())
                 .public()
                 .as_bytes(),
-        )
+        ))
         .await
         .unwrap();
     let delayed = raw_endpoint(&relay_url).await;
@@ -1101,11 +1107,11 @@ async fn contract() {
     activate(activated.clone()).await;
     assert_eq!(
         local.record().accepted_client(&cloud()),
-        Some(
+        Some(ClientKey::from_bytes(
             *SecretKey::from_bytes(capability.client_secret())
                 .public()
                 .as_bytes()
-        )
+        ))
     );
     drop(activated);
     tokio::time::timeout(Duration::from_secs(10), activated_connection.closed())

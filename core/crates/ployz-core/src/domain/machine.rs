@@ -11,9 +11,9 @@ use serde::{Deserialize, Serialize};
 
 use super::NameMatches;
 use crate::{
-    AdvertisedEndpoint, FanoutSelector, MachineId, MachineLabelKey, MachineLabelValue, MachineName,
-    MachineSubnet, MachineTarget, ManagementAddress, ManagementIdentity, Placement, Sealing,
-    SelectedEndpoint, ValueError, WireGuardPublicKey,
+    AdvertisedEndpoint, DeviceKey, FanoutSelector, MachineId, MachineLabelKey, MachineLabelValue,
+    MachineName, MachineSubnet, MachineTarget, ManagementAddress, ManagementIdentity, Placement,
+    Sealing, SelectedEndpoint, ValueError, WireGuardPublicKey,
 };
 
 pub(super) fn resolve_machine_text<'a>(
@@ -144,6 +144,40 @@ pub enum RowStanding {
         /// Whether the row also names a daemon version.
         versioned: bool,
     },
+}
+
+/// A Management Client's public key, as a Machine's local record stores it in a slot and
+/// the management transport proves it. It is a distinct type from a Management Identity,
+/// a Build Grant key or any secret, so none of them passes for it. It serializes as its
+/// 32 bytes, the shape the local Machine record has always held.
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq, Serialize, Deserialize)]
+#[serde(transparent)]
+pub struct ClientKey([u8; 32]);
+
+impl ClientKey {
+    #[must_use]
+    pub const fn from_bytes(bytes: [u8; 32]) -> Self {
+        Self(bytes)
+    }
+
+    #[must_use]
+    pub const fn as_bytes(&self) -> &[u8; 32] {
+        &self.0
+    }
+}
+
+impl fmt::Display for ClientKey {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        self.0
+            .iter()
+            .try_for_each(|byte| write!(formatter, "{byte:02x}"))
+    }
+}
+
+impl From<DeviceKey> for ClientKey {
+    fn from(key: DeviceKey) -> Self {
+        Self(*key.as_bytes())
+    }
 }
 
 /// Deterministic management-plane address for a WireGuard identity.
@@ -1260,5 +1294,31 @@ mod machine_runtime_capabilities_tests {
             runtime.capabilities.into_iter().collect::<Vec<_>>(),
             ["ployz.build.v1", "ployz.logs.tail.v1"]
         );
+    }
+}
+
+#[cfg(test)]
+mod client_key_tests {
+    use serde_json::json;
+
+    use super::{ClientKey, DeviceKey};
+
+    #[test]
+    fn a_client_key_serializes_as_its_bytes_and_displays_as_hex() {
+        let key = ClientKey::from_bytes([0xab; 32]);
+
+        assert_eq!(serde_json::to_value(key).unwrap(), json!(vec![0xab; 32]));
+        assert_eq!(
+            serde_json::from_value::<ClientKey>(json!(vec![0xab; 32])).unwrap(),
+            key
+        );
+        assert_eq!(key.to_string(), "ab".repeat(32));
+    }
+
+    #[test]
+    fn a_device_key_converts_to_the_client_key_of_the_same_bytes() {
+        let device = DeviceKey::from_bytes([5; 32]);
+
+        assert_eq!(ClientKey::from(device).as_bytes(), device.as_bytes());
     }
 }

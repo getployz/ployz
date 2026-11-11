@@ -7,7 +7,7 @@ use std::{
 };
 
 use ployz_core::{
-    CapabilityAdvertisement, CertificateMaterialChange, CertificateMaterialPublished,
+    CapabilityAdvertisement, CertificateMaterialChange, CertificateMaterialPublished, ClientKey,
     ClusterDoorsDeclared, ClusterNamed, ContainerId, ContainerList, ContainerObservation,
     ContractDescription, EndpointSelected, EnvironmentValues, LiveLogTarget, LocalMachinePhase,
     LogMetadata, LogOrigin, MachineLayout, MachineLogService, MachineRpc, ManagementScope,
@@ -131,7 +131,7 @@ impl MachineService {
         }
     }
 
-    pub(super) fn with_management_client(mut self, remote: [u8; 32]) -> Self {
+    pub(super) fn with_management_client(mut self, remote: ClientKey) -> Self {
         self.local = self.local.with_management_client(remote);
         self
     }
