@@ -8335,3 +8335,21 @@ fn a_deploy_without_an_upload_builds_the_upload_a_service_runs_not_one_that_neve
     let claimed = store.claim(&id(3), &a).unwrap();
     assert_eq!(claimed.deployment.upload, Some(digested('a')));
 }
+
+#[test]
+fn a_deploy_that_supersedes_a_queued_upload_builds_it_as_it_starts() {
+    let (store, who) = uploaded_app();
+    let a = runner("cli-a");
+    deploy_sent(&store, &who, 1, Some('a'));
+    store.claim(&id(1), &a).unwrap();
+    deploy_sent(&store, &who, 2, Some('b'));
+    let next = deploy_sent(&store, &who, 3, None);
+    assert_eq!(status(&store, &who, 2), DeploymentStatus::Superseded);
+    assert_eq!(next.upload, Some(digested('b')));
+    store
+        .record(&id(1), &a, RunEvidence::Prepared(preview(&["app"])))
+        .unwrap();
+    store.record(&id(1), &a, succeeded(&["app"])).unwrap();
+    let claimed = store.claim(&id(3), &a).unwrap();
+    assert_eq!(claimed.deployment.upload, Some(digested('b')));
+}
