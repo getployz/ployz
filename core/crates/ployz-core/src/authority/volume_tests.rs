@@ -567,12 +567,17 @@ fn a_move_approval_shows_both_servers_the_service_it_starts_and_the_mirrors_that
         tag: None,
         digest: PayloadDigest::try_from(digest.repeat(64)).unwrap(),
         host: Vec::new(),
+        settings: vec![r#"command ["postgres"]"#.to_owned()],
     };
     let change =
         ApprovedVolumeChange::moving(&approval(moving()), "data", name, service("d")).unwrap();
     assert_eq!(
-        change.line(),
-        "Approved: move data from web-1 to web-2. db stops on web-1 for the last copy, then starts on web-2. Approved db: postgres@sha256:0123456789ab… The Mirror on web-3 keeps syncing."
+        change.lines(),
+        [
+            "Approved: move data from web-1 to web-2. db stops on web-1 for the last copy, then starts on web-2. The Mirror on web-3 keeps syncing.".to_owned(),
+            format!("Approved db: postgres@sha256:{}", "0123456789ab".repeat(5)),
+            r#"  command ["postgres"]"#.to_owned(),
+        ]
     );
     assert_eq!(
         ApprovedVolumeChange::moving(&approval(moving()), "data", name, service("e")),

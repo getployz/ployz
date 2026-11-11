@@ -122,8 +122,14 @@ on, a move runs only with your approval. `ployz volume move` from an approved de
 prints what you approved before Ployz Cloud starts it:
 
 ```
-Approved: move data from web-1 to web-2. web stops on web-1 for the last copy, then starts on web-2. Approved web: registry.example.com/web@sha256:0123456789ab…
+Approved: move data from web-1 to web-2. web stops on web-1 for the last copy, then starts on web-2.
+Approved web: registry.example.com/web@sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef
+  variables DATABASE_HOST=db.internal
+  pull_policy "never"
 ```
+
+Below the first line is `web` as it starts on `web-2`, with each setting, as a
+[deploy's approval](../deploy/deployments.md) lists them.
 
 One approval covers the whole move, its retries, and the release that undoes or finishes it. The
 servers refuse anything else: `web-1` sends the volume only to `web-2`, and `web-2` starts only

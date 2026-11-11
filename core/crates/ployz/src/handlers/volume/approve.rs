@@ -154,7 +154,9 @@ pub(super) fn sign_move(
     let signed = Signed::sign(&body, &signer).map_err(Error::command)?;
     let change = ApprovedVolumeChange::moving(&body, volume.as_str(), named(&seen), change)
         .expect("a Move approval names the change it was made from");
-    crate::ui::stream(change.line());
+    for line in change.lines() {
+        crate::ui::stream(line);
+    }
     Ok(Some(MoveApproval {
         signed,
         change,

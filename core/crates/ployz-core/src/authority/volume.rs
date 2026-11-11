@@ -362,8 +362,19 @@ impl ApprovedVolumeChange {
         })
     }
 
+    /// The lines a person reads: [`Self::line`], then for a Move the Service it starts and
+    /// each setting its digest covers, as a deploy's approval shows them.
+    #[must_use]
+    pub fn lines(&self) -> Vec<String> {
+        let started = match self {
+            Self::Mirror { .. } => Vec::new(),
+            Self::Move { service, .. } => service.lines(),
+        };
+        std::iter::once(self.line()).chain(started).collect()
+    }
+
     /// One line a person reads: the Volume, both Servers, and that later syncs need no
-    /// approval.
+    /// approval, or what stops and starts where.
     #[must_use]
     pub fn line(&self) -> String {
         match self {
@@ -392,9 +403,8 @@ impl ApprovedVolumeChange {
                 mirrors,
             } => {
                 let mut line = format!(
-                    "Approved: move {volume} from {from} to {to}. {name} stops on {from} for the last copy, then starts on {to}. {started}",
+                    "Approved: move {volume} from {from} to {to}. {name} stops on {from} for the last copy, then starts on {to}.",
                     name = service.service,
-                    started = service.line(),
                 );
                 match mirrors.as_slice() {
                     [] => {}
