@@ -705,12 +705,14 @@ impl MachineRpc for MachineService {
     ) -> Result<Response<OpaquePayload>, Status> {
         let operator = from_operator(&request);
         let request = expect::<op::SetVolumeCopy>(request)?;
-        // Refused before the switch lock, so nothing is planned against the copy. A Kept
-        // start is refused too: nothing on this Machine ties the Container it names to
-        // this Volume or to a stop a person approved.
+        // An unapproved start is refused before the switch lock, so nothing is planned
+        // against the copy. One that carries an approval is checked once the plan says the
+        // start can run.
         if operator
             && matches!(request.want, WantedCopy::Writer { start: Some(_), .. })
-            && let Err(error) = self.local.admit_operator_volume_start()
+            && let Err(error) = self
+                .local
+                .refuse_unapproved_volume_start(request.approval.as_ref())
         {
             return local_error(error);
         }
@@ -1626,7 +1628,7 @@ fn sealing_error(error: SealingError) -> RpcError {
             (RpcErrorCode::InvalidArgument, Refusal::SealedAnother)
         }
     };
-    RpcError::caused(code, &error).with_details(refusal.details())
+    RpcError::caused(code, &error).with_evidence(&refusal)
 }
 
 /// A refusal that keeps a second Sealing Key out of the Cluster also names the route's
@@ -1674,7 +1676,7 @@ fn recovery_error(error: RecoveryError) -> RpcError {
         RecoveryError::WrongCode => (RpcErrorCode::InvalidArgument, Refusal::WrongCode),
         RecoveryError::HeldAnother { .. } => (RpcErrorCode::Conflict, Refusal::HeldAnother),
     };
-    RpcError::caused(code, &error).with_details(refusal.details())
+    RpcError::caused(code, &error).with_evidence(&refusal)
 }
 
 #[expect(

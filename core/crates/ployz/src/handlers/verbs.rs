@@ -836,7 +836,7 @@ pub(crate) const VOLUME_MIRROR_RM: Verb = Verb::cloud(
 .tool(ToolId::VolumeMirrorRemove);
 pub(crate) const VOLUME_MOVE: Verb = Verb::cloud(
     "volume move",
-    Never,
+    Depends,
     volume::run::move_command,
     volume::run::move_volume,
 )

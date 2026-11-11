@@ -323,7 +323,7 @@ pub(crate) async fn execute<C: BackfillClient>(
                 (public_key, sources, Some(generator))
             }
             Err(error) => {
-                return Ok(match error.sealing_refusal() {
+                return Ok(match error.evidence::<SealingRefusal>() {
                     Some(SealingRefusal::AwaitsRecovery) => {
                         BackfillSealingKeyReport::AwaitsRecovery { machine: generator }
                     }

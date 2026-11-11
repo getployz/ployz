@@ -12,9 +12,9 @@ use serde::{Deserialize, Serialize};
 use ts_rs::TS;
 
 use crate::{
-    ContainerId, DockerVolumeName, Gen, MachineId, ManagementAddress, Namespace,
-    ResolvedServiceSpec, RpcError, RpcErrorCode, RunRotation, SlotId, SlotRole, SnapshotGuid,
-    SnapshotName, VolumeCopy,
+    CodedRefusal, ContainerId, DockerVolumeName, Evidence, Gen, MachineId, ManagementAddress,
+    Namespace, ResolvedServiceSpec, RpcError, RpcErrorCode, RunRotation, SlotId, SlotRole,
+    SnapshotGuid, SnapshotName, VolumeCopy,
 };
 
 /// Which run of writes a Writer root belongs to. Cloud numbers it; the Machine stores it
@@ -309,16 +309,20 @@ pub struct SetVolumeCopyRefused {
 }
 
 impl SetVolumeCopyRefused {
-    /// The refusal carried by an RPC error, if it is one.
-    #[must_use]
-    pub fn from_details(details: &serde_json::Value) -> Option<Self> {
-        Self::deserialize(details).ok()
-    }
-
     /// An RPC error that carries this refusal in `details`.
     #[must_use]
     pub fn rpc_error(self, message: impl Into<String>) -> RpcError {
-        let code = match self.reason {
+        RpcError::refused(&self, message)
+    }
+}
+
+impl Evidence for SetVolumeCopyRefused {
+    const KEY: Option<&'static str> = None;
+}
+
+impl CodedRefusal for SetVolumeCopyRefused {
+    fn code(&self) -> RpcErrorCode {
+        match self.reason {
             CopyRefusal::NoCapacity => RpcErrorCode::Unavailable,
             CopyRefusal::Mismatch
             | CopyRefusal::NoTransition
@@ -327,9 +331,7 @@ impl SetVolumeCopyRefused {
             | CopyRefusal::Written
             | CopyRefusal::NoSource
             | CopyRefusal::Stale => RpcErrorCode::Conflict,
-        };
-        RpcError::new(code, message)
-            .with_details(serde_json::to_value(self).expect("a copy refusal is JSON serializable"))
+        }
     }
 }
 
@@ -1211,10 +1213,7 @@ mod tests {
         );
         let error = refused.clone().rpc_error("the Container still runs");
         assert_eq!(error.code, RpcErrorCode::Conflict);
-        assert_eq!(
-            SetVolumeCopyRefused::from_details(&error.details),
-            Some(refused)
-        );
+        assert_eq!(error.evidence(), Some(refused));
         let capacity = SetVolumeCopyRefused {
             reason: CopyRefusal::NoCapacity,
             copy: None,
@@ -1237,10 +1236,7 @@ mod tests {
         );
         let error = stale.clone().rpc_error("a newer lane owns the Volume");
         assert_eq!(error.code, RpcErrorCode::Conflict);
-        assert_eq!(
-            SetVolumeCopyRefused::from_details(&error.details),
-            Some(stale)
-        );
+        assert_eq!(error.evidence(), Some(stale));
     }
 
     #[test]

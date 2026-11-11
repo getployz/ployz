@@ -509,7 +509,7 @@ impl Failure {
                 // A refusal comes before any Docker change, so the old limits hold.
                 // Anything else, such as a Docker error, an unapplied read-back or a
                 // lost answer, leaves the live limits unknown.
-                let outcome = match LimitsRefusal::from_details(&error.details) {
+                let outcome = match error.evidence::<LimitsRefusal>() {
                     Some(LimitsRefusal::NotRunning) => {
                         "found the Container not running, so the new limits do not apply"
                     }

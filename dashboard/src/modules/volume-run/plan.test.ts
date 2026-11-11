@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
-import type { MachineId, Signed, VolumeApproval, VolumeCopy } from "@ployz/sdk";
-import { approvesMirror, expectOf, MAX_APPROVAL_BYTES, observedEpoch, type PlanInput, planForwardRelease, planFromCopies, restoreSource, type Role, roleOf } from "#/modules/volume-run/plan";
+import type { MachineId, ResolvedServiceSpec, Signed, VolumeApproval, VolumeCopy } from "@ployz/sdk";
+import { asTestDouble } from "#/lib/test-double";
+import { approvesMirror, approvesMove, expectOf, MAX_APPROVAL_BYTES, MAX_SERVICE_BYTES, observedEpoch, type PlanInput, planForwardRelease, planFromCopies, restoreSource, type Role, roleOf } from "#/modules/volume-run/plan";
 import type { AnsweredMember, Member } from "#/modules/volume-run/volume-run";
 import type { DeploymentsSeen } from "#/modules/volume-run/resize";
 import { COPIES, type Copy, member } from "#/modules/volume-run/volume-run.test-fixture";
@@ -14,6 +15,7 @@ const approved = (input: PlanInput): PlanInput => {
   const approval: Signed = { body: "{}", signatures: [] };
   if (input.kind === "mirror") return { ...input, args: { ...input.args, approval } };
   if (input.kind === "sync") return { ...input, args: { ...input.args, approval } };
+  if (input.kind === "move") return { ...input, args: { ...input.args, approval } };
   return input;
 };
 const remove = (slot: string | null, confirmed: string | null = null): PlanInput =>
@@ -438,6 +440,8 @@ describe("plan a run on Servers that enforce device approval", () => {
     ["move off an enforcing Server", move("b"), [writer, member("b", "mirror")], "refuse enforced"],
     ["move that lands on an enforcing Server", move("b"), [member("a", "final"), enforcing(member("b", "writer"))], "refuse enforced"],
     ["move beside an enforcing Server it doesn't touch", move("b"), [member("a", "writer"), member("b", "empty"), enforcing(member("c", "empty"))], "move a->b at rounds"],
+    ["approved move between enforcing Servers", approved(move("b")), [writer, enforcing(member("b", "empty"))], "move a->b at rounds"],
+    ["approved move that lands on an enforcing Server", approved(move("b")), [enforcing(member("a", "final")), enforcing(member("b", "writer"))], "landed on b behind a"],
     ["seed on an enforcing Server", seed, [writer, member("b", "mirror")], "refuse enforced"],
     ["mirror onto an enforcing Server with no approval", mirror("b"), [member("a", "writer"), enforcing(member("b", "empty"))], "refuse enforced"],
     ["mirror off an enforcing Server with no approval", mirror("b"), [writer, member("b", "empty")], "refuse enforced"],
@@ -454,21 +458,20 @@ describe("plan a run on Servers that enforce device approval", () => {
   });
 
   it("names the Server and the command that turns enforcement off", () => {
-    expect(planFromCopies(move("b"), [member("a", "writer"), enforcing(member("b", "empty"))])).toEqual({
-      ok: false,
-      refusal: {
-        code: "enforced",
-        message: "b enforces device approval, so Ployz Cloud can't move data until a later release. To move it now, turn enforcement off from an approved device.",
-        next: "ployz device enforce --off",
-      },
-    });
     expect(planFromCopies(seed, [writer, member("b", "mirror")])).toMatchObject({
       ok: false,
       refusal: { code: "enforced", message: expect.stringContaining("a enforces device approval, so Ployz Cloud can't restore data into a new volume until a later release.") },
     });
   });
 
-  it("names the command that mirrors or syncs from an approved device", () => {
+  it("names the command that mirrors, syncs or moves from an approved device", () => {
+    expect(planFromCopies(move("b"), [member("a", "writer"), enforcing(member("b", "empty"))])).toEqual({
+      ok: false,
+      refusal: {
+        code: "enforced",
+        message: "b enforces device approval, so Ployz Cloud can't move data on its own. Run ployz volume move data --to b from an approved device.",
+      },
+    });
     expect(planFromCopies(mirror("b"), [member("a", "writer"), enforcing(member("b", "empty"))])).toEqual({
       ok: false,
       refusal: {
@@ -502,6 +505,29 @@ describe("read a Mirror approval", () => {
     ["a body past the size limit", { ...mirrorTo(b), signatures: [{ key: "a".repeat(64), signature: "b".repeat(MAX_APPROVAL_BYTES) }] }, false],
   ])("approves %s", (_, approval, approves) => {
     expect(approvesMirror(approval, "shop_data", a, b)).toBe(approves);
+  });
+});
+
+describe("read a Move approval", () => {
+  const id = (name: string) => name.padEnd(32, "0") as MachineId;
+  const [a, b, c] = [id("a"), id("b"), id("c")];
+  const service = asTestDouble<ResolvedServiceSpec>()({ name: "db" });
+  const moving = (from: MachineId, to: MachineId, { volume = "shop_data", name = "db" } = {}): Signed => ({
+    body: JSON.stringify({ volume, workflow: { kind: "move", from, to, service: { name, digest: "d".repeat(64) }, mirrors: [] } }),
+    signatures: [],
+  });
+
+  it.each<[string, Signed, ResolvedServiceSpec | undefined, boolean]>([
+    ["the Move, Volume and Service asked for", moving(a, b), service, true],
+    ["another target", moving(a, c), service, false],
+    ["another source", moving(c, b), service, false],
+    ["another Volume", moving(a, b, { volume: "shop_logs" }), service, false],
+    ["another Service", moving(a, b, { name: "web" }), service, false],
+    ["no spec", moving(a, b), undefined, false],
+    ["a spec past the size limit", moving(a, b), asTestDouble<ResolvedServiceSpec>()({ name: "db", padding: "x".repeat(MAX_SERVICE_BYTES) }), false],
+    ["a Mirror approval", { body: JSON.stringify({ volume: "shop_data", workflow: { kind: "mirror", writer: a, mirror: b, replace: false } }), signatures: [] }, service, false],
+  ])("approves %s", (_, approval, spec, approves) => {
+    expect(approvesMove(approval, spec, "shop_data", a, b)).toBe(approves);
   });
 });
 

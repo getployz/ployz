@@ -477,8 +477,8 @@ pub const CASES: &[Case] = &[
     case(
         SET_VOLUME_COPY_CAPABILITY,
         "a Writer want with a start",
-        "a SetVolumeCopy making this copy Writer and creating its Container",
-        Expected::Refused(&[SET_VOLUME_COPY_CAPABILITY]),
+        "a SetVolumeCopy making this copy Writer and creating its Container, with no approval",
+        Expected::Refused(&[VOLUME_APPROVAL_CAPABILITY]),
     ),
     case(
         SET_VOLUME_COPY_CAPABILITY,
@@ -488,7 +488,13 @@ pub const CASES: &[Case] = &[
     ),
     case(
         SET_VOLUME_COPY_CAPABILITY,
-        "cut, promote, forget",
+        "a cut",
+        "a SetVolumeCopy cutting the Writer for a Move, with no approval",
+        Expected::Refused(&[VOLUME_APPROVAL_CAPABILITY]),
+    ),
+    case(
+        SET_VOLUME_COPY_CAPABILITY,
+        "promote, forget",
         "a SetVolumeCopy forgetting a copy",
         Expected::Served,
     ),

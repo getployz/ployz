@@ -1,5 +1,6 @@
 import { Schema } from "effect";
 import { dataLossIdentitySchema } from "#/modules/runtime/data-loss-identity";
+import type { ResolvedServiceSpec } from "@ployz/sdk";
 import type { VolumeRunInput, VolumeRunRequestKind } from "#/modules/volume-run/volume-run";
 
 /** The name the CLI resolved the Server by and showed, which its run keeps. An older CLI sends none. */
@@ -29,6 +30,14 @@ const VolumeApproval = Schema.Struct({
   signatures: Schema.mutable(Schema.Array(Schema.Struct({ key: hexOf(64), signature: hexOf(128) }))).check(Schema.isMaxLength(4)),
 });
 
+const NamedSpec = Schema.Struct({ name: Schema.String, container: Schema.Struct({ image: Schema.String }) });
+
+/**
+ * The spec a Move's approval names for the Service's start on its target, kept whole. Cloud reads only its name and
+ * size; the target checks the rest against the approval before it starts anything.
+ */
+const MoveService = Schema.declare<ResolvedServiceSpec>((value): value is ResolvedServiceSpec => Schema.is(NamedSpec)(value));
+
 /** A byte count the CLI sends: a positive whole number JSON carries exactly. */
 export const MaximumBytes = Schema.Number.check(Schema.isInt(), Schema.isGreaterThan(0), Schema.isLessThanOrEqualTo(Number.MAX_SAFE_INTEGER));
 
@@ -50,7 +59,13 @@ export const VOLUME_RUN_BODIES = {
     slot: Schema.optional(Destination),
     confirm: Schema.optional(Schema.String),
   }),
-  move: Schema.Struct({ environment: RunEnvironment, kind: Schema.Literal("move"), to: Destination }),
+  move: Schema.Struct({
+    environment: RunEnvironment,
+    kind: Schema.Literal("move"),
+    to: Destination,
+    approval: Schema.optional(VolumeApproval),
+    service: Schema.optional(MoveService),
+  }),
   release: Schema.Struct({ environment: RunEnvironment, kind: Schema.Literal("release") }),
   restore: Schema.Struct({ environment: RunEnvironment, kind: Schema.Literal("restore"), from: Destination }),
   resize: Schema.Struct({ environment: RunEnvironment, kind: Schema.Literal("resize"), maximum_bytes: MaximumBytes, approval: Schema.optional(VolumeApproval) }),
@@ -69,7 +84,14 @@ export function volumeRunInput(body: typeof NewVolumeRun.Type): VolumeRunInput {
     case "delete_old_copy":
       return { kind: "delete_mirror", args: { slot: body.slot ?? null, confirmed_name: body.confirm ?? null, role: body.kind === "delete_old_copy" ? "old_copy" : "any" } };
     case "move":
-      return { kind: "move", args: { to: body.to } };
+      return {
+        kind: "move",
+        args: {
+          to: body.to,
+          ...(body.approval && { approval: body.approval }),
+          ...(body.service && { service: body.service }),
+        },
+      };
     case "release":
       return { kind: "release", args: {} };
     case "restore":

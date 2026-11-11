@@ -9,12 +9,13 @@
 use std::net::IpAddr;
 
 use ployz_core::{
-    CopyTransition, DockerVolumeName, MachineId, ManagementAddress, OperationId,
-    SEED_REFUSED_BY_ENFORCEMENT, SEED_VOLUME_CAPABILITY, SET_VOLUME_COPY_CAPABILITY, Sealing,
-    SnapshotName, VOLUME_START_REFUSED_BY_ENFORCEMENT,
+    ContainerId, ContainerKind, CopyTransition, DockerVolumeName, MachineId, ManagementAddress,
+    OperationId, Sealing, SnapshotName, Start,
     authority::{
         Approver, AuthorityRefusal, Purpose, Signed, StepDigest, Timestamp, VolumeApproval,
-        VolumeFacts, VolumeStep, VolumeWorkflow, volume,
+        VolumeFacts, VolumeStep, VolumeWorkflow,
+        deploy::{self, Creation},
+        volume,
     },
 };
 pub(crate) use ployz_decide::volume_records::{GrantScope, VolumeRecords};
@@ -167,51 +168,159 @@ impl LocalMachine {
     /// must be the address this Machine's own accepted row gives a Server the approval pulls
     /// from. A Snapshot with one opens its operation, and under a Mirror approval grants the
     /// Mirror every snapshot of the Volume. A Snapshot without one runs and records nothing.
+    /// A cut needs a Move approval from this Machine. A promote with one is admitted: on a
+    /// Move's source it records the resume, which ends the Move here, and on its target it
+    /// grants each Mirror that keeps following every snapshot. A promote without one runs
+    /// as before. Returns the operation admitted, for the step's effect to record against.
     ///
     /// # Errors
-    /// Returns [`Error::VolumeStepRefused`] for a pull with no approval, from another
-    /// source, or that the approval does not admit, and a Snapshot whose approval does not
-    /// admit it; [`Error::ApprovalRecord`] or a store error when a record cannot be read.
+    /// Returns [`Error::VolumeStepRefused`] for a pull or a cut with no approval, a pull
+    /// from another source, and a step the approval does not admit; [`Error::ApprovalRecord`]
+    /// or a store error when a record cannot be read.
     pub(crate) async fn admit_operator_copy(
         &self,
         approval: Option<&Signed<VolumeApproval>>,
         volume: &DockerVolumeName,
         step: CopyStep<'_>,
-    ) -> Result<(), Error> {
+    ) -> Result<Option<Admitted>, Error> {
         if !self.record().device_enforcement() {
-            return Ok(());
+            return Ok(None);
         }
+        let unsigned = || {
+            Error::VolumeStepRefused(AuthorityRefusal::Unsigned {
+                purpose: Purpose::Volume,
+            })
+        };
         match step {
             CopyStep::Pull { transition, from } => {
-                let Some(approval) = approval else {
-                    return Err(Error::VolumeStepRefused(AuthorityRefusal::Unsigned {
-                        purpose: Purpose::Volume,
-                    }));
-                };
+                let approval = approval.ok_or_else(unsigned)?;
                 self.admit_source(approval, from).await?;
-                self.admit_volume_step(approval, volume, &VolumeStep::Copy(transition))?;
+                self.admitted(approval, volume, &VolumeStep::Copy(transition))
+                    .map(Some)
             }
             CopyStep::Held { from } => {
                 let Some(approval) = approval else {
-                    return Ok(());
+                    return Ok(None);
                 };
                 self.admit_source(approval, from).await?;
                 let step = VolumeStep::Copy(CopyTransition::MirrorToMirror);
-                self.admit_volume_step(approval, volume, &step)?;
+                self.admitted(approval, volume, &step).map(Some)
             }
             CopyStep::Snapshot => {
                 let Some(approval) = approval else {
-                    return Ok(());
+                    return Ok(None);
                 };
                 let step = VolumeStep::Copy(CopyTransition::WriterToSnapshot);
-                let operation = self.admit_volume_step(approval, volume, &step)?;
-                let body = approval.open().map_err(Error::VolumeStepRefused)?;
-                if let VolumeWorkflow::Mirror { mirror, .. } = body.workflow {
-                    self.grant_volume(operation, mirror, GrantScope::Standing)?;
+                let admitted = self.admitted(approval, volume, &step)?;
+                if let VolumeWorkflow::Mirror { mirror, .. } = admitted.workflow {
+                    self.grant_volume(admitted.operation, mirror, GrantScope::Standing)?;
                 }
+                Ok(Some(admitted))
+            }
+            CopyStep::Cut => {
+                let approval = approval.ok_or_else(unsigned)?;
+                let step = VolumeStep::Copy(CopyTransition::WriterToMirror);
+                self.admitted(approval, volume, &step).map(Some)
+            }
+            CopyStep::Promote { transition } => {
+                let Some(approval) = approval else {
+                    return Ok(None);
+                };
+                let admitted = self.admitted(approval, volume, &VolumeStep::Copy(transition))?;
+                let machine = self.record().id();
+                if let VolumeWorkflow::Move {
+                    from, to, mirrors, ..
+                } = &admitted.workflow
+                {
+                    if *from == machine {
+                        self.resume_volume(admitted.operation)?;
+                    }
+                    if *to == machine && transition == CopyTransition::MirrorToWriter {
+                        for mirror in mirrors {
+                            self.grant_volume(admitted.operation, *mirror, GrantScope::Standing)?;
+                        }
+                    }
+                }
+                Ok(Some(admitted))
             }
         }
+    }
+
+    fn admitted(
+        &self,
+        approval: &Signed<VolumeApproval>,
+        volume: &DockerVolumeName,
+        step: &VolumeStep,
+    ) -> Result<Admitted, Error> {
+        let operation = self.admit_volume_step(approval, volume, step)?;
+        let workflow = approval.open().map_err(Error::VolumeStepRefused)?.workflow;
+        Ok(Admitted {
+            operation,
+            workflow,
+        })
+    }
+
+    /// Record that this Machine, a Move's source, resumes: the Move ends here, with its
+    /// grants, before the Writer route makes the root writable again.
+    ///
+    /// # Errors
+    /// Returns [`Error::ApprovalRecord`] when the record cannot be written.
+    fn resume_volume(&self, operation: OperationId) -> Result<(), Error> {
+        self.approvals
+            .change_volumes(Timestamp::now(), |records, _| {
+                records.resume(operation);
+                Ok(())
+            })?;
+        tracing::info!(%operation, "Volume move resumed here; it ends on this Server");
         Ok(())
+    }
+
+    /// Record the cut of a Move this Machine admitted, before it stops anything: the snapshot
+    /// it takes, and the Containers in `running` it is about to stop. The Move's target may
+    /// pull that snapshot from then on.
+    ///
+    /// # Errors
+    /// Returns [`Error::VolumeStepRefused`] for a second cut at another snapshot or a Move
+    /// ended here, and [`Error::ApprovalRecord`] when the record cannot be written.
+    pub(crate) fn record_cut(
+        &self,
+        operation: OperationId,
+        snapshot: &SnapshotName,
+        running: &[ContainerId],
+    ) -> Result<(), Error> {
+        let machine = self.record().id();
+        self.approvals
+            .change_volumes(Timestamp::now(), |records, _| {
+                records
+                    .cut(operation, &machine, snapshot, running)
+                    .map_err(Error::VolumeStepRefused)
+            })?;
+        tracing::info!(%operation, %snapshot, stopping = running.len(), "Volume cut recorded");
+        Ok(())
+    }
+
+    /// Let a Move's target pull `snapshot`, which this Machine, the Move's source, left as
+    /// its newest under the Move.
+    ///
+    /// # Errors
+    /// Returns [`Error::VolumeStepRefused`] when the Move is no longer open here, and
+    /// [`Error::ApprovalRecord`] when the record cannot be written.
+    pub(crate) fn grant_move_snapshot(
+        &self,
+        admitted: &Admitted,
+        snapshot: &SnapshotName,
+    ) -> Result<(), Error> {
+        let VolumeWorkflow::Move { from, to, .. } = &admitted.workflow else {
+            return Ok(());
+        };
+        if *from != self.record().id() {
+            return Ok(());
+        }
+        self.grant_volume(
+            admitted.operation,
+            *to,
+            GrantScope::Snapshots(vec![snapshot.clone()]),
+        )
     }
 
     /// Refuse a pull whose `from` is not the management address this Machine's own accepted
@@ -276,20 +385,91 @@ impl LocalMachine {
         }
     }
 
-    /// Under Device enforcement an Operator's `SetVolumeCopy` that starts the Writer's
-    /// Container is refused before the switch lock. A Create runs a spec the caller
-    /// chose. A Kept start names a stopped Container that nothing on this Machine ties
-    /// to the Volume or to a stop a person approved.
+    /// Under Device enforcement, refuse an Operator's `SetVolumeCopy` that starts the
+    /// Writer's Container with no Volume approval, before the switch lock.
     ///
     /// # Errors
-    /// Returns [`Error::VolumeRefused`] naming `SetVolumeCopy` under enforcement.
-    pub(crate) fn admit_operator_volume_start(&self) -> Result<(), Error> {
-        self.admit_operator_volume(SET_VOLUME_COPY_CAPABILITY)
+    /// Returns [`Error::VolumeStepRefused`] as unsigned under enforcement.
+    pub(crate) fn refuse_unapproved_volume_start(
+        &self,
+        approval: Option<&Signed<VolumeApproval>>,
+    ) -> Result<(), Error> {
+        if approval.is_none() && self.record().device_enforcement() {
+            return Err(Error::VolumeStepRefused(AuthorityRefusal::Unsigned {
+                purpose: Purpose::Volume,
+            }));
+        }
+        Ok(())
     }
 
-    fn admit_operator_volume(&self, capability: &'static str) -> Result<(), Error> {
-        if self.record().device_enforcement() {
-            return Err(Error::VolumeRefused { capability });
+    /// Under Device enforcement, admit an Operator's Writer `start` on `volume` against the
+    /// Move approval it carries, before the transition runs. A Create must be the Service
+    /// the Move approves, by its [`deploy::PayloadDigest`] in the approved Namespace, the
+    /// check a Deploy's creation gets. A Kept start must name a Container this operation's
+    /// cut stopped on this Machine, whatever it mounts.
+    ///
+    /// # Errors
+    /// Returns [`Error::VolumeStepRefused`] for no approval, a workflow that is not a Move,
+    /// a spec that differs from the approved one, a Container the cut did not stop, and a
+    /// start the approval does not admit; [`Error::ApprovalRecord`] when a record cannot be
+    /// read or written.
+    pub(crate) fn admit_operator_volume_start(
+        &self,
+        approval: Option<&Signed<VolumeApproval>>,
+        volume: &DockerVolumeName,
+        start: &Start,
+    ) -> Result<(), Error> {
+        if !self.record().device_enforcement() {
+            return Ok(());
+        }
+        let refused = |refusal: AuthorityRefusal| {
+            tracing::warn!(%volume, "Volume start refused: {refusal}");
+            Error::VolumeStepRefused(refusal)
+        };
+        let approval = approval.ok_or_else(|| {
+            refused(AuthorityRefusal::Unsigned {
+                purpose: Purpose::Volume,
+            })
+        })?;
+        let body = approval.open().map_err(refused)?;
+        let VolumeWorkflow::Move { service, .. } = &body.workflow else {
+            return Err(refused(AuthorityRefusal::Mismatch {
+                field: "a Volume step",
+            }));
+        };
+        if let Start::Create {
+            namespace,
+            resolved_spec,
+            ..
+        } = start
+        {
+            if *namespace != body.namespace {
+                return Err(refused(AuthorityRefusal::Mismatch {
+                    field: "a Namespace",
+                }));
+            }
+            deploy::refuse_preview_parts(namespace, resolved_spec).map_err(refused)?;
+            deploy::approved_creation(
+                service,
+                &body.namespace,
+                Creation {
+                    service: &resolved_spec.name,
+                    kind: ContainerKind::ServiceContainer,
+                    spec: resolved_spec,
+                },
+            )
+            .map_err(refused)?;
+        }
+        let operation = self.admit_volume_step(approval, volume, &VolumeStep::Start)?;
+        if let Start::Kept { container_id } = start {
+            let stopped = self
+                .approvals
+                .read_volumes(|records| records.stopped_by_cut(operation, container_id))?;
+            if !stopped {
+                return Err(refused(AuthorityRefusal::Mismatch {
+                    field: "a Container",
+                }));
+            }
         }
         Ok(())
     }
@@ -310,15 +490,17 @@ pub(crate) enum CopyStep<'a> {
     Held { from: &'a ManagementAddress },
     /// A run snapshot on the Writer, taken or already held.
     Snapshot,
+    /// The cut on a Move's source.
+    Cut,
+    /// The copy becomes the Writer: a Move's target promotes, or its source resumes.
+    Promote { transition: CopyTransition },
 }
 
-/// What a refused Volume verb answers, by the capability refused.
-pub(super) fn refusal_text(capability: &str) -> &'static str {
-    if capability == SEED_VOLUME_CAPABILITY {
-        SEED_REFUSED_BY_ENFORCEMENT
-    } else {
-        VOLUME_START_REFUSED_BY_ENFORCEMENT
-    }
+/// A Volume step this Machine admitted, for its effect to record against.
+#[derive(Clone, Debug)]
+pub(crate) struct Admitted {
+    pub(crate) operation: OperationId,
+    pub(crate) workflow: VolumeWorkflow,
 }
 
 #[cfg(test)]

@@ -14,7 +14,7 @@ use super::{MachineService, local_error, respond};
 use crate::{
     docker::FloorTurn,
     faults::{Identity, Want},
-    machine::{CopyStep, CutRefusal, LocalMachineError},
+    machine::{Admitted, CopyStep, CutRefusal, LocalMachineError},
     volume_copy::{
         CUT_ROUTE, CopyRequest, CutRequest, DESTROY_ROUTE, FORGET_ROUTE, ForgetRequest,
         INSPECT_ROUTE, PULL_ROUTE, PullRequest, SNAPSHOT_ROUTE, SnapshotRequest, WRITER_ROUTE,
@@ -111,11 +111,23 @@ impl MachineService {
             }
             CopyPlan::Transition(transition) => Some(transition),
         };
-        if operator && let Some(step) = approved_step(&want, transition) {
+        if operator
+            && transition.is_some()
+            && let WantedCopy::Writer {
+                start: Some(start), ..
+            } = &want
+        {
             self.local
-                .admit_operator_copy(approval.as_ref(), &name, step)
-                .await?;
+                .admit_operator_volume_start(approval.as_ref(), &name, start)?;
         }
+        let admitted = match approved_step(&want, transition) {
+            Some(step) if operator => {
+                self.local
+                    .admit_operator_copy(approval.as_ref(), &name, step)
+                    .await?
+            }
+            _ => None,
+        };
         if let WantedCopy::Forget { recipient } = &want
             && let Some(recipient) = withdrawn(
                 copy.as_ref(),
@@ -132,6 +144,9 @@ impl MachineService {
             } = &want
             {
                 self.route_created(start, &name).await?;
+            }
+            if let (Some(admitted), WantedCopy::Snapshot { .. }) = (&admitted, &want) {
+                self.grant_newest(admitted, copy.as_ref())?;
             }
             return Ok(copy);
         };
@@ -196,6 +211,12 @@ impl MachineService {
             }
             (CopyTransition::WriterToMirror, WantedCopy::Mirror { target, drain, .. }) => {
                 let plugin = self.local.plugin().clone();
+                let local = self.local.clone();
+                let snapshot = target.clone();
+                let record = move |running: &[ployz_core::ContainerId]| match &admitted {
+                    Some(admitted) => local.record_cut(admitted.operation, &snapshot, running),
+                    None => Ok(()),
+                };
                 let request = CutRequest {
                     name: name.clone(),
                     target,
@@ -203,7 +224,7 @@ impl MachineService {
                 };
                 let cut = self
                     .local
-                    .cut_volume_copy(name.clone(), r#gen, drain, move || async move {
+                    .cut_volume_copy(name.clone(), r#gen, drain, record, move || async move {
                         // This closure runs only past the Busy re-check, so the line means every
                         // holder is stopped, whoever signalled it. The verify harness credits that
                         // moment by this line's Volume, target and gen, after its restart cursor.
@@ -233,15 +254,20 @@ impl MachineService {
                 }
             }
             (CopyTransition::WriterToSnapshot, WantedCopy::Snapshot { name: snapshot }) => {
-                self.plugin_copy(
-                    SNAPSHOT_ROUTE,
-                    &SnapshotRequest {
-                        name,
-                        snapshot,
-                        r#gen,
-                    },
-                )
-                .await
+                let copy = self
+                    .plugin_copy(
+                        SNAPSHOT_ROUTE,
+                        &SnapshotRequest {
+                            name,
+                            snapshot,
+                            r#gen,
+                        },
+                    )
+                    .await?;
+                if let Some(admitted) = &admitted {
+                    self.grant_newest(admitted, copy.as_ref())?;
+                }
+                Ok(copy)
             }
             (CopyTransition::WriterToForget, WantedCopy::Forget { .. }) => {
                 self.plugin_copy(FORGET_ROUTE, &ForgetRequest { name, r#gen })
@@ -490,9 +516,28 @@ impl MachineService {
     }
 }
 
+impl MachineService {
+    /// Let a Move's target pull what this round left newest: the snapshot it took, or with
+    /// nothing written the one before, which is what the run then sends.
+    fn grant_newest(
+        &self,
+        admitted: &Admitted,
+        copy: Option<&VolumeCopy>,
+    ) -> Result<(), LocalMachineError> {
+        if let Some(VolumeCopy::Root {
+            newest: Some(newest),
+            ..
+        }) = copy
+        {
+            self.local.grant_move_snapshot(admitted, &newest.name)?;
+        }
+        Ok(())
+    }
+}
+
 /// The step of `want` an enforcing Machine checks against an Operator's Volume approval: a
-/// pull that makes, refreshes or already holds a Mirror, and a run snapshot taken or already
-/// held.
+/// pull that makes, refreshes or already holds a Mirror, a run snapshot taken or already
+/// held, a Move's cut, and a promote to the Writer.
 fn approved_step(want: &WantedCopy, transition: Option<CopyTransition>) -> Option<CopyStep<'_>> {
     match (want, transition) {
         (
@@ -510,6 +555,13 @@ fn approved_step(want: &WantedCopy, transition: Option<CopyTransition>) -> Optio
         (WantedCopy::Snapshot { .. }, None | Some(CopyTransition::WriterToSnapshot)) => {
             Some(CopyStep::Snapshot)
         }
+        (WantedCopy::Mirror { from: None, .. }, Some(CopyTransition::WriterToMirror)) => {
+            Some(CopyStep::Cut)
+        }
+        (
+            WantedCopy::Writer { .. },
+            Some(transition @ (CopyTransition::MirrorToWriter | CopyTransition::WriterToWriter)),
+        ) => Some(CopyStep::Promote { transition }),
         _ => None,
     }
 }

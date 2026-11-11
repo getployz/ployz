@@ -873,20 +873,19 @@ fn image_ingest_contract_returns_the_management_address_destination() {
     for (reason, wire) in frozen {
         assert_eq!(serde_json::to_value(reason).unwrap(), json!(wire));
         let error = reason.rpc_error("ingest unavailable");
-        assert_eq!(
-            ImageIngestReason::from_details(&error.details),
-            Some(reason)
-        );
+        assert_eq!(error.evidence::<ImageIngestReason>(), Some(reason));
         assert_eq!(error.details, json!({ "reason": wire }));
     }
+    let detailed = |details| RpcError::unavailable("m").with_details(details);
     assert_eq!(
-        ImageIngestReason::from_details(&json!({
+        detailed(json!({
             "reason": "docker_unavailable",
             "extra": 1
-        })),
+        }))
+        .evidence::<ImageIngestReason>(),
         Some(ImageIngestReason::DockerUnavailable)
     );
-    assert_eq!(ImageIngestReason::from_details(&Value::Null), None);
+    assert_eq!(detailed(Value::Null).evidence::<ImageIngestReason>(), None);
 }
 
 /// A newer client may add optional fields to Machine RPC requests within
@@ -1999,14 +1998,12 @@ fn sealing_key_recovery_rpcs_have_one_typed_wire_contract() {
     );
 
     let refusal = ployz_core::RecoveryRefusal::WrongCode;
-    let error = RpcError {
-        code: RpcErrorCode::InvalidArgument,
-        message: "wrong code".into(),
-        details: refusal.details(),
-        cause: Vec::new(),
-    };
+    let error = RpcError::invalid_argument("wrong code").with_evidence(&refusal);
     assert_eq!(error.details, json!({ "recovery": "wrong_code" }));
-    assert_eq!(error.recovery_refusal(), Some(refusal));
+    assert_eq!(
+        error.evidence::<ployz_core::RecoveryRefusal>(),
+        Some(refusal)
+    );
 }
 
 #[test]

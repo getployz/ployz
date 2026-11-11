@@ -99,7 +99,7 @@ mod sealing_recovery;
 pub(crate) use sealing_recovery::Error as RecoveryError;
 mod upgrade;
 mod volume_approval;
-pub(crate) use volume_approval::CopyStep;
+pub(crate) use volume_approval::{Admitted, CopyStep};
 
 #[derive(Clone)]
 struct ClusterContext {
@@ -237,9 +237,9 @@ pub enum Error {
     /// without an approval of its auth key.
     #[error("This Server joins a tailnet only with your approval: {0}")]
     PrivateAccessRefused(ployz_core::authority::AuthorityRefusal),
-    /// Device enforcement refused an Operator's `SetVolumeCopy` that creates a Container,
-    /// or its `SeedVolume`. The refusal names `capability` in its details.
-    #[error("{}", volume_approval::refusal_text(.capability))]
+    /// Device enforcement refused an Operator's `SeedVolume`, which no Volume approval
+    /// admits yet. The refusal names `capability` in its details.
+    #[error("{}", ployz_core::SEED_REFUSED_BY_ENFORCEMENT)]
     VolumeRefused { capability: &'static str },
     /// A Volume step that no Volume approval admits on this Machine.
     #[error("This Server refused the Volume step: {0}")]

@@ -6,6 +6,7 @@ import type {
   CopyRotation,
   ExpectedCopy,
   MachineId,
+  ResolvedServiceSpec,
   RuntimeWatchView,
   SeedVolumeRequest,
   SetVolumeCopyReply,
@@ -1813,6 +1814,19 @@ describe("volume runs", () => {
       expect(sent.at(-1)?.want).toMatchObject({ kind: "writer", start: { kind: "create", resolved_spec: { container: { environment: { POSTGRES_PASSWORD: "secret-fsn-1" } } } } });
     });
 
+    it("starts B from the spec a Move's approval names, carrying the approval, and not A's stopped Container's", async () => {
+      const ctx = await owned();
+      containers = [{ machine: "fsn-1", id: "web-fsn-1", running: false, gen: 3 }];
+      const service = asTestDouble<ResolvedServiceSpec>()({ name: "web", container: { image: `example.test/web@sha256:${"a".repeat(64)}`, pull_policy: "never" } });
+
+      await runEffect(commitAndStart(ctx, "run-1", {
+        to: { id: B, name: "fsn-2" }, from: { id: idOf("fsn-1"), name: "fsn-1" }, expect: { kind: "none" }, at: base.guid, epoch: 1,
+        approved: { approval: APPROVAL, service },
+      }));
+
+      expect(sent.at(-1)).toMatchObject({ approval: APPROVAL, want: { kind: "writer", start: { kind: "create", gen: 3, resolved_spec: service } } });
+    });
+
     it.each([
       ["the size a resize recorded since the Deploy", 20 * GB, 20 * GB],
       ["the spec's own size while none is recorded", 0, 5_000_000],
@@ -1868,6 +1882,56 @@ describe("volume runs", () => {
       { machine: { id: idOf("fsn-3"), name: "fsn-3" }, answered: false },
     ];
 
+    it("releases back to the newest stopped Container on A, not one an earlier Move's cut left there", async () => {
+      const G = newSnap("f-1");
+      named("fsn-1").copy = slotCopy(G);
+      containers = [
+        { machine: "fsn-1", id: "web-old", running: false, created: 1 },
+        { machine: "fsn-1", id: "web-fsn-1", running: false, created: 5 },
+      ];
+      machines[1] = { name: "fsn-2", pool: true, copy: slotCopy(G, null, "2") };
+      await owned("warm");
+
+      expect(await runEffect(closeVolumeRun("run-1", "failure"))).toBe(1);
+      await execute((await releaseRow()).id, "run-2");
+
+      expect(sent.at(-1)?.want).toMatchObject({ kind: "writer", start: { kind: "kept", container_id: "web-fsn-1" } });
+    });
+
+    it("releases back to A when the target kept the stopped Container of an earlier Move off it", async () => {
+      const G = newSnap("f-1");
+      named("fsn-1").copy = slotCopy(G);
+      containers = [
+        { machine: "fsn-2", id: "web-fsn-2", running: false, created: 1 },
+        { machine: "fsn-1", id: "web-fsn-1", running: false, created: 5 },
+      ];
+      machines[1] = { name: "fsn-2", pool: true, copy: slotCopy(G, null, "2") };
+      await owned("warm");
+
+      expect(await runEffect(closeVolumeRun("run-1", "failure"))).toBe(1);
+      await execute((await releaseRow()).id, "run-2");
+
+      expect(sent.at(-1)?.want).toMatchObject({ kind: "writer", start: { kind: "kept", container_id: "web-fsn-1" } });
+      expect((await rows()).at(-1)).toMatchObject({ state: "done" });
+    });
+
+    it("releases back to the slot holding the cut's snapshot, though the other Server's clock made its old Container look newer", async () => {
+      const G = newSnap("f-1");
+      const cut = { ...newSnap("f-2"), created_unix_seconds: G.created_unix_seconds + 60 };
+      named("fsn-1").copy = slotCopy(cut);
+      containers = [
+        { machine: "fsn-2", id: "web-fsn-2", running: false, created: 9 },
+        { machine: "fsn-1", id: "web-fsn-1", running: false, created: 5 },
+      ];
+      machines[1] = { name: "fsn-2", pool: true, copy: slotCopy(G, null, "2") };
+      await owned("warm");
+
+      expect(await runEffect(closeVolumeRun("run-1", "failure"))).toBe(1);
+      await execute((await releaseRow()).id, "run-2");
+
+      expect(sent.at(-1)?.want).toMatchObject({ kind: "writer", start: { kind: "kept", container_id: "web-fsn-1" } });
+    });
+
     it("on a warm row starts a release back to A", async () => {
       const G = newSnap("f-1");
       named("fsn-1").copy = slotCopy(G);
@@ -1882,6 +1946,24 @@ describe("volume runs", () => {
       expect(verbs).toEqual(["floor@fsn-1", "floor@fsn-2", "forget@fsn-2", "writer@fsn-1(kept)"]);
       expect(named("fsn-1").copy).toMatchObject({ kind: "root", readonly: false, newest: G });
       expect(containers).toEqual([{ machine: "fsn-1", id: "web-fsn-1", running: true }]);
+    });
+
+    it("on an approved warm row starts a release that carries the Move's approval and spec, and resumes A under it", async () => {
+      const G = newSnap("f-1");
+      named("fsn-1").copy = slotCopy(G);
+      for (const container of containers) container.running = false;
+      machines[1] = { name: "fsn-2", pool: true, copy: slotCopy(G, null, "2") };
+      const service = asTestDouble<ResolvedServiceSpec>()({ name: "web" });
+      const run = await requested({ kind: "move", args: { to: "fsn-2", approval: APPROVAL, service } });
+      await harness.pool.query("update volume_run set state = 'running', inngest_run_id = 'run-1', phase = 'warm', epoch = 4 where id = $1", [run.id]);
+
+      await runEffect(closeVolumeRun("run-1", "failure"));
+      const { rows: released } = await harness.pool.query("select args from volume_run where kind = 'release'");
+      expect(released).toEqual([{ args: { approval: APPROVAL, service } }]);
+      await execute((await releaseRow()).id, "run-2");
+
+      expect(verbs).toEqual(["floor@fsn-1", "floor@fsn-2", "forget@fsn-2", "writer@fsn-1(kept)"]);
+      expect(sent.at(-1)).toMatchObject({ approval: APPROVAL, want: { kind: "writer", start: { kind: "kept" } } });
     });
 
     it("on a warm row waits for a silent Server, noting it on the row, then releases back to A once it answers", async () => {
@@ -3139,6 +3221,20 @@ describe("volume runs", () => {
       expect(verbs).toEqual(["writer@fsn-2(create)", "remove@fsn-1(web-fsn-1)"]);
       expect(containers.map(({ machine, id }) => `${machine}:${id}`)).toEqual(["fsn-1:web-fsn-1", `fsn-2:created-${volumeId}-${G.guid}`]);
       expect(await request({ kind: "resize", args: { maximum_bytes: 20 * GB } })).toMatchObject({ ok: true });
+    });
+
+    it("on a Server that kept an earlier Move's stopped Container, copies and starts the running one", async () => {
+      containers = [
+        { machine: "fsn-1", id: "web-old", running: false, created: 1, gen: 2 },
+        { machine: "fsn-1", id: "web-fsn-1", running: true, created: 5, gen: 3 },
+      ];
+      const run = await requested({ kind: "move", args: { to: "fsn-2" } });
+
+      const output = await execute(run.id);
+
+      expect(output.result).toEqual({ runId: run.id, moved: "fsn-2" });
+      expect(verbs).toContain("copy_image@fsn-1->fsn-2(web-fsn-1)");
+      expect(sent.find((request) => request.want.kind === "writer")?.want).toMatchObject({ start: { kind: "create", gen: 3 } });
     });
 
     it("again once B writes and runs the Service only removes A's kept Container", async () => {

@@ -44,9 +44,9 @@ use futures_util::StreamExt;
 use ployz_core::{
     BridgeEndpointCapacity, ConfiguredHealthcheck, ContainerAddress, ContainerId, ContainerKind,
     ContainerObservation, ContainerRuntimeObservation, DiskSpace, DockerVolumeId, DockerVolumeName,
-    Gen, HEALTHCHECK_DISABLE_SENTINEL, HealthObservation, HealthcheckCommand, HealthcheckSpec,
-    ImageSummary, LastHealthCheck, MachineId, MachineImages, MachineTelemetry, Namespace,
-    QualifiedService, RpcError, RpcErrorCode, ServiceId, ServiceName, ValueError,
+    Evidence, Gen, HEALTHCHECK_DISABLE_SENTINEL, HealthObservation, HealthcheckCommand,
+    HealthcheckSpec, ImageSummary, LastHealthCheck, MachineId, MachineImages, MachineTelemetry,
+    Namespace, QualifiedService, RpcError, RpcErrorCode, ServiceId, ServiceName, ValueError,
     healthcheck_deadline,
 };
 use serde::Deserialize;
@@ -1787,10 +1787,10 @@ impl From<&Error> for RpcError {
             Error::VolumeInUse { services, .. } if !services.is_empty() => {
                 serde_json::json!({ "in_use_by": services })
             }
-            Error::DiskFull { full, .. } => full.details(),
-            Error::LimitsRefused { refusal, .. } => serde_json::json!({ "reason": refusal }),
+            Error::DiskFull { full, .. } => full.to_details(),
+            Error::LimitsRefused { refusal, .. } => refusal.to_details(),
             Error::SpecNotFound(_) => {
-                serde_json::json!({ "reason": ployz_core::ContainerNotFoundReason::NoResolvedSpec })
+                ployz_core::ContainerNotFoundReason::NoResolvedSpec.to_details()
             }
             _ => serde_json::Value::Null,
         };

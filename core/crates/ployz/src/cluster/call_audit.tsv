@@ -110,6 +110,7 @@ src/handlers/server/show.rs::read_direct	op::Inspect	invoke_entry	single	-	-	onc
 src/handlers/server/upgrade.rs::poll_upgrade	op::RequestMachineUpgrade	call_repeatable_for	setup	wait(wait)	redial	keyed
 src/handlers/server/upgrade.rs::request_upgrade	op::RequestMachineUpgrade	call_repeatable_for	setup	wait(wait)	redial	keyed
 src/handlers/status_servers.rs::observe	op::ReadRoutedAddresses	invoke	single	target(ROUTED_READ_TIMEOUT)	-	once
+src/handlers/volume/approve.rs::running_spec	op::InspectContainer	-	single	target(TARGET_RPC_TIMEOUT)	-	once
 src/handlers/volume/restore.rs::set	op::SetVolumeCopy	invoke	single	target(TARGET_RPC_TIMEOUT)	-	once
 src/handlers/volume/restore.rs::copies	op::InspectVolumeCopy	invoke	single	target(TARGET_RPC_TIMEOUT)	-	once
 src/image.rs::copy_running_image	op::EnsureImageIngest	call	unary	-	redial	keyed

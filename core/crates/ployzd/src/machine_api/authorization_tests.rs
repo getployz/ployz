@@ -56,6 +56,11 @@ const UNIT_ONLY: &[(&str, &str, &str)] = &[
         "a pull",
         "volume_approval_tests::a_pull_needs_an_approval_that_names_this_machine_and_its_source",
     ),
+    (
+        ployz_core::SET_VOLUME_COPY_CAPABILITY,
+        "a cut",
+        "volume_approval_tests::a_cut_needs_an_approval",
+    ),
 ];
 
 struct Enforcing {
@@ -491,7 +496,7 @@ async fn sample(case: &Case, machine: &Enforcing) -> Sample {
                         "creation_key": "attacker-0001", "gen": 1, "rotation": "pending",
                     },
                 }),
-                "cut, promote, forget" => json!({"kind": "forget"}),
+                "promote, forget" => json!({"kind": "forget"}),
                 "floor, snapshot" => json!({"kind": "floor"}),
                 other => panic!("SetVolumeCopy has no sample for {other:?}"),
             };
