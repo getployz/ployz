@@ -3,7 +3,7 @@
 //! an ended Deployment froze. Starting hands a queued one to a runner again, and
 //! cancelling stops one.
 
-use ployz_core::authority::{DeployApproval, Signed};
+use ployz_core::authority::{CommitApproval, DeployApproval, Signed};
 use ployz_core::config::canonicalize_environment_intent;
 use ployz_core::config::{SavedEnvironmentIntent, SavedServiceIntent};
 use ployz_core::{Namespace, RpcError, ServiceName};
@@ -130,6 +130,28 @@ pub struct Retry {
     #[serde(default)]
     #[ts(as = "Option<Vec<VolumeName>>", optional)]
     pub accept_volume_loss: Vec<VolumeName>,
+    /// A person's approval of each Service's commit it builds again, which each Server
+    /// checks in place of the branch head under the Environment's automatic deploy rule:
+    /// the grant Machine before it opens a rebuild's secrets, every Server before it runs
+    /// the image.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    #[ts(optional, as = "Option<Vec<Signed<CommitApproval>>>")]
+    pub approvals: Vec<Signed<CommitApproval>>,
+    /// It waits, queued, once its builds end, until [`ApproveDeployment`] approves its
+    /// commits again: an approval lasts minutes, and a build may outlast it.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    #[ts(optional, as = "Option<bool>")]
+    pub awaits_approval: bool,
+}
+
+/// Approve again the commits of a queued Deployment that waited for its builds, so the
+/// approvals each Server checks as it runs are fresh.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
+#[serde(deny_unknown_fields)]
+pub struct ApproveDeployment {
+    pub deployment: DeploymentId,
+    #[ts(as = "Vec<Signed<CommitApproval>>")]
+    pub approvals: Vec<Signed<CommitApproval>>,
 }
 
 /// Take an Environment off the Servers under the `remove` that marked it, or its

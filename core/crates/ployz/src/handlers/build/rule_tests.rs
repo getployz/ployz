@@ -75,6 +75,7 @@ fn checked_in(rule: &AutoDeployRule, deployment: Value) -> CheckedIn {
         service: web(),
         deployment,
         review: None,
+        approval: None,
     }
 }
 
@@ -456,6 +457,71 @@ fn a_build_refuses_a_review_of_another_commit_or_service_or_rule() {
         CheckedIn {
             review: Some(review_of(web(), commit)),
             ..checked_in(&rule, json!({}))
+        },
+    ] {
+        assert!(authority(&checked_in, commit).is_err());
+    }
+}
+
+/// A person's approval of `service` at `commit` under `rule`, signed by its Device.
+fn approval_of(
+    rule: &AutoDeployRule,
+    service: ServiceName,
+    commit: CommitSha,
+) -> Signed<CommitApproval> {
+    let issued_at = Timestamp::from_millis(1_800_000_000_000).unwrap();
+    Signed::sign(
+        &CommitApproval {
+            cluster: rule.cluster,
+            rule: rule.rule,
+            generation: rule.generation,
+            service,
+            commit,
+            issued_at,
+            expires_at: Timestamp::from_millis(1_800_000_900_000).unwrap(),
+            signer: rule.signer,
+        },
+        &Signer::from_seed(&[7; 32]),
+    )
+    .unwrap()
+}
+
+#[test]
+fn a_build_claims_the_approval_cloud_relayed_for_its_commit() {
+    let rule = rule(lab_policy(&[]));
+    let commit = CommitSha::from_bytes([1; 20]);
+    let approval = approval_of(&rule, web(), commit);
+    let checked_in = CheckedIn {
+        approval: Some(approval.clone()),
+        ..checked_in(&rule, json!({}))
+    };
+    assert_eq!(
+        authority(&checked_in, commit).unwrap(),
+        CommitAuthority::Approved(ApprovalDigest::of(&approval))
+    );
+}
+
+#[test]
+fn a_build_refuses_an_approval_of_another_commit_or_service_or_under_a_preview_rule() {
+    let rule = rule(lab_policy(&[]));
+    let commit = CommitSha::from_bytes([1; 20]);
+    let other = CommitSha::from_bytes([2; 20]);
+    for checked_in in [
+        CheckedIn {
+            approval: Some(approval_of(&rule, web(), other)),
+            ..checked_in(&rule, json!({}))
+        },
+        CheckedIn {
+            approval: Some(approval_of(
+                &rule,
+                ServiceName::parse("worker").unwrap(),
+                commit,
+            )),
+            ..checked_in(&rule, json!({}))
+        },
+        CheckedIn {
+            approval: Some(approval_of(&rule, web(), commit)),
+            ..reviewed(&rule, None)
         },
     ] {
         assert!(authority(&checked_in, commit).is_err());

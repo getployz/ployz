@@ -49,9 +49,9 @@ pub enum GithubStart {
         /// The pushed commit the build pins.
         commit: String,
     },
-    /// It builds a commit a person approved under a rule: dispatch `workflow` on
-    /// `branch` with `commit` as its input. Its builder job's OIDC token names
-    /// `workflow_ref`.
+    /// It builds a commit a person reviewed or approved under a rule: dispatch
+    /// `workflow` on `branch` with `commit` as its input. Its builder job's OIDC token
+    /// names `workflow_ref`.
     Approved {
         workflow: String,
         workflow_ref: String,
@@ -63,8 +63,11 @@ pub enum GithubStart {
 /// Decide how GitHub build `id` starts: reuse the Service's latest image when a
 /// Machine still holds it for this commit, else dispatch to the runner of its one
 /// platform. A Service that needs several platforms, or a Cluster Cloud can't read,
-/// skips GitHub. With `expect`, it reads only an entry of that Cluster, as
-/// [`super::run_deployment_expecting`] runs, naming the Machines it left.
+/// skips GitHub. A commit a person approved under the automatic deploy rule reuses the
+/// image a redeploy's source built when a Machine still holds it and its token was built
+/// under the rule's generation, else builds on a dispatch. With `expect`, it reads only
+/// an entry of that Cluster, as [`super::run_deployment_expecting`] runs, naming the
+/// Machines it left.
 ///
 /// # Errors
 /// Returns the Store's `conflict` when the build already started or ended.
@@ -76,10 +79,17 @@ pub async fn github_start(
 ) -> Result<Dialed<GithubStart>, RpcError> {
     // A push under a rule already started its own run; an older image has no image
     // token, so it isn't reused. A reviewed preview builds the commit a person reviewed,
-    // on a run Cloud dispatches on the parent's branch.
-    let (rule, review) = store_call(&store, {
+    // on a run Cloud dispatches on the parent's branch, and an approved commit on one
+    // Cloud dispatches on the rule's.
+    let (rule, review, approval) = store_call(&store, {
         let id = id.clone();
-        move |store| Ok((store.github_rule(&id)?, store.github_review(&id)?))
+        move |store| {
+            Ok((
+                store.github_rule(&id)?,
+                store.github_review(&id)?,
+                store.github_approval(&id)?,
+            ))
+        }
     })
     .await?;
     let built = store_call(&store, {
@@ -89,14 +99,21 @@ pub async fn github_start(
     .await?;
     if let Some(source) = rule.as_ref().and_then(GithubRule::source) {
         let commit = built.commit.to_string();
-        let outcome = match review {
-            Some(_) => GithubStart::Approved {
+        if approval.is_some()
+            && let Some(GithubRule::Auto(rule)) = &rule
+            && let Some(reused) =
+                reuse_approved(&store, &id, rule, &built, connections, expect).await?
+        {
+            return Ok(reused);
+        }
+        let outcome = match (review, approval) {
+            (Some(_), _) | (None, Some(_)) => GithubStart::Approved {
                 workflow: source.workflow,
                 workflow_ref: source.builder.r#ref,
                 branch: source.branch,
                 commit,
             },
-            None => GithubStart::Follow {
+            (None, None) => GithubStart::Follow {
                 workflow: source.workflow,
                 workflow_ref: source.builder.r#ref,
                 commit,
@@ -167,6 +184,66 @@ pub async fn github_start(
         outcome: start,
         foreign,
     })
+}
+
+/// Reuse the image a redeploy's source built for an approved commit, ending the build
+/// on it, when its token was built under `rule`'s generation and a Machine still holds
+/// the image. None when it must build: the Servers check the token's generation against
+/// the rule, so an older one would only be refused.
+async fn reuse_approved(
+    store: &Arc<ConfigStore>,
+    id: &GithubBuildId,
+    rule: &ployz_core::authority::Signed<ployz_core::authority::AutoDeployRule>,
+    built: &ployz_store::GithubInput,
+    connections: Vec<Connection>,
+    expect: Option<ClusterExpectation>,
+) -> Result<Option<Dialed<GithubStart>>, RpcError> {
+    let generation = rule.open().ok().map(|rule| rule.generation);
+    let Some(token) = built
+        .image_token
+        .as_ref()
+        .filter(|token| Some(token.generation) == generation)
+    else {
+        return Ok(None);
+    };
+    let Some(receipt) = built
+        .receipt
+        .clone()
+        .and_then(|receipt| serde_json::from_value::<BuildReceipt>(receipt).ok())
+        .filter(|receipt| receipt.image.reference == token.image)
+    else {
+        return Ok(None);
+    };
+    let Ok(session) = session(connections, expect).await else {
+        return Ok(None);
+    };
+    let foreign = session.foreign();
+    let outside = session
+        .outside_build(OutsideBuildInput {
+            deployment: only(&built.input, &id.service),
+            commit: built.commit.to_string(),
+            receipt: Some(receipt),
+        })
+        .await;
+    session.close().await;
+    let receipt = match outside {
+        Ok(OutsideBuild::Reuse { receipt, .. }) if receipt.image.reference == token.image => {
+            receipt
+        }
+        Ok(OutsideBuild::Reuse { .. } | OutsideBuild::Build { .. }) | Err(_) => return Ok(None),
+    };
+    let end = GithubEnd::Built {
+        receipt: serde_json::to_value(receipt).expect("a build receipt is JSON"),
+    };
+    store_call(store, {
+        let id = id.clone();
+        move |store| store.github_end(&id, None, &end)
+    })
+    .await?;
+    Ok(Some(Dialed {
+        outcome: GithubStart::Reused,
+        foreign,
+    }))
 }
 
 /// A receipt that can't be checked is only a missed shortcut: GitHub builds.
@@ -352,6 +429,10 @@ pub struct RuleCheckIn {
     /// A person's review of the commit, for a reviewed preview's build.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub review: Option<ployz_core::authority::Review>,
+    /// A person's approval of the commit, for a build of one that isn't the rule
+    /// branch's head.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub approval: Option<ployz_core::authority::Signed<ployz_core::authority::CommitApproval>>,
 }
 
 /// The rule a build runs under, as the runner reads it: `rule` for an automatic deploy
@@ -387,7 +468,15 @@ pub async fn github_rule_check_in(
     connections: Vec<Connection>,
     expect: Option<ClusterExpectation>,
 ) -> Result<Dialed<RuleCheckIn>, RpcError> {
-    let (id, RuleBuild { rule, review }, built) = rule_build(&store, &claims, &commit).await?;
+    let (
+        id,
+        RuleBuild {
+            rule,
+            review,
+            approval,
+        },
+        built,
+    ) = rule_build(&store, &claims, &commit).await?;
     let session = session(connections, expect).await?;
     let foreign = session.foreign();
     let contract = session.about().await;
@@ -409,6 +498,7 @@ pub async fn github_rule_check_in(
             attest,
             service: id.service,
             review,
+            approval,
         },
         foreign,
     })
@@ -448,8 +538,15 @@ pub async fn github_rule_grant(
     connections: Vec<Connection>,
     expect: Option<ClusterExpectation>,
 ) -> Result<Dialed<RuleGranted>, RpcError> {
-    let (id, RuleBuild { rule, review }, built) =
-        rule_build(&store, &claims, &ask.commit.to_string()).await?;
+    let (
+        id,
+        RuleBuild {
+            rule,
+            review,
+            approval,
+        },
+        built,
+    ) = rule_build(&store, &claims, &ask.commit.to_string()).await?;
     if ask.service != id.service {
         return Err(ployz_core::RpcError::conflict(
             "The grant asks for another Service than its build's",
@@ -492,6 +589,12 @@ pub async fn github_rule_grant(
                 "Reviewed previews need a newer Ployz on your servers",
             ));
         }
+        // An older Machine refuses the approval's field as unknown; this says why first.
+        if approval.is_some() && !advertises(ployz_core::COMMIT_APPROVAL_CAPABILITY) {
+            return Err(ployz_core::RpcError::conflict(
+                "Rebuilding an approved commit needs a newer Ployz on your servers",
+            ));
+        }
         let (rule, preview) = match rule {
             GithubRule::Auto(rule) => (
                 Some(ployz_core::RuleGrant {
@@ -500,7 +603,7 @@ pub async fn github_rule_grant(
                     service: ask.service,
                     commit: ask.commit,
                     authority: ask.authority,
-                    approval: None,
+                    approval,
                     recipient: ask.recipient,
                     reader,
                 }),
@@ -558,11 +661,12 @@ pub async fn github_rule_grant(
     })
 }
 
-/// The rule a build runs under, and a person's review of its commit for a reviewed
-/// preview.
+/// The rule a build runs under, with a person's review of its commit for a reviewed
+/// preview, or their approval of it for a commit that isn't the rule branch's head.
 struct RuleBuild {
     rule: GithubRule,
     review: Option<ployz_core::authority::Review>,
+    approval: Option<ployz_core::authority::Signed<ployz_core::authority::CommitApproval>>,
 }
 
 /// The build run `claims` names holds, authorized, with its rule and inputs, once it
@@ -592,13 +696,22 @@ async fn rule_build(
             ployz_core::RpcError::conflict("This build runs under no automatic deploy rule")
         })?;
         let review = store.github_review(&id)?;
+        let approval = store.github_approval(&id)?;
         let built = store.github_input(&id)?;
         if built.commit.as_str() != commit {
             return Err(ployz_core::RpcError::conflict(
                 "This run checked out another commit than the one this build pins",
             ));
         }
-        Ok((id, RuleBuild { rule, review }, built))
+        Ok((
+            id,
+            RuleBuild {
+                rule,
+                review,
+                approval,
+            },
+            built,
+        ))
     })
     .await
 }

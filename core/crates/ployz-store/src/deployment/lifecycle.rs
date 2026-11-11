@@ -283,6 +283,59 @@ pub(crate) fn approved_by_device(
     .map(drop)
 }
 
+/// Keep a person's fresh approvals of the commits of queued Deployment
+/// `approve.deployment`, which waited for them once its builds ended, and let it run.
+///
+/// # Errors
+/// `conflict` for a Deployment that doesn't wait for them, no longer queues, or whose
+/// builds haven't all ended with an image, and `invalid_argument` for an approval naming
+/// a Service or commit it doesn't build.
+pub(crate) fn approve_commits(
+    tx: &mut dyn Tx,
+    who: &Actor,
+    approve: &crate::ApproveDeployment,
+) -> Result<DeploymentSummary, RpcError> {
+    let id = &approve.deployment;
+    owned(tx, who, id)?;
+    let stored = locked(tx, id)?;
+    let refused = |why: String| Err(error::conflict(why, json!({ "deployment": id })));
+    let label = stored.summary.label();
+    if !awaits(tx, id)? {
+        return refused(format!("Deployment {label} doesn't wait for an approval"));
+    }
+    if stored.summary.status != DeploymentStatus::Queued {
+        return refused(format!("Deployment {label} already started or ended"));
+    }
+    if !build::all_built(tx, id)? {
+        return refused(format!("Deployment {label} hasn't built every image yet"));
+    }
+    for approval in &approve.approvals {
+        build::approve_commit(tx, id, approval)?;
+    }
+    tx.execute(
+        "UPDATE config_deployment SET awaits_approval = 0 WHERE id = ?1",
+        &[id.as_str().into()],
+    )?;
+    Ok(stored.summary)
+}
+
+/// Whether queued Deployment `id` waits for a person to approve its commits again. One
+/// cancelled or replaced meanwhile waits for nothing.
+pub(crate) fn awaiting_approval(tx: &mut dyn Tx, id: &DeploymentId) -> Result<bool, RpcError> {
+    Ok(load(tx, id)?.summary.status == DeploymentStatus::Queued && awaits(tx, id)?)
+}
+
+fn awaits(tx: &mut dyn Tx, id: &DeploymentId) -> Result<bool, RpcError> {
+    let rows = tx.query(
+        "SELECT awaits_approval FROM config_deployment WHERE id = ?1",
+        &[id.as_str().into()],
+    )?;
+    rows.first()
+        .ok_or_else(|| missing(id))?
+        .int(0)
+        .map(|awaits| awaits != 0)
+}
+
 /// The deploy approval a Device signed for Deployment `id`, if any.
 fn device_approval(
     tx: &mut dyn Tx,
@@ -921,10 +974,10 @@ pub(crate) fn retry(
             "INSERT INTO config_deployment \
              (id, organization_id, environment_id, number, status, saved_revision, services, \
               nodes, namespace, run, credentials, upload, cluster_domain, admitted, admitted_by, \
-              message, listed, service_uploads, preview_review) \
+              message, listed, service_uploads, preview_review, awaits_approval) \
              SELECT ?1, organization_id, environment_id, ?2, 'queued', saved_revision, ?7, \
               ?8, namespace, ?3, credentials, upload, cluster_domain, ?5, ?6, message, ?9, \
-              ?10, preview_review \
+              ?10, preview_review, ?11 \
              FROM config_deployment WHERE id = ?4",
             &[
                 id.as_str().into(),
@@ -944,17 +997,24 @@ pub(crate) fn retry(
                 json_text(&nodes).as_str().into(),
                 listed.into(),
                 retried_uploads.as_deref().into(),
+                i64::from(retry.awaits_approval).into(),
             ],
         )?;
-        // A retry builds the commits its source pinned.
+        // A retry builds the commits its source pinned, and may reuse the image its
+        // source built, with that image's token.
         tx.execute(
             "INSERT INTO config_build \
-             (deployment_id, service, organization_id, commit_sha, status, message, log) \
-             SELECT ?1, service, organization_id, commit_sha, 'pending', NULL, '' \
+             (deployment_id, service, organization_id, commit_sha, status, message, log, \
+              receipt, image_token) \
+             SELECT ?1, service, organization_id, commit_sha, 'pending', NULL, '', receipt, \
+              image_token \
              FROM config_build WHERE deployment_id = ?2",
             &[id.as_str().into(), source.as_str().into()],
-        )
-        .map(|_| ())
+        )?;
+        for approval in &retry.approvals {
+            build::approve_commit(tx, id, approval)?;
+        }
+        Ok(())
     })?;
     let summary = DeploymentSummary {
         id: id.clone(),
@@ -1374,6 +1434,25 @@ pub(crate) fn claim(
             true
         }
     };
+    if starting && awaits(tx, id)? {
+        let refused = error::conflict(
+            "Nobody approved this redeploy after its builds, so it didn't run. Run ployz \
+             deployment redeploy again.",
+            json!({ "deployment": id }),
+        );
+        finish(
+            tx,
+            stored,
+            Outcome::NotExecuted {
+                reason: refused.message.clone(),
+                cause: Vec::new(),
+                needs_upload: Vec::new(),
+                same_again: false,
+            },
+            End::Failed,
+        )?;
+        return Ok(Err(refused));
+    }
     let saved = held_revision(tx, &stored)?;
     // An earlier run may have fixed a Volume's storage since this one was admitted.
     if let Err(refused) = crate::volume::check_admitted(tx, &stored.summary.environment_id, &saved)
@@ -1475,13 +1554,36 @@ pub(crate) fn claim(
         Some(_) => preview_review(tx, id)?,
         None => None,
     };
+    // A person's approval of a commit stands in for the push automation answers to.
+    let approvals = match preview {
+        Some(_) => BTreeMap::new(),
+        None => build::commit_approvals(tx, id)?,
+    };
     let rule = match (&stored.summary.admitted_by, &preview) {
         (None, None) => crate::auto_rule::stored(tx, &stored.summary.environment_id)?,
+        (Some(_), None) if !approvals.is_empty() => {
+            crate::auto_rule::stored(tx, &stored.summary.environment_id)?
+        }
         (Some(_), _) | (None, Some(_)) => None,
     };
-    let image_tokens = match (&rule, &preview) {
-        (None, None) => BTreeMap::new(),
-        (Some(_), _) | (None, Some(_)) => build::image_tokens(tx, id)?,
+    let generation = match (&rule, &preview) {
+        (Some(rule), _) => rule.open().ok().map(|rule| rule.generation),
+        (None, Some(preview)) => preview.open().ok().map(|preview| preview.generation),
+        (None, None) => None,
+    };
+    let image_tokens = match generation {
+        None => BTreeMap::new(),
+        // A build that ended before the Store kept its token's terms was built under
+        // the rule as it stands, for the push or the review.
+        Some(generation) => build::image_tokens(tx, id, |token| build::ImageToken {
+            token,
+            image: String::new(),
+            generation,
+            authority: match &review {
+                Some(review) => ployz_core::authority::CommitAuthority::Review(review.digest()),
+                None => ployz_core::authority::CommitAuthority::Head,
+            },
+        })?,
     };
     Ok(Ok(Claimed {
         deployment: stored.summary,
@@ -1499,6 +1601,7 @@ pub(crate) fn claim(
         preview,
         review,
         image_tokens,
+        approvals,
     }))
 }
 
