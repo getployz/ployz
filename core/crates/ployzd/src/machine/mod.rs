@@ -30,7 +30,7 @@ use record_wire::LocalMachineRecordWire;
 mod ingress;
 pub(crate) mod local_machine;
 mod record_owner;
-mod store;
+pub(crate) mod store;
 
 pub use record_owner::{RecordOwner, RecordOwnerStopped};
 #[cfg(test)]
@@ -45,6 +45,8 @@ pub(crate) use local_machine::{CutRefusal, RecoveryError, RuntimeWatchTelemetry,
 pub(crate) use local_machine::{EnsurePause, EnsurePausePoint};
 pub use local_machine::{Error as LocalMachineError, LocalMachine};
 
+#[cfg(test)]
+mod record_tests;
 #[cfg(test)]
 mod register_tests;
 
@@ -600,7 +602,12 @@ impl LocalMachineRecord {
                 return Err(StoreError::MissingPeers);
             }
         }
-        Ok(Self {
+        Ok(Self::fresh(body, wireguard_private_key))
+    }
+
+    /// A record as it is born: its own secret, no slots, no pins, nothing vetted away.
+    fn fresh(body: LocalMachineBody, wireguard_private_key: WireGuardPrivateKey) -> Self {
+        Self {
             body,
             wireguard_private_key,
             management_secret: ManagementSecret::generate(),
@@ -615,7 +622,7 @@ impl LocalMachineRecord {
             passkeys: Vec::new(),
             membership_cluster: None,
             enrollment: None,
-        })
+        }
     }
 
     #[must_use]
@@ -726,19 +733,7 @@ impl LocalMachineRecord {
             body: LocalMachineBody::Resetting {
                 prior: Box::new(self.body.into_prior()),
             },
-            wireguard_private_key: self.wireguard_private_key,
-            management_secret: self.management_secret,
-            management_clients: self.management_clients,
-            wireguard_mtu: self.wireguard_mtu,
-            selected_endpoints: self.selected_endpoints,
-            pinned_addresses: self.pinned_addresses,
-            push_target: self.push_target,
-            device_slots_vetted: self.device_slots_vetted,
-            device_enforcement: self.device_enforcement,
-            trusted_machines: self.trusted_machines,
-            passkeys: self.passkeys,
-            membership_cluster: self.membership_cluster,
-            enrollment: self.enrollment,
+            ..self
         }
     }
 }

@@ -90,6 +90,28 @@ pub(crate) fn preview_review(
     })
 }
 
+/// Whether PR Environment `id` runs under a live preview rule of its repository that
+/// doesn't trust `facts`' author, or whose code comes from a fork. Each Server then
+/// starts a head only once a person reviews it, whatever Cloud's members say. A Server
+/// checks the account that pushed; Cloud knows only the author.
+pub(super) fn needs_review(
+    tx: &mut dyn Tx,
+    id: &EnvironmentId,
+    facts: &super::PullRequest,
+) -> Result<bool, RpcError> {
+    let Some((_, rule)) = rule(tx, id)? else {
+        return Ok(false);
+    };
+    if rule.source.repository_id != facts.repository_id.get() {
+        return Ok(false);
+    }
+    let own = facts.head_repository_id == Some(facts.repository_id);
+    let trusted = facts
+        .author_id
+        .is_some_and(|author| rule.trusted.contains(&author.get()));
+    Ok(!(own && trusted))
+}
+
 /// The live preview rule of the Environment PR Environment `id` starts from.
 fn rule(
     tx: &mut dyn Tx,
