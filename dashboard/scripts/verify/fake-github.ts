@@ -145,7 +145,7 @@ export async function run() {
 
   const repositoryJson = (i: Installation, r: Repository) => ({
     id: r.id, node_id: `R_${r.id}`, name: r.name, full_name: fullName(i, r), private: r.private,
-    owner: { login: i.account.login, type: i.account.type }, default_branch: r.default_branch,
+    owner: { id: i.account.id, login: i.account.login, type: i.account.type }, default_branch: r.default_branch,
     html_url: `${origin}/${fullName(i, r)}`, updated_at: "2026-10-01T00:00:00Z",
   });
   const installationJson = (i: Installation) => ({
