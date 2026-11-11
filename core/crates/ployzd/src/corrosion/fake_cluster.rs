@@ -146,10 +146,12 @@ fn router(kv: Arc<Mutex<ClusterKv>>) -> Router {
 
 /// A loopback address that stays free after a test releases it. The kernel
 /// autobinds ports only from the ephemeral range, which starts at 32768 on
-/// Linux, and the random 127/8 address keeps concurrent tests apart.
+/// Linux, and the random 127/8 address keeps concurrent tests apart. Ports from
+/// 10000 up belong to the `ployz` probe tests' `free_port`, which binds every
+/// address.
 pub(crate) fn unclaimed_loopback() -> SocketAddrV4 {
     let [a, b, c, low, high, ..] = RandomState::new().hash_one(()).to_le_bytes();
-    let port = 1024 + u16::from_le_bytes([low, high]) % (32768 - 1024);
+    let port = 1024 + u16::from_le_bytes([low, high]) % (10_000 - 1024);
     SocketAddrV4::new(
         Ipv4Addr::new(127, a.clamp(1, 254), b, c.clamp(1, 254)),
         port,
