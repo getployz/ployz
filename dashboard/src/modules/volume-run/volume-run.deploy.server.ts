@@ -116,8 +116,14 @@ export const placeDeployVolumes = Effect.fn("VolumeRun.placeDeploy")(function* (
       }
       const hold = deploy?.hold === true;
       const resume = input.kind === "move" ? input.args : (deploy?.resume ?? null);
+      // A release of a Move carries its approval, which covers the resume or start this Deploy ends it with.
+      const taken = input.kind === "release" ? carriedApproval(lane) : deploy?.taken;
       const { run } = yield* takeDeployLane(CLOUD(organizationId), {
-        input: { volumeId: lane.volumeId, kind: "deploy", args: hold ? { deployment: deploymentId, resume: null, hold } : { deployment: deploymentId, resume } },
+        input: {
+          volumeId: lane.volumeId,
+          kind: "deploy",
+          args: hold ? { deployment: deploymentId, resume: null, hold } : { deployment: deploymentId, resume, ...(taken && { taken }) },
+        },
         volume: { environmentId, volumeName: lane.volumeName, dockerVolume: lane.dockerVolume, refquotaBytes: lane.refquotaBytes, recordedBytes: lane.recordedBytes },
         id: crypto.randomUUID(),
       }, inngestRunId);
@@ -244,7 +250,7 @@ export const fenceTaken = Effect.fn("VolumeRun.fenceTaken")(function* (run: RunC
     const { epoch } = yield* takeEpoch(run, inngestRunId, observedEpoch(floored.members));
     const start = { kind: "kept", container_id: kept.containerId } as const;
     // The Move's approval covers the resume or the start that ends it, as it covers its release.
-    const taken = run.kind === "deploy" ? run.args.resume : null;
+    const taken = run.kind === "deploy" ? (run.args.resume ?? run.args.taken ?? null) : null;
     const promoted = yield* setVolumeCopy(run, inngestRunId, writer.machine, expectOf(copy), { kind: "writer", at: copy.newest.guid, epoch, start }, taken?.approval);
     // A source that already handed the Volume off refuses with its receipt, and the Move it decided finishes forward.
     if (!promoted.ok && promoted.reason === "handed_off" && promoted.receipt !== undefined) {
