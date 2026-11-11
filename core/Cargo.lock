@@ -4205,6 +4205,7 @@ version = "0.3.17"
 dependencies = [
  "ployz-core",
  "ployz-decide",
+ "serde_json",
  "stateright",
 ]
 

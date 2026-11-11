@@ -1955,3 +1955,192 @@ async fn a_target_promotes_only_on_its_sources_receipt() {
         "the receipt names one snapshot"
     );
 }
+
+/// Every step of a Move, as Cloud could replay it at either end.
+fn every_move_step() -> Vec<VolumeStep> {
+    let mut steps: Vec<VolumeStep> = [
+        CopyTransition::WriterToSnapshot,
+        CopyTransition::WriterToMirror,
+        CopyTransition::WriterToWriter,
+        CopyTransition::MirrorToWriter,
+        CopyTransition::MirrorToMirror,
+        CopyTransition::NoneToMirror,
+    ]
+    .into_iter()
+    .map(VolumeStep::Copy)
+    .collect();
+    steps.extend([VolumeStep::Start, VolumeStep::Handoff]);
+    steps
+}
+
+/// After a Move ends, by a handoff and its promotion or by a resume, each Machine reads its
+/// decision back from disk on every step. A replayed step is refused, or is the resend of
+/// the step that ended the Move there and changes nothing; A serves B the cut's snapshot
+/// after a handoff and nothing after a resume.
+#[test]
+fn a_move_replayed_after_it_ended_changes_nothing_on_either_end() {
+    let a_dir = tempfile::tempdir().unwrap();
+    let b_dir = tempfile::tempdir().unwrap();
+    let a = Records {
+        dir: a_dir.path(),
+        machine: id('a'),
+    };
+    let b = Records {
+        dir: b_dir.path(),
+        machine: id('b'),
+    };
+    let cut = CopyTransition::WriterToMirror;
+    let (at, epoch2) = (SnapshotGuid::new(9), ployz_core::WriterEpoch::new(2));
+    a.admit_new('1', moving('a', 'b', &[]), &snapshot());
+    a.grant('1', 'b', GrantScope::Snapshots(vec![name("w-1-1")]))
+        .unwrap();
+    a.admit_late('1', &VolumeStep::Copy(cut)).unwrap();
+    let change =
+        |records: &Records<'_>,
+         step: &dyn Fn(&mut VolumeRecords) -> Result<(), AuthorityRefusal>| {
+            records.log().change_volumes(at_now(), |volumes, _| {
+                step(volumes).map_err(Error::VolumeStepRefused)
+            })
+        };
+    change(&a, &|volumes| {
+        volumes.cut(
+            operation('1'),
+            &id('a'),
+            &name("f-1"),
+            ployz_core::WriterEpoch::new(1),
+            &[],
+        )
+    })
+    .unwrap();
+    let hand = || {
+        a.log().change_volumes(at_now(), |volumes, _| {
+            volumes
+                .handoff(
+                    operation('1'),
+                    &id('a'),
+                    id('b'),
+                    (at, &name("f-1")),
+                    epoch2,
+                )
+                .map_err(Error::VolumeStepRefused)
+        })
+    };
+    let handed = hand().unwrap();
+    let receipt = MachineSigned::sign(
+        &HandoffReceipt {
+            cluster: ployz_core::SealingPublicKey::from_bytes([9; 32]),
+            operation: operation('1'),
+            approval: digest('1'),
+            volume: data(),
+            from: id('a'),
+            to: id('b'),
+            at,
+            snapshot: name("f-1"),
+            from_epoch: handed.handoff.from_epoch,
+            epoch: epoch2,
+        },
+        &Signer::from_seed(&[7; 32]),
+    )
+    .unwrap();
+    b.admit_new('1', moving('a', 'b', &[]), &pull());
+    let promote = |receipt: &HandoffReceiptEnvelope| {
+        change(&b, &|volumes| {
+            volumes.promote(operation('1'), &id('b'), (at, epoch2), receipt.clone())
+        })
+    };
+    promote(&receipt).unwrap();
+
+    for step in every_move_step() {
+        let resend = step == VolumeStep::Handoff;
+        let on_a = a.admit_late('1', &step);
+        assert_eq!(on_a.is_ok(), resend, "{step:?} at A after the handoff");
+        if !resend {
+            assert!(replayed(on_a, '1'), "{step:?} at A");
+        }
+        let writer = matches!(
+            step,
+            VolumeStep::Copy(CopyTransition::WriterToWriter | CopyTransition::MirrorToWriter)
+                | VolumeStep::Start
+        );
+        let on_b = b.admit_late('1', &step);
+        assert_eq!(on_b.is_ok(), writer, "{step:?} at B after its promotion");
+        if !writer {
+            assert!(replayed(on_b, '1'), "{step:?} at B");
+        }
+    }
+    assert_eq!(
+        hand().unwrap(),
+        handed,
+        "a resent handoff returns the same one"
+    );
+    promote(&receipt).expect("a resent promotion is its recorded outcome");
+    assert_eq!(
+        b.log()
+            .change_volumes(at_now(), |volumes, _| {
+                volumes
+                    .promote(
+                        operation('1'),
+                        &id('b'),
+                        (SnapshotGuid::new(10), epoch2),
+                        receipt.clone(),
+                    )
+                    .map_err(Error::VolumeStepRefused)
+            })
+            .map_err(|error| refused::<()>(Err(error))),
+        Err(Some(AuthorityRefusal::Mismatch {
+            field: "a second promotion"
+        }))
+    );
+    assert!(a.live(&data(), 'b', "f-1"), "A serves B the cut's snapshot");
+    assert!(!a.live(&data(), 'b', "w-1-1"), "and nothing else");
+    assert!(!a.live(&data(), 'c', "f-1"));
+    assert!(matches!(a.decision('1'), Some(Decision::Handed(_))));
+    let resume = change(&a, &|volumes| volumes.resume(operation('1')));
+    assert!(replayed(resume, '1'), "A never resumes after its handoff");
+
+    a.admit_new('2', moving('a', 'b', &[]), &VolumeStep::Copy(cut));
+    change(&a, &|volumes| {
+        volumes.cut(
+            operation('2'),
+            &id('a'),
+            &name("f-2"),
+            ployz_core::WriterEpoch::new(2),
+            &[],
+        )
+    })
+    .unwrap();
+    change(&a, &|volumes| volumes.resume(operation('2'))).unwrap();
+    for step in every_move_step() {
+        let resend = matches!(
+            step,
+            VolumeStep::Copy(CopyTransition::WriterToWriter | CopyTransition::MirrorToWriter)
+                | VolumeStep::Start
+        );
+        assert_eq!(
+            a.admit_late('2', &step).is_ok(),
+            resend,
+            "{step:?} at A after its resume"
+        );
+    }
+    let handoff = a.log().change_volumes(at_now(), |volumes, _| {
+        volumes
+            .handoff(
+                operation('2'),
+                &id('a'),
+                id('b'),
+                (SnapshotGuid::new(11), &name("f-2")),
+                ployz_core::WriterEpoch::new(3),
+            )
+            .map(|_| ())
+            .map_err(Error::VolumeStepRefused)
+    });
+    assert!(replayed(handoff, '2'), "no handoff after a resume");
+    assert!(
+        !a.live(&data(), 'b', "f-2"),
+        "A serves B nothing after a resume"
+    );
+}
+
+fn at_now() -> Timestamp {
+    at(5_000)
+}
