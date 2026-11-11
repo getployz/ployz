@@ -5,7 +5,7 @@
 //! root.
 //!
 //! Each daemon runs one certificate loop, `run` (:509-565), once it participates
-//! (core/crates/ployzd/src/daemon.rs:490-503). Each pass of `issue_wanted` (:641-775) reads the
+//! (core/crates/ployzd/src/daemon.rs:490-503). Each pass of `issue_wanted` (:647-781) reads the
 //! row, and `step` moves the loop-local `HostIssuance` it keeps for the hostname (:211-314, :517,
 //! :686-690). The hostname is pushed to `to_order` only when `issuance_gate` lets it through
 //! (core/crates/ployz-core/src/domain/issuance.rs:66-98) and `issuance_action` says the

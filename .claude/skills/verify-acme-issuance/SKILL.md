@@ -9,7 +9,7 @@ The model in `core/crates/ployz-verify/src/acme_issuance.rs` explores when each 
 
 ## What the model copies
 
-**What each Machine hosts.** Each daemon runs one certificate loop, `run` (`:509-565`), once it participates (`core/crates/ployzd/src/daemon.rs:490-503`). The loop keeps `hosts`, a map from hostname to its `HostIssuance` (`:209-235`, `:511`), and runs `issue_wanted` (`:641-775`) once per wake. A pass that pushed the hostname awaits `account` (`:716`) and then `join_all` over `obtain` (`:717-728`), so the same Machine passes again only once its obtains end. A daemon restart builds an empty `hosts` (`:511`) and ends an obtain in flight.
+**What each Machine hosts.** Each daemon runs one certificate loop, `run` (`:509-565`), once it participates (`core/crates/ployzd/src/daemon.rs:490-503`). The loop keeps `hosts`, a map from hostname to its `HostIssuance` (`:211-237`, `:517`), and runs `issue_wanted` (`:647-781`) once per wake. A pass that pushed the hostname awaits `account` (`:722`) and then `join_all` over `obtain` (`:723-734`), so the same Machine passes again only once its obtains end. A daemon restart builds an empty `hosts` (`:517`) and ends an obtain in flight.
 
 **`HostIssuance`**, one per wanted hostname, lives only in the loop's memory:
 - `Issued { renew_due }`: the row holds material whose renewal is not due (`issued`, `:239-254`);

@@ -9,7 +9,7 @@
 //! (:687-716) loads both notes (:708-709), readdresses the bridge when its IPv6 shape is wrong
 //! (:734-741), pins its members (:713) and starts the members written down (:714). The Machine
 //! API is built and served only after `NetworkPlane::start` returns
-//! (core/crates/ployzd/src/daemon.rs:347-372, :405-411), so the operator's own steps on a
+//! (core/crates/ployzd/src/daemon.rs:347-372, :411-417), so the operator's own steps on a
 //! Container (`ContainerStep::Start`, `Stop` and `Hold`,
 //! core/crates/ployzd/src/machine/local_machine/container.rs:1106-1136) run only between daemon
 //! starts. Docker's restart policy acts at any step. A crash ends the process: the in-memory
