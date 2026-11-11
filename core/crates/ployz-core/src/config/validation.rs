@@ -118,18 +118,148 @@ pub fn parse_service_config(value: Value) -> Result<ServiceConfig, ConfigError> 
     if config.settings.version != 2 {
         return Err(ConfigError::at("version", "Expected version 2"));
     }
-    let mut value = serde_json::to_value(config).expect("config is JSON");
-    for (field, value) in value.as_object_mut().expect("config is an object") {
-        if matches!(field.as_str(), "version" | "env" | "mounts" | "configs") {
-            continue;
-        }
-        *value = parse_service_setting(serde_json::json!({ "field": field, "value": value }))?;
+    let ServiceConfig {
+        settings,
+        env,
+        mounts,
+        configs,
+    } = config;
+    Ok(ServiceConfig {
+        settings: settings.normalized()?,
+        env,
+        mounts,
+        configs,
+    })
+}
+
+impl AuthoredServiceConfig {
+    /// Run every setting through [`ServiceSettingInput::normalize`], in the order of the settings' JSON
+    /// names, so the first error is the alphabetically first invalid setting. The exhaustive destructure
+    /// makes a new setting a compile error here.
+    fn normalized(self) -> Result<Self, ConfigError> {
+        let Self {
+            version,
+            source,
+            pre_deploy_command,
+            start_command,
+            healthcheck,
+            restart_policy,
+            max_retries,
+            update_order,
+            replicas,
+            cpu_limit,
+            mem_limit,
+            private_dns,
+            routes,
+            managed_hostnames,
+            build,
+            template,
+        } = self;
+        let ServiceSettingInput::Build(build) = ServiceSettingInput::Build(build).normalized()?
+        else {
+            variant_changed()
+        };
+        let ServiceSettingInput::CpuLimit(cpu_limit) =
+            ServiceSettingInput::CpuLimit(cpu_limit).normalized()?
+        else {
+            variant_changed()
+        };
+        let ServiceSettingInput::Healthcheck(healthcheck) =
+            ServiceSettingInput::Healthcheck(healthcheck).normalized()?
+        else {
+            variant_changed()
+        };
+        let ServiceSettingInput::ManagedHostnames(managed_hostnames) =
+            ServiceSettingInput::ManagedHostnames(managed_hostnames).normalized()?
+        else {
+            variant_changed()
+        };
+        let ServiceSettingInput::MaxRetries(max_retries) =
+            ServiceSettingInput::MaxRetries(max_retries).normalized()?
+        else {
+            variant_changed()
+        };
+        let ServiceSettingInput::MemLimit(mem_limit) =
+            ServiceSettingInput::MemLimit(mem_limit).normalized()?
+        else {
+            variant_changed()
+        };
+        let ServiceSettingInput::PreDeployCommand(pre_deploy_command) =
+            ServiceSettingInput::PreDeployCommand(pre_deploy_command).normalized()?
+        else {
+            variant_changed()
+        };
+        let ServiceSettingInput::PrivateDns(private_dns) =
+            ServiceSettingInput::PrivateDns(private_dns).normalized()?
+        else {
+            variant_changed()
+        };
+        let ServiceSettingInput::Replicas(replicas) =
+            ServiceSettingInput::Replicas(replicas).normalized()?
+        else {
+            variant_changed()
+        };
+        let ServiceSettingInput::RestartPolicy(restart_policy) =
+            ServiceSettingInput::RestartPolicy(restart_policy).normalized()?
+        else {
+            variant_changed()
+        };
+        let ServiceSettingInput::Routes(routes) =
+            ServiceSettingInput::Routes(routes).normalized()?
+        else {
+            variant_changed()
+        };
+        let ServiceSettingInput::Source(source) =
+            ServiceSettingInput::Source(source).normalized()?
+        else {
+            variant_changed()
+        };
+        let ServiceSettingInput::StartCommand(start_command) =
+            ServiceSettingInput::StartCommand(start_command).normalized()?
+        else {
+            variant_changed()
+        };
+        let ServiceSettingInput::Template(template) =
+            ServiceSettingInput::Template(template).normalized()?
+        else {
+            variant_changed()
+        };
+        let ServiceSettingInput::UpdateOrder(update_order) =
+            ServiceSettingInput::UpdateOrder(update_order).normalized()?
+        else {
+            variant_changed()
+        };
+        Ok(Self {
+            version,
+            source,
+            pre_deploy_command,
+            start_command,
+            healthcheck,
+            restart_policy,
+            max_retries,
+            update_order,
+            replicas,
+            cpu_limit,
+            mem_limit,
+            private_dns,
+            routes,
+            managed_hostnames,
+            build,
+            template,
+        })
     }
-    serde_json::from_value(value)
-        .map_err(|_| ConfigError::at("service", "Invalid service configuration"))
+}
+
+fn variant_changed() -> ! {
+    unreachable!("normalize keeps the setting's variant")
 }
 
 impl ServiceSettingInput {
+    fn normalized(mut self) -> Result<Self, ConfigError> {
+        self.normalize()?;
+        Ok(self)
+    }
+
     fn normalize(&mut self) -> Result<(), ConfigError> {
         match self {
             Self::Name(value) => trimmed(value, "name", 64),
