@@ -14,7 +14,7 @@ use serde_json::{Value, json};
 use super::LineCap;
 use super::act::{Run, latest, operate, operations, resolve, roster, server_show, servers};
 use super::cloud::{LogsAnswer, Operation, OperationsAnswer, RunState, ServersAnswer, UnknownEnd};
-use super::machine::{Cx, Effect, Stop, Tool, store};
+use super::machine::{Cx, Effect, Stop, Tool, WAIT_CAP_SECONDS, store};
 use super::refusal::{Call, Refusal};
 use super::step::{
     AcceptedLoss, Action, Ask, CloudQuery, Gate, RequestKey, ServerLogsQuery, ServerName, Subject,
@@ -23,7 +23,6 @@ use crate::catalog::NODE_NAME;
 use crate::error::did_you_mean;
 use crate::{NamespacesQuery, NamespacesView, OwnedNamespace};
 
-const REQUEST_KEY: &str = "^[A-Za-z0-9_-]{8,64}$";
 const BUILDS: &str = "^(auto|[0-9]+)$";
 const SETTABLE: [&str; 4] = [
     "accepts_builds",
@@ -292,10 +291,10 @@ pub(crate) struct ServerDrain {
     #[schemars(with = "String", pattern(NODE_NAME))]
     server: ServerName,
     #[serde(default)]
-    #[schemars(range(min = 0, max = 300))]
+    #[schemars(range(min = 0, max = WAIT_CAP_SECONDS))]
     wait_seconds: u32,
     #[serde(default)]
-    #[schemars(with = "Option<String>", pattern(REQUEST_KEY))]
+    #[schemars(with = "Option<String>", pattern(RequestKey::PATTERN))]
     request_key: Option<RequestKey>,
 }
 
@@ -331,7 +330,7 @@ pub(crate) struct ServerSet {
     #[schemars(with = "Option<String>", pattern(BUILDS))]
     build_concurrency: Option<String>,
     #[serde(default)]
-    #[schemars(with = "Option<String>", pattern(REQUEST_KEY))]
+    #[schemars(with = "Option<String>", pattern(RequestKey::PATTERN))]
     request_key: Option<RequestKey>,
 }
 
@@ -393,10 +392,10 @@ pub(crate) struct ServerUpgrade {
     #[schemars(with = "String", pattern(NODE_NAME))]
     server: ServerName,
     #[serde(default)]
-    #[schemars(range(min = 0, max = 300))]
+    #[schemars(range(min = 0, max = WAIT_CAP_SECONDS))]
     wait_seconds: u32,
     #[serde(default)]
-    #[schemars(with = "Option<String>", pattern(REQUEST_KEY))]
+    #[schemars(with = "Option<String>", pattern(RequestKey::PATTERN))]
     request_key: Option<RequestKey>,
 }
 
@@ -433,7 +432,7 @@ pub(crate) struct ServerClean {
     #[serde(default)]
     version: Option<String>,
     #[serde(default)]
-    #[schemars(with = "Option<String>", pattern(REQUEST_KEY))]
+    #[schemars(with = "Option<String>", pattern(RequestKey::PATTERN))]
     request_key: Option<RequestKey>,
 }
 
@@ -513,7 +512,7 @@ pub(crate) struct ServerRemove {
     #[serde(default)]
     version: Option<String>,
     #[serde(default)]
-    #[schemars(with = "Option<String>", pattern(REQUEST_KEY))]
+    #[schemars(with = "Option<String>", pattern(RequestKey::PATTERN))]
     request_key: Option<RequestKey>,
 }
 
@@ -555,7 +554,7 @@ pub(crate) struct ServerForget {
     #[schemars(with = "String", pattern(NODE_NAME))]
     server: ServerName,
     #[serde(default)]
-    #[schemars(with = "Option<String>", pattern(REQUEST_KEY))]
+    #[schemars(with = "Option<String>", pattern(RequestKey::PATTERN))]
     request_key: Option<RequestKey>,
 }
 

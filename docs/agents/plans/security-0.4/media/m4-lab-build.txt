@@ -1,0 +1,38 @@
+M4 lane 5: the pinned ployz-build.yml, dispatched through the minter (this branch, run locally) with the lab App.
+Ployz-test/lab-m4 holds the file the dashboard now offers on main. Ployz-test/lab-service holds a rule template.
+The minter's cloud input is https://lab.invalid, so no Cloud answers the runner's check-in: the run proves the
+builder commit and the token's permissions, not a finished build.
+
+## /v1/workflow on lab-m4
+{"full_name":"Ployz-test/lab-m4","default_branch":"main","state":"active","digest":"d592ce0cc7b54c5f65b5a5d617c9c828ae8376dd7186387fe6dab42b1a68a049","canonical":true}
+
+## /v1/dispatch on lab-m4 main
+{"run_id":42972694545,"run_url":"https://github.com/Ployz-test/lab-m4/actions/runs/42972694545","head_sha":"82dbe92677e699c9ebf2ca56b36c254d56b61eac","workflow_ref":"Ployz-test/lab-m4/.github/workflows/ployz-build.yml@refs/heads/main"}
+
+## /v1/dispatch on lab-service main (its file is a rule template)
+400 {"error":"refused","reason":"the build workflow is not a canonical template"}
+
+## Minter audit lines
+{"time":"2026-11-11T06:28:35.824Z","caller":"local-bearer","route":"/v1/workflow","outcome":"granted","installation_id":180070163,"repository_ids":[1453607244],"ref":"main","workflow_digest":"d592ce0cc7b54c5f65b5a5d617c9c828ae8376dd7186387fe6dab42b1a68a049","duration_ms":3163}
+{"time":"2026-11-11T06:28:39.062Z","caller":"local-bearer","route":"/v1/dispatch","outcome":"granted","installation_id":180070163,"repository_ids":[1453607244],"ref":"main","head_sha":"82dbe92677e699c9ebf2ca56b36c254d56b61eac","workflow_digest":"d592ce0cc7b54c5f65b5a5d617c9c828ae8376dd7186387fe6dab42b1a68a049","run_id":42972694545,"duration_ms":4789}
+{"time":"2026-11-11T06:28:43.879Z","caller":"local-bearer","route":"/v1/dispatch","outcome":"refused","reason":"the build workflow is not a canonical template","installation_id":180070163,"repository_ids":[1450985696],"ref":"main","head_sha":"be7a3551479740e36a9c0d9836a7563a1a9fa3f2","workflow_digest":"368d552096ab3d5443af66292ff3b092a1c4069d18c584e80c48923c80c4a311","duration_ms":2677}
+
+## Run 42972694545 log (gh run view --log), the lines that name the builder, the token and the end
+2026-11-11T06:28:50.5496784Z ##[group]GITHUB_TOKEN Permissions
+2026-11-11T06:28:50.5520090Z Contents: read
+2026-11-11T06:28:50.5521067Z Metadata: read
+2026-11-11T06:28:51.0492161Z Download action repository 'getployz/build@a19b4fca3adea371c25ec29f181e8c7d21037d1e' (SHA:a19b4fca3adea371c25ec29f181e8c7d21037d1e)
+2026-11-11T06:28:51.5055849Z Getting action download info
+2026-11-11T06:28:51.6405161Z Download action repository 'crazy-max/ghaction-github-runtime@3cb05d89e1f492524af3d41a1c98c83bc3025124' (SHA:3cb05d89e1f492524af3d41a1c98c83bc3025124)
+2026-11-11T06:28:51.9217408Z Download action repository 'actions/checkout@11d5960a326750d5838078e36cf38b85af677262' (SHA:11d5960a326750d5838078e36cf38b85af677262)
+2026-11-11T06:28:52.0235423Z Complete job name: build
+﻿2026-11-11T06:28:52.1168164Z ##[group]Run getployz/build@a19b4fca3adea371c25ec29f181e8c7d21037d1e
+2026-11-11T06:28:52.1170235Z   build: m4-lane5.web
+2026-11-11T06:28:52.1170777Z   cloud: https://lab.invalid
+2026-11-11T06:28:52.4961635Z ##[endgroup]
+2026-11-11T06:28:54.5070131Z curl: (6) Could not resolve host: lab.invalid
+2026-11-11T06:28:55.5221674Z curl: (6) Could not resolve host: lab.invalid
+2026-11-11T06:28:57.5359747Z curl: (6) Could not resolve host: lab.invalid
+2026-11-11T06:29:00.5514579Z curl: (6) Could not resolve host: lab.invalid
+2026-11-11T06:29:00.5548519Z ##[error]Ployz Cloud refused the check-in for build m4-lane5.web (could not reach Ployz Cloud at https://lab.invalid/api/builds/m4-lane5.web/check-in).
+2026-11-11T06:29:00.5556222Z ##[error]Process completed with exit code 1.

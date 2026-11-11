@@ -10,9 +10,6 @@ use ployz_core::{
 
 use super::{CapturedBuild, Error, invalid};
 
-/// The only platforms the pinned Railpack frontend produces.
-const RAILPACK_PLATFORMS: [&str; 2] = ["linux/amd64", "linux/arm64"];
-
 impl CapturedBuild {
     /// Fix each Railpack target's platforms to what the Machines its Service
     /// may be placed on run natively, from read-only observations. A Dockerfile
@@ -82,14 +79,14 @@ fn machine_platforms(
             name, id, runtime, ..
         } = &machine.machine;
         let architecture = &runtime.architecture;
-        let Some(platform) = RAILPACK_PLATFORMS
+        let Some(platform) = ployz_build::railpack::PLATFORMS
             .iter()
             .find(|platform| crate::image::platform_compatible(platform, architecture))
         else {
             return Err(invalid(format!(
                 "service '{}' may run on {name} ({id}), which reports architecture {architecture:?}; Railpack builds only {}",
                 spec.name,
-                RAILPACK_PLATFORMS.join(" and ")
+                ployz_build::railpack::PLATFORMS.join(" and ")
             )));
         };
         required.insert((*platform).to_owned());

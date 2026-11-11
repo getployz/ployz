@@ -277,7 +277,10 @@ fn capture_frozen(
         let mut reads = BuildVariables::All;
         let recipe = match settings.build_method {
             BuildMethod::Dockerfile => {
-                let dockerfile = settings.dockerfile_path.as_deref().unwrap_or("Dockerfile");
+                let dockerfile = settings
+                    .dockerfile_path
+                    .as_deref()
+                    .unwrap_or(ployz_core::config::DEFAULT_DOCKERFILE_PATH);
                 let dockerfile = contained(&repository, &context, dockerfile)?;
                 if !dockerfile.is_file() {
                     return Err(invalid("Dockerfile must be a file"));
