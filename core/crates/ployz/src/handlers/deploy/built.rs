@@ -147,9 +147,9 @@ pub(in crate::handlers) fn prepare(
     // The person approves these bodies, and this signs exactly them.
     let bodies = redeploy.bodies(Timestamp::now());
     for line in shown(&bodies) {
-        crate::ui::stream(format_args!("{line}"));
+        crate::ui::note(format_args!("{line}"));
     }
-    crate::ui::stream(
+    crate::ui::note(
         "Once each image is built or reused, this device approves the same commits again, \
          without asking.",
     );
