@@ -340,14 +340,15 @@ const fenceFollowed = Effect.fn("VolumeRun.fenceFollowed")(function* (lane: Foll
 /**
  * An approved commitment with no receipt does not say its source handed the Volume off, so a source that signs
  * handoffs decides first, as a release asks it: it resumes at the lane's epoch and the Deploy runs there, or it
- * answers with the receipt B starts on. A source that already resumed, on this Deploy's earlier fence or a release's,
- * is followed as it is. Null when the commitment carries no approval or its source signs no handoffs.
+ * answers with the receipt B starts on. A source this Deploy's earlier fence resumed writes at the lane's epoch, which
+ * no other root holds, so it is followed as it is. Null when the commitment carries no approval or its source signs
+ * no handoffs.
  */
 const askSource = Effect.fn("VolumeRun.askSource")(function* (lane: FollowLane, others: readonly AnsweredMember[]) {
   const { run } = lane;
   const approved = carriedApproval(run);
   const asks = (member: AnsweredMember) => member.handoff === true && member.enforces === true;
-  const resumed = others.find((member) => member.view.copy?.kind === "root" && !member.view.copy.readonly);
+  const resumed = others.find(({ view: { copy } }) => copy?.kind === "root" && !copy.readonly && copy.epoch === lane.epoch);
   if (approved !== undefined && resumed !== undefined && asks(resumed)) return { kind: "resumed", on: resumed.machine.name } as const;
   const slots = others.filter((member) => member.view.copy?.kind === "slot");
   if (approved === undefined || slots.length === 0 || lane.epoch === null) return null;

@@ -5208,6 +5208,16 @@ describe("volume runs", () => {
         expect(verbs).toEqual([]);
       });
 
+      it("resumes A, not an old root another Server still holds", async () => {
+        await committed(false);
+        machines.push({ name: "fsn-3", pool: true, copy: writerCopy(base, 0), capabilities: HANDOFF_CAPABILITIES, enforces: true });
+        const [placed] = await place();
+
+        expect(await fence(placed)).toEqual({ on: "fsn-1" });
+
+        expect(verbs).toEqual(["writer@fsn-1(kept)"]);
+      });
+
       it("starts B on the receipt A answers with when A handed off", async () => {
         const { cut, receipt, service } = await committed(true);
         const [placed] = await place();
