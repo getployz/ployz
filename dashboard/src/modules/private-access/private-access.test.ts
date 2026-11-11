@@ -28,6 +28,17 @@ it("calls a router Tailscale gave up on stopped rather than running, so the card
   expect(Object.fromEntries(routers)).toEqual({ m1: "running", m2: "stopped", m3: "stopped" });
 });
 
+it("calls a router stopped until its node joined the tailnet, since Docker keeps restarting one Tailscale refused the key for", () => {
+  const routers = routersOn(frame(
+    ["m1", { state: "running", health: "healthy" }],
+    ["m2", { state: "running", health: "starting" }],
+    ["m3", { state: "running", health: "unhealthy" }],
+    ["m4", { state: "running", health: "failing" }],
+    ["m5", { state: "running", health: "not_configured" }],
+  ));
+  expect(Object.fromEntries(routers)).toEqual({ m1: "running", m2: "stopped", m3: "stopped", m4: "stopped", m5: "running" });
+});
+
 it("calls a Server running if any of its routers runs, whatever order they are listed in", () => {
   expect(routersOn(frame(["m1", { state: "running", health: "none" }], ["m1", { state: "exited", code: 1 }])).get("m1")).toBe("running");
   expect(routersOn(frame(["m1", { state: "exited", code: 1 }], ["m1", { state: "running", health: "none" }])).get("m1")).toBe("running");

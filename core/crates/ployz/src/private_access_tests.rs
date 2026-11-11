@@ -87,6 +87,62 @@ async fn a_daemon_that_predates_the_route_is_named_on_on_and_has_nothing_to_remo
     assert_eq!(off.machines.len(), 2);
 }
 
+fn router_on(machine: char, runtime: ContainerRuntimeObservation) -> ServiceObservation {
+    let identity = QualifiedService::system_tailscale();
+    let service_id = ployz_core::ServiceId::parse("c".repeat(32)).unwrap();
+    let observation = ployz_core::ContainerObservation::try_from(
+        ployz_core::ContainerObservationParts {
+            rotation: None,
+            r#gen: None,
+            container_id: ployz_core::ContainerId::parse(machine.to_string().repeat(64)).unwrap(),
+            display_name: "tailscale".into(),
+            created_at_unix_nanos: 0,
+            machine_id: MachineId::parse(machine.to_string().repeat(32)).unwrap(),
+            namespace: identity.namespace.clone(),
+            kind: ployz_core::ContainerKind::ServiceContainer,
+            runtime,
+            effective_healthcheck: None,
+            resolved_spec: serde_json::from_value(serde_json::json!({
+                "service_id": service_id,
+                "name": identity.name,
+                "mode": { "mode": "global" },
+                "container": { "image": "tailscale:1", "pull_policy": "missing" }
+            }))
+            .unwrap(),
+            address: None,
+            labels: Default::default(),
+            stopped: false,
+            run: None,
+        },
+    )
+    .unwrap();
+    ServiceObservation {
+        identity,
+        service_id,
+        containers: vec![ployz_core::ServiceContainer::try_from(observation).unwrap()],
+        hook_containers: Vec::new(),
+    }
+}
+
+// Catches a router Tailscale refused the key for reading as running while Docker keeps
+// restarting it: its container runs, but the node never joined the tailnet. A router
+// from a daemon that predates the probe says nothing either way, so it still counts.
+#[test]
+fn a_router_counts_as_running_only_once_its_node_joined_the_tailnet() {
+    let health = |health| ContainerRuntimeObservation::Running { health };
+    let services = [
+        router_on('1', health(ployz_core::HealthObservation::Healthy)),
+        router_on('2', health(ployz_core::HealthObservation::NotConfigured)),
+        router_on('3', health(ployz_core::HealthObservation::Starting)),
+        router_on('4', health(ployz_core::HealthObservation::Unhealthy)),
+        router_on('5', health(ployz_core::HealthObservation::Failing)),
+        router_on('6', ContainerRuntimeObservation::Restarting),
+        router_on('7', ContainerRuntimeObservation::Exited { code: 0 }),
+    ];
+    let id = |digit: &str| MachineId::parse(digit.repeat(32)).unwrap();
+    assert_eq!(running(&services), [id("1"), id("2")].into());
+}
+
 #[test]
 fn a_refused_key_is_told_from_a_router_that_merely_stopped() {
     let server = MachineName::parse("edge").unwrap();
