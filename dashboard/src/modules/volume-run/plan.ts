@@ -165,17 +165,26 @@ function enforcedRefusal(phase: PlannedPhase, name: string, server: string): Pla
 
 const MirrorApproval = Schema.fromJsonString(Schema.Struct({
   volume: Schema.String,
-  workflow: Schema.Struct({ kind: Schema.Literal("mirror"), mirror: Schema.String }),
+  workflow: Schema.Struct({ kind: Schema.Literal("mirror"), writer: Schema.String, mirror: Schema.String }),
 }));
 
+/** The most bytes a Mirror approval may take as JSON. A Device's takes well under a kilobyte. */
+export const MAX_APPROVAL_BYTES = 4096;
+
 /**
- * Whether `approval` approves mirroring Docker Volume `volume` to `mirror`. Cloud reads it only to refuse a mistake
- * before the run starts; the Servers check the signature.
+ * Whether `approval` approves mirroring Docker Volume `volume` from `writer` to `mirror`, in at most
+ * `MAX_APPROVAL_BYTES`. Cloud reads it only to refuse a mistake before the run starts, and to keep only approvals
+ * shaped for this Mirror; the Servers check the signature.
  */
-export function approvesMirror(approval: Signed, volume: string, mirror: MachineId) {
+export function approvesMirror(approval: Signed, volume: string, writer: MachineId, mirror: MachineId) {
+  if (new TextEncoder().encode(JSON.stringify(approval)).length > MAX_APPROVAL_BYTES) return false;
   const body = Schema.decodeUnknownOption(MirrorApproval)(approval.body);
-  return Option.isSome(body) && body.value.volume === volume && body.value.workflow.mirror === mirror;
+  return Option.isSome(body) && body.value.volume === volume && body.value.workflow.writer === writer && body.value.workflow.mirror === mirror;
 }
+
+/** Why a run can't keep another approval for the Mirror of `name` on `server`. */
+export const fullApprovalsMessage = (name: string, server: string, most: number) =>
+  `Ployz Cloud keeps at most ${most} approvals for Mirror ${copyName(name, server)}. Remove it with ployz volume mirror rm ${copyName(name, server)}, then mirror ${name} to ${server} again.`;
 
 export const otherApprovalMessage = (name: string, server: string) =>
   `The approval from your device is for another change, not mirroring ${name} to ${server}.`;

@@ -20,7 +20,8 @@ import { volumeMirrorStatus } from "#/modules/volume-run/tables";
  * - Deleting the Mirror drops them all.
  *
  * A sync tries them in order and moves on only past a refusal for the approval. The list grows by one each time a
- * Device approves the Mirror again.
+ * Device approves the Mirror again, up to `MAX_KEPT_APPROVALS`. Past it Cloud refuses the new approval before any
+ * step carries it, rather than drop a kept one: that could be the open one.
  */
 export const sameApproval = (a: Signed, b: Signed) => a.body === b.body;
 
@@ -32,16 +33,24 @@ const keptFor = (volumeId: string, mirror: MachineId) => Effect.gen(function* ()
   return row;
 });
 
-/** Keeps `approval` with the Mirror on `mirror`, first, before any step carries it. */
+/** The most approvals Cloud keeps for one Mirror. */
+export const MAX_KEPT_APPROVALS = 128;
+
+/**
+ * Keeps `approval` with the Mirror on `mirror`, first, before any step carries it. False, keeping nothing new, when the
+ * Mirror already keeps `MAX_KEPT_APPROVALS` others.
+ */
 export const offerApproval = Effect.fn("MirrorApprovals.offer")(function* (organizationId: string, volumeId: string, mirror: MachineId, approval: Signed) {
   const database = yield* Database;
-  yield* database.transaction(Effect.gen(function* () {
-    const row = yield* keptFor(volumeId, mirror);
-    const approvals = [approval, ...(row?.approvals ?? []).filter((kept) => !sameApproval(kept, approval))];
-    const now = new Date();
-    yield* database.drizzle.insert(volumeMirrorStatus)
-      .values({ organizationId, volumeId, machineId: mirror, approvals, updatedAt: now })
-      .onConflictDoUpdate({ target: [volumeMirrorStatus.volumeId, volumeMirrorStatus.machineId], set: { approvals, updatedAt: now } });
+  return yield* database.transaction(Effect.gen(function* () {
+    // The row exists before the lock, so the lock holds even for the first offer: one that read no row would otherwise
+    // write its list over a list committed in between.
+    yield* database.drizzle.insert(volumeMirrorStatus).values({ organizationId, volumeId, machineId: mirror, updatedAt: new Date() }).onConflictDoNothing();
+    const others = ((yield* keptFor(volumeId, mirror))?.approvals ?? []).filter((kept) => !sameApproval(kept, approval));
+    if (others.length >= MAX_KEPT_APPROVALS) return false;
+    yield* database.drizzle.update(volumeMirrorStatus).set({ approvals: [approval, ...others], updatedAt: new Date() })
+      .where(and(eq(volumeMirrorStatus.volumeId, volumeId), eq(volumeMirrorStatus.machineId, mirror)));
+    return true;
   }));
 });
 

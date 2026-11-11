@@ -329,7 +329,7 @@ async function mirrorVolume(steps: RunSteps, phase: PhaseOf<"mirror"> | PhaseOf<
   try {
     if (approval !== undefined) {
       const { step, runEffect, runId } = steps;
-      await step.run("03-offer-approval", () => runEffect(offerRunApproval(run, runId, B.id, approval)));
+      await step.run("03-offer-approval", () => runEffect(offerRunApproval(run, runId, B, approval)));
     }
     if (phase.kind === "sync") {
       await mustSet(steps, "03-reset-forget-mirror", B, expectOf(copy), { kind: "forget" }, `${B.name} is still busy with ${run.volumeName}`);

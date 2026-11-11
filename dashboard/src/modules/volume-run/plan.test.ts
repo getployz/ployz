@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { MachineId, Signed, VolumeApproval, VolumeCopy } from "@ployz/sdk";
-import { approvesMirror, expectOf, observedEpoch, type PlanInput, planForwardRelease, planFromCopies, restoreSource, type Role, roleOf } from "#/modules/volume-run/plan";
+import { approvesMirror, expectOf, MAX_APPROVAL_BYTES, observedEpoch, type PlanInput, planForwardRelease, planFromCopies, restoreSource, type Role, roleOf } from "#/modules/volume-run/plan";
 import type { AnsweredMember, Member } from "#/modules/volume-run/volume-run";
 import type { DeploymentsSeen } from "#/modules/volume-run/resize";
 import { COPIES, type Copy, member } from "#/modules/volume-run/volume-run.test-fixture";
@@ -498,8 +498,10 @@ describe("read a Mirror approval", () => {
     ["another Volume", mirrorTo(b, "shop_logs"), false],
     ["another workflow", signed({ volume: "shop_data", workflow: { kind: "mirror_removal", mirror: b, writer: a, role: "mirror", last_copy: false } }), false],
     ["a body that isn't JSON", { body: "{", signatures: [] }, false],
+    ["another Writer", signed({ volume: "shop_data", workflow: { kind: "mirror", writer: c, mirror: b, replace: false } }), false],
+    ["a body past the size limit", { ...mirrorTo(b), signatures: [{ key: "a".repeat(64), signature: "b".repeat(MAX_APPROVAL_BYTES) }] }, false],
   ])("approves %s", (_, approval, approves) => {
-    expect(approvesMirror(approval, "shop_data", b)).toBe(approves);
+    expect(approvesMirror(approval, "shop_data", a, b)).toBe(approves);
   });
 });
 

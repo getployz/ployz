@@ -109,7 +109,8 @@ web-2 then pulls `data` only from web-1, and web-1 sends `data` only to web-2. R
 
 `ployz volume sync data --full` deletes the mirror's copy and copies everything again, so it signs
 a new approval the same way. Removing the mirror ends its approval for good. To mirror to that
-server again, run `ployz volume mirror` again.
+server again, run `ployz volume mirror` again. A mirror takes up to 128 approvals. After that,
+remove it and mirror again.
 
 Ployz Cloud can't add a mirror on these servers yet. Adding one under **Copies** fails before it
 changes anything. A mirror added before you turned enforcement on has no approval, so its

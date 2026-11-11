@@ -64,6 +64,7 @@ import {
   startOrphanDeletes,
   volumeBusyMessage,
 } from "#/modules/volume-run/volume-run.server";
+import { MAX_KEPT_APPROVALS, offerApproval } from "#/modules/volume-run/mirror-approvals.server";
 import { PATIENCE_WAITS } from "#/modules/volume-run/patience";
 import type { Member, VolumeRunInput } from "#/modules/volume-run/volume-run";
 import { member } from "#/modules/volume-run/volume-run.test-fixture";
@@ -2692,6 +2693,58 @@ describe("volume runs", () => {
 
       expect(await rows()).toMatchObject([{ state: "done" }]);
       expect(await keptApprovals()).toEqual([{ machine_id: idOf("fsn-2"), approvals: null }]);
+    });
+
+    it("an offer that read no row keeps an approval committed meanwhile, so a delayed offer never drops a newer one", async () => {
+      const newer = { body: "newer", signatures: [] };
+      // Another run's offer has made the row and holds it uncommitted while this offer starts.
+      const other = await harness.pool.connect();
+      try {
+        await other.query("begin");
+        await other.query(
+          "insert into volume_mirror_status (organization_id, volume_id, machine_id, approvals, updated_at) values ($1, $2, $3, $4, now())",
+          [organizationId, volumeId, idOf("fsn-2"), JSON.stringify([newer])]);
+        const offering = harness.runEffect(offerApproval(organizationId, volumeId, idOf("fsn-2"), APPROVAL));
+        // The offer is under way once it waits on the other transaction's row.
+        await vi.waitFor(async () => {
+          const { rows: waiting } = await harness.pool.query("select 1 from pg_stat_activity where wait_event_type = 'Lock'");
+          expect(waiting.length).toBeGreaterThan(0);
+        });
+        await other.query("commit");
+        expect(await offering).toBe(true);
+      } finally {
+        other.release();
+      }
+
+      expect(await keptApprovals()).toEqual([{ machine_id: idOf("fsn-2"), approvals: [APPROVAL, newer] }]);
+    });
+
+    it(`keeps at most ${MAX_KEPT_APPROVALS} approvals for a mirror, refusing a new one rather than dropping a kept one`, async () => {
+      const kept = Array.from({ length: MAX_KEPT_APPROVALS }, (_, at) => ({ body: `kept-${at}`, signatures: [] }));
+      await harness.pool.query(
+        "insert into volume_mirror_status (organization_id, volume_id, machine_id, approvals) values ($1, $2, $3, $4)",
+        [organizationId, volumeId, idOf("fsn-2"), JSON.stringify(kept)]);
+
+      expect(await harness.runEffect(offerApproval(organizationId, volumeId, idOf("fsn-2"), APPROVAL))).toBe(false);
+      expect(await keptApprovals()).toEqual([{ machine_id: idOf("fsn-2"), approvals: kept }]);
+      // One it already keeps comes first again.
+      const again = { body: "kept-5", signatures: [] };
+      expect(await harness.runEffect(offerApproval(organizationId, volumeId, idOf("fsn-2"), again))).toBe(true);
+      expect((await keptApprovals())[0]?.approvals?.[0]).toEqual(again);
+    });
+
+    it("a mirror run whose mirror keeps the most approvals ends before any step carries its approval", async () => {
+      machines[1] = { name: "fsn-2", pool: true, copy: slotCopy(base) };
+      const kept = Array.from({ length: MAX_KEPT_APPROVALS }, (_, at) => ({ body: `kept-${at}`, signatures: [] }));
+      await harness.pool.query(
+        "insert into volume_mirror_status (organization_id, volume_id, machine_id, approvals) values ($1, $2, $3, $4)",
+        [organizationId, volumeId, idOf("fsn-2"), JSON.stringify(kept)]);
+      const run = await requested({ kind: "mirror", args: { to: "fsn-2", approval: APPROVAL } });
+
+      await execute(run.id);
+
+      expect(sent.filter((request) => request.approval !== undefined)).toEqual([]);
+      expect(await rows()).toMatchObject([{ state: "failed", message: `Ployz Cloud keeps at most ${MAX_KEPT_APPROVALS} approvals for Mirror data-fsn-2. Remove it with ployz volume mirror rm data-fsn-2, then mirror data to fsn-2 again.` }]);
     });
 
     it("drops no approval when the run no longer owns its row at the drop, so a Mirror made again keeps the one offered to it", async () => {

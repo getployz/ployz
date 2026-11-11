@@ -44,13 +44,13 @@ import { RuntimeConnectionFailure } from "#/modules/runtime/runtime-connection-e
 import { movedRouting, type Requirement, requirementFor, requirements, serverSupports } from "#/modules/runtime/daemon-compat";
 import { observeVolumeCopies, type PloyzSdkError, RpcError, sdkFailureMessage, setVolumeCopyRefusal } from "#/modules/runtime/ployz.server";
 import {
-  alreadyOn, approvalRefusedMessage, approvesMirror, enforcedMessage, newestGuid, otherApprovalMessage, type PlanInput, type Planned, planForwardRelease, planFromCopies,
+  alreadyOn, approvalRefusedMessage, approvesMirror, enforcedMessage, fullApprovalsMessage, newestGuid, otherApprovalMessage, type PlanInput, type Planned, planForwardRelease, planFromCopies,
   type Refusal, type RefusalCode, type ReleaseFrom, restoreSource, roleOf, writerRemovedMessage,
 } from "#/modules/volume-run/plan";
 import { type DeploymentsSeen, deployingMessage, gb, resizeRequirements, sizeDirection } from "#/modules/volume-run/resize";
 import { isBehind, isCurrent, releaseLine } from "#/modules/server-upgrade/server-upgrade";
 import { channelRelease, organizationReleaseChannel } from "#/modules/server-upgrade/server-upgrade.server";
-import { dropApprovals, offerApproval } from "#/modules/volume-run/mirror-approvals.server";
+import { dropApprovals, MAX_KEPT_APPROVALS, offerApproval } from "#/modules/volume-run/mirror-approvals.server";
 import { volumeRun } from "#/modules/volume-run/tables";
 import {
   ACTIVE_VOLUME_RUN_STATES,
@@ -663,7 +663,8 @@ export const planOnCluster = Effect.fn("VolumeRun.planOnCluster")(function* (
   const { phase } = planned;
   const recipient = phase.kind === "mirror" ? phase.target : phase.kind === "sync" ? phase.mirror : null;
   const approval = input.kind === "mirror" || input.kind === "sync" ? input.args.approval : undefined;
-  if (recipient !== null && approval !== undefined && !approvesMirror(approval, volume.dockerVolume, recipient.machine.id)) {
+  const writer = phase.kind === "mirror" || phase.kind === "sync" ? phase.writer.machine.id : null;
+  if (recipient !== null && writer !== null && approval !== undefined && !approvesMirror(approval, volume.dockerVolume, writer, recipient.machine.id)) {
     return { ok: false, refusal: storeRefusal({ code: "invalid", message: otherApprovalMessage(volume.volumeName, recipient.machine.name) }) } satisfies ClusterPlan;
   }
   if (phase.kind === "landed") {
@@ -1297,10 +1298,16 @@ export const setVolumeCopy = Effect.fn("VolumeRun.setVolumeCopy")(function* (
   return yield* askCopy(ctx, machine, expect, want, approval);
 });
 
-/** Keeps the run's `approval` with the Mirror on `mirror`, newest, before any of the run's steps carries it. */
-export const offerRunApproval = Effect.fn("VolumeRun.offerRunApproval")(function* (ctx: RunContext, inngestRunId: string, mirror: MachineId, approval: Signed) {
-  yield* requireOwner(ctx.id, inngestRunId);
-  yield* offerApproval(ctx.organizationId, ctx.volumeId, mirror, approval);
+/**
+ * Keeps the run's `approval` with the Mirror on `mirror`, first, before any of the run's steps carries it. It holds the
+ * run's row while it does, so a run that ended can't keep its approval after a later run's.
+ */
+export const offerRunApproval = Effect.fn("VolumeRun.offerRunApproval")(function* (ctx: RunContext, inngestRunId: string, mirror: MachineRef, approval: Signed) {
+  const database = yield* Database;
+  const offered = yield* database.transaction(requireOwner(ctx.id, inngestRunId, true).pipe(
+    Effect.andThen(offerApproval(ctx.organizationId, ctx.volumeId, mirror.id, approval)),
+  ));
+  if (!offered) return yield* failRun(ctx, inngestRunId, fullApprovalsMessage(ctx.volumeName, mirror.name, MAX_KEPT_APPROVALS));
 });
 
 /**
