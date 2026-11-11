@@ -1898,6 +1898,23 @@ describe("volume runs", () => {
       expect(sent.at(-1)?.want).toMatchObject({ kind: "writer", start: { kind: "kept", container_id: "web-fsn-1" } });
     });
 
+    it("releases back to A when the target kept the stopped Container of an earlier Move off it", async () => {
+      const G = newSnap("f-1");
+      named("fsn-1").copy = slotCopy(G);
+      containers = [
+        { machine: "fsn-2", id: "web-fsn-2", running: false, created: 1 },
+        { machine: "fsn-1", id: "web-fsn-1", running: false, created: 5 },
+      ];
+      machines[1] = { name: "fsn-2", pool: true, copy: slotCopy(G, null, "2") };
+      await owned("warm");
+
+      expect(await runEffect(closeVolumeRun("run-1", "failure"))).toBe(1);
+      await execute((await releaseRow()).id, "run-2");
+
+      expect(sent.at(-1)?.want).toMatchObject({ kind: "writer", start: { kind: "kept", container_id: "web-fsn-1" } });
+      expect((await rows()).at(-1)).toMatchObject({ state: "done" });
+    });
+
     it("on a warm row starts a release back to A", async () => {
       const G = newSnap("f-1");
       named("fsn-1").copy = slotCopy(G);

@@ -1373,24 +1373,24 @@ export const findHolder = Effect.fn("VolumeRun.findHolder")(function* (ctx: RunC
 
 export type Kept = { readonly machine: MachineRef; readonly containerId: ContainerId };
 
-/** With only slots left, the cut's source is the one of them that keeps a Service container for this Volume. */
+/**
+ * With only slots left, the cut's source is the one of them that keeps the newest Service container for this Volume.
+ * One Writer runs at a time and each Move creates its Container on the target, so the newest is the one the latest
+ * cut stopped. A Server that enforces device approval keeps the Container each Move's cut stopped there, so older
+ * ones may stay on any of them; the Server itself starts only a Container its open cut recorded. Two Servers whose
+ * newest were made at once name no source.
+ */
 export const keptOn = Effect.fn("VolumeRun.keptOn")(function* (organizationId: string, dockerVolume: string, machines: readonly MachineRef[]) {
   const on = (yield* serviceContainers(organizationId, dockerVolume)).filter((container) =>
     machines.some((candidate) => candidate.id === container.machine_id));
-  const [newest] = newestOnOne(on);
+  const [newest, next] = newestFirst(on);
+  if (next !== undefined && next.machine_id !== newest?.machine_id && next.created_at_unix_nanos === newest?.created_at_unix_nanos) return null;
   const machine = newest === undefined ? undefined : machines.find((candidate) => candidate.id === newest.machine_id);
   return newest === undefined || machine === undefined ? null : { machine, containerId: newest.container_id } satisfies Kept;
 });
 
-/**
- * `containers` newest first when they are all on one Server, or none when they span several. A Server that enforces
- * device approval keeps the Container each Move's cut stopped there, and the newest is the one the latest cut stopped;
- * the Server itself starts only a Container its open cut recorded.
- */
-const newestOnOne = <C extends { readonly machine_id: string; readonly created_at_unix_nanos: number }>(containers: readonly C[]) =>
-  new Set(containers.map((container) => container.machine_id)).size === 1
-    ? [...containers].sort((a, b) => b.created_at_unix_nanos - a.created_at_unix_nanos)
-    : [];
+const newestFirst = <C extends { readonly created_at_unix_nanos: number }>(containers: readonly C[]) =>
+  [...containers].sort((a, b) => b.created_at_unix_nanos - a.created_at_unix_nanos);
 
 export const findKept = Effect.fn("VolumeRun.findKept")(function* (ctx: RunContext, inngestRunId: string, machines: readonly MachineRef[]) {
   yield* requireOwner(ctx.id, inngestRunId);
@@ -1484,7 +1484,7 @@ export const startWriter = Effect.fn("VolumeRun.startWriter")(function* (ctx: Ru
     const running: CopyAnswer = { ok: true, copy: null };
     return running;
   }
-  const [holder] = from === null ? stopped : newestOnOne(stopped);
+  const [holder] = from === null ? stopped : newestFirst(stopped);
   if (holder === undefined && from === null && containers.some((container) => container.machine_id === to.id)) {
     if (ownedBy !== null) yield* requireOwner(ctx.id, ownedBy);
     return yield* askCopy(ctx, to, start.expect, { kind: "writer", at: start.at, epoch: start.epoch, start: null });
