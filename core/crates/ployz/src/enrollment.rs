@@ -13,7 +13,7 @@ use ployz_core::{
 /// Returns transport errors or missing enrollment facts.
 pub async fn observe_enrollment(entry: &mut Client) -> Result<EnrollmentSnapshot, RpcError> {
     entry
-        .machine_list()
+        .machine_list_uncapped()
         .await?
         .enrollment
         .ok_or_else(|| RpcError::unavailable("Entry Machine returned no enrollment snapshot"))

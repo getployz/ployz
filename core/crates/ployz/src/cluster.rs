@@ -509,7 +509,11 @@ impl Client {
         &mut self,
         request: RemoveVolumesRequest,
     ) -> Result<Vec<VolumeRemoval>, RpcError> {
-        let machines = self.machines().await.map_err(RpcError::from)?;
+        let machines = self
+            .machine_list_uncapped()
+            .await
+            .map_err(RpcError::from)?
+            .machines;
         Ok(remove_volumes_on(self, &machines, request).await)
     }
 
@@ -525,7 +529,11 @@ impl Client {
         &mut self,
         sought: Vec<DockerVolumeName>,
     ) -> Result<ployz_store::VolumeObservation, RpcError> {
-        let machines = self.machines().await.map_err(RpcError::from)?;
+        let machines = self
+            .machine_list_uncapped()
+            .await
+            .map_err(RpcError::from)?
+            .machines;
         let inspector = self.clone();
         // Seeking nothing asks only who answers: storage holds nothing sought.
         let storage: &[MachineObservation] = match sought.is_empty() {
@@ -587,7 +595,11 @@ impl Client {
     ///
     /// Returns a generated [`RpcError`] when listing Machines fails.
     pub async fn observe_running(&mut self) -> Result<ployz_store::RunningObservation, RpcError> {
-        let machines = self.machines().await.map_err(RpcError::from)?;
+        let machines = self
+            .machine_list_uncapped()
+            .await
+            .map_err(RpcError::from)?
+            .machines;
         let live = self
             .live_services_from(&machines, EnvironmentValues::Redacted)
             .await
@@ -638,7 +650,11 @@ impl Client {
     ///
     /// Returns a generated [`RpcError`] when listing Machines fails.
     pub async fn observe_copies(&mut self) -> Result<crate::sdk::CopyObservation, RpcError> {
-        let machines = self.machines().await.map_err(RpcError::from)?;
+        let machines = self
+            .machine_list_uncapped()
+            .await
+            .map_err(RpcError::from)?
+            .machines;
         let inspected = self.inspect_storage(&machines).await;
         let unanswered: BTreeSet<MachineId> = inspected
             .failures
@@ -717,11 +733,11 @@ impl Client {
             return Ok(Departed::AlreadyForgotten.into());
         };
         let selected = observation.machine.id;
-        // The entry confirmed on this channel is the one a describe would name now.
-        let current = match self.entry_machine() {
-            Some(entry) => entry,
-            None => self.entry_id().await.map_err(RpcError::from)?,
-        };
+        let current = self
+            .call::<op::DescribeContract>(DescribeContractRequest {}, Call::read())
+            .await
+            .map_err(RpcError::from)?
+            .machine_id;
         if selected == current && machines.len() > 1 {
             return Err(RpcError::invalid_argument(
                 "the current entry Machine cannot be removed while another Machine is visible",
@@ -905,15 +921,20 @@ impl Client {
 
     /// The entry Machine's listing of the Cluster, with the enrollment snapshot it carries.
     pub async fn machine_list(&mut self) -> Result<ployz_core::MachineList, ConnectError> {
-        match tokio::time::timeout(
-            TARGET_RPC_TIMEOUT,
-            self.call::<op::ListMachines>(ListMachinesRequest {}, Call::read()),
-        )
-        .await
-        {
+        match tokio::time::timeout(TARGET_RPC_TIMEOUT, self.machine_list_uncapped()).await {
             Ok(result) => result,
             Err(_) => Err(tonic::Status::deadline_exceeded("target Machine RPC timed out").into()),
         }
+    }
+
+    /// [`Self::machine_list`] with only the unary retries to bound it. The reads that listed
+    /// Machines this way before the Machine list had a deadline keep it: a slow daemon still
+    /// answers them.
+    pub(crate) async fn machine_list_uncapped(
+        &mut self,
+    ) -> Result<ployz_core::MachineList, ConnectError> {
+        self.call::<op::ListMachines>(ListMachinesRequest {}, Call::read())
+            .await
     }
 
     /// Fill in each reachable Machine's storage; returns the Machines left without it.

@@ -1389,3 +1389,102 @@ async fn a_client_reaches_a_machine_with_full_scope_only_over_ssh_the_socket_or_
     );
     server.abort();
 }
+
+/// A daemon that lists Machines `a` and `b`, names itself `described` whenever asked, and
+/// refuses every other request. Each request it receives is logged in order.
+async fn lists_a_and_b_describing_itself_as(
+    described: char,
+) -> (
+    Client,
+    std::sync::Arc<std::sync::Mutex<Vec<&'static str>>>,
+    tokio::task::JoinHandle<Result<(), tonic::transport::Error>>,
+) {
+    let log = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+    let logged = log.clone();
+    let (client, server) = crate::connect::test_support::rpc_client(move |rpc| {
+        let logged = logged.clone();
+        async move {
+            let body = rpc.into_inner().decode_request().unwrap().body;
+            logged.lock().unwrap().push(body.command());
+            let reply = if let ployz_core::RpcRequestBody::DescribeContract(_) = body {
+                ployz_core::RpcResponse::from(ployz_core::ContractDescription {
+                    attest: None,
+                    machine_id: machine_id(described),
+                    protocol_major: ployz_core::PROTOCOL_MAJOR,
+                    daemon_version: "test".into(),
+                    capabilities: Default::default(),
+                    sealing: None,
+                })
+            } else if let ployz_core::RpcRequestBody::ListMachines(_) = body {
+                ployz_core::RpcResponse::from(ployz_core::MachineList {
+                    enrollment: None,
+                    machines: vec![machine('a'), machine('b')],
+                })
+            } else {
+                return Err(tonic::Status::unimplemented("pinned"));
+            };
+            Ok(tonic::Response::new(reply.encode().unwrap()))
+        }
+    })
+    .await;
+    (client, log, server)
+}
+
+async fn removing(
+    removed: char,
+    confirmed: char,
+    described: char,
+) -> (Result<LocalMachineRemoved, RpcError>, Vec<&'static str>) {
+    let (mut client, log, server) = lists_a_and_b_describing_itself_as(described).await;
+    client.session.entry = Some(machine_id(confirmed));
+    client.session.confirmed = Some(machine_id(confirmed));
+    let nothing_lost = ployz_core::ObservedDataLoss {
+        data_loss: Vec::new(),
+    }
+    .confirm_names([])
+    .unwrap();
+    let removal = client
+        .remove_machine(
+            &MachineTarget::from(&machine_id(removed)),
+            &nothing_lost,
+            Remover::Operator,
+        )
+        .await;
+    server.abort();
+    let seen = log.lock().unwrap().clone();
+    (removal, seen)
+}
+
+const CURRENT_ENTRY_REFUSAL: &str =
+    "the current entry Machine cannot be removed while another Machine is visible";
+
+/// The entry is the Machine a describe names now, not the one confirmed when the channel
+/// opened: a daemon that reset and enrolled as another since is the one removed last.
+#[tokio::test]
+async fn remove_machine_refuses_the_machine_the_daemon_now_describes_as_its_entry() {
+    let (removal, seen) = removing('b', 'a', 'b').await;
+
+    let refused = removal.unwrap_err();
+    assert_eq!(refused.code, RpcErrorCode::InvalidArgument);
+    assert_eq!(refused.message, CURRENT_ENTRY_REFUSAL);
+    assert_eq!(
+        seen,
+        ["list_machines", "describe_contract"],
+        "refused before any volume is read"
+    );
+}
+
+/// And the Machine the entry was confirmed as, once the daemon no longer says so, is not
+/// refused as the current entry.
+#[tokio::test]
+async fn remove_machine_does_not_refuse_the_machine_the_daemon_no_longer_describes_as_its_entry() {
+    let (removal, seen) = removing('a', 'a', 'b').await;
+
+    if let Err(error) = removal {
+        assert_ne!(error.message, CURRENT_ENTRY_REFUSAL);
+    }
+    assert_eq!(
+        seen.get(..2),
+        Some(&["list_machines", "describe_contract"][..])
+    );
+}

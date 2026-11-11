@@ -17,11 +17,12 @@ src/cluster.rs::inspect_storage	op::InspectStorage	read	unary	budget(target_read
 src/cluster.rs::list_images	op::ListImages	read	unary	budget(target_read_timeout)	redial	read
 src/cluster.rs::list_on_machine	op::ListContainers	try_read	unary	budget(target_read_timeout)	redial	read
 src/cluster.rs::list_volumes_on_machine	op::ListVolumes	read	unary	budget(target_read_timeout)	redial	read
-src/cluster.rs::machine_list	op::ListMachines	call	unary	-	redial	read
+src/cluster.rs::machine_list_uncapped	op::ListMachines	call	unary	-	redial	read
 src/cluster.rs::observe_docker_disks	op::Inspect	invoke	single	-	-	once
 src/cluster.rs::observe_machine_storage	op::DescribeContract	invoke	single	-	-	once
 src/cluster.rs::observe_machine_storage	op::Inspect	invoke	single	-	-	once
 src/cluster.rs::refuse_last_managed	op::Inspect	invoke	single	target(TARGET_RPC_TIMEOUT)	-	once
+src/cluster.rs::remove_machine	op::DescribeContract	call	unary	-	redial	read
 src/cluster.rs::remove_volumes_on	op::RemoveVolume	invoke	single	target(TARGET_RPC_TIMEOUT)	-	once
 src/cluster.rs::set_ingress_doors	op::SetIngressDoors	invoke_answered	single	-	-	once
 src/cluster.rs::set_private_access	op::SetPrivateAccess	invoke_answered	single	-	-	once

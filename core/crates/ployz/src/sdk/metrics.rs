@@ -125,7 +125,14 @@ pub(super) async fn metric_history_among(
         Some(machine_id) => Asked::one(machine_id),
         None => match listed {
             Some(listed) => Asked::among(listed),
-            None => Asked::among(&client.clone().machines().await.map_err(RpcError::from)?),
+            None => Asked::among(
+                &client
+                    .clone()
+                    .machine_list_uncapped()
+                    .await
+                    .map_err(RpcError::from)?
+                    .machines,
+            ),
         },
     };
     let answers = join_all(machines.reachable.into_iter().map(|machine_id| {

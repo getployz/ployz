@@ -428,35 +428,126 @@ fn the_routes_a_call_dials_itself_are_the_ones_pinned_here() {
     assert_eq!(ployz_core::rpc_catalog!(direct_routes), DIRECT);
 }
 
-/// Every read of the Machine list gives up on its own, on a daemon that never answers.
-#[tokio::test(start_paused = true)]
-async fn every_site_that_lists_machines_gives_up_after_the_machine_list_deadline() {
-    let (mut client, server) = crate::connect::test_support::rpc_client(|_| async {
-        std::future::pending::<Result<Response<OpaquePayload>, Status>>().await
+/// A daemon that answers `ListMachines` with no Machines after `delay`, and anything else with
+/// an error.
+async fn slow_lister(
+    delay: Duration,
+) -> (
+    Client,
+    tokio::task::JoinHandle<Result<(), tonic::transport::Error>>,
+) {
+    crate::connect::test_support::rpc_client(move |rpc: Request<OpaquePayload>| async move {
+        let body = rpc.into_inner().decode_request().unwrap().body;
+        let RpcRequestBody::ListMachines(_) = body else {
+            return Err(Status::unimplemented("pinned"));
+        };
+        tokio::time::sleep(delay).await;
+        let listed = ployz_core::MachineList {
+            enrollment: None,
+            machines: Vec::new(),
+        };
+        Ok(Response::new(
+            ployz_core::RpcResponse::from(listed).encode().unwrap(),
+        ))
     })
-    .await;
-    let waited = Duration::from_secs(600);
-    let timed_out = |error: &dyn std::fmt::Debug| {
-        let error = format!("{error:?}");
-        assert!(error.contains("target Machine RPC timed out"), "{error}");
+    .await
+}
+
+fn timed_out(error: &dyn std::fmt::Debug) {
+    let error = format!("{error:?}");
+    assert!(error.contains("target Machine RPC timed out"), "{error}");
+}
+
+/// Six reads of the Machine list have no deadline of their own: a daemon that answers late
+/// answers them, as the retries alone bound them. Each read is named in the failure.
+#[tokio::test(start_paused = true)]
+async fn the_reads_that_list_machines_without_a_deadline_wait_for_a_slow_daemon() {
+    let (mut client, server) = slow_lister(Duration::from_secs(11)).await;
+    let mut gave_up = Vec::new();
+    let mut note = |read: &str, error: Option<String>| {
+        if let Some(error) = error.filter(|error| error.contains("target Machine RPC timed out")) {
+            gave_up.push(format!("{read}: {error}"));
+        }
     };
-    timed_out(
-        &tokio::time::timeout(waited, client.observe_running())
+    note(
+        "observe_running",
+        client
+            .observe_running()
             .await
-            .expect("observe_running gives up on its own")
-            .unwrap_err(),
+            .err()
+            .map(|e| format!("{e:?}")),
     );
-    timed_out(
-        &tokio::time::timeout(waited, client.observe_copies())
+    note(
+        "observe_copies",
+        client
+            .observe_copies()
             .await
-            .expect("observe_copies gives up on its own")
-            .unwrap_err(),
+            .err()
+            .map(|e| format!("{e:?}")),
     );
+    note(
+        "observe_volumes",
+        client
+            .observe_volumes(vec![DockerVolumeName::parse("data").unwrap()])
+            .await
+            .err()
+            .map(|e| format!("{e:?}")),
+    );
+    note(
+        "remove_volumes",
+        client
+            .remove_volumes(ployz_core::RemoveVolumesRequest {
+                volumes: Vec::new(),
+                force: false,
+            })
+            .await
+            .err()
+            .map(|e| format!("{e:?}")),
+    );
+    note(
+        "observe_enrollment",
+        crate::enrollment::observe_enrollment(&mut client)
+            .await
+            .err()
+            .map(|e| format!("{e:?}")),
+    );
+    note(
+        "metric_history",
+        crate::sdk::metric_history(
+            &client,
+            crate::sdk::MetricSubject::Service {
+                service: ployz_core::QualifiedService::parse("prod/web").unwrap(),
+            },
+            ployz_core::metrics::MetricRange {
+                since_nanos: 0,
+                until_nanos: 60_000_000_000,
+            },
+            None,
+        )
+        .await
+        .err()
+        .map(|e| format!("{e:?}")),
+    );
+    assert!(gave_up.is_empty(), "{gave_up:#?}");
+    server.abort();
+}
+
+/// The Machine list's own reads, `machines()` and `machine_list()`, give up after the
+/// deadline on a daemon that is slow and on one that never answers.
+#[tokio::test(start_paused = true)]
+async fn machines_and_machine_list_give_up_after_the_machine_list_deadline() {
+    let (mut slow, slow_server) = slow_lister(Duration::from_secs(11)).await;
+    timed_out(&slow.machines().await.unwrap_err());
+    timed_out(&slow.machine_list().await.unwrap_err());
+    slow_server.abort();
+
+    let (mut silent, silent_server) = slow_lister(Duration::from_secs(86_400)).await;
+    let waited = Duration::from_secs(600);
     timed_out(
-        &tokio::time::timeout(waited, client.machines())
+        &tokio::time::timeout(waited, silent.machines())
             .await
             .expect("machines() gives up on its own")
             .unwrap_err(),
     );
-    server.abort();
+    silent_server.abort();
 }
