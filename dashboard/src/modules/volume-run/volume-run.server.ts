@@ -140,6 +140,16 @@ export function laneInputOf(lane: Pick<VolumeRunRow, "kind" | "args">): VolumeLa
   return { kind: lane.kind, args: lane.args } as VolumeLaneInput;
 }
 
+/**
+ * The approval and spec a Move carries, or the release that carried them on. One approval covers the Move and the
+ * release that undoes or finishes it, so a user's release takes them over with the run it ends or the commitment it
+ * inherits; the Servers still check every step against them.
+ */
+const carriedApproval = (row: Pick<VolumeRunRow, "kind" | "args">) => {
+  const lane = laneInputOf(row);
+  return lane.kind === "move" || lane.kind === "release" ? moveApproved(lane.args) : undefined;
+};
+
 export const contextOf = (row: VolumeRunRow): RunContext => ({
   ...laneInputOf(row),
   id: row.id,
@@ -816,7 +826,7 @@ const takeLane = Effect.fn("VolumeRun.takeLane")(function* (caller: Caller, { in
       refquotaBytes: volume.refquotaBytes,
       recordedBytes: volume.recordedBytes,
       kind: input.kind,
-      args: input.args,
+      args: input.kind === "release" && taken !== undefined ? { ...carriedApproval(taken), ...input.args } : input.args,
       state: inngestRunId === null ? "requested" : "running",
       inngestRunId,
       requestedByUserId: caller.userId,
@@ -867,7 +877,8 @@ const admitOwed = Effect.fn("VolumeRun.admitOwed")(function* (inserted: VolumeRu
     return yield* new LaneRefused({ refusal: releaseChanged(inserted.volumeName), busy: volumeRunView(pending) });
   }
   const { drizzle } = yield* Database;
-  const [inherited] = yield* drizzle.update(volumeRun).set({ phase: "committed", current: pending.current, epoch: pending.epoch, receipt: pending.receipt })
+  const args = { ...carriedApproval(pending), ...input.args };
+  const [inherited] = yield* drizzle.update(volumeRun).set({ phase: "committed", current: pending.current, epoch: pending.epoch, receipt: pending.receipt, args })
     .where(eq(volumeRun.id, inserted.id)).returning();
   return inherited ?? inserted;
 });

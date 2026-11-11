@@ -642,8 +642,9 @@ async function releaseVolume(steps: RunSteps, phase: PhaseOf<"release">, epoch: 
       start: { kind: "kept", container_id: source.containerId },
     }, `${A.name} is still starting ${run.volumeName}'s Service`, approval);
     // When every copy signs and checks handoffs, A decides first: it resumes, or refuses with the receipt it signed and
-    // the Move goes forward. No late start reaches B meanwhile, since B becomes the writer only on that receipt.
-    const asksFirst = approval !== undefined && from.slots.every((slot) => slot.handoff === true && slot.enforces === true);
+    // the Move goes forward. No late start reaches B meanwhile, since B becomes the writer only on that receipt. A
+    // release with no approval asks too, so it fails at A before it forgets the copy a handoff left the only writer.
+    const asksFirst = from.slots.every((slot) => slot.handoff === true && slot.enforces === true);
     if (asksFirst) {
       const decided = await resumeA("04-source");
       if (!decided.ok && decided.reason === "handed_off" && decided.receipt !== undefined) throw new HandedOff(decided.receipt);
@@ -737,11 +738,13 @@ async function finishRelease(steps: RunSteps, current: MachineId, plan: ReleaseP
     }
     const { target, copy } = forward;
     const epoch = handed?.epoch ?? (await step.run(id("02-epoch"), () => runEffect(takeEpoch(run, runId, observedEpoch(members))))).epoch;
+    // The receipt names the source, so B starts from the Container its cut stopped, not one an earlier Move left elsewhere.
+    const source = members.find((member) => member.machine.id === handed?.from)?.machine ?? null;
     let stays: readonly string[] | null;
     try {
       const started = await settle(steps, id("03-start"), commitAndStart(run, runId, {
         to: target.machine,
-        from: null,
+        from: source,
         expect: expectOf(copy),
         at: copy.newest.guid,
         epoch: copy.kind === "root" ? copy.epoch : epoch,
