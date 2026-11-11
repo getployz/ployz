@@ -800,13 +800,14 @@ export const enrollMachine = Effect.fn("MachineEnrollment.enrollMachine")(
           const cannotKeepDoors = Schema.is(Schema.Struct({
             details: Schema.Struct({ capability: Schema.Literal(DOORS_CAPABILITY) }),
           }))(error.cause);
-          if (cannotKeepDoors) return Effect.fail(new Conflict({ message: CANNOT_KEEP_DOORS, userFacing: true }));
           const message = alreadyAdmitted
             ? "The Server's join was already admitted. Inspect the Server before retrying enrollment."
             : "ployz.machine.join.device-approval.v1 requires approval from an existing Device. Approve the join, then rerun the same join command.";
-          return Effect.fail(needsApproval
-            ? new JoinApprovalRequired({ message })
-            : error);
+          return Effect.fail(cannotKeepDoors
+            ? new Conflict({ message: CANNOT_KEEP_DOORS, userFacing: true })
+            : needsApproval
+              ? new JoinApprovalRequired({ message })
+              : error);
         }));
       return { kind: "join" as const, pairing, storage: request.storage, registration };
     }));
