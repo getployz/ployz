@@ -695,7 +695,9 @@ async function handOn(steps: RunSteps, receipt: MachineSigned) {
   const committed = await step.run("07-handed", () => runEffect(commitMove(run, runId, handed.to, receipt)));
   if (!committed) return fail(steps, "07-taken", `a newer run took ${run.volumeName} before it finished on its new Server`);
   await step.run("07-note", () => runEffect(noteRun(run, runId, `${run.volumeName}'s source handed it off; finishing on its new Server`)));
-  return finishRelease(steps, handed.to, run.kind === "release" ? run.args.plan : undefined, receipt, "fw-");
+  // A release that asks the source was planned from the copies, back to it. The receipt overrules that plan: the Move
+  // it finishes was approved.
+  return finishRelease(steps, handed.to, undefined, receipt, "fw-");
 }
 
 const FORWARD_WAITS = waitsFor(15 * 60);

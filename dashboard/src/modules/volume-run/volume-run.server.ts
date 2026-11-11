@@ -151,6 +151,12 @@ export const carriedApproval = (row: Pick<VolumeRunRow, "kind" | "args">) => {
   return lane.kind === "move" || lane.kind === "release" ? moveApproved(lane.args) : undefined;
 };
 
+/**
+ * An approved commitment with no receipt: the row alone does not say the source handed off, so its release is planned
+ * from the copies, as a warm Move's is, and the source decides whether it resumes or the Move goes forward.
+ */
+const sourceDecides = (pending: Owed) => pending.receipt == null && carriedApproval(pending) !== undefined;
+
 export const contextOf = (row: VolumeRunRow): RunContext => ({
   ...laneInputOf(row),
   id: row.id,
@@ -666,7 +672,7 @@ export const planOnCluster = Effect.fn("VolumeRun.planOnCluster")(function* (
   const deployments = input.kind === "resize" ? Option.getOrUndefined(yield* answered(deploymentsSeen(organizationId, input.environment))) : undefined;
   const members = yield* answered(observeVolumeMembers(organizationId, volume.dockerVolume, input.kind === "resize" ? { ...input, recordedBytes: volume.recordedBytes } : input));
   if (Option.isNone(members)) return { ok: false, refusal: unanswered } satisfies ClusterPlan;
-  if (pending !== null && input.kind === "release") return yield* planForward(volume, input, pending, members.value);
+  if (pending !== null && input.kind === "release" && !sourceDecides(pending)) return yield* planForward(volume, input, pending, members.value);
   const resolved = input.kind === "delete_mirror"
     ? { ...input, args: withSlotMachine(input.args, members.value.map((member) => member.machine)) }
     : input;
@@ -874,7 +880,10 @@ const admitOwed = Effect.fn("VolumeRun.admitOwed")(function* (inserted: VolumeRu
     if (!refusedWhileOwed(input, pending)) return inserted;
     return yield* new LaneRefused({ refusal: yield* owedRefusal(pending, yield* laneTarget(pending)), busy: volumeRunView(pending), owed: pending });
   }
-  if (plan !== undefined && (plan.forward?.after !== pending.id || plan.forward.to !== pending.current)) {
+  const previewed = sourceDecides(pending)
+    ? plan?.forward === undefined
+    : plan?.forward?.after === pending.id && plan.forward.to === pending.current;
+  if (plan !== undefined && !previewed) {
     return yield* new LaneRefused({ refusal: releaseChanged(inserted.volumeName), busy: volumeRunView(pending) });
   }
   const { drizzle } = yield* Database;
