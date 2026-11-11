@@ -214,12 +214,14 @@ fn capture_target(
             };
             let mut sealed = sealed::capture(service, &recipe, &inputs, opened)?;
             if let Some(command) = command {
-                args.insert("RAILPACK_BUILD_CMD".into(), command);
+                args.insert(ployz_build::railpack::BUILD_CMD.into(), command);
             }
             let config = args
-                .get("RAILPACK_CONFIG_FILE")
+                .get(ployz_build::railpack::CONFIG_FILE)
                 .map(String::as_str)
-                .or_else(|| opened.and_then(|opened| opened.get("RAILPACK_CONFIG_FILE")));
+                .or_else(|| {
+                    opened.and_then(|opened| opened.get(ployz_build::railpack::CONFIG_FILE))
+                });
             let context = inputs.railpack_context(&spec.context, config)?;
             let context = inputs.relative(&context);
             // Railpack variables stay in private upload material, not the recipe.

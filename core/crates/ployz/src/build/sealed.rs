@@ -72,9 +72,9 @@ pub(super) fn capture(
     match recipe {
         Recipe::Railpack { command } => {
             // An explicit build command wins, as it does over a plain value.
-            let planned = values
-                .iter()
-                .filter(|(name, _)| command.is_none() || name.as_str() != "RAILPACK_BUILD_CMD");
+            let planned = values.iter().filter(|(name, _)| {
+                command.is_none() || name.as_str() != ployz_build::railpack::BUILD_CMD
+            });
             if opened.is_none() {
                 refuse_railpack_settings(planned.clone().map(|(name, _)| name))?;
             }
@@ -168,7 +168,7 @@ fn standard_frontend(syntax: &str) -> bool {
 fn refuse_railpack_settings<'name>(
     mut sealed: impl Iterator<Item = &'name String>,
 ) -> Result<(), Error> {
-    match sealed.find(|name| name.starts_with("RAILPACK_")) {
+    match sealed.find(|name| name.starts_with(ployz_build::railpack::SETTING_PREFIX)) {
         Some(name) => Err(Error::Sealed(format!(
             "{name} is sealed. Railpack settings can't be sealed."
         ))),

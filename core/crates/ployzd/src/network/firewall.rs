@@ -142,8 +142,13 @@ fn install(
     )?);
     restore("iptables", &ipv4_document)?;
     add_mss_clamp(moved);
-    for rule in LOOSE_BUILD_FORWARDING {
-        delete_rule("iptables", "mangle", "FORWARD", rule)?;
+    for rule in loose_build_forwarding() {
+        delete_rule(
+            "iptables",
+            "mangle",
+            "FORWARD",
+            &rule.split(' ').collect::<Vec<_>>(),
+        )?;
     }
     let mut ipv6_document =
         filter_document("ip6tables", &management_policy(management_address), moved)?;
@@ -313,29 +318,22 @@ fn dns_returns() -> impl Iterator<Item = String> {
 /// Loose rules main hooked into mangle FORWARD before this chain. A RETURN
 /// from the chain resumes FORWARD, where their link-local drop would still
 /// catch DNS to a cloud's link-local resolver.
-const LOOSE_BUILD_FORWARDING: [&[&str]; 3] = [
-    &[
-        "-i",
-        "ployz-build+",
-        "-o",
-        "ployz",
-        "-m",
-        "conntrack",
-        "!",
-        "--ctstate",
-        "DNAT",
-        "-j",
-        "DROP",
-    ],
-    &["-i", "ployz-build+", "-o", "ployz-wg", "-j", "DROP"],
-    &["-i", "ployz-build+", "-d", "169.254.0.0/16", "-j", "DROP"],
-];
+fn loose_build_forwarding() -> [String; 3] {
+    let bridges = build_bridges();
+    [
+        format!("-i {bridges} -o {DOCKER_NETWORK_NAME} -m conntrack ! --ctstate DNAT -j DROP"),
+        format!("-i {bridges} -o {WIREGUARD_INTERFACE_NAME} -j DROP"),
+        format!("-i {bridges} -d 169.254.0.0/16 -j DROP"),
+    ]
+}
+
+/// Every build slot's bridge, as iptables names them.
+fn build_bridges() -> String {
+    format!("{}+", ployz_build::BUILD_BRIDGE_PREFIX)
+}
 
 fn build_forward_jump() -> String {
-    format!(
-        "-i {}+ -j {BUILD_FORWARD_CHAIN}",
-        ployz_build::BUILD_BRIDGE_PREFIX
-    )
+    format!("-i {} -j {BUILD_FORWARD_CHAIN}", build_bridges())
 }
 
 fn build_forward_document(
@@ -453,7 +451,7 @@ fn ipv4_fence(fence: &ployz_build::Fence) -> Vec<String> {
         )
         .collect();
     let mut drops: Vec<String> = [
-        &format!("{}+", ployz_build::BUILD_BRIDGE_PREFIX),
+        &build_bridges(),
         DOCKER_NETWORK_NAME,
         WIREGUARD_INTERFACE_NAME,
         "docker0",
@@ -474,7 +472,7 @@ fn ipv6_fence(fence: &ployz_build::Fence) -> Vec<String> {
 /// Build steps run on their slot's bridge and get only the internet: nothing
 /// on the host answers them, on any address.
 fn mesh_ports() -> Vec<String> {
-    let mut rules = vec![format!("-i {}+ -j DROP", ployz_build::BUILD_BRIDGE_PREFIX)];
+    let mut rules = vec![format!("-i {} -j DROP", build_bridges())];
     rules.extend(
         [WIREGUARD_PORT, MANAGEMENT_PORT]
             .into_iter()
@@ -638,8 +636,13 @@ pub(super) fn remove_firewall_rules(subnet: MachineSubnet) -> Result<(), Network
             "RETURN",
         ],
     ));
-    for rule in LOOSE_BUILD_FORWARDING {
-        attempt(delete_rule("iptables", "mangle", "FORWARD", rule));
+    for rule in loose_build_forwarding() {
+        attempt(delete_rule(
+            "iptables",
+            "mangle",
+            "FORWARD",
+            &rule.split(' ').collect::<Vec<_>>(),
+        ));
     }
     let clamp = mss_clamp();
     let clamp = clamp.split(' ').collect::<Vec<_>>();
@@ -826,6 +829,31 @@ mod tests {
     }
 
     #[test]
+    fn the_loose_build_forwarding_rules_are_the_ones_earlier_daemons_hooked() {
+        assert_eq!(
+            loose_build_forwarding(),
+            [
+                "-i ployz-build+ -o ployz -m conntrack ! --ctstate DNAT -j DROP",
+                "-i ployz-build+ -o ployz-wg -j DROP",
+                "-i ployz-build+ -d 169.254.0.0/16 -j DROP",
+            ]
+        );
+    }
+
+    #[test]
+    fn every_build_rule_names_the_bridges_by_the_prefix_builds_create_them_under() {
+        let bridges = format!("{}+", ployz_build::BUILD_BRIDGE_PREFIX);
+        for rule in loose_build_forwarding() {
+            assert!(rule.starts_with(&format!("-i {bridges} ")), "{rule}");
+        }
+        assert_eq!(
+            build_forward_jump(),
+            format!("-i {bridges} -j {BUILD_FORWARD_CHAIN}")
+        );
+        assert_eq!(mesh_ports().first(), Some(&format!("-i {bridges} -j DROP")));
+    }
+
+    #[test]
     fn the_worker_reaches_only_the_image_servers_across_the_mesh() {
         assert_eq!(
             ipv6_fence(&fence(vec![41_234])),
@@ -957,9 +985,9 @@ mod tests {
     #[ignore = "needs root and ip netns"]
     fn teardown_removes_the_chain_and_loose_rules_from_earlier_daemons() {
         if in_child() {
-            for rule in LOOSE_BUILD_FORWARDING {
+            for rule in loose_build_forwarding() {
                 let mut insert = vec!["-t", "mangle", "-I", "FORWARD", "1"];
-                insert.extend_from_slice(rule);
+                insert.extend(rule.split(' '));
                 xtables("iptables", &insert).unwrap();
             }
             restore(

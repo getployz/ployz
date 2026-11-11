@@ -315,7 +315,7 @@ impl BuildPolicy {
                 path: settings
                     .dockerfile_path
                     .clone()
-                    .unwrap_or_else(|| "Dockerfile".to_owned()),
+                    .unwrap_or_else(|| crate::config::DEFAULT_DOCKERFILE_PATH.to_owned()),
             },
             crate::config::BuildMethod::Railpack => PolicyMethod::Railpack {
                 command: settings.command.clone(),
