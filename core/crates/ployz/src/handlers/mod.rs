@@ -1158,7 +1158,7 @@ mod tests {
 
     #[test]
     fn local_machine_init_without_install_dials_the_unix_socket() {
-        if std::path::Path::new(crate::connect::DEFAULT_LOCAL_SOCKET).exists() {
+        if ployz_core::MachineLayout::production().socket().exists() {
             return;
         }
         let mut command = command();

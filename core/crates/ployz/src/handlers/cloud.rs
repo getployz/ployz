@@ -1071,7 +1071,7 @@ fn local_selection(matches: &ArgMatches) -> Result<SelectedConnections, ConnectE
         &config,
         matches.get_one::<String>("connect").map(String::as_str),
         None,
-        std::path::Path::new(crate::connect::DEFAULT_LOCAL_SOCKET),
+        &ployz_core::MachineLayout::production().socket(),
     )
 }
 

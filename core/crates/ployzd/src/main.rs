@@ -14,14 +14,14 @@ use std::{
 
 use clap::{Parser, Subcommand};
 use ployz_core::{
-    MachineRelease, MachineUpgradeAttemptId, NETWORK_CONFLICT_EXIT_STATUS, StoragePreparation,
+    MachineLayout, MachineRelease, MachineUpgradeAttemptId, NETWORK_CONFLICT_EXIT_STATUS,
+    StoragePreparation,
 };
 use ployzd::{
     daemon::{ContainerMode, Daemon, DaemonConfig, Error, wait_until_socket_accepts},
     diag,
     dns::{self, DnsExit},
-    installer::{DEFAULT_SOCKET_PATH, InstallMode, InstallRequest, Readiness},
-    machine::DEFAULT_DATA_DIR,
+    installer::{InstallMode, InstallRequest, Readiness},
     management::ManagementConfig,
     runtime_unit::UnitSupervision,
 };
@@ -40,9 +40,9 @@ const STDOUT_FLUSH_BOUND: Duration = Duration::from_secs(2);
 struct Args {
     #[command(subcommand)]
     command: Option<Command>,
-    #[arg(short, long, default_value = DEFAULT_DATA_DIR)]
+    #[arg(short, long, default_value_os_t = MachineLayout::production().data_dir().to_path_buf())]
     data_dir: PathBuf,
-    #[arg(long, default_value = DEFAULT_SOCKET_PATH)]
+    #[arg(long, default_value_os_t = MachineLayout::production().socket())]
     socket: PathBuf,
     #[arg(long = "dns-upstream", value_name = "ADDR")]
     dns_upstreams: Vec<SocketAddr>,
@@ -147,7 +147,7 @@ enum ObserveCommand {
 fn main() -> ExitCode {
     let args = Args::parse();
     if args.command.is_none() {
-        ployzd::daemon::clear_refusal(socket_dir(&args.socket));
+        ployzd::daemon::clear_refusal(&MachineLayout::run_dir_of(&args.socket));
     }
     let dial_stdio = matches!(args.command, Some(Command::DialStdio));
     let runtime = match runtime() {
@@ -211,11 +211,7 @@ async fn run(args: Args) -> Result<ExitCode, Error> {
     if matches!(args.command, Some(Command::Dns { probe: true })) {
         return Ok(ExitCode::SUCCESS);
     }
-    let run_dir = args
-        .socket
-        .parent()
-        .unwrap_or_else(|| Path::new("/run/ployz"))
-        .to_owned();
+    let run_dir = MachineLayout::run_dir_of(&args.socket);
     if let Some(Command::UpgradeWorker { attempt }) = args.command {
         ployzd::installer::upgrade::run_worker(attempt, &args.data_dir, &run_dir)
             .await
@@ -357,18 +353,14 @@ fn install_request(
     Ok(InstallRequest { release, mode })
 }
 
-fn socket_dir(socket: &Path) -> &Path {
-    socket.parent().unwrap_or_else(|| Path::new("/run/ployz"))
-}
-
 async fn dial_stdio(path: &Path) -> io::Result<()> {
-    let run_dir = socket_dir(path);
+    let run_dir = MachineLayout::run_dir_of(path);
     let stream = connect_unless_refused(path, DIAL_STDIO_SOCKET_TIMEOUT).await?;
     // A refusing start closes the connection unread, so a request already sent
     // ends it with a reset rather than an empty close.
     match bridge(stdin(), stdout(), stream).await {
         Ok(sent) if sent > 0 => Ok(()),
-        ended => match ployz_core::startup_refusal(run_dir) {
+        ended => match ployz_core::startup_refusal(&run_dir) {
             Some(refusal) => Err(io::Error::other(refusal)),
             None => ended.map(drop),
         },
@@ -381,10 +373,10 @@ async fn dial_stdio(path: &Path) -> io::Result<()> {
 // client. The grace covers a socket restarting, which comes back before a
 // daemon process has cleared the last refusal.
 async fn connect_unless_refused(path: &Path, timeout: Duration) -> io::Result<UnixStream> {
-    let run_dir = socket_dir(path);
+    let run_dir = MachineLayout::run_dir_of(path);
     let refused_since = Cell::new(None);
     wait_until_socket_accepts(path, timeout, || {
-        if ployz_core::startup_refusal(run_dir).is_none() {
+        if ployz_core::startup_refusal(&run_dir).is_none() {
             refused_since.set(None);
             return false;
         }
@@ -395,7 +387,7 @@ async fn connect_unless_refused(path: &Path, timeout: Duration) -> io::Result<Un
         since.elapsed() >= REFUSED_SOCKET_GRACE
     })
     .await
-    .map_err(|error| naming_refusal(run_dir, error))
+    .map_err(|error| naming_refusal(&run_dir, error))
 }
 
 fn naming_refusal(run_dir: &Path, error: io::Error) -> io::Error {

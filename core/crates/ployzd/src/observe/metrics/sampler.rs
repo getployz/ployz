@@ -23,7 +23,7 @@ use bollard::{
     Docker, models::ContainerInspectResponse, query_parameters::ListContainersOptionsBuilder,
 };
 use ployz_core::{
-    ContainerId, DockerVolumeName, MachineId, Namespace, PROVISIONED_VOLUME_DRIVER,
+    ContainerId, DockerVolumeName, MachineId, MachineLayout, Namespace, PROVISIONED_VOLUME_DRIVER,
     QualifiedService, ServiceId, ServiceName,
     metrics::{CpuJiffies, DiskBreakdown, HostMemory, HostSample, InterfaceBytes, MetricSample},
 };
@@ -45,7 +45,6 @@ use super::{
 use crate::{
     docker::{LABEL_HOOK, LABEL_MANAGED, LABEL_SERVICE_ID},
     machine::store,
-    machine_pool,
     network::DOCKER_NETWORK_NAME,
     observe::{
         harvest,
@@ -116,7 +115,7 @@ pub(crate) async fn run(docker: Docker, store: StoreRoot, data_dir: PathBuf) {
         disk::run(
             store.clone(),
             zfs,
-            PathBuf::from(machine_pool::BACKING_FILE),
+            MachineLayout::production().machine_pool_file(),
             latest,
         ),
         sample_every_interval(docker, store, data_dir, slow),

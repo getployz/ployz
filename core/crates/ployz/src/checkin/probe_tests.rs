@@ -1,5 +1,6 @@
 use std::{
     cell::{Cell, RefCell},
+    hash::RandomState,
     net::{TcpListener as StdTcpListener, UdpSocket as StdUdpSocket},
     sync::{Arc, Condvar},
 };
@@ -165,17 +166,91 @@ impl Drop for StalledBinds {
 /// holding it stalls saves in every test sharing the process; nextest runs each test alone.
 pub(in crate::checkin) static SAVES: Mutex<()> = Mutex::new(());
 
+const FIRST_FREE_PORT: u16 = 10_000;
+const SMALLEST_BAND: usize = 1_000;
+
+/// Locks held until the test process exits, one per port `free_port` handed out.
+static RESERVED: Mutex<Vec<fs::File>> = Mutex::new(Vec::new());
+
+/// A port nothing holds and no other `free_port` caller, in this process or another, will hand out.
+/// The kernel hands the same number to a mock server, outbound connection or UDP socket of a test
+/// in another process as soon as it is free, so the port comes from below the ephemeral range.
+/// A host that tuned that range to leave no such band falls back to a kernel-allocated port.
 fn free_port() -> u16 {
+    let band = FIRST_FREE_PORT..*ephemeral_ports().start();
     loop {
-        let port = StdTcpListener::bind("127.0.0.1:0")
-            .unwrap()
-            .local_addr()
-            .unwrap()
-            .port();
-        if bindable(port) {
+        let port = if band.len() >= SMALLEST_BAND {
+            let draw = std::hash::BuildHasher::hash_one(&RandomState::new(), 0_u8);
+            band.start + u16::try_from(draw % u64::try_from(band.len()).unwrap()).unwrap()
+        } else {
+            StdTcpListener::bind("127.0.0.1:0")
+                .unwrap()
+                .local_addr()
+                .unwrap()
+                .port()
+        };
+        if reserve(port) && bindable(port) {
             return port;
         }
     }
+}
+
+/// Fails when another caller holds the port, whichever process it runs in. The locks sit in a
+/// directory per user, so a shared temporary directory never hands one user another's files.
+fn reserve(port: u16) -> bool {
+    let user = rustix::process::geteuid().as_raw();
+    let locks = std::env::temp_dir().join(format!("ployz-probe-test-ports-{user}"));
+    fs::create_dir_all(&locks).unwrap();
+    let lock = fs::OpenOptions::new()
+        .create(true)
+        .truncate(false)
+        .write(true)
+        .open(locks.join(port.to_string()))
+        .unwrap();
+    match lock.try_lock() {
+        Ok(()) => {
+            RESERVED
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .push(lock);
+            true
+        }
+        Err(fs::TryLockError::WouldBlock) => false,
+        Err(fs::TryLockError::Error(error)) => panic!("cannot lock port {port}: {error}"),
+    }
+}
+
+/// The ports the kernel hands to `bind(0)`, outbound connections and the UDP sockets of tests in
+/// other processes.
+fn ephemeral_ports() -> std::ops::RangeInclusive<u16> {
+    let range = fs::read_to_string("/proc/sys/net/ipv4/ip_local_port_range")
+        .ok()
+        .and_then(|text| {
+            let mut ends = text.split_whitespace().map(str::parse::<u16>);
+            Some(ends.next()?.ok()?..=ends.next()?.ok()?)
+        });
+    range.unwrap_or(32_768..=u16::MAX)
+}
+
+#[test]
+fn a_free_port_is_not_one_the_kernel_hands_out() {
+    let ephemeral = ephemeral_ports();
+    if usize::from(*ephemeral.start()) < usize::from(FIRST_FREE_PORT) + SMALLEST_BAND {
+        return;
+    }
+    for _ in 0..50 {
+        let port = free_port();
+        assert!(
+            !ephemeral.contains(&port),
+            "{port} is in the kernel's ephemeral range {ephemeral:?}, so a test in another process can be handed it"
+        );
+    }
+}
+
+#[test]
+fn a_port_one_caller_holds_cannot_be_held_by_another() {
+    let port = free_port();
+    assert!(!reserve(port));
 }
 
 fn handout(handout: &str, window_ms: u64, listen: &[Port], send: &[u16]) -> Handout {

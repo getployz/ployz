@@ -574,7 +574,7 @@ async fn leave_resent_to_a_resetting_machine_answers_left() {
 #[test]
 fn directory_holding_only_host_preparation_is_claimed() {
     let dir = TestDir::new("ployzd-state");
-    let prepare = dir.0.join(ployzd::machine::PREPARE_DIR_NAME);
+    let prepare = dir.0.join(ployz_core::PREPARE_DIR_NAME);
     fs::create_dir_all(&prepare).unwrap();
     fs::write(prepare.join("state.json"), b"{}").unwrap();
 
@@ -586,7 +586,7 @@ fn directory_holding_only_host_preparation_is_claimed() {
 fn reset_keeps_host_preparation() {
     let dir = TestDir::new("ployzd-state");
     let mut store = LocalMachineStore::open(&dir.0).unwrap();
-    let prepare = dir.0.join(ployzd::machine::PREPARE_DIR_NAME);
+    let prepare = dir.0.join(ployz_core::PREPARE_DIR_NAME);
     fs::create_dir_all(&prepare).unwrap();
     fs::write(prepare.join("state.json"), b"{}").unwrap();
 
@@ -599,7 +599,7 @@ fn reset_keeps_host_preparation() {
             .unwrap()
             .map(|entry| entry.unwrap().file_name())
             .collect::<Vec<_>>(),
-        vec![std::ffi::OsString::from(ployzd::machine::PREPARE_DIR_NAME)]
+        vec![std::ffi::OsString::from(ployz_core::PREPARE_DIR_NAME)]
     );
 }
 

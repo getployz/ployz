@@ -9,7 +9,7 @@ The model in `core/crates/ployz-verify/src/bridge_notes.rs` explores the two not
 
 ## What the model copies
 
-**What hosts each step.** One `ployzd` process runs on the Machine. Each daemon start runs `NetworkPlane::start` (`core/crates/ployzd/src/daemon.rs:276`), whose `ensure_docker_network` (`:687-716`) loads both notes (`:708-709`), settles the bridge's shape and readdresses it when its IPv6 shape is wrong (`:712`, `:731-741`), pins its members (`:713`) and starts the members `Stopped` names (`:714`). The Machine API is built and served only after `NetworkPlane::start` returns (`core/crates/ployzd/src/daemon.rs:353-378`, `:411-417` of that file), so the operator's own steps on a Container, `ContainerStep::Start`, `Stop` and `Hold` (`core/crates/ployzd/src/machine/local_machine/container.rs:1099-1136`), run only between daemon starts. The model offers them only while `Process::Serving`, after a start returned and before the next one. Docker's restart policy acts at any step. A crash ends the process: the in-memory `Stopped`, `Pins` and member list go, and the files and Docker's state stay. Each Docker call is one atomic step, and so is each `atomic_write` (`core/crates/ployzd/src/filesystem.rs:13-26`).
+**What hosts each step.** One `ployzd` process runs on the Machine. Each daemon start runs `NetworkPlane::start` (`core/crates/ployzd/src/daemon.rs:274`), whose `ensure_docker_network` (`:687-716`) loads both notes (`:708-709`), settles the bridge's shape and readdresses it when its IPv6 shape is wrong (`:712`, `:731-741`), pins its members (`:713`) and starts the members `Stopped` names (`:714`). The Machine API is built and served only after `NetworkPlane::start` returns (`core/crates/ployzd/src/daemon.rs:347-372`, `:411-417` of that file), so the operator's own steps on a Container, `ContainerStep::Start`, `Stop` and `Hold` (`core/crates/ployzd/src/machine/local_machine/container.rs:1099-1136`), run only between daemon starts. The model offers them only while `Process::Serving`, after a start returned and before the next one. Docker's restart policy acts at any step. A crash ends the process: the in-memory `Stopped`, `Pins` and member list go, and the files and Docker's state stay. Each Docker call is one atomic step, and so is each `atomic_write` (`core/crates/ployzd/src/filesystem.rs:13-26`).
 
 **The steps,** `BridgeNotes::daemon`, one arm per statement, each printing its lines in the story:
 - `At::Load`: `Stopped::load` and `Pins::load` (`:708-709`).
@@ -282,7 +282,7 @@ Each of the 57 rows was made unreachable alone this way, and each turned these t
 
 ## Bounds and blind spots
 
-**The model has no clock.** Nothing in this code waits on time: each step is a call, a write or another actor's move, and the bounds count events, not seconds. `extend_systemd_start_timeout` (`core/crates/ployzd/src/daemon.rs:945-970`) extends a timeout and bounds no duration; a start that runs past it is killed, which the model's crash covers.
+**The model has no clock.** Nothing in this code waits on time: each step is a call, a write or another actor's move, and the bounds count events, not seconds. `extend_systemd_start_timeout` (`core/crates/ployzd/src/daemon.rs:939-964`) extends a timeout and bounds no duration; a start that runs past it is killed, which the model's crash covers.
 
 **The bounds,** each with the state counts and the tests that go red when it drops or lifts by one, from fresh runs at this PR's head. Every lift but the two noted below kept every test green, and `scratch_rows` printed the same broken `always` properties and unreached rows as the clean head for each model.
 
@@ -364,14 +364,14 @@ ROWS   unreached: Docker attaches a detached member it starts on a dynamic addre
 - **A failed listing**, in the readdress and in the pin pass, each returning its own way: modelled, `FAILED_LISTINGS`.
 - **Docker refuses a connect**, then answers `connect(None)` either way: modelled, `REFUSED_CONNECTS`.
 - **`settle`'s three answers**: modelled through `Policy` and the run state. A running member under no restart policy is stopped and never noted (`:1185`).
-- **`ensure_docker_network_shape` returning Err** (`:712`). The `?` skips the pin pass and `Stopped::start`, and `NetworkPlane::start`'s Err fails the daemon start (`core/crates/ployzd/src/daemon.rs:276`). Not modelled; each Err reaches the states of a crash at that step. An inspect that fails with anything but a 404 (`:779`), and a found bridge that is `Stale` and not removed, `Attached` or `Unowned` (`:743-776`), return before any write. Docker refusing the bridge in both shapes (`:880-889`), via `:781` or the readdress's `:739`, leaves no bridge, the state of a crash just after `At::Remove`; the readdress's rejoins before it return (`:846-849`), and with no bridge they connect nothing.
+- **`ensure_docker_network_shape` returning Err** (`:712`). The `?` skips the pin pass and `Stopped::start`, and `NetworkPlane::start`'s Err fails the daemon start (`core/crates/ployzd/src/daemon.rs:274`). Not modelled; each Err reaches the states of a crash at that step. An inspect that fails with anything but a 404 (`:779`), and a found bridge that is `Stale` and not removed, `Attached` or `Unowned` (`:743-776`), return before any write. Docker refusing the bridge in both shapes (`:880-889`), via `:781` or the readdress's `:739`, leaves no bridge, the state of a crash just after `At::Remove`; the readdress's rejoins before it return (`:846-849`), and with no bridge they connect nothing.
 
 **Left out**, with nothing in the model that stands for it:
 - **The owed address as a property.** The fallback's success is modelled, and so is `finish` clearing the note for a member it rejoined (`pins.rs:83`), so a member attached on a dynamic address while the note owes another is reached as a row, "Stopped::start starts a member attached on a dynamic address while the address note owes another". No property says the owed address is kept.
 - A `docker` command someone runs on the Machine outside Ployz.
 - Docker's own restart of its containers when the Docker daemon restarts.
 - A corrupt or unreadable note (`stopped.rs:27-43`, `pins.rs:26-42`).
-- `complete_reset`, which removes every `data_dir` file but the state, lock and prepare entries (`core/crates/ployzd/src/machine/store.rs:736-748`).
+- `complete_reset`, which removes every `data_dir` file but the state, lock and prepare entries (`core/crates/ployzd/src/machine/store.rs:737-749`).
 - Any second Machine.
 
 A green model says nothing about them. Cover the code with:

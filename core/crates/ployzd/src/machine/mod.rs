@@ -52,8 +52,6 @@ mod record_tests;
 #[cfg(test)]
 mod register_tests;
 
-pub const DEFAULT_DATA_DIR: &str = "/var/lib/ployz";
-pub const PREPARE_DIR_NAME: &str = "prepare";
 const DOCKER_VERSION_TIMEOUT: Duration = Duration::from_secs(2);
 const STORAGE_OBSERVATION_TIMEOUT: Duration = Duration::from_secs(2);
 

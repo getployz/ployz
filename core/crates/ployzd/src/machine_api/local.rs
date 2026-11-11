@@ -10,9 +10,9 @@ use ployz_core::{
     CapabilityAdvertisement, CertificateMaterialChange, CertificateMaterialPublished,
     ClusterDoorsDeclared, ClusterNamed, ContainerId, ContainerList, ContainerObservation,
     ContractDescription, EndpointSelected, EnvironmentValues, LiveLogTarget, LocalMachinePhase,
-    LogMetadata, LogOrigin, MachineLogService, MachineRpc, ManagementScope, OpaquePayload,
-    PROTOCOL_MAJOR, RetainedEnvReply, RoutedAddresses, RoutesRead, Rpc, RpcError, RpcErrorCode,
-    RpcRequestBody, RpcResponse, SelectEndpointRequest, WantedCopy, op,
+    LogMetadata, LogOrigin, MachineLayout, MachineLogService, MachineRpc, ManagementScope,
+    OpaquePayload, PROTOCOL_MAJOR, RetainedEnvReply, RoutedAddresses, RoutesRead, Rpc, RpcError,
+    RpcErrorCode, RpcRequestBody, RpcResponse, SelectEndpointRequest, WantedCopy, op,
 };
 use tonic::{Request, Response, Status};
 
@@ -30,8 +30,6 @@ use crate::{
     runtime_watch::{RuntimeWatch, RuntimeWatchStream},
     sealed_env::{self, Lines, SealedRecord},
 };
-
-const DEFAULT_OBSERVE_SOCKET: &str = "/run/ployz/observe.sock";
 
 #[derive(Clone)]
 pub struct MachineService {
@@ -112,7 +110,9 @@ impl MachineService {
     ) -> Self {
         Self {
             local: LocalMachine::new(owner).with_cluster(cluster),
-            observe: crate::observe::ObserveClient::new(PathBuf::from(DEFAULT_OBSERVE_SOCKET)),
+            observe: crate::observe::ObserveClient::new(
+                MachineLayout::production().observe_socket(),
+            ),
             ingest: ImageIngest::new(None, None),
             machine_api_port: MACHINE_API_PORT,
             runtime_watch: Arc::default(),

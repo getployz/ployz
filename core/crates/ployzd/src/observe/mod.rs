@@ -38,7 +38,6 @@ use layout::{LogFileName, StoreRoot};
 use tokio::net::UnixListener;
 
 const DOCKER_LOG_FILE: &str = "container.log";
-pub const SOCKET_FILE: &str = "observe.sock";
 const LOCK_FILE: &str = "harvester.lock";
 
 /// Runs the harvester, which holds the log files of every Ployz container in
@@ -63,7 +62,7 @@ pub async fn run(run_dir: &Path, data_dir: &Path) -> io::Result<()> {
     let store = StoreRoot::under(&docker_root);
     let _lock = lock_store(&store)?;
     store.prepare()?;
-    let listener = bind_socket(&run_dir.join(SOCKET_FILE))?;
+    let listener = bind_socket(&ployz_core::MachineLayout::observe_socket_in(run_dir))?;
     tracing::info!(store = %store.path().display(), "holding Ployz container logs");
     tokio::spawn(serve::serve(listener, store.clone()));
     // The harvester's startup cleanup deletes raw hours older than a day, so

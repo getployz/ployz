@@ -131,9 +131,7 @@ pub(super) fn create_user_and_directories(
             ["--add", user, PLOYZ_USER],
         )?;
     }
-    let data = paths.data_dir.to_string_lossy();
-    // ployz.socket recreates run_dir on boot, but the installer's MutationGate needs it before the units exist.
-    let run = paths.run_dir.to_string_lossy();
+    let (data, run) = directory_arguments(paths);
     let mode = format!("{PLOYZ_DIR_MODE:04o}");
     run_host(
         "create Ployz directories",
@@ -143,6 +141,14 @@ pub(super) fn create_user_and_directories(
         ],
     )?;
     Ok(())
+}
+
+/// The data and run directories `install -d` creates, spelled as the installer was handed them.
+fn directory_arguments(paths: &InstallPaths) -> (String, String) {
+    let data = paths.layout.data_dir().to_string_lossy().into_owned();
+    // ployz.socket recreates run_dir on boot, but the installer's MutationGate needs it before the units exist.
+    let run = paths.layout.run_dir().to_string_lossy().into_owned();
+    (data, run)
 }
 
 pub(super) fn verify_software_prerequisites(paths: &InstallPaths) -> Result<(), Error> {
@@ -168,7 +174,7 @@ pub(super) fn verify_software_prerequisites(paths: &InstallPaths) -> Result<(), 
             message: "the Ployz service account is missing; run ployzd install without --software-only first".into(),
         });
     }
-    for path in [&paths.data_dir, &paths.run_dir] {
+    for path in [paths.layout.data_dir(), paths.layout.run_dir()] {
         if !path.is_dir() {
             return Err(Error::Command {
                 stage: "software-only preflight".into(),
@@ -189,7 +195,7 @@ pub(super) async fn install_units(paths: &InstallPaths) -> Result<(), Error> {
         .arg("--bin-dir")
         .arg(&paths.bin_dir)
         .arg("--run-dir")
-        .arg(&paths.run_dir)
+        .arg(paths.layout.run_dir())
         .arg("--systemd-dir")
         .arg(&paths.systemd_dir)
         .kill_on_drop(true);
@@ -204,7 +210,9 @@ pub(super) async fn install_units(paths: &InstallPaths) -> Result<(), Error> {
     match output.status.code() {
         Some(0) => Ok(()),
         // Releases before install-units reject the subcommand as a usage error.
-        Some(USAGE_ERROR) => write_units(&paths.bin_dir, &paths.run_dir, &paths.systemd_dir),
+        Some(USAGE_ERROR) => {
+            write_units(&paths.bin_dir, paths.layout.run_dir(), &paths.systemd_dir)
+        }
         _ => {
             let stderr = String::from_utf8_lossy(&output.stderr).trim().to_owned();
             Err(Error::Command {
@@ -241,7 +249,7 @@ pub fn write_units(bin_dir: &Path, run_dir: &Path, systemd_dir: &Path) -> Result
     )?;
     write_file_atomically(
         &systemd_dir.join("ployz-volume-plugin.socket"),
-        volume_plugin_socket_unit(),
+        &volume_plugin_socket_unit(),
         "write Volume plugin socket unit",
     )?;
     write_file_atomically(
@@ -324,14 +332,15 @@ WantedBy=sockets.target
     )
 }
 
-fn volume_plugin_socket_unit() -> &'static str {
-    "\
+fn volume_plugin_socket_unit() -> String {
+    format!(
+        "\
 [Unit]
 Description=Ployz Docker Volume plugin socket
 Before=docker.service
 
 [Socket]
-ListenStream=/run/docker/plugins/ployz.sock
+ListenStream={}
 SocketMode=0660
 DirectoryMode=0755
 Accept=no
@@ -339,7 +348,9 @@ Service=ployz-volume-plugin.service
 
 [Install]
 WantedBy=sockets.target
-"
+",
+        crate::VOLUME_PLUGIN_SOCKET
+    )
 }
 
 fn volume_plugin_service_unit(bin_dir: &Path) -> String {
@@ -535,7 +546,7 @@ pub(super) async fn verify_running_daemon(
             ));
         }
     }
-    verify_daemon_contract(&paths.run_dir.join("ployz.sock"), target).await
+    verify_daemon_contract(&paths.socket(), target).await
 }
 
 /// The process systemd currently runs as `ployz.service`'s main process.
@@ -628,12 +639,76 @@ mod tests {
 
     #[test]
     fn machine_api_socket_unit_listens_where_the_daemon_serves() {
-        let unit = machine_api_socket_unit(Path::new(super::super::DEFAULT_RUN_DIR));
+        let layout = ployz_core::MachineLayout::production();
+        let unit = machine_api_socket_unit(layout.run_dir());
         let listen = unit
             .lines()
             .find_map(|line| line.strip_prefix("ListenStream="))
             .unwrap();
-        assert_eq!(listen, super::super::DEFAULT_SOCKET_PATH);
+        assert_eq!(listen, "/run/ployz/ployz.sock");
+        assert_eq!(layout.socket().as_os_str(), listen);
+    }
+
+    /// Pinned from `machine_api_socket_unit` and the `install -d` arguments as `main` built them
+    /// from the same typed roots, which the standard-path guard accepts.
+    #[test]
+    fn accepted_roots_keep_their_spelling_in_the_socket_unit_and_install_arguments() {
+        let repeated = InstallPaths::system("/var//lib/ployz", "/run//ployz");
+        assert_eq!(
+            machine_api_socket_unit(repeated.layout.run_dir()),
+            "\
+[Unit]
+Description=Ployz Machine API socket
+
+[Socket]
+ExecStartPre=/usr/bin/install -d -m 0750 -o ployz -g ployz /run//ployz
+ListenStream=/run//ployz/ployz.sock
+SocketMode=0660
+SocketGroup=ployz
+Accept=no
+
+[Install]
+WantedBy=sockets.target
+"
+        );
+        assert_eq!(
+            directory_arguments(&repeated),
+            ("/var//lib/ployz".to_owned(), "/run//ployz".to_owned())
+        );
+
+        let trailing = InstallPaths::system("/var/lib/ployz/", "/run/ployz/");
+        assert_eq!(
+            machine_api_socket_unit(trailing.layout.run_dir()),
+            "\
+[Unit]
+Description=Ployz Machine API socket
+
+[Socket]
+ExecStartPre=/usr/bin/install -d -m 0750 -o ployz -g ployz /run/ployz/
+ListenStream=/run/ployz//ployz.sock
+SocketMode=0660
+SocketGroup=ployz
+Accept=no
+
+[Install]
+WantedBy=sockets.target
+"
+        );
+        assert_eq!(
+            directory_arguments(&trailing),
+            ("/var/lib/ployz/".to_owned(), "/run/ployz/".to_owned())
+        );
+    }
+
+    #[test]
+    fn volume_plugin_socket_unit_listens_where_the_plugin_serves() {
+        assert_eq!(
+            crate::VOLUME_PLUGIN_SOCKET,
+            "/run/docker/plugins/ployz.sock"
+        );
+        assert!(
+            volume_plugin_socket_unit().contains("\nListenStream=/run/docker/plugins/ployz.sock\n")
+        );
     }
 
     #[test]

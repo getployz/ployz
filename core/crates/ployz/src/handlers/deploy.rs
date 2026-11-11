@@ -617,7 +617,7 @@ fn run_here(
         &super::config_path(matches)?,
         direct,
         context,
-        Path::new(crate::connect::DEFAULT_LOCAL_SOCKET),
+        &ployz_core::MachineLayout::production().socket(),
     ) {
         Ok(selected) => selected.connections,
         // Nothing named and no Cluster to reach: the runner records that nothing ran.
