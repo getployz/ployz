@@ -45,7 +45,7 @@ sequenceDiagram
 - GitHub-hosted runner isolation between jobs.
 - The builder workflow at the commit the rule pins. It is the code that asks GitHub for the tokens, so it attests what it built and which key sealed its secrets.
 - The repository's own code on the approved branch. Anyone who can push there deploys. That is the rule's intent.
-- Keys the Machine already trusts (Devices and passkeys, from thread A), for the signatures on rules, build approvals and reviews.
+- Keys the Machine already trusts (Devices and passkeys, from thread A), for the signatures on rules, commit approvals and reviews.
 
 It does not trust Cloud's rows, Cloud's OIDC check, Cloud's Build Receipts, Uploaded Source, image tags, a webhook, the grant endpoint Cloud names, or any commit, ref, version or input Cloud passes the runner.
 
@@ -123,7 +123,7 @@ Claim                                 aud = "ployz-build:" + hex(SHA-256(canonic
   policy      PolicyDigest
   commit      CommitSha                the commit the builder checked out
   authority   Head
-            | Approved(StatementDigest)  a person's BuildApproval (D6)
+            | Approved(ApprovalDigest)   a person's CommitApproval (D6)
             | Review(StatementDigest)    a person's PreviewReview (D7)
   stage       Grant { holder: K, recipient: R }
             | Built { image: ImageDigest, attest: A }
@@ -163,7 +163,7 @@ The image a Machine admits therefore names an attest key the Machine recognises.
 | --- | --- | --- |
 | RS256 signature, `kid` in the issuer's JWKS | The JWKS the Machine fetched from the fixed issuer | GitHub |
 | `iss` | `https://token.actions.githubusercontent.com` | Machine constant |
-| `exp`, `nbf`, `iat` | The Machine's clock, with thread A's skew rule | Machine |
+| `exp`, `nbf`, `iat` | The Machine's clock, with thread A's skew rule. At creation, a live `CommitApproval` naming the token's Service and commit waives this check (D6). | Machine |
 | `repository_id`, `repository_owner_id` | The rule | Signed rule |
 | `ref_type == branch`, `ref` | The rule's branch. A preview rule takes any other branch for a trusted push, and the parent's branch for a review. | Signed rule |
 | `event_name` in `events` | The rule | Signed rule |
@@ -179,14 +179,14 @@ The image a Machine admits therefore names an attest key the Machine recognises.
 | Authority | Required |
 | --- | --- |
 | `Head` | `C == sha == head`, where head is `GET https://api.github.com/repositories/<repository_id>/git/ref/heads/<branch>` read now by this Machine, for the branch in `ref` |
-| `Approved(d)` | A `BuildApproval` whose digest is d, signed by a trusted key, naming this rule, generation, Service and C (D6). C must be the branch head or one of its ancestors: `GET /repositories/<id>/compare/<C>...<branch>`, read now by this Machine, answers `identical` or `ahead`. `behind` (a descendant never merged) and `diverged` are refused. A run on the rule's branch with `event_name == workflow_dispatch`. |
+| `Approved(d)` | A `CommitApproval` whose digest is d, signed by a trusted key, naming this rule, generation, Service and C (D6). C must be the branch head or one of its ancestors: `GET /repositories/<id>/compare/<C>...<branch>`, read now by this Machine, answers `identical` or `ahead`. `behind` (a descendant never merged) and `diverged` are refused. A run on the rule's branch with `event_name == workflow_dispatch`. |
 | `Review(d)` | A `PreviewReview` whose digest is d, signed per the preview rule's signer rule, naming this preview rule, generation and C (D7). A run on the parent's branch with `event_name == workflow_dispatch`. |
 
 A `commit` input with authority `Head` fails, because C differs from `sha`. Without a signed statement no other authority exists. So a dispatch on the parent's head with an attacker's commit as input gets no grant, and no secret opens.
 
 **At grant** (`MintBuildGrant` with a rule, a token, and for `Approved` or `Review` the signed statement). The rule verifies, this Machine is in `machines`, the generation is current, the token passes, the stage is `Grant { K, R }` for the holder the request names, the commit's authority holds, and the `jti` is unused. The Machine consumes the `jti` in thread A's consumption log until `exp`. The Sealed record Cloud relays must hash to the `secrets` digest of the Service in the rule, or in the preview rule for a review. Then it mints the grant for K, remembering the rule, generation, Service, commit and authority, and serves the secrets sealed to R as above.
 
-**At creation** (`EnsureContainer` with a rule and a token in place of a deploy approval). The rule verifies and the token passes with `stage = Built { image, attest }`. `attest` is this Machine's A. The commit's authority holds again at this moment: `Head` needs `commit == head` now, and `Review` needs the signed review. `Approved` builds never reach creation through a rule. Their deploy is a person's thread C approval (D6). The spec's image is content-addressed (thread C's `content_addressed`) and its digest is `image`. `PayloadDigest::of(spec with image emptied)` equals the rule's `template` for the slot's Service. The Machine then writes an accepted-build record, (rule, generation, Service, commit, image). A later creation of the same image under the same generation may use that record in place of an unexpired token. It still needs the authority check above. The Machine keeps one hook record per (rule, Service), naming the generation and commit whose hook ran, so one push runs its hook once. A force push back to an earlier commit replaces that record and can run that commit's approved hook again. The generation is checked again when the accepted-build record is written, but a creation already past that write when the rule is approved again or ended still completes with the earlier, approved settings.
+**At creation** (`EnsureContainer` with a rule and a token in place of a deploy approval). The rule verifies and the token passes with `stage = Built { image, attest }`. `attest` is this Machine's A. The commit's authority holds again at this moment: `Head` needs `commit == head` now and a claim built under `Head`, and `Review` needs the signed review. A live `CommitApproval` naming the Service and commit replaces the head read, for a claim built under `Head` or `Approved` (D6). The spec's image is content-addressed (thread C's `content_addressed`) and its digest is `image`. `PayloadDigest::of(spec with image emptied)` equals the rule's `template` for the slot's Service. The Machine then writes an accepted-build record, (rule, generation, Service, commit, image). A later creation of the same image under the same generation may use that record in place of an unexpired token. It still needs the authority check above. The Machine keeps one hook record per (rule, Service), naming the generation and commit whose hook ran, so one push runs its hook once. A force push back to an earlier commit replaces that record and can run that commit's approved hook again. The generation is checked again when the accepted-build record is written, but a creation already past that write when the rule is approved again or ended still completes with the earlier, approved settings.
 
 **Lifecycle steps** on old copies (Hold, Out, Stop, Start, Remove) follow thread C's `admit_deploy_step`. They are admitted for Containers in the rule's Namespace on Machines it names, while the proof passes, and nothing is consumed.
 
@@ -214,7 +214,7 @@ Every check is on facts this Machine reads itself. No Machine acts on another Ma
 | Attempt by a compromised Cloud | Refused by |
 | --- | --- |
 | **Substituted source.** It dispatches the workflow and tells the runner to build commit X, or dispatches it on branch `attacker`. | With `Head`, C must equal `sha` and the head. With X as input and no signed statement naming X, no authority holds, so no grant is minted and no secret opens. A run on another ref fails `ref` and `workflow_ref`. |
-| **Reviewed-commit dispatch.** It dispatches on the parent's head with an attacker fork commit as `commit`, hoping the parent rule's grant releases the parent's secrets. | The grant audience names the fork commit. `Head` fails, and no `PreviewReview` or `BuildApproval` names it. Refused before `Mint::check` opens anything. |
+| **Reviewed-commit dispatch.** It dispatches on the parent's head with an attacker fork commit as `commit`, hoping the parent rule's grant releases the parent's secrets. | The grant audience names the fork commit. `Head` fails, and no `PreviewReview` or `CommitApproval` names it. Refused before `Mint::check` opens anything. |
 | **Substituted secrets endpoint.** It names its own iroh endpoint as the grant Machine and serves its own value for a Sealed bootstrap URL. | Its response does not open with A, so the builder stops. If it also relays its own key as A, the image token names that key, and every Machine refuses `attest`. |
 | **Substituted settings.** It sends `EnsureContainer` with the built image and `privileged: true`, a new Sealed variable, or a host bind. | The spec with its image emptied no longer hashes to `template`. `Mismatch { field: "a payload" }`. |
 | **Substituted settings, at build time.** It gives the runner other build args or a registry cache. | The builder puts the digest of the policy it used in `aud`. The Machine computes `aud` from the rule's policy, so the grant is refused before any secret opens, and the image token never matches. |
@@ -264,12 +264,29 @@ Thread Y's alternatives were a deploy key per repository (H2), a customer-owned 
 
 ## A person deploys a built image (D6)
 
-A deploy of a commit that is not the head, such as a rollback, has no `Head` authority. A person supplies it in two signed steps, both by keys that may sign a thread C deploy approval.
+A deploy of a commit that is not the head, such as a rollback, has no `Head` authority. A person supplies it by signing a statement that names the commit, with a key that may sign a thread C deploy approval:
 
-1. **Build authority.** The person's client signs `BuildApproval { cluster, rule, generation, service, commit C, issued_at, expires_at, signer }`. It has thread C's 15-minute window. Cloud dispatches the rule's workflow on the rule's branch with `commit = C`. The grant Machine checks `Approved(d)`, including that C is the branch head or an ancestor of it, so a person's approval can only rebuild code that was pushed to the approved branch. The secrets then go to R as for any build. A `BuildApproval` is not needed when the client already holds a token for C, below.
-2. **Deploy.** The client verifies the image token itself. That means the RS256 signature against GitHub's JWKS fetched by the client, and every claim and the audience against the rule, with `commit == C`, `authority == Approved(d)` or `Head`, and `attest` equal to the Cluster's A. A is read from a Machine over the Device's own connection, or taken from the image token the client last verified under a `Head` deploy. The client ignores `exp`, because the person, not freshness, is now the authority. It then signs thread C's `DeployApproval` with `image = <repository>@<D>` in its own fresh window. The Machine checks that approval exactly as thread C does. It sees a content-addressed image a person approved, and no token is involved.
+```text
+CommitApproval                        purpose: Workflow
+  cluster      SealingPublicKey
+  rule         RuleId
+  generation   u64
+  service      ServiceName
+  commit       CommitSha
+  issued_at, expires_at                thread C's 15-minute window
+  signer
+```
 
-Rolling back to an image built earlier skips step 1. The client verifies the token Cloud stored with that build. If GitHub has rotated that token's key out of its JWKS, the client cannot verify it, and it rebuilds C under step 1. The person's `DeployApproval` window starts after the build, so a long build never expires it.
+The approval replaces only the branch-head read. Every other check stays the Machine's, on its own facts, exactly as for a push:
+
+- **Build.** When no image of C is left, Cloud dispatches the rule's workflow on the rule's branch with `commit = C`, and the builder's claim names `Approved(d)`, d being the approval's digest. The grant Machine checks the approval, a `workflow_dispatch` run on the rule's branch, and that C is the branch head or an ancestor of it: `GET /repositories/<id>/compare/<C>...<branch>`, read now by this Machine, answers `identical` or `ahead`. So a person's approval can only rebuild code that was pushed to the approved branch. The secrets then go to R as for any build.
+- **Deploy.** A creation carries the rule, the image token, the claim and a live approval for its Service and C. The Machine verifies the rule's signature against its own trusted keys and marks its generation, verifies the approval against the same keys, the rule, the generation and its clock, and checks the token's signature and claims against GitHub's keys and the rule. It ignores the token's lifetime only here, because the person, not freshness, is the authority. It recomputes the audience with its own attest key, requires the image the token names and the rule's template, and admits a claim built under `Head` or `Approved`. For a claim built under `Approved`, GitHub's `sha` is the head the dispatch ran at, so only the audience binds the commit.
+
+A rollback to an image built earlier needs no build. The Machine checks the token Cloud stored with that build. If GitHub has rotated that token's key out of its key set, or the rule was approved again since, the Machine refuses, naming the key or the generation, and the image builds again under an approval. A build that outlasts the approval's window needs a second approval for the deploy. The client signs it after the build, and the Deployment waits for it.
+
+A rollback under an ended rule is refused, at grant and at creation. A Machine that never saw a newer generation admits the older one, as it does for a push.
+
+*Changed on 2026-11-11.* The first design had the client check the image token itself, against keys, a rule, a generation floor and an attest key it read through Cloud, then sign thread C's `DeployApproval` over the image digest. A digest is not something a person can judge, so the client signed a verdict over relayed inputs. It is withdrawn: the client now fetches no key, reads no floor and verifies no token. It shows each Service and commit and signs.
 
 ## Preview inheritance (checkpoint C3)
 
@@ -393,6 +410,7 @@ Cloud dispatches the parent's workflow on `source.branch` with `commit = X`. A f
 - **Cloud verifies the OIDC token and tells the Machine.** That is today's design (`dashboard/src/modules/config-store/store-github-builds.server.ts:239`), and Cloud's verdict is the thing under attack.
 - **Binding the grant Machine's Management Identity in the rule.** The approver's client learns that identity from Cloud, and the builder cannot verify the rule's signature. A Cluster-derived attest key that every Machine recomputes needs neither.
 - **A digest of opened secret values in the rule.** The approver would need the plaintext, and a hash of a low-entropy secret lets Cloud guess it.
+- **The client verifies a built image's token and signs a deploy approval over its digest (D6's first design).** Every input the client checked came through Cloud: the rule, the trusted keys, the generation floor, the attest key and the token. The Machine verifies instead, and the person signs only what they can judge, a commit.
 - **Head evidence by deploy key, customer token, or an independent verifier service.** The integrity comes from TLS to GitHub, so the credential's owner does not matter. See above.
 - **GitHub artifact attestations (Sigstore).** They need more verifier machinery for the same trust, and their availability for private repositories on every plan is unknown.
 - **The grant Machine signs a build receipt that other Machines trust.** That is one Machine acting on another's record, which is bet 6's red flag. A GitHub-signed audience lets every Machine check for itself.
