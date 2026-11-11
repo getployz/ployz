@@ -3,6 +3,7 @@
 //! This client names the repositories each Machine received; each Machine chooses
 //! which of their build images are superseded and keeps anything a Container uses.
 
+use crate::cluster::Call;
 use std::{collections::BTreeMap, time::Duration};
 
 use ployz_core::{
@@ -86,14 +87,19 @@ async fn clean(
 ) -> Result<MachineCleanupResult, RpcError> {
     let target = MachineTarget::from(&machine_id);
     let contract = client
-        .invoke::<op::DescribeContract>(DescribeContractRequest {}, &target, None)
-        .await?;
+        .call_shared::<op::DescribeContract>(DescribeContractRequest {}, Call::once().to(&target))
+        .await
+        .map_err(crate::connect::rpc_error)?;
     if !contract.supports(PRUNE_IMAGES_CAPABILITY) {
         return Ok(MachineCleanupResult::Unsupported);
     }
     let removed = client
-        .invoke::<op::PruneImages>(PruneImagesRequest { repositories }, &target, None)
-        .await?;
+        .call_shared::<op::PruneImages>(
+            PruneImagesRequest { repositories },
+            Call::once().to(&target),
+        )
+        .await
+        .map_err(crate::connect::rpc_error)?;
     Ok(MachineCleanupResult::Cleaned {
         removals: removed.results,
     })

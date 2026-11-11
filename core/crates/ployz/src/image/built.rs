@@ -5,6 +5,7 @@
 //! for that destination. Build delivery and Deploy's peer lookup route through
 //! it.
 
+use crate::cluster::Call;
 use ployz_build::BuiltImage;
 use ployz_core::{ImageSummary, ListImagesRequest, MachineObservation};
 
@@ -123,13 +124,19 @@ impl Source {
         // Docker's reference filter does not match repository@digest; read the
         // whole store and compare identities.
         let store = cancellation
-            .race(client.call::<op::ListImages>(ListImagesRequest::default(), Some(&target)))
+            .race(
+                client
+                    .call::<op::ListImages>(ListImagesRequest::default(), Call::read().to(&target)),
+            )
             .await??;
         if !store.containerd_store {
             return Err(PushError::UnsupportedImageStore);
         }
         let opened = cancellation
-            .race(client.call::<op::EnsureImageIngest>(EnsureImageIngestRequest {}, Some(&target)))
+            .race(client.call::<op::EnsureImageIngest>(
+                EnsureImageIngestRequest {},
+                Call::keyed().to(&target),
+            ))
             .await?
             .map_err(|error| ingest_error(rpc_error(error)))?;
         Ok(Self {
@@ -199,7 +206,7 @@ impl Source {
                     source: self.destination,
                     platform: variant.to_owned(),
                 },
-                Some(&MachineTarget::from(&machine.id)),
+                Call::keyed().to(&MachineTarget::from(&machine.id)),
             ))
             .await?
             .map(|_| ())

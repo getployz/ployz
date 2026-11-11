@@ -1,3 +1,4 @@
+use ployz::connect::Call;
 use std::{
     collections::{BTreeMap, BTreeSet, VecDeque},
     sync::{
@@ -469,7 +470,7 @@ async fn lazy_first_connection_falls_through_to_a_healthy_machine() {
     assert_eq!(client.connection().to_string(), live.to_string());
     assert_eq!(
         client
-            .call::<op::DescribeContract>(DescribeContractRequest {}, None)
+            .call::<op::DescribeContract>(DescribeContractRequest {}, Call::read())
             .await
             .unwrap(),
         description
@@ -1407,7 +1408,7 @@ async fn machine_discovery_uses_the_same_rpc_over_tcp_and_unix() {
         .unwrap();
         assert_eq!(
             client
-                .call::<op::DescribeContract>(DescribeContractRequest {}, None)
+                .call::<op::DescribeContract>(DescribeContractRequest {}, Call::read())
                 .await
                 .unwrap(),
             description
@@ -1420,7 +1421,7 @@ async fn machine_discovery_uses_the_same_rpc_over_tcp_and_unix() {
         .unwrap();
     assert_eq!(
         fallback
-            .call::<op::DescribeContract>(DescribeContractRequest {}, None)
+            .call::<op::DescribeContract>(DescribeContractRequest {}, Call::read())
             .await
             .unwrap(),
         description
@@ -1439,7 +1440,7 @@ async fn machine_discovery_uses_the_same_rpc_over_tcp_and_unix() {
         .unwrap();
     assert_eq!(
         direct
-            .call::<op::DescribeContract>(DescribeContractRequest {}, None)
+            .call::<op::DescribeContract>(DescribeContractRequest {}, Call::read())
             .await
             .unwrap(),
         description
@@ -1467,7 +1468,7 @@ async fn machine_discovery_uses_the_same_rpc_over_tcp_and_unix() {
     );
     assert_eq!(
         failed_over
-            .call::<op::DescribeContract>(DescribeContractRequest {}, None)
+            .call::<op::DescribeContract>(DescribeContractRequest {}, Call::read())
             .await
             .unwrap(),
         description
@@ -1493,7 +1494,7 @@ async fn unary_call_retries_unavailable_after_redial() {
 
     assert_eq!(
         client
-            .call::<op::DescribeContract>(DescribeContractRequest {}, None)
+            .call::<op::DescribeContract>(DescribeContractRequest {}, Call::read())
             .await
             .unwrap(),
         description
@@ -1513,7 +1514,7 @@ async fn unary_call_does_not_retry_remote_or_not_found() {
         .unwrap()
         .push_back(DescribeOutcome::Status(Status::not_found("missing")));
     let error = client
-        .call::<op::DescribeContract>(DescribeContractRequest {}, None)
+        .call::<op::DescribeContract>(DescribeContractRequest {}, Call::read())
         .await
         .unwrap_err();
     assert!(
@@ -1536,7 +1537,7 @@ async fn unary_call_does_not_retry_remote_or_not_found() {
             cause: Vec::new(),
         }));
     let error = client
-        .call::<op::DescribeContract>(DescribeContractRequest {}, None)
+        .call::<op::DescribeContract>(DescribeContractRequest {}, Call::read())
         .await
         .unwrap_err();
     assert!(
@@ -1565,7 +1566,7 @@ async fn unary_call_gives_up_after_four_unavailable_attempts() {
     ]);
 
     let error = client
-        .call::<op::DescribeContract>(DescribeContractRequest {}, None)
+        .call::<op::DescribeContract>(DescribeContractRequest {}, Call::read())
         .await
         .unwrap_err();
     assert!(
@@ -1605,7 +1606,7 @@ async fn stream_after_redial_uses_the_replaced_channel() {
         )));
 
     client
-        .call::<op::DescribeContract>(DescribeContractRequest {}, None)
+        .call::<op::DescribeContract>(DescribeContractRequest {}, Call::read())
         .await
         .unwrap();
     assert_eq!(connects.load(Ordering::SeqCst), 2);
@@ -1661,7 +1662,7 @@ async fn redial_rechecks_expected_machine_identity() {
             "transport dropped",
         )));
     let error = client
-        .call::<op::DescribeContract>(DescribeContractRequest {}, None)
+        .call::<op::DescribeContract>(DescribeContractRequest {}, Call::read())
         .await
         .unwrap_err();
     assert!(error.to_string().contains("identity mismatch"));

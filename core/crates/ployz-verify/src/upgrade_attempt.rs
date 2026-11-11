@@ -181,7 +181,7 @@ enum Caller {
     /// The Inspect RPC (local_machine.rs:463, :512), through `latest`.
     Inspect,
     /// A resend of the same attempt (local_machine/upgrade.rs:27-31), through `replay`. The
-    /// CLI's poll (ployz handlers/server/upgrade.rs:75-87, :700-701) and Cloud's resend
+    /// CLI's poll (ployz handlers/server/upgrade.rs poll_upgrade at :80-98, :700-701) and Cloud's resend
     /// (dashboard server-upgrade.server.ts:288-292) send it.
     Replay,
     /// Leave's `depart` (local_machine.rs:938-961), through `latest`, then `finish_mutation`.

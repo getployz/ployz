@@ -9,6 +9,7 @@
 //! Reasons and failures are typed; their `Display` is the CLI's English. Convergence never
 //! returns an error: whatever moved before a failure stays in its result.
 
+use crate::cluster::{Call, Deadline};
 use std::collections::BTreeSet;
 use std::fmt;
 
@@ -734,14 +735,16 @@ async fn image_id(
     to: &MachineRef,
 ) -> Result<String, MoveFailure> {
     client
-        .invoke::<op::InspectContainer>(
+        .call_shared::<op::InspectContainer>(
             InspectContainerRequest {
                 container_id: *container,
             },
-            &MachineTarget::from(&from.id),
-            Some(TARGET_RPC_TIMEOUT),
+            Call::once()
+                .to(&MachineTarget::from(&from.id))
+                .within(Deadline::Target(TARGET_RPC_TIMEOUT)),
         )
         .await
+        .map_err(crate::connect::rpc_error)
         .map_err(|error| MoveFailure::ReadImage {
             from: from.clone(),
             to: to.clone(),

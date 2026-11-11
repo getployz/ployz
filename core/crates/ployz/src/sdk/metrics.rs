@@ -5,6 +5,7 @@
 //! and two grids can differ near the 23 hour raw boundary, so the sum lands on
 //! the widest step any Machine used.
 
+use crate::cluster::Call;
 use std::collections::BTreeMap;
 
 use futures_util::future::join_all;
@@ -114,8 +115,14 @@ pub async fn metric_history(
         let request = request.clone();
         async move {
             let answer = client
-                .read::<op::MetricHistory>(request, &MachineTarget::from(&machine_id))
-                .await;
+                .call::<op::MetricHistory>(
+                    request,
+                    Call::read()
+                        .to(&MachineTarget::from(&machine_id))
+                        .budget(crate::connect::target_read_timeout()),
+                )
+                .await
+                .map_err(crate::connect::rpc_error);
             (machine_id, answer)
         }
     }))
@@ -147,7 +154,7 @@ impl Asked {
     async fn cluster(client: &Client) -> Result<Self, RpcError> {
         let listed = client
             .clone()
-            .call::<op::ListMachines>(ListMachinesRequest {}, None)
+            .call::<op::ListMachines>(ListMachinesRequest {}, Call::read())
             .await
             .map_err(RpcError::from)?;
         let mut asked = Self {

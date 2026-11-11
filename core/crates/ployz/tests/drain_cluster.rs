@@ -1,3 +1,4 @@
+use ployz::connect::Call;
 use std::{
     collections::{BTreeMap, BTreeSet},
     process::{self, Command},
@@ -442,7 +443,7 @@ async fn deploy(
     requested: &RequestedServiceSpec,
 ) -> ServiceId {
     let machines = client
-        .call::<op::ListMachines>(ListMachinesRequest {}, None)
+        .call::<op::ListMachines>(ListMachinesRequest {}, Call::read())
         .await
         .unwrap()
         .machines;
@@ -578,7 +579,7 @@ async fn image_ids(
         let details = client
             .call::<op::InspectContainer>(
                 InspectContainerRequest { container_id: *id },
-                Some(&MachineTarget::from(&container.machine_id)),
+                Call::read().to(&MachineTarget::from(&container.machine_id)),
             )
             .await
             .unwrap();
@@ -622,7 +623,7 @@ async fn wait_accepts_services(client: &mut ployz::connect::Client, id: &Machine
         "Machine's accepts_services flag",
         async || {
             let machines = client
-                .call::<op::ListMachines>(ListMachinesRequest {}, None)
+                .call::<op::ListMachines>(ListMachinesRequest {}, Call::read())
                 .await
                 .unwrap()
                 .machines;

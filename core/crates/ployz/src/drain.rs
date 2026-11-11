@@ -27,7 +27,7 @@ use serde::{Deserialize, Serialize};
 use tokio_util::sync::CancellationToken;
 use ts_rs::TS;
 
-use crate::cluster::{RoleSetting, RoleWaitError, visible_machine, wait_for_role};
+use crate::cluster::{Call, Deadline, RoleSetting, RoleWaitError, visible_machine, wait_for_role};
 use crate::connect::{Client, ConnectError, TARGET_RPC_TIMEOUT};
 use crate::deploy::cleanup::Copy;
 use crate::deploy::{Converged, LastIn, Moving, can_move, converge, named};
@@ -381,20 +381,21 @@ async fn turn_services_off(
     cancellation: &CancellationToken,
 ) -> Result<(), DrainError> {
     let target = MachineTarget::from(id);
-    let update = client.invoke::<op::UpdateMachine>(
+    let update = client.call_shared::<op::UpdateMachine>(
         UpdateMachineRequest {
             update: MachineUpdate {
                 accepts_services: Some(false),
                 ..MachineUpdate::default()
             },
         },
-        &target,
-        Some(TARGET_RPC_TIMEOUT),
+        Call::once()
+            .to(&target)
+            .within(Deadline::Target(TARGET_RPC_TIMEOUT)),
     );
     tokio::select! {
         biased;
         () = cancellation.cancelled() => return Err(DrainError::Cancelled),
-        updated = update => updated.map_err(DrainError::Refused)?,
+        updated = update => updated.map_err(|error| DrainError::Refused(crate::connect::rpc_error(error)))?,
     };
     wait_for_role(client, id, RoleSetting::ServicesOff, cancellation)
         .await
