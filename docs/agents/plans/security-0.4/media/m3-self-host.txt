@@ -1,0 +1,32 @@
+Lane 10, partly: local mode at the PR head, on the verify Cloud from this checkout, not the release image. The App key and client secret reach Cloud's processes from their files at start; GITHUB_MINTER_URL is unset. 2026-11-11T01:22:48Z
+
+A read token the local authority minted, against GitHub:
+authority mode: local
+read set, every repository
+  PUT contents/x            -> 403 Resource not accessible by integration
+  POST ployz-build dispatch -> 403 Resource not accessible by integration
+  GET the repository        -> 200 
+read set, lab-service
+  PUT contents/x            -> 403 Resource not accessible by integration
+  POST ployz-build dispatch -> 403 Resource not accessible by integration
+  GET the repository        -> 200 
+
+The same through the minter, for comparison:
+authority mode: minter
+read set, every repository
+  PUT contents/x            -> 403 Resource not accessible by integration
+  POST ployz-build dispatch -> 403 Resource not accessible by integration
+  GET the repository        -> 200 
+read set, lab-service
+  PUT contents/x            -> 403 Resource not accessible by integration
+  POST ployz-build dispatch -> 403 Resource not accessible by integration
+  GET the repository        -> 200 
+
+A push to Ployz-test/lab-preview#9 (760ac75461ee8e6a674e7cecd14983d1ecc73022) in local mode:
+  web: deployed
+  build web from 760ac75: built on machine-2 
+    GitHub skipped it: Ployz-test/lab-preview has no .github/workflows/ployz-build.yml on its default branch
+  check: Ployz · ready to merge completed success, app ployz-lab
+  minter audit lines in local mode: 0
+
+Not run: connect (needs a person's GitHub sign-in in a browser), and the release image built at head.

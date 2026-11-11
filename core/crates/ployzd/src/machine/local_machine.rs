@@ -227,10 +227,10 @@ pub enum Error {
     /// stopped. The refusal names `capability` in its details.
     #[error("{}", departure_text(.capability))]
     DepartureRefused { capability: &'static str },
-    /// Device enforcement refused an Operator's `SetIngressDoors` or `SetPrivateAccess`,
-    /// which no statement admits yet. The refusal names `capability` in its details.
-    #[error("{}", ployz_core::INGRESS_REFUSED_BY_ENFORCEMENT)]
-    IngressRefused { capability: &'static str },
+    /// Device enforcement refused an Operator's `SetPrivateAccess` turning Private Access on
+    /// without an approval of its auth key.
+    #[error("This Server joins a tailnet only with your approval: {0}")]
+    PrivateAccessRefused(ployz_core::authority::AuthorityRefusal),
     /// Device enforcement refused an Operator's `SeedVolume`, which no Volume approval
     /// admits yet. The refusal names `capability` in its details.
     #[error("{}", ployz_core::SEED_REFUSED_BY_ENFORCEMENT)]
@@ -280,6 +280,8 @@ pub enum Error {
     TunnelToken(crate::sealed_env::OpenError),
     #[error("could not write the tunnel token for the Tunnel Connector")]
     TunnelTokenFile(#[source] std::io::Error),
+    #[error("could not record whether the Tunnel Door is closed")]
+    TunnelDoorMarker(#[source] std::io::Error),
     #[error("Ingress Proxy container {container_id} is {runtime} right after starting")]
     DoorNotRunning {
         container_id: ContainerId,

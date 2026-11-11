@@ -5,8 +5,7 @@ use serde_json::{Value, json};
 use ts_rs::TS;
 
 use super::{
-    At, ConfigError, ServiceConfig, ServiceImageCredentials, ServiceSource, Setting,
-    parse_service_config,
+    At, ConfigError, ServiceConfig, Setting, keep_branch, parse_service_config, source_cell,
 };
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -126,7 +125,7 @@ pub fn compare_service_settings(
 ) -> Vec<(ServiceSettingChange, Option<At>)> {
     // The source is one row, as Sync moves it and Discard takes it, but for its git branch.
     let source = |config: &ServiceConfig| {
-        Some(source_cell(&config.settings.source)).filter(|cell| *cell != default_value("source"))
+        Some(source_cell(&config.settings.source)).filter(|cell| *cell != Setting::Source.default())
     };
     let (before, after) = (baseline.and_then(source), source(current));
     // A git branch that comes or goes with its source is the source's change.
@@ -162,7 +161,7 @@ pub fn compare_service_settings(
         if before == after || (switched && path == "source.branch") {
             continue;
         }
-        if baseline.is_null() && *after == default_value(path) {
+        if baseline.is_null() && *after == setting.default() {
             continue;
         }
         changes.push(change(
@@ -258,42 +257,6 @@ pub fn restore_service_setting(
 pub(super) fn at<'a>(value: &'a Value, path: &str) -> &'a Value {
     path.split('.')
         .fold(value, |value, key| value.get(key).unwrap_or(&Value::Null))
-}
-
-/// A source as its row holds it: all of it but its git branch, its credentials by
-/// presence.
-pub(super) fn source_cell(source: &ServiceSource) -> Value {
-    let mut cell = json!(source);
-    let fields = cell.as_object_mut().expect("a source is an object");
-    fields.remove("branch");
-    if let ServiceSource::Image { credentials, .. } = source {
-        let configured = matches!(credentials, ServiceImageCredentials::Configured { .. });
-        fields.insert("credentials".into(), json!(configured));
-    }
-    cell
-}
-
-/// `source` as a Service on `current` takes it: the git branch is the Service's own, so
-/// it keeps the one it has, else the one `source` carries.
-pub(super) fn keep_branch(current: &ServiceSource, mut source: ServiceSource) -> ServiceSource {
-    if let (ServiceSource::Git { branch: own, .. }, ServiceSource::Git { branch, .. }) =
-        (current, &mut source)
-    {
-        branch.clone_from(own);
-    }
-    source
-}
-
-pub(super) fn default_value(path: &str) -> Value {
-    match path {
-        "source" => json!({"type": "empty", "version": 1, "rootDir": "/"}),
-        "healthcheck" => json!({"type": "none"}),
-        "restartPolicy" => json!("unless-stopped"),
-        "maxRetries" => json!(10),
-        "replicas" => json!(1),
-        "build.buildMethod" => json!("railpack"),
-        _ => Value::Null,
-    }
 }
 
 /// A change at `path`, in the row at `at` of its node.

@@ -7,8 +7,8 @@ use std::str::FromStr;
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use serde_json::{Value, json};
 
+use super::Setting;
 use crate::ConfigFileName;
-use crate::config::service_changes::{at, default_value, source_cell};
 use crate::config::{
     ConfigError, Generator, SavedConfigIntent, SavedEnvironmentIntent as Intent,
     SavedServiceIntent, SavedVariableIntent, SavedVolumeIntent, SecretCiphertext, VariableValue,
@@ -43,102 +43,6 @@ pub enum At {
     ConfigMount(String),
     /// The variable of this key.
     Variable(String),
-}
-
-/// A Service setting a row can address. Declaration order is landing order.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub enum Setting {
-    Source,
-    Branch,
-    PrivateDns,
-    ManagedHostnames,
-    Routes,
-    PreDeployCommand,
-    StartCommand,
-    Healthcheck,
-    RestartPolicy,
-    MaxRetries,
-    UpdateOrder,
-    Replicas,
-    CpuLimit,
-    MemLimit,
-    BuildMethod,
-    DockerfilePath,
-    BuildCommand,
-}
-
-impl Setting {
-    /// Every Setting, in landing order.
-    pub const ALL: [Self; 17] = [
-        Self::Source,
-        Self::Branch,
-        Self::PrivateDns,
-        Self::ManagedHostnames,
-        Self::Routes,
-        Self::PreDeployCommand,
-        Self::StartCommand,
-        Self::Healthcheck,
-        Self::RestartPolicy,
-        Self::MaxRetries,
-        Self::UpdateOrder,
-        Self::Replicas,
-        Self::CpuLimit,
-        Self::MemLimit,
-        Self::BuildMethod,
-        Self::DockerfilePath,
-        Self::BuildCommand,
-    ];
-
-    /// Where it is in a Service's configuration, as the review names it.
-    #[must_use]
-    pub const fn path(self) -> &'static str {
-        match self {
-            Self::Source => "source",
-            Self::Branch => "source.branch",
-            Self::PrivateDns => "privateDns",
-            Self::ManagedHostnames => "managedHostnames",
-            Self::Routes => "routes",
-            Self::PreDeployCommand => "preDeployCommand",
-            Self::StartCommand => "startCommand",
-            Self::Healthcheck => "healthcheck",
-            Self::RestartPolicy => "restartPolicy",
-            Self::MaxRetries => "maxRetries",
-            Self::UpdateOrder => "updateOrder",
-            Self::Replicas => "replicas",
-            Self::CpuLimit => "cpuLimit",
-            Self::MemLimit => "memLimit",
-            Self::BuildMethod => "build.buildMethod",
-            Self::DockerfilePath => "build.dockerfilePath",
-            Self::BuildCommand => "build.command",
-        }
-    }
-
-    fn of_path(path: &str) -> Option<Self> {
-        Self::ALL.into_iter().find(|setting| setting.path() == path)
-    }
-
-    /// Whether a new node arrives with it on its node row rather than as a row.
-    pub(super) fn carried(self) -> bool {
-        match self {
-            Self::Source
-            | Self::Branch
-            | Self::PrivateDns
-            | Self::ManagedHostnames
-            | Self::Routes => true,
-            Self::PreDeployCommand
-            | Self::StartCommand
-            | Self::Healthcheck
-            | Self::RestartPolicy
-            | Self::MaxRetries
-            | Self::UpdateOrder
-            | Self::Replicas
-            | Self::CpuLimit
-            | Self::MemLimit
-            | Self::BuildMethod
-            | Self::DockerfilePath
-            | Self::BuildCommand => false,
-        }
-    }
 }
 
 impl At {
@@ -565,40 +469,10 @@ fn cells(env: &Intent, node: NodeRef, suffix: &str) -> BTreeMap<At, Cell> {
         }
         NodeRef::Service(service) => service,
     };
-    let config = json!(service.config);
     let mut cells = BTreeMap::new();
     for setting in Setting::ALL {
-        let value = match setting {
-            Setting::Source => source_cell(&service.config.source),
-            Setting::Routes => {
-                let mut domains: Vec<_> = service.config.routes.iter().map(|r| &r.hostname).collect();
-                domains.sort();
-                json!(domains)
-            }
-            Setting::ManagedHostnames => json!(
-                service
-                    .config
-                    .managed_hostnames
-                    .iter()
-                    .map(|h| json!({"prefix": h.prefix.strip_suffix(suffix).unwrap_or(&h.prefix), "targetPort": h.target_port}))
-                    .collect::<Vec<_>>()
-            ),
-            Setting::Branch
-            | Setting::PrivateDns
-            | Setting::PreDeployCommand
-            | Setting::StartCommand
-            | Setting::Healthcheck
-            | Setting::RestartPolicy
-            | Setting::MaxRetries
-            | Setting::UpdateOrder
-            | Setting::Replicas
-            | Setting::CpuLimit
-            | Setting::MemLimit
-            | Setting::BuildMethod
-            | Setting::DockerfilePath
-            | Setting::BuildCommand => at(&config, setting.path()).clone(),
-        };
-        if !(value.is_null() || value == default_value(setting.path()) || value == json!([])) {
+        let value = setting.read(&service.config, suffix);
+        if !(value.is_null() || value == setting.default() || value == json!([])) {
             cells.insert(At::Setting(setting), Cell::Value(value));
         }
     }

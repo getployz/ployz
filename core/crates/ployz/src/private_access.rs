@@ -8,7 +8,12 @@ use ployz_core::{
     MachineName, MachineObservation, PartialResult, PlatformPurpose, PrivateAccessProblem,
     PrivateAccessSet, QualifiedService, RowStanding, RpcError, RpcErrorCode,
     SET_PRIVATE_ACCESS_CAPABILITY, Sealing, SealingPublicKey, ServiceObservation,
-    SetPrivateAccessRequest, private_access_sealed_key, seal_platform,
+    SetPrivateAccessRequest,
+    authority::{
+        KeyApproval, PrivateAccessApproval, PrivateAccessTerms, Signed, Signer, SignerKey,
+        Timestamp,
+    },
+    private_access_sealed_key, seal_platform,
 };
 use serde::{Deserialize, Serialize};
 use tokio_util::sync::CancellationToken;
@@ -159,6 +164,47 @@ pub(crate) fn seal_key(observed: &Access, key: &str) -> Result<Ciphertext, Failu
     })
 }
 
+/// An auth key sealed to the Cluster in the person's own client, with their approval of
+/// it, which Cloud relays and cannot open or change.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
+#[serde(deny_unknown_fields)]
+pub struct PrivateAccessOn {
+    pub sealed_auth_key: Ciphertext,
+    /// Absent when no Server enforces Device approval, so a person with no passkey can
+    /// still turn Private Access on. A Server that enforces refuses the key without it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub approval: Option<KeyApproval>,
+}
+
+/// `signer`'s approval of `sealed`, the auth key sealed to the Cluster whose Sealing Key
+/// is `cluster`, for the longest lifetime a Machine takes.
+///
+/// # Errors
+///
+/// Fails when the approval has no canonical form.
+pub(crate) fn device_approval(
+    signer: &Signer,
+    cluster: SealingPublicKey,
+    sealed: &Ciphertext,
+) -> Result<KeyApproval, Failure> {
+    let approval = PrivateAccessApproval::drafted(&PrivateAccessTerms {
+        cluster,
+        sealed_auth_key: sealed.clone(),
+        issued_at: Timestamp::now(),
+        signer: SignerKey::Device(signer.public().into()),
+    });
+    Signed::sign(&approval, signer)
+        .map(KeyApproval::Signed)
+        .map_err(|error| {
+            Failure::caused(
+                RpcErrorCode::Internal,
+                "Could not sign the Private Access approval",
+                error,
+            )
+        })
+}
+
 /// What one Machine's daemon answered, or why it wasn't asked to the end.
 enum Answer {
     Set(Box<PrivateAccessSet>),
@@ -188,9 +234,9 @@ async fn set_all<C: MachineOperations>(
         .await
 }
 
-/// Place the router on every Machine, with the auth key `sealed`, `AT_ONCE` at a time.
-/// A router that was placed and did not serve is the Machine's failure, and stays for a
-/// corrected key to replace.
+/// Place the router on every Machine, with the auth key `sealed` and a person's
+/// `approval` of it, `AT_ONCE` at a time. A router that was placed and did not serve is
+/// the Machine's failure, and stays for a corrected key to replace.
 ///
 /// # Errors
 ///
@@ -199,6 +245,7 @@ pub(crate) async fn turn_on<C: MachineOperations>(
     client: &C,
     machines: Vec<AccessMachine>,
     sealed: Ciphertext,
+    approval: Option<KeyApproval>,
     cancel: &CancellationToken,
 ) -> AccessChanged {
     let mut changed = AccessChanged::default();
@@ -213,6 +260,7 @@ pub(crate) async fn turn_on<C: MachineOperations>(
     let request = SetPrivateAccessRequest {
         enabled: true,
         sealed_auth_key: Some(sealed),
+        approval,
     };
     let answers = set_all(client, &asked, &request, cancel).await;
     for (machine, answer) in asked.into_iter().zip(answers) {
@@ -264,6 +312,7 @@ pub(crate) async fn turn_off<C: MachineOperations>(
     let request = SetPrivateAccessRequest {
         enabled: false,
         sealed_auth_key: None,
+        approval: None,
     };
     let answers = set_all(client, &asked, &request, cancel).await;
     for (machine, answer) in asked.into_iter().zip(answers) {

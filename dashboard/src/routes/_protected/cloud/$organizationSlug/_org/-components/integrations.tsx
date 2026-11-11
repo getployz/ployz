@@ -17,6 +17,7 @@ import {
   type PrivateAccessWant,
   TAILSCALE_MACHINES_URL,
 } from "#/modules/private-access/private-access";
+import { KeyNotApproved, sealAndApprove } from "#/modules/private-access/approved-key";
 import { setPrivateAccessServerFn } from "#/modules/private-access/private-access.functions";
 import { landAnswer, lastAnswerOptions, type PrivateAccessAnswer, privateAccessQueryOptions } from "#/modules/private-access/private-access.queries";
 
@@ -182,6 +183,7 @@ function ConnectForm({ organizationSlug, onCancel, onPending, onDone }: {
   onPending: (pending: boolean) => void;
   onDone: (changed: PrivateAccessChanged) => Promise<void>;
 }) {
+  const queryClient = useQueryClient();
   const [key, setKey] = useState("");
   const [busy, setBusy] = useState(false);
   const [refusal, setRefusal] = useState<string | null>(null);
@@ -191,11 +193,12 @@ function ConnectForm({ organizationSlug, onCancel, onPending, onDone }: {
     onPending(true);
     setRefusal(null);
     try {
-      const changed = await setPrivateAccessServerFn({ data: { organizationSlug, to: "on", authKey: key.trim() } });
+      const on = await sealAndApprove(queryClient, organizationSlug, key);
+      const changed = await setPrivateAccessServerFn({ data: { organizationSlug, to: "on", on } });
       setKey("");
       await onDone(changed);
     } catch (error) {
-      setRefusal(toErrorMessage(error, "Your servers didn't answer. Try again."));
+      setRefusal(error instanceof KeyNotApproved ? error.message : toErrorMessage(error, "Your servers didn't answer. Try again."));
     } finally {
       setBusy(false);
       onPending(false);

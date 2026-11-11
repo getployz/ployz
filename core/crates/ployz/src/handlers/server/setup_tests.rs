@@ -1,5 +1,6 @@
 //! Real setup RPC deadlines and Enroll resends under virtual time.
 
+use crate::cluster::{Call, Deadline, Wait};
 use std::{
     sync::{
         Arc,
@@ -177,10 +178,11 @@ async fn held_setup_rpcs_keep_the_mutation_and_read_deadlines() {
     .await;
     let started = Instant::now();
     let error = client
-        .call_unretried::<op::Enroll>(
+        .call_shared::<op::Enroll>(
             founder_request(&machine),
-            None,
-            crate::cluster::LIVE_MUTATION_REPLY_TIMEOUT,
+            Call::once().within(Deadline::MutationReply(
+                crate::cluster::LIVE_MUTATION_REPLY_TIMEOUT,
+            )),
         )
         .await
         .unwrap_err();
@@ -189,7 +191,10 @@ async fn held_setup_rpcs_keep_the_mutation_and_read_deadlines() {
     assert_eq!(enrolls.load(Ordering::SeqCst), 1);
     let started = Instant::now();
     let error = client
-        .call_repeatable::<op::Inspect>(InspectRequest::default(), None)
+        .call::<op::Inspect>(
+            InspectRequest::default(),
+            Call::read().waiting(Wait::standard()),
+        )
         .await
         .unwrap_err();
     assert_eq!(Instant::now() - started, Duration::from_secs(60));

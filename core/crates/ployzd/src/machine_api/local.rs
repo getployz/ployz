@@ -1213,15 +1213,7 @@ impl MachineRpc for MachineService {
         &self,
         request: Request<OpaquePayload>,
     ) -> Result<Response<OpaquePayload>, Status> {
-        let operator = from_operator(&request);
         let request = expect::<op::SetIngressDoors>(request)?;
-        if operator
-            && let Err(error) = self
-                .local
-                .admit_operator_ingress(ployz_core::SET_INGRESS_DOORS_CAPABILITY)
-        {
-            return local_error(error);
-        }
         finish(self.local.set_ingress_doors(request).await)
     }
 
@@ -1231,11 +1223,7 @@ impl MachineRpc for MachineService {
     ) -> Result<Response<OpaquePayload>, Status> {
         let operator = from_operator(&request);
         let request = expect::<op::SetPrivateAccess>(request)?;
-        if operator
-            && let Err(error) = self
-                .local
-                .admit_operator_ingress(ployz_core::SET_PRIVATE_ACCESS_CAPABILITY)
-        {
+        if operator && let Err(error) = self.local.admit_operator_private_access(&request) {
             return local_error(error);
         }
         finish(self.local.set_private_access(request).await)
@@ -1368,7 +1356,14 @@ fn local_failure(error: LocalMachineError) -> Result<RpcError, Status> {
                 },
             }),
         )),
-        LocalMachineError::IngressRefused { capability } => Err(build_refused(&error, capability)),
+        LocalMachineError::PrivateAccessRefused(_) => Err(ployz_core::rpc::hinted_status(
+            tonic::Code::PermissionDenied,
+            &error,
+            serde_json::json!({
+                "capability": ployz_core::PRIVATE_ACCESS_APPROVAL_CAPABILITY,
+                "next": "ployz private-access on from an approved device, or Connect in the dashboard with your passkey",
+            }),
+        )),
         LocalMachineError::VolumeRefused { capability } => Err(ployz_core::rpc::hinted_status(
             tonic::Code::PermissionDenied,
             &error,
@@ -1493,7 +1488,9 @@ fn local_failure(error: LocalMachineError) -> Result<RpcError, Status> {
                 serde_json::json!({ "capability": ployz_core::SET_INGRESS_TUNNEL_CAPABILITY }),
             )),
         LocalMachineError::TunnelToken(_) => Ok(RpcError::invalid_argument(error.to_string())),
-        LocalMachineError::DoorNotRunning { .. } | LocalMachineError::TunnelTokenFile(_) => {
+        LocalMachineError::DoorNotRunning { .. }
+        | LocalMachineError::TunnelTokenFile(_)
+        | LocalMachineError::TunnelDoorMarker(_) => {
             Ok(RpcError::caused(RpcErrorCode::Internal, &error))
         }
         LocalMachineError::Docker(error) => Ok(RpcError::from(&error)),

@@ -228,6 +228,7 @@ Named once in each PR body, then left alone.
 - A Server added from Cloud's install line ran Cloud's script as root before it joined (decision 3). A Cluster founded from that line trusts the first key that line installs (Appendix A gap 6).
 - A teardown a person approved runs in the order and at the time Cloud picks.
 - Cloud can leave a real Server out of the starting set. That's a drop. The Server stays awaiting activation and is named.
+- A secret typed into the dashboard trusts the dashboard: a compromised Cloud can supply the sealing key (or the page) and read it. F3 stops the key reaching an honest Cloud in plaintext; the CLI path that seals to a Device-pinned Cluster key is a follow-up.
 
 ## Program checklist
 
@@ -336,28 +337,28 @@ What users lose. On an enforcing Cluster with no signed channel, upgrades throug
 
 ## Keep ingress and Private Access running under enforcement (F3)
 
-Outcome. Under enforcement, Cloud starts and repairs the Ingress Proxy and its doors as it does with enforcement off, and the daemon renews certificates with Cloud unreachable. Turning Private Access on takes one passkey prompt, and turning it off takes none. Attack path closed. Cloud cannot turn on a Private Access router that joins a tailnet the customer did not approve, which would reach every Service on the mesh. Ingress doors run only images the daemon pins, so serving them unsigned crosses no part of the bar.
+Outcome. Under enforcement, Cloud starts and repairs the Ingress Proxy and its doors as it does with enforcement off, and the daemon renews certificates with Cloud unreachable. Turning Private Access on takes one passkey prompt, and turning it off takes none. Attack path closed. Cloud cannot turn on a Private Access router that joins a tailnet the customer did not approve, which would reach every Service on the mesh. Ingress doors run only images the daemon pins, so serving them unsigned crosses no part of the bar. Residual: A secret typed into the dashboard trusts the dashboard: a compromised Cloud can supply the sealing key (or the page) and read it. F3 stops the key reaching an honest Cloud in plaintext; the CLI path that seals to a Device-pinned Cluster key is a follow-up.
 
 **Depends on.** F1. Appendix A gap 2.
 
 **Files.**
 
-- [ ] Edit `core/crates/ployzd/src/machine_api/local.rs` so `set_ingress_doors` (`:1161`) no longer calls `admit_operator_deploy` under enforcement. It checks that each door's image is the daemon's pinned image and refuses any other, naming `ployz.ingress.doors.v1`. Class `Bound`.
-- [ ] Create `PrivateAccessApproval` in `core/crates/ployz-core/src/authority/` (`Workflow`, passkey-direct or Device, binding the Cluster and the digest of `sealed_auth_key`). Edit `SetPrivateAccessRequest` to carry it as an optional field. Add `PRIVATE_ACCESS_APPROVAL_CAPABILITY: ("ployz.private-access.approval.v1", Cluster)`.
+- [ ] Edit `core/crates/ployzd/src/machine_api/local.rs` so `set_ingress_doors` (`:1161`) no longer refuses an Operator under enforcement. `SetIngressDoorsRequest` names no image: the daemon places only its pinned Caddy and pause images, so there is no image to check. Class `Bound` ("the request names no image; the daemon places only its pinned images; the tunnel token is thread X's"). Corrected after F1: the plan first said to check and refuse a door image.
+- [ ] Create `PrivateAccessApproval` in `core/crates/ployz-core/src/authority/` (`Workflow`, passkey-direct or Device, binding the Cluster and the digest of `sealed_auth_key`). It travels as `KeyApproval`, D7b's `Review` shape: `Signed` from a Device, or `Passkey { body, assertion }` answering its own prompt over the body's Workflow signing input; a session browser key is refused. Edit `SetPrivateAccessRequest` to carry it as an optional field. Add `PRIVATE_ACCESS_APPROVAL_CAPABILITY: ("ployz.private-access.approval.v1", Cluster)`.
 - [ ] Edit `set_private_access` (`:1173`) so an Operator under enforcement needs the approval to turn on. Turning off needs none.
-- [ ] Edit `dashboard/src/modules/ingress/doors.server.ts` to stop treating enforcement as a refusal. Edit the Private Access settings flow to seal the key in the browser and ask the passkey once.
+- [ ] Edit the Private Access settings flow and the Approval card to seal the key in the browser and ask the passkey once, through a Node SDK entry that takes the pre-sealed key and its approval, so Cloud never sees the key. `doors.server.ts` had no enforcement refusal to remove.
 - [ ] Edit `docs/user/services/private-networking.md` and the enforcement section of `manage-servers.md`.
 
 **Verify, unit.**
 
-- [ ] `ployzd` tests. `SetIngressDoors` with the pinned image is admitted for an Operator under enforcement, and one with another image is refused. `SetPrivateAccess` on with no approval, and with an approval over another ciphertext, are refused. Off is admitted. Run `cargo nextest run -p ployzd ingress_doors private_access`.
+- [ ] `ployzd` tests. `SetIngressDoors` from an Operator under enforcement places only the pinned images, even when the request carries an extra `image` field. `SetPrivateAccess` on with no approval, and with an approval over another ciphertext, are refused. Off is admitted. Run `cargo nextest run -p ployzd ingress_doors private_access`.
 - [ ] F1's `authorization_tests` covers `SetPrivateAccess` as `Signed`.
 
 **Verify, live.** Seven lanes.
 
 - [ ] Lane 1. Regression lane against trunk. Enforcement off. Add a Server that accepts ingress at trunk and head. Save `f3-enforce-off.png`. Pass when its Ingress Proxy serves.
 - [ ] Lane 2. Enforcement on. Add the same Server. Save `f3-ingress.png`. Pass when its doors come up with no prompt.
-- [ ] Lane 3. Attacker harness. `SetIngressDoors` with a door image Cloud picked. Save `f3-door-image.png`. Pass when it is refused and `docker ps` shows the pinned image only.
+- [ ] Lane 3. Attacker harness. `SetIngressDoors` with an extra `image` field naming an image Cloud picked. Save `f3-door-image.png`. Pass when `docker ps` shows only the pinned images.
 - [ ] Lane 4. Stop the Boat Cloud and move the clock past a certificate's renewal window on one Server. Save `f3-renewal.png`. Pass when Caddy renews and the route still serves.
 - [ ] Lane 5. Enforcement on. Turn Private Access on from the dashboard. Save `f3-private-access.png`. Pass when one prompt appears and the router serves.
 - [ ] Lane 6. Attacker harness. `SetPrivateAccess` on with a key sealed by the harness. Save `f3-tailnet-refused.png`. Pass when it is refused and no router Container exists.

@@ -54,7 +54,48 @@ pub(crate) fn present(root: &Path) -> bool {
     token_dir(root).join(TUNNEL_TOKEN_FILE).is_file()
 }
 
+/// Present while a connector the Tunnel Door closing could not remove may still be in
+/// Docker. It is on disk, since the connector and its sealed token label outlive a
+/// reboot, and `/run` does not.
+fn closed_marker(root: &Path) -> PathBuf {
+    root.join("var/lib/ployz/tunnel-door-closed")
+}
+
+/// Record that the Tunnel Door is closed, before the connector is removed.
+pub(crate) fn mark_closed(root: &Path) -> io::Result<()> {
+    let path = closed_marker(root);
+    fs::create_dir_all(path.parent().expect("the marker has a parent"))?;
+    atomic_write(&path, b"", 0o600)
+}
+
+/// Forget the marker, once the Tunnel Door is open or no closed connector remains.
+pub(crate) fn clear_closed(root: &Path) -> io::Result<()> {
+    let path = closed_marker(root);
+    match fs::remove_file(&path) {
+        Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(()),
+        Err(error) => Err(error),
+        Ok(()) => fs::File::open(path.parent().expect("the marker has a parent"))?.sync_all(),
+    }
+}
+
+/// Whether the Tunnel Door was closed and its connector may remain.
+pub(crate) fn is_closed(root: &Path) -> bool {
+    closed_marker(root).exists()
+}
+
 impl ContainerRuntime {
+    pub(crate) fn mark_tunnel_door_closed(&self) -> io::Result<()> {
+        mark_closed(&self.machine_root)
+    }
+
+    pub(crate) fn clear_tunnel_door_closed(&self) -> io::Result<()> {
+        clear_closed(&self.machine_root)
+    }
+
+    pub(crate) fn tunnel_door_closed(&self) -> bool {
+        is_closed(&self.machine_root)
+    }
+
     pub(crate) fn write_tunnel_token(&self, token: &[u8]) -> io::Result<()> {
         write(&self.machine_root, token)
     }

@@ -1,5 +1,6 @@
 //! `ployz debug`: verification-only verbs.
 
+use crate::cluster::{Call, Deadline};
 use clap::{ArgMatches, Command};
 use ployz_core::{MachineTarget, RpcErrorCode, RpcRequest, RpcRequestBody, RpcResponseBody};
 use serde_json::json;
@@ -61,7 +62,13 @@ fn send(root: &ArgMatches, target: Option<MachineTarget>) -> Result<(), Error> {
     with_client(root, |client| {
         Box::pin(async move {
             let response = client
-                .invoke_raw(&request, path, target.as_ref(), Some(TARGET_RPC_TIMEOUT))
+                .call_raw(
+                    &request,
+                    path,
+                    Call::once()
+                        .toward(target.as_ref())
+                        .within(Deadline::Target(TARGET_RPC_TIMEOUT)),
+                )
                 .await
                 .map_err(ployz_core::RpcError::from)?;
             if let RpcResponseBody::Error(error) = response.body {

@@ -786,17 +786,22 @@ impl Client {
         to_json(&changed)
     }
 
-    /// Turn Private Access on or off on every Server: run the Tailscale router with
-    /// `auth_key`, sealed to the Cluster here, or remove it.
+    /// Turn Private Access on with the auth key `on` carries, sealed and approved in the
+    /// person's browser, or off when `on` is null.
+    ///
+    /// # Errors
+    ///
+    /// Returns a generated [`RpcError`] JSON payload when `on` is not
+    /// `PrivateAccessOn` data, the session is closed, or observation fails.
     #[napi(ts_return_type = "Promise<AccessChanged>")]
     pub async fn set_private_access(
         &self,
-        enabled: bool,
-        auth_key: Option<String>,
+        #[napi(ts_arg_type = "PrivateAccessOn | null")] on: Option<serde_json::Value>,
     ) -> Result<serde_json::Value> {
+        let on = on.map(from_js).transpose().map_err(invalid_argument)?;
         let changed = self
             .inner
-            .set_private_access(enabled, auth_key.as_deref())
+            .set_private_access(on)
             .await
             .map_err(rpc_to_napi)?;
         to_json(&changed)

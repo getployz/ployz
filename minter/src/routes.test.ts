@@ -85,7 +85,7 @@ describe("/v1/token", () => {
         json({ token: "ghs_wider", expires_at: "2099-01-01T00:00:00Z", permissions: { contents: "write" } }, 201),
     });
     const response = await minter.call("/v1/token", { installation_id: INSTALLATION });
-    expect(response.status).toBe(502);
+    expect(response).toEqual({ status: 502, body: { error: "github", operation: "installation_token_granted_more", failure: "overbroad" } });
     expect(JSON.stringify(response.body)).not.toContain("ghs_");
   });
 
@@ -310,12 +310,14 @@ describe("/v1/connect", () => {
         { id: 1, account: { login: "acme", type: "Organization", avatar_url: null }, suspended_at: null },
         { id: 2, account: { login: "octo", type: "User", avatar_url: "https://avatars.test/2" }, suspended_at: null },
         { id: 3, account: { login: "other", type: "Organization", avatar_url: null }, suspended_at: "2026-01-01T00:00:00Z" },
+        { id: 4, account: { login: "sso", type: "Organization", avatar_url: null }, suspended_at: null },
       ],
     }),
     "GET /user/memberships/orgs/acme": () => json({ state: "active", role: "admin" }),
+    "GET /user/memberships/orgs/sso": () => json({ message: "Resource protected by organization SAML enforcement." }, 403),
   };
 
-  it("returns the login and installations, and never the user token", async () => {
+  it("returns the login and installations, unknown where GitHub won't say who administers one, and never the user token", async () => {
     const minter = harness(connectRoutes);
     const response = await minter.call("/v1/connect", { code: CODE });
     expect(response.body).toEqual({
@@ -324,6 +326,7 @@ describe("/v1/connect", () => {
         { id: 1, account: { login: "acme", type: "Organization", avatar_url: null }, suspended_at: null, administers: true },
         { id: 2, account: { login: "octo", type: "User", avatar_url: "https://avatars.test/2" }, suspended_at: null, administers: true },
         { id: 3, account: { login: "other", type: "Organization", avatar_url: null }, suspended_at: "2026-01-01T00:00:00Z", administers: false },
+        { id: 4, account: { login: "sso", type: "Organization", avatar_url: null }, suspended_at: null, administers: null },
       ],
     });
     expect(JSON.stringify([response, minter.audit])).not.toContain(USER_TOKEN);
@@ -389,7 +392,31 @@ describe("the request", () => {
       [`POST /app/installations/${INSTALLATION}/access_tokens`]: () => new Response(JSON.stringify({ message: "rate limited" }), { status: 429, headers: { "retry-after": "30" } }),
     });
     const response = await minter.call("/v1/token", { installation_id: INSTALLATION });
-    expect(response).toEqual({ status: 502, body: { error: "github", operation: "installation_token", status: 429, retry_after: 30 } });
+    expect(response).toEqual({ status: 502, body: { error: "github", operation: "installation_token", failure: "status", status: 429, retry_after: 30 } });
     expect(minter.audit[0]).toMatchObject({ outcome: "failed", github_status: 429 });
+  });
+
+  it("tells a GitHub that never answered apart from one that answered a shape it can't read", async () => {
+    const mint = `POST /app/installations/${INSTALLATION}/access_tokens`;
+    const down = harness({ [mint]: () => { throw new TypeError("fetch failed"); } });
+    expect(await down.call("/v1/token", { installation_id: INSTALLATION }))
+      .toEqual({ status: 502, body: { error: "github", operation: "installation_token", failure: "unreachable" } });
+    const garbled = harness({ [mint]: () => json({ token: 7 }, 201) });
+    expect(await garbled.call("/v1/token", { installation_id: INSTALLATION }))
+      .toEqual({ status: 502, body: { error: "github", operation: "installation_token", failure: "unreadable" } });
+  });
+
+  it("reads a body cut off after its headers as unreachable, and a whole body that doesn't parse as unreadable", async () => {
+    const mint = `POST /app/installations/${INSTALLATION}/access_tokens`;
+    const cutOff = () => new Response(new ReadableStream<Uint8Array>({
+      start(controller) {
+        controller.enqueue(new TextEncoder().encode("{\"tok"));
+        controller.error(new TypeError("terminated"));
+      },
+    }), { status: 201 });
+    expect(await harness({ [mint]: cutOff }).call("/v1/token", { installation_id: INSTALLATION }))
+      .toEqual({ status: 502, body: { error: "github", operation: "installation_token", failure: "unreachable" } });
+    expect(await harness({ [mint]: () => new Response("{\"tok", { status: 201 }) }).call("/v1/token", { installation_id: INSTALLATION }))
+      .toEqual({ status: 502, body: { error: "github", operation: "installation_token", failure: "unreadable" } });
   });
 });

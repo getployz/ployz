@@ -4,9 +4,11 @@ import { afterAll, beforeAll, beforeEach, expect, it, vi } from "vitest";
 import { asTestDouble } from "#/lib/test-double";
 import type { ConfigStore } from "@ployz/sdk";
 import { CloudStore } from "#/modules/config-store/store-sdk.server";
+import { endClusterIngress } from "#/modules/cloudflare/cluster-gone.server";
 import { closeDoorsRun, closeStaleDoors, bindDoorsRun, executeDoorsOnce, freshSwitchDigest, requestDoorsSwitch, reviewSwitch } from "#/modules/ingress/doors.server";
 import { OrganizationRuntime, type ScopedRuntimeClientSession } from "#/modules/runtime/organization-runtime.server";
 import type { PloyzSession } from "#/modules/runtime/ployz.server";
+import { GithubAuthority } from "#/modules/github/github-authority.server";
 import { GithubApi } from "#/modules/github/github-observation.api";
 import { InngestClient } from "#/modules/inngest/client";
 import { AppConfig } from "#/server/config.server";
@@ -55,7 +57,9 @@ type StoreRows =
 /** The Store as a switch reads it: no Environment owns a Namespace unless a test says so, and a switch never writes to it. */
 const noOwners = ({ query }: { query: string }): StoreRows => query === "namespaces" ? { namespaces: [] } : { projects: [] };
 let storeViews = noOwners;
-const store = { open: Effect.succeed(asTestDouble<ConfigStore>()({ read: async (_organizationId: string, query: { query: string }) => storeViews(query) })) };
+/** Held by a test that pauses a switch inside a Store read. */
+let storeRead: () => Promise<void> = () => Promise.resolve();
+const store = { open: Effect.succeed(asTestDouble<ConfigStore>()({ read: async (_organizationId: string, query: { query: string }) => { await storeRead(); return storeViews(query); } })) };
 
 const inngest = new Inngest({ id: "doors-test" });
 vi.spyOn(inngest, "send").mockResolvedValue({ ids: [] });
@@ -64,15 +68,17 @@ vi.spyOn(inngest, "send").mockResolvedValue({ ids: [] });
 const unused = {
   config: asTestDouble<AppConfig["Service"]>()({}),
   github: asTestDouble<GithubApi["Service"]>()({}),
+  authority: asTestDouble<GithubAuthority["Service"]>()({}),
 };
 
-const run = <A, E>(effect: Effect.Effect<A, E, Database | OrganizationRuntime | CloudStore | InngestClient | AppConfig | GithubApi | SecretEncryption>) =>
+const run = <A, E>(effect: Effect.Effect<A, E, Database | OrganizationRuntime | CloudStore | InngestClient | AppConfig | GithubApi | GithubAuthority | SecretEncryption>) =>
   harness.runEffect(effect.pipe(
     Effect.provideService(OrganizationRuntime, runtime),
     Effect.provideService(CloudStore, store),
     Effect.provideService(InngestClient, inngest),
     Effect.provideService(AppConfig, unused.config),
     Effect.provideService(GithubApi, unused.github),
+    Effect.provideService(GithubAuthority, unused.authority),
   ));
 
 const setup = (state: "set_up" | "active" | "left" | "setting_up") => harness.pool.query(
@@ -102,6 +108,7 @@ beforeEach(async () => {
   sets.length = 0;
   session = answering();
   storeViews = noOwners;
+  storeRead = () => Promise.resolve();
   await harness.pool.query(`
     truncate table operation_outbox, "user", organization cascade;
     insert into organization (id, name, slug) values ('${ORG}', 'Acme', 'acme');
@@ -254,6 +261,36 @@ it("stops before the source moves on a name under the zone that no Deployment ac
   expect(await attempts()).toMatchObject([{ state: "failed", stage: "moving", failure: gap }]);
 });
 
+it("stops before any Door opens when a generated name would spell a custom domain under the zone, and says so in the review", async () => {
+  await setup("set_up");
+  await hosted();
+  session = answering((doors) => doors, Effect.succeed({ ...EMPTY_FRAME, containers: [serving("wk.acme.ployz.test"), serving("wk.example.com")] }));
+  storeViews = owning([{ kind: "generated", hostname: "wk.acme.ployz.test" }, { kind: "custom", hostname: "wk.example.com" }]);
+  const gap = "wk.example.com would be the generated domain of shop-prod/shop, and a custom domain already holds it. Remove the generated domain or the custom domain, deploy, then switch again.";
+  expect(await run(reviewSwitch(ORG, "tunnel"))).toEqual({
+    moves: [{ from: "wk.acme.ployz.test", to: "wk.example.com" }], kept: ["wk.example.com"], zone: "example.com", hostedName: "acme.ployz.test", gap,
+  });
+  const request = await asked("tunnel");
+  expect(await run(executeDoorsOnce(request, RUN))).toMatchObject({ state: "failed" });
+  expect(sets).toEqual([]);
+  expect(await stateNow()).toBe("set_up");
+  expect(await attempts()).toMatchObject([{ state: "failed", failure: gap }]);
+});
+
+it("opens no Door when a switch to public ports would spell a generated name like a custom domain, so the tunnel is never left beside open ports", async () => {
+  await setup("active");
+  await hosted();
+  session = answering((doors) => doors, Effect.succeed({ ...EMPTY_FRAME, containers: [serving("wk.example.com"), serving("wk.acme.ployz.test")] }));
+  storeViews = owning([{ kind: "generated", hostname: "wk.example.com" }, { kind: "custom", hostname: "wk.acme.ployz.test" }]);
+  const gap = "wk.acme.ployz.test would be the generated domain of shop-prod/shop, and a custom domain already holds it. Remove the generated domain or the custom domain, deploy, then switch again.";
+  expect((await run(reviewSwitch(ORG, "public"))).gap).toBe(gap);
+  const request = await asked("public");
+  expect(await run(executeDoorsOnce(request, RUN))).toMatchObject({ state: "failed" });
+  expect(sets).toEqual([]);
+  expect(await stateNow()).toBe("active");
+  expect(await attempts()).toMatchObject([{ state: "failed", failure: gap }]);
+});
+
 it("moves nothing when a Server doesn't take both doors, and says so", async () => {
   await setup("set_up");
   session = answering(() => ["public"]);
@@ -356,4 +393,24 @@ it("keeps a pending approval for a switch refused only for now, while Cloudflare
   await setup("setting_up");
   expect(await run(freshSwitchDigest(ORG, stored, { to: "tunnel" }))).toBe(stored);
   expect(await run(freshSwitchDigest(ORG, stored, { to: "public" }))).toBe(stored);
+});
+
+it.each(["public", "tunnel"] as const)("never lets a %s switch still running at removal flip the row of the Cluster set up after it", async (to) => {
+  await setup(to === "public" ? "active" : "set_up");
+  await hosted();
+  const request = await asked(to);
+  let release!: () => void;
+  let entered!: () => void;
+  const reading = new Promise<void>((resolve) => { entered = resolve; });
+  const gate = new Promise<void>((resolve) => { release = resolve; });
+  storeRead = () => { entered(); return gate; };
+  const old = run(executeDoorsOnce(request, RUN));
+  await reading;
+  await harness.runEffect(harness.database.transaction(endClusterIngress(ORG)));
+  expect(await attempts()).toMatchObject([{ state: "failed", failure: "The Cluster was removed." }]);
+    await setup("set_up");
+  release();
+  expect(await old).toMatchObject({ state: "failed" });
+  expect(await stateNow()).toBe("set_up");
+  expect(await attempts()).toMatchObject([{ state: "failed", failure: "The Cluster was removed." }]);
 });

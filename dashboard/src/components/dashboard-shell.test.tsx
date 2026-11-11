@@ -50,6 +50,7 @@ failOnMountedStore("Better Auth session", () => authClient.$store.atoms["session
 failOnRenderAfterTest();
 afterEach(() => {
   cleanup();
+  vi.restoreAllMocks();
   cleanStores(authClient.$store.atoms["session"]);
   document.cookie = "theme=; path=/; max-age=0";
   document.documentElement.classList.remove("light", "dark", "system");
@@ -215,6 +216,60 @@ it("lists Settings' sections under it in the rail, and on phones under the top b
   await waitFor(() => expect(router.state.location.search).toEqual({ scope: "project" }));
   await waitFor(() => expect(within(strip).getByRole("link", { name: "Project" }).getAttribute("aria-current")).toBe("page"));
   expect(within(rail).getByRole("link", { name: "Environment" }).getAttribute("aria-current")).toBeNull();
+});
+
+/** A phone strip 100px wide holding 300px of sections, the last one starting at 250px. */
+function stubPhoneStrip() {
+  const scroller = (el: Element) => el.parentElement?.tagName === "NAV" && el.parentElement.getAttribute("aria-label")?.endsWith("sections");
+  vi.spyOn(HTMLElement.prototype, "clientWidth", "get").mockImplementation(function (this: HTMLElement) { return scroller(this) ? 100 : 0; });
+  vi.spyOn(HTMLElement.prototype, "scrollWidth", "get").mockImplementation(function (this: HTMLElement) { return scroller(this) ? 300 : 0; });
+  vi.spyOn(HTMLElement.prototype, "getBoundingClientRect").mockImplementation(function (this: HTMLElement) {
+    const offset = scroller(this) ? 0 : this.textContent === "Project" ? 250 - (this.parentElement?.scrollLeft ?? 0) : 0 - (this.parentElement?.scrollLeft ?? 0);
+    const width = scroller(this) ? 100 : 50;
+    return { left: offset, right: offset + width, width, top: 0, bottom: 0, height: 0, x: offset, y: 0, toJSON() {} };
+  });
+}
+
+it("signals on a phone that the sections run past the strip's end", async () => {
+  stubPhoneStrip();
+  await show({ path: "/cloud/acme/store/production/settings" });
+  await screen.findByText("Environment preferences");
+  const scroller = screen.getByRole("navigation", { name: "Settings sections" }).firstElementChild;
+  expect(scroller?.getAttribute("data-overflow")).toBe("end");
+});
+
+it("scrolls a phone's current section into view and signals the sections before it", async () => {
+  stubPhoneStrip();
+  await show({ path: "/cloud/acme/store/production/settings?scope=project" });
+  await screen.findByText("Environment preferences");
+  const strip = screen.getByRole("navigation", { name: "Settings sections" });
+  const current = within(strip).getByRole("link", { name: "Project" });
+  expect(current.getAttribute("aria-current")).toBe("page");
+  const { left, right } = current.getBoundingClientRect();
+  expect(left).toBeGreaterThanOrEqual(0);
+  expect(right).toBeLessThanOrEqual(100);
+  expect(strip.firstElementChild?.getAttribute("data-overflow")).toBe("start");
+});
+
+it("reveals a phone's current section again after the strip resizes", async () => {
+  stubPhoneStrip();
+  const resized: (() => void)[] = [];
+  vi.stubGlobal("ResizeObserver", class {
+    constructor(callback: () => void) { resized.push(callback); }
+    observe() {}
+    disconnect() {}
+  });
+  await show({ path: "/cloud/acme/store/production/settings?scope=project" });
+  await screen.findByText("Environment preferences");
+  const strip = screen.getByRole("navigation", { name: "Settings sections" });
+  const scroller = strip.firstElementChild as HTMLElement;
+  // The browser clamps the scroll position to zero while the sections fit, as when a phone rotates to landscape and back.
+  scroller.scrollLeft = 0;
+  expect(within(strip).getByRole("link", { name: "Project" }).getBoundingClientRect().right).toBeGreaterThan(100);
+  await act(async () => { for (const callback of resized) callback(); });
+  const { left, right } = within(strip).getByRole("link", { name: "Project" }).getBoundingClientRect();
+  expect(left).toBeGreaterThanOrEqual(0);
+  expect(right).toBeLessThanOrEqual(100);
 });
 
 it("marks the avatar row as the current place on Account, with no rail entry of its own", async () => {

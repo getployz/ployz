@@ -4,6 +4,7 @@
 //! `confirm` executes the privately admitted plan to a Deploy Outcome. This module does not
 //! print, read stdin, or exit the process.
 
+use crate::cluster::Call;
 use std::collections::BTreeSet;
 use std::net::IpAddr;
 
@@ -393,11 +394,14 @@ async fn gather_deploy_snapshot(
             let id = machine.machine.id;
             reads.spawn(async move {
                 let result = client
-                    .read::<ployz_core::op::InspectStorage>(
+                    .call::<ployz_core::op::InspectStorage>(
                         ployz_core::InspectStorageRequest {},
-                        &ployz_core::MachineTarget::from(&id),
+                        Call::read()
+                            .to(&ployz_core::MachineTarget::from(&id))
+                            .budget(crate::connect::target_read_timeout()),
                     )
-                    .await;
+                    .await
+                    .map_err(crate::connect::rpc_error);
                 (id, result)
             });
         }

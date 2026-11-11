@@ -1,3 +1,4 @@
+use crate::cluster::{Call, Wait};
 use clap::ArgMatches;
 use ployz_core::{
     EnrollAs, EnrollRequest, EnrollmentSnapshot, InspectRequest, LocalMachinePhase, MachineId,
@@ -37,7 +38,10 @@ pub(in crate::handlers) fn add(root: &ArgMatches) -> Result<(), Error> {
         let mut entry = connect_context(matches, options.context()).await?;
         let snapshot = crate::enrollment::observe_enrollment(&mut entry).await?;
         let entry_id = entry
-            .call_repeatable::<op::Inspect>(InspectRequest::default(), None)
+            .call::<op::Inspect>(
+                InspectRequest::default(),
+                Call::read().waiting(Wait::standard()),
+            )
             .await?
             .id;
         let mut target_client = if no_install {

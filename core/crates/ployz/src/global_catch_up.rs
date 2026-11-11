@@ -14,6 +14,7 @@
 //! Private Access router is never copied either: the joiner's own daemon builds it
 //! through SetPrivateAccess from the sealed auth key an observed router carries.
 
+use crate::cluster::Call;
 use ployz_core::{
     AnonymousVolumes, BridgeEndpointCapacity, Ciphertext, ContainerKind, ContainerObservation,
     ContainerRefusalReason, ContainerRuntimeObservation, ContainerWant, CopyRotation, CreationKey,
@@ -141,14 +142,17 @@ impl CatchUpClient for Client {
         machine_id: &MachineId,
     ) -> Result<Option<BridgeEndpointCapacity>, Failure> {
         let details = self
-            .read::<op::Inspect>(
+            .call::<op::Inspect>(
                 InspectRequest {
                     telemetry: ployz_core::InspectTelemetry::BridgeCapacity,
                     ..Default::default()
                 },
-                &MachineTarget::from(machine_id),
+                Call::read()
+                    .to(&MachineTarget::from(machine_id))
+                    .budget(crate::connect::target_read_timeout()),
             )
             .await
+            .map_err(crate::connect::rpc_error)
             .map_err(Failure::from)?;
         Ok(details.telemetry.map(|telemetry| telemetry.into_bridge()))
     }
@@ -167,13 +171,16 @@ impl CatchUpClient for Client {
                     new.resolved_spec.name.clone(),
                 );
                 let listed = self
-                    .read::<op::ListContainers>(
+                    .call::<op::ListContainers>(
                         ListContainersRequest {
                             environment: EnvironmentValues::Included,
                         },
-                        &MachineTarget::from(machine_id),
+                        Call::read()
+                            .to(&MachineTarget::from(machine_id))
+                            .budget(crate::connect::target_read_timeout()),
                     )
-                    .await?
+                    .await
+                    .map_err(crate::connect::rpc_error)?
                     .containers;
                 let own = listed.iter().filter(|observed| {
                     observed.machine_id == *machine_id
@@ -204,13 +211,16 @@ impl CatchUpClient for Client {
             return Ok(None);
         }
         let listed = self
-            .read::<op::ListContainers>(
+            .call::<op::ListContainers>(
                 ListContainersRequest {
                     environment: EnvironmentValues::Included,
                 },
-                &target,
+                Call::read()
+                    .to(&target)
+                    .budget(crate::connect::target_read_timeout()),
             )
-            .await?;
+            .await
+            .map_err(crate::connect::rpc_error)?;
         let existing = listed.containers.into_iter().find(|observed| {
             observed.machine_id == *machine_id
                 && observed.kind == ContainerKind::ServiceContainer
@@ -288,6 +298,7 @@ impl CatchUpClient for Client {
             SetPrivateAccessRequest {
                 enabled: true,
                 sealed_auth_key: Some(sealed),
+                approval: None,
             },
         )
         .await
@@ -317,13 +328,16 @@ impl CatchUpClient for Client {
         &mut self,
         machine_id: &MachineId,
     ) -> Result<Vec<ContainerObservation>, Failure> {
-        self.read::<op::ListContainers>(
+        self.call::<op::ListContainers>(
             ListContainersRequest {
                 environment: EnvironmentValues::Included,
             },
-            &MachineTarget::from(machine_id),
+            Call::read()
+                .to(&MachineTarget::from(machine_id))
+                .budget(crate::connect::target_read_timeout()),
         )
         .await
+        .map_err(crate::connect::rpc_error)
         .map(|list| list.containers)
         .map_err(Failure::from)
     }
@@ -332,8 +346,14 @@ impl CatchUpClient for Client {
 /// Whether `machine_id` holds the ingress role, by its own record.
 async fn takes_ingress(client: &mut Client, machine_id: &MachineId) -> Result<bool, RpcError> {
     let details = client
-        .read::<op::Inspect>(InspectRequest::default(), &MachineTarget::from(machine_id))
-        .await?;
+        .call::<op::Inspect>(
+            InspectRequest::default(),
+            Call::read()
+                .to(&MachineTarget::from(machine_id))
+                .budget(crate::connect::target_read_timeout()),
+        )
+        .await
+        .map_err(crate::connect::rpc_error)?;
     details
         .machine
         .filter(|machine| {
@@ -383,7 +403,7 @@ async fn ensure_retried(
                 deploy: None,
                 rule: None,
             },
-            Some(target),
+            Call::keyed().to(target),
         )
         .await
         .map_err(RpcError::from)?

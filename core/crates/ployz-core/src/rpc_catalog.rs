@@ -144,6 +144,8 @@ macro_rules! rpc_catalog {
                 START_APPROVAL_CAPABILITY: ("ployz.restart.start-approval.v1", Always),
                 /// `SetIngressDoors` takes the Tunnel Door with a `sealed_token`, and places the Tunnel Connector.
                 SET_INGRESS_TUNNEL_CAPABILITY: ("ployz.ingress.tunnel.v1", Cluster),
+                /// `SetPrivateAccess` takes a person's approval of its sealed auth key and, under Device enforcement, turns Private Access on for an Operator only with one.
+                PRIVATE_ACCESS_APPROVAL_CAPABILITY: ("ployz.private-access.approval.v1", Cluster),
                 /// A restart approval may be an unsigned step of a signed proposal bundle that rides in its envelope.
                 PROPOSAL_APPROVAL_CAPABILITY: ("ployz.restart.proposal.v1", Always),
                 /// `EnsureContainer` takes a deploy approval and, under Device enforcement, creates an Operator's Container only when its spec matches a digest it approves.

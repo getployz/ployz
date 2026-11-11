@@ -1,3 +1,4 @@
+use crate::cluster::Call;
 use std::future::Future;
 
 use ployz_core::{
@@ -191,7 +192,7 @@ pub(crate) async fn ensure_cluster_image(
     let opened = listing_client
         .call::<op::EnsureImageIngest>(
             EnsureImageIngestRequest {},
-            Some(&MachineTarget::from(peer)),
+            Call::keyed().to(&MachineTarget::from(peer)),
         )
         .await
         .map_err(|error| answered_by(peer, error))?;
@@ -204,7 +205,7 @@ pub(crate) async fn ensure_cluster_image(
                 source: opened.destination,
                 platform: (*platform).to_owned(),
             },
-            Some(&MachineTarget::from(dest)),
+            Call::keyed().to(&MachineTarget::from(dest)),
         )
         .await
         .map(|_| ())
@@ -237,7 +238,7 @@ pub(crate) async fn pull_cluster_image(
                 policy,
                 registry_auth,
             },
-            Some(&MachineTarget::from(dest)),
+            Call::keyed().to(&MachineTarget::from(dest)),
         )
         .await
         .or_else(|error| pulls_on_create(answered_by(dest, error).pulling(image, policy)))
@@ -318,7 +319,7 @@ pub(crate) async fn copy_running_image(
     let opened = client
         .call::<op::EnsureImageIngest>(
             EnsureImageIngestRequest {},
-            Some(&MachineTarget::from(&source.id)),
+            Call::keyed().to(&MachineTarget::from(&source.id)),
         )
         .await
         .map_err(|error| ingest_error(rpc_error(error)))?;
@@ -329,7 +330,7 @@ pub(crate) async fn copy_running_image(
                 source: opened.destination,
                 platform: platform.to_owned(),
             },
-            Some(&MachineTarget::from(&dest.id)),
+            Call::keyed().to(&MachineTarget::from(&dest.id)),
         )
         .await
         .map(drop)

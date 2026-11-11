@@ -1,6 +1,7 @@
 //! `ployz device`: the people's keys every Machine admits at Full scope. Cloud relays a
 //! Device's key to the approver, who checks it against the code the Device printed.
 
+use crate::cluster::Call;
 use std::collections::BTreeMap;
 use std::path::Path;
 
@@ -295,8 +296,12 @@ async fn approve_waiting_join(leaf: &ArgMatches, code: &str) -> Result<(), Error
     for machine in &asked {
         let target = MachineTarget::from(machine);
         let pending = client
-            .invoke::<op::PendingJoins>(ployz_core::PendingJoinsRequest {}, &target, None)
-            .await?;
+            .call_shared::<op::PendingJoins>(
+                ployz_core::PendingJoinsRequest {},
+                Call::once().to(&target),
+            )
+            .await
+            .map_err(crate::connect::rpc_error)?;
         matching.extend(
             pending
                 .joins
@@ -320,12 +325,12 @@ async fn approve_waiting_join(leaf: &ArgMatches, code: &str) -> Result<(), Error
     body.signer = signer.public().into();
     let approval = ployz_core::authority::Signed::sign(body, &signer).map_err(Error::command)?;
     client
-        .invoke::<op::ApproveJoin>(
+        .call_shared::<op::ApproveJoin>(
             ployz_core::ApproveJoinRequest { approval },
-            &MachineTarget::from(&*admitting),
-            None,
+            Call::once().to(&MachineTarget::from(&*admitting)),
         )
-        .await?;
+        .await
+        .map_err(crate::connect::rpc_error)?;
     ui::finish(&json!({ "approved_join": body.machine.id }), || {
         ui::stream("Approved the Server join. Rerun its join command.")
     })
@@ -366,7 +371,7 @@ pub(super) async fn sign_waiting_join(
     };
     let signer = ployz_core::authority::Signer::from_seed(&secret);
     let pending = client
-        .call::<op::PendingJoins>(ployz_core::PendingJoinsRequest {}, None)
+        .call::<op::PendingJoins>(ployz_core::PendingJoinsRequest {}, Call::read())
         .await?;
     let Some(mut body) = pending
         .joins
@@ -384,7 +389,7 @@ pub(super) async fn sign_waiting_join(
     body.signer = signer.public().into();
     let approval = ployz_core::authority::Signed::sign(&body, &signer).map_err(Error::command)?;
     client
-        .call::<op::ApproveJoin>(ployz_core::ApproveJoinRequest { approval }, None)
+        .call::<op::ApproveJoin>(ployz_core::ApproveJoinRequest { approval }, Call::keyed())
         .await?;
     Ok(true)
 }
@@ -516,8 +521,9 @@ async fn enforce_on(
         return Ok(None);
     }
     client
-        .invoke::<op::SetDeviceEnforcement>(request, &target, None)
+        .call_shared::<op::SetDeviceEnforcement>(request, Call::once().to(&target))
         .await
+        .map_err(crate::connect::rpc_error)
         .map(Some)
 }
 
@@ -553,12 +559,12 @@ async fn sign_starting_set(
 
 async fn member_of(client: Client, machine_id: MachineId) -> Result<Option<Member>, RpcError> {
     let details = client
-        .invoke::<op::Inspect>(
+        .call_shared::<op::Inspect>(
             InspectRequest::default(),
-            &MachineTarget::from(&machine_id),
-            None,
+            Call::once().to(&MachineTarget::from(&machine_id)),
         )
-        .await?;
+        .await
+        .map_err(crate::connect::rpc_error)?;
     Ok(details
         .machine
         .as_ref()
@@ -668,7 +674,11 @@ async fn set_on<T: Rpc<Response = DeviceSet>>(
     if !compat::supports(&client, &target, capability).await? {
         return Ok(None);
     }
-    client.invoke::<T>(request, &target, None).await.map(Some)
+    client
+        .call_shared::<T>(request, Call::once().to(&target))
+        .await
+        .map_err(crate::connect::rpc_error)
+        .map(Some)
 }
 
 /// Remove the key `code` names on one Server, Device or passkey. The Server picks the
@@ -685,16 +695,21 @@ async fn remove_on(
     let target = MachineTarget::from(&machine_id);
     if compat::supports(&client, &target, REMOVE_TRUSTED_KEY_CAPABILITY).await? {
         return client
-            .invoke::<op::RemoveTrustedKey>(RemoveTrustedKeyRequest { code }, &target, None)
+            .call_shared::<op::RemoveTrustedKey>(
+                RemoveTrustedKeyRequest { code },
+                Call::once().to(&target),
+            )
             .await
+            .map_err(crate::connect::rpc_error)
             .map(Some);
     }
     if !compat::supports(&client, &target, SET_DEVICE_CAPABILITY).await? {
         return Ok(None);
     }
     let removed = match client
-        .invoke::<op::SetDevice>(SetDeviceRequest::Remove { code }, &target, None)
-        .await?
+        .call_shared::<op::SetDevice>(SetDeviceRequest::Remove { code }, Call::once().to(&target))
+        .await
+        .map_err(crate::connect::rpc_error)?
     {
         DeviceSet::Removed { code } => TrustedKeyRemoved::RemovedDevice {
             code,
@@ -723,8 +738,9 @@ async fn devices_on(
         return Ok(None);
     }
     let details = client
-        .invoke::<op::Inspect>(InspectRequest::default(), &target, None)
-        .await?;
+        .call_shared::<op::Inspect>(InspectRequest::default(), Call::once().to(&target))
+        .await
+        .map_err(crate::connect::rpc_error)?;
     let devices = details
         .management_clients
         .iter()
@@ -753,7 +769,7 @@ pub(super) fn request_hint() -> Hint {
 mod compat {
     use ployz_core::{DescribeContractRequest, MachineTarget, RpcError, op};
 
-    use crate::connect::Client;
+    use crate::{cluster::Call, connect::Client};
 
     /// Whether the Machine at `target` promises `capability`; one that doesn't is an
     /// omission, not a failure.
@@ -763,8 +779,12 @@ mod compat {
         capability: &str,
     ) -> Result<bool, RpcError> {
         Ok(client
-            .invoke::<op::DescribeContract>(DescribeContractRequest {}, target, None)
-            .await?
+            .call_shared::<op::DescribeContract>(
+                DescribeContractRequest {},
+                Call::once().to(target),
+            )
+            .await
+            .map_err(crate::connect::rpc_error)?
             .supports(capability))
     }
 }

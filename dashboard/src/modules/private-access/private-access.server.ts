@@ -1,5 +1,6 @@
 import "@tanstack/react-start/server-only";
-import { Data, Effect, Redacted } from "effect";
+import type { PrivateAccessOn } from "@ployz/sdk";
+import { Data, Effect } from "effect";
 import { approveKeyed, type Decider, type OperationAsked } from "#/modules/approvals/approvals.server";
 import { refusalWords } from "#/modules/machines/server-web-traffic.server";
 import { freshOperationDigest } from "#/modules/machines/server-operations.server";
@@ -30,7 +31,7 @@ const connectedSession = Effect.fn("PrivateAccess.session")(function* (organizat
   return opened.status === "connected" ? opened.connected : yield* refuse(UNANSWERED);
 });
 
-const send = (session: PloyzSession, authKey: Redacted.Redacted<string> | null) => session.setPrivateAccess(authKey).pipe(
+const send = (session: PloyzSession, on: PrivateAccessOn | null) => session.setPrivateAccess(on).pipe(
   Effect.mapError((error) => refuse(refusalWords(error))),
   Effect.timeoutOrElse({ duration: SET_LIMIT_MS, orElse: () => Effect.fail(new StillConnecting()) }),
   Effect.map((changed): PrivateAccessChanged => {
@@ -44,8 +45,9 @@ const send = (session: PloyzSession, authKey: Redacted.Redacted<string> | null) 
   Effect.catch(waitedOut),
 );
 
-export const setPrivateAccess = (organizationId: string, authKey: Redacted.Redacted<string> | null) =>
-  Effect.flatMap(connectedSession(organizationId), (session) => send(session, authKey)).pipe(Effect.scoped);
+/** Turn Private Access on with a key the browser sealed and the person approved, or off with `null`. */
+export const setPrivateAccess = (organizationId: string, on: PrivateAccessOn | null) =>
+  Effect.flatMap(connectedSession(organizationId), (session) => send(session, on)).pipe(Effect.scoped);
 
 export const privateAccessAsked = (organizationId: string, to: PrivateAccessWant) => ({
   subject: `cluster:${organizationId}`,
@@ -59,15 +61,15 @@ export const privateAccessAsked = (organizationId: string, to: PrivateAccessWant
 /** What a Connect that approved its Approval got from the Servers: their answer, or why Cloud has none. */
 export type KeyedSent = PrivateAccessChanged | { readonly problem: string };
 
-/** Approve the Approval with `approveKeyed`, then turn Private Access on with the key the approver pasted. */
+/** Approve the Approval with `approveKeyed`, then turn Private Access on with the key the approver sealed and approved. */
 export const approvePrivateAccess = Effect.fn("PrivateAccess.approve")(function* (
   decider: Decider,
-  input: { readonly id: string; readonly digest: string; readonly authKey: Redacted.Redacted<string> },
+  input: { readonly id: string; readonly digest: string; readonly on: PrivateAccessOn },
 ) {
   const session = yield* connectedSession(decider.organization.id);
   const decided = yield* approveKeyed(decider, input, freshOperationDigest);
   if (!decided.ok) return yield* new Conflict({ userFacing: true, message: decided.refusal.message });
-  const sent: KeyedSent = yield* send(session, input.authKey).pipe(
+  const sent: KeyedSent = yield* send(session, input.on).pipe(
     Effect.catchTag("Validation", (problem) => Effect.succeed({ problem: problem.message })),
   );
   return { approval: decided.approval, sent };

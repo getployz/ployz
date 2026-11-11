@@ -14,12 +14,14 @@ pub mod deploy;
 pub mod join;
 pub mod keys;
 pub mod preview;
+pub mod private_access;
 pub mod proposal;
 pub mod refusal;
 pub mod restart;
 pub mod rule;
 pub mod rule_draft;
 pub mod session;
+pub mod shown;
 pub mod starting_set;
 pub mod trusted_key;
 pub mod validity;
@@ -36,6 +38,10 @@ pub use preview::{
     CheckedReview, PreviewCreation, PreviewFacts, PreviewKey, PreviewProof, PreviewReview,
     PreviewRule, PreviewService, Review, ReviewDraft, ReviewDraftError, ReviewSigner, ReviewTerms,
     ReviewedService,
+};
+pub use private_access::{
+    AuthKeyDigest, KeyApproval, PrivateAccessApproval, PrivateAccessFacts, PrivateAccessTerms,
+    key_approval_challenge,
 };
 pub use proposal::{ProposalApproval, ProposalRef, ProposalStep, StepDigest, StepKind};
 pub use refusal::AuthorityRefusal;

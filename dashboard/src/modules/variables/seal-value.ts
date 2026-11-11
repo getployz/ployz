@@ -76,16 +76,42 @@ export async function sealValue(
   return toBase64(out);
 }
 
+/** HPKE `info` and the first associated-data field of a value Ployz seals to a Cluster for one platform purpose. */
+const PLATFORM_SEALED_INFO = "ployz-platform-sealed-v1";
+
+/**
+ * `plaintext` sealed to the Cluster key `publicKey` for `purpose`, as ployz-core's `seal_platform` does: base64 of the
+ * encapsulated key followed by the ciphertext. It opens for that purpose on that Cluster only.
+ */
+export async function sealPlatform(publicKey: string, purpose: "private-access", plaintext: string): Promise<string> {
+  const hpke = await warmSealing();
+  const cluster = fromBase64(publicKey);
+  const recipientPublicKey = await hpke.kem.deserializePublicKey(cluster);
+  const { enc, ct } = await hpke.seal(
+    { recipientPublicKey, info: encoder.encode(PLATFORM_SEALED_INFO) },
+    encoder.encode(plaintext),
+    framed([encoder.encode(PLATFORM_SEALED_INFO), encoder.encode(purpose), cluster]),
+  );
+  const out = new Uint8Array(enc.byteLength + ct.byteLength);
+  out.set(new Uint8Array(enc), 0);
+  out.set(new Uint8Array(ct), enc.byteLength);
+  return toBase64(out);
+}
+
 /** ployz-core's `SealedValue::associated_data` for a value scoped to one Service. */
 function associatedData(organizationId: string, target: { environment: string; service: string }, key: string) {
-  const fields = [
+  return framed([
     encoder.encode(SEALED_VALUE_INFO),
     encoder.encode(organizationId),
     uuidBytes(target.environment),
     encoder.encode("service"),
     uuidBytes(target.service),
     encoder.encode(key),
-  ];
+  ]);
+}
+
+/** ployz-core's associated-data framing: each field after its length as a big-endian u32. */
+function framed(fields: readonly Uint8Array[]) {
   const out = new Uint8Array(fields.reduce((length, field) => length + 4 + field.length, 0));
   const view = new DataView(out.buffer);
   let offset = 0;

@@ -685,7 +685,7 @@ fn admit(
     let shut_down = removal
         .as_ref()
         .is_some_and(|removal| removal.status == DeploymentStatus::Applied)
-        && crate::pull_request::of(tx, id)?.is_some();
+        && crate::pr_environment::of(tx, id)?.is_some();
     if crate::removal::mark::naming(tx, id)?.is_some() || (removal.is_some() && !shut_down) {
         return Ok(None);
     }

@@ -389,8 +389,10 @@ approved device or over SSH on a server. Elsewhere they stop before changing any
 server that needs an approved device. The dashboard's **Remove server** and **Forget server** are
 refused, and the message names the command to run from an approved device. Ployz Cloud drops a server you removed from the CLI once the Cluster no longer lists it,
 within minutes. To remove the last server of a Cluster Ployz Cloud manages, turn enforcement off
-first. Ingress doors and Private Access can't be changed from the dashboard either. Over
-`--connect ssh://` to that server, they change as before.
+first. Ingress doors still change from the dashboard, and a server runs only Ployz's own
+images for them. Private Access turns on from the dashboard once your passkey approves the key,
+or with `ployz private-access on` from an approved device. Over `--connect ssh://` to that
+server, both change as before.
 
 ## Change what a server does
 

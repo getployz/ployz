@@ -126,6 +126,17 @@ pub enum ServiceSource {
     },
 }
 
+impl ServiceSource {
+    /// The source a Service has until it gets one: nothing, at the repository root.
+    #[must_use]
+    pub fn empty() -> Self {
+        Self::Empty {
+            version: 1,
+            root_dir: "/".to_owned(),
+        }
+    }
+}
+
 /// How Cloud reads a GitHub repository; public access never borrows credentials.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
 #[serde(
@@ -166,7 +177,7 @@ pub enum ServiceImageCredentials {
 }
 
 /// An authored HTTP or shell-command readiness check, or none, which also disables the image's own check.
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
+#[derive(Clone, Debug, Default, Eq, PartialEq, Serialize, Deserialize, TS)]
 #[serde(
     tag = "type",
     rename_all = "kebab-case",
@@ -174,6 +185,7 @@ pub enum ServiceImageCredentials {
     deny_unknown_fields
 )]
 pub enum ServiceHealthcheck {
+    #[default]
     None,
     Http {
         path: String,
@@ -186,7 +198,7 @@ pub enum ServiceHealthcheck {
 }
 
 /// Cloud's retry count is authored separately; parsing reuses Docker policy admission.
-#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize, Deserialize, TS)]
 #[serde(try_from = "String", into = "String")]
 #[ts(type = "'unless-stopped' | 'always' | 'on-failure' | 'no'")]
 pub struct ServiceRestartPolicy(pub RestartPolicy);
@@ -397,6 +409,22 @@ mod tests {
             "sealedFor": "00000000-0000-4000-8000-000000000002",
             "value": { "sealed": SEALED, "scope": { "service": "00000000-0000-4000-8000-000000000003" }, "key": "K" }
         })
+    }
+
+    #[test]
+    fn typed_defaults_serialize_as_the_literals_they_replace() {
+        fn json(value: impl Serialize) -> String {
+            json!(value).to_string()
+        }
+        assert_eq!(
+            json(ServiceSource::empty()),
+            r#"{"rootDir":"/","type":"empty","version":1}"#
+        );
+        assert_eq!(json(ServiceHealthcheck::default()), r#"{"type":"none"}"#);
+        assert_eq!(json(ServiceRestartPolicy::default()), r#""unless-stopped""#);
+        assert_eq!(json(default_max_retries()), "10");
+        assert_eq!(json(default_replicas()), "1");
+        assert_eq!(json(BuildMethod::default()), r#""railpack""#);
     }
 
     #[test]

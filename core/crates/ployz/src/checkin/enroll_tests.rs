@@ -12,7 +12,10 @@ use serde_json::Value;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
 use super::super::{FleetToken, Headline, pass, run};
-use super::super::{Probe, wire::EnrollPolicy};
+use super::super::{
+    Probe,
+    wire::{self, EnrollPolicy},
+};
 use super::*;
 
 const TOKEN: &str = "pmet_never_written_down";

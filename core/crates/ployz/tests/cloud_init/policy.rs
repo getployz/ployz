@@ -1,6 +1,7 @@
 //! Enrollment refuses policy changes on an already assigned Machine.
 
 use super::*;
+use ployz::connect::Call;
 
 #[tokio::test]
 async fn cloud_resume_refuses_policy_mismatch_without_editing_the_machine() {
@@ -46,7 +47,7 @@ async fn cloud_resume_refuses_policy_mismatch_without_editing_the_machine() {
                     wireguard_mtu: None,
                     pinned: Default::default(),
                 },
-                None,
+                Call::keyed(),
             )
             .await
             .unwrap();
@@ -70,7 +71,7 @@ async fn cloud_resume_refuses_policy_mismatch_without_editing_the_machine() {
         );
         let observed = connect_daemon(address)
             .await
-            .call::<op::Inspect>(InspectRequest::default(), None)
+            .call::<op::Inspect>(InspectRequest::default(), Call::read())
             .await
             .unwrap()
             .machine
@@ -195,7 +196,7 @@ async fn machine_init_and_add_send_policy_in_creation_without_an_update() {
         assert_eq!(policy.labels.get("pool").unwrap().as_str(), "build");
         let observed = connect_daemon(target_address)
             .await
-            .call::<op::Inspect>(InspectRequest::default(), None)
+            .call::<op::Inspect>(InspectRequest::default(), Call::read())
             .await
             .unwrap()
             .machine

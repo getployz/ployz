@@ -199,7 +199,7 @@ pub(crate) fn environments(
 
 /// Whether `id` is a PR Environment whose pull request merged.
 fn merged(tx: &mut dyn Tx, who: &Actor, id: &EnvironmentId) -> Result<bool, RpcError> {
-    let Some(pull_request) = crate::pull_request::of(tx, id)? else {
+    let Some(pull_request) = crate::pr_environment::of(tx, id)? else {
         return Ok(false);
     };
     Ok(
@@ -248,7 +248,7 @@ pub(crate) fn set_protected(
     if set.protected {
         crate::removal::marked(tx, &environment)?;
     }
-    let kind = if crate::pull_request::of(tx, &summary.id)?.is_some() {
+    let kind = if crate::pr_environment::of(tx, &summary.id)?.is_some() {
         Some("a PR Environment")
     } else if !tx
         .query(

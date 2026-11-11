@@ -9,6 +9,7 @@ import { Cause, ConfigProvider, Effect, Exit, Fiber, Layer, Schema } from "effec
 import { Inngest } from "inngest";
 import { Polar } from "#/modules/billing/polar-provider.server";
 import { GithubRepositoriesLive } from "#/modules/github/github-cli.server";
+import { GithubAuthority } from "#/modules/github/github-authority.server";
 import { GithubApi } from "#/modules/github/github-observation.api";
 import { githubInstallation, githubRepositoryCache, organizationGithubInstallation } from "#/modules/github/tables";
 import { InngestClient } from "#/modules/inngest/client";
@@ -52,7 +53,7 @@ import { Database, DatabaseLive } from "#/server/database.server";
 import { encodePublicError, statusForPublicError, Unauthorized } from "#/server/public-error";
 import { createOrganizationForSession } from "#/modules/organization/organization-state.server";
 import { connectionAborts } from "#/test/connection-aborts";
-import { fakeGithubApi } from "#/test/fake-github";
+import { fakeGithubApi, fakeGithubAuthority } from "#/test/fake-github";
 import * as ids from "#/test/ids";
 import { postgresTestDatabase } from "#/test/postgres";
 import { sendsNowhere } from "#/test/store-cloud";
@@ -222,6 +223,7 @@ const cliLayer = Effect.fn(function* (
     Layer.succeed(InngestClient, overrides.inngest ?? sendsNowhere()),
     Layer.succeed(SecretEncryption, encryption),
     Layer.succeed(GithubApi, github.service),
+    Layer.succeed(GithubAuthority, fakeGithubAuthority().service),
     ployz,
   );
   const store = CloudStoreLive.pipe(Layer.provide(Layer.merge(configLayer, databaseLayer)));

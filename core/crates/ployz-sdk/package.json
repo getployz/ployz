@@ -25,6 +25,11 @@
       "types": "./generated/capabilities.d.ts",
       "import": "./generated/capabilities.mjs",
       "default": "./generated/capabilities.js"
+    },
+    "./cloud-contract": {
+      "types": "./generated/cloud-contract.d.ts",
+      "import": "./generated/cloud-contract.mjs",
+      "default": "./generated/cloud-contract.js"
     }
   },
   "files": [

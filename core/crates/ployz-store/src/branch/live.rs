@@ -296,8 +296,8 @@ pub(crate) fn view(tx: &mut dyn Tx, branch: &Environment) -> Result<BranchView, 
         setup,
         live,
         to_parent,
-        closes_at: crate::pull_request::closes_at(tx, &branch.summary.id)?,
-        pull_request: crate::pull_request::of(tx, &branch.summary.id)?,
+        closes_at: super::idle::closes_at(tx, &branch.summary.id)?,
+        pull_request: crate::pr_environment::of(tx, &branch.summary.id)?,
     })
 }
 

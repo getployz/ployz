@@ -1,6 +1,7 @@
 //! Domain and wire contracts shared byte-for-byte by the Ployz CLI and daemon.
 
 pub mod authority;
+pub mod cloud_contract;
 pub mod config;
 mod container_metadata;
 pub mod decode;
@@ -89,11 +90,6 @@ pub const LEAVE_REFUSED_BY_ENFORCEMENT: &str =
 /// What a Machine that enforces Device approval says when an Operator asks it to `Forget`
 /// another Machine.
 pub const FORGET_REFUSED_BY_ENFORCEMENT: &str = "This server forgets another server only when you approve it. Run ployz server forget from an approved device.";
-
-/// What a Machine that enforces Device approval says when an Operator asks it to set its
-/// Ingress Doors or Private Access, which no statement approves yet.
-pub const INGRESS_REFUSED_BY_ENFORCEMENT: &str =
-    "This server changes its ingress doors and Private Access only from an approved device.";
 
 /// Daemon exit status for an operator-actionable Docker network or WireGuard
 /// interface refusal.

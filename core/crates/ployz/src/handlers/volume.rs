@@ -7,6 +7,7 @@
 //! Mirror, Sync and Mirror removal are Volume runs in Ployz Cloud; see [`run`].
 
 use clap::{ArgAction, ArgMatches, Command};
+use ployz_core::cloud_contract::MIN_MANAGED_VOLUME_BYTES;
 use ployz_core::config::VolumeKind;
 use ployz_core::{
     MachineObservation, MachineStorageObservation, ProvisionedVolumeMaximumBytes, ServiceName,
@@ -158,10 +159,6 @@ fn shared_writes_flag() -> clap::Arg {
         .help("Let more than one container write it: replicas of one Service, or several Services. =false refuses a second writer")
 }
 
-/// The smallest size `--size` takes, 0.1 GB: a much smaller Volume is full when created (#2995).
-/// A Volume already recorded smaller still reads and resizes up.
-const SMALLEST_SIZE: u64 = 100_000_000;
-
 fn storage_flags(command: Command) -> Command {
     command
         .arg(
@@ -170,7 +167,7 @@ fn storage_flags(command: Command) -> Command {
                 .value_parser(|size: &str| {
                     let size = ProvisionedVolumeMaximumBytes::parse_gb(size)
                         .map_err(|_| "Use a positive size in GB, such as 5GB or 0.5GB")?;
-                    if size.get() < SMALLEST_SIZE {
+                    if size.get() < MIN_MANAGED_VOLUME_BYTES {
                         return Err("Use a size of at least 0.1GB, such as 5GB or 0.5GB");
                     }
                     Ok(size)

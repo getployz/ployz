@@ -25,6 +25,7 @@ use ployz_store::{EnvironmentSummary, VolumeId, VolumeName};
 use super::super::deploy::approve::{Enforcing, Probe, probe};
 use super::super::{Error, leaf_matches, store};
 use super::restore::{Seen, copies, docker_volume};
+use crate::cluster::{Call, Deadline};
 use crate::connect::TARGET_RPC_TIMEOUT;
 
 /// A signed Mirror approval and the change it approved.
@@ -275,14 +276,16 @@ async fn running_spec(
         }
     };
     let details = client
-        .invoke::<op::InspectContainer>(
+        .call_shared::<op::InspectContainer>(
             InspectContainerRequest {
                 container_id: holder.container_id,
             },
-            &MachineTarget::from(&writer.id),
-            Some(TARGET_RPC_TIMEOUT),
+            Call::once()
+                .to(&MachineTarget::from(&writer.id))
+                .within(Deadline::Target(TARGET_RPC_TIMEOUT)),
         )
-        .await?;
+        .await
+        .map_err(crate::connect::rpc_error)?;
     Ok(details.container.into_parts().resolved_spec)
 }
 
