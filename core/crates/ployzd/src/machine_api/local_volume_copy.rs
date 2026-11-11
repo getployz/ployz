@@ -108,6 +108,7 @@ impl MachineService {
             expect,
             want,
             approval,
+            r#gen: request_gen,
             ..
         } = request;
         let Some(approval) = approval else {
@@ -131,6 +132,15 @@ impl MachineService {
         let receipt = self
             .local
             .hand_off(&approval, &name, to, (at, &newest.name), epoch)?;
+        // Between the synced decision and its reply: a restart must answer the same receipt.
+        crate::faults::kill_inside(
+            "SetVolumeCopy.Handoff",
+            Some(Identity {
+                volume: &name,
+                want: Want::Handoff { at, epoch },
+                r#gen: request_gen,
+            }),
+        );
         Ok(SetVolumeCopyReply {
             copy,
             receipt: Some(receipt),

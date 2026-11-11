@@ -11,8 +11,9 @@ pub(crate) use enabled::{apply, check};
 
 /// Verbs whose effect outlives the RPC; `kill-daemon` fires inside them, from [`kill_inside`].
 #[cfg_attr(not(feature = "verify-faults"), allow(dead_code))]
-const LONG_EFFECTS: [&str; 8] = [
+const LONG_EFFECTS: [&str; 9] = [
     "SetVolumeCopy.WriterToMirror",
+    "SetVolumeCopy.Handoff",
     "SetVolumeCopy.WriterToSnapshot",
     "SetVolumeCopy.WriterToForget",
     "SetVolumeCopy.SeedToForget",
