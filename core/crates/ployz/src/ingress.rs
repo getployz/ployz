@@ -301,9 +301,9 @@ async fn declaration_of(client: &Client) -> Result<Declaration, Failure> {
 async fn declare(client: &Client, observed: &Doors, doors: &IngressDoors) -> Result<(), Failure> {
     match observed.declaration {
         Declaration::Unsupported => {
-            tracing::warn!(
-                "the entry Server can't keep the Cluster's Doors; setting each Server's Doors \
-                 without declaring them"
+            crate::ui::warn(
+                "The entry Server can't keep the Cluster's Doors, so each Server's Doors are set \
+                 without declaring them. Upgrade it to have a joiner and a restart follow them.",
             );
             Ok(())
         }
