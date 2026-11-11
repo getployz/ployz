@@ -2598,7 +2598,7 @@ describe("volume runs", () => {
       expect(await keptApprovals()).toEqual([{ machine_id: idOf("fsn-2"), approvals: [APPROVAL, before] }]);
     });
 
-    it("a sync moves past approvals the mirror refused as spent to the one it holds, and drops them", async () => {
+    it("a sync moves past approvals the mirror refuses to the one it holds, and puts that one first", async () => {
       const lapsed = { body: "lapsed", signatures: [] };
       const before = { body: "before", signatures: [] };
       first(machines).writes = 1;
@@ -2611,7 +2611,7 @@ describe("volume runs", () => {
 
       expect(synced.lines).toEqual([expect.stringMatching(/^data-fsn-2 is pulling /)]);
       expect(sent.filter((request) => request.want.kind === "mirror").map((request) => request.approval)).toEqual([APPROVAL, lapsed, before]);
-      expect(await keptApprovals()).toEqual([{ machine_id: idOf("fsn-2"), approvals: [before] }]);
+      expect(await keptApprovals()).toEqual([{ machine_id: idOf("fsn-2"), approvals: [before, APPROVAL, lapsed] }]);
     });
 
     it("sync --full that fails after its first pull keeps the approval the mirror admitted under it", async () => {

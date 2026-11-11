@@ -146,7 +146,7 @@ describe("the mirror sync", () => {
     expect(carried).toEqual(["snapshot web-1 none", `mirror web-2 ${approval.body}`, "mirror web-3 none"]);
   });
 
-  it("tries a mirror's kept approvals newest first, stops at the one it accepts and drops only those it refused as spent", async () => {
+  it("tries a mirror's kept approvals in order, stops at the one it accepts, puts that one first and drops none", async () => {
     const [lapsed, early, ended, admitted, oldest] = ["lapsed", "early", "ended", "admitted", "oldest"].map((body): Signed => ({ body, signatures: [] }));
     await harness.pool.query(
       "insert into volume_mirror_status (organization_id, volume_id, machine_id, approvals) values ($1, $2, $3, $4)",
@@ -167,9 +167,9 @@ describe("the mirror sync", () => {
     expect((await run(syncMirrors(organizationId, volume, () => Effect.succeed(members), asking))).lines).toEqual(["db-web-2 is pulling w-1-5"]);
 
     expect(carried).toEqual(["lapsed", "early", "ended", "admitted"]);
-    // `early` may pass once its window opens; `oldest` was never tried, and only the Mirror can say it ended.
+    // A refusal can stop being true (a clock that steps back, approval records that are reset), so none goes.
     expect((await harness.pool.query("select approvals from volume_mirror_status where machine_id = $1", [web("web-2")])).rows)
-      .toEqual([{ approvals: [early, admitted, oldest] }]);
+      .toEqual([{ approvals: [admitted, lapsed, early, ended, oldest] }]);
   });
 
   it("keeps every approval when the mirror refuses them all, and when a pull goes unanswered", async () => {

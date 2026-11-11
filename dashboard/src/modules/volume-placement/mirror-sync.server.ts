@@ -7,7 +7,7 @@ import { volumePlacement } from "#/modules/volume-placement/tables";
 import { slotRole } from "#/modules/volume-placement/volume-placement";
 import { deployClaim } from "#/modules/volume-placement/volume-placement.server";
 import { expectOf, roleOf } from "#/modules/volume-run/plan";
-import { dropSpent } from "#/modules/volume-run/mirror-approvals.server";
+import { acceptApproval } from "#/modules/volume-run/mirror-approvals.server";
 import { volumeMirrorStatus, volumeRun } from "#/modules/volume-run/tables";
 import { ACTIVE_VOLUME_RUN_STATES, type AnsweredMember, copyName, type Member, unheardOf } from "#/modules/volume-run/volume-run";
 import { askCopy, type CopyAnswer, DRAIN_MS, type MachineRef, observeVolumeMembers, requestVolumeRun, SwitchAttemptError } from "#/modules/volume-run/volume-run.server";
@@ -275,22 +275,19 @@ const syncOnce = Effect.fn("MirrorSync.sync")(function* (organizationId: string,
         Effect.as<MirrorAnswer>({ ok: false, reason: "unasked", copy: null, message: "Cloud couldn't reach the Cluster" }),
       )),
     );
-    // Each pull carries an approval kept with its Mirror, newest first, past any the Mirror refuses for the approval:
-    // the one it holds open is always kept, and one it refuses as spent goes (mirror-approvals.server.ts). The writer's
+    // Each pull carries an approval kept with its Mirror, in order, past any the Mirror refuses for the approval: the one
+    // it holds open is always kept (mirror-approvals.server.ts), and the one it accepts goes first. The writer's
     // snapshot carries none: the Mirror's own run granted it the writer's later snapshots, and one snapshot serves every
     // Mirror.
     const pull = (member: SlotMember, copy: Slot, target: string) => Effect.gen(function* () {
       const want: WantedCopy = { kind: "mirror", from: writer.address, target, drain: DRAIN_MS };
       const kept = approvals.find((row) => row.machineId === member.machine.id)?.approvals ?? [];
-      const spent: Signed[] = [];
-      let answer: MirrorAnswer | undefined;
-      for (const approval of kept) {
-        answer = yield* setCopy(member.machine, expectOf(copy), want, approval);
-        if (answer.ok || answer.reason !== "unapproved") break;
-        if (answer.spent === true) spent.push(approval);
+      for (const [at, approval] of kept.entries()) {
+        const answer = yield* setCopy(member.machine, expectOf(copy), want, approval);
+        if (answer.ok && at > 0) yield* acceptApproval(volume.volumeId, member.machine.id, approval);
+        if (answer.ok || answer.reason !== "unapproved" || at === kept.length - 1) return answer;
       }
-      if (spent.length > 0) yield* dropSpent(volume.volumeId, member.machine.id, spent);
-      return answer ?? (yield* setCopy(member.machine, expectOf(copy), want));
+      return yield* setCopy(member.machine, expectOf(copy), want);
     });
 
     // The Machine finishes a landed pull only when asked for it again, so resend each pull before calling it busy.
